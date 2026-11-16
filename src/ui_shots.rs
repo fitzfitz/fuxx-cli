@@ -12040,7 +12040,7 @@ fn palette_keys_scene() {
             assert_eq!(scope(cx), Scope::All, "{n}: ⌘K opens All");
             assert_eq!(selected(cx), Some(Key::Workspace(ids[0])), "{n}");
             // Over the `… more` row, into Actions; then up past the top, round to the last.
-            press_keys(cx, window, "down down down down down");
+            press_keys(cx, window, "down down down down");
             assert_eq!(
                 selected(cx),
                 Some(Key::More(Kind::Workspace)),
@@ -14841,7 +14841,12 @@ fn welcome_scene() {
         let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
             let ws = slotted(&slot);
             open_welcome_on(cx, window, &ws, Origin::FirstRun { over: over.get() });
-            welcome_found(cx, window, &ws, vec![Found::Yes, Found::No, Found::Yes]);
+            welcome_found(
+                cx,
+                window,
+                &ws,
+                vec![Found::Yes, Found::Yes, Found::No, Found::Yes],
+            );
             let (chosen, texts) = welcome_state(cx, &ws);
             assert_eq!(chosen, Row::Preset(0), "{m}: the first found is chosen");
             for want in [
@@ -14866,7 +14871,7 @@ fn welcome_scene() {
 
             let card = welcome_of(cx, &ws).expect("open");
             let codex = cx
-                .read(|cx| card.read(cx).row_bounds(Row::Preset(2)))
+                .read(|cx| card.read(cx).row_bounds(Row::Preset(3)))
                 .expect("codex's row is drawn");
             cx.simulate_click(window, codex.center(), gpui::Modifiers::none());
             settle(cx, window);
@@ -14875,7 +14880,7 @@ fn welcome_scene() {
                 "{m}: a click on a row keeps the card open"
             );
             let (chosen, texts) = welcome_state(cx, &ws);
-            assert_eq!(chosen, Row::Preset(2), "{m}: the click chose codex");
+            assert_eq!(chosen, Row::Preset(3), "{m}: the click chose codex");
             assert!(
                 texts.iter().any(|t| t == "Start codex"),
                 "{m}: the button follows: {texts:?}"
@@ -14884,7 +14889,7 @@ fn welcome_scene() {
                 let c = card.read(cx);
                 Some((
                     c.card_bounds()?,
-                    c.row_bounds(Row::Preset(2))?,
+                    c.row_bounds(Row::Preset(3))?,
                     c.start_bounds()?,
                 ))
             }));
@@ -15014,11 +15019,11 @@ fn welcome_checking_scene() {
                 open_welcome_on(cx, window, &ws, first);
                 let card = welcome_of(cx, &ws).expect("open");
                 let found = cx.read(|cx| card.read(cx).found().to_vec());
-                assert_eq!(found, [Found::Checking; 3], "{n}: nothing answered yet");
+                assert_eq!(found, [Found::Checking; 4], "{n}: nothing answered yet");
                 let (chosen, texts) = welcome_state(cx, &ws);
                 assert_eq!(chosen, Row::Preset(0), "{n}: claude chosen meanwhile");
                 let checking = texts.iter().filter(|t| *t == "Checking\u{2026}").count();
-                assert_eq!(checking, 3, "{n}: each row checking: {texts:?}");
+                assert_eq!(checking, 4, "{n}: each row checking: {texts:?}");
 
                 // Enter starts the chosen row while it's still checking.
                 let heard: Rc<RefCell<Vec<WelcomeEvent>>> = Rc::default();
@@ -15042,10 +15047,10 @@ fn welcome_checking_scene() {
                 // An answer after a move leaves the move; on a fresh card it chooses.
                 open_welcome_on(cx, window, &ws, first);
                 press_keys(cx, window, "down");
-                welcome_found(cx, window, &ws, vec![Found::No; 3]);
+                welcome_found(cx, window, &ws, vec![Found::No; 4]);
                 assert_eq!(welcome_state(cx, &ws).0, Row::Preset(1), "{n}: kept moved");
                 open_welcome_on(cx, window, &ws, first);
-                welcome_found(cx, window, &ws, vec![Found::No; 3]);
+                welcome_found(cx, window, &ws, vec![Found::No; 4]);
                 assert_eq!(welcome_state(cx, &ws).0, Row::Plain, "{n}: all missing");
 
                 // Nothing in the card moves.
@@ -15118,7 +15123,7 @@ fn welcome_keys_scene() {
             let first = Origin::FirstRun { over: over.get() };
             open_welcome_on(cx, window, &ws, first);
             assert_eq!(welcome_state(cx, &ws).0, Row::Preset(0), "{n}: claude");
-            press_keys(cx, window, "down down down down");
+            press_keys(cx, window, "down down down down down");
             assert_eq!(
                 welcome_state(cx, &ws).0,
                 Row::Folder,
@@ -15497,8 +15502,8 @@ fn welcome_start_scene() {
             Box::new(|cx, window, ws, s1, n| {
                 open_welcome_on(cx, window, ws, Origin::FirstRun { over: s1 });
                 welcome_folder_to(cx, window, ws, "/w/app");
-                press_keys(cx, window, "down down");
-                assert_eq!(welcome_state(cx, ws).0, Row::Preset(2), "{n}: codex");
+                press_keys(cx, window, "down down down");
+                assert_eq!(welcome_state(cx, ws).0, Row::Preset(3), "{n}: codex");
                 press_keys(cx, window, "enter");
                 assert!(
                     welcome_of(cx, ws).is_none(),
@@ -15536,7 +15541,7 @@ fn welcome_start_scene() {
                 assert_eq!(welcome_layout(cx, ws), (vec![s1], 1), "{n}: one terminal");
                 open_welcome_on(cx, window, ws, Origin::FirstRun { over: s1 });
                 welcome_folder_to(cx, window, ws, "/w/app");
-                press_keys(cx, window, "down down enter");
+                press_keys(cx, window, "down down down enter");
                 assert!(
                     welcome_of(cx, ws).is_none(),
                     "{n}: the pick closes the card"
@@ -15553,7 +15558,7 @@ fn welcome_start_scene() {
             "c",
             Box::new(|cx, window, ws, s1, n| {
                 open_welcome_on(cx, window, ws, Origin::FirstRun { over: s1 });
-                press_keys(cx, window, "down down down");
+                press_keys(cx, window, "down down down down");
                 assert_eq!(welcome_state(cx, ws).0, Row::Plain, "{n}: Plain terminal");
                 press_keys(cx, window, "enter");
                 assert!(
@@ -15738,7 +15743,7 @@ fn welcome_folder_scene() {
                 settle(cx, window);
             };
 
-            press_keys(cx, window, "down down down");
+            press_keys(cx, window, "down down down down");
             for (answer, want) in [(Some("/w/other"), "/w/other"), (None, "/w/other")] {
                 let (tx, rx) = oneshot::channel();
                 cx.update(|cx| card.update(cx, |c, _| c.answer_panel_with(rx)));
