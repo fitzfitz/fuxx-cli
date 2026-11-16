@@ -6,6 +6,9 @@ use crate::status::Status;
 
 pub const OUTPUT_KEEP_LINES: usize = 2_000;
 pub const OUTPUT_KEEP_BYTES: usize = 256 * 1024;
+/// The notice an agent tab shows once its conversation is opened in a terminal (R13): its own
+/// process has stopped until you send from it again.
+pub const PAUSED_NOTICE: &str = "Open in classic view — this tab is paused";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Answer {
@@ -312,6 +315,15 @@ impl Conversation {
         } else {
             self.items.push(Item::Error(format!("{what}: {tail}")));
         }
+    }
+
+    /// The tab's process was stopped for "Open in classic view" (R13): nothing runs or waits,
+    /// one notice says so, and it reads Done. Not an exit: no error row.
+    pub fn paused(&mut self) {
+        self.ended = true;
+        self.outstanding = 0;
+        self.settle();
+        self.items.push(Item::Notice(PAUSED_NOTICE.into()));
     }
 
     /// A turn is over: nothing is still running and no question is still open.
@@ -707,6 +719,39 @@ mod tests {
         c.process_ended(Some(0), "some warning");
         assert!(!c.items().iter().any(|i| matches!(i, Item::Error(_))));
         assert_eq!(c.status(), Status::Done);
+    }
+
+    #[test]
+    fn pausing_is_one_notice_and_done() {
+        let mut c = Conversation::new();
+        c.you("x".into(), vec![]);
+        c.apply(permission("p1"));
+        assert_eq!(c.status(), Status::Waiting);
+        c.paused();
+        assert!(c.items().iter().any(|i| matches!(
+            i,
+            Item::Permission {
+                answer: Some(Answer::Expired),
+                ..
+            }
+        )));
+        assert_eq!(
+            c.items().last(),
+            Some(&Item::Notice(PAUSED_NOTICE.to_string()))
+        );
+        assert!(!c.items().iter().any(|i| matches!(i, Item::Error(_))));
+        assert_eq!(
+            c.items()
+                .iter()
+                .filter(|i| matches!(i, Item::Notice(_)))
+                .count(),
+            1
+        );
+        assert_eq!(c.status(), Status::Done);
+        assert!(c.pending_permission().is_none());
+        // Sending again starts a turn.
+        c.you("y".into(), vec![]);
+        assert_eq!(c.status(), Status::Working);
     }
 
     #[test]

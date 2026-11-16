@@ -238,6 +238,7 @@ const SCENES: &[(&str, fn())] = &[
     ("chrome-resize-title", chrome_sources::chrome_resize_title),
     ("chrome-drag-cancel", chrome_sources::chrome_drag_cancel),
     ("chrome-renaming", chrome_sources::chrome_renaming),
+    ("chrome-agent-tabs", chrome_sources::chrome_agent_tabs),
     (
         "chrome-new-bar-reveal",
         chrome_sources::chrome_new_bar_reveal,
@@ -361,6 +362,12 @@ const SCENES: &[(&str, fn())] = &[
     ("agent-tab-close", agent_tab_scenes::agent_tab_close),
     ("agent-tab-keys", agent_tab_scenes::agent_tab_keys),
     ("agent-tab-review", agent_tab_scenes::agent_tab_review),
+    (
+        "agent-workspace-split",
+        agent_tab_scenes::agent_workspace_split,
+    ),
+    ("agent-preset-menu", agent_tab_scenes::agent_preset_menu),
+    ("agent-pane-menu", agent_tab_scenes::agent_pane_menu),
     (
         "agent-tab-composer-wrap",
         agent_tab_scenes::agent_tab_composer_wrap,
@@ -5031,21 +5038,23 @@ fn tab_bar_scenes() {
                     assert!(!is(right, ui.panel), "{n}: right edges together: {right:?}");
                     let above = px_at(mx - 100.0, my - 2.0);
                     assert!(!is(above, ui.panel), "{n}: under the button: {above:?}");
-                    // Four items (26 pt each, inside the 1 pt edge and 4 pt padding), each with
-                    // its name; the keys at the right of all but New Browser Tab; the menu ends
-                    // after the fourth.
+                    // Five items (26 pt each, inside the 1 pt edge and 4 pt padding), each with
+                    // its name; the keys at the right of all but New Browser Tab and (M11aa)
+                    // New Claude Tab; the menu ends after the fifth.
                     let inked = |x0: f32, x1: f32, y: f32| {
                         (x0 as i32..x1 as i32).any(|x| {
                             (-4..=4).any(|dy| gap(px_at(x as f32, y + dy as f32), ui.panel) > 60)
                         })
                     };
-                    for k in 0..4 {
+                    let items = crate::pane_actions::PaneAction::items(true);
+                    assert_eq!(items.len(), 5, "{n}: the menu's items");
+                    for (k, item) in items.iter().enumerate() {
                         let y = my + 5.0 + 26.0 * k as f32 + 13.0;
                         assert!(inked(mx - 192.0, mx - 110.0, y), "{n}: item {k}'s name");
                         let keys = inked(mx - 40.0, mx - 10.0, y);
-                        assert_eq!(keys, k != 1, "{n}: item {k}'s keys");
+                        assert_eq!(keys, item.keys().is_some(), "{n}: item {k}'s keys");
                     }
-                    let end = my + 1.0 + 4.0 + 4.0 * 26.0 + 4.0 + 1.0;
+                    let end = my + 1.0 + 4.0 + items.len() as f32 * 26.0 + 4.0 + 1.0;
                     // (Clear of the panel's rounded corners.)
                     let last = px_at(mx - 20.0, end - 3.0);
                     assert!(is(last, ui.panel), "{n}: the menu's foot: {last:?}");
@@ -5188,11 +5197,15 @@ fn tab_bar_scenes() {
             assert_eq!(pane, panes[0], "{n}: the left pane's menu");
             cx.simulate_keystrokes(window, "escape");
             assert_eq!(open(cx), None, "{n}: Escape closes it");
-            // Again, and its Split Right (the third item): the left pane splits, beside it a
-            // third pane, focused; the right pane is still last.
+            // Again, and its Split Right (the fourth item since M11aa's New Claude Tab): the
+            // left pane splits, beside it a third pane, focused; the right pane is still last.
             cx.simulate_click(window, more, none);
             assert!(open(cx).is_some(), "{n}: open again");
-            let split = point(at.x - px(100.0), at.y + px(5.0 + 26.0 * 2.0 + 13.0));
+            let k = crate::pane_actions::PaneAction::items(true)
+                .iter()
+                .position(|a| *a == crate::pane_actions::PaneAction::SplitRight)
+                .expect("Split Right") as f32;
+            let split = point(at.x - px(100.0), at.y + px(5.0 + 26.0 * k + 13.0));
             cx.simulate_click(window, split, none);
             assert_eq!(open(cx), None, "{n}: a choice closes it");
             let panes_now = shown_panes(cx, &ws);
@@ -5533,17 +5546,20 @@ fn tab_drag_scenes() {
                         }
                         TabKind::Browser { .. } => {
                             let view = ws.browser_tabs.get(&tab).expect("its view");
-                            let keys = view.read(cx).focus_handle(cx).is_focused(window);
+                            let keys =
+                                gpui::Focusable::focus_handle(view.read(cx), cx).is_focused(window);
                             ("browser".to_string(), keys)
                         }
                         TabKind::File { .. } => {
                             let view = ws.file_tabs.get(&tab).expect("its view");
-                            let keys = view.read(cx).focus_handle(cx).is_focused(window);
+                            let keys =
+                                gpui::Focusable::focus_handle(view.read(cx), cx).is_focused(window);
                             ("file".to_string(), keys)
                         }
                         TabKind::Agent { .. } => {
-                            let view = ws.agent_tabs.get(&tab).expect("its view");
-                            let keys = view.read(cx).focus_handle(cx).is_focused(window);
+                            let view = &ws.agents.get(&tab).expect("its view").view;
+                            let keys =
+                                gpui::Focusable::focus_handle(view.read(cx), cx).is_focused(window);
                             ("agent".to_string(), keys)
                         }
                     }
@@ -11800,13 +11816,15 @@ fn palette_scene() {
             });
             let mut bindings = crate::new_bindings().to_vec();
             bindings.extend(crate::key_bindings());
-            let actions = action_rows(
+            let mut actions = action_rows(
                 Focused::Terminal,
                 false,
                 false, // no repo: `switcher_workspace` has no branch
                 &presets,
                 &binding_pairs(&bindings),
             );
+            // M11aa: its workspaces are this Mac's, so New Claude Tab is listed too.
+            crate::palette_items::add_agent_rows(&mut actions, true);
             let item = |key| Line::Item {
                 key,
                 positions: Vec::new(),
@@ -15644,9 +15662,24 @@ fn welcome_start_scene() {
                     new.project.clone()
                 });
                 assert_eq!(project, None, "{n}: home is no project");
-                assert!(
-                    active_terminal_focused(cx, window, ws),
-                    "{n}: the new terminal types"
+                // M11aa: claude is a provider's preset: its shell (above) and, split beside it,
+                // its agent tab, which takes the keyboard once made (the next frame).
+                settle(cx, window);
+                let agent = cx
+                    .update_window(window, |_, window, cx| {
+                        let ws = ws.read(cx);
+                        let (tab, view) = ws.focused_agent_tab()?;
+                        let w = ws.model.locate(tab)?.0;
+                        let panes = ws.model.workspace(w)?.panes.len();
+                        let keys =
+                            gpui::Focusable::focus_handle(view.read(cx), cx).is_focused(window);
+                        Some((panes, keys, ws.workspace_label(w).to_string()))
+                    })
+                    .expect("read the workspace");
+                assert_eq!(
+                    agent,
+                    Some((2, true, "Claude".to_string())),
+                    "{n}: a shell and the Claude tab beside it, which types"
                 );
             }),
         );

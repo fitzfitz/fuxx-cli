@@ -17,7 +17,7 @@ const OVERLONG_MARKER: &str = r#"{"type":"fuxx_overlong"}"#;
 /// How much of the end of stderr is kept for `Exited`.
 const STDERR_TAIL: usize = 4 * 1024;
 /// How long a process group gets after SIGTERM before SIGKILL.
-const TERM_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const TERM_GRACE: Duration = Duration::from_secs(2);
 
 unsafe extern "C" {
     fn setsid() -> c_int;
@@ -43,6 +43,11 @@ fn signal_group(pgid: i32, sig: c_int) {
 /// SIGTERM the group, then SIGKILL it after `TERM_GRACE` unless the leader is reaped by then.
 fn terminate_group(pgid: i32, done: Arc<AtomicBool>) {
     signal_group(pgid, SIGTERM);
+    escalate_later(pgid, done);
+}
+
+/// SIGKILL the group after `TERM_GRACE` unless the leader is reaped by then (on a thread).
+fn escalate_later(pgid: i32, done: Arc<AtomicBool>) {
     let _ = std::thread::Builder::new()
         .name("fuxx-agent-killer".into())
         .spawn(move || {
@@ -58,6 +63,9 @@ fn terminate_group(pgid: i32, done: Arc<AtomicBool>) {
             }
         });
 }
+
+/// After `end_all`'s SIGKILL, how long it waits for those children to be reaped.
+const KILL_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessEvent {
@@ -128,7 +136,7 @@ impl AgentProcess {
     }
 
     /// The child's pid, once it is running.
-    #[allow(dead_code)] // M11aa Task 8 (`end_all`); the tests use it
+    #[cfg(any(test, feature = "ui-shots"))] // the tests' and the scenes'
     pub fn pid(&self) -> Option<i32> {
         Some(self.pid.load(Ordering::SeqCst)).filter(|pid| *pid > 0)
     }
@@ -136,14 +144,59 @@ impl AgentProcess {
     /// SIGTERM the process group, SIGKILL it after `TERM_GRACE`; the child is reaped by its
     /// own thread, which then sends `Exited`.
     pub fn kill(&self) {
-        if self.killed.swap(true, Ordering::SeqCst) || self.done.load(Ordering::SeqCst) {
-            return; // already asked, or reaped: its group id may belong to someone else now
+        if self.killed.swap(true, Ordering::SeqCst) {
+            return; // already asked
         }
-        let pid = self.pid.load(Ordering::SeqCst);
-        if pid > 0 {
-            terminate_group(pid, self.done.clone());
-        } // else not spawned yet: the spawning thread sees `killed`
+        if let Some(pgid) = self.signal_running(SIGTERM) {
+            escalate_later(pgid, self.done.clone());
+        } // else reaped (its group id may belong to someone else now), or not spawned yet:
+        // the spawning thread sees `killed`
     }
+
+    /// Signal its group with `sig` while its child runs (spawned, not reaped yet): the group
+    /// id, if it was signalled. The one check `kill` and `end_all` share.
+    fn signal_running(&self, sig: c_int) -> Option<i32> {
+        if self.done.load(Ordering::SeqCst) {
+            return None;
+        }
+        let pgid = self.pid.load(Ordering::SeqCst);
+        (pgid > 0).then(|| {
+            signal_group(pgid, sig);
+            pgid
+        })
+    }
+
+    fn reaped(&self) -> bool {
+        self.done.load(Ordering::SeqCst)
+    }
+}
+
+/// End every process in `processes` (quitting): SIGTERM each group, wait up to `grace` for
+/// each child to be reaped, then SIGKILL the groups of those that weren't (and wait a moment
+/// for those to be reaped). Blocking: call it off the UI thread. A process already reaped is
+/// not signalled (its group id may be reused); it waits on the reap, not on `Exited` (a
+/// straggler holding stdout can hold that back).
+pub fn end_all(processes: &[Arc<AgentProcess>], grace: Duration) {
+    for p in processes {
+        p.killed.store(true, Ordering::SeqCst);
+        p.signal_running(SIGTERM);
+    }
+    let all_reaped = |until: Instant| loop {
+        if processes.iter().all(|p| p.reaped()) {
+            return true;
+        }
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    if all_reaped(Instant::now() + grace) {
+        return;
+    }
+    for p in processes {
+        p.signal_running(SIGKILL);
+    }
+    all_reaped(Instant::now() + KILL_WAIT);
 }
 
 impl Drop for AgentProcess {
@@ -557,6 +610,41 @@ mod tests {
         if let Some(pgid) = process.pid() {
             assert!(group_gone(pgid, Duration::from_secs(3)));
         }
+    }
+
+    #[test]
+    fn end_all_ends_a_term_ignoring_agent() {
+        let spawned = |p: &AgentProcess| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while p.pid().is_none() {
+                assert!(Instant::now() < deadline, "never spawned");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let (a, mut rx_a) = start(&argv("trap '' TERM; sleep 100"));
+        let (b, mut rx_b) = start(&argv("trap '' TERM; sleep 100"));
+        spawned(&a);
+        spawned(&b);
+        std::thread::sleep(Duration::from_millis(300)); // let the traps be set
+        let (pa, pb) = (a.pid().unwrap(), b.pid().unwrap());
+        let (a, b) = (Arc::new(a), Arc::new(b));
+        let began = Instant::now();
+        end_all(&[a.clone(), b.clone()], Duration::from_secs(2));
+        assert!(
+            began.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            began.elapsed()
+        );
+        // `end_all` waited for the reaps; the groups' last members (SIGKILLed with them) are
+        // gone a moment later.
+        for pgid in [pa, pb] {
+            assert!(
+                group_gone(pgid, Duration::from_millis(500)),
+                "group {pgid} still alive"
+            );
+        }
+        assert!(matches!(next(&mut rx_a), ProcessEvent::Exited { .. }));
+        assert!(matches!(next(&mut rx_b), ProcessEvent::Exited { .. }));
     }
 
     #[test]

@@ -35,8 +35,8 @@ use crate::overlay_panel;
 use crate::palette_files::{CachedFiles, rank_files};
 use crate::palette_items::{
     ActionRow, COMMANDS, FILE_RESULTS, FileHit, Files, Focused, HINT, Key, Line, NO_FOLDER, Recent,
-    Run, SSH_NOTE, Scope, Sources, Step, action_rows, compose, more_label, palette_step,
-    parse_query, selectable, text_for_scope,
+    Run, SSH_NOTE, Scope, Sources, Step, action_rows, add_agent_rows, compose, more_label,
+    palette_step, parse_query, selectable, text_for_scope,
 };
 use crate::palette_match::byte_ranges;
 use crate::preferences::PaletteSetting;
@@ -637,7 +637,7 @@ impl Palette {
                 .find(|e| e.id == *id)
                 .map(|e| e.label.clone())
                 .unwrap_or_default(),
-            Key::Action(_) | Key::Preset(_) => self
+            Key::Action(_) | Key::Preset(_) | Key::NewAgent(_) => self
                 .data
                 .actions
                 .iter()
@@ -736,7 +736,7 @@ impl Palette {
             Line::Item { key, positions } => {
                 let name = self.item_name(key);
                 let right = match key {
-                    Key::Action(_) | Key::Preset(_) => self
+                    Key::Action(_) | Key::Preset(_) | Key::NewAgent(_) => self
                         .data
                         .actions
                         .iter()
@@ -1015,8 +1015,9 @@ impl Workspace {
             Some(TabKind::Terminal(_)) => Focused::Terminal,
             Some(TabKind::Browser { .. }) => Focused::Browser,
             Some(TabKind::File { .. }) => Focused::File,
-            // M11aa Task 8 gives an agent tab its own actions.
-            Some(TabKind::Agent { .. }) | None => Focused::Nothing,
+            // M11aa: only what applies anywhere (and the agent tabs' own rows).
+            Some(TabKind::Agent { .. }) => Focused::Agent,
+            None => Focused::Nothing,
         }
     }
 
@@ -1098,13 +1099,19 @@ impl Workspace {
                 let in_repo = self
                     .focused_terminal()
                     .is_some_and(|t| self.switchable_folder(t).is_some());
-                let actions = action_rows(
+                let mut actions = action_rows(
                     self.focused_kind(),
                     self.persistent,
                     in_repo,
                     &presets,
                     &binding_table(self.persistent),
                 );
+                // The ⋯ menu's New ⟨Label⟩ Tab rows, for the focused pane (M11aa).
+                let local = self
+                    .model
+                    .focused_workspace()
+                    .is_some_and(|ws| !self.workspace_is_ssh(ws));
+                add_agent_rows(&mut actions, local);
                 let data = self.palette_data(actions, cx);
                 let recent = self.palette_recent.clone();
                 let palette = cx.new(|cx| Palette::new(scope, data, recent, window, cx));
@@ -1165,6 +1172,11 @@ impl Workspace {
                 None => {}
             },
             Key::Preset(n) => self.launch_preset(n, window, cx),
+            Key::NewAgent(provider) => {
+                if let Some(pane) = self.model.focused_pane() {
+                    self.new_agent_tab(pane, provider, window, cx);
+                }
+            }
             // As ⌘P always did: its most urgent terminal (its pane and tab shown), else the
             // workspace as it was (one of browser or file tabs only).
             Key::Workspace(id) => {

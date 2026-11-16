@@ -231,8 +231,8 @@ impl Workspace {
     }
 
     /// Close a workspace (its ×, a middle-click, its menu's Close): every tab in it closes,
-    /// every terminal ending. With two or more terminals it asks first, in a native sheet;
-    /// Cancel keeps it.
+    /// every terminal ending. With two or more terminals, or an agent tab working or waiting for
+    /// you (M11aa), it asks first, in a native sheet; Cancel keeps it.
     pub(crate) fn close_workspace(
         &mut self,
         ws: WorkspaceId,
@@ -241,11 +241,13 @@ impl Workspace {
     ) {
         let terminals = self.model.terminals(ws);
         let tabs = self.model.tabs_of(ws);
-        if !asks_to_close(terminals.len()) {
+        let busy_agent = tabs.iter().any(|&tab| self.agent_busy(tab, cx));
+        if !asks_to_close(terminals.len()) && !busy_agent {
             self.end_tabs(&tabs, window, cx);
             return;
         }
-        let (message, detail) = confirm_workspace_text(terminals.len(), self.busy(&terminals));
+        let busy = self.busy(&terminals, &tabs, cx);
+        let (message, detail) = confirm_workspace_text(terminals.len(), busy);
         self.ask_then_end(message, detail, tabs, window, cx);
     }
 
@@ -268,18 +270,21 @@ impl Workspace {
             .iter()
             .flat_map(|&ws| self.model.tabs_of(ws))
             .collect();
-        let (message, detail) = confirm_text(chosen.len(), self.busy(&terminals));
+        let (message, detail) = confirm_text(chosen.len(), self.busy(&terminals, &tabs, cx));
         self.ask_then_end(message, detail, tabs, window, cx);
     }
 
-    /// How many of `terminals` have an agent still working or waiting.
-    fn busy(&self, terminals: &[u64]) -> usize {
-        self.sessions
+    /// How many of `terminals` have an agent still working or waiting, and of `tabs` are agent
+    /// tabs working or waiting for you (M11aa).
+    fn busy(&self, terminals: &[u64], tabs: &[TabId], cx: &gpui::App) -> usize {
+        let terminals = self
+            .sessions
             .items()
             .iter()
             .filter(|s| terminals.contains(&s.id))
             .filter(|s| matches!(s.status, Status::Working | Status::Waiting))
-            .count()
+            .count();
+        terminals + tabs.iter().filter(|&&tab| self.agent_busy(tab, cx)).count()
     }
 
     /// Ask (`message`, `detail`) in a native sheet; on Close, close `tabs`. By id, so the ones
@@ -310,9 +315,14 @@ impl Workspace {
     }
 
     /// Close each of `tabs` as ⌘W would, its terminal ending (those already gone are skipped).
+    /// Asked already (or nothing to ask): an agent tab closes without asking.
     fn end_tabs(&mut self, tabs: &[TabId], window: &mut Window, cx: &mut Context<Self>) {
         for &tab in tabs {
-            self.close_tab(tab, window, cx);
+            if self.agents.contains_key(&tab) {
+                self.close_agent_tab(tab, false, window, cx);
+            } else {
+                self.close_tab(tab, window, cx);
+            }
         }
     }
 

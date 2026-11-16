@@ -129,6 +129,7 @@ mod vt_snapshot;
 mod welcome;
 mod welcome_items;
 mod workspace;
+mod workspace_agent;
 mod workspace_api;
 mod workspace_browser;
 mod workspace_daemon;

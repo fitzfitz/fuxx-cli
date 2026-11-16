@@ -30,7 +30,6 @@ use gpui::{
 };
 
 use crate::adopt::{self, Probe};
-use crate::agent_tab::AgentTab;
 use crate::api_events::{Event, WaitTable};
 use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
@@ -63,7 +62,9 @@ use crate::restore::{self, Launch, RestoreMode, SavedSession, SavedState};
 use crate::right_sidebar::RightSidebarState;
 use crate::session_list::SessionList;
 use crate::settings;
-use crate::sidebar::{self, HEADER_MARK, RowGrab, SidebarRow, SidebarState, group_hash};
+use crate::sidebar::{
+    self, AGENT_MARK, HEADER_MARK, RowGrab, SidebarRow, SidebarState, group_hash,
+};
 use crate::sidebar_toggle::{self, Slide};
 use crate::split_tree::{Axis, Dir, Node, Rect};
 use crate::ssh_target::SshTarget;
@@ -76,6 +77,7 @@ use crate::theme::UiColors;
 use crate::ui_tokens::size::{CARD_GAP, TOP_BAND};
 use crate::welcome::Welcome;
 use crate::welcome_items::Origin;
+use crate::workspace_agent::AgentSlot;
 use crate::workspace_browser::{AddressBox, Browsers};
 use crate::workspace_daemon::{Service, UNANSWERED_NOTICE, open_refusal};
 use crate::workspace_ssh::{
@@ -569,11 +571,13 @@ overlays!(
     Preferences,
 );
 
-/// What the rename box names: a workspace (its sidebar row) or a terminal (its pane tab).
+/// What the rename box names: a workspace (its sidebar row), a terminal (its pane tab) or an
+/// agent tab (its title, M11aa).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Renaming {
     Workspace(WorkspaceId),
     Terminal(u64),
+    Agent(TabId),
 }
 
 /// Where a new session goes: a workspace of its own, a new pane split from a pane, a new tab
@@ -671,10 +675,21 @@ pub struct Workspace {
     /// The file tabs' views (M11g), by tab: one for each file tab of the model (`sync` drops
     /// those whose tab has gone).
     pub(crate) file_tabs: HashMap<TabId, Entity<FileTab>>,
-    /// The agent tabs' views (M11aa), by tab. `sync` drops those whose tab has gone (dropping
-    /// the view ends its process); closing a tab ends it first. M11aa Task 8 makes the views
-    /// (`ensure_agent_tabs`) and keeps the chrome's mirror of each.
-    pub(crate) agent_tabs: HashMap<TabId, Entity<AgentTab>>,
+    /// The agent tabs (M11aa), by tab: each one's view and the chrome's mirror of it
+    /// (`workspace_agent::AgentSlot`, R1), made by `ensure_agent_tabs`. `sync` drops those whose
+    /// tab has gone (dropping the view ends its process); closing a tab ends it first.
+    pub(crate) agents: HashMap<TabId, AgentSlot>,
+    /// The number the next agent tab gets (`aN`, from 1); never reused.
+    pub(crate) next_agent_id: u64,
+    /// Each agent tab "Open in classic view" opened a terminal for: that terminal (`sN`).
+    pub(crate) classic_of: HashMap<TabId, u64>,
+    /// The scenes never start an agent: agent tabs are made with no process (R12).
+    #[cfg(feature = "ui-shots")]
+    pub(crate) agents_offline: bool,
+    /// The scenes' sessions opened by the app's own paths (a classic view) run a quiet `cat`, not
+    /// a login shell typing a preset.
+    #[cfg(feature = "ui-shots")]
+    pub(crate) quiet_opens: bool,
     /// Each browser tab's title as its page last said (for the tab bar and a workspace's name).
     pub(crate) browser_titles: HashMap<TabId, String>,
     /// Browser tabs just closed whose pages still have to leave the window.
@@ -907,7 +922,13 @@ impl Workspace {
             agents_frozen: false,
             browser_tabs: HashMap::new(),
             file_tabs: HashMap::new(),
-            agent_tabs: HashMap::new(),
+            agents: HashMap::new(),
+            next_agent_id: 1,
+            classic_of: HashMap::new(),
+            #[cfg(feature = "ui-shots")]
+            agents_offline: false,
+            #[cfg(feature = "ui-shots")]
+            quiet_opens: false,
             browser_titles: HashMap::new(),
             closed_browser_tabs: Vec::new(),
             browser_clock: 0,
@@ -1440,6 +1461,13 @@ impl Workspace {
     ) -> Option<u64> {
         let Launch { saved, run_preset } = launch;
         let (cwd, startup) = start_in(&saved, run_preset);
+        // The scenes: a quiet `cat` in place of a login shell (and of any preset it would type).
+        #[cfg(feature = "ui-shots")]
+        let (program, cwd, startup) = if self.quiet_opens {
+            (Some(vec!["/bin/cat".to_string()]), None, None)
+        } else {
+            (program, cwd, startup)
+        };
         let session_id = self.next_id;
         self.next_id += 1;
         let env = session_env(
@@ -1652,6 +1680,8 @@ impl Workspace {
         self.marks.get_mut().retain(|(place, key), _| {
             if *place == HEADER_MARK {
                 groups.contains(key)
+            } else if *place == AGENT_MARK {
+                true // by the agent slots, below
             } else {
                 sessions.iter().any(|s| s.id == *key)
             }
@@ -1737,12 +1767,20 @@ impl Workspace {
                 .tab(*tab)
                 .is_some_and(|t| matches!(t.kind, TabKind::File { .. }))
         });
-        // An agent tab gone: its view goes, and its process with it (`AgentProcess`'s drop).
-        self.agent_tabs.retain(|tab, _| {
+        // An agent tab gone: its slot and view go, and its process with them (`AgentProcess`'s
+        // drop; the closes that can, `close_agent_tab`, end it first), and its classic view's
+        // note.
+        let is_agent = |tab: &TabId| {
             model
                 .tab(*tab)
                 .is_some_and(|t| matches!(t.kind, TabKind::Agent { .. }))
-        });
+        };
+        self.agents.retain(|tab, _| is_agent(tab));
+        self.classic_of.retain(|tab, _| is_agent(tab));
+        let agents: Vec<u64> = self.agents.values().map(|slot| slot.id).collect();
+        self.marks
+            .get_mut()
+            .retain(|(place, key), _| *place != AGENT_MARK || agents.contains(key));
         // Every op keeps the model's rules; a break is a bug, said where it can be found.
         if let Err(broken) = self.model.check() {
             eprintln!("[fuxx] layout: {broken}");
@@ -1866,14 +1904,35 @@ impl Workspace {
         sidebar::row_tip(&label, title, question)
     }
 
-    /// A workspace's name: yours, else its focused pane's terminal's (`Session::label`), else
-    /// its first terminal's, else the shown page's title or file's name, else "Browser".
+    /// A workspace's name: yours, else (R11) its first agent tab's provider label when its named
+    /// terminal has no name of yours and no preset, else its focused pane's terminal's
+    /// (`Session::label`), else its first terminal's, else the shown page's title or file's
+    /// name, else "Browser".
     pub(crate) fn workspace_label(&self, ws: WorkspaceId) -> SharedString {
         let Some(w) = self.model.workspace(ws) else {
             return groups::DEFAULT_NAME.into();
         };
         if let Some(name) = w.name.as_deref().filter(|n| !n.trim().is_empty()) {
             return name.to_string().into();
+        }
+        let first_agent =
+            self.model
+                .agent_tabs(ws)
+                .first()
+                .and_then(|&tab| match &self.model.tab(tab)?.kind {
+                    TabKind::Agent { provider, .. } => {
+                        Some(crate::workspace_agent::provider_look(provider).0)
+                    }
+                    _ => None,
+                });
+        let terminal_named = self
+            .named_terminal(ws)
+            .and_then(|id| self.sessions.items().iter().find(|s| s.id == id))
+            .is_some_and(|s| s.name.is_some() || s.preset.is_some());
+        if let Some(label) =
+            crate::workspace_agent::agent_row_label(first_agent.as_deref(), terminal_named)
+        {
+            return label.to_string().into();
         }
         self.named_terminal(ws)
             .and_then(|id| self.sessions.items().iter().find(|s| s.id == id))
@@ -2034,6 +2093,7 @@ impl Workspace {
     }
 
     /// Preset `n` (0-based) of the settings, in the active session's group; absent is ignored.
+    /// A provider's preset (M11aa) opens a shell and its agent tab beside it (`open_planned`).
     pub(crate) fn launch_preset(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(preset) = cx.global::<Appearance>().presets.get(n).cloned() else {
             return;
@@ -2043,15 +2103,11 @@ impl Workspace {
             preset: Some(preset),
             ..Default::default()
         };
-        self.open_session(
-            Launch {
-                saved,
-                run_preset: true,
-            },
-            None,
-            window,
-            cx,
-        );
+        let launch = Launch {
+            saved,
+            run_preset: true,
+        };
+        self.open_planned(launch, At::New, None, window, cx);
     }
 
     pub(crate) fn on_terminal_event(
@@ -2326,6 +2382,7 @@ impl Workspace {
         let renamed_gone = match self.renaming.as_ref().map(|(r, _)| *r) {
             Some(Renaming::Workspace(ws)) => self.model.workspace(ws).is_none(),
             Some(Renaming::Terminal(id)) => id == session_id,
+            Some(Renaming::Agent(tab)) => self.model.tab(tab).is_none(),
             None => false,
         };
         if renamed_gone {
@@ -2684,6 +2741,35 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Rename Tab… on an agent tab: the rename box in the place of its title, focused. Its title
+    /// is yours from then (empty: its provider's label again).
+    pub(crate) fn start_agent_rename(
+        &mut self,
+        tab: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(
+            self.model.tab(tab).map(|t| &t.kind),
+            Some(TabKind::Agent { .. })
+        ) {
+            return;
+        }
+        let text = self.agent_title(tab).to_string();
+        self.renamed_from = text.clone();
+        self.close_overlays(Overlay::Rename);
+        let input = cx.new(|cx| {
+            let mut input = NameInput::new(text, window, cx);
+            input.select_all();
+            input
+        });
+        cx.subscribe_in(&input, window, Self::on_name_event)
+            .detach();
+        input.focus_handle(cx).focus(window, cx);
+        self.renaming = Some((Renaming::Agent(tab), input));
+        cx.notify();
+    }
+
     fn on_name_event(
         &mut self,
         input: &Entity<NameInput>,
@@ -2720,6 +2806,30 @@ impl Workspace {
                         if session.name.is_some() || *text != opened_with {
                             self.rename_at(i, text, cx);
                         }
+                    }
+                }
+                Renaming::Agent(tab) => {
+                    if let Some(TabKind::Agent {
+                        provider,
+                        cwd,
+                        conversation,
+                        mode,
+                        title,
+                    }) = self.model.tab(tab).map(|t| t.kind.clone())
+                        && (title.is_some() || *text != opened_with)
+                    {
+                        let title = (!text.trim().is_empty()).then(|| text.clone());
+                        self.model.set_kind(
+                            tab,
+                            TabKind::Agent {
+                                provider,
+                                cwd,
+                                conversation,
+                                mode,
+                                title,
+                            },
+                        );
+                        self.save();
                     }
                 }
             }
@@ -2886,16 +2996,6 @@ impl Workspace {
         }
     }
 
-    /// The focused tab's agent view, if it is an agent tab with one.
-    pub(crate) fn focused_agent_tab(&self) -> Option<&Entity<AgentTab>> {
-        self.agent_tabs.get(&self.model.focused_tab()?)
-    }
-
-    /// The agent view pane `pane` shows, if it shows one.
-    pub(crate) fn pane_agent_tab(&self, pane: PaneId) -> Option<Entity<AgentTab>> {
-        self.agent_tabs.get(&self.model.pane(pane)?.active).cloned()
-    }
-
     /// The keyboard to the focused tab: its terminal, a file tab, an agent tab (its composer),
     /// or a browser tab (GPUI's focus only: its page takes AppKit's keyboard only on a click in
     /// it or a navigation the person started). While the Welcome card is open it keeps the keyboard instead: terminals
@@ -2914,7 +3014,7 @@ impl Workspace {
             tab.read(cx).focus_handle(cx).focus(window, cx);
             return;
         }
-        if let Some(tab) = self.focused_agent_tab() {
+        if let Some((_, tab)) = self.focused_agent_tab() {
             tab.read(cx).focus_handle(cx).focus(window, cx);
             return;
         }
@@ -3295,6 +3395,7 @@ impl Render for Workspace {
         }
         self.ensure_browser_tabs(window, cx);
         self.ensure_file_tabs(window, cx);
+        self.ensure_agent_tabs(window, cx);
         // Only the file tabs on screen watch their files.
         self.show_file_tabs(cx);
         self.tick_marks(cx);
@@ -3807,6 +3908,8 @@ impl Workspace {
         this.ports.frozen = true;
         this.palette_files.frozen = true;
         this.agents_frozen = true;
+        this.agents_offline = true;
+        this.quiet_opens = true;
         this
     }
 
