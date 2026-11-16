@@ -22004,6 +22004,15 @@ fn file_tab_md_scenes() {
             .collect::<String>(),
     )
     .expect("SCROLLY.md");
+    // Over `PREVIEW_MEASURE_ALL` blocks: its rows are not all measured, the thumb is estimated.
+    let many = dir.join("MANY.md");
+    std::fs::write(
+        &many,
+        (0..3_000)
+            .map(|i| format!("Paragraph {i}, long enough to read as prose.\n\n"))
+            .collect::<String>(),
+    )
+    .expect("MANY.md");
     let tiny = dir.join("TINY.md");
     std::fs::write(&tiny, "# Tiny\n\nOne short paragraph.\n").expect("TINY.md");
     let huge = dir.join("HUGE.md");
@@ -22242,6 +22251,43 @@ fn file_tab_md_scenes() {
                     "{n}: shown for a file that fits"
                 );
                 short_slot.borrow_mut().take();
+            });
+
+            // Past the measure-all size: the list's rows are measured as drawn, and a thumb
+            // dragged to the bottom still lands on the true end.
+            let n = format!("file-tab-md-preview-scrollbar-many-{slug}");
+            let many_slot: TabSlot = Rc::default();
+            let many_build = build_for(many.clone(), many_slot.clone(), Rc::default());
+            render_with(&theme, dims, many_build, move |cx, window| {
+                let tab = tab_of(&many_slot);
+                preview(cx, window, &tab);
+                let list = cx.read(|cx| tab.read(cx).preview_list());
+                let area = list.viewport_bounds();
+                assert!(
+                    list.item_count() > crate::file_tab::PREVIEW_MEASURE_ALL,
+                    "{n}"
+                );
+                wheel(cx, window, area.center());
+                frame(cx, window);
+                let thumb = cx
+                    .read(|cx| tab.read(cx).thumb_bounds(Axis::Vertical))
+                    .expect("a thumb");
+                let grab = thumb.center();
+                cx.simulate_mouse_down(window, grab, MouseButton::Left, none);
+                let below = point(grab.x, area.bottom() + px(40.0));
+                cx.simulate_mouse_move(window, below, Some(MouseButton::Left), none);
+                cx.simulate_mouse_up(window, below, MouseButton::Left, none);
+                frame(cx, window);
+                // (`is_scrolled_to_end` is None with unmeasured rows: the last block's bottom is
+                // the list's bottom instead.)
+                let last = list
+                    .bounds_for_item(list.item_count() - 1)
+                    .expect("the last block is drawn");
+                assert!(
+                    (last.bottom() - area.bottom()).abs() <= px(1.0),
+                    "{n}: dragged to the end, the last block {last:?} in {area:?}"
+                );
+                many_slot.borrow_mut().take();
             });
         }
 
