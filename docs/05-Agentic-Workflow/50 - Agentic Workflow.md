@@ -34,10 +34,12 @@ fuxx draws its views off screen and checks them in the screenshot scenes
 scenes its change touches.
 
 - **Per task:** `scripts/ui-shots.sh --changed <task base>`, where the base is the commit the
-  task started from. It runs the scenes that cover a changed file, says which and why, and runs
-  nothing if no `src/` file changed. Add `--png` when you want to look at the pictures
-  (`target/ui-shots/`). A shared file (the theme, the tokens, the workspace, `main.rs`, the
-  harness, `Cargo.toml`) or a `src/` file no scene covers runs everything, and the file is named.
+  task started from. It runs the scenes that cover a changed file (a scene's own file under
+  `src/ui_shots/` counts as covered by its scenes), says which and why, and runs nothing if no
+  `src/` file, `assets/` file or `Cargo.*` file changed. Add `--png` when you want to look at the
+  pictures (`target/ui-shots/`). A shared file (e.g. the theme, the tokens, the workspace,
+  `main.rs`, the harness, `Cargo.toml`) or a `src/` file no scene covers runs everything, and the
+  file is named.
 - **Once per milestone:** the full `scripts/ui-shots.sh --all-themes`, before the milestone is
   called done.
 - **The rule:** logic that doesn't need a real window (what a view would show, positions from
