@@ -15,6 +15,11 @@
 //! `scripts/ui-shots.sh` builds once, runs `__ui-shots --shard I/N` in N processes side by side
 //! (the scenes that aren't `serial`, balanced by `target/ui-shots/timings.tsv`), then
 //! `__ui-shots --serial-only` alone, and prints the run's summary.
+//!
+//! Reference fingerprints (C3, a trial): each `Kind::Visual` scene that passes has its shots'
+//! fingerprints (`fingerprint`: greyscale at 1/8 of the point size) compared with
+//! `tests/ui-shots-ref/<scene>/<scene>-<slug>.fp`; a shot further than `TOLERANCE` prints
+//! "looks different" but never fails the run. `--update-refs` writes them instead.
 
 use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
@@ -95,7 +100,7 @@ pub(super) struct Scene {
     /// Must run alone (real-time waits, a child fuxx, the clipboard): never in a `--shard`, run
     /// by `--serial-only` after the shards.
     pub(super) serial: bool,
-    #[allow(dead_code)]
+    /// `Visual` scenes' shots are fingerprinted against `tests/ui-shots-ref/` (C3).
     pub(super) kind: Kind,
     /// The app files its views come from (and the `assets/` paths, a file or a `dir/`); read by
     /// `--changed`.
@@ -326,10 +331,6 @@ pub fn run(args: &[String]) -> ! {
             exit(2);
         }
     };
-    if opts.update_refs {
-        eprintln!("ui-shots: --update-refs is not built yet");
-        exit(2);
-    }
     opts.png |= std::env::var("UI_SHOTS_PNG").is_ok_and(|v| v == "1");
     let filter = opts.filter.clone();
     // A shard's or the serial run's own timings, beside `timings.tsv` (which the script merges
@@ -370,6 +371,15 @@ pub fn run(args: &[String]) -> ! {
     let picked = selected(&every, &opts, &recorded);
     OPTIONS.set(opts).expect("the run's options are set once");
     let started = Instant::now();
+    // A child process (cache-off, WebKit) is a filtered run of this binary: it leaves the
+    // timings, the summary and the fingerprints to its parent.
+    let child = std::env::var(CHILD_ENV).is_ok_and(|v| v == "1");
+    // Fingerprints (C3): only reported, never a failure.
+    let fingerprints = !child && picked.iter().any(|s| s.kind == Kind::Visual);
+    let mut refs = RefCounts::default();
+    if fingerprints {
+        measure_fingerprint_scale();
+    }
     let mut times: Vec<(&str, f64, bool)> = Vec::new();
     for scene in picked {
         let name = scene.name;
@@ -390,6 +400,9 @@ pub fn run(args: &[String]) -> ! {
         let secs = t.elapsed().as_secs_f64();
         if passed {
             println!("ui-shots: {name} ok ({secs:.1} s)");
+            if fingerprints && scene.kind == Kind::Visual {
+                check_refs(name, options().update_refs, &mut refs);
+            }
         } else {
             let dir = write_failed(name);
             println!(
@@ -413,9 +426,21 @@ pub fn run(args: &[String]) -> ! {
     }
     let failed = times.iter().filter(|t| !t.2).count();
     let total = started.elapsed().as_secs_f64();
-    // A child process (cache-off, WebKit) is a filtered run of this binary: it leaves the
-    // timings and the summary to its parent.
-    let child = std::env::var(CHILD_ENV).is_ok_and(|v| v == "1");
+    if fingerprints {
+        let RefCounts {
+            same,
+            different,
+            missing,
+            written,
+        } = refs;
+        if options().update_refs {
+            println!("ui-shots: fingerprints: {written} written");
+        } else {
+            println!(
+                "ui-shots: fingerprints: {same} same, {different} look different, {missing} without a reference"
+            );
+        }
+    }
     if let Some(part) = &part {
         // A shard or the serial run: its share may be empty; the script sums the parts.
         let tsv: String = times

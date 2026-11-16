@@ -8,12 +8,14 @@
 # the next run's shards are balanced by. Exits 1 if any process failed. bash 3.2-safe.
 # --changed <base> runs only the scenes whose sources changed since <base> (git diff <base>...HEAD
 # plus uncommitted files), says which and why, and runs nothing (exit 0) if no src change.
-# Usage: scripts/ui-shots.sh [filter] [--png] [--all-themes] [--changed <base>] [-j N]
+# Usage: scripts/ui-shots.sh [filter] [--png] [--all-themes] [--changed <base>] [--update-refs] [-j N]
 #   -j N: shards (default: CPU cores - 2, at most 8, at least 1).
+#   --update-refs: write the visual scenes' fingerprints to tests/ui-shots-ref/ (C3; a run without
+#   it only reports a shot that "looks different", never fails for it).
 set -uo pipefail
 
 usage() {
-    echo "usage: scripts/ui-shots.sh [filter] [--png] [--all-themes] [--changed <base>] [-j N]" >&2
+    echo "usage: scripts/ui-shots.sh [filter] [--png] [--all-themes] [--changed <base>] [--update-refs] [-j N]" >&2
     exit 2
 }
 
