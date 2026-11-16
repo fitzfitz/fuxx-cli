@@ -1425,8 +1425,10 @@ pub fn edge_speed(outside: f32, line_height: f32) -> f32 {
 }
 
 /// The auto-scroll's step for window point `p` (M11ae): per axis, towards the side the pointer
-/// is out of the text (its canvas, the scrollbar's edge zones in it), at `edge_speed`; sideways
-/// only with Wrap off (Wrap on has no sideways scroll). Zero: the pointer is in the text.
+/// is out of the text, at `edge_speed`. Down the text: its canvas (the scrollbar's edge zones in
+/// it); across it, only with Wrap off (Wrap on has no sideways scroll): from where the text
+/// starts, right of the numbers (over them is left of the text). Zero: the pointer is in the
+/// text.
 fn edge_push(p: Point<Pixels>, g: &Geom, wrap: bool) -> Point<Pixels> {
     let lh = f32::from(g.line_height);
     let push = |o: f32| px(o.signum() * edge_speed(o.abs(), lh));
@@ -1435,7 +1437,8 @@ fn edge_push(p: Point<Pixels>, g: &Geom, wrap: bool) -> Point<Pixels> {
     let x = if wrap {
         0.0
     } else {
-        outside(f32::from(p.x), f32::from(b.left()), f32::from(b.right()))
+        let left = b.left() + g.text_left;
+        outside(f32::from(p.x), f32::from(left), f32::from(b.right()))
     };
     point(push(x), push(y))
 }

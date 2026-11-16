@@ -5992,7 +5992,8 @@ fn file_tab_scenes() {
 ///   and the scroll stays. Then from the middle to above the text: it scrolls back up, the
 ///   moving end in sight. Shot at the end: that second selection, the thumb showing.
 /// - `file-tab-drag-select-wide` (asserts only): a 3,000-character line, the pointer right of
-///   the text: it scrolls sideways and the selection grows along the line.
+///   the text: it scrolls sideways and the selection grows along the line; then over the line
+///   numbers (left of the text): it scrolls back left.
 /// - `file-tab-drag-select-mode` (asserts only): a switch to Diff mid-drag ends the task.
 fn file_drag_select_scenes() {
     use crate::file_tab::FileTab;
@@ -6160,7 +6161,20 @@ fn file_drag_select_scenes() {
                 head.line == 1 && head.col > edge.col,
                 "{n}: the moving end {head:?} didn't follow the scroll from {edge:?}"
             );
-            cx.simulate_mouse_up(window, right, MouseButton::Left, none);
+            // Over the line numbers: left of the text, so it scrolls back left.
+            let numbers = point(g.bounds.left() + g.text_left / 2.0, y);
+            cx.simulate_mouse_move(window, numbers, left, none);
+            cx.advance_clock(ms(160));
+            let (on, back) = cx.read(|cx| {
+                let t = tab.read(cx);
+                (t.autoscrolling(), t.scroll())
+            });
+            assert!(on, "{n}: no auto-scroll over the line numbers");
+            assert!(
+                back.x < scroll.x,
+                "{n}: didn't scroll left over the numbers ({back:?} from {scroll:?})"
+            );
+            cx.simulate_mouse_up(window, numbers, MouseButton::Left, none);
             cx.advance_clock(ms(50));
             assert!(
                 !cx.read(|cx| tab.read(cx).autoscrolling()),
