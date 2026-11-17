@@ -1,7 +1,7 @@
 # Milestone 11aa — Agent Tabs and Providers
 
 **Status:** 🟨 built 2026-11-17 on branch `m11aa-ui` (from master; the safe part, Tasks 0, 2, 3, 4 and 6, was built on
-2026-11-13 and is already on master), every task reviewed, whole-branch review and fix wave clean, **merged to master 2026-11-17, not pushed**, waiting for your on-screen
+2026-11-13 and is already on master), every task reviewed, whole-branch review and fix wave clean, **merged to master and pushed 2026-11-17 (`250faeb`)**, waiting for your on-screen
 check (below). Plan [[M11aa Plan - Agent Tabs]], 14 / 14 tasks, then a whole-branch review and its fix wave. At the
 branch tip: 1,787 tests pass, clippy 14 / 27 (default) and 16 / 29 (`ui-shots`) = the baselines, `cargo fmt --check`
 clean, full `scripts/ui-shots.sh` 137 scenes passed, 0 failed, in 91.8 s.
