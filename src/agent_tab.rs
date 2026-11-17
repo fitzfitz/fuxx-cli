@@ -497,6 +497,9 @@ pub struct AgentTab {
     unconfirmed: Option<String>,
     /// Scenes: no process is ever started.
     no_process: bool,
+    /// This tab's own process is to answer the catalog (`Event::Catalog`): the cache says
+    /// "loading" until it does, and failed if the process ends first.
+    catalog_pending: bool,
     list: ListState,
     rows: Vec<Row>,
     /// Tool rows opened by a click (by tool id).
@@ -763,6 +766,8 @@ impl AgentTab {
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::on_composer),
             cx.observe(&composer, |this, _, cx| this.composer_changed(cx)),
+            // The box's menus draw from the cache: a probe finishing redraws the tab.
+            cx.observe_global::<crate::agent_catalog::Catalogs>(|_, cx| cx.notify()),
         ];
         Self {
             provider,
@@ -784,6 +789,7 @@ impl AgentTab {
             run: Run::default(),
             unconfirmed: None,
             no_process: false,
+            catalog_pending: false,
             list,
             rows: Vec::new(),
             expanded: HashSet::new(),
@@ -1012,6 +1018,10 @@ impl AgentTab {
             let notice = crate::workspace_agent::held_notice(self.label(), &holder, None);
             self.conversation.paused_with(&notice);
             self.after_change(false, cx);
+            // No process of its own: the probe answers the catalog.
+            if let Some(provider) = self.provider {
+                crate::agent_catalog::load_catalog(provider, self.start.cwd.clone(), cx);
+            }
             return;
         }
         self.after_change(false, cx);
@@ -1089,11 +1099,42 @@ impl AgentTab {
             return;
         }
         let process = self.listen(&argv, cx);
+        self.ask_catalog(provider, cx);
         let mut translator = provider.translator();
         for line in translator.hello() {
             process.send(line);
         }
         self.translator = Some(translator);
+    }
+
+    /// The catalog for the box's menus: from this tab's own process when the agent answers it at
+    /// start (marked loading until it does), else from a probe.
+    fn ask_catalog(&mut self, provider: &'static dyn Provider, cx: &mut Context<Self>) {
+        let agent = provider.info().name;
+        if provider.catalog_on_start() {
+            let cwd = self.start.cwd.clone();
+            self.catalog_pending = false;
+            cx.update_default_global(|c: &mut crate::agent_catalog::Catalogs, _| {
+                self.catalog_pending = c.begin_catalog(agent, &cwd);
+            });
+        } else {
+            crate::agent_catalog::load_catalog(provider, self.start.cwd.clone(), cx);
+        }
+    }
+
+    /// The process ended without answering the catalog: say so, so the menu stops loading.
+    fn catalog_unanswered(&mut self, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.catalog_pending) {
+            return;
+        }
+        if let Some(provider) = self.provider {
+            crate::agent_catalog::store_catalog(
+                provider.info().name,
+                &self.start.cwd,
+                crate::agent_catalog::Lookup::Failed("it ended without answering".into()),
+                cx,
+            );
+        }
     }
 
     /// Start `argv` in the agent's folder and read its events on a task (`on_process`).
@@ -1173,6 +1214,7 @@ impl AgentTab {
                 }
             }
             ProcessEvent::SpawnFailed(message) => {
+                self.catalog_unanswered(cx);
                 self.exited = true;
                 self.ending = false;
                 self.process = None;
@@ -1190,6 +1232,7 @@ impl AgentTab {
     /// (one notice, the process again without `--resume`, what you sent sent again); else the
     /// conversation hears it ended.
     fn finish(&mut self, code: Option<i32>, tail: String, cx: &mut Context<Self>) {
+        self.catalog_unanswered(cx);
         self.exited = true;
         self.ending = false;
         self.process = None;
@@ -1299,6 +1342,33 @@ impl AgentTab {
                 }
                 Event::ToolStarted { id, .. } => {
                     self.tool_started.insert(id.clone(), Instant::now());
+                }
+                Event::Catalog(catalog) => {
+                    self.catalog_pending = false;
+                    if let Some(provider) = self.provider {
+                        crate::agent_catalog::store_catalog(
+                            provider.info().name,
+                            &self.start.cwd,
+                            crate::agent_catalog::Lookup::Ready(catalog.clone()),
+                            cx,
+                        );
+                    }
+                }
+                Event::Skills(skills) => {
+                    if let Some(provider) = self.provider {
+                        let (agent, cwd) = (provider.info().name, self.start.cwd.clone());
+                        cx.update_default_global(|c: &mut crate::agent_catalog::Catalogs, _| {
+                            c.mark_skills(agent, &cwd, skills)
+                        });
+                    }
+                }
+                Event::RateLimit(limit) => {
+                    if let Some(provider) = self.provider {
+                        let agent = provider.info().name;
+                        cx.update_default_global(|c: &mut crate::agent_catalog::Catalogs, _| {
+                            c.note_limit(agent, limit.clone())
+                        });
+                    }
                 }
                 Event::TurnDone { .. } => {
                     self.stopping = None;

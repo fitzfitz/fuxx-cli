@@ -4,6 +4,7 @@
 mod activity;
 mod activity_panel;
 mod adopt;
+mod agent_catalog;
 mod agent_conversation;
 mod agent_detect;
 mod agent_markdown;
@@ -917,6 +918,8 @@ fn main() {
             cx.set_global(appearance::load(cx));
             // The edit ledger (M11af): agents' file edits and working spans.
             cx.set_global(edit_ledger::Ledger::default());
+            // What each agent can say about itself (M11ak): its models, commands and usage.
+            cx.set_global(agent_catalog::Catalogs::default());
             // The key sounds (M11s): loaded now, and again whenever the settings change.
             sounds::sync(cx);
             cx.observe_global::<appearance::Appearance>(sounds::sync)
