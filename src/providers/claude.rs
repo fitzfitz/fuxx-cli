@@ -228,6 +228,45 @@ impl Provider for Claude {
             .ok_or_else(|| "no answer to initialize".to_string())
     }
 
+    /// `/usage` in print mode ($0, no turn); `--no-session-persistence` keeps it from leaving a
+    /// transcript behind (Task 0).
+    fn usage_probe(&self) -> Option<Probe> {
+        Some(Probe {
+            argv: [
+                "claude",
+                "-p",
+                "/usage",
+                "--output-format",
+                "json",
+                "--no-session-persistence",
+            ]
+            .map(String::from)
+            .to_vec(),
+            stdin: Vec::new(),
+            until: None,
+        })
+    }
+
+    /// The result's text lines (`Current session: 13% used · resets Nov 17 at 8:10pm (UTC)`),
+    /// as one nameless group.
+    fn read_usage(&self, output: &str) -> Result<Vec<UsageGroup>, String> {
+        let text = serde_json::from_str::<Value>(output)
+            .ok()
+            .filter(|v| !v["is_error"].as_bool().unwrap_or(false))
+            .and_then(|v| s(&v["result"]))
+            .ok_or_else(|| "Couldn't read usage".to_string())?;
+        Ok(vec![UsageGroup {
+            name: String::new(),
+            about: None,
+            limits: text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(usage_line)
+                .collect(),
+        }])
+    }
+
     fn fallback_models(&self) -> Vec<ModelChoice> {
         FALLBACK_ALIASES
             .iter()
@@ -573,6 +612,63 @@ fn context_pct(result: &Value, model: Option<&str>) -> Option<u8> {
     (window > 0).then(|| (used * 100 / window).min(100) as u8)
 }
 
+/// `name: N% used · resets Nov 17 at 8:09pm (UTC)` as a limit with the percent left
+/// (the `· resets …` part may be missing); any other line stays text.
+fn usage_line(line: &str) -> UsageLimit {
+    let read = || {
+        let (name, rest) = line.split_once(": ")?;
+        let (used, rest) = rest.split_once("% used")?;
+        let used: u8 = used.trim().parse().ok().filter(|u| *u <= 100)?;
+        let resets = match rest.trim().strip_prefix("· resets ") {
+            Some(when) => Some(Reset::Words(strip_zone(when.trim()).to_string())),
+            None if rest.trim().is_empty() => None,
+            None => return None,
+        };
+        Some(UsageLimit::Read {
+            name: name.to_string(),
+            left_pct: 100 - used,
+            resets,
+        })
+    };
+    read().unwrap_or_else(|| UsageLimit::Text(line.to_string()))
+}
+
+/// `Nov 17 at 8:09pm (UTC)` without its trailing zone.
+fn strip_zone(when: &str) -> &str {
+    match when.rsplit_once(" (") {
+        Some((time, zone)) if zone.ends_with(')') => time,
+        _ => when,
+    }
+}
+
+/// A `rate_limit_event`'s limit as `/usage` names it (any other type keeps its raw name).
+fn limit_name(kind: &str) -> String {
+    match kind {
+        "five_hour" => "Current session",
+        "seven_day" => "Current week (all models)",
+        other => other,
+    }
+    .to_string()
+}
+
+fn rate_limit(v: &Value) -> Vec<Event> {
+    let info = &v["rate_limit_info"];
+    let state = match info["status"].as_str() {
+        Some("allowed") => LimitState::Fine,
+        Some("allowed_warning") => LimitState::Close,
+        Some("rejected") => LimitState::Reached,
+        _ => return Vec::new(),
+    };
+    let Some(kind) = info["rateLimitType"].as_str() else {
+        return Vec::new();
+    };
+    vec![Event::RateLimit(RateLimit {
+        limit: limit_name(kind),
+        state,
+        resets_at: info["resetsAt"].as_i64(),
+    })]
+}
+
 fn control_response(request_id: &str, response: Value) -> String {
     json!({"type": "control_response",
         "response": {"subtype": "success", "request_id": request_id, "response": response}})
@@ -766,6 +862,7 @@ impl Translator for ClaudeTranslator {
             Some("assistant") => self.assistant(&v),
             Some("user") => self.user(&v),
             Some("result") => self.result(&v),
+            Some("rate_limit_event") => rate_limit(&v),
             Some("control_request") if v["request"]["subtype"] == "can_use_tool" => {
                 self.permission(&v)
             }
@@ -1861,5 +1958,136 @@ mod tests {
             !a.contains(&"x".to_string()),
             "the preset's --model is dropped: {a:?}"
         );
+    }
+
+    const USAGE: &str = include_str!("fixtures/claude-usage.json");
+
+    fn usage_json(result: &str) -> String {
+        json!({"type": "result", "result": result}).to_string()
+    }
+
+    fn read(name: &str, left_pct: u8, resets: &str) -> UsageLimit {
+        UsageLimit::Read {
+            name: name.into(),
+            left_pct,
+            resets: Some(Reset::Words(resets.into())),
+        }
+    }
+
+    #[test]
+    fn usage_lines_read_as_percent_left() {
+        let text = "Current session: 0% used · resets Nov 17 at 8:09pm (UTC)\n\
+            Current week (all models): 37% used · resets Nov 22 at 9:59pm (UTC)";
+        let groups = CLAUDE.read_usage(&usage_json(text)).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "");
+        assert_eq!(groups[0].about, None);
+        assert_eq!(
+            groups[0].limits,
+            [
+                read("Current session", 100, "Nov 17 at 8:09pm"),
+                read("Current week (all models)", 63, "Nov 22 at 9:59pm"),
+            ]
+        );
+        let fixture = CLAUDE.read_usage(USAGE).unwrap();
+        let limits = &fixture[0].limits;
+        assert!(limits.iter().any(|l| matches!(l, UsageLimit::Read { .. })));
+        assert!(limits.contains(&read("Current week (Fable)", 100, "Nov 22 at 10pm")));
+    }
+
+    #[test]
+    fn an_unreadable_usage_line_is_kept_as_text() {
+        let groups = CLAUDE
+            .read_usage(&usage_json(
+                "Extra usage: off\n\n  \nCurrent session: 5% used",
+            ))
+            .unwrap();
+        assert_eq!(
+            groups[0].limits,
+            [
+                UsageLimit::Text("Extra usage: off".into()),
+                UsageLimit::Read {
+                    name: "Current session".into(),
+                    left_pct: 95,
+                    resets: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn garbage_usage_is_an_error() {
+        assert_eq!(
+            CLAUDE.read_usage("not json"),
+            Err("Couldn't read usage".into())
+        );
+        assert!(CLAUDE.read_usage(r#"{"type":"result"}"#).is_err());
+        assert!(CLAUDE.read_usage("").is_err());
+    }
+
+    #[test]
+    fn claude_usage_runs_without_a_conversation_or_a_transcript() {
+        let p = CLAUDE.usage_probe().expect("claude has /usage");
+        assert_eq!(
+            p.argv,
+            [
+                "claude",
+                "-p",
+                "/usage",
+                "--output-format",
+                "json",
+                "--no-session-persistence"
+            ]
+        );
+        assert!(p.stdin.is_empty() && p.until.is_none());
+    }
+
+    #[test]
+    fn rate_limit_events_become_rate_limits() {
+        let limits: Vec<RateLimit> = decode_all(&CLAUDE, SLASH)
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::RateLimit(r) => Some(r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            limits,
+            [
+                RateLimit {
+                    limit: "Current week (all models)".into(),
+                    state: LimitState::Close,
+                    resets_at: Some(1794754800)
+                },
+                RateLimit {
+                    limit: "Current session".into(),
+                    state: LimitState::Close,
+                    resets_at: Some(1794535800)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rate_limit_status_maps_to_a_state_and_unknown_types_keep_their_name() {
+        let one = |status: &str, kind: &str| {
+            let line = json!({"type": "rate_limit_event",
+                "rate_limit_info": {"status": status, "rateLimitType": kind}})
+            .to_string();
+            CLAUDE.translator().decode(&line)
+        };
+        let state = |ev: Vec<Event>| match ev.as_slice() {
+            [Event::RateLimit(r)] => (r.limit.clone(), r.state, r.resets_at),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            state(one("allowed", "five_hour")),
+            ("Current session".into(), LimitState::Fine, None)
+        );
+        assert_eq!(
+            state(one("rejected", "opus_week")),
+            ("opus_week".into(), LimitState::Reached, None)
+        );
+        assert!(one("brand_new", "five_hour").is_empty());
     }
 }
