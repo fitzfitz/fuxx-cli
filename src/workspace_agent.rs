@@ -65,6 +65,9 @@ pub(crate) struct AgentSlot {
     pub label: SharedString,
     pub badge: &'static str,
     pub badge_rgb: u32,
+    /// Its provider is known: it takes a dropped command block (an error tab has nothing to
+    /// send one to).
+    pub attachable: bool,
     /// Its status as the tab last told it (`set_agent_status`), and since when.
     pub status: Status,
     pub since: Instant,
@@ -470,6 +473,7 @@ impl Workspace {
                 label,
                 badge,
                 badge_rgb,
+                attachable: provider.is_some(),
                 status: Status::Idle,
                 since: Instant::now(),
                 pop: None,
@@ -760,7 +764,7 @@ impl Workspace {
     /// Command block `drag` dropped on agent tab `tab` (its body or its tab in a bar, spec
     /// §1.7): the block's output is read off the UI thread (the Term lock held only for the
     /// read, as Copy output does), made into "command + exit code + output" text
-    /// (`block_view::attachment_text`), and attached to the tab's next message, shown as a chip
+    /// (`block_view::attachment_text`, with the block's outcome when dropped), and attached to the tab's next message, shown as a chip
     /// under its composer. It only waits there: nothing is sent, and a paused tab stays paused
     /// (R13: only your send resumes it, through the holder check). Nothing when the block has
     /// left the grid by then, or the tab is gone.
@@ -769,13 +773,12 @@ impl Workspace {
             return;
         };
         let BlockDrag {
-            id,
-            command,
-            outcome,
-            core,
+            id, command, core, ..
         } = drag.clone();
+        // Its outcome as it is now (a block that finished during the drag has its exit code);
+        // the command is the one the chip showed.
         let text = cx.background_spawn(async move {
-            let output = core.block_output(&id)?;
+            let (output, outcome) = core.block_output_and_outcome(&id)?;
             Some(block_view::attachment_text(
                 command.as_deref(),
                 outcome,

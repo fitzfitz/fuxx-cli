@@ -680,7 +680,7 @@ impl Workspace {
         let lifted = self.dragged_tab(cx) == Some(id);
         let (source, rows) = (self.tab_drag.clone(), self.sidebar.drag_source.clone());
         let (chip_title, chip_icon) = (tab.title.clone(), tab.icon);
-        let agent = self.agents.contains_key(&id);
+        let attachable = self.agents.get(&id).is_some_and(|slot| slot.attachable);
         let tab = div()
             .id(("pane-tab", id.0 as usize))
             .group(group)
@@ -737,9 +737,8 @@ impl Workspace {
             // accent while one is over it (GPUI's element-local style: no Workspace field changes
             // in a drag-over); dropped, the block is attached to its next message and the tab
             // shown.
-            .when(agent, |t| {
-                let tint = crate::theme::mix(surface, ui.accent, 0.2);
-                t.drag_over::<BlockDrag>(move |s, _, _, _| s.bg(hsla(tint)))
+            .when(attachable, |t| {
+                t.drag_over::<BlockDrag>(move |s, _, _, _| s.bg(hsla(ui.drop_tab)))
                     .on_drop(cx.listener(move |this, drag: &BlockDrag, window, cx| {
                         this.attach_block(id, drag, cx);
                         this.select_tab(id, window, cx);
