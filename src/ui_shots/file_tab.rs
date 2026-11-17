@@ -5378,6 +5378,39 @@ fn file_code_lane_scenes() {
         );
         println!("ui-shots: {n} ok");
 
+        // Hidden matches and deletions tick at their fold's row: blocks at lines 5 and 97
+        // (0-based 4 and 96) folded, lines deleted above 0-based line 6 (hidden in the first)
+        // and above line 150 (shown), the needle on line 100 (hidden in the second, current).
+        let n = format!("file-code-lane-hidden-{slug}");
+        let red = fit(theme.palette[1]);
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            setup(cx, window, tab);
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_changes(
+                        vec![
+                            (6, LineChange::DeletedAfter),
+                            (150, LineChange::DeletedAfter),
+                        ],
+                        cx,
+                    );
+                    t.fold_for_shots(&[4, 96], cx);
+                })
+            });
+            live_frame(cx, window);
+        });
+        keep_shot(&n, &shot);
+        for (line, hidden, colour, what) in [
+            (4, 0, red, "the hidden deletion, on its fold's row"),
+            (150, 6, red, "the shown deletion"),
+            (96, 3, now, "the hidden current match, on its fold's row"),
+            (249, 6, found, "a shown match"),
+        ] {
+            let y = place(&g, line, hidden);
+            assert!(has(&shot, &g, y, colour, 12), "{n}: {what} (y {y})");
+        }
+        println!("ui-shots: {n} ok");
+
         // A press on the lane (between marks) jumps as a track press does: the thumb centres on it.
         let n = format!("file-code-lane-press-{slug}");
         code_shot(&theme, &path, dims, |cx, window, tab| {
