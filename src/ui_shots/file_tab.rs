@@ -3442,6 +3442,7 @@ fn file_follow_wheel_stops_scenes() {
 
 /// `file-follow-mode` (mode_switch_keeps_marks_turns_follow_off): Follow on and a mark's tooltip
 /// showing; Diff, then File again: the marks are kept, Follow is off, and the tooltip is gone.
+/// The same for Preview (a Markdown file), where an agent's change never moves the File view.
 fn file_follow_mode_scenes() {
     use crate::layout_model::FileMode;
     use gpui::Modifiers;
@@ -3481,6 +3482,92 @@ fn file_follow_mode_scenes() {
         let shot = render_with(&theme, dims, build, act);
         keep_shot(&n, &shot);
         assert_eq!(seen.get(), [1, 0, 0, 1], "{n}: tip, follow, tip, marks");
+        println!("ui-shots: {n} ok");
+    }
+    // Preview (a Markdown file): File → Preview → File keeps the marks and ends Follow and the
+    // tooltip, as Diff does; and an agent's change while Preview shows never moves the hidden
+    // File view (Follow on there or not).
+    let md = live_file(
+        "follow-mode.md",
+        &(0..600)
+            .map(|i| format!("line {i}\n\n"))
+            .collect::<String>(),
+    );
+    for &(slug, name) in shot_themes() {
+        let n = format!("file-follow-mode-preview-{slug}");
+        let theme = shot_theme(name);
+        let slot: LiveSlot = Rc::default();
+        let build = live_tab(theme, md.clone(), slot.clone());
+        let seen: Rc<Cell<[u8; 7]>> = Rc::default();
+        let keep = seen.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            let lines = 1200;
+            follow_setup(cx, window, &tab, lines, 3..5, true);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let on_mark = point(
+                g.bounds.left() + g.marks_left.unwrap_or(g.numbers_right) + px(8.0),
+                g.bounds.top() + g.line_height * 3.5,
+            );
+            cx.simulate_mouse_move(window, on_mark, None, Modifiers::none());
+            live_frame(cx, window);
+            let tipped = cx.read(|cx| tab.read(cx).mark_tip().is_some());
+            let preview = |cx: &mut VisualTestAppContext, on: bool| {
+                cx.update_window(window, |_, window, cx| {
+                    tab.update(cx, |t, cx| t.choose_preview_for_shots(on, window, cx))
+                })
+                .expect("the view switch");
+                live_frame(cx, window);
+            };
+            preview(cx, true);
+            let (shown, in_preview) = cx.read(|cx| {
+                let t = tab.read(cx);
+                (t.preview_shown(), t.follow_on())
+            });
+            preview(cx, false);
+            let (follow, tip, marked) = cx.read(|cx| {
+                let t = tab.read(cx);
+                (t.follow_on(), t.mark_tip().is_some(), t.live_marks().any())
+            });
+            // Preview again, Follow on anyway, and the agent changes line 800: the File view
+            // stays where it was.
+            preview(cx, true);
+            let before = cx.read(|cx| tab.read(cx).scroll().y);
+            let record = live_record(
+                lines,
+                &[(
+                    800..803,
+                    crate::live_lines::Who::Agent(crate::edit_ledger::agent_mark_for("codex")),
+                    crate::live_lines::Sure::Exact,
+                    1,
+                )],
+            );
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_live_for_shot(record, live_now(), Some(true));
+                    t.follow_for_shots(cx);
+                })
+            });
+            live_frame(cx, window);
+            let stayed = cx.read(|cx| tab.read(cx).scroll().y) == before;
+            keep.set([
+                tipped as u8,
+                shown as u8,
+                in_preview as u8,
+                follow as u8,
+                tip as u8,
+                marked as u8,
+                stayed as u8,
+            ]);
+        };
+        let shot = render_with(&theme, dims, build, act);
+        keep_shot(&n, &shot);
+        assert_eq!(
+            seen.get(),
+            [1, 1, 0, 0, 0, 1, 1],
+            "{n}: tip, Preview shown, Follow in Preview, Follow back in File, tip, marks, \
+             the File view stays"
+        );
         println!("ui-shots: {n} ok");
     }
 }

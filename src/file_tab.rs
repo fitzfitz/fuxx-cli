@@ -49,13 +49,14 @@
 //! or you) and when, and follows its lines when others are added or removed above them. Who is
 //! decided by the app-wide edit ledger (`edit_ledger`, fed by agent tabs and by terminals that run a
 //! known agent); a late tool finish revises a mark to exact once, within 2 s (one-shot timer, no
-//! other). A changed line glows in three steps over 60 s and shows its age at the end of the first
+//! other), and at that check a change decided while an edit was still open is settled without it
+//! (a guess, or yours). A changed line glows in three steps over 60 s and shows its age at the end of the first
 //! line of each warm block; levels are worked out on the existing 1 s poll and the tab redraws only
 //! when a level or an age label changes. A mark column (a small circle with a letter; hollow when
 //! guessed) sits between the line numbers and the change bars, only while a line is marked. File
 //! mode only; Diff and Preview look as before. **Follow** (a pill in the bar, off by default,
 //! never turns itself on) scrolls the agent's newest change into view, 3 lines from the top as a
-//! diff opens; scrolling, a mode switch or cleared marks turn it off.
+//! diff opens; scrolling, a mode switch (Preview on or off too) or cleared marks turn it off.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -1155,14 +1156,24 @@ struct Live {
     /// The newest agent mark's name, kept with each change: what the pill says (none: no
     /// agent has changed the file, no pill).
     agent: Option<Arc<str>>,
-    /// The revision check runs (one at a time), and the look whose decision it may revise.
+    /// The revision check runs (one at a time), and the look whose decision it may revise
+    /// (or, decided while an edit was open, settle).
     revising: bool,
-    pending: Option<Instant>,
+    pending: Option<Pending>,
     /// The file's canonical path, as the edit ledger keeps paths (found with each text read).
     real: Option<PathBuf>,
     /// The time the glow is worked out at: a scene's own (frozen tabs never poll).
     #[cfg(feature = "ui-shots")]
     now: Option<SystemTime>,
+}
+
+/// A look the revision check waits for (M11af): when it was, the look before it, and whether
+/// an agent's edit to the file was still open when it was decided.
+#[derive(Clone, Copy, Debug)]
+struct Pending {
+    at: Instant,
+    since: Instant,
+    open: bool,
 }
 
 impl Live {
@@ -1259,18 +1270,17 @@ impl Live {
         let revisable = !c.blocks.is_empty() && (open || sure == Sure::Guess || who == Who::You);
         Rc::make_mut(&mut self.record).apply(&c, lines, Mark { who, sure, when });
         self.sync_marks();
-        self.latest = Some(self.latest.map_or(when, |t| t.max(when)));
-        self.pending = revisable.then_some(at);
+        if !c.blocks.is_empty() {
+            self.latest = Some(self.latest.map_or(when, |t| t.max(when)));
+        }
+        self.pending = revisable.then_some(Pending { at, since, open });
         revisable
     }
 
-    /// A late finish (`Ledger::revise`): the latest change's lines become that agent's, exact.
-    /// True when a mark changed.
-    fn revise(&mut self, found: Option<AgentMark>) -> bool {
-        let Some(agent) = found else {
-            return false;
-        };
-        let who = Who::Agent(agent);
+    /// A change decided while an agent's edit was open, settled (`Ledger::settle`): the latest
+    /// change's lines become `who`, `sure`, which may be less sure than they were. True when a
+    /// mark changed.
+    fn settle(&mut self, (who, sure): (Who, Sure)) -> bool {
         let record = &self.record;
         let changed = record
             .last_blocks()
@@ -1279,12 +1289,18 @@ impl Live {
             .any(|line| {
                 record
                     .mark(line)
-                    .is_some_and(|m| m.who != who || m.sure != Sure::Exact)
+                    .is_some_and(|m| m.who != who || m.sure != sure)
             });
         if changed {
-            Rc::make_mut(&mut self.record).revise_last(who, Sure::Exact);
+            Rc::make_mut(&mut self.record).revise_last(who, sure);
         }
         changed
+    }
+
+    /// A late finish (`Ledger::revise`): the latest change's lines become that agent's, exact.
+    /// True when a mark changed.
+    fn revise(&mut self, found: Option<AgentMark>) -> bool {
+        found.is_some_and(|agent| self.settle((Who::Agent(agent), Sure::Exact)))
     }
 }
 
@@ -3138,24 +3154,36 @@ impl FileTab {
     }
 
     /// The revision check's turn: the look waited for, once its 2 s have passed, is revised to
-    /// exact if an agent's edit to the file finished ok in them (drawn again only if a mark
-    /// changed), and the check ends. Some: that look's 2 s are still running, wait so long.
+    /// exact if an agent's edit to the file finished ok in them; one decided while an edit was
+    /// open is settled without it otherwise (a guess, or yours). Drawn again only if a mark
+    /// changed; then the check ends. Some: that look's 2 s are still running, wait so long.
     fn revise_pending(&mut self, cx: &mut Context<Self>) -> Option<Duration> {
-        let Some(read_at) = self.live.pending else {
+        let Some(look) = self.live.pending else {
             self.live.revising = false;
             return None;
         };
-        let left = (read_at + SLACK).saturating_duration_since(Instant::now());
+        let left = (look.at + SLACK).saturating_duration_since(Instant::now());
         if !left.is_zero() {
             return Some(left);
         }
         self.live.pending = None;
         self.live.revising = false;
         let path = self.live.real.as_deref().unwrap_or(&self.path);
-        let found = cx
-            .try_global::<Ledger>()
-            .and_then(|ledger| ledger.revise(path, read_at));
-        if self.live.revise(found) {
+        let ws = self.live.workspace;
+        // A look decided while an edit was open is settled (ruling R10: it may be downgraded);
+        // any other may only be revised up by a late finish.
+        let changed = match cx.try_global::<Ledger>() {
+            Some(ledger) if look.open => {
+                let settled = ledger.settle(path, ws, look.since, look.at);
+                self.live.settle(settled)
+            }
+            Some(ledger) => {
+                let found = ledger.revise(path, look.at);
+                self.live.revise(found)
+            }
+            None => false,
+        };
+        if changed {
             self.live.sync_marks();
             self.follow_latest(cx);
             cx.notify();
@@ -3164,7 +3192,7 @@ impl FileTab {
     }
 
     /// M11af part 4: with Follow on, after a change by an agent, bring its first line into view
-    /// (File mode, as last drawn). Not through `set_scroll`: that is yours, and ends Follow.
+    /// (File mode, as last drawn; never while Preview shows). Not through `set_scroll`: that is yours, and ends Follow.
     /// The rows aren't drawn yet, so the scroll is kept within them when drawn (as a diff's
     /// reveal is). Wrapped (M11x part 2): the line's first screen row, the text wrapped at the
     /// width last drawn.
@@ -3172,7 +3200,7 @@ impl FileTab {
         let (Some(line), Some(g)) = (self.live.follow_line(), self.geom.get()) else {
             return;
         };
-        if self.mode != FileMode::Plain {
+        if self.mode != FileMode::Plain || self.preview_shown() {
             return;
         }
         let mut row = line;
@@ -3654,6 +3682,10 @@ impl FileTab {
             return;
         }
         self.preview = on;
+        // M11af: as a mode switch, Preview on or off ends Follow, and the marks' tooltip does
+        // not wait for the way back.
+        self.live.follow = false;
+        self.mark_tip = None;
         if on && self.find.is_some() {
             self.close_find(window, cx);
         }
@@ -7136,6 +7168,61 @@ mod tests {
             Sure::Exact,
             false
         )));
+    }
+
+    /// A read with no changed line (a touch, a save of the same text) marks nothing, so it is
+    /// not the latest change either.
+    #[test]
+    fn a_read_with_no_change_keeps_latest() {
+        let t0 = Instant::now();
+        let mut live = Live::default();
+        live.saw(text_read(&live, &doc("a\nb\n"), T0), t0, |_| unreachable!());
+        assert_eq!(live.latest, None);
+        let later = T0 + Duration::from_secs(30);
+        live.saw(text_read(&live, &doc("a\nb\n"), later), t0, |_| {
+            unreachable!("nothing to decide")
+        });
+        assert_eq!(live.latest, None, "a touch is not a change");
+        let changed = T0 + Duration::from_secs(40);
+        live.saw(text_read(&live, &doc("a\nB\n"), changed), t0, |_| {
+            (Who::You, Sure::Exact, false)
+        });
+        live.saw(
+            text_read(&live, &doc("a\nB\n"), changed + Duration::from_secs(9)),
+            t0,
+            |_| unreachable!("nothing to decide"),
+        );
+        assert_eq!(live.latest, Some(changed));
+    }
+
+    /// Ruling R10: a change decided while an agent's edit was open is remembered so, with the
+    /// look before it; at its 2 s check it is settled, and may be downgraded (the edit never
+    /// finished ok: yours, or a guess).
+    #[test]
+    fn an_open_decision_is_settled_at_the_revision_turn() {
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(1);
+        let mut live = Live::default();
+        live.saw(text_read(&live, &doc("a\nb\n"), T0), t0, |_| unreachable!());
+        assert!(live.saw(text_read(&live, &doc("a\nB\n"), T0), t1, |_| (
+            agent("claude"),
+            Sure::Exact,
+            true
+        )));
+        let p = live.pending.expect("waits for its check");
+        assert_eq!((p.at, p.since, p.open), (t1, t0, true));
+        assert!(live.settle((Who::You, Sure::Exact)));
+        let m = live.record.mark(1).unwrap();
+        assert_eq!((&m.who, m.sure), (&Who::You, Sure::Exact));
+        // Already so: nothing changes.
+        assert!(!live.settle((Who::You, Sure::Exact)));
+        // A guess, or yours, is not open.
+        assert!(live.saw(text_read(&live, &doc("A\nB\n"), T0), t1, |_| (
+            agent("agy"),
+            Sure::Guess,
+            false
+        )));
+        assert!(!live.pending.expect("waits").open);
     }
 
     // M11af Task 6: what the glow, the age words and the marks draw.
