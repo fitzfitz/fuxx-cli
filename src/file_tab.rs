@@ -162,6 +162,8 @@ const ON_MARK_DARK: Rgb = Rgb {
     g: 0x1f,
     b: 0x27,
 };
+/// M11af: the Follow pill's fill when on: the warm accent at this opacity (the mockup's).
+const FOLLOW_TINT: f32 = 0.15;
 /// A changed line's tint: its bar's colour at this opacity.
 const TINT: f32 = 0.12;
 /// M11af: the glow's warm accent (the mockup's peach), and its opacity at each level (1, 2, 3;
@@ -177,7 +179,8 @@ const MATCH_TINT: f32 = 0.25;
 const CURRENT_TINT: f32 = 0.55;
 /// The deleted-lines ▸, larger than the text so it reads at a glance.
 const MARKER_SCALE: f32 = 1.3;
-/// A diff opens (and a change bar's click shows its change) this many rows from the top.
+/// A diff opens (and a change bar's click shows its change) this many rows from the top; Follow
+/// (M11af) puts the agent's change there too.
 const REVEAL_ABOVE: usize = 3;
 /// A diff row's sign: removed (U+2212) and added.
 const SIGN_REMOVED: &str = "\u{2212}";
@@ -1103,6 +1106,12 @@ enum Seen<'a> {
     },
 }
 
+/// Follow's scroll (M11af): the first row to show so `line` sits `top_rows` from the top, none
+/// when `line` is already in `view` (rows).
+fn follow_scroll(view: Range<usize>, line: usize, top_rows: usize) -> Option<usize> {
+    (!view.contains(&line)).then(|| line.saturating_sub(top_rows))
+}
+
 /// A file tab's live changes (M11af): who changed each line since the tab opened, and what the
 /// next read needs to keep that record.
 #[derive(Default)]
@@ -1126,9 +1135,11 @@ struct Live {
     /// The letter on your marks, once found (`find_your_letter`, asked once per tab).
     your_letter: Option<char>,
     letter_asked: bool,
-    /// Follow the agent's newest change (M11af part 4).
-    #[allow(dead_code)] // used by Task 7
+    /// Follow the agent's newest change (M11af part 4). Off until the pill is clicked.
     follow: bool,
+    /// The newest agent mark's name, kept with each change: what the pill says (none: no
+    /// agent has changed the file, no pill).
+    agent: Option<Arc<str>>,
     /// The revision check runs (one at a time), and the look whose decision it may revise.
     revising: bool,
     pending: Option<Instant>,
@@ -1140,6 +1151,31 @@ struct Live {
 }
 
 impl Live {
+    /// What the record holds, kept: whether any line is marked and the newest agent's name.
+    /// Cleared marks turn Follow off.
+    fn sync_marks(&mut self) {
+        self.marked = self.record.any();
+        self.agent = self.record.newest_agent().map(|a| a.name.clone());
+        if !self.marked {
+            self.follow = false;
+        }
+    }
+
+    /// The pill's agent: the newest agent mark's name.
+    fn agent_name(&self) -> Option<Arc<str>> {
+        self.agent.clone()
+    }
+
+    /// With Follow on, the line to bring into view after a reload: the first line of the latest
+    /// change's first block, when an agent made it (your changes never move the view).
+    fn follow_line(&self) -> Option<usize> {
+        if !self.follow {
+            return None;
+        }
+        let line = self.record.last_blocks().first()?.start;
+        matches!(self.record.mark(line)?.who, Who::Agent(_)).then_some(line)
+    }
+
     /// The last text, for the next read to compare with.
     fn prev(&self) -> Option<Prev> {
         self.last.clone()
@@ -1178,7 +1214,7 @@ impl Live {
             Seen::Unchanged | Seen::Missing => return false,
             Seen::Refused => {
                 Rc::make_mut(&mut self.record).clear(0);
-                self.marked = false;
+                self.sync_marks();
                 self.last = None;
                 self.pending = None;
                 return false;
@@ -1196,7 +1232,7 @@ impl Live {
         let lines = doc.lines.len();
         let Some(c) = compared else {
             Rc::make_mut(&mut self.record).clear(lines);
-            self.marked = false;
+            self.sync_marks();
             self.pending = None;
             return false;
         };
@@ -1207,7 +1243,7 @@ impl Live {
         };
         let revisable = !c.blocks.is_empty() && (open || sure == Sure::Guess || who == Who::You);
         Rc::make_mut(&mut self.record).apply(&c, lines, Mark { who, sure, when });
-        self.marked = self.record.any();
+        self.sync_marks();
         self.latest = Some(self.latest.map_or(when, |t| t.max(when)));
         self.pending = revisable.then_some(at);
         revisable
@@ -2704,6 +2740,8 @@ pub struct FileTab {
     /// controls together, as last drawn (none: not drawn).
     toggle_at: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
     controls_at: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// M11af: the Follow pill, as drawn this frame (none: not drawn).
+    follow_at: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The second line's Where and the parts after it, as last drawn (the scenes check Where
     /// is cut first).
     meta_at: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>,
@@ -2805,6 +2843,7 @@ impl FileTab {
             close_at: Rc::default(),
             toggle_at: Rc::default(),
             controls_at: Rc::default(),
+            follow_at: Rc::default(),
             meta_at: Rc::default(),
             age: None,
             preview: false,
@@ -3019,6 +3058,7 @@ impl FileTab {
                 self.unrefuse_diff(was_refused);
                 self.colour(cx);
                 self.look_up_changes(cx);
+                self.follow_latest(cx);
             }
         }
         self.refresh_age(SystemTime::now(), cx);
@@ -3101,9 +3141,39 @@ impl FileTab {
             .try_global::<Ledger>()
             .and_then(|ledger| ledger.revise(path, read_at));
         if self.live.revise(found) {
+            self.live.sync_marks();
+            self.follow_latest(cx);
             cx.notify();
         }
         None
+    }
+
+    /// M11af part 4: with Follow on, after a change by an agent, bring its first line into view
+    /// (File mode, as last drawn). Not through `set_scroll`: that is yours, and ends Follow.
+    /// The rows aren't drawn yet, so the scroll is kept within them when drawn (as a diff's
+    /// reveal is). Wrapped (M11x part 2): the line's first screen row, the text wrapped at the
+    /// width last drawn.
+    fn follow_latest(&mut self, cx: &mut Context<Self>) {
+        let (Some(line), Some(g)) = (self.live.follow_line(), self.geom.get()) else {
+            return;
+        };
+        if self.mode != FileMode::Plain {
+            return;
+        }
+        let mut row = line;
+        let columns = self.wrapped.borrow().as_ref().map(|w| w.columns);
+        if let (Some(columns), true, Some(doc)) =
+            (columns, cx.global::<Appearance>().file_wrap, self.doc())
+        {
+            row = Wrapped::of(doc, FileMode::Plain, columns).first_row(line);
+        }
+        let top = (g.scroll.y / g.line_height).floor().max(0.0) as usize;
+        let rows = (g.bounds.size.height / g.line_height).floor().max(1.0) as usize;
+        if let Some(first) = follow_scroll(top..top + rows, row, REVEAL_ABOVE) {
+            self.scroll = point(g.scroll.x, g.line_height * first as f32);
+            self.scrolled(cx);
+            cx.notify();
+        }
     }
 
     /// Your letter, looked up once off the UI thread (`find_your_letter`).
@@ -3942,6 +4012,10 @@ impl FileTab {
         }
         self.selection = None;
         self.selecting = false;
+        // M11af: a mode switch ends Follow, and the marks' tooltip does not wait for the
+        // way back.
+        self.live.follow = false;
+        self.mark_tip = None;
         // Find's current match: the first from the top of the text now shown.
         if let Some(find) = self.find.as_mut() {
             find.finds.from_top = true;
@@ -3978,6 +4052,8 @@ impl FileTab {
     /// Scroll to `to`, kept within the text (as last drawn). Every scroll of the text shown
     /// comes here (the wheel, find, a thumb, the auto-scroll), so the scrollbar shows.
     pub fn set_scroll(&mut self, to: Point<Pixels>, cx: &mut Context<Self>) {
+        // M11af: any scroll of yours ends Follow (its own scroll is `follow_to`'s).
+        self.live.follow = false;
         let Some(g) = self.geom.get() else {
             return;
         };
@@ -4690,6 +4766,58 @@ impl FileTab {
             .into_any_element()
     }
 
+    /// M11af: the Follow pill, in File mode once an agent has changed the file: "Follow claude"
+    /// (off) or "● Following claude" (on: the warm accent tinted), named from the newest agent
+    /// mark. A click turns it the other way.
+    fn follow_pill(&self, ui: UiColors, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.follow_at.set(None);
+        if self.mode != FileMode::Plain || self.preview_shown() {
+            return None;
+        }
+        let name = self.live.agent_name()?;
+        let on = self.live.follow;
+        let words = if on {
+            format!("\u{25cf} Following {name}")
+        } else {
+            format!("Follow {name}")
+        };
+        let ink = ensure_contrast(WARM_RGB, ui.panel, TEXT_MIN);
+        let at = self.follow_at.clone();
+        Some(
+            div()
+                .id("file-follow")
+                .relative()
+                .flex_none()
+                .px(px(8.0))
+                .py(px(2.0))
+                .rounded(px(999.0))
+                .text_size(px(text::META))
+                .cursor_pointer()
+                .whitespace_nowrap()
+                .when(on, |p| {
+                    p.bg(hsla(WARM_RGB).opacity(FOLLOW_TINT))
+                        .text_color(hsla(ink))
+                })
+                .when(!on, |p| {
+                    p.text_color(hsla(ui.text_dim))
+                        .hover(move |s| s.bg(hsla(ui.panel_hover)))
+                })
+                .child(SharedString::from(words))
+                .child(
+                    canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.live.follow = !this.live.follow;
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )
+    }
+
     /// The bar (M11ae, option B): on the left the title, the file's name (semibold) and its
     /// change chip over where it is and what it is (`meta_parts`, Where cut first when narrow);
     /// a note; on the right the view switch (two segments or more), Wrap and Open in Editor.
@@ -4738,6 +4866,7 @@ impl FileTab {
                 cx,
             )
         });
+        let follow = self.follow_pill(ui, cx);
         let (name, chip) = self.title_words();
         let mut meta = self.meta_parts().into_iter();
         let place = meta.next().unwrap_or_default();
@@ -4854,6 +4983,7 @@ impl FileTab {
                     .flex_row()
                     .items_center()
                     .gap(px(8.0))
+                    .children(follow)
                     .children(switch)
                     .children(wrap)
                     .children(open)
@@ -5443,8 +5573,8 @@ impl FileTab {
     /// M11af: a scene's live record, its glow worked out at `now`, and Follow on or off
     /// (none: as it is).
     pub fn set_live_for_shot(&mut self, record: LineRecord, now: SystemTime, follow: Option<bool>) {
-        self.live.marked = record.any();
         self.live.record = Rc::new(record);
+        self.live.sync_marks();
         self.live.now = Some(now);
         // A scene's marks are all at or before its `now`.
         self.live.latest = Some(now);
@@ -5452,6 +5582,21 @@ impl FileTab {
         if let Some(follow) = follow {
             self.live.follow = follow;
         }
+    }
+
+    /// M11af: a reload by an agent, as far as Follow goes (what `loaded` does after a text).
+    pub fn follow_for_shots(&mut self, cx: &mut Context<Self>) {
+        self.follow_latest(cx);
+    }
+
+    /// M11af: the Follow pill as drawn (none: not shown).
+    pub fn follow_pill_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.follow_at.get()
+    }
+
+    /// M11af: whether Follow is on.
+    pub fn follow_on(&self) -> bool {
+        self.live.follow
     }
 
     /// Change bars from a list (git's answer; a scene's given list).
@@ -7117,5 +7262,72 @@ mod tests {
         assert!(live.marked, "a look that finds nothing new keeps the marks");
         live.saw(Seen::Refused, t0, |_| unreachable!());
         assert!(!live.marked && !live.record.any());
+    }
+
+    // M11af part 4: Follow.
+    #[test]
+    fn follow_scroll_is_none_when_in_view() {
+        assert_eq!(follow_scroll(10..40, 10, 3), None);
+        assert_eq!(follow_scroll(10..40, 39, 3), None);
+    }
+
+    #[test]
+    fn follow_scroll_puts_line_at_top_rows() {
+        assert_eq!(follow_scroll(10..40, 400, 3), Some(397));
+        assert_eq!(
+            follow_scroll(10..40, 40, 3),
+            Some(37),
+            "just below the view"
+        );
+        assert_eq!(
+            follow_scroll(10..40, 2, 3),
+            Some(0),
+            "never above the first row"
+        );
+        assert_eq!(follow_scroll(10..40, 5, 3), Some(2));
+    }
+
+    #[test]
+    fn follow_off_by_default() {
+        let mut live = Live::default();
+        assert!(!live.follow);
+        // A change by an agent never turns it on.
+        let t0 = Instant::now();
+        live.saw(text_read(&live, &doc("a\nb\n"), T0), t0, |_| unreachable!());
+        live.saw(text_read(&live, &doc("a\nB\n"), T0), t0, |_| {
+            (agent("claude"), Sure::Exact, false)
+        });
+        assert!(!live.follow);
+    }
+
+    /// Follow acts on an agent's latest change only (yours never moves the view), at its first
+    /// block's first line; clearing the marks turns it off; the pill is named from the newest
+    /// agent mark.
+    #[test]
+    fn follow_line_and_name() {
+        let t0 = Instant::now();
+        let mut live = Live::default();
+        live.saw(
+            text_read(&live, &doc("a\nb\nc\n"), T0),
+            t0,
+            |_| unreachable!(),
+        );
+        live.saw(text_read(&live, &doc("a\nb\nC\n"), T0), t0, |_| {
+            (Who::You, Sure::Exact, false)
+        });
+        live.follow = true;
+        assert_eq!(live.follow_line(), None, "your change never moves the view");
+        assert_eq!(live.agent_name(), None, "no agent mark: no pill");
+        live.saw(text_read(&live, &doc("a\nB\nC\n"), T0), t0, |_| {
+            (agent("codex"), Sure::Exact, false)
+        });
+        assert_eq!(live.follow_line(), Some(1));
+        assert_eq!(live.agent_name().as_deref(), Some("codex"));
+        live.follow = false;
+        assert_eq!(live.follow_line(), None, "off: no scroll");
+        live.follow = true;
+        live.saw(Seen::Refused, t0, |_| unreachable!());
+        assert!(!live.follow, "the marks cleared");
+        assert_eq!(live.agent_name(), None);
     }
 }

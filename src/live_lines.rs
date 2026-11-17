@@ -154,6 +154,19 @@ impl LineRecord {
         self.marks.iter().any(Option::is_some)
     }
 
+    /// The agent that made the newest mark of an agent (the last, among marks made together).
+    pub fn newest_agent(&self) -> Option<&AgentMark> {
+        self.marks
+            .iter()
+            .flatten()
+            .filter_map(|m| match &m.who {
+                Who::Agent(a) => Some((m.when, a)),
+                Who::You => None,
+            })
+            .max_by_key(|(when, _)| *when)
+            .map(|(_, a)| a)
+    }
+
     /// The blocks of the latest change.
     pub fn last_blocks(&self) -> &[Range<usize>] {
         &self.last
