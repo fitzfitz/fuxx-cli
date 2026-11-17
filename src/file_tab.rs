@@ -67,6 +67,15 @@
 //! palette folds or unfolds all. Folds follow their first lines over a reload (one whose first
 //! line changed opens), open for a find step or Follow into them, and are not kept over a
 //! restart. Folding is you moving the view: it ends Follow.
+//!
+//! **The sticky line and the breadcrumb (M11ah).** In File mode a file with blocks has a strip
+//! between the bar (and the find bar) and the text: the file's name, then the blocks the top line
+//! is in, outer to inner (`crumbs`; the outer ones fold into "…" when narrow, `fit_crumbs`). Once
+//! a block's first line scrolls above the top, it is pinned over the text's first row (one line,
+//! the innermost named block). Both are worked out when the view moves (`refresh_place`: a
+//! scroll, a read, the colours landing, a fold or a mode change), never while drawing; a press on
+//! either puts its line at the top, current, and ends Follow. Find, Follow and the change jumps
+//! land `REVEAL_ABOVE` rows from the top, one more under a sticky line (`reveal_top`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
@@ -213,6 +222,10 @@ const MARKER_SCALE: f32 = 1.3;
 /// (M11af) puts the agent's change there too.
 const REVEAL_ABOVE: usize = 3;
 /// A diff row's sign: removed (U+2212) and added.
+/// M11ah: between the breadcrumb's parts, and in place of the outer ones that do not fit (and
+/// at the end of a sticky line cut by Wrap).
+const CRUMB_SEPARATOR: &str = " \u{203a} ";
+const ELLIPSIS: &str = "\u{2026}";
 const SIGN_REMOVED: &str = "\u{2212}";
 const SIGN_ADDED: &str = "+";
 
@@ -1191,10 +1204,15 @@ enum Seen<'a> {
     },
 }
 
-/// Follow's scroll (M11af): the first row to show so `line` sits `top_rows` from the top, none
-/// when `line` is already in `view` (rows).
-fn follow_scroll(view: Range<usize>, line: usize, top_rows: usize) -> Option<usize> {
-    (!view.contains(&line)).then(|| line.saturating_sub(top_rows))
+/// Follow's scroll (M11af): the first row to show so `line` sits `REVEAL_ABOVE` rows from the
+/// top (M11ah: one more under a sticky line, `reveal_top`), none when `line` is already in
+/// `view` (rows; M11ah: not the row under a sticky line).
+fn follow_scroll(
+    view: Range<usize>,
+    line: usize,
+    sticky_at: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    (!view.contains(&line)).then(|| reveal_top(line, sticky_at))
 }
 
 /// A file tab's live changes (M11af): who changed each line since the tab opened, and what the
@@ -1775,6 +1793,134 @@ fn step_line(matches: &[Match], stepped: Option<usize>, kept: Option<usize>) -> 
     stepped
         .and_then(|k| matches.get(k))
         .map_or(kept, |m| Some(m.line))
+}
+
+/// M11ah: where the view is (File mode), worked out when it moves (a scroll, a read, the colours
+/// landing, a fold or a mode change), never while drawing: the sticky line and the breadcrumb's
+/// parts.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Place {
+    sticky: Option<Sticky>,
+    crumbs: Vec<Crumb>,
+}
+
+/// What is pinned at the top of the text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sticky {
+    /// A block's first line (File mode).
+    Line(usize),
+    /// A Diff card's title row (by card).
+    #[allow(dead_code)] // pinned by Diff mode's cards (M11ah Task 9)
+    Title(usize),
+}
+
+/// What the breadcrumb's parts were laid out for (its layout cache's key): the parts, the room,
+/// the font and its size, and the inks (the parts', the last part's).
+#[derive(Clone, Debug, PartialEq)]
+struct CrumbFitKey {
+    crumbs: Vec<Crumb>,
+    room: f32,
+    font: gpui::Font,
+    font_size: Pixels,
+    inks: (Rgb, Rgb),
+}
+
+/// What a piece of the breadcrumb is: a part (a press takes it), the "…" of the outer parts
+/// folded, or a " › " between two.
+#[derive(Clone, Debug)]
+enum CrumbPiece {
+    Part(Crumb),
+    Folded,
+    Separator,
+}
+
+/// The breadcrumb laid out: each piece's x from the strip's text edge, shaped.
+type CrumbsLaid = Vec<(Pixels, gpui::ShapedLine, CrumbPiece)>;
+
+/// The breadcrumb's parts and "…" as drawn (window points), each with its crumb (none: the "…",
+/// which a press does not take).
+type CrumbsDrawn = Vec<(Bounds<Pixels>, Option<Crumb>)>;
+
+/// A breadcrumb part: its words, and the line a press goes to (none: the file's name, the top).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Crumb {
+    pub words: String,
+    pub line: Option<usize>,
+}
+
+/// The breadcrumb for `top` the line at the top of the text: the file's name, then each block
+/// naming where `top` is, outer to inner (`Outline::path`), in their first lines' words
+/// (`code_outline::part_words`). `line` gives a line's text (only the path's are read).
+pub fn crumbs<'a>(
+    file_name: &str,
+    outline: &Outline,
+    line: impl Fn(usize) -> &'a str,
+    top: usize,
+    markdown: bool,
+) -> Vec<Crumb> {
+    let file = Crumb {
+        words: file_name.to_string(),
+        line: None,
+    };
+    let parts = outline.path(top).into_iter().map(|b| {
+        let start = outline.blocks[b].start;
+        Crumb {
+            words: code_outline::part_words(line(start), markdown),
+            line: Some(start),
+        }
+    });
+    std::iter::once(file).chain(parts).collect()
+}
+
+/// Which crumbs fit `room` points (widths measured): outer ones fold into one "…" first; the last
+/// always stays. Each part shown in order (none: the "…").
+pub fn fit_crumbs(widths: &[f32], room: f32, ellipsis: f32, separator: f32) -> Vec<Option<usize>> {
+    let n = widths.len();
+    // `k` outer parts folded into the "…" (none for k = 0).
+    for k in 0..n {
+        let shown = &widths[k..];
+        let mut width: f32 = shown.iter().sum();
+        let mut parts = shown.len();
+        if k > 0 {
+            width += ellipsis;
+            parts += 1;
+        }
+        width += separator * parts.saturating_sub(1) as f32;
+        if width <= room {
+            let fold = (k > 0).then_some(None);
+            return fold.into_iter().chain((k..n).map(Some)).collect();
+        }
+    }
+    n.checked_sub(1).map(Some).into_iter().collect()
+}
+
+/// The first row to show so `target_row` sits `REVEAL_ABOVE` rows down, one more when a sticky
+/// line shows there (`sticky_at`: with that row at the top).
+fn reveal_top(target_row: usize, sticky_at: impl Fn(usize) -> bool) -> usize {
+    let top = target_row.saturating_sub(REVEAL_ABOVE);
+    if top > 0 && sticky_at(top) {
+        top - 1
+    } else {
+        top
+    }
+}
+
+/// The place shown with `top` the line at the text's top and `under` the line just under the
+/// sticky line's row (the sticky line pins the innermost named block holding `under` whose
+/// first line is above it: `Outline::sticky`; at that block's own first line, none).
+fn place_of<'a>(
+    file_name: &str,
+    outline: &Outline,
+    line: impl Fn(usize) -> &'a str,
+    (top, under): (usize, usize),
+    markdown: bool,
+) -> Place {
+    Place {
+        sticky: outline
+            .sticky(under)
+            .map(|b| Sticky::Line(outline.blocks[b].start)),
+        crumbs: crumbs(file_name, outline, line, top, markdown),
+    }
 }
 
 /// Where the gutter's parts sit, in points from the body's left edge: the old numbers' right
@@ -2387,6 +2533,8 @@ struct Frame {
     folded: BTreeSet<usize>,
     folds_gen: u64,
     gutter_hover: bool,
+    /// M11ah: the line pinned at the top of the text (File mode), as the place says.
+    sticky: Option<usize>,
 }
 
 /// What the text body draws of the live changes (M11af): the marks, and the runs glowing as
@@ -2944,6 +3092,155 @@ fn paint_body(
     }
 }
 
+/// M11ah: the breadcrumb's parts laid out for `key`: each shaped, the ones that fit `key.room`
+/// (`fit_crumbs`) placed left to right with " › " between them and "…" for the folded outer
+/// ones. A part's x is from the strip's text edge; the last part may run past the room (cut
+/// where it is drawn).
+fn lay_out_crumbs(key: &CrumbFitKey, window: &mut Window) -> CrumbsLaid {
+    let shape = |words: &str, ink: Rgb, window: &mut Window| {
+        let run = TextRun {
+            len: words.len(),
+            font: key.font.clone(),
+            color: hsla(ink),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        window.text_system().shape_line(
+            SharedString::from(words.to_string()),
+            key.font_size,
+            &[run],
+            None,
+        )
+    };
+    let (dim, bright) = key.inks;
+    let last = key.crumbs.len().saturating_sub(1);
+    let parts: Vec<gpui::ShapedLine> = key
+        .crumbs
+        .iter()
+        .enumerate()
+        .map(|(i, c)| shape(&c.words, if i == last { bright } else { dim }, window))
+        .collect();
+    let separator = shape(CRUMB_SEPARATOR, dim, window);
+    let dots = shape(ELLIPSIS, dim, window);
+    let widths: Vec<f32> = parts.iter().map(|p| f32::from(p.width)).collect();
+    let shown = fit_crumbs(
+        &widths,
+        key.room,
+        f32::from(dots.width),
+        f32::from(separator.width),
+    );
+    let mut x = px(0.0);
+    let mut laid = Vec::new();
+    for (k, part) in shown.into_iter().enumerate() {
+        if k > 0 {
+            laid.push((x, separator.clone(), CrumbPiece::Separator));
+            x += separator.width;
+        }
+        let (shaped, piece) = match part {
+            Some(i) => (parts[i].clone(), CrumbPiece::Part(key.crumbs[i].clone())),
+            None => (dots.clone(), CrumbPiece::Folded),
+        };
+        let width = shaped.width;
+        laid.push((x, shaped, piece));
+        x += width;
+    }
+    laid
+}
+
+/// M11ah: the sticky line (File mode): block line `line` pinned over the text's first row, on
+/// the background, with its number (as bright as the current line's when it is current) and a
+/// `STICKY_RULE` `divider` line under it. Its text as the line's own row draws it, following
+/// the sideways scroll; with Wrap, one row, cut with "…" when the line takes more.
+fn paint_sticky(
+    f: &Frame,
+    g: &Geom,
+    m: &CellMetrics,
+    map: &RowMap,
+    line: usize,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let ui = f.theme.ui();
+    let bg = f.theme.background;
+    let (bounds, lh) = (g.bounds, g.line_height);
+    let y = bounds.top();
+    let row = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
+    window.paint_quad(fill(row, hsla(bg)));
+    let rule = Bounds::new(
+        point(bounds.left(), y + lh),
+        size(bounds.size.width, px(code::STICKY_RULE)),
+    );
+    window.paint_quad(fill(rule, hsla(ui.divider)));
+    let ink = number_ink(&ui, bg, f.current_line == Some(line));
+    let right = point(bounds.left() + g.numbers_right, y);
+    paint_number(line + 1, right, m, lh, ink, window, cx);
+    let spans = f
+        .doc
+        .spans
+        .as_deref()
+        .filter(|_| f.coloured)
+        .and_then(|s| s.get(line))
+        .map(Vec::as_slice);
+    let fg = f.theme.foreground;
+    let (laid, text_x, cut) = match map.columns() {
+        Some(columns) => {
+            let width = f.doc.widths.get(line).copied().unwrap_or(0);
+            let cut = width > columns;
+            // Cut: one cell less, for the "…".
+            let cells = if cut {
+                columns.saturating_sub(1)
+            } else {
+                columns
+            };
+            let (from, to, start) = wrapped_row(&f.doc, line, 0, cells.max(1));
+            let laid = Laid::part(&f.doc, line, from, to, start, spans, fg, m, window);
+            (laid, bounds.left() + g.text_left, cut)
+        }
+        None => {
+            let laid = Laid::new(
+                &f.doc,
+                line,
+                spans,
+                fg,
+                m,
+                g.scroll.x,
+                bounds.size.width,
+                window,
+            );
+            (laid, bounds.left() + g.text_left - g.scroll.x, false)
+        }
+    };
+    let mask = ContentMask {
+        bounds: Bounds::from_corners(
+            point(bounds.left() + g.text_left - px(TEXT_GAP - 1.0), y),
+            point(bounds.right(), y + lh),
+        ),
+    };
+    window.with_content_mask(Some(mask), |window| {
+        if let Some(shaped) = &laid.shaped {
+            let _ = shaped.paint(
+                point(text_x + laid.x0, y),
+                lh,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+        if cut {
+            let dots = window.text_system().shape_line(
+                SharedString::from(ELLIPSIS),
+                m.font_size,
+                &[plain_run(ELLIPSIS.len(), m, fg)],
+                None,
+            );
+            let x = text_x + laid.x0 + laid.width;
+            let _ = dots.paint(point(x, y), lh, TextAlign::Left, None, window, cx);
+        }
+    });
+}
+
 /// What the tab asks of its workspace.
 pub enum FileTabEvent {
     /// The Close button of a file that no longer exists.
@@ -3130,6 +3427,13 @@ pub struct FileTab {
     folded: BTreeSet<usize>,
     folds_gen: u64,
     gutter_hover: bool,
+    /// M11ah: the sticky line and the breadcrumb's parts (File mode), worked out when the view
+    /// moves (`refresh_place`), never while drawing.
+    place: Place,
+    /// M11ah: the breadcrumb's parts as last drawn (a press finds its part), and how they were
+    /// laid out, for the words and the room they were measured in.
+    crumbs_at: Rc<RefCell<CrumbsDrawn>>,
+    crumbs_fit: Rc<RefCell<Option<(CrumbFitKey, CrumbsLaid)>>>,
     /// M11ae: the pointer's last place while selecting, and whether the auto-scroll task runs
     /// (one at a time; only while the pointer is out of the text).
     drag_at: Option<Point<Pixels>>,
@@ -3246,6 +3550,9 @@ impl FileTab {
             folded: BTreeSet::new(),
             folds_gen: 0,
             gutter_hover: false,
+            place: Place::default(),
+            crumbs_at: Rc::default(),
+            crumbs_fit: Rc::default(),
             drag_at: None,
             autoscrolling: false,
             scrollbar: Bar::default(),
@@ -3333,7 +3640,8 @@ impl FileTab {
         ))
     }
 
-    /// M11ah: whether blocks fold here: File mode (not Preview) on a file with blocks.
+    /// M11ah: whether blocks fold here: File mode (not Preview) on a file with blocks. The
+    /// breadcrumb and the sticky line show by the same rule.
     fn folds_apply(&self) -> bool {
         self.mode == FileMode::Plain
             && !self.preview_shown()
@@ -3377,6 +3685,7 @@ impl FileTab {
             };
             self.scroll.y = px(map.top(row) + into.max(0.0));
         }
+        self.refresh_place(cx);
         cx.notify();
     }
 
@@ -3440,6 +3749,122 @@ impl FileTab {
             self.folds_gen += 1;
         }
         opened
+    }
+
+    /// M11ah: the rows of the text shown as they are now: the last drawing's when made for this
+    /// mode, version, folds and Wrap; else made fresh (a read or a fold since then). None
+    /// before the first drawing.
+    fn map_now(&self, cx: &App) -> Option<RowMap> {
+        let doc = self.shown_doc()?;
+        let wrap = cx.global::<Appearance>().file_wrap;
+        if let Some((key, map)) = self.rows.borrow().as_ref()
+            && key.mode == self.mode
+            && key.version == doc.version
+            && key.folds == self.folds_gen
+            && key.columns.is_some() == wrap
+        {
+            return Some(map.clone());
+        }
+        self.fresh_map(cx)
+    }
+
+    /// M11ah: the place shown now (File mode, a file with blocks, not Preview; else none): the
+    /// breadcrumb for the line at the top, the sticky line for the line just under its row (a
+    /// line exactly at the top has none pinned over it). Before the first drawing: the top.
+    fn place_now(&self, cx: &App) -> Place {
+        let (Some(doc), true) = (self.doc(), self.folds_apply()) else {
+            return Place::default();
+        };
+        let Some(outline) = doc.outline.as_deref() else {
+            return Place::default();
+        };
+        let (top, under) = match (self.map_now(cx), self.geom.get()) {
+            (Some(map), Some(g)) => {
+                // As the next drawing keeps the scroll (`Geom::clamp`).
+                let max = (map.height() - f32::from(g.bounds.size.height)).max(0.0);
+                let y = f32::from(self.scroll.y).clamp(0.0, max);
+                let line_at = |y: f32| match map.row(map.row_at(y)) {
+                    Some(Row::Line { line, .. }) => line,
+                    _ => 0,
+                };
+                (line_at(y), line_at(y + map.row_h() - 1.0))
+            }
+            _ => (0, 0),
+        };
+        let name = self
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let markdown = is_markdown(&self.path);
+        place_of(&name, outline, |i| doc.line(i), (top, under), markdown)
+    }
+
+    /// M11ah: the place worked out again (a scroll, a read, the colours landing, a fold or a
+    /// mode change); drawn again only when it changed.
+    fn refresh_place(&mut self, cx: &mut Context<Self>) {
+        let place = self.place_now(cx);
+        if place != self.place {
+            self.place = place;
+            cx.notify();
+        }
+    }
+
+    /// M11ah: a breadcrumb part or the sticky line pressed: its line goes to the top of the text
+    /// and becomes current; the file's name (`None`) goes to the top. You moved the view: Follow
+    /// ends.
+    fn show_at_top(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
+        let y = match line {
+            Some(line) => {
+                let Some(map) = self.map_now(cx) else {
+                    return;
+                };
+                map.first_row(line).map_or(0.0, |r| map.top(r))
+            }
+            None => 0.0,
+        };
+        self.live.follow = false;
+        self.set_scroll(point(self.scroll.x, px(y)), cx);
+        if line.is_some() {
+            self.set_current(line, cx);
+        }
+        self.refresh_place(cx);
+        cx.notify();
+    }
+
+    /// M11ah: the sticky line's line, when window point `p` is on it (as last drawn).
+    fn sticky_under(&self, p: Point<Pixels>) -> Option<usize> {
+        let Some(Sticky::Line(line)) = self.place.sticky else {
+            return None;
+        };
+        let g = self.geom.get()?;
+        (g.bounds.contains(&p) && p.y < g.bounds.top() + g.line_height).then_some(line)
+    }
+
+    /// M11ah: whether a sticky line shows with row `r` of `map` at the top (File mode): what a
+    /// reveal leaves one more row of room for (`reveal_top`).
+    fn sticky_at_row(&self, map: &RowMap, r: usize) -> bool {
+        if !self.folds_apply() {
+            return false;
+        }
+        let outline = self.doc().and_then(|d| d.outline.as_deref());
+        match (outline, map.row(r)) {
+            (Some(o), Some(Row::Line { line, .. })) => o.sticky(line).is_some(),
+            _ => false,
+        }
+    }
+
+    /// M11ah: a press in the breadcrumb: the part under it (as last drawn) goes to the top.
+    fn crumb_press(&mut self, p: Point<Pixels>, cx: &mut Context<Self>) {
+        let hit = self
+            .crumbs_at
+            .borrow()
+            .iter()
+            .find(|(b, _)| b.contains(&p))
+            .and_then(|(_, c)| c.clone());
+        if let Some(crumb) = hit {
+            self.show_at_top(crumb.line, cx);
+        }
     }
 
     /// The scroll of the mode shown.
@@ -3638,6 +4063,8 @@ impl FileTab {
         self.refresh_age(SystemTime::now(), cx);
         self.keep_selection();
         self.find_again(cx);
+        // M11ah: the sticky line and the breadcrumb, for the new text (or none without one).
+        self.refresh_place(cx);
         cx.notify();
     }
 
@@ -3758,11 +4185,15 @@ impl FileTab {
         };
         let top = map.row_at(f32::from(g.scroll.y));
         let rows = (g.bounds.size.height / g.line_height).floor().max(1.0) as usize;
-        if let Some(first) = follow_scroll(top..top + rows, row, REVEAL_ABOVE) {
+        // M11ah: a row under the sticky line is not in view; the change lands below it.
+        let covered = usize::from(self.place.sticky.is_some());
+        let view = (top + covered).min(top + rows)..top + rows;
+        if let Some(first) = follow_scroll(view, row, |r| self.sticky_at_row(&map, r)) {
             self.scroll = point(g.scroll.x, px(map.top(first)));
             self.scrolled(cx);
             cx.notify();
         }
+        self.refresh_place(cx);
     }
 
     /// Your letter, looked up once off the UI thread (`find_your_letter`).
@@ -3919,6 +4350,9 @@ impl FileTab {
                     && doc.accept_spans(version, coloured.spans, &coloured.named)
                 {
                     doc.syntax = Some(syntax);
+                    // M11ah: the named lines came with them: the sticky line and the
+                    // breadcrumb name their blocks now.
+                    this.refresh_place(cx);
                     cx.notify();
                 }
                 if this.colouring.finish() {
@@ -4240,6 +4674,7 @@ impl FileTab {
         self.selection = None;
         self.selecting = false;
         cx.emit(FileTabEvent::Preview(on));
+        self.refresh_place(cx);
         cx.notify();
     }
 
@@ -4374,7 +4809,12 @@ impl FileTab {
         let g = self.geom.get()?;
         let left = g.marks_left?;
         let x = p.x - g.bounds.left() - left;
-        if x < px(0.0) || x > px(MARK_COLUMN) || !g.bounds.contains(&p) {
+        // M11ah: the sticky line covers the marks of the row under it.
+        if x < px(0.0)
+            || x > px(MARK_COLUMN)
+            || !g.bounds.contains(&p)
+            || self.sticky_under(p).is_some()
+        {
             return None;
         }
         let y = f32::from(p.y - g.bounds.top() + g.scroll.y);
@@ -4645,6 +5085,7 @@ impl FileTab {
         }
         self.drop_find_without_text();
         self.find_again(cx);
+        self.refresh_place(cx);
         cx.notify();
     }
 
@@ -4676,6 +5117,7 @@ impl FileTab {
         if to != *scroll {
             *scroll = to;
             self.scrolled(cx);
+            self.refresh_place(cx);
             cx.notify();
         }
     }
@@ -4803,6 +5245,12 @@ impl FileTab {
             };
             self.scrollbar.start_drag(track.axis, grab);
             cx.notify();
+            return;
+        }
+        // M11ah: the sticky line scrolls back to its line (the top line, current); what it
+        // covers takes no press.
+        if let Some(line) = self.sticky_under(e.position) {
+            self.show_at_top(Some(line), cx);
             return;
         }
         // A change bar (or a deleted-lines ▸) in a file: its diff, at that change.
@@ -5211,7 +5659,8 @@ impl FileTab {
         cx.notify();
     }
 
-    /// Scroll the current match into sight: its line to the middle when off screen, and
+    /// Scroll the current match into sight: off screen (M11ah: or under the sticky line), its
+    /// row `REVEAL_ABOVE` rows from the top, one more under a sticky line (`reveal_top`); and
     /// sideways when it's out of the text's width (M11ah: a fold holding it opens).
     fn reveal_current(&mut self, cx: &mut Context<Self>) {
         let Some(hit) = self
@@ -5241,12 +5690,18 @@ impl FileTab {
         let columns = map.columns();
         let row = first + columns.map_or(0, |c| doc.cell_of(hit.line, hit.cols.start) / c);
         let (top, bottom) = (px(map.top(row)), px(map.top(row + 1)));
-        if top < to.y || bottom > to.y + h {
-            to.y = top - (h - (bottom - top)) / 2.0;
+        let covered = if self.place.sticky.is_some() {
+            g.line_height
+        } else {
+            px(0.0)
+        };
+        if top < to.y + covered || bottom > to.y + h {
+            to.y = px(map.top(reveal_top(row, |r| self.sticky_at_row(&map, r))));
         }
         // Wrapped (M11x part 2): no sideways scroll.
         if columns.is_some() {
             self.set_scroll(to, cx);
+            self.refresh_place(cx);
             return;
         }
         let x = |col: usize| g.cell_width * doc.cell_of(hit.line, col) as f32;
@@ -5256,6 +5711,8 @@ impl FileTab {
             to.x = (x0 + x1) / 2.0 - room / 2.0;
         }
         self.set_scroll(to, cx);
+        // M11ah: a fold opened with no scroll needed: the place still moves.
+        self.refresh_place(cx);
     }
 
     /// Open the file in the default text editor, or show a refused one in the Finder
@@ -5796,6 +6253,95 @@ impl FileTab {
         )
     }
 
+    /// M11ah: the breadcrumb, a strip `code::BREADCRUMB` tall between the bar (and the find bar)
+    /// and the text, whenever the file has blocks (File mode, not Preview: `folds_apply`), so the
+    /// text never moves when its parts fill in: the file's name, then each block the top line is
+    /// in, outer to inner, in `code::BREADCRUMB_TEXT` UI text, `text_dim`, the last part in
+    /// `text`. Too narrow, the outer parts fold into "…" first (`fit_crumbs`, measured in the
+    /// prepaint, a layout cache keyed by its inputs). A press on a part puts its line at the top.
+    fn breadcrumb(&self, ui: UiColors, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.folds_apply() {
+            // Not drawn: no part to press.
+            self.crumbs_at.borrow_mut().clear();
+            return None;
+        }
+        let crumbs = self.place.crumbs.clone();
+        let (at, fit) = (self.crumbs_at.clone(), self.crumbs_fit.clone());
+        Some(
+            div()
+                .flex_none()
+                .w_full()
+                .h(px(code::BREADCRUMB))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, e: &MouseDownEvent, _, cx| this.crumb_press(e.position, cx)),
+                )
+                .child(
+                    canvas(
+                        move |bounds, window, _| {
+                            let key = CrumbFitKey {
+                                crumbs,
+                                room: f32::from(bounds.size.width) - 2.0 * GUTTER_LEFT,
+                                font: window.text_style().font(),
+                                font_size: px(code::BREADCRUMB_TEXT),
+                                inks: (ui.text_dim, ui.text),
+                            };
+                            let laid = match fit.borrow().as_ref() {
+                                Some((k, laid)) if *k == key => Some(laid.clone()),
+                                _ => None,
+                            };
+                            let laid = laid.unwrap_or_else(|| {
+                                let laid = lay_out_crumbs(&key, window);
+                                *fit.borrow_mut() = Some((key, laid.clone()));
+                                laid
+                            });
+                            let left = bounds.left() + px(GUTTER_LEFT);
+                            let mut hits = Vec::new();
+                            let mut boxes = Vec::new();
+                            for (x, shaped, piece) in &laid {
+                                let b = Bounds::new(
+                                    point(left + *x, bounds.top()),
+                                    size(shaped.width, bounds.size.height),
+                                );
+                                match piece {
+                                    CrumbPiece::Part(crumb) => {
+                                        let hit = HitboxBehavior::Normal;
+                                        boxes.push(window.insert_hitbox(b, hit));
+                                        hits.push((b, Some(crumb.clone())));
+                                    }
+                                    CrumbPiece::Folded => hits.push((b, None)),
+                                    CrumbPiece::Separator => {}
+                                }
+                            }
+                            *at.borrow_mut() = hits;
+                            (laid, boxes)
+                        },
+                        move |bounds, (laid, boxes), window, cx| {
+                            for b in &boxes {
+                                window.set_cursor_style(CursorStyle::PointingHand, b);
+                            }
+                            let left = bounds.left() + px(GUTTER_LEFT);
+                            let mask = ContentMask {
+                                bounds: Bounds::from_corners(
+                                    point(left, bounds.top()),
+                                    point(bounds.right() - px(GUTTER_LEFT), bounds.bottom()),
+                                ),
+                            };
+                            window.with_content_mask(Some(mask), |window| {
+                                for (x, shaped, _) in &laid {
+                                    let at = point(left + *x, bounds.top());
+                                    let h = bounds.size.height;
+                                    let _ = shaped.paint(at, h, TextAlign::Left, None, window, cx);
+                                }
+                            });
+                        },
+                    )
+                    .size_full(),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// The note the body shows instead of text (`note_of`).
     fn body_note(&self) -> Option<&'static str> {
         note_of(&self.state, self.mode, &self.diff.state)
@@ -5919,6 +6465,10 @@ impl FileTab {
             },
             folds_gen: self.folds_gen,
             gutter_hover: self.gutter_hover,
+            sticky: match self.place.sticky {
+                Some(Sticky::Line(line)) if self.mode == FileMode::Plain => Some(line),
+                _ => None,
+            },
         });
         let geom = self.geom.clone();
         let row_map = self.rows.clone();
@@ -6037,11 +6587,22 @@ impl FileTab {
                                 keep.update(cx, |this, _| *this.mode_scroll_mut(mode) = kept);
                             }
                             let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-                            (m, g, hitbox, map)
+                            // M11ah: the sticky line, over the text's first row: a press there
+                            // scrolls back to its line.
+                            let sticky = laid.sticky.map(|_| {
+                                let row =
+                                    Bounds::new(bounds.origin, size(bounds.size.width, row_h));
+                                window.insert_hitbox(row, HitboxBehavior::Normal)
+                            });
+                            (m, g, hitbox, map, sticky)
                         },
-                        move |_, (m, g, hitbox, map), window, cx| {
+                        move |_, (m, g, hitbox, map, sticky), window, cx| {
                             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
                             paint_body(&frame, &g, &m, &map, window, cx);
+                            if let (Some(line), Some(row)) = (frame.sticky, &sticky) {
+                                window.set_cursor_style(CursorStyle::PointingHand, row);
+                                paint_sticky(&frame, &g, &m, &map, line, window, cx);
+                            }
                             // M11ae: the scrollbar's thumbs over the text (the fade read from
                             // the clock; its task redraws).
                             let now = Instant::now();
@@ -6381,6 +6942,37 @@ impl FileTab {
         }
     }
 
+    /// M11ah: the line pinned as the sticky line (none: nothing pinned), the breadcrumb's
+    /// parts' words, and the pieces it drew: each part's (or the "…"'s) bounds and words.
+    pub fn sticky_line(&self) -> Option<usize> {
+        match self.place.sticky {
+            Some(Sticky::Line(line)) => Some(line),
+            _ => None,
+        }
+    }
+
+    /// M11ah: the current line set (as a press there would).
+    pub fn set_current_for_shots(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
+        self.set_current(line, cx);
+    }
+
+    pub fn crumb_words(&self) -> Vec<String> {
+        self.place.crumbs.iter().map(|c| c.words.clone()).collect()
+    }
+
+    pub fn crumbs_drawn(&self) -> Vec<(Bounds<Pixels>, String)> {
+        self.crumbs_at
+            .borrow()
+            .iter()
+            .map(|(b, c)| {
+                (
+                    *b,
+                    c.as_ref().map_or(ELLIPSIS.to_string(), |c| c.words.clone()),
+                )
+            })
+            .collect()
+    }
+
     /// M11ah: fold the blocks starting on `lines` (as a press on their ▾ would).
     pub fn fold_for_shots(&mut self, lines: &[usize], cx: &mut Context<Self>) {
         let mut folded = self.folded.clone();
@@ -6451,6 +7043,7 @@ impl Render for FileTab {
         self.reveal_diff(window, cx);
         let toolbar = self.toolbar(&theme, ui, cx);
         let find_bar = self.find_bar(ui, cx);
+        let crumbs = self.breadcrumb(ui, cx);
         let body = match self.body_note() {
             Some(words) if words == MISSING || words == REFUSED => self.notice(ui, cx),
             Some(words) => Self::diff_note(words, ui),
@@ -6482,6 +7075,7 @@ impl Render for FileTab {
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
             .child(toolbar)
             .children(find_bar)
+            .children(crumbs)
             .child(body)
     }
 }
@@ -8273,24 +8867,26 @@ mod tests {
     // M11af part 4: Follow.
     #[test]
     fn follow_scroll_is_none_when_in_view() {
-        assert_eq!(follow_scroll(10..40, 10, 3), None);
-        assert_eq!(follow_scroll(10..40, 39, 3), None);
+        assert_eq!(follow_scroll(10..40, 10, |_| false), None);
+        assert_eq!(follow_scroll(10..40, 39, |_| false), None);
     }
 
     #[test]
     fn follow_scroll_puts_line_at_top_rows() {
-        assert_eq!(follow_scroll(10..40, 400, 3), Some(397));
+        assert_eq!(follow_scroll(10..40, 400, |_| false), Some(397));
         assert_eq!(
-            follow_scroll(10..40, 40, 3),
+            follow_scroll(10..40, 40, |_| false),
             Some(37),
             "just below the view"
         );
         assert_eq!(
-            follow_scroll(10..40, 2, 3),
+            follow_scroll(10..40, 2, |_| false),
             Some(0),
             "never above the first row"
         );
-        assert_eq!(follow_scroll(10..40, 5, 3), Some(2));
+        assert_eq!(follow_scroll(10..40, 5, |_| false), Some(2));
+        // M11ah: under a sticky line, one row more.
+        assert_eq!(follow_scroll(10..40, 400, |_| true), Some(396));
     }
 
     #[test]
@@ -8493,5 +9089,135 @@ mod tests {
             Some((7, LineChange::DeletedAfter))
         );
         assert_eq!(bar_at_rows(15.0, &map, &edge), None);
+    }
+
+    /// M11ah: a file with `impl Session` holding `fn refresh` (the outline is by indentation, so
+    /// any words do) and `fn small` after it.
+    const PLACE_FIXTURE: &str = "impl Session {
+    fn refresh {
+        let a = 1;
+        if a > 0 {
+            a;
+        }
+    }
+}
+
+fn small {
+    let b = 2;
+}
+";
+
+    fn place_outline(named: &[usize]) -> (Vec<&'static str>, Outline) {
+        let lines: Vec<&str> = PLACE_FIXTURE.lines().collect();
+        let mut outline =
+            code_outline::outline(&lines, false, code_outline::LIMIT).expect("an outline");
+        outline.name(named);
+        (lines, outline)
+    }
+
+    fn words(crumbs: &[Crumb]) -> String {
+        crumbs
+            .iter()
+            .map(|c| c.words.as_str())
+            .collect::<Vec<_>>()
+            .join(" \u{203a} ")
+    }
+
+    #[test]
+    fn crumbs_go_outer_to_inner_from_the_file() {
+        let (lines, outline) = place_outline(&[0, 1, 9]);
+        // A top line inside `fn refresh` (its `let`; inside the `if`, the unnamed `if` is not
+        // a part).
+        for top in [2, 4] {
+            let c = crumbs("session.rs", &outline, |i| lines[i], top, false);
+            assert_eq!(
+                words(&c),
+                "session.rs \u{203a} impl Session \u{203a} fn refresh"
+            );
+            assert_eq!(
+                c.iter().map(|c| c.line).collect::<Vec<_>>(),
+                [None, Some(0), Some(1)],
+                "the file's name goes to the top; each part to its first line"
+            );
+        }
+        // Outside every block: the file's name alone.
+        let c = crumbs("session.rs", &outline, |i| lines[i], 8, false);
+        assert_eq!(words(&c), "session.rs");
+        // No names yet (the colours not in): every block holding it.
+        let (lines, outline) = place_outline(&[]);
+        let c = crumbs("session.rs", &outline, |i| lines[i], 4, false);
+        assert_eq!(
+            words(&c),
+            "session.rs \u{203a} impl Session \u{203a} fn refresh \u{203a} if a > 0"
+        );
+    }
+
+    #[test]
+    fn crumbs_follow_the_top_not_the_current_line() {
+        // The breadcrumb is worked out from the line at the top (the place has no current
+        // line among its inputs): two tops, two paths, whatever line is current.
+        let (lines, outline) = place_outline(&[0, 1, 9]);
+        let at = |top: usize| place_of("session.rs", &outline, |i| lines[i], (top, top), false);
+        assert_eq!(
+            words(&at(2).crumbs),
+            "session.rs \u{203a} impl Session \u{203a} fn refresh"
+        );
+        assert_eq!(words(&at(10).crumbs), "session.rs \u{203a} fn small");
+        // `top` and `under` differ (the sticky line's row): the breadcrumb takes `top`.
+        let place = place_of("session.rs", &outline, |i| lines[i], (8, 10), false);
+        assert_eq!(words(&place.crumbs), "session.rs");
+        assert_eq!(place.sticky, Some(Sticky::Line(9)));
+    }
+
+    #[test]
+    fn fit_crumbs_folds_outer_parts_first() {
+        // Three parts, 60, 90 and 80 wide; " › " 20, "…" 15.
+        let widths = [60.0, 90.0, 80.0];
+        let fit = |room: f32| fit_crumbs(&widths, room, 15.0, 20.0);
+        // All: 230 + 2 × 20 = 270.
+        assert_eq!(fit(300.0), [Some(0), Some(1), Some(2)]);
+        assert_eq!(fit(270.0), [Some(0), Some(1), Some(2)]);
+        // The file's name into "…": 15 + 90 + 80 + 40 = 225.
+        assert_eq!(fit(260.0), [None, Some(1), Some(2)]);
+        // Narrow: "… › fn refresh", 15 + 20 + 80 = 115.
+        assert_eq!(fit(120.0), [None, Some(2)]);
+        // Very narrow: the last part still (cut where it is drawn).
+        assert_eq!(fit(50.0), [Some(2)]);
+        assert_eq!(fit(0.0), [Some(2)]);
+        // One part, or none.
+        assert_eq!(fit_crumbs(&[500.0], 10.0, 15.0, 20.0), [Some(0)]);
+        assert!(fit_crumbs(&[], 10.0, 15.0, 20.0).is_empty());
+    }
+
+    #[test]
+    fn reveal_top_leaves_room_for_the_sticky_line() {
+        assert_eq!(reveal_top(40, |_| true), 36);
+        assert_eq!(reveal_top(40, |_| false), 37);
+        // Asked with the row it would put at the top.
+        assert_eq!(reveal_top(40, |r| r == 37), 36);
+        assert_eq!(reveal_top(40, |r| r != 37), 37);
+        // Near the top: from the first row.
+        assert_eq!(reveal_top(2, |_| true), 0);
+        assert_eq!(reveal_top(3, |_| true), 0);
+        assert_eq!(reveal_top(0, |_| false), 0);
+    }
+
+    #[test]
+    fn the_sticky_line_is_none_at_its_own_first_line() {
+        let (lines, outline) = place_outline(&[0, 1, 9]);
+        let sticky = |under: usize| {
+            place_of("session.rs", &outline, |i| lines[i], (under, under), false).sticky
+        };
+        // At `impl Session`'s own first line: nothing above to pin.
+        assert_eq!(sticky(0), None);
+        // At `fn refresh`'s first line: not itself, the block above holding it (impl).
+        assert_eq!(sticky(1), Some(Sticky::Line(0)));
+        // Inside `fn refresh` (the `if` is not named): fn refresh.
+        assert_eq!(sticky(2), Some(Sticky::Line(1)));
+        assert_eq!(sticky(4), Some(Sticky::Line(1)));
+        // Between blocks, and at `fn small`'s first line: none.
+        assert_eq!(sticky(8), None);
+        assert_eq!(sticky(9), None);
+        assert_eq!(sticky(10), Some(Sticky::Line(9)));
     }
 }
