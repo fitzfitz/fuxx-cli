@@ -35,6 +35,7 @@ pub struct Catalogs {
     usage: HashMap<String, (Lookup<Vec<UsageGroup>>, Instant)>,
     limits: HashMap<String, Vec<RateLimit>>,
     versions: HashMap<String, Lookup<Option<String>>>,
+    known_folders: HashMap<String, Lookup<Vec<PathBuf>>>,
 }
 
 impl Global for Catalogs {}
@@ -133,6 +134,15 @@ impl Catalogs {
 
     pub fn set_version(&mut self, agent: &str, found: Lookup<Option<String>>) {
         self.versions.insert(agent.to_string(), found);
+    }
+
+    /// The folders the agent itself knows (its own project list), once read.
+    pub fn known_folders(&self, agent: &str) -> Option<&Lookup<Vec<PathBuf>>> {
+        self.known_folders.get(agent)
+    }
+
+    pub fn set_known_folders(&mut self, agent: &str, found: Lookup<Vec<PathBuf>>) {
+        self.known_folders.insert(agent.to_string(), found);
     }
 }
 
@@ -299,8 +309,8 @@ pub fn load_usage(provider: &'static dyn Provider, folder: PathBuf, cx: &mut App
     .detach();
 }
 
-/// Read the agent's version (`<program> --version`) in the background, once.
-#[allow(dead_code)] // read by the agent box's menus (a later M11ak task)
+/// Read the agent's version (its `version_probe`) in the background, once per app run; an
+/// agent without one is known to have none.
 pub fn load_version(provider: &'static dyn Provider, cx: &mut App) {
     let agent = provider.info().name;
     let started = with_catalogs(cx, |c| {
@@ -313,15 +323,14 @@ pub fn load_version(provider: &'static dyn Provider, cx: &mut App) {
     if !started {
         return;
     }
+    let Some(probe) = provider.version_probe() else {
+        with_catalogs(cx, |c| c.set_version(agent, Lookup::Ready(None)));
+        return;
+    };
     cx.spawn(async move |cx| {
         let found = cx
             .background_executor()
             .spawn(async move {
-                let probe = Probe {
-                    argv: vec![provider.program().to_string(), "--version".into()],
-                    stdin: Vec::new(),
-                    until: None,
-                };
                 let home = crate::workspace::home_dir().unwrap_or_else(|| PathBuf::from("/"));
                 run_probe(&probe, &home, login_path().as_deref(), PROBE_DEADLINE)
             })
@@ -336,6 +345,34 @@ pub fn load_version(provider: &'static dyn Provider, cx: &mut App) {
             Err(why) => Lookup::Failed(why),
         };
         cx.update(|cx| with_catalogs(cx, |c| c.set_version(agent, found)));
+    })
+    .detach();
+}
+
+/// Read the folders `provider` itself knows (`Provider::known_folders`, under your home) in the
+/// background, once per app run.
+pub fn load_known_folders(provider: &'static dyn Provider, cx: &mut App) {
+    let agent = provider.info().name;
+    let started = with_catalogs(cx, |c| {
+        let fresh = c.known_folders(agent).is_none();
+        if fresh {
+            c.set_known_folders(agent, Lookup::Loading);
+        }
+        fresh
+    });
+    if !started {
+        return;
+    }
+    cx.spawn(async move |cx| {
+        let found = cx
+            .background_executor()
+            .spawn(async move {
+                crate::workspace::home_dir()
+                    .map(|home| provider.known_folders(&home))
+                    .unwrap_or_default()
+            })
+            .await;
+        cx.update(|cx| with_catalogs(cx, |c| c.set_known_folders(agent, Lookup::Ready(found))));
     })
     .detach();
 }

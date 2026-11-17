@@ -241,6 +241,12 @@ impl Provider for Agy {
         Applies::Restart
     }
 
+    /// `--conversation <id>` from another folder carries the conversation on (Task 0,
+    /// `agy-move.jsonl`), whatever its version.
+    fn can_move(&self, _version: Option<&str>) -> bool {
+        true
+    }
+
     fn classic_argv(&self, conversation: &str) -> Vec<String> {
         ["agy", "--conversation", conversation]
             .map(String::from)
@@ -1209,5 +1215,14 @@ mod tests {
         ] {
             assert_eq!(AGY.applies(kind), Applies::Restart, "{kind:?}");
         }
+    }
+
+    /// Task 0: agy moves a conversation (same `--conversation` from the new folder); its
+    /// version isn't read, and it knows no folders of its own.
+    #[test]
+    fn agy_moves_a_conversation_and_knows_no_folders() {
+        assert!(AGY.can_move(None));
+        assert!(AGY.version_probe().is_none());
+        assert!(AGY.known_folders(Path::new("/nonexistent")).is_empty());
     }
 }

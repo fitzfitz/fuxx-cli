@@ -102,6 +102,12 @@ pub enum AgentTabEvent {
         effort: Option<String>,
         mode: Option<String>,
     },
+    /// The folder it now runs in (the box's folder chip: chosen before the first message, or
+    /// the conversation moved): saved as the tab's folder.
+    Folder(PathBuf),
+    /// "New conversation" in that folder (the folder chip, after the first message): a new
+    /// agent tab of the same agent there, beside this one in its pane.
+    NewConversationIn(PathBuf),
     /// The error tab's Close.
     Close,
     /// "Open in classic view": the command line that resumes it in a terminal.
@@ -485,6 +491,14 @@ struct Asked {
     mode: Option<String>,
 }
 
+/// What the agent starts with, as saved with the tab: its flags and its folder.
+struct Settings {
+    model: Option<String>,
+    effort: Option<String>,
+    mode: Option<String>,
+    cwd: PathBuf,
+}
+
 pub struct AgentTab {
     pub(crate) provider: Option<&'static dyn Provider>,
     provider_name: String,
@@ -518,8 +532,8 @@ pub struct AgentTab {
     /// conversation again (under a new id: an agent may refuse an id used before) instead of
     /// resuming one that may never have been made.
     unconfirmed: Option<String>,
-    /// Scenes: no process is ever started.
-    no_process: bool,
+    /// Scenes: no process is ever started (nor a probe, nor a file read for the picker).
+    pub(crate) no_process: bool,
     /// This tab's own process is to answer the catalog (`Event::Catalog`): the cache says
     /// "loading" until it does, and failed if the process ends first.
     catalog_pending: bool,
@@ -538,6 +552,8 @@ pub struct AgentTab {
     pub(crate) attachments: Vec<String>,
     /// The box's open menu (one at a time; Esc closes it).
     pub(crate) menu: Option<BoxMenu>,
+    /// The folder picker's search and rows, while it is open.
+    pub(crate) picker: Option<crate::agent_box::FolderPicker>,
     files: Option<Files>,
     listing: bool,
     at: Option<AtList>,
@@ -566,6 +582,9 @@ pub struct AgentTab {
     /// Where each part of the box was laid out (`shot_part`).
     #[cfg(feature = "ui-shots")]
     pub(crate) parts: crate::agent_box::Parts,
+    /// Where each row of the open menu was laid out, by its words (`shot_menu_row`).
+    #[cfg(feature = "ui-shots")]
+    pub(crate) menu_rows: crate::agent_box::MenuRows,
 }
 
 impl EventEmitter<AgentTabEvent> for AgentTab {}
@@ -853,8 +872,15 @@ impl AgentTab {
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::on_composer),
             cx.observe(&composer, |this, _, cx| this.composer_changed(cx)),
-            // The box's menus draw from the cache: a probe finishing redraws the tab.
-            cx.observe_global::<crate::agent_catalog::Catalogs>(|_, cx| cx.notify()),
+            // The box's menus draw from the cache: a probe finishing redraws the tab (and the
+            // folder picker's lists are made again).
+            cx.observe_global::<crate::agent_catalog::Catalogs>(|this, cx| {
+                this.refresh_picker(cx);
+                cx.notify()
+            }),
+            cx.observe_global::<crate::folder_picker::KnownFolders>(|this, cx| {
+                this.refresh_picker(cx)
+            }),
             // Closed before its process answered the catalog: the menu mustn't load forever.
             cx.on_release(|this, cx| {
                 if let (true, Some(provider)) = (this.catalog_pending, this.provider) {
@@ -898,6 +924,7 @@ impl AgentTab {
             force: false,
             attachments: Vec::new(),
             menu: None,
+            picker: None,
             files: None,
             listing: false,
             at: None,
@@ -919,6 +946,8 @@ impl AgentTab {
             removes: Rc::default(),
             #[cfg(feature = "ui-shots")]
             parts: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            menu_rows: Rc::default(),
         }
     }
 
@@ -1838,7 +1867,9 @@ impl AgentTab {
                 self.submit(text.clone(), composer, cx);
             }
             ComposerEvent::Stop => {
-                if self.menu.take().is_some() || self.at.take().is_some() {
+                if self.menu.is_some() {
+                    self.close_menu(cx);
+                } else if self.at.take().is_some() {
                     cx.notify();
                 } else {
                     self.stop(cx);
@@ -1878,15 +1909,20 @@ impl AgentTab {
     }
 
     /// Open `menu` over its chip, in place of any other (Esc closes it).
-    #[allow(dead_code)] // opened by the chips' menus (Tasks 6–11); scenes open it now
     pub fn open_menu(&mut self, menu: BoxMenu, cx: &mut Context<Self>) {
         self.at = None;
+        self.picker = None;
         self.menu = Some(menu);
+        #[cfg(feature = "ui-shots")]
+        self.menu_rows.borrow_mut().clear();
         cx.notify();
     }
 
     /// Close the box's menu (a click outside it).
     pub(crate) fn close_menu(&mut self, cx: &mut Context<Self>) {
+        self.picker = None;
+        #[cfg(feature = "ui-shots")]
+        self.menu_rows.borrow_mut().clear();
         if self.menu.take().is_some() {
             cx.notify();
         }
@@ -2133,9 +2169,12 @@ impl AgentTab {
                 }
             }
         }
-        self.tell_settings(before, cx);
+        let moved = self.tell_settings(before, cx);
         if !restart.is_empty() {
             self.restart_with(provider, &restart, cx);
+        }
+        if moved {
+            self.read_folder_catalog(cx);
         }
         cx.notify();
     }
@@ -2278,30 +2317,64 @@ impl AgentTab {
                 self.conversation.apply(Event::Notice(text));
             }
         }
-        self.tell_settings(before, cx);
+        if self.tell_settings(before, cx) {
+            self.read_folder_catalog(cx);
+        }
     }
 
-    fn settings(&self) -> (Option<String>, Option<String>, Option<String>) {
-        (
-            self.start.model.clone(),
-            self.start.effort.clone(),
-            self.start.mode.clone(),
-        )
+    fn settings(&self) -> Settings {
+        Settings {
+            model: self.start.model.clone(),
+            effort: self.start.effort.clone(),
+            mode: self.start.mode.clone(),
+            cwd: self.start.cwd.clone(),
+        }
     }
 
-    /// Tell the Workspace the start flags, if they changed since `before` (saved with the tab).
-    fn tell_settings(
-        &mut self,
-        before: (Option<String>, Option<String>, Option<String>),
-        cx: &mut Context<Self>,
-    ) {
-        let (model, effort, mode) = self.settings();
-        if (&model, &effort, &mode) != (&before.0, &before.1, &before.2) {
+    /// Tell the Workspace what the agent starts with now, if it changed since `before` (saved
+    /// with the tab): its flags, and its folder. True when the folder changed: the caller reads
+    /// the new folder's lists once its restart (if any) is under way (`read_folder_catalog`).
+    fn tell_settings(&mut self, before: Settings, cx: &mut Context<Self>) -> bool {
+        let now = self.settings();
+        if (&now.model, &now.effort, &now.mode) != (&before.model, &before.effort, &before.mode) {
             cx.emit(AgentTabEvent::Settings {
-                model,
-                effort,
-                mode,
+                model: now.model,
+                effort: now.effort,
+                mode: now.mode,
             });
+        }
+        if now.cwd == before.cwd {
+            return false;
+        }
+        // The old folder's list, still waited for from this tab's process, never comes now.
+        if std::mem::take(&mut self.catalog_pending)
+            && let Some(provider) = self.provider
+        {
+            crate::agent_catalog::fail_catalog_if_loading(
+                provider.info().name,
+                &before.cwd,
+                "its tab moved to another folder",
+                cx,
+            );
+        }
+        cx.emit(AgentTabEvent::Folder(now.cwd));
+        true
+    }
+
+    /// The menus' lists for the folder the agent is in now (R4): a restart already asked its
+    /// own process (the entry says loading); else a probe reads them. A scene tab never probes:
+    /// its entry only says the list is being read.
+    fn read_folder_catalog(&mut self, cx: &mut Context<Self>) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        let cwd = self.start.cwd.clone();
+        if self.no_process {
+            cx.update_default_global(|c: &mut crate::agent_catalog::Catalogs, _| {
+                c.begin_catalog(provider.info().name, &cwd);
+            });
+        } else {
+            crate::agent_catalog::load_catalog(provider, cwd, cx);
         }
     }
 

@@ -1,21 +1,28 @@
 //! The agent box (M11ak): the chips under an agent tab's conversation that choose its model,
 //! effort, mode and folder. This file holds the pure part: what a choice is (`Change`), when it
 //! reaches the agent (`step_for`), the line a restart leaves (`switched_notice`) and what the
-//! chips say (`chip_model_label`, `model_chip_text`, `mode_chip_text`, `usage_line`). The tab
-//! (`agent_tab.rs`) carries it out.
+//! chips say (`chip_model_label`, `model_chip_text`, `mode_chip_text`, `usage_line`); and the
+//! box's drawing and its menus (the folder picker: Task 6). The tab (`agent_tab.rs`) carries a
+//! choice out.
 
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    Anchor, AnyElement, App, Context, Div, Focusable, MouseButton, MouseDownEvent, SharedString,
-    Stateful, Window, anchored, deferred, div, point, prelude::*, px,
+    Anchor, AnyElement, App, Context, Div, Entity, Focusable, MouseButton, MouseDownEvent,
+    SharedString, Stateful, Subscription, Window, anchored, deferred, div, point, prelude::*, px,
 };
 
 use crate::agent_catalog::{Catalogs, Lookup};
-use crate::agent_tab::{AgentTab, Colors, button, chip};
+use crate::agent_tab::{AgentTab, AgentTabEvent, Colors, button, chip};
 use crate::appearance::Appearance;
-use crate::providers::{Applies, Catalog, ModeChoice, Provider, Start};
+use crate::folder_picker::{
+    KnownFolders, NEW_PROJECT, NO_PROJECT, PickerRow, THIS_COMPUTER, computer_folders, folder_row,
+    picker_rows,
+};
+use crate::name_input::{NameInput, NameInputEvent};
+use crate::providers::{Applies, Catalog, ChangeKind, ModeChoice, Provider, Start};
 use crate::terminal_view::hsla;
+use crate::theme::UiColors;
 use crate::ui_tokens::text;
 use alacritty_terminal::vte::ansi::Rgb;
 
@@ -43,6 +50,17 @@ const MENU_WIDTH: f32 = 240.0;
 const MENU_GAP: f32 = 4.0;
 /// How far from the window's edges a menu keeps.
 const MENU_EDGE: f32 = 8.0;
+/// A menu row's height and corners; the most a menu's list grows before it scrolls.
+const ROW_H: f32 = 26.0;
+const ROW_RADIUS: f32 = 6.0;
+const MENU_LIST_MAX: f32 = 320.0;
+/// The id of This Computer's rows, beside the picker.
+const COMPUTER_ROWS: &str = "box-computer";
+
+/// The folder picker's words (§2), and the choice it asks after the first message.
+const SEARCH: &str = "Search";
+pub const MOVE_HERE: &str = "Move this conversation";
+pub const NEW_CONVERSATION: &str = "New conversation";
 
 /// The send button's glyph.
 const SEND: &str = "\u{27a4}";
@@ -53,6 +71,21 @@ pub type Parts = std::rc::Rc<
     std::cell::RefCell<std::collections::HashMap<&'static str, gpui::Bounds<gpui::Pixels>>>,
 >;
 
+/// Where each row of the open menu was laid out, by its words (scenes click them).
+#[cfg(feature = "ui-shots")]
+pub type MenuRows =
+    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, gpui::Bounds<gpui::Pixels>>>>;
+
+/// The folder picker while it is open: its search box, the rows for what is typed in it, and
+/// This Computer's folders beside it while that is open (with whether the agent's own list is
+/// still being read).
+pub(crate) struct FolderPicker {
+    search: Entity<NameInput>,
+    rows: Vec<PickerRow>,
+    computer: Option<(Vec<PickerRow>, bool)>,
+    _subscriptions: Vec<Subscription>,
+}
+
 /// The box's text while nothing is being asked (§1).
 pub const PLACEHOLDER: &str = "Ask anything, @ to mention, / for actions";
 
@@ -60,7 +93,7 @@ pub const PLACEHOLDER: &str = "Ask anything, @ to mention, / for actions";
 /// conversation or a new one), the model menu (with one model's efforts, or View Usage, open
 /// beside it), the mode menu, and `+`'s attach menu. One is open at a time.
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)] // each opened by its chip's task (6–11)
+#[allow(dead_code)] // each opened by its chip's task (7–11)
 pub enum BoxMenu {
     Folder,
     Model {
@@ -186,12 +219,12 @@ pub fn mode_chip_text(
     Some(format!("\u{1f6e1} {label} \u{25be}"))
 }
 
-/// The folder chip: `📁 <the folder's name>` (shown as text until the picker, Task 6).
+/// The folder chip: `📁 <the folder's name> ▾` (it opens the picker).
 pub fn folder_chip_text(folder: &Path) -> String {
     let name = folder
         .file_name()
         .map_or_else(|| folder.to_string_lossy(), |n| n.to_string_lossy());
-    format!("\u{1f4c1} {name}")
+    format!("\u{1f4c1} {name} \u{25be}")
 }
 
 /// What the pane's top line says after the status: `$0.21 · context 18%`, either part alone,
@@ -216,7 +249,6 @@ pub enum Change {
         effort: Option<String>,
     },
     Mode(String),
-    #[allow(dead_code)] // chosen by the folder chip (a later M11ak task)
     Folder(PathBuf),
 }
 
@@ -363,6 +395,7 @@ impl AgentTab {
         let edge = self.box_edge(c, window, cx);
         let menu = self.menu.clone();
         let menu_on = |chip: fn(&BoxMenu) -> bool| menu.as_ref().is_some_and(chip);
+        let folder_hover = c.box_hover;
         let folder = self
             .marked(
                 "folder",
@@ -373,13 +406,22 @@ impl AgentTab {
                     .px(px(CHIP_X))
                     .flex()
                     .items_center()
+                    .rounded(px(CHIP_RADIUS))
                     .text_size(px(text::META))
                     .text_color(hsla(c.dim))
                     .child(SharedString::from(texts.folder.clone())),
             )
+            .when(self.provider.is_some(), |d| {
+                d.cursor_pointer()
+                    .hover(move |s| s.bg(hsla(folder_hover)))
+                    .on_click(cx.listener(|this, _, window, cx| this.folder_clicked(window, cx)))
+            })
             .when(
                 menu_on(|m| matches!(m, BoxMenu::Folder | BoxMenu::Move(_))),
-                |d| d.child(self.menu_frame(cx)),
+                |d| {
+                    let (menu, side) = self.folder_menu(cx);
+                    d.child(self.menu_frame(Some(menu), side, cx))
+                },
             );
         let attach = self
             .marked(
@@ -396,12 +438,12 @@ impl AgentTab {
                     .child("+"),
             )
             .when(menu_on(|m| matches!(m, BoxMenu::Attach)), |d| {
-                d.child(self.menu_frame(cx))
+                d.child(self.menu_frame(None, None, cx))
             });
         let model = self
             .marked("model", box_chip("agent-model", texts.model.clone(), c))
             .when(menu_on(|m| matches!(m, BoxMenu::Model { .. })), |d| {
-                d.child(self.menu_frame(cx))
+                d.child(self.menu_frame(None, None, cx))
             });
         let mode = texts.mode.clone().map(|text| {
             // Before the first message it steps to the agent's next mode (the mode menu, a
@@ -415,7 +457,7 @@ impl AgentTab {
                         .on_click(cx.listener(|this, _, _, cx| this.next_mode(cx)))
                 })
                 .when(menu_on(|m| matches!(m, BoxMenu::Mode)), |d| {
-                    d.child(self.menu_frame(cx))
+                    d.child(self.menu_frame(None, None, cx))
                 })
         });
         let send = match self.stop_label() {
@@ -575,17 +617,23 @@ impl AgentTab {
         ))
     }
 
-    /// The open menu's panel, hung above its chip (a child of it) and opening upward, in the
-    /// tab menu's look. A click outside it closes it. What each menu lists comes with its own
-    /// task (the folder picker, the model, mode and attach menus).
-    fn menu_frame(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The open menu's panel (`content` in it), hung above its chip (a child of it) and opening
+    /// upward, in the tab menu's look; `side` (This Computer's folders) beside it. A click
+    /// outside them closes it. What the model, mode and attach menus list comes with their own
+    /// tasks.
+    fn menu_frame(
+        &self,
+        content: Option<AnyElement>,
+        side: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let ui = cx.global::<Appearance>().theme.ui();
         let panel = crate::overlay_panel::shell(&ui, MENU_WIDTH)
             .id("agent-box-menu")
             .p(px(4.))
             .gap(px(0.))
             .occlude()
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| this.close_menu(cx)));
+            .children(content);
         div()
             .absolute()
             .top_0()
@@ -595,10 +643,514 @@ impl AgentTab {
                     .anchor(Anchor::BottomLeft)
                     .offset(point(px(0.), px(-MENU_GAP)))
                     .snap_to_window_with_margin(px(MENU_EDGE))
-                    .child(self.marked("menu", div().child(panel))),
+                    .child(
+                        // A press outside both panels closes it (one in the panel beside the
+                        // menu is a pick, not "outside").
+                        div()
+                            .flex()
+                            .items_end()
+                            .gap(px(MENU_GAP))
+                            .on_mouse_down_out(
+                                cx.listener(|this, _: &MouseDownEvent, _, cx| this.close_menu(cx)),
+                            )
+                            .child(self.marked("menu", div().child(panel)))
+                            .children(side),
+                    ),
             ))
             .into_any_element()
     }
+
+    /// The folder chip's click: the picker opens over it, or (open) closes.
+    fn folder_clicked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.menu, Some(BoxMenu::Folder | BoxMenu::Move(_))) {
+            self.close_menu(cx);
+        } else {
+            self.open_folder_picker(window, cx);
+        }
+    }
+
+    /// Open the folder picker (§2), its search taking the keyboard. The first time in an app
+    /// run it reads the folders the agent knows and the agent's version (whether it can move a
+    /// conversation); a scene tab reads neither.
+    pub fn open_folder_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        if !self.no_process {
+            crate::agent_catalog::load_known_folders(provider, cx);
+            crate::agent_catalog::load_version(provider, cx);
+        }
+        let search = cx.new(|cx| NameInput::new(String::new(), window, cx));
+        let subscriptions = vec![
+            cx.observe(&search, |this, _, cx| this.refresh_picker(cx)),
+            cx.subscribe_in(&search, window, Self::on_search),
+        ];
+        search.read(cx).focus_handle(cx).focus(window, cx);
+        self.open_menu(BoxMenu::Folder, cx);
+        self.picker = Some(FolderPicker {
+            search,
+            rows: Vec::new(),
+            computer: None,
+            _subscriptions: subscriptions,
+        });
+        self.refresh_picker(cx);
+    }
+
+    /// The search box: Return picks the first folder listed; Esc (while it has the keyboard:
+    /// losing it to a click on a row is no cancel) closes the picker.
+    fn on_search(
+        &mut self,
+        search: &Entity<NameInput>,
+        event: &NameInputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            NameInputEvent::Confirm(_) => {
+                let first = self.picker.as_ref().and_then(|p| {
+                    p.rows
+                        .iter()
+                        .find(|r| matches!(r, PickerRow::Folder { .. }))
+                        .cloned()
+                });
+                if let Some(row) = first {
+                    self.pick_row(row, cx);
+                    self.keyboard_back(window, cx);
+                }
+            }
+            NameInputEvent::Cancel => {
+                if search.read(cx).focus_handle(cx).is_focused(window) {
+                    self.close_menu(cx);
+                    self.keyboard_back(window, cx);
+                }
+            }
+        }
+    }
+
+    /// The keyboard goes back to the box's text once the picker has closed.
+    fn keyboard_back(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.is_none() {
+            self.composer.read(cx).focus_handle(cx).focus(window, cx);
+        }
+    }
+
+    /// Whether `folder` is there to start in. A scene tab reads no disk: its made-up folders are.
+    fn folder_exists(&self, folder: &Path) -> bool {
+        self.no_process || folder.is_dir()
+    }
+
+    /// Make the open picker's rows again: for what is typed, from the folders fuxx knows
+    /// (`KnownFolders`) and the agent's own (once read); This Computer's too while it is open.
+    pub(crate) fn refresh_picker(&mut self, cx: &mut Context<Self>) {
+        let Some(picker) = &self.picker else {
+            return;
+        };
+        let query = picker.search.read(cx).text().to_string();
+        let open_beside = picker.computer.is_some();
+        let known = cx.try_global::<KnownFolders>().cloned().unwrap_or_default();
+        let agents = self.provider.and_then(|p| {
+            cx.try_global::<Catalogs>()?
+                .known_folders(p.info().name)
+                .cloned()
+        });
+        let loading = matches!(agents, Some(Lookup::Loading));
+        let agents = match agents {
+            Some(Lookup::Ready(list)) => list,
+            _ => Vec::new(),
+        };
+        let computer = computer_folders(&known.projects, &agents);
+        let home = crate::workspace::home_dir();
+        let cwd = &self.start.cwd;
+        let rows = picker_rows(
+            &query,
+            &known.recent,
+            &computer,
+            cwd,
+            home.as_deref(),
+            |f| self.folder_exists(f),
+        );
+        let beside = open_beside.then(|| {
+            let rows = computer
+                .iter()
+                .filter(|f| self.folder_exists(f))
+                .map(|f| folder_row(f, cwd, home.as_deref()))
+                .collect();
+            (rows, loading)
+        });
+        if let Some(picker) = self.picker.as_mut() {
+            picker.rows = rows;
+            picker.computer = beside;
+        }
+        // Rows no longer listed leave no probe behind.
+        #[cfg(feature = "ui-shots")]
+        self.menu_rows.borrow_mut().clear();
+        cx.notify();
+    }
+
+    /// A row of the picker chosen (its click; Return in the search for the first folder).
+    pub fn pick_row(&mut self, row: PickerRow, cx: &mut Context<Self>) {
+        match row {
+            PickerRow::Folder { path, .. } => self.choose_folder(path, cx),
+            PickerRow::ThisComputer => {
+                if let Some(picker) = self.picker.as_mut() {
+                    picker.computer = match picker.computer {
+                        Some(_) => None,
+                        None => Some((Vec::new(), false)),
+                    };
+                }
+                self.refresh_picker(cx);
+            }
+            PickerRow::NewProject => {
+                self.close_menu(cx);
+                // The folder panel, "New Folder" in it: the folder chosen or made is used.
+                let picked = cx.prompt_for_paths(crate::workspace::folder_panel());
+                cx.spawn(async move |this, cx| {
+                    let folder = match picked.await {
+                        Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                        Ok(Err(err)) => {
+                            eprintln!("[fuxx] agent box: folder panel failed: {err}");
+                            None
+                        }
+                        _ => None,
+                    };
+                    if let Some(folder) = folder {
+                        this.update(cx, |this, cx| this.choose_folder(folder, cx))
+                            .ok();
+                    }
+                })
+                .detach();
+            }
+            PickerRow::NoProject => match crate::workspace::home_dir() {
+                Some(home) => self.choose_folder(home, cx),
+                None => self.close_menu(cx),
+            },
+            PickerRow::Heading(_) => {}
+        }
+    }
+
+    /// `folder` chosen: the folder it is in already does nothing; before the first message the
+    /// agent starts there (`choose`); after it, the picker asks: Move this conversation, or a
+    /// New conversation there.
+    fn choose_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        if folder == self.start.cwd {
+            self.close_menu(cx);
+        } else if self.spoken() {
+            self.open_menu(BoxMenu::Move(folder), cx);
+        } else {
+            self.close_menu(cx);
+            self.choose(Change::Folder(folder), cx);
+        }
+    }
+
+    /// The answer to Move this conversation (`move_it`) or New conversation: the agent
+    /// restarts on this conversation in the folder (after the turn, if one runs), or a new
+    /// agent tab opens there.
+    pub fn move_choice(&mut self, move_it: bool, cx: &mut Context<Self>) {
+        let Some(BoxMenu::Move(folder)) = self.menu.clone() else {
+            return;
+        };
+        self.close_menu(cx);
+        if !move_it {
+            cx.emit(AgentTabEvent::NewConversationIn(folder));
+        } else if self.can_move(cx) {
+            self.choose(Change::Folder(folder), cx);
+        }
+    }
+
+    /// Whether the agent can carry this conversation to another folder: by a restart (never
+    /// live), and its provider says so for the version it read.
+    fn can_move(&self, cx: &App) -> bool {
+        let Some(provider) = self.provider else {
+            return false;
+        };
+        let version =
+            cx.try_global::<Catalogs>()
+                .and_then(|c| match c.version(provider.info().name) {
+                    Some(Lookup::Ready(version)) => version.clone(),
+                    _ => None,
+                });
+        provider.applies(ChangeKind::Folder) == Applies::Restart
+            && provider.can_move(version.as_deref())
+    }
+
+    /// The folder menu's panel content, and This Computer's list beside it while open: the
+    /// picker (search, rows), or after the first message the Move / New conversation choice.
+    fn folder_menu(&self, cx: &mut Context<Self>) -> (AnyElement, Option<AnyElement>) {
+        let ui = cx.global::<Appearance>().theme.ui();
+        if let Some(BoxMenu::Move(folder)) = &self.menu {
+            let home = crate::workspace::home_dir();
+            let mut rows = vec![heading(
+                crate::sidebar::home_relative(folder, home.as_deref()),
+                &ui,
+            )];
+            if self.can_move(cx) {
+                rows.push(self.menu_row(
+                    ("box-move", 0),
+                    MOVE_HERE.into(),
+                    false,
+                    false,
+                    &ui,
+                    cx,
+                    |this, window, cx| {
+                        this.move_choice(true, cx);
+                        this.keyboard_back(window, cx);
+                    },
+                ));
+            }
+            rows.push(self.menu_row(
+                ("box-move", 1),
+                NEW_CONVERSATION.into(),
+                false,
+                false,
+                &ui,
+                cx,
+                |this, window, cx| {
+                    this.move_choice(false, cx);
+                    this.keyboard_back(window, cx);
+                },
+            ));
+            return (
+                div().flex().flex_col().children(rows).into_any_element(),
+                None,
+            );
+        }
+        let Some(picker) = &self.picker else {
+            return (div().into_any_element(), None);
+        };
+        let empty = picker.search.read(cx).text().is_empty();
+        let field = crate::overlay_panel::filter_box(&ui, &picker.search, empty, SEARCH);
+        let rows: Vec<AnyElement> = picker
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| self.picker_row(("box-folder", i), row, &ui, cx))
+            .collect();
+        let list = div()
+            .id("box-folder-rows")
+            .flex()
+            .flex_col()
+            .max_h(px(MENU_LIST_MAX))
+            .overflow_y_scroll()
+            .children(rows);
+        let menu = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(field)
+            .child(list)
+            .into_any_element();
+        let side = picker.computer.as_ref().map(|(rows, loading)| {
+            let mut items: Vec<AnyElement> = rows
+                .iter()
+                .enumerate()
+                .map(|(i, row)| self.picker_row((COMPUTER_ROWS, i), row, &ui, cx))
+                .collect();
+            if *loading {
+                items.push(quiet("Loading\u{2026}", &ui));
+            } else if items.is_empty() {
+                items.push(quiet("No folders", &ui));
+            }
+            let panel = crate::overlay_panel::shell(&ui, MENU_WIDTH)
+                .p(px(4.))
+                .gap(px(0.))
+                .occlude()
+                .child(heading(THIS_COMPUTER.into(), &ui))
+                .child(
+                    div()
+                        .id("box-computer-rows")
+                        .flex()
+                        .flex_col()
+                        .max_h(px(MENU_LIST_MAX))
+                        .overflow_y_scroll()
+                        .children(items),
+                );
+            self.marked("computer", div().child(panel))
+                .into_any_element()
+        });
+        (menu, side)
+    }
+
+    /// One of the picker's rows, drawn; its click picks it.
+    fn picker_row(
+        &self,
+        id: (&'static str, usize),
+        row: &PickerRow,
+        ui: &UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (label, check, more) = match row {
+            PickerRow::Heading(h) => return heading((*h).into(), ui),
+            PickerRow::Folder { shown, current, .. } => (shown.clone(), *current, false),
+            PickerRow::ThisComputer => (THIS_COMPUTER.to_string(), false, true),
+            PickerRow::NewProject => (NEW_PROJECT.to_string(), false, false),
+            PickerRow::NoProject => (NO_PROJECT.to_string(), false, false),
+        };
+        let row = row.clone();
+        self.menu_row(id, label, check, more, ui, cx, move |this, window, cx| {
+            this.pick_row(row.clone(), cx);
+            this.keyboard_back(window, cx);
+        })
+    }
+
+    /// A menu row: a ✓ when `check`, its words (cut at the start when long: a path keeps its
+    /// folder's name), `▸` when `more` opens beside it; `pick` on its click.
+    #[allow(clippy::too_many_arguments)]
+    fn menu_row(
+        &self,
+        id: (&'static str, usize),
+        label: String,
+        check: bool,
+        more: bool,
+        ui: &UiColors,
+        cx: &mut Context<Self>,
+        pick: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> AnyElement {
+        let hover = ui.panel_hover;
+        let row = div()
+            .id(id)
+            .h(px(ROW_H))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .rounded(px(ROW_RADIUS))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hsla(hover)))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(12.))
+                    .text_color(hsla(ui.accent))
+                    .child(if check { "\u{2713}" } else { "" }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis_start()
+                    .child(SharedString::from(label.clone())),
+            )
+            .when(more, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_color(hsla(ui.text_dim))
+                        .child("\u{25b8}"),
+                )
+            })
+            .on_click(cx.listener(move |this, _, window, cx| pick(this, window, cx)));
+        // A row beside the picker (This Computer's) is probed apart from Recent's same folder.
+        let probe = if id.0 == COMPUTER_ROWS {
+            format!("{THIS_COMPUTER} \u{25b8} {label}")
+        } else {
+            label
+        };
+        self.marked_row(probe, row).into_any_element()
+    }
+
+    /// `el`, and under `ui-shots` a probe that keeps where it was laid out by its `label`.
+    fn marked_row<E: ParentElement>(&self, label: String, el: E) -> E {
+        #[cfg(feature = "ui-shots")]
+        {
+            let rows = self.menu_rows.clone();
+            el.child(
+                gpui::canvas(
+                    move |bounds, _, _| {
+                        rows.borrow_mut().insert(label.clone(), bounds);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+        }
+        #[cfg(not(feature = "ui-shots"))]
+        {
+            let _ = label;
+            el
+        }
+    }
+}
+
+/// The scenes' hooks for the folder picker.
+#[cfg(feature = "ui-shots")]
+impl AgentTab {
+    /// The picker's rows as drawn (none while it is closed).
+    pub fn shot_picker_rows(&self) -> Vec<PickerRow> {
+        self.picker
+            .as_ref()
+            .map_or_else(Vec::new, |p| p.rows.clone())
+    }
+
+    /// This Computer's rows beside the picker, while open.
+    pub fn shot_computer_rows(&self) -> Option<Vec<PickerRow>> {
+        self.picker
+            .as_ref()
+            .and_then(|p| p.computer.as_ref().map(|(rows, _)| rows.clone()))
+    }
+
+    /// The picker's search box.
+    pub fn shot_search(&self) -> Option<Entity<NameInput>> {
+        self.picker.as_ref().map(|p| p.search.clone())
+    }
+
+    /// Where the open menu's row saying `label` was last laid out.
+    pub fn shot_menu_row(&self, label: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.menu_rows.borrow().get(label).copied()
+    }
+
+    /// The words of the open menu's rows, top to bottom (as last laid out).
+    pub fn shot_menu_labels(&self) -> Vec<String> {
+        let rows = self.menu_rows.borrow();
+        let mut labels: Vec<(&String, &gpui::Bounds<gpui::Pixels>)> = rows.iter().collect();
+        labels.sort_by(|a, b| a.1.top().partial_cmp(&b.1.top()).expect("a number"));
+        labels.into_iter().map(|(l, _)| l.clone()).collect()
+    }
+
+    /// The folder the agent starts (or runs) in.
+    pub fn shot_cwd(&self) -> PathBuf {
+        self.start.cwd.clone()
+    }
+
+    /// Put the tab in `folder` (and, for the branch chip, `branch`: Task 7 draws it), as a
+    /// scene sets the place without reading a disk.
+    pub fn shot_place(&mut self, folder: PathBuf, branch: Option<String>, cx: &mut Context<Self>) {
+        let _ = branch;
+        self.start.cwd = folder;
+        self.refresh_picker(cx);
+        cx.notify();
+    }
+}
+
+/// A menu's section heading.
+fn heading(text: String, ui: &UiColors) -> AnyElement {
+    div()
+        .px(px(8.))
+        .pt(px(6.))
+        .pb(px(2.))
+        .text_size(px(text::META))
+        .text_color(hsla(ui.text_faint))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis_start()
+        .child(SharedString::from(text))
+        .into_any_element()
+}
+
+/// A quiet line in a menu's list (no row to pick).
+fn quiet(text: &'static str, ui: &UiColors) -> AnyElement {
+    div()
+        .h(px(ROW_H))
+        .px(px(26.))
+        .flex()
+        .items_center()
+        .text_color(hsla(ui.text_dim))
+        .child(text)
+        .into_any_element()
 }
 
 /// A chip on the box's bottom row: quiet text, no edge.
@@ -833,9 +1385,9 @@ mod tests {
     fn the_folder_chip_names_the_folder() {
         assert_eq!(
             folder_chip_text(Path::new("/home/me/code/my-app")),
-            "\u{1f4c1} my-app"
+            "\u{1f4c1} my-app \u{25be}"
         );
-        assert_eq!(folder_chip_text(Path::new("/")), "\u{1f4c1} /");
+        assert_eq!(folder_chip_text(Path::new("/")), "\u{1f4c1} / \u{25be}");
     }
 
     #[test]

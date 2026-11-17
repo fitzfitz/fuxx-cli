@@ -44,6 +44,7 @@ mod drag_gap;
 mod edit_ledger;
 mod file_tab;
 mod file_tree;
+mod folder_picker;
 mod fonts;
 mod git_branch;
 mod git_graph;
