@@ -18,8 +18,72 @@ pub struct ProviderInfo {
     /// Whether a turn can be stopped by asking the agent (`Action::Interrupt`); if not, Stop
     /// offers Force stop (ending the process) at once.
     pub interrupts: bool,
-    pub modes: &'static [&'static str],
+    pub modes: &'static [ModeChoice],
     pub default_mode: Option<&'static str>,
+}
+
+/// One permission mode a provider offers: the id it is passed as, the name the menu shows, and
+/// a line saying what it does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModeChoice {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub about: &'static str,
+}
+
+/// What a provider can say about itself without a conversation: its models (with their effort
+/// levels), its slash commands and the mode it runs in.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Catalog {
+    pub models: Vec<ModelChoice>,
+    /// The provider's built-in list stood in (it gave none): the menu says "(default list)".
+    pub fallback_models: bool,
+    pub commands: Vec<AgentCommand>,
+    /// The mode the agent says it runs in.
+    pub mode: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelChoice {
+    /// What the provider takes as the model (`--model <id>`).
+    pub id: String,
+    pub label: String,
+    /// The full model name an alias stands for, when the provider says.
+    pub resolves_to: Option<String>,
+    pub efforts: Vec<EffortChoice>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffortChoice {
+    pub level: String,
+    /// The model id that carries this effort, when the provider builds the effort into the id.
+    pub model_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandKind {
+    Command,
+    #[allow(dead_code)] // the cache marks `Event::Skills` names so (M11ak Task 2 on)
+    Skill,
+    Agent,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentCommand {
+    pub name: String,
+    pub about: String,
+    pub kind: CommandKind,
+    pub aliases: Vec<String>,
+}
+
+/// A short-lived process that answers part of the catalog: its command line, the lines to write
+/// to its stdin, and (when it keeps running) the stdout line that is the answer.
+#[allow(dead_code)] // read when the catalog is fetched (M11ak Task 2 on)
+#[derive(Clone, Debug)]
+pub struct Probe {
+    pub argv: Vec<String>,
+    pub stdin: Vec<String>,
+    pub until: Option<fn(&str) -> bool>,
 }
 
 /// How to start (or resume) a conversation.
@@ -31,6 +95,9 @@ pub struct Start {
     /// provider starts it under that id when `resume` is None.
     pub new_id: Option<String>,
     pub mode: Option<String>,
+    /// The model and effort chosen (as `Provider::model_flags` gives them); None: the agent's own.
+    pub model: Option<String>,
+    pub effort: Option<String>,
     pub extra_args: Vec<String>,
 }
 
@@ -70,6 +137,34 @@ pub trait Provider: Sync {
         Vec::new()
     }
     fn translator(&self) -> Box<dyn Translator>;
+    /// The short processes that answer the catalog, in the order `read_catalog` takes their
+    /// outputs. None: the provider can't be asked.
+    #[allow(dead_code)] // read by the agent box's menus (M11ak Task 2 on)
+    fn catalog_probes(&self) -> Vec<Probe> {
+        Vec::new()
+    }
+    /// Its own process's start answers the catalog (`Event::Catalog`), so no probe runs while
+    /// it runs.
+    #[allow(dead_code)] // read by the agent box's menus (M11ak Task 2 on)
+    fn catalog_on_start(&self) -> bool {
+        false
+    }
+    /// The catalog from the probes' outputs (stdout of each, in order).
+    #[allow(dead_code)] // read by the agent box's menus (M11ak Task 2 on)
+    fn read_catalog(&self, _outputs: &[String]) -> Result<Catalog, String> {
+        Err("no list".into())
+    }
+    /// The models to offer when the provider gave none.
+    #[allow(dead_code)] // read by the agent box's menus (M11ak Task 2 on)
+    fn fallback_models(&self) -> Vec<ModelChoice> {
+        Vec::new()
+    }
+    /// A model choice and an effort level to the `(model, effort)` values to start with
+    /// (`Start::model`, `Start::effort`). Default: the model's id and the effort as chosen.
+    #[allow(dead_code)] // read by the agent box's menus (M11ak Task 2 on)
+    fn model_flags(&self, model: &ModelChoice, effort: Option<&str>) -> (String, Option<String>) {
+        (model.id.clone(), effort.map(String::from))
+    }
     /// Whether what a resumed run said on its way out (its stderr tail, or an error row) means
     /// the conversation to resume doesn't exist: only then does the tab start a new one.
     fn unknown_conversation(&self, _said: &str) -> bool {
@@ -144,6 +239,10 @@ pub enum Event {
     },
     Notice(String),
     Error(String),
+    /// The provider's own start answered the catalog.
+    Catalog(Catalog),
+    /// The names of the skills the agent has (the cache marks those commands `Skill`).
+    Skills(Vec<String>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

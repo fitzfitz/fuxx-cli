@@ -429,6 +429,8 @@ fn start() -> Start {
         new_id: None,
         mode: None,
         extra_args: Vec::new(),
+        model: None,
+        effort: None,
     }
 }
 
@@ -1279,6 +1281,8 @@ pub(super) fn agent_tab_close() {
                             conversation: None,
                             mode: None,
                             title: None,
+                            model: None,
+                            effort: None,
                         },
                     )
                     .expect("an agent tab");

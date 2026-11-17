@@ -1782,9 +1782,9 @@ impl AgentTab {
             .start
             .mode
             .as_deref()
-            .and_then(|m| modes.iter().position(|x| *x == m));
+            .and_then(|m| modes.iter().position(|x| x.id == m));
         let next = modes[at.map_or(0, |i| (i + 1) % modes.len())];
-        self.start.mode = Some(next.to_string());
+        self.start.mode = Some(next.id.to_string());
         if self.process.is_some() {
             let resume = self.start.resume.clone();
             self.spawn_process(resume, cx);

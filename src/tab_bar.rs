@@ -1961,6 +1961,8 @@ mod tests {
                         conversation: None,
                         mode: None,
                         title: Some("fix tests".into()),
+                        model: None,
+                        effort: None,
                     },
                 },
                 crate::layout_model::Tab {
@@ -1971,6 +1973,8 @@ mod tests {
                         conversation: None,
                         mode: None,
                         title: None,
+                        model: None,
+                        effort: None,
                     },
                 },
             ],

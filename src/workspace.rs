@@ -2932,6 +2932,8 @@ impl Workspace {
                         conversation,
                         mode,
                         title,
+                        model,
+                        effort,
                     }) = self.model.tab(tab).map(|t| t.kind.clone())
                         && (title.is_some() || *text != opened_with)
                     {
@@ -2944,6 +2946,8 @@ impl Workspace {
                                 conversation,
                                 mode,
                                 title,
+                                model,
+                                effort,
                             },
                         );
                         self.save();

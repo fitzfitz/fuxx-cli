@@ -1788,6 +1788,8 @@ fn claude_beside_api_and_agent() -> (
                         conversation,
                         mode,
                         title,
+                        model: None,
+                        effort: None,
                     };
                     ws.model.set_kind(tab, kind);
                 }
