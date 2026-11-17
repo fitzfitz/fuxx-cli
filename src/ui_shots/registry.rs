@@ -136,6 +136,7 @@ pub(super) const ORDER: &[&str] = &[
     "file-follow-scrolls",
     "file-follow-wheel-stops",
     "file-follow-mode",
+    "file-code-calm",
     "right-sidebar",
     "files",
     "files-follow",

@@ -104,6 +104,7 @@ use crate::tab_bar::{Glyph, glyph_with};
 use crate::tab_color::TabColor;
 use crate::terminal_view::{CellMetrics, Copy, hsla};
 use crate::theme::{Theme, UiColors, mix};
+use crate::ui_tokens::code::{self, BAR_WIDTH, GUTTER_LEFT, NUMBER_GAP, TEXT_GAP, TOP_ROOM};
 use crate::ui_tokens::size::CARD_RADIUS;
 use crate::ui_tokens::{MARK_MIN, TEXT_MIN, contrast, ensure_contrast, text};
 use crate::workspace::Workspace;
@@ -154,15 +155,9 @@ const BAR_PAD: f32 = 6.0;
 const BUTTON: f32 = 24.0;
 const BUTTON_STROKE: f32 = 1.75;
 const FIND_BOX: f32 = 260.0;
-const GUTTER_LEFT: f32 = 12.0;
-/// The room above the first line (M11i: as the gutter's at its left).
-const TOP_ROOM: f32 = 12.0;
 /// The room below the last line (M11i): as tall as the card's rounded corners, so no line's
 /// tint, match or selection reaches them.
 const BOTTOM_ROOM: f32 = CARD_RADIUS;
-const NUMBER_GAP: f32 = 8.0;
-const BAR_WIDTH: f32 = 3.0;
-const TEXT_GAP: f32 = 10.0;
 const RIGHT_PAD: f32 = 24.0;
 /// M11af: the column of who-changed-what marks, between the numbers and the bar; a mark's
 /// circle and its letter in it; the age words' size and their gap after the line's end (as the
@@ -1570,6 +1565,36 @@ impl Gutter {
     }
 }
 
+/// A row's height (M11ah): the font's line height times `code::ROW_SCALE`; the text is painted
+/// with it, so GPUI centres the line in its row.
+pub fn row_height(line_height: Pixels) -> Pixels {
+    line_height * code::ROW_SCALE
+}
+
+/// A line number's colour: the current line's in `text`; the others quiet, `text_dim` held to
+/// `MARK_MIN` on the background so they stay readable.
+fn number_ink(ui: &UiColors, bg: Rgb, current: bool) -> Rgb {
+    if current {
+        ui.text
+    } else {
+        ensure_contrast(ui.text_dim, bg, MARK_MIN)
+    }
+}
+
+/// Where the current line `line` is after a reload: its new place when the reload's line
+/// comparison (`new_of_old`) says where it went, none when that line is gone; with no
+/// comparison, kept when `same` says the line there is unchanged.
+fn carry_line(
+    new_of_old: Option<&[Option<usize>]>,
+    line: usize,
+    same: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    match new_of_old {
+        Some(map) => map.get(line).copied().flatten(),
+        None => same(line).then_some(line),
+    }
+}
+
 /// Where the gutter's parts sit, in points from the body's left edge: the old numbers' right
 /// edge (a diff's), the (new) numbers' right edge, the change bar's left edge (a diff's sign
 /// column), the text's left edge.
@@ -1695,6 +1720,7 @@ pub fn bar_at(y: f32, line_height: f32, changes: &Changes) -> Option<(usize, Lin
 #[derive(Clone, Copy, Debug)]
 pub struct Geom {
     pub bounds: Bounds<Pixels>,
+    /// A row's height (`row_height`: the font's line height times `code::ROW_SCALE`).
     pub line_height: Pixels,
     pub cell_width: Pixels,
     /// From the body's left edge: a diff's old numbers' right edge, the (new) line numbers'
@@ -1715,6 +1741,7 @@ impl Geom {
     fn of(
         bounds: Bounds<Pixels>,
         m: &CellMetrics,
+        row: Pixels,
         lines: usize,
         gutter: Gutter,
         widest: usize,
@@ -1725,11 +1752,11 @@ impl Geom {
         let max_scroll = point(
             (text_left + m.cell_width * widest as f32 + px(RIGHT_PAD) - bounds.size.width)
                 .max(px(0.0)),
-            (m.line_height * lines as f32 - bounds.size.height).max(px(0.0)),
+            (row * lines as f32 - bounds.size.height).max(px(0.0)),
         );
         Geom {
             bounds,
-            line_height: m.line_height,
+            line_height: row,
             cell_width: m.cell_width,
             old_numbers_right: c.old_right.map(px),
             numbers_right: px(c.new_right),
@@ -2202,6 +2229,8 @@ struct Frame {
     selection: Option<(Pos, Pos)>,
     matches: Arc<Vec<Match>>,
     current: Option<usize>,
+    /// M11ah: the current line (a file's line, or a diff's row), drawn with a band.
+    current_line: Option<usize>,
     theme: Theme,
     /// M11af: the live changes drawn (a file in File mode with a line marked).
     live: Option<LiveFrame>,
@@ -2311,6 +2340,7 @@ fn paint_number(
     n: usize,
     right: Point<Pixels>,
     m: &CellMetrics,
+    row: Pixels,
     ink: Rgb,
     window: &mut Window,
     cx: &mut App,
@@ -2322,7 +2352,7 @@ fn paint_number(
             .text_system()
             .shape_line(SharedString::from(label), m.font_size, &[run], None);
     let at = point(right.x - number.width(), right.y);
-    let _ = number.paint(at, m.line_height, TextAlign::Left, None, window, cx);
+    let _ = number.paint(at, row, TextAlign::Left, None, window, cx);
 }
 
 /// Paint the text body: `f`'s lines in sight, laid out as `g`. A file: its numbers, change bars
@@ -2364,6 +2394,14 @@ fn paint_body(
             None,
         )
     };
+    let (quiet, bright) = (number_ink(&ui, bg, false), number_ink(&ui, bg, true));
+    let ink_for = |i: usize| {
+        if f.current_line == Some(i) {
+            bright
+        } else {
+            quiet
+        }
+    };
     let (removed_ink, added_ink) = sign_inks(&bars, bg);
     // M11af: the age words in the warm accent, readable on the background.
     let age_ink = ensure_contrast(WARM_RGB, bg, TEXT_MIN);
@@ -2392,6 +2430,11 @@ fn paint_body(
             FileMode::Plain => f.doc.changes.by_line.get(&i).copied(),
             FileMode::Diff => None,
         };
+        // The current line's band, first: under the tints, the glow, the selection and matches.
+        if f.current_line == Some(i) {
+            let band = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
+            window.paint_quad(fill(band, hsla(ui.text).opacity(code::CURRENT_ALPHA)));
+        }
         let tint = match (row.map(|r| r.kind), change) {
             (Some(RowKind::Removed), _) => Some(bars.deleted),
             (Some(RowKind::Added), _) => Some(bars.added),
@@ -2515,7 +2558,7 @@ fn paint_body(
         match row {
             None => {
                 let right = point(bounds.left() + g.numbers_right, y);
-                paint_number(i + 1, right, m, ui.text_faint, window, cx);
+                paint_number(i + 1, right, m, lh, ink_for(i), window, cx);
                 if let (Some(l), Some(left)) = (&f.live, g.marks_left)
                     && let Some(mark) = l.record.mark(i)
                 {
@@ -2533,11 +2576,11 @@ fn paint_body(
             Some(row) => {
                 if let (Some(n), Some(right)) = (row.old, g.old_numbers_right) {
                     let right = point(bounds.left() + right, y);
-                    paint_number(n, right, m, ui.text_faint, window, cx);
+                    paint_number(n, right, m, lh, ink_for(i), window, cx);
                 }
                 if let Some(n) = row.new {
                     let right = point(bounds.left() + g.numbers_right, y);
-                    paint_number(n, right, m, ui.text_faint, window, cx);
+                    paint_number(n, right, m, lh, ink_for(i), window, cx);
                 }
                 let sign = match row.kind {
                     RowKind::Removed => Some(&removed_sign),
@@ -2752,6 +2795,11 @@ pub struct FileTab {
     /// The selection: where the mouse went down, and where it is.
     selection: Option<(Pos, Pos)>,
     selecting: bool,
+    /// M11ah: the current line: the last press's line, or where a drag ended, a find step's
+    /// line (File mode: a line), and the same in Diff mode (a `DiffDoc` row). None when the
+    /// tab opens; Esc does not clear it.
+    current: Option<usize>,
+    diff_current: Option<usize>,
     /// M11ae: the pointer's last place while selecting, and whether the auto-scroll task runs
     /// (one at a time; only while the pointer is out of the text).
     drag_at: Option<Point<Pixels>>,
@@ -2863,6 +2911,8 @@ impl FileTab {
             wrapped: Rc::default(),
             selection: None,
             selecting: false,
+            current: None,
+            diff_current: None,
             drag_at: None,
             autoscrolling: false,
             scrollbar: Bar::default(),
@@ -3068,6 +3118,14 @@ impl FileTab {
                 doc.version = self.versions;
                 if let Some(old) = self.doc() {
                     doc.carry_over(old, plain);
+                    // M11ah: the current line follows its line (the reload's comparison), or
+                    // without one stays when its text is unchanged.
+                    self.current = self.current.and_then(|line| {
+                        let map = compared.as_ref().map(|c| c.new_of_old.as_slice());
+                        carry_line(map, line, |l| {
+                            l < old.lines.len() && l < doc.lines.len() && old.line(l) == doc.line(l)
+                        })
+                    });
                 }
                 if real.is_some() {
                     self.live.real = real;
@@ -3629,7 +3687,8 @@ impl FileTab {
         if !self.diff.accept(version, self.versions, state) {
             return;
         }
-        // Redrawn below.
+        // Redrawn below. The rows changed: the current row is another one's.
+        self.diff_current = None;
         self.take_diff_counts(counts);
         match &self.diff.state {
             DiffState::Rows(d) => {
@@ -4288,6 +4347,12 @@ impl FileTab {
 
     /// The button released anywhere in the window: a selection or a thumb drag ends.
     fn mouse_up(&mut self, cx: &mut Context<Self>) {
+        // M11ah: the selection's moving end (a press without a drag: the press) is the current
+        // line.
+        if self.selecting {
+            let line = self.selection.map(|(_, head)| head.line);
+            self.set_current(line, cx);
+        }
         self.selecting = false;
         // No old auto-scroll task resumes on a quick press again.
         self.drag_at = None;
@@ -4295,6 +4360,19 @@ impl FileTab {
             // Idempotent: a Preview thumb's drag may end here too.
             self.preview_list.scrollbar_drag_ended();
             self.scrolled(cx);
+            cx.notify();
+        }
+    }
+
+    /// M11ah: the current line of the mode shown (a file's line, a diff's row) set to `line`;
+    /// drawn again only when it changed.
+    fn set_current(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
+        let slot = match self.mode {
+            FileMode::Plain => &mut self.current,
+            FileMode::Diff => &mut self.diff_current,
+        };
+        if *slot != line {
+            *slot = line;
             cx.notify();
         }
     }
@@ -4537,6 +4615,11 @@ impl FileTab {
         };
         let finds = &mut find.finds;
         finds.current = step(finds.current, finds.matches.len(), forward);
+        let line = finds
+            .current
+            .and_then(|k| finds.matches.get(k))
+            .map(|m| m.line);
+        self.set_current(line, cx);
         self.reveal_current(cx);
         cx.notify();
     }
@@ -5234,6 +5317,10 @@ impl FileTab {
                 .map(|(a, b)| if a <= b { (a, b) } else { (b, a) }),
             matches,
             current,
+            current_line: match self.mode {
+                FileMode::Plain => self.current,
+                FileMode::Diff => self.diff_current,
+            },
             theme,
             live: (self.mode == FileMode::Plain && self.live.marked).then(|| LiveFrame {
                 record: self.live.record.clone(),
@@ -5298,10 +5385,11 @@ impl FileTab {
                             let before = wrapped.borrow().clone();
                             let mut scroll = laid.scroll;
                             if before.is_some() != wrap.is_some() {
-                                let lh = f32::from(m.line_height).max(1.0);
+                                let row_h = row_height(m.line_height);
+                                let lh = f32::from(row_h).max(1.0);
                                 let top = (f32::from(scroll.y) / lh).floor().max(0.0) as usize;
                                 let row = rescroll_row(top, before.as_ref(), wrap.as_ref());
-                                scroll = point(px(0.0), m.line_height * row as f32);
+                                scroll = point(px(0.0), row_h * row as f32);
                                 let mode = laid.mode;
                                 keep.update(cx, |this, _| *this.mode_scroll_mut(mode) = scroll);
                             }
@@ -5310,7 +5398,15 @@ impl FileTab {
                                 Some(w) => (w.rows.len(), 0),
                                 None => (count, laid.doc.widest),
                             };
-                            let g = Geom::of(bounds, &m, rows, gutter, widest, scroll);
+                            let g = Geom::of(
+                                bounds,
+                                &m,
+                                row_height(m.line_height),
+                                rows,
+                                gutter,
+                                widest,
+                                scroll,
+                            );
                             geom.set(Some(g));
                             // A new version (or mode) drawn: the scroll as kept in it is the
                             // scroll (after a shrink, the view doesn't jump back down when the
@@ -5682,7 +5778,7 @@ impl FileTab {
         if let (Some(columns), true) = (columns, cx.global::<Appearance>().file_wrap) {
             rows_up = Wrapped::of(&d.doc, FileMode::Diff, columns).first_row(rows_up);
         }
-        self.diff_scroll = point(px(0.0), m.line_height * rows_up as f32);
+        self.diff_scroll = point(px(0.0), row_height(m.line_height) * rows_up as f32);
         // M11ae: a reveal scrolls, so the scrollbar shows (this frame draws it). Not through
         // `set_scroll`: the rows aren't drawn yet, so the last drawing's limits are another
         // text's.
@@ -6539,9 +6635,9 @@ mod tests {
             },
         );
         assert_eq!(plain.old_right, None);
-        assert_eq!(plain.new_right, 28.0);
-        assert_eq!(plain.bar_left, 36.0);
-        assert_eq!(plain.text_left, 49.0);
+        assert_eq!(plain.new_right, 32.0);
+        assert_eq!(plain.bar_left, 42.0);
+        assert_eq!(plain.text_left, 59.0);
         let diff = columns(
             8.0,
             Gutter::Diff {
@@ -6549,11 +6645,11 @@ mod tests {
                 new_digits: 2,
             },
         );
-        assert_eq!(diff.old_right, Some(36.0));
-        assert_eq!(diff.new_right, 60.0);
+        assert_eq!(diff.old_right, Some(40.0));
+        assert_eq!(diff.new_right, 66.0);
         // The sign column's left, one cell wide, then the text.
-        assert_eq!(diff.bar_left, 68.0);
-        assert_eq!(diff.text_left, 86.0);
+        assert_eq!(diff.bar_left, 76.0);
+        assert_eq!(diff.text_left, 98.0);
     }
 
     #[test]
@@ -6577,6 +6673,66 @@ mod tests {
         assert_eq!(bar_at(5.0, lh, &changes), None);
         assert_eq!(bar_at(45.0, lh, &changes), None);
         assert_eq!(bar_at(-3.0, lh, &changes), None);
+    }
+
+    #[test]
+    fn rows_are_the_line_height_times_1_2() {
+        assert_eq!(row_height(px(15.0)), px(18.0));
+    }
+
+    #[test]
+    fn columns_use_the_code_sizes() {
+        let c = columns(
+            8.0,
+            Gutter::Plain {
+                digits: 2,
+                marks: false,
+            },
+        );
+        assert_eq!(c.new_right, 16.0 + 16.0);
+        assert_eq!(c.bar_left, 32.0 + 10.0);
+        assert_eq!(c.text_left, 42.0 + 3.0 + 14.0);
+        let m = columns(
+            8.0,
+            Gutter::Plain {
+                digits: 2,
+                marks: true,
+            },
+        );
+        assert_eq!(
+            m.text_left,
+            c.text_left + 16.0,
+            "the marks' column is 16 more"
+        );
+    }
+
+    #[test]
+    fn quiet_numbers_stay_readable() {
+        for (name, theme) in crate::theme::every_theme() {
+            let ui = theme.ui();
+            let quiet = number_ink(&ui, theme.background, false);
+            assert!(
+                contrast(quiet, theme.background) >= MARK_MIN,
+                "{name}: quiet numbers {:.2}",
+                contrast(quiet, theme.background)
+            );
+            assert_ne!(quiet, ui.text, "{name}: quieter than the current number");
+            assert_eq!(number_ink(&ui, theme.background, true), ui.text, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_current_line_follows_its_line_or_clears() {
+        let map = [Some(2), None, Some(3)];
+        assert_eq!(carry_line(Some(&map), 0, |_| false), Some(2));
+        assert_eq!(carry_line(Some(&map), 1, |_| true), None);
+        assert_eq!(
+            carry_line(Some(&map), 9, |_| true),
+            None,
+            "past the old text"
+        );
+        assert_eq!(carry_line(None, 4, |l| l == 4), Some(4));
+        assert_eq!(carry_line(None, 4, |_| false), None);
     }
 
     #[test]
@@ -7313,9 +7469,9 @@ mod tests {
         let without = columns(8.0, Gutter::plain(9, false));
         let with = columns(8.0, Gutter::plain(9, true));
         assert_eq!(without.marks_left, None);
-        assert_eq!(without.text_left, 49.0);
+        assert_eq!(without.text_left, 59.0);
         assert_eq!(with.new_right, without.new_right);
-        assert_eq!(with.marks_left, Some(32.0));
+        assert_eq!(with.marks_left, Some(37.0));
         assert_eq!(with.bar_left, without.bar_left + MARK_COLUMN);
         assert_eq!(with.text_left, without.text_left + MARK_COLUMN);
     }
