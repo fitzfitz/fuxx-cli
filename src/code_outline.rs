@@ -357,10 +357,20 @@ impl Outline {
         if named.is_empty() { chain } else { named }
     }
 
-    /// The block whose opener the sticky line shows with `top` the first line in view: `titled`'s
-    /// block, but only when its opener has scrolled above `top`.
+    /// The block whose opener the sticky line shows with `top` the first line in view: among the
+    /// blocks holding `top` whose opener is above it, the innermost named one, else the innermost.
     pub fn sticky(&self, top: usize) -> Option<usize> {
-        self.titled(top).filter(|&i| self.blocks[i].start < top)
+        let above: Vec<usize> = self
+            .containing(top)
+            .into_iter()
+            .filter(|&i| self.blocks[i].start < top)
+            .collect();
+        above
+            .iter()
+            .rev()
+            .find(|&&i| self.blocks[i].named)
+            .or(above.last())
+            .copied()
     }
 }
 
@@ -532,12 +542,16 @@ mod tests {
         assert_eq!(o.titled(0), Some(0));
         assert_eq!(
             o.sticky(1),
-            None,
-            "its opener is the top line, not above it"
+            Some(0),
+            "fn's opener is the top; impl's is above"
         );
         assert_eq!(o.sticky(3), Some(1));
         assert_eq!(o.sticky(0), None);
         assert_eq!(o.sticky(6), Some(0));
+        // Unnamed: the innermost block whose opener is above the top.
+        let plain = rust();
+        assert_eq!(plain.sticky(3), Some(2));
+        assert_eq!(plain.sticky(2), Some(1));
         assert!(o.name(&[0]), "a name taken back is a change");
         assert_eq!(o.titled(3), Some(0));
     }
