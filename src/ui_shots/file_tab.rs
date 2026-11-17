@@ -134,6 +134,14 @@ pub(super) const SCENES: &[Scene] = &[
         kind: Kind::State,
         sources: &["src/file_tab.rs", "src/live_lines.rs"],
     },
+    Scene {
+        name: "file-code-calm",
+        run: file_code_calm_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/file_tab.rs", "src/ui_tokens.rs"],
+    },
 ];
 
 /// A file tab (M11g) in a pane beside a terminal's tab: opened twice for one file it is one tab,
@@ -1231,7 +1239,13 @@ fn file_view_scenes() {
         assert!(near(p, theme.background, 6), "{n}: no bar on line 0: {p:?}");
         // The tint at the far right of a changed line: its colour at 12 % over the background.
         let right = g.bounds.right() - px(6.0);
-        let tint = crate::theme::mix(theme.background, green, 0.12);
+        // Line 3 (0-based 2) is where the drag ended: the current line, its tint over the band.
+        let band = crate::theme::mix(
+            theme.background,
+            theme.ui().text,
+            crate::ui_tokens::code::CURRENT_ALPHA,
+        );
+        let tint = crate::theme::mix(band, green, 0.12);
         let p = at(right, row_y(2));
         assert!(near(p, tint, 6), "{n}: the tint {p:?}, not {tint:?}");
         assert!(
@@ -2122,9 +2136,16 @@ fn file_diff_scenes() {
         let right = g.bounds.right() - px(2.0);
         let red_tint = crate::theme::mix(theme.background, red, 0.12);
         let green_tint = crate::theme::mix(theme.background, green, 0.12);
+        // The row the drag ended on is the current row: its tint over the band.
+        let band = crate::theme::mix(
+            theme.background,
+            theme.ui().text,
+            crate::ui_tokens::code::CURRENT_ALPHA,
+        );
+        let green_current = crate::theme::mix(band, green, 0.12);
         for (row, tint, what) in [
             (removed, red_tint, "removed"),
-            (added, green_tint, "added"),
+            (added, green_current, "added (current)"),
             (added_late, green_tint, "added"),
             (same, theme.background, "unchanged"),
         ] {
@@ -2184,8 +2205,11 @@ fn file_diff_scenes() {
         );
         // The number columns: (left, right) edges.
         let old_right = g.old_numbers_right.expect("two number columns");
-        let old_col = (px(12.0), old_right);
-        let new_col = (old_right + px(8.0), g.numbers_right);
+        let old_col = (px(crate::ui_tokens::code::GUTTER_LEFT), old_right);
+        let new_col = (
+            old_right + px(crate::ui_tokens::code::NUMBER_GAP),
+            g.numbers_right,
+        );
         let inked = |row: usize, (l, r): (Pixels, Pixels), base: Rgb| {
             let top = row_y(row) - g.line_height / 2.0;
             (f32::from(l) as i32..f32::from(r) as i32).any(|x| {
@@ -2199,11 +2223,11 @@ fn file_diff_scenes() {
             })
         };
         assert!(
-            !inked(added, old_col, green_tint),
+            !inked(added, old_col, green_current),
             "{n}: no old number on an added row"
         );
         assert!(
-            inked(added, new_col, green_tint),
+            inked(added, new_col, green_current),
             "{n}: the added row's new number"
         );
         assert!(
@@ -2679,10 +2703,11 @@ fn live_near(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, by: u8) -> bool 
         .all(|(a, b)| a.abs_diff(b) <= by)
 }
 
-/// The gutter's text edge before M11af (no marks' column): `GUTTER_LEFT` 12, two digits,
-/// `NUMBER_GAP` 8, `BAR_WIDTH` 3, `TEXT_GAP` 10.
+/// The gutter's text edge with no marks' column: `code::GUTTER_LEFT`, two digits,
+/// `NUMBER_GAP`, `BAR_WIDTH`, `TEXT_GAP`.
 fn plain_text_left(cell: f32) -> f32 {
-    12.0 + 2.0 * cell + 8.0 + 3.0 + 10.0
+    use crate::ui_tokens::code;
+    code::GUTTER_LEFT + 2.0 * cell + code::NUMBER_GAP + code::BAR_WIDTH + code::TEXT_GAP
 }
 
 /// `file-live-glow` (both themes): runs changed 2 s, 20 s, 40 s and 70 s ago (lines 2–3, 6,
@@ -3567,6 +3592,148 @@ fn file_follow_mode_scenes() {
             [1, 1, 0, 0, 0, 1, 1],
             "{n}: tip, Preview shown, Follow in Preview, Follow back in File, tip, marks, \
              the File view stays"
+        );
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-code-calm` (both themes; M11ah Task 1): a 14-line Rust file with line 5 pressed. Rows
+/// are the font's line height x 1.2 and the text sits at the new columns; the first row starts
+/// `code::TOP_ROOM` under the body's top; line 5's row has the current band (`text` at 5 %
+/// over the background, to the right edge) and rows 4 and 6 have none; line 5's number is
+/// drawn in `text`, line 4's in the quiet ink (`text_dim`, held to 3:1).
+fn file_code_calm_scenes() {
+    use crate::ui_tokens::{MARK_MIN, code, contrast, ensure_contrast};
+    use gpui::{Modifiers, MouseButton};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let path = live_file("calm.rs", LIVE_FIXTURE);
+    let dims = size(px(760.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let n = format!("file-code-calm-{slug}");
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let slot: LiveSlot = Rc::default();
+        let build = live_tab(theme, path.clone(), slot.clone());
+        let seen: Rc<RefCell<Option<(crate::file_tab::Geom, gpui::Pixels)>>> = Rc::default();
+        let keep = seen.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            live_frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            // Line 5 (0-based 4): a press without a drag.
+            let at = point(
+                g.bounds.left() + g.text_left + px(4.0),
+                g.bounds.top() + g.line_height * 4.5,
+            );
+            let none = Modifiers::none();
+            cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+            cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+            live_frame(cx, window);
+            let line = cx
+                .update_window(window, |_, window, cx| {
+                    let m = crate::terminal_view::CellMetrics::measure(
+                        cx.global::<crate::appearance::Appearance>(),
+                        window,
+                    );
+                    m.line_height
+                })
+                .expect("metrics");
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            *keep.borrow_mut() = Some((g, line));
+        };
+        let shot = render_with(&theme, dims, build, act);
+        keep_shot(&n, &shot);
+        let (g, line) = seen.borrow().expect("read");
+        assert_eq!(
+            g.line_height,
+            crate::file_tab::row_height(line),
+            "{n}: a row is the line height x 1.2"
+        );
+        assert!(
+            (f32::from(g.line_height) - f32::from(line) * 1.2).abs() < 0.01,
+            "{n}: a row is {:?}, the line height {line:?} x 1.2",
+            g.line_height
+        );
+        assert_eq!(
+            f32::from(g.text_left),
+            plain_text_left(f32::from(g.cell_width)),
+            "{n}: the text at the new columns"
+        );
+        // The file bar is 42 pt tall; the first row starts `TOP_ROOM` under it.
+        assert_eq!(
+            f32::from(g.bounds.top()),
+            42.0 + code::TOP_ROOM,
+            "{n}: the first row's top"
+        );
+        let bg = theme.background;
+        let band = crate::theme::mix(bg, ui.text, code::CURRENT_ALPHA);
+        let right = f32::from(g.bounds.right()) - 3.0;
+        let top = f32::from(g.bounds.top());
+        let row = f32::from(g.line_height);
+        let at = |r: usize| pixel_at(&shot, dims, right, top + row * (r as f32 + 0.5));
+        assert!(live_near(at(4), band, 2), "{n}: line 5's band {:?}", at(4));
+        assert!(live_near(at(3), bg, 1), "{n}: line 4 has none {:?}", at(3));
+        assert!(live_near(at(5), bg, 1), "{n}: line 6 has none {:?}", at(5));
+        // The band covers the whole row and no more.
+        let edge = |y: f32| pixel_at(&shot, dims, right, y);
+        assert!(
+            live_near(edge(top + row * 4.0 + 1.0), band, 2),
+            "{n}: its top"
+        );
+        assert!(
+            live_near(edge(top + row * 5.0 - 1.0), band, 2),
+            "{n}: its bottom"
+        );
+        assert!(
+            live_near(edge(top + row * 4.0 - 1.0), bg, 1),
+            "{n}: above it"
+        );
+        assert!(
+            live_near(edge(top + row * 5.0 + 1.0), bg, 1),
+            "{n}: below it"
+        );
+        // The numbers: the most inked pixel of each, against its row's background.
+        let inkiest = |r: usize, back: [u8; 3]| {
+            let (x1, y0) = (
+                f32::from(g.bounds.left() + g.numbers_right),
+                top + row * r as f32,
+            );
+            let cell = f32::from(g.cell_width);
+            let mut best = (0, back);
+            for dx in 0..(cell * 2.0 * 2.0) as i32 {
+                for dy in 0..(row * 2.0) as i32 {
+                    let p = pixel_at(
+                        &shot,
+                        dims,
+                        x1 - cell * 2.0 + dx as f32 * 0.5,
+                        y0 + dy as f32 * 0.5,
+                    );
+                    let d: i32 = (0..3).map(|k| (p[k] as i32 - back[k] as i32).abs()).sum();
+                    if d > best.0 {
+                        best = (d, p);
+                    }
+                }
+            }
+            best.1
+        };
+        let dist = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| -> i32 {
+            [(p[0], c.r), (p[1], c.g), (p[2], c.b)]
+                .iter()
+                .map(|&(a, b)| (a as i32 - b as i32).abs())
+                .sum()
+        };
+        let quiet = ensure_contrast(ui.text_dim, bg, MARK_MIN);
+        assert!(contrast(quiet, bg) >= MARK_MIN, "{n}: the quiet ink reads");
+        let (five, four) = (inkiest(4, at(4)), inkiest(3, at(3)));
+        assert!(
+            dist(five, ui.text) <= 30,
+            "{n}: line 5's number in text {five:?}"
+        );
+        assert!(
+            dist(four, quiet) <= 30 && dist(four, quiet) < dist(four, ui.text),
+            "{n}: line 4's number quiet {four:?}"
         );
         println!("ui-shots: {n} ok");
     }

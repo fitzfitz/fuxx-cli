@@ -27,6 +27,44 @@ pub const TAB_BAR_LIGHT_CAP: f32 = 1.15;
 #[cfg(any(test, feature = "ui-shots"))]
 pub const TAB_BAR_LOW_MIN: f32 = 1.15;
 
+/// M11ah (code view upgrade): every size the file tab's code view is drawn with, in points, in
+/// one place so M11al can move them together. Row = the font's line height x `ROW_SCALE`.
+pub mod code {
+    #![allow(dead_code)] // each size is drawn with by the task that builds its part
+
+    pub const ROW_SCALE: f32 = 1.2;
+    /// The room above the first line, and left of the numbers.
+    pub const TOP_ROOM: f32 = 16.0;
+    pub const GUTTER_LEFT: f32 = 16.0;
+    /// Numbers to the change bar, and the bar to the text.
+    pub const NUMBER_GAP: f32 = 10.0;
+    pub const TEXT_GAP: f32 = 14.0;
+    pub const BAR_WIDTH: f32 = 3.0;
+    pub const BAR_RUN_GAP: f32 = 2.0;
+    pub const FOLD_COLUMN: f32 = 14.0;
+    /// The current line's band: `text` at this alpha.
+    pub const CURRENT_ALPHA: f32 = 0.05;
+    pub const GUIDE: f32 = 1.0;
+    pub const GUIDE_ALPHA: f32 = 0.07;
+    pub const GUIDE_ACTIVE_ALPHA: f32 = 0.14;
+    pub const STICKY_RULE: f32 = 1.0;
+    pub const BREADCRUMB: f32 = 26.0;
+    pub const BREADCRUMB_TEXT: f32 = 12.0;
+    pub const LANE: f32 = 4.0;
+    pub const LANE_MARK_MIN: f32 = 2.0;
+    pub const LANE_TICK: f32 = 2.0;
+    pub const NAV_BUTTON: f32 = 24.0;
+    pub const CARD_INSET: f32 = 12.0;
+    pub const CARD_BORDER: f32 = 1.0;
+    pub const CARD_GAP: f32 = 10.0;
+    pub const CARD_TITLE: f32 = 30.0;
+    pub const UNCHANGED_TEXT: f32 = 12.0;
+    pub const WORD_ALPHA: f32 = 0.35;
+    pub const WORD_RADIUS: f32 = 2.0;
+    pub const SIDE_HAIRLINE: f32 = 1.0;
+    pub const SIDE_EMPTY_ALPHA: f32 = 0.03;
+}
+
 /// Sizes in pixels, from the M11 plan's Global Constraints.
 pub mod size {
     #![allow(dead_code)] // drawn with from M11 Task 2 on
