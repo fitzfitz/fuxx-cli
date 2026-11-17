@@ -1,6 +1,6 @@
 # Milestone 11af — Live Changes, with Who Wrote Them
 
-**Status:** 🟨 built 2026-11-17 on branch `m11af-live-changes`, all 8 plan tasks, each reviewed clean, final-review fixes in; **merged to master 2026-11-17 (`9afbb29`), not pushed**, waiting for your on-screen check (below). Design approved 2026-11-17 ("approve"); plan [[M11af Plan - Live Changes]].
+**Status:** 🟨 built 2026-11-17 on branch `m11af-live-changes`, all 8 plan tasks, each reviewed clean, final-review fixes in; **merged to master and pushed 2026-11-17 (`d327d15`)**, waiting for your on-screen check (below). Design approved 2026-11-17 ("approve"); plan [[M11af Plan - Live Changes]].
 
 **Asked for:** 2026-11-16, by you, as near-future idea **1** of the file-view mockups ("1 and 3" → M11af and M11ag;
 order "your order is fine, go ahead"). Direction: [[Proposal - File View Upgrades]], mockup
