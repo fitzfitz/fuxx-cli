@@ -34,7 +34,7 @@ use gpui::{
     Subscription, Task, WeakEntity, Window, actions, div, list, prelude::*, px, relative,
 };
 
-use crate::agent_box::{Change, Step, step_for, switched_notice};
+use crate::agent_box::{BoxMenu, Change, PLACEHOLDER, Step, step_for, switched_notice, usage_line};
 use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
@@ -212,16 +212,6 @@ pub fn status_word(status: Status) -> &'static str {
     }
 }
 
-/// The model chip's text: as `provider` labels `model` (no provider: as it is).
-pub fn model_chip(provider: Option<&dyn Provider>, model: &str) -> String {
-    provider.map_or_else(|| model.to_string(), |p| p.model_label(model))
-}
-
-/// The cost chip's text.
-pub fn cost_chip(usd: f64) -> String {
-    format!("${usd:.2}")
-}
-
 /// A running tool's elapsed time: `4s`, `1m 05s`.
 pub fn elapsed_label(d: Duration) -> String {
     let s = d.as_secs();
@@ -390,6 +380,11 @@ pub struct Colors {
     pub code_fill: Rgb,
     pub code_text: Rgb,
     pub code_dim: Rgb,
+    /// The agent box (M11ak): its fill and edge, its quiet chips, and a hovered one.
+    pub box_fill: Rgb,
+    pub box_edge: Rgb,
+    pub box_dim: Rgb,
+    pub box_hover: Rgb,
 }
 
 impl Colors {
@@ -426,6 +421,11 @@ impl Colors {
             code_fill,
             code_text: fit(ui.text, code_fill),
             code_dim: fit(ui.text_dim, code_fill),
+            // The fill the box's text field always had.
+            box_fill: ui.sidebar_background,
+            box_edge: ui.panel_border,
+            box_dim: fit(ui.text_dim, ui.sidebar_background),
+            box_hover: ui.panel_hover,
         }
     }
 }
@@ -483,11 +483,11 @@ struct Asked {
 }
 
 pub struct AgentTab {
-    provider: Option<&'static dyn Provider>,
+    pub(crate) provider: Option<&'static dyn Provider>,
     provider_name: String,
-    start: Start,
-    composer: Entity<Composer>,
-    conversation: Conversation,
+    pub(crate) start: Start,
+    pub(crate) composer: Entity<Composer>,
+    pub(crate) conversation: Conversation,
     /// The login shell's `PATH`, read once the tab opens.
     path: Option<String>,
     translator: Option<Box<dyn Translator>>,
@@ -532,7 +532,9 @@ pub struct AgentTab {
     /// Stop was pressed: the turn hasn't ended yet. `force`: `STOP_FORCE_AFTER` has passed.
     stopping: Option<Instant>,
     force: bool,
-    attachments: Vec<String>,
+    pub(crate) attachments: Vec<String>,
+    /// The box's open menu (one at a time; Esc closes it).
+    pub(crate) menu: Option<BoxMenu>,
     files: Option<Files>,
     listing: bool,
     at: Option<AtList>,
@@ -557,7 +559,10 @@ pub struct AgentTab {
     pub rows_built: Rc<Cell<usize>>,
     /// Where each waiting attachment's × was laid out (scenes click it).
     #[cfg(feature = "ui-shots")]
-    removes: Rc<std::cell::RefCell<Vec<Option<gpui::Bounds<gpui::Pixels>>>>>,
+    pub(crate) removes: Rc<std::cell::RefCell<Vec<Option<gpui::Bounds<gpui::Pixels>>>>>,
+    /// Where each part of the box was laid out (`shot_part`).
+    #[cfg(feature = "ui-shots")]
+    pub(crate) parts: crate::agent_box::Parts,
 }
 
 impl EventEmitter<AgentTabEvent> for AgentTab {}
@@ -778,6 +783,43 @@ impl AgentTab {
         self.force_stop(cx);
     }
 
+    /// The catalog the box's chips and menus read, as if this tab's agent had answered it.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_catalog(
+        &mut self,
+        found: crate::agent_catalog::Lookup<crate::providers::Catalog>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(provider) = self.provider {
+            crate::agent_catalog::store_catalog(provider.info().name, &self.start.cwd, found, cx);
+        }
+        cx.notify();
+    }
+
+    /// What the box's chips and the top line say.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_box(&self, cx: &App) -> crate::agent_box::BoxTexts {
+        self.box_texts(cx)
+    }
+
+    /// Where a part of the box was last laid out: `folder`, `box`, `attachments`, `attach`,
+    /// `model`, `mode`, `send`, `menu`, `usage`.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_part(&self, part: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.parts.borrow().get(part).copied()
+    }
+
+    /// The box's open menu.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_menu(&self) -> Option<BoxMenu> {
+        self.menu.clone()
+    }
+
+    /// Whether the `@` file list is open.
+    pub(crate) fn at_open(&self) -> bool {
+        self.at.is_some()
+    }
+
     /// Whether the `@` list has hits (scenes wait for the ranking).
     #[cfg(feature = "ui-shots")]
     pub fn at_hits(&self) -> usize {
@@ -791,9 +833,12 @@ impl AgentTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let label = provider.map_or(provider_name.as_str(), |p| p.info().label);
-        let placeholder: SharedString = format!("Message {label}…").into();
-        let composer = cx.new(|cx| Composer::new(placeholder, window, cx));
+        let composer = cx.new(|cx| {
+            let mut composer = Composer::new(PLACEHOLDER.into(), window, cx);
+            // The box draws its edge and fill.
+            composer.set_bare(true, cx);
+            composer
+        });
         let list = ListState::new(0, ListAlignment::Top, px(200.));
         list.set_follow_mode(gpui::FollowMode::Tail);
         let subscriptions = vec![
@@ -843,6 +888,7 @@ impl AgentTab {
             stopping: None,
             force: false,
             attachments: Vec::new(),
+            menu: None,
             files: None,
             listing: false,
             at: None,
@@ -862,6 +908,8 @@ impl AgentTab {
             rows_built: Rc::new(Cell::new(0)),
             #[cfg(feature = "ui-shots")]
             removes: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            parts: Rc::default(),
         }
     }
 
@@ -1609,7 +1657,7 @@ impl AgentTab {
         } else if self.status() == Status::Working {
             format!("Add a note. {label} reads it after this step…").into()
         } else {
-            format!("Message {label}…").into()
+            PLACEHOLDER.into()
         };
         self.composer
             .update(cx, |c, cx| c.set_placeholder(text, cx));
@@ -1732,7 +1780,7 @@ impl AgentTab {
     }
 
     /// The right button: Stop, or Force stop once it is offered.
-    fn stop_pressed(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn stop_pressed(&mut self, cx: &mut Context<Self>) {
         if self.force {
             self.force_stop(cx);
         } else {
@@ -1778,33 +1826,60 @@ impl AgentTab {
                     self.pick_at(None, cx);
                     return;
                 }
-                let text = text.clone();
-                if self.conversation.pending_permission().is_some() {
-                    let answer = if text.trim().is_empty() {
-                        Answer::Allowed
-                    } else {
-                        Answer::Denied(Some(text.trim().to_string()))
-                    };
-                    self.answer(answer, cx).ok();
-                } else if text.trim().is_empty() && self.attachments.is_empty() {
-                    return;
-                } else if self.paused {
-                    // The box keeps the text until it is sent (`resume_after_classic`).
-                    self.send(text, cx);
-                    return;
-                } else {
-                    self.send(text, cx);
-                }
-                composer.update(cx, |c, cx| c.set_text(String::new(), cx));
+                self.submit(text.clone(), composer, cx);
             }
             ComposerEvent::Stop => {
-                if self.at.take().is_some() {
+                if self.menu.take().is_some() || self.at.take().is_some() {
                     cx.notify();
                 } else {
                     self.stop(cx);
                 }
             }
             ComposerEvent::AtTyped => self.open_at(cx),
+        }
+    }
+
+    /// The box's send (➤), as Enter on the box.
+    pub(crate) fn send_pressed(&mut self, cx: &mut Context<Self>) {
+        let composer = self.composer.clone();
+        let text = composer.read(cx).text().to_string();
+        self.submit(text, &composer, cx);
+    }
+
+    /// What Enter or ➤ does with the box's `text`: with a permission waiting, empty allows and
+    /// text denies with it as the reason; else it is sent. The box is cleared once it is used.
+    fn submit(&mut self, text: String, composer: &Entity<Composer>, cx: &mut Context<Self>) {
+        if self.conversation.pending_permission().is_some() {
+            let answer = if text.trim().is_empty() {
+                Answer::Allowed
+            } else {
+                Answer::Denied(Some(text.trim().to_string()))
+            };
+            self.answer(answer, cx).ok();
+        } else if text.trim().is_empty() && self.attachments.is_empty() {
+            return;
+        } else if self.paused {
+            // The box keeps the text until it is sent (`resume_after_classic`).
+            self.send(text, cx);
+            return;
+        } else {
+            self.send(text, cx);
+        }
+        composer.update(cx, |c, cx| c.set_text(String::new(), cx));
+    }
+
+    /// Open `menu` over its chip, in place of any other (Esc closes it).
+    #[allow(dead_code)] // opened by the chips' menus (Tasks 6–11); scenes open it now
+    pub fn open_menu(&mut self, menu: BoxMenu, cx: &mut Context<Self>) {
+        self.at = None;
+        self.menu = Some(menu);
+        cx.notify();
+    }
+
+    /// Close the box's menu (a click outside it).
+    pub(crate) fn close_menu(&mut self, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
         }
     }
 
@@ -2247,7 +2322,7 @@ impl AgentTab {
     }
 
     /// You have sent a message in this tab.
-    fn spoken(&self) -> bool {
+    pub(crate) fn spoken(&self) -> bool {
         self.conversation
             .items()
             .iter()
@@ -2257,7 +2332,7 @@ impl AgentTab {
     /// The mode chip's click (call 6): before the first message, the agent's next mode, chosen
     /// as the box chooses one (`choose`: live where the agent can, else a restart); after it,
     /// the chip is read-only (the box's mode menu replaces it).
-    fn next_mode(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn next_mode(&mut self, cx: &mut Context<Self>) {
         let Some(provider) = self.provider else {
             return;
         };
@@ -2310,7 +2385,7 @@ struct Look {
 }
 
 /// A small button: `primary` filled with the accent.
-fn button(
+pub(crate) fn button(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     primary: bool,
@@ -2335,8 +2410,8 @@ fn button(
         .child(label.into())
 }
 
-/// A chip on the composer.
-fn chip(text: impl Into<SharedString>, dim: bool, c: &Colors) -> gpui::Div {
+/// A chip with an edge (an attachment's).
+pub(crate) fn chip(text: impl Into<SharedString>, dim: bool, c: &Colors) -> gpui::Div {
     div()
         .px(px(10.))
         .py(px(2.))
@@ -2893,7 +2968,7 @@ impl AgentTab {
     }
 
     /// The right button: Stop while the turn runs, "Stopping…" until it ends, then Force stop.
-    fn stop_label(&self) -> Option<&'static str> {
+    pub(crate) fn stop_label(&self) -> Option<&'static str> {
         match (self.stopping.is_some(), self.force) {
             (true, true) => Some("Force stop"),
             (true, false) => Some("Stopping…"),
@@ -2902,11 +2977,13 @@ impl AgentTab {
         }
     }
 
+    /// The pane's top line: the status, and on the right what the conversation cost and how
+    /// full its context is (§1: no longer chips by the box).
     fn top_line(&self, c: &Colors) -> AnyElement {
-        let context = self
-            .conversation
-            .context_pct()
-            .map(|p| format!("context {p}%"));
+        let usage = usage_line(
+            self.conversation.cost_usd(),
+            self.conversation.context_pct(),
+        );
         div()
             .flex_none()
             .w_full()
@@ -2918,7 +2995,9 @@ impl AgentTab {
             .text_color(hsla(c.dim))
             .child(SharedString::from(status_word(self.status())))
             .child(div().flex_1())
-            .when_some(context, |d, t| d.child(SharedString::from(t)))
+            .when_some(usage, |d, t| {
+                d.child(self.marked("usage", div().child(SharedString::from(t))))
+            })
             .into_any_element()
     }
 
@@ -2977,18 +3056,14 @@ impl AgentTab {
             .into_any_element()
     }
 
-    fn composer_area(&self, c: &Colors, mono: SharedString, cx: &mut Context<Self>) -> AnyElement {
-        let mode = self
-            .provider
-            .filter(|p| !p.info().modes.is_empty())
-            .and(self.start.mode.clone());
-        let model = self
-            .conversation
-            .model()
-            .map(|m| model_chip(self.provider, m));
-        let cost = self.conversation.cost_usd().map(cost_chip);
-        let stop_label = self.stop_label();
-        let at = self.at.as_ref().map(|at| {
+    /// The `@` file list, over the box while it is open.
+    pub(crate) fn at_list(
+        &self,
+        c: &Colors,
+        mono: SharedString,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Div> {
+        self.at.as_ref().map(|at| {
             let rows: Vec<AnyElement> = at
                 .hits
                 .iter()
@@ -3038,125 +3113,7 @@ impl AgentTab {
                             .child(n),
                     )
                 })
-        });
-        div()
-            .flex_none()
-            .w_full()
-            .px(px(14.))
-            .pt(px(10.))
-            .pb(px(10.))
-            .border_t_1()
-            .border_color(hsla(c.card_border))
-            .flex()
-            .flex_col()
-            .children(at)
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(6.))
-                    .mb(px(8.))
-                    .when_some(mode, |d, m| {
-                        let fixed = self.spoken();
-                        d.child(
-                            div()
-                                .id("agent-mode")
-                                .when(!fixed, |d| {
-                                    d.cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _, cx| this.next_mode(cx)))
-                                })
-                                .child(chip(m, false, c)),
-                        )
-                    })
-                    .when_some(model, |d, m| d.child(chip(m, false, c)))
-                    .when_some(cost, |d, m| d.child(chip(m, true, c))),
-            )
-            .child(
-                div()
-                    .when(self.at.is_some(), |d| d.key_context("AtPopup"))
-                    .flex()
-                    .items_end()
-                    .gap(px(8.))
-                    .font_family(mono)
-                    .child(div().flex_1().min_w(px(0.)).child(self.composer.clone()))
-                    .child(match stop_label {
-                        Some(label) => button("agent-stop", label, false, c)
-                            .text_size(px(text::META))
-                            .on_click(cx.listener(|this, _, _, cx| this.stop_pressed(cx)))
-                            .into_any_element(),
-                        None => div()
-                            .px(px(8.))
-                            .py(px(3.))
-                            .text_size(px(text::META))
-                            .text_color(hsla(c.dim))
-                            .child("⏎")
-                            .into_any_element(),
-                    }),
-            )
-            // What goes with your next message (a dropped command block, Task 11), under the
-            // box until it is sent; its × takes it off.
-            .when(!self.attachments.is_empty(), |d| {
-                d.child(div().mt(px(6.)).flex().flex_wrap().gap(px(6.)).children(
-                    self.attachments.iter().enumerate().map(|(i, a)| {
-                        let (dim, text, hover) = (c.panel_dim, c.panel_text, c.panel_hover);
-                        let remove = div()
-                            .id(("attachment-remove", i))
-                            .size(px(14.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(3.))
-                            .text_color(hsla(dim))
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(hsla(hover)).text_color(hsla(text)))
-                            .child("×")
-                            .tooltip(|_, cx| -> gpui::AnyView {
-                                cx.new(|_| crate::sidebar_toggle::Tip("Remove".into()))
-                                    .into()
-                            })
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.remove_attachment_at(i, cx)),
-                            );
-                        #[cfg(feature = "ui-shots")]
-                        let remove = {
-                            let removes = self.removes.clone();
-                            removes.borrow_mut().resize(self.attachments.len(), None);
-                            remove.child(
-                                gpui::canvas(
-                                    move |b, _, _| {
-                                        if let Some(slot) = removes.borrow_mut().get_mut(i) {
-                                            *slot = Some(b);
-                                        }
-                                    },
-                                    |_, _, _, _| {},
-                                )
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .size_full(),
-                            )
-                        };
-                        chip(format!("📎 {}", a.lines().next().unwrap_or("")), true, c)
-                            .pr(px(4.))
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .child(remove)
-                    }),
-                ))
-            })
-            .child(
-                div()
-                    .mt(px(6.))
-                    .flex()
-                    .gap(px(12.))
-                    .text_size(px(text::META))
-                    .text_color(hsla(c.dim))
-                    .child("/ commands")
-                    .child("@ files"),
-            )
-            .into_any_element()
+        })
     }
 }
 
@@ -3240,7 +3197,7 @@ impl Render for AgentTab {
             .children(pending)
             // An error tab (no such agent) has nothing to send to.
             .when(self.provider.is_some(), |d| {
-                d.child(self.composer_area(&c, mono, cx))
+                d.child(self.box_area(&c, mono, cx))
             })
     }
 }
@@ -3346,9 +3303,6 @@ mod tests {
     fn words_and_chips() {
         assert_eq!(status_word(Status::Waiting), "needs you");
         assert_eq!(status_word(Status::Working), "working");
-        // The provider labels its models (`Provider::model_label`); without one, as it is.
-        assert_eq!(model_chip(None, "claude-opus-5-5"), "claude-opus-5-5");
-        assert_eq!(cost_chip(0.2116182), "$0.21");
         assert_eq!(elapsed_label(Duration::from_secs(4)), "4s");
         assert_eq!(elapsed_label(Duration::from_secs(65)), "1m 05s");
         assert_eq!(lines_label(1), "1 line");
@@ -3441,6 +3395,7 @@ mod tests {
                 ("code", c.code_text, c.code_fill),
                 ("code dim", c.code_dim, c.code_fill),
                 ("todo active", c.todo_active, c.panel),
+                ("box dim", c.box_dim, c.box_fill),
             ] {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got:.2}");

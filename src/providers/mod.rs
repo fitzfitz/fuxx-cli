@@ -194,6 +194,11 @@ pub trait Provider: Sync {
     fn model_label(&self, model: &str) -> String {
         model.to_string()
     }
+    /// Whether catalog model `id` stands for "the agent's own default" rather than naming a
+    /// model (the chip then names the model it stands for by another entry).
+    fn stands_for_default(&self, _id: &str) -> bool {
+        false
+    }
     /// What was said before in a resumed conversation (empty unless the provider can read it).
     /// Reads a file: call it off the UI thread.
     fn history(&self, _start: &Start) -> Vec<Past> {

@@ -432,6 +432,9 @@ pub struct Composer {
     last_origin: Option<Point<Pixels>>,
     last_bounds: Option<Bounds<Pixels>>,
     last_line_height: Pixels,
+    /// Drawn with no edge, fill or padding of its own: a box around it draws them (the agent
+    /// box, M11ak).
+    bare: bool,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -466,6 +469,15 @@ impl Composer {
             last_origin: None,
             last_bounds: None,
             last_line_height: px(0.),
+            bare: false,
+        }
+    }
+
+    /// Draw it `bare` (no edge, fill or padding: the box around it draws them) or framed.
+    pub fn set_bare(&mut self, bare: bool, cx: &mut Context<Self>) {
+        if self.bare != bare {
+            self.bare = bare;
+            cx.notify();
         }
     }
 
@@ -831,12 +843,14 @@ impl Render for Composer {
         div()
             .w_full()
             .overflow_hidden()
-            .px_2()
-            .py_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(hsla(edge))
-            .bg(hsla(ui.sidebar_background))
+            .when(!self.bare, |d| {
+                d.px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(hsla(edge))
+                    .bg(hsla(ui.sidebar_background))
+            })
             .text_color(hsla(ui.text))
             .key_context("Composer")
             .track_focus(&self.focus_handle)

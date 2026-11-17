@@ -332,6 +332,12 @@ impl Provider for Claude {
         }
     }
 
+    /// `initialize`'s `default` entry ("Default (recommended)") stands for whichever model
+    /// Claude picks; an alias such as `opus` names the same model by its own name.
+    fn stands_for_default(&self, id: &str) -> bool {
+        id == "default"
+    }
+
     fn translator(&self) -> Box<dyn Translator> {
         Box::new(ClaudeTranslator::default())
     }

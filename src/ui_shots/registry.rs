@@ -222,6 +222,10 @@ pub(super) const ORDER: &[&str] = &[
     "agent-box-change-waits",
     "agent-box-change-restart",
     "agent-box-restart-keeps-queued-text",
+    "agent-box-empty",
+    "agent-box-working",
+    "agent-box-attachment",
+    "agent-box-long-text",
 ];
 
 /// Every scene, in `ORDER`. Panics, naming the scene, if one is in no area or in two, or if
