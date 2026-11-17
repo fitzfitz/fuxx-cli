@@ -1676,7 +1676,7 @@ fn file_view_scenes() {
         .map(|l| format!("{l}\n"))
         .collect();
     let started = std::time::Instant::now();
-    let lines = h.highlight(std::path::Path::new("big.rs"), &text);
+    let lines = h.colour(std::path::Path::new("big.rs"), &text).spans;
     let took = started.elapsed();
     assert_eq!(lines.len(), 5000);
     println!(

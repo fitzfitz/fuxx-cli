@@ -30,6 +30,7 @@ mod browser_url;
 mod changes_panel;
 mod chrome_cache;
 mod cli;
+mod code_outline;
 mod colors;
 mod composer;
 mod cursor_look;
