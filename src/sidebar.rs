@@ -95,6 +95,9 @@ pub struct WorkspaceFacts<'a> {
     pub title: Option<&'a str>,
     /// In a folder's group: where its terminal is now (`home_relative`).
     pub here: Option<String>,
+    /// One of its terminals or agent tabs is Working, whatever `status` won (a closed group's
+    /// header shows work in progress over a finished one's ✓).
+    pub working: bool,
 }
 
 /// One row of the sidebar.
@@ -117,8 +120,8 @@ pub struct HeaderRow {
     pub mark: Option<Status>,
     /// How many of its workspaces wait for you ("N waiting" while it's collapsed).
     pub waiting: usize,
-    /// Its first three workspaces' avatar colours and statuses (small avatars while collapsed).
-    pub faces: Vec<(TabColor, Status)>,
+    /// One of its workspaces has a terminal or agent tab Working (its live mark while collapsed).
+    pub working: bool,
 }
 
 /// A workspace's row.
@@ -210,11 +213,9 @@ pub fn rows(
                         .iter()
                         .filter(|s| s.status == Status::Waiting)
                         .count(),
-                    faces: inside
+                    working: inside
                         .iter()
-                        .take(FACES)
-                        .map(|s| (avatar_color(s.color, s.label), s.status))
-                        .collect(),
+                        .any(|s| s.working || s.status == Status::Working),
                     label: groups::group_label(&key, &all),
                     key,
                     first,
@@ -834,7 +835,7 @@ const LIST_TOP: f32 = 10.0;
 /// Above and below a row's text: `ui_tokens`' row heights are its lines plus twice this.
 #[cfg(test)]
 const ROW_PAD_Y: f32 = 7.0;
-/// A workspace's avatar (M11r): its side; a collapsed group shows up to `FACES` small ones.
+/// A workspace's avatar (M11r): its side.
 pub(crate) const AVATAR: f32 = 28.0;
 const AVATAR_RADIUS: f32 = 8.0;
 const AVATAR_TEXT: f32 = 11.0;
@@ -845,10 +846,6 @@ const AVATAR_GAP: f32 = 10.0;
 const BADGE: f32 = 14.0;
 const BADGE_OUT: f32 = 3.0;
 const BADGE_DOT: f32 = 6.0;
-const FACES: usize = 3;
-/// A collapsed group's small avatars, and how much each overlaps the one before.
-const FACE: f32 = 14.0;
-const FACE_OVERLAP: f32 = 4.0;
 /// A group header's letter tile.
 const TILE: f32 = 18.0;
 const BRANCH_SHRINK: f32 = 20.0;
@@ -1156,18 +1153,78 @@ pub(crate) fn group_hash(key: &GroupKey) -> u64 {
     hasher.finish()
 }
 
-/// A row's status badge (M11r, as the mockup): a dot in a ring of the row's `surface` over the
-/// avatar's bottom-right corner, in the status colour (working: with a soft halo; idle: dim
-/// while a program runs, fainter at the prompt). Drawn still: no animation, so no redraws.
-fn badge(status: Status, running: bool, ui: UiColors, surface: Rgb) -> Div {
+/// What a row's badge shows (chore, 2026-11-17: colour means activity).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BadgeLook {
+    /// A dot in `color`, with a soft halo while working.
+    Dot { color: Rgb, halo: bool },
+    /// A small muted ✓: it finished, nothing runs.
+    Check(Rgb),
+}
+
+/// A row's badge for `status` (`running`: a program other than the shell is in front).
+pub fn badge_look(status: Status, running: bool, ui: &UiColors) -> BadgeLook {
     let color = match status {
         Status::Working => ui.ring_working,
         Status::Waiting => ui.ring_waiting,
-        Status::Done => ui.ring_done,
+        Status::Done => return BadgeLook::Check(ui.text_dim),
         Status::Idle if running => ui.text_dim,
         Status::Idle => ui.text_faint,
     };
-    let halo = (status == Status::Working).then(|| mix(surface, color, 0.35));
+    BadgeLook::Dot {
+        color,
+        halo: status == Status::Working,
+    }
+}
+
+/// What a closed group's header shows after its name.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ClosedMark {
+    /// "N waiting".
+    Waiting(usize),
+    /// Working's live mark: one in it works (never hidden behind a finished one's ✓).
+    Live(Status),
+    /// A small muted ✓: one in it finished and none works.
+    Done,
+}
+
+/// A header's `ClosedMark`: none while it's open or when all in it idle.
+pub fn closed_mark(header: &HeaderRow) -> Option<ClosedMark> {
+    if !header.collapsed {
+        return None;
+    }
+    if header.waiting > 0 {
+        return Some(ClosedMark::Waiting(header.waiting));
+    }
+    if header.working {
+        return Some(ClosedMark::Live(Status::Working));
+    }
+    match header.mark? {
+        Status::Idle => None,
+        Status::Done => Some(ClosedMark::Done),
+        live => Some(ClosedMark::Live(live)),
+    }
+}
+
+/// A row's status badge (M11r, as the mockup): a ring of the row's `surface` over the avatar's
+/// bottom-right corner holding `badge_look`: a dot in the status colour (working: with a soft
+/// halo; idle: dim while a program runs, fainter at the prompt), or Done's muted ✓. Drawn
+/// still: no animation, so no redraws.
+fn badge(status: Status, running: bool, ui: UiColors, surface: Rgb) -> Div {
+    let (inside, halo) = match badge_look(status, running, &ui) {
+        BadgeLook::Dot { color, halo } => (
+            div()
+                .size(px(BADGE_DOT))
+                .rounded_full()
+                .bg(hsla(color))
+                .into_any_element(),
+            halo.then(|| mix(surface, color, 0.35)),
+        ),
+        BadgeLook::Check(color) => (
+            status_mark::done_check(color, px(BADGE - 4.0)).into_any_element(),
+            None,
+        ),
+    };
     div()
         .absolute()
         .right(px(-BADGE_OUT))
@@ -1180,7 +1237,7 @@ fn badge(status: Status, running: bool, ui: UiColors, surface: Rgb) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .child(div().size(px(BADGE_DOT)).rounded_full().bg(hsla(color)))
+        .child(inside)
 }
 
 /// A shortcut's keys in a small cap (the search and New buttons, M11r).
@@ -1345,6 +1402,12 @@ impl Workspace {
                         .and_then(|id| items.iter().find(|s| s.id == id))
                         .and_then(|s| s.title.as_deref()),
                     here: heres.get(i).cloned().flatten(),
+                    working: (self.model.terminals(ws).iter())
+                        .filter_map(|&id| items.iter().find(|s| s.id == id))
+                        .any(|s| s.status == Status::Working)
+                        || (self.model.agent_tabs(ws).iter())
+                            .filter_map(|tab| self.agents.get(tab))
+                            .any(|a| a.status == Status::Working),
                 }
             })
             .collect();
@@ -1401,8 +1464,8 @@ impl Workspace {
     }
 
     /// The status marks on screen that are their own views (`mark_view`), by their key in
-    /// `Workspace::marks`: a closed group's header in the scrolled view (its sessions' most
-    /// urgent, unless it counts some waiting; none with the sidebar hidden), each terminal tab
+    /// `Workspace::marks`: a closed group's header in the scrolled view (its live mark,
+    /// `ClosedMark::Live`; none with the sidebar hidden), each terminal tab
     /// and each agent tab (R2: `AGENT_MARK`, its `aN`) in the panes' tab bars, and the status
     /// bar's terminal (the followed one, M11i); none for Idle (a glyph or dot is drawn then). A
     /// workspace's row draws a still badge (M11r): none.
@@ -1412,9 +1475,12 @@ impl Workspace {
             .rows_in_view(Instant::now())
             .into_iter()
             .filter_map(|row| match row {
-                SidebarRow::Header(h) if h.waiting == 0 => h
-                    .mark
-                    .map(|status| ((HEADER_MARK, group_hash(&h.key)), status)),
+                SidebarRow::Header(h) => match closed_mark(&h) {
+                    Some(ClosedMark::Live(status)) => {
+                        Some(((HEADER_MARK, group_hash(&h.key)), status))
+                    }
+                    _ => None,
+                },
                 _ => None,
             });
         let tabs = self
@@ -1562,8 +1628,15 @@ impl Workspace {
                 .into_iter()
                 .filter(|(status, _)| *status != Status::Idle)
                 .map(|(_, since)| since);
+            // And the 🔔 popover's entries, while it's open (each says how long ago).
+            let notifications = self
+                .notifications_popover
+                .iter()
+                .flat_map(|_| self.notifications.shown(|_| true))
+                .map(|(entry, _)| entry.at);
             sinces
                 .chain(palette)
+                .chain(notifications)
                 .map(|since| next_age_change(now.saturating_duration_since(since)))
                 .min()
         };
@@ -1759,7 +1832,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A group's header: chevron, name, then (closed) its most urgent mark, its workspace count,
+    /// A group's header: chevron, name, then (closed) its status (`closed_mark`), open its count,
     /// and on hover a + for a new workspace in it. Click opens or closes it.
     fn render_header(
         &self,
@@ -1790,43 +1863,11 @@ impl Workspace {
             }
             _ => chevron(angle, color).into_any_element(),
         };
-        // Closed: who's inside (small avatars) and how many wait, else its most urgent mark.
-        let closed_marks = header.collapsed.then(|| {
-            // Overlapping, each drawn over the one before (placed: a negative margin breaks the
-            // row's layout).
-            let n = header.faces.len() as f32;
-            let faces = div()
-                .flex_none()
-                .relative()
-                .w(px((n * (FACE - FACE_OVERLAP) + FACE_OVERLAP).max(0.0)))
-                .h(px(FACE))
-                .children(header.faces.iter().enumerate().map(|(i, &(color, _))| {
-                    let (fill, _, _) = ui.avatars[color as usize];
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left(px(i as f32 * (FACE - FACE_OVERLAP)))
-                        .size(px(FACE))
-                        .rounded(px(5.0))
-                        .bg(hsla(fill))
-                        .border_2()
-                        .border_color(hsla(ui.card))
-                }));
-            let status = (header.waiting == 0)
-                .then_some(header.mark)
-                .flatten()
-                .filter(|s| *s != Status::Idle)
-                .map(|status| {
-                    let key = group_hash(&header.key);
-                    let size = px(STATUS_MARK);
-                    let mark =
-                        self.mark_view(HEADER_MARK, key, status, size, ui.sidebar_background, cx);
-                    div().flex_none().ml(px(6.0)).child(mark)
-                });
-            let waiting = (header.waiting > 0).then(|| {
-                div()
-                    .flex_none()
-                    .ml(px(6.0))
+        // Closed: its status, not who's inside (chore, 2026-11-17: the small avatars' colours
+        // read as status lights): how many wait, else Working's mark, else Done's muted ✓.
+        let closed_marks = closed_mark(header).map(|closed| {
+            let mark = match closed {
+                ClosedMark::Waiting(n) => div()
                     .px(px(6.0))
                     .h(px(16.0))
                     .flex()
@@ -1836,16 +1877,18 @@ impl Workspace {
                     .bg(hsla(ui.waiting_tint))
                     .text_size(px(text::META))
                     .text_color(hsla(ui.ring_waiting))
-                    .child(format!("{} waiting", header.waiting))
-            });
-            div()
-                .flex_none()
-                .flex()
-                .items_center()
-                .ml(px(6.0))
-                .child(faces)
-                .children(waiting)
-                .children(status)
+                    .child(format!("{n} waiting"))
+                    .into_any_element(),
+                ClosedMark::Live(status) => {
+                    let key = group_hash(&header.key);
+                    let size = px(STATUS_MARK);
+                    self.mark_view(HEADER_MARK, key, status, size, ui.sidebar_background, cx)
+                }
+                ClosedMark::Done => {
+                    status_mark::done_check(ui.text_dim, px(STATUS_MARK)).into_any_element()
+                }
+            };
+            div().flex_none().ml(px(6.0)).child(mark)
         });
         // What the group is: a folder (open while the group is), or a host's globe (2026-11-10,
         // your call: "ganti avatar group title jadi ikon folder").
@@ -1908,7 +1951,7 @@ impl Workspace {
                             .font_features(tabular())
                             .text_color(hsla(ui.text_faint))
                             .group_hover("sidebar-header", |style| style.invisible())
-                            // Closed, its small avatars say it (M11r).
+                            // Closed, its status says it (chore, 2026-11-17).
                             .when(!header.collapsed, |count| {
                                 count.child(header.count.to_string())
                             }),
@@ -3121,6 +3164,7 @@ mod tests {
             running: false,
             title: None,
             here: None,
+            working: false,
         }
     }
 
@@ -4238,10 +4282,85 @@ mod tests {
         );
         let h = header(&rows[0]);
         assert_eq!(h.waiting, 2);
-        // At most three small avatars, in order.
-        assert_eq!(h.faces.len(), 3);
-        assert_eq!(h.faces[0], (TabColor::Teal, Status::Waiting));
-        assert_eq!(h.faces[2].1, Status::Idle);
+        // Closed, it says how many wait (no avatars: their colours read as status lights).
+        assert_eq!(closed_mark(h), Some(ClosedMark::Waiting(2)));
+    }
+
+    /// Chore (2026-11-17, "nothings running but sidebar is clored like somehting is actively
+    /// running"): colour means activity. Only Working keeps a bright dot (with its halo) and
+    /// Waiting its own colour; Done is a muted ✓, never a green dot; Idle is unchanged.
+    #[test]
+    fn a_badge_is_bright_only_while_something_happens() {
+        let ui = crate::theme::Theme::default().ui();
+        assert_eq!(
+            badge_look(Status::Working, true, &ui),
+            BadgeLook::Dot {
+                color: ui.ring_working,
+                halo: true
+            }
+        );
+        assert_eq!(
+            badge_look(Status::Waiting, true, &ui),
+            BadgeLook::Dot {
+                color: ui.ring_waiting,
+                halo: false
+            }
+        );
+        for running in [true, false] {
+            assert_eq!(
+                badge_look(Status::Done, running, &ui),
+                BadgeLook::Check(ui.text_dim)
+            );
+        }
+        assert_eq!(
+            badge_look(Status::Idle, true, &ui),
+            BadgeLook::Dot {
+                color: ui.text_dim,
+                halo: false
+            }
+        );
+        assert_eq!(
+            badge_look(Status::Idle, false, &ui),
+            BadgeLook::Dot {
+                color: ui.text_faint,
+                halo: false
+            }
+        );
+    }
+
+    /// A closed group shows its status, not who's inside: "N waiting", else Working's live mark
+    /// when one works, else Done's muted ✓, else nothing; open, nothing (its rows say it).
+    #[test]
+    fn a_closed_header_shows_its_status_and_nothing_when_all_idle() {
+        let now = Instant::now();
+        let closed = |statuses: &[Status]| {
+            let facts: Vec<_> = statuses
+                .iter()
+                .enumerate()
+                .map(|(i, &s)| {
+                    let mut f = facts("x", s, now, Some(folder("/api")));
+                    f.color = Some(TabColor::ALL[i % TabColor::ALL.len()]);
+                    f
+                })
+                .collect();
+            let rows = rows(&numbered(facts), &[folder("/api")], None, &[], now);
+            closed_mark(header(&rows[0]))
+        };
+        use Status::*;
+        assert_eq!(closed(&[Idle, Waiting, Done]), Some(ClosedMark::Waiting(1)));
+        assert_eq!(closed(&[Idle, Working]), Some(ClosedMark::Live(Working)));
+        // Work in progress is never hidden behind a finished one's ✓ (Done is muted now).
+        assert_eq!(
+            closed(&[Idle, Working, Done]),
+            Some(ClosedMark::Live(Working))
+        );
+        assert_eq!(closed(&[Done, Working]), Some(ClosedMark::Live(Working)));
+        assert_eq!(closed(&[Idle, Done]), Some(ClosedMark::Done));
+        assert_eq!(closed(&[Idle, Idle]), None);
+        // Open: nothing after its name.
+        let f = facts("x", Working, now, Some(folder("/api")));
+        let rows = rows(&numbered(vec![f]), &[], None, &[], now);
+        assert_eq!(closed_mark(header(&rows[0])), None);
     }
 
     #[test]

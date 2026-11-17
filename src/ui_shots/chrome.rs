@@ -399,30 +399,50 @@ pub(super) fn chrome_status_elsewhere() {
     let (mut cx, window, ws) = elsewhere_window();
     let mut steps = Steps::new(n, &mut cx, window, &ws);
     let ws = &ws;
-    steps.step(
+    // Each status's age held (`held_step`): live, agent's or tests's turns every second, and
+    // under load a check and its retry each caught a turn (chore, 2026-11-17).
+    held_step(
+        &mut steps,
         &mut cx,
         window,
+        ws,
+        n,
         "agent (elsewhere) works",
         Seen::Changes,
         |cx| report(cx, ws, "agent", Status::Working),
     );
-    steps.step(
+    held_step(
+        &mut steps,
         &mut cx,
         window,
+        ws,
+        n,
         "agent is done (a short run)",
         Seen::Changes,
         |cx| report(cx, ws, "agent", Status::Done),
     );
-    steps.step(&mut cx, window, "agent waits", Seen::Changes, |cx| {
-        let i = index_of(cx, ws, "agent");
-        cx.update(|cx| ws.update(cx, |ws, cx| ws.set_status(i, Status::Waiting, false, cx)));
-    });
+    held_step(
+        &mut steps,
+        &mut cx,
+        window,
+        ws,
+        n,
+        "agent waits",
+        Seen::Changes,
+        |cx| {
+            let i = index_of(cx, ws, "agent");
+            cx.update(|cx| ws.update(cx, |ws, cx| ws.set_status(i, Status::Waiting, false, cx)));
+        },
+    );
     steps.step(&mut cx, window, "agent idle", Seen::Changes, |cx| {
         report(cx, ws, "agent", Status::Idle)
     });
-    steps.step(
+    held_step(
+        &mut steps,
         &mut cx,
         window,
+        ws,
+        n,
         "tests (not focused) works",
         Seen::Changes,
         |cx| report(cx, ws, "tests", Status::Working),
@@ -439,9 +459,16 @@ pub(super) fn chrome_status_elsewhere() {
             }
         },
     );
-    steps.step(&mut cx, window, "tests is done", Seen::Changes, |cx| {
-        report(cx, ws, "tests", Status::Done)
-    });
+    held_step(
+        &mut steps,
+        &mut cx,
+        window,
+        ws,
+        n,
+        "tests is done",
+        Seen::Changes,
+        |cx| report(cx, ws, "tests", Status::Done),
+    );
     let unseen = cx.read(|cx| ws.read(cx).notifications.unseen());
     assert_eq!(
         unseen, 2,
@@ -540,7 +567,8 @@ pub(super) fn chrome_model_edits() {
 
 /// Notifications reach the footer's 🔔 and, with the sidebar hidden, the title band's: a
 /// terminal elsewhere is done after a short run (listed, unseen, no banner), the 🔔 clicked
-/// open (all seen), the popover closed; then hidden, another one.
+/// open (all seen), its entry's age turning with nothing notified (its timer redraws it), the
+/// popover closed; then hidden, another one.
 ///
 /// Panics unless after each the window shows what a full redraw does, and it changed.
 pub(super) fn chrome_notifications() {
@@ -590,6 +618,26 @@ pub(super) fn chrome_notifications() {
         "{n}: the popover opened"
     );
     assert_eq!(unseen(&mut cx), 0, "{n}: all seen");
+    // Its entry's age ("0s", then "1s"…) turns with nothing notified: the popover's ages are
+    // on screen, so their turns are timed as the rows' are (chore, 2026-11-17: the open step
+    // went stale when its "0s" turned between the check's two captures).
+    steps.step(
+        &mut cx,
+        window,
+        "its entry's age turns, nothing notified",
+        Seen::Changes,
+        |cx| {
+            let at = cx.read(|cx| {
+                let shown = ws.read(cx).notifications.shown(|_| true);
+                shown.first().map(|(entry, _)| entry.at).expect("its entry")
+            });
+            // Its second turn from now ("1s" to "2s", ages count in seconds then): its first
+            // can coincide with the rows' timer agent's Done set before `minutes_old` dated it
+            // back, which redraws the window as it fires.
+            let turn = crate::sidebar::next_age_change(at.elapsed()) + Duration::from_secs(1);
+            crate::ui_shots::prof::sleep(turn + LABEL_LATE);
+        },
+    );
     steps.step(&mut cx, window, "the popover closed", Seen::Changes, |cx| {
         on_ws(cx, window, ws, |ws, window, cx| {
             ws.dismiss_notifications(window, cx)
@@ -1834,10 +1882,35 @@ fn agent_status_step(
     seen: Seen,
     act: impl FnOnce(&mut VisualTestAppContext),
 ) {
+    held_step(
+        steps,
+        cx,
+        window,
+        ws,
+        "chrome-agent-status",
+        what,
+        seen,
+        act,
+    );
+}
+
+/// One step: `act`, then the ages it set held (`hold_ages`), which must read the same for the
+/// rest of the scene `n`.
+#[allow(clippy::too_many_arguments)]
+fn held_step(
+    steps: &mut Steps,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    n: &str,
+    what: &str,
+    seen: Seen,
+    act: impl FnOnce(&mut VisualTestAppContext),
+) {
     steps.step(cx, window, what, seen, |cx| {
         act(cx);
         hold_ages(cx, ws);
-        assert_ages_hold(cx, ws, "chrome-agent-status", what);
+        assert_ages_hold(cx, ws, n, what);
     });
 }
 
