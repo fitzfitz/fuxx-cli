@@ -53,6 +53,55 @@ pub(super) const SCENES: &[Scene] = &[
         kind: Kind::State,
         sources: &["src/file_tab.rs", "src/scrollbar.rs"],
     },
+    Scene {
+        name: "file-live-glow",
+        run: file_live_glow_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/file_tab.rs", "src/live_lines.rs"],
+    },
+    Scene {
+        name: "file-live-marks",
+        run: file_live_marks_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/file_tab.rs", "src/live_lines.rs"],
+    },
+    Scene {
+        name: "file-live-none",
+        run: file_live_none_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/file_tab.rs", "src/live_lines.rs"],
+    },
+    Scene {
+        name: "file-live-tooltip",
+        run: file_live_tooltip_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/live_lines.rs",
+            "src/sidebar_toggle.rs",
+        ],
+    },
+    Scene {
+        name: "file-live-modes",
+        run: file_live_modes_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/live_lines.rs",
+            "src/diff_view.rs",
+            "src/md_preview.rs",
+        ],
+    },
 ];
 
 /// A file tab (M11g) in a pane beside a terminal's tab: opened twice for one file it is one tab,
@@ -2491,6 +2540,601 @@ fn file_diff_scenes() {
         };
         render_with(&theme, window_dims, build, act);
         println!("ui-shots: file-diff-toggle-clicks-{slug} ok");
+    }
+}
+
+// M11af Task 6: the glow, the age words and the marks (a file tab's live changes).
+
+/// Fourteen short lines, so a run's words have room after its first line.
+const LIVE_FIXTURE: &str = "fn main() {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+    let g = 7;
+    let h = 8;
+    let i = 9;
+    let j = 10;
+    let k = 11;
+    let l = 12;
+}
+";
+
+/// The scenes' clock: every age is counted back from it (frozen tabs never poll).
+fn live_now() -> std::time::SystemTime {
+    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000)
+}
+
+/// A record of `lines` lines, each `(block, who, sure, seconds ago)` applied in turn (lines
+/// changed in place), as a read of the file would make it.
+fn live_record(
+    lines: usize,
+    changes: &[(
+        std::ops::Range<usize>,
+        crate::live_lines::Who,
+        crate::live_lines::Sure,
+        u64,
+    )],
+) -> crate::live_lines::LineRecord {
+    use crate::live_lines::{Compared, LineRecord, Mark};
+    let mut record = LineRecord::baseline(lines);
+    for (block, who, sure, ago) in changes {
+        let c = Compared {
+            new_of_old: (0..lines)
+                .map(|i| (!block.contains(&i)).then_some(i))
+                .collect(),
+            blocks: vec![block.clone()],
+        };
+        let mark = Mark {
+            who: who.clone(),
+            sure: *sure,
+            when: live_now() - std::time::Duration::from_secs(*ago),
+        };
+        record.apply(&c, lines, mark);
+    }
+    record
+}
+
+type LiveSlot = std::rc::Rc<std::cell::RefCell<Option<gpui::Entity<crate::file_tab::FileTab>>>>;
+/// What a scene read of its tab: its geometry and the age words drawn (line, words).
+type LiveSeen = Option<(crate::file_tab::Geom, Vec<(usize, String)>)>;
+
+/// A frozen file tab on `path` alone in the window (kept in `slot`).
+fn live_tab(
+    theme: Theme,
+    path: PathBuf,
+    slot: LiveSlot,
+) -> impl FnOnce(&mut Window, &mut App) -> AnyView {
+    move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_global(shot_appearance(theme, cx));
+        cx.bind_keys(crate::key_bindings());
+        let tab = cx.new(|cx| {
+            let mut tab = crate::file_tab::FileTab::new(
+                path,
+                crate::layout_model::FileMode::Plain,
+                window,
+                cx,
+            );
+            tab.frozen = true;
+            tab
+        });
+        *slot.borrow_mut() = Some(tab.clone());
+        tab.into()
+    }
+}
+
+fn live_frame(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
+    cx.update_window(window, |_, window, _| window.refresh())
+        .expect("refresh");
+    cx.run_until_parked();
+}
+
+/// The fixture folder, with `name` written as `text`.
+fn live_file(name: &str, text: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-file-live");
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let path = dir.join(name);
+    std::fs::write(&path, text).expect("the fixture");
+    path
+}
+
+fn live_near(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, by: u8) -> bool {
+    p.iter()
+        .zip([c.r, c.g, c.b])
+        .all(|(a, b)| a.abs_diff(b) <= by)
+}
+
+/// The gutter's text edge before M11af (no marks' column): `GUTTER_LEFT` 12, two digits,
+/// `NUMBER_GAP` 8, `BAR_WIDTH` 3, `TEXT_GAP` 10.
+fn plain_text_left(cell: f32) -> f32 {
+    12.0 + 2.0 * cell + 8.0 + 3.0 + 10.0
+}
+
+/// `file-live-glow` (both themes): runs changed 2 s, 20 s, 40 s and 70 s ago (lines 2–3, 6,
+/// 9–10 and 13): the first three tinted the warm accent at 20 %, 11 % and 5 % over the whole
+/// row, the fourth (cooled) and the unchanged lines not; the words `just now`, `20 s ago` and
+/// `40 s ago` once per run, in the accent, after its first line's end (none after its other
+/// lines, none for the cooled run); the marks' column open (the text 16 pt further right).
+fn file_live_glow_scenes() {
+    use crate::file_tab::{GLOW, WARM_RGB};
+    use crate::live_lines::{Sure, Who};
+    use crate::theme::mix;
+    use crate::ui_tokens::{TEXT_MIN, ensure_contrast};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let path = live_file("glow.rs", LIVE_FIXTURE);
+    let dims = size(px(760.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let n = format!("file-live-glow-{slug}");
+        let theme = shot_theme(name);
+        let slot: LiveSlot = Rc::default();
+        let build = live_tab(theme, path.clone(), slot.clone());
+        let seen: Rc<RefCell<LiveSeen>> = Rc::default();
+        let keep = seen.clone();
+        let widths: Rc<RefCell<Vec<usize>>> = Rc::default();
+        let keep_widths = widths.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            live_frame(cx, window);
+            let record = live_record(
+                14,
+                &[
+                    (1..3, Who::You, Sure::Exact, 2),
+                    (5..6, Who::You, Sure::Exact, 20),
+                    (8..10, Who::You, Sure::Exact, 40),
+                    (12..13, Who::You, Sure::Exact, 70),
+                ],
+            );
+            cx.update(|cx| tab.update(cx, |t, _| t.set_live_for_shot(record, live_now(), None)));
+            live_frame(cx, window);
+            *keep.borrow_mut() = cx.read(|cx| {
+                let t = tab.read(cx);
+                *keep_widths.borrow_mut() = t.doc().expect("its text").widths.to_vec();
+                Some((t.geom().expect("drawn"), t.live_words()))
+            });
+        };
+        let shot = render_with(&theme, dims, build, act);
+        keep_shot(&n, &shot);
+        let (g, words) = seen.borrow().clone().expect("read");
+        let widths = widths.borrow().clone();
+        let words: Vec<(usize, &str)> = words.iter().map(|(l, w)| (*l, w.as_str())).collect();
+        assert_eq!(
+            words,
+            [(1, "just now"), (5, "20 s ago"), (8, "40 s ago")],
+            "{n}: one age per warm run, at its first line"
+        );
+        let cw = f32::from(g.cell_width);
+        assert!(g.marks_left.is_some(), "{n}: the marks' column is open");
+        assert_eq!(
+            f32::from(g.text_left),
+            plain_text_left(cw) + 16.0,
+            "{n}: the text 16 pt further right"
+        );
+        let bg = theme.background;
+        let at = |x: f32, line: usize| {
+            let y = f32::from(g.bounds.top() + g.line_height * (line as f32 + 0.5));
+            pixel_at(&shot, dims, x, y)
+        };
+        let right = f32::from(g.bounds.right()) - 6.0;
+        for (line, level) in [(1, 3), (2, 3), (5, 2), (8, 1), (9, 1)] {
+            let want = mix(bg, WARM_RGB, GLOW[level - 1]);
+            let p = at(right, line);
+            println!("ui-shots: {n}: line {line} level {level}: {p:?} (want {want:?})");
+            assert!(
+                live_near(p, want, 3),
+                "{n}: line {line}'s glow {p:?}, not {want:?}"
+            );
+            assert!(!live_near(p, bg, 1), "{n}: line {line} tinted");
+        }
+        for line in [0, 3, 4, 12] {
+            let p = at(right, line);
+            assert!(live_near(p, bg, 1), "{n}: line {line} untinted: {p:?}");
+        }
+        // The words: in the accent (readable on the background), after the line's end.
+        let ink = ensure_contrast(WARM_RGB, bg, TEXT_MIN);
+        let inked = |line: usize| {
+            let from = f32::from(g.bounds.left() + g.text_left) + cw * widths[line] as f32 + 4.0;
+            let y0 = f32::from(g.bounds.top() + g.line_height * line as f32);
+            (0..140).any(|dx| {
+                (2..(f32::from(g.line_height) as i32 - 2)).any(|dy| {
+                    let p = pixel_at(&shot, dims, from + dx as f32 * 0.5, y0 + dy as f32);
+                    live_near(p, ink, 48)
+                })
+            })
+        };
+        for line in [1, 5, 8] {
+            assert!(inked(line), "{n}: the age words after line {line}");
+        }
+        for line in [0, 2, 9, 12] {
+            assert!(!inked(line), "{n}: no words after line {line}");
+        }
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-live-marks` (both themes): four lines changed a while ago (nothing glows), each with
+/// its mark in the column between the numbers and the bar: Claude's exact change a filled
+/// circle in its colour with its letter; Claude's guessed one hollow (its ring in that colour);
+/// codex's (a program fuxx has no colour for) hollow and grey; yours filled teal. Unmarked lines
+/// leave the column empty.
+fn file_live_marks_scenes() {
+    use crate::edit_ledger::agent_mark_for;
+    use crate::live_lines::{Sure, Who};
+    use crate::tab_color::TabColor;
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+    use alacritty_terminal::vte::ansi::Rgb;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let path = live_file("marks.rs", LIVE_FIXTURE);
+    let dims = size(px(760.0), px(360.0));
+    let claude = agent_mark_for("claude");
+    let codex = agent_mark_for("codex");
+    assert_eq!(codex.rgb, None, "codex has no colour of its own");
+    for &(slug, name) in shot_themes() {
+        let n = format!("file-live-marks-{slug}");
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let slot: LiveSlot = Rc::default();
+        let build = live_tab(theme, path.clone(), slot.clone());
+        let seen: Rc<Cell<Option<crate::file_tab::Geom>>> = Rc::default();
+        let keep = seen.clone();
+        let (claude_mark, codex) = (claude.clone(), codex.clone());
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            live_frame(cx, window);
+            let record = live_record(
+                14,
+                &[
+                    (1..2, Who::Agent(claude_mark.clone()), Sure::Exact, 90),
+                    (3..4, Who::Agent(claude_mark), Sure::Guess, 90),
+                    (5..6, Who::Agent(codex), Sure::Guess, 90),
+                    (7..8, Who::You, Sure::Exact, 90),
+                ],
+            );
+            cx.update(|cx| tab.update(cx, |t, _| t.set_live_for_shot(record, live_now(), None)));
+            live_frame(cx, window);
+            keep.set(cx.read(|cx| tab.read(cx).geom()));
+        };
+        let shot = render_with(&theme, dims, build, act);
+        keep_shot(&n, &shot);
+        let g = seen.get().expect("drawn");
+        let cw = f32::from(g.cell_width);
+        assert_eq!(
+            f32::from(g.text_left),
+            plain_text_left(cw) + 16.0,
+            "{n}: the marks' column, 16 pt"
+        );
+        let left = f32::from(g.bounds.left() + g.marks_left.expect("the marks' column"));
+        assert!(
+            left > f32::from(g.bounds.left() + g.numbers_right),
+            "{n}: after the numbers"
+        );
+        assert!(
+            left + 16.0 <= f32::from(g.bounds.left() + g.bar_left),
+            "{n}: before the bar"
+        );
+        let bg = theme.background;
+        let centre = |line: usize| {
+            (
+                left + 8.0,
+                f32::from(g.bounds.top() + g.line_height * (line as f32 + 0.5)),
+            )
+        };
+        let rgb = |c: u32| Rgb {
+            r: (c >> 16) as u8,
+            g: (c >> 8) as u8,
+            b: c as u8,
+        };
+        let claude_ink = ensure_contrast(rgb(claude.rgb.expect("Claude's colour")), bg, MARK_MIN);
+        let (teal, grey) = (ui.tab(TabColor::Teal), ui.tab(TabColor::Grey));
+        // Inside the circle, left of its letter: the fill (filled) or the background (hollow).
+        let inside = |line: usize| {
+            let (x, y) = centre(line);
+            pixel_at(&shot, dims, x - 4.0, y)
+        };
+        // Its ring (hollow): somewhere on the circle's left edge.
+        let ringed = |line: usize, c: Rgb| {
+            let (x, y) = centre(line);
+            (0..6).any(|k| live_near(pixel_at(&shot, dims, x - 7.5 + k as f32 * 0.5, y), c, 48))
+        };
+        // Its letter: within a few points of the centre, something unlike the fill.
+        let lettered = |line: usize, fill: Rgb| {
+            let (x, y) = centre(line);
+            (-6..=6).any(|dx| {
+                (-6..=6).any(|dy| {
+                    let p = pixel_at(&shot, dims, x + dx as f32 * 0.5, y + dy as f32 * 0.5);
+                    !live_near(p, fill, 60)
+                })
+            })
+        };
+        for (line, what, fill) in [(1, "Claude, exact", claude_ink), (7, "yours", teal)] {
+            let p = inside(line);
+            assert!(
+                live_near(p, fill, 12),
+                "{n}: {what}: filled {p:?}, not {fill:?}"
+            );
+            assert!(lettered(line, fill), "{n}: {what}: its letter");
+        }
+        for (line, what, ring) in [(3, "Claude, guessed", claude_ink), (5, "codex", grey)] {
+            let p = inside(line);
+            assert!(live_near(p, bg, 6), "{n}: {what}: hollow {p:?}");
+            assert!(ringed(line, ring), "{n}: {what}: its ring in {ring:?}");
+            assert!(lettered(line, bg), "{n}: {what}: its letter");
+        }
+        for line in [0, 2, 4, 6] {
+            let (x, y) = centre(line);
+            let empty = (-12..=12)
+                .all(|dx| live_near(pixel_at(&shot, dims, x + dx as f32 * 0.5, y), bg, 2));
+            assert!(empty, "{n}: no mark on line {line}");
+        }
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-live-none` (both themes): a tab whose record holds no mark (given one, all lines
+/// unmarked) has the same geometry and the same pixels as the plain file tab beside it (no
+/// record given): no marks' column (the text where it was before M11af), no tint, no words.
+fn file_live_none_scenes() {
+    use crate::live_lines::LineRecord;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let path = live_file("none.rs", LIVE_FIXTURE);
+    let dims = size(px(760.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let n = format!("file-live-none-{slug}");
+        let theme = shot_theme(name);
+        let run = |given: bool| {
+            let slot: LiveSlot = Rc::default();
+            let build = live_tab(theme, path.clone(), slot.clone());
+            let seen: Rc<RefCell<LiveSeen>> = Rc::default();
+            let keep = seen.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = slot.borrow().clone().expect("the file tab");
+                live_frame(cx, window);
+                if given {
+                    cx.update(|cx| {
+                        tab.update(cx, |t, _| {
+                            t.set_live_for_shot(LineRecord::baseline(14), live_now(), None)
+                        })
+                    });
+                    live_frame(cx, window);
+                }
+                *keep.borrow_mut() = cx.read(|cx| {
+                    Some((
+                        tab.read(cx).geom().expect("drawn"),
+                        tab.read(cx).live_words(),
+                    ))
+                });
+            };
+            let shot = render_with(&theme, dims, build, act);
+            let (g, words) = seen.borrow().clone().expect("read");
+            (shot, g, words)
+        };
+        let (plain, gp, _) = run(false);
+        let (none, gn, words) = run(true);
+        keep_shot(&n, &none);
+        assert!(words.is_empty(), "{n}: no words");
+        assert_eq!(gn.marks_left, None, "{n}: no marks' column");
+        assert_eq!(gp.marks_left, None, "{n}: none on a plain tab either");
+        let cw = f32::from(gn.cell_width);
+        assert_eq!(
+            f32::from(gn.text_left),
+            plain_text_left(cw),
+            "{n}: the text as before"
+        );
+        assert_eq!(
+            (gn.numbers_right, gn.bar_left, gn.text_left),
+            (gp.numbers_right, gp.bar_left, gp.text_left),
+            "{n}: the plain tab's geometry"
+        );
+        assert_eq!(
+            (none.width, none.height),
+            (plain.width, plain.height),
+            "{n}"
+        );
+        let differ = none
+            .rgba
+            .chunks(4)
+            .zip(plain.rgba.chunks(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(differ, 0, "{n}: the plain tab's pixels");
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-live-tooltip` (both themes): the pointer on a mark shows its tooltip, at once: on
+/// yours (3 min ago) "you · 3 min ago"; off the marks, none; on Claude's guessed mark (12 s
+/// ago) "probably claude · 12 s ago (it was working)", drawn under it (shot).
+fn file_live_tooltip_scenes() {
+    use crate::edit_ledger::agent_mark_for;
+    use crate::live_lines::{Sure, Who};
+    use gpui::Modifiers;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let path = live_file("tooltip.rs", LIVE_FIXTURE);
+    let dims = size(px(760.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let n = format!("file-live-tooltip-{slug}");
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let slot: LiveSlot = Rc::default();
+        let build = live_tab(theme, path.clone(), slot.clone());
+        let tips: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
+        let keep_tips = tips.clone();
+        let seen: Rc<Cell<Option<crate::file_tab::Geom>>> = Rc::default();
+        let keep = seen.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            live_frame(cx, window);
+            let record = live_record(
+                14,
+                &[
+                    (3..4, Who::Agent(agent_mark_for("claude")), Sure::Guess, 12),
+                    (6..7, Who::You, Sure::Exact, 180),
+                ],
+            );
+            cx.update(|cx| tab.update(cx, |t, _| t.set_live_for_shot(record, live_now(), None)));
+            live_frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let mark = |line: usize| {
+                point(
+                    g.bounds.left() + g.marks_left.unwrap_or(g.numbers_right) + px(8.0),
+                    g.bounds.top() + g.line_height * (line as f32 + 0.5),
+                )
+            };
+            let text = point(g.bounds.left() + g.text_left + px(20.0), mark(6).y);
+            for at in [mark(6), text, mark(3)] {
+                cx.simulate_mouse_move(window, at, None, Modifiers::none());
+                live_frame(cx, window);
+                keep_tips
+                    .borrow_mut()
+                    .push(cx.read(|cx| tab.read(cx).mark_tip()));
+            }
+            keep.set(Some(g));
+        };
+        let shot = render_with(&theme, dims, build, act);
+        keep_shot(&n, &shot);
+        let tips = tips.borrow().clone();
+        assert_eq!(
+            tips,
+            [
+                Some("you \u{b7} 3 min ago".to_string()),
+                None,
+                Some("probably claude \u{b7} 12 s ago (it was working)".to_string()),
+            ],
+            "{n}: the tooltips"
+        );
+        // The tooltip under the mark: its words in the text colour across the gutter between
+        // the marks and the text, under line 4 (nothing is drawn there without it).
+        let g = seen.get().expect("drawn");
+        let left = f32::from(g.bounds.left() + g.marks_left.expect("the marks' column"));
+        let text_left = f32::from(g.bounds.left() + g.text_left);
+        let top = f32::from(g.bounds.top() + g.line_height * 4.0);
+        let inked = (0..(((text_left - left - 18.0) * 2.0) as i32))
+            .flat_map(|dx| (0..(f32::from(g.line_height) as i32 * 4)).map(move |dy| (dx, dy)))
+            .filter(|&(dx, dy)| {
+                let p = pixel_at(
+                    &shot,
+                    dims,
+                    left + 18.0 + dx as f32 * 0.5,
+                    top + dy as f32 * 0.5,
+                );
+                live_near(p, ui.text, 40)
+            })
+            .count();
+        println!("ui-shots: {n}: {inked} text pixels beside the mark");
+        assert!(inked > 10, "{n}: the tooltip drawn under the mark");
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-live-modes` (both themes): the glow and marks are File mode's only. A tab whose lines
+/// glow, switched to Diff (given a diff): no marks' column, its unchanged rows untinted; a
+/// Markdown tab whose lines glow, in Preview: the page untinted.
+fn file_live_modes_scenes() {
+    use crate::layout_model::FileMode;
+    use crate::live_lines::{Sure, Who};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let view_rs = live_file("view.rs", FILE_VIEW_FIXTURE);
+    let md = live_file(
+        "notes.md",
+        "# Notes\n\nA first paragraph.\n\nA second paragraph.\n\nA third paragraph.\n",
+    );
+    let unified = Rc::new(file_diff_fixture());
+    let dims = size(px(760.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let bg = theme.background;
+
+        // Diff: the rows of lines 1–7 (from 0) glowed in File mode; none in Diff.
+        let n = format!("file-live-modes-diff-{slug}");
+        let slot: LiveSlot = Rc::default();
+        let build = live_tab(theme, view_rs.clone(), slot.clone());
+        let seen: Rc<Cell<Option<(crate::file_tab::Geom, bool)>>> = Rc::default();
+        let keep = seen.clone();
+        let diff = unified.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            live_frame(cx, window);
+            let lines = cx.read(|cx| tab.read(cx).doc().expect("its text").lines.len());
+            let record = live_record(lines, &[(1..8, Who::You, Sure::Exact, 2)]);
+            cx.update(|cx| tab.update(cx, |t, _| t.set_live_for_shot(record, live_now(), None)));
+            live_frame(cx, window);
+            let file_marks = cx.read(|cx| tab.read(cx).geom().expect("drawn").marks_left.is_some());
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.choose_mode_for_shots(FileMode::Diff, cx);
+                    t.set_diff_for_shots(&diff, cx);
+                })
+            });
+            live_frame(cx, window);
+            let t = cx.read(|cx| {
+                let t = tab.read(cx);
+                assert_eq!(t.mode(), FileMode::Diff);
+                assert_eq!(t.diff_state_name(), "rows");
+                t.geom().expect("drawn")
+            });
+            keep.set(Some((t, file_marks)));
+        };
+        let shot = render_with(&theme, dims, build, act);
+        keep_shot(&n, &shot);
+        let (g, file_marks) = seen.get().expect("drawn");
+        assert!(file_marks, "{n}: File mode had the marks' column");
+        assert_eq!(g.marks_left, None, "{n}: Diff has none");
+        // Rows 1–5 are lines 1–5 unchanged (the first change, row 6, opens 3 rows down); right
+        // of their text, clear of the scrollbar (the diff opened scrolled, so it shows).
+        let right = f32::from(g.bounds.right()) - 40.0;
+        for row in 3..=5 {
+            let y = f32::from(g.bounds.top() + g.line_height * (row as f32 + 0.5) - g.scroll.y);
+            let p = pixel_at(&shot, dims, right, y);
+            assert!(live_near(p, bg, 1), "{n}: row {row} untinted: {p:?}");
+        }
+        println!("ui-shots: {n} ok");
+
+        // Preview: the Markdown rendered, nothing tinted.
+        let n = format!("file-live-modes-preview-{slug}");
+        let slot: LiveSlot = Rc::default();
+        let build = live_tab(theme, md.clone(), slot.clone());
+        let shown: Rc<Cell<bool>> = Rc::default();
+        let keep = shown.clone();
+        let tipped: Rc<RefCell<Option<String>>> = Rc::default();
+        let keep_tip = tipped.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            live_frame(cx, window);
+            let lines = cx.read(|cx| tab.read(cx).doc().expect("its text").lines.len());
+            let record = live_record(lines, &[(0..lines, Who::You, Sure::Exact, 2)]);
+            cx.update(|cx| tab.update(cx, |t, _| t.set_live_for_shot(record, live_now(), None)));
+            cx.update_window(window, |_, window, cx| {
+                tab.update(cx, |t, cx| t.choose_preview_for_shots(true, window, cx))
+            })
+            .expect("Preview");
+            live_frame(cx, window);
+            keep.set(cx.read(|cx| tab.read(cx).preview_shown()));
+            *keep_tip.borrow_mut() = cx.read(|cx| tab.read(cx).mark_tip());
+        };
+        let shot = render_with(&theme, dims, build, act);
+        keep_shot(&n, &shot);
+        let (preview, tip) = (shown.get(), tipped.borrow().clone());
+        assert!(preview, "{n}: the Preview shows");
+        assert_eq!(tip, None, "{n}");
+        // Down the page's right side (past the bar): the background, untinted.
+        let x = f32::from(dims.width) - 30.0;
+        for y in (60..340).step_by(4) {
+            let p = pixel_at(&shot, dims, x, y as f32);
+            assert!(live_near(p, bg, 1), "{n}: untinted at y {y}: {p:?}");
+        }
+        println!("ui-shots: {n} ok");
     }
 }
 
