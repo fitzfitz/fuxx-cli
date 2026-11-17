@@ -1175,7 +1175,17 @@ impl AgentTab {
     fn on_events(&mut self, events: Vec<Event>, cx: &mut Context<Self>) {
         for event in events {
             match &event {
-                Event::Started { .. } => self.run.started = true,
+                Event::Started { conversation, .. } => {
+                    self.run.started = true;
+                    // Asked to resume one conversation, the agent began another: the one asked
+                    // for is gone, and this is a new one (the id it reported is kept).
+                    if self.run.resume.as_ref().is_some_and(|r| r != conversation) {
+                        self.run.resume = None;
+                        self.start.resume = None;
+                        self.conversation
+                            .replace_notice(RESTORED_NOTICE, BAD_RESUME_NOTICE);
+                    }
+                }
                 Event::ToolStarted { id, .. } => {
                     self.tool_started.insert(id.clone(), Instant::now());
                 }
@@ -1405,13 +1415,20 @@ impl AgentTab {
     }
 
     /// Stop the turn: an interrupt; the button reads "Stopping…" until the turn ends, and
-    /// offers Force stop after `STOP_FORCE_AFTER`.
+    /// offers Force stop after `STOP_FORCE_AFTER`. An agent that can't be interrupted
+    /// (`ProviderInfo::interrupts`) is offered Force stop at once.
     pub fn stop(&mut self, cx: &mut Context<Self>) {
         if !matches!(self.status(), Status::Working | Status::Waiting) || self.stopping.is_some() {
             return;
         }
-        self.write(&Action::Interrupt);
         self.stopping = Some(Instant::now());
+        if !self.provider.is_some_and(|p| p.info().interrupts) {
+            self.force = true;
+            self.force_timer = None;
+            cx.notify();
+            return;
+        }
+        self.write(&Action::Interrupt);
         self.force = false;
         self.force_timer = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(STOP_FORCE_AFTER).await;

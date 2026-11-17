@@ -203,8 +203,11 @@ CommandLine}, output?}`; `read_file`'s output is a size ("1 lines, 6 bytes"), `r
 carries no old/new text (no diff). Between tools, `agent_response` steps that only plan arrive `DONE` with no text.
 No permission prompt arrived in `accept-edits` (an `ls` ran unasked). **resume** (`--conversation <id>`): same
 `init.conversation_id`, `step_index` goes on from the earlier run (2, 3 `system_message`, 4), **no replay of history
-on stdout**, and the model remembered the earlier turn. Not observed: a way to interrupt a turn on stdin, a model
-name, a bad `--conversation` id. Fragments of one step's `text_delta` can split a path, so the recorder scrubs a
+on stdout**, and the model remembered the earlier turn. **bad-resume** (`--conversation 00000000-…`, fix round 1): agy
+prints `warning: conversation "<id>" not found` on stderr and goes on in a **new** conversation (a new
+`init.conversation_id`, exit 0), so the tab replaces "Conversation restored" with the bad-resume notice when the
+agent's reported id differs from the one it resumed. Not observed: a way to interrupt a turn on stdin (agy's
+`ProviderInfo.interrupts` is false: Stop offers Force stop at once), a model name. Fragments of one step's `text_delta` can split a path, so the recorder scrubs a
 step's joined text (`rejoin_agy_text`).
 
 ### Antigravity CLI (`agy` 1.4.3, `~/.local/bin/agy`, checked from `--help` only)

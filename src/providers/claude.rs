@@ -15,6 +15,7 @@ static INFO: ProviderInfo = ProviderInfo {
     badge: "CC",
     badge_rgb: 0x7a4a2a,
     routes_permissions: true,
+    interrupts: true,
     modes: &[],
     default_mode: None,
 };
@@ -80,7 +81,7 @@ impl Provider for Claude {
     /// An npm install's `claude` (node) sets `process.title = "claude"`, which writes over its
     /// arguments: `ps` then shows `claude` alone, and this says None.
     fn conversation_in_args(&self, args: &str) -> Option<String> {
-        conversation_after(args, CONVERSATION_FLAGS)
+        conversation_after(args, CONVERSATION_FLAGS, uuid_shaped)
     }
 
     /// `claude-opus-5-5` → `opus`: the family, the word after the `claude-` prefix.
