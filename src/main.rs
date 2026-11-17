@@ -1094,6 +1094,8 @@ fn main() {
             {
                 std::thread::spawn(move || updater::clean_previous(&app));
             }
+            // Pasted images written for agy (a day old or more) go, off the UI thread.
+            std::thread::spawn(agent_tab::clean_old_pasted);
             cx.activate(true);
         });
 }
