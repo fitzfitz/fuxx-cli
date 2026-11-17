@@ -135,9 +135,20 @@ into.
   own records yet. The conversation itself continues. (Claude tabs do show history.)
 - **A block that has scrolled out of the grid cannot be dropped.** The drop does nothing and says nothing.
 - **Mermaid in chat shows as code.**
-- **Claude's TodoWrite** is not offered in this Claude build, so the checklist is tested only with a hand-written line.
+- **Claude's TodoWrite.** The Claude provider turns a `TodoWrite` call into the checklist, but this Claude build did not offer the tool during recording, so only a hand-written test line covers it. agy has no TodoWrite at all.
 - **The status bar** keeps following the shell, not the agent (R9).
 - **Quit stops agents** (M11ad is the follow-up).
+- **Shortcut numbers moved.** ⌃⌘1 and ⌃⌘2 are now claude and agy, so opencode is ⌃⌘3 and codex ⌃⌘4 (they were ⌃⌘2 and ⌃⌘3).
+- **The palette and the workspace switcher** show the shell's status, not an agent tab's. ⇧⌘U does reach waiting agent tabs.
+- **`--fork-session`.** A Claude preset with `--fork-session` shows the "new conversation" notice.
+- **A later different session id** after a resume (for example Claude's `/clear`) can show a false "Couldn't resume"
+  notice. A fix may follow from the final review; until then it is a limit.
+- **Scripting gaps.** No open or close events for agent tabs; `status.changed` also fires for restored tabs; a blank
+  `fuxx answer` is a Deny; an agent event's number is its sidebar row, not a `#N` target; `new` over the API with a
+  preset still opens a classic terminal.
+- **R13 edges.** A stale saved classic id keeps the tab Blind for that run. Open in classic view during a send's check
+  shows a notice instead of focusing the classic terminal.
+- **A preset's extra words** are split simply, so a quoted argument with spaces is not kept together.
 - **Dev builds touch the real fuxx's background service** unless you point them elsewhere; see the first line of the
   check below.
 
@@ -145,8 +156,8 @@ into.
 
 To try it before merging, build the branch from Terminal.app so a dev build does not touch your real fuxx:
 `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run --release`. To rerun the pictures, `scripts/ui-shots.sh`. Use a
-scratch folder you do not mind an agent editing (`~/code/scratch`). Items 12–17 need `claude` logged in; items 29–30
-need `agy`.
+scratch folder you do not mind an agent editing (`~/code/scratch`). Items 1–17 need `claude` logged in; items 18–21 need
+`agy`; items 22–25 need an agent tab open.
 
 **Open and read**
 
@@ -184,12 +195,18 @@ need `agy`.
     tab in the bar). A chip appears under the box with "exit 1 · npm test". Nothing is sent yet; send, and the agent
     sees the output.
 16. Remove the chip with its **×** before sending: it goes, and nothing is attached.
-17. Drop a block onto an error agent tab (rename a preset to something unknown, or use a tab restored from a removed
-    provider): nothing happens. Drop a block that has scrolled out of the grid: nothing happens (a known limit).
+17. A drop onto an error agent tab does nothing. To get one: open an agent tab and quit the dev build; back up
+    `~/Library/Application Support/fuxx/sessions-dev.json` (the dev build's file; the released app uses
+    `sessions.json`); in the tab entry with `"kind": "agent"`, change `"provider": "claude"` to `"provider": "nope"`;
+    relaunch. You should see one error row, "No agent called nope", and no composer. Drag a block onto it: nothing
+    happens. Restore the backup afterwards. Also, dropping a block that has scrolled out of the grid does nothing (a
+    known limit).
 
 **agy** (if you use it)
 
 18. New Antigravity Tab: the mode chip cycles accept-edits, auto, plan before the first message and then stays fixed.
+    Do it once per mode: pick the mode, send "list this folder", and note what agy did (whether it asked, ran the
+    command, or only planned).
 19. Stop on an agy tab offers **Force stop** at once.
 20. Quit and relaunch with an agy tab that has a conversation: it continues, but earlier messages are not shown (a limit).
     If you deleted that conversation in agy, the tab shows a "new conversation" notice.

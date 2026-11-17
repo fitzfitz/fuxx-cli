@@ -297,7 +297,7 @@ pub struct ProviderInfo {
     pub label: &'static str,         // "Claude"
     pub badge: &'static str,         // "CC"
     pub badge_rgb: u32,              // 0x7a4a2a for Claude, 0x2d4f8a for agy (mockups)
-    pub routes_permissions: bool,
+    pub routes_permissions: bool,  *(removed in Task 13)*
     pub modes: &'static [&'static str],      // [] for Claude
     pub default_mode: Option<&'static str>,
 }
@@ -1156,7 +1156,7 @@ assert_eq!(attachment_text(None, Outcome::Unknown, "ok"), "ok");
 
 **Interfaces:**
 - Produces: `pub static AGY: Agy;` — `ProviderInfo { name: "agy", label: "Antigravity", badge: "AG", badge_rgb:
-  0x2d4f8a, routes_permissions: false, modes: &["accept-edits","auto","plan"], default_mode: Some("accept-edits") }`;
+  0x2d4f8a, routes_permissions: false, modes: &["accept-edits","auto","plan"], default_mode: Some("accept-edits") }`;  *(removed in Task 13)*
   argv per Global Constraints (`--mode` from `start.mode`, else the default); `classic_argv(id)` =
   `["agy","--conversation",id]`. **Its own decoder:** `init` → `Started { conversation: conversation_id, model: None }`;
   `step_update` with `step_type: "agent_response"` and `text_delta` → `TextDelta { message: "<conversation>:<step_index>" }`,
