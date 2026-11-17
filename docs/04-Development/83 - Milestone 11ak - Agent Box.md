@@ -238,7 +238,9 @@ restart for Claude too (Approach A's fallback) — no question to you needed.
 Claude Code 2.1.326 and agy 1.5.10, in `~/code/scratch` (and `~/code/scratch/moved`), one-word prompts. Fixtures in
 `src/providers/fixtures/` (paths scrubbed to `/tmp/fx`; the user's own skills, plugins, sub-agents and MCP servers
 replaced by Claude's built-ins plus one made-up `example-skill` / `example-plugin`; `models` kept whole). Recorder:
-`scripts/record-agent-fixture.py` (new scenarios below, and `--scrub-file` for a plain command's output).
+`scripts/record-agent-fixture.py` (new scenarios below, and `--scrub-file` for a plain command's output). The M11aa
+`claude-*.jsonl` fixtures' init lists (they named the user's installed skills, sub-agents and plugins) went through
+`--scrub-file` too: the same built-ins plus made-up entries (`example-agent` where no built-in agent was left).
 
 **Claude — the start-up probe (`claude-initialize.jsonl`).** A stream-json process that sends `initialize` gets its
 `control_response` in **0.5–0.6 s** (from spawn) and leaves **no transcript** (nothing new under
@@ -252,14 +254,15 @@ has neither key; some older models list `low, medium, high, max` without `xhigh`
 effort: a `get_settings` control request (no model use, answered at once) does —
 `response.applied.model` (`"claude-opus-5-5"`) and `response.applied.effort` (`"high"`).
 
-**Claude — live changes. All three are live, and all work before the first message.** Each is a control request on
-stdin; each is answered by a `control_response` with the same `request_id` and `subtype: "success"`:
+**Claude — live changes. All three are live, before the first message and mid-conversation (sent after a `result`;
+each recorded both ways).** Each is a control request on stdin; each is answered by a `control_response` with the same
+`request_id` and `subtype: "success"`:
 
 | Change | Request (`{"type":"control_request","request_id":…,"request":…}`) | What confirms it |
 |---|---|---|
 | Model | `{"subtype":"set_model","model":"sonnet"}` | the answer's `response.model` (`"claude-sonnet-5-5"`, the resolved id); the next `system/init` `model`; each `assistant` `message.model`; `result.modelUsage` keys. Mid-conversation (after a `result`) it also writes a `user` line `<local-command-stdout>Set model to \`opus (claude-opus-5-5)\`</local-command-stdout>` (`claude-set-model.jsonl`) |
-| Effort | `{"subtype":"apply_flag_settings","settings":{"effortLevel":"low"}}` (the SDK's `applyFlagSettings`) | the answer has no body; `{"subtype":"get_settings"}` then says `applied.effort: "low"` (and `effective.effortLevel`) — before and after the turn (`claude-set-effort.jsonl`). Nothing in the stream itself names the effort |
-| Mode | `{"subtype":"set_permission_mode","mode":"plan"}` | the answer's `response.mode` (`"plan"`); a `system/status` with `permissionMode: "plan"`; the next `system/init` `permissionMode`. Asked to write `hello.txt`, Claude wrote only its plan and asked `ExitPlanMode` (denied by the recorder): no `hello.txt` (`claude-set-mode.jsonl`) |
+| Effort | `{"subtype":"apply_flag_settings","settings":{"effortLevel":"low"}}` (the SDK's `applyFlagSettings`) | the answer has no body; `{"subtype":"get_settings"}` then says `applied.effort: "low"` (and `effective.effortLevel`) — before and after the turn; mid-conversation `"medium"` likewise reads back `applied.effort: "medium"` (`claude-set-effort.jsonl`). Nothing in the stream itself names the effort, and unlike `set_model` a mid-conversation change writes no `<local-command-stdout>` line |
+| Mode | `{"subtype":"set_permission_mode","mode":"plan"}` | the answer's `response.mode` (`"plan"`); a `system/status` with `permissionMode: "plan"`; the next `system/init` `permissionMode`. Asked to write `hello.txt`, Claude wrote only its plan and asked `ExitPlanMode` (denied by the recorder): no `hello.txt`. Then, mid-conversation, `{"subtype":"set_permission_mode","mode":"acceptEdits"}`: answer `{"mode":"acceptEdits"}`, `system/status` and the next `system/init` say `acceptEdits`, and the same request wrote `hello.txt` with no permission prompt (the recorder denies every prompt here) (`claude-set-mode.jsonl`). No `<local-command-stdout>` line either |
 
 **Claude — image (`claude-image.jsonl`).** A user message whose `content` is
 `[{"type":"image","source":{"type":"base64","media_type":"image/png","data":…}},{"type":"text","text":…}]` works: a
@@ -288,16 +291,20 @@ one id has none (`gemini-pro-orchestrator-g1-pro` "Orchestrator (Argon)"). `/hel
 `description`), as the design says.
 
 **agy — restart with new flags (`agy-restart-flags.jsonl`).** A one-word conversation, then the same
-`--conversation <id>` with `--mode plan --model gemini-3.8-flash --effort low`: it **carries on** (recalled "Say hi
-in one word"); the second `init` names the model (`init.model: "gemini-3.8-flash"`; the first `init`, started
-without `--model`, has no `model` key); plan mode **takes** (asked to write `hello.txt`, it wrote an implementation
-plan into its own `~/.gemini/antigravity-cli/brain/<id>/` and asked for approval; no `hello.txt`). Effort is accepted
-but nothing reports it. `init.permission_mode` says `request-review` whatever `--mode` is, so it can't confirm a mode.
-**Model flag form:** `--model <id from agy models>` alone works (`--model gemini-3.8-flash-low`: `init.model` is the
-whole id), and so does `--model <id without effort> --effort <level>`; an id with effort **plus a different
-`--effort` is refused**: `error: invalid model selection (--model "gemini-3.8-flash-medium" --effort "low"): --model
-gemini-3.8-flash-medium conflicts with --effort=low` (stderr, and a `result` with `status: "ERROR"`, exit 1). So fuxx
-passes the `agy models` id alone and no `--effort`.
+`--conversation <id>` with `--mode plan --model gemini-3.8-flash-low` (an id exactly as `agy-models.txt` lists it, no
+`--effort`): it **carries on** (recalled "Say hi in one word"); the second `init` names the model (`init.model:
+"gemini-3.8-flash-low"`, the whole id; the first `init`, started without `--model`, has no `model` key); plan mode
+**takes** (asked to write `hello.txt`, it wrote an implementation plan into its own
+`~/.gemini/antigravity-cli/brain/<id>/` and asked for approval; no `hello.txt`). `init.permission_mode` says
+`request-review` whatever `--mode` is, so it can't confirm a mode.
+**Model flag form** (three recordings): `--model <id from agy models>` alone works (`agy-restart-flags.jsonl`, above).
+`--model <id without its effort suffix> --effort <level>` also works (`agy-restart-flags-effort.jsonl`: `--model
+gemini-3.8-flash --effort low`, a name `agy models` does not list; `init.model: "gemini-3.8-flash"`; the effort is
+accepted but nothing reports it). An id with effort **plus a different `--effort` is refused**
+(`agy-restart-flags-conflict.jsonl` and its `.stderr`): stderr `error: invalid model selection (--model
+"gemini-3.8-flash-medium" --effort "low"): --model gemini-3.8-flash-medium conflicts with --effort=low`, a `result`
+with `status: "ERROR"`, `conversation_id: ""` and the same `error` text, exit 1. So fuxx passes the `agy models` id
+alone and no `--effort`.
 
 **agy — move and image.** `--conversation <id>` from `~/code/scratch/moved` carries on (`init.cwd` is the new folder;
 it recalled the first message) (`agy-move.jsonl`). A message naming a PNG's absolute path works: agy reads it with

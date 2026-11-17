@@ -8,11 +8,12 @@ Scenarios (claude): text, tools, permission-allow, permission-deny, permission-a
   interrupt, interrupt-text, queue, resume (needs session-id), slash, bad-resume,
   initialize, set-model, set-effort, set-mode, image, move (M11ak Task 0)
 Scenarios (agy): text, tools, resume (needs session-id = conversation id), bad-resume,
-  restart-flags (5th argument: a model from `agy models`; without its effort suffix,
-  `--effort low` is added), move, image
+  restart-flags (5th argument: a model id; an optional 6th, an effort, adds `--effort <it>`),
+  move, image
 agy: `-p=` and {"event":"user","message":{"content":...}} input (see comments).
 `move` runs in <workdir>, then resumes the same conversation from <workdir>/moved (made here).
-`--scrub-file` puts a plain command's output (e.g. `claude -p "/usage"`) through the same scrub.
+`--scrub-file` puts a plain command's output (e.g. `claude -p "/usage"`) through the same scrub;
+a .jsonl recording also gets the trim's neutral lists (for fixtures recorded before them).
 
 Run each recording in a fresh temp dir, never in the repo. The user's own hooks run (nothing
 is switched off). stdout lines are scrubbed and written to <out>; stderr, if any, goes to
@@ -73,18 +74,31 @@ def scrub_event(e, scrub):
     return e
 
 
+def init_box(e):
+    """The dict holding the bulky lists of an init event: `system/init`, the initialize
+    `control_response`, agy's `init`; None for any other event."""
+    if e.get("type") == "system" and e.get("subtype") == "init":
+        return e
+    if e.get("type") == "control_response" and isinstance(e.get("response", {}).get("response"), dict):
+        return e["response"]["response"]
+    if e.get("event") == "init" and isinstance(e.get("init"), dict):  # agy
+        return e["init"]
+    return None
+
+
+def neutral_init(e):
+    """Always on (privacy, not trimming): the user's own installs in an init event replaced."""
+    box = init_box(e)
+    if box is not None:
+        neutral_lists(box)
+    return e
+
+
 def trim_lists(e):
     """Optional (--no-trim skips it): cut every list longer than KEEP to its first KEEP entries
     in the bulky init events: `system/init`, the initialize `control_response`, agy's `init`."""
-    box = None
-    if e.get("type") == "system" and e.get("subtype") == "init":
-        box = e
-    elif e.get("type") == "control_response" and isinstance(e.get("response", {}).get("response"), dict):
-        box = e["response"]["response"]
-    elif e.get("event") == "init" and isinstance(e.get("init"), dict):  # agy
-        box = e["init"]
+    box = init_box(e)
     if box is not None:
-        neutral_lists(box)
         for k, v in box.items():
             if isinstance(v, list) and len(v) > KEEP and k not in UNTRIMMED:
                 box[k] = v[:KEEP]
@@ -97,10 +111,11 @@ def trim_lists(e):
 BUILTIN_COMMANDS = ("clear", "compact", "effort", "model", "usage")
 BUILTIN_AGENTS = ("general-purpose", "Explore", "Plan")
 EXAMPLE_SKILL = {"name": "example-skill", "description": "An example skill. (user)", "argumentHint": ""}
+EXAMPLE_AGENT = {"name": "example-agent", "description": "An example agent."}
 EXAMPLE_PLUGIN = {"name": "example-plugin", "path": "~/.claude/plugins/cache/example/example-plugin/1.0.0",
                   "source": "example-plugin@example"}
 EXAMPLE_MCP = {"name": "plugin:example-plugin:example", "status": "pending", "source": "plugin"}
-UNTRIMMED = {"models", "commands", "slash_commands", "agents"}  # the last three: already neutral
+UNTRIMMED = {"models", "commands", "slash_commands", "agents"}  # the last three: made neutral first
 
 
 def neutral_lists(box):
@@ -114,7 +129,9 @@ def neutral_lists(box):
     if isinstance(box.get("skills"), list) and not IS_AGY:
         box["skills"] = ["example-skill"]
     if isinstance(box.get("agents"), list) and not IS_AGY:
-        box["agents"] = [a for a in box["agents"] if named(a) in BUILTIN_AGENTS]
+        dicts = any(isinstance(a, dict) for a in box["agents"])
+        box["agents"] = [a for a in box["agents"] if named(a) in BUILTIN_AGENTS] or (
+            [EXAMPLE_AGENT if dicts else EXAMPLE_AGENT["name"]] if box["agents"] else [])
     if isinstance(box.get("plugins"), list) and not IS_AGY:
         box["plugins"] = [EXAMPLE_PLUGIN]
     if isinstance(box.get("mcp_servers"), list) and not IS_AGY:
@@ -217,8 +234,8 @@ class Run:
         M11ak Task 0) arrive as fragments that can split a path, so per content block: join the
         fragments, scrub, and if that changed anything put the whole scrubbed text in the first
         fragment and "" in the rest."""
-        evs = [scrub_event(copy.deepcopy(x), self.scrub) if isinstance(x, dict) else self.scrub(x)
-               for x in self.lines]
+        evs = [neutral_init(scrub_event(copy.deepcopy(x), self.scrub)) if isinstance(x, dict)
+               else self.scrub(x) for x in self.lines]
         if TRIM:
             evs = [trim_lists(x) if isinstance(x, dict) else x for x in evs]
         rejoin_agy_text(self.lines, evs, self.scrub)
@@ -411,9 +428,20 @@ def play(r, scenario):
         r.send(user(HI))
         r.expect_result()
         ask(r, "fuxx-settings-3", {"subtype": "get_settings"})
+        # Mid-conversation (after a `result`), as for set_model.
+        ask(r, "fuxx-effort-2", {"subtype": "apply_flag_settings", "settings": {"effortLevel": "medium"}})
+        ask(r, "fuxx-settings-4", {"subtype": "get_settings"})
+        r.send(user(HI))
+        r.expect_result()
+        ask(r, "fuxx-settings-5", {"subtype": "get_settings"})
     elif scenario == "set-mode":
         answered(r, "fuxx-init", 60)
         ask(r, "fuxx-mode-1", {"subtype": "set_permission_mode", "mode": "plan"})
+        r.send(user(WRITE_PROMPT))
+        r.expect_result()
+        # Mid-conversation (after a `result`): acceptEdits writes without a prompt (the recorder
+        # denies every prompt here), so hello.txt appears only if the mode took.
+        ask(r, "fuxx-mode-2", {"subtype": "set_permission_mode", "mode": "acceptEdits"})
         r.send(user(WRITE_PROMPT))
         r.expect_result()
     elif scenario == "image":
@@ -427,8 +455,9 @@ def play(r, scenario):
         r.expect_result()
     elif scenario in ("move", "restart-flags"):  # the second half (main started it resumed)
         r.send(user(RECALL))
-        r.expect_result()
-        if scenario == "restart-flags":  # does plan mode take? (hello.txt must not appear)
+        e = r.expect_result()
+        refused = (e.get("result") or {}).get("status") == "ERROR"  # agy refused the flags
+        if scenario == "restart-flags" and not refused:  # does plan mode take? (no hello.txt)
             r.send(user(WRITE_PROMPT))
             r.expect_result()
 
@@ -515,13 +544,40 @@ def trim_plain_output(doc):
     return doc
 
 
+def scrub_jsonl(text, workdirs):
+    """`--scrub-file` on a recorded .jsonl (e.g. a fixture recorded before a scrub existed): each
+    JSON line through the string scrub, scrub_event and the trim (with its neutral lists); a line
+    the scrub leaves alone is written back unchanged; non-JSON lines are only string-scrubbed."""
+    out = []
+    for line in text.split("\n"):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            out.append(scrub_text(line, workdirs))
+            continue
+        if not isinstance(e, dict):
+            out.append(line)
+            continue
+        e = neutral_init(scrub_event(e, lambda x: scrub_text(x, workdirs)))
+        if TRIM:
+            e = trim_lists(e)
+        new = json.dumps(e, ensure_ascii=False)
+        out.append(line if json.loads(line) == e else new)
+    return "\n".join(out)
+
+
 def main():
     global TRIM, IS_AGY
     if sys.argv[1:2] == ["--scrub-file"]:
         if len(sys.argv) != 5:
             sys.exit("usage: --scrub-file <in> <out> <workdir>")
         src, dest, wd = sys.argv[2:5]
-        text = scrub_text(open(src, encoding="utf-8").read(), (os.path.realpath(wd), wd))
+        raw = open(src, encoding="utf-8").read()
+        if src.endswith(".jsonl"):
+            open(dest, "w", encoding="utf-8").write(scrub_jsonl(raw, (os.path.realpath(wd), wd)))
+            print(f"scrubbed: {dest}")
+            return
+        text = scrub_text(raw, (os.path.realpath(wd), wd))
         try:
             doc = json.loads(text)
         except ValueError:
@@ -539,6 +595,7 @@ def main():
     TRIM = "--no-trim" not in sys.argv
     agent, scenario, workdir, out = args[:4]
     sid = args[4] if len(args) > 4 else None
+    effort = args[5] if len(args) > 5 else None  # restart-flags only
     # Validate everything BEFORE spawning the agent, so a bad invocation leaks no child.
     if agent not in SCENARIOS:
         sys.exit(f"unknown agent {agent!r} (claude|agy)")
@@ -588,9 +645,7 @@ def main():
             else:  # agy restart-flags: the same conversation with a new mode, model and effort
                 i = again.index("--mode")
                 again[i + 1] = "plan"
-                again += ["--model", sid]
-                if not re.search(r"-(low|medium|high|xhigh|max)$", sid):  # the id has no effort in it
-                    again += ["--effort", "low"]
+                again += ["--model", sid] + (["--effort", effort] if effort else [])
             print("second half:", " ".join(scrub_text(a, (workdir,)) for a in again), "in",
                   scrub_text(where, (workdir,)))
             r = Run(again, where, out, policy, scrub_root=workdir, append=True)
