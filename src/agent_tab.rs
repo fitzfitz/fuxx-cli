@@ -768,6 +768,17 @@ impl AgentTab {
             cx.observe(&composer, |this, _, cx| this.composer_changed(cx)),
             // The box's menus draw from the cache: a probe finishing redraws the tab.
             cx.observe_global::<crate::agent_catalog::Catalogs>(|_, cx| cx.notify()),
+            // Closed before its process answered the catalog: the menu mustn't load forever.
+            cx.on_release(|this, cx| {
+                if let (true, Some(provider)) = (this.catalog_pending, this.provider) {
+                    crate::agent_catalog::fail_catalog_if_loading(
+                        provider.info().name,
+                        &this.start.cwd,
+                        "its tab closed before it answered",
+                        cx,
+                    );
+                }
+            }),
         ];
         Self {
             provider,
@@ -1019,7 +1030,8 @@ impl AgentTab {
             self.conversation.paused_with(&notice);
             self.after_change(false, cx);
             // No process of its own: the probe answers the catalog.
-            if let Some(provider) = self.provider {
+            // (A scene tab never probes.)
+            if let Some(provider) = self.provider.filter(|_| !self.no_process) {
                 crate::agent_catalog::load_catalog(provider, self.start.cwd.clone(), cx);
             }
             return;
@@ -1113,9 +1125,11 @@ impl AgentTab {
         let agent = provider.info().name;
         if provider.catalog_on_start() {
             let cwd = self.start.cwd.clone();
-            self.catalog_pending = false;
+            // Still waiting on this process's answer even when the entry already says loading
+            // (a restart, or another tab asked first): if it ends unanswered, the entry fails.
+            self.catalog_pending = true;
             cx.update_default_global(|c: &mut crate::agent_catalog::Catalogs, _| {
-                self.catalog_pending = c.begin_catalog(agent, &cwd);
+                c.begin_catalog(agent, &cwd);
             });
         } else {
             crate::agent_catalog::load_catalog(provider, self.start.cwd.clone(), cx);
@@ -1128,10 +1142,10 @@ impl AgentTab {
             return;
         }
         if let Some(provider) = self.provider {
-            crate::agent_catalog::store_catalog(
+            crate::agent_catalog::fail_catalog_if_loading(
                 provider.info().name,
                 &self.start.cwd,
-                crate::agent_catalog::Lookup::Failed("it ended without answering".into()),
+                "it ended without answering",
                 cx,
             );
         }

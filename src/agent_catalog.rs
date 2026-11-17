@@ -66,6 +66,18 @@ impl Catalogs {
         self.catalogs.insert(Self::key(agent, folder), found);
     }
 
+    /// A catalog still loading becomes failed (its asker's process ended, or the tab closed,
+    /// without an answer); true if it was. One read, or never asked, is left alone.
+    pub fn fail_catalog_if_loading(&mut self, agent: &str, folder: &Path, why: &str) -> bool {
+        match self.catalogs.get_mut(&Self::key(agent, folder)) {
+            Some(found @ Lookup::Loading) => {
+                *found = Lookup::Failed(why.to_string());
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The commands named in `skills` are skills (`Event::Skills`), not plain commands.
     pub fn mark_skills(&mut self, agent: &str, folder: &Path, skills: &[String]) {
         if let Some(Lookup::Ready(catalog)) = self.catalogs.get_mut(&Self::key(agent, folder)) {
@@ -200,6 +212,13 @@ fn with_catalogs<R>(cx: &mut App, f: impl FnOnce(&mut Catalogs) -> R) -> R {
 /// Put `found` for `agent` in `folder` into the cache (a tab's own process answered).
 pub fn store_catalog(agent: &str, folder: &Path, found: Lookup<Catalog>, cx: &mut App) {
     with_catalogs(cx, |c| c.set_catalog(agent, folder, found));
+}
+
+/// Fail `agent`'s catalog for `folder` if it is still loading (see `fail_catalog_if_loading`).
+pub fn fail_catalog_if_loading(agent: &str, folder: &Path, why: &str, cx: &mut App) {
+    with_catalogs(cx, |c| {
+        c.fail_catalog_if_loading(agent, folder, why);
+    });
 }
 
 /// Every probe of `provider`'s catalog, in `folder`, sharing one deadline. A probe that fails
@@ -365,6 +384,33 @@ mod tests {
         c.set_catalog("agy", a, Lookup::Failed("no".into()));
         assert!(c.begin_catalog("agy", a), "a failure is tried again");
         assert_eq!(c.catalog("agy", a), Some(&Lookup::Loading));
+    }
+
+    #[test]
+    fn a_catalog_still_loading_fails_when_its_process_ends_unanswered() {
+        let mut c = Catalogs::default();
+        let a = Path::new("/a");
+        // A tab closed (or its process ended) before the answer: the entry doesn't stay loading.
+        assert!(c.begin_catalog("claude", a));
+        assert!(c.fail_catalog_if_loading("claude", a, "it ended"));
+        assert_eq!(
+            c.catalog("claude", a),
+            Some(&Lookup::Failed("it ended".into()))
+        );
+        assert!(
+            c.begin_catalog("claude", a),
+            "so the next asker tries again"
+        );
+        // A restart: the entry is still loading (begin says no), and the new process ending
+        // unanswered fails it too.
+        assert!(!c.begin_catalog("claude", a));
+        assert!(c.fail_catalog_if_loading("claude", a, "again"));
+        // An answer that came is not undone, and an agent never asked is not made up.
+        c.set_catalog("claude", a, Lookup::Ready(Catalog::default()));
+        assert!(!c.fail_catalog_if_loading("claude", a, "late"));
+        assert!(matches!(c.catalog("claude", a), Some(Lookup::Ready(_))));
+        assert!(!c.fail_catalog_if_loading("agy", a, "never asked"));
+        assert!(c.catalog("agy", a).is_none());
     }
 
     #[test]

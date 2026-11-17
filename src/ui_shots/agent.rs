@@ -2032,6 +2032,12 @@ pub(super) fn agent_tab_held() {
                     let t = tab.read(cx);
                     let argv = t.shot_last_argv();
                     let text = t.shot_composer().read(cx).text().to_string();
+                    // A scene tab never probes the real agent.
+                    assert!(
+                        cx.try_global::<crate::agent_catalog::Catalogs>()
+                            .is_none_or(|c| c.catalog("claude", &start().cwd).is_none()),
+                        "{n}: {holder:?}: no probe"
+                    );
                     if starts {
                         assert!(!t.shot_paused(), "{n}: {holder:?}: started");
                         assert!(argv.windows(2).any(|w| w == ["--resume", "c1"]), "{n}");
