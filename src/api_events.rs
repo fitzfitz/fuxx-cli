@@ -33,9 +33,9 @@ impl fmt::Display for Subject {
 /// A session (or an agent tab) as an event names it.
 pub struct EventSession<'a> {
     pub subject: Subject,
-    /// A terminal: its 1-based place in the session list (what `#N` targets). An agent tab: its
-    /// workspace's 1-based row in the sidebar.
-    pub number: usize,
+    /// A terminal: its 1-based place in the session list (what `#N` targets). An agent tab:
+    /// None (no `#N` targets it), and the event has no `number`.
+    pub number: Option<usize>,
     pub name: &'a str,
 }
 
@@ -68,8 +68,10 @@ pub fn event_json(event: &Event, session: Option<&EventSession>, ts: u64) -> Val
     };
     line["event"] = json!(name);
     if let Some(s) = session {
-        line["session"] =
-            json!({ "id": s.subject.to_string(), "number": s.number, "name": s.name });
+        line["session"] = json!({ "id": s.subject.to_string(), "name": s.name });
+        if let Some(number) = s.number {
+            line["session"]["number"] = json!(number);
+        }
     }
     line["ts"] = json!(ts);
     line
@@ -321,7 +323,7 @@ mod tests {
 
     const S4: EventSession = EventSession {
         subject: Subject::Terminal(4),
-        number: 2,
+        number: Some(2),
         name: "api",
     };
 
@@ -396,9 +398,10 @@ mod tests {
 
     #[test]
     fn an_event_about_an_agent_tab_names_it_by_its_id() {
+        // An agent tab has no `#N` (that targets a terminal): its event has no number.
         let about = EventSession {
             subject: Subject::Agent(1),
-            number: 2,
+            number: None,
             name: "Fix the build",
         };
         let line = event_json(
@@ -411,7 +414,7 @@ mod tests {
         );
         assert_eq!(
             line["session"],
-            json!({"id": "a1", "number": 2, "name": "Fix the build"})
+            json!({"id": "a1", "name": "Fix the build"})
         );
     }
 

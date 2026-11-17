@@ -2,8 +2,9 @@
 
 **Status:** 🟨 built 2026-11-17 on branch `m11aa-ui` (from master; the safe part, Tasks 0, 2, 3, 4 and 6, was built on
 2026-11-13 and is already on master), every task reviewed, **not merged, not pushed**, waiting for your on-screen
-check (below). Plan [[M11aa Plan - Agent Tabs]], 14 / 14 tasks. At the branch tip: 1,781 tests pass, clippy 14 / 27
-(default) and 16 / 29 (`ui-shots`) = the baselines, `cargo fmt --check` clean, full `scripts/ui-shots.sh` 136 scenes passed, 0 failed, in 90.0 s.
+check (below). Plan [[M11aa Plan - Agent Tabs]], 14 / 14 tasks, then a whole-branch review and its fix wave. At the
+branch tip: 1,787 tests pass, clippy 14 / 27 (default) and 16 / 29 (`ui-shots`) = the baselines, `cargo fmt --check`
+clean, full `scripts/ui-shots.sh` 137 scenes passed, 0 failed, in 91.8 s.
 
 **Asked for:** 2026-11-13, by you: a chat view for agents. Picking **claude** or **agy** opens a workspace with a shell
 and an agent tab side by side. The design was chosen with you in mockups (direction C, then C1: one kind of tab per
@@ -41,9 +42,9 @@ By task. Each agent keeps its own knowledge in its own provider file.
 8. **Task 7: the agent tab view** (`agent_tab.rs`). Streamed messages drawn with the Markdown reader's renderer, tool
    rows, a todo list, the permission card, the mode chip (agy), model and cost chips, `@` file picker, Stop with
    "Stopping…" and Force stop after 10 s, history read from the agent's own transcript.
-9. **Task 8: the tab in the workspace** (`workspace_agent.rs`). New Claude / Antigravity Tab in the + menu and pane
-   menu, shell-then-agent presets, rename, close (asks while Working or Waiting), "Open in classic view", quit
-   stops agents, the row label rule.
+9. **Task 8: the tab in the workspace** (`workspace_agent.rs`). The + menu lists the claude and agy presets (a shell and
+   an agent tab side by side); "New Claude Tab" and "New Antigravity Tab" are in the pane's ⋯ menu and ⌘K. Also
+   rename, close (asks while Working or Waiting), "Open in classic view", quit stops agents, the row label rule.
 10. **Task 9: status everywhere.** A row's mark can come from an agent tab (the most urgent of the shell and the
     agents; a tie goes to the shell). The tab's own mark turns while it works. Ring, 🔔 and banner when it asks while
     you are elsewhere. The Activity panel follows the focused agent tab, and its header's age keeps turning. An agent
@@ -82,7 +83,8 @@ into.
 - **R8: history is read off the UI thread.** `AgentTab::new` never emits, and nothing is emitted from `render`.
 - **R9: the status bar keeps following the terminal** while an agent tab is focused, as with a file or browser tab.
   The Activity panel shows the agent tab's log.
-- **R10: quit ends agents synchronously** (`flush_on_quit` calls `end_all`).
+- **R10: quit ends agents synchronously** (`flush_on_quit` calls `end_every_started`, which also ends the processes
+  of tabs already closed).
 - **R11: the row label.** An unnamed workspace whose shell has no name and no preset is labelled "Claude" (the first
   agent tab's label).
 - **R12: scenes feed decoded events** (`shot_feed`), so a picture test uses the real path from the event on and no
@@ -105,8 +107,8 @@ into.
 4. **The R13 holder check.** Before a paused tab resumes (and at launch for a restored one), fuxx reads the process
    table off the UI thread and asks the provider whether any other process holds the conversation. If one does, the tab
    warns and does not start. If the check fails, it warns and does not start (fail-closed). Its limits:
-   - A classic terminal on a **Blind daemon session** (fuxx cannot see inside it) treats any other bare `claude` there
-     as holding the conversation. It would rather refuse than risk two writers.
+   - While the classic view is **Blind** (a background-service terminal fuxx cannot see inside), any bare `claude`
+     anywhere on the Mac counts as holding the conversation. It would rather refuse than risk two writers.
    - **Restarts keep the classic session id**, so a saved classic terminal is still recognised after a restart.
    - Only ids shaped like a UUID count as "another conversation".
 5. **The scripting API never starts or resumes an agent.** `send`, `key` and `paste` refuse `aN`. `fuxx answer a1 yes`
@@ -114,11 +116,26 @@ into.
    bypass the holder check.
 6. **A drop of a block that has scrolled out of the grid silently does nothing.** (A limit; see below.)
 7. **Status changes are emitted for a classic-view pause** too (as for terminals), but no notification.
-8. **The unit-test and scene counts** moved with the work: 1,661 tests on master before the UI tasks, 1,781 now.
+8. **The unit-test and scene counts** moved with the work: 1,661 tests on master before the UI tasks, 1,787 now.
 9. **Dead code.** The last `#[allow(dead_code)]` in the agent files was on `routes_permissions`, a provider flag for
    "asks fuxx before a tool" that nothing read. It was removed rather than kept: agy's permissions are not routed
    (below), and nothing needs the flag. `rg "allow\(dead_code\)"` over the agent files and `src/providers` finds
    nothing.
+10. **Final review fixes (2026-11-17).**
+    - **A new Claude conversation starts under an id fuxx chooses** (`claude … --session-id <uuid>`, through the
+      provider hook `fresh_conversation_id`; Ruling 40). The tab takes that id as its conversation with your first
+      message, so it is saved at once and `ps` always shows it: a `claude` left running by a crash is seen as the
+      holder on the next launch. If the run ends before Claude says it started, the next start picks a new id (Claude
+      refuses an id it has seen). Checked with Claude Code 2.1.326: its `init` reports the chosen id.
+    - **The conversation id is followed when it changes** mid-run (Claude's `/clear`): the tab saves the new id, and
+      restart, classic view and the holder check use it.
+    - **The classic view's terminal is saved as a plain shell** (no preset, no agent), so restoring with agents never
+      types today's `claude` preset into it.
+    - **Only an id of the agent's shape is typed into the classic view's shell** (`is_conversation_id`); any other
+      id is refused with a notice.
+    - Force stop right after the agent exited no longer leaves sends queued; a failed resume puts queued messages
+      back in the box; text you edit while a paused tab is checked stays in the box; a lost background-service
+      terminal keeps its classic-view note when closed.
 
 ## Limits
 
@@ -141,13 +158,16 @@ into.
 - **Shortcut numbers moved.** ⌃⌘1 and ⌃⌘2 are now claude and agy, so opencode is ⌃⌘3 and codex ⌃⌘4 (they were ⌃⌘2 and ⌃⌘3).
 - **The palette and the workspace switcher** show the shell's status, not an agent tab's. ⇧⌘U does reach waiting agent tabs.
 - **`--fork-session`.** A Claude preset with `--fork-session` shows the "new conversation" notice.
-- **A later different session id** after a resume (for example Claude's `/clear`) can show a false "Couldn't resume"
-  notice. A fix may follow from the final review; until then it is a limit.
+- **An agy run left by a crash can be missed.** agy cannot be told a new conversation's id, so a brand-new agy
+  conversation has no id on its command line. If fuxx crashes during its first turn, the `agy` it started keeps
+  running unseen by the next launch's check, and the restored tab may start a second writer. Quit that `agy`
+  (`pgrep -fl agy`) before sending from the restored tab. (Claude tabs are covered: fuxx chooses their id.)
 - **Scripting gaps.** No open or close events for agent tabs; `status.changed` also fires for restored tabs; a blank
-  `fuxx answer` is a Deny; an agent event's number is its sidebar row, not a `#N` target; `new` over the API with a
-  preset still opens a classic terminal.
-- **R13 edges.** A stale saved classic id keeps the tab Blind for that run. Open in classic view during a send's check
-  shows a notice instead of focusing the classic terminal.
+  `fuxx answer` is a Deny; `new` over the API with a preset still opens a classic terminal. An agent tab's events
+  have no `number` (no `#N` targets it): name it by its `aN`.
+- **R13 edges.** With the background service off, a stale saved classic id keeps the tab Blind on every run (fuxx
+  cannot ask the service whether that terminal still exists). With it on, a stale id keeps the tab Blind for that
+  run. Open in classic view during a send's check shows a notice instead of focusing the classic terminal.
 - **A preset's extra words** are split simply, so a quoted argument with spaces is not kept together.
 - **Dev builds touch the real fuxx's background service** unless you point them elsewhere; see the first line of the
   check below.
@@ -155,7 +175,10 @@ into.
 ## On-screen check (yours, after the build)
 
 To try it before merging, build the branch from Terminal.app so a dev build does not touch your real fuxx:
-`FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run --release`. To rerun the pictures, `scripts/ui-shots.sh`. Use a
+`FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run` (a debug build). **Do not add `--release`:** only a debug build
+saves to `sessions-dev.json`; a release build saves to your real `sessions.json`, and a fuxx from before this branch
+cannot read agent tabs, so it would start empty and save over your workspaces. To rerun the pictures,
+`scripts/ui-shots.sh`. Use a
 scratch folder you do not mind an agent editing (`~/code/scratch`). Items 1–17 need `claude` logged in; items 18–21 need
 `agy`; items 22–25 need an agent tab open.
 
@@ -171,7 +194,7 @@ scratch folder you do not mind an agent editing (`~/code/scratch`). Items 1–17
 
 5. While it works, Esc stops it ("Stopping…"). If it was running a long command, **Force stop** shows after 10 s.
 6. Focus another workspace, then make the agent ask. The row gets a ring and a mark, a 🔔 entry and a banner appear.
-   Click the banner or press ⇧⌘U: it takes you to the agent tab.
+   Press ⇧⌘U: it takes you to the agent tab.
 7. The agent tab's mark turns while it works. Its title becomes your first message. Rename the tab.
 8. The Activity panel with the agent tab focused shows its log, and the age in its header keeps counting. Make the
    agent fail (for example, run it with no network or kill it from another terminal): an Activity note appears.
@@ -205,8 +228,8 @@ scratch folder you do not mind an agent editing (`~/code/scratch`). Items 1–17
 **agy** (if you use it)
 
 18. New Antigravity Tab: the mode chip cycles accept-edits, auto, plan before the first message and then stays fixed.
-    Do it once per mode: pick the mode, send "list this folder", and note what agy did (whether it asked, ran the
-    command, or only planned).
+    Open a new agy tab for each mode (the chip locks after the first message): pick the mode, send "list this
+    folder", and note what agy did (whether it asked, ran the command, or only planned).
 19. Stop on an agy tab offers **Force stop** at once.
 20. Quit and relaunch with an agy tab that has a conversation: it continues, but earlier messages are not shown (a limit).
     If you deleted that conversation in agy, the tab shows a "new conversation" notice.

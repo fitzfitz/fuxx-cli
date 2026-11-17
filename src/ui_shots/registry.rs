@@ -201,6 +201,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-tab-keys",
     "agent-tab-review",
     "agent-tab-held",
+    "agent-tab-runs",
     "agent-tab-agy",
     "agent-workspace-split",
     "agent-preset-menu",

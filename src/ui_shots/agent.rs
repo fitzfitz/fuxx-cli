@@ -368,6 +368,26 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "agent-tab-runs",
+        run: agent_tab_runs,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/agent_tab.rs",
+            "src/agent_conversation.rs",
+            "src/agent_markdown.rs",
+            "src/composer.rs",
+            "src/md_preview.rs",
+            "src/diff_view.rs",
+            "src/file_tab.rs",
+            "src/palette_files.rs",
+            "src/providers/mod.rs",
+            "src/providers/claude.rs",
+            "src/workspace_agent.rs",
+        ],
+    },
+    Scene {
         name: "agent-tab-agy",
         run: agent_tab_agy,
         themes: Themes::Both,
@@ -406,6 +426,7 @@ fn start() -> Start {
     Start {
         cwd: cwd(),
         resume: None,
+        new_id: None,
         mode: None,
         extra_args: Vec::new(),
     }
@@ -2425,4 +2446,322 @@ pub(super) fn agent_tab_attachment() {
         });
         println!("ui-shots: {n}-{slug}: dropped on the body and the tab, removed, sent, paused");
     }
+}
+
+/// The ids a tab told the Workspace (`AgentTabEvent::Conversation`), in order.
+type Told = Rc<RefCell<Vec<String>>>;
+
+/// Checks only: a tab made with no process (R12), `start` given, its `Conversation` events
+/// kept in `told`; `act` runs once the tab's history is in (as `new`'s boot task leaves it:
+/// its process (re)started, so `shot_last_argv` is the command it would run).
+fn run_scene(
+    name: &str,
+    start: Start,
+    act: impl FnOnce(&str, &mut VisualTestAppContext, &Entity<AgentTab>, &Told) + 'static,
+) {
+    use crate::agent_tab::AgentTabEvent;
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = Rc::default();
+    let keep = slot.clone();
+    let told: Told = Rc::default();
+    let heard = told.clone();
+    let n = name.to_string();
+    render_with(
+        &theme,
+        size(px(DIMS.0), px(DIMS.1)),
+        move |window, cx| {
+            cx.set_global(shot_appearance(theme, cx));
+            let tab = cx.new(|cx| AgentTab::for_shots(&CLAUDE, start, window, cx));
+            cx.subscribe(&tab, move |_, e: &AgentTabEvent, _| {
+                if let AgentTabEvent::Conversation(id) = e {
+                    heard.borrow_mut().push(id.clone());
+                }
+            })
+            .detach();
+            *keep.borrow_mut() = Some(tab.clone());
+            tab.into()
+        },
+        move |cx, _| {
+            let tab = tab_of(&slot);
+            feed(cx, &tab, |t, cx| t.shot_history(Vec::new(), cx));
+            act(&n, cx, &tab, &told);
+            slot.borrow_mut().take();
+        },
+    );
+}
+
+/// The word after `flag` in the command line the tab last (re)started with.
+fn argv_value(cx: &VisualTestAppContext, tab: &Entity<AgentTab>, flag: &str) -> Option<String> {
+    let argv = cx.read(|cx| tab.read(cx).shot_last_argv());
+    argv.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone())
+}
+
+fn notices(cx: &VisualTestAppContext, tab: &Entity<AgentTab>, text: &str) -> usize {
+    cx.read(|cx| {
+        tab.read(cx)
+            .shot_items()
+            .iter()
+            .filter(|i| matches!(i, Item::Notice(t) if t == text))
+            .count()
+    })
+}
+
+fn said(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<String> {
+    cx.read(|cx| {
+        tab.read(cx)
+            .shot_items()
+            .iter()
+            .filter_map(|i| match i {
+                Item::You { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+fn started(id: &str) -> Event {
+    Event::Started {
+        conversation: id.into(),
+        model: Some("claude-opus-5-5".into()),
+    }
+}
+
+/// Checks only, on the paths a process's runs take (final review fixes):
+/// - a new conversation starts under an id fuxx chose (`--session-id`, Ruling 40), the tab's
+///   conversation from your first message; the agent's own `Started` with it is no "new
+///   conversation"; a later id (Claude's `/clear`) is followed and told again; a run that ended
+///   before the agent took the id starts under a new one (Claude refuses an id used before);
+/// - a resumed run's `Started` with its id, then another id: no false "Couldn't resume";
+/// - Force stop right after the process ended: a send goes at once (not queued forever);
+/// - a resume after the classic view leaves text you edited during the check in the box;
+/// - a resume that failed for another reason than a gone conversation puts what was queued
+///   back in the box.
+pub(super) fn agent_tab_runs() {
+    use crate::agent_tab::RESTORED_NOTICE;
+    use crate::workspace_agent::Holder;
+    const OLD: &str = "6a1c234d-7469-40ef-b093-c74ad8006c28";
+    const CLEARED: &str = "0b3c4a5e-1f2d-4e6a-9b8c-7d6e5f4a3b2c";
+
+    run_scene("agent-tab-runs-fresh", start(), |n, cx, tab, told| {
+        let chosen = argv_value(cx, tab, "--session-id").expect("started under a chosen id");
+        assert_eq!(argv_value(cx, tab, "--resume"), None, "{n}");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).resume_id()),
+            None,
+            "{n}: nothing said yet"
+        );
+        assert!(told.borrow().is_empty(), "{n}");
+        feed(cx, tab, |t, cx| t.send("Say hello".into(), cx));
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).resume_id()),
+            Some(chosen.clone()),
+            "{n}: the chosen id is its conversation from the first message"
+        );
+        assert_eq!(
+            *told.borrow(),
+            std::slice::from_ref(&chosen),
+            "{n}: told at once (saved)"
+        );
+        feed(cx, tab, |t, cx| t.shot_feed(vec![started(&chosen)], cx));
+        assert_eq!(notices(cx, tab, BAD_RESUME_NOTICE), 0, "{n}: not a new one");
+        assert_eq!(
+            *told.borrow(),
+            std::slice::from_ref(&chosen),
+            "{n}: the same id: not told again"
+        );
+        // `/clear`: the agent goes on under another id, which the tab follows.
+        feed(cx, tab, |t, cx| {
+            t.shot_feed(
+                vec![
+                    Event::TurnDone {
+                        ok: true,
+                        message: None,
+                    },
+                    started(CLEARED),
+                ],
+                cx,
+            )
+        });
+        assert_eq!(notices(cx, tab, BAD_RESUME_NOTICE), 0, "{n}");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).resume_id()).as_deref(),
+            Some(CLEARED),
+            "{n}: follows the new id"
+        );
+        assert_eq!(
+            *told.borrow(),
+            [chosen, CLEARED.to_string()],
+            "{n}: told again"
+        );
+    });
+
+    run_scene("agent-tab-runs-unconfirmed", start(), |n, cx, tab, told| {
+        let chosen = argv_value(cx, tab, "--session-id").expect("a chosen id");
+        feed(cx, tab, |t, cx| t.send("Say hello".into(), cx));
+        // Stopped before the agent said it started: its id may never have been taken.
+        feed(cx, tab, |t, cx| t.shot_force_stop(cx));
+        let again = argv_value(cx, tab, "--session-id").expect("a new conversation again");
+        assert_ne!(
+            again, chosen,
+            "{n}: under a new id (an id used once is refused)"
+        );
+        assert_eq!(
+            argv_value(cx, tab, "--resume"),
+            None,
+            "{n}: nothing to resume"
+        );
+        feed(cx, tab, |t, cx| t.send("Say hello again".into(), cx));
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).resume_id()),
+            Some(again.clone()),
+            "{n}"
+        );
+        assert_eq!(*told.borrow(), [chosen, again], "{n}");
+    });
+
+    let resumed = Start {
+        resume: Some(OLD.into()),
+        ..start()
+    };
+    run_scene(
+        "agent-tab-runs-resumed",
+        resumed.clone(),
+        |n, cx, tab, told| {
+            assert_eq!(argv_value(cx, tab, "--resume").as_deref(), Some(OLD), "{n}");
+            assert_eq!(argv_value(cx, tab, "--session-id"), None, "{n}");
+            feed(cx, tab, |t, cx| t.send("Go on".into(), cx));
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(
+                    vec![
+                        started(OLD),
+                        Event::TurnDone {
+                            ok: true,
+                            message: None,
+                        },
+                        started(CLEARED),
+                    ],
+                    cx,
+                )
+            });
+            assert_eq!(
+                notices(cx, tab, BAD_RESUME_NOTICE),
+                0,
+                "{n}: no false notice"
+            );
+            assert_eq!(notices(cx, tab, RESTORED_NOTICE), 1, "{n}: still restored");
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).resume_id()).as_deref(),
+                Some(CLEARED),
+                "{n}"
+            );
+            assert_eq!(
+                told.borrow().last().map(String::as_str),
+                Some(CLEARED),
+                "{n}"
+            );
+        },
+    );
+
+    run_scene(
+        "agent-tab-runs-force-after-exit",
+        start(),
+        |n, cx, tab, _| {
+            feed(cx, tab, |t, cx| t.send("Write a long essay".into(), cx));
+            let id = cx.read(|cx| tab.read(cx).resume_id()).expect("its id");
+            feed(cx, tab, |t, cx| t.shot_feed(vec![started(&id)], cx));
+            // The process ends; within END_WAIT, Force stop.
+            feed(cx, tab, |t, cx| {
+                t.shot_process(ProcessEvent::Ended { code: Some(0) }, cx);
+                t.shot_force_stop(cx);
+            });
+            feed(cx, tab, |t, cx| t.send("and then this".into(), cx));
+            cx.read(|cx| assert_eq!(tab.read(cx).shot_pending(), 0, "{n}: not queued"));
+            assert_eq!(
+                said(cx, tab),
+                ["Write a long essay", "and then this"],
+                "{n}: sent"
+            );
+        },
+    );
+
+    run_scene("agent-tab-runs-classic-edit", start(), |n, cx, tab, _| {
+        feed(cx, tab, |t, cx| t.send("Fix the date check".into(), cx));
+        let id = cx.read(|cx| tab.read(cx).resume_id()).expect("its id");
+        feed(cx, tab, |t, cx| {
+            t.shot_feed(
+                vec![
+                    started(&id),
+                    Event::TurnDone {
+                        ok: true,
+                        message: None,
+                    },
+                ],
+                cx,
+            );
+            t.pause_for_classic(cx);
+        });
+        let composer = cx.read(|cx| tab.read(cx).shot_composer());
+        // Sent, then edited while the Workspace checked: the edit stays.
+        feed(cx, tab, |t, cx| {
+            composer.update(cx, |c, cx| c.set_text("and the tests, edited".into(), cx));
+            t.resume_after_classic("and the tests".into(), Holder::Free, None, cx);
+        });
+        assert_eq!(
+            cx.read(|cx| composer.read(cx).text().to_string()),
+            "and the tests, edited",
+            "{n}: the edited text stays"
+        );
+        assert_eq!(
+            said(cx, tab).last().map(String::as_str),
+            Some("and the tests"),
+            "{n}"
+        );
+        // Not edited: the box is cleared.
+        feed(cx, tab, |t, cx| {
+            t.pause_for_classic(cx);
+            composer.update(cx, |c, cx| c.set_text("and the docs".into(), cx));
+            t.resume_after_classic("and the docs".into(), Holder::Free, None, cx);
+        });
+        assert_eq!(
+            cx.read(|cx| composer.read(cx).text().to_string()),
+            "",
+            "{n}"
+        );
+    });
+
+    run_scene("agent-tab-runs-failed-resume", resumed, |n, cx, tab, _| {
+        feed(cx, tab, |t, cx| t.send("Go on".into(), cx));
+        // It ends before it said it started, not for a gone conversation; a send meanwhile
+        // waits for the end.
+        feed(cx, tab, |t, cx| {
+            t.shot_process(ProcessEvent::Ended { code: Some(1) }, cx);
+            t.send("and this".into(), cx);
+        });
+        cx.read(|cx| assert_eq!(tab.read(cx).shot_pending(), 1, "{n}: waits"));
+        feed(cx, tab, |t, cx| {
+            t.shot_process(
+                ProcessEvent::Exited {
+                    code: Some(1),
+                    stderr_tail: "network is down".into(),
+                },
+                cx,
+            )
+        });
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            assert_eq!(t.shot_pending(), 0, "{n}: nothing left waiting");
+            assert_eq!(
+                t.shot_composer().read(cx).text(),
+                "and this",
+                "{n}: back in the box"
+            );
+            assert!(
+                t.shot_items()
+                    .iter()
+                    .any(|i| matches!(i, Item::Error(e) if e.contains("network is down"))),
+                "{n}"
+            );
+        });
+    });
+    println!("ui-shots: agent-tab-runs: chosen ids, /clear, Force stop, classic edits, queues");
 }

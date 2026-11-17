@@ -749,7 +749,7 @@ impl Workspace {
             .zip(label.as_deref())
             .map(|((i, s), name)| EventSession {
                 subject: Subject::Terminal(s.id),
-                number: i + 1,
+                number: Some(i + 1),
                 name,
             });
         let line = event_json(event, about.as_ref(), now_ms()).to_string();
@@ -757,7 +757,7 @@ impl Workspace {
     }
 
     /// Send an event about agent tab `tab` (M11aa) to every subscriber, as `emit` does for a
-    /// terminal: named by its `aN`, its workspace's row and its title. Nothing while restoring.
+    /// terminal: named by its `aN` and its title (no number: `#N` targets terminals only). Nothing while restoring.
     pub(crate) fn emit_agent(&mut self, event: &Event, tab: TabId) {
         if self.subscribers.is_empty() || self.restoring {
             return;
@@ -768,7 +768,7 @@ impl Workspace {
         let name = self.agent_title(tab);
         let about = EventSession {
             subject: Subject::Agent(id),
-            number: self.agent_place(tab).0,
+            number: None,
             name: &name,
         };
         let line = event_json(event, Some(&about), now_ms()).to_string();

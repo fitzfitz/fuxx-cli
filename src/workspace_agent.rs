@@ -345,6 +345,20 @@ pub fn not_stopped_notice(label: &str) -> String {
     format!("{label} didn't stop in time, so the classic view didn't open — try again")
 }
 
+/// The command the classic view types into its shell for conversation `id`: the provider's
+/// resume command (`classic_argv`), only when `id` has the provider's id shape
+/// (`is_conversation_id`); else None, and nothing is typed.
+pub fn classic_command(provider: &dyn Provider, id: &str) -> Option<String> {
+    provider
+        .is_conversation_id(id)
+        .then(|| provider.classic_argv(id).join(" "))
+}
+
+/// The notice of a classic view refused for an id not of the provider's shape.
+pub fn bad_id_notice(label: &str) -> String {
+    format!("{label}'s conversation id doesn't look right, so the classic view didn't open")
+}
+
 /// A provider's badge: `size` square, rounded, `rgb` filled, its letters in white.
 pub(crate) fn agent_badge(badge: &'static str, rgb: u32, size: f32) -> Div {
     div()
@@ -417,6 +431,7 @@ impl Workspace {
         let start = self.agent_start(kind, cx).unwrap_or_else(|| Start {
             cwd: PathBuf::from("/"),
             resume: None,
+            new_id: None,
             mode: None,
             extra_args: Vec::new(),
         });
@@ -506,6 +521,7 @@ impl Workspace {
         Some(Start {
             cwd: cwd.clone(),
             resume: conversation.clone(),
+            new_id: None,
             mode: mode.clone(),
             extra_args,
         })
@@ -1070,6 +1086,15 @@ impl Workspace {
         let Some(provider) = providers::by_name(&provider) else {
             return;
         };
+        // Only an id of the provider's shape is typed into a shell: else the tab says so and
+        // stays as it is.
+        if classic_command(provider, &id).is_none() {
+            if let Some(slot) = self.agents.get(&tab) {
+                let notice = bad_id_notice(provider.info().label);
+                slot.view.update(cx, |view, cx| view.notice(notice, cx));
+            }
+            return;
+        }
         if self.still_checking(tab, cx) || !self.classic_opening.insert(tab) {
             return; // a send's check runs, or opening already (a sheet answered twice)
         }
@@ -1123,13 +1148,22 @@ impl Workspace {
             self.classic_opening.remove(&tab);
             return;
         };
+        // Checked before the pause (`open_classic_now`); again here, where it is typed.
+        let Some(command) = classic_command(p, &id) else {
+            self.classic_opening.remove(&tab);
+            if let Some(view) = &view {
+                let notice = bad_id_notice(p.info().label);
+                view.update(cx, |view, cx| view.notice(notice, cx));
+            }
+            return;
+        };
         let project = (self.places.home.as_ref() != Some(&cwd)).then_some(cwd);
         let launch = Launch {
             saved: SavedSession {
                 project,
                 preset: Some(Preset {
                     name: provider.clone(),
-                    command: p.classic_argv(&id).join(" "),
+                    command,
                 }),
                 ..Default::default()
             },
@@ -1330,6 +1364,30 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::providers::claude::CLAUDE;
+
+    /// The classic view types the provider's resume command into a shell: only for an id of
+    /// the provider's shape (anything else could be a shell command).
+    #[test]
+    fn a_classic_command_is_typed_only_for_an_id_of_the_provider_s_shape() {
+        const ID: &str = "0b3c4a5e-1f2d-4e6a-9b8c-7d6e5f4a3b2c";
+        assert_eq!(
+            classic_command(&CLAUDE, ID).as_deref(),
+            Some("claude --resume 0b3c4a5e-1f2d-4e6a-9b8c-7d6e5f4a3b2c")
+        );
+        for bad in [
+            "",
+            "abc",
+            "x; rm -rf ~",
+            "$(open -a Calculator)",
+            &format!("{ID} &"),
+        ] {
+            assert_eq!(classic_command(&CLAUDE, bad), None, "{bad}");
+        }
+        assert_eq!(
+            bad_id_notice("Claude"),
+            "Claude's conversation id doesn't look right, so the classic view didn't open"
+        );
+    }
 
     /// Another conversation's session id (a UUID, as Claude's are).
     const OTHER: &str = "0b3c4a5e-1f2d-4e6a-9b8c-7d6e5f4a3b2c";

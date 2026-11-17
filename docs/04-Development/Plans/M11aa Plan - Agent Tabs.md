@@ -1066,7 +1066,7 @@ pub enum Target { Id(u64), Agent(u64), Number(usize), Name(String) }   // "a<dig
 pub fn answer_action(text: &str) -> Answer;   // y / yes / allow (any case, trimmed) → Allowed; always → AlwaysAllowed; else Denied(Some(text))
 // workspace_api.rs
 fn statuses(&self) -> Vec<(Subject, Status)>;   // terminals in sidebar order, then agent tabs by workspace order
-pub(crate) fn emit_agent(&mut self, event: &Event, tab: TabId);   // EventSession { subject: Agent(aN), number: its row, name: its title }
+pub(crate) fn emit_agent(&mut self, event: &Event, tab: TabId);   // EventSession { subject: Agent(aN), number: None (final review: no `#N` targets it), name: its title }
 ```
   `session.list` rows for agent tabs: `{"id":"aN","kind":"agent","provider":"claude","name":<title or label>,
   "status":…,"workspace":…,"pane":…}`; terminal rows gain `"kind":"terminal"`. `session.status` on `aN` → the

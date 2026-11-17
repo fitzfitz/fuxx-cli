@@ -27,6 +27,9 @@ pub struct ProviderInfo {
 pub struct Start {
     pub cwd: PathBuf,
     pub resume: Option<String>,
+    /// A new conversation's id, chosen by fuxx (`Provider::fresh_conversation_id`): the
+    /// provider starts it under that id when `resume` is None.
+    pub new_id: Option<String>,
     pub mode: Option<String>,
     pub extra_args: Vec<String>,
 }
@@ -43,6 +46,17 @@ pub trait Provider: Sync {
     /// line (`args`): Some only when its arguments name one by an id of this agent's shape.
     /// None is not "another conversation": the arguments may not say (or may be hidden).
     fn conversation_in_args(&self, _args: &str) -> Option<String> {
+        None
+    }
+    /// Whether `id` has the shape of this agent's conversation ids: only such an id is typed
+    /// into a shell (`classic_argv`, the classic view). None is, unless the provider says.
+    fn is_conversation_id(&self, _id: &str) -> bool {
+        false
+    }
+    /// An id for a new conversation, when the agent can be told to start one under it (R13,
+    /// Ruling 40: `ps` then names the conversation from its first moment, so a process left
+    /// running after a crash is seen as its holder). None: the agent picks its own id.
+    fn fresh_conversation_id(&self) -> Option<String> {
         None
     }
     /// The model chip's text for the model the agent reports (`model`): as it is, unless the
@@ -186,6 +200,27 @@ fn uuid_shaped(word: &str) -> bool {
             .all(|(g, n)| g.len() == n && g.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
+/// A random (version 4) UUID, lower-case, from the system's random source; None if it can't
+/// be read.
+fn new_uuid() -> Option<String> {
+    use std::io::Read;
+    let mut b = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut b))
+        .ok()?;
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // the RFC 4122 variant
+    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    ))
+}
+
 /// The conversation a command line (`ps`'s `args`) names after one of `flags` (`--flag <id>` or
 /// `--flag=<id>`), the id of the provider's shape (`is_id`); any other word after one (a word of
 /// a prompt `ps` joined in, a search) names nothing, and the search goes on.
@@ -287,6 +322,25 @@ mod tests {
             Some("abc")
         );
         assert_eq!(conversation_after(args, &["--other"], uuid_shaped), None);
+    }
+
+    #[test]
+    fn a_new_id_is_a_random_v4_uuid() {
+        let a = new_uuid().expect("16 random bytes");
+        let b = new_uuid().expect("16 random bytes");
+        assert!(uuid_shaped(&a), "{a}");
+        assert_ne!(a, b);
+        assert_eq!(&a[14..15], "4", "version 4: {a}");
+        assert!("89ab".contains(&a[19..20]), "the RFC 4122 variant: {a}");
+        assert_eq!(a, a.to_lowercase());
+    }
+
+    /// A provider that says nothing of its ids: no id is chosen for it, and none of its ids is
+    /// typed into a shell (fail closed).
+    #[test]
+    fn a_provider_s_ids_are_its_own_unless_it_says() {
+        assert_eq!(Plain.fresh_conversation_id(), None);
+        assert!(!Plain.is_conversation_id("6a1c234d-7469-40ef-b093-c74ad8006c28"));
     }
 
     #[test]
