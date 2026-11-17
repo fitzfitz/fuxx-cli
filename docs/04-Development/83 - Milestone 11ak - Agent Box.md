@@ -1,6 +1,6 @@
 # Milestone 11ak — Agent Box
 
-**Status:** 📝 design approved 2026-11-17 ("approved") on branch `m11ak-agent-box`; plan next ([[M11ak Plan - Agent Box]]).
+**Status:** 📝 design approved 2026-11-17 ("approved") on branch `m11ak-agent-box`; plan written 2026-11-17 ([[M11ak Plan - Agent Box]], 15 tasks), waiting for your review.
 
 **Asked for:** 2026-11-17, by you, while scoping M11ag ("Ask the agent from the code"). You showed three screenshots of
 another app's message box — a folder and branch chip above the box; a folder picker (Search, Recent, This Computer ▸,
