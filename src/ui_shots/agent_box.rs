@@ -6,15 +6,22 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use gpui::{AppContext, Context, Entity, VisualTestAppContext, px, size};
+use gpui::{
+    AnyWindowHandle, AppContext, Bounds, Context, Entity, Focusable, Modifiers, Pixels,
+    VisualTestAppContext, px, size,
+};
 
-use super::{Kind, Scene, Themes, render_with, shot_appearance, shot_theme};
-use crate::agent_box::Change;
+use super::{
+    Kind, Scene, Themes, frame_fresh, render_with, shoot_with, shot_appearance, shot_theme,
+    shot_themes,
+};
+use crate::agent_box::{BoxMenu, Change, PLACEHOLDER};
+use crate::agent_catalog::Lookup;
 use crate::agent_conversation::Item;
 use crate::agent_tab::{AgentTab, AgentTabEvent};
 use crate::providers::agy::AGY;
 use crate::providers::claude::CLAUDE;
-use crate::providers::{ChangeKind, Event, Provider, Start};
+use crate::providers::{Catalog, ChangeKind, EffortChoice, Event, ModelChoice, Provider, Start};
 use crate::status::Status;
 
 /// This file, as `file!()` gives it: `registry::AREAS` pairs it with `SCENES`.
@@ -32,8 +39,53 @@ const BOX: &[&str] = &[
     "src/providers/fixtures/agy-text.jsonl",
 ];
 
+/// The files the box is drawn from: the change files, the composer inside it, the catalog its
+/// chips read, and the menu panel's look.
+const LAYOUT: &[&str] = &[
+    "src/agent_tab.rs",
+    "src/agent_box.rs",
+    "src/agent_conversation.rs",
+    "src/agent_catalog.rs",
+    "src/composer.rs",
+    "src/overlay_panel.rs",
+    "src/providers/mod.rs",
+    "src/providers/claude.rs",
+];
+
 /// This area's scenes (`registry.rs` runs them in its `ORDER`).
 pub(super) const SCENES: &[Scene] = &[
+    Scene {
+        name: "agent-box-empty",
+        run: agent_box_empty,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: LAYOUT,
+    },
+    Scene {
+        name: "agent-box-working",
+        run: agent_box_working,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: LAYOUT,
+    },
+    Scene {
+        name: "agent-box-attachment",
+        run: agent_box_attachment,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: LAYOUT,
+    },
+    Scene {
+        name: "agent-box-long-text",
+        run: agent_box_long_text,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: LAYOUT,
+    },
     Scene {
         name: "agent-box-change-waits",
         run: agent_box_change_waits,
@@ -522,4 +574,324 @@ pub(super) fn agent_box_restart_keeps_queued_text() {
         },
     );
     cancelled_change_still_sends();
+}
+
+// ---- The box's layout (Task 5) ----
+
+/// The window the layout scenes draw in.
+const DIMS: (f32, f32) = (720.0, 640.0);
+
+/// A made-up catalog: one model, `Claude Example 5`, with three efforts; the agent says it runs
+/// in its `default` mode.
+fn example_catalog() -> Catalog {
+    Catalog {
+        models: vec![ModelChoice {
+            id: "example-5".into(),
+            label: "Claude Example 5".into(),
+            resolves_to: Some("claude-example-5".into()),
+            efforts: ["low", "medium", "high"]
+                .map(|l| EffortChoice {
+                    level: l.into(),
+                    model_id: None,
+                })
+                .to_vec(),
+        }],
+        mode: Some("default".into()),
+        ..Catalog::default()
+    }
+}
+
+/// Claude, `example-5` at `high` chosen, in `~/code/my-app`.
+fn example_start() -> Start {
+    Start {
+        effort: Some("high".into()),
+        ..start(None, Some("example-5"))
+    }
+}
+
+/// Shoot layout scene `name` in both themes: the tab (keys bound, the keyboard in its box) with
+/// its history in and the made-up catalog read; `act` sets it up and checks it before the shot.
+fn layout_scene(
+    name: &str,
+    act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + Clone + 'static,
+) {
+    for &(slug, theme_name) in shot_themes() {
+        let theme = shot_theme(theme_name);
+        let slot: Slot = Rc::default();
+        let keep = slot.clone();
+        let n = format!("{name}-{slug}");
+        let act = act.clone();
+        let path = shoot_with(
+            name,
+            slug,
+            &theme,
+            size(px(DIMS.0), px(DIMS.1)),
+            move |window, cx| {
+                cx.set_global(shot_appearance(theme, cx));
+                cx.bind_keys(crate::key_bindings());
+                let tab = cx.new(|cx| AgentTab::for_shots(&CLAUDE, example_start(), window, cx));
+                let focus = tab.read(cx).focus_handle(cx);
+                focus.focus(window, cx);
+                *keep.borrow_mut() = Some(tab.clone());
+                tab.into()
+            },
+            move |cx, window| {
+                let tab = slot.borrow().clone().expect("the agent tab");
+                feed(cx, &tab, |t, cx| t.shot_history(Vec::new(), cx));
+                feed(cx, &tab, |t, cx| {
+                    t.shot_catalog(Lookup::Ready(example_catalog()), cx)
+                });
+                let _ = frame_fresh(cx, window);
+                act(&n, cx, window, &tab);
+                let _ = frame_fresh(cx, window);
+                slot.borrow_mut().take();
+            },
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// Where `part` of the box was drawn (it must have been).
+fn part(cx: &VisualTestAppContext, tab: &Entity<AgentTab>, n: &str, part: &str) -> Bounds<Pixels> {
+    cx.read(|cx| tab.read(cx).shot_part(part))
+        .unwrap_or_else(|| panic!("{n}: the {part} was never drawn"))
+}
+
+/// `inner` lies inside `outer`.
+fn inside(inner: Bounds<Pixels>, outer: Bounds<Pixels>) -> bool {
+    inner.left() >= outer.left()
+        && inner.right() <= outer.right()
+        && inner.top() >= outer.top()
+        && inner.bottom() <= outer.bottom()
+}
+
+/// The composer's text area, as last drawn.
+fn composer_bounds(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Bounds<Pixels> {
+    cx.read(|cx| tab.read(cx).shot_composer().read(cx).shot_rows().2)
+        .expect("the composer was drawn")
+}
+
+/// §1's box, empty: the folder above it; inside it the placeholder and, along the bottom, `+`,
+/// the model chip (`Claude Example 5  High ▾`), then on the right the mode chip and send. A
+/// menu opens upward from its chip, one at a time, and Esc closes it (stopping nothing).
+pub(super) fn agent_box_empty() {
+    layout_scene("agent-box-empty", |n, cx, window, tab| {
+        let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
+        assert_eq!(texts.folder, "\u{1f4c1} my-app", "{n}");
+        assert_eq!(texts.model, "Claude Example 5  High \u{25be}", "{n}");
+        assert_eq!(
+            texts.mode.as_deref(),
+            Some("\u{1f6e1} Ask before edits \u{25be}"),
+            "{n}: the mode Claude reports"
+        );
+        assert_eq!(texts.send, "\u{27a4}", "{n}");
+        assert_eq!(texts.usage, None, "{n}: nothing spent yet");
+        let placeholder = cx.read(|cx| {
+            tab.read(cx)
+                .shot_composer()
+                .read(cx)
+                .placeholder()
+                .to_string()
+        });
+        assert_eq!(placeholder, PLACEHOLDER, "{n}");
+
+        let (folder, the_box) = (part(cx, tab, n, "folder"), part(cx, tab, n, "box"));
+        let (attach, model) = (part(cx, tab, n, "attach"), part(cx, tab, n, "model"));
+        let (mode, send) = (part(cx, tab, n, "mode"), part(cx, tab, n, "send"));
+        let text = composer_bounds(cx, tab);
+        assert!(
+            folder.bottom() <= the_box.top(),
+            "{n}: the folder sits above the box"
+        );
+        assert!(!inside(folder, the_box), "{n}");
+        for (name, b) in [
+            ("+", attach),
+            ("model", model),
+            ("mode", mode),
+            ("send", send),
+        ] {
+            assert!(
+                inside(b, the_box),
+                "{n}: {name} {b:?} is inside the box {the_box:?}"
+            );
+            assert!(b.top() >= text.bottom(), "{n}: {name} is under the text");
+            assert!(
+                (b.center().y - send.center().y).abs() < px(2.0),
+                "{n}: {name} is on the bottom row"
+            );
+        }
+        assert!(inside(text, the_box), "{n}: the text is in the box");
+        assert!(attach.right() <= model.left(), "{n}: + then the model");
+        assert!(model.right() < mode.left(), "{n}: the mode on the right");
+        assert!(mode.right() <= send.left(), "{n}: then send, last");
+        assert!(
+            the_box.right() - send.right() < px(16.0),
+            "{n}: send at the box's right edge"
+        );
+        assert!(
+            attach.left() - the_box.left() < px(16.0),
+            "{n}: + at its left edge"
+        );
+
+        // A menu opens upward from its chip; one at a time; Esc closes it.
+        feed(cx, tab, |t, cx| {
+            t.open_menu(
+                BoxMenu::Model {
+                    efforts_of: None,
+                    usage: false,
+                },
+                cx,
+            )
+        });
+        let _ = frame_fresh(cx, window);
+        let menu = part(cx, tab, n, "menu");
+        assert!(
+            menu.bottom() <= model.top(),
+            "{n}: above the model chip {menu:?}"
+        );
+        assert!(
+            (menu.left() - model.left()).abs() < px(1.0),
+            "{n}: from the chip's left {menu:?} {model:?}"
+        );
+        feed(cx, tab, |t, cx| t.open_menu(BoxMenu::Folder, cx));
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).shot_menu()),
+            Some(BoxMenu::Folder),
+            "{n}: one at a time"
+        );
+        let menu = part(cx, tab, n, "menu");
+        assert!(
+            menu.bottom() <= folder.top(),
+            "{n}: above the folder {menu:?}"
+        );
+        cx.simulate_keystrokes(window, "escape");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            assert_eq!(t.shot_menu(), None, "{n}: Esc closed it");
+            assert_eq!(t.status(), Status::Idle, "{n}");
+            assert_eq!(t.shot_stop_label(), None, "{n}: and stopped nothing");
+        });
+        assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
+    });
+}
+
+/// Working: Stop in send's place; the top line says what the conversation cost and how full
+/// its context is (`$0.21 · context 18%`), no longer the chips.
+pub(super) fn agent_box_working() {
+    layout_scene("agent-box-working", |n, cx, window, tab| {
+        let send = part(cx, tab, n, "send");
+        feed(cx, tab, |t, cx| t.send("Fix notes.txt".into(), cx));
+        feed(cx, tab, |t, cx| {
+            t.shot_feed(
+                vec![Event::Usage {
+                    context_pct: Some(18),
+                    cost_usd: Some(0.2116),
+                }],
+                cx,
+            )
+        });
+        let _ = frame_fresh(cx, window);
+        let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
+        assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Working, "{n}");
+        assert_eq!(
+            texts.send, "\u{25a0} Stop  esc",
+            "{n}: Stop in send's place"
+        );
+        assert_eq!(
+            texts.usage.as_deref(),
+            Some("$0.21 \u{b7} context 18%"),
+            "{n}"
+        );
+        let stop = part(cx, tab, n, "send");
+        assert!(
+            (stop.right() - send.right()).abs() < px(1.0),
+            "{n}: where send was {stop:?} {send:?}"
+        );
+        assert!(inside(stop, part(cx, tab, n, "box")), "{n}");
+        let usage = part(cx, tab, n, "usage");
+        assert!(
+            usage.bottom() <= px(30.0),
+            "{n}: on the pane's top line {usage:?}"
+        );
+        assert!(usage.right() > px(DIMS.0 / 2.0), "{n}: at its right");
+    });
+}
+
+/// A command block attached: its chip inside the box, above the text; its × takes it off
+/// (nothing is sent).
+pub(super) fn agent_box_attachment() {
+    layout_scene("agent-box-attachment", |n, cx, window, tab| {
+        let npm = "$ npm test\n(exit 1)\n> app@1.0.0 test\nFAIL src/rsvp.test.ts";
+        let done = "$ echo done\n(exit 0)\ndone";
+        feed(cx, tab, |t, cx| t.attach(done.into(), cx));
+        feed(cx, tab, |t, cx| t.attach(npm.into(), cx));
+        let _ = frame_fresh(cx, window);
+        let chips = part(cx, tab, n, "attachments");
+        let the_box = part(cx, tab, n, "box");
+        assert!(inside(chips, the_box), "{n}: the chips are in the box");
+        assert!(
+            chips.bottom() <= composer_bounds(cx, tab).top(),
+            "{n}: above the text"
+        );
+        let x = cx
+            .read(|cx| tab.read(cx).shot_remove_bounds(0))
+            .expect("the first chip's \u{d7}");
+        assert!(inside(x, chips), "{n}");
+        cx.simulate_click(window, x.center(), Modifiers::none());
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            assert_eq!(
+                t.shot_attachments(),
+                [npm.to_string()],
+                "{n}: \u{d7} took it off"
+            );
+            assert!(t.shot_items().is_empty(), "{n}: nothing sent");
+        });
+        assert!(written(cx, tab).is_empty(), "{n}");
+    });
+}
+
+/// A long message: the box grows to 8 rows, then scrolls; the chips above and below the text
+/// stay put as more is typed.
+pub(super) fn agent_box_long_text() {
+    layout_scene("agent-box-long-text", |n, cx, window, tab| {
+        let line = "Please read src/rsvp.ts and the failing test, then explain why past dates \
+                    are accepted and fix the comparison without changing today() at all. ";
+        cx.simulate_input(window, "Fix it");
+        let _ = frame_fresh(cx, window);
+        let one = composer_bounds(cx, tab);
+        cx.simulate_input(window, &line.repeat(4));
+        let _ = frame_fresh(cx, window);
+        let composer = cx.read(|cx| tab.read(cx).shot_composer());
+        let (rows, first, _) = cx.read(|cx| composer.read(cx).shot_rows());
+        assert!(rows > 8, "{n}: more rows than shown ({rows})");
+        assert!(first > 0, "{n}: scrolled to the caret");
+        let eight = composer_bounds(cx, tab);
+        let ratio = eight.size.height / one.size.height;
+        assert!(
+            (7.5..8.5).contains(&ratio),
+            "{n}: eight rows tall ({ratio})"
+        );
+        let parts = |cx: &VisualTestAppContext| {
+            ["folder", "box", "attach", "model", "mode", "send"].map(|p| part(cx, tab, n, p))
+        };
+        let before = parts(cx);
+        assert!(inside(eight, before[1]), "{n}: the text stays in the box");
+        assert!(
+            before[0].bottom() <= before[1].top(),
+            "{n}: the folder above"
+        );
+        assert!(before[0].top() >= px(0.0), "{n}: still in the window");
+        cx.simulate_input(window, &line.repeat(3));
+        let _ = frame_fresh(cx, window);
+        assert_eq!(parts(cx), before, "{n}: the chips stay put");
+        assert_eq!(
+            composer_bounds(cx, tab),
+            eight,
+            "{n}: no taller than 8 rows"
+        );
+    });
 }
