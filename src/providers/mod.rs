@@ -128,6 +128,27 @@ pub struct RateLimit {
     pub resets_at: Option<i64>,
 }
 
+/// What a change in the agent box changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChangeKind {
+    Model,
+    Effort,
+    Mode,
+    Folder,
+}
+
+/// How a provider takes a change (`Provider::applies`): in place on its running process, by
+/// starting it again on the same conversation, or only in a new conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Applies {
+    Live,
+    Restart,
+    /// No provider answers it today (Task 0: both carry a conversation on); the box's menus
+    /// then say "applies to a new conversation".
+    #[allow(dead_code)]
+    NextConversation,
+}
+
 /// How to start (or resume) a conversation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Start {
@@ -194,13 +215,11 @@ pub trait Provider: Sync {
         Err("no list".into())
     }
     /// The models to offer when the provider gave none.
-    #[allow(dead_code)] // read by the agent box's menus (a later M11ak task)
     fn fallback_models(&self) -> Vec<ModelChoice> {
         Vec::new()
     }
     /// A model choice and an effort level to the `(model, effort)` values to start with
     /// (`Start::model`, `Start::effort`). Default: the model's id and the effort as chosen.
-    #[allow(dead_code)] // read by the agent box's menus (a later M11ak task)
     fn model_flags(&self, model: &ModelChoice, effort: Option<&str>) -> (String, Option<String>) {
         (model.id.clone(), effort.map(String::from))
     }
@@ -217,6 +236,11 @@ pub trait Provider: Sync {
     /// the conversation to resume doesn't exist: only then does the tab start a new one.
     fn unknown_conversation(&self, _said: &str) -> bool {
         false
+    }
+    /// How a change of `change` reaches a running conversation. Default: by a restart on the
+    /// same conversation (the new flags).
+    fn applies(&self, _change: ChangeKind) -> Applies {
+        Applies::Restart
     }
 }
 
@@ -293,6 +317,13 @@ pub enum Event {
     Skills(Vec<String>),
     /// A usage limit changed state.
     RateLimit(RateLimit),
+    /// The agent answered a live change (`Action::SetModel` …): `ok` with the value it now
+    /// uses, else not, `value` saying why.
+    Applied {
+        kind: ChangeKind,
+        value: String,
+        ok: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -316,11 +347,30 @@ pub enum TodoState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    Send { text: String },
-    Allow { id: String },
-    AlwaysAllow { id: String },
-    Deny { id: String, reason: Option<String> },
+    Send {
+        text: String,
+    },
+    Allow {
+        id: String,
+    },
+    AlwaysAllow {
+        id: String,
+    },
+    Deny {
+        id: String,
+        reason: Option<String>,
+    },
     Interrupt,
+    /// Live changes (`Applies::Live`); a provider that can't take one writes nothing.
+    SetModel {
+        model: String,
+    },
+    SetEffort {
+        effort: String,
+    },
+    SetMode {
+        mode: String,
+    },
 }
 
 /// `extra` without the flags a provider sets itself (`owned`: each flag, and whether it takes a

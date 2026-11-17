@@ -14,8 +14,8 @@
 //! `--changed` follows.
 
 use super::{
-    Scene, agent, branch, changes, chrome, chrome_parts, file_tab, file_tab_md, naming, overlays,
-    palette, panes, right_sidebar, sidebar, status_bar, terminal, welcome, window,
+    Scene, agent, agent_box, branch, changes, chrome, chrome_parts, file_tab, file_tab_md, naming,
+    overlays, palette, panes, right_sidebar, sidebar, status_bar, terminal, welcome, window,
 };
 
 /// Files that run or declare the suite but change no scene's picture: an edit to one of these
@@ -48,6 +48,7 @@ pub(super) const AREAS: &[(&str, &[Scene])] = &[
     (status_bar::FILE, status_bar::SCENES),
     (terminal::FILE, terminal::SCENES),
     (agent::FILE, agent::SCENES),
+    (agent_box::FILE, agent_box::SCENES),
 ];
 
 /// The scenes with their own area file added to `sources`, as `--changed` reads them, so an edit
@@ -218,6 +219,9 @@ pub(super) const ORDER: &[&str] = &[
     "agent-sidebar-waiting",
     "agent-tab-composer-wrap",
     "agent-tab-attachment",
+    "agent-box-change-waits",
+    "agent-box-change-restart",
+    "agent-box-restart-keeps-queued-text",
 ];
 
 /// Every scene, in `ORDER`. Panics, naming the scene, if one is in no area or in two, or if

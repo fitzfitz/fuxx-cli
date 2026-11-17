@@ -235,6 +235,12 @@ impl Provider for Agy {
         (id, None)
     }
 
+    /// Every change restarts agy on the same `--conversation` with the new flags (Task 0: it
+    /// carries on, and `--model` / `--mode` take); it has no live request on stdin.
+    fn applies(&self, _change: ChangeKind) -> Applies {
+        Applies::Restart
+    }
+
     fn classic_argv(&self, conversation: &str) -> Vec<String> {
         ["agy", "--conversation", conversation]
             .map(String::from)
@@ -580,7 +586,10 @@ impl Translator for AgyTranslator {
             Action::Allow { .. }
             | Action::AlwaysAllow { .. }
             | Action::Deny { .. }
-            | Action::Interrupt => Vec::new(),
+            | Action::Interrupt
+            | Action::SetModel { .. }
+            | Action::SetEffort { .. }
+            | Action::SetMode { .. } => Vec::new(),
         }
     }
 }
@@ -1169,6 +1178,36 @@ mod tests {
             "2026-11-22T14:59:00",
         ] {
             assert_eq!(rfc3339_unix(t), None, "{t}");
+        }
+    }
+
+    #[test]
+    fn agy_set_actions_write_nothing() {
+        let mut t = AGY.translator();
+        for a in [
+            Action::SetModel {
+                model: "gemini-3.8-flash-low".into(),
+            },
+            Action::SetEffort {
+                effort: "low".into(),
+            },
+            Action::SetMode {
+                mode: "plan".into(),
+            },
+        ] {
+            assert!(t.encode(&a).is_empty(), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn agy_applies_per_task_0() {
+        for kind in [
+            ChangeKind::Model,
+            ChangeKind::Effort,
+            ChangeKind::Mode,
+            ChangeKind::Folder,
+        ] {
+            assert_eq!(AGY.applies(kind), Applies::Restart, "{kind:?}");
         }
     }
 }
