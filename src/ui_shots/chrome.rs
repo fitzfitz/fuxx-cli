@@ -170,7 +170,8 @@ pub(super) const SCENES: &[Scene] = &[
         name: "chrome-agent-status",
         run: chrome_agent_status,
         themes: Themes::One,
-        serial: false,
+        // Serial: (c) its ages under a minute turn every second while a check runs.
+        serial: true,
         kind: Kind::Visual,
         sources: &[
             "src/chrome_cache.rs",

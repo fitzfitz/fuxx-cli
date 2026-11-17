@@ -152,6 +152,11 @@ pub struct UiColors {
     pub avatars: [(Rgb, Rgb, Rgb); 11],
     /// The selected sidebar row in a group's card (M11r): a neutral lift of the card.
     pub card_lift: Rgb,
+    /// Under a dragged command block (M11aa Task 11): a pane tab that takes it (an agent's),
+    /// and an agent tab's page. The accent washed over the bar and the card, as strong as
+    /// keeps their text (and the tab's marks) readable.
+    pub drop_tab: Rgb,
+    pub drop_card: Rgb,
 }
 
 impl UiColors {
@@ -346,6 +351,39 @@ impl Theme {
             .map(|step| mix(sidebar, accent, 0.30 - 0.05 * step as f32))
             .find(|&s| contrast(ink, s) >= TEXT_MIN)
             .unwrap_or(sidebar);
+        let text_faint = text(mix(sidebar, fg, 0.55));
+        // Also text: the browser panel's error on the sidebar, and a waiting row's "Needs
+        // input" on its tint (hovered or not) or, selected, on the selection's (M11i).
+        let ring_waiting = readable(
+            mark(waiting),
+            &[sidebar, waiting_tint, waiting_hover, row_selected],
+            TEXT_MIN,
+        );
+        let ring_done = mark(done);
+        // Under a dragged command block (M11aa Task 11): a pane tab, and an agent tab's page
+        // (the card). A wash of the accent (20 %; 8 % on the page), lowered in 2 % steps while
+        // the text (and, on a tab, its status marks) would fall below its floor. At 0 it is
+        // the surface itself, which they read on.
+        let wash = |on: Rgb, most: f32, keep: &[(Rgb, f32)]| {
+            (0..=10)
+                .map(|n| mix(on, accent, (most - 0.02 * n as f32).max(0.0)))
+                .find(|&s| keep.iter().all(|&(c, min)| contrast(c, s) >= min))
+                .unwrap_or(on)
+        };
+        let words = [
+            (ink, TEXT_MIN),
+            (text_dim, TEXT_MIN),
+            (text_faint, TEXT_MIN),
+        ];
+        let tab_marks = [
+            (text_dim, MARK_MIN), // ring_idle
+            (ring_working, MARK_MIN),
+            (ring_waiting, MARK_MIN),
+            (ring_done, MARK_MIN),
+            (accent, MARK_MIN),
+        ];
+        let drop_tab = wash(tab_bar, 0.20, &[&words[..], &tab_marks[..]].concat());
+        let drop_card = wash(card, 0.08, &words);
         let tab_colors = TabColor::ALL.map(|c| mark(c.base()));
         // A gradient of the colour over the card it mostly sits on, lit at its top left; its
         // letters a pale (dark: light) tint of the colour.
@@ -379,17 +417,11 @@ impl Theme {
             text_dim,
             ring_idle: text_dim,
             ring_working,
-            // Also text: the browser panel's error on the sidebar, and a waiting row's "Needs
-            // input" on its tint (hovered or not) or, selected, on the selection's (M11i).
-            ring_waiting: readable(
-                mark(waiting),
-                &[sidebar, waiting_tint, waiting_hover, row_selected],
-                TEXT_MIN,
-            ),
-            ring_done: mark(done),
+            ring_waiting,
+            ring_done,
             accent,
             on_accent: on_accent(accent, bg, fg),
-            text_faint: text(mix(sidebar, fg, 0.55)),
+            text_faint,
             divider: quiet(mix(bg, fg, 0.16), &[bg]),
             waiting_tint,
             done_tint,
@@ -419,6 +451,8 @@ impl Theme {
             block_running: ensure_contrast(ring_working, bg, MARK_MIN),
             avatars,
             card_lift,
+            drop_tab,
+            drop_card,
         }
     }
 }
@@ -489,10 +523,17 @@ impl Theme {
             ("card_selected", ui.card_selected),
             ("card_hover", ui.card_hover),
             ("card_lift", ui.card_lift),
+            // An agent tab's page under a dragged command block (M11aa Task 11).
+            ("drop_card", ui.drop_card),
         ];
         // The pane tab bars: their titles, glyphs and buttons, and a busy tab's status mark
         // (inactive on the bar, hovered on `tab_hover`); no tab colours.
-        let tab_bars = [("tab_bar", ui.tab_bar), ("tab_hover", ui.tab_hover)];
+        // `drop_tab`: a tab under a dragged command block (M11aa Task 11).
+        let tab_bars = [
+            ("tab_bar", ui.tab_bar),
+            ("tab_hover", ui.tab_hover),
+            ("drop_tab", ui.drop_tab),
+        ];
         let marked: Vec<_> = surfaces.iter().copied().chain([row_selected]).collect();
         let mark_room: Vec<_> = marked.iter().copied().chain(tab_bars).collect();
         let written: Vec<_> = mark_room.iter().copied().chain(text_only).collect();
@@ -1084,6 +1125,19 @@ mod tests {
         );
         assert_eq!(ui.card_shadow_alpha, 0.30);
         assert_eq!(named("Catppuccin Latte").ui().card_shadow_alpha, 0.08);
+    }
+
+    #[test]
+    fn a_dragged_block_tints_its_drop_targets_in_every_theme() {
+        // M11aa Task 11: the tints show (not stepped all the way back to the surface) and keep
+        // their text readable (`drawn_pairs` checks the floors).
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            assert_ne!(ui.drop_tab, ui.tab_bar, "{name}: drop_tab");
+            assert_ne!(ui.drop_card, ui.card, "{name}: drop_card");
+            assert!(contrast(ui.text_dim, ui.drop_tab) >= TEXT_MIN, "{name}");
+            assert!(contrast(ui.text, ui.drop_card) >= TEXT_MIN, "{name}");
+        }
     }
 
     #[test]

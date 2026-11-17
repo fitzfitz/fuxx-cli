@@ -951,6 +951,12 @@ impl TerminalCore {
         blocks::output_text(&self.shared.lock().term, id)
     }
 
+    /// Block `id`'s output text and its outcome now (one scan); none when it is gone. Off the
+    /// UI thread, as `block_output`.
+    pub fn block_output_and_outcome(&self, id: &str) -> Option<(String, crate::blocks::Outcome)> {
+        blocks::output_and_outcome(&self.shared.lock().term, id)
+    }
+
     /// Block `id`'s command line, if it is still in the grid and was recorded (one column-0
     /// scan; only the matching tag is decoded).
     pub fn block_cmd(&self, id: &str) -> Option<String> {

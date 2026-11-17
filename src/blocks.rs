@@ -581,9 +581,20 @@ pub fn live_prompt<L>(term: &Term<L>) -> Option<Line> {
 /// The output of the block `id`, lines right-trimmed and trailing empty lines dropped (empty
 /// when it has none); none when no such block is in the grid.
 pub fn output_text<L>(term: &Term<L>, id: &str) -> Option<String> {
+    Some(text_of(term, &find_block(term, id)?))
+}
+
+/// Block `id`'s output (as `output_text`) and its outcome now, from one scan; none when no
+/// such block is in the grid. (A block dropped on an agent tab is read as it is then.)
+pub fn output_and_outcome<L>(term: &Term<L>, id: &str) -> Option<(String, Outcome)> {
     let block = find_block(term, id)?;
+    Some((text_of(term, &block), block.outcome))
+}
+
+/// `block`'s output rows as text (see `output_text`).
+fn text_of<L>(term: &Term<L>, block: &Block) -> String {
     let Some((first, last)) = block.output else {
-        return Some(String::new());
+        return String::new();
     };
     let start = Point::new(first, Column(0));
     let end = Point::new(last, term.grid().last_column());
@@ -592,7 +603,7 @@ pub fn output_text<L>(term: &Term<L>, id: &str) -> Option<String> {
     while lines.last() == Some(&"") {
         lines.pop();
     }
-    Some(lines.join("\n"))
+    lines.join("\n")
 }
 
 /// Rows under the viewport whose tags `visible` also reads: a block's prompt can be shown
@@ -1085,6 +1096,27 @@ mod tests {
         assert_eq!(output_text(&sh.term, &running.id).as_deref(), Some("x\ny"));
         // No live prompt while a command runs.
         assert_eq!(live_prompt(&sh.term), None);
+    }
+
+    #[test]
+    fn output_and_outcome_reads_the_block_as_it_is_now() {
+        // A block dragged while it ran (M11aa Task 11) is read as it is when dropped.
+        let mut sh = Shell::new();
+        sh.prompt()
+            .feed(b"make\r\n")
+            .feed(&c(Some("make")))
+            .feed(b"x\r\n");
+        let id = sh.blocks()[0].id.clone();
+        assert_eq!(
+            output_and_outcome(&sh.term, &id),
+            Some(("x".to_string(), Outcome::Running))
+        );
+        sh.feed(&d(Some(2))).prompt();
+        assert_eq!(
+            output_and_outcome(&sh.term, &id),
+            Some(("x".to_string(), Outcome::Failed(2)))
+        );
+        assert_eq!(output_and_outcome(&sh.term, "fuxx-block-nope"), None);
     }
 
     #[test]

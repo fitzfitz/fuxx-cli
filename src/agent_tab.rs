@@ -222,6 +222,16 @@ pub fn inserted_path(root: &Path, cwd: &Path, rel: &str) -> String {
     }
 }
 
+/// Take attachment `i` off the list waiting for your next message (its chip's ×); false when
+/// there is none at `i` (nothing changes).
+pub fn remove_attachment(list: &mut Vec<String>, i: usize) -> bool {
+    if i >= list.len() {
+        return false;
+    }
+    list.remove(i);
+    true
+}
+
 /// What is sent for a message with attachments: the text, then each attachment.
 pub fn wire_text(text: &str, attachments: &[String]) -> String {
     let mut out = text.to_string();
@@ -304,6 +314,8 @@ pub struct Colors {
     /// On a tool row or chip (`panel`).
     pub panel: Rgb,
     pub panel_border: Rgb,
+    /// A hovered button on a chip (an attachment's ×).
+    pub panel_hover: Rgb,
     pub panel_text: Rgb,
     pub panel_dim: Rgb,
     pub tool_name: Rgb,
@@ -343,6 +355,7 @@ impl Colors {
             dim: fit(ui.text_dim, page),
             panel: ui.panel,
             panel_border: ui.panel_border,
+            panel_hover: ui.panel_hover,
             panel_text: fit(ui.text, ui.panel),
             panel_dim: fit(ui.text_dim, ui.panel),
             tool_name: fit(ui.accent, ui.panel),
@@ -463,6 +476,9 @@ pub struct AgentTab {
     /// How many item rows the list built (scenes check only the rows in sight are laid out).
     #[cfg(feature = "ui-shots")]
     pub rows_built: Rc<Cell<usize>>,
+    /// Where each waiting attachment's × was laid out (scenes click it).
+    #[cfg(feature = "ui-shots")]
+    removes: Rc<std::cell::RefCell<Vec<Option<gpui::Bounds<gpui::Pixels>>>>>,
 }
 
 impl EventEmitter<AgentTabEvent> for AgentTab {}
@@ -727,6 +743,8 @@ impl AgentTab {
             last_argv: Vec::new(),
             #[cfg(feature = "ui-shots")]
             rows_built: Rc::new(Cell::new(0)),
+            #[cfg(feature = "ui-shots")]
+            removes: Rc::default(),
         }
     }
 
@@ -1335,6 +1353,20 @@ impl AgentTab {
         }
         self.attachments.push(attachment);
         cx.notify();
+    }
+
+    /// The × on a waiting attachment's chip: it goes, and is never sent (nothing else changes:
+    /// nothing is sent or started).
+    pub fn remove_attachment_at(&mut self, i: usize, cx: &mut Context<Self>) {
+        if remove_attachment(&mut self.attachments, i) {
+            cx.notify();
+        }
+    }
+
+    /// Where waiting attachment `i`'s × was last laid out.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_remove_bounds(&self, i: usize) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.removes.borrow().get(i).copied().flatten()
     }
 
     /// The attachments waiting for your next message.
@@ -2447,15 +2479,56 @@ impl AgentTab {
                     }),
             )
             // What goes with your next message (a dropped command block, Task 11), under the
-            // box until it is sent.
+            // box until it is sent; its × takes it off.
             .when(!self.attachments.is_empty(), |d| {
-                d.child(
-                    div().mt(px(6.)).flex().flex_wrap().gap(px(6.)).children(
-                        self.attachments.iter().map(|a| {
-                            chip(format!("📎 {}", a.lines().next().unwrap_or("")), true, c)
-                        }),
-                    ),
-                )
+                d.child(div().mt(px(6.)).flex().flex_wrap().gap(px(6.)).children(
+                    self.attachments.iter().enumerate().map(|(i, a)| {
+                        let (dim, text, hover) = (c.panel_dim, c.panel_text, c.panel_hover);
+                        let remove = div()
+                            .id(("attachment-remove", i))
+                            .size(px(14.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(3.))
+                            .text_color(hsla(dim))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hsla(hover)).text_color(hsla(text)))
+                            .child("×")
+                            .tooltip(|_, cx| -> gpui::AnyView {
+                                cx.new(|_| crate::sidebar_toggle::Tip("Remove".into()))
+                                    .into()
+                            })
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.remove_attachment_at(i, cx)),
+                            );
+                        #[cfg(feature = "ui-shots")]
+                        let remove = {
+                            let removes = self.removes.clone();
+                            removes.borrow_mut().resize(self.attachments.len(), None);
+                            remove.child(
+                                gpui::canvas(
+                                    move |b, _, _| {
+                                        if let Some(slot) = removes.borrow_mut().get_mut(i) {
+                                            *slot = Some(b);
+                                        }
+                                    },
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full(),
+                            )
+                        };
+                        chip(format!("📎 {}", a.lines().next().unwrap_or("")), true, c)
+                            .pr(px(4.))
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(remove)
+                    }),
+                ))
             })
             .child(
                 div()
@@ -2530,7 +2603,7 @@ impl Render for AgentTab {
         };
         // A command block dragged over the tab tints it (GPUI's element-local style: nothing
         // else changes during a drag-over); dropped, the Workspace attaches it (Task 11).
-        let drop_fill = mix(c.page, c.accent, 0.08);
+        let drop_fill = theme.ui().drop_card;
         div()
             .key_context("AgentTab")
             .on_action(cx.listener(Self::at_up))
@@ -2637,6 +2710,20 @@ mod tests {
             inserted_path(root, Path::new("/w/docs"), "src/a.rs"),
             "/w/src/a.rs"
         );
+    }
+
+    #[test]
+    fn an_attachment_is_removed_by_its_place() {
+        let mut list = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        assert!(remove_attachment(&mut list, 1));
+        assert_eq!(list, ["a", "c"]);
+        // Out of range (a chip from a frame before a send): nothing changes.
+        assert!(!remove_attachment(&mut list, 2));
+        assert_eq!(list, ["a", "c"]);
+        assert!(remove_attachment(&mut list, 0));
+        assert!(remove_attachment(&mut list, 0));
+        assert!(list.is_empty());
+        assert!(!remove_attachment(&mut list, 0));
     }
 
     #[test]

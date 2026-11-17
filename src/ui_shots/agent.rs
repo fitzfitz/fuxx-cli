@@ -342,7 +342,7 @@ pub(super) const SCENES: &[Scene] = &[
         run: agent_tab_attachment,
         themes: Themes::Both,
         serial: false,
-        kind: Kind::State,
+        kind: Kind::Visual,
         sources: &[
             "src/agent_tab.rs",
             "src/agent_conversation.rs",
@@ -363,6 +363,7 @@ pub(super) const SCENES: &[Scene] = &[
             "src/tab_bar.rs",
             "src/layout_model.rs",
             "src/sidebar.rs",
+            "src/providers/fixtures/claude-text.jsonl",
         ],
     },
 ];
@@ -1921,24 +1922,30 @@ pub(super) fn agent_sidebar_waiting() {
     }
 }
 
-/// The shell of `agent-tab-attachment`: a failed `npm test` (exit 1) and its output, a finished
-/// `echo done` (exit 0), then the live prompt, marked as fuxx's zsh integration marks them.
+/// The shell of `agent-tab-attachment`, marked as fuxx's zsh integration marks it: a finished
+/// `echo done` (exit 0, rows 0-1), then `npm test` (row 2), still running, its output so far
+/// on rows 3-11. `ATTACHMENT_END` ends it (exit 1) and shows the next prompt.
 fn attachment_shell() -> String {
-    const A: &str = "\x1b]133;A\x07";
-    const B: &str = "\x1b]133;B\x07";
     let c = |cmd: &str| format!("\x1b]133;C;cmdline_url={cmd}\x07");
-    let d = |x: i32| format!("\x1b]133;D;{x}\x07");
     [
         format!(
-            "{A}$ {B}npm test\r\n{}{ATTACHMENT_OUTPUT}{}",
-            c("npm%20test"),
-            d(1)
+            "{MARK_A}$ {MARK_B}echo done\r\n{}done\r\n",
+            c("echo%20done")
         ),
-        format!("{A}$ {B}echo done\r\n{}done\r\n{}", c("echo%20done"), d(0)),
-        format!("{A}$ {B}"),
+        "\x1b]133;D;0\x07".to_string(),
+        format!(
+            "{MARK_A}$ {MARK_B}npm test\r\n{}{ATTACHMENT_OUTPUT}",
+            c("npm%20test")
+        ),
     ]
     .concat()
 }
+
+const MARK_A: &str = "\x1b]133;A\x07";
+const MARK_B: &str = "\x1b]133;B\x07";
+
+/// `npm test` ends with exit 1, and the next prompt shows.
+const ATTACHMENT_END: &str = "\x1b]133;D;1\x07\x1b]133;A\x07$ \x1b]133;B\x07";
 
 /// `npm test`'s output in `attachment_shell` (its rows end in `\r\n` on the screen).
 const ATTACHMENT_OUTPUT: &str = "> app@1.0.0 test\r\n> node --test\r\n\r\n\
@@ -2009,16 +2016,23 @@ fn drag_block(
 }
 
 /// M11aa Task 11 (spec §1.7): a command block dragged from a shell onto an agent tab is
-/// attached to your next message as "command + exit code + output" text. A failed `npm test`,
-/// dragged by its chip's command onto the Claude tab's body, shows as a chip under the
-/// composer (`agent-tab-attachment-composer`); sent, it shows under your message's card
-/// (`agent-tab-attachment`), and the box has no attachment left. `echo done`, dropped on the
-/// Claude tab in its bar, is attached too. R13: a block dropped on a tab paused for "Open in
-/// classic view" only waits there: the tab stays paused and starts nothing.
+/// attached to your next message as "command + exit code + output" text.
+/// - `npm test`, still running, dragged by its chip's command onto the Claude tab's body
+///   (tinted while it is over it: `-dragging`), ends (exit 1) before the drop: the attachment
+///   has its exit code (read as the block is when dropped). Its chip shows under the composer
+///   with a × (`-composer`); nothing is sent or started.
+/// - Sent: it shows under your message's card, and the box has none left (the main shot).
+/// - `echo done`, dropped on the Claude tab in its bar (tinted beyond its hover), is attached;
+///   with `npm test` attached again, the first chip's × takes `echo done` off, and the next
+///   message carries only `npm test`.
+/// - R13: a block dropped on a tab paused for "Open in classic view" only waits there: the tab
+///   stays paused and starts nothing.
 pub(super) fn agent_tab_attachment() {
     use crate::block_view::{BlockDrag, attachment_text};
     use crate::blocks::Outcome;
+    use gpui::Modifiers;
     let n = "agent-tab-attachment";
+    let dims = size(px(1100.0), px(640.0));
     for &(slug, theme_name) in shot_themes() {
         let theme = shot_theme(theme_name);
         let slot: Rc<RefCell<Option<Entity<crate::workspace::Workspace>>>> = Rc::default();
@@ -2028,16 +2042,13 @@ pub(super) fn agent_tab_attachment() {
             let id = ws.open_unnamed_shot_session(Some(my_app), &shell, window, cx);
             ws.agent_beside(id, "claude", window, cx);
         });
-        render_with(&theme, size(px(1100.0), px(640.0)), build, |cx, window| {
+        render_with(&theme, dims, build, |cx, window| {
             let ws = slot.borrow_mut().take().expect("the workspace");
             settle_frames(cx, window);
             let (tab, view) = cx
                 .read(|cx| ws.read(cx).focused_agent_tab())
                 .expect("the agent tab");
-            let shell = cx.read(|cx| {
-                let ws = ws.read(cx);
-                ws.sessions.items()[0].view.clone()
-            });
+            let shell = cx.read(|cx| ws.read(cx).sessions.items()[0].view.clone());
             let panes = super::shown_panes(cx, &ws);
             let bar_tab = super::tab_bounds(cx, &ws, panes[1], 0).expect("Claude's tab");
             let body = gpui::point(bar_tab.left() + px(120.0), bar_tab.bottom() + px(200.0));
@@ -2046,17 +2057,34 @@ pub(super) fn agent_tab_attachment() {
             let npm = attachment_text(Some("npm test"), Outcome::Failed(1), output.trim_end());
             let done = attachment_text(Some("echo done"), Outcome::Ok, "done");
             let attached = |cx: &App| view.read(cx).shot_attachments().to_vec();
+            let block = |cmd: &str, cx: &mut VisualTestAppContext| {
+                cx.read(|cx| {
+                    let b = shell.read(cx).shot_blocks();
+                    let b = b.iter().find(|b| b.cmd.as_deref() == Some(cmd)).expect(cmd);
+                    BlockDrag {
+                        id: b.id.clone(),
+                        command: b.cmd.clone(),
+                        outcome: b.outcome,
+                        core: shell.read(cx).shot_core(),
+                    }
+                })
+            };
+            assert_eq!(
+                block("npm test", cx).outcome,
+                Outcome::Running,
+                "{n}: npm test runs as it is picked up"
+            );
 
-            // npm test, dragged onto the tab's body.
-            let dims = size(px(1100.0), px(640.0));
+            // npm test, dragged onto the tab's body; it ends while held.
             // Where the tint shows: the body's empty page, away from the chip at the pointer.
             let page = (body.x.into(), f32::from(body.y) + 120.0);
             let held: RefCell<Option<super::Shot>> = RefCell::default();
-            drag_block(cx, window, &shell, 0, body, |cx| {
+            drag_block(cx, window, &shell, 2, body, |cx| {
                 // Held over the body: it is tinted, the block's chip at the pointer.
                 let shot = frame_fresh(cx, window);
                 save_shot(&format!("{n}-dragging"), slug, &shot);
                 *held.borrow_mut() = Some(shot);
+                cx.read(|cx| shell.read(cx).show_text(ATTACHMENT_END));
             });
             let held = held.take().expect("a shot while held");
             settle_until(cx, window, "npm test attached", |cx| {
@@ -2064,7 +2092,10 @@ pub(super) fn agent_tab_attachment() {
             });
             let got = cx.read(|cx| attached(cx));
             assert_eq!(got.len(), 1, "{n}: one block attached");
-            assert_eq!(got[0], npm, "{n}: command + exit code + output");
+            assert_eq!(
+                got[0], npm,
+                "{n}: command + exit code (as it ended) + output"
+            );
             assert!(
                 got[0].starts_with("$ npm test\n(exit 1)\n> app@1.0.0 test"),
                 "{n}"
@@ -2082,8 +2113,20 @@ pub(super) fn agent_tab_attachment() {
             );
             save_shot(&format!("{n}-composer"), slug, &dropped);
 
-            // Sent: under your card; the box keeps none.
-            cx.update(|cx| view.update(cx, |t, cx| t.send("Why does this fail?".into(), cx)));
+            // Sent: under your card; the box keeps none. The reply ends the turn (no spinner
+            // in the shot), and its age is dated back (no live "0s").
+            let reply = decode(include_str!("../providers/fixtures/claude-text.jsonl"));
+            cx.update(|cx| {
+                view.update(cx, |t, cx| {
+                    t.send("Why does this fail?".into(), cx);
+                    t.shot_feed(reply, cx);
+                })
+            });
+            cx.update(|cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.shot_agent_since(tab, Duration::from_secs(4 * 60 + 10), cx)
+                })
+            });
             settle_frames(cx, window);
             cx.read(|cx| {
                 let t = view.read(cx);
@@ -2105,11 +2148,11 @@ pub(super) fn agent_tab_attachment() {
             // The tab's fill before its icon, clear of the block's chip at the pointer.
             let on_tab = (f32::from(bar_tab.left()) + 3.0, bar_tab.center().y.into());
             // Against the pointer merely on it (a tab's hover shade).
-            cx.simulate_mouse_move(window, bar_tab.center(), None, gpui::Modifiers::none());
+            cx.simulate_mouse_move(window, bar_tab.center(), None, Modifiers::none());
             settle_frames(cx, window);
             let before = frame_fresh(cx, window);
             let tinted = RefCell::new(false);
-            drag_block(cx, window, &shell, 10, bar_tab.center(), |cx| {
+            drag_block(cx, window, &shell, 0, bar_tab.center(), |cx| {
                 let shot = frame_fresh(cx, window);
                 *tinted.borrow_mut() = super::pixel_at(&shot, dims, on_tab.0, on_tab.1)
                     != super::pixel_at(&before, dims, on_tab.0, on_tab.1);
@@ -2127,27 +2170,61 @@ pub(super) fn agent_tab_attachment() {
                 assert_eq!(ws.read(cx).model.focused_tab(), Some(tab), "{n}: shown");
             });
 
+            // Two waiting; the first one's × takes it off, and only the other is sent.
+            let drag = block("npm test", cx);
+            cx.update(|cx| ws.update(cx, |ws, cx| ws.attach_block(tab, &drag, cx)));
+            settle_until(cx, window, "npm test attached again", |cx| {
+                view.read(cx).shot_attachments().len() == 2
+            });
+            assert_eq!(
+                cx.read(|cx| attached(cx)),
+                [done.clone(), npm.clone()],
+                "{n}"
+            );
+            let x = cx
+                .read(|cx| view.read(cx).shot_remove_bounds(0))
+                .expect("the first chip's ×");
+            cx.simulate_click(window, x.center(), Modifiers::none());
+            settle_frames(cx, window);
+            assert_eq!(
+                cx.read(|cx| attached(cx)),
+                std::slice::from_ref(&npm),
+                "{n}: × took the first off"
+            );
+            cx.update(|cx| view.update(cx, |t, cx| t.send("And with this?".into(), cx)));
+            settle_frames(cx, window);
+            cx.read(|cx| {
+                let t = view.read(cx);
+                assert!(t.shot_attachments().is_empty(), "{n}");
+                let last = t.shot_items().iter().rev().find_map(|i| match i {
+                    Item::You { text, attachments } => Some((text.clone(), attachments.clone())),
+                    _ => None,
+                });
+                let (text, with) = last.expect("your second message");
+                assert_eq!(text, "And with this?", "{n}");
+                assert_eq!(
+                    with,
+                    std::slice::from_ref(&npm),
+                    "{n}: only what's left went"
+                );
+            });
+
             // R13: dropped on a paused tab, it only waits.
             cx.update(|cx| view.update(cx, |t, cx| t.pause_for_classic(cx)));
             let argv = cx.read(|cx| view.read(cx).shot_last_argv());
-            let drag = BlockDrag {
-                id: cx.read(|cx| shell.read(cx).block_ids()[0].clone()),
-                command: Some("npm test".into()),
-                outcome: Outcome::Failed(1),
-                core: cx.read(|cx| shell.read(cx).shot_core()),
-            };
+            let drag = block("echo done", cx);
             cx.update(|cx| ws.update(cx, |ws, cx| ws.attach_block(tab, &drag, cx)));
             settle_until(cx, window, "attached while paused", |cx| {
-                view.read(cx).shot_attachments().len() == 2
+                !view.read(cx).shot_attachments().is_empty()
             });
             cx.read(|cx| {
                 let t = view.read(cx);
                 assert!(t.shot_paused(), "{n}: still paused");
                 assert_eq!(t.shot_last_argv(), argv, "{n}: nothing started");
                 assert_eq!(t.status(), Status::Done, "{n}");
-                assert_eq!(t.shot_attachments(), [done.clone(), npm.clone()], "{n}");
+                assert_eq!(t.shot_attachments(), std::slice::from_ref(&done), "{n}");
             });
         });
-        println!("ui-shots: {n}-{slug}: dropped on the body and the tab, sent, paused");
+        println!("ui-shots: {n}-{slug}: dropped on the body and the tab, removed, sent, paused");
     }
 }
