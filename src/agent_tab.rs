@@ -557,9 +557,9 @@ pub struct AgentTab {
     pub(crate) menu: Option<BoxMenu>,
     /// The folder picker's search and rows, while it is open.
     pub(crate) picker: Option<crate::agent_box::FolderPicker>,
-    /// Where the press was that last closed the folder menu from outside it: the folder chip's
-    /// click from that same press leaves it closed (not closed and opened again).
-    pub(crate) folder_closed_at: Option<gpui::Point<gpui::Pixels>>,
+    /// Where the press was that last closed the folder or model menu from outside it: that
+    /// chip's click from the same press leaves it closed (not closed and opened again).
+    pub(crate) chip_closed_at: Option<gpui::Point<gpui::Pixels>>,
     /// The branch checked out in the agent's folder (none outside a repo, or before it is read):
     /// looked up on the background executor, never in `render` (`read_branch`).
     pub(crate) branch: Option<String>,
@@ -935,7 +935,7 @@ impl AgentTab {
             attachments: Vec::new(),
             menu: None,
             picker: None,
-            folder_closed_at: None,
+            chip_closed_at: None,
             branch: None,
             files: None,
             listing: false,
@@ -1367,8 +1367,16 @@ impl AgentTab {
         self.apply_changes(vec![change], cx);
     }
 
+    /// The model change waiting for the turn to end, if there is one (`choose` keeps one).
+    pub(crate) fn waiting_model(&self) -> Option<&Change> {
+        self.waiting
+            .iter()
+            .rev()
+            .find(|c| matches!(c, Change::Model { .. }))
+    }
+
     /// The latest change waiting for the turn to end.
-    #[allow(dead_code)] // read by the box's chips (a later M11ak task)
+    #[allow(dead_code)] // read by scenes
     pub fn waiting_change(&self) -> Option<&Change> {
         self.waiting.last()
     }
@@ -2106,7 +2114,7 @@ impl AgentTab {
     }
 
     /// A model change's start flags (`Provider::model_flags`).
-    fn model_flags(
+    pub(crate) fn model_flags(
         &self,
         provider: &'static dyn Provider,
         id: &str,

@@ -274,13 +274,18 @@ impl Provider for Claude {
                 id: id.to_string(),
                 label: label.to_string(),
                 resolves_to: None,
-                efforts: FALLBACK_EFFORTS
-                    .iter()
-                    .map(|l| EffortChoice {
-                        level: l.to_string(),
-                        model_id: None,
-                    })
-                    .collect(),
+                // Haiku takes no effort (Claude Code lists none for it).
+                efforts: if *id == "haiku" {
+                    Vec::new()
+                } else {
+                    FALLBACK_EFFORTS
+                        .iter()
+                        .map(|l| EffortChoice {
+                            level: l.to_string(),
+                            model_id: None,
+                        })
+                        .collect()
+                },
             })
             .collect()
     }
@@ -2045,6 +2050,24 @@ mod tests {
         assert_eq!(c.commands[6].name, "Explore");
         assert_eq!(c.commands[6].kind, CommandKind::Agent);
         assert!(c.commands[6].about.starts_with("Fast read-only search"));
+    }
+
+    #[test]
+    fn the_fallback_list_gives_haiku_no_efforts() {
+        let models = CLAUDE.fallback_models();
+        let efforts = |id: &str| -> Vec<String> {
+            models
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap_or_else(|| panic!("{id} is in the list"))
+                .efforts
+                .iter()
+                .map(|e| e.level.clone())
+                .collect()
+        };
+        assert!(efforts("haiku").is_empty(), "Haiku takes no effort");
+        assert_eq!(efforts("opus"), FALLBACK_EFFORTS);
+        assert_eq!(efforts("sonnet"), FALLBACK_EFFORTS);
     }
 
     #[test]

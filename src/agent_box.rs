@@ -21,7 +21,7 @@ use crate::folder_picker::{
     picker_rows,
 };
 use crate::name_input::{NameInput, NameInputEvent};
-use crate::providers::{Applies, Catalog, ChangeKind, ModeChoice, Provider, Start};
+use crate::providers::{Applies, Catalog, ChangeKind, ModeChoice, ModelChoice, Provider, Start};
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::ui_tokens::text;
@@ -62,6 +62,17 @@ const COMPUTER_ROWS: &str = "box-computer";
 const SEARCH: &str = "Search";
 pub const MOVE_HERE: &str = "Move this conversation";
 pub const NEW_CONVERSATION: &str = "New conversation";
+
+/// The model menu's words (§4).
+const MODEL_HEADING: &str = "Model";
+pub const LOADING: &str = "Loading\u{2026}";
+pub const MODEL_LIST_FAILED: &str = "Couldn't read the model list";
+pub const DEFAULT_LIST: &str = "(default list)";
+pub const NEXT_CONVERSATION_NOTE: &str = "applies to a new conversation";
+pub const VIEW_USAGE: &str = "View Usage \u{25b8}";
+/// The id of the effort list's rows, beside the model menu, and the width of its panel.
+const EFFORT_ROWS: &str = "box-effort";
+const EFFORT_WIDTH: f32 = 140.0;
 
 /// The send button's glyph.
 const SEND: &str = "\u{27a4}";
@@ -248,14 +259,109 @@ pub fn usage_line(cost_usd: Option<f64>, context_pct: Option<u8>) -> Option<Stri
     (!parts.is_empty()).then(|| parts.join(" \u{b7} "))
 }
 
+/// One row of the model menu, top to bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ModelRow {
+    Heading,
+    Model {
+        ix: usize,
+        label: String,
+        effort: Option<String>,
+        current: bool,
+        has_efforts: bool,
+    },
+    Note(&'static str),
+    NewConversation,
+    Divider,
+    Usage,
+}
+
+/// The model menu's rows (§4): the heading, then the models (or `Loading…`, or that the list
+/// couldn't be read, or the `(default list)` note), a New conversation row when the provider
+/// takes a model only in a new conversation, a divider and View Usage. The chosen model (by
+/// `choice_of`, from `start`'s flags) is current and shows its effort.
+pub fn model_rows(catalog: &Lookup<Catalog>, start: &Start, applies: Applies) -> Vec<ModelRow> {
+    let next = applies == Applies::NextConversation;
+    let mut rows = vec![ModelRow::Heading];
+    if next {
+        rows.push(ModelRow::Note(NEXT_CONVERSATION_NOTE));
+    }
+    match catalog {
+        Lookup::Loading => rows.push(ModelRow::Note(LOADING)),
+        Lookup::Failed(_) => rows.push(ModelRow::Note(MODEL_LIST_FAILED)),
+        Lookup::Ready(catalog) => {
+            if catalog.fallback_models {
+                rows.push(ModelRow::Note(DEFAULT_LIST));
+            }
+            let chosen = start
+                .model
+                .as_deref()
+                .and_then(|flag| choice_of(catalog, flag, start.effort.as_deref()));
+            for (ix, model) in catalog.models.iter().enumerate() {
+                let current = chosen.as_ref().is_some_and(|(at, _)| *at == ix);
+                rows.push(ModelRow::Model {
+                    ix,
+                    label: model.label.clone(),
+                    effort: chosen.clone().filter(|_| current).and_then(|(_, e)| e),
+                    current,
+                    has_efforts: !model.efforts.is_empty(),
+                });
+            }
+        }
+    }
+    if next {
+        rows.push(ModelRow::NewConversation);
+    }
+    rows.push(ModelRow::Divider);
+    rows.push(ModelRow::Usage);
+    rows
+}
+
+/// The effort to ask for when `model` is picked while the agent runs at `current`: the same
+/// level when the model has it. A model whose ids carry the effort (agy's) needs one named: its
+/// `medium`, else its first. Otherwise none (the agent keeps or clamps its own).
+pub fn effort_on_switch(model: &ModelChoice, current: Option<&str>) -> Option<String> {
+    if let Some(level) = current.filter(|c| model.efforts.iter().any(|e| e.level == *c)) {
+        return Some(level.to_string());
+    }
+    if model.efforts.iter().any(|e| e.model_id.is_some()) {
+        let pick = model
+            .efforts
+            .iter()
+            .find(|e| e.level == "medium")
+            .or(model.efforts.first());
+        return pick.map(|e| e.level.clone());
+    }
+    None
+}
+
+/// The effort list of the model at `ix`: only the levels it has, the running one ticked when
+/// the model is the one `start` names.
+pub fn effort_rows(catalog: &Catalog, ix: usize, start: &Start) -> Vec<(String, bool)> {
+    let running = start
+        .model
+        .as_deref()
+        .and_then(|flag| choice_of(catalog, flag, start.effort.as_deref()))
+        .filter(|(at, _)| *at == ix)
+        .and_then(|(_, effort)| effort);
+    catalog.models.get(ix).map_or_else(Vec::new, |model| {
+        model
+            .efforts
+            .iter()
+            .map(|e| {
+                (
+                    e.level.clone(),
+                    running.as_deref() == Some(e.level.as_str()),
+                )
+            })
+            .collect()
+    })
+}
+
 /// A choice made in the box. An effort alone is a `Model` change with the current model's id.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Change {
-    #[allow(dead_code)] // chosen by the model menu (a later M11ak task)
-    Model {
-        id: String,
-        effort: Option<String>,
-    },
+    Model { id: String, effort: Option<String> },
     Mode(String),
     Folder(PathBuf),
 }
@@ -429,7 +535,7 @@ impl AgentTab {
                             _ => None,
                         };
                         // This press already closed the open picker (from outside it).
-                        let closed_at = this.folder_closed_at.take();
+                        let closed_at = this.chip_closed_at.take();
                         if pressed.is_none() || closed_at != pressed {
                             this.folder_clicked(window, cx)
                         }
@@ -461,6 +567,7 @@ impl AgentTab {
             .cursor_pointer()
             .hover(move |s| s.bg(hsla(hover)))
             .on_click(cx.listener(|this, _, _, cx| {
+                this.close_menu(cx);
                 cx.emit(AgentTabEvent::OpenBranchSwitcher(this.start.cwd.clone()))
             }))
         });
@@ -481,10 +588,27 @@ impl AgentTab {
             .when(menu_on(|m| matches!(m, BoxMenu::Attach)), |d| {
                 d.child(self.menu_frame(None, None, cx))
             });
+        let model_hover = c.box_hover;
         let model = self
             .marked("model", box_chip("agent-model", texts.model.clone(), c))
+            .when(self.provider.is_some(), |d| {
+                d.cursor_pointer()
+                    .hover(move |s| s.bg(hsla(model_hover)))
+                    .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                        let pressed = match event {
+                            ClickEvent::Mouse(click) => Some(click.down.position),
+                            _ => None,
+                        };
+                        // This press already closed the open menu (from outside it).
+                        let closed_at = this.chip_closed_at.take();
+                        if pressed.is_none() || closed_at != pressed {
+                            this.model_clicked(cx)
+                        }
+                    }))
+            })
             .when(menu_on(|m| matches!(m, BoxMenu::Model { .. })), |d| {
-                d.child(self.menu_frame(None, None, cx))
+                let (menu, side) = self.model_menu(cx);
+                d.child(self.menu_frame(Some(menu), side, cx))
             });
         let mode = texts.mode.clone().map(|text| {
             // Before the first message it steps to the agent's next mode (the mode menu, a
@@ -694,9 +818,15 @@ impl AgentTab {
                             .gap(px(MENU_GAP))
                             .on_mouse_down_out(cx.listener(
                                 |this, event: &MouseDownEvent, _, cx| {
-                                    if matches!(this.menu, Some(BoxMenu::Folder | BoxMenu::Move(_)))
-                                    {
-                                        this.folder_closed_at = Some(event.position);
+                                    if matches!(
+                                        this.menu,
+                                        Some(
+                                            BoxMenu::Folder
+                                                | BoxMenu::Move(_)
+                                                | BoxMenu::Model { .. }
+                                        )
+                                    ) {
+                                        this.chip_closed_at = Some(event.position);
                                     }
                                     this.close_menu(cx)
                                 },
@@ -1040,6 +1170,297 @@ impl AgentTab {
         })
     }
 
+    /// The catalog lookup the model menu reads: what is known for the agent and folder (not yet
+    /// asked: still loading).
+    fn catalog_lookup(&self, cx: &App) -> Lookup<Catalog> {
+        let found = self
+            .provider
+            .zip(cx.try_global::<Catalogs>())
+            .and_then(|(p, catalogs)| catalogs.catalog(p.info().name, &self.start.cwd));
+        found.cloned().unwrap_or(Lookup::Loading)
+    }
+
+    /// The start flags the model menu shows as current: the model the agent runs (named by the
+    /// chip when none was chosen), with a model change waiting for the turn laid over it (so an
+    /// effort picked meanwhile belongs to the model you picked, and composes with it).
+    pub(crate) fn shown_start(&self, cx: &App) -> Start {
+        let mut shown = self.start.clone();
+        let Some(provider) = self.provider else {
+            return shown;
+        };
+        if let Some(Change::Model { id, effort }) = self.waiting_model() {
+            let (model, effort) = self.model_flags(provider, id, effort.as_deref(), cx);
+            shown.model = Some(model);
+            if effort.is_some() {
+                shown.effort = effort;
+            }
+        } else if shown.model.is_none()
+            && let Some(catalog) = self.catalog(cx)
+        {
+            let label = chip_model_label(
+                Some(catalog),
+                &self.start,
+                self.conversation.model(),
+                provider,
+            );
+            shown.model = catalog
+                .models
+                .iter()
+                .find(|m| m.label == label)
+                .map(|m| m.id.clone());
+        }
+        shown
+    }
+
+    /// The model chip's click: the model menu opens over it, or (open) closes. Opening asks for
+    /// the model list again when it could not be read (or was never asked).
+    fn model_clicked(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.menu, Some(BoxMenu::Model { .. })) {
+            self.close_menu(cx);
+            return;
+        }
+        if let Some(provider) = self.provider
+            && !self.no_process
+        {
+            crate::agent_catalog::load_catalog(provider, self.start.cwd.clone(), cx);
+        }
+        self.open_menu(
+            BoxMenu::Model {
+                efforts_of: None,
+                usage: false,
+            },
+            cx,
+        );
+    }
+
+    /// The model at `ix` of the open list chosen, with the effort it keeps or needs
+    /// (`effort_on_switch`): the menu closes, the change is asked for (`choose`), nothing is sent.
+    fn pick_model(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Lookup::Ready(catalog) = self.catalog_lookup(cx) else {
+            return;
+        };
+        let Some(model) = catalog.models.get(ix) else {
+            return;
+        };
+        let current = chip_effort(Some(&catalog), &self.shown_start(cx));
+        let change = Change::Model {
+            id: model.id.clone(),
+            effort: effort_on_switch(model, current.as_deref()),
+        };
+        self.close_menu(cx);
+        self.choose(change, cx);
+        self.keyboard_back(window, cx);
+    }
+
+    /// `level` of the model at `ix` chosen (as for that model's row, with this effort).
+    fn pick_effort(
+        &mut self,
+        ix: usize,
+        level: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Lookup::Ready(catalog) = self.catalog_lookup(cx) else {
+            return;
+        };
+        let Some(model) = catalog.models.get(ix) else {
+            return;
+        };
+        let change = Change::Model {
+            id: model.id.clone(),
+            effort: Some(level),
+        };
+        self.close_menu(cx);
+        self.choose(change, cx);
+        self.keyboard_back(window, cx);
+    }
+
+    /// The model menu's panel content, and the open model's effort list beside it.
+    fn model_menu(&self, cx: &mut Context<Self>) -> (AnyElement, Option<AnyElement>) {
+        let ui = cx.global::<Appearance>().theme.ui();
+        let lookup = self.catalog_lookup(cx);
+        let shown = self.shown_start(cx);
+        let applies = self
+            .provider
+            .map_or(Applies::Live, |p| p.applies(ChangeKind::Model));
+        let efforts_of = match &self.menu {
+            Some(BoxMenu::Model { efforts_of, .. }) => *efforts_of,
+            _ => None,
+        };
+        let mut top = Vec::new();
+        let mut list = Vec::new();
+        let mut bottom = Vec::new();
+        for (i, row) in model_rows(&lookup, &shown, applies).iter().enumerate() {
+            match row {
+                ModelRow::Heading => top.push(heading(MODEL_HEADING.into(), &ui)),
+                ModelRow::Note(note) => list.push(quiet(note, &ui)),
+                ModelRow::Model { .. } => {
+                    list.push(self.model_row(i, row, efforts_of, &ui, cx));
+                }
+                ModelRow::NewConversation => list.push(self.menu_row(
+                    ("box-model", i),
+                    NEW_CONVERSATION.into(),
+                    false,
+                    false,
+                    &ui,
+                    cx,
+                    |this, window, cx| {
+                        this.close_menu(cx);
+                        cx.emit(AgentTabEvent::NewConversationIn(this.start.cwd.clone()));
+                        this.keyboard_back(window, cx);
+                    },
+                )),
+                ModelRow::Divider => bottom.push(
+                    div()
+                        .h(px(1.))
+                        .mx(px(4.))
+                        .my(px(4.))
+                        .bg(hsla(ui.panel_border))
+                        .into_any_element(),
+                ),
+                // Its submenu is a later task's (View Usage).
+                ModelRow::Usage => bottom.push(self.menu_row(
+                    ("box-model", i),
+                    VIEW_USAGE.into(),
+                    false,
+                    false,
+                    &ui,
+                    cx,
+                    |_, _, _| {},
+                )),
+            }
+        }
+        let menu = div()
+            .flex()
+            .flex_col()
+            .children(top)
+            .child(
+                div()
+                    .id("box-model-rows")
+                    .flex()
+                    .flex_col()
+                    .max_h(px(MENU_LIST_MAX))
+                    .overflow_y_scroll()
+                    .children(list),
+            )
+            .children(bottom)
+            .into_any_element();
+        let side = match (efforts_of, &lookup) {
+            (Some(ix), Lookup::Ready(catalog)) => {
+                let items: Vec<AnyElement> = effort_rows(catalog, ix, &shown)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (level, current))| {
+                        self.menu_row(
+                            (EFFORT_ROWS, i),
+                            effort_word(&level),
+                            current,
+                            false,
+                            &ui,
+                            cx,
+                            move |this, window, cx| this.pick_effort(ix, level.clone(), window, cx),
+                        )
+                    })
+                    .collect();
+                let panel = crate::overlay_panel::shell(&ui, EFFORT_WIDTH)
+                    .p(px(4.))
+                    .gap(px(0.))
+                    .occlude()
+                    .children(items);
+                Some(self.marked("effort", div().child(panel)).into_any_element())
+            }
+            _ => None,
+        };
+        (menu, side)
+    }
+
+    /// One model of the menu: ✓ when current, its name, its effort in grey (the current one's),
+    /// and `▸` (when it has efforts), which opens its effort list beside the menu. A click on
+    /// the name picks the model.
+    fn model_row(
+        &self,
+        i: usize,
+        row: &ModelRow,
+        efforts_of: Option<usize>,
+        ui: &UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let ModelRow::Model {
+            ix,
+            label,
+            effort,
+            current,
+            has_efforts,
+        } = row
+        else {
+            return div().into_any_element();
+        };
+        let (ix, hover) = (*ix, ui.panel_hover);
+        let name = div()
+            .id(("box-model-pick", i))
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .pl(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .cursor_pointer()
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(12.))
+                    .text_color(hsla(ui.accent))
+                    .child(if *current { "\u{2713}" } else { "" }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(SharedString::from(label.clone())),
+            )
+            .children(effort.as_deref().map(|level| {
+                div()
+                    .flex_none()
+                    .text_color(hsla(ui.text_dim))
+                    .child(SharedString::from(effort_word(level)))
+            }))
+            .on_click(cx.listener(move |this, _, window, cx| this.pick_model(ix, window, cx)));
+        let more = div()
+            .id(("box-model-more", i))
+            .flex_none()
+            .h_full()
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .text_color(hsla(ui.text_dim))
+            .cursor_pointer()
+            .child("\u{25b8}")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.open_menu(
+                    BoxMenu::Model {
+                        efforts_of: Some(ix),
+                        usage: false,
+                    },
+                    cx,
+                )
+            }));
+        let row = div()
+            .id(("box-model", i))
+            .h(px(ROW_H))
+            .flex()
+            .items_center()
+            .rounded(px(ROW_RADIUS))
+            .hover(move |s| s.bg(hsla(hover)))
+            .when(efforts_of == Some(ix), move |d| d.bg(hsla(hover)))
+            .child(name)
+            .when(*has_efforts, |d| d.child(more));
+        self.marked_row(label.clone(), row).into_any_element()
+    }
+
     /// A menu row: a ✓ when `check`, its words (cut at the start when long: a path keeps its
     /// folder's name), `▸` when `more` opens beside it; `pick` on its click.
     #[allow(clippy::too_many_arguments)]
@@ -1089,11 +1510,11 @@ impl AgentTab {
                 )
             })
             .on_click(cx.listener(move |this, _, window, cx| pick(this, window, cx)));
-        // A row beside the picker (This Computer's) is probed apart from Recent's same folder.
-        let probe = if id.0 == COMPUTER_ROWS {
-            format!("{THIS_COMPUTER} \u{25b8} {label}")
-        } else {
-            label
+        // A row beside the menu (This Computer's, an effort) is probed apart from the menu's own.
+        let probe = match id.0 {
+            COMPUTER_ROWS => format!("{THIS_COMPUTER} \u{25b8} {label}"),
+            EFFORT_ROWS => format!("Effort \u{25b8} {label}"),
+            _ => label,
         };
         self.marked_row(probe, row).into_any_element()
     }
@@ -1159,6 +1580,15 @@ impl AgentTab {
         labels.into_iter().map(|(l, _)| l.clone()).collect()
     }
 
+    /// The model menu's rows as drawn now (what `model_rows` makes of the lookup and the start
+    /// the menu shows as current).
+    pub fn shot_model_rows(&self, cx: &App) -> Vec<ModelRow> {
+        let applies = self
+            .provider
+            .map_or(Applies::Live, |p| p.applies(ChangeKind::Model));
+        model_rows(&self.catalog_lookup(cx), &self.shown_start(cx), applies)
+    }
+
     /// The folder the agent starts (or runs) in.
     pub fn shot_cwd(&self) -> PathBuf {
         self.start.cwd.clone()
@@ -1219,9 +1649,9 @@ fn box_chip(id: &'static str, text: String, c: &Colors) -> Stateful<Div> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::EffortChoice;
     use crate::providers::agy::AGY;
     use crate::providers::claude::CLAUDE;
-    use crate::providers::{EffortChoice, ModelChoice};
     use Applies::{Live, NextConversation, Restart};
     use Step::{AfterTurn, NextStart, RestartNow};
 
@@ -1381,6 +1811,140 @@ mod tests {
         );
         assert_eq!(chip_effort(None, &s).as_deref(), Some("xhigh"));
         assert_eq!(chip_effort(None, &start(None, None)), None);
+    }
+
+    #[test]
+    fn model_rows_loading_failed_and_fallback() {
+        let s = start(None, None);
+        let words = |rows: &[ModelRow]| -> Vec<String> {
+            rows.iter()
+                .map(|r| match r {
+                    ModelRow::Heading => "Model".into(),
+                    ModelRow::Model { label, .. } => label.clone(),
+                    ModelRow::Note(n) => n.to_string(),
+                    ModelRow::NewConversation => "New conversation".into(),
+                    ModelRow::Divider => "-".into(),
+                    ModelRow::Usage => "View Usage".into(),
+                })
+                .collect()
+        };
+        let loading = model_rows(&Lookup::Loading, &s, Live);
+        assert_eq!(
+            words(&loading),
+            ["Model", "Loading\u{2026}", "-", "View Usage"]
+        );
+        let failed = model_rows(&Lookup::Failed("boom".into()), &s, Live);
+        assert_eq!(
+            words(&failed),
+            ["Model", "Couldn't read the model list", "-", "View Usage"],
+            "the reason is for logs, not made-up words"
+        );
+        let fallback = Catalog {
+            fallback_models: true,
+            ..claude_list()
+        };
+        let rows = model_rows(&Lookup::Ready(fallback), &s, Live);
+        assert_eq!(
+            words(&rows)[..3],
+            ["Model", "(default list)", "Default (recommended)"],
+            "{rows:?}"
+        );
+        let read = model_rows(&Lookup::Ready(claude_list()), &s, Live);
+        assert!(!words(&read).contains(&"(default list)".to_string()));
+        // A provider that takes a change only in a new conversation says so, and offers one.
+        let next = model_rows(&Lookup::Ready(claude_list()), &s, NextConversation);
+        assert_eq!(
+            words(&next)[..2],
+            ["Model", "applies to a new conversation"]
+        );
+        assert!(next.contains(&ModelRow::NewConversation));
+        assert!(!read.contains(&ModelRow::NewConversation));
+        assert_eq!(next.last(), Some(&ModelRow::Usage));
+    }
+
+    #[test]
+    fn model_rows_mark_the_chosen() {
+        let list = Lookup::Ready(claude_list());
+        let models = |s: &Start| -> Vec<(usize, bool, Option<String>, bool)> {
+            model_rows(&list, s, Live)
+                .into_iter()
+                .filter_map(|r| match r {
+                    ModelRow::Model {
+                        ix,
+                        current,
+                        effort,
+                        has_efforts,
+                        ..
+                    } => Some((ix, current, effort, has_efforts)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let rows = models(&start(Some("sonnet"), Some("low")));
+        let current: Vec<_> = rows.iter().filter(|r| r.1).collect();
+        assert_eq!(current.len(), 1, "one is chosen: {rows:?}");
+        assert_eq!(current[0].2.as_deref(), Some("low"), "its effort, in grey");
+        assert!(
+            rows.iter().filter(|r| !r.1).all(|r| r.2.is_none()),
+            "the others show no effort"
+        );
+        // Nothing chosen: nothing is ticked.
+        assert!(models(&start(None, None)).iter().all(|r| !r.1));
+        // agy's effort rides in the id.
+        let agy = Lookup::Ready(agy_list());
+        let rows = model_rows(&agy, &start(Some("claude-opus-5-5-high"), None), Restart);
+        assert!(rows.iter().any(|r| matches!(
+            r,
+            ModelRow::Model { ix: 1, current: true, effort: Some(e), has_efforts: true, .. } if e == "high"
+        )));
+    }
+
+    #[test]
+    fn a_model_switch_keeps_the_effort_it_has() {
+        let list = claude_list();
+        let sonnet = &list.models[2];
+        assert_eq!(
+            effort_on_switch(sonnet, Some("low")).as_deref(),
+            Some("low")
+        );
+        // Claude clamps an effort the model lacks; nothing is made up for it.
+        let no_effort = model("haiku", "Haiku", None, &[]);
+        assert_eq!(effort_on_switch(&no_effort, Some("low")), None);
+        assert_eq!(effort_on_switch(sonnet, Some("max-ish")), None);
+        // agy's model ids carry the effort: one must be named (the current, else medium).
+        let agy = agy_list();
+        let opus = &agy.models[1];
+        assert_eq!(
+            effort_on_switch(opus, Some("high")).as_deref(),
+            Some("high")
+        );
+        assert_eq!(effort_on_switch(opus, None).as_deref(), Some("medium"));
+        assert_eq!(
+            effort_on_switch(opus, Some("xhigh")).as_deref(),
+            Some("medium")
+        );
+        let (id, effort) = AGY.model_flags(opus, effort_on_switch(opus, None).as_deref());
+        assert_eq!((id.as_str(), effort), ("claude-opus-5-5-medium", None));
+    }
+
+    #[test]
+    fn effort_rows_list_only_the_models_levels() {
+        let list = claude_list();
+        let s = start(Some("sonnet"), Some("low"));
+        let levels = |ix| -> Vec<(String, bool)> { effort_rows(&list, ix, &s) };
+        let on_sonnet = levels(2);
+        assert!(on_sonnet.iter().any(|(l, c)| l == "low" && *c));
+        assert!(on_sonnet.iter().filter(|(_, c)| *c).count() == 1);
+        let on_opus = levels(1);
+        assert!(on_opus.iter().all(|(_, c)| !c), "another model: no tick");
+        assert_eq!(
+            on_opus.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(),
+            list.models[1]
+                .efforts
+                .iter()
+                .map(|e| e.level.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
