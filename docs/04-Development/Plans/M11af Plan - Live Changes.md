@@ -12,7 +12,7 @@ updated: 2026-11-17
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[82 - Milestone 11af - Live Changes]] |
-| **Status** | 🟨 Built 2026-11-17, waiting for your on-screen check; not merged, not pushed |
+| **Status** | 🟨 Built 2026-11-17, merged to master (`9afbb29`), not pushed; waiting for your on-screen check |
 | **Tasks done** | 8 / 8 |
 | **Baselines** | 1,787 tests (1 ignored); clippy 14 (bin) / 27 (test) default, 16 / 29 with `ui-shots`; fmt clean |
 | **▶ Pick up here** | Your on-screen check in note 82, then the merge |
