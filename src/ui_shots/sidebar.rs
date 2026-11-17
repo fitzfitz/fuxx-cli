@@ -33,6 +33,8 @@ pub(super) const SCENES: &[Scene] = &[
             "src/drag_gap.rs",
             "src/groups.rs",
             "src/workspace.rs",
+            // `providers::all()`: the + menu's badges (sidebar-menu).
+            "src/providers/mod.rs",
         ],
     },
     Scene {

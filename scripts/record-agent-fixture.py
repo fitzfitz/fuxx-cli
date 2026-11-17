@@ -79,6 +79,25 @@ def trim_lists(e):
     return e
 
 
+def rejoin_agy_text(origs, evs, scrub):
+    """agy streams a step's text as `text_delta` fragments that can split a path (found in
+    Task 12). Per step: join the raw fragments, scrub, and if that changed anything put the whole
+    scrubbed text in the step's first fragment and "" in the rest (like Claude's partial_json)."""
+    steps = {}  # (conversation, step_index) -> [(raw fragment, scrubbed step_update dict)]
+    for orig, ev in zip(origs, evs):
+        if not (isinstance(orig, dict) and orig.get("event") == "step_update"):
+            continue
+        su = orig.get("step_update") or {}
+        if isinstance(su.get("text_delta"), str):
+            key = (su.get("conversation_id"), su.get("step_index"))
+            steps.setdefault(key, []).append((su["text_delta"], ev["step_update"]))
+    for frags in steps.values():
+        joined = "".join(raw for raw, _ in frags)
+        if scrub(joined) != joined:
+            for i, (_, d) in enumerate(frags):
+                d["text_delta"] = scrub(joined) if i == 0 else ""
+
+
 def tool_starts(r, name="Bash"):
     """Wait until `name` is actually running: a tool_use that the user's hooks did not block.
     (Hooks such as GateGuard bounce the first attempt with a tool_result "hook error".)"""
@@ -136,6 +155,7 @@ class Run:
                for x in self.lines]
         if TRIM:
             evs = [trim_lists(x) if isinstance(x, dict) else x for x in evs]
+        rejoin_agy_text(self.lines, evs, self.scrub)
         raws, deltas = [], []  # raw fragment text, and the matching scrubbed delta dicts
         for orig, ev in zip(self.lines, evs):
             inner = orig.get("event") if isinstance(orig, dict) else None
@@ -200,7 +220,8 @@ class Run:
                 "response": {"subtype": "success", "request_id": e["request_id"], "response": resp}}
 
     def result(self, secs=None):
-        return self.pump(lambda e: e.get("type") == "result", secs)
+        # Claude: {"type":"result"}; agy: {"event":"result"} (else agy waits on stdin until the deadline).
+        return self.pump(lambda e: e.get("type") == "result" or e.get("event") == "result", secs)
 
     def expect_result(self, secs=None):
         e = self.result(secs)

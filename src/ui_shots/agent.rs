@@ -297,6 +297,7 @@ pub(super) const SCENES: &[Scene] = &[
             "src/workspace_agent.rs",
             "src/providers/mod.rs",
             "src/providers/claude.rs",
+            "src/providers/agy.rs",
         ],
     },
     Scene {
@@ -366,6 +367,27 @@ pub(super) const SCENES: &[Scene] = &[
             "src/providers/fixtures/claude-text.jsonl",
         ],
     },
+    Scene {
+        name: "agent-tab-agy",
+        run: agent_tab_agy,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/agent_tab.rs",
+            "src/agent_conversation.rs",
+            "src/agent_markdown.rs",
+            "src/composer.rs",
+            "src/md_preview.rs",
+            "src/diff_view.rs",
+            "src/file_tab.rs",
+            "src/palette_files.rs",
+            "src/providers/mod.rs",
+            "src/providers/agy.rs",
+            "src/providers/fixtures/agy-text.jsonl",
+            "src/providers/fixtures/agy-tools.jsonl",
+        ],
+    },
 ];
 
 type Slot = Rc<RefCell<Option<Entity<AgentTab>>>>;
@@ -409,10 +431,20 @@ fn build_in(
     slot: Slot,
     start: Start,
 ) -> impl FnOnce(&mut Window, &mut App) -> AnyView {
+    build_with(&CLAUDE, theme, slot, start)
+}
+
+/// `build_in`, a tab of `provider`.
+fn build_with(
+    provider: &'static dyn Provider,
+    theme: crate::theme::Theme,
+    slot: Slot,
+    start: Start,
+) -> impl FnOnce(&mut Window, &mut App) -> AnyView {
     move |window, cx| {
         cx.set_global(shot_appearance(theme, cx));
         cx.bind_keys(crate::key_bindings());
-        let tab = cx.new(|cx| AgentTab::for_shots(&CLAUDE, start, window, cx));
+        let tab = cx.new(|cx| AgentTab::for_shots(provider, start, window, cx));
         let focus = tab.read(cx).focus_handle(cx);
         focus.focus(window, cx);
         *slot.borrow_mut() = Some(tab.clone());
@@ -644,6 +676,91 @@ pub(super) fn agent_tab_done() {
             );
         });
     });
+}
+
+/// An Antigravity tab (M11aa Task 12), fed agy's own recordings through its own decoder: its
+/// mode chip steps through agy's modes before the first message and is read-only after; the
+/// replies carry the AG badge; the tools pair up and the turns end Done.
+pub(super) fn agent_tab_agy() {
+    use crate::providers::agy::AGY;
+    let name = "agent-tab-agy";
+    let decode = |fixture: &str| -> Vec<Event> {
+        let mut t = AGY.translator();
+        fixture.lines().flat_map(|l| t.decode(l)).collect()
+    };
+    for &(slug, theme_name) in shot_themes() {
+        let theme = shot_theme(theme_name);
+        let slot: Slot = Rc::default();
+        let keep = slot.clone();
+        let n = format!("{name}-{slug}");
+        let start = Start {
+            mode: AGY.info().default_mode.map(String::from),
+            ..start()
+        };
+        let path = shoot_with(
+            name,
+            slug,
+            &theme,
+            size(px(DIMS.0), px(DIMS.1)),
+            build_with(&AGY, theme, slot, start),
+            move |cx, _| {
+                let tab = tab_of(&keep);
+                let mode = |cx: &mut VisualTestAppContext| {
+                    cx.read(|cx| tab.read(cx).mode().map(str::to_string))
+                };
+                assert_eq!(
+                    mode(cx).as_deref(),
+                    Some("accept-edits"),
+                    "{n}: the default"
+                );
+                // Before the first message the chip steps through agy's modes, round to the start.
+                for want in ["auto", "plan", "accept-edits"] {
+                    feed(cx, &tab, |t, cx| t.shot_next_mode(cx));
+                    assert_eq!(mode(cx).as_deref(), Some(want), "{n}");
+                }
+                feed(cx, &tab, |t, cx| t.send("Say hello in one word".into(), cx));
+                feed(cx, &tab, |t, cx| {
+                    t.shot_feed(
+                        decode(include_str!("../providers/fixtures/agy-text.jsonl")),
+                        cx,
+                    )
+                });
+                feed(cx, &tab, |t, cx| t.send("Now fix notes.txt".into(), cx));
+                feed(cx, &tab, |t, cx| {
+                    t.shot_feed(
+                        decode(include_str!("../providers/fixtures/agy-tools.jsonl")),
+                        cx,
+                    )
+                });
+                // After it the chip is read-only.
+                feed(cx, &tab, |t, cx| t.shot_next_mode(cx));
+                assert_eq!(mode(cx).as_deref(), Some("accept-edits"), "{n}: read-only");
+                cx.read(|cx| {
+                    let t = tab.read(cx);
+                    assert_eq!(t.status(), Status::Done, "{n}");
+                    let items = t.shot_items();
+                    let tools = items
+                        .iter()
+                        .filter(|i| matches!(i, Item::Tool { running: false, .. }))
+                        .count();
+                    assert_eq!(tools, 4, "{n}: read, edit, ls, task list");
+                    assert!(
+                        items
+                            .iter()
+                            .all(|i| !matches!(i, Item::Tool { running: true, .. })),
+                        "{n}"
+                    );
+                    let replies = items
+                        .iter()
+                        .filter(|i| matches!(i, Item::Agent { done: true, .. }))
+                        .count();
+                    assert_eq!(replies, 2, "{n}: Hello, and Done.");
+                });
+                keep.borrow_mut().take();
+            },
+        );
+        println!("ui-shots: {}", path.display());
+    }
 }
 
 /// The agent exits 1 ("not logged in"): one error row with Open in classic view, status Done.
@@ -1679,8 +1796,8 @@ pub(super) fn agent_workspace_split() {
     }
 }
 
-/// The sidebar's + menu: each preset fuxx runs as an agent tab (`claude`) has its provider's
-/// badge before its name; the others (agy, opencode, codex) none.
+/// The sidebar's + menu: each preset fuxx runs as an agent tab (`claude`, `agy`) has its
+/// provider's badge before its name; the others (opencode, codex) none.
 pub(super) fn agent_preset_menu() {
     let n = "agent-preset-menu";
     for &(slug, theme_name) in shot_themes() {
@@ -1708,7 +1825,11 @@ pub(super) fn agent_preset_menu() {
                         .filter(|p| crate::presets::provider_for(p).is_some())
                         .map(|p| p.name.as_str())
                         .collect();
-                    assert_eq!(badged, ["claude"], "{n}: the presets drawn with a badge");
+                    assert_eq!(
+                        badged,
+                        ["claude", "agy"],
+                        "{n}: the presets drawn with a badge"
+                    );
                 });
             },
         );

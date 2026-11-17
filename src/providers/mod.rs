@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 
+pub mod agy;
 pub mod claude;
 
 /// What fuxx shows and decides about a provider without starting it.
@@ -156,9 +157,72 @@ pub enum Action {
     Interrupt,
 }
 
+/// `extra` without the flags a provider sets itself (`owned`: each flag, and whether it takes a
+/// value): a word naming one is dropped, with its value.
+fn pass_through(extra: &[String], owned: &[(&str, bool)]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut skip_value = false;
+    for arg in extra {
+        if std::mem::take(&mut skip_value) {
+            continue;
+        }
+        let name = arg.split_once('=').map_or(arg.as_str(), |(n, _)| n);
+        match owned.iter().find(|(f, _)| *f == name) {
+            // `--flag=value` carries its value; `--flag value` borrows the next word.
+            Some((_, takes_value)) => skip_value = *takes_value && name == arg,
+            None => out.push(arg.clone()),
+        }
+    }
+    out
+}
+
+/// Whether `word` has a UUID's shape (8-4-4-4-12 hex digits), as conversation ids have.
+fn uuid_shaped(word: &str) -> bool {
+    let groups: Vec<&str> = word.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(g, n)| g.len() == n && g.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// The conversation a command line (`ps`'s `args`) names after one of `flags` (`--flag <id>` or
+/// `--flag=<id>`), the id UUID-shaped; any other word after one (a word of a prompt `ps` joined
+/// in, a search) names nothing, and the search goes on.
+fn conversation_after(args: &str, flags: &[&str]) -> Option<String> {
+    let mut words = args.split_whitespace().peekable();
+    while let Some(word) = words.next() {
+        let value = match word.split_once('=') {
+            Some((flag, value)) if flags.contains(&flag) => Some(value),
+            _ if flags.contains(&word) => words.peek().copied(),
+            _ => None,
+        };
+        if let Some(id) = value.filter(|v| uuid_shaped(v)) {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or("")
+}
+
+/// `text`'s first line, cut to `max` characters with an ellipsis.
+fn short(text: &str, max: usize) -> String {
+    let line = first_line(text.trim_start());
+    if line.chars().count() <= max {
+        line.to_string()
+    } else {
+        let mut t: String = line.chars().take(max - 1).collect();
+        t.push('…');
+        t
+    }
+}
+
 /// Every provider fuxx can run an agent tab with.
 pub fn all() -> &'static [&'static dyn Provider] {
-    static ALL: [&dyn Provider; 1] = [&claude::CLAUDE];
+    static ALL: [&dyn Provider; 2] = [&claude::CLAUDE, &agy::AGY];
     &ALL
 }
 
@@ -218,8 +282,9 @@ mod tests {
     }
 
     #[test]
-    fn by_name_finds_claude_and_nothing_else() {
+    fn by_name_finds_claude_and_agy_and_nothing_else() {
         assert_eq!(by_name("claude").map(|p| p.info().name), Some("claude"));
+        assert_eq!(by_name("agy").map(|p| p.info().label), Some("Antigravity"));
         assert!(by_name("opencode").is_none());
     }
 }

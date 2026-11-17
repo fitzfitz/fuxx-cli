@@ -243,6 +243,7 @@ mod tests {
                 PaneAction::NewTerminal,
                 PaneAction::NewBrowser,
                 PaneAction::NewAgent("claude"),
+                PaneAction::NewAgent("agy"),
                 PaneAction::SplitRight,
                 PaneAction::SplitDown
             ]
@@ -253,13 +254,14 @@ mod tests {
                 "New Terminal Tab",
                 "New Browser Tab",
                 "New Claude Tab",
+                "New Antigravity Tab",
                 "Split Right",
                 "Split Down"
             ]
         );
         assert_eq!(
             items.iter().map(|a| a.keys()).collect::<Vec<_>>(),
-            [Some("⌘T"), None, None, Some("⌘D"), Some("⇧⌘D")]
+            [Some("⌘T"), None, None, None, Some("⌘D"), Some("⇧⌘D")]
         );
     }
 

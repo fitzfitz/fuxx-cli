@@ -624,6 +624,12 @@ impl AgentTab {
         self.toggle(ix, cx);
     }
 
+    /// The mode chip's click (call 6), as its click does.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_next_mode(&mut self, cx: &mut Context<Self>) {
+        self.next_mode(cx);
+    }
+
     #[cfg(feature = "ui-shots")]
     pub fn shot_items(&self) -> &[Item] {
         self.conversation.items()
@@ -763,7 +769,6 @@ impl AgentTab {
     }
 
     /// The mode the agent runs in (agy's chip; none for Claude).
-    #[allow(dead_code)] // M11aa Task 12 (agy's mode, saved with the tab: call 6)
     pub fn mode(&self) -> Option<&str> {
         self.start.mode.as_deref()
     }

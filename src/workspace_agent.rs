@@ -721,11 +721,17 @@ impl Workspace {
                     ..
                 }) = self.model.tab(tab).map(|t| t.kind.clone())
                 {
+                    // The mode its process runs in (chosen on the chip before the first
+                    // message, call 6) is saved with the conversation it runs.
+                    let running = self
+                        .agents
+                        .get(&tab)
+                        .and_then(|slot| slot.view.read(cx).mode().map(str::to_string));
                     let kind = TabKind::Agent {
                         provider,
                         cwd,
                         conversation: Some(id.clone()),
-                        mode,
+                        mode: running.or(mode),
                         title,
                     };
                     self.model.set_kind(tab, kind);
@@ -1353,6 +1359,66 @@ mod tests {
             conversation_holder(Some(&own), &CLAUDE, ID, &[700], &Classic::Closed),
             Holder::Free
         );
+    }
+
+    /// R13 holds for a provider other than Claude: an `agy` (a native binary, its arguments as
+    /// given) opened by `classic_argv` (`agy --conversation <id>`), typed with `=`, or run by
+    /// path, holds the conversation; the tab's own `agy -p= … --conversation <id>`, another
+    /// conversation's, and a `claude` naming the same id don't.
+    #[test]
+    fn a_classic_agy_holds_its_conversation() {
+        use crate::providers::agy::AGY;
+        const ID: &str = "6a1c234d-7469-40ef-b093-c74ad8006c28";
+        let classic = AGY.classic_argv(ID).join(" ");
+        let table = ps(&format!(
+            "  500     1   500   600 Ss   -zsh\n  600   500   600   600 S+   {classic}\n  \
+             900     1   900     0 Ss   agy -p= --input-format stream-json --output-format \
+             stream-json --mode accept-edits --conversation {ID}\n"
+        ));
+        assert_eq!(
+            conversation_holder(Some(&table), &AGY, ID, &[900], &Classic::Closed),
+            Holder::Held
+        );
+        assert_eq!(
+            conversation_holder(Some(&table), &AGY, ID, &[900], &Classic::Shell(500)),
+            Holder::Held
+        );
+        let row = |args: &str| ps(&format!("  700     1   700   700 S+   {args}\n"));
+        for (args, holder) in [
+            (format!("agy --conversation={ID}"), Holder::Held),
+            (
+                format!("/Users/me/.local/bin/agy --mode plan --conversation {ID}"),
+                Holder::Held,
+            ),
+            (format!("agy --conversation {OTHER}"), Holder::Free),
+            (format!("claude --resume {ID}"), Holder::Free),
+        ] {
+            assert_eq!(
+                conversation_holder(Some(&row(&args)), &AGY, ID, &[], &Classic::Closed),
+                holder,
+                "{args}"
+            );
+        }
+        // Only the tab's own process left: free.
+        let own = ps(&format!(
+            "  900     1   900     0 Ss   agy -p= --mode auto --conversation {ID}\n"
+        ));
+        assert_eq!(
+            conversation_holder(Some(&own), &AGY, ID, &[900], &Classic::Closed),
+            Holder::Free
+        );
+        // A background-service classic view: an `agy -c` there may be it; another id is not.
+        let blind = Classic::Blind(vec![900]);
+        for (args, holder) in [
+            ("agy -c".to_string(), Holder::Held),
+            (format!("agy --conversation {OTHER}"), Holder::Free),
+        ] {
+            assert_eq!(
+                conversation_holder(Some(&row(&args)), &AGY, ID, &[900], &blind),
+                holder,
+                "{args}"
+            );
+        }
     }
 
     #[test]
