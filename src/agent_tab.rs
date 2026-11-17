@@ -38,6 +38,7 @@ use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
 use crate::appearance::Appearance;
+use crate::block_view::BlockDrag;
 use crate::composer::{Composer, ComposerEvent};
 use crate::diff_view::{RowKind, parse_diff};
 use crate::file_tab::{DiffRowColours, diff_row_colours};
@@ -99,6 +100,9 @@ pub enum AgentTabEvent {
     /// signal): its error row's words, for the tab's Activity (spec §1.5). Before the `Status`
     /// it brings.
     Failed(String),
+    /// A command block dropped on the tab's body (Task 11): the Workspace reads its output and
+    /// attaches it (`attach_block`), as for a drop on the tab in a bar.
+    BlockDropped(BlockDrag),
 }
 
 /// Reports the process's end exactly once (`Conversation::process_ended` isn't idempotent):
@@ -1322,11 +1326,21 @@ impl AgentTab {
         self.after_change(true, cx);
     }
 
-    /// Something to send with the next message (Task 11: a command's output), shown as a chip.
-    #[allow(dead_code)] // M11aa Task 11
+    /// Something to send with the next message (Task 11: a command's output), shown as a chip
+    /// under the composer until it is sent. Only kept: it never sends, and never restarts a
+    /// paused tab (R13); an error tab (no agent) has nothing to send it to.
     pub fn attach(&mut self, attachment: String, cx: &mut Context<Self>) {
+        if self.provider.is_none() {
+            return;
+        }
         self.attachments.push(attachment);
         cx.notify();
+    }
+
+    /// The attachments waiting for your next message.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_attachments(&self) -> &[String] {
+        &self.attachments
     }
 
     /// Answer the waiting permission.
@@ -2408,12 +2422,7 @@ impl AgentTab {
                         )
                     })
                     .when_some(model, |d, m| d.child(chip(m, false, c)))
-                    .when_some(cost, |d, m| d.child(chip(m, true, c)))
-                    .children(
-                        self.attachments.iter().map(|a| {
-                            chip(format!("📎 {}", a.lines().next().unwrap_or("")), true, c)
-                        }),
-                    ),
+                    .when_some(cost, |d, m| d.child(chip(m, true, c))),
             )
             .child(
                 div()
@@ -2437,6 +2446,17 @@ impl AgentTab {
                             .into_any_element(),
                     }),
             )
+            // What goes with your next message (a dropped command block, Task 11), under the
+            // box until it is sent.
+            .when(!self.attachments.is_empty(), |d| {
+                d.child(
+                    div().mt(px(6.)).flex().flex_wrap().gap(px(6.)).children(
+                        self.attachments.iter().map(|a| {
+                            chip(format!("📎 {}", a.lines().next().unwrap_or("")), true, c)
+                        }),
+                    ),
+                )
+            })
             .child(
                 div()
                     .mt(px(6.))
@@ -2508,6 +2528,9 @@ impl Render for AgentTab {
                 )
                 .into_any_element()
         };
+        // A command block dragged over the tab tints it (GPUI's element-local style: nothing
+        // else changes during a drag-over); dropped, the Workspace attaches it (Task 11).
+        let drop_fill = mix(c.page, c.accent, 0.08);
         div()
             .key_context("AgentTab")
             .on_action(cx.listener(Self::at_up))
@@ -2516,6 +2539,12 @@ impl Render for AgentTab {
             .flex()
             .flex_col()
             .bg(hsla(c.page))
+            .when(self.provider.is_some(), |d| {
+                d.drag_over::<BlockDrag>(move |s, _, _, _| s.bg(hsla(drop_fill)))
+                    .on_drop(cx.listener(|_, drag: &BlockDrag, _, cx| {
+                        cx.emit(AgentTabEvent::BlockDropped(drag.clone()))
+                    }))
+            })
             .text_color(hsla(c.text))
             .child(self.top_line(&c))
             .child(stream)

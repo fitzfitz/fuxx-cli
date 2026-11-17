@@ -28,6 +28,7 @@ use gpui::{
 };
 
 use crate::appearance::Appearance;
+use crate::block_view::BlockDrag;
 use crate::drag_gap::{self, Slid};
 use crate::layout_model::{Pane, PaneId, TabDrop, TabId, TabKind};
 use crate::restore::{Launch, SavedSession};
@@ -679,6 +680,7 @@ impl Workspace {
         let lifted = self.dragged_tab(cx) == Some(id);
         let (source, rows) = (self.tab_drag.clone(), self.sidebar.drag_source.clone());
         let (chip_title, chip_icon) = (tab.title.clone(), tab.icon);
+        let agent = self.agents.contains_key(&id);
         let tab = div()
             .id(("pane-tab", id.0 as usize))
             .group(group)
@@ -731,6 +733,18 @@ impl Workspace {
                     }
                 }
             }))
+            // An agent tab takes a command block dropped on it (M11aa Task 11), tinted toward the
+            // accent while one is over it (GPUI's element-local style: no Workspace field changes
+            // in a drag-over); dropped, the block is attached to its next message and the tab
+            // shown.
+            .when(agent, |t| {
+                let tint = crate::theme::mix(surface, ui.accent, 0.2);
+                t.drag_over::<BlockDrag>(move |s, _, _, _| s.bg(hsla(tint)))
+                    .on_drop(cx.listener(move |this, drag: &BlockDrag, window, cx| {
+                        this.attach_block(id, drag, cx);
+                        this.select_tab(id, window, cx);
+                    }))
+            })
             // A middle-click closes it, like its ×.
             .on_aux_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if event.is_middle_click() {

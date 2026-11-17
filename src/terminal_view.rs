@@ -30,8 +30,8 @@ use gpui::{
 
 use crate::appearance::{Appearance, CursorFun, CursorShapeSetting};
 use crate::block_view::{
-    self, BAR_END_GAP, BAR_RADIUS, CHIP_GAP, CHIP_HIDE_MS, CHIP_PAD, CHIP_RADIUS, GUTTER_BAR,
-    GUTTER_BAR_ACTIVE, GutterHit, Jump, Refusal,
+    self, BAR_END_GAP, BAR_RADIUS, BlockDrag, CHIP_GAP, CHIP_HIDE_MS, CHIP_PAD, CHIP_RADIUS,
+    GUTTER_BAR, GUTTER_BAR_ACTIVE, GutterHit, Jump, Refusal,
 };
 use crate::blocks::{Block, Outcome};
 use crate::cursor_look::{self, Frames, Glide, PaintShape, Spark};
@@ -187,6 +187,8 @@ struct Chip {
     rerun: Result<(), Refusal>,
     outcome: Option<(String, Rgb)>,
     cmd: Option<String>,
+    /// What dragging its command carries (M11aa Task 11): none without a command.
+    drag: Option<BlockDrag>,
     /// Whether the block has output (Copy output is disabled without).
     has_output: bool,
     buttons: [&'static str; 3],
@@ -270,6 +272,9 @@ pub struct TerminalView {
     /// Where its three buttons were laid out (UI screenshots press them).
     #[cfg(feature = "ui-shots")]
     chip_button_bounds: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
+    /// Where its command's words (the block's drag handle) were laid out.
+    #[cfg(feature = "ui-shots")]
+    chip_command_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Every byte sent as input (UI screenshots read what Rerun sent).
     #[cfg(feature = "ui-shots")]
     sent: Vec<u8>,
@@ -485,6 +490,12 @@ impl TerminalView {
         self.core.blocks().into_iter().map(|b| b.id).collect()
     }
 
+    /// Its terminal (what a dragged block carries).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_core(&self) -> TerminalCore {
+        self.core.clone()
+    }
+
     /// Every block, oldest first.
     #[cfg(feature = "ui-shots")]
     pub fn shot_blocks(&self) -> Vec<Block> {
@@ -504,6 +515,13 @@ impl TerminalView {
         let chip = self.chip(&self.core.theme().ui())?;
         let enabled = block_view::chip_enabled(chip.cmd.is_some(), chip.has_output, chip.rerun);
         Some((self.chip_button_bounds.get(), enabled, chip.rerun))
+    }
+
+    /// Where the open chip's command (the block's drag handle) was laid out.
+    #[cfg(feature = "ui-shots")]
+    pub fn chip_command_shot(&self) -> Option<Bounds<Pixels>> {
+        self.chip(&self.core.theme().ui())?.cmd?;
+        self.chip_command_bounds.get()
     }
 
     /// The bytes sent as input since the last call.
@@ -634,6 +652,12 @@ impl TerminalView {
             outcome: block_view::chip_outcome(block.outcome)
                 .map(|o| (o, block_view::outcome_ink(block.outcome, ui))),
             cmd: block.cmd.as_deref().map(block_view::chip_command),
+            drag: block.cmd.clone().map(|command| BlockDrag {
+                id: id.to_string(),
+                command: Some(command),
+                outcome: block.outcome,
+                core: self.core.clone(),
+            }),
             has_output: block.output.is_some(),
             buttons: block_view::chip_buttons(f32::from(grid.size.width), room),
             left: left - pane.left(),
@@ -851,6 +875,8 @@ impl TerminalView {
             chip_bounds: Rc::new(Cell::new(None)),
             #[cfg(feature = "ui-shots")]
             chip_button_bounds: Rc::new(Cell::new([None; 3])),
+            #[cfg(feature = "ui-shots")]
+            chip_command_bounds: Rc::new(Cell::new(None)),
             #[cfg(feature = "ui-shots")]
             sent: Vec::new(),
             chip_hide: None,
@@ -1512,6 +1538,8 @@ impl Render for TerminalView {
                     chip: self.chip_bounds.clone(),
                     #[cfg(feature = "ui-shots")]
                     buttons: self.chip_button_bounds.clone(),
+                    #[cfg(feature = "ui-shots")]
+                    command: self.chip_command_bounds.clone(),
                 },
                 cx,
             )
@@ -1688,6 +1716,40 @@ struct ChipSlots {
     chip: Rc<Cell<Option<Bounds<Pixels>>>>,
     #[cfg(feature = "ui-shots")]
     buttons: Rc<Cell<[Option<Bounds<Pixels>>; 3]>>,
+    /// The command's words (the drag handle).
+    #[cfg(feature = "ui-shots")]
+    command: Rc<Cell<Option<Bounds<Pixels>>>>,
+}
+
+/// What the chip that follows a dragged block says: its outcome and its command's first line,
+/// as the block's own chip does.
+fn drag_words(drag: &BlockDrag) -> String {
+    block_view::chip_label(drag.outcome, drag.command.as_deref())
+}
+
+/// The block that follows the pointer while its command is dragged: a small panel with its
+/// outcome and command.
+struct BlockDragChip {
+    words: SharedString,
+}
+
+impl Render for BlockDragChip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = cx.global::<Appearance>().theme.ui();
+        div()
+            .px(px(CHIP_PAD))
+            .py(px(3.0))
+            .rounded(px(CHIP_RADIUS))
+            .opacity(0.95)
+            .shadow_md()
+            .bg(hsla(ui.panel))
+            .border_1()
+            .border_color(hsla(ui.panel_border))
+            .text_color(hsla(ui.text))
+            .text_size(px(crate::ui_tokens::text::META))
+            .whitespace_nowrap()
+            .child(self.words.clone())
+    }
 }
 
 /// The chip (M11l): an absolutely placed panel over the grid, 4 pt right of the gutter, exactly
@@ -1723,14 +1785,40 @@ fn chip_element(
             true => format!("· {cmd}"),
             false => cmd,
         };
-        label = label.child(
-            div()
-                .flex_shrink(1.0)
-                .min_w(px(0.0))
-                .truncate()
-                .text_color(hsla(ui.text))
-                .child(cmd),
-        );
+        let text = div()
+            .id("chip-command")
+            .flex_shrink(1.0)
+            .min_w(px(0.0))
+            .truncate()
+            .text_color(hsla(ui.text))
+            .child(cmd);
+        #[cfg(feature = "ui-shots")]
+        let text = {
+            let slot = slots.command.clone();
+            text.child(
+                canvas(move |b, _, _| slot.set(Some(b)), |_, _, _, _| {})
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+            )
+        };
+        // The command is the block's handle (M11aa Task 11): dragged onto an agent tab (its
+        // body, or its tab in a bar), the block is attached to your next message there. A chip
+        // of the block follows the pointer.
+        let text = match chip.drag {
+            Some(drag) => {
+                let words: SharedString = drag_words(&drag).into();
+                text.on_drag(drag, move |_, _, window, cx| {
+                    crate::tab_bar::hold_closed_hand(window, cx);
+                    let words = words.clone();
+                    cx.new(|_| BlockDragChip { words })
+                })
+                .into_any_element()
+            }
+            None => text.into_any_element(),
+        };
+        label = label.child(text);
     }
     let (id, rerun) = (chip.id, chip.rerun);
     let buttons = chip.buttons.into_iter().enumerate().map(|(i, name)| {

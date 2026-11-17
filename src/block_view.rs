@@ -86,8 +86,8 @@ pub fn chip_buttons(grid_width: f32, room: f32) -> [&'static str; 3] {
 }
 
 /// The chip's left side as one line: the outcome, ` · `, and the command, whichever of them
-/// there are (the chip lays the parts out side by side; the shots read them this way).
-#[cfg(any(test, feature = "ui-shots"))]
+/// there are (the chip lays the parts out side by side; the shots read them this way, and a
+/// dragged block's chip says it, M11aa Task 11).
 pub fn chip_label(outcome: Outcome, cmd: Option<&str>) -> String {
     let parts: Vec<String> = [chip_outcome(outcome), cmd.map(chip_command)]
         .into_iter()
@@ -356,6 +356,69 @@ pub fn refusal_tip(refusal: Refusal) -> &'static str {
 /// Copy Command and Output: `$ <command>`, a newline, the output.
 pub fn with_command(cmd: &str, output: &str) -> String {
     format!("$ {cmd}\n{output}")
+}
+
+/// A command block dragged by its chip's command (M11aa Task 11): which block, its command and
+/// outcome as the chip showed them, and its terminal, whose grid its output is read from when
+/// it is dropped on an agent tab (`Workspace::attach_block`).
+#[derive(Clone)]
+pub struct BlockDrag {
+    pub id: String,
+    pub command: Option<String>,
+    pub outcome: Outcome,
+    pub core: crate::terminal::TerminalCore,
+}
+
+/// Without its terminal (which has no `Debug`).
+impl std::fmt::Debug for BlockDrag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockDrag")
+            .field("id", &self.id)
+            .field("command", &self.command)
+            .field("outcome", &self.outcome)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The same block: a block id names one terminal's block (each terminal's ids start at a
+/// random number, `blocks::Tagger::new`), so the terminal isn't compared.
+impl PartialEq for BlockDrag {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.id, &self.command, self.outcome) == (&other.id, &other.command, other.outcome)
+    }
+}
+
+/// The most output bytes a dropped block attaches (its tail).
+pub const ATTACH_CAP: usize = 64 * 1024;
+
+/// What a dropped block attaches to your next message: `$ <command>` (none without a command),
+/// `(exit <code>)` (only for a reported code: `Ok` is exit 0, `Failed(code)`), then the output;
+/// over `ATTACH_CAP` bytes only its tail is kept (from a character boundary), under a first line
+/// `… (earlier output cut)`.
+pub fn attachment_text(command: Option<&str>, outcome: Outcome, output: &str) -> String {
+    let mut body = String::new();
+    let code = match outcome {
+        Outcome::Ok => Some(0),
+        Outcome::Failed(code) => Some(code),
+        Outcome::Unknown | Outcome::Running => None,
+    };
+    if let Some(code) = code {
+        body.push_str(&format!("(exit {code})\n"));
+    }
+    if output.len() > ATTACH_CAP {
+        let mut start = output.len() - ATTACH_CAP;
+        while !output.is_char_boundary(start) {
+            start += 1;
+        }
+        body.push_str("… (earlier output cut)\n");
+        body.push_str(&output[start..]);
+    } else {
+        body.push_str(output);
+    }
+    match command {
+        Some(cmd) => with_command(cmd, &body),
+        None => body,
+    }
 }
 
 #[cfg(test)]
@@ -832,5 +895,32 @@ mod tests {
         assert_eq!(with_command("ls", "a\nb"), "$ ls\na\nb");
         assert_eq!(with_command("echo hi", "hi"), "$ echo hi\nhi");
         assert_eq!(with_command("true", ""), "$ true\n");
+    }
+
+    #[test]
+    fn attachment_text_formats_and_caps() {
+        let out = "x".repeat(100 * 1024);
+        let t = attachment_text(Some("npm test"), Outcome::Failed(1), &out);
+        assert!(t.starts_with("$ npm test\n(exit 1)\n… (earlier output cut)\n"));
+        assert!(t.len() <= ATTACH_CAP + 64);
+        assert_eq!(attachment_text(None, Outcome::Unknown, "ok"), "ok");
+        // The tail is what's kept.
+        let out = format!("{}END", "a".repeat(ATTACH_CAP));
+        assert!(attachment_text(None, Outcome::Unknown, &out).ends_with("aEND"));
+        // Exit 0 has its line; a running block (or an unreported code) has none.
+        assert_eq!(
+            attachment_text(Some("ls"), Outcome::Ok, "a"),
+            "$ ls\n(exit 0)\na"
+        );
+        assert_eq!(
+            attachment_text(Some("sleep 9"), Outcome::Running, "one"),
+            "$ sleep 9\none"
+        );
+        assert_eq!(attachment_text(None, Outcome::Failed(2), ""), "(exit 2)\n");
+        // The cut lands on a character boundary (a 3-byte character straddles it).
+        let out = format!("{}{}", "é".repeat(10), "€".repeat(ATTACH_CAP / 3 + 1));
+        let t = attachment_text(None, Outcome::Unknown, &out);
+        assert!(t.starts_with("… (earlier output cut)\n€"));
+        assert!(t.len() <= ATTACH_CAP + 64);
     }
 }
