@@ -353,12 +353,16 @@ directly." Built on master, pushed directly.
      group's Done mark is the same muted ✓ (it was a green disc with a check). `sidebar::badge_look`, `closed_mark`;
      `status_mark::done_check` draws the check alone. Other places' marks (tab bars, status bar, switcher) unchanged.
   2. **Closed groups show status, not avatars.** The small coloured squares are gone (their colours are the
-     workspaces' name colours, but read as status lights). A closed header shows "N waiting", else its rolled-up
-     mark (Working's live mark or Done's ✓), else nothing when all idle. `HeaderRow::faces` and `FACE*` removed.
+     workspaces' name colours, but read as status lights). A closed header shows "N waiting", else Working's live
+     mark when any terminal or agent tab in it works (even if another finished: work in progress is never hidden
+     behind a ✓), else Done's ✓, else nothing when all idle. `HeaderRow::faces` and `FACE*` removed; the header
+     knows `working` instead. `groups::rolled_up` (the tab bars' order) is unchanged.
   3. **When an agent exits, its row goes back to being a shell.** Once the program in front is no longer the agent
-     (the shell's prompt, or another program), the terminal drops the preset that named its row, here and in the
-     background service, so the row is named and coloured as a fresh shell's ("New Fuxxpace", or the shell's own
-     title). A name you gave the row stays; a row still running its agent keeps the agent's name.
+     (the shell's prompt, or another program) at **two readings in a row** (about 3 s apart), and the agent isn't a
+     suspended job below the shell (Ctrl-Z), the terminal drops the preset that named its row, so the row is named
+     and coloured as a fresh shell's ("New Fuxxpace", or the shell's own title). So a looping preset
+     (`while :; do claude; done`) or a suspended agent keeps its name. A name you gave the row stays; a row still
+     running its agent keeps the agent's name.
 - **Root cause of the stale `claude` rows:** a row's name is your name, else the program's title, else its
   **preset's** name (`Session::label`). M11u's restore turns the agent a terminal ran into that terminal's preset
   (`restore::launch`: "its preset, else the agent that ran in it"), and nothing ever took it away. Claude Code blanks
@@ -366,17 +370,27 @@ directly." Built on master, pushed directly.
   `fuxx ls` showed two such rows with `title: ""`, `preset: "claude"`, name `claude`, status done, and the sessions
   file had entries with `preset: claude` but no `agent` (nothing running). The same stale preset also re-typed
   `claude` into those terminals on the next restore. Fix at the source: `Workspace::note_agents` (M11u's agent
-  watch) now clears the preset of each terminal whose agent ended (`agents_ended`).
-- **AI's calls (for you to check):** a closed group with one Working and one Done terminal shows Done's ✓ (it keeps
-  `groups::rolled_up`'s order, Done above Working). A closed header still hides its workspace count (the small avatars
+  watch, now run at every reading) clears the preset of each terminal whose agent's end is confirmed
+  (`agents_settled`; the Ctrl-Z check is `procs::stopped_below`).
+- **Not covered: background-service terminals.** A terminal kept by the background service ("Keep running after
+  quit") has no shell pid in fuxx, so what runs in it is never looked up, as for M11u's agent watch. Its agent's end
+  isn't seen, and its row keeps the old name (`claude`) after the agent quits. The rows in your screenshot were local
+  terminals (the sessions file has no background-service ids), so they are covered.
+- **AI's calls (for you to check):** a closed group with one Working and one Done terminal shows Working's mark
+  (after review: with Done muted, `rolled_up`'s Done-over-Working order would hide work in progress). A closed header still hides its workspace count (the small avatars
   used to stand in for it). The window's title is left as is. A row whose front can't be looked up (SSH) keeps
   its preset. Rows already stale before this build (an agent quit in them earlier) keep `claude` until an agent runs
   and quits there again, or you close them: the fix works on the agent ending, which they won't do again by itself.
-  Any program started from a preset counts (as M11u counts it): when it quits, its row goes back to a shell too.
+  Any program started from a preset counts (as M11u counts it): a non-agent preset (e.g. a dev server) is dropped
+  once its program stops, and its row goes back to a shell too. The background service isn't told the preset went
+  (no code path reaches a background-service terminal here; the unreachable call was removed).
 - **Tests:** RED first for `a_badge_is_bright_only_while_something_happens`,
-  `a_closed_header_shows_its_status_and_nothing_when_all_idle`, `a_terminal_whose_agent_ended_goes_back_to_its_shell`
-  and the updated `a_header_knows_who_waits_inside` (it asserted the small avatars; now the "N waiting" mark). New
-  scene `sidebar-quiet` (both themes): an ended `claude` row named as the fresh shell beside it, its preset gone; a
+  `a_closed_header_shows_its_status_and_nothing_when_all_idle` (Working over Done after review),
+  `a_terminal_whose_agent_ended_goes_back_to_its_shell`, `an_agent_s_end_is_confirmed_on_two_readings` (the watch
+  driven through Running → Prompt → Running → Prompt → Prompt, another program in front, Ctrl-Z then killed, and a
+  lost look-up), `a_suspended_job_is_found_below_its_shell`, and the updated `a_header_knows_who_waits_inside` (it asserted the small avatars; now the "N waiting" mark). New
+  scene `sidebar-quiet` (both themes): an ended `claude` row still `claude` at the first reading at its prompt, then
+  named as the fresh shell beside it, its preset gone; a
   named row keeps its name; the Done row's badge has no green and a muted ✓; the closed web header has no small
   avatars and a ✓; the all-idle infra header shows nothing. Checked against the old code: putting the green dot back
   fails it ("no green dot on the done row"), and keeping the preset fails it ("a shell again", left `claude`).
@@ -385,7 +399,8 @@ directly." Built on master, pushed directly.
      and once you're back at the prompt the row is named "New Fuxxpace" (or your shell's title) with that avatar.
   2. Close a group whose terminals are all idle: nothing after its name. With one done: a small grey ✓. With one
      waiting: "1 waiting". No coloured squares.
-  3. Rename a row, run `claude` in it and quit: the row keeps your name.
+  3. Rename a row, run `claude` in it and quit: the row keeps your name. Run `claude`, press Ctrl-Z: the row keeps
+     `claude` until you `fg` it or kill it.
 
 ## Related
 

@@ -95,6 +95,9 @@ pub struct WorkspaceFacts<'a> {
     pub title: Option<&'a str>,
     /// In a folder's group: where its terminal is now (`home_relative`).
     pub here: Option<String>,
+    /// One of its terminals or agent tabs is Working, whatever `status` won (a closed group's
+    /// header shows work in progress over a finished one's ✓).
+    pub working: bool,
 }
 
 /// One row of the sidebar.
@@ -117,6 +120,8 @@ pub struct HeaderRow {
     pub mark: Option<Status>,
     /// How many of its workspaces wait for you ("N waiting" while it's collapsed).
     pub waiting: usize,
+    /// One of its workspaces has a terminal or agent tab Working (its live mark while collapsed).
+    pub working: bool,
 }
 
 /// A workspace's row.
@@ -208,6 +213,9 @@ pub fn rows(
                         .iter()
                         .filter(|s| s.status == Status::Waiting)
                         .count(),
+                    working: inside
+                        .iter()
+                        .any(|s| s.working || s.status == Status::Working),
                     label: groups::group_label(&key, &all),
                     key,
                     first,
@@ -1174,9 +1182,9 @@ pub fn badge_look(status: Status, running: bool, ui: &UiColors) -> BadgeLook {
 pub enum ClosedMark {
     /// "N waiting".
     Waiting(usize),
-    /// Its rolled-up mark when it moves (Working).
+    /// Working's live mark: one in it works (never hidden behind a finished one's ✓).
     Live(Status),
-    /// A small muted ✓: one in it finished (`groups::rolled_up`).
+    /// A small muted ✓: one in it finished and none works.
     Done,
 }
 
@@ -1187,6 +1195,9 @@ pub fn closed_mark(header: &HeaderRow) -> Option<ClosedMark> {
     }
     if header.waiting > 0 {
         return Some(ClosedMark::Waiting(header.waiting));
+    }
+    if header.working {
+        return Some(ClosedMark::Live(Status::Working));
     }
     match header.mark? {
         Status::Idle => None,
@@ -1391,6 +1402,12 @@ impl Workspace {
                         .and_then(|id| items.iter().find(|s| s.id == id))
                         .and_then(|s| s.title.as_deref()),
                     here: heres.get(i).cloned().flatten(),
+                    working: (self.model.terminals(ws).iter())
+                        .filter_map(|&id| items.iter().find(|s| s.id == id))
+                        .any(|s| s.status == Status::Working)
+                        || (self.model.agent_tabs(ws).iter())
+                            .filter_map(|tab| self.agents.get(tab))
+                            .any(|a| a.status == Status::Working),
                 }
             })
             .collect();
@@ -1847,7 +1864,7 @@ impl Workspace {
             _ => chevron(angle, color).into_any_element(),
         };
         // Closed: its status, not who's inside (chore, 2026-11-17: the small avatars' colours
-        // read as status lights): how many wait, else its rolled-up mark (Done's muted ✓).
+        // read as status lights): how many wait, else Working's mark, else Done's muted ✓.
         let closed_marks = closed_mark(header).map(|closed| {
             let mark = match closed {
                 ClosedMark::Waiting(n) => div()
@@ -3147,6 +3164,7 @@ mod tests {
             running: false,
             title: None,
             here: None,
+            working: false,
         }
     }
 
@@ -4308,8 +4326,8 @@ mod tests {
         );
     }
 
-    /// A closed group shows its status, not who's inside: "N waiting", else its rolled-up mark
-    /// (Done's muted ✓, Working's live mark), else nothing; open, nothing (its rows say it).
+    /// A closed group shows its status, not who's inside: "N waiting", else Working's live mark
+    /// when one works, else Done's muted ✓, else nothing; open, nothing (its rows say it).
     #[test]
     fn a_closed_header_shows_its_status_and_nothing_when_all_idle() {
         let now = Instant::now();
@@ -4329,8 +4347,12 @@ mod tests {
         use Status::*;
         assert_eq!(closed(&[Idle, Waiting, Done]), Some(ClosedMark::Waiting(1)));
         assert_eq!(closed(&[Idle, Working]), Some(ClosedMark::Live(Working)));
-        // The rolled-up status (`groups::rolled_up`: Done outranks Working).
-        assert_eq!(closed(&[Idle, Working, Done]), Some(ClosedMark::Done));
+        // Work in progress is never hidden behind a finished one's ✓ (Done is muted now).
+        assert_eq!(
+            closed(&[Idle, Working, Done]),
+            Some(ClosedMark::Live(Working))
+        );
+        assert_eq!(closed(&[Done, Working]), Some(ClosedMark::Live(Working)));
         assert_eq!(closed(&[Idle, Done]), Some(ClosedMark::Done));
         assert_eq!(closed(&[Idle, Idle]), None);
         // Open: nothing after its name.

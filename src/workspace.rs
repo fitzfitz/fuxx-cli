@@ -330,10 +330,13 @@ impl Workspace {
                     let shells = this.all_program_shells(cx);
                     if this.programs.take(table, &shells) {
                         cx.notify();
-                        // An agent started or ended: the sessions file says so (M11u).
-                        if this.note_agents(cx) {
-                            this.save_soon(cx);
-                        }
+                    }
+                    // At every good reading (an agent's end is confirmed at the next one): an
+                    // agent started or ended, or a row went back to a shell; the sessions file
+                    // says so (M11u).
+                    if this.programs.table().is_some() && this.note_agents(cx) {
+                        cx.notify();
+                        this.save_soon(cx);
                     }
                 });
                 if took.is_err() {
@@ -827,6 +830,9 @@ pub struct Workspace {
     pub(crate) folders_now: HashMap<u64, PathBuf>,
     /// The agent (a preset's name) each terminal runs now, for the sessions file (M11u).
     pub(crate) agents_now: HashMap<u64, String>,
+    /// The terminals whose agent was gone at the last reading, by its preset's name: a second
+    /// reading confirms its end (`agents_settled`).
+    agents_leaving: HashMap<u64, String>,
     /// A save is already due (`save_soon`).
     save_due: bool,
     /// Whether the places' 5 s refresh is running (only while a row can be seen).
@@ -1015,6 +1021,7 @@ impl Workspace {
             places: Places::new(home_dir(), crate::git_branch::this_hostname()),
             folders_now: HashMap::new(),
             agents_now: HashMap::new(),
+            agents_leaving: HashMap::new(),
             save_due: false,
             places_ticking: false,
             folders_ticking: false,
@@ -1325,10 +1332,12 @@ impl Workspace {
     }
 
     /// Note the agents the terminals run now (`programs`, by today's presets); true when one
-    /// started or ended (M11u). A terminal whose agent ended goes back to being a shell (chore,
-    /// 2026-11-17): the preset that named its row goes (here and in the background service),
-    /// so its row is named as a fresh shell's is, and restoring it starts no agent. A name you
-    /// gave it stays.
+    /// started or ended (M11u), or a terminal's row went back to a shell. Called at every
+    /// reading. A terminal whose agent ended (`agents_settled`: seen gone twice in a row, not
+    /// a suspended job) goes back to being a shell (chore, 2026-11-17): the preset that named
+    /// its row goes, so its row is named as a fresh shell's is and restoring it starts no
+    /// agent. A name you gave it stays. Only local terminals are watched (as M11u's agent
+    /// watch): a background-service one has no shell pid here, so its row keeps its preset.
     pub(crate) fn note_agents(&mut self, cx: &App) -> bool {
         let presets = &cx.global::<Appearance>().presets;
         let now: HashMap<u64, String> = self
@@ -1342,28 +1351,34 @@ impl Workspace {
                 _ => None,
             })
             .collect();
-        if now == self.agents_now {
-            return false;
-        }
-        for id in agents_ended(&self.agents_now, &now, |id| self.programs.state(id)) {
-            let Some(s) =
-                (self.sessions.position(|s| s.id == id)).and_then(|i| self.sessions.get_mut(i))
-            else {
-                continue;
+        let shells: HashMap<u64, u32> = self.all_program_shells(cx).into_iter().collect();
+        let table = self.programs.table();
+        let stopped = |id: u64, agent: &str| {
+            let (Some(&shell), Some(table)) = (shells.get(&id), table.as_deref()) else {
+                return false;
             };
-            if s.preset.take().is_some() && !s.lost {
-                s.view.read(cx).set_meta(crate::mux_proto::SetMeta {
-                    id,
-                    name: None,
-                    project: None,
-                    preset: Some(None),
-                    note: None,
-                    progress: None,
-                });
+            procs::stopped_below(table, shell).iter().any(|name| {
+                crate::presets::agent_for(name, presets).is_some_and(|p| p.name == agent)
+            })
+        };
+        let ended = agents_settled(
+            &self.agents_now,
+            &now,
+            &mut self.agents_leaving,
+            |id| self.programs.state(id),
+            stopped,
+        );
+        let mut cleared = false;
+        for id in ended {
+            if let Some(s) =
+                (self.sessions.position(|s| s.id == id)).and_then(|i| self.sessions.get_mut(i))
+            {
+                cleared |= s.preset.take().is_some();
             }
         }
+        let changed = now != self.agents_now;
         self.agents_now = now;
-        true
+        changed || cleared
     }
 
     /// What `save` writes to the sessions file.
@@ -4320,6 +4335,37 @@ fn agents_ended(
         .collect()
 }
 
+/// One reading of M11u's agent watch (chore, 2026-11-17): the terminals whose agent's end is
+/// confirmed now. `leaving` holds those whose agent was gone at the last reading (by its
+/// preset's name); an end is confirmed when it is still gone at the next one, with what's in
+/// front known (`state`) and no stopped job of that agent below the shell (`stopped`: Ctrl-Z),
+/// so a looping preset or a suspended agent keeps its name.
+fn agents_settled(
+    before: &HashMap<u64, String>,
+    now: &HashMap<u64, String>,
+    leaving: &mut HashMap<u64, String>,
+    state: impl Fn(u64) -> ProgramState,
+    stopped: impl Fn(u64, &str) -> bool,
+) -> Vec<u64> {
+    let mut ended = Vec::new();
+    // Gone at the last reading: back, or its front unknown, it's kept; suspended, still
+    // waited on; still gone, it ended.
+    leaving.retain(|&id, agent| {
+        if now.contains_key(&id) || state(id) == ProgramState::Unknown {
+            return false;
+        }
+        if stopped(id, agent) {
+            return true;
+        }
+        ended.push(id);
+        false
+    });
+    for id in agents_ended(before, now, &state) {
+        leaving.insert(id, before[&id].clone());
+    }
+    ended
+}
+
 /// The folder a new terminal starts in to follow a session: where its shell says it is, else
 /// where the process look-up found it; none for an SSH session (its folder is on the host).
 fn folder_to_follow(ssh: bool, reported: Option<&Path>, polled: Option<&Path>) -> Option<PathBuf> {
@@ -4476,10 +4522,70 @@ mod tests {
         assert!(agents_ended(&map(&[5]), &map(&[5]), state).is_empty());
     }
 
+    /// The watch's readings, one terminal (1) running `claude`: an end is confirmed only when
+    /// seen twice in a row (a looping preset's moment at the prompt isn't one), never while the
+    /// agent is a stopped job (Ctrl-Z) or what's in front can't be looked up.
+    #[test]
+    fn an_agent_s_end_is_confirmed_on_two_readings() {
+        use std::cell::{Cell, RefCell};
+        use std::collections::HashMap;
+        let front = RefCell::new(ProgramState::Unknown);
+        let suspended = Cell::new(false);
+        let mut watched: HashMap<u64, String> = HashMap::new();
+        let mut leaving = HashMap::new();
+        let mut read = |seen: ProgramState| {
+            *front.borrow_mut() = seen.clone();
+            let now: HashMap<u64, String> = match &seen {
+                ProgramState::Running(p) if p == "claude" => HashMap::from([(1, "claude".into())]),
+                _ => HashMap::new(),
+            };
+            let ended = agents_settled(
+                &watched,
+                &now,
+                &mut leaving,
+                |_| front.borrow().clone(),
+                |id, agent| id == 1 && agent == "claude" && suspended.get(),
+            );
+            watched = now;
+            ended
+        };
+        let claude = || ProgramState::Running("claude".into());
+        assert!(read(claude()).is_empty(), "it starts");
+        // Running → Prompt → Running (a loop's moment at the prompt): kept.
+        assert!(
+            read(ProgramState::Prompt).is_empty(),
+            "one reading isn't an end"
+        );
+        assert!(read(claude()).is_empty(), "it's back");
+        assert!(read(ProgramState::Prompt).is_empty());
+        // Prompt again: it ended, once.
+        assert_eq!(read(ProgramState::Prompt), [1], "two readings: ended");
+        assert!(read(ProgramState::Prompt).is_empty(), "said once");
+        // Another program in front counts as the shell's prompt does.
+        read(claude());
+        read(ProgramState::Running("vim".into()));
+        assert_eq!(read(ProgramState::Running("vim".into())), [1]);
+        // Ctrl-Z: stopped below the shell, never an end while it's there; killed, it is.
+        read(claude());
+        suspended.set(true);
+        assert!(read(ProgramState::Prompt).is_empty());
+        assert!(
+            read(ProgramState::Prompt).is_empty(),
+            "suspended, not ended"
+        );
+        assert!(read(ProgramState::Prompt).is_empty());
+        suspended.set(false);
+        assert_eq!(read(ProgramState::Prompt), [1], "killed: ended");
+        // What's in front unknown (the look-up lost it): not an end.
+        read(claude());
+        assert!(read(ProgramState::Unknown).is_empty());
+        assert!(read(ProgramState::Unknown).is_empty());
+    }
+
     use super::{
-        PROGRAMS_REFRESH, PROGRAMS_RETRY, Programs, ZshIntegration, agents_ended, daemon_create,
-        folder_to_follow, helper_plugins_on, programs_wait, scripting_env, session_env,
-        starts_window_move, window_title,
+        PROGRAMS_REFRESH, PROGRAMS_RETRY, Programs, ZshIntegration, agents_ended, agents_settled,
+        daemon_create, folder_to_follow, helper_plugins_on, programs_wait, scripting_env,
+        session_env, starts_window_move, window_title,
     };
     use crate::presets::Preset;
     use crate::procs::{ProgramState, parse_ps};

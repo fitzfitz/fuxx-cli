@@ -1036,8 +1036,9 @@ fn count_box(
 /// `claude`, its title blanked as Claude Code leaves it, now at its prompt); web closed with a
 /// done and an idle one; infra closed, all idle.
 ///
-/// Panics unless the ended agent's row is named as a fresh shell's ("New Fuxxpace", like the
-/// unnamed shell beside it, its preset gone) while a named one keeps its name; the done row's
+/// Panics unless the ended agent's row keeps `claude` at the first reading at its prompt and is
+/// named as a fresh shell's at the second ("New Fuxxpace", like the unnamed shell beside it, its
+/// preset gone) while a named one keeps its name; the done row's
 /// badge is a muted ✓ (`text_dim`), no `ring_done` green; web's closed header shows a muted ✓
 /// and no small avatars; infra's closed header shows nothing after its name.
 fn sidebar_quiet_scenes() {
@@ -1100,6 +1101,10 @@ fn sidebar_quiet_scenes() {
                 for id in [ended, tests] {
                     ws.programs.set_for_shots(id, ProgramState::Prompt);
                 }
+                // One reading isn't an end (a looping preset's moment at the prompt); the next
+                // confirms it.
+                ws.note_agents(cx);
+                assert_eq!(label_of(&ws, ended), "claude", "{named}: one reading");
                 assert!(ws.note_agents(cx), "{named}: claude ended");
                 assert_eq!(
                     label_of(&ws, ended),
