@@ -63,6 +63,8 @@ pub(super) const SCENES: &[Scene] = &[
             "src/tab_menu.rs",
             "src/layout_model.rs",
             "src/pane_actions.rs",
+            // `providers::all()`: one New ⟨agent⟩ Tab item per provider.
+            "src/providers/mod.rs",
         ],
     },
     Scene {
@@ -908,16 +910,16 @@ fn tab_bar_scenes() {
                     assert!(!is(right, ui.panel), "{n}: right edges together: {right:?}");
                     let above = px_at(mx - 100.0, my - 2.0);
                     assert!(!is(above, ui.panel), "{n}: under the button: {above:?}");
-                    // Five items (26 pt each, inside the 1 pt edge and 4 pt padding), each with
+                    // Six items (26 pt each, inside the 1 pt edge and 4 pt padding), each with
                     // its name; the keys at the right of all but New Browser Tab and (M11aa)
-                    // New Claude Tab; the menu ends after the fifth.
+                    // the New ⟨agent⟩ Tab items, one per provider; the menu ends after the last.
                     let inked = |x0: f32, x1: f32, y: f32| {
                         (x0 as i32..x1 as i32).any(|x| {
                             (-4..=4).any(|dy| gap(px_at(x as f32, y + dy as f32), ui.panel) > 60)
                         })
                     };
                     let items = crate::pane_actions::PaneAction::items(true);
-                    assert_eq!(items.len(), 5, "{n}: the menu's items");
+                    assert_eq!(items.len(), 6, "{n}: the menu's items");
                     for (k, item) in items.iter().enumerate() {
                         let y = my + 5.0 + 26.0 * k as f32 + 13.0;
                         assert!(inked(mx - 192.0, mx - 110.0, y), "{n}: item {k}'s name");
@@ -929,10 +931,7 @@ fn tab_bar_scenes() {
                     let last = px_at(mx - 20.0, end - 3.0);
                     assert!(is(last, ui.panel), "{n}: the menu's foot: {last:?}");
                     let past = px_at(mx - 20.0, end + 3.0);
-                    assert!(
-                        !is(past, ui.panel),
-                        "{n}: nothing after the fourth: {past:?}"
-                    );
+                    assert!(!is(past, ui.panel), "{n}: nothing after the last: {past:?}");
                 }
                 _ => {}
             }

@@ -34,35 +34,8 @@ const OWNED_FLAGS: &[(&str, bool)] = &[
     ("-c", false),
 ];
 
-fn pass_through(extra: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut skip_value = false;
-    for arg in extra {
-        if std::mem::take(&mut skip_value) {
-            continue;
-        }
-        let name = arg.split_once('=').map_or(arg.as_str(), |(n, _)| n);
-        match OWNED_FLAGS.iter().find(|(f, _)| *f == name) {
-            // `--flag=value` carries its value; `--flag value` borrows the next word.
-            Some((_, takes_value)) => skip_value = *takes_value && name == arg,
-            None => out.push(arg.clone()),
-        }
-    }
-    out
-}
-
 /// The flags that name the conversation a `claude` works on.
 const CONVERSATION_FLAGS: &[&str] = &["--resume", "-r", "--session-id"];
-
-/// Whether `word` has a Claude session id's shape: a UUID (8-4-4-4-12 hex digits).
-fn session_id(word: &str) -> bool {
-    let groups: Vec<&str> = word.split('-').collect();
-    groups.len() == 5
-        && groups
-            .iter()
-            .zip([8, 4, 4, 4, 12])
-            .all(|(g, n)| g.len() == n && g.chars().all(|c| c.is_ascii_hexdigit()))
-}
 
 impl Provider for Claude {
     fn info(&self) -> &'static ProviderInfo {
@@ -87,7 +60,7 @@ impl Provider for Claude {
         if let Some(id) = &start.resume {
             a.extend(["--resume".to_string(), id.clone()]);
         }
-        a.extend(pass_through(&start.extra_args));
+        a.extend(pass_through(&start.extra_args, OWNED_FLAGS));
         a
     }
 
@@ -102,23 +75,12 @@ impl Provider for Claude {
     }
 
     /// `--resume <id>`, `-r <id>` or `--session-id <id>` (or `=<id>`), the id a session id
-    /// (`session_id`'s shape); any other word after one of those (a word of a prompt `ps`
+    /// (a UUID: `uuid_shaped`); any other word after one of those (a word of a prompt `ps`
     /// joined in, the `--resume` picker's search) names nothing, and the search goes on.
     /// An npm install's `claude` (node) sets `process.title = "claude"`, which writes over its
     /// arguments: `ps` then shows `claude` alone, and this says None.
     fn conversation_in_args(&self, args: &str) -> Option<String> {
-        let mut words = args.split_whitespace().peekable();
-        while let Some(word) = words.next() {
-            let value = match word.split_once('=') {
-                Some((flag, value)) if CONVERSATION_FLAGS.contains(&flag) => Some(value),
-                _ if CONVERSATION_FLAGS.contains(&word) => words.peek().copied(),
-                _ => None,
-            };
-            if let Some(id) = value.filter(|v| session_id(v)) {
-                return Some(id.to_string());
-            }
-        }
-        None
+        conversation_after(args, CONVERSATION_FLAGS)
     }
 
     /// `claude-opus-5-5` → `opus`: the family, the word after the `claude-` prefix.
@@ -262,22 +224,6 @@ struct ClaudeTranslator {
 
 fn s(v: &Value) -> Option<String> {
     v.as_str().map(str::to_string)
-}
-
-fn first_line(text: &str) -> &str {
-    text.lines().next().unwrap_or("")
-}
-
-/// `text`'s first line, cut to `max` characters with an ellipsis.
-fn short(text: &str, max: usize) -> String {
-    let line = first_line(text.trim_start());
-    if line.chars().count() <= max {
-        line.to_string()
-    } else {
-        let mut t: String = line.chars().take(max - 1).collect();
-        t.push('…');
-        t
-    }
 }
 
 /// A tool call's one-line target: the file name, else the command's first line, else the

@@ -192,6 +192,21 @@ init → user_input → error_message → result(ERROR) sequence only; **tool ev
 not observed.** Re-record when credits are available. The conversation id is `init.conversation_id` and every
 `step_update` / `result`.
 
+**agy 1.5.7, re-recorded 2026-11-17 (M11aa Task 12).** All three scenarios succeeded with the same argv
+(`-p= … --mode accept-edits`); the Task 0 credit error is kept as `agy-credits.jsonl`. **text:** `user_input` →
+`agent_response` `ACTIVE` with `text_delta: "Hello"` → `DONE` with `text_delta: "\n"` and per-step `usage` →
+`result` `SUCCESS` (`response: "Hello\n"`). **tools:** each tool is one `step_type: "tool"` step, `ACTIVE` then
+`DONE`, with `tool_name` (`read_file`, `edit_file`, `run_command`, `write_file`; no TodoWrite: agy writes its task
+list to `~/.gemini/antigravity-cli/brain/<conversation>/task.md`) and `tool_info: {name, parameters: {Path |
+CommandLine}, output?}`; `read_file`'s output is a size ("1 lines, 6 bytes"), `run_command`'s is a header
+(`Created At`, `Completed At`, `Command exited with code N.`) then `Command output:` and what it printed; `edit_file`
+carries no old/new text (no diff). Between tools, `agent_response` steps that only plan arrive `DONE` with no text.
+No permission prompt arrived in `accept-edits` (an `ls` ran unasked). **resume** (`--conversation <id>`): same
+`init.conversation_id`, `step_index` goes on from the earlier run (2, 3 `system_message`, 4), **no replay of history
+on stdout**, and the model remembered the earlier turn. Not observed: a way to interrupt a turn on stdin, a model
+name, a bad `--conversation` id. Fragments of one step's `text_delta` can split a path, so the recorder scrubs a
+step's joined text (`rejoin_agy_text`).
+
 ### Antigravity CLI (`agy` 1.4.3, `~/.local/bin/agy`, checked from `--help` only)
 
 - `-p/--print`, `--input-format text|stream-json` ("reads one NDJSON message per line from stdin and runs a turn for
