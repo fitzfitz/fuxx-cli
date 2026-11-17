@@ -15,7 +15,7 @@ use super::{
     Kind, Scene, Themes, frame_fresh, render_with, shoot_with, shot_appearance, shot_theme,
     shot_themes,
 };
-use crate::agent_box::{BoxMenu, Change, MOVE_HERE, NEW_CONVERSATION, PLACEHOLDER};
+use crate::agent_box::{BoxMenu, Change, MOVE_HERE, ModelRow, NEW_CONVERSATION, PLACEHOLDER};
 use crate::agent_catalog::{Catalogs, Lookup};
 use crate::agent_conversation::Item;
 use crate::agent_tab::{AgentTab, AgentTabEvent};
@@ -66,6 +66,20 @@ const FOLDER: &[&str] = &[
     "src/overlay_panel.rs",
     "src/providers/mod.rs",
     "src/providers/claude.rs",
+];
+
+/// The files the model menu is made of: the box's, the catalog it lists, and the providers that
+/// say each model's efforts and how a change applies.
+const MODEL: &[&str] = &[
+    "src/agent_tab.rs",
+    "src/agent_box.rs",
+    "src/agent_conversation.rs",
+    "src/agent_catalog.rs",
+    "src/composer.rs",
+    "src/overlay_panel.rs",
+    "src/providers/mod.rs",
+    "src/providers/claude.rs",
+    "src/providers/agy.rs",
 ];
 
 /// The files the branch chip is made of: the box's, and the branch look-up and switcher it
@@ -179,6 +193,70 @@ pub(super) const SCENES: &[Scene] = &[
         serial: false,
         kind: Kind::State,
         sources: BOX,
+    },
+    Scene {
+        name: "agent-box-model-menu",
+        run: agent_box_model_menu,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: MODEL,
+    },
+    Scene {
+        name: "agent-box-effort-list",
+        run: agent_box_effort_list,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: MODEL,
+    },
+    Scene {
+        name: "agent-box-model-agy",
+        run: agent_box_model_agy,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: MODEL,
+    },
+    Scene {
+        name: "agent-box-model-loading",
+        run: agent_box_model_loading,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: MODEL,
+    },
+    Scene {
+        name: "agent-box-model-failed",
+        run: agent_box_model_failed,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: MODEL,
+    },
+    Scene {
+        name: "agent-box-model-fallback",
+        run: agent_box_model_fallback,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: MODEL,
+    },
+    Scene {
+        name: "agent-box-model-choose-sends-nothing",
+        run: agent_box_model_choose_sends_nothing,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: MODEL,
+    },
+    Scene {
+        name: "agent-box-model-effort-composes",
+        run: agent_box_model_effort_composes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: MODEL,
     },
     Scene {
         name: "agent-box-branch",
@@ -701,12 +779,30 @@ fn layout_scene(
     name: &str,
     act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + Clone + 'static,
 ) {
+    box_scene(
+        name,
+        &CLAUDE,
+        example_start(),
+        Lookup::Ready(example_catalog()),
+        act,
+    );
+}
+
+/// `layout_scene` for any agent, its `start` and what its catalog lookup says.
+fn box_scene(
+    name: &str,
+    provider: &'static dyn Provider,
+    start: Start,
+    lookup: Lookup<Catalog>,
+    act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + Clone + 'static,
+) {
     for &(slug, theme_name) in shot_themes() {
         let theme = shot_theme(theme_name);
         let slot: Slot = Rc::default();
         let keep = slot.clone();
         let n = format!("{name}-{slug}");
         let act = act.clone();
+        let (start, lookup) = (start.clone(), lookup.clone());
         let path = shoot_with(
             name,
             slug,
@@ -715,7 +811,7 @@ fn layout_scene(
             move |window, cx| {
                 cx.set_global(shot_appearance(theme, cx));
                 cx.bind_keys(crate::key_bindings());
-                let tab = cx.new(|cx| AgentTab::for_shots(&CLAUDE, example_start(), window, cx));
+                let tab = cx.new(|cx| AgentTab::for_shots(provider, start, window, cx));
                 let focus = tab.read(cx).focus_handle(cx);
                 focus.focus(window, cx);
                 *keep.borrow_mut() = Some(tab.clone());
@@ -724,9 +820,7 @@ fn layout_scene(
             move |cx, window| {
                 let tab = slot.borrow().clone().expect("the agent tab");
                 feed(cx, &tab, |t, cx| t.shot_history(Vec::new(), cx));
-                feed(cx, &tab, |t, cx| {
-                    t.shot_catalog(Lookup::Ready(example_catalog()), cx)
-                });
+                feed(cx, &tab, |t, cx| t.shot_catalog(lookup, cx));
                 let _ = frame_fresh(cx, window);
                 act(&n, cx, window, &tab);
                 let _ = frame_fresh(cx, window);
@@ -1479,6 +1573,575 @@ pub(super) fn agent_box_folder_before_first() {
                 cx.read(|cx| tab.read(cx).shot_box(cx)).folder,
                 "\u{1f4c1} my-app \u{25be}",
                 "{n}"
+            );
+        },
+    );
+}
+
+// ---- The model menu (Task 8) ----
+
+/// A made-up Claude list: `Claude Example 5` (five efforts, `high` running in the scenes),
+/// `Claude Example 4` (three) and `Claude Tiny` (none).
+fn model_catalog() -> Catalog {
+    let levels = |ls: &[&str]| {
+        ls.iter()
+            .map(|l| EffortChoice {
+                level: l.to_string(),
+                model_id: None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let model = |id: &str, label: &str, ls: &[&str]| ModelChoice {
+        id: id.into(),
+        label: label.into(),
+        resolves_to: None,
+        efforts: levels(ls),
+    };
+    Catalog {
+        models: vec![
+            model(
+                "example-5",
+                "Claude Example 5",
+                &["low", "medium", "high", "xhigh", "max"],
+            ),
+            model("example-4", "Claude Example 4", &["low", "medium", "high"]),
+            model("tiny", "Claude Tiny", &[]),
+        ],
+        mode: Some("default".into()),
+        ..Catalog::default()
+    }
+}
+
+/// A made-up agy list: the effort is in each level's id (`example-pro-high`).
+fn agy_example_catalog() -> Catalog {
+    let model = |id: &str, label: &str, ls: &[&str]| ModelChoice {
+        id: id.into(),
+        label: label.into(),
+        resolves_to: None,
+        efforts: ls
+            .iter()
+            .map(|l| EffortChoice {
+                level: l.to_string(),
+                model_id: Some(format!("{id}-{l}")),
+            })
+            .collect(),
+    };
+    Catalog {
+        models: vec![
+            model("example-pro", "Example Pro", &["low", "medium", "high"]),
+            model("example-flash", "Example Flash", &["low", "high"]),
+        ],
+        ..Catalog::default()
+    }
+}
+
+/// Claude on `example-5` at `high`, with the made-up list.
+fn model_scene(
+    name: &str,
+    lookup: Lookup<Catalog>,
+    act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + Clone + 'static,
+) {
+    box_scene(name, &CLAUDE, example_start(), lookup, act);
+}
+
+/// Click the model chip (a real click), and draw what opened.
+fn click_model_chip(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+) {
+    let chip = part(cx, tab, n, "model");
+    cx.simulate_click(window, chip.center(), Modifiers::none());
+    cx.run_until_parked();
+    let _ = frame_fresh(cx, window);
+}
+
+/// Click the `▸` of the model row `label` (the row's right end), and draw what opened.
+fn click_more(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+    label: &str,
+) {
+    let row = cx
+        .read(|cx| tab.read(cx).shot_menu_row(label))
+        .unwrap_or_else(|| panic!("{n}: no row {label} was drawn"));
+    let at = gpui::point(row.right() - px(12.), row.center().y);
+    cx.simulate_click(window, at, Modifiers::none());
+    cx.run_until_parked();
+    let _ = frame_fresh(cx, window);
+}
+
+/// Where the effort list's row `level` was drawn (none: not listed).
+fn effort_row(
+    cx: &VisualTestAppContext,
+    tab: &Entity<AgentTab>,
+    level: &str,
+) -> Option<Bounds<Pixels>> {
+    cx.read(|cx| {
+        tab.read(cx)
+            .shot_menu_row(&format!("Effort \u{25b8} {level}"))
+    })
+}
+
+fn model_rows_of(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<ModelRow> {
+    cx.read(|cx| tab.read(cx).shot_model_rows(cx))
+}
+
+/// The words of the model rows that are models, in order.
+fn model_names(rows: &[ModelRow]) -> Vec<String> {
+    rows.iter()
+        .filter_map(|r| match r {
+            ModelRow::Model { label, .. } => Some(label.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// §4's menu from the chip (a click): the `Model` heading, the models (✓ and the effort, in
+/// grey, on the running one; `▸` on those with efforts), a divider and `View Usage ▸`. Opening
+/// it chooses nothing; a press on the chip again closes it, and a press on another chip
+/// (folder, branch) closes it too.
+pub(super) fn agent_box_model_menu() {
+    model_scene(
+        "agent-box-model-menu",
+        Lookup::Ready(model_catalog()),
+        |n, cx, window, tab| {
+            click_model_chip(n, cx, window, tab);
+            assert_eq!(
+                menu(cx, tab),
+                Some(BoxMenu::Model {
+                    efforts_of: None,
+                    usage: false
+                }),
+                "{n}"
+            );
+            let rows = model_rows_of(cx, tab);
+            assert_eq!(
+                rows[1],
+                ModelRow::Model {
+                    ix: 0,
+                    label: "Claude Example 5".into(),
+                    effort: Some("high".into()),
+                    current: true,
+                    has_efforts: true
+                },
+                "{n}: ✓ and the effort on the running one"
+            );
+            assert_eq!(
+                model_names(&rows),
+                ["Claude Example 5", "Claude Example 4", "Claude Tiny"],
+                "{n}"
+            );
+            assert!(
+                matches!(
+                    rows[3],
+                    ModelRow::Model {
+                        has_efforts: false,
+                        ..
+                    }
+                ),
+                "{n}"
+            );
+            // Rows, top to bottom; View Usage last, under the divider.
+            let at = |l: &str| {
+                cx.read(|cx| tab.read(cx).shot_menu_row(l))
+                    .unwrap_or_else(|| panic!("{n}: no row {l}"))
+            };
+            let (a, b, t) = (
+                at("Claude Example 5"),
+                at("Claude Example 4"),
+                at("Claude Tiny"),
+            );
+            let usage = at("View Usage \u{25b8}");
+            assert!(a.bottom() <= b.top() && b.bottom() <= t.top(), "{n}");
+            assert!(t.bottom() < usage.top(), "{n}: the divider between");
+            let menu_box = part(cx, tab, n, "menu");
+            assert!(inside(usage, menu_box), "{n}: inside the menu");
+            assert!(
+                part(cx, tab, n, "model").top() >= menu_box.bottom(),
+                "{n}: upward"
+            );
+            assert!(written(cx, tab).is_empty(), "{n}: opening chooses nothing");
+
+            // The chip again closes it (the press is no reopening).
+            click_model_chip(n, cx, window, tab);
+            assert_eq!(menu(cx, tab), None, "{n}: the chip closes it");
+            // A press on another chip while a menu is open closes it (and opens nothing).
+            click_folder_chip(n, cx, window, tab);
+            assert_eq!(menu(cx, tab), Some(BoxMenu::Folder), "{n}");
+            click_model_chip(n, cx, window, tab);
+            assert_eq!(
+                menu(cx, tab),
+                None,
+                "{n}: the model chip's press closes the picker"
+            );
+            click_model_chip(n, cx, window, tab);
+            assert!(matches!(menu(cx, tab), Some(BoxMenu::Model { .. })), "{n}");
+            click_folder_chip(n, cx, window, tab);
+            assert_eq!(
+                menu(cx, tab),
+                None,
+                "{n}: and the folder chip's, the model menu"
+            );
+            click_model_chip(n, cx, window, tab);
+            assert!(matches!(menu(cx, tab), Some(BoxMenu::Model { .. })), "{n}");
+            // And the branch chip's press closes an open menu too.
+            feed(cx, tab, |t, cx| {
+                t.shot_place(folder("my-app"), Some("master".into()), cx)
+            });
+            let _ = frame_fresh(cx, window);
+            let branch = part(cx, tab, n, "branch");
+            cx.simulate_click(window, branch.center(), Modifiers::none());
+            cx.run_until_parked();
+            assert_eq!(menu(cx, tab), None, "{n}: the branch chip closes the menu");
+            // Leave it open for the shot.
+            click_model_chip(n, cx, window, tab);
+            assert!(menu(cx, tab).is_some(), "{n}");
+        },
+    );
+}
+
+/// `▸` on a model opens its effort list beside the menu: only that model's levels, the running
+/// one ticked on the running model; the list follows the `▸` pressed; a model without efforts has
+/// no `▸`. A press outside both closes them; one on the effort list is a pick, not outside.
+pub(super) fn agent_box_effort_list() {
+    model_scene(
+        "agent-box-effort-list",
+        Lookup::Ready(model_catalog()),
+        |n, cx, window, tab| {
+            click_model_chip(n, cx, window, tab);
+            click_more(n, cx, window, tab, "Claude Example 4");
+            assert_eq!(
+                menu(cx, tab),
+                Some(BoxMenu::Model {
+                    efforts_of: Some(1),
+                    usage: false
+                }),
+                "{n}"
+            );
+            assert!(
+                effort_row(cx, tab, "Low").is_some() && effort_row(cx, tab, "High").is_some(),
+                "{n}"
+            );
+            assert!(
+                effort_row(cx, tab, "XHigh").is_none(),
+                "{n}: Example 4 has three levels only"
+            );
+            click_more(n, cx, window, tab, "Claude Example 5");
+            let levels = ["Low", "Medium", "High", "XHigh", "Max"];
+            let spots: Vec<_> = levels.iter().map(|l| effort_row(cx, tab, l)).collect();
+            assert!(
+                spots.iter().all(Option::is_some),
+                "{n}: Low … Max {spots:?}"
+            );
+            let tops: Vec<_> = spots.iter().map(|b| b.unwrap().top()).collect();
+            assert!(
+                tops.windows(2).all(|w| w[0] < w[1]),
+                "{n}: in order {tops:?}"
+            );
+            let side = part(cx, tab, n, "effort");
+            let menu_box = part(cx, tab, n, "menu");
+            assert!(side.left() >= menu_box.right(), "{n}: beside the menu");
+            assert!(inside(spots[0].unwrap(), side), "{n}");
+            assert!(written(cx, tab).is_empty(), "{n}: opening chooses nothing");
+            // A model with no efforts has no ▸: its right end picks it.
+            assert!(
+                !matches!(
+                    model_rows_of(cx, tab)[3],
+                    ModelRow::Model {
+                        has_efforts: true,
+                        ..
+                    }
+                ),
+                "{n}"
+            );
+            // A press outside closes both.
+            cx.simulate_click(window, gpui::point(px(30.), px(120.)), Modifiers::none());
+            cx.run_until_parked();
+            assert_eq!(menu(cx, tab), None, "{n}: outside closes");
+            // Reopened, the effort list is open on the first model for the shot.
+            click_model_chip(n, cx, window, tab);
+            click_more(n, cx, window, tab, "Claude Example 5");
+            assert!(effort_row(cx, tab, "Max").is_some(), "{n}");
+        },
+    );
+}
+
+/// agy's models grouped by name, the effort in each id: `▸` lists that model's levels. Choosing
+/// before the first message restarts agy with `--model <id with the effort>` and no `--effort`.
+pub(super) fn agent_box_model_agy() {
+    box_scene(
+        "agent-box-model-agy",
+        &AGY,
+        start(None, Some("example-pro-high")),
+        Lookup::Ready(agy_example_catalog()),
+        |n, cx, window, tab| {
+            click_model_chip(n, cx, window, tab);
+            let rows = model_rows_of(cx, tab);
+            assert_eq!(model_names(&rows), ["Example Pro", "Example Flash"], "{n}");
+            assert!(
+                matches!(&rows[1], ModelRow::Model { current: true, effort: Some(e), .. } if e == "high"),
+                "{n}: the effort rides in the id: {rows:?}"
+            );
+            click_more(n, cx, window, tab, "Example Flash");
+            assert!(
+                cx.read(|cx| tab.read(cx).shot_menu_row("Effort \u{25b8} Medium"))
+                    .is_none(),
+                "{n}: Example Flash has no medium"
+            );
+            click_more(n, cx, window, tab, "Example Pro");
+            click_row(n, cx, window, tab, "Effort \u{25b8} Low");
+            assert_eq!(menu(cx, tab), None, "{n}: chosen, it closes");
+            let a = argv(cx, tab);
+            assert_eq!(
+                flag(&a, "--model").as_deref(),
+                Some("example-pro-low"),
+                "{n}: {a:?}"
+            );
+            assert_eq!(flag(&a, "--effort"), None, "{n}: never --effort {a:?}");
+            // Another model: its id with the effort it keeps (low: Flash has it).
+            click_model_chip(n, cx, window, tab);
+            click_row(n, cx, window, tab, "Example Flash");
+            let a = argv(cx, tab);
+            assert_eq!(
+                flag(&a, "--model").as_deref(),
+                Some("example-flash-low"),
+                "{n}: {a:?}"
+            );
+            // Left open, on the effort list, for the shot.
+            click_model_chip(n, cx, window, tab);
+            click_more(n, cx, window, tab, "Example Pro");
+            assert!(
+                cx.read(|cx| tab.read(cx).shot_menu_row("Effort \u{25b8} High"))
+                    .is_some(),
+                "{n}"
+            );
+        },
+    );
+}
+
+/// While the list is read the menu says `Loading…` (the divider and View Usage stay).
+pub(super) fn agent_box_model_loading() {
+    model_scene(
+        "agent-box-model-loading",
+        Lookup::Loading,
+        |n, cx, window, tab| {
+            click_model_chip(n, cx, window, tab);
+            assert_eq!(
+                model_rows_of(cx, tab),
+                [
+                    ModelRow::Heading,
+                    ModelRow::Note("Loading\u{2026}"),
+                    ModelRow::Divider,
+                    ModelRow::Usage
+                ],
+                "{n}"
+            );
+            assert!(
+                cx.read(|cx| tab.read(cx).shot_menu_row("View Usage \u{25b8}"))
+                    .is_some(),
+                "{n}"
+            );
+        },
+    );
+}
+
+/// A list that could not be read says so; no models are made up.
+pub(super) fn agent_box_model_failed() {
+    model_scene(
+        "agent-box-model-failed",
+        Lookup::Failed("claude: not found".into()),
+        |n, cx, window, tab| {
+            click_model_chip(n, cx, window, tab);
+            assert_eq!(
+                model_rows_of(cx, tab),
+                [
+                    ModelRow::Heading,
+                    ModelRow::Note("Couldn't read the model list"),
+                    ModelRow::Divider,
+                    ModelRow::Usage
+                ],
+                "{n}"
+            );
+        },
+    );
+}
+
+/// The agent's own aliases stand in when it lists none: marked `(default list)`; Haiku (which
+/// takes no effort) has no `▸`.
+pub(super) fn agent_box_model_fallback() {
+    let list = Catalog {
+        models: CLAUDE.fallback_models(),
+        fallback_models: true,
+        ..Catalog::default()
+    };
+    box_scene(
+        "agent-box-model-fallback",
+        &CLAUDE,
+        start(None, None),
+        Lookup::Ready(list),
+        |n, cx, window, tab| {
+            click_model_chip(n, cx, window, tab);
+            let rows = model_rows_of(cx, tab);
+            assert_eq!(rows[1], ModelRow::Note("(default list)"), "{n}");
+            assert_eq!(
+                model_names(&rows),
+                ["Opus", "Sonnet", "Haiku", "Fable"],
+                "{n}"
+            );
+            let efforts = |label: &str| {
+                rows.iter().find_map(|r| match r {
+                    ModelRow::Model {
+                        label: l,
+                        has_efforts,
+                        ..
+                    } if l == label => Some(*has_efforts),
+                    _ => None,
+                })
+            };
+            assert_eq!(efforts("Haiku"), Some(false), "{n}: Haiku takes no effort");
+            assert_eq!(efforts("Opus"), Some(true), "{n}");
+            assert!(written(cx, tab).is_empty(), "{n}");
+        },
+    );
+}
+
+/// Choosing never sends a message: idle Claude writes the set request (a model, then an effort
+/// of the running model: an effort alone), and no `user` line; the menu closes and the keyboard
+/// is back in the box.
+pub(super) fn agent_box_model_choose_sends_nothing() {
+    model_scene(
+        "agent-box-model-choose-sends-nothing",
+        Lookup::Ready(model_catalog()),
+        |n, cx, window, tab| {
+            let subtypes = |cx: &VisualTestAppContext, from: usize| -> Vec<String> {
+                written(cx, tab)[from..]
+                    .iter()
+                    .map(|l| l["request"]["subtype"].as_str().unwrap_or("").to_string())
+                    .collect()
+            };
+            let lines = |cx: &VisualTestAppContext| written(cx, tab).len();
+            // A model: asked as a model change (its effort is kept where it has it).
+            let before = lines(cx);
+            click_model_chip(n, cx, window, tab);
+            click_row(n, cx, window, tab, "Claude Example 4");
+            assert_eq!(menu(cx, tab), None, "{n}: chosen, it closes");
+            let sent = written(cx, tab);
+            assert_eq!(subtypes(cx, before), ["set_model"], "{n}: {sent:?}");
+            assert_eq!(sent[before]["request"]["model"], "example-4", "{n}");
+            assert!(sent.iter().all(|l| l["type"] != "user"), "{n}: no message");
+            assert_eq!(said(cx, tab), Vec::<String>::new(), "{n}: nothing said");
+            // Claude confirms: the chip follows.
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(
+                    vec![Event::Applied {
+                        kind: ChangeKind::Model,
+                        value: "example-4".into(),
+                        ok: true,
+                    }],
+                    cx,
+                )
+            });
+            let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
+            assert_eq!(
+                texts.model, "Claude Example 4  High \u{25be}",
+                "{n}: {texts:?}"
+            );
+            // An effort of the running model alone: an effort request.
+            let before = lines(cx);
+            click_model_chip(n, cx, window, tab);
+            click_more(n, cx, window, tab, "Claude Example 4");
+            click_row(n, cx, window, tab, "Effort \u{25b8} Low");
+            assert_eq!(
+                subtypes(cx, before),
+                ["apply_flag_settings", "get_settings"],
+                "{n}"
+            );
+            assert!(written(cx, tab).iter().all(|l| l["type"] != "user"), "{n}");
+            // A model with no efforts: the model alone.
+            let before = lines(cx);
+            click_model_chip(n, cx, window, tab);
+            click_row(n, cx, window, tab, "Claude Tiny");
+            assert_eq!(subtypes(cx, before), ["set_model"], "{n}");
+            let composer = cx.read(|cx| tab.read(cx).shot_composer());
+            assert!(
+                has_keys(cx, window, move |cx| composer.read(cx).focus_handle(cx)),
+                "{n}: the keyboard is back in the box"
+            );
+        },
+    );
+}
+
+/// While Claude works, a model picked waits for the turn; an effort picked meanwhile belongs to
+/// that picked model (the menu shows it as current): they compose into one change, never one
+/// replacing the other. An effort of the model that runs, picked while a model waits, is a
+/// choice of that model again: the waiting change is dropped.
+pub(super) fn agent_box_model_effort_composes() {
+    model_scene(
+        "agent-box-model-effort-composes",
+        Lookup::Ready(model_catalog()),
+        |n, cx, window, tab| {
+            feed(cx, tab, |t, cx| t.send("Fix notes.txt".into(), cx));
+            assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Working, "{n}");
+            let before = written(cx, tab).len();
+            let waiting =
+                |cx: &VisualTestAppContext| cx.read(|cx| tab.read(cx).waiting_change().cloned());
+            click_model_chip(n, cx, window, tab);
+            click_row(n, cx, window, tab, "Claude Example 4");
+            assert_eq!(
+                waiting(cx),
+                Some(Change::Model {
+                    id: "example-4".into(),
+                    effort: Some("high".into())
+                }),
+                "{n}: waits, keeping the effort it has"
+            );
+            // Example 4 now shows as current (✓), with its effort.
+            click_model_chip(n, cx, window, tab);
+            let rows = model_rows_of(cx, tab);
+            assert!(
+                matches!(&rows[2], ModelRow::Model { current: true, effort: Some(e), .. } if e == "high"),
+                "{n}: the picked model is the current one: {rows:?}"
+            );
+            assert!(
+                matches!(&rows[1], ModelRow::Model { current: false, .. }),
+                "{n}"
+            );
+            // An effort of it: the same model, the new effort, in one waiting change.
+            click_more(n, cx, window, tab, "Claude Example 4");
+            click_row(n, cx, window, tab, "Effort \u{25b8} Low");
+            assert_eq!(
+                waiting(cx),
+                Some(Change::Model {
+                    id: "example-4".into(),
+                    effort: Some("low".into())
+                }),
+                "{n}: model and effort together"
+            );
+            assert_eq!(
+                written(cx, tab).len(),
+                before,
+                "{n}: nothing written mid-turn"
+            );
+            // After the turn: the model, then the effort, once.
+            feed(cx, tab, |t, cx| t.shot_feed(vec![turn_done()], cx));
+            let lines = written(cx, tab);
+            let subtypes: Vec<&str> = lines[before..]
+                .iter()
+                .map(|l| l["request"]["subtype"].as_str().unwrap_or(""))
+                .collect();
+            assert_eq!(
+                subtypes,
+                ["set_model", "apply_flag_settings", "get_settings"],
+                "{n}"
+            );
+            assert_eq!(lines[before]["request"]["model"], "example-4", "{n}");
+            assert!(
+                lines.iter().filter(|l| l["type"] == "user").count() == 1,
+                "{n}: only yours"
             );
         },
     );

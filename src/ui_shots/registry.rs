@@ -234,6 +234,14 @@ pub(super) const ORDER: &[&str] = &[
     "agent-box-folder-before-first",
     "agent-box-branch",
     "agent-box-branch-opens-switcher",
+    "agent-box-model-menu",
+    "agent-box-effort-list",
+    "agent-box-model-agy",
+    "agent-box-model-loading",
+    "agent-box-model-failed",
+    "agent-box-model-fallback",
+    "agent-box-model-choose-sends-nothing",
+    "agent-box-model-effort-composes",
 ];
 
 /// Every scene, in `ORDER`. Panics, naming the scene, if one is in no area or in two, or if
