@@ -4018,6 +4018,46 @@ fn file_code_bars_scenes() {
         assert!(drawn, "{n}: the ▸ is still drawn");
         println!("ui-shots: {n} ok");
 
+        // Wrap on: two wrapped Added lines are one bar over every row of both, continuation
+        // rows and the seam between the lines included.
+        let n = format!("file-code-bars-wrap-{slug}");
+        let wide = live_file(
+            "bars-wrap.rs",
+            &format!("a\n// {0}end\n// {0}end\nb\n", " ".repeat(400)),
+        );
+        let rows = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = rows.clone();
+        let (shot, g) = code_shot(&theme, &wide, dims, |cx, window, tab| {
+            cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().file_wrap = true);
+            live_frame(cx, window);
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_changes(vec![(2, LineChange::Added), (3, LineChange::Added)], cx)
+                })
+            });
+            live_frame(cx, window);
+            seen.set(cx.read(|cx| tab.read(cx).wrapped_rows()).expect("wrapped"));
+        });
+        keep_shot(&n, &shot);
+        let each = (rows.get() - 2) / 2;
+        assert!(each >= 3, "{n}: each long line takes {each} rows");
+        let (lh, top) = (f32::from(g.line_height), f32::from(g.bounds.top()));
+        let x = f32::from(g.bounds.left() + g.bar_left) + 1.5;
+        let seam = top + lh * (1 + each) as f32;
+        for (what, y) in [
+            ("a continuation row", top + lh * 2.5),
+            ("above the seam", seam - 1.5),
+            ("the seam", seam - 0.25),
+            ("below the seam", seam + 1.5),
+            ("the last row", top + lh * (1 + 2 * each) as f32 - lh * 0.5),
+        ] {
+            let p = pixel_at(&shot, dims, x, y);
+            assert!(live_near(p, green, 12), "{n}: {what} {p:?}, not {green:?}");
+        }
+        let p = pixel_at(&shot, dims, x, top + lh * 0.5);
+        assert!(live_near(p, bg, 6), "{n}: none on the unchanged line {p:?}");
+        println!("ui-shots: {n} ok");
+
         // A press on any row of the run opens Diff.
         let n = format!("file-code-bars-press-{slug}");
         let (_, _) = code_shot(&theme, &path, dims, |cx, window, tab| {
