@@ -151,6 +151,15 @@ fn tool_summary(name: &str, params: &Value) -> String {
     name.to_string()
 }
 
+/// The file an agy `edit_file` or `write_file` step writes: its `Path` parameter, as agy gave
+/// it (it may start with `~`); none for any other tool.
+fn tool_writes(name: &str, params: &Value) -> Vec<String> {
+    match name {
+        "edit_file" | "write_file" => s(&params["Path"]).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// A `run_command` step's output is agy's header (`Created At`, `Completed At`, `Command
 /// exited with code N.`), then `Command output:` and what the command printed: what it
 /// printed, and whether it exited 0 (None: no header).
@@ -230,6 +239,7 @@ impl AgyTranslator {
                     .as_str()
                     .map(|c| ToolDetail::Command(c.to_string())),
                 parent: None,
+                writes: tool_writes(&name, params),
                 name: name.clone(),
             });
         }
@@ -441,6 +451,29 @@ mod tests {
         assert_eq!(done.len(), 1, "{done:?}");
         assert!(done[0].starts_with("Done."), "{done:?}");
         assert!(matches!(ev.last(), Some(Event::TurnDone { ok: true, .. })));
+    }
+
+    #[test]
+    fn agy_tool_calls_name_written_files_when_they_say() {
+        let ev = decode_all(TOOLS);
+        let writes: Vec<(&str, &Vec<String>)> = ev
+            .iter()
+            .filter_map(|e| match e {
+                Event::ToolStarted { name, writes, .. } => Some((name.as_str(), writes)),
+                _ => None,
+            })
+            .collect();
+        let of = |tool: &str| writes.iter().find(|w| w.0 == tool).map(|w| w.1.clone());
+        assert_eq!(of("edit_file"), Some(vec!["/tmp/fx/notes.txt".to_string()]));
+        assert_eq!(
+            of("write_file"),
+            Some(vec![
+                "~/.gemini/antigravity-cli/brain/72e5eb35-46f6-4788-9c0f-f93c20324da4/task.md"
+                    .to_string()
+            ])
+        );
+        assert_eq!(of("read_file"), Some(Vec::new()));
+        assert_eq!(of("run_command"), Some(Vec::new()));
     }
 
     #[test]

@@ -295,6 +295,17 @@ fn tool_detail(name: &str, input: &Value) -> Option<ToolDetail> {
     }
 }
 
+/// The files a tool call writes: the path of an `Edit`, `Write` or `MultiEdit` (`file_path`) or
+/// a `NotebookEdit` (`notebook_path`); none for any other tool, or while the input is empty.
+fn tool_writes(name: &str, input: &Value) -> Vec<String> {
+    let field = match name {
+        "Edit" | "Write" | "MultiEdit" => "file_path",
+        "NotebookEdit" => "notebook_path",
+        _ => return Vec::new(),
+    };
+    s(&input[field]).into_iter().collect()
+}
+
 fn todos(input: &Value) -> Vec<TodoItem> {
     input["todos"]
         .as_array()
@@ -418,6 +429,7 @@ impl ClaudeTranslator {
                             id: s(&item["id"]).unwrap_or_default(),
                             summary: tool_summary(&name, input),
                             detail: tool_detail(&name, input),
+                            writes: tool_writes(&name, input),
                             parent: parent.clone(),
                             name,
                         });
@@ -764,6 +776,61 @@ mod tests {
         )));
     }
 
+    #[test]
+    fn edit_tools_name_the_files_they_write() {
+        let writes_of = |ev: &[Event], tool: &str| -> Vec<Vec<String>> {
+            ev.iter()
+                .filter_map(|e| match e {
+                    Event::ToolStarted { name, writes, .. } if name == tool => Some(writes.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let tools = decode_all(&CLAUDE, include_str!("fixtures/claude-tools.jsonl"));
+        // The recording carries each Edit twice: once with the input still empty (nothing to
+        // name), once whole.
+        let edits = writes_of(&tools, "Edit");
+        assert!(
+            edits.contains(&vec!["/tmp/fx/notes.txt".to_string()]),
+            "{edits:?}"
+        );
+        assert!(
+            edits
+                .iter()
+                .all(|w| w.is_empty() || w == &["/tmp/fx/notes.txt"])
+        );
+        assert!(writes_of(&tools, "Read").iter().all(|w| w.is_empty()));
+        assert!(writes_of(&tools, "Bash").iter().all(|w| w.is_empty()));
+        let allow = decode_all(
+            &CLAUDE,
+            include_str!("fixtures/claude-permission-allow.jsonl"),
+        );
+        let wrote: Vec<Vec<String>> = writes_of(&allow, "Write")
+            .into_iter()
+            .filter(|w| !w.is_empty())
+            .collect();
+        assert!(!wrote.is_empty());
+        assert!(
+            wrote
+                .iter()
+                .all(|w| w.len() == 1 && w[0].ends_with("hello.txt"))
+        );
+        let inline = |name: &str, input: Value| {
+            let line = json!({"type":"assistant","parent_tool_use_id":null,"message":{"id":"m",
+                "content":[{"type":"tool_use","id":"toolu_i","name":name,"input":input}]}})
+            .to_string();
+            writes_of(&CLAUDE.translator().decode(&line), name)
+        };
+        assert_eq!(
+            inline("MultiEdit", json!({"file_path":"/tmp/fx/a.rs","edits":[]})),
+            [["/tmp/fx/a.rs"]]
+        );
+        assert_eq!(
+            inline("NotebookEdit", json!({"notebook_path":"/tmp/fx/n.ipynb"})),
+            [["/tmp/fx/n.ipynb"]]
+        );
+    }
+
     /// Synthetic: this Claude build offers no TodoWrite, so no fixture has one. The shape is
     /// the documented `input.todos[{content, status}]`.
     #[test]
@@ -802,6 +869,7 @@ mod tests {
                 summary: "foo".into(),
                 parent: Some("toolu_parent".into()),
                 detail: None,
+                writes: Vec::new(),
             }]
         );
     }
