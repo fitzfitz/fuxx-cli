@@ -3810,16 +3810,26 @@ impl FileTab {
         }
     }
 
-    /// M11ah: a breadcrumb part or the sticky line pressed: its line goes to the top of the text
-    /// and becomes current; the file's name (`None`) goes to the top. You moved the view: Follow
-    /// ends.
+    /// M11ah: a breadcrumb part or the sticky line pressed: its line becomes the first row you
+    /// see (the top row; when a sticky line shows there, the row under it, as `reveal_top`
+    /// leaves room) and current; the file's name (`None`) goes to the top. You moved the view:
+    /// Follow ends.
     fn show_at_top(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
         let y = match line {
             Some(line) => {
                 let Some(map) = self.map_now(cx) else {
                     return;
                 };
-                map.first_row(line).map_or(0.0, |r| map.top(r))
+                // A line with no row (hidden): nowhere to go.
+                let Some(row) = map.first_row(line) else {
+                    return;
+                };
+                let top = if row > 0 && self.sticky_at_row(&map, row) {
+                    row - 1
+                } else {
+                    row
+                };
+                map.top(top)
             }
             None => 0.0,
         };
@@ -6551,18 +6561,29 @@ impl FileTab {
                                     &laid.folded,
                                 ),
                             };
-                            // Wrap switched: the same line stays at the top (review fix).
+                            // The rows reflowed (Wrap switched, review fix; M11ah fix round 1:
+                            // another width with Wrap on, or another row height): the same line
+                            // stays at the top, so the place worked out from it (the sticky line,
+                            // the breadcrumb) stays right with no scroll. A map of the other mode
+                            // says nothing of this one's rows.
+                            let wrap_switched =
+                                before.as_ref().and_then(|(_, b)| b.columns()).is_some()
+                                    != wrap.is_some();
+                            let reflowed = before.as_ref().is_some_and(|(k, b)| {
+                                k.mode == laid.mode
+                                    && (b.columns() != wrap || b.row_h() != f32::from(row_h))
+                            });
                             let before = before.map(|(_, map)| map);
                             let mut scroll = laid.scroll;
-                            if before.as_ref().and_then(RowMap::columns).is_some() != wrap.is_some()
-                            {
+                            if wrap_switched || reflowed {
                                 let y = f32::from(scroll.y);
                                 let top = before.as_ref().map_or_else(
                                     || (y / f32::from(row_h).max(1.0)).floor().max(0.0) as usize,
                                     |b| b.row_at(y),
                                 );
                                 let row = rescroll_row(top, before.as_ref(), &map);
-                                scroll = point(px(0.0), px(map.top(row)));
+                                let x = if wrap.is_some() { px(0.0) } else { scroll.x };
+                                scroll = point(x, px(map.top(row)));
                                 let mode = laid.mode;
                                 keep.update(cx, |this, _| *this.mode_scroll_mut(mode) = scroll);
                             }
@@ -6954,6 +6975,11 @@ impl FileTab {
     /// M11ah: the current line set (as a press there would).
     pub fn set_current_for_shots(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
         self.set_current(line, cx);
+    }
+
+    /// M11ah: the line drawn at the top of the text (none: not drawn yet).
+    pub fn top_line_for_shots(&self) -> Option<usize> {
+        self.top_line()
     }
 
     pub fn crumb_words(&self) -> Vec<String> {

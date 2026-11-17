@@ -4472,7 +4472,8 @@ fn file_code_fold_keys_scenes() {
 
 /// The sticky line and breadcrumb scenes' file: `impl Session` (0-based line 5) holds
 /// `fn refresh` (line 6, its first line far wider than the view, in tall letters), whose 30 lines
-/// (7..37) and `}` follow; then `fn small` (line 39).
+/// (7..37) and `}` follow; then `fn small` (line 39). Then `impl Other` (line 44) holds a note
+/// and `fn last` (line 46), whose 20 lines (47..67) follow.
 fn sticky_fixture() -> String {
     let mut text = String::from(
         "// A session, for the sticky line and breadcrumb scenes.\nstruct Session {\n    id: u32,\n}\n\nimpl Session {\n",
@@ -4485,8 +4486,16 @@ fn sticky_fixture() -> String {
         text.push_str(&format!("        let v{k} = {k};\n"));
     }
     text.push_str("    }\n\n    fn small(&self) {\n        let z = 0;\n    }\n}\n");
+    text.push_str("\nimpl Other {\n    // A note.\n    fn last(&self) {\n");
+    for k in 47..67 {
+        text.push_str(&format!("        let w{k} = {k};\n"));
+    }
+    text.push_str("    }\n}\n");
     text
 }
+
+/// `sticky_fixture`'s line count.
+const STICKY_LINES: usize = 69;
 
 /// The pixel in `b` (window points) that stands out most from `bg`: a part's ink.
 fn ink_in(
@@ -4714,7 +4723,7 @@ fn file_code_sticky_scenes() {
         scroll_to(cx, 15);
         let codex = crate::live_lines::Who::Agent(crate::edit_ledger::agent_mark_for("codex"));
         let record = live_record(
-            43,
+            STICKY_LINES,
             &[(33..34, codex.clone(), crate::live_lines::Sure::Exact, 2)],
         );
         cx.update(|cx| {
@@ -4730,22 +4739,35 @@ fn file_code_sticky_scenes() {
         );
         cx.simulate_mouse_down(window, on, MouseButton::Left, none);
         cx.simulate_mouse_up(window, on, MouseButton::Left, none);
+        // Fix round 1: its line is the first row seen, right under the sticky line pinned
+        // there now (impl, which holds it), not covered by it.
+        // (A sticky line would pin impl over it at the top: one row lower, impl's own line is
+        // at the top, so nothing is pinned and its line is the first row under it.)
         let (top, sticky, current, follow, _) = read(cx);
-        assert_eq!(top, 6, "{n}: the press puts its line on top");
+        assert_eq!((top, sticky), (5, None), "{n}: impl's own line on top");
+        let seen = cx.read(|cx| tab.read(cx).line_at_row(top + 1));
+        assert_eq!(seen, Some(6), "{n}: its line right under it, seen");
         assert_eq!(current, Some(6), "{n}: and makes it current");
-        assert_eq!(
-            sticky,
-            Some(5),
-            "{n}: not itself pinned now (impl, above it, is)"
-        );
         assert!(!follow, "{n}: a press on it ends Follow");
+        // In `fn last` (a note between it and `impl Other`): pressed, its line lands right
+        // under `impl Other` pinned, seen (not covered), and current.
+        scroll_to(cx, 52);
+        assert_eq!(read(cx).1, Some(46), "{n}: fn last pinned");
+        cx.simulate_mouse_down(window, on, MouseButton::Left, none);
+        cx.simulate_mouse_up(window, on, MouseButton::Left, none);
+        let (top, sticky, current, _, _) = read(cx);
+        assert_eq!(sticky, Some(44), "{n}: impl Other pinned over the note");
+        assert_eq!(top, 45, "{n}: the note under the sticky line");
+        let seen = cx.read(|cx| tab.read(cx).line_at_row(top + 1));
+        assert_eq!(seen, Some(46), "{n}: fn last right under the sticky line");
+        assert_eq!(current, Some(46), "{n}: and current");
         // Follow: the agent's change (line 27, 0-based 26) out of view lands 3 rows under the
         // sticky line.
         scroll_to(cx, 0);
         cx.update(|cx| {
             tab.update(cx, |t, cx| {
                 let record = live_record(
-                    43,
+                    STICKY_LINES,
                     &[(26..27, codex.clone(), crate::live_lines::Sure::Exact, 2)],
                 );
                 t.set_live_for_shot(record, live_now(), Some(true));
@@ -4778,8 +4800,103 @@ fn file_code_sticky_scenes() {
             (25 - 4, Some(25)),
             "{n}: the step's match scrolled clear of the sticky line"
         );
+        // Fix round 1: the rows reflow with no scroll of yours (Wrap on, then a bigger font,
+        // then a narrower window): the line at the top stays, and the place with it.
+        cx.simulate_keystrokes(window, "escape");
+        cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().file_wrap = true);
+        live_frame(cx, window);
+        scroll_to(cx, 20);
+        let place = |cx: &mut VisualTestAppContext| {
+            live_frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let g = t.geom().expect("drawn");
+                (t.top_line_for_shots(), t.sticky_line(), t.crumb_words(), g)
+            })
+        };
+        let (top, sticky, words, g0) = place(cx);
+        assert_eq!(sticky, Some(6), "{n}: wrapped, inside fn refresh");
+        assert!(top.is_some_and(|l| l > 6), "{n}: the top line {top:?}");
+        cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().font_size *= 1.5);
+        let (after, sticky_after, words_after, g1) = place(cx);
+        assert!(g1.line_height > g0.line_height, "{n}: a bigger font");
+        assert_eq!(after, top, "{n}: a font change keeps the top line");
+        assert_eq!(
+            (sticky_after, &words_after),
+            (sticky, &words),
+            "{n}: and the place"
+        );
+    });
+    // A narrower pane, Wrap on (the rows cut at another width): the top line stays, and the place
+    // with it. (The off-screen window keeps its size: the tab is narrowed in a host.)
+    let slot: LiveSlot = std::rc::Rc::default();
+    let host: std::rc::Rc<std::cell::RefCell<Option<gpui::Entity<NarrowHost>>>> =
+        std::rc::Rc::default();
+    let tab_build = live_tab(theme, path.clone(), slot.clone());
+    let keep = host.clone();
+    let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+        let tab = tab_build(window, cx);
+        let h = cx.new(|_| NarrowHost { tab, width: 760.0 });
+        *keep.borrow_mut() = Some(h.clone());
+        h.into()
+    };
+    render_with(&theme, dims, build, move |cx, window| {
+        let tab = slot.borrow_mut().take().expect("the file tab");
+        let host = host.borrow_mut().take().expect("the host");
+        cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().file_wrap = true);
+        live_frame(cx, window);
+        let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), g.line_height * 20.0), cx)
+            })
+        });
+        let place = |cx: &mut VisualTestAppContext| {
+            live_frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let g = t.geom().expect("drawn");
+                (t.top_line_for_shots(), t.sticky_line(), t.crumb_words(), g)
+            })
+        };
+        let (top, sticky, words, g0) = place(cx);
+        assert_eq!(sticky, Some(6), "{n}: wrapped, inside fn refresh");
+        cx.update(|cx| {
+            host.update(cx, |h, cx| {
+                h.width = 480.0;
+                cx.notify();
+            })
+        });
+        let (after, sticky_after, words_after, g1) = place(cx);
+        assert!(
+            g1.bounds.size.width < g0.bounds.size.width,
+            "{n}: a narrower pane ({:?})",
+            g1.bounds.size.width
+        );
+        assert_eq!(after, top, "{n}: a narrower pane keeps the top line");
+        assert_eq!(
+            (sticky_after, &words_after),
+            (sticky, &words),
+            "{n}: and the place"
+        );
     });
     println!("ui-shots: {n} ok");
+}
+
+/// A file tab in a host `width` points wide (a pane narrowed; the scene changes it).
+struct NarrowHost {
+    tab: AnyView,
+    width: f32,
+}
+
+impl gpui::Render for NarrowHost {
+    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+        use gpui::{ParentElement, Styled};
+        gpui::div()
+            .h_full()
+            .w(px(self.width))
+            .child(self.tab.clone())
+    }
 }
 
 /// `file-code-breadcrumb` (both themes; M11ah Task 6): a strip `code::BREADCRUMB` tall under the
@@ -4913,7 +5030,10 @@ fn file_code_breadcrumb_scenes() {
         // The current line elsewhere (fn small's): the breadcrumb follows the top, not it.
         cx.update(|cx| tab.update(cx, |t, cx| t.set_current_for_shots(Some(40), cx)));
         let codex = crate::live_lines::Who::Agent(crate::edit_ledger::agent_mark_for("codex"));
-        let record = live_record(43, &[(33..34, codex, crate::live_lines::Sure::Exact, 2)]);
+        let record = live_record(
+            STICKY_LINES,
+            &[(33..34, codex, crate::live_lines::Sure::Exact, 2)],
+        );
         cx.update(|cx| {
             tab.update(cx, |t, _| {
                 t.set_live_for_shot(record, live_now(), Some(true))
@@ -4933,6 +5053,44 @@ fn file_code_breadcrumb_scenes() {
             (5, Some(5), false),
             "{n}: a part's press"
         );
+        // Fix round 1: a nested part (`fn refresh`): its line right under the sticky line
+        // pinned there (impl), current.
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), g.line_height * 15.0), cx)
+            })
+        });
+        let parts = read(cx).3;
+        press(cx, parts[2].0.center());
+        let (top, current, _, _, _) = read(cx);
+        assert_eq!(cx.read(|cx| tab.read(cx).sticky_line()), None, "{n}");
+        assert_eq!((top, current), (5, Some(6)), "{n}: a nested part's press");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).line_at_row(top + 1)),
+            Some(6),
+            "{n}"
+        );
+        // `fn last` (a note between it and `impl Other`): right under `impl Other` pinned.
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), g.line_height * 52.0), cx)
+            })
+        });
+        let parts = read(cx).3;
+        assert_eq!(parts[2].1, "fn last(&self)", "{n}");
+        press(cx, parts[2].0.center());
+        let (top, current, _, _, _) = read(cx);
+        assert_eq!(cx.read(|cx| tab.read(cx).sticky_line()), Some(44), "{n}");
+        assert_eq!(
+            (top, current),
+            (45, Some(46)),
+            "{n}: a nested part under the sticky line"
+        );
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).line_at_row(top + 1)),
+            Some(46),
+            "{n}"
+        );
         // The file's name: the top.
         cx.update(|cx| {
             tab.update(cx, |t, cx| {
@@ -4944,7 +5102,7 @@ fn file_code_breadcrumb_scenes() {
         let (top, current, _, _, _) = read(cx);
         assert_eq!(
             (top, current),
-            (0, Some(5)),
+            (0, Some(46)),
             "{n}: the file's name goes to the top"
         );
         // The find bar open: the strip under it.
