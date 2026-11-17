@@ -109,6 +109,10 @@ pub(crate) struct FolderPicker {
     _subscriptions: Vec<Subscription>,
 }
 
+/// The attach menu's rows.
+pub const FILE_ROW: &str = "File\u{2026}";
+pub const IMAGE_ROW: &str = "Image\u{2026}";
+
 /// The box's text while nothing is being asked (§1).
 pub const PLACEHOLDER: &str = "Ask anything, @ to mention, / for actions";
 
@@ -116,7 +120,6 @@ pub const PLACEHOLDER: &str = "Ask anything, @ to mention, / for actions";
 /// conversation or a new one), the model menu (with one model's efforts, or View Usage, open
 /// beside it), the mode menu, and `+`'s attach menu. One is open at a time.
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)] // each opened by its chip's task (7–11)
 pub enum BoxMenu {
     Folder,
     Model {
@@ -818,8 +821,24 @@ impl AgentTab {
                     .text_color(hsla(c.box_dim))
                     .child("+"),
             )
+            .when(self.provider.is_some(), |d| {
+                let hover = c.box_hover;
+                d.cursor_pointer()
+                    .hover(move |s| s.bg(hsla(hover)))
+                    .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                        let pressed = match event {
+                            ClickEvent::Mouse(click) => Some(click.down.position),
+                            _ => None,
+                        };
+                        // This press already closed the open menu (from outside it).
+                        let closed_at = this.chip_closed_at.take();
+                        if pressed.is_none() || closed_at != pressed {
+                            this.attach_clicked(cx)
+                        }
+                    }))
+            })
             .when(menu_on(|m| matches!(m, BoxMenu::Attach)), |d| {
-                d.child(self.menu_frame(None, None, cx))
+                d.child(self.menu_frame(Some(self.attach_menu(cx)), None, cx))
             });
         let model_hover = c.box_hover;
         let warn = c.ask_edge;
@@ -911,6 +930,7 @@ impl AgentTab {
                 .on_click(cx.listener(|this, _, _, cx| this.send_pressed(cx)))
                 .into_any_element(),
         };
+        let drop_fill = cx.global::<Appearance>().theme.ui().drop_card;
         let the_box = self.marked(
             "box",
             div()
@@ -932,6 +952,11 @@ impl AgentTab {
                     }),
                 )
                 .bg(hsla(c.box_fill))
+                // Files dropped on it become chips (tinted while one is over it).
+                .drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hsla(drop_fill)))
+                .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
+                    this.attach_dropped(paths.paths().to_vec(), cx)
+                }))
                 .children(self.attachment_chips(c, cx))
                 .child(
                     div()
@@ -1020,8 +1045,9 @@ impl AgentTab {
                     .size_full(),
                 )
             };
+            let label = a.label();
             chip(
-                format!("\u{1f4ce} {}", a.lines().next().unwrap_or("")),
+                format!("{} {}", a.glyph(), label.lines().next().unwrap_or("")),
                 true,
                 c,
             )

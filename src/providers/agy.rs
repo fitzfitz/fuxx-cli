@@ -586,7 +586,8 @@ impl Translator for AgyTranslator {
     /// process).
     fn encode(&mut self, action: &Action) -> Vec<String> {
         match action {
-            Action::Send { text } => {
+            // Its images reach it as paths in `text` (`sends_images` is false).
+            Action::Send { text, .. } => {
                 vec![json!({"event": "user", "message": {"content": text}}).to_string()]
             }
             Action::Allow { .. }
@@ -921,7 +922,10 @@ mod tests {
     fn agy_sends_user_events_and_answers_nothing() {
         let mut t = AGY.translator();
         assert!(t.hello().is_empty());
-        let sent = t.encode(&Action::Send { text: "hi".into() });
+        let sent = t.encode(&Action::Send {
+            text: "hi".into(),
+            images: Vec::new(),
+        });
         assert_eq!(sent.len(), 1);
         let v: Value = serde_json::from_str(&sent[0]).unwrap();
         assert_eq!(v, json!({"event": "user", "message": {"content": "hi"}}));

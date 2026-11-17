@@ -46,8 +46,8 @@ use crate::file_tab::{DiffRowColours, diff_row_colours};
 use crate::md_preview::{self, LinkTarget};
 use crate::palette_items::FileHit;
 use crate::providers::{
-    Action, Applies, ChangeKind, Event, ModelChoice, Past, Provider, Start, TodoState, ToolDetail,
-    Translator,
+    Action, Applies, ChangeKind, Event, ModelChoice, Past, Picture, Provider, Start, TodoState,
+    ToolDetail, Translator,
 };
 use crate::status::Status;
 use crate::terminal_view::hsla;
@@ -271,9 +271,93 @@ pub fn inserted_path(root: &Path, cwd: &Path, rel: &str) -> String {
     }
 }
 
+/// The biggest image taken (the API's limit is lower than a file's): 5 MB.
+pub const IMAGE_MAX: usize = 5 * 1024 * 1024;
+
+/// What goes with your next message, shown as a chip in the box until it is sent: a command
+/// block's text, a file's path, or an image (with the path it is at, when it has one).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Attachment {
+    Text(String),
+    File(PathBuf),
+    Image {
+        name: String,
+        picture: Picture,
+        /// Where the image is: its file, or the temp file a pasted one was written to when
+        /// the agent can't take it in the message (it is told this path instead).
+        path: Option<PathBuf>,
+    },
+}
+
+impl Attachment {
+    /// What its chip says after the glyph (and what the conversation's row for the message
+    /// lists): a file's or an image's name; a command block's whole text (rows show its first
+    /// line).
+    pub fn label(&self) -> String {
+        match self {
+            Attachment::Text(text) => text.clone(),
+            Attachment::File(path) => file_name(path),
+            Attachment::Image { name, .. } => name.clone(),
+        }
+    }
+
+    /// The glyph before its chip's words.
+    pub fn glyph(&self) -> &'static str {
+        match self {
+            Attachment::Image { .. } => "\u{1f5bc}",
+            _ => "\u{1f4ce}",
+        }
+    }
+}
+
+/// The last part of `path` (the whole of it when it has none).
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The type an image file's extension says (png, jpeg/jpg, gif, webp); None for any other file.
+pub fn media_type_for(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// The notice for an image `name` over `IMAGE_MAX`: it is not attached.
+pub fn too_big(name: &str) -> String {
+    format!("Image over 5 MB: {name}")
+}
+
+/// `bytes` as a picture to send, or the notice saying it is too big.
+pub fn picture(name: &str, media_type: &'static str, bytes: Vec<u8>) -> Result<Picture, String> {
+    if bytes.len() > IMAGE_MAX {
+        return Err(too_big(name));
+    }
+    Ok(Picture {
+        media_type,
+        bytes: Arc::from(bytes),
+    })
+}
+
+/// Write a pasted `picture` to a new file in `dir` (made if needed), for an agent that is
+/// told a path: `<dir>/<uuid>.<ext>`. Reads and writes a file: call it off the UI thread.
+pub fn write_pasted(dir: &Path, picture: &Picture, ext: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let id = crate::providers::new_uuid().ok_or_else(|| std::io::Error::other("no random id"))?;
+    let path = dir.join(format!("{id}.{ext}"));
+    std::fs::write(&path, &picture.bytes)?;
+    Ok(path)
+}
+
 /// Take attachment `i` off the list waiting for your next message (its chip's ×); false when
 /// there is none at `i` (nothing changes).
-pub fn remove_attachment(list: &mut Vec<String>, i: usize) -> bool {
+pub fn remove_attachment<T>(list: &mut Vec<T>, i: usize) -> bool {
     if i >= list.len() {
         return false;
     }
@@ -281,16 +365,52 @@ pub fn remove_attachment(list: &mut Vec<String>, i: usize) -> bool {
     true
 }
 
-/// What is sent for a message with attachments: the text, then each attachment.
-pub fn wire_text(text: &str, attachments: &[String]) -> String {
+/// The folder in the temp folder that pasted images are written to (for an agent told a path).
+const PASTED_DIR: &str = "fuxx-images";
+
+/// Where an image chip's bytes come from.
+enum ImageFrom {
+    File(PathBuf),
+    Clipboard(Vec<u8>),
+}
+
+/// What is sent as text for a message with attachments: the text, then each attachment (a
+/// command block's text, a file's path, an image's path). With `images_inline` the agent takes
+/// images in the message itself, so they are not in the text.
+pub fn wire_text(text: &str, attachments: &[Attachment], images_inline: bool) -> String {
     let mut out = text.to_string();
     for a in attachments {
+        let said = match a {
+            Attachment::Text(text) => text.clone(),
+            Attachment::File(path) => path.to_string_lossy().into_owned(),
+            Attachment::Image { path, .. } if !images_inline => match path {
+                Some(path) => path.to_string_lossy().into_owned(),
+                None => continue,
+            },
+            Attachment::Image { .. } => continue,
+        };
         if !out.is_empty() {
             out.push_str("\n\n");
         }
-        out.push_str(a);
+        out.push_str(&said);
     }
     out
+}
+
+/// What the conversation's row for a message lists of its attachments.
+fn labels(attachments: &[Attachment]) -> Vec<String> {
+    attachments.iter().map(Attachment::label).collect()
+}
+
+/// The images among `attachments`, for an agent that takes them in the message.
+fn pictures(attachments: &[Attachment]) -> Vec<Picture> {
+    attachments
+        .iter()
+        .filter_map(|a| match a {
+            Attachment::Image { picture, .. } => Some(picture.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// What an item looks like, as a number: a row is laid out again when its number changes.
@@ -459,7 +579,7 @@ struct Run {
     fresh: Option<String>,
     started: bool,
     first_item: usize,
-    sends: Vec<(String, Vec<String>)>,
+    sends: Vec<(String, Vec<Attachment>)>,
 }
 
 /// The `@` file list: where the `@` is, the query after it, the ranked hits, the selected one.
@@ -528,7 +648,7 @@ pub struct AgentTab {
     /// Its process was stopped for "Open in classic view" (R13): a send asks the Workspace first
     /// (`ResumeAsked`).
     paused: bool,
-    queued: Vec<(String, Vec<String>)>,
+    queued: Vec<(String, Vec<Attachment>)>,
     run: Run,
     /// The id fuxx chose for a new conversation, taken as the tab's conversation at your first
     /// message, while the agent hasn't said it started under it: a restart then starts a new
@@ -552,7 +672,7 @@ pub struct AgentTab {
     /// Stop was pressed: the turn hasn't ended yet. `force`: `STOP_FORCE_AFTER` has passed.
     stopping: Option<Instant>,
     force: bool,
-    pub(crate) attachments: Vec<String>,
+    pub(crate) attachments: Vec<Attachment>,
     /// The box's open menu (one at a time; Esc closes it).
     pub(crate) menu: Option<BoxMenu>,
     /// The folder picker's search and rows, while it is open.
@@ -1191,7 +1311,7 @@ impl AgentTab {
     /// Show what you said and send it to the running process. The first message of a new
     /// conversation started under an id fuxx chose makes that id the tab's conversation at once
     /// (told, so saved: a process left running by a crash is found holding it, R13).
-    fn say(&mut self, text: String, attachments: Vec<String>) {
+    fn say(&mut self, text: String, attachments: Vec<Attachment>) {
         if let Some(id) = self.run.fresh.clone()
             && !self.run.started
             && self.conversation.conversation() != Some(id.as_str())
@@ -1202,10 +1322,16 @@ impl AgentTab {
             });
             self.unconfirmed = Some(id);
         }
-        let wire = wire_text(&text, &attachments);
-        self.conversation.you(text.clone(), attachments.clone());
+        let inline = self.provider.is_some_and(|p| p.sends_images());
+        let wire = wire_text(&text, &attachments, inline);
+        let images = if inline {
+            pictures(&attachments)
+        } else {
+            Vec::new()
+        };
+        self.conversation.you(text.clone(), labels(&attachments));
         self.run.sends.push((text, attachments));
-        self.write(&Action::Send { text: wire });
+        self.write(&Action::Send { text: wire, images });
     }
 
     /// Start (or start again) the agent, resuming `resume`; with none, a new conversation (under
@@ -1462,7 +1588,7 @@ impl AgentTab {
             let sends = std::mem::take(&mut self.run.sends);
             self.conversation.keep_first(self.run.first_item);
             for (text, attachments) in sends {
-                self.conversation.you(text, attachments);
+                self.conversation.you(text, labels(&attachments));
             }
             let why = said
                 .iter()
@@ -1752,15 +1878,111 @@ impl AgentTab {
         self.after_change(true, cx);
     }
 
-    /// Something to send with the next message (Task 11: a command's output), shown as a chip
-    /// under the composer until it is sent. Only kept: it never sends, and never restarts a
+    /// Something to send with the next message (a command's output, a file, an image), shown
+    /// as a chip in the box until it is sent. Only kept: it never sends, and never restarts a
     /// paused tab (R13); an error tab (no agent) has nothing to send it to.
-    pub fn attach(&mut self, attachment: String, cx: &mut Context<Self>) {
+    pub fn attach(&mut self, attachment: Attachment, cx: &mut Context<Self>) {
         if self.provider.is_none() {
             return;
         }
         self.attachments.push(attachment);
         cx.notify();
+    }
+
+    /// `paths` (from `File…`) as file chips: each is sent as its path, for the agent to read.
+    pub fn attach_files(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        for path in paths {
+            self.attach(Attachment::File(path), cx);
+        }
+    }
+
+    /// The image files among `paths` (from `Image…`) as image chips, read off the UI thread;
+    /// any other file is left out.
+    pub fn attach_images(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        for path in paths {
+            if let Some(media_type) = media_type_for(&path) {
+                let name = file_name(&path);
+                self.add_image(name, media_type, ImageFrom::File(path), cx);
+            }
+        }
+    }
+
+    /// Files dropped on the box: an image file becomes an image chip, any other a file chip.
+    pub fn attach_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let (images, files) = paths.into_iter().partition(|p| media_type_for(p).is_some());
+        self.attach_images(images, cx);
+        self.attach_files(files, cx);
+    }
+
+    /// An image pasted from the clipboard, as an image chip. A format the agents don't take
+    /// (not png, jpeg, gif or webp) is left out.
+    pub fn attach_pasted_image(&mut self, image: gpui::Image, cx: &mut Context<Self>) {
+        let media_type = match image.format {
+            gpui::ImageFormat::Png => "image/png",
+            gpui::ImageFormat::Jpeg => "image/jpeg",
+            gpui::ImageFormat::Gif => "image/gif",
+            gpui::ImageFormat::Webp => "image/webp",
+            _ => return,
+        };
+        let name = format!("pasted-image.{}", image.format.extension());
+        self.add_image(name, media_type, ImageFrom::Clipboard(image.bytes), cx);
+    }
+
+    /// An image chip once its bytes are in: they are read, checked against `IMAGE_MAX` and, for
+    /// a pasted image with an agent that is told a path, written to the temp folder, all off the
+    /// UI thread. Too big (or unreadable): no chip, a notice says so.
+    fn add_image(
+        &mut self,
+        name: String,
+        media_type: &'static str,
+        from: ImageFrom,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        let by_path = !provider.sends_images();
+        let dir = std::env::temp_dir().join(PASTED_DIR);
+        let job = cx.background_spawn(async move {
+            let (bytes, path) = match from {
+                ImageFrom::File(path) => {
+                    let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    if len > IMAGE_MAX as u64 {
+                        return Err(too_big(&name));
+                    }
+                    let bytes =
+                        std::fs::read(&path).map_err(|e| format!("Couldn't read {name}: {e}"))?;
+                    (bytes, Some(path))
+                }
+                ImageFrom::Clipboard(bytes) => (bytes, None),
+            };
+            let picture = picture(&name, media_type, bytes)?;
+            let path = match path {
+                Some(path) => Some(path),
+                None if by_path => {
+                    let ext = name.rsplit('.').next().unwrap_or("png");
+                    Some(
+                        write_pasted(&dir, &picture, ext)
+                            .map_err(|e| format!("Couldn't attach {name}: {e}"))?,
+                    )
+                }
+                None => None,
+            };
+            Ok(Attachment::Image {
+                name,
+                picture,
+                path,
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let done = job.await;
+            this.update(cx, |this, cx| match done {
+                Ok(image) => this.attach(image, cx),
+                Err(note) => this.notice(note, cx),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The × on a waiting attachment's chip: it goes, and is never sent (nothing else changes:
@@ -1779,7 +2001,7 @@ impl AgentTab {
 
     /// The attachments waiting for your next message.
     #[cfg(feature = "ui-shots")]
-    pub fn shot_attachments(&self) -> &[String] {
+    pub fn shot_attachments(&self) -> &[Attachment] {
         &self.attachments
     }
 
@@ -1896,6 +2118,7 @@ impl AgentTab {
                 }
             }
             ComposerEvent::AtTyped => self.open_at(cx),
+            ComposerEvent::PasteImage(image) => self.attach_pasted_image(image.clone(), cx),
         }
     }
 
@@ -3339,6 +3562,7 @@ impl Render for AgentTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::Picture;
     use crate::ui_tokens::contrast;
 
     #[test]
@@ -3482,11 +3706,105 @@ mod tests {
         assert!(!remove_attachment(&mut list, 0));
     }
 
+    fn image(name: &str, path: Option<&str>) -> Attachment {
+        Attachment::Image {
+            name: name.into(),
+            picture: Picture {
+                media_type: "image/png",
+                bytes: Arc::from(&b"x"[..]),
+            },
+            path: path.map(PathBuf::from),
+        }
+    }
+
     #[test]
     fn attachments_follow_the_text() {
-        assert_eq!(wire_text("fix", &[]), "fix");
-        assert_eq!(wire_text("fix", &["out".into()]), "fix\n\nout");
-        assert_eq!(wire_text("", &["out".into()]), "out");
+        let text = |s: &str| Attachment::Text(s.into());
+        assert_eq!(wire_text("fix", &[], false), "fix");
+        assert_eq!(wire_text("fix", &[text("out")], false), "fix\n\nout");
+        assert_eq!(wire_text("", &[text("out")], false), "out");
+    }
+
+    #[test]
+    fn wire_text_puts_paths_after_the_text() {
+        let list = [
+            Attachment::File(PathBuf::from("/p/notes.txt")),
+            image("shot.png", Some("/p/shot.png")),
+            Attachment::Text("out".into()),
+        ];
+        // An agent that takes no image in the message gets its path, as a file's.
+        assert_eq!(
+            wire_text("look", &list, false),
+            "look\n\n/p/notes.txt\n\n/p/shot.png\n\nout"
+        );
+        // One that does gets the image apart (`Action::Send`'s images): not in the text.
+        assert_eq!(
+            wire_text("look", &list, true),
+            "look\n\n/p/notes.txt\n\nout"
+        );
+        assert_eq!(wire_text("", &[image("a.png", Some("/p/a.png"))], true), "");
+        // Without a path (nothing wrote one) there is nothing to say.
+        assert_eq!(wire_text("hi", &[image("a.png", None)], false), "hi");
+    }
+
+    #[test]
+    fn labels_and_glyphs() {
+        assert_eq!(
+            Attachment::File(PathBuf::from("/p/notes.txt")).label(),
+            "notes.txt"
+        );
+        assert_eq!(image("shot.png", None).label(), "shot.png");
+        assert_eq!(Attachment::Text("a\nb".into()).label(), "a\nb");
+        assert_eq!(image("shot.png", None).glyph(), "\u{1f5bc}");
+        assert_eq!(Attachment::File(PathBuf::from("/p/a")).glyph(), "\u{1f4ce}");
+    }
+
+    #[test]
+    fn media_types_by_extension() {
+        for (name, want) in [
+            ("a.png", Some("image/png")),
+            ("a.PNG", Some("image/png")),
+            ("a.jpg", Some("image/jpeg")),
+            ("a.jpeg", Some("image/jpeg")),
+            ("a.gif", Some("image/gif")),
+            ("a.webp", Some("image/webp")),
+            ("a.svg", None),
+            ("a.txt", None),
+            ("png", None),
+            ("a.png.bak", None),
+        ] {
+            assert_eq!(media_type_for(Path::new(name)), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_image_over_5_mb_is_refused() {
+        assert_eq!(IMAGE_MAX, 5 * 1024 * 1024);
+        let ok =
+            picture("big.png", "image/png", vec![0; IMAGE_MAX]).expect("exactly 5 MB is taken");
+        assert_eq!(ok.bytes.len(), IMAGE_MAX);
+        assert_eq!(
+            picture("big.png", "image/png", vec![0; IMAGE_MAX + 1]),
+            Err("Image over 5 MB: big.png".to_string())
+        );
+        assert_eq!(too_big("big.png"), "Image over 5 MB: big.png");
+    }
+
+    #[test]
+    fn a_pasted_image_goes_to_a_new_file_in_the_temp_folder() {
+        let dir = std::env::temp_dir().join(format!("fuxx-test-paste-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let picture = Picture {
+            media_type: "image/png",
+            bytes: Arc::from(&b"png bytes"[..]),
+        };
+        let a = write_pasted(&dir, &picture, "png").expect("written");
+        let b = write_pasted(&dir, &picture, "png").expect("written");
+        assert_ne!(a, b, "each paste its own file");
+        assert!(a.starts_with(&dir) && a.is_absolute());
+        assert_eq!(a.extension().and_then(|e| e.to_str()), Some("png"));
+        assert_eq!(std::fs::read(&a).unwrap(), b"png bytes");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

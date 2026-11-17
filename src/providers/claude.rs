@@ -353,6 +353,11 @@ impl Provider for Claude {
         Box::new(ClaudeTranslator::default())
     }
 
+    /// Image content blocks in a user message (Task 0: `claude-image.jsonl`).
+    fn sends_images(&self) -> bool {
+        true
+    }
+
     /// "No conversation found with session ID: …" (on stderr and in the `result`'s errors).
     fn unknown_conversation(&self, said: &str) -> bool {
         said.contains("No conversation found")
@@ -782,6 +787,45 @@ fn rate_limit(v: &Value) -> Vec<Event> {
     })]
 }
 
+/// A message's `content`: the text as it is, or with images a block each, then the text block
+/// (none when there is no text: the API refuses an empty one).
+fn content(text: &str, images: &[Picture]) -> Value {
+    if images.is_empty() {
+        return json!(text);
+    }
+    let mut blocks: Vec<Value> = images
+        .iter()
+        .map(|p| {
+            json!({"type": "image",
+            "source": {"type": "base64", "media_type": p.media_type, "data": base64(&p.bytes)}})
+        })
+        .collect();
+    if !text.is_empty() {
+        blocks.push(json!({"type": "text", "text": text}));
+    }
+    Value::Array(blocks)
+}
+
+/// `bytes` as standard base64 (RFC 4648, padded).
+pub fn base64(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(DIGITS[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 fn control_response(request_id: &str, response: Value) -> String {
     json!({"type": "control_response",
         "response": {"subtype": "success", "request_id": request_id, "response": response}})
@@ -1045,9 +1089,9 @@ impl Translator for ClaudeTranslator {
 
     fn encode(&mut self, action: &Action) -> Vec<String> {
         match action {
-            Action::Send { text } => vec![
+            Action::Send { text, images } => vec![
                 json!({"type": "user",
-                "message": {"role": "user", "content": text}})
+                "message": {"role": "user", "content": content(text, images)}})
                 .to_string(),
             ],
             Action::Interrupt => vec![
@@ -1619,7 +1663,10 @@ mod tests {
     #[test]
     fn send_and_interrupt_encode() {
         let mut t = CLAUDE.translator();
-        let out = t.encode(&Action::Send { text: "hi".into() });
+        let out = t.encode(&Action::Send {
+            text: "hi".into(),
+            images: Vec::new(),
+        });
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(
             v,
@@ -1629,6 +1676,69 @@ mod tests {
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(v["type"], "control_request");
         assert_eq!(v["request"]["subtype"], "interrupt");
+    }
+
+    #[test]
+    fn base64_vectors() {
+        // RFC 4648's test vectors, and the empty input.
+        for (plain, coded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(plain.as_bytes()), coded, "{plain:?}");
+        }
+        assert_eq!(base64(&[0xfb, 0xff, 0xfe]), "+//+", "the + and / digits");
+    }
+
+    #[test]
+    fn a_send_with_an_image_is_a_content_array() {
+        assert!(CLAUDE.sends_images());
+        let mut t = CLAUDE.translator();
+        let picture = Picture {
+            media_type: "image/png",
+            bytes: Arc::from(&b"foo"[..]),
+        };
+        let out = t.encode(&Action::Send {
+            text: "what colour".into(),
+            images: vec![picture.clone(), picture],
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        let image = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}});
+        assert_eq!(
+            v,
+            json!({"type":"user","message":{"role":"user","content":[
+                image.clone(), image, {"type":"text","text":"what colour"}]}})
+        );
+        // An image alone has no (empty) text block: the API refuses one.
+        let out = t.encode(&Action::Send {
+            text: String::new(),
+            images: vec![Picture {
+                media_type: "image/png",
+                bytes: Arc::from(&b"foo"[..]),
+            }],
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(v["message"]["content"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn a_send_without_images_is_as_before() {
+        let mut t = CLAUDE.translator();
+        let out = t.encode(&Action::Send {
+            text: "hi".into(),
+            images: Vec::new(),
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(v["message"]["content"], "hi", "a plain string, not blocks");
+        assert!(
+            !crate::providers::agy::AGY.sends_images(),
+            "agy gets a path"
+        );
     }
 
     #[test]

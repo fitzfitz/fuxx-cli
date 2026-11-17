@@ -974,7 +974,9 @@ impl Workspace {
         });
         cx.spawn(async move |_, cx| {
             if let Some(text) = text.await {
-                let _ = view.update(cx, |t, cx| t.attach(text, cx));
+                let _ = view.update(cx, |t, cx| {
+                    t.attach(crate::agent_tab::Attachment::Text(text), cx)
+                });
             }
         })
         .detach();
