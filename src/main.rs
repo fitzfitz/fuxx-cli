@@ -162,11 +162,11 @@ use workspace::{
     CloseSession, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
     LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4, LaunchPreset5, LaunchPreset6,
     LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp,
-    NewSessionInFolder, NewSshSession, NewTab, NewWorkspace, NextNeedingYou, NextPane, NextSession,
-    NextTab, OpenBrowser, OpenPalette, OpenSwitcher, PrevPane, PrevSession, PrevTab, RenameSession,
-    SelectSession1, SelectSession2, SelectSession3, SelectSession4, SelectSession5, SelectSession6,
-    SelectSession7, SelectSession8, SelectSession9, SplitDown, SplitRight, ToggleRightSidebar,
-    ToggleSidebar, Workspace,
+    NewSessionInFolder, NewSshSession, NewTab, NewTabInWorkspaceFolder, NewWorkspace,
+    NextNeedingYou, NextPane, NextSession, NextTab, OpenBrowser, OpenPalette, OpenSwitcher,
+    PrevPane, PrevSession, PrevTab, RenameSession, SelectSession1, SelectSession2, SelectSession3,
+    SelectSession4, SelectSession5, SelectSession6, SelectSession7, SelectSession8, SelectSession9,
+    SplitDown, SplitRight, ToggleRightSidebar, ToggleSidebar, Workspace,
 };
 
 actions!(
@@ -218,10 +218,12 @@ fn edit_menu() -> Menu {
     ])
 }
 
-/// ⌘T (a new tab in the focused pane) and ⌘N (a new workspace).
-pub(crate) fn new_bindings() -> [KeyBinding; 2] {
+/// ⌘T (a new tab in the focused pane, where its terminal is), ⇧⌘T (one fresh in the
+/// workspace's folder) and ⌘N (a new workspace).
+pub(crate) fn new_bindings() -> [KeyBinding; 3] {
     [
         KeyBinding::new("cmd-t", NewTab, None),
+        KeyBinding::new("cmd-shift-t", NewTabInWorkspaceFolder, None),
         KeyBinding::new("cmd-n", NewWorkspace, None),
     ]
 }
@@ -478,6 +480,7 @@ fn file_menu(preset_items: Vec<MenuItem>) -> Menu {
     Menu::new("File").items([
         new_workspace,
         new_tab,
+        MenuItem::action("New Tab in Workspace Folder", NewTabInWorkspaceFolder),
         MenuItem::action("New Workspace in Folder\u{2026}", NewSessionInFolder),
         MenuItem::action("New SSH Workspace\u{2026}", NewSshSession),
         MenuItem::submenu(Menu::new("New Agent Workspace").items(preset_items)),
@@ -1112,9 +1115,9 @@ mod tests {
     use crate::browser_tab::{GoBack, GoForward, Reload, ResetZoom, ZoomIn, ZoomOut};
     use crate::terminal_view::{Copy, Paste};
     use crate::workspace::{
-        CloseSession, EqualizePanes, NewTab, NewWorkspace, NextNeedingYou, NextPane, NextTab,
-        OpenPalette, OpenSwitcher, PrevPane, PrevTab, RenameSession, SelectSession1,
-        SelectSession9, SplitDown, SplitRight, ToggleRightSidebar, ToggleSidebar,
+        CloseSession, EqualizePanes, NewTab, NewTabInWorkspaceFolder, NewWorkspace, NextNeedingYou,
+        NextPane, NextTab, OpenPalette, OpenSwitcher, PrevPane, PrevTab, RenameSession,
+        SelectSession1, SelectSession9, SplitDown, SplitRight, ToggleRightSidebar, ToggleSidebar,
     };
     use gpui::{Action, KeyContext, Keymap, Keystroke};
 
@@ -1321,6 +1324,8 @@ mod tests {
         };
         assert!(of("cmd-t").partial_eq(&NewTab));
         assert!(of("cmd-n").partial_eq(&NewWorkspace));
+        // A fresh tab in the workspace's folder, not the current terminal's.
+        assert!(of("cmd-shift-t").partial_eq(&NewTabInWorkspaceFolder));
     }
 
     /// fuxx's keymap, bound as `main` binds it.
@@ -1658,13 +1663,14 @@ mod tests {
                 MenuItem::Submenu(menu) => Some(format!("{} ▸", menu.name)),
                 _ => None,
             })
-            .take(5)
+            .take(6)
             .collect();
         assert_eq!(
             named,
             [
                 "New Workspace",
                 "New Tab",
+                "New Tab in Workspace Folder",
                 "New Workspace in Folder…",
                 "New SSH Workspace…",
                 "New Agent Workspace ▸"

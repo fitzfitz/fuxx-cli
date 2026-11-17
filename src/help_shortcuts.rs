@@ -81,6 +81,7 @@ pub fn describe(action: &str) -> Describe {
         | "workspace::LaunchPreset9" => Listed(Workspaces, "Start agent preset 1\u{2013}9"),
 
         "workspace::NewTab" => Listed(Tabs, "New Tab"),
+        "workspace::NewTabInWorkspaceFolder" => Listed(Tabs, "New Tab in Workspace Folder"),
         "workspace::CloseSession" => Listed(Tabs, "Close Tab"),
         "workspace::NextTab" => Listed(Tabs, "Next tab"),
         "workspace::PrevTab" => Listed(Tabs, "Previous tab"),

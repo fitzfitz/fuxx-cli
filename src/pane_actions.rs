@@ -133,7 +133,7 @@ impl Workspace {
         }
         self.focus_active(window, cx);
         match action {
-            PaneAction::NewTerminal => self.new_terminal_tab(pane, window, cx),
+            PaneAction::NewTerminal => self.new_terminal_tab(pane, true, window, cx),
             PaneAction::NewBrowser => self.new_browser_tab(pane, window, cx),
             PaneAction::NewAgent(provider) => self.new_agent_tab(pane, provider, window, cx),
             PaneAction::SplitRight => self.split_pane(pane, Axis::Row, window, cx),

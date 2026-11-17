@@ -89,6 +89,7 @@ actions!(
     [
         NewWorkspace,
         NewTab,
+        NewTabInWorkspaceFolder,
         NewSessionInFolder,
         NewSshSession,
         OpenBrowser,
@@ -1383,16 +1384,7 @@ impl Workspace {
                     color: None,
                     // Where it is now and the agent it runs (M11u); not for an SSH one (its
                     // folder is on the host, and it reconnects as it was).
-                    cwd: s
-                        .ssh
-                        .is_none()
-                        .then(|| {
-                            self.folders_now
-                                .get(&s.id)
-                                .cloned()
-                                .or_else(|| self.places.folder(s.id).map(Path::to_path_buf))
-                        })
-                        .flatten(),
+                    cwd: self.folder_now(s),
                     agent: (s.ssh.is_none() && !classic.contains(&s.id))
                         .then(|| self.agents_now.get(&s.id).cloned())
                         .flatten(),
@@ -2039,6 +2031,21 @@ impl Workspace {
         self.sessions.items()[i].project.clone()
     }
 
+    /// Where session `s` is now (M11u): its shell's own report, else the process look-up;
+    /// none for an SSH session (its folder is on the host).
+    pub(crate) fn folder_now(&self, s: &Session) -> Option<PathBuf> {
+        folder_to_follow(
+            s.ssh.is_some(),
+            self.folders_now.get(&s.id).map(PathBuf::as_path),
+            self.places.folder(s.id),
+        )
+    }
+
+    /// The folder a new terminal follows: the active session's, where it is now.
+    pub(crate) fn active_folder_now(&self) -> Option<PathBuf> {
+        self.sessions.active().and_then(|s| self.folder_now(s))
+    }
+
     pub(crate) fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Another session to the same host, with the same option.
         if let Some((_, target)) = self.active_ssh() {
@@ -2047,6 +2054,7 @@ impl Workspace {
         }
         let saved = SavedSession {
             project: self.active_project(),
+            cwd: self.active_folder_now(),
             ..Default::default()
         };
         self.open_session(
@@ -2065,7 +2073,20 @@ impl Workspace {
     /// is a new workspace.
     pub(crate) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.model.focused_pane() {
-            Some(pane) => self.new_terminal_tab(pane, window, cx),
+            Some(pane) => self.new_terminal_tab(pane, true, window, cx),
+            None => self.new_session(window, cx),
+        }
+    }
+
+    /// ⇧⌘T: a new terminal tab that starts fresh in the workspace's folder, not where the
+    /// current terminal is (⌘T follows it).
+    pub(crate) fn new_tab_in_workspace_folder(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.model.focused_pane() {
+            Some(pane) => self.new_terminal_tab(pane, false, window, cx),
             None => self.new_session(window, cx),
         }
     }
@@ -2136,6 +2157,7 @@ impl Workspace {
         }
         let saved = SavedSession {
             project: self.active_project(),
+            cwd: self.active_folder_now(),
             ..Default::default()
         };
         let launch = Launch {
@@ -3676,6 +3698,11 @@ impl Render for Workspace {
                 cx.listener(|this, _: &NewWorkspace, window, cx| this.new_session(window, cx)),
             )
             .on_action(cx.listener(|this, _: &NewTab, window, cx| this.new_tab(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &NewTabInWorkspaceFolder, window, cx| {
+                    this.new_tab_in_workspace_folder(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &NewSessionInFolder, window, cx| {
                 this.new_session_in_folder(window, cx)
             }))
@@ -4258,6 +4285,15 @@ fn daemon_create(
     }
 }
 
+/// The folder a new terminal starts in to follow a session: where its shell says it is, else
+/// where the process look-up found it; none for an SSH session (its folder is on the host).
+fn folder_to_follow(ssh: bool, reported: Option<&Path>, polled: Option<&Path>) -> Option<PathBuf> {
+    if ssh {
+        return None;
+    }
+    reported.or(polled).map(Path::to_path_buf)
+}
+
 /// Where a session for `saved` starts (its project's folder, if it's still there) and what is
 /// typed into it first (its preset's command, when `run_preset`).
 fn start_in(saved: &SavedSession, run_preset: bool) -> (Option<PathBuf>, Option<String>) {
@@ -4363,10 +4399,28 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_new_terminal_follows_where_the_current_one_is() {
+        let reported = Path::new("/w/my-app/src");
+        let polled = Path::new("/w/my-app");
+        // The shell's own report wins; the process look-up is the fallback.
+        assert_eq!(
+            folder_to_follow(false, Some(reported), Some(polled)),
+            Some(reported.to_path_buf())
+        );
+        assert_eq!(
+            folder_to_follow(false, None, Some(polled)),
+            Some(polled.to_path_buf())
+        );
+        assert_eq!(folder_to_follow(false, None, None), None);
+        // An SSH terminal's folder is on its host: nothing to follow here.
+        assert_eq!(folder_to_follow(true, Some(reported), Some(polled)), None);
+    }
+
     use super::{
         PROGRAMS_REFRESH, PROGRAMS_RETRY, Programs, ZshIntegration, daemon_create,
-        helper_plugins_on, programs_wait, scripting_env, session_env, starts_window_move,
-        window_title,
+        folder_to_follow, helper_plugins_on, programs_wait, scripting_env, session_env,
+        starts_window_move, window_title,
     };
     use crate::presets::Preset;
     use crate::procs::{ProgramState, parse_ps};
