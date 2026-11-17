@@ -102,6 +102,38 @@ pub(super) const SCENES: &[Scene] = &[
             "src/md_preview.rs",
         ],
     },
+    Scene {
+        name: "file-follow-pill",
+        run: file_follow_pill_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/file_tab.rs", "src/live_lines.rs"],
+    },
+    Scene {
+        name: "file-follow-scrolls",
+        run: file_follow_scrolls_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &["src/file_tab.rs", "src/live_lines.rs"],
+    },
+    Scene {
+        name: "file-follow-wheel-stops",
+        run: file_follow_wheel_stops_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &["src/file_tab.rs", "src/live_lines.rs"],
+    },
+    Scene {
+        name: "file-follow-mode",
+        run: file_follow_mode_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &["src/file_tab.rs", "src/live_lines.rs"],
+    },
 ];
 
 /// A file tab (M11g) in a pane beside a terminal's tab: opened twice for one file it is one tab,
@@ -3176,3 +3208,279 @@ fn main() {
     println!("listening on {} (timeout {:?})", server.port, TIMEOUT);
 }
 "#;
+
+/// A file of `lines` numbered lines, for the Follow scenes.
+fn follow_file(name: &str, lines: usize) -> PathBuf {
+    let text: String = (0..lines).map(|i| format!("let v{i} = {i};\n")).collect();
+    live_file(name, &text)
+}
+
+/// A frozen tab on `path` with an agent's (codex) change at `lines`, drawn, Follow as given.
+fn follow_setup(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &gpui::Entity<crate::file_tab::FileTab>,
+    total: usize,
+    change: std::ops::Range<usize>,
+    follow: bool,
+) {
+    use crate::live_lines::{Sure, Who};
+    live_frame(cx, window);
+    let record = live_record(
+        total,
+        &[(
+            change,
+            Who::Agent(crate::edit_ledger::agent_mark_for("codex")),
+            Sure::Exact,
+            2,
+        )],
+    );
+    cx.update(|cx| {
+        tab.update(cx, |t, _| {
+            t.set_live_for_shot(record, live_now(), Some(follow))
+        })
+    });
+    live_frame(cx, window);
+}
+
+/// `file-follow-pill` (both themes): once an agent (codex) has marked the file the bar has a
+/// pill: "Follow codex" with no fill, then (a click) "Following codex" on the warm accent's
+/// tint; a click turns it back. A file marked only by you has none.
+fn file_follow_pill_scenes() {
+    use crate::live_lines::{Sure, Who};
+    use gpui::Modifiers;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let path = live_file("follow-pill.rs", LIVE_FIXTURE);
+    let dims = size(px(760.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let n = format!("file-follow-pill-{slug}");
+        let theme = shot_theme(name);
+        let panel = theme.ui().panel;
+        let slot: LiveSlot = Rc::default();
+        let build = live_tab(theme, path.clone(), slot.clone());
+        type Seen = (Option<gpui::Bounds<gpui::Pixels>>, bool);
+        let seen: Rc<RefCell<Vec<Seen>>> = Rc::default();
+        let keep = seen.clone();
+        let on_bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>> = Rc::default();
+        let keep_on = on_bounds.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            let look = |cx: &mut VisualTestAppContext| {
+                live_frame(cx, window);
+                cx.read(|cx| {
+                    let t = tab.read(cx);
+                    (t.follow_pill_bounds(), t.follow_on())
+                })
+            };
+            live_frame(cx, window);
+            // Marked by you only: no pill.
+            let yours = live_record(14, &[(3..4, Who::You, Sure::Exact, 30)]);
+            cx.update(|cx| tab.update(cx, |t, _| t.set_live_for_shot(yours, live_now(), None)));
+            keep.borrow_mut().push(look(cx));
+            follow_setup(cx, window, &tab, 14, 3..5, false);
+            let off = look(cx);
+            keep.borrow_mut().push(off);
+            let at = off.0.expect("the pill").center();
+            cx.simulate_click(window, at, Modifiers::none());
+            let on = look(cx);
+            keep.borrow_mut().push(on);
+            keep_on.set(on.0);
+            cx.simulate_click(window, on.0.expect("the pill").center(), Modifiers::none());
+            keep.borrow_mut().push(look(cx));
+            cx.simulate_click(window, at, Modifiers::none());
+            look(cx);
+        };
+        let shot = render_with(&theme, dims, build, act);
+        keep_shot(&n, &shot);
+        let seen = seen.borrow().clone();
+        assert_eq!(seen[0].0, None, "{n}: your marks alone: no pill");
+        assert!(seen[1].0.is_some() && !seen[1].1, "{n}: off");
+        assert!(seen[2].0.is_some() && seen[2].1, "{n}: a click turns it on");
+        assert!(!seen[3].1, "{n}: a click turns it off");
+        // The last state (on): the pill's left padding tinted, not the bar's own colour.
+        let b = on_bounds.get().expect("the pill on");
+        let (x, y) = (f32::from(b.left()) + 5.0, f32::from(b.center().y));
+        let p = pixel_at(&shot, dims, x, y);
+        assert!(
+            !live_near(p, panel, 3),
+            "{n}: the pill on is tinted: {p:?} on the bar {panel:?}"
+        );
+        // Its words are narrower than "Following codex" with its dot only when on.
+        assert!(b.size.width > px(60.0), "{n}: the pill holds its words");
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-follow-scrolls`: a change by an agent at line 400 of 600, Follow on: the view comes to
+/// it, its first line `REVEAL_ABOVE` (3) rows from the top; in view already, the view stays;
+/// your change, or Follow off, never moves it.
+fn file_follow_scrolls_scenes() {
+    use crate::live_lines::{Sure, Who};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let path = follow_file("follow-scrolls.rs", 600);
+    let dims = size(px(760.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let n = format!("file-follow-scrolls-{slug}");
+        let theme = shot_theme(name);
+        let slot: LiveSlot = Rc::default();
+        let build = live_tab(theme, path.clone(), slot.clone());
+        let rows: Rc<Cell<[f32; 5]>> = Rc::default();
+        let keep = rows.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            follow_setup(cx, window, &tab, 600, 400..403, true);
+            let row = |cx: &mut VisualTestAppContext| {
+                live_frame(cx, window);
+                cx.read(|cx| {
+                    let t = tab.read(cx);
+                    let g = t.geom().expect("drawn");
+                    t.scroll().y / g.line_height
+                })
+            };
+            let start = row(cx);
+            cx.update(|cx| tab.update(cx, |t, cx| t.follow_for_shots(cx)));
+            let followed = row(cx);
+            let still_on = cx.read(|cx| tab.read(cx).follow_on());
+            // In view now: no scroll.
+            cx.update(|cx| tab.update(cx, |t, cx| t.follow_for_shots(cx)));
+            let again = row(cx);
+            // Your change far away (line 100): nothing moves.
+            let yours = live_record(600, &[(100..101, Who::You, Sure::Exact, 2)]);
+            cx.update(|cx| tab.update(cx, |t, _| t.set_live_for_shot(yours, live_now(), None)));
+            cx.update(|cx| tab.update(cx, |t, cx| t.follow_for_shots(cx)));
+            let yours_row = row(cx);
+            keep.set([start, followed, again, yours_row, f32::from(still_on as u8)]);
+        };
+        let shot = render_with(&theme, dims, build, act);
+        keep_shot(&n, &shot);
+        let [start, followed, again, yours_row, on] = rows.get();
+        assert_eq!(start, 0.0, "{n}: opens at the top");
+        assert_eq!(followed, 397.0, "{n}: line 400 is 3 rows from the top");
+        assert_eq!(on, 1.0, "{n}: Follow stays on");
+        assert_eq!(again, 397.0, "{n}: in view: it stays");
+        assert_eq!(yours_row, 397.0, "{n}: your change never moves the view");
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-follow-wheel-stops`: Follow on; the wheel turns it off (the pill says Follow again); a
+/// change by the agent then leaves the view; selecting text alone keeps it on.
+fn file_follow_wheel_stops_scenes() {
+    use gpui::{Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, TouchPhase};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let path = follow_file("follow-wheel.rs", 600);
+    let dims = size(px(760.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let n = format!("file-follow-wheel-stops-{slug}");
+        let theme = shot_theme(name);
+        let slot: LiveSlot = Rc::default();
+        let build = live_tab(theme, path.clone(), slot.clone());
+        let seen: Rc<Cell<[f32; 4]>> = Rc::default();
+        let keep = seen.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            follow_setup(cx, window, &tab, 600, 400..403, true);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            // Selecting text alone: still on.
+            let from = point(
+                g.bounds.left() + g.text_left + px(10.0),
+                g.bounds.top() + px(20.0),
+            );
+            let to = point(from.x + px(60.0), from.y);
+            cx.simulate_mouse_down(window, from, MouseButton::Left, Modifiers::none());
+            cx.simulate_mouse_move(window, to, Some(MouseButton::Left), Modifiers::none());
+            cx.simulate_mouse_up(window, to, MouseButton::Left, Modifiers::none());
+            live_frame(cx, window);
+            let selected = cx.read(|cx| {
+                let t = tab.read(cx);
+                (t.selection().is_some(), t.follow_on())
+            });
+            // The wheel: off.
+            cx.simulate_event(
+                window,
+                ScrollWheelEvent {
+                    position: g.bounds.center(),
+                    delta: ScrollDelta::Pixels(point(px(0.0), px(-60.0))),
+                    modifiers: Modifiers::none(),
+                    touch_phase: TouchPhase::Moved,
+                },
+            );
+            live_frame(cx, window);
+            let (on, pill) = cx.read(|cx| {
+                let t = tab.read(cx);
+                (t.follow_on(), t.follow_pill_bounds().is_some())
+            });
+            let before = cx.read(|cx| tab.read(cx).scroll().y);
+            cx.update(|cx| tab.update(cx, |t, cx| t.follow_for_shots(cx)));
+            live_frame(cx, window);
+            let after = cx.read(|cx| tab.read(cx).scroll().y);
+            keep.set([
+                f32::from(selected.0 as u8 * 2 + selected.1 as u8),
+                f32::from(on as u8 * 2 + pill as u8),
+                f32::from(before),
+                f32::from(after),
+            ]);
+        };
+        let shot = render_with(&theme, dims, build, act);
+        keep_shot(&n, &shot);
+        let [selected, wheel, before, after] = seen.get();
+        assert_eq!(selected, 3.0, "{n}: selecting keeps Follow on");
+        assert_eq!(wheel, 1.0, "{n}: the wheel turns it off, the pill stays");
+        assert_eq!(
+            before, after,
+            "{n}: off, the agent's change leaves the view"
+        );
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-follow-mode` (mode_switch_keeps_marks_turns_follow_off): Follow on and a mark's tooltip
+/// showing; Diff, then File again: the marks are kept, Follow is off, and the tooltip is gone.
+fn file_follow_mode_scenes() {
+    use crate::layout_model::FileMode;
+    use gpui::Modifiers;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let path = follow_file("follow-mode.rs", 40);
+    let dims = size(px(760.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let n = format!("file-follow-mode-{slug}");
+        let theme = shot_theme(name);
+        let slot: LiveSlot = Rc::default();
+        let build = live_tab(theme, path.clone(), slot.clone());
+        let seen: Rc<Cell<[u8; 4]>> = Rc::default();
+        let keep = seen.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            follow_setup(cx, window, &tab, 40, 3..5, true);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let on_mark = point(
+                g.bounds.left() + g.marks_left.unwrap_or(g.numbers_right) + px(8.0),
+                g.bounds.top() + g.line_height * 3.5,
+            );
+            cx.simulate_mouse_move(window, on_mark, None, Modifiers::none());
+            live_frame(cx, window);
+            let tipped = cx.read(|cx| tab.read(cx).mark_tip().is_some());
+            cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Diff, cx)));
+            live_frame(cx, window);
+            cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+            live_frame(cx, window);
+            let (follow, tip, marked) = cx.read(|cx| {
+                let t = tab.read(cx);
+                (t.follow_on(), t.mark_tip().is_some(), t.live_marks().any())
+            });
+            keep.set([tipped as u8, follow as u8, tip as u8, marked as u8]);
+        };
+        let shot = render_with(&theme, dims, build, act);
+        keep_shot(&n, &shot);
+        assert_eq!(seen.get(), [1, 0, 0, 1], "{n}: tip, follow, tip, marks");
+        println!("ui-shots: {n} ok");
+    }
+}
