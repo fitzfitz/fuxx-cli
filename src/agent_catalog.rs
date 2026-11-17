@@ -44,7 +44,6 @@ impl Catalogs {
         (agent.to_string(), folder.to_path_buf())
     }
 
-    #[allow(dead_code)] // read by the agent box's menus (a later M11ak task)
     pub fn catalog(&self, agent: &str, folder: &Path) -> Option<&Lookup<Catalog>> {
         self.catalogs.get(&Self::key(agent, folder))
     }

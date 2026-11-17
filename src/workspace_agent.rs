@@ -776,6 +776,32 @@ impl Workspace {
                     self.save();
                 }
             }
+            AgentTabEvent::Settings {
+                model,
+                effort,
+                mode,
+            } => {
+                if let Some(TabKind::Agent {
+                    provider,
+                    cwd,
+                    conversation,
+                    title,
+                    ..
+                }) = self.model.tab(tab).map(|t| t.kind.clone())
+                {
+                    let kind = TabKind::Agent {
+                        provider,
+                        cwd,
+                        conversation,
+                        mode: mode.clone(),
+                        title,
+                        model: model.clone(),
+                        effort: effort.clone(),
+                    };
+                    self.model.set_kind(tab, kind);
+                    self.save();
+                }
+            }
             AgentTabEvent::Close => self.close_agent_tab(tab, false, window, cx),
             AgentTabEvent::OpenClassic(_) => self.open_classic(tab, window, cx),
             AgentTabEvent::ResumeAsked(text) => {

@@ -243,6 +243,13 @@ impl Conversation {
             Event::Notice(text) => self.items.push(Item::Notice(text)),
             // The catalog, the skills and the limits are the tab's, not the conversation's.
             Event::Catalog(_) | Event::Skills(_) | Event::RateLimit(_) => {}
+            // A live model switch the agent confirmed: the id it now runs.
+            Event::Applied {
+                kind: crate::providers::ChangeKind::Model,
+                value,
+                ok: true,
+            } => self.model = Some(value),
+            Event::Applied { .. } => {}
             Event::Error(text) => self.items.push(Item::Error(text)),
         }
     }

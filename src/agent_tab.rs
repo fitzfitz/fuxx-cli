@@ -34,6 +34,7 @@ use gpui::{
     Subscription, Task, WeakEntity, Window, actions, div, list, prelude::*, px, relative,
 };
 
+use crate::agent_box::{Change, Step, step_for, switched_notice};
 use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
@@ -44,7 +45,10 @@ use crate::diff_view::{RowKind, parse_diff};
 use crate::file_tab::{DiffRowColours, diff_row_colours};
 use crate::md_preview::{self, LinkTarget};
 use crate::palette_items::FileHit;
-use crate::providers::{Action, Event, Past, Provider, Start, TodoState, ToolDetail, Translator};
+use crate::providers::{
+    Action, Applies, ChangeKind, Event, ModelChoice, Past, Provider, Start, TodoState, ToolDetail,
+    Translator,
+};
 use crate::status::Status;
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, UiColors, mix};
@@ -91,6 +95,13 @@ pub enum AgentTabEvent {
     /// an id fuxx chose, when the agent reports it, and again whenever it changes (an agent's
     /// `/clear` may go on under a new id).
     Conversation(String),
+    /// The model, effort and mode it now starts with (the box's choice, once taken): saved
+    /// with the tab.
+    Settings {
+        model: Option<String>,
+        effort: Option<String>,
+        mode: Option<String>,
+    },
     /// The error tab's Close.
     Close,
     /// "Open in classic view": the command line that resumes it in a terminal.
@@ -462,6 +473,15 @@ struct Said {
     conversation: Option<String>,
 }
 
+/// Live changes asked of the running agent and not confirmed yet: the start flags each becomes
+/// once the agent says it took it (`Event::Applied`).
+#[derive(Default)]
+struct Asked {
+    model: Option<String>,
+    effort: Option<String>,
+    mode: Option<String>,
+}
+
 pub struct AgentTab {
     provider: Option<&'static dyn Provider>,
     provider_name: String,
@@ -522,9 +542,16 @@ pub struct AgentTab {
     force_timer: Option<Task<()>>,
     _boot: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+    /// Box changes waiting for the turn to end (one per kind of change, the latest); what you
+    /// send meanwhile waits with them (`queued`), for the agent as it is after them.
+    waiting: Vec<Change>,
+    asked: Asked,
     /// The command line of the last start (scenes check a restart resumes).
     #[cfg(feature = "ui-shots")]
     last_argv: Vec<String>,
+    /// The lines a scene tab (no process) would have written to its agent.
+    #[cfg(feature = "ui-shots")]
+    written: Vec<String>,
     /// How many item rows the list built (scenes check only the rows in sight are laid out).
     #[cfg(feature = "ui-shots")]
     pub rows_built: Rc<Cell<usize>>,
@@ -721,6 +748,12 @@ impl AgentTab {
         self.last_argv.clone()
     }
 
+    /// The lines written to the agent (a scene tab's, kept by `write`).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_written(&self) -> Vec<String> {
+        self.written.clone()
+    }
+
     /// The conversation the tab resumes when its process starts again.
     #[cfg(feature = "ui-shots")]
     pub fn shot_resume(&self) -> Option<String> {
@@ -819,8 +852,12 @@ impl AgentTab {
             force_timer: None,
             _boot: None,
             _subscriptions: subscriptions,
+            waiting: Vec::new(),
+            asked: Asked::default(),
             #[cfg(feature = "ui-shots")]
             last_argv: Vec::new(),
+            #[cfg(feature = "ui-shots")]
+            written: Vec::new(),
             #[cfg(feature = "ui-shots")]
             rows_built: Rc::new(Cell::new(0)),
             #[cfg(feature = "ui-shots")]
@@ -878,6 +915,7 @@ impl AgentTab {
         self.force_timer = None;
         self.end_process();
         self.abandon_edits(cx);
+        self.start_with_waiting(false, cx);
         self.paused = true;
         self.unqueue(cx);
         self.conversation.paused();
@@ -1076,6 +1114,19 @@ impl AgentTab {
     /// an id fuxx chooses, if the provider takes one).
     fn spawn_process(&mut self, resume: Option<String>, cx: &mut Context<Self>) {
         self.end_process();
+        // Live changes the old process never answered: the new one starts with them.
+        let asked = std::mem::take(&mut self.asked);
+        let before = self.settings();
+        if asked.model.is_some() {
+            self.start.model = asked.model;
+        }
+        if asked.effort.is_some() {
+            self.start.effort = asked.effort;
+        }
+        if asked.mode.is_some() {
+            self.start.mode = asked.mode;
+        }
+        self.tell_settings(before, cx);
         // A process ended and not yet reported (Force stop within `END_WAIT`) never will be:
         // sends go to this one.
         self.ending = false;
@@ -1191,6 +1242,37 @@ impl AgentTab {
                 process.send(line);
             }
         }
+        // A scene tab has no process: what it would write is kept.
+        #[cfg(feature = "ui-shots")]
+        if self.no_process
+            && let Some(translator) = self.translator.as_mut()
+        {
+            self.written.extend(translator.encode(action));
+        }
+    }
+
+    /// A choice made in the box (a model and effort, a mode, a folder). Never sends a message.
+    /// The provider says how it applies (`Provider::applies`); `step_for` says when: live on
+    /// the running agent, by a restart on the same conversation, after the current turn, or at
+    /// its next start. Choosing what it already runs with changes nothing (and drops a waiting
+    /// change of that kind).
+    pub fn choose(&mut self, change: Change, cx: &mut Context<Self>) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        self.waiting
+            .retain(|w| std::mem::discriminant(w) != std::mem::discriminant(&change));
+        if self.kinds(provider, &change, cx).is_empty() {
+            cx.notify();
+            return;
+        }
+        self.apply_changes(vec![change], cx);
+    }
+
+    /// The latest change waiting for the turn to end.
+    #[allow(dead_code)] // read by the box's chips (a later M11ak task)
+    pub fn waiting_change(&self) -> Option<&Change> {
+        self.waiting.last()
     }
 
     fn on_process(&mut self, event: ProcessEvent, cx: &mut Context<Self>) {
@@ -1247,6 +1329,8 @@ impl AgentTab {
     /// conversation hears it ended.
     fn finish(&mut self, code: Option<i32>, tail: String, cx: &mut Context<Self>) {
         self.catalog_unanswered(cx);
+        // Its turn is over: what waited for it is how the next start runs.
+        self.start_with_waiting(false, cx);
         self.exited = true;
         self.ending = false;
         self.process = None;
@@ -1329,6 +1413,7 @@ impl AgentTab {
     /// changed told — `Question`, `Status` (after it, so a Waiting banner has its question),
     /// `Title`, `Conversation` — and the tab redrawn.
     fn on_events(&mut self, events: Vec<Event>, cx: &mut Context<Self>) {
+        let mut turn_ended = false;
         for event in events {
             let home = crate::workspace::home_dir();
             for told in edit_events(
@@ -1388,10 +1473,15 @@ impl AgentTab {
                     self.stopping = None;
                     self.force = false;
                     self.force_timer = None;
+                    turn_ended = true;
                 }
+                Event::Applied { kind, value, ok } => self.applied(*kind, value, *ok, cx),
                 _ => {}
             }
             self.conversation.apply(event);
+        }
+        if turn_ended {
+            self.settle_waiting(cx);
         }
         self.after_change(true, cx);
     }
@@ -1539,8 +1629,10 @@ impl AgentTab {
             cx.emit(AgentTabEvent::ResumeAsked(text));
             return;
         }
-        if self.booting || self.ending {
-            // Held, shown as waiting under the conversation, until the process is there.
+        if self.booting || self.ending || !self.waiting.is_empty() {
+            // Held, shown as waiting under the conversation, until the process is there (or,
+            // with a change waiting for the turn, until the agent has taken it: a restart would
+            // lose what was written to the process before it).
             self.queued.push((text, attachments));
             cx.notify();
             return;
@@ -1660,7 +1752,14 @@ impl AgentTab {
             ok: false,
             message: None,
         });
+        // The turn is over: what waited for it starts with the new process, and what you sent
+        // meanwhile goes to it.
+        let held = !self.waiting.is_empty();
+        self.start_with_waiting(true, cx);
         self.spawn_process(resume, cx);
+        if held {
+            self.flush_queued();
+        }
         self.after_change(true, cx);
     }
 
@@ -1844,6 +1943,295 @@ impl AgentTab {
         cx.notify();
     }
 
+    /// The process runs (a scene tab's "runs" until it ends: it has none).
+    fn running(&self) -> bool {
+        self.process.is_some() || (self.no_process && !self.exited && !self.paused)
+    }
+
+    /// A turn hasn't ended (it works, or waits for your answer).
+    fn working(&self) -> bool {
+        matches!(self.status(), Status::Working | Status::Waiting)
+    }
+
+    /// `id` as a model choice: from the catalog the menus show, else the provider's own list,
+    /// else just the id.
+    fn model_choice(&self, provider: &'static dyn Provider, id: &str, cx: &App) -> ModelChoice {
+        use crate::agent_catalog::{Catalogs, Lookup};
+        let listed = cx.try_global::<Catalogs>().and_then(|c| {
+            match c.catalog(provider.info().name, &self.start.cwd) {
+                Some(Lookup::Ready(catalog)) => catalog.models.iter().find(|m| m.id == id).cloned(),
+                _ => None,
+            }
+        });
+        listed
+            .or_else(|| provider.fallback_models().into_iter().find(|m| m.id == id))
+            .unwrap_or_else(|| ModelChoice {
+                id: id.to_string(),
+                label: id.to_string(),
+                resolves_to: None,
+                efforts: Vec::new(),
+            })
+    }
+
+    /// A model change's start flags (`Provider::model_flags`).
+    fn model_flags(
+        &self,
+        provider: &'static dyn Provider,
+        id: &str,
+        effort: Option<&str>,
+        cx: &App,
+    ) -> (String, Option<String>) {
+        provider.model_flags(&self.model_choice(provider, id, cx), effort)
+    }
+
+    /// What `change` changes from how the agent runs now (empty: nothing). A new model is
+    /// `Model`, a new effort `Effort` (both, for a model with a new effort).
+    fn kinds(&self, provider: &'static dyn Provider, change: &Change, cx: &App) -> Vec<ChangeKind> {
+        match change {
+            Change::Model { id, effort } => {
+                let (model, effort) = self.model_flags(provider, id, effort.as_deref(), cx);
+                let mut kinds = Vec::new();
+                if self.start.model.as_deref() != Some(model.as_str()) {
+                    kinds.push(ChangeKind::Model);
+                }
+                if effort.is_some() && self.start.effort != effort {
+                    kinds.push(ChangeKind::Effort);
+                }
+                kinds
+            }
+            Change::Mode(mode) if self.start.mode.as_deref() != Some(mode.as_str()) => {
+                vec![ChangeKind::Mode]
+            }
+            Change::Folder(folder) if *folder != self.start.cwd => vec![ChangeKind::Folder],
+            _ => Vec::new(),
+        }
+    }
+
+    /// How `kinds` reach the agent: the strictest of the provider's answers (a model and an
+    /// effort are live only if both are). A folder is never live: it is where the process runs.
+    fn applies(provider: &'static dyn Provider, kinds: &[ChangeKind]) -> Applies {
+        let rank = |a: Applies| match a {
+            Applies::Live => 0,
+            Applies::Restart => 1,
+            Applies::NextConversation => 2,
+        };
+        kinds
+            .iter()
+            .map(|&k| match provider.applies(k) {
+                Applies::Live if k == ChangeKind::Folder => Applies::Restart,
+                a => a,
+            })
+            .max_by_key(|&a| rank(a))
+            .unwrap_or(Applies::Live)
+    }
+
+    /// Carry out `changes` now, each by its step: asked live, into the start flags (with a
+    /// restart on the same conversation for those that need one), or left waiting for the turn.
+    fn apply_changes(&mut self, changes: Vec<Change>, cx: &mut Context<Self>) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        let before = self.settings();
+        let mut restart = Vec::new();
+        for change in changes {
+            let kinds = self.kinds(provider, &change, cx);
+            if kinds.is_empty() {
+                continue;
+            }
+            let applies = Self::applies(provider, &kinds);
+            match step_for(applies, self.running(), self.spoken(), self.working()) {
+                Step::Live => self.ask_live(provider, &change, &kinds, cx),
+                Step::AfterTurn => self.waiting.push(change),
+                Step::NextStart => self.set_start(provider, &change, cx),
+                Step::RestartNow => {
+                    self.set_start(provider, &change, cx);
+                    restart.push(change);
+                }
+            }
+        }
+        self.tell_settings(before, cx);
+        if !restart.is_empty() {
+            self.restart_with(provider, &restart, cx);
+        }
+        cx.notify();
+    }
+
+    /// Ask the running agent to take `change` (its `kinds`) in place.
+    fn ask_live(
+        &mut self,
+        provider: &'static dyn Provider,
+        change: &Change,
+        kinds: &[ChangeKind],
+        cx: &App,
+    ) {
+        match change {
+            Change::Model { id, effort } => {
+                let (model, effort) = self.model_flags(provider, id, effort.as_deref(), cx);
+                if kinds.contains(&ChangeKind::Model) {
+                    self.write(&Action::SetModel {
+                        model: model.clone(),
+                    });
+                    self.asked.model = Some(model);
+                }
+                if let Some(effort) = effort.filter(|_| kinds.contains(&ChangeKind::Effort)) {
+                    self.write(&Action::SetEffort {
+                        effort: effort.clone(),
+                    });
+                    self.asked.effort = Some(effort);
+                }
+            }
+            Change::Mode(mode) => {
+                self.write(&Action::SetMode { mode: mode.clone() });
+                self.asked.mode = Some(mode.clone());
+            }
+            Change::Folder(_) => {}
+        }
+    }
+
+    /// `change` into the flags the agent starts with.
+    fn set_start(&mut self, provider: &'static dyn Provider, change: &Change, cx: &App) {
+        match change {
+            Change::Model { id, effort } => {
+                let (model, effort) = self.model_flags(provider, id, effort.as_deref(), cx);
+                self.start.model = Some(model);
+                if effort.is_some() {
+                    self.start.effort = effort;
+                }
+            }
+            Change::Mode(mode) => self.start.mode = Some(mode.clone()),
+            Change::Folder(folder) => self.start.cwd = folder.clone(),
+        }
+    }
+
+    /// Start the agent again with what `changes` set, on the same conversation once you have
+    /// spoken (one quiet row each), else as it was to start. Not running: its next start takes
+    /// them. Queued text is kept (as Force stop's restart).
+    fn restart_with(
+        &mut self,
+        provider: &'static dyn Provider,
+        changes: &[Change],
+        cx: &mut Context<Self>,
+    ) {
+        let spoken = self.spoken();
+        if spoken {
+            for change in changes {
+                let notice = self.switched(provider, change, cx);
+                self.conversation.apply(Event::Notice(notice));
+            }
+            self.after_change(true, cx);
+        }
+        if self.running() {
+            let resume = if spoken {
+                self.conversation_id()
+            } else {
+                self.start.resume.clone()
+            };
+            self.spawn_process(resume, cx);
+        }
+    }
+
+    /// The row a restart for `change` leaves.
+    fn switched(&self, provider: &'static dyn Provider, change: &Change, cx: &App) -> String {
+        let model = match change {
+            Change::Model { id, .. } => Some(self.model_choice(provider, id, cx).label),
+            _ => None,
+        };
+        let mode = match change {
+            Change::Mode(id) => provider
+                .info()
+                .modes
+                .iter()
+                .find(|m| m.id == id)
+                .map(|m| m.label),
+            _ => None,
+        };
+        let home = crate::workspace::home_dir();
+        switched_notice(change, model.as_deref(), mode, home.as_deref())
+    }
+
+    /// The turn is over: what waited for it is carried out, then what you sent meanwhile goes
+    /// to the agent as it now is.
+    fn settle_waiting(&mut self, cx: &mut Context<Self>) {
+        if self.waiting.is_empty() || self.working() {
+            return;
+        }
+        let changes = std::mem::take(&mut self.waiting);
+        self.apply_changes(changes, cx);
+        if !self.booting && !self.ending && self.running() && !self.queued.is_empty() {
+            self.flush_queued();
+            self.after_change(true, cx);
+        }
+    }
+
+    /// The process is gone (ended, stopped, paused) with changes waiting: its next start takes
+    /// them. `notice`: it starts again now, so each leaves its row.
+    fn start_with_waiting(&mut self, notice: bool, cx: &mut Context<Self>) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        let before = self.settings();
+        for change in std::mem::take(&mut self.waiting) {
+            if self.kinds(provider, &change, cx).is_empty() {
+                continue;
+            }
+            self.set_start(provider, &change, cx);
+            if notice && self.spoken() {
+                let text = self.switched(provider, &change, cx);
+                self.conversation.apply(Event::Notice(text));
+            }
+        }
+        self.tell_settings(before, cx);
+    }
+
+    fn settings(&self) -> (Option<String>, Option<String>, Option<String>) {
+        (
+            self.start.model.clone(),
+            self.start.effort.clone(),
+            self.start.mode.clone(),
+        )
+    }
+
+    /// Tell the Workspace the start flags, if they changed since `before` (saved with the tab).
+    fn tell_settings(
+        &mut self,
+        before: (Option<String>, Option<String>, Option<String>),
+        cx: &mut Context<Self>,
+    ) {
+        let (model, effort, mode) = self.settings();
+        if (&model, &effort, &mode) != (&before.0, &before.1, &before.2) {
+            cx.emit(AgentTabEvent::Settings {
+                model,
+                effort,
+                mode,
+            });
+        }
+    }
+
+    /// The agent answered a live change: taken, it is a start flag from now on; refused, one
+    /// row says why and nothing changes.
+    fn applied(&mut self, kind: ChangeKind, value: &str, ok: bool, cx: &mut Context<Self>) {
+        let asked = match kind {
+            ChangeKind::Model => self.asked.model.take(),
+            ChangeKind::Effort => self.asked.effort.take(),
+            ChangeKind::Mode => self.asked.mode.take(),
+            ChangeKind::Folder => None,
+        };
+        if !ok {
+            self.conversation
+                .apply(Event::Notice(format!("Couldn't switch: {value}")));
+            return;
+        }
+        let before = self.settings();
+        match kind {
+            // The flag as chosen (an alias stays an alias); the agent names the model it is.
+            ChangeKind::Model => self.start.model = asked.or(self.start.model.take()),
+            ChangeKind::Effort => self.start.effort = Some(value.to_string()),
+            ChangeKind::Mode => self.start.mode = Some(value.to_string()),
+            ChangeKind::Folder => {}
+        }
+        self.tell_settings(before, cx);
+    }
+
     /// You have sent a message in this tab.
     fn spoken(&self) -> bool {
         self.conversation
@@ -1852,8 +2240,9 @@ impl AgentTab {
             .any(|i| matches!(i, Item::You { .. }))
     }
 
-    /// The mode chip's click (call 6): before the first message, the agent's next mode (its
-    /// process starts again in it); after it, the chip is read-only.
+    /// The mode chip's click (call 6): before the first message, the agent's next mode, chosen
+    /// as the box chooses one (`choose`: live where the agent can, else a restart); after it,
+    /// the chip is read-only (the box's mode menu replaces it).
     fn next_mode(&mut self, cx: &mut Context<Self>) {
         let Some(provider) = self.provider else {
             return;
@@ -1868,12 +2257,7 @@ impl AgentTab {
             .as_deref()
             .and_then(|m| modes.iter().position(|x| x.id == m));
         let next = modes[at.map_or(0, |i| (i + 1) % modes.len())];
-        self.start.mode = Some(next.id.to_string());
-        if self.process.is_some() {
-            let resume = self.start.resume.clone();
-            self.spawn_process(resume, cx);
-        }
-        cx.notify();
+        self.choose(Change::Mode(next.id.to_string()), cx);
     }
 
     fn open_classic(&mut self, cx: &mut Context<Self>) {

@@ -285,6 +285,16 @@ impl Provider for Claude {
             .collect()
     }
 
+    /// Model, effort and mode switch live on the running process (`set_model`,
+    /// `apply_flag_settings`, `set_permission_mode`: Task 0, before the first message and
+    /// mid-conversation); a folder is a restart (`--resume` from the new folder).
+    fn applies(&self, change: ChangeKind) -> Applies {
+        match change {
+            ChangeKind::Model | ChangeKind::Effort | ChangeKind::Mode => Applies::Live,
+            ChangeKind::Folder => Applies::Restart,
+        }
+    }
+
     /// A session id is a UUID.
     fn is_conversation_id(&self, id: &str) -> bool {
         uuid_shaped(id)
@@ -451,6 +461,23 @@ struct ClaudeTranslator {
     pending: HashMap<String, (Value, Value)>,
     /// The model named by `system/init`, whose `modelUsage` entry sizes the context.
     model: Option<String>,
+    /// The live changes asked and not answered yet, by request id (`fuxx-set-<n>`).
+    asked: HashMap<String, Asked>,
+    /// The last `fuxx-set-<n>` written.
+    sets: u32,
+}
+
+/// A live change asked of Claude (Task 0's requests), and what was asked for.
+enum Asked {
+    /// `set_model`: answered with the resolved id.
+    Model(String),
+    /// `set_permission_mode`: answered with the mode.
+    Mode(String),
+    /// `apply_flag_settings` with `effortLevel`: answered with no body; `read_back` is the
+    /// `get_settings` asked after it.
+    Effort { read_back: String },
+    /// That `get_settings`: `applied.effort` is the effort now in use.
+    ReadEffort(String),
 }
 
 fn s(v: &Value) -> Option<String> {
@@ -676,6 +703,61 @@ fn control_response(request_id: &str, response: Value) -> String {
 }
 
 impl ClaudeTranslator {
+    /// The next request id for a live change.
+    fn set_id(&mut self) -> String {
+        self.sets += 1;
+        format!("fuxx-set-{}", self.sets)
+    }
+
+    /// A live change's request under a new id, kept as `asked` until its answer.
+    fn ask(&mut self, request: Value, asked: Asked) -> String {
+        let id = self.set_id();
+        let line =
+            json!({"type": "control_request", "request_id": id, "request": request}).to_string();
+        self.asked.insert(id, asked);
+        line
+    }
+
+    /// The answer to a live change fuxx asked (any other control response is not one).
+    fn answered(&mut self, v: &Value) -> Vec<Event> {
+        let response = &v["response"];
+        let Some(asked) = response["request_id"]
+            .as_str()
+            .and_then(|id| self.asked.remove(id))
+        else {
+            return Vec::new();
+        };
+        let kind = match &asked {
+            Asked::Model(_) => ChangeKind::Model,
+            Asked::Mode(_) => ChangeKind::Mode,
+            Asked::Effort { .. } | Asked::ReadEffort(_) => ChangeKind::Effort,
+        };
+        if response["subtype"] != "success" {
+            if let Asked::Effort { read_back } = &asked {
+                // Its read-back would only say the effort that stayed.
+                self.asked.remove(read_back);
+            }
+            let why = s(&response["error"]).unwrap_or_else(|| "Claude refused it".into());
+            return vec![Event::Applied {
+                kind,
+                value: why,
+                ok: false,
+            }];
+        }
+        let body = &response["response"];
+        let value = match asked {
+            Asked::Model(asked) => s(&body["model"]).unwrap_or(asked),
+            Asked::Mode(asked) => s(&body["mode"]).unwrap_or(asked),
+            Asked::Effort { .. } => return Vec::new(),
+            Asked::ReadEffort(asked) => s(&body["applied"]["effort"]).unwrap_or(asked),
+        };
+        vec![Event::Applied {
+            kind,
+            value,
+            ok: true,
+        }]
+    }
+
     fn assistant(&self, v: &Value) -> Vec<Event> {
         let message = s(&v["message"]["id"]).unwrap_or_default();
         let parent = s(&v["parent_tool_use_id"]);
@@ -858,6 +940,7 @@ impl Translator for ClaudeTranslator {
             Some("control_response") if is_init_answer(&v) => {
                 vec![Event::Catalog(catalog_of(&v["response"]["response"]))]
             }
+            Some("control_response") => self.answered(&v),
             Some("stream_event") => self.stream_event(&v),
             Some("assistant") => self.assistant(&v),
             Some("user") => self.user(&v),
@@ -891,6 +974,28 @@ impl Translator for ClaudeTranslator {
                     response["updatedPermissions"] = suggestions;
                 }
                 vec![control_response(id, response)]
+            }
+            Action::SetModel { model } => vec![self.ask(
+                json!({"subtype": "set_model", "model": model}),
+                Asked::Model(model.clone()),
+            )],
+            Action::SetMode { mode } => vec![self.ask(
+                json!({"subtype": "set_permission_mode", "mode": mode}),
+                Asked::Mode(mode.clone()),
+            )],
+            // The SDK's `applyFlagSettings`; its answer has no body, so `get_settings`, asked
+            // right after it, reads the effort back (Task 0).
+            Action::SetEffort { effort } => {
+                let read_back = format!("fuxx-set-{}", self.sets + 2);
+                let apply = self.ask(
+                    json!({"subtype": "apply_flag_settings", "settings": {"effortLevel": effort}}),
+                    Asked::Effort { read_back },
+                );
+                let read = self.ask(
+                    json!({"subtype": "get_settings"}),
+                    Asked::ReadEffort(effort.clone()),
+                );
+                vec![apply, read]
             }
             Action::Deny { id, reason } => {
                 if self.pending.remove(id).is_none() {
@@ -2089,5 +2194,187 @@ mod tests {
             ("opus_week".into(), LimitState::Reached, None)
         );
         assert!(one("brand_new", "five_hour").is_empty());
+    }
+
+    /// The `Applied` events among `events`.
+    fn applied(events: Vec<Event>) -> Vec<(ChangeKind, String, bool)> {
+        events
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Applied { kind, value, ok } => Some((kind, value, ok)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `text` with each recorded request id the recorder chose turned into the one fuxx writes.
+    fn renamed(text: &str, ids: &[(&str, &str)]) -> String {
+        ids.iter().fold(text.to_string(), |t, (from, to)| {
+            t.replace(&format!("\"{from}\""), &format!("\"{to}\""))
+        })
+    }
+
+    #[test]
+    fn set_requests_encode_as_recorded() {
+        let mut t = CLAUDE.translator();
+        let lines = |t: &mut Box<dyn Translator>, a: Action| -> Vec<Value> {
+            t.encode(&a)
+                .iter()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect()
+        };
+        let request = |id: &str, request: Value| json!({"type": "control_request", "request_id": id, "request": request});
+        assert_eq!(
+            lines(
+                &mut t,
+                Action::SetModel {
+                    model: "sonnet".into()
+                }
+            ),
+            [request(
+                "fuxx-set-1",
+                json!({"subtype": "set_model", "model": "sonnet"})
+            )]
+        );
+        // The effort, then `get_settings` to read it back (its answer has no body).
+        assert_eq!(
+            lines(
+                &mut t,
+                Action::SetEffort {
+                    effort: "low".into()
+                }
+            ),
+            [
+                request(
+                    "fuxx-set-2",
+                    json!({"subtype": "apply_flag_settings", "settings": {"effortLevel": "low"}})
+                ),
+                request("fuxx-set-3", json!({"subtype": "get_settings"})),
+            ]
+        );
+        assert_eq!(
+            lines(
+                &mut t,
+                Action::SetMode {
+                    mode: "plan".into()
+                }
+            ),
+            [request(
+                "fuxx-set-4",
+                json!({"subtype": "set_permission_mode", "mode": "plan"})
+            )]
+        );
+    }
+
+    #[test]
+    fn set_answers_decode_to_applied() {
+        use ChangeKind::*;
+        let mut t = CLAUDE.translator();
+        t.encode(&Action::SetModel {
+            model: "sonnet".into(),
+        });
+        t.encode(&Action::SetModel {
+            model: "opus".into(),
+        });
+        let text = include_str!("fixtures/claude-set-model.jsonl");
+        let events = text.lines().flat_map(|l| t.decode(l)).collect();
+        assert_eq!(
+            applied(events),
+            [
+                (Model, "claude-sonnet-5-5".to_string(), true),
+                (Model, "claude-opus-5-5".to_string(), true),
+            ],
+            "the resolved ids, before the first message and mid-conversation"
+        );
+
+        let mut t = CLAUDE.translator();
+        t.encode(&Action::SetEffort {
+            effort: "low".into(),
+        });
+        t.encode(&Action::SetEffort {
+            effort: "medium".into(),
+        });
+        let text = renamed(
+            include_str!("fixtures/claude-set-effort.jsonl"),
+            &[
+                ("fuxx-effort-1", "fuxx-set-1"),
+                ("fuxx-settings-2", "fuxx-set-2"),
+                ("fuxx-effort-2", "fuxx-set-3"),
+                ("fuxx-settings-4", "fuxx-set-4"),
+            ],
+        );
+        let events = text.lines().flat_map(|l| t.decode(l)).collect();
+        assert_eq!(
+            applied(events),
+            [
+                (Effort, "low".to_string(), true),
+                (Effort, "medium".to_string(), true),
+            ],
+            "read back by get_settings; the recorder's other reads are not fuxx's"
+        );
+
+        let mut t = CLAUDE.translator();
+        t.encode(&Action::SetMode {
+            mode: "plan".into(),
+        });
+        t.encode(&Action::SetMode {
+            mode: "acceptEdits".into(),
+        });
+        let text = renamed(
+            include_str!("fixtures/claude-set-mode.jsonl"),
+            &[("fuxx-mode-1", "fuxx-set-1"), ("fuxx-mode-2", "fuxx-set-2")],
+        );
+        let events = text.lines().flat_map(|l| t.decode(l)).collect();
+        assert_eq!(
+            applied(events),
+            [
+                (Mode, "plan".to_string(), true),
+                (Mode, "acceptEdits".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_refused_set_decodes_to_not_applied() {
+        use ChangeKind::*;
+        let error = |id: &str, why: &str| {
+            json!({"type": "control_response",
+                "response": {"subtype": "error", "request_id": id, "error": why}})
+            .to_string()
+        };
+        let mut t = CLAUDE.translator();
+        t.encode(&Action::SetModel {
+            model: "nope".into(),
+        });
+        assert_eq!(
+            applied(t.decode(&error("fuxx-set-1", "Unknown model: nope"))),
+            [(Model, "Unknown model: nope".to_string(), false)]
+        );
+        // A refused effort: its read-back then says nothing.
+        t.encode(&Action::SetEffort {
+            effort: "max".into(),
+        });
+        assert_eq!(
+            applied(t.decode(&error("fuxx-set-2", "Not supported"))),
+            [(Effort, "Not supported".to_string(), false)]
+        );
+        let read_back = json!({"type": "control_response", "response": {"subtype": "success",
+            "request_id": "fuxx-set-3", "response": {"applied": {"effort": "high"}}}})
+        .to_string();
+        assert!(applied(t.decode(&read_back)).is_empty());
+        // An answer to nothing fuxx asked is no change.
+        assert!(applied(t.decode(&error("fuxx-set-9", "?"))).is_empty());
+        let other = json!({"type": "control_response", "response": {"subtype": "success",
+            "request_id": "fuxx-set-9", "response": {"model": "x"}}})
+        .to_string();
+        assert!(applied(t.decode(&other)).is_empty());
+    }
+
+    #[test]
+    fn claude_applies_per_task_0() {
+        assert_eq!(CLAUDE.applies(ChangeKind::Model), Applies::Live);
+        assert_eq!(CLAUDE.applies(ChangeKind::Effort), Applies::Live);
+        assert_eq!(CLAUDE.applies(ChangeKind::Mode), Applies::Live);
+        assert_eq!(CLAUDE.applies(ChangeKind::Folder), Applies::Restart);
     }
 }
