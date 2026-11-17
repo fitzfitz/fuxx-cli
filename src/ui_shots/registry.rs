@@ -145,6 +145,8 @@ pub(super) const ORDER: &[&str] = &[
     "file-code-sticky",
     "file-code-breadcrumb",
     "file-code-lane",
+    "file-diff-cards",
+    "file-diff-cards-fold",
     "right-sidebar",
     "files",
     "files-follow",

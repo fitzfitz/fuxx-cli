@@ -18,10 +18,8 @@ pub enum Row {
     /// A part of a doc line, from cell `cell0` (0: the line's first row).
     Line { line: usize, cell0: usize },
     /// Diff: a card's title row.
-    #[allow(dead_code)] // built by `RowMap::diff` (Task 9)
     Title { card: usize },
     /// Diff: a folded unchanged stretch.
-    #[allow(dead_code)] // built by `RowMap::diff` (Task 9)
     Unchanged { stretch: usize },
     /// Diff side by side: an old (line, cell0) on the left and a new one on the right.
     #[allow(dead_code)] // built by `RowMap::diff` with pairs (Task 11)
@@ -65,7 +63,44 @@ enum Rows {
         tops: Arc<[f32]>,
         /// Each line's first row (none: hidden).
         first: Arc<[Option<usize>]>,
+        /// Diff mode's cards and folded rows (none: a file's).
+        diff: Option<Arc<DiffRows>>,
     },
+}
+
+/// Where a Diff map's cards and folds sit.
+#[derive(Clone, Debug, Default)]
+struct DiffRows {
+    /// Each card's rows: its title's, to one past its last.
+    cards: Vec<Range<usize>>,
+    /// Each run of hidden lines (a folded stretch, a closed card) and the row drawn for it, in
+    /// order.
+    held: Vec<(Range<usize>, usize)>,
+}
+
+/// Each row's top for rows `heights` tall, then the height: summed in f64 (exact for any real
+/// row count), each top the f32 nearest it, as the identity's `row_h × r` is.
+fn tops_of(heights: impl Iterator<Item = f32>) -> Arc<[f32]> {
+    let mut tops = Vec::new();
+    let mut y = 0.0_f64;
+    for h in heights {
+        tops.push(y as f32);
+        y += f64::from(h);
+    }
+    tops.push(y as f32);
+    tops.into()
+}
+
+/// Line `line`'s rows, `width` cells wide, cut at `columns` (none: one row).
+fn line_rows(line: usize, width: usize, columns: Option<usize>) -> impl Iterator<Item = Row> {
+    let (count, step) = match columns {
+        Some(c) => (width.div_ceil(c).max(1), c),
+        None => (1, 0),
+    };
+    (0..count).map(move |k| Row::Line {
+        line,
+        cell0: k * step,
+    })
 }
 
 impl RowMap {
@@ -99,28 +134,15 @@ impl RowMap {
                 continue;
             }
             first[line] = Some(rows.len());
-            let (count, step) = match columns {
-                Some(c) => (width.div_ceil(c).max(1), c),
-                None => (1, 0),
-            };
-            rows.extend((0..count).map(|k| Row::Line {
-                line,
-                cell0: k * step,
-            }));
+            rows.extend(line_rows(line, width, columns));
         }
-        // Summed in f64 (exact for any real row count): each top is the f32 nearest it, as
-        // the identity's `row_h × r` is.
-        let mut tops = Vec::with_capacity(rows.len() + 1);
-        let mut y = 0.0_f64;
-        for _ in 0..=rows.len() {
-            tops.push(y as f32);
-            y += f64::from(row_h);
-        }
+        let tops = tops_of(std::iter::repeat_n(row_h, rows.len()));
         RowMap {
             rows: Rows::Listed {
                 rows: rows.into(),
-                tops: tops.into(),
+                tops,
                 first: first.into(),
+                diff: None,
             },
             columns,
             row_h,
@@ -226,6 +248,153 @@ impl RowMap {
                 None => Some(rows.len()),
             },
         }
+    }
+}
+
+/// A card's rows side by side (Task 11): each an old and a new row, either may be none.
+pub type CardPairs = Vec<(Option<usize>, Option<usize>)>;
+
+/// Diff mode's layout (M11ah): the cards and stretches, which stretches are shown and which
+/// cards closed, and (side by side, Task 11) each card's rows paired.
+pub struct DiffLayout<'a> {
+    pub grouped: &'a crate::diff_cards::Grouped,
+    /// Per stretch: shown whole (else one `⋯` row).
+    pub shown: &'a [bool],
+    /// Per card: closed to its title.
+    pub closed: &'a [bool],
+    #[allow(dead_code)] // side by side (M11ah Task 11)
+    pub pairs: Option<&'a [CardPairs]>,
+}
+
+impl RowMap {
+    /// Diff mode's rows (M11ah): the rows outside the cards as lines, a folded stretch one `⋯`
+    /// row (unless `shown`), each card a title row `code::CARD_TITLE` tall (`code::CARD_GAP`
+    /// further down for every card but the first) and its lines (none when `closed`); lines cut
+    /// at `columns` cells when wrapping.
+    pub fn diff(
+        widths: &[usize],
+        columns: Option<usize>,
+        layout: &DiffLayout,
+        row_h: f32,
+    ) -> RowMap {
+        use crate::ui_tokens::code::{CARD_GAP, CARD_TITLE};
+        let columns = columns.map(|c| c.max(1));
+        let lines = widths.len();
+        let g = layout.grouped;
+        let mut rows: Vec<Row> = Vec::with_capacity(lines + g.cards.len());
+        let mut heights: Vec<f32> = Vec::with_capacity(lines + g.cards.len());
+        let mut first = vec![None; lines];
+        let mut diff = DiffRows::default();
+        let (mut card, mut stretch) = (0, 0);
+        let mut line = 0;
+        let push = |rows: &mut Vec<Row>, heights: &mut Vec<f32>, row: Row, h: f32| {
+            rows.push(row);
+            heights.push(h);
+        };
+        while line < lines {
+            if let Some(c) = g.cards.get(card).filter(|c| c.rows.start == line) {
+                if card > 0
+                    && let Some(h) = heights.last_mut()
+                {
+                    // The gap above it: the row before it reaches down to its title.
+                    *h += CARD_GAP;
+                }
+                let title = rows.len();
+                push(&mut rows, &mut heights, Row::Title { card }, CARD_TITLE);
+                let end = c.rows.end.min(lines);
+                if layout.closed.get(card).copied().unwrap_or(false) {
+                    diff.held.push((line..end, title));
+                } else {
+                    for l in line..end {
+                        first[l] = Some(rows.len());
+                        for row in line_rows(l, widths[l], columns) {
+                            push(&mut rows, &mut heights, row, row_h);
+                        }
+                    }
+                }
+                diff.cards.push(title..rows.len());
+                (line, card) = (end, card + 1);
+                continue;
+            }
+            if let Some(s) = g.stretches.get(stretch).filter(|s| s.rows.start == line) {
+                stretch += 1;
+                if !layout.shown.get(stretch - 1).copied().unwrap_or(false) {
+                    let end = s.rows.end.min(lines);
+                    diff.held.push((line..end, rows.len()));
+                    push(
+                        &mut rows,
+                        &mut heights,
+                        Row::Unchanged {
+                            stretch: stretch - 1,
+                        },
+                        row_h,
+                    );
+                    line = end;
+                    continue;
+                }
+            }
+            first[line] = Some(rows.len());
+            for row in line_rows(line, widths[line], columns) {
+                push(&mut rows, &mut heights, row, row_h);
+            }
+            line += 1;
+        }
+        RowMap {
+            rows: Rows::Listed {
+                rows: rows.into(),
+                tops: tops_of(heights.into_iter()),
+                first: first.into(),
+                diff: Some(Arc::new(diff)),
+            },
+            columns,
+            row_h,
+        }
+    }
+
+    fn diff_rows(&self) -> Option<&DiffRows> {
+        match &self.rows {
+            Rows::Listed { diff, .. } => diff.as_deref(),
+            Rows::Identity { .. } => None,
+        }
+    }
+
+    /// The row line `line` is drawn on: its first, or (hidden in a Diff) its fold's: the `⋯`
+    /// row of its stretch, the title of its closed card. None: hidden in a file's fold.
+    pub fn row_holding(&self, line: usize) -> Option<usize> {
+        self.first_row(line).or_else(|| {
+            let held = &self.diff_rows()?.held;
+            let k = held.partition_point(|(lines, _)| lines.end <= line);
+            held.get(k)
+                .filter(|(l, _)| l.contains(&line))
+                .map(|(_, r)| *r)
+        })
+    }
+
+    /// Diff: card `card`'s title row.
+    pub fn title_row(&self, card: usize) -> Option<usize> {
+        self.card_rows(card).map(|r| r.start)
+    }
+
+    /// Diff: card `card`'s rows, its title's first.
+    pub fn card_rows(&self, card: usize) -> Option<Range<usize>> {
+        self.diff_rows()?.cards.get(card).cloned()
+    }
+
+    /// Diff: the cards with a row among `rows`.
+    pub fn cards_in(&self, rows: Range<usize>) -> Range<usize> {
+        let Some(d) = self.diff_rows() else {
+            return 0..0;
+        };
+        let from = d.cards.partition_point(|c| c.end <= rows.start);
+        let to = d.cards.partition_point(|c| c.start < rows.end);
+        from..to.max(from)
+    }
+
+    /// Diff: the card row `r` is in (its title or one of its lines).
+    pub fn card_at(&self, r: usize) -> Option<usize> {
+        let cards = &self.diff_rows()?.cards;
+        let k = cards.partition_point(|c| c.end <= r);
+        cards.get(k).filter(|c| c.contains(&r)).map(|_| k)
     }
 }
 
@@ -483,5 +652,164 @@ mod tests {
         assert_eq!(step_change(&starts, None, 13, true), None);
         assert_eq!(step_change(&starts, None, 3, false), None);
         assert_eq!(step_change(&[], None, 0, true), None);
+    }
+
+    /// The diff of `diff_cards`' tests: rows from letters (`s` unchanged, `a` added).
+    fn diff_rows(kinds: &str) -> Vec<crate::diff_view::DiffRow> {
+        use crate::diff_view::{DiffRow, RowKind};
+        let mut n = 0;
+        kinds
+            .chars()
+            .map(|c| {
+                n += 1;
+                match c {
+                    'a' => DiffRow {
+                        kind: RowKind::Added,
+                        old: None,
+                        new: Some(n),
+                    },
+                    _ => DiffRow {
+                        kind: RowKind::Same,
+                        old: Some(n),
+                        new: Some(n),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// 11 unchanged, an added row, 14 unchanged, an added row, 11 unchanged: a stretch (0..8),
+    /// card 0 (8..15), a stretch (15..23), card 1 (23..30), a stretch (30..38).
+    fn two_cards() -> crate::diff_cards::Grouped {
+        let rows = diff_rows(&format!(
+            "{}a{}a{}",
+            "s".repeat(11),
+            "s".repeat(14),
+            "s".repeat(11)
+        ));
+        let g = crate::diff_cards::group(&rows);
+        assert_eq!(g.cards.len(), 2);
+        assert_eq!(g.stretches.len(), 3);
+        g
+    }
+
+    #[test]
+    fn diff_rows_have_titles_and_folded_stretches() {
+        use crate::ui_tokens::code::{CARD_GAP, CARD_TITLE};
+        let g = two_cards();
+        let widths = vec![1; 38];
+        let layout = DiffLayout {
+            grouped: &g,
+            shown: &[false, false, false],
+            closed: &[false, false],
+            pairs: None,
+        };
+        let map = RowMap::diff(&widths, None, &layout, 10.0);
+        // ⋯ | title 0 | 8..15 | ⋯ | title 1 | 23..30 | ⋯
+        let rows: Vec<Row> = (0..map.len()).filter_map(|r| map.row(r)).collect();
+        assert_eq!(rows.len(), 1 + 1 + 7 + 1 + 1 + 7 + 1);
+        assert_eq!(rows[0], Row::Unchanged { stretch: 0 });
+        assert_eq!(rows[1], Row::Title { card: 0 });
+        assert_eq!(rows[2], Row::Line { line: 8, cell0: 0 });
+        assert_eq!(rows[9], Row::Unchanged { stretch: 1 });
+        assert_eq!(rows[10], Row::Title { card: 1 });
+        assert_eq!(rows[18], Row::Unchanged { stretch: 2 });
+        // A stretch is one row; the first card's title CARD_TITLE tall, right under it; the
+        // next card's CARD_GAP further down.
+        assert_eq!(map.top(1), 10.0);
+        assert_eq!(map.top(2), 10.0 + CARD_TITLE);
+        assert_eq!(map.top(10) - map.top(9), 10.0 + CARD_GAP);
+        assert_eq!(map.top(11) - map.top(10), CARD_TITLE);
+        assert_eq!(map.height(), 17.0 * 10.0 + 2.0 * CARD_TITLE + CARD_GAP);
+        assert_eq!(map.first_row(8), Some(2));
+        assert_eq!(map.first_row(3), None, "folded");
+        assert_eq!(map.row_holding(3), Some(0), "its stretch's row");
+        assert_eq!(map.row_holding(8), Some(2));
+        assert_eq!(
+            (map.title_row(1), map.card_rows(1)),
+            (Some(10), Some(10..18))
+        );
+        assert_eq!(map.card_at(12), Some(1));
+        assert_eq!(map.card_at(9), None);
+        assert_eq!(map.cards_in(0..1), 0..0);
+        assert_eq!(map.cards_in(0..11), 0..2);
+        assert_eq!(map.cards_in(9..10), 1..1, "between them: none");
+        assert_eq!(map.cards_in(5..12), 0..2);
+        assert_eq!(RowMap::file(&[1], None, &[], 10.0).cards_in(0..1), 0..0);
+        assert!(map.hidden_after(14).is_empty(), "no fold pill in a diff");
+        // A shown stretch is its lines; a closed card its title only.
+        let layout = DiffLayout {
+            grouped: &g,
+            shown: &[false, true, false],
+            closed: &[true, false],
+            pairs: None,
+        };
+        let map = RowMap::diff(&widths, None, &layout, 10.0);
+        let rows: Vec<Row> = (0..map.len()).filter_map(|r| map.row(r)).collect();
+        assert_eq!(
+            &rows[..4],
+            [
+                Row::Unchanged { stretch: 0 },
+                Row::Title { card: 0 },
+                Row::Line { line: 15, cell0: 0 },
+                Row::Line { line: 16, cell0: 0 },
+            ]
+        );
+        assert_eq!(rows.len(), 1 + 1 + 8 + 1 + 7 + 1);
+        assert_eq!(map.first_row(9), None, "inside the closed card");
+        assert_eq!(map.row_holding(9), Some(1), "its title's row");
+        assert_eq!(map.card_rows(0), Some(1..2));
+        // With Wrap, a line takes its rows inside a card.
+        let mut wide = widths.clone();
+        wide[8] = 9;
+        let map = RowMap::diff(&wide, Some(4), &layout_all(&g), 10.0);
+        assert_eq!(map.row(2), Some(Row::Line { line: 8, cell0: 0 }));
+        assert_eq!(map.row(4), Some(Row::Line { line: 8, cell0: 8 }));
+        assert_eq!(map.columns(), Some(4));
+    }
+
+    fn layout_all(g: &crate::diff_cards::Grouped) -> DiffLayout<'_> {
+        DiffLayout {
+            grouped: g,
+            shown: &[false, false, false],
+            closed: &[false, false],
+            pairs: None,
+        }
+    }
+
+    /// Review Focus 5 in Diff mode: a press below titles and a folded stretch, Wrap on, lands
+    /// on the row drawn there.
+    #[test]
+    fn row_at_finds_rows_below_titles_and_stretches() {
+        use crate::ui_tokens::code::{CARD_GAP, CARD_TITLE};
+        let g = two_cards();
+        let mut widths = vec![1; 38];
+        widths[24] = 9; // three rows at 4 columns
+        let map = RowMap::diff(&widths, Some(4), &layout_all(&g), 10.0);
+        let at = |y: f32| map.row(map.row_at(y));
+        assert_eq!(at(5.0), Some(Row::Unchanged { stretch: 0 }));
+        assert_eq!(at(10.0 + CARD_TITLE - 0.1), Some(Row::Title { card: 0 }));
+        assert_eq!(at(10.0 + CARD_TITLE), Some(Row::Line { line: 8, cell0: 0 }));
+        // Card 1: its title after the ⋯ row and the gap, then line 23, then 24's three rows.
+        let title1 = 10.0 + CARD_TITLE + 70.0 + 10.0 + CARD_GAP;
+        assert_eq!(map.top(map.title_row(1).unwrap()), title1);
+        assert_eq!(
+            at(title1 - 1.0),
+            Some(Row::Unchanged { stretch: 1 }),
+            "the gap"
+        );
+        assert_eq!(
+            at(title1 + CARD_TITLE + 5.0),
+            Some(Row::Line { line: 23, cell0: 0 })
+        );
+        assert_eq!(
+            at(title1 + CARD_TITLE + 25.0),
+            Some(Row::Line { line: 24, cell0: 4 })
+        );
+        assert_eq!(
+            at(title1 + CARD_TITLE + 45.0),
+            Some(Row::Line { line: 25, cell0: 0 })
+        );
+        assert_eq!(map.rows_in(0.0..10.0 + CARD_TITLE), 0..2);
     }
 }
