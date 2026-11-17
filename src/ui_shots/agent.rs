@@ -386,6 +386,7 @@ pub(super) const SCENES: &[Scene] = &[
             "src/providers/agy.rs",
             "src/providers/fixtures/agy-text.jsonl",
             "src/providers/fixtures/agy-tools.jsonl",
+            "src/providers/fixtures/agy-bad-resume.jsonl",
         ],
     },
 ];
@@ -680,7 +681,8 @@ pub(super) fn agent_tab_done() {
 
 /// An Antigravity tab (M11aa Task 12), fed agy's own recordings through its own decoder: its
 /// mode chip steps through agy's modes before the first message and is read-only after; the
-/// replies carry the AG badge; the tools pair up and the turns end Done.
+/// tools pair up and the turns end Done. (The replies' AG avatar is in the picture only: this
+/// scene reads view state, not pixels.)
 pub(super) fn agent_tab_agy() {
     use crate::providers::agy::AGY;
     let name = "agent-tab-agy";
@@ -761,6 +763,81 @@ pub(super) fn agent_tab_agy() {
         );
         println!("ui-shots: {}", path.display());
     }
+    agy_dead_conversation_and_stop(name, decode);
+}
+
+/// Checks only: a restored agy tab whose conversation agy no longer has (agy goes on in a new
+/// one: `agy-bad-resume.jsonl`) says so in place of "restored" and keeps the new id; and Stop,
+/// agy having no interrupt (`ProviderInfo::interrupts`), offers Force stop at once.
+fn agy_dead_conversation_and_stop(name: &str, decode: impl Fn(&str) -> Vec<Event> + 'static) {
+    use crate::agent_tab::RESTORED_NOTICE;
+    use crate::providers::agy::AGY;
+    const ZERO: &str = "00000000-0000-0000-0000-000000000000";
+    let n = format!("{name}-dead-conversation");
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = Rc::default();
+    let keep = slot.clone();
+    render_with(
+        &theme,
+        size(px(DIMS.0), px(DIMS.1)),
+        move |window, cx| {
+            cx.set_global(shot_appearance(theme, cx));
+            let resume = Start {
+                resume: Some(ZERO.into()),
+                mode: AGY.info().default_mode.map(String::from),
+                ..start()
+            };
+            let tab = cx.new(|cx| AgentTab::for_shots(&AGY, resume, window, cx));
+            *keep.borrow_mut() = Some(tab.clone());
+            tab.into()
+        },
+        move |cx, _| {
+            let tab = tab_of(&slot);
+            // agy keeps no history fuxx reads: the "restored" notice.
+            feed(cx, &tab, |t, cx| t.shot_history(Vec::new(), cx));
+            cx.read(|cx| {
+                let items = tab.read(cx).shot_items();
+                assert!(
+                    matches!(items, [Item::Notice(a)] if a == RESTORED_NOTICE),
+                    "{n}: {items:?}"
+                );
+            });
+            let events = decode(include_str!("../providers/fixtures/agy-bad-resume.jsonl"));
+            assert!(
+                matches!(events.first(), Some(Event::Started { conversation, .. }) if conversation != ZERO),
+                "{n}: agy began another conversation"
+            );
+            feed(cx, &tab, |t, cx| t.send("Say hello in one word".into(), cx));
+            feed(cx, &tab, |t, cx| t.shot_feed(events, cx));
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let items = t.shot_items();
+                assert!(
+                    matches!(items.first(), Some(Item::Notice(a)) if a == BAD_RESUME_NOTICE),
+                    "{n}: the notice says it's a new one: {items:?}"
+                );
+                assert!(
+                    !items
+                        .iter()
+                        .any(|i| matches!(i, Item::Notice(a) if a == RESTORED_NOTICE)),
+                    "{n}: not restored: {items:?}"
+                );
+                assert!(
+                    items.iter().any(|i| matches!(i, Item::You { .. })),
+                    "{n}: your message stays"
+                );
+                assert_eq!(t.shot_resume(), None, "{n}: the dead id is forgotten");
+                assert_eq!(t.status(), Status::Done, "{n}");
+            });
+            // A new turn, then Stop: Force stop is offered at once (no "Stopping…").
+            feed(cx, &tab, |t, cx| t.send("Write a long essay".into(), cx));
+            cx.read(|cx| assert_eq!(tab.read(cx).status(), Status::Working, "{n}"));
+            feed(cx, &tab, |t, cx| t.shot_press_stop(cx));
+            cx.read(|cx| assert_eq!(tab.read(cx).shot_stop_label(), Some("Force stop"), "{n}"));
+            slot.borrow_mut().take();
+        },
+    );
+    println!("ui-shots: {name}: a dead conversation is a new one; Stop offers Force stop at once");
 }
 
 /// The agent exits 1 ("not logged in"): one error row with Open in classic view, status Done.

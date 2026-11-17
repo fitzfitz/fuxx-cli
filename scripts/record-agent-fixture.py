@@ -5,7 +5,7 @@ Usage: python3 -I scripts/record-agent-fixture.py <claude|agy> <scenario> <workd
 
 Scenarios (claude): text, tools, permission-allow, permission-deny, permission-always,
   interrupt, interrupt-text, queue, resume (needs session-id), slash, bad-resume
-Scenarios (agy): text, tools, resume (needs session-id = conversation id)
+Scenarios (agy): text, tools, resume (needs session-id = conversation id), bad-resume
 agy: `-p=` and {"event":"user","message":{"content":...}} input (see comments).
 
 Run each recording in a fresh temp dir, never in the repo. The user's own hooks run (nothing
@@ -145,6 +145,10 @@ class Run:
             s = s.replace(w, "/tmp/fx")
         s = s.replace(os.path.expanduser("~"), "~")
         s = re.sub(r"-(private-)?(var-folders|tmp)-[A-Za-z0-9-]+", "-tmp-fx", s)  # mangled cwd in ~/.claude/projects names
+        # A local time's UTC offset tells the owner's timezone (agy's `Created At: …+hh:mm`): UTC.
+        s = re.sub(r"(T\d\d:\d\d:\d\d(?:\.\d+)?)[+-]\d\d:\d\d", r"\1Z", s)
+        # A server's per-request error id (agy's AGY_ERROR line) traces back to the account.
+        s = re.sub(r'("error_id"\s*:\s*")[^"]*"', r'\g<1>00000000-0000-0000-0000-000000000000"', s)
         return s.replace(os.path.basename(os.path.expanduser("~")), "user")  # e.g. `ls -l` owners
 
     def _write(self):
@@ -263,7 +267,7 @@ class Run:
 SCENARIOS = {
     "claude": {"text", "tools", "permission-allow", "permission-deny", "permission-always", "interrupt",
                "interrupt-text", "queue", "resume", "slash", "bad-resume"},
-    "agy": {"text", "tools", "resume"},
+    "agy": {"text", "tools", "resume", "bad-resume"},
 }
 TOOL_PROMPT = ("Do these four things in order, using the matching tools: 1) Read the file notes.txt "
                "2) Edit notes.txt, changing 'alpha' to 'beta' 3) run `ls` with Bash "

@@ -285,6 +285,19 @@ impl Conversation {
         self.settle();
     }
 
+    /// Notice `old` (its last one) says `new` instead, in its place; without one, `new` is added.
+    pub fn replace_notice(&mut self, old: &str, new: &str) {
+        let found = self
+            .items
+            .iter_mut()
+            .rev()
+            .find(|i| matches!(i, Item::Notice(t) if t == old));
+        match found {
+            Some(item) => *item = Item::Notice(new.to_string()),
+            None => self.items.push(Item::Notice(new.to_string())),
+        }
+    }
+
     pub fn answered(&mut self, id: &str, answer: Answer) {
         for item in &mut self.items {
             if let Item::Permission {
@@ -502,6 +515,18 @@ mod tests {
         assert_eq!(c.status(), Status::Done);
         c.you("again".into(), vec![]);
         assert_eq!(c.status(), Status::Working);
+    }
+
+    #[test]
+    fn a_notice_is_replaced_in_its_place() {
+        let mut c = Conversation::new();
+        c.apply(Event::Notice("Conversation restored".into()));
+        c.you("hi".into(), Vec::new());
+        c.replace_notice("Conversation restored", "a new one");
+        assert!(matches!(c.items(), [Item::Notice(t), Item::You { .. }] if t == "a new one"));
+        // None to replace: added.
+        c.replace_notice("Conversation restored", "again");
+        assert!(matches!(c.items().last(), Some(Item::Notice(t)) if t == "again"));
     }
 
     #[test]

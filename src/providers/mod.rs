@@ -16,8 +16,11 @@ pub struct ProviderInfo {
     pub badge: &'static str,
     pub badge_rgb: u32,
     /// Whether the agent asks fuxx (not the user's terminal) before using a tool.
-    #[allow(dead_code)] // M11aa Task 12 (agy: false); nothing reads it yet
+    #[allow(dead_code)] // M11aa Task 13 (Claude true, agy false); nothing reads it yet
     pub routes_permissions: bool,
+    /// Whether a turn can be stopped by asking the agent (`Action::Interrupt`); if not, Stop
+    /// offers Force stop (ending the process) at once.
+    pub interrupts: bool,
     pub modes: &'static [&'static str],
     pub default_mode: Option<&'static str>,
 }
@@ -187,9 +190,9 @@ fn uuid_shaped(word: &str) -> bool {
 }
 
 /// The conversation a command line (`ps`'s `args`) names after one of `flags` (`--flag <id>` or
-/// `--flag=<id>`), the id UUID-shaped; any other word after one (a word of a prompt `ps` joined
-/// in, a search) names nothing, and the search goes on.
-fn conversation_after(args: &str, flags: &[&str]) -> Option<String> {
+/// `--flag=<id>`), the id of the provider's shape (`is_id`); any other word after one (a word of
+/// a prompt `ps` joined in, a search) names nothing, and the search goes on.
+fn conversation_after(args: &str, flags: &[&str], is_id: fn(&str) -> bool) -> Option<String> {
     let mut words = args.split_whitespace().peekable();
     while let Some(word) = words.next() {
         let value = match word.split_once('=') {
@@ -197,7 +200,7 @@ fn conversation_after(args: &str, flags: &[&str]) -> Option<String> {
             _ if flags.contains(&word) => words.peek().copied(),
             _ => None,
         };
-        if let Some(id) = value.filter(|v| uuid_shaped(v)) {
+        if let Some(id) = value.filter(|v| is_id(v)) {
             return Some(id.to_string());
         }
     }
@@ -243,6 +246,7 @@ mod tests {
         badge: "PL",
         badge_rgb: 0,
         routes_permissions: false,
+        interrupts: false,
         modes: &[],
         default_mode: None,
     };
@@ -273,6 +277,20 @@ mod tests {
         fn translator(&self) -> Box<dyn Translator> {
             Box::new(Silent)
         }
+    }
+
+    #[test]
+    fn a_conversation_is_named_by_the_providers_id_shape() {
+        let args = "agent --id abc --id 6a1c234d-7469-40ef-b093-c74ad8006c28";
+        assert_eq!(
+            conversation_after(args, &["--id"], uuid_shaped).as_deref(),
+            Some("6a1c234d-7469-40ef-b093-c74ad8006c28")
+        );
+        assert_eq!(
+            conversation_after(args, &["--id"], |w| w == "abc").as_deref(),
+            Some("abc")
+        );
+        assert_eq!(conversation_after(args, &["--other"], uuid_shaped), None);
     }
 
     #[test]

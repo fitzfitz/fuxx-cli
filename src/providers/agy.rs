@@ -15,6 +15,8 @@ static INFO: ProviderInfo = ProviderInfo {
     badge: "AG",
     badge_rgb: 0x2d4f8a,
     routes_permissions: false,
+    // The recordings show no way to stop a turn on stdin.
+    interrupts: false,
     modes: &["accept-edits", "auto", "plan"],
     default_mode: Some("accept-edits"),
 };
@@ -87,11 +89,21 @@ impl Provider for Agy {
     /// `--conversation <id>` or `--conversation=<id>`, the id a UUID (`uuid_shaped`), as agy's
     /// conversation ids are (`init.conversation_id`).
     fn conversation_in_args(&self, args: &str) -> Option<String> {
-        conversation_after(args, CONVERSATION_FLAGS)
+        conversation_after(args, CONVERSATION_FLAGS, uuid_shaped)
     }
 
     fn translator(&self) -> Box<dyn Translator> {
         Box::new(AgyTranslator::default())
+    }
+
+    /// Given a conversation it doesn't have, agy warns `conversation "<id>" not found` on
+    /// stderr, exits 0 if its input ends, and otherwise goes on in a new conversation with a
+    /// new `init.conversation_id` (`fixtures/agy-bad-resume.jsonl`).
+    fn unknown_conversation(&self, said: &str) -> bool {
+        said.lines().any(|l| {
+            let l = l.trim();
+            l.contains("conversation \"") && l.ends_with("\" not found")
+        })
     }
 }
 
@@ -320,6 +332,9 @@ mod tests {
     const RESUME: &str = include_str!("fixtures/agy-resume.jsonl");
     /// The Task 0 recording: the account was out of credits (429 RESOURCE_EXHAUSTED).
     const CREDITS: &str = include_str!("fixtures/agy-credits.jsonl");
+    /// `--conversation 00000000-…`: agy warns on stderr and starts a new conversation.
+    const BAD_RESUME: &str = include_str!("fixtures/agy-bad-resume.jsonl");
+    const BAD_RESUME_STDERR: &str = include_str!("fixtures/agy-bad-resume.jsonl.stderr");
 
     fn decode_all(text: &str) -> Vec<Event> {
         let mut t = AGY.translator();
@@ -504,7 +519,7 @@ mod tests {
 
     #[test]
     fn every_agy_fixture_decodes_and_garbage_is_silent() {
-        for f in [TEXT, TOOLS, RESUME, CREDITS] {
+        for f in [TEXT, TOOLS, RESUME, CREDITS, BAD_RESUME] {
             decode_all(f);
         }
         let mut t = AGY.translator();
@@ -619,6 +634,25 @@ mod tests {
     }
 
     #[test]
+    fn a_dead_conversation_is_told_by_what_agy_said() {
+        assert!(AGY.unknown_conversation(BAD_RESUME_STDERR));
+        assert!(AGY.unknown_conversation(
+            "warning: conversation \"6a1c234d-7469-40ef-b093-c74ad8006c28\" not found\n"
+        ));
+        // Other failures are not a dead conversation.
+        assert!(!AGY.unknown_conversation(include_str!("fixtures/agy-credits.jsonl.stderr")));
+        assert!(!AGY.unknown_conversation("error: file \"x\" not found"));
+        assert!(!AGY.unknown_conversation(""));
+        // It goes on in a new conversation, not the one asked for.
+        let ev = decode_all(BAD_RESUME);
+        assert!(
+            matches!(ev.first(), Some(Event::Started { conversation, .. })
+            if conversation != "00000000-0000-0000-0000-000000000000")
+        );
+        assert!(matches!(ev.last(), Some(Event::TurnDone { ok: true, .. })));
+    }
+
+    #[test]
     fn agy_info_is_antigravity() {
         let i = AGY.info();
         assert_eq!(
@@ -626,6 +660,7 @@ mod tests {
             ("agy", "Antigravity", "AG", 0x2d4f8a)
         );
         assert!(!i.routes_permissions);
+        assert!(!i.interrupts);
         assert_eq!(i.modes, ["accept-edits", "auto", "plan"]);
         assert_eq!(i.default_mode, Some("accept-edits"));
     }
