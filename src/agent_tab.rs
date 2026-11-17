@@ -102,9 +102,46 @@ pub enum AgentTabEvent {
     /// signal): its error row's words, for the tab's Activity (spec §1.5). Before the `Status`
     /// it brings.
     Failed(String),
+    /// A tool call that writes files started (M11af): `call` is its tool id (unique only within
+    /// this conversation); `paths` are canonical, relative ones joined to the tab's cwd.
+    Edit { call: String, paths: Vec<PathBuf> },
+    /// That tool call finished.
+    EditDone { call: String, ok: bool },
     /// A command block dropped on the tab's body (Task 11): the Workspace reads its output and
     /// attaches it (`attach_block`), as for a drop on the tab in a bar.
     BlockDropped(BlockDrag),
+}
+
+/// What an agent event tells the edit ledger: a tool call that writes files (`writes`, resolved
+/// against the agent's `cwd`) starts an edit; the finish of one that did ends it. `open` holds
+/// the calls started and not finished.
+fn edit_events(
+    event: &Event,
+    cwd: &Path,
+    home: Option<&Path>,
+    open: &mut HashSet<String>,
+) -> Vec<AgentTabEvent> {
+    match event {
+        Event::ToolStarted { id, writes, .. } => {
+            let paths: Vec<PathBuf> = writes
+                .iter()
+                .filter_map(|w| crate::edit_ledger::resolve_write(w, cwd, home))
+                .collect();
+            if paths.is_empty() {
+                return Vec::new();
+            }
+            open.insert(id.clone());
+            vec![AgentTabEvent::Edit {
+                call: id.clone(),
+                paths,
+            }]
+        }
+        Event::ToolFinished { id, ok, .. } if open.remove(id) => vec![AgentTabEvent::EditDone {
+            call: id.clone(),
+            ok: *ok,
+        }],
+        _ => Vec::new(),
+    }
 }
 
 /// Reports the process's end exactly once (`Conversation::process_ended` isn't idempotent):
@@ -466,6 +503,8 @@ pub struct AgentTab {
     expanded: HashSet<String>,
     /// When each running tool started (for its elapsed time).
     tool_started: std::collections::HashMap<String, Instant>,
+    /// Tool calls that write files and haven't finished (reported to the edit ledger).
+    open_edits: HashSet<String>,
     said: Said,
     /// Stop was pressed: the turn hasn't ended yet. `force`: `STOP_FORCE_AFTER` has passed.
     stopping: Option<Instant>,
@@ -749,6 +788,7 @@ impl AgentTab {
             rows: Vec::new(),
             expanded: HashSet::new(),
             tool_started: std::collections::HashMap::new(),
+            open_edits: HashSet::new(),
             said: Said::default(),
             stopping: None,
             force: false,
@@ -801,6 +841,20 @@ impl AgentTab {
         self.end_process();
     }
 
+    /// The tool calls that write files and haven't finished (the Workspace closes them in the
+    /// edit ledger as the tab closes).
+    pub fn open_edit_calls(&self) -> Vec<String> {
+        self.open_edits.iter().cloned().collect()
+    }
+
+    /// The run ended (or was stopped): its open edits end as not ok, so one that never finished
+    /// can't claim later changes.
+    fn abandon_edits(&mut self, cx: &mut Context<Self>) {
+        for call in std::mem::take(&mut self.open_edits) {
+            cx.emit(AgentTabEvent::EditDone { call, ok: false });
+        }
+    }
+
     /// "Open in classic view" (R13): stop the process (not an exit: no exit row; nothing that
     /// was booting or waiting goes on), one notice, Done (`live: false`: no banner). It comes
     /// back only through `resume_after_classic`.
@@ -812,6 +866,7 @@ impl AgentTab {
         self.force = false;
         self.force_timer = None;
         self.end_process();
+        self.abandon_edits(cx);
         self.paused = true;
         self.unqueue(cx);
         self.conversation.paused();
@@ -1127,6 +1182,7 @@ impl AgentTab {
                 self.exited = true;
                 self.ending = false;
                 self.process = None;
+                self.abandon_edits(cx);
                 let label = self.label().to_string();
                 let why = format!("Couldn't start {label}: {message}");
                 self.conversation.failed_to_start(&why);
@@ -1145,6 +1201,7 @@ impl AgentTab {
         self.process = None;
         self.pump = None;
         self.stopping = None;
+        self.abandon_edits(cx);
         // What the run said on its way out: its stderr tail and its error rows.
         let said: Vec<String> = self.conversation.items()[self.run.first_item..]
             .iter()
@@ -1222,6 +1279,15 @@ impl AgentTab {
     /// `Title`, `Conversation` — and the tab redrawn.
     fn on_events(&mut self, events: Vec<Event>, cx: &mut Context<Self>) {
         for event in events {
+            let home = crate::workspace::home_dir();
+            for told in edit_events(
+                &event,
+                &self.start.cwd,
+                home.as_deref(),
+                &mut self.open_edits,
+            ) {
+                cx.emit(told);
+            }
             match &event {
                 Event::Started { conversation, .. } => {
                     self.run.started = true;
@@ -1473,6 +1539,7 @@ impl AgentTab {
             return;
         }
         self.stopping = Some(Instant::now());
+        self.abandon_edits(cx);
         if !self.provider.is_some_and(|p| p.info().interrupts) {
             self.force = true;
             self.force_timer = None;
@@ -2706,6 +2773,58 @@ impl Render for AgentTab {
 mod tests {
     use super::*;
     use crate::ui_tokens::contrast;
+
+    #[test]
+    fn an_edit_tool_call_emits_edit_with_paths_joined_to_cwd() {
+        let mut open = HashSet::new();
+        let cwd = Path::new("/tmp/fx");
+        let started = Event::ToolStarted {
+            id: "t1".into(),
+            name: "Write".into(),
+            summary: "hello.txt".into(),
+            parent: None,
+            detail: None,
+            writes: vec!["hello.txt".into(), String::new()],
+        };
+        assert_eq!(
+            edit_events(&started, cwd, None, &mut open),
+            vec![AgentTabEvent::Edit {
+                call: "t1".into(),
+                paths: vec![PathBuf::from("/tmp/fx/hello.txt")],
+            }]
+        );
+        let other = Event::ToolFinished {
+            id: "t0".into(),
+            ok: true,
+            summary: String::new(),
+            output: None,
+        };
+        assert!(edit_events(&other, cwd, None, &mut open).is_empty());
+        let finished = Event::ToolFinished {
+            id: "t1".into(),
+            ok: true,
+            summary: String::new(),
+            output: None,
+        };
+        assert_eq!(
+            edit_events(&finished, cwd, None, &mut open),
+            vec![AgentTabEvent::EditDone {
+                call: "t1".into(),
+                ok: true
+            }]
+        );
+        assert!(open.is_empty());
+        // A call that writes nothing says nothing.
+        let read = Event::ToolStarted {
+            id: "t2".into(),
+            name: "Read".into(),
+            summary: String::new(),
+            parent: None,
+            detail: None,
+            writes: vec![],
+        };
+        assert!(edit_events(&read, cwd, None, &mut open).is_empty());
+    }
 
     #[test]
     fn process_end_is_reported_once() {
