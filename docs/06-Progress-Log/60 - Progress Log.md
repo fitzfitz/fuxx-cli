@@ -23,6 +23,11 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-17 — Chore: fix the `chrome-agent-status` scene
+- **Cause:** the scene's two Claudes work at once. Their live ages started a fraction of a second apart (436 ms in the failing run), so a label turned twice a second. Under today's load one check (two whole-window captures) took about 490 ms, so the check caught one Claude's turn and its one retry caught the other's. Not a product bug.
+- **Fix (scene only):** after each step's act, once the app's own path has set the status, the scene dates its agent tabs' statuses ten minutes ahead. Their ages then read "0s" for the whole scene. Nothing has been drawn yet, so no pixel changes and no notify is needed. A missing notify still shows as stale: checked by dropping `set_agent_status`'s notify, and the scene failed stale. New check (RED first): no agent age turns within a minute.
+- **Numbers:** 1,840 tests pass (1 ignored); clippy 14/27 and 16/29 (unchanged); fmt clean. `chrome-agent-status` passed 3 runs of 3. Full `scripts/ui-shots.sh`: 144 passed, 2 failed (231.8 s, load average about 20 on 10 cores). The 2 failures were `chrome-notifications` (stale) and `chrome-sidebar-scroll` (an age turned twice). This change doesn't touch either one, and both passed when run alone right after.
+
 ### 2026-11-17 — Chore: ignore `.impeccable/`
 - **Did:** `.impeccable/` (the impeccable design skill's local config and cache) added to `.gitignore`, on your word. The `backup/pre-scrub` branch you asked to delete was already gone (no local, remote or tag copy left).
 
