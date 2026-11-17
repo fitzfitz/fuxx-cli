@@ -101,6 +101,7 @@ mod pty;
 mod reduce_motion;
 mod restore;
 mod right_sidebar;
+mod row_map;
 mod scrollbar;
 mod session_list;
 mod settings;
