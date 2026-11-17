@@ -110,6 +110,7 @@ pub(super) const ORDER: &[&str] = &[
     "chrome-file-tab-toolbar",
     "sidebar",
     "sidebar-rows",
+    "sidebar-quiet",
     "sidebar-selection",
     "sidebar-button",
     "title-area",

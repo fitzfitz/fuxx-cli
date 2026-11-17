@@ -222,6 +222,16 @@ pub fn foreground(procs: &[Proc], shell: u32) -> Foreground {
         .map_or(Foreground::Prompt, |p| Foreground::Program(p.args.clone()))
 }
 
+/// The programs stopped as jobs below `shell` (Ctrl-Z: state `T`), by `program_name`.
+pub fn stopped_below(procs: &[Proc], shell: u32) -> Vec<String> {
+    let below = descendants(procs, shell);
+    procs
+        .iter()
+        .filter(|p| below.contains(&p.pid) && p.stat.starts_with('T'))
+        .map(|p| program_name(&p.args))
+        .collect()
+}
+
 /// Every process below `root` (its children, theirs, and so on), `root` not included.
 pub fn descendants(procs: &[Proc], root: u32) -> Vec<u32> {
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -312,6 +322,19 @@ fn lsof_command(pids: &[u32]) -> Option<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_suspended_job_is_found_below_its_shell() {
+        let t = parse_ps(
+            "  500     1   500   500 Ss   -zsh\n\
+               600   500   600   500 T    claude --resume c1\n\
+               601   600   600   500 T    node helper.js\n\
+               700     1   700   700 T    codex\n\
+               800   500   800   500 S    vim notes.md\n",
+        );
+        assert_eq!(stopped_below(&t, 500), ["claude", "node"]);
+        assert!(stopped_below(&t, 999).is_empty());
+    }
 
     fn run(name: &str) -> ProgramState {
         ProgramState::Running(name.into())
