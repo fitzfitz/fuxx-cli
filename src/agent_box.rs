@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    Anchor, AnyElement, App, Context, Div, MouseDownEvent, SharedString, Stateful, anchored,
-    deferred, div, point, prelude::*, px,
+    Anchor, AnyElement, App, Context, Div, Focusable, MouseButton, MouseDownEvent, SharedString,
+    Stateful, Window, anchored, deferred, div, point, prelude::*, px,
 };
 
 use crate::agent_catalog::{Catalogs, Lookup};
@@ -17,6 +17,7 @@ use crate::appearance::Appearance;
 use crate::providers::{Applies, Catalog, ModeChoice, Provider, Start};
 use crate::terminal_view::hsla;
 use crate::ui_tokens::text;
+use alacritty_terminal::vte::ansi::Rgb;
 
 /// The box's sizes, named here so the UI uplift (M11al) restyles them in one place.
 /// The room around the box: at its sides, above the folder row, under the box.
@@ -312,6 +313,17 @@ impl AgentTab {
         }
     }
 
+    /// The box's edge: the focus ring while its text has the keyboard, else the quiet edge
+    /// (as the framed composer's own edge was). Read while drawing: a focus change refreshes
+    /// the window, which draws cached views again.
+    pub(crate) fn box_edge(&self, c: &Colors, window: &Window, cx: &App) -> Rgb {
+        if self.composer.read(cx).focus_handle(cx).is_focused(window) {
+            c.box_focus
+        } else {
+            c.box_edge
+        }
+    }
+
     /// `el`, and under `ui-shots` a probe that keeps where it was laid out as `part`.
     pub(crate) fn marked<E: ParentElement>(&self, part: &'static str, el: E) -> E {
         #[cfg(feature = "ui-shots")]
@@ -344,9 +356,11 @@ impl AgentTab {
         &self,
         c: &Colors,
         mono: SharedString,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let texts = self.box_texts(cx);
+        let edge = self.box_edge(c, window, cx);
         let menu = self.menu.clone();
         let menu_on = |chip: fn(&BoxMenu) -> bool| menu.as_ref().is_some_and(chip);
         let folder = self
@@ -447,7 +461,15 @@ impl AgentTab {
                 .py(px(BOX_Y))
                 .rounded(px(BOX_RADIUS))
                 .border_1()
-                .border_color(hsla(c.box_edge))
+                .border_color(hsla(edge))
+                // A press on the box's own room (not a chip or button: theirs act as well)
+                // puts the keyboard in its text, as the framed text box did.
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                        this.composer.read(cx).focus_handle(cx).focus(window, cx)
+                    }),
+                )
                 .bg(hsla(c.box_fill))
                 .children(self.attachment_chips(c, cx))
                 .child(
