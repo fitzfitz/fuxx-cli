@@ -23,6 +23,9 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-17 — M11al direction chosen: UI uplift 3
+- **Chosen in browser mockups:** keep today's positions; roomier everywhere; the sidebar stays attached; the terminal and the right panel become one floating card (option 1); minimal tabs (E). Note [[84 - Milestone 11al - UI Uplift 3]]. **Right after M11ak**, before M11ag (your call: "looks right, do it right after M11ak").
+
 ### 2026-11-17 — M11ak designed and approved: the agent box
 - **Asked:** while scoping M11ag you showed another app's message box (folder and branch chips, folder picker, model menu with effort and usage, mode chip) — "split it — box first, drop mic and main agent"; `/` and `@` "include both in the box milestone"; folder defaults to the active terminal's.
 - **Checked (2026-11-17):** both agents' `/usage` and lists run without the model ($0, zero turns); agy's usage, `models` and `/help` are structured; Claude's `/usage` is regular text lines; Claude's start-up lists commands, skills and sub-agents.
