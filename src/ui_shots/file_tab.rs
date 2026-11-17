@@ -142,6 +142,22 @@ pub(super) const SCENES: &[Scene] = &[
         kind: Kind::Visual,
         sources: &["src/file_tab.rs", "src/ui_tokens.rs"],
     },
+    Scene {
+        name: "file-code-guides",
+        run: file_code_guides_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/file_tab.rs", "src/code_outline.rs", "src/ui_tokens.rs"],
+    },
+    Scene {
+        name: "file-code-bars",
+        run: file_code_bars_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/file_tab.rs", "src/ui_tokens.rs"],
+    },
 ];
 
 /// A file tab (M11g) in a pane beside a terminal's tab: opened twice for one file it is one tab,
@@ -3735,6 +3751,301 @@ fn file_code_calm_scenes() {
             dist(four, quiet) <= 30 && dist(four, quiet) < dist(four, ui.text),
             "{n}: line 4's number quiet {four:?}"
         );
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// A frozen tab on `path` shot in `theme` after `setup` (given the tab): the shot and the
+/// geometry last drawn.
+fn code_shot(
+    theme: &Theme,
+    path: &std::path::Path,
+    dims: gpui::Size<gpui::Pixels>,
+    setup: impl FnOnce(
+        &mut VisualTestAppContext,
+        AnyWindowHandle,
+        &gpui::Entity<crate::file_tab::FileTab>,
+    ),
+) -> (Shot, crate::file_tab::Geom) {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let slot: LiveSlot = Rc::default();
+    let build = live_tab(*theme, path.to_path_buf(), slot.clone());
+    let seen: Rc<Cell<Option<crate::file_tab::Geom>>> = Rc::default();
+    let keep = seen.clone();
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let tab = slot.borrow().clone().expect("the file tab");
+        live_frame(cx, window);
+        setup(cx, window, &tab);
+        live_frame(cx, window);
+        keep.set(cx.read(|cx| tab.read(cx).geom()));
+    };
+    let shot = render_with(theme, dims, build, act);
+    (shot, seen.get().expect("drawn"))
+}
+
+/// The fixture of the guide scenes: a block inside a block, a blank line inside the inner one.
+const GUIDES_FIXTURE: &str = "fn main() {
+    if ready {
+        let a = 1;
+
+        let b = 2;
+    }
+    let c = 3;
+}
+";
+
+/// `file-code-guides` (both themes; M11ah Task 3): in a nested Rust file with line 3 (0-based
+/// 2) pressed, a level-2 line has a 1 pt guide at cell 0 and at cell 4 (the step) in `text` at
+/// 7 %, the pressed line's block (the `if`) drawing its own at 14 %; the blank line inside the
+/// block has both; a line outside the `if` has none at cell 4. A wrapped line's continuation
+/// rows (Wrap on) have them too; a flat text file none; Diff mode draws them over its rows.
+fn file_code_guides_scenes() {
+    use crate::ui_tokens::code;
+    use gpui::{Modifiers, MouseButton};
+
+    let nested = live_file("guides.rs", GUIDES_FIXTURE);
+    let flat = live_file("guides-flat.txt", "one\ntwo\n\nthree\nfour\n");
+    let long = live_file(
+        "guides-wrap.rs",
+        &format!(
+            "fn main() {{\n    if ready {{\n        let a = 1; // {}end\n        let b = 2;\n    }}\n}}\n",
+            " ".repeat(400)
+        ),
+    );
+    let dims = size(px(760.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = theme.background;
+        let faint = crate::theme::mix(bg, ui.text, code::GUIDE_ALPHA);
+        let strong = crate::theme::mix(bg, ui.text, code::GUIDE_ACTIVE_ALPHA);
+        // The guide's pixel at `cell`, `dy` points down row `row` (scroll counted).
+        let guide = |shot: &Shot, g: &crate::file_tab::Geom, cell: usize, row: usize, dy: f32| {
+            let x = f32::from(g.bounds.left() + g.text_left + g.cell_width * cell as f32) + 0.5;
+            let y = f32::from(g.bounds.top() + g.line_height * row as f32 - g.scroll.y) + dy;
+            pixel_at(shot, dims, x, y)
+        };
+
+        // File mode: line 3 pressed.
+        let n = format!("file-code-guides-{slug}");
+        let (shot, g) = code_shot(&theme, &nested, dims, |cx, window, tab| {
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let at = point(
+                g.bounds.left() + g.text_left + g.cell_width * 12.0,
+                g.bounds.top() + g.line_height * 2.5,
+            );
+            let none = Modifiers::none();
+            cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+            cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+        });
+        keep_shot(&n, &shot);
+        let lh = f32::from(g.line_height);
+        for dy in [lh * 0.3, lh * 0.5, lh * 0.8] {
+            // Row 4 (`let b`) and the blank row 3: cell 0 quiet, cell 4 the pressed block's.
+            for row in [3, 4] {
+                let (a, b) = (guide(&shot, &g, 0, row, dy), guide(&shot, &g, 4, row, dy));
+                assert!(
+                    live_near(a, faint, 3),
+                    "{n}: row {row} cell 0 {a:?}, not {faint:?}"
+                );
+                assert!(
+                    live_near(b, strong, 3),
+                    "{n}: row {row} cell 4 {b:?}, not {strong:?}"
+                );
+            }
+            // Row 5 (`    }`, the closer, level 1): cell 0 quiet.
+            let a = guide(&shot, &g, 0, 5, dy);
+            assert!(
+                live_near(a, faint, 3),
+                "{n}: row 5 cell 0 {a:?}, not {faint:?}"
+            );
+        }
+        // Row 6 (`    let c`): cell 0 quiet; its cell 4 holds the text, no guide drawn there.
+        let a = guide(&shot, &g, 0, 6, lh * 0.5);
+        assert!(live_near(a, faint, 3), "{n}: row 6 cell 0 {a:?}");
+        println!("ui-shots: {n} ok");
+
+        // Wrap on: the long line's continuation rows (just spaces) have the guides.
+        let n = format!("file-code-guides-wrap-{slug}");
+        let (shot, g) = code_shot(&theme, &long, dims, |cx, _, _| {
+            cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().file_wrap = true);
+        });
+        keep_shot(&n, &shot);
+        let lh = f32::from(g.line_height);
+        for row in [3, 4] {
+            for cell in [0, 4] {
+                let p = guide(&shot, &g, cell, row, lh * 0.5);
+                assert!(
+                    live_near(p, faint, 3),
+                    "{n}: continuation row {row} cell {cell} {p:?}, not {faint:?}"
+                );
+            }
+        }
+        println!("ui-shots: {n} ok");
+
+        // A flat text file: none, even through its blank line.
+        let n = format!("file-code-guides-flat-{slug}");
+        let (shot, g) = code_shot(&theme, &flat, dims, |_, _, _| {});
+        keep_shot(&n, &shot);
+        for cell in [0, 4] {
+            let p = guide(&shot, &g, cell, 2, f32::from(g.line_height) * 0.5);
+            assert!(live_near(p, bg, 1), "{n}: no guide at cell {cell} {p:?}");
+        }
+        println!("ui-shots: {n} ok");
+
+        // Diff mode: the rows' own outline; the blank context row (3) has both.
+        let n = format!("file-code-guides-diff-{slug}");
+        let old: Vec<&str> = GUIDES_FIXTURE.lines().collect();
+        let mut unified = format!(
+            "diff --git a/guides.rs b/guides.rs\n--- a/guides.rs\n+++ b/guides.rs\n@@ -1,{} +1,{} @@\n",
+            old.len() - 1,
+            old.len()
+        );
+        for (i, line) in old.iter().enumerate() {
+            let sign = if i == 2 { '+' } else { ' ' };
+            unified.push_str(&format!("{sign}{line}\n"));
+        }
+        let (shot, g) = code_shot(&theme, &nested, dims, |cx, _, tab| {
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.choose_mode_for_shots(crate::layout_model::FileMode::Diff, cx);
+                    t.set_diff_for_shots(&unified, cx);
+                })
+            });
+        });
+        keep_shot(&n, &shot);
+        for cell in [0, 4] {
+            let p = guide(&shot, &g, cell, 3, f32::from(g.line_height) * 0.5);
+            assert!(live_near(p, faint, 3), "{n}: diff row 3 cell {cell} {p:?}");
+        }
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-code-bars` (both themes; M11ah Task 3): three Added rows are one 3 pt bar with rounded
+/// ends (its corner pixels show the row's tint, not the green; its middle the green); an Added
+/// run touching a Changed run leaves 2 pt between them (1 pt of each row's tint); the deleted
+/// lines' ▸ is still drawn; a press on any row of a run opens Diff.
+fn file_code_bars_scenes() {
+    use crate::git_status::LineChange;
+    use crate::layout_model::FileMode;
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+    use gpui::{Modifiers, MouseButton};
+
+    let path = live_file("bars.rs", LIVE_FIXTURE);
+    let dims = size(px(760.0), px(360.0));
+    // Lines counted from 1, as git does: 3-5 added, 6 changed, lines deleted above line 12.
+    let changes = || {
+        vec![
+            (3, LineChange::Added),
+            (4, LineChange::Added),
+            (5, LineChange::Added),
+            (6, LineChange::Changed),
+            (11, LineChange::DeletedAfter),
+        ]
+    };
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let bg = theme.background;
+        let fit = |c: alacritty_terminal::vte::ansi::Rgb| ensure_contrast(c, bg, MARK_MIN);
+        let (green, blue, red) = (
+            fit(theme.palette[2]),
+            fit(theme.palette[4]),
+            fit(theme.palette[1]),
+        );
+        let (tint_green, tint_blue) = (
+            crate::theme::mix(bg, green, 0.12),
+            crate::theme::mix(bg, blue, 0.12),
+        );
+        let n = format!("file-code-bars-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, _, tab| {
+            cx.update(|cx| tab.update(cx, |t, cx| t.set_changes(changes(), cx)));
+        });
+        keep_shot(&n, &shot);
+        let (lh, top) = (f32::from(g.line_height), f32::from(g.bounds.top()));
+        let left = f32::from(g.bounds.left() + g.bar_left);
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        let (y0, y1) = (top + lh * 2.0, top + lh * 5.0);
+        // The run's middle is the green, at its full width.
+        for dx in [0.4, 1.5, 2.6] {
+            let p = at(left + dx, y0 + lh * 1.5);
+            assert!(
+                live_near(p, green, 12),
+                "{n}: middle at {dx}: {p:?}, not {green:?}"
+            );
+        }
+        // Its top corners are cut round: the row's tint shows there, not the green.
+        for x in [left + 0.25, left + 2.75] {
+            let p = at(x, y0 + 0.25);
+            assert!(
+                live_near(p, tint_green, 10),
+                "{n}: top corner {p:?}, not {tint_green:?}"
+            );
+        }
+        let p = at(left + 1.5, y0 + 2.0);
+        assert!(live_near(p, green, 12), "{n}: below the corner {p:?}");
+        // The bottom end (touching the Changed run) is shortened by 1 pt and round.
+        for x in [left + 0.25, left + 2.75] {
+            let p = at(x, y1 - 1.25);
+            assert!(live_near(p, tint_green, 10), "{n}: bottom corner {p:?}");
+        }
+        let p = at(left + 1.5, y1 - 3.0);
+        assert!(live_near(p, green, 12), "{n}: above the gap {p:?}");
+        // The 2 pt gap: 1 pt under the Added run, 1 pt above the Changed one, each its row's tint.
+        let (up, down) = (at(left + 1.5, y1 - 0.5), at(left + 1.5, y1 + 0.5));
+        assert!(
+            live_near(up, tint_green, 10),
+            "{n}: gap above {up:?}, not {tint_green:?}"
+        );
+        assert!(
+            live_near(down, tint_blue, 10),
+            "{n}: gap below {down:?}, not {tint_blue:?}"
+        );
+        let p = at(left + 1.5, y1 + 3.0);
+        assert!(
+            live_near(p, blue, 12),
+            "{n}: the Changed run {p:?}, not {blue:?}"
+        );
+        // The deleted-lines ▸ over the bar's place, on the edge above line 12 (0-based 11).
+        let edge = top + lh * 11.0;
+        let drawn = (-8..=8).any(|dx| {
+            (-10..=10).any(|dy| {
+                let p = at(left + 1.5 + dx as f32 * 0.5, edge + dy as f32 * lh / 20.0);
+                live_near(p, red, 40)
+            })
+        });
+        assert!(drawn, "{n}: the ▸ is still drawn");
+        println!("ui-shots: {n} ok");
+
+        // A press on any row of the run opens Diff.
+        let n = format!("file-code-bars-press-{slug}");
+        let (_, _) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.pretend_in_repo_for_shots(cx);
+                    t.set_changes(changes(), cx);
+                })
+            });
+            live_frame(cx, window);
+            for row in 2..6 {
+                let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+                let at = point(
+                    g.bounds.left() + g.bar_left + px(1.5),
+                    g.bounds.top() + g.line_height * (row as f32 + 0.5) - g.scroll.y,
+                );
+                let none = Modifiers::none();
+                cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+                cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+                live_frame(cx, window);
+                let mode = cx.read(|cx| tab.read(cx).mode());
+                assert_eq!(mode, FileMode::Diff, "{n}: a press on row {row} opens Diff");
+                cx.update(|cx| {
+                    tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx))
+                });
+                live_frame(cx, window);
+            }
+        });
         println!("ui-shots: {n} ok");
     }
 }

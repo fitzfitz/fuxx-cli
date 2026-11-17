@@ -540,6 +540,28 @@ pub fn selection_text(text: &str, lines: &[Range<usize>], a: Pos, b: Pos) -> Str
     out
 }
 
+/// Runs of neighbouring shown rows with the same change, in row order: (rows, change).
+pub fn bar_runs(changes: &[(usize, LineChange)]) -> Vec<(Range<usize>, LineChange)> {
+    let mut runs: Vec<(Range<usize>, LineChange)> = Vec::new();
+    for &(row, change) in changes {
+        match runs.last_mut() {
+            Some((rows, kind)) if rows.end == row && *kind == change => rows.end = row + 1,
+            _ => runs.push((row..row + 1, change)),
+        }
+    }
+    runs
+}
+
+/// The pixel span of a run drawn at `top..bottom`: shortened by half of `code::BAR_RUN_GAP` at an
+/// end that touches a run of another kind.
+pub fn bar_span(top: f32, bottom: f32, gap_above: bool, gap_below: bool) -> (f32, f32) {
+    let half = code::BAR_RUN_GAP / 2.0;
+    (
+        if gap_above { top + half } else { top },
+        if gap_below { bottom - half } else { bottom },
+    )
+}
+
 /// A change list (1-based new lines, from `line_changes`) as bars by 0-based line, and the
 /// edges where lines were deleted: edge `c` is above 0-based line `c` (0 is the top).
 pub fn bars(changes: &[(usize, LineChange)]) -> (HashMap<usize, LineChange>, Vec<usize>) {
@@ -998,6 +1020,13 @@ fn diff_state(
         Outcome::Binary => DiffState::Binary,
         Outcome::Rows(parsed) => {
             let mut doc = Doc::new(format!("{}\n", parsed.text), version);
+            // M11ah: the rows' own outline, for the guides (made here, off the UI thread).
+            doc.outline = code_outline::outline(
+                &line_slices(&doc.text, &doc.lines),
+                false,
+                code_outline::LIMIT,
+            )
+            .map(Arc::new);
             let both = sides(&parsed);
             let colourable = colourable(&both, doc.longest);
             // The rows held, coloured, again: not highlighted again (`accept_diff` keeps them).
@@ -2273,6 +2302,8 @@ struct Frame {
     current: Option<usize>,
     /// M11ah: the current line (a file's line, or a diff's row), drawn with a band.
     current_line: Option<usize>,
+    /// M11ah: whether indent guides are drawn (not in a Markdown file: its outline is headings).
+    guides: bool,
     theme: Theme,
     /// M11af: the live changes drawn (a file in File mode with a line marked).
     live: Option<LiveFrame>,
@@ -2397,6 +2428,62 @@ fn paint_number(
     let _ = number.paint(at, row, TextAlign::Left, None, window, cx);
 }
 
+/// The change bars of the rows in sight (a file's; a diff has signs): runs of neighbouring rows
+/// of one change are one bar, `BAR_WIDTH` wide with round ends, a `BAR_RUN_GAP` between runs of
+/// different changes. A run that goes on past the view's edge keeps a square end there. With Wrap
+/// a bar is on a line's first row only.
+fn paint_bars(
+    f: &Frame,
+    g: &Geom,
+    wrapped: Option<&Wrapped>,
+    rows: &Range<usize>,
+    colours: &BarColours,
+    window: &mut Window,
+) {
+    if f.mode != FileMode::Plain || f.doc.changes.by_line.is_empty() {
+        return;
+    }
+    let row_count = wrapped.map_or(f.doc.lines.len(), |w| w.rows.len());
+    // One row either side of the view, to tell a cut run and a touching one from a free end.
+    let (from, to) = (rows.start.saturating_sub(1), (rows.end + 1).min(row_count));
+    let shown: Vec<(usize, LineChange)> = (from..to)
+        .filter_map(|r| {
+            let (i, cell0) = wrapped.map_or((r, 0), |w| w.row(r));
+            let change = f.doc.changes.by_line.get(&i)?;
+            (cell0 == 0).then_some((r, *change))
+        })
+        .collect();
+    let runs = bar_runs(&shown);
+    let lh = f32::from(g.line_height);
+    let top = f32::from(g.bounds.top() - g.scroll.y);
+    let x = g.bounds.left() + g.bar_left;
+    for (k, (run, change)) in runs.iter().enumerate() {
+        let touches = |other: Option<&(Range<usize>, LineChange)>, at: usize| {
+            other.is_some_and(|(rows, _)| rows.contains(&at))
+        };
+        let gap_above =
+            run.start > 0 && touches(k.checked_sub(1).and_then(|p| runs.get(p)), run.start - 1);
+        let gap_below = touches(runs.get(k + 1), run.end);
+        let (y0, y1) = bar_span(
+            top + lh * run.start as f32,
+            top + lh * run.end as f32,
+            gap_above,
+            gap_below,
+        );
+        // Cut by the view's edge (the run goes on to the extra row): square there.
+        let radius = px(BAR_WIDTH / 2.0);
+        let (cut_top, cut_bottom) = (run.start < rows.start, run.end > rows.end);
+        let corners = gpui::Corners {
+            top_left: if cut_top { px(0.0) } else { radius },
+            top_right: if cut_top { px(0.0) } else { radius },
+            bottom_right: if cut_bottom { px(0.0) } else { radius },
+            bottom_left: if cut_bottom { px(0.0) } else { radius },
+        };
+        let bar = Bounds::new(point(x, px(y0)), size(px(BAR_WIDTH), px(y1 - y0)));
+        window.paint_quad(fill(bar, hsla(colours.of_change(*change))).corner_radii(corners));
+    }
+}
+
 /// Paint the text body: `f`'s lines in sight, laid out as `g`. A file: its numbers, change bars
 /// and tints, the deleted-lines ▸. A diff: each row's old and new numbers, its sign and tint
 /// (removed red, added green), unchanged rows' colours dimmed (`diff_view::dim`).
@@ -2451,6 +2538,22 @@ fn paint_body(
         sign(SIGN_REMOVED, removed_ink, window),
         sign(SIGN_ADDED, added_ink, window),
     );
+    // M11ah: indent guides (a file with blocks), the current line's block drawn stronger.
+    let outline = f
+        .doc
+        .outline
+        .as_deref()
+        .filter(|o| f.guides && o.has_structure());
+    let active = outline.and_then(|o| {
+        let block = *o.containing(f.current_line?).last()?;
+        Some((
+            o.blocks[block].start..o.blocks[block].end,
+            o.blocks[block].indent / o.step.max(1),
+        ))
+    });
+    let guide = hsla(ui.text).opacity(code::GUIDE_ALPHA);
+    let guide_active = hsla(ui.text).opacity(code::GUIDE_ACTIVE_ALPHA);
+    paint_bars(f, g, wrapped, &rows, &bars, window);
     for r in rows.clone() {
         let (i, cell0) = wrapped.map_or((r, 0), |w| w.row(r));
         let y = bounds.top() + lh * r as f32 - g.scroll.y;
@@ -2529,6 +2632,20 @@ fn paint_body(
         };
         let x_of = |col: usize| text_x + laid.x(col);
         window.with_content_mask(Some(mask), |window| {
+            // Indent guides, under the selection, the matches and the text: a 1 pt line at each
+            // of the line's levels (the same cells on every row of a wrapped line).
+            if let Some(o) = outline {
+                let origin =
+                    text_x + g.cell_width * part.map_or(0, |(_, _, start, _)| start) as f32;
+                for k in 0..o.levels(i) {
+                    let on = active
+                        .as_ref()
+                        .is_some_and(|(span, level)| *level == k && span.contains(&i));
+                    let x = origin + g.cell_width * (k * o.step) as f32;
+                    let line = Bounds::new(point(x, y), size(px(code::GUIDE), lh));
+                    window.paint_quad(fill(line, if on { guide_active } else { guide }));
+                }
+            }
             if let Some((s, e)) = f.selection
                 && (s.line..=e.line).contains(&i)
                 && s != e
@@ -2606,13 +2723,6 @@ fn paint_body(
                 {
                     let look = mark_look(mark, l.your_letter, &ui, bg);
                     paint_mark(look, bounds.left() + left, y, lh, window, cx);
-                }
-                if let Some(change) = change {
-                    let bar = Bounds::new(
-                        point(bounds.left() + g.bar_left, y),
-                        size(px(BAR_WIDTH), lh),
-                    );
-                    window.paint_quad(fill(bar, hsla(bars.of_change(change))));
                 }
             }
             Some(row) => {
@@ -5364,6 +5474,7 @@ impl FileTab {
                 FileMode::Plain => self.current,
                 FileMode::Diff => self.diff_current,
             },
+            guides: !is_markdown(&self.path),
             theme,
             live: (self.mode == FileMode::Plain && self.live.marked).then(|| LiveFrame {
                 record: self.live.record.clone(),
@@ -6616,6 +6727,40 @@ mod tests {
         assert_eq!(fresh.spans_version, Some(2));
         let mut bars = Doc::new("x\n".into(), 7);
         assert!(bars.accept_changes(2, &[(1, LineChange::Added)], None));
+    }
+
+    #[test]
+    fn bar_runs_join_rows_of_one_kind() {
+        let changes = [
+            (2, LineChange::Added),
+            (3, LineChange::Added),
+            (4, LineChange::Added),
+            (5, LineChange::Changed),
+            (9, LineChange::Added),
+        ];
+        assert_eq!(
+            bar_runs(&changes),
+            vec![
+                (2..5, LineChange::Added),
+                (5..6, LineChange::Changed),
+                (9..10, LineChange::Added),
+            ]
+        );
+        assert!(bar_runs(&[]).is_empty());
+    }
+
+    #[test]
+    fn bar_span_leaves_a_gap_only_between_kinds() {
+        let gap = code::BAR_RUN_GAP;
+        assert_eq!(bar_span(10.0, 40.0, false, false), (10.0, 40.0));
+        // Two runs touching at y = 40: each gives up half the gap, so 2 pt shows between them.
+        let (_, above_end) = bar_span(10.0, 40.0, false, true);
+        let (below_start, _) = bar_span(40.0, 70.0, true, false);
+        assert!((below_start - above_end - gap).abs() < f32::EPSILON);
+        assert_eq!(
+            bar_span(10.0, 40.0, true, true),
+            (10.0 + gap / 2.0, 40.0 - gap / 2.0)
+        );
     }
 
     #[test]
