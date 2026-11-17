@@ -1595,6 +1595,14 @@ fn carry_line(
     }
 }
 
+/// The current line after a Find step: the line of the match stepped to; a step that found
+/// no match (`stepped` none: no matches) keeps `kept`.
+fn step_line(matches: &[Match], stepped: Option<usize>, kept: Option<usize>) -> Option<usize> {
+    stepped
+        .and_then(|k| matches.get(k))
+        .map_or(kept, |m| Some(m.line))
+}
+
 /// Where the gutter's parts sit, in points from the body's left edge: the old numbers' right
 /// edge (a diff's), the (new) numbers' right edge, the change bar's left edge (a diff's sign
 /// column), the text's left edge.
@@ -4615,10 +4623,11 @@ impl FileTab {
         };
         let finds = &mut find.finds;
         finds.current = step(finds.current, finds.matches.len(), forward);
-        let line = finds
-            .current
-            .and_then(|k| finds.matches.get(k))
-            .map(|m| m.line);
+        let kept = match self.mode {
+            FileMode::Plain => self.current,
+            FileMode::Diff => self.diff_current,
+        };
+        let line = step_line(&finds.matches, finds.current, kept);
         self.set_current(line, cx);
         self.reveal_current(cx);
         cx.notify();
@@ -6733,6 +6742,15 @@ mod tests {
         );
         assert_eq!(carry_line(None, 4, |l| l == 4), Some(4));
         assert_eq!(carry_line(None, 4, |_| false), None);
+    }
+
+    #[test]
+    fn a_find_step_sets_the_current_line_and_a_miss_keeps_it() {
+        let hit = |line| Match { line, cols: 0..1 };
+        let matches = [hit(3), hit(7)];
+        assert_eq!(step_line(&matches, Some(1), Some(5)), Some(7));
+        assert_eq!(step_line(&matches, None, Some(5)), Some(5), "no matches");
+        assert_eq!(step_line(&[], None, None), None);
     }
 
     #[test]
