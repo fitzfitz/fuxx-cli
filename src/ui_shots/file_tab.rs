@@ -173,6 +173,20 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "file-code-nav",
+        run: file_code_nav_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/file_tab.rs",
+            "src/row_map.rs",
+            "src/tab_bar.rs",
+            "src/main.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
         name: "file-code-fold-keys",
         run: file_code_fold_keys_scenes,
         themes: Themes::One,
@@ -4480,6 +4494,190 @@ fn file_code_fold_keys_scenes() {
         let (_, g) = code_shot(&theme, &flat, dims, |_, _, _| {});
         assert_eq!(g.fold_left, None, "{n}: no blocks, no fold column");
     }
+    println!("ui-shots: {n} ok");
+}
+
+/// `file-code-nav` (M11ah Task 8): the bar's previous / next change buttons (24 pt) show only when
+/// the file has a change; ⌥↓ goes to the next change (its first line current, 3 rows from the
+/// top, 4 under a sticky line), opening a fold that holds it; at the last change the button is
+/// faint and ⌥↓ does nothing (no wrap-around); ⌥↑ goes back; a jump ends Follow; plain ↑ / ↓ and
+/// ⌥↓ in the find box change nothing; the buttons click.
+fn file_code_nav_scenes() {
+    use crate::git_status::LineChange;
+    use crate::live_lines::{Sure, Who};
+    use crate::ui_tokens::code;
+    use gpui::{Focusable, Modifiers, MouseButton};
+
+    let path = live_file("nav.rs", &fold_fixture());
+    let flat = live_file("nav-flat.txt", "one\ntwo\nthree\n");
+    let dims = size(px(760.0), px(400.0));
+    let n = "file-code-nav";
+    let theme = shot_theme(shot_themes()[0].1);
+    let ui = theme.ui();
+    // 1-based, as git counts: lines 2, 21 (inside `fn refresh`) and 39 changed.
+    let changes = vec![
+        (2, LineChange::Changed),
+        (21, LineChange::Added),
+        (39, LineChange::Changed),
+    ];
+    let ends: std::rc::Rc<std::cell::Cell<[Option<gpui::Bounds<gpui::Pixels>>; 2]>> =
+        std::rc::Rc::default();
+    let ends_in = ends.clone();
+    let (shot, _) = code_shot(&theme, &path, dims, |cx, window, tab| {
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_changes(changes, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.fold_for_shots(&[11], cx)));
+        live_frame(cx, window);
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+        let look = |cx: &mut VisualTestAppContext| {
+            live_frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                (
+                    t.current_line(),
+                    t.top_line_for_shots(),
+                    t.folded_lines(),
+                    t.change_nav_for_shots(),
+                )
+            })
+        };
+        // Both buttons, 24 pt; at the top with no current line: nothing before, a change after.
+        let (current, top, _, nav) = look(cx);
+        assert_eq!((current, top), (None, Some(0)), "{n}");
+        assert_eq!(nav, Some((false, true)), "{n}: previous faint, next live");
+        let [prev, next] = cx.read(|cx| tab.read(cx).nav_drawn());
+        let (prev, next) = (prev.expect("previous drawn"), next.expect("next drawn"));
+        for b in [prev, next] {
+            assert_eq!(
+                (f32::from(b.size.width), f32::from(b.size.height)),
+                (code::NAV_BUTTON, code::NAV_BUTTON),
+                "{n}: the buttons are 24 pt"
+            );
+        }
+        assert!(prev.right() <= next.left(), "{n}: previous, then next");
+        // ⌥↓: the first change; the fold holding the next one is still shut.
+        cx.simulate_keystrokes(window, "alt-down");
+        let (current, top, folded, nav) = look(cx);
+        assert_eq!(current, Some(1), "{n}: the first change is current");
+        assert_eq!(top, Some(0), "{n}: near the top it stays there");
+        assert_eq!(folded, [11], "{n}");
+        assert_eq!(nav, Some((false, true)), "{n}");
+        // ⌥↓: a change inside the fold opens it; the line sits 4 rows down (3, and one more for
+        // the sticky line `fn refresh` pins there).
+        cx.simulate_keystrokes(window, "alt-down");
+        let (current, top, folded, nav) = look(cx);
+        assert_eq!(current, Some(20), "{n}");
+        assert!(folded.is_empty(), "{n}: the fold opened");
+        assert_eq!(
+            top,
+            Some(16),
+            "{n}: 4 rows from the top under a sticky line"
+        );
+        assert_eq!(nav, Some((true, true)), "{n}");
+        // ⌥↓ to the last change: next goes faint; again does nothing.
+        cx.simulate_keystrokes(window, "alt-down");
+        let (current, top, _, nav) = look(cx);
+        assert_eq!(current, Some(38), "{n}: the last change");
+        assert_eq!(
+            nav,
+            Some((true, false)),
+            "{n}: next is faint at the last change"
+        );
+        cx.simulate_keystrokes(window, "alt-down");
+        let (again, top_again, _, _) = look(cx);
+        assert_eq!((again, top_again), (Some(38), top), "{n}: no wrap-around");
+        // Plain arrows change nothing, as before.
+        for key in ["up", "down"] {
+            cx.simulate_keystrokes(window, key);
+            let (c, t, _, _) = look(cx);
+            assert_eq!((c, t), (Some(38), top), "{n}: plain {key} does nothing");
+        }
+        // ⌥↓ typed in the find box is the box's, not a jump.
+        cx.simulate_keystrokes(window, "alt-up");
+        assert_eq!(look(cx).0, Some(20), "{n}: ⌥↑ goes back");
+        cx.simulate_keystrokes(window, "cmd-f");
+        live_frame(cx, window);
+        cx.simulate_keystrokes(window, "alt-down");
+        assert_eq!(
+            look(cx).0,
+            Some(20),
+            "{n}: not while the find box has the keys"
+        );
+        cx.simulate_keystrokes(window, "escape");
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+        // ⌥↑ to the first change: previous goes faint; again does nothing.
+        cx.simulate_keystrokes(window, "alt-up");
+        let (current, top, _, nav) = look(cx);
+        assert_eq!(current, Some(1), "{n}");
+        assert_eq!(
+            nav,
+            Some((false, true)),
+            "{n}: previous is faint at the first change"
+        );
+        cx.simulate_keystrokes(window, "alt-up");
+        assert_eq!(look(cx).0, Some(1), "{n}: no wrap-around");
+        assert_eq!(look(cx).1, top, "{n}");
+        // The buttons click.
+        let centre = |b: gpui::Bounds<gpui::Pixels>| b.center();
+        let none = Modifiers::none();
+        let [_, next] = cx.read(|cx| tab.read(cx).nav_drawn());
+        let at = centre(next.expect("next drawn"));
+        cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+        cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+        assert_eq!(look(cx).0, Some(20), "{n}: the next button jumps");
+        // A jump ends Follow.
+        let codex = Who::Agent(crate::edit_ledger::agent_mark_for("codex"));
+        let record = live_record(40, &[(30..31, codex, Sure::Exact, 2)]);
+        cx.update(|cx| {
+            tab.update(cx, |t, _| {
+                t.set_live_for_shot(record, live_now(), Some(true));
+            })
+        });
+        assert!(cx.read(|cx| tab.read(cx).follow_on()), "{n}: Follow is on");
+        cx.simulate_keystrokes(window, "alt-down");
+        assert_eq!(look(cx).0, Some(38), "{n}");
+        assert!(
+            !cx.read(|cx| tab.read(cx).follow_on()),
+            "{n}: a jump ends Follow"
+        );
+        ends_in.set(cx.read(|cx| tab.read(cx).nav_drawn()));
+    });
+    keep_shot(n, &shot);
+    // At the last change, previous is live and next is faint (nearer `text_faint` than `text`).
+    let [prev, next] = ends.get().map(|b| b.expect("drawn"));
+    let dist = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
+        p.iter()
+            .zip([c.r, c.g, c.b])
+            .map(|(a, b)| u32::from(a.abs_diff(b)))
+            .sum::<u32>()
+    };
+    let (live_ink, faint_ink) = (
+        ink_in(&shot, dims, prev, [ui.panel.r, ui.panel.g, ui.panel.b]),
+        ink_in(&shot, dims, next, [ui.panel.r, ui.panel.g, ui.panel.b]),
+    );
+    assert!(
+        dist(live_ink, ui.text) < dist(live_ink, ui.text_faint),
+        "{n}: previous is live"
+    );
+    assert!(
+        dist(faint_ink, ui.text_faint) < dist(faint_ink, ui.text),
+        "{n}: next is faint"
+    );
+    // A file with no change: no buttons.
+    code_shot(&theme, &flat, dims, |cx, window, tab| {
+        live_frame(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).change_nav_for_shots()),
+            None,
+            "{n}"
+        );
+        assert_eq!(cx.read(|cx| tab.read(cx).nav_drawn()), [None, None], "{n}");
+    });
     println!("ui-shots: {n} ok");
 }
 

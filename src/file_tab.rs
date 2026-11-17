@@ -118,7 +118,7 @@ use crate::mermaid_render::{Drawn, Mermaids, Waiter};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
-use crate::row_map::{MapKey, Row, RowMap};
+use crate::row_map::{MapKey, Row, RowMap, change_starts, step_change};
 use crate::scrollbar::{self, Axis, Bar, LaneMark, Thumb};
 use crate::sidebar_toggle::{Tip, tip_box};
 use crate::tab_bar::{Glyph, glyph_with};
@@ -132,11 +132,12 @@ use crate::workspace::Workspace;
 
 // Bound in main.rs in the "FileTab" key context: ⌘F, ⌘G, ⇧⌘G, and Esc to close the find bar.
 // M11ah: ⌥⌘[ / ⌥⌘] fold and unfold the block the current line is in; the palette folds or
-// unfolds them all.
+// unfolds them all; ⌥↑ / ⌥↓ jump to the previous / next change.
 gpui::actions!(
     file_tab,
     [
-        Find, FindNext, FindPrev, CloseFind, FoldHere, UnfoldHere, FoldAll, UnfoldAll
+        Find, FindNext, FindPrev, CloseFind, FoldHere, UnfoldHere, FoldAll, UnfoldAll, PrevChange,
+        NextChange
     ]
 );
 
@@ -149,6 +150,9 @@ const OPEN_IN_EDITOR: &str = "Open in Editor";
 /// and tooltips.
 const TOGGLE_FILE: &str = "File";
 const TOGGLE_DIFF: &str = "Diff";
+/// The bar's jumps between changes (M11ah), with their keys.
+const TIP_PREV_CHANGE: &str = "Previous change (\u{2325}\u{2191})";
+const TIP_NEXT_CHANGE: &str = "Next change (\u{2325}\u{2193})";
 const TIP_WRAP: &str = "Wrap long lines at the tab\u{2019}s width";
 const PREVIEW: &str = "Preview";
 const TIP_PREVIEW: &str = "Show the Markdown rendered";
@@ -708,6 +712,9 @@ pub struct Changes {
     pub by_line: HashMap<usize, LineChange>,
     pub deleted: Vec<usize>,
 }
+
+/// `FileTab::stops`: the change bars, the line count and the stops made from them.
+type Stops = (Arc<Changes>, usize, Arc<Vec<usize>>);
 
 /// A loaded text: its lines, colours (once highlighted) and change bars (once git answered).
 #[derive(Clone)]
@@ -3542,6 +3549,11 @@ pub struct FileTab {
     folded: BTreeSet<usize>,
     folds_gen: u64,
     gutter_hover: bool,
+    /// M11ah: where ⌥↑ / ⌥↓ stop (`change_starts`), kept for the text's change bars it was made
+    /// from (a layout cache: never made while drawing unless those changed).
+    stops: RefCell<Option<Stops>>,
+    /// Where the jump buttons (previous, next) were last drawn.
+    nav_at: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>,
     /// M11ah: the sticky line and the breadcrumb's parts (File mode), worked out when the view
     /// moves (`refresh_place`), never while drawing.
     place: Place,
@@ -3666,6 +3678,8 @@ impl FileTab {
             folded: BTreeSet::new(),
             folds_gen: 0,
             gutter_hover: false,
+            stops: RefCell::new(None),
+            nav_at: Rc::default(),
             place: Place::default(),
             crumbs_at: Rc::default(),
             crumbs_fit: Rc::default(),
@@ -3845,6 +3859,84 @@ impl FileTab {
             _ => BTreeSet::new(),
         };
         self.set_folds(folded, cx);
+    }
+
+    /// M11ah: the lines ⌥↑ / ⌥↓ stop at (the first line of each change), in order; kept until
+    /// the change bars or the line count change.
+    fn change_stops(&self) -> Option<Arc<Vec<usize>>> {
+        let doc = self.doc()?;
+        let lines = doc.lines.len();
+        if let Some((changes, n, stops)) = self.stops.borrow().as_ref()
+            && Arc::ptr_eq(changes, &doc.changes)
+            && *n == lines
+        {
+            return Some(stops.clone());
+        }
+        let stops = Arc::new(change_starts(
+            &doc.changes.by_line,
+            &doc.changes.deleted,
+            lines,
+        ));
+        *self.stops.borrow_mut() = Some((doc.changes.clone(), lines, stops.clone()));
+        Some(stops)
+    }
+
+    /// M11ah: the change a jump goes to, from the current line (else the view's top).
+    fn change_target(&self, forward: bool) -> Option<usize> {
+        let stops = self.change_stops()?;
+        step_change(&stops, self.current, self.top_line().unwrap_or(0), forward)
+    }
+
+    /// M11ah: whether the bar's jump buttons show (File mode on a file with a change) and which
+    /// of them can go (previous, next).
+    fn change_nav(&self) -> Option<(bool, bool)> {
+        if self.mode != FileMode::Plain || self.preview_shown() {
+            return None;
+        }
+        (!self.change_stops()?.is_empty()).then(|| {
+            (
+                self.change_target(false).is_some(),
+                self.change_target(true).is_some(),
+            )
+        })
+    }
+
+    /// M11ah: ⌥↑ / ⌥↓ (or the bar's buttons): the next (`forward`) or previous change's first
+    /// line lands `REVEAL_ABOVE` rows from the top (one more under a sticky line) and becomes
+    /// the current line; a fold holding it opens. It is you moving the view: Follow ends. At
+    /// the first or last change, nothing (no wrap-around). File mode only.
+    fn jump_change(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.mode != FileMode::Plain || self.preview_shown() {
+            return;
+        }
+        let Some(target) = self.change_target(forward) else {
+            return;
+        };
+        let opened = self.open_folds_at(target);
+        let map = if opened {
+            self.fresh_map(cx)
+        } else {
+            self.map_now(cx)
+        };
+        let Some(map) = map else {
+            return;
+        };
+        let Some(row) = map.first_row(target) else {
+            return;
+        };
+        let y = px(map.top(reveal_top(row, |r| self.sticky_at_row(&map, r))));
+        self.live.follow = false;
+        if opened {
+            // The rows are longer now than the last drawing's: its limit would cut the jump
+            // short; the next drawing keeps the scroll inside the new one.
+            self.scroll.y = y;
+            self.scrolled(cx);
+        } else {
+            self.set_scroll(point(self.scroll.x, y), cx);
+        }
+        self.set_current(Some(target), cx);
+        self.refresh_place(cx);
+        cx.notify();
     }
 
     /// M11ah: the folds that hide `line` open (a find step or Follow went there; not you
@@ -5887,6 +5979,60 @@ impl FileTab {
             .into_any_element()
     }
 
+    /// M11ah: a jump button (`code::NAV_BUTTON` square; `forward`: the next change's, else the
+    /// previous): faint, with no hover and no click, when there is no change that way
+    /// (`enabled` false); its tooltip still tells the key. Where it is drawn is kept (`nav_at`).
+    fn change_button(
+        &self,
+        forward: bool,
+        enabled: bool,
+        ui: UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (id, kind, tip) = if forward {
+            ("file-change-next", Glyph::ChangeDown, TIP_NEXT_CHANGE)
+        } else {
+            ("file-change-prev", Glyph::ChangeUp, TIP_PREV_CHANGE)
+        };
+        let ink = if enabled { ui.text } else { ui.text_faint };
+        let at = self.nav_at.clone();
+        div()
+            .id(id)
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(px(code::NAV_BUTTON))
+            .rounded(px(5.0))
+            .when(enabled, |b| {
+                b.cursor_pointer()
+                    .hover(move |s| s.bg(hsla(ui.panel_hover)))
+                    .on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.jump_change(forward, cx)
+                        }),
+                    )
+            })
+            .child(glyph_with(kind, ink, BUTTON_STROKE))
+            .child(
+                canvas(
+                    move |b, _, _| {
+                        let mut both = at.get();
+                        both[usize::from(forward)] = Some(b);
+                        at.set(both);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
+            .into_any_element()
+    }
+
     fn text_button(
         id: &'static str,
         label: &'static str,
@@ -6148,6 +6294,14 @@ impl FileTab {
                 cx,
             )
         });
+        // M11ah: the jumps between changes, left of the view switch, when the file has a change.
+        self.nav_at.set([None; 2]);
+        let jumps = self.change_nav().map(|(prev, next)| {
+            [
+                self.change_button(false, prev, ui, cx),
+                self.change_button(true, next, ui, cx),
+            ]
+        });
         // A refused file has its button in the middle; a missing one has none.
         let open = matches!(
             self.state,
@@ -6282,6 +6436,7 @@ impl FileTab {
                     .items_center()
                     .gap(px(8.0))
                     .children(follow)
+                    .children(jumps.into_iter().flatten())
                     .children(switch)
                     .children(wrap)
                     .children(open)
@@ -7106,6 +7261,16 @@ impl FileTab {
         self.folded.iter().copied().collect()
     }
 
+    /// M11ah: the jump buttons' state (previous can go, next can go; none: not shown) and where
+    /// they were drawn (previous, next).
+    pub fn change_nav_for_shots(&self) -> Option<(bool, bool)> {
+        self.change_nav()
+    }
+
+    pub fn nav_drawn(&self) -> [Option<Bounds<Pixels>>; 2] {
+        self.nav_at.get()
+    }
+
     pub fn current_line(&self) -> Option<usize> {
         self.current
     }
@@ -7260,6 +7425,17 @@ impl Render for FileTab {
             .on_action(cx.listener(|this, _: &UnfoldHere, _, cx| this.fold_here(false, cx)))
             .on_action(cx.listener(|this, _: &FoldAll, _, cx| this.fold_all(true, cx)))
             .on_action(cx.listener(|this, _: &UnfoldAll, _, cx| this.fold_all(false, cx)))
+            // ⌥↑ / ⌥↓ act only while the tab itself has the keyboard (not the find box).
+            .on_action(cx.listener(|this, _: &PrevChange, window, cx| {
+                if this.focus.is_focused(window) {
+                    this.jump_change(false, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &NextChange, window, cx| {
+                if this.focus.is_focused(window) {
+                    this.jump_change(true, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
             .child(toolbar)
             .children(find_bar)
