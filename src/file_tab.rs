@@ -119,7 +119,7 @@ use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
 use crate::row_map::{MapKey, Row, RowMap};
-use crate::scrollbar::{self, Axis, Bar, Thumb};
+use crate::scrollbar::{self, Axis, Bar, LaneMark, Thumb};
 use crate::sidebar_toggle::{Tip, tip_box};
 use crate::tab_bar::{Glyph, glyph_with};
 use crate::tab_color::TabColor;
@@ -2656,6 +2656,98 @@ fn paint_number(
     let _ = number.paint(at, row, TextAlign::Left, None, window, cx);
 }
 
+/// What the scrollbar's marks were worked out for (M11ah): the rows (their key and height), the
+/// changes and the find's matches (the very lists: compared by identity, so a new answer, even
+/// an equal one, works them out again; no matches at all are always the same), the current
+/// match, the lane's length and the text's, and the colours (the theme).
+#[derive(Clone)]
+struct LaneKey {
+    map: MapKey,
+    row_h: f32,
+    changes: Arc<Changes>,
+    matches: Arc<Vec<Match>>,
+    current: Option<usize>,
+    extent: (f32, f32),
+    colours: [Rgb; 5],
+}
+
+/// The scrollbar's marks kept with the key they were worked out for.
+type Lane = Rc<RefCell<Option<(LaneKey, Vec<LaneMark>)>>>;
+
+impl PartialEq for LaneKey {
+    fn eq(&self, o: &LaneKey) -> bool {
+        self.map == o.map
+            && self.row_h == o.row_h
+            && Arc::ptr_eq(&self.changes, &o.changes)
+            && (Arc::ptr_eq(&self.matches, &o.matches)
+                || (self.matches.is_empty() && o.matches.is_empty()))
+            && self.current == o.current
+            && self.extent == o.extent
+            && self.colours == o.colours
+    }
+}
+
+/// The scrollbar's marks of a file (M11ah), scaled onto a lane `track` long for a text `content`
+/// long: each change bar's run at its rows (a fold shows its hidden lines' strongest change on
+/// its line; positions follow the row map, so folds and Wrap move them), in the bar colours; then
+/// each find match a `LANE_TICK` tick in the accent at `MATCH_TINT`, the current one last, at
+/// `CURRENT_TINT`. Worked out only when the key changes, never in a timer.
+fn lane_marks(
+    f: &Frame,
+    map: &RowMap,
+    bars: &BarColours,
+    content: f32,
+    track: f32,
+) -> Vec<LaneMark> {
+    if f.mode != FileMode::Plain {
+        return Vec::new();
+    }
+    let mut shown: Vec<(usize, LineChange)> = Vec::new();
+    if !f.doc.changes.by_line.is_empty() {
+        for r in 0..map.len() {
+            let Some(Row::Line { line, .. }) = map.row(r) else {
+                continue;
+            };
+            let own = f.doc.changes.by_line.get(&line).copied();
+            let hidden = map.hidden_after(line);
+            let folded = (!hidden.is_empty())
+                .then(|| folded_summary(hidden, &f.doc.changes, None).change)
+                .flatten();
+            let change = either_change(own, folded).filter(|c| *c != LineChange::DeletedAfter);
+            if let Some(change) = change {
+                shown.push((r, change));
+            }
+        }
+    }
+    let items: Vec<(f32, f32, Rgb)> = bar_runs(&shown)
+        .into_iter()
+        .map(|(run, change)| {
+            let top = map.top(run.start);
+            (top, map.top(run.end) - top, bars.of_change(change))
+        })
+        .collect();
+    let mut marks = scrollbar::lane(&items, content, track, code::LANE_MARK_MIN);
+    let accent = f.theme.ui().accent;
+    // A match on a hidden line has no row: no tick.
+    let ticks = |colour: Rgb, only: &dyn Fn(usize) -> bool| {
+        let items: Vec<(f32, f32, Rgb)> = f
+            .matches
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| only(*k))
+            .filter_map(|(_, m)| Some((map.top(map.first_row(m.line)?), 0.0, colour)))
+            .collect();
+        scrollbar::lane(&items, content, track, code::LANE_TICK)
+    };
+    let (found, now) = (
+        mix(f.theme.background, accent, MATCH_TINT),
+        mix(f.theme.background, accent, CURRENT_TINT),
+    );
+    marks.extend(ticks(found, &|k| f.current != Some(k)));
+    marks.extend(ticks(now, &|k| f.current == Some(k)));
+    marks
+}
+
 /// The folded lines in sight (M11ah): for each, how many lines it hides and what they hold.
 type Folds = HashMap<usize, (usize, FoldSummary)>;
 
@@ -3413,6 +3505,8 @@ pub struct FileTab {
     /// M11ah: the text body's screen rows as last drawn (with Wrap on, cut at its width) and
     /// what they were made for; none before the first drawing.
     rows: Rc<RefCell<Option<(MapKey, RowMap)>>>,
+    /// M11ah: the scrollbar's marks (changes, find matches) as last worked out, and what for.
+    lane: Lane,
     /// The selection: where the mouse went down, and where it is.
     selection: Option<(Pos, Pos)>,
     selecting: bool,
@@ -3543,6 +3637,7 @@ impl FileTab {
             diff_scroll: Point::default(),
             geom: Rc::default(),
             rows: Rc::default(),
+            lane: Rc::default(),
             selection: None,
             selecting: false,
             current: None,
@@ -6483,6 +6578,7 @@ impl FileTab {
         let geom = self.geom.clone();
         let row_map = self.rows.clone();
         let drawn = self.drawn.clone();
+        let lane = self.lane.clone();
         let bar = self.scrollbar;
         let view = cx.entity();
         let keep = view.clone();
@@ -6602,11 +6698,45 @@ impl FileTab {
                             // A new version (or mode) drawn: the scroll as kept in it is the
                             // scroll (after a shrink, the view doesn't jump back down when the
                             // file grows again).
-                            let key = (laid.mode, laid.doc.version);
-                            if drawn.replace(key) != key && g.scroll != laid.scroll {
+                            let shown = (laid.mode, laid.doc.version);
+                            if drawn.replace(shown) != shown && g.scroll != laid.scroll {
                                 let (kept, mode) = (g.scroll, laid.mode);
                                 keep.update(cx, |this, _| *this.mode_scroll_mut(mode) = kept);
                             }
+                            // M11ah: the scrollbar's marks, a layout cache worked out again
+                            // only for another key.
+                            let marks = match Track::of(&g, Axis::Vertical) {
+                                Some(t) => {
+                                    let colours = BarColours::of(&laid.theme);
+                                    let key = LaneKey {
+                                        map: key,
+                                        row_h: f32::from(row_h),
+                                        changes: laid.doc.changes.clone(),
+                                        matches: laid.matches.clone(),
+                                        current: laid.current,
+                                        extent: (t.viewport, t.content),
+                                        colours: [
+                                            colours.added,
+                                            colours.changed,
+                                            laid.theme.ui().accent,
+                                            laid.theme.background,
+                                            colours.deleted,
+                                        ],
+                                    };
+                                    let mut kept = lane.borrow_mut();
+                                    match kept.as_ref() {
+                                        Some((k, marks)) if *k == key => marks.clone(),
+                                        _ => {
+                                            let marks = lane_marks(
+                                                &laid, &map, &colours, t.content, t.viewport,
+                                            );
+                                            *kept = Some((key, marks.clone()));
+                                            marks
+                                        }
+                                    }
+                                }
+                                None => Vec::new(),
+                            };
                             let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
                             // M11ah: the sticky line, over the text's first row: a press there
                             // scrolls back to its line.
@@ -6615,15 +6745,18 @@ impl FileTab {
                                     Bounds::new(bounds.origin, size(bounds.size.width, row_h));
                                 window.insert_hitbox(row, HitboxBehavior::Normal)
                             });
-                            (m, g, hitbox, map, sticky)
+                            (m, g, hitbox, map, sticky, marks)
                         },
-                        move |_, (m, g, hitbox, map, sticky), window, cx| {
+                        move |_, (m, g, hitbox, map, sticky, marks), window, cx| {
                             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
                             paint_body(&frame, &g, &m, &map, window, cx);
                             if let (Some(line), Some(row)) = (frame.sticky, &sticky) {
                                 window.set_cursor_style(CursorStyle::PointingHand, row);
                                 paint_sticky(&frame, &g, &m, &map, line, window, cx);
                             }
+                            // M11ah: the marks' lane, every frame (the thumb's fade leaves it),
+                            // under the thumb.
+                            scrollbar::paint_lane(window, g.bounds, &marks);
                             // M11ae: the scrollbar's thumbs over the text (the fade read from
                             // the clock; its task redraws).
                             let now = Instant::now();
@@ -6997,6 +7130,14 @@ impl FileTab {
                 )
             })
             .collect()
+    }
+
+    /// M11ah: the scrollbar's marks as last worked out.
+    pub fn lane_for_shots(&self) -> Vec<LaneMark> {
+        self.lane
+            .borrow()
+            .as_ref()
+            .map_or_else(Vec::new, |(_, marks)| marks.clone())
     }
 
     /// M11ah: fold the blocks starting on `lines` (as a press on their ▾ would).
