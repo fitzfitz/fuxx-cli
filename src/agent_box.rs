@@ -8,8 +8,9 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    Anchor, AnyElement, App, Context, Div, Entity, Focusable, MouseButton, MouseDownEvent,
-    SharedString, Stateful, Subscription, Window, anchored, deferred, div, point, prelude::*, px,
+    Anchor, AnyElement, App, ClickEvent, Context, Div, Entity, Focusable, MouseButton,
+    MouseDownEvent, SharedString, Stateful, Subscription, Window, anchored, deferred, div, point,
+    prelude::*, px,
 };
 
 use crate::agent_catalog::{Catalogs, Lookup};
@@ -414,7 +415,17 @@ impl AgentTab {
             .when(self.provider.is_some(), |d| {
                 d.cursor_pointer()
                     .hover(move |s| s.bg(hsla(folder_hover)))
-                    .on_click(cx.listener(|this, _, window, cx| this.folder_clicked(window, cx)))
+                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                        let pressed = match event {
+                            ClickEvent::Mouse(click) => Some(click.down.position),
+                            _ => None,
+                        };
+                        // This press already closed the open picker (from outside it).
+                        let closed_at = this.folder_closed_at.take();
+                        if pressed.is_none() || closed_at != pressed {
+                            this.folder_clicked(window, cx)
+                        }
+                    }))
             })
             .when(
                 menu_on(|m| matches!(m, BoxMenu::Folder | BoxMenu::Move(_))),
@@ -650,9 +661,15 @@ impl AgentTab {
                             .flex()
                             .items_end()
                             .gap(px(MENU_GAP))
-                            .on_mouse_down_out(
-                                cx.listener(|this, _: &MouseDownEvent, _, cx| this.close_menu(cx)),
-                            )
+                            .on_mouse_down_out(cx.listener(
+                                |this, event: &MouseDownEvent, _, cx| {
+                                    if matches!(this.menu, Some(BoxMenu::Folder | BoxMenu::Move(_)))
+                                    {
+                                        this.folder_closed_at = Some(event.position);
+                                    }
+                                    this.close_menu(cx)
+                                },
+                            ))
                             .child(self.marked("menu", div().child(panel)))
                             .children(side),
                     ),

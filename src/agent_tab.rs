@@ -554,6 +554,9 @@ pub struct AgentTab {
     pub(crate) menu: Option<BoxMenu>,
     /// The folder picker's search and rows, while it is open.
     pub(crate) picker: Option<crate::agent_box::FolderPicker>,
+    /// Where the press was that last closed the folder menu from outside it: the folder chip's
+    /// click from that same press leaves it closed (not closed and opened again).
+    pub(crate) folder_closed_at: Option<gpui::Point<gpui::Pixels>>,
     files: Option<Files>,
     listing: bool,
     at: Option<AtList>,
@@ -925,6 +928,7 @@ impl AgentTab {
             attachments: Vec::new(),
             menu: None,
             picker: None,
+            folder_closed_at: None,
             files: None,
             listing: false,
             at: None,

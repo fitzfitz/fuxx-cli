@@ -1221,6 +1221,21 @@ pub(super) fn agent_box_folder_picker() {
                 "{n}: beside the picker {beside:?} {the_menu:?}"
             );
             assert_eq!(menu(cx, tab), Some(BoxMenu::Folder), "{n}: still open");
+            // The chip pressed while it is open closes it (not closed and opened again); the
+            // next press opens it.
+            click_folder_chip(n, cx, window, tab);
+            assert_eq!(menu(cx, tab), None, "{n}: the chip closes it");
+            click_folder_chip(n, cx, window, tab);
+            assert_eq!(
+                menu(cx, tab),
+                Some(BoxMenu::Folder),
+                "{n}: and opens it again"
+            );
+            click_row(n, cx, window, tab, "This Computer");
+            assert!(
+                cx.read(|cx| tab.read(cx).shot_computer_rows()).is_some(),
+                "{n}"
+            );
             assert_eq!(argv(cx, tab), before, "{n}: nothing restarted");
             assert!(moves.borrow().is_empty(), "{n}: nothing chosen");
             assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
