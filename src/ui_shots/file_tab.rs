@@ -199,6 +199,19 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "file-code-lane",
+        run: file_code_lane_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/scrollbar.rs",
+            "src/row_map.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
         name: "file-code-breadcrumb",
         run: file_code_breadcrumb_scenes,
         themes: Themes::Both,
@@ -1526,9 +1539,9 @@ fn file_view_scenes() {
         let shot = render_with(&theme, dims, build, act);
         let (w, h) = (f32::from(dims.width), f32::from(dims.height));
         let tint = crate::theme::mix(theme.background, fit(theme.palette[4]), 0.12);
-        // The last line, tinted, above the room ...
+        // The last line, tinted, above the room (left of the scrollbar's lane, which marks it) ...
         let room = ui_tokens::size::CARD_RADIUS;
-        let p = pixel_at(&shot, dims, w - 2.0, h - room - 2.0);
+        let p = pixel_at(&shot, dims, w - 14.0, h - room - 2.0);
         assert!(
             near(p, tint, 4) && !near(p, theme.background, 4),
             "{n}: the last line is tinted: {p:?}, not {tint:?}"
@@ -5182,4 +5195,214 @@ fn read_drawn(
 ) -> Vec<(gpui::Bounds<gpui::Pixels>, String)> {
     live_frame(cx, window);
     cx.read(|cx| tab.read(cx).crumbs_drawn())
+}
+
+/// The lane scene's file: 100 four-line functions (400 lines), a "needle" on lines 100, 250 and
+/// 330 (0-based 99, 249, 329).
+fn lane_fixture() -> String {
+    let mut lines: Vec<String> = (0..100)
+        .flat_map(|k| {
+            [
+                format!("fn f{k}() {{"),
+                "    let a = 1;".to_string(),
+                "    let b = 2;".to_string(),
+                "}".to_string(),
+            ]
+        })
+        .collect();
+    for at in [99, 249, 329] {
+        lines[at] = "    let needle = 3;".to_string();
+    }
+    lines.join("\n") + "\n"
+}
+
+/// `file-code-lane` (both themes; M11ah Task 7): in a 400-line file with changes near the top,
+/// the middle and the end and three find matches, the scrollbar's lane (4 pt, at the right
+/// edge) carries a mark at each change's place in the bar colours (at least 2 pt) and an accent
+/// tick at each match, the current one brighter; the marks are still drawn once the thumb has
+/// faded; a fold above a change moves its mark up; a press on the lane jumps as a track press.
+fn file_code_lane_scenes() {
+    use crate::git_status::LineChange;
+    use crate::scrollbar::Axis;
+    use crate::theme::mix;
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+    use gpui::{Focusable, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, TouchPhase};
+
+    let path = live_file("lane.rs", &lane_fixture());
+    let dims = size(px(760.0), px(400.0));
+    // 1-based, as git counts: lines 30 and 390 added, 200 changed.
+    let changes = || {
+        vec![
+            (30, LineChange::Added),
+            (200, LineChange::Changed),
+            (390, LineChange::Added),
+        ]
+    };
+    let setup = |cx: &mut VisualTestAppContext,
+                 window: AnyWindowHandle,
+                 tab: &gpui::Entity<crate::file_tab::FileTab>| {
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_changes(changes(), cx)));
+        live_frame(cx, window);
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+        cx.simulate_keystrokes(window, "cmd-f");
+        cx.simulate_input(window, "needle ");
+        live_frame(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).find_label()),
+            "1 of 3",
+            "file-code-lane: three matches"
+        );
+    };
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let bg = theme.background;
+        let fit = |c: alacritty_terminal::vte::ansi::Rgb| ensure_contrast(c, bg, MARK_MIN);
+        let (green, blue) = (fit(theme.palette[2]), fit(theme.palette[4]));
+        let accent = theme.ui().accent;
+        let (found, now) = (mix(bg, accent, 0.25), mix(bg, accent, 0.55));
+        // The mark at `line` (0-based, `hidden` lines folded away above it): the lane's place
+        // by the geometry, and the pixels there.
+        let place = |g: &crate::file_tab::Geom, line: usize, hidden: usize| {
+            let (viewport, content) = (
+                f32::from(g.bounds.size.height),
+                f32::from(g.bounds.size.height + g.max_scroll.y),
+            );
+            f32::from(g.bounds.top())
+                + (line - hidden) as f32 * f32::from(g.line_height) * viewport / content
+        };
+        let lane_x = |g: &crate::file_tab::Geom| f32::from(g.bounds.right()) - 2.0;
+        // Some pixel within the mark's first 2 pt (y..y+2) is `want`.
+        let has = |shot: &Shot, g: &crate::file_tab::Geom, y: f32, want, by| {
+            (0..6).any(|k| {
+                live_near(
+                    pixel_at(shot, dims, lane_x(g), y + 0.25 + k as f32 * 0.3),
+                    want,
+                    by,
+                )
+            })
+        };
+
+        // Marks at the changes and the matches, the first match current.
+        let n = format!("file-code-lane-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            setup(cx, window, tab);
+            let marks = cx.read(|cx| tab.read(cx).lane_for_shots());
+            let lens: Vec<f32> = marks.iter().map(|m| m.len).collect();
+            assert!(
+                lens.iter().all(|l| *l >= 2.0),
+                "{n}: every mark is at least 2 pt: {lens:?}"
+            );
+            assert_eq!(marks.len(), 6, "{n}: 3 changes and 3 matches: {marks:?}");
+        });
+        keep_shot(&n, &shot);
+        for (line, colour) in [(29, green), (199, blue), (389, green)] {
+            let y = place(&g, line, 0);
+            assert!(
+                has(&shot, &g, y, colour, 12),
+                "{n}: change at {line} (y {y})"
+            );
+        }
+        for (line, colour, what) in [
+            (99, now, "current"),
+            (249, found, "match"),
+            (329, found, "match"),
+        ] {
+            let y = place(&g, line, 0);
+            assert!(
+                has(&shot, &g, y, colour, 8),
+                "{n}: the {what} at {line} (y {y}), not {colour:?}"
+            );
+        }
+        assert!(
+            !has(&shot, &g, place(&g, 150, 0), green, 40)
+                && live_near(pixel_at(&shot, dims, lane_x(&g), place(&g, 150, 0)), bg, 6),
+            "{n}: nothing drawn between the marks"
+        );
+        println!("ui-shots: {n} ok");
+
+        // The thumb faded: the marks stay.
+        let n = format!("file-code-lane-faded-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            setup(cx, window, tab);
+            // The find scrolled the text down to its match; back up, then a wheel step shows
+            // the thumb, and 1.5 s later it has faded.
+            cx.update(|cx| tab.update(cx, |t, cx| t.set_scroll(point(px(0.0), px(0.0)), cx)));
+            live_frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            cx.simulate_event(
+                window,
+                ScrollWheelEvent {
+                    position: g.bounds.center(),
+                    delta: ScrollDelta::Lines(point(0.0, -1.0)),
+                    modifiers: Modifiers::none(),
+                    touch_phase: TouchPhase::Moved,
+                },
+            );
+            live_frame(cx, window);
+            assert!(cx.read(|cx| tab.read(cx).scrollbar_shown()), "{n}: shown");
+            prof::sleep(std::time::Duration::from_millis(1500));
+            cx.advance_clock(std::time::Duration::from_millis(1500));
+            live_frame(cx, window);
+            assert!(!cx.read(|cx| tab.read(cx).scrollbar_shown()), "{n}: faded");
+        });
+        keep_shot(&n, &shot);
+        // Scrolled one step, the marks are where the geometry puts them still.
+        for (line, colour) in [(29, green), (199, blue), (389, green)] {
+            let y = place(&g, line, 0);
+            assert!(
+                has(&shot, &g, y, colour, 12),
+                "{n}: change at {line} (y {y})"
+            );
+        }
+        println!("ui-shots: {n} ok");
+
+        // Three blocks (12 lines) folded above the first change: its mark moves up.
+        let n = format!("file-code-lane-fold-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_changes(changes(), cx);
+                    t.fold_for_shots(&[0, 4, 8], cx);
+                })
+            });
+            live_frame(cx, window);
+        });
+        keep_shot(&n, &shot);
+        let y = place(&g, 29, 9);
+        assert!(
+            has(&shot, &g, y, green, 12),
+            "{n}: the mark moved up to y {y}"
+        );
+        println!("ui-shots: {n} ok");
+
+        // A press on the lane (between marks) jumps as a track press does: the thumb centres on it.
+        let n = format!("file-code-lane-press-{slug}");
+        code_shot(&theme, &path, dims, |cx, window, tab| {
+            setup(cx, window, tab);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let at = point(
+                g.bounds.right() - px(2.0),
+                g.bounds.top() + g.bounds.size.height * 0.7,
+            );
+            let none = Modifiers::none();
+            cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+            cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+            live_frame(cx, window);
+            let thumb = cx
+                .read(|cx| tab.read(cx).thumb_bounds(Axis::Vertical))
+                .expect("a thumb");
+            assert!(
+                (thumb.center().y - at.y).abs() < px(3.0),
+                "{n}: the thumb {thumb:?} is not centred on the press {at:?}"
+            );
+            assert!(
+                cx.read(|cx| tab.read(cx).selection()).is_none(),
+                "{n}: a press on the lane selects nothing"
+            );
+        });
+        println!("ui-shots: {n} ok");
+    }
 }
