@@ -63,13 +63,13 @@ for Claude and agy running inside fuxx.
 | | Claude (`claude -p`, stream-json) | agy (`agy -p`) |
 |---|---|---|
 | Folder | any; `--resume <id>` also works from another folder (Claude ≥ 2.1.223) | any; has its own projects (`--project`, `--new-project`) |
-| Model list | documented in the `initialize` control response (`models`); **to confirm (Task 0)** | `agy models`: id + name, effort built in (`claude-opus-5-5-high` "Claude Opus 5.5 (High)") |
+| Model list | the `initialize` control response (`models`); confirmed (Task 0 findings) | `agy models`: id + name, effort built in (`claude-opus-5-5-high` "Claude Opus 5.5 (High)") |
 | Effort | `--effort low…max` | `--effort low…max` |
-| Change model / effort / mode mid-conversation | documented as live requests in Claude's SDK (`set_model`, `set_permission_mode`, flag settings); **wire shapes to confirm (Task 0)** | restart on the same conversation with new flags |
+| Change model / effort / mode mid-conversation | live control requests (`set_model`, `set_permission_mode`, `apply_flag_settings`); confirmed (Task 0 findings) | restart on the same conversation with new flags |
 | Modes | default (ask) / acceptEdits / plan / auto | accept-edits / auto / plan |
 | Usage | `/usage` in print mode: $0, zero turns; text lines `Current session: 0% used · resets …`, `Current week (all models): 37% used · resets …`; plus `rate_limit_event` messages when the status changes | `/usage` in print mode: $0, zero turns, **structured** (`command.data.groups[].buckets[]`: `window`, `remaining_fraction`, `reset_time`) |
 | `/` list | init message lists `slash_commands`, `skills`, `agents` | `/help` in print mode: structured `commands[]` (name, aliases, description) |
-| Images | base64 image blocks in a user message | unknown — files by path |
+| Images | base64 image blocks in a user message | a path in the message (agy reads it; Task 0 findings) |
 
 ## Constraints
 
@@ -232,6 +232,83 @@ restart for Claude too (Approach A's fallback) — no question to you needed.
 - How the Recent list is stored (with the sessions file or a small file next to it).
 - Tests: provider parsing (models, efforts, modes, usage, commands) from Task 0's fixtures is pure and unit-tested; each
   menu and chip gets ui-shots scenes in light and dark.
+
+## Task 0 findings (recorded 2026-11-17)
+
+Claude Code 2.1.326 and agy 1.5.10, in `~/code/scratch` (and `~/code/scratch/moved`), one-word prompts. Fixtures in
+`src/providers/fixtures/` (paths scrubbed to `/tmp/fx`; the user's own skills, plugins, sub-agents and MCP servers
+replaced by Claude's built-ins plus one made-up `example-skill` / `example-plugin`; `models` kept whole). Recorder:
+`scripts/record-agent-fixture.py` (new scenarios below, and `--scrub-file` for a plain command's output).
+
+**Claude — the start-up probe (`claude-initialize.jsonl`).** A stream-json process that sends `initialize` gets its
+`control_response` in **0.5–0.6 s** (from spawn) and leaves **no transcript** (nothing new under
+`~/.claude/projects/<folder>/`). The answer (`response.response`) has: `models[]` (14 here) with `value`
+(`default`, `opus`, `fable`, `sonnet`, `haiku`, then full ids such as `claude-opus-4-8`), `displayName`,
+`resolvedModel`, `description`, `supportsEffort` and `supportedEffortLevels` (a model without effort — Haiku 4.5 —
+has neither key; some older models list `low, medium, high, max` without `xhigh`); `commands[]` (`name`,
+`description`, `argumentHint`, optional `aliases`, `builtin: true` for Claude's own; a skill's description ends
+`(user)`); `agents[]` (`name`, `description`, optional `model`); `current_permission_mode` (`"default"`);
+`available_output_styles`, `account` (scrubbed), `claude_code_version`. It does **not** say the current model or
+effort: a `get_settings` control request (no model use, answered at once) does —
+`response.applied.model` (`"claude-opus-5-5"`) and `response.applied.effort` (`"high"`).
+
+**Claude — live changes. All three are live, and all work before the first message.** Each is a control request on
+stdin; each is answered by a `control_response` with the same `request_id` and `subtype: "success"`:
+
+| Change | Request (`{"type":"control_request","request_id":…,"request":…}`) | What confirms it |
+|---|---|---|
+| Model | `{"subtype":"set_model","model":"sonnet"}` | the answer's `response.model` (`"claude-sonnet-5-5"`, the resolved id); the next `system/init` `model`; each `assistant` `message.model`; `result.modelUsage` keys. Mid-conversation (after a `result`) it also writes a `user` line `<local-command-stdout>Set model to \`opus (claude-opus-5-5)\`</local-command-stdout>` (`claude-set-model.jsonl`) |
+| Effort | `{"subtype":"apply_flag_settings","settings":{"effortLevel":"low"}}` (the SDK's `applyFlagSettings`) | the answer has no body; `{"subtype":"get_settings"}` then says `applied.effort: "low"` (and `effective.effortLevel`) — before and after the turn (`claude-set-effort.jsonl`). Nothing in the stream itself names the effort |
+| Mode | `{"subtype":"set_permission_mode","mode":"plan"}` | the answer's `response.mode` (`"plan"`); a `system/status` with `permissionMode: "plan"`; the next `system/init` `permissionMode`. Asked to write `hello.txt`, Claude wrote only its plan and asked `ExitPlanMode` (denied by the recorder): no `hello.txt` (`claude-set-mode.jsonl`) |
+
+**Claude — image (`claude-image.jsonl`).** A user message whose `content` is
+`[{"type":"image","source":{"type":"base64","media_type":"image/png","data":…}},{"type":"text","text":…}]` works: a
+1×1 red PNG → "Red".
+
+**Claude — move (`claude-move.jsonl`).** `--resume <id>` from `~/code/scratch/moved` carries the conversation on (same
+`session_id`; `system/init` `cwd` is the new folder; it recalled the first message). The transcript **stays in the
+first folder's entry** (`~/.claude/projects/<scratch>/<id>.jsonl`, new lines carry the new `cwd`); the new folder's
+entry gets only an empty `memory/`. So a resumed tab's history is read from the folder the conversation **started**
+in, not the folder it is in now.
+
+**Claude — usage (`claude-usage.json`).** `claude -p "/usage" --output-format json`: about 4 s, `num_turns: 0`,
+`total_cost_usd: 0`, `local_command: "usage"`; `result` holds the text lines (`Current session: 13% used · resets Nov
+17 at 8:10pm (<zone>)`, `Current week (all models): …`, `Current week (Fable): …`) followed by a "What's contributing to
+your usage?" section (the fixture drops it and writes the zone as `UTC`: both are the user's). **It leaves a
+transcript** (a new `<id>.jsonl` in the folder's entry). `--no-session-persistence` (in `claude --help`: "Don't save
+sessions to disk … only works with --print") stops that: recorded again with it, nothing new appeared. The fixture is
+that second run. `rate_limit_event` (in `claude-set-model.jsonl`): `rate_limit_info.status`, `resetsAt` (unix),
+`rateLimitType` (`five_hour`), `unifiedWindows.{five_hour,seven_day}.{utilization,resetsAt,status}`.
+
+**agy (`agy-models.txt`, `agy-help.json`, `agy-usage.json`).** `agy models`: id TAB name per line on stdout ("Fetching
+available models..." goes to stderr), the effort built into the id (`gemini-3.8-flash-low` "Gemini 3.8 Flash (Low)");
+one id has none (`gemini-pro-orchestrator-g1-pro` "Orchestrator (Argon)"). `/help` and `/usage` in print mode (about
+3 s, `num_turns: 0`, `conversation_id: ""`): `command.data.commands[]` (`name`, `description`, optional `aliases`) and
+`command.data.groups[].buckets[]` (`id`, `name`, `window`, `remaining_fraction`, `reset_time`, optional
+`description`), as the design says.
+
+**agy — restart with new flags (`agy-restart-flags.jsonl`).** A one-word conversation, then the same
+`--conversation <id>` with `--mode plan --model gemini-3.8-flash --effort low`: it **carries on** (recalled "Say hi
+in one word"); the second `init` names the model (`init.model: "gemini-3.8-flash"`; the first `init`, started
+without `--model`, has no `model` key); plan mode **takes** (asked to write `hello.txt`, it wrote an implementation
+plan into its own `~/.gemini/antigravity-cli/brain/<id>/` and asked for approval; no `hello.txt`). Effort is accepted
+but nothing reports it. `init.permission_mode` says `request-review` whatever `--mode` is, so it can't confirm a mode.
+**Model flag form:** `--model <id from agy models>` alone works (`--model gemini-3.8-flash-low`: `init.model` is the
+whole id), and so does `--model <id without effort> --effort <level>`; an id with effort **plus a different
+`--effort` is refused**: `error: invalid model selection (--model "gemini-3.8-flash-medium" --effort "low"): --model
+gemini-3.8-flash-medium conflicts with --effort=low` (stderr, and a `result` with `status: "ERROR"`, exit 1). So fuxx
+passes the `agy models` id alone and no `--effort`.
+
+**agy — move and image.** `--conversation <id>` from `~/code/scratch/moved` carries on (`init.cwd` is the new folder;
+it recalled the first message) (`agy-move.jsonl`). A message naming a PNG's absolute path works: agy reads it with
+`read_file` and answers "Red" (`agy-image.jsonl`).
+
+| Change | Claude | agy |
+|---|---|---|
+| Model | **Live** (`set_model`) | **Restart** (same `--conversation`, `--model <id>`) |
+| Effort | **Live** (`apply_flag_settings` `effortLevel`; read back with `get_settings`) | **Restart** (the effort is in the model id) |
+| Mode | **Live** (`set_permission_mode`) | **Restart** (same `--conversation`, `--mode`) |
+| Folder (Move) | **Restart** (`--resume` from the new folder; 2.1.326 ≥ 2.1.223) | **Restart** (same `--conversation` from the new folder) |
 
 ## Related
 

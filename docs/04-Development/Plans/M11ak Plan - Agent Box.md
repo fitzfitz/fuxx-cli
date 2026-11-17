@@ -13,9 +13,9 @@ updated: 2026-11-17
 |---|---|
 | **Design (the spec)** | [[83 - Milestone 11ak - Agent Box]] |
 | **Status** | 📝 Planned 2026-11-17 on branch `m11ak-agent-box` (from master `ded19b9`) |
-| **Tasks done** | 0 / 15 |
-| **Baselines** | Task 0 records them (tests, clippy default and `ui-shots`, fmt) |
-| **▶ Pick up here** | Task 0 |
+| **Tasks done** | 1 / 15 (Task 0) |
+| **Baselines** | Task 0, on `1995aae`: `cargo test --bin fuxx` 1,840 passed, 1 ignored; clippy default 14 (bin) / 27 (test), `ui-shots` 16 / 29; `cargo fmt --check` clean |
+| **▶ Pick up here** | Task 1 (Task 0's findings are in note 83, "Task 0 findings") |
 | **Decisions used** | Yours: approach A (live where the agent can, restart where it can't), "split it — box first, drop mic and main agent", `/` and `@` "include both in the box milestone", "approved". The design's "AI's calls" sections. Plan-time calls below (AI's). |
 | **Needs your eyes** | 👀 the on-screen check in note 83, after Task 14 |
 
@@ -126,9 +126,9 @@ and RFC 3339 are small pure functions with test vectors here.
   `agy-image.jsonl` (a `.stderr` beside any recording that wrote one)
 - Modify: note 83 (a "Task 0 findings" section), this plan's "At a glance"
 
-- [ ] **Step 1: Baselines.** On the clean branch run the gate; write the test count (and ignored), clippy warning
+- [x] **Step 1: Baselines.** On the clean branch run the gate; write the test count (and ignored), clippy warning
   counts (bin / test, default and `ui-shots`) and fmt state into "At a glance".
-- [ ] **Step 2: Record Claude** in `~/code/scratch` (made fresh; a sub-folder `~/code/scratch/moved` for `move`):
+- [x] **Step 2: Record Claude** in `~/code/scratch` (made fresh; a sub-folder `~/code/scratch/moved` for `move`):
   - `initialize`: the response (expect `models[]` with `value`, `displayName`, `resolvedModel`, `supportedEffortLevels`;
     `commands[]`; `agents[]`; `current_permission_mode`), and how long it took.
   - `set-model`: before any message, `{"type":"control_request","request_id":"fuxx-set-1","request":{"subtype":"set_model","model":"sonnet"}}`;
@@ -145,16 +145,16 @@ and RFC 3339 are small pure functions with test vectors here.
     after: does it leave a transcript? Check `claude --help` for a flag that stops session persistence; if one
     exists, record again with it and confirm nothing is left.
   - `claude --version` → `claude-version.txt`.
-- [ ] **Step 3: Record agy:** `agy models` → `agy-models.txt`; `agy -p "/help" --output-format json` →
+- [x] **Step 3: Record agy:** `agy models` → `agy-models.txt`; `agy -p "/help" --output-format json` →
   `agy-help.json`; `agy -p "/usage" --output-format json` → `agy-usage.json`; `restart-flags`: a one-word
   conversation, then the same `--conversation <id>` with `--mode plan`, `--model <another id from agy-models.txt>` and
   `--effort low`, asking "What was my first message?" (does it carry on; do the flags take — the model `init` or
   `result` names, a plan-mode refusal); whether `--model <id with effort>` alone or `--model` + `--effort` is the form
   that takes; `move`: the same conversation from `~/code/scratch/moved`; `image`: a message naming a PNG's absolute
   path ("What colour is the image at <path>? One word.").
-- [ ] **Step 4: Scrub check.** `rg -n "$USER|/Users/" src/providers/fixtures/` finds nothing new; no folder name but
+- [x] **Step 4: Scrub check.** `rg -n "$USER|/Users/" src/providers/fixtures/` finds nothing new; no folder name but
   `scratch` / `moved` / `/tmp/fx` appears.
-- [ ] **Step 5: Write "Task 0 findings" into note 83**, ending with this table filled in (each cell from a recording):
+- [x] **Step 5: Write "Task 0 findings" into note 83**, ending with this table filled in (each cell from a recording):
 
   | Change | Claude | agy |
   |---|---|---|
@@ -166,7 +166,7 @@ and RFC 3339 are small pure functions with test vectors here.
   plus: the exact request shapes and what confirms each live change; whether live requests work before the first
   message; agy's model flag form; Claude's transcript location after a move; the `/usage` transcript answer and the
   flag used; the probe's duration. A live change that didn't work as documented is **Restart** (design §0).
-- [ ] **Step 6: Commit** `M11ak Task 0: wire fixtures and findings` (`git add scripts/record-agent-fixture.py
+- [x] **Step 6: Commit** `M11ak Task 0: wire fixtures and findings` (`git add scripts/record-agent-fixture.py
   <the fixture files listed above> "docs/04-Development/83 - Milestone 11ak - Agent Box.md" "docs/04-Development/Plans/M11ak Plan - Agent Box.md"`).
 
 ### Task 1: The provider's catalog — models, efforts, modes, commands, flags
