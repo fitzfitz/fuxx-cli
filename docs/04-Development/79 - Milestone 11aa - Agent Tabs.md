@@ -181,6 +181,10 @@ into.
 
 ## On-screen check (yours, after the build)
 
+> **Your first look (2026-11-17):** "the agent tab is not what I expect it be, the layout, the flow is just different
+> from what we discussed. But we can skip this later." The agent tab's layout and flow are to be revisited with you
+> (what differs from the design is not written down yet). The rest of this check is still open.
+
 To try it before merging, build the branch from Terminal.app so a dev build does not touch your real fuxx:
 `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run` (a debug build). **Do not add `--release`:** only a debug build
 saves to `sessions-dev.json`; a release build saves to your real `sessions.json`, and a fuxx from before this branch
