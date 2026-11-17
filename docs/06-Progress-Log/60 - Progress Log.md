@@ -23,6 +23,9 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-17 — Info.plist: camera usage description
+- **Did:** committed and pushed (`fa561a8`, on your word) the `NSCameraUsageDescription` line in `packaging/macos/Info.plist` ("Programs you run in fuxx, such as camera software, can use the camera."), so macOS can ask for the camera when a program run in fuxx wants it. Not part of a milestone.
+
 ### 2026-11-17 — M11af built and merged: live changes, with who wrote them (merged to master, not pushed)
 - **Merged:** fast-forwarded into master (`9afbb29`) after the final review's fix wave re-reviewed clean, on your standing word; 1,839 tests pass on the merged tree. Branch deleted. Your on-screen check (note 82, 12 items) is still open.
 - **Pushed:** `e9f3729..d327d15` (12 commits), a normal push on your word ("scrub then push"); the pre-push check found no private or work-project names, so nothing was rewritten.
