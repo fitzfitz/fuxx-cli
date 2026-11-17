@@ -1819,7 +1819,7 @@ fn agent_hears(
     cx.update(|cx| view.update(cx, |t, cx| t.shot_feed(events, cx)));
 }
 
-/// One step of `chrome-agent-status`: `act`, then its agent tabs' ages held (`hold_agent_ages`),
+/// One step of `chrome-agent-status`: `act`, then its agent tabs' ages held (`hold_ages`),
 /// which must read the same for the rest of the scene. Two Claudes there work at once, their
 /// live ages a fraction of a second apart: each turns every second, so under load a check (two
 /// whole-window captures) and its one retry each caught a turn (chore, 2026-11-17).
@@ -1834,21 +1834,28 @@ fn agent_status_step(
 ) {
     steps.step(cx, window, what, seen, |cx| {
         act(cx);
-        hold_agent_ages(cx, ws);
-        assert_agent_ages_hold(cx, ws, what);
+        hold_ages(cx, ws);
+        assert_ages_hold(cx, ws, "chrome-agent-status", what);
     });
 }
 
-/// Each agent tab's status dated ten minutes ahead: its age reads "0s" (the age of a status
-/// from the future) for the whole scene, so no label turns during a check. Run in a step's act
-/// once the app's own path has set each `since` (to now: "0s" too) and asked for its redraw, and
-/// before anything draws: it changes no pixel and needs no notify, so a source that doesn't
-/// notify still shows stale (unlike `minutes_old`). A Done after it worked "0 s": a short run.
-fn hold_agent_ages(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>) {
+/// Each busy terminal's and each agent tab's status dated ten minutes ahead: its age reads "0s"
+/// (the age of a status from the future) for the whole scene, so no label turns during a check.
+/// Run in a step's act once the app's own path has set each `since` (to now: "0s" too) and asked
+/// for its redraw, and before anything draws: it changes no pixel and needs no notify, so a source
+/// that doesn't notify still shows stale (unlike `minutes_old`). A Done after it worked "0 s": a
+/// short run.
+fn hold_ages(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>) {
     cx.run_until_parked();
     cx.update(|cx| {
         ws.update(cx, |ws, _| {
             let held = Instant::now() + Duration::from_secs(10 * 60);
+            for i in 0..ws.sessions.items().len() {
+                let s = ws.sessions.get_mut(i).expect("a session");
+                if s.status != Status::Idle {
+                    s.status_since = held;
+                }
+            }
             for slot in ws.agents.values_mut() {
                 slot.since = held;
             }
@@ -1856,21 +1863,25 @@ fn hold_agent_ages(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>) {
     });
 }
 
-/// Panics unless each busy agent tab's age label reads the same now as a minute on (longer
-/// than the scene takes).
-fn assert_agent_ages_hold(cx: &VisualTestAppContext, ws: &Entity<Workspace>, what: &str) {
+/// Panics unless each busy terminal's and agent tab's age label reads the same now as a minute
+/// on (longer than the scene takes).
+fn assert_ages_hold(cx: &VisualTestAppContext, ws: &Entity<Workspace>, n: &str, what: &str) {
     let now = Instant::now();
     let later = now + Duration::from_secs(60);
     cx.read(|cx| {
         let ws = ws.read(cx);
-        for slot in ws.agents.values().filter(|a| a.status != Status::Idle) {
-            let label =
-                |at: Instant| crate::status::age_label(at.saturating_duration_since(slot.since));
+        let terminals = (ws.sessions.items().iter())
+            .filter(|s| s.status != Status::Idle)
+            .map(|s| (s.label().to_string(), s.status_since));
+        let agents = (ws.agents.values())
+            .filter(|a| a.status != Status::Idle)
+            .map(|a| (a.label.to_string(), a.since));
+        for (name, since) in terminals.chain(agents) {
+            let label = |at: Instant| crate::status::age_label(at.saturating_duration_since(since));
             assert_eq!(
                 label(now),
                 label(later),
-                "chrome-agent-status: {what}: {}'s age turns during the scene",
-                slot.label
+                "{n}: {what}: {name}'s age turns during the scene"
             );
         }
     });
@@ -2701,7 +2712,14 @@ pub(super) fn chrome_sidebar_scroll() {
         window,
         "a row out of view works",
         Seen::Maybe,
-        |cx| report(cx, ws, "w15", Status::Working),
+        |cx| {
+            // Its age held (`hold_ages`): the only age in the scene, live it turns every
+            // second, and under load a check and its retry each caught a turn (chore,
+            // 2026-11-17).
+            report(cx, ws, "w15", Status::Working);
+            hold_ages(cx, ws);
+            assert_ages_hold(cx, ws, n, "a row out of view works");
+        },
     );
     let list = super::sidebar::row_point(&mut cx, ws, 1, 0.0);
     steps.step(
