@@ -3682,6 +3682,8 @@ mod tests {
             conversation: None,
             mode: None,
             title: None,
+            model: None,
+            effort: None,
         };
         let mut m = Model::new();
         let a = m.new_workspace(0, TabKind::Terminal(1)).unwrap();

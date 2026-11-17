@@ -15,9 +15,122 @@ static INFO: ProviderInfo = ProviderInfo {
     badge: "CC",
     badge_rgb: 0x7a4a2a,
     interrupts: true,
-    modes: &[],
+    modes: &[
+        ModeChoice {
+            id: "default",
+            label: "Ask before edits",
+            about: "Asks before it edits files or runs commands",
+        },
+        ModeChoice {
+            id: "acceptEdits",
+            label: "Accept edits",
+            about: "Edits files without asking; asks before running commands",
+        },
+        ModeChoice {
+            id: "plan",
+            label: "Plan",
+            about: "Plans first and asks for approval before changing anything",
+        },
+        ModeChoice {
+            id: "auto",
+            label: "Auto",
+            about: "Decides for itself which actions need asking",
+        },
+    ],
     default_mode: None,
 };
+
+/// The id the start-up `initialize` request carries, and its answer's `request_id`.
+const INIT_ID: &str = "fuxx-init";
+
+/// The `initialize` request line.
+fn initialize_line() -> String {
+    json!({"type": "control_request", "request_id": INIT_ID,
+        "request": {"subtype": "initialize", "hooks": null}})
+    .to_string()
+}
+
+/// Whether `line` is the answer to `initialize`.
+fn is_initialize_answer(line: &str) -> bool {
+    serde_json::from_str::<Value>(line).is_ok_and(|v| is_init_answer(&v))
+}
+
+fn is_init_answer(v: &Value) -> bool {
+    v["type"] == "control_response"
+        && v["response"]["request_id"] == INIT_ID
+        && v["response"]["subtype"] == "success"
+}
+
+/// The aliases `--model` takes, as a menu of last resort: the order the design lists them.
+const FALLBACK_ALIASES: &[(&str, &str)] = &[
+    ("opus", "Opus"),
+    ("sonnet", "Sonnet"),
+    ("haiku", "Haiku"),
+    ("fable", "Fable"),
+];
+
+/// The effort levels Claude Code 2.1.326 lists for its current model aliases (`initialize`).
+const FALLBACK_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// The catalog an `initialize` answer's `response` holds. `models` missing or empty: the
+/// aliases stand in (`fallback_models`). `commands` come first, then the `agents`.
+fn catalog_of(response: &Value) -> Catalog {
+    let mut models: Vec<ModelChoice> = response["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let id = s(&m["value"])?;
+            Some(ModelChoice {
+                label: s(&m["displayName"]).unwrap_or_else(|| id.clone()),
+                resolves_to: s(&m["resolvedModel"]),
+                efforts: m["supportedEffortLevels"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|l| {
+                        Some(EffortChoice {
+                            level: s(l)?,
+                            model_id: None,
+                        })
+                    })
+                    .collect(),
+                id,
+            })
+        })
+        .collect();
+    let fallback_models = models.is_empty();
+    if fallback_models {
+        models = CLAUDE.fallback_models();
+    }
+    let named = |list: &Value, kind: CommandKind| -> Vec<AgentCommand> {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                Some(AgentCommand {
+                    name: s(&c["name"])?,
+                    about: s(&c["description"]).unwrap_or_default(),
+                    kind,
+                    aliases: c["aliases"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(s)
+                        .collect(),
+                })
+            })
+            .collect()
+    };
+    let mut commands = named(&response["commands"], CommandKind::Command);
+    commands.extend(named(&response["agents"], CommandKind::Agent));
+    Catalog {
+        models,
+        fallback_models,
+        commands,
+        mode: s(&response["current_permission_mode"]),
+    }
+}
 
 /// Flags fuxx sets itself, with whether each takes a value: an `extra_args` entry naming one
 /// is dropped (with its value).
@@ -65,8 +178,72 @@ impl Provider for Claude {
             (None, Some(id)) => a.extend(["--session-id".to_string(), id.clone()]),
             (None, None) => {}
         }
-        a.extend(pass_through(&start.extra_args, OWNED_FLAGS));
+        // What was chosen replaces the same flag in the preset; what wasn't, passes through.
+        let mut owned = OWNED_FLAGS.to_vec();
+        for (flag, value) in [
+            ("--model", &start.model),
+            ("--effort", &start.effort),
+            ("--permission-mode", &start.mode),
+        ] {
+            if let Some(value) = value {
+                owned.push((flag, true));
+                a.extend([flag.to_string(), value.clone()]);
+            }
+        }
+        a.extend(pass_through(&start.extra_args, &owned));
         a
+    }
+
+    /// The stream-json process without a conversation, asked `initialize`: it answers in about
+    /// half a second and leaves no transcript (Task 0).
+    fn catalog_probes(&self) -> Vec<Probe> {
+        let start = Start {
+            cwd: PathBuf::from("."),
+            resume: None,
+            new_id: None,
+            mode: None,
+            model: None,
+            effort: None,
+            extra_args: Vec::new(),
+        };
+        vec![Probe {
+            argv: self.argv(&start),
+            stdin: vec![initialize_line()],
+            until: Some(is_initialize_answer),
+        }]
+    }
+
+    /// The tab's own process answers `initialize` (its `hello`): `Event::Catalog`.
+    fn catalog_on_start(&self) -> bool {
+        true
+    }
+
+    fn read_catalog(&self, outputs: &[String]) -> Result<Catalog, String> {
+        outputs
+            .iter()
+            .flat_map(|o| o.lines())
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .find(is_init_answer)
+            .map(|v| catalog_of(&v["response"]["response"]))
+            .ok_or_else(|| "no answer to initialize".to_string())
+    }
+
+    fn fallback_models(&self) -> Vec<ModelChoice> {
+        FALLBACK_ALIASES
+            .iter()
+            .map(|(id, label)| ModelChoice {
+                id: id.to_string(),
+                label: label.to_string(),
+                resolves_to: None,
+                efforts: FALLBACK_EFFORTS
+                    .iter()
+                    .map(|l| EffortChoice {
+                        level: l.to_string(),
+                        model_id: None,
+                    })
+                    .collect(),
+            })
+            .collect()
     }
 
     /// A session id is a UUID.
@@ -464,10 +641,14 @@ impl ClaudeTranslator {
         match v["subtype"].as_str() {
             Some("init") => {
                 self.model = s(&v["model"]);
-                vec![Event::Started {
+                let mut out = vec![Event::Started {
                     conversation: s(&v["session_id"]).unwrap_or_default(),
                     model: s(&v["model"]),
-                }]
+                }];
+                if let Some(skills) = v["skills"].as_array() {
+                    out.push(Event::Skills(skills.iter().filter_map(s).collect()));
+                }
+                out
             }
             Some("permission_denied") => s(&v["message"])
                 .or_else(|| s(&v["tool_name"]).map(|t| format!("{t} was denied")))
@@ -569,11 +750,7 @@ impl ClaudeTranslator {
 
 impl Translator for ClaudeTranslator {
     fn hello(&mut self) -> Vec<String> {
-        vec![
-            json!({"type": "control_request", "request_id": "fuxx-init",
-            "request": {"subtype": "initialize", "hooks": null}})
-            .to_string(),
-        ]
+        vec![initialize_line()]
     }
 
     fn decode(&mut self, line: &str) -> Vec<Event> {
@@ -582,6 +759,9 @@ impl Translator for ClaudeTranslator {
         };
         match v["type"].as_str() {
             Some("system") => self.system(&v),
+            Some("control_response") if is_init_answer(&v) => {
+                vec![Event::Catalog(catalog_of(&v["response"]["response"]))]
+            }
             Some("stream_event") => self.stream_event(&v),
             Some("assistant") => self.assistant(&v),
             Some("user") => self.user(&v),
@@ -648,7 +828,9 @@ mod tests {
     #[test]
     fn text_fixture_streams_then_finishes() {
         let ev = decode_all(&CLAUDE, include_str!("fixtures/claude-text.jsonl"));
-        assert!(matches!(ev.first(), Some(Event::Started { .. })));
+        // The tab's own `initialize` answer (a `Catalog`) comes first, then `Started`.
+        assert!(matches!(ev.first(), Some(Event::Catalog(_))));
+        assert!(ev.iter().any(|e| matches!(e, Event::Started { .. })));
         assert!(ev.iter().any(|e| matches!(e, Event::TextDelta { .. })));
         assert!(matches!(ev.last(), Some(Event::TurnDone { ok: true, .. })));
         // The delta and the finished message share the API message id.
@@ -683,7 +865,7 @@ mod tests {
     fn started_carries_session_and_model() {
         let ev = decode_all(&CLAUDE, include_str!("fixtures/claude-text.jsonl"));
         assert_eq!(
-            ev.first(),
+            ev.iter().find(|e| matches!(e, Event::Started { .. })),
             Some(&Event::Started {
                 conversation: "ed50a2b7-6678-4a7c-9ed9-cfa63240ae19".into(),
                 model: Some("claude-opus-5-5".into()),
@@ -1101,6 +1283,8 @@ mod tests {
             new_id: None,
             mode: None,
             extra_args: Vec::new(),
+            model: None,
+            effort: None,
         };
         assert!(CLAUDE.history(&start).is_empty());
         let fresh = Start {
@@ -1348,6 +1532,8 @@ mod tests {
                 "--resume".into(),
                 "x".into(),
             ],
+            model: None,
+            effort: None,
         };
         let a = CLAUDE.argv(&s);
         assert!(a.ends_with(&["--model".to_string(), "sonnet".to_string()]));
@@ -1385,6 +1571,8 @@ mod tests {
             ]
             .map(String::from)
             .to_vec(),
+            model: None,
+            effort: None,
         };
         let a = CLAUDE.argv(&s);
         assert!(a.windows(2).any(|w| w == ["--resume", "abc"]));
@@ -1474,6 +1662,8 @@ mod tests {
             extra_args: ["--session-id", "mine", "--model", "sonnet"]
                 .map(String::from)
                 .to_vec(),
+            model: None,
+            effort: None,
         };
         let a = CLAUDE.argv(&fresh);
         assert!(
@@ -1507,5 +1697,169 @@ mod tests {
         assert!(!CLAUDE.is_conversation_id("abc"));
         assert!(!CLAUDE.is_conversation_id("0b3c4a5e-1f2d-4e6a-9b8c-7d6e5f4a3b2c; rm -rf ~"));
         assert!(!CLAUDE.is_conversation_id(""));
+    }
+
+    const SLASH: &str = include_str!("fixtures/claude-slash.jsonl");
+    const INITIALIZE: &str = include_str!("fixtures/claude-initialize.jsonl");
+
+    fn the_answer(text: &str) -> String {
+        text.lines()
+            .find(|l| l.contains("fuxx-init") && l.contains("control_response"))
+            .expect("the initialize answer")
+            .to_string()
+    }
+
+    #[test]
+    fn the_initialize_answer_is_the_catalog() {
+        // `claude-slash.jsonl` (its line 9) holds the tab's own answer.
+        let c = CLAUDE.read_catalog(&[the_answer(SLASH)]).unwrap();
+        let ids: Vec<&str> = c.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["default", "opus", "fable"]);
+        let labels: Vec<&str> = c.models.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(labels, ["Default (recommended)", "Opus 5.5", "Fable 5.2"]);
+        assert_eq!(c.models[0].resolves_to.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(c.models[1].resolves_to.as_deref(), Some("claude-opus-5-5"));
+        for m in &c.models {
+            let levels: Vec<&str> = m.efforts.iter().map(|e| e.level.as_str()).collect();
+            assert_eq!(levels, ["low", "medium", "high", "xhigh", "max"]);
+            assert!(m.efforts.iter().all(|e| e.model_id.is_none()));
+        }
+        // Task 0's recording of this answer has one skill and one sub-agent (the made-up ones).
+        let kinds: Vec<(&str, CommandKind)> = c
+            .commands
+            .iter()
+            .map(|x| (x.name.as_str(), x.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("example-skill", CommandKind::Command),
+                ("example-agent", CommandKind::Agent)
+            ]
+        );
+        assert_eq!(c.mode.as_deref(), Some("default"));
+        assert!(!c.fallback_models);
+
+        // The start-up probe's own recording: all 14 models, Claude's commands, then its agents.
+        let c = CLAUDE.read_catalog(&[the_answer(INITIALIZE)]).unwrap();
+        assert_eq!(c.models.len(), 14);
+        let haiku = c
+            .models
+            .iter()
+            .find(|m| m.id == "claude-haiku-4-5-20251001");
+        assert!(haiku.is_some_and(|m| m.efforts.is_empty()), "no effort");
+        assert_eq!(c.commands.len(), 9);
+        assert_eq!(c.commands[0].name, "clear");
+        assert_eq!(c.commands[0].aliases, ["reset", "new"]);
+        assert_eq!(c.commands[0].kind, CommandKind::Command);
+        assert_eq!(c.commands[6].name, "Explore");
+        assert_eq!(c.commands[6].kind, CommandKind::Agent);
+        assert!(c.commands[6].about.starts_with("Fast read-only search"));
+    }
+
+    #[test]
+    fn no_models_falls_back_to_the_aliases() {
+        let line = json!({"type": "control_response", "response": {"subtype": "success",
+            "request_id": "fuxx-init", "response": {"commands": [], "agents": []}}});
+        let c = CLAUDE.read_catalog(&[line.to_string()]).unwrap();
+        let ids: Vec<&str> = c.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["opus", "sonnet", "haiku", "fable"]);
+        assert!(c.fallback_models);
+        assert_eq!(c.models, CLAUDE.fallback_models());
+        // An output without the answer line is no catalog.
+        let other = r#"{"type":"system","subtype":"hook_started"}"#;
+        assert!(CLAUDE.read_catalog(&[other.to_string()]).is_err());
+        assert!(CLAUDE.read_catalog(&[]).is_err());
+    }
+
+    #[test]
+    fn the_tabs_own_initialize_answer_is_a_catalog_event() {
+        let ev = decode_all(&CLAUDE, SLASH);
+        let catalogs: Vec<&Catalog> = ev
+            .iter()
+            .filter_map(|e| match e {
+                Event::Catalog(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(catalogs.len(), 1);
+        assert_eq!(catalogs[0].models.len(), 3);
+        let skills = ev.iter().find_map(|e| match e {
+            Event::Skills(s) => Some(s),
+            _ => None,
+        });
+        assert_eq!(skills.map(|s| s[0].as_str()), Some("example-skill"));
+    }
+
+    #[test]
+    fn claude_catalog_comes_with_its_start() {
+        assert!(CLAUDE.catalog_on_start());
+        assert!(!crate::providers::agy::AGY.catalog_on_start());
+        // Its probe is the stream-json process without a conversation, asked `initialize`.
+        let probes = CLAUDE.catalog_probes();
+        assert_eq!(probes.len(), 1);
+        let p = &probes[0];
+        assert_eq!(p.argv[0], "claude");
+        assert!(
+            !p.argv
+                .iter()
+                .any(|w| w == "--resume" || w == "--session-id")
+        );
+        assert_eq!(p.stdin.len(), 1);
+        assert!(p.stdin[0].contains(r#""subtype":"initialize""#));
+        let until = p.until.expect("it keeps running until answered");
+        assert!(until(&the_answer(SLASH)));
+        assert!(!until(r#"{"type":"system","subtype":"init"}"#));
+    }
+
+    #[test]
+    fn claude_modes_are_its_four() {
+        let i = CLAUDE.info();
+        let ids: Vec<&str> = i.modes.iter().map(|m| m.id).collect();
+        assert_eq!(ids, ["default", "acceptEdits", "plan", "auto"]);
+        let labels: Vec<&str> = i.modes.iter().map(|m| m.label).collect();
+        assert_eq!(labels, ["Ask before edits", "Accept edits", "Plan", "Auto"]);
+        assert!(i.modes.iter().all(|m| !m.about.is_empty()));
+        assert_eq!(i.default_mode, None);
+    }
+
+    #[test]
+    fn argv_passes_model_effort_and_mode_only_when_chosen() {
+        let mut s = Start {
+            cwd: "/tmp".into(),
+            resume: None,
+            new_id: None,
+            mode: None,
+            model: None,
+            effort: None,
+            extra_args: vec!["--model".into(), "x".into()],
+        };
+        let a = CLAUDE.argv(&s);
+        for flag in ["--effort", "--permission-mode"] {
+            assert!(!a.iter().any(|w| w == flag), "{flag}: {a:?}");
+        }
+        assert!(
+            a.ends_with(&["--model".to_string(), "x".to_string()]),
+            "{a:?}"
+        );
+        s.model = Some("sonnet".into());
+        s.effort = Some("low".into());
+        s.mode = Some("plan".into());
+        let a = CLAUDE.argv(&s);
+        for pair in [
+            ["--model", "sonnet"],
+            ["--effort", "low"],
+            ["--permission-mode", "plan"],
+        ] {
+            assert_eq!(
+                a.windows(2).filter(|w| *w == pair).count(),
+                1,
+                "{pair:?}: {a:?}"
+            );
+        }
+        assert!(
+            !a.contains(&"x".to_string()),
+            "the preset's --model is dropped: {a:?}"
+        );
     }
 }

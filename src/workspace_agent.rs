@@ -435,6 +435,8 @@ impl Workspace {
             resume: None,
             new_id: None,
             mode: None,
+            model: None,
+            effort: None,
             extra_args: Vec::new(),
         });
         let name = name.clone();
@@ -508,6 +510,8 @@ impl Workspace {
             cwd,
             conversation,
             mode,
+            model,
+            effort,
             ..
         } = kind
         else {
@@ -525,6 +529,8 @@ impl Workspace {
             resume: conversation.clone(),
             new_id: None,
             mode: mode.clone(),
+            model: model.clone(),
+            effort: effort.clone(),
             extra_args,
         })
     }
@@ -613,6 +619,8 @@ impl Workspace {
             conversation: None,
             mode,
             title: None,
+            model: None,
+            effort: None,
         }
     }
 
@@ -720,6 +728,8 @@ impl Workspace {
                     conversation,
                     mode,
                     title: None,
+                    model,
+                    effort,
                 }) = self.model.tab(tab).map(|t| t.kind.clone())
                 {
                     let kind = TabKind::Agent {
@@ -728,6 +738,8 @@ impl Workspace {
                         conversation,
                         mode,
                         title: Some(title.clone()),
+                        model,
+                        effort,
                     };
                     self.model.set_kind(tab, kind);
                     self.save();
@@ -740,6 +752,8 @@ impl Workspace {
                     cwd,
                     mode,
                     title,
+                    model,
+                    effort,
                     ..
                 }) = self.model.tab(tab).map(|t| t.kind.clone())
                 {
@@ -755,6 +769,8 @@ impl Workspace {
                         conversation: Some(id.clone()),
                         mode: running.or(mode),
                         title,
+                        model,
+                        effort,
                     };
                     self.model.set_kind(tab, kind);
                     self.save();

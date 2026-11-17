@@ -42,6 +42,9 @@ pub enum TabKind {
         conversation: Option<String>,
         mode: Option<String>,
         title: Option<String>,
+        /// The model and effort chosen for the conversation (M11ak); None: the agent's own.
+        model: Option<String>,
+        effort: Option<String>,
     },
 }
 
@@ -234,6 +237,10 @@ pub enum SavedTab {
         mode: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
         /// The background service's id of the terminal its classic view opened in (R13): after a
         /// restart its check counts on that terminal while it lives. Not written without one, so
         /// older files load and the file reads as before.
@@ -931,12 +938,16 @@ impl Model {
                             conversation,
                             mode,
                             title,
+                            model,
+                            effort,
                         } => SavedTab::Agent {
                             provider: provider.clone(),
                             cwd: cwd.clone(),
                             conversation: conversation.clone(),
                             mode: mode.clone(),
                             title: title.clone(),
+                            model: model.clone(),
+                            effort: effort.clone(),
                             classic: self.agent_classic(t.id),
                         },
                     };
@@ -1178,6 +1189,8 @@ impl Model {
                     conversation,
                     mode,
                     title,
+                    model,
+                    effort,
                     ..
                 } => TabKind::Agent {
                     provider: provider.clone(),
@@ -1185,6 +1198,8 @@ impl Model {
                     conversation: conversation.clone(),
                     mode: mode.clone(),
                     title: title.clone(),
+                    model: model.clone(),
+                    effort: effort.clone(),
                 },
             };
             let id = TabId(self.next());
@@ -3209,6 +3224,8 @@ mod tests {
             conversation: conversation.map(str::to_string),
             mode: None,
             title: title.map(str::to_string),
+            model: None,
+            effort: None,
         }
     }
 
@@ -3310,6 +3327,8 @@ mod tests {
             conversation: None,
             mode: None,
             title: None,
+            model: None,
+            effort: None,
         };
         let mut m = Model::new();
         let a = m.new_workspace(0, fresh()).unwrap();
@@ -3355,6 +3374,8 @@ mod tests {
                     mode: None,
                     title: None,
                     classic: None,
+                    model: None,
+                    effort: None,
                 }],
                 active: 0,
             }),
@@ -3370,6 +3391,8 @@ mod tests {
                 conversation: None,
                 mode: None,
                 title: None,
+                model: None,
+                effort: None,
             }]]]
         );
     }
@@ -3612,5 +3635,51 @@ mod tests {
             diff_file("/w/a.rs")
         );
         let _ = f;
+    }
+
+    #[test]
+    fn an_agent_tab_keeps_its_model_and_effort() {
+        let chosen = TabKind::Agent {
+            provider: "claude".into(),
+            cwd: PathBuf::from("/w/app"),
+            conversation: Some("c1".into()),
+            mode: None,
+            title: None,
+            model: Some("sonnet".into()),
+            effort: Some("low".into()),
+        };
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(1)).unwrap();
+        m.split(a.pane, Axis::Row, chosen.clone()).unwrap();
+        let session = |id: u64| Some((id - 1) as usize);
+        let (saved, active) = m.to_saved(session);
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(json.contains(r#""model":"sonnet""#), "{json}");
+        assert!(json.contains(r#""effort":"low""#), "{json}");
+        let back: Vec<SavedWorkspace> = serde_json::from_str(&json).unwrap();
+        let m2 = Model::from_saved(&back, active, &[Some(1)]);
+        assert_eq!(shape(&m2), [vec![vec![term(1)], vec![chosen]]]);
+        // Without them nothing is written, and an older file (none) loads with none.
+        let (plain, _) = {
+            let mut m = Model::new();
+            let a = m.new_workspace(0, term(1)).unwrap();
+            m.split(a.pane, Axis::Row, agent(Some("c1"), None)).unwrap();
+            m.to_saved(session)
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(
+            !json.contains("model") && !json.contains("effort"),
+            "{json}"
+        );
+        let old: SavedTab =
+            serde_json::from_str(r#"{"kind":"agent","provider":"claude","cwd":"/w"}"#).unwrap();
+        assert!(matches!(
+            old,
+            SavedTab::Agent {
+                model: None,
+                effort: None,
+                ..
+            }
+        ));
     }
 }
