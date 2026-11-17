@@ -68,6 +68,20 @@ const FOLDER: &[&str] = &[
     "src/providers/claude.rs",
 ];
 
+/// The files the branch chip is made of: the box's, and the branch look-up and switcher it
+/// opens.
+const BRANCH: &[&str] = &[
+    "src/agent_tab.rs",
+    "src/agent_box.rs",
+    "src/agent_catalog.rs",
+    "src/composer.rs",
+    "src/git_branch.rs",
+    "src/branch_switcher.rs",
+    "src/workspace_agent.rs",
+    "src/providers/mod.rs",
+    "src/providers/claude.rs",
+];
+
 /// This area's scenes (`registry.rs` runs them in its `ORDER`).
 pub(super) const SCENES: &[Scene] = &[
     Scene {
@@ -165,6 +179,22 @@ pub(super) const SCENES: &[Scene] = &[
         serial: false,
         kind: Kind::State,
         sources: BOX,
+    },
+    Scene {
+        name: "agent-box-branch",
+        run: agent_box_branch,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: BRANCH,
+    },
+    Scene {
+        name: "agent-box-branch-opens-switcher",
+        run: agent_box_branch_opens_switcher,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: BRANCH,
     },
 ];
 
@@ -1452,4 +1482,148 @@ pub(super) fn agent_box_folder_before_first() {
             );
         },
     );
+}
+
+// ---- The branch chip (Task 7) ----
+
+/// §3: `⑂ master ▾` beside `📁 my-app ▾` when the folder is in a repo; no chip when it isn't.
+pub(super) fn agent_box_branch() {
+    layout_scene("agent-box-branch", |n, cx, window, tab| {
+        // A folder that isn't in a repo: no chip.
+        let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
+        assert_eq!(texts.branch, None, "{n}: no branch, no chip");
+        feed(cx, tab, |t, cx| t.shot_place(folder("my-app"), None, cx));
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).shot_part("branch")),
+            None,
+            "{n}: no chip is drawn"
+        );
+
+        feed(cx, tab, |t, cx| {
+            t.shot_place(folder("my-app"), Some("master".into()), cx)
+        });
+        let _ = frame_fresh(cx, window);
+        let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
+        assert_eq!(
+            texts.branch.as_deref(),
+            Some("\u{2442} master \u{25be}"),
+            "{n}"
+        );
+        assert_eq!(texts.folder, "\u{1f4c1} my-app \u{25be}", "{n}");
+        let (folder_chip, chip) = (part(cx, tab, n, "folder"), part(cx, tab, n, "branch"));
+        assert!(
+            chip.left() >= folder_chip.right(),
+            "{n}: beside the folder chip, after it"
+        );
+        assert!(
+            (chip.center().y - folder_chip.center().y).abs() < px(1.),
+            "{n}: on the folder chip's row"
+        );
+    });
+}
+
+/// A click on the chip asks the Workspace to open its branch switcher on the box's folder; the
+/// agent's process is not started again.
+pub(super) fn agent_box_branch_opens_switcher() {
+    use crate::layout_model::TabKind;
+    use crate::workspace::Workspace;
+
+    let n = "agent-box-branch-opens-switcher";
+    let Some(git) = crate::git_branch::find_git() else {
+        println!("ui-shots: {n} skipped (no git on this Mac)");
+        return;
+    };
+    let base =
+        std::env::temp_dir().join(format!("fuxx-ui-shots-box-branch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let repo = base.join("my-app");
+    std::fs::create_dir_all(&repo).expect("make the repo");
+    let run = |args: &[&str]| super::branch::scratch_git(&git, &repo, args);
+    run(&["init", "-q", "-b", "master"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    run(&["add", "."]);
+    run(&["commit", "-q", "-m", "one"]);
+
+    let theme = shot_theme("Catppuccin Mocha");
+    type WsSlot = Rc<RefCell<Option<Entity<Workspace>>>>;
+    let slot: WsSlot = Rc::default();
+    let keep = slot.clone();
+    let at = repo.clone();
+    render_with(
+        &theme,
+        size(px(900.), px(560.)),
+        move |window, cx| {
+            cx.set_global(shot_appearance(theme, cx));
+            cx.bind_keys(crate::key_bindings());
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                let project = std::path::Path::new("/Users/me/code/api");
+                ws.open_shot_session("api", project, super::SHELL_TEXT, None, window, cx);
+                let pane = ws.model.focused_pane().expect("a pane");
+                ws.model
+                    .add_tab(
+                        pane,
+                        TabKind::Agent {
+                            provider: "claude".into(),
+                            cwd: at.clone(),
+                            conversation: None,
+                            mode: None,
+                            title: None,
+                            model: None,
+                            effort: None,
+                        },
+                    )
+                    .expect("an agent tab");
+                ws.sync();
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        },
+        move |cx, window| {
+            let ws = slot.borrow().clone().expect("the workspace");
+            cx.run_until_parked();
+            let _ = frame_fresh(cx, window);
+            let tab = cx.read(|cx| {
+                let ws = ws.read(cx);
+                let id = ws.model.focused_tab().expect("a tab");
+                ws.agents.get(&id).expect("its view").view.clone()
+            });
+            feed(cx, &tab, |t, cx| t.shot_history(Vec::new(), cx));
+            feed(cx, &tab, |t, cx| {
+                t.shot_place(repo.clone(), Some("master".into()), cx)
+            });
+            let _ = frame_fresh(cx, window);
+            let argv_before = argv(cx, &tab);
+            assert!(!argv_before.is_empty(), "{n}: it would start the agent");
+            assert!(
+                cx.read(|cx| ws.read(cx).branch_switcher.is_none()),
+                "{n}: closed to begin with"
+            );
+
+            let chip = part(cx, &tab, n, "branch");
+            cx.simulate_click(window, chip.center(), Modifiers::none());
+            cx.run_until_parked();
+            let _ = frame_fresh(cx, window);
+            let switcher = cx
+                .read(|cx| ws.read(cx).branch_switcher.clone())
+                .unwrap_or_else(|| panic!("{n}: the chip opens the switcher"));
+            assert!(
+                super::branch::settle_until(cx, window, 10, |cx| cx
+                    .read(|cx| switcher.read(cx).title() == "Switch branch \u{b7} my-app")),
+                "{n}: it is on the box's folder: {}",
+                cx.read(|cx| switcher.read(cx).title())
+            );
+            assert_eq!(
+                argv(cx, &tab),
+                argv_before,
+                "{n}: the agent did not restart"
+            );
+            assert_eq!(tab_cwd(cx, &tab), repo, "{n}: and is where it was");
+            slot.borrow_mut().take();
+        },
+    );
+    let _ = std::fs::remove_dir_all(&base);
+    println!("ui-shots: {n} ok");
 }

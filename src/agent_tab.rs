@@ -105,6 +105,9 @@ pub enum AgentTabEvent {
     /// The folder it now runs in (the box's folder chip: chosen before the first message, or
     /// the conversation moved): saved as the tab's folder.
     Folder(PathBuf),
+    /// The branch chip's click: open the branch switcher on the box's folder (the agent keeps
+    /// running: a branch switch never restarts it).
+    OpenBranchSwitcher(PathBuf),
     /// "New conversation" in that folder (the folder chip, after the first message): a new
     /// agent tab of the same agent there, beside this one in its pane.
     NewConversationIn(PathBuf),
@@ -557,6 +560,9 @@ pub struct AgentTab {
     /// Where the press was that last closed the folder menu from outside it: the folder chip's
     /// click from that same press leaves it closed (not closed and opened again).
     pub(crate) folder_closed_at: Option<gpui::Point<gpui::Pixels>>,
+    /// The branch checked out in the agent's folder (none outside a repo, or before it is read):
+    /// looked up on the background executor, never in `render` (`read_branch`).
+    pub(crate) branch: Option<String>,
     files: Option<Files>,
     listing: bool,
     at: Option<AtList>,
@@ -623,6 +629,7 @@ impl AgentTab {
             }
             Some(provider) => {
                 this.booting = true;
+                this.read_branch(cx);
                 let start = this.start.clone();
                 this._boot = Some(cx.spawn(async move |this, cx| {
                     let (path, past, holder) = cx
@@ -929,6 +936,7 @@ impl AgentTab {
             menu: None,
             picker: None,
             folder_closed_at: None,
+            branch: None,
             files: None,
             listing: false,
             at: None,
@@ -2178,7 +2186,7 @@ impl AgentTab {
             self.restart_with(provider, &restart, cx);
         }
         if moved {
-            self.read_folder_catalog(cx);
+            self.folder_changed(cx);
         }
         cx.notify();
     }
@@ -2322,7 +2330,7 @@ impl AgentTab {
             }
         }
         if self.tell_settings(before, cx) {
-            self.read_folder_catalog(cx);
+            self.folder_changed(cx);
         }
     }
 
@@ -2363,6 +2371,53 @@ impl AgentTab {
         }
         cx.emit(AgentTabEvent::Folder(now.cwd));
         true
+    }
+
+    /// The agent is in another folder now: its menus' lists and its branch are read again.
+    fn folder_changed(&mut self, cx: &mut Context<Self>) {
+        self.read_folder_catalog(cx);
+        self.branch = None;
+        self.read_branch(cx);
+    }
+
+    /// Look the folder's branch up again (`git_branch::branch_at`, on the background executor):
+    /// at boot, when the folder changes, and when the branch switcher reports a change
+    /// (`branch_changed`). An answer for a folder the agent has left is dropped. A scene tab
+    /// reads no disk (`shot_place` sets the branch).
+    fn read_branch(&mut self, cx: &mut Context<Self>) {
+        if self.no_process {
+            return;
+        }
+        let folder = self.start.cwd.clone();
+        cx.spawn(async move |this, cx| {
+            let at = folder.clone();
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    let git = crate::git_branch::find_git()?;
+                    crate::git_branch::branch_at(&git, &at)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.start.cwd == folder && this.branch != found {
+                    this.branch = found;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The branch switcher switched the repo this agent's folder is in: read its branch again.
+    /// Never restarts the agent.
+    pub(crate) fn branch_changed(&mut self, cx: &mut Context<Self>) {
+        self.read_branch(cx);
+    }
+
+    /// The folder the agent runs in.
+    pub(crate) fn folder(&self) -> &std::path::Path {
+        &self.start.cwd
     }
 
     /// The menus' lists for the folder the agent is in now (R4): a restart already asked its

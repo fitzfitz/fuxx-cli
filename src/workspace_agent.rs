@@ -871,6 +871,9 @@ impl Workspace {
                     self.add_agent_tab(pane, kind, Some(tab), cx);
                 }
             }
+            AgentTabEvent::OpenBranchSwitcher(folder) => {
+                self.open_branch_switcher_in(folder.clone(), window, cx)
+            }
             AgentTabEvent::Close => self.close_agent_tab(tab, false, window, cx),
             AgentTabEvent::OpenClassic(_) => self.open_classic(tab, window, cx),
             AgentTabEvent::ResumeAsked(text) => {
