@@ -58,8 +58,8 @@ use gpui::{
     DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Global,
     HighlightStyle, HitboxBehavior, ListAlignment, ListOffset, ListState, MouseButton,
     MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent,
-    SharedString, StyledText, Subscription, TextAlign, TextRun, WeakEntity, Window, canvas, div,
-    fill, list, point, prelude::*, px, size,
+    SharedString, StyledText, Subscription, TextAlign, TextRun, WeakEntity, Window, anchored,
+    canvas, deferred, div, fill, list, point, prelude::*, px, quad, size,
 };
 
 use crate::agent_markdown::Md;
@@ -74,7 +74,7 @@ use crate::git_status::{FileDiff, LineChange, file_diff, head_size, line_changes
 use crate::highlight::{Highlighter, PLAIN_ABOVE, REFUSE_ABOVE, Span, Viewable, classify};
 use crate::layout_model::{FileMode, PaneId, TabId, TabKind, WorkspaceId};
 use crate::live_lines::{
-    AgentMark, Compared, LIMIT, LineRecord, Mark, Sure, Who, compare, letter_of,
+    AgentMark, Compared, LIMIT, LineRecord, Mark, Sure, WARM, Who, age_words, compare, letter_of,
 };
 use crate::md_preview::{self, LinkTarget, is_markdown, link_target};
 use crate::mermaid::{self, Asked, Key};
@@ -83,12 +83,13 @@ use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
 use crate::scrollbar::{self, Axis, Bar, Thumb};
-use crate::sidebar_toggle::Tip;
+use crate::sidebar_toggle::{Tip, tip_box};
 use crate::tab_bar::{Glyph, glyph_with};
+use crate::tab_color::TabColor;
 use crate::terminal_view::{CellMetrics, Copy, hsla};
 use crate::theme::{Theme, UiColors, mix};
 use crate::ui_tokens::size::CARD_RADIUS;
-use crate::ui_tokens::{MARK_MIN, ensure_contrast, text};
+use crate::ui_tokens::{MARK_MIN, TEXT_MIN, contrast, ensure_contrast, text};
 use crate::workspace::Workspace;
 
 // Bound in main.rs in the "FileTab" key context: ⌘F, ⌘G, ⇧⌘G, and Esc to close the find bar.
@@ -147,8 +148,30 @@ const NUMBER_GAP: f32 = 8.0;
 const BAR_WIDTH: f32 = 3.0;
 const TEXT_GAP: f32 = 10.0;
 const RIGHT_PAD: f32 = 24.0;
+/// M11af: the column of who-changed-what marks, between the numbers and the bar; a mark's
+/// circle and its letter in it; the age words' size and their gap after the line's end (as the
+/// mockup's).
+const MARK_COLUMN: f32 = 16.0;
+const MARK_DOT: f32 = 13.0;
+const MARK_LETTER: f32 = 8.0;
+const AGE_SIZE: f32 = 10.0;
+const AGE_GAP: f32 = 10.0;
+/// A filled mark's dark letter (the mockup's), when it reads better than white.
+const ON_MARK_DARK: Rgb = Rgb {
+    r: 0x1e,
+    g: 0x1f,
+    b: 0x27,
+};
 /// A changed line's tint: its bar's colour at this opacity.
 const TINT: f32 = 0.12;
+/// M11af: the glow's warm accent (the mockup's peach), and its opacity at each level (1, 2, 3;
+/// note 82's starting values).
+pub const WARM_RGB: Rgb = Rgb {
+    r: 0xfa,
+    g: 0xb3,
+    b: 0x87,
+};
+pub const GLOW: [f32; 3] = [0.05, 0.11, 0.20];
 /// Find's matches: the accent at these opacities (the current one stronger).
 const MATCH_TINT: f32 = 0.25;
 const CURRENT_TINT: f32 = 0.55;
@@ -435,15 +458,23 @@ pub fn lines_label(n: usize) -> String {
 /// `1 mo` (30 days), `1 y` (365 days). A time ahead of `now` is just now.
 pub fn age_label(modified: SystemTime, now: SystemTime) -> String {
     let secs = now.duration_since(modified).map_or(0, |d| d.as_secs());
-    let (n, unit) = match secs {
-        0..60 => return "edited just now".to_string(),
+    match age_units(secs) {
+        None => "edited just now".to_string(),
+        Some((n, unit)) => format!("edited {n} {unit} ago"),
+    }
+}
+
+/// An age of a minute or more in its largest unit: `(5, "min")`, `(1, "h")`, `(1, "d")`,
+/// `(1, "mo")` (30 days), `(1, "y")` (365 days); none under a minute.
+fn age_units(secs: u64) -> Option<(u64, &'static str)> {
+    Some(match secs {
+        0..60 => return None,
         60..3_600 => (secs / 60, "min"),
         3_600..86_400 => (secs / 3_600, "h"),
         86_400..2_592_000 => (secs / 86_400, "d"),
         2_592_000..31_536_000 => (secs / 2_592_000, "mo"),
         _ => (secs / 31_536_000, "y"),
-    };
-    format!("edited {n} {unit} ago")
+    })
 }
 
 /// `n` with commas between thousands.
@@ -1076,7 +1107,16 @@ enum Seen<'a> {
 /// next read needs to keep that record.
 #[derive(Default)]
 struct Live {
-    record: LineRecord,
+    /// Shared with the frame drawing it (a change copies it while a frame still holds it).
+    record: Rc<LineRecord>,
+    /// Whether any line is marked, kept with each change (`render` asks it every frame; the
+    /// record would be scanned).
+    marked: bool,
+    /// The runs glowing as of the last poll (`refresh`), with their words: what is drawn.
+    warm: Rc<Vec<Warm>>,
+    /// The latest change's time: once it has cooled and nothing glows, the poll skips the
+    /// glow (none: nothing was ever marked).
+    latest: Option<SystemTime>,
     /// The last text read (kept while the file is missing): the next read compares with it.
     last: Option<Prev>,
     /// When the disk was last looked at: a change found next was made since then.
@@ -1084,7 +1124,6 @@ struct Live {
     /// The tab's workspace (the workspace says so each frame): its working agents are guessed.
     workspace: Option<WorkspaceId>,
     /// The letter on your marks, once found (`find_your_letter`, asked once per tab).
-    #[allow(dead_code)] // drawn by Task 6
     your_letter: Option<char>,
     letter_asked: bool,
     /// Follow the agent's newest change (M11af part 4).
@@ -1097,7 +1136,6 @@ struct Live {
     real: Option<PathBuf>,
     /// The time the glow is worked out at: a scene's own (frozen tabs never poll).
     #[cfg(feature = "ui-shots")]
-    #[allow(dead_code)] // used by Task 6
     now: Option<SystemTime>,
 }
 
@@ -1105,6 +1143,23 @@ impl Live {
     /// The last text, for the next read to compare with.
     fn prev(&self) -> Option<Prev> {
         self.last.clone()
+    }
+
+    /// The glow at `now` (the poll's, each second): true when a run's level or words changed,
+    /// so the tab is drawn again.
+    fn refresh(&mut self, now: SystemTime) -> bool {
+        let cold = self
+            .latest
+            .is_none_or(|t| now.duration_since(t).is_ok_and(|age| age >= WARM));
+        if cold && self.warm.is_empty() {
+            return false;
+        }
+        let warm = warm_runs(&self.record, now);
+        if warm == *self.warm {
+            return false;
+        }
+        self.warm = Rc::new(warm);
+        true
     }
 
     /// A look at the disk at `at`. A new text's changed lines are marked as `decide` says (given
@@ -1122,7 +1177,8 @@ impl Live {
         let (doc, compared, when) = match seen {
             Seen::Unchanged | Seen::Missing => return false,
             Seen::Refused => {
-                self.record.clear(0);
+                Rc::make_mut(&mut self.record).clear(0);
+                self.marked = false;
                 self.last = None;
                 self.pending = None;
                 return false;
@@ -1139,7 +1195,8 @@ impl Live {
         });
         let lines = doc.lines.len();
         let Some(c) = compared else {
-            self.record.clear(lines);
+            Rc::make_mut(&mut self.record).clear(lines);
+            self.marked = false;
             self.pending = None;
             return false;
         };
@@ -1149,7 +1206,9 @@ impl Live {
             decide(since)
         };
         let revisable = !c.blocks.is_empty() && (open || sure == Sure::Guess || who == Who::You);
-        self.record.apply(&c, lines, Mark { who, sure, when });
+        Rc::make_mut(&mut self.record).apply(&c, lines, Mark { who, sure, when });
+        self.marked = self.record.any();
+        self.latest = Some(self.latest.map_or(when, |t| t.max(when)));
         self.pending = revisable.then_some(at);
         revisable
     }
@@ -1172,9 +1231,54 @@ impl Live {
                     .is_some_and(|m| m.who != who || m.sure != Sure::Exact)
             });
         if changed {
-            self.record.revise_last(who, Sure::Exact);
+            Rc::make_mut(&mut self.record).revise_last(who, Sure::Exact);
         }
         changed
+    }
+}
+
+/// A run of neighbouring changed lines glowing at one level (`LineRecord::warm_blocks`), and
+/// the words said at its first line's end (`age_words`, from that line's change).
+#[derive(Clone, Debug, PartialEq)]
+struct Warm {
+    lines: Range<usize>,
+    level: u8,
+    words: String,
+}
+
+/// The record's warm runs at `now`.
+fn warm_runs(record: &LineRecord, now: SystemTime) -> Vec<Warm> {
+    record
+        .warm_blocks(now)
+        .into_iter()
+        .map(|(lines, level)| {
+            let when = record.mark(lines.start).map_or(now, |m| m.when);
+            let words = age_words(now.duration_since(when).unwrap_or_default());
+            Warm {
+                lines,
+                level,
+                words,
+            }
+        })
+        .collect()
+}
+
+/// A mark's tooltip at `now`: "claude · 12 s ago", "probably claude · 12 s ago (it was
+/// working)", "you · 3 min ago".
+fn mark_tip_words(m: &Mark, now: SystemTime) -> String {
+    let name = match &m.who {
+        Who::Agent(a) => &*a.name,
+        Who::You => "you",
+    };
+    let age = now.duration_since(m.when).unwrap_or_default();
+    // Under a minute as the glow says it; then as the bar's "edited …" does.
+    let ago = match age_units(age.as_secs()) {
+        None => age_words(age),
+        Some((n, unit)) => format!("{n} {unit} ago"),
+    };
+    match m.sure {
+        Sure::Exact => format!("{name} \u{b7} {ago}"),
+        Sure::Guess => format!("probably {name} \u{b7} {ago} (it was working)"),
     }
 }
 
@@ -1364,9 +1468,9 @@ fn visible_rows(
 /// as many digits as its largest number, at least 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gutter {
-    Plain {
-        digits: usize,
-    },
+    /// A file's: its numbers, and (M11af) a column for who changed each line while any is
+    /// marked.
+    Plain { digits: usize, marks: bool },
     Diff {
         old_digits: usize,
         new_digits: usize,
@@ -1379,10 +1483,11 @@ fn digits(n: usize) -> usize {
 }
 
 impl Gutter {
-    /// The gutter for `count` lines of a file.
-    fn plain(count: usize) -> Gutter {
+    /// The gutter for `count` lines of a file, with the marks' column or not.
+    fn plain(count: usize, marks: bool) -> Gutter {
         Gutter::Plain {
             digits: digits(count),
+            marks,
         }
     }
 
@@ -1404,16 +1509,25 @@ impl Gutter {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Columns {
     pub old_right: Option<f32>,
+    /// The marks' column's left edge (M11af; a file's, while any line is marked).
+    pub marks_left: Option<f32>,
     pub new_right: f32,
     pub bar_left: f32,
     pub text_left: f32,
 }
 
 /// The gutter laid out for cells `cell` wide: `GUTTER_LEFT`, the numbers (old, `NUMBER_GAP`,
-/// new, for a diff), `NUMBER_GAP`, the bar (`BAR_WIDTH`; a diff's sign, one cell), `TEXT_GAP`.
+/// new, for a diff), `NUMBER_GAP` (a file's marks' column, `MARK_COLUMN`, opened in its middle
+/// while any line is marked), the bar (`BAR_WIDTH`; a diff's sign, one cell), `TEXT_GAP`.
 pub fn columns(cell: f32, gutter: Gutter) -> Columns {
+    let mut marks_left = None;
     let (old_right, new_right, mark) = match gutter {
-        Gutter::Plain { digits } => (None, GUTTER_LEFT + cell * digits as f32, BAR_WIDTH),
+        Gutter::Plain { digits, marks } => {
+            let right = GUTTER_LEFT + cell * digits as f32;
+            // M11af: the marks' column, half a gap from the numbers and half a gap from the bar.
+            marks_left = marks.then_some(right + NUMBER_GAP / 2.0);
+            (None, right, BAR_WIDTH)
+        }
         Gutter::Diff {
             old_digits,
             new_digits,
@@ -1422,9 +1536,15 @@ pub fn columns(cell: f32, gutter: Gutter) -> Columns {
             (Some(old), old + NUMBER_GAP + cell * new_digits as f32, cell)
         }
     };
-    let bar_left = new_right + NUMBER_GAP;
+    let marks = if marks_left.is_some() {
+        MARK_COLUMN
+    } else {
+        0.0
+    };
+    let bar_left = new_right + NUMBER_GAP + marks;
     Columns {
         old_right,
+        marks_left,
         new_right,
         bar_left,
         text_left: bar_left + mark + TEXT_GAP,
@@ -1515,6 +1635,8 @@ pub struct Geom {
     /// (before the sideways scroll).
     pub old_numbers_right: Option<Pixels>,
     pub numbers_right: Pixels,
+    /// M11af: the marks' column's left edge (none: no line is marked, or not a file's).
+    pub marks_left: Option<Pixels>,
     pub bar_left: Pixels,
     pub text_left: Pixels,
     /// The scroll drawn (kept within `max_scroll`).
@@ -1544,6 +1666,7 @@ impl Geom {
             cell_width: m.cell_width,
             old_numbers_right: c.old_right.map(px),
             numbers_right: px(c.new_right),
+            marks_left: c.marks_left.map(px),
             bar_left: px(c.bar_left),
             text_left,
             scroll: Geom::clamp(scroll, max_scroll),
@@ -2013,6 +2136,107 @@ struct Frame {
     matches: Arc<Vec<Match>>,
     current: Option<usize>,
     theme: Theme,
+    /// M11af: the live changes drawn (a file in File mode with a line marked).
+    live: Option<LiveFrame>,
+}
+
+/// What the text body draws of the live changes (M11af): the marks, and the runs glowing as
+/// of the last poll with their words.
+struct LiveFrame {
+    record: Rc<LineRecord>,
+    warm: Rc<Vec<Warm>>,
+    your_letter: char,
+}
+
+impl LiveFrame {
+    /// The warm run line `i` is in, if any.
+    fn run_of(&self, i: usize) -> Option<&Warm> {
+        let k = self.warm.partition_point(|w| w.lines.end <= i);
+        self.warm.get(k).filter(|w| w.lines.contains(&i))
+    }
+}
+
+/// A mark's look: its colour, whether it is filled (else drawn hollow, in that colour), and
+/// its letter. An agent's in its provider's colour (filled when we know, hollow when we guess);
+/// an agent without one grey and hollow; yours teal and filled. Colours stand out on the
+/// background as marks do.
+fn mark_look(m: &Mark, your_letter: char, ui: &UiColors, bg: Rgb) -> (Rgb, bool, char) {
+    match &m.who {
+        Who::You => (ui.tab(TabColor::Teal), true, your_letter),
+        Who::Agent(a) => match a.rgb {
+            Some(c) => {
+                let c = Rgb {
+                    r: (c >> 16) as u8,
+                    g: (c >> 8) as u8,
+                    b: c as u8,
+                };
+                let c = ensure_contrast(c, bg, MARK_MIN);
+                (c, m.sure == Sure::Exact, a.letter)
+            }
+            None => (ui.tab(TabColor::Grey), false, a.letter),
+        },
+    }
+}
+
+/// A line's mark (the line's top at `top`) in the marks' column at `left`: a circle with its
+/// letter, as `mark_look` says.
+fn paint_mark(
+    look: (Rgb, bool, char),
+    left: Pixels,
+    top: Pixels,
+    lh: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (colour, filled, letter) = look;
+    let dot = px(MARK_DOT);
+    let centre = point(left + px(MARK_COLUMN / 2.0), top + lh / 2.0);
+    let b = Bounds::new(
+        point(centre.x - dot / 2.0, centre.y - dot / 2.0),
+        size(dot, dot),
+    );
+    let ink = if filled {
+        let white = Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        window.paint_quad(fill(b, hsla(colour)).corner_radii(dot / 2.0));
+        if contrast(white, colour) >= contrast(ON_MARK_DARK, colour) {
+            white
+        } else {
+            ON_MARK_DARK
+        }
+    } else {
+        let ring = quad(
+            b,
+            dot / 2.0,
+            gpui::transparent_black(),
+            px(1.0),
+            hsla(colour),
+            gpui::BorderStyle::Solid,
+        );
+        window.paint_quad(ring);
+        colour
+    };
+    let font = gpui::Font {
+        weight: FontWeight::BOLD,
+        ..window.text_style().font()
+    };
+    let label = SharedString::from(letter.to_string());
+    let run = TextRun {
+        len: label.len(),
+        font,
+        color: hsla(ink),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let shaped = window
+        .text_system()
+        .shape_line(label, px(MARK_LETTER), &[run], None);
+    let at = point(centre.x - shaped.width() / 2.0, top);
+    let _ = shaped.paint(at, lh, TextAlign::Left, None, window, cx);
 }
 
 /// A number in the gutter, right-aligned at `right` (a point at its line's top).
@@ -2074,6 +2298,8 @@ fn paint_body(
         )
     };
     let (removed_ink, added_ink) = sign_inks(&bars, bg);
+    // M11af: the age words in the warm accent, readable on the background.
+    let age_ink = ensure_contrast(WARM_RGB, bg, TEXT_MIN);
     let (removed_sign, added_sign) = (
         sign(SIGN_REMOVED, removed_ink, window),
         sign(SIGN_ADDED, added_ink, window),
@@ -2108,6 +2334,17 @@ fn paint_body(
         if let Some(tint) = tint {
             let band = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
             window.paint_quad(fill(band, hsla(tint).opacity(TINT)));
+        }
+        // M11af: a line changed on disk in the last minute glows, under the selection and find.
+        let run = f.live.as_ref().and_then(|l| l.run_of(i));
+        let glow = run.and_then(|w| {
+            w.level
+                .checked_sub(1)
+                .and_then(|k| GLOW.get(usize::from(k)))
+        });
+        if let Some(level) = glow {
+            let band = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
+            window.paint_quad(fill(band, hsla(WARM_RGB).opacity(*level)));
         }
         let line_spans = spans.and_then(|s| s.get(i)).map(Vec::as_slice);
         // An unchanged diff row: its colours mixed toward the background, still readable.
@@ -2185,6 +2422,25 @@ fn paint_body(
                 let origin = point(text_x + laid.x0, y);
                 let _ = shaped.paint(origin, lh, TextAlign::Left, None, window, cx);
             }
+            // M11af: a warm run's age, after its first line's end (on the row it ends on).
+            let ends_here = part.is_none_or(|(_, _, _, last)| last);
+            if let Some(w) = run.filter(|w| w.lines.start == i && ends_here) {
+                let width = f.doc.widths.get(i).copied().unwrap_or(0) as f32;
+                let x = text_x + g.cell_width * width + px(AGE_GAP);
+                let label = SharedString::from(w.words.clone());
+                let run = TextRun {
+                    len: label.len(),
+                    font: window.text_style().font(),
+                    color: hsla(age_ink),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let words = window
+                    .text_system()
+                    .shape_line(label, px(AGE_SIZE), &[run], None);
+                let _ = words.paint(point(x, y), lh, TextAlign::Left, None, window, cx);
+            }
         });
         if !first_row {
             continue;
@@ -2193,6 +2449,12 @@ fn paint_body(
             None => {
                 let right = point(bounds.left() + g.numbers_right, y);
                 paint_number(i + 1, right, m, ui.text_faint, window, cx);
+                if let (Some(l), Some(left)) = (&f.live, g.marks_left)
+                    && let Some(mark) = l.record.mark(i)
+                {
+                    let look = mark_look(mark, l.your_letter, &ui, bg);
+                    paint_mark(look, bounds.left() + left, y, lh, window, cx);
+                }
                 if let Some(change) = change {
                     let bar = Bounds::new(
                         point(bounds.left() + g.bar_left, y),
@@ -2460,6 +2722,8 @@ pub struct FileTab {
     mermaid_shown: Rc<Vec<Option<md_preview::Shown>>>,
     /// M11af: who changed each line since the tab opened.
     live: Live,
+    /// M11af: the mark under the pointer: its tooltip's place (window points) and words.
+    mark_tip: Option<(Point<Pixels>, SharedString)>,
     _appearance: Subscription,
 }
 
@@ -2549,6 +2813,7 @@ impl FileTab {
             mermaid_plan: None,
             mermaid_shown: Rc::default(),
             live: Live::default(),
+            mark_tip: None,
             _appearance: appearance,
         };
         tab.check_disk(cx);
@@ -2646,6 +2911,7 @@ impl FileTab {
                         if this.ticking {
                             this.polls = this.polls.wrapping_add(1);
                             this.refresh_age(SystemTime::now(), cx);
+                            this.refresh_live(cx);
                             this.check_disk(cx);
                             if this.polls.is_multiple_of(CHANGES_EVERY) {
                                 this.look_up_changes(cx);
@@ -2773,9 +3039,27 @@ impl FileTab {
         if revisable {
             self.revise_soon(cx);
         }
-        if self.live.record.any() && !self.live.letter_asked && !self.frozen {
+        if self.live.marked && !self.live.letter_asked && !self.frozen {
             self.ask_your_letter(cx);
         }
+        self.refresh_live(cx);
+    }
+
+    /// M11af: the glow and its words worked out at now (each poll, each look at the disk),
+    /// never while drawing: drawn again only when a run's level or words changed.
+    fn refresh_live(&mut self, cx: &mut Context<Self>) {
+        if self.live.refresh(self.live_now()) {
+            cx.notify();
+        }
+    }
+
+    /// M11af: the time the glow and the tooltips are worked out at: now (a scene's own).
+    fn live_now(&self) -> SystemTime {
+        #[cfg(feature = "ui-shots")]
+        if let Some(now) = self.live.now {
+            return now;
+        }
+        SystemTime::now()
     }
 
     /// The revision check (one at a time): 2 s after the look it waits for, a late finish may
@@ -2847,7 +3131,6 @@ impl FileTab {
     }
 
     /// M11af: who changed each line since the tab opened.
-    #[allow(dead_code)] // drawn by Task 6
     pub fn live_marks(&self) -> &LineRecord {
         &self.live.record
     }
@@ -3393,6 +3676,46 @@ impl FileTab {
             self.scrolled(cx);
             cx.notify();
         }
+        self.hover_mark(None, cx);
+    }
+
+    /// M11af: the pointer at `p` (none: not over the text): on a mark, its tooltip shows at
+    /// once (its age as of now); off it, none. Drawn again only when that changes.
+    fn hover_mark(&mut self, p: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+        let tip = p.and_then(|p| self.mark_under(p)).and_then(|(line, at)| {
+            let m = self.live_marks().mark(line)?;
+            Some((at, SharedString::from(mark_tip_words(m, self.live_now()))))
+        });
+        if tip != self.mark_tip {
+            self.mark_tip = tip;
+            cx.notify();
+        }
+    }
+
+    /// M11af: the marked line whose mark is under window point `p` (File mode, as last drawn),
+    /// and where its tooltip goes: under the mark's row, from the column's left.
+    fn mark_under(&self, p: Point<Pixels>) -> Option<(usize, Point<Pixels>)> {
+        if self.mode != FileMode::Plain || self.preview_shown() {
+            return None;
+        }
+        let g = self.geom.get()?;
+        let left = g.marks_left?;
+        let x = p.x - g.bounds.left() - left;
+        if x < px(0.0) || x > px(MARK_COLUMN) || !g.bounds.contains(&p) {
+            return None;
+        }
+        let row = ((p.y - g.bounds.top() + g.scroll.y) / g.line_height).floor() as usize;
+        let line = match self.wrapped.borrow().as_ref() {
+            Some(w) if row < w.rows.len() => match w.row(row) {
+                (line, 0) => line,
+                _ => return None,
+            },
+            Some(_) => return None,
+            None => row,
+        };
+        self.live_marks().mark(line)?;
+        let below = g.line_height * (row + 1) as f32 - g.scroll.y + px(2.0);
+        Some((line, point(g.bounds.left() + left, g.bounds.top() + below)))
     }
 
     /// The button released anywhere in the window: a thumb drag ends.
@@ -3701,6 +4024,8 @@ impl FileTab {
         let Some(g) = self.geom.get() else {
             return;
         };
+        // The marks move under the pointer: the next move shows the tooltip again.
+        self.hover_mark(None, cx);
         let d = e.delta.pixel_delta(g.line_height);
         self.set_scroll(point(g.scroll.x - d.x, g.scroll.y - d.y), cx);
     }
@@ -3832,6 +4157,9 @@ impl FileTab {
             self.scrolled(cx);
             cx.notify();
         }
+        // M11af: a mark's tooltip, while the pointer rests on it (not while selecting).
+        let resting = over && !self.selecting && e.pressed_button.is_none();
+        self.hover_mark(resting.then_some(e.position), cx);
         self.mouse_drag(e, window, cx);
     }
 
@@ -4730,6 +5058,11 @@ impl FileTab {
             matches,
             current,
             theme,
+            live: (self.mode == FileMode::Plain && self.live.marked).then(|| LiveFrame {
+                record: self.live.record.clone(),
+                warm: self.live.warm.clone(),
+                your_letter: self.live.your_letter.unwrap_or('Y'),
+            }),
         });
         let geom = self.geom.clone();
         let wrapped = self.wrapped.clone();
@@ -4742,12 +5075,23 @@ impl FileTab {
         // sight doesn't show in them (nor in the card's bottom corners); a press or the wheel in
         // a room still reaches the text.
         let text = div().size_full().overflow_hidden();
+        // M11af: the hovered mark's tooltip, under it (as the Changes bar's, drawn in place).
+        let tip = self.mark_tip.clone().filter(|_| frame.live.is_some());
+        let ui = theme.ui();
         div()
             .flex_1()
             .min_h(px(0.0))
             .w_full()
             .pt(px(TOP_ROOM))
             .pb(px(BOTTOM_ROOM))
+            .when_some(tip, |d, (at, words)| {
+                d.child(deferred(
+                    anchored()
+                        .position(at)
+                        .snap_to_window_with_margin(px(4.0))
+                        .child(tip_box(words, &ui)),
+                ))
+            })
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, cx| this.wheel(e, cx)))
             .on_mouse_down(
                 MouseButton::Left,
@@ -4759,7 +5103,9 @@ impl FileTab {
                         move |bounds, window, cx| {
                             let m = CellMetrics::measure(cx.global::<Appearance>(), window);
                             let count = laid.doc.lines.len();
-                            let gutter = laid.gutter.unwrap_or_else(|| Gutter::plain(count));
+                            let gutter = laid
+                                .gutter
+                                .unwrap_or_else(|| Gutter::plain(count, laid.live.is_some()));
                             // Wrap on (M11x part 2): rows at the text's width, made again only
                             // for another version, mode or width; no sideways scroll.
                             let wrap = cx.global::<Appearance>().file_wrap.then(|| {
@@ -5080,12 +5426,29 @@ impl FileTab {
         self.find.is_some()
     }
 
+    /// M11af: the age words drawn, each at its run's first line (as of the last poll).
+    pub fn live_words(&self) -> Vec<(usize, String)> {
+        self.live
+            .warm
+            .iter()
+            .map(|w| (w.lines.start, w.words.clone()))
+            .collect()
+    }
+
+    /// M11af: the hovered mark's tooltip, if one shows.
+    pub fn mark_tip(&self) -> Option<String> {
+        self.mark_tip.as_ref().map(|(_, words)| words.to_string())
+    }
+
     /// M11af: a scene's live record, its glow worked out at `now`, and Follow on or off
     /// (none: as it is).
-    #[allow(dead_code)] // used by Task 6's scenes
     pub fn set_live_for_shot(&mut self, record: LineRecord, now: SystemTime, follow: Option<bool>) {
-        self.live.record = record;
+        self.live.marked = record.any();
+        self.live.record = Rc::new(record);
         self.live.now = Some(now);
+        // A scene's marks are all at or before its `now`.
+        self.live.latest = Some(now);
+        self.live.refresh(now);
         if let Some(follow) = follow {
             self.live.follow = follow;
         }
@@ -5976,7 +6339,13 @@ mod tests {
 
     #[test]
     fn columns_lay_out_one_or_two_number_columns() {
-        let plain = columns(8.0, Gutter::Plain { digits: 2 });
+        let plain = columns(
+            8.0,
+            Gutter::Plain {
+                digits: 2,
+                marks: false,
+            },
+        );
         assert_eq!(plain.old_right, None);
         assert_eq!(plain.new_right, 28.0);
         assert_eq!(plain.bar_left, 36.0);
@@ -6607,5 +6976,146 @@ mod tests {
             Sure::Exact,
             false
         )));
+    }
+
+    // M11af Task 6: what the glow, the age words and the marks draw.
+
+    /// A record of `lines` lines whose `block` changed at `when`, by `who` (`sure`).
+    fn changed(
+        record: &mut LineRecord,
+        lines: usize,
+        block: Range<usize>,
+        who: Who,
+        sure: Sure,
+        when: SystemTime,
+    ) {
+        let c = Compared {
+            new_of_old: (0..lines)
+                .map(|i| (!block.contains(&i)).then_some(i))
+                .collect(),
+            blocks: vec![block],
+        };
+        record.apply(&c, lines, Mark { who, sure, when });
+    }
+
+    #[test]
+    fn warm_runs_carry_their_first_lines_words() {
+        let now = T0 + Duration::from_secs(1_000);
+        let ago = |s: u64| now - Duration::from_secs(s);
+        let mut r = LineRecord::baseline(14);
+        changed(&mut r, 14, 1..3, Who::You, Sure::Exact, ago(2));
+        changed(&mut r, 14, 5..6, Who::You, Sure::Exact, ago(20));
+        changed(&mut r, 14, 8..10, agent("claude"), Sure::Guess, ago(40));
+        changed(&mut r, 14, 12..13, Who::You, Sure::Exact, ago(70));
+        let warm = |lines: Range<usize>, level: u8, words: &str| Warm {
+            lines,
+            level,
+            words: words.to_string(),
+        };
+        assert_eq!(
+            warm_runs(&r, now),
+            vec![
+                warm(1..3, 3, "just now"),
+                warm(5..6, 2, "20 s ago"),
+                warm(8..10, 1, "40 s ago"),
+            ]
+        );
+        // A minute on, everything has cooled.
+        assert!(warm_runs(&r, now + Duration::from_secs(60)).is_empty());
+    }
+
+    #[test]
+    fn mark_tips_say_who_and_when() {
+        let now = T0 + Duration::from_secs(10_000);
+        let mark = |who: Who, sure: Sure, secs: u64| Mark {
+            who,
+            sure,
+            when: now - Duration::from_secs(secs),
+        };
+        let tip = |m: Mark| mark_tip_words(&m, now);
+        assert_eq!(
+            tip(mark(agent("claude"), Sure::Exact, 12)),
+            "claude \u{b7} 12 s ago"
+        );
+        assert_eq!(
+            tip(mark(agent("claude"), Sure::Guess, 12)),
+            "probably claude \u{b7} 12 s ago (it was working)"
+        );
+        assert_eq!(
+            tip(mark(Who::You, Sure::Exact, 180)),
+            "you \u{b7} 3 min ago"
+        );
+        assert_eq!(tip(mark(Who::You, Sure::Exact, 3)), "you \u{b7} just now");
+        assert_eq!(
+            tip(mark(agent("codex"), Sure::Guess, 7_200)),
+            "probably codex \u{b7} 2 h ago (it was working)"
+        );
+        // A time ahead of now (a clock moved back) is just now.
+        let ahead = Mark {
+            who: Who::You,
+            sure: Sure::Exact,
+            when: now + Duration::from_secs(5),
+        };
+        assert_eq!(mark_tip_words(&ahead, now), "you \u{b7} just now");
+    }
+
+    /// The marks' column (16 pt) sits between the numbers and the bar, only while any line is
+    /// marked; without it the gutter is as before M11af.
+    #[test]
+    fn the_marks_column_opens_only_while_marked() {
+        let without = columns(8.0, Gutter::plain(9, false));
+        let with = columns(8.0, Gutter::plain(9, true));
+        assert_eq!(without.marks_left, None);
+        assert_eq!(without.text_left, 49.0);
+        assert_eq!(with.new_right, without.new_right);
+        assert_eq!(with.marks_left, Some(32.0));
+        assert_eq!(with.bar_left, without.bar_left + MARK_COLUMN);
+        assert_eq!(with.text_left, without.text_left + MARK_COLUMN);
+    }
+
+    /// The poll's refresh says "draw again" only when a run's level or words changed.
+    #[test]
+    fn refresh_says_when_the_glow_changed() {
+        let now = T0 + Duration::from_secs(1_000);
+        let mut live = Live::default();
+        let mut r = LineRecord::baseline(3);
+        changed(&mut r, 3, 1..2, Who::You, Sure::Exact, now);
+        live.record = Rc::new(r);
+        assert!(
+            !live.refresh(now),
+            "nothing marked yet as far as it knows: skipped"
+        );
+        live.latest = Some(now);
+        assert!(live.refresh(now), "the first glow");
+        assert!(
+            !live.refresh(now + Duration::from_millis(900)),
+            "still just now"
+        );
+        assert!(live.refresh(now + Duration::from_secs(5)), "5 s ago");
+        assert!(!live.refresh(now + Duration::from_millis(5_500)));
+        assert!(live.refresh(now + Duration::from_secs(60)), "cooled");
+        assert!(
+            !live.refresh(now + Duration::from_secs(61)),
+            "nothing warm: nothing to draw"
+        );
+    }
+
+    /// `marked` (what each frame asks) follows the record through every look.
+    #[test]
+    fn marked_follows_the_record() {
+        let t0 = Instant::now();
+        let mut live = Live::default();
+        let first = doc("a\nb\n");
+        live.saw(text_read(&live, &first, T0), t0, |_| unreachable!());
+        assert!(!live.marked);
+        let second = doc("a\nB\n");
+        live.saw(text_read(&live, &second, T0), t0, |_| {
+            (Who::You, Sure::Exact, false)
+        });
+        assert!(live.marked && live.record.any());
+        live.saw(Seen::Unchanged, t0, |_| unreachable!());
+        assert!(live.marked, "a look that finds nothing new keeps the marks");
+        live.saw(Seen::Refused, t0, |_| unreachable!());
+        assert!(!live.marked && !live.record.any());
     }
 }
