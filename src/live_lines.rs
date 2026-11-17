@@ -5,9 +5,6 @@
 //! without their terminators (the file tab passes its lines with `\r` and `\n` trimmed), so a
 //! CRLF file and its LF twin, or a missing final newline, never count as a change.
 
-// Nothing draws or calls this yet; the file tab wires it in later in M11af.
-#![allow(dead_code)]
-
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -17,6 +14,7 @@ use similar::{Algorithm, DiffOp, capture_diff_slices_deadline};
 /// How long a comparison may take before we give up (the diff is then only approximate).
 pub const LIMIT: Duration = Duration::from_millis(50);
 /// How long a changed line keeps glowing.
+#[allow(dead_code)] // used by Task 6 (drawing the glow)
 pub const WARM: Duration = Duration::from_secs(60);
 
 /// Which new lines are new or changed (`blocks`, merged runs), and where each old line went
@@ -163,6 +161,7 @@ impl LineRecord {
     }
 
     /// Runs of neighbouring lines still glowing at the same level, as (lines, level).
+    #[allow(dead_code)] // used by Task 6 (drawing the glow)
     pub fn warm_blocks(&self, now: SystemTime) -> Vec<(Range<usize>, u8)> {
         let mut out: Vec<(Range<usize>, u8)> = Vec::new();
         for (line, m) in self.marks.iter().enumerate() {
@@ -180,6 +179,7 @@ impl LineRecord {
 }
 
 /// How brightly a line of this age glows: 3 (fresh), 2, 1, or `None` once it has cooled.
+#[allow(dead_code)] // used by Task 6 (drawing the glow)
 pub fn glow_level(age: Duration) -> Option<u8> {
     match age.as_secs_f64() {
         s if s < 15.0 => Some(3),
@@ -190,6 +190,7 @@ pub fn glow_level(age: Duration) -> Option<u8> {
 }
 
 /// "just now" for the first seconds, then "12 s ago".
+#[allow(dead_code)] // used by Task 6 (drawing the glow)
 pub fn age_words(age: Duration) -> String {
     let s = age.as_secs();
     if s < 5 {
