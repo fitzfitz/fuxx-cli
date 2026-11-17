@@ -68,6 +68,8 @@ pub enum ComposerEvent {
     Stop,
     /// An `@` was typed at the start of a word.
     AtTyped,
+    /// Paste with an image (and no text) on the clipboard: the box makes it an attachment.
+    PasteImage(gpui::Image),
 }
 
 /// The pure editing core: text, a caret and an anchor (the selection is between them), all byte
@@ -618,8 +620,16 @@ impl Composer {
     }
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        if let Some(text) = item.text() {
             self.insert(&text, cx);
+        } else if let Some(image) = item.into_entries().find_map(|entry| match entry {
+            gpui::ClipboardEntry::Image(image) => Some(image),
+            _ => None,
+        }) {
+            cx.emit(ComposerEvent::PasteImage(image));
         }
     }
 

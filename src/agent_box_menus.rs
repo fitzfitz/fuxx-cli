@@ -45,6 +45,7 @@ impl AgentTab {
                                                 | BoxMenu::Move(_)
                                                 | BoxMenu::Model { .. }
                                                 | BoxMenu::Mode
+                                                | BoxMenu::Attach
                                         )
                                     ) {
                                         this.chip_closed_at = Some(event.position);
@@ -628,6 +629,74 @@ impl AgentTab {
         } else {
             self.open_menu(BoxMenu::Mode, cx);
         }
+    }
+
+    /// `+`'s click: the attach menu opens over it, or (open) closes.
+    pub(super) fn attach_clicked(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.menu, Some(BoxMenu::Attach)) {
+            self.close_menu(cx);
+        } else {
+            self.open_menu(BoxMenu::Attach, cx);
+        }
+    }
+
+    /// The attach menu's rows (§8): `File…` and `Image…`.
+    pub(super) fn attach_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let ui = cx.global::<Appearance>().theme.ui();
+        let rows = [(FILE_ROW, false), (IMAGE_ROW, true)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (label, images))| {
+                let hover = ui.panel_hover;
+                let row = div()
+                    .id(("box-attach", i))
+                    .h(px(ROW_H))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(ROW_RADIUS))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hsla(hover)))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.pick_attachments(images, cx);
+                        this.keyboard_back(window, cx);
+                    }));
+                self.marked_row(label.to_string(), row).into_any_element()
+            });
+        div().flex().flex_col().children(rows).into_any_element()
+    }
+
+    /// `File…` (any files) or `Image…` (`images`) chosen: the menu closes and the macOS file
+    /// panel opens; what it picks becomes chips (`attach_files`, `attach_images`). Cancelled:
+    /// nothing. Nothing is sent.
+    fn pick_attachments(&mut self, images: bool, cx: &mut Context<Self>) {
+        self.close_menu(cx);
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let paths = match picked.await {
+                Ok(Ok(Some(paths))) => paths,
+                Ok(Err(err)) => {
+                    eprintln!("[fuxx] agent box: file panel failed: {err}");
+                    return;
+                }
+                _ => return,
+            };
+            this.update(cx, |this, cx| {
+                if images {
+                    this.attach_images(paths, cx)
+                } else {
+                    this.attach_files(paths, cx)
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The mode `id` chosen: the menu closes and the change is asked for (`choose`: live where

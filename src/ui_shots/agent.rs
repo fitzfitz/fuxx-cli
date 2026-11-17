@@ -2290,7 +2290,14 @@ pub(super) fn agent_tab_attachment() {
             let output = ATTACHMENT_OUTPUT.replace('\r', "");
             let npm = attachment_text(Some("npm test"), Outcome::Failed(1), output.trim_end());
             let done = attachment_text(Some("echo done"), Outcome::Ok, "done");
-            let attached = |cx: &App| view.read(cx).shot_attachments().to_vec();
+            // (A command block's chip's label is its whole text.)
+            let attached = |cx: &App| -> Vec<String> {
+                view.read(cx)
+                    .shot_attachments()
+                    .iter()
+                    .map(crate::agent_tab::Attachment::label)
+                    .collect()
+            };
             let block = |cmd: &str, cx: &mut VisualTestAppContext| {
                 cx.read(|cx| {
                     let b = shell.read(cx).shot_blocks();
@@ -2456,7 +2463,11 @@ pub(super) fn agent_tab_attachment() {
                 assert!(t.shot_paused(), "{n}: still paused");
                 assert_eq!(t.shot_last_argv(), argv, "{n}: nothing started");
                 assert_eq!(t.status(), Status::Done, "{n}");
-                assert_eq!(t.shot_attachments(), std::slice::from_ref(&done), "{n}");
+                assert_eq!(
+                    t.shot_attachments(),
+                    [crate::agent_tab::Attachment::Text(done.clone())],
+                    "{n}"
+                );
             });
         });
         println!("ui-shots: {n}-{slug}: dropped on the body and the tab, removed, sent, paused");

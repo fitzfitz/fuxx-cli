@@ -21,7 +21,7 @@ use crate::agent_box::{
 };
 use crate::agent_catalog::{Catalogs, Lookup};
 use crate::agent_conversation::Item;
-use crate::agent_tab::{AgentTab, AgentTabEvent};
+use crate::agent_tab::{AgentTab, AgentTabEvent, Attachment};
 use crate::folder_picker::{KnownFolders, PickerRow};
 use crate::providers::agy::AGY;
 use crate::providers::claude::CLAUDE;
@@ -59,6 +59,21 @@ const LAYOUT: &[&str] = &[
     "src/overlay_panel.rs",
     "src/providers/mod.rs",
     "src/providers/claude.rs",
+];
+
+/// The files the attach menu and its chips are made of: the box's, the composer (a paste), the
+/// menu panel's look, and the providers that say how an image is sent.
+const ATTACH: &[&str] = &[
+    "src/agent_tab.rs",
+    "src/agent_box.rs",
+    "src/agent_box_menus.rs",
+    "src/agent_conversation.rs",
+    "src/agent_catalog.rs",
+    "src/composer.rs",
+    "src/overlay_panel.rs",
+    "src/providers/mod.rs",
+    "src/providers/claude.rs",
+    "src/providers/agy.rs",
 ];
 
 /// The files the folder picker is made of: the box's, the picker's lists, its search box, and
@@ -138,6 +153,46 @@ pub(super) const SCENES: &[Scene] = &[
         serial: false,
         kind: Kind::Visual,
         sources: LAYOUT,
+    },
+    Scene {
+        name: "agent-box-attach-menu",
+        run: agent_box_attach_menu,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: ATTACH,
+    },
+    Scene {
+        name: "agent-box-file-chip",
+        run: agent_box_file_chip,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: ATTACH,
+    },
+    Scene {
+        name: "agent-box-image-chip",
+        run: agent_box_image_chip,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: ATTACH,
+    },
+    Scene {
+        name: "agent-box-image-agy",
+        run: agent_box_image_agy,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: ATTACH,
+    },
+    Scene {
+        name: "agent-box-image-too-big",
+        run: agent_box_image_too_big,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: ATTACH,
     },
     Scene {
         name: "agent-box-long-text",
@@ -1145,8 +1200,8 @@ pub(super) fn agent_box_attachment() {
     layout_scene("agent-box-attachment", |n, cx, window, tab| {
         let npm = "$ npm test\n(exit 1)\n> app@1.0.0 test\nFAIL src/rsvp.test.ts";
         let done = "$ echo done\n(exit 0)\ndone";
-        feed(cx, tab, |t, cx| t.attach(done.into(), cx));
-        feed(cx, tab, |t, cx| t.attach(npm.into(), cx));
+        feed(cx, tab, |t, cx| t.attach(Attachment::Text(done.into()), cx));
+        feed(cx, tab, |t, cx| t.attach(Attachment::Text(npm.into()), cx));
         let _ = frame_fresh(cx, window);
         let chips = part(cx, tab, n, "attachments");
         let the_box = part(cx, tab, n, "box");
@@ -1165,12 +1220,393 @@ pub(super) fn agent_box_attachment() {
             let t = tab.read(cx);
             assert_eq!(
                 t.shot_attachments(),
-                [npm.to_string()],
+                [Attachment::Text(npm.to_string())],
                 "{n}: \u{d7} took it off"
             );
             assert!(t.shot_items().is_empty(), "{n}: nothing sent");
         });
         assert!(written(cx, tab).is_empty(), "{n}");
+    });
+}
+
+/// A folder of made-up files for the attach scenes, removed when dropped.
+struct Files(PathBuf);
+
+impl Files {
+    fn new(scene: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("fuxx-shots-{scene}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scene's folder");
+        Files(dir)
+    }
+
+    /// File `name` with `bytes`; its path.
+    fn make(&self, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = self.0.join(name);
+        std::fs::write(&path, bytes).expect("a made-up file");
+        path
+    }
+
+    /// File `name` of `len` zero bytes (sparse: it costs nothing to make); its path.
+    fn make_sized(&self, name: &str, len: usize) -> PathBuf {
+        let path = self.0.join(name);
+        let file = std::fs::File::create(&path).expect("a made-up file");
+        file.set_len(len as u64).expect("its size");
+        path
+    }
+}
+
+impl Drop for Files {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A made-up image file's bytes (a PNG's signature, then nothing: no scene decodes it).
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\nmade-up";
+
+/// Run until `done` holds: image files are read off the UI thread, so a chip (or a notice)
+/// comes a little later. At most five seconds.
+fn settle_until(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    what: &str,
+    done: impl Fn(&VisualTestAppContext) -> bool,
+) {
+    let started = std::time::Instant::now();
+    loop {
+        cx.run_until_parked();
+        if done(cx) {
+            let _ = frame_fresh(cx, window);
+            return;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{n}: {what}"
+        );
+        super::prof::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// The waiting attachments, as the chips say them (`glyph label`).
+fn chips(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<String> {
+    cx.read(|cx| {
+        tab.read(cx)
+            .shot_attachments()
+            .iter()
+            .map(|a| format!("{} {}", a.glyph(), a.label()))
+            .collect()
+    })
+}
+
+/// The last user message written to the agent.
+fn last_user(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> serde_json::Value {
+    written(cx, tab)
+        .into_iter()
+        .rfind(|l| l["type"] == "user" || l["event"] == "user")
+        .expect("a message was written")
+}
+
+/// §8: `+` opens a menu over it with `File\u{2026}` and `Image\u{2026}`, one menu at a time (a
+/// press on another chip closes it). Choosing a row closes it and opens the file panel (a shot
+/// has none: it is cancelled), so nothing is attached or sent. Left open for the shot.
+pub(super) fn agent_box_attach_menu() {
+    layout_scene("agent-box-attach-menu", |n, cx, window, tab| {
+        let plus = part(cx, tab, n, "attach");
+        cx.simulate_click(window, plus.center(), Modifiers::none());
+        cx.run_until_parked();
+        let _ = frame_fresh(cx, window);
+        assert_eq!(menu(cx, tab), Some(BoxMenu::Attach), "{n}");
+        assert_eq!(labels(cx, tab), ["File\u{2026}", "Image\u{2026}"], "{n}");
+        let menu_box = part(cx, tab, n, "menu");
+        assert!(plus.top() >= menu_box.bottom(), "{n}: upward from +");
+        let at = |l: &str| {
+            cx.read(|cx| tab.read(cx).shot_menu_row(l))
+                .unwrap_or_else(|| panic!("{n}: no row {l}"))
+        };
+        let (file, image) = (at("File\u{2026}"), at("Image\u{2026}"));
+        assert!(file.bottom() <= image.top(), "{n}: top to bottom");
+        assert!(inside(file, menu_box) && inside(image, menu_box), "{n}");
+        // + again closes it; a press on another chip closes it and opens nothing, and + does the
+        // same to another menu.
+        cx.simulate_click(window, plus.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(menu(cx, tab), None, "{n}: + closes it");
+        cx.simulate_click(window, plus.center(), Modifiers::none());
+        click_model_chip(n, cx, window, tab);
+        assert_eq!(menu(cx, tab), None, "{n}: the model chip's press closes it");
+        click_model_chip(n, cx, window, tab);
+        assert!(matches!(menu(cx, tab), Some(BoxMenu::Model { .. })), "{n}");
+        cx.simulate_click(window, plus.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(menu(cx, tab), None, "{n}: +'s press closes the model menu");
+        cx.simulate_click(window, plus.center(), Modifiers::none());
+        cx.run_until_parked();
+        let _ = frame_fresh(cx, window);
+        assert_eq!(menu(cx, tab), Some(BoxMenu::Attach), "{n}");
+        // Each row closes it; the panel is cancelled here: no chip, nothing sent.
+        for row in ["File\u{2026}", "Image\u{2026}"] {
+            click_row(n, cx, window, tab, row);
+            assert_eq!(menu(cx, tab), None, "{n}: {row} closes it");
+            cx.simulate_click(window, plus.center(), Modifiers::none());
+            cx.run_until_parked();
+            let _ = frame_fresh(cx, window);
+            assert_eq!(menu(cx, tab), Some(BoxMenu::Attach), "{n}");
+        }
+        assert!(
+            chips(cx, tab).is_empty(),
+            "{n}: a cancelled panel attaches nothing"
+        );
+        assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
+        assert!(cx.read(|cx| tab.read(cx).shot_items().is_empty()), "{n}");
+    });
+}
+
+/// §8: files (from `File\u{2026}`, or dropped on the box) are chips, `\u{1f4ce} name`, in the box above the
+/// text; a dropped image file is an image chip instead. A message sends each file as its path
+/// after the text, and the conversation lists their names; the \u{d7} takes one off.
+pub(super) fn agent_box_file_chip() {
+    layout_scene("agent-box-file-chip", |n, cx, window, tab| {
+        let files = Files::new("file-chip");
+        let notes = files.make("notes.txt", b"made-up");
+        let todo = files.make("todo.md", b"made-up");
+        let log = files.make("build.log", b"made-up");
+        feed(cx, tab, |t, cx| t.attach_files(vec![notes.clone()], cx));
+        feed(cx, tab, |t, cx| {
+            t.attach_dropped(vec![todo.clone(), log.clone()], cx)
+        });
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            chips(cx, tab),
+            [
+                "\u{1f4ce} notes.txt",
+                "\u{1f4ce} todo.md",
+                "\u{1f4ce} build.log"
+            ],
+            "{n}"
+        );
+        let chip_row = part(cx, tab, n, "attachments");
+        assert!(inside(chip_row, part(cx, tab, n, "box")), "{n}: in the box");
+        assert!(
+            chip_row.bottom() <= composer_bounds(cx, tab).top(),
+            "{n}: above the text"
+        );
+        assert!(written(cx, tab).is_empty(), "{n}: attaching sends nothing");
+        // The \u{d7} of the last takes it off.
+        let x = cx
+            .read(|cx| tab.read(cx).shot_remove_bounds(2))
+            .expect("the last chip's \u{d7}");
+        cx.simulate_click(window, x.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(chips(cx, tab).len(), 2, "{n}: \u{d7} took one off");
+        feed(cx, tab, |t, cx| t.attach_files(vec![log.clone()], cx));
+        let _ = frame_fresh(cx, window);
+        // Sent: the paths go after the text, as text (not an image block).
+        feed(cx, tab, |t, cx| t.send("Read these".into(), cx));
+        let sent = last_user(cx, tab);
+        assert_eq!(
+            sent["message"]["content"],
+            format!(
+                "Read these\n\n{}\n\n{}\n\n{}",
+                notes.display(),
+                todo.display(),
+                log.display()
+            ),
+            "{n}"
+        );
+        assert!(chips(cx, tab).is_empty(), "{n}: the box has none left");
+        let said = cx.read(|cx| {
+            tab.read(cx).shot_items().iter().find_map(|i| match i {
+                Item::You { attachments, .. } => Some(attachments.clone()),
+                _ => None,
+            })
+        });
+        assert_eq!(
+            said.as_deref(),
+            Some(
+                &[
+                    "notes.txt".to_string(),
+                    "todo.md".into(),
+                    "build.log".into()
+                ][..]
+            ),
+            "{n}"
+        );
+        // One more waits for the shot.
+        feed(cx, tab, |t, cx| t.attach_files(vec![notes.clone()], cx));
+    });
+}
+
+/// §8: an image from `Image\u{2026}`, pasted, or dropped is a chip, `\u{1f5bc} name`. Claude takes
+/// them in the message: image blocks (base64) before the text, no path in the text; the
+/// conversation lists their names.
+pub(super) fn agent_box_image_chip() {
+    layout_scene("agent-box-image-chip", |n, cx, window, tab| {
+        let files = Files::new("image-chip");
+        let diagram = files.make("diagram.png", PNG);
+        let photo = files.make("photo.JPG", b"made-up jpeg");
+        feed(cx, tab, |t, cx| t.attach_images(vec![diagram.clone()], cx));
+        feed(cx, tab, |t, cx| t.attach_dropped(vec![photo.clone()], cx));
+        let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, b"pasted bytes".to_vec());
+        feed(cx, tab, |t, cx| t.attach_pasted_image(image, cx));
+        settle_until(n, cx, window, "three image chips", |cx| {
+            chips(cx, tab).len() == 3
+        });
+        let mut got = chips(cx, tab);
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                "\u{1f5bc} diagram.png",
+                "\u{1f5bc} pasted-image.png",
+                "\u{1f5bc} photo.JPG"
+            ],
+            "{n}"
+        );
+        let chip_row = part(cx, tab, n, "attachments");
+        assert!(inside(chip_row, part(cx, tab, n, "box")), "{n}: in the box");
+        assert!(
+            chip_row.bottom() <= composer_bounds(cx, tab).top(),
+            "{n}: above the text"
+        );
+        assert!(written(cx, tab).is_empty(), "{n}: attaching sends nothing");
+        // Claude is not told paths: each image is kept as it is, the pasted one has no file.
+        cx.read(|cx| {
+            for a in tab.read(cx).shot_attachments() {
+                let Attachment::Image {
+                    name,
+                    picture,
+                    path,
+                } = a
+                else {
+                    panic!("{n}: {a:?}");
+                };
+                match name.as_str() {
+                    "diagram.png" => {
+                        assert_eq!(picture.media_type, "image/png", "{n}");
+                        assert_eq!(path.as_deref(), Some(diagram.as_path()), "{n}");
+                    }
+                    "photo.JPG" => assert_eq!(picture.media_type, "image/jpeg", "{n}"),
+                    _ => assert_eq!(path, &None, "{n}: nothing written for Claude"),
+                }
+            }
+        });
+        feed(cx, tab, |t, cx| t.send("What are these?".into(), cx));
+        let sent = last_user(cx, tab);
+        let blocks = sent["message"]["content"].as_array().expect("blocks");
+        assert_eq!(blocks.len(), 4, "{n}: three images, then the text");
+        for b in &blocks[..3] {
+            assert_eq!(b["type"], "image", "{n}");
+            assert_eq!(b["source"]["type"], "base64", "{n}");
+        }
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png", "{n}");
+        assert_eq!(
+            blocks[0]["source"]["data"],
+            crate::providers::claude::base64(PNG),
+            "{n}"
+        );
+        assert_eq!(
+            blocks[3],
+            serde_json::json!({"type":"text","text":"What are these?"}),
+            "{n}"
+        );
+        assert!(chips(cx, tab).is_empty(), "{n}: the box has none left");
+        // Another waits for the shot.
+        let again = files.make("sketch.webp", b"made-up webp");
+        feed(cx, tab, |t, cx| t.attach_images(vec![again], cx));
+        settle_until(n, cx, window, "the chip", |cx| chips(cx, tab).len() == 1);
+        assert_eq!(chips(cx, tab), ["\u{1f5bc} sketch.webp"], "{n}");
+    });
+}
+
+/// §8, agy: it takes no image in the message, so an image goes as its absolute path after the
+/// text: a file's own path, and a pasted image's, written first to
+/// `$TMPDIR/fuxx-images/<uuid>.png` (off the UI thread).
+pub(super) fn agent_box_image_agy() {
+    box_scene(
+        "agent-box-image-agy",
+        &AGY,
+        start(Some("accept-edits"), None),
+        Lookup::Ready(agy_example_catalog()),
+        |n, cx, window, tab| {
+            let files = Files::new("image-agy");
+            let diagram = files.make("diagram.png", PNG);
+            feed(cx, tab, |t, cx| t.attach_images(vec![diagram.clone()], cx));
+            let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, b"pasted bytes".to_vec());
+            feed(cx, tab, |t, cx| t.attach_pasted_image(image, cx));
+            settle_until(n, cx, window, "two chips", |cx| chips(cx, tab).len() == 2);
+            let pasted = cx.read(|cx| {
+                tab.read(cx)
+                    .shot_attachments()
+                    .iter()
+                    .find_map(|a| match a {
+                        Attachment::Image { name, path, .. } if name == "pasted-image.png" => {
+                            path.clone()
+                        }
+                        _ => None,
+                    })
+            });
+            let pasted = pasted.expect("a pasted image has a file for agy");
+            let folder = std::env::temp_dir().join("fuxx-images");
+            assert_eq!(pasted.parent(), Some(folder.as_path()), "{n}");
+            assert_eq!(
+                pasted.extension().and_then(|e| e.to_str()),
+                Some("png"),
+                "{n}"
+            );
+            assert_eq!(
+                std::fs::read(&pasted).expect("written"),
+                b"pasted bytes",
+                "{n}"
+            );
+            feed(cx, tab, |t, cx| t.send("Look".into(), cx));
+            let sent = last_user(cx, tab);
+            assert_eq!(
+                sent["message"]["content"],
+                format!("Look\n\n{}\n\n{}", diagram.display(), pasted.display()),
+                "{n}"
+            );
+            let _ = std::fs::remove_file(&pasted);
+        },
+    );
+}
+
+/// §8: an image over 5 MB (`IMAGE_MAX`) is refused: no chip, one notice, `Image over 5 MB:
+/// <name>`, in the conversation; a pasted one likewise. One of exactly 5 MB is taken.
+pub(super) fn agent_box_image_too_big() {
+    layout_scene("agent-box-image-too-big", |n, cx, window, tab| {
+        use crate::agent_tab::IMAGE_MAX;
+        let files = Files::new("too-big");
+        let exact = files.make_sized("exact.png", IMAGE_MAX);
+        let big = files.make_sized("big-scan.png", IMAGE_MAX + 1);
+        feed(cx, tab, |t, cx| t.attach_images(vec![exact.clone()], cx));
+        settle_until(n, cx, window, "exactly 5 MB is taken", |cx| {
+            chips(cx, tab).len() == 1
+        });
+        assert!(notices(cx, tab).is_empty(), "{n}");
+        feed(cx, tab, |t, cx| t.attach_images(vec![big.clone()], cx));
+        let pasted = gpui::Image::from_bytes(gpui::ImageFormat::Png, vec![0; IMAGE_MAX + 1]);
+        feed(cx, tab, |t, cx| t.attach_pasted_image(pasted, cx));
+        settle_until(n, cx, window, "two notices", |cx| {
+            notices(cx, tab).len() == 2
+        });
+        let mut got = notices(cx, tab);
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                "Image over 5 MB: big-scan.png",
+                "Image over 5 MB: pasted-image.png"
+            ],
+            "{n}"
+        );
+        assert_eq!(
+            chips(cx, tab),
+            ["\u{1f5bc} exact.png"],
+            "{n}: no chip for the others"
+        );
+        assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
     });
 }
 

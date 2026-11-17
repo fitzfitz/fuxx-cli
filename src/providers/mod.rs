@@ -3,6 +3,7 @@
 //! agent by name here: each agent lives in its own file.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub mod agy;
 pub mod claude;
@@ -205,6 +206,11 @@ pub trait Provider: Sync {
         Vec::new()
     }
     fn translator(&self) -> Box<dyn Translator>;
+    /// Whether the agent takes an image in the message itself (`Action::Send`'s `images`); if
+    /// not, an image goes as its path in the text.
+    fn sends_images(&self) -> bool {
+        false
+    }
     /// The short processes that answer the catalog, in the order `read_catalog` takes their
     /// outputs. None: the provider can't be asked.
     fn catalog_probes(&self) -> Vec<Probe> {
@@ -366,10 +372,20 @@ pub enum TodoState {
     Pending,
 }
 
+/// An image to send with a message: its type (`image/png`) and bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picture {
+    pub media_type: &'static str,
+    pub bytes: Arc<[u8]>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
+    /// A message; `images` go with it only for a provider that `sends_images` (the others get
+    /// each image's path in `text`).
     Send {
         text: String,
+        images: Vec<Picture>,
     },
     Allow {
         id: String,
@@ -425,7 +441,7 @@ fn uuid_shaped(word: &str) -> bool {
 
 /// A random (version 4) UUID, lower-case, from the system's random source; None if it can't
 /// be read.
-fn new_uuid() -> Option<String> {
+pub(crate) fn new_uuid() -> Option<String> {
     use std::io::Read;
     let mut b = [0u8; 16];
     std::fs::File::open("/dev/urandom")
