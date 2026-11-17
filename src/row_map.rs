@@ -5,9 +5,11 @@
 //! list. A layout cache: the file tab builds it in its canvas's prepaint only when its `MapKey`
 //! changes (as `Wrapped` was). Pure: no GPUI.
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
+use crate::git_status::LineChange;
 use crate::layout_model::FileMode;
 
 /// One screen row.
@@ -227,6 +229,54 @@ impl RowMap {
     }
 }
 
+/// M11ah: each run of changed lines' first line (an edge where lines were deleted counts as a
+/// change at the line after it, held to the last line; one touching a run joins it), in order.
+/// The places ⌥↑ / ⌥↓ stop at.
+pub fn change_starts(
+    by_line: &HashMap<usize, LineChange>,
+    deleted: &[usize],
+    lines: usize,
+) -> Vec<usize> {
+    let Some(last) = lines.checked_sub(1) else {
+        return Vec::new();
+    };
+    let mut starts: Vec<usize> = by_line
+        .keys()
+        .copied()
+        .filter(|&l| l <= last && !(l > 0 && by_line.contains_key(&(l - 1))))
+        .collect();
+    for &edge in deleted {
+        let at = edge.min(last);
+        let touches = by_line.contains_key(&at) || (at > 0 && by_line.contains_key(&(at - 1)));
+        if !touches {
+            starts.push(at);
+        }
+    }
+    starts.sort_unstable();
+    starts.dedup();
+    starts
+}
+
+/// M11ah: the change to jump to: from the current line `from` the first start strictly after
+/// (forward) or before it; with no current line, from the view's `top`: forward, the first at
+/// or after it; back, the last before it. None at the ends (no wrap-around).
+pub fn step_change(
+    starts: &[usize],
+    from: Option<usize>,
+    top: usize,
+    forward: bool,
+) -> Option<usize> {
+    match (forward, from) {
+        (true, Some(cur)) => starts.iter().copied().find(|&s| s > cur),
+        (true, None) => starts.iter().copied().find(|&s| s >= top),
+        (false, from) => starts
+            .iter()
+            .rev()
+            .copied()
+            .find(|&s| s < from.unwrap_or(top)),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::single_range_in_vec_init)] // `hidden` is a list of ranges: one hidden run
 mod tests {
@@ -383,5 +433,55 @@ mod tests {
         // The identity hides nothing.
         let plain = RowMap::file(&[1; 4], None, &[], 10.0);
         assert!(plain.hidden_after(1).is_empty());
+    }
+
+    #[test]
+    fn change_starts_are_runs() {
+        let mut by_line = HashMap::new();
+        for l in [3, 4, 5, 9] {
+            by_line.insert(l, LineChange::Changed);
+        }
+        assert_eq!(change_starts(&by_line, &[12], 20), [3, 9, 12]);
+        // An edge at the end is held to the last line; one touching a run joins it.
+        assert_eq!(change_starts(&by_line, &[20], 20), [3, 9, 19]);
+        assert_eq!(change_starts(&by_line, &[6, 9], 20), [3, 9]);
+        assert_eq!(change_starts(&by_line, &[3], 20), [3, 9]);
+        assert!(change_starts(&by_line, &[], 0).is_empty());
+    }
+
+    #[test]
+    fn step_change_moves_from_the_current_line() {
+        let starts = [3, 9, 12];
+        assert_eq!(step_change(&starts, Some(3), 0, true), Some(9));
+        assert_eq!(step_change(&starts, Some(5), 0, true), Some(9));
+        assert_eq!(step_change(&starts, Some(9), 0, false), Some(3));
+        assert_eq!(step_change(&starts, Some(10), 99, false), Some(9));
+    }
+
+    #[test]
+    fn step_change_from_the_top_without_one() {
+        let starts = [3, 9, 12];
+        assert_eq!(
+            step_change(&starts, None, 9, true),
+            Some(9),
+            "at or after the top"
+        );
+        assert_eq!(step_change(&starts, None, 4, true), Some(9));
+        assert_eq!(
+            step_change(&starts, None, 9, false),
+            Some(3),
+            "before the top"
+        );
+        assert_eq!(step_change(&starts, None, 0, true), Some(3));
+    }
+
+    #[test]
+    fn step_change_stops_at_the_ends() {
+        let starts = [3, 9, 12];
+        assert_eq!(step_change(&starts, Some(12), 0, true), None);
+        assert_eq!(step_change(&starts, Some(3), 0, false), None);
+        assert_eq!(step_change(&starts, None, 13, true), None);
+        assert_eq!(step_change(&starts, None, 3, false), None);
+        assert_eq!(step_change(&[], None, 0, true), None);
     }
 }

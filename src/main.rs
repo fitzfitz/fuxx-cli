@@ -316,6 +316,9 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         // M11ah: fold and unfold the block the current line is in.
         KeyBinding::new("alt-cmd-[", file_tab::FoldHere, Some("FileTab")),
         KeyBinding::new("alt-cmd-]", file_tab::UnfoldHere, Some("FileTab")),
+        // M11ah: ⌥↑ / ⌥↓ jump to the previous / next change (a terminal keeps ⌥↑ / ⌥↓).
+        KeyBinding::new("alt-up", file_tab::PrevChange, Some("FileTab")),
+        KeyBinding::new("alt-down", file_tab::NextChange, Some("FileTab")),
         KeyBinding::new("cmd-c", Copy, Some("FileTab")),
         KeyBinding::new("ctrl-tab", NextTab, Some("FileTab")),
         KeyBinding::new("ctrl-shift-tab", PrevTab, Some("FileTab")),
@@ -1654,6 +1657,30 @@ mod tests {
         };
         for key in ["alt-cmd-[", "alt-cmd-]"] {
             assert!(!bound(key, TERMINAL), "{key} folds nothing in a terminal");
+        }
+    }
+
+    #[test]
+    fn the_change_keys_work_in_the_file_tab_only() {
+        use crate::file_tab::{NextChange, PrevChange};
+        let keymap = keymap();
+        let tab: &[&str] = &["Workspace", "FileTab"];
+        assert!(runs(&keymap, "alt-up", tab).partial_eq(&PrevChange));
+        assert!(runs(&keymap, "alt-down", tab).partial_eq(&NextChange));
+        for key in ["alt-up", "alt-down"] {
+            let contexts: Vec<KeyContext> = TERMINAL
+                .iter()
+                .map(|c| KeyContext::parse(c).unwrap())
+                .collect();
+            let (found, _) =
+                keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], &contexts);
+            assert!(
+                !found
+                    .iter()
+                    .any(|b| b.action().partial_eq(&PrevChange)
+                        || b.action().partial_eq(&NextChange)),
+                "{key} steps no change in a terminal"
+            );
         }
     }
 

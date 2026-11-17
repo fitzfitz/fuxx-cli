@@ -92,6 +92,8 @@ pub fn describe(action: &str) -> Describe {
         "file_tab::UnfoldHere" => Listed(Tabs, "Unfold"),
         "file_tab::FoldAll" => Listed(Tabs, "Fold All"),
         "file_tab::UnfoldAll" => Listed(Tabs, "Unfold All"),
+        "file_tab::PrevChange" => Listed(Tabs, "Previous Change"),
+        "file_tab::NextChange" => Listed(Tabs, "Next Change"),
 
         "workspace::SplitRight" => Listed(Panes, "Split Right"),
         "workspace::SplitDown" => Listed(Panes, "Split Down"),
