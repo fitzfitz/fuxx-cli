@@ -235,6 +235,25 @@ pub(super) fn agent_box_change_waits() {
                 "{n}: it waits"
             );
             let argv_before = argv(cx, tab);
+            // A live change holds nothing back (R5): a note goes at once, and the turn it
+            // starts is waited for too.
+            feed(cx, tab, |t, cx| t.send("Also check todo.txt".into(), cx));
+            let lines = written(cx, tab);
+            assert_eq!(lines.len(), before + 1, "{n}: the note is written at once");
+            assert_eq!(lines[before]["type"], "user", "{n}");
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_pending()),
+                0,
+                "{n}: not held"
+            );
+            let before = lines.len();
+            feed(cx, tab, |t, cx| t.shot_feed(vec![turn_done()], cx));
+            assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Working, "{n}");
+            assert_eq!(
+                written(cx, tab).len(),
+                before,
+                "{n}: the note's turn is still to run"
+            );
             feed(cx, tab, |t, cx| t.shot_feed(vec![turn_done()], cx));
             let lines = written(cx, tab);
             assert_eq!(lines.len(), before + 1, "{n}: one line after the turn");
@@ -243,8 +262,8 @@ pub(super) fn agent_box_change_waits() {
             assert_eq!(line["request"]["subtype"], "set_model", "{n}");
             assert_eq!(line["request"]["model"], "sonnet", "{n}");
             assert!(
-                lines.iter().filter(|l| l["type"] == "user").count() == 1,
-                "{n}: choosing never sends a message"
+                lines.iter().filter(|l| l["type"] == "user").count() == 2,
+                "{n}: choosing never sends a message (yours: two)"
             );
             assert_eq!(argv(cx, tab), argv_before, "{n}: live, not a restart");
             assert_eq!(cx.read(|cx| tab.read(cx).waiting_change().cloned()), None);
@@ -405,6 +424,44 @@ pub(super) fn agent_box_change_restart() {
     );
 }
 
+/// A restart waiting for the turn, then the mode it runs chosen again: the change is dropped,
+/// and what you sent meanwhile still goes when the turn ends (never left waiting).
+fn cancelled_change_still_sends() {
+    run_scene(
+        "agent-box-restart-keeps-queued-text-cancelled",
+        &AGY,
+        start(Some("accept-edits"), None),
+        |n, cx, tab, _| {
+            feed(cx, tab, |t, cx| t.send("Say hello in one word".into(), cx));
+            let mut events = agy_text();
+            let done = events
+                .iter()
+                .position(|e| matches!(e, Event::TurnDone { .. }))
+                .expect("a turn end");
+            let rest = events.split_off(done);
+            feed(cx, tab, |t, cx| t.shot_feed(events, cx));
+            let a = argv(cx, tab);
+            feed(cx, tab, |t, cx| t.choose(Change::Mode("plan".into()), cx));
+            feed(cx, tab, |t, cx| t.send("hi".into(), cx));
+            assert_eq!(cx.read(|cx| tab.read(cx).shot_pending()), 1, "{n}: held");
+            feed(cx, tab, |t, cx| {
+                t.choose(Change::Mode("accept-edits".into()), cx)
+            });
+            assert_eq!(cx.read(|cx| tab.read(cx).waiting_change().cloned()), None);
+            feed(cx, tab, |t, cx| t.shot_feed(rest, cx));
+            assert_eq!(argv(cx, tab), a, "{n}: no restart");
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_pending()),
+                0,
+                "{n}: not stuck"
+            );
+            let lines = written(cx, tab);
+            let last = lines.last().expect("a line");
+            assert_eq!(last["message"]["content"], "hi", "{n}: {last}");
+        },
+    );
+}
+
 /// Review Focus #3: a message sent while a restart waits for the turn is held (not written to
 /// the process about to end) and sent to the restarted one; if that restart can't start, what
 /// was sent stays in the conversation (the tab's bad-resume path) — nothing typed is lost.
@@ -464,4 +521,5 @@ pub(super) fn agent_box_restart_keeps_queued_text() {
             );
         },
     );
+    cancelled_change_still_sends();
 }

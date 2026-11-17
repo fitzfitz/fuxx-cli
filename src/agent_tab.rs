@@ -542,8 +542,8 @@ pub struct AgentTab {
     force_timer: Option<Task<()>>,
     _boot: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
-    /// Box changes waiting for the turn to end (one per kind of change, the latest); what you
-    /// send meanwhile waits with them (`queued`), for the agent as it is after them.
+    /// Box changes waiting for the turn to end (one per kind of change, the latest); while one
+    /// of them is a restart, what you send waits with them (`queued`), for the restarted agent.
     waiting: Vec<Change>,
     asked: Asked,
     /// The command line of the last start (scenes check a restart resumes).
@@ -1629,10 +1629,10 @@ impl AgentTab {
             cx.emit(AgentTabEvent::ResumeAsked(text));
             return;
         }
-        if self.booting || self.ending || !self.waiting.is_empty() {
+        if self.booting || self.ending || self.restart_waits(cx) {
             // Held, shown as waiting under the conversation, until the process is there (or,
-            // with a change waiting for the turn, until the agent has taken it: a restart would
-            // lose what was written to the process before it).
+            // with a restart waiting for the turn, until it is done: it would lose what was
+            // written to the process before it). A live change holds nothing back (R5).
             self.queued.push((text, attachments));
             cx.notify();
             return;
@@ -2149,14 +2149,28 @@ impl AgentTab {
         switched_notice(change, model.as_deref(), mode, home.as_deref())
     }
 
+    /// A change waiting for the turn will restart the agent (not a live change).
+    fn restart_waits(&self, cx: &App) -> bool {
+        let Some(provider) = self.provider else {
+            return false;
+        };
+        self.waiting.iter().any(|change| {
+            let kinds = self.kinds(provider, change, cx);
+            !kinds.is_empty() && Self::applies(provider, &kinds) != Applies::Live
+        })
+    }
+
     /// The turn is over: what waited for it is carried out, then what you sent meanwhile goes
     /// to the agent as it now is.
     fn settle_waiting(&mut self, cx: &mut Context<Self>) {
-        if self.waiting.is_empty() || self.working() {
+        if self.working() {
             return;
         }
-        let changes = std::mem::take(&mut self.waiting);
-        self.apply_changes(changes, cx);
+        if !self.waiting.is_empty() {
+            let changes = std::mem::take(&mut self.waiting);
+            self.apply_changes(changes, cx);
+        }
+        // Also when the change was dropped meanwhile (chosen back): nothing stays held.
         if !self.booting && !self.ending && self.running() && !self.queued.is_empty() {
             self.flush_queued();
             self.after_change(true, cx);
