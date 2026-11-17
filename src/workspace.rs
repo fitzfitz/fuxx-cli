@@ -1325,8 +1325,11 @@ impl Workspace {
     }
 
     /// Note the agents the terminals run now (`programs`, by today's presets); true when one
-    /// started or ended (M11u).
-    fn note_agents(&mut self, cx: &App) -> bool {
+    /// started or ended (M11u). A terminal whose agent ended goes back to being a shell (chore,
+    /// 2026-11-17): the preset that named its row goes (here and in the background service),
+    /// so its row is named as a fresh shell's is, and restoring it starts no agent. A name you
+    /// gave it stays.
+    pub(crate) fn note_agents(&mut self, cx: &App) -> bool {
         let presets = &cx.global::<Appearance>().presets;
         let now: HashMap<u64, String> = self
             .sessions
@@ -1341,6 +1344,23 @@ impl Workspace {
             .collect();
         if now == self.agents_now {
             return false;
+        }
+        for id in agents_ended(&self.agents_now, &now, |id| self.programs.state(id)) {
+            let Some(s) =
+                (self.sessions.position(|s| s.id == id)).and_then(|i| self.sessions.get_mut(i))
+            else {
+                continue;
+            };
+            if s.preset.take().is_some() && !s.lost {
+                s.view.read(cx).set_meta(crate::mux_proto::SetMeta {
+                    id,
+                    name: None,
+                    project: None,
+                    preset: Some(None),
+                    note: None,
+                    progress: None,
+                });
+            }
         }
         self.agents_now = now;
         true
@@ -4285,6 +4305,21 @@ fn daemon_create(
     }
 }
 
+/// The terminals whose agent has ended (chore, 2026-11-17): an agent then (`before`, M11u's
+/// `agents_now`) and none now (`now`), with what's in front known again (`state`: the shell, or
+/// another program). Their rows go back to being shells: the preset that named them goes.
+fn agents_ended(
+    before: &HashMap<u64, String>,
+    now: &HashMap<u64, String>,
+    state: impl Fn(u64) -> ProgramState,
+) -> Vec<u64> {
+    before
+        .keys()
+        .copied()
+        .filter(|id| !now.contains_key(id) && state(*id) != ProgramState::Unknown)
+        .collect()
+}
+
 /// The folder a new terminal starts in to follow a session: where its shell says it is, else
 /// where the process look-up found it; none for an SSH session (its folder is on the host).
 fn folder_to_follow(ssh: bool, reported: Option<&Path>, polled: Option<&Path>) -> Option<PathBuf> {
@@ -4417,8 +4452,32 @@ mod tests {
         assert_eq!(folder_to_follow(true, Some(reported), Some(polled)), None);
     }
 
+    /// Chore (2026-11-17): an agent that ended takes its row's agent name with it once the
+    /// shell (or another program) is in front; one still running, one never seen running (a
+    /// preset typed but not started yet) and one whose front can't be looked up keep theirs.
+    #[test]
+    fn a_terminal_whose_agent_ended_goes_back_to_its_shell() {
+        use std::collections::HashMap;
+        let map = |ids: &[u64]| -> HashMap<u64, String> {
+            ids.iter().map(|&id| (id, "claude".to_string())).collect()
+        };
+        let state = |id: u64| match id {
+            1 | 4 => ProgramState::Prompt,
+            2 => ProgramState::Running("vim".into()),
+            3 => ProgramState::Unknown,
+            _ => ProgramState::Running("claude".into()),
+        };
+        // 1 at its prompt and 2 in vim: ended. 3: unknown, kept. 5 still runs it.
+        let mut ended = agents_ended(&map(&[1, 2, 3, 5]), &map(&[5]), state);
+        ended.sort_unstable();
+        assert_eq!(ended, [1, 2]);
+        // 4 was never an agent (a preset not started yet): nothing ended.
+        assert!(agents_ended(&map(&[]), &map(&[]), state).is_empty());
+        assert!(agents_ended(&map(&[5]), &map(&[5]), state).is_empty());
+    }
+
     use super::{
-        PROGRAMS_REFRESH, PROGRAMS_RETRY, Programs, ZshIntegration, daemon_create,
+        PROGRAMS_REFRESH, PROGRAMS_RETRY, Programs, ZshIntegration, agents_ended, daemon_create,
         folder_to_follow, helper_plugins_on, programs_wait, scripting_env, session_env,
         starts_window_move, window_title,
     };

@@ -38,6 +38,19 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "sidebar-quiet",
+        run: sidebar_quiet_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/sidebar.rs",
+            "src/status_mark.rs",
+            "src/groups.rs",
+            "src/workspace.rs",
+        ],
+    },
+    Scene {
         name: "sidebar-rows",
         run: sidebar_row_scenes,
         themes: Themes::Both,
@@ -991,6 +1004,193 @@ fn sidebar_button_scenes() {
             at("sliding", inside),
             bg(theme.background),
             "{slug}: still partly in"
+        );
+    }
+}
+
+/// How many pixels in the box (`x0..x1`, `y0..y1`, points) are within `tol` of `c`.
+fn count_box(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    c: alacritty_terminal::vte::ansi::Rgb,
+    tol: u8,
+    (x0, x1): (f32, f32),
+    (y0, y1): (f32, f32),
+) -> usize {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let mut count = 0;
+    for y in (y0 * scale) as usize..(y1 * scale) as usize {
+        for x in (x0 * scale) as usize..(x1 * scale) as usize {
+            let i = (y * shot.width as usize + x) * 4;
+            if near_by([shot.rgba[i], shot.rgba[i + 1], shot.rgba[i + 2]], c, tol) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// The sidebar with nothing running (chore, 2026-11-17: "nothings running but sidebar is
+/// clored like somehting is actively running"), in both themes (`sidebar-quiet`): in api, codex
+/// working (its bright dot and halo), tests done and a terminal whose `claude` ended (preset
+/// `claude`, its title blanked as Claude Code leaves it, now at its prompt); web closed with a
+/// done and an idle one; infra closed, all idle.
+///
+/// Panics unless the ended agent's row is named as a fresh shell's ("New Fuxxpace", like the
+/// unnamed shell beside it, its preset gone) while a named one keeps its name; the done row's
+/// badge is a muted ✓ (`text_dim`), no `ring_done` green; web's closed header shows a muted ✓
+/// and no small avatars; infra's closed header shows nothing after its name.
+fn sidebar_quiet_scenes() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Instant;
+
+    use crate::groups::NEW_WORKSPACE_NAME;
+    use crate::sidebar::SidebarRow;
+
+    const QUIET: [ShotSession; 5] = [
+        shot("codex", API, Status::Working, 32, AGENT_TEXT),
+        shot("tests", API, Status::Done, 12 * 60, SHELL_TEXT),
+        shot("build", WEB, Status::Done, 40, SHELL_TEXT),
+        shot("server", WEB, Status::Idle, 0, SHELL_TEXT),
+        shot("deploy", INFRA, Status::Idle, 0, SHELL_TEXT),
+    ];
+    let dims = size(px(520.0), px(460.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let n = format!("sidebar-quiet-{slug}");
+        // Where tests' row, web's header and infra's header were laid out.
+        let boxes: Rc<RefCell<Vec<gpui::Bounds<Pixels>>>> = Rc::default();
+        let seen = boxes.clone();
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let named = n.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = sidebar_workspace(&QUIET, None, 0, &[WEB, INFRA], window, cx);
+                ws.sidebar.hint_dismissed = true;
+                let api = std::path::Path::new(API);
+                // A terminal `claude` ran in (restored as its preset, M11u) and one that never
+                // ran an agent: both unnamed.
+                let ended = ws.open_unnamed_shot_session(Some(api), SHELL_TEXT, window, cx);
+                let fresh = ws.open_unnamed_shot_session(Some(api), SHELL_TEXT, window, cx);
+                let claude = crate::presets::builtins()
+                    .into_iter()
+                    .find(|p| p.name == "claude")
+                    .expect("the claude preset");
+                let label_of = |ws: &Workspace, id: u64| {
+                    let i = ws.sessions.position(|s| s.id == id).expect("opened");
+                    let w = ws.workspace_of(i).expect("its workspace");
+                    ws.workspace_label(w).to_string()
+                };
+                let tests = ws.sessions.items()[1].id;
+                for id in [ended, tests] {
+                    let i = ws.sessions.position(|s| s.id == id).expect("opened");
+                    let s = ws.sessions.get_mut(i).expect("opened");
+                    s.preset = Some(claude.clone());
+                    s.title = Some(String::new().into());
+                    ws.programs
+                        .set_for_shots(id, ProgramState::Running("claude".into()));
+                }
+                assert!(ws.note_agents(cx), "{named}: claude runs");
+                assert_eq!(label_of(&ws, ended), "claude", "{named}: while it runs");
+                // It quits: the shell is in front again.
+                for id in [ended, tests] {
+                    ws.programs.set_for_shots(id, ProgramState::Prompt);
+                }
+                assert!(ws.note_agents(cx), "{named}: claude ended");
+                assert_eq!(
+                    label_of(&ws, ended),
+                    NEW_WORKSPACE_NAME,
+                    "{named}: a shell again"
+                );
+                assert_eq!(
+                    label_of(&ws, ended),
+                    label_of(&ws, fresh),
+                    "{named}: as a fresh one"
+                );
+                let i = ws.sessions.position(|s| s.id == ended).expect("opened");
+                assert_eq!(
+                    ws.sessions.items()[i].preset,
+                    None,
+                    "{named}: its preset went"
+                );
+                // A name of yours stays.
+                assert_eq!(
+                    label_of(&ws, tests),
+                    "tests",
+                    "{named}: a named row keeps it"
+                );
+                let i = ws.sessions.position(|s| s.id == ended).expect("opened");
+                ws.set_status(i, Status::Done, false, cx);
+                ws.sessions.get_mut(i).expect("opened").pop = None;
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let act = move |cx: &mut VisualTestAppContext, _: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                let rows = ws.rows_in_view(Instant::now());
+                let at = |want: &dyn Fn(&SidebarRow) -> bool| {
+                    let i = rows.iter().position(want).expect("the row");
+                    ws.sidebar.scroll.bounds_for_item(i).expect("laid out")
+                };
+                let header = |label: &'static str| {
+                    move |r: &SidebarRow| matches!(r, SidebarRow::Header(h) if h.label == label)
+                };
+                *seen.borrow_mut() = vec![
+                    at(&|r| matches!(r, SidebarRow::Workspace(w) if w.label == "tests")),
+                    at(&header("web")),
+                    at(&header("infra")),
+                ];
+            });
+            slot.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
+        save_shot("sidebar-quiet", slug, &shot);
+        let boxes = boxes.borrow().clone();
+        let (tests, web, infra) = (boxes[0], boxes[1], boxes[2]);
+        let span = |b: gpui::Bounds<Pixels>| {
+            (
+                (f32::from(b.left()), f32::from(b.right())),
+                (f32::from(b.top()), f32::from(b.bottom())),
+            )
+        };
+        // tests' avatar and its badge: the row's first 50 pt (its name starts after them).
+        let ((left, _), (top, bottom)) = span(tests);
+        let face = ((left, left + 50.0), (top, bottom));
+        let green = count_box(&shot, dims, ui.ring_done, 3, face.0, face.1);
+        assert_eq!(green, 0, "{n}: no green dot on the done row");
+        // The check's stroke is anti-aliased: near `text_dim`.
+        let tick = count_box(&shot, dims, ui.text_dim, 20, face.0, face.1);
+        assert!(tick > 0, "{n}: the done row's muted check");
+        // The closed headers' right side: past their names, before the count and chevron.
+        let closed = |b: gpui::Bounds<Pixels>| {
+            let ((_, right), (top, bottom)) = span(b);
+            ((right - 80.0, right - 34.0), (top, bottom))
+        };
+        let (x, y) = closed(web);
+        for (fill, _, _) in ui.avatars {
+            let faces = count_box(&shot, dims, fill, 3, x, y);
+            assert_eq!(faces, 0, "{n}: no small avatars on web's header");
+        }
+        assert_eq!(
+            count_box(&shot, dims, ui.ring_done, 3, x, y),
+            0,
+            "{n}: web: no green"
+        );
+        let tick = count_box(&shot, dims, ui.text_dim, 20, x, y);
+        assert!(tick > 0, "{n}: web's header shows its muted check");
+        let (x, y) = closed(infra);
+        let tick = count_box(&shot, dims, ui.text_dim, 20, x, y);
+        assert_eq!(
+            tick, 0,
+            "{n}: infra (all idle) shows nothing after its name"
         );
     }
 }

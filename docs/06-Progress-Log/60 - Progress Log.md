@@ -23,6 +23,11 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-17 — Chore: the sidebar stops looking busy
+- **Asked:** "nothings running but sidebar is clored like somehting is actively running".
+- **Did:** Done is a small muted ✓ on rows and closed headers (no green dot); closed groups show their status ("N waiting", Working's mark, Done's ✓, or nothing), not small coloured avatars; a terminal whose agent ended drops the preset that named its row, so the row goes back to a shell's name and avatar (a name you set stays). Root cause of the stale `claude` rows: M11u's restore made the agent a terminal ran its preset, the label falls back to the preset when Claude blanks its title, and nothing took the preset away. Details, calls and your 3-item check: note 82, "Chore 2".
+- **Numbers:** 1,843 tests pass (1 ignored; 3 new); clippy 14/27 and 16/29 (unchanged); fmt clean. `scripts/ui-shots.sh --changed master`: 145 passed, 2 failed (`chrome-sidebar-scroll`, `chrome-status-elsewhere`: ages turning under load; a re-run of the changed set failed `chrome-sidebar-scroll` alone; alone, it failed once more and then passed; `chrome-status-elsewhere` passed alone). Full `scripts/ui-shots.sh`: 146 passed, 1 failed (`chrome-notifications`, stale ages; passed alone right after). New scene `sidebar-quiet`.
+
 ### 2026-11-17 — Chore: fix the `chrome-status-elsewhere` and `chrome-notifications` scenes
 - **`chrome-status-elsewhere` cause:** the same family as `chrome-sidebar-scroll`. Each `report` sets agent's or tests's `status_since` to now, so its label turns every second. In 13 of 24 logged runs (8 at a time) the ticker step's check caught tests's "0s" turning to "1s" and retried (checks took 165–420 ms). A slower check plus its retry spans the next turn too: "an age turned during the check (twice)". Not a product bug.
 - **`chrome-status-elsewhere` fix (scene only):** its status steps go through `held_step` (`agent_status_step` generalised; it now calls it), which holds the ages the app's own path just set (`hold_ages`) and checks them (`assert_ages_hold`). New check (RED first): "agent (elsewhere) works: agent's age turns during the scene". With the hold, dropping `set_status`'s notify still fails the scene stale, so the hold hides no missing notify.
