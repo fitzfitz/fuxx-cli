@@ -5,6 +5,8 @@
 //! later (`Outline::name`); until then, and for plain text, the innermost block is the fallback.
 #![allow(dead_code)] // each lookup is used by the task that builds its part
 
+use std::collections::BTreeSet;
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 /// Give up after this long (a huge file with no structure): that read gets no outline.
@@ -374,6 +376,28 @@ impl Outline {
     }
 }
 
+/// The lines folded blocks hide (each folded block's lines after its opener, the closer
+/// included), in order and merged: a fold inside a folded one adds nothing (the outer wins). A
+/// start with no block there (an old outline's) hides nothing.
+pub fn hidden_ranges(outline: &Outline, folded: &BTreeSet<usize>) -> Vec<Range<usize>> {
+    let mut out: Vec<Range<usize>> = Vec::new();
+    for &start in folded {
+        let Some(b) = outline.starting_at(start) else {
+            continue;
+        };
+        let hide = start + 1..outline.blocks[b].end;
+        if hide.is_empty() {
+            continue;
+        }
+        // In start order: one inside the last run is part of it; one touching it joins it.
+        match out.last_mut() {
+            Some(last) if hide.start <= last.end => last.end = last.end.max(hide.end),
+            _ => out.push(hide),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,5 +595,43 @@ mod tests {
         );
         assert_eq!(part_words(&"b".repeat(32), false), "b".repeat(32));
         assert_eq!(part_words("## Install", true), "Install");
+    }
+
+    #[test]
+    fn hidden_ranges_merge_nested_folds() {
+        // 0 fn a {      block 0..6
+        // 1     if x {  block 1..4
+        // 2         y
+        // 3     }
+        // 4     z
+        // 5 }
+        // 6 fn b {      block 6..9
+        // 7     w
+        // 8 }
+        let o = make(&[
+            "fn a {",
+            "    if x {",
+            "        y",
+            "    }",
+            "    z",
+            "}",
+            "fn b {",
+            "    w",
+            "}",
+        ]);
+        assert_eq!(spans(&o), vec![(0, 6), (1, 4), (6, 9)]);
+        let set = |s: &[usize]| s.iter().copied().collect::<BTreeSet<usize>>();
+        assert_eq!(hidden_ranges(&o, &set(&[])), Vec::<Range<usize>>::new());
+        assert_eq!(hidden_ranges(&o, &set(&[1])), vec![2..4]);
+        // The outer wins: the inner fold is inside it.
+        assert_eq!(hidden_ranges(&o, &set(&[0, 1])), vec![1..6]);
+        assert_eq!(hidden_ranges(&o, &set(&[1, 6])), vec![2..4, 7..9]);
+        // Every block folded: the two top-level ones.
+        assert_eq!(hidden_ranges(&o, &set(&[0, 1, 6])), vec![1..6, 7..9]);
+        // A start with no block (an old outline's) hides nothing.
+        assert_eq!(
+            hidden_ranges(&o, &set(&[2, 40])),
+            Vec::<Range<usize>>::new()
+        );
     }
 }

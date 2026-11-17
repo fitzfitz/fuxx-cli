@@ -313,6 +313,9 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-g", file_tab::FindNext, Some("FileTab")),
         KeyBinding::new("cmd-shift-g", file_tab::FindPrev, Some("FileTab")),
         KeyBinding::new("escape", file_tab::CloseFind, Some("FileTab")),
+        // M11ah: fold and unfold the block the current line is in.
+        KeyBinding::new("alt-cmd-[", file_tab::FoldHere, Some("FileTab")),
+        KeyBinding::new("alt-cmd-]", file_tab::UnfoldHere, Some("FileTab")),
         KeyBinding::new("cmd-c", Copy, Some("FileTab")),
         KeyBinding::new("ctrl-tab", NextTab, Some("FileTab")),
         KeyBinding::new("ctrl-shift-tab", PrevTab, Some("FileTab")),
@@ -1628,6 +1631,29 @@ mod tests {
         for key in ["cmd-f", "cmd-g", "cmd-shift-g"] {
             assert!(!bound(key, TERMINAL), "{key} in a terminal");
             assert!(!bound(key, PAGE), "{key} in a browser tab");
+        }
+    }
+
+    #[test]
+    fn the_fold_keys_work_in_the_file_tab() {
+        use crate::file_tab::{FoldHere, UnfoldHere};
+        let keymap = keymap();
+        let tab: &[&str] = &["Workspace", "FileTab"];
+        assert!(runs(&keymap, "alt-cmd-[", tab).partial_eq(&FoldHere));
+        assert!(runs(&keymap, "alt-cmd-]", tab).partial_eq(&UnfoldHere));
+        let bound = |key: &str, stack: &[&str]| {
+            let contexts: Vec<KeyContext> = stack
+                .iter()
+                .map(|c| KeyContext::parse(c).unwrap())
+                .collect();
+            let (found, _) =
+                keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], &contexts);
+            found
+                .iter()
+                .any(|b| b.action().partial_eq(&FoldHere) || b.action().partial_eq(&UnfoldHere))
+        };
+        for key in ["alt-cmd-[", "alt-cmd-]"] {
+            assert!(!bound(key, TERMINAL), "{key} folds nothing in a terminal");
         }
     }
 

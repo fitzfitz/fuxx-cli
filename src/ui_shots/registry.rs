@@ -139,6 +139,8 @@ pub(super) const ORDER: &[&str] = &[
     "file-code-calm",
     "file-code-guides",
     "file-code-bars",
+    "file-code-fold",
+    "file-code-fold-keys",
     "right-sidebar",
     "files",
     "files-follow",

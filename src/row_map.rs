@@ -192,6 +192,28 @@ impl RowMap {
         start.min(end)..end
     }
 
+    /// The hidden lines right after shown line `line` (a fold's: empty when none, and for a
+    /// hidden line or one past the end). Read while drawing a folded line's row: a few rows'
+    /// look, never a scan of the lines.
+    pub fn hidden_after(&self, line: usize) -> Range<usize> {
+        let none = line + 1..line + 1;
+        let Rows::Listed { rows, first, .. } = &self.rows else {
+            return none;
+        };
+        let Some(Some(mut r)) = first.get(line).copied() else {
+            return none;
+        };
+        // Past the line's own rows (Wrap: a few), to the next shown line.
+        while matches!(rows.get(r), Some(Row::Line { line: l, .. }) if *l == line) {
+            r += 1;
+        }
+        match rows.get(r) {
+            Some(Row::Line { line: next, .. }) => line + 1..*next,
+            Some(_) => none,
+            None => line + 1..first.len(),
+        }
+    }
+
     /// Line `line`'s first row (none: hidden). Past the last line: the row count (the edge
     /// after the last row, where lines deleted at the end are marked).
     pub fn first_row(&self, line: usize) -> Option<usize> {
@@ -344,5 +366,22 @@ mod tests {
         // Hidden lines: the rows shown, not the lines.
         let folded = RowMap::file(&[1; 10], None, &[2..8], 10.0);
         assert_eq!(folded.rows_in(0.0..100.0), 0..4);
+    }
+
+    #[test]
+    fn a_shown_line_knows_the_lines_hidden_after_it() {
+        let map = RowMap::file(&[1; 10], None, &[3..7, 8..10], 10.0);
+        assert_eq!(map.hidden_after(2), 3..7);
+        assert_eq!(map.hidden_after(7), 8..10, "to the end");
+        assert_eq!(map.hidden_after(0), 1..1);
+        assert!(map.hidden_after(4).is_empty(), "a hidden line");
+        assert!(map.hidden_after(30).is_empty(), "past the end");
+        // With Wrap: after all of the line's rows.
+        let wrapped = RowMap::file(&[9, 2, 2, 2], Some(4), &[1..3], 10.0);
+        assert_eq!(wrapped.hidden_after(0), 1..3);
+        assert!(wrapped.hidden_after(3).is_empty());
+        // The identity hides nothing.
+        let plain = RowMap::file(&[1; 4], None, &[], 10.0);
+        assert!(plain.hidden_after(1).is_empty());
     }
 }

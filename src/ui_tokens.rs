@@ -42,6 +42,16 @@ pub mod code {
     pub const BAR_WIDTH: f32 = 3.0;
     pub const BAR_RUN_GAP: f32 = 2.0;
     pub const FOLD_COLUMN: f32 = 14.0;
+    /// An open block's ▾ (only while the pointer is over the gutter): the numbers' ink at this
+    /// alpha.
+    pub const FOLD_OPEN_ALPHA: f32 = 0.55;
+    /// A folded line's pill ("⋯ 24 lines"): this far after the line's text, its words this far
+    /// in from its ends, its ground `text` at this alpha, this far in from the row's top and
+    /// bottom.
+    pub const FOLD_PILL_GAP: f32 = 8.0;
+    pub const FOLD_PILL_PAD: f32 = 6.0;
+    pub const FOLD_PILL_ALPHA: f32 = 0.08;
+    pub const FOLD_PILL_INSET: f32 = 2.0;
     /// The current line's band: `text` at this alpha.
     pub const CURRENT_ALPHA: f32 = 0.05;
     pub const GUIDE: f32 = 1.0;
