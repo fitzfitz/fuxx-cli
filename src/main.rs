@@ -59,6 +59,7 @@ mod host_picker;
 mod keys;
 mod layout_model;
 mod links;
+mod live_lines;
 mod mark_view;
 mod mcp;
 mod md_preview;
