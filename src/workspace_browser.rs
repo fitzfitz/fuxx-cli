@@ -465,6 +465,7 @@ impl Workspace {
     /// rest are placed, or hidden, by their tab's own drawing.
     pub(crate) fn update_pages(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.close_browser_pages(cx);
+        self.end_gone_agents(cx);
         let overlay_open = self.overlays(cx).any();
         let dragging = self.dragging.is_some()
             || self.sidebar.resizing

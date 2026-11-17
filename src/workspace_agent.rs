@@ -679,13 +679,7 @@ impl Workspace {
         if let Some(slot) = self.agents.get(&tab) {
             // Its open edits end as not ok, and it stops working.
             let id = slot.id;
-            let open = slot.view.read(cx).open_edit_calls();
-            edit_ledger::update(cx, |l, now| {
-                for call in open {
-                    l.edit_finished(&format!("a{id}:{call}"), false, now);
-                }
-            });
-            self.ledger_agent_working(tab, false, cx);
+            edit_ledger::update(cx, |l, now| l.end_agent(id, now));
             let slot = &self.agents[&tab];
             slot.view.update(cx, |view, _| view.end());
         }
@@ -808,6 +802,16 @@ impl Workspace {
         }
     }
 
+    /// Tells the edit ledger of agent slots that left without `close_agent_tab` (`sync` noted
+    /// them): nothing of theirs stays open.
+    pub(crate) fn end_gone_agents(&mut self, cx: &mut Context<Self>) {
+        if self.agents_ended.is_empty() {
+            return;
+        }
+        let ids = std::mem::take(&mut self.agents_ended);
+        edit_ledger::update(cx, |l, now| ids.iter().for_each(|id| l.end_agent(*id, now)));
+    }
+
     /// Agent tab `tab`'s slot id and the mark the edit ledger knows its agent by.
     fn agent_ledger_who(&self, tab: TabId) -> Option<(u64, AgentMark)> {
         let slot = self.agents.get(&tab)?;
@@ -825,7 +829,9 @@ impl Workspace {
         else {
             return;
         };
-        edit_ledger::update(cx, |l, now| l.working(ws, mark, (1u64 << 63) | id, on, now));
+        edit_ledger::update(cx, |l, now| {
+            l.working(ws, mark, edit_ledger::agent_key(id), on, now)
+        });
     }
 
     /// Command block `drag` dropped on agent tab `tab` (its body or its tab in a bar, spec

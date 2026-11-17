@@ -83,6 +83,32 @@ impl Ledger {
         }
     }
 
+    /// Ends the open working span with `key`, whatever its workspace (its terminal or agent tab
+    /// is gone); none open: nothing.
+    pub fn end_working(&mut self, key: u64, at: Instant) {
+        for s in self
+            .spans
+            .iter_mut()
+            .filter(|s| s.key == key && s.end.is_none())
+        {
+            s.end = Some(at);
+        }
+    }
+
+    /// Agent tab `slot` is gone: its open edits (call ids `a{slot}:..`) end as not ok and its
+    /// working span ends, so nothing of it stays open.
+    pub fn end_agent(&mut self, slot: u64, at: Instant) {
+        let prefix = format!("a{slot}:");
+        for e in self
+            .edits
+            .iter_mut()
+            .filter(|e| e.finished.is_none() && e.call.starts_with(&prefix))
+        {
+            e.finished = Some((at, false));
+        }
+        self.end_working(agent_key(slot), at);
+    }
+
     /// Who changed `path` between `since` (the tab's previous read) and `now`; the bool: an edit to
     /// `path` is still open (started, not finished).
     pub fn decide(
@@ -153,6 +179,12 @@ impl Ledger {
             .retain(|e| e.finished.map_or(e.started, |(f, _)| f) >= cut);
         self.spans.retain(|s| s.end.is_none_or(|e| e >= cut));
     }
+}
+
+/// An agent tab's working-span key: its slot id with the top bit set, so it can't meet a
+/// terminal's session id.
+pub fn agent_key(slot: u64) -> u64 {
+    (1u64 << 63) | slot
 }
 
 /// Runs `f` on the app's ledger at the present time, then prunes it. A scene that never set the
@@ -514,5 +546,22 @@ mod tests {
             Some(dir.join("new-file-fx.txt"))
         );
         assert_eq!(resolve_write(".", &dir, None), Some(dir.clone()));
+    }
+
+    #[test]
+    fn a_gone_agent_and_a_gone_terminal_leave_nothing_open() {
+        let t0 = Instant::now();
+        let mut l = Ledger::default();
+        l.edit_started("a1:t1", mark("claude"), vec![p("/a/f.rs")], t0);
+        l.edit_started("a11:t1", mark("claude"), vec![p("/a/g.rs")], t0);
+        l.working(WS1, mark("claude"), agent_key(1), true, t0);
+        l.working(WS1, mark("codex"), 7, true, t0);
+        l.end_agent(1, secs(t0, 5));
+        assert!(l.edits[0].finished == Some((secs(t0, 5), false)));
+        assert!(l.edits[1].finished.is_none(), "a11 is not a1");
+        assert!(l.spans[0].end.is_some());
+        assert!(l.spans[1].end.is_none(), "a terminal's key is its own");
+        l.end_working(7, secs(t0, 6));
+        assert_eq!(l.spans[1].end, Some(secs(t0, 6)));
     }
 }
