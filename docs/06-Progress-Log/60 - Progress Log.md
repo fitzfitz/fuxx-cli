@@ -23,6 +23,11 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-17 — M11ak designed and approved: the agent box
+- **Asked:** while scoping M11ag you showed another app's message box (folder and branch chips, folder picker, model menu with effort and usage, mode chip) — "split it — box first, drop mic and main agent"; `/` and `@` "include both in the box milestone"; folder defaults to the active terminal's.
+- **Checked (2026-11-17):** both agents' `/usage` and lists run without the model ($0, zero turns); agy's usage, `models` and `/help` are structured; Claude's `/usage` is regular text lines; Claude's start-up lists commands, skills and sub-agents.
+- **Approved:** [[83 - Milestone 11ak - Agent Box]] ("approved"), branch `m11ak-agent-box`. Next: the plan, then M11ag.
+
 ### 2026-11-17 — Chore: new terminals follow the current terminal's folder
 - **Asked:** chores outside a milestone, recorded under M11af, pushed straight to master. New terminals follow the current terminal's folder; ⇧⌘T starts fresh in the workspace's folder.
 - **Did:** ⌘T, the tab bar's +, ⌘D, ⇧⌘D and ⌘N start where the current terminal is (the folder M11u saves); new ⇧⌘T "New Tab in Workspace Folder" (File menu, palette, shortcut list). Agent presets and SSH terminals unchanged (your calls to check: note 82, "Chores after M11af").
