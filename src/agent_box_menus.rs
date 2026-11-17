@@ -629,7 +629,9 @@ impl AgentTab {
         };
         let agent = provider.info().name;
         let catalogs = cx.try_global::<Catalogs>();
-        let found = catalogs.and_then(|c| c.usage(agent, std::time::Instant::now()));
+        // The last reading, however old: the panel never swaps numbers for `Checking…`; a
+        // reopening reads again.
+        let found = catalogs.and_then(|c| c.usage_last(agent));
         let limits = catalogs.map_or(&[][..], |c| c.limits(agent));
         let available = provider
             .usage_probe()
