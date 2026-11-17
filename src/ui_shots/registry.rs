@@ -206,6 +206,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-pane-menu",
     "agent-sidebar-waiting",
     "agent-tab-composer-wrap",
+    "agent-tab-attachment",
 ];
 
 /// Every scene, in `ORDER`. Panics, naming the scene, if one is in no area or in two, or if

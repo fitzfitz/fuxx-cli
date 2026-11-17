@@ -337,6 +337,34 @@ pub(super) const SCENES: &[Scene] = &[
         kind: Kind::State,
         sources: TAB,
     },
+    Scene {
+        name: "agent-tab-attachment",
+        run: agent_tab_attachment,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/agent_tab.rs",
+            "src/agent_conversation.rs",
+            "src/agent_markdown.rs",
+            "src/composer.rs",
+            "src/md_preview.rs",
+            "src/diff_view.rs",
+            "src/file_tab.rs",
+            "src/palette_files.rs",
+            "src/providers/mod.rs",
+            "src/providers/claude.rs",
+            "src/workspace_agent.rs",
+            "src/block_view.rs",
+            "src/blocks.rs",
+            "src/shell_marks.rs",
+            "src/terminal_view.rs",
+            "src/terminal.rs",
+            "src/tab_bar.rs",
+            "src/layout_model.rs",
+            "src/sidebar.rs",
+        ],
+    },
 ];
 
 type Slot = Rc<RefCell<Option<Entity<AgentTab>>>>;
@@ -1890,5 +1918,236 @@ pub(super) fn agent_sidebar_waiting() {
             },
         );
         println!("ui-shots: {n}: {}", path.display());
+    }
+}
+
+/// The shell of `agent-tab-attachment`: a failed `npm test` (exit 1) and its output, a finished
+/// `echo done` (exit 0), then the live prompt, marked as fuxx's zsh integration marks them.
+fn attachment_shell() -> String {
+    const A: &str = "\x1b]133;A\x07";
+    const B: &str = "\x1b]133;B\x07";
+    let c = |cmd: &str| format!("\x1b]133;C;cmdline_url={cmd}\x07");
+    let d = |x: i32| format!("\x1b]133;D;{x}\x07");
+    [
+        format!(
+            "{A}$ {B}npm test\r\n{}{ATTACHMENT_OUTPUT}{}",
+            c("npm%20test"),
+            d(1)
+        ),
+        format!("{A}$ {B}echo done\r\n{}done\r\n{}", c("echo%20done"), d(0)),
+        format!("{A}$ {B}"),
+    ]
+    .concat()
+}
+
+/// `npm test`'s output in `attachment_shell` (its rows end in `\r\n` on the screen).
+const ATTACHMENT_OUTPUT: &str = "> app@1.0.0 test\r\n> node --test\r\n\r\n\
+     ✖ adds two numbers (2.1ms)\r\n  expected 4, got 5\r\n\r\nℹ tests 3\r\nℹ pass 2\r\nℹ fail 1\r\n";
+
+/// Run frames and the app's tasks until `done` holds (a block's output is read on the
+/// background executor), for at most five seconds.
+fn settle_until(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    what: &str,
+    done: impl Fn(&App) -> bool,
+) {
+    let started = Instant::now();
+    loop {
+        settle_frames(cx, window);
+        if cx.read(|cx| done(cx)) {
+            return;
+        }
+        assert!(started.elapsed() < Duration::from_secs(5), "{what}");
+        super::prof::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Drag the command of block `row`'s chip (the bar's first row is `row`) in `shell` to `to`,
+/// and drop it there, as you would: the pointer over the bar opens the chip, a press on its
+/// command, a move past GPUI's drag threshold, a move to `to` (`over` runs there, the block
+/// still held), the release. The chip closes once the pointer has left it.
+fn drag_block(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    shell: &Entity<crate::terminal_view::TerminalView>,
+    row: usize,
+    to: gpui::Point<gpui::Pixels>,
+    over: impl FnOnce(&mut VisualTestAppContext),
+) {
+    use gpui::{Modifiers, MouseButton, point};
+    let cell = cx
+        .read(|cx| shell.read(cx).cell_bounds(0, row))
+        .expect("the shell was painted");
+    let bar = point(cell.left() - px(4.0), cell.center().y);
+    cx.simulate_mouse_move(window, bar, None, Modifiers::none());
+    settle_frames(cx, window);
+    let handle = cx
+        .read(|cx| shell.read(cx).chip_command_shot())
+        .expect("the chip shows its command");
+    let from = handle.center();
+    let left = MouseButton::Left;
+    cx.simulate_mouse_down(window, from, left, Modifiers::none());
+    cx.simulate_mouse_move(
+        window,
+        from + point(px(0.0), px(8.0)),
+        left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_move(window, to, left, Modifiers::none());
+    settle_frames(cx, window);
+    over(cx);
+    cx.simulate_mouse_up(window, to, left, Modifiers::none());
+    cx.simulate_mouse_move(window, to, None, Modifiers::none());
+    settle_frames(cx, window);
+    cx.advance_clock(Duration::from_millis(crate::block_view::CHIP_HIDE_MS));
+    settle_frames(cx, window);
+    assert!(
+        cx.read(|cx| shell.read(cx).hovered_block().is_none()),
+        "the chip closed after the drop"
+    );
+}
+
+/// M11aa Task 11 (spec §1.7): a command block dragged from a shell onto an agent tab is
+/// attached to your next message as "command + exit code + output" text. A failed `npm test`,
+/// dragged by its chip's command onto the Claude tab's body, shows as a chip under the
+/// composer (`agent-tab-attachment-composer`); sent, it shows under your message's card
+/// (`agent-tab-attachment`), and the box has no attachment left. `echo done`, dropped on the
+/// Claude tab in its bar, is attached too. R13: a block dropped on a tab paused for "Open in
+/// classic view" only waits there: the tab stays paused and starts nothing.
+pub(super) fn agent_tab_attachment() {
+    use crate::block_view::{BlockDrag, attachment_text};
+    use crate::blocks::Outcome;
+    let n = "agent-tab-attachment";
+    for &(slug, theme_name) in shot_themes() {
+        let theme = shot_theme(theme_name);
+        let slot: Rc<RefCell<Option<Entity<crate::workspace::Workspace>>>> = Rc::default();
+        let build = agent_workspace(theme, slot.clone(), |ws, window, cx| {
+            let my_app = std::path::Path::new("/Users/me/code/my-app");
+            let shell = attachment_shell();
+            let id = ws.open_unnamed_shot_session(Some(my_app), &shell, window, cx);
+            ws.agent_beside(id, "claude", window, cx);
+        });
+        render_with(&theme, size(px(1100.0), px(640.0)), build, |cx, window| {
+            let ws = slot.borrow_mut().take().expect("the workspace");
+            settle_frames(cx, window);
+            let (tab, view) = cx
+                .read(|cx| ws.read(cx).focused_agent_tab())
+                .expect("the agent tab");
+            let shell = cx.read(|cx| {
+                let ws = ws.read(cx);
+                ws.sessions.items()[0].view.clone()
+            });
+            let panes = super::shown_panes(cx, &ws);
+            let bar_tab = super::tab_bounds(cx, &ws, panes[1], 0).expect("Claude's tab");
+            let body = gpui::point(bar_tab.left() + px(120.0), bar_tab.bottom() + px(200.0));
+            // As the grid gives it back: rows joined by newlines, none after the last.
+            let output = ATTACHMENT_OUTPUT.replace('\r', "");
+            let npm = attachment_text(Some("npm test"), Outcome::Failed(1), output.trim_end());
+            let done = attachment_text(Some("echo done"), Outcome::Ok, "done");
+            let attached = |cx: &App| view.read(cx).shot_attachments().to_vec();
+
+            // npm test, dragged onto the tab's body.
+            let dims = size(px(1100.0), px(640.0));
+            // Where the tint shows: the body's empty page, away from the chip at the pointer.
+            let page = (body.x.into(), f32::from(body.y) + 120.0);
+            let held: RefCell<Option<super::Shot>> = RefCell::default();
+            drag_block(cx, window, &shell, 0, body, |cx| {
+                // Held over the body: it is tinted, the block's chip at the pointer.
+                let shot = frame_fresh(cx, window);
+                save_shot(&format!("{n}-dragging"), slug, &shot);
+                *held.borrow_mut() = Some(shot);
+            });
+            let held = held.take().expect("a shot while held");
+            settle_until(cx, window, "npm test attached", |cx| {
+                !view.read(cx).shot_attachments().is_empty()
+            });
+            let got = cx.read(|cx| attached(cx));
+            assert_eq!(got.len(), 1, "{n}: one block attached");
+            assert_eq!(got[0], npm, "{n}: command + exit code + output");
+            assert!(
+                got[0].starts_with("$ npm test\n(exit 1)\n> app@1.0.0 test"),
+                "{n}"
+            );
+            cx.read(|cx| {
+                let t = view.read(cx);
+                assert!(t.shot_items().is_empty(), "{n}: nothing sent");
+                assert!(t.shot_last_argv().is_empty(), "{n}: nothing started");
+            });
+            let dropped = frame_fresh(cx, window);
+            assert_ne!(
+                super::pixel_at(&held, dims, page.0, page.1),
+                super::pixel_at(&dropped, dims, page.0, page.1),
+                "{n}: the body is tinted while a block is over it, not after"
+            );
+            save_shot(&format!("{n}-composer"), slug, &dropped);
+
+            // Sent: under your card; the box keeps none.
+            cx.update(|cx| view.update(cx, |t, cx| t.send("Why does this fail?".into(), cx)));
+            settle_frames(cx, window);
+            cx.read(|cx| {
+                let t = view.read(cx);
+                assert!(
+                    t.shot_attachments().is_empty(),
+                    "{n}: sent with the message"
+                );
+                let you = t.shot_items().iter().find_map(|i| match i {
+                    Item::You { text, attachments } => Some((text.clone(), attachments.clone())),
+                    _ => None,
+                });
+                let (text, with) = you.expect("your message");
+                assert_eq!(text, "Why does this fail?", "{n}");
+                assert_eq!(with, got, "{n}: the block went with it");
+            });
+            save_shot(n, slug, &frame_fresh(cx, window));
+
+            // echo done, dropped on Claude's tab in its bar.
+            // The tab's fill before its icon, clear of the block's chip at the pointer.
+            let on_tab = (f32::from(bar_tab.left()) + 3.0, bar_tab.center().y.into());
+            // Against the pointer merely on it (a tab's hover shade).
+            cx.simulate_mouse_move(window, bar_tab.center(), None, gpui::Modifiers::none());
+            settle_frames(cx, window);
+            let before = frame_fresh(cx, window);
+            let tinted = RefCell::new(false);
+            drag_block(cx, window, &shell, 10, bar_tab.center(), |cx| {
+                let shot = frame_fresh(cx, window);
+                *tinted.borrow_mut() = super::pixel_at(&shot, dims, on_tab.0, on_tab.1)
+                    != super::pixel_at(&before, dims, on_tab.0, on_tab.1);
+            });
+            assert!(
+                tinted.take(),
+                "{n}: the tab is tinted while a block is over it (not only hovered)"
+            );
+            settle_until(cx, window, "echo done attached", |cx| {
+                !view.read(cx).shot_attachments().is_empty()
+            });
+            let got = cx.read(|cx| attached(cx));
+            assert_eq!(got, std::slice::from_ref(&done), "{n}: dropped on its tab");
+            cx.read(|cx| {
+                assert_eq!(ws.read(cx).model.focused_tab(), Some(tab), "{n}: shown");
+            });
+
+            // R13: dropped on a paused tab, it only waits.
+            cx.update(|cx| view.update(cx, |t, cx| t.pause_for_classic(cx)));
+            let argv = cx.read(|cx| view.read(cx).shot_last_argv());
+            let drag = BlockDrag {
+                id: cx.read(|cx| shell.read(cx).block_ids()[0].clone()),
+                command: Some("npm test".into()),
+                outcome: Outcome::Failed(1),
+                core: cx.read(|cx| shell.read(cx).shot_core()),
+            };
+            cx.update(|cx| ws.update(cx, |ws, cx| ws.attach_block(tab, &drag, cx)));
+            settle_until(cx, window, "attached while paused", |cx| {
+                view.read(cx).shot_attachments().len() == 2
+            });
+            cx.read(|cx| {
+                let t = view.read(cx);
+                assert!(t.shot_paused(), "{n}: still paused");
+                assert_eq!(t.shot_last_argv(), argv, "{n}: nothing started");
+                assert_eq!(t.status(), Status::Done, "{n}");
+                assert_eq!(t.shot_attachments(), [done.clone(), npm.clone()], "{n}");
+            });
+        });
+        println!("ui-shots: {n}-{slug}: dropped on the body and the tab, sent, paused");
     }
 }

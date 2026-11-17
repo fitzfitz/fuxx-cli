@@ -26,6 +26,7 @@ use gpui::{
 use crate::activity::ActivityLog;
 use crate::agent_tab::{AgentTab, AgentTabEvent};
 use crate::api_events::Event;
+use crate::block_view::{self, BlockDrag};
 use crate::groups;
 use crate::layout_model::{PaneId, TabId, TabKind, WorkspaceId};
 use crate::notification_list;
@@ -752,7 +753,41 @@ impl Workspace {
                     cx.notify();
                 }
             }
+            AgentTabEvent::BlockDropped(drag) => self.attach_block(tab, drag, cx),
         }
+    }
+
+    /// Command block `drag` dropped on agent tab `tab` (its body or its tab in a bar, spec
+    /// §1.7): the block's output is read off the UI thread (the Term lock held only for the
+    /// read, as Copy output does), made into "command + exit code + output" text
+    /// (`block_view::attachment_text`), and attached to the tab's next message, shown as a chip
+    /// under its composer. It only waits there: nothing is sent, and a paused tab stays paused
+    /// (R13: only your send resumes it, through the holder check). Nothing when the block has
+    /// left the grid by then, or the tab is gone.
+    pub(crate) fn attach_block(&mut self, tab: TabId, drag: &BlockDrag, cx: &mut Context<Self>) {
+        let Some(view) = self.agents.get(&tab).map(|slot| slot.view.downgrade()) else {
+            return;
+        };
+        let BlockDrag {
+            id,
+            command,
+            outcome,
+            core,
+        } = drag.clone();
+        let text = cx.background_spawn(async move {
+            let output = core.block_output(&id)?;
+            Some(block_view::attachment_text(
+                command.as_deref(),
+                outcome,
+                &output,
+            ))
+        });
+        cx.spawn(async move |_, cx| {
+            if let Some(text) = text.await {
+                let _ = view.update(cx, |t, cx| t.attach(text, cx));
+            }
+        })
+        .detach();
     }
 
     /// For agent tab `tab` what `set_status` does for a terminal: its status and since when;
