@@ -100,6 +100,7 @@ use gpui::{
 use crate::agent_markdown::Md;
 use crate::appearance::Appearance;
 use crate::code_outline::{self, Outline};
+use crate::diff_cards::{self, CardKind, CardTitle, Grouped};
 use crate::diff_view::{
     BINARY, DiffRow, NO_CHANGES, NO_REPO, Outcome, Parsed, RowKind, context_for, diff_outcome,
     diff_spans, dim, first_change, reveal_row, sides,
@@ -118,13 +119,14 @@ use crate::mermaid_render::{Drawn, Mermaids, Waiter};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
-use crate::row_map::{MapKey, Row, RowMap, change_starts, step_change};
+use crate::row_map::{DiffLayout, MapKey, Row, RowMap, change_starts, step_change};
 use crate::scrollbar::{self, Axis, Bar, LaneMark, Thumb};
 use crate::sidebar_toggle::{Tip, tip_box};
 use crate::tab_bar::{Glyph, glyph_with};
 use crate::tab_color::TabColor;
 use crate::terminal_view::{CellMetrics, Copy, hsla};
 use crate::theme::{Theme, UiColors, mix};
+use crate::ui_tokens::code::CARD_TITLE;
 use crate::ui_tokens::code::{self, BAR_WIDTH, GUTTER_LEFT, NUMBER_GAP, TEXT_GAP, TOP_ROOM};
 use crate::ui_tokens::size::CARD_RADIUS;
 use crate::ui_tokens::{MARK_MIN, TEXT_MIN, contrast, ensure_contrast, text};
@@ -136,8 +138,17 @@ use crate::workspace::Workspace;
 gpui::actions!(
     file_tab,
     [
-        Find, FindNext, FindPrev, CloseFind, FoldHere, UnfoldHere, FoldAll, UnfoldAll, PrevChange,
-        NextChange
+        Find,
+        FindNext,
+        FindPrev,
+        CloseFind,
+        FoldHere,
+        UnfoldHere,
+        FoldAll,
+        UnfoldAll,
+        PrevChange,
+        NextChange,
+        ShowAllUnchanged
     ]
 );
 
@@ -937,7 +948,8 @@ pub enum DiffState {
     /// Not asked yet (or no answer yet).
     #[default]
     Waiting,
-    Rows(DiffDoc),
+    /// Boxed: a diff's rows, cards and outlines are far bigger than the other answers.
+    Rows(Box<DiffDoc>),
     /// "No changes since the last commit."
     Same,
     /// "This file is binary: no diff to show." (git's answer, or binary on disk.)
@@ -963,6 +975,56 @@ pub struct DiffDoc {
     /// Untracked, or no commits yet: git said the whole file is added (`FileDiff::AllAdded`).
     /// For the header chip's `A` (M11ae).
     pub new: bool,
+    /// M11ah: the rows grouped into cards and folded stretches, and each card's title (named
+    /// from both sides' outlines once the colours name their lines).
+    pub grouped: Arc<Grouped>,
+    pub titles: Arc<Vec<CardTitle>>,
+    /// M11ah: the old and the new side's outlines (none: gave up past the limit).
+    pub old_outline: Option<Arc<Outline>>,
+    pub new_outline: Option<Arc<Outline>>,
+}
+
+/// M11ah: a diff's two sides' outlines (from their texts, `sides`), named with each side's
+/// named lines when the colours gave them.
+fn side_outlines(
+    (old, new): &(String, String),
+    markdown: bool,
+    named: Option<(&[usize], &[usize])>,
+) -> (Option<Outline>, Option<Outline>) {
+    let of = |text: &str, named: Option<&[usize]>| {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut o = code_outline::outline(&lines, markdown, code_outline::LIMIT)?;
+        if let Some(named) = named {
+            o.name(named);
+        }
+        Some(o)
+    };
+    (of(old, named.map(|n| n.0)), of(new, named.map(|n| n.1)))
+}
+
+/// M11ah: each card's title, from both sides' texts and outlines.
+fn card_titles(
+    rows: &[DiffRow],
+    grouped: &Grouped,
+    (old, new): &(String, String),
+    (old_o, new_o): (Option<&Outline>, Option<&Outline>),
+    markdown: bool,
+) -> Vec<CardTitle> {
+    let (old_l, new_l): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    grouped
+        .cards
+        .iter()
+        .map(|card| {
+            diff_cards::title(
+                card,
+                rows,
+                grouped.whole,
+                new_o.map(|o| (o, new_l.as_slice())),
+                old_o.map(|o| (o, old_l.as_slice())),
+                markdown,
+            )
+        })
+        .collect()
 }
 
 impl DiffDoc {
@@ -1013,11 +1075,9 @@ struct ColouredRows {
 /// taking its side's colours (blocking: the background executor's); and each side's named lines.
 struct ColouredDiff {
     spans: Vec<Vec<Span>>,
-    /// The old side's named lines (ascending); the cards' titles read them (Task 9).
-    #[allow(dead_code)]
+    /// The old side's named lines (ascending); the cards' titles read them.
     old_named: Vec<usize>,
     /// The new side's named lines (ascending).
-    #[allow(dead_code)]
     new_named: Vec<usize>,
 }
 
@@ -1049,6 +1109,7 @@ fn diff_state(
     diff: FileDiff,
     disk_text: Option<&str>,
     version: u64,
+    markdown: bool,
     colour: Option<(&Highlighter, &Path)>,
     held: Option<&ColouredRows>,
 ) -> DiffState {
@@ -1069,20 +1130,41 @@ fn diff_state(
             let colourable = colourable(&both, doc.longest);
             // The rows held, coloured, again: not highlighted again (`accept_diff` keeps them).
             let unchanged = held.is_some_and(|h| *h.text == *doc.text && *h.rows == parsed.rows);
+            let mut named = None;
             if let Some((h, path)) = colour
                 && colourable
                 && !unchanged
             {
-                doc.spans = Some(Arc::new(colour_rows(h, path, &parsed.rows, &both).spans));
+                let coloured = colour_rows(h, path, &parsed.rows, &both);
+                doc.spans = Some(Arc::new(coloured.spans));
                 doc.spans_version = Some(version);
+                named = Some((coloured.old_named, coloured.new_named));
             }
-            DiffState::Rows(DiffDoc {
+            // M11ah: the cards, and their titles from both sides' outlines.
+            let grouped = diff_cards::group(&parsed.rows);
+            let (old_o, new_o) = side_outlines(
+                &both,
+                markdown,
+                named.as_ref().map(|(o, n)| (o.as_slice(), n.as_slice())),
+            );
+            let titles = card_titles(
+                &parsed.rows,
+                &grouped,
+                &both,
+                (old_o.as_ref(), new_o.as_ref()),
+                markdown,
+            );
+            DiffState::Rows(Box::new(DiffDoc {
                 doc,
                 gutter: Gutter::diff(&parsed.rows),
                 rows: Arc::new(parsed.rows),
                 colourable,
                 new,
-            })
+                grouped: Arc::new(grouped),
+                titles: Arc::new(titles),
+                old_outline: old_o.map(Arc::new),
+                new_outline: new_o.map(Arc::new),
+            }))
         }
     }
 }
@@ -1096,6 +1178,7 @@ fn diff_answer(
     diff: impl FnOnce() -> Option<FileDiff>,
     disk_text: Option<&str>,
     version: u64,
+    markdown: bool,
     colour: Option<(&Highlighter, &Path)>,
     held: Option<&ColouredRows>,
 ) -> Option<DiffState> {
@@ -1108,7 +1191,7 @@ fn diff_answer(
     {
         return Some(DiffState::Refuse);
     }
-    Some(diff_state(diff, disk_text, version, colour, held))
+    Some(diff_state(diff, disk_text, version, markdown, colour, held))
 }
 
 /// A file's size and time, to tell whether it changed.
@@ -1564,7 +1647,13 @@ pub fn row_hit(doc: &Doc, i: usize, row: (usize, usize, usize), last: bool, x_ce
 pub fn rescroll_row(top: usize, from: Option<&RowMap>, to: &RowMap) -> usize {
     let line = match from.and_then(|m| m.row(top)) {
         Some(Row::Line { line, .. }) => line,
-        // Not a line's row (a Diff card's title): the row kept.
+        // A Diff card's title: that card's title.
+        Some(Row::Title { card }) => {
+            return to
+                .title_row(card)
+                .unwrap_or_else(|| top.min(to.len().saturating_sub(1)));
+        }
+        // Not a line's row (a folded stretch): the row kept.
         Some(_) => return top.min(to.len().saturating_sub(1)),
         None => top,
     };
@@ -1817,8 +1906,26 @@ enum Sticky {
     /// A block's first line (File mode).
     Line(usize),
     /// A Diff card's title row (by card).
-    #[allow(dead_code)] // pinned by Diff mode's cards (M11ah Task 9)
     Title(usize),
+}
+
+/// M11ah: the card whose title is pinned with the view's top `y` points down a diff's rows: the
+/// card the top is inside, its title scrolled above it.
+fn sticky_title_at(map: &RowMap, y: f32) -> Option<usize> {
+    let card = map.card_at(map.row_at(y))?;
+    let rows = map.card_rows(card)?;
+    (map.top(rows.start) < y && map.top(rows.end) > y).then_some(card)
+}
+
+/// M11ah: where a diff scrolls to show row `row`: `REVEAL_ABOVE` rows above it at the top, a
+/// card's title's height higher when that title would be pinned over them.
+fn diff_reveal_y(map: &RowMap, row: usize) -> f32 {
+    let y = map.top(row.saturating_sub(REVEAL_ABOVE));
+    if sticky_title_at(map, y).is_some() {
+        (y - CARD_TITLE).max(0.0)
+    } else {
+        y
+    }
 }
 
 /// What the breadcrumb's parts were laid out for (its layout cache's key): the parts, the room,
@@ -1945,7 +2052,8 @@ pub struct Columns {
     pub text_left: f32,
 }
 
-/// The gutter laid out for cells `cell` wide: `GUTTER_LEFT`, the numbers (old, `NUMBER_GAP`,
+/// The gutter laid out for cells `cell` wide: `GUTTER_LEFT` (a diff's inside its cards'
+/// `code::CARD_INSET`), the numbers (old, `NUMBER_GAP`,
 /// new, for a diff), `NUMBER_GAP` (a file's fold column, `code::FOLD_COLUMN`, for a file with
 /// blocks, then its marks' column, `MARK_COLUMN`, while any line is marked, opened in its
 /// middle), the bar (`BAR_WIDTH`; a diff's sign, one cell), `TEXT_GAP`.
@@ -1969,7 +2077,8 @@ pub fn columns(cell: f32, gutter: Gutter) -> Columns {
             old_digits,
             new_digits,
         } => {
-            let old = GUTTER_LEFT + cell * old_digits as f32;
+            // M11ah: inside the cards, `code::CARD_INSET` from the body's left edge.
+            let old = code::CARD_INSET + GUTTER_LEFT + cell * old_digits as f32;
             (Some(old), old + NUMBER_GAP + cell * new_digits as f32, cell)
         }
     };
@@ -1991,6 +2100,43 @@ pub fn columns(cell: f32, gutter: Gutter) -> Columns {
         new_right,
         bar_left,
         text_left: bar_left + mark + TEXT_GAP,
+    }
+}
+
+/// M11ah: Diff mode's cards: the grouping, and per stretch whether it is shown, per card
+/// whether it is closed.
+type DiffParts = (Arc<Grouped>, Vec<bool>, Vec<bool>);
+
+/// M11ah: what a card is known by over a reload: the new-file line of its first row that has
+/// one (a deleted file's one card: 0).
+fn card_key(card: &diff_cards::Card, rows: &[DiffRow]) -> usize {
+    rows.get(card.rows.clone())
+        .and_then(|rows| rows.iter().find_map(|r| r.new))
+        .unwrap_or(0)
+}
+
+/// M11ah: the cards of `d` with the stretches `shown` and the cards `closed` (by key).
+fn diff_parts(d: &DiffDoc, shown: &BTreeSet<usize>, closed: &BTreeSet<usize>) -> DiffParts {
+    let g = &d.grouped;
+    let shown = g
+        .stretches
+        .iter()
+        .map(|s| s.new_start.is_some_and(|n| shown.contains(&n)))
+        .collect();
+    let closed = g
+        .cards
+        .iter()
+        .map(|c| closed.contains(&card_key(c, &d.rows)))
+        .collect();
+    (g.clone(), shown, closed)
+}
+
+/// M11ah: the room a diff's cards leave at the body's right edge (a file's: none): the text
+/// stops `RIGHT_PAD` inside it, wraps and scrolls sideways within it.
+fn right_inset(gutter: Gutter) -> f32 {
+    match gutter {
+        Gutter::Diff { .. } => code::CARD_INSET,
+        Gutter::Plain { .. } => 0.0,
     }
 }
 
@@ -2086,7 +2232,8 @@ impl Geom {
         let c = columns(f32::from(m.cell_width), gutter);
         let text_left = px(c.text_left);
         let max_scroll = point(
-            (text_left + m.cell_width * widest as f32 + px(RIGHT_PAD) - bounds.size.width)
+            (text_left + m.cell_width * widest as f32 + px(RIGHT_PAD + right_inset(gutter))
+                - bounds.size.width)
                 .max(px(0.0)),
             (height - bounds.size.height).max(px(0.0)),
         );
@@ -2542,6 +2689,17 @@ struct Frame {
     gutter_hover: bool,
     /// M11ah: the line pinned at the top of the text (File mode), as the place says.
     sticky: Option<usize>,
+    /// M11ah: Diff mode's cards (their grouping, shown stretches and closed cards, titles) and
+    /// their layout's generation (the row map's key); the card whose title is pinned at the top.
+    cards: Option<CardsFrame>,
+    layout_gen: u64,
+    sticky_title: Option<usize>,
+}
+
+/// What the text body draws of Diff mode's cards (M11ah).
+struct CardsFrame {
+    parts: DiffParts,
+    titles: Arc<Vec<CardTitle>>,
 }
 
 /// What the text body draws of the live changes (M11af): the marks, and the runs glowing as
@@ -2706,6 +2864,27 @@ fn lane_marks(
     content: f32,
     track: f32,
 ) -> Vec<LaneMark> {
+    // M11ah: Diff mode: one mark per card (green, red, or blue for both), and the matches.
+    if f.mode == FileMode::Diff {
+        let Some(cards) = &f.cards else {
+            return Vec::new();
+        };
+        let items: Vec<(f32, f32, Rgb)> = (cards.parts.0.cards.iter().enumerate())
+            .filter_map(|(k, card)| {
+                let rows = map.card_rows(k)?;
+                let top = map.top(rows.start);
+                let colour = match card.kind {
+                    CardKind::Added => bars.added,
+                    CardKind::Removed => bars.deleted,
+                    CardKind::Both => bars.changed,
+                };
+                Some((top, map.top(rows.end) - top, colour))
+            })
+            .collect();
+        let mut marks = scrollbar::lane(&items, content, track, code::LANE_MARK_MIN);
+        marks.extend(match_ticks(f, map, content, track, |l| map.row_holding(l)));
+        return marks;
+    }
     if f.mode != FileMode::Plain {
         return Vec::new();
     }
@@ -2756,6 +2935,20 @@ fn lane_marks(
         .collect();
     items.extend(deletions.into_iter().map(|top| (top, 0.0, bars.deleted)));
     let mut marks = scrollbar::lane(&items, content, track, code::LANE_MARK_MIN);
+    marks.extend(match_ticks(f, map, content, track, row_of));
+    marks
+}
+
+/// The scrollbar's find ticks (M11ah): each match a `LANE_TICK` tick in the accent at
+/// `MATCH_TINT` on the row `row_of` its line (a hidden one's: its fold's), the current one last,
+/// at `CURRENT_TINT`.
+fn match_ticks(
+    f: &Frame,
+    map: &RowMap,
+    content: f32,
+    track: f32,
+    row_of: impl Fn(usize) -> Option<usize>,
+) -> Vec<LaneMark> {
     let accent = f.theme.ui().accent;
     let ticks = |colour: Rgb, only: &dyn Fn(usize) -> bool| {
         let items: Vec<(f32, f32, Rgb)> = f
@@ -2771,7 +2964,7 @@ fn lane_marks(
         mix(f.theme.background, accent, MATCH_TINT),
         mix(f.theme.background, accent, CURRENT_TINT),
     );
-    marks.extend(ticks(found, &|k| f.current != Some(k)));
+    let mut marks = ticks(found, &|k| f.current != Some(k));
     marks.extend(ticks(now, &|k| f.current == Some(k)));
     marks
 }
@@ -2858,13 +3051,25 @@ fn paint_body(
     // The screen rows in sight (M11ah: the row map's), each a line or (Wrap) a part of one.
     let scroll_y = f32::from(g.scroll.y);
     let rows = map.rows_in(scroll_y..scroll_y + f32::from(bounds.size.height));
+    // M11ah: a diff's rows are inside its cards: the bands and the text stop at their sides.
+    let inside = if f.cards.is_some() {
+        px(code::CARD_INSET + code::CARD_BORDER)
+    } else {
+        px(0.0)
+    };
+    let band_at = |y: Pixels| {
+        Bounds::new(
+            point(bounds.left() + inside, y),
+            size(bounds.size.width - inside * 2.0, lh),
+        )
+    };
     let mask = ContentMask {
         bounds: Bounds::from_corners(
             point(
                 bounds.left() + g.text_left - px(TEXT_GAP - 1.0),
                 bounds.top(),
             ),
-            bounds.bottom_right(),
+            point(bounds.right() - inside, bounds.bottom()),
         ),
     };
     let (seen_left, seen_right) = (mask.bounds.left(), mask.bounds.right());
@@ -2935,11 +3140,40 @@ fn paint_body(
         sign("\u{25be}", mix(bg, quiet, code::FOLD_OPEN_ALPHA), window),
     );
     paint_bars(f, g, map, &rows, &folds, &bars, window);
+    // M11ah: Diff mode's cards in sight, under their rows: rounded panels with a 1 pt border.
+    if f.cards.is_some() {
+        let (left, right) = panel_x(g);
+        for k in map.cards_in(rows.clone()) {
+            let Some(card) = map.card_rows(k) else {
+                continue;
+            };
+            let top = bounds.top() + px(map.top(card.start)) - g.scroll.y;
+            let bottom = bounds.top() + px(map.top(card.end)) - g.scroll.y;
+            let panel = Bounds::from_corners(point(left, top), point(right, bottom));
+            window.paint_quad(quad(
+                panel,
+                px(CARD_RADIUS),
+                hsla(bg),
+                px(code::CARD_BORDER),
+                hsla(ui.divider),
+                gpui::BorderStyle::Solid,
+            ));
+        }
+    }
     for r in rows.clone() {
-        let Some(Row::Line { line: i, cell0 }) = map.row(r) else {
-            continue;
-        };
         let y = bounds.top() + px(map.top(r)) - g.scroll.y;
+        let (i, cell0) = match map.row(r) {
+            Some(Row::Line { line, cell0 }) => (line, cell0),
+            Some(Row::Title { card }) => {
+                paint_card_title(f, g, card, y, false, window, cx);
+                continue;
+            }
+            Some(Row::Unchanged { stretch }) => {
+                paint_unchanged(f, g, stretch, y, window, cx);
+                continue;
+            }
+            _ => continue,
+        };
         let line = f.doc.line(i);
         // A wrapped row: its line's part, drawn from the text's left edge; the line's first row
         // has its number, bar and sign, its last row the selection's line end.
@@ -2960,7 +3194,7 @@ fn paint_body(
         };
         // The current line's band, first: under the tints, the glow, the selection and matches.
         if f.current_line == Some(i) {
-            let band = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
+            let band = band_at(y);
             window.paint_quad(fill(band, hsla(ui.text).opacity(code::CURRENT_ALPHA)));
         }
         let tint = match (row.map(|r| r.kind), change) {
@@ -2970,7 +3204,7 @@ fn paint_body(
             _ => None,
         };
         if let Some(tint) = tint {
-            let band = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
+            let band = band_at(y);
             window.paint_quad(fill(band, hsla(tint).opacity(TINT)));
         }
         // M11af: a line changed on disk in the last minute glows, under the selection and find.
@@ -2980,7 +3214,7 @@ fn paint_body(
         let level = run.map(|w| w.level).max(fold.and_then(|(_, s)| s.glow));
         let glow = level.and_then(|l| l.checked_sub(1).and_then(|k| GLOW.get(usize::from(k))));
         if let Some(level) = glow {
-            let band = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
+            let band = band_at(y);
             window.paint_quad(fill(band, hsla(WARM_RGB).opacity(*level)));
         }
         let line_spans = spans.and_then(|s| s.get(i)).map(Vec::as_slice);
@@ -3210,6 +3444,130 @@ fn paint_body(
         let x = bounds.left() + g.bar_left + px(BAR_WIDTH / 2.0) - marker.width() / 2.0;
         let _ = marker.paint(point(x, top), lh, TextAlign::Left, None, window, cx);
     }
+}
+
+/// M11ah: a diff card's panel's left and right edges, in window points.
+fn panel_x(g: &Geom) -> (Pixels, Pixels) {
+    (
+        g.bounds.left() + px(code::CARD_INSET),
+        g.bounds.right() - px(code::CARD_INSET),
+    )
+}
+
+/// M11ah: 12 pt UI text `words` in `ink`, shaped.
+fn ui_words(words: &str, ink: Rgb, window: &mut Window) -> gpui::ShapedLine {
+    let run = TextRun {
+        len: words.len(),
+        font: window.text_style().font(),
+        color: hsla(ink),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window.text_system().shape_line(
+        SharedString::from(words.to_string()),
+        px(code::UNCHANGED_TEXT),
+        &[run],
+        None,
+    )
+}
+
+/// M11ah: card `card`'s title row at `y` (window points), `code::CARD_TITLE` tall: the block's
+/// name in `text`, its `+n` in green and `−n` in red, and on the right `lines a–b` in
+/// `text_dim`. `pinned` (the sticky title): over the rows of its card scrolled under it, on the
+/// background, with the card's sides and a `divider` line under it.
+fn paint_card_title(
+    f: &Frame,
+    g: &Geom,
+    card: usize,
+    y: Pixels,
+    pinned: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(title) = f.cards.as_ref().and_then(|c| c.titles.get(card)) else {
+        return;
+    };
+    let ui = f.theme.ui();
+    let bg = f.theme.background;
+    let bars = BarColours::of(&f.theme);
+    let (left, right) = panel_x(g);
+    let h = px(code::CARD_TITLE);
+    if pinned {
+        let ground = Bounds::from_corners(point(left, y), point(right, y + h));
+        let border = px(code::CARD_BORDER);
+        let sides = gpui::Edges {
+            top: px(0.0),
+            right: border,
+            bottom: border,
+            left: border,
+        };
+        window.paint_quad(quad(
+            ground,
+            px(0.0),
+            hsla(bg),
+            sides,
+            hsla(ui.divider),
+            gpui::BorderStyle::Solid,
+        ));
+    }
+    let dim = number_ink(&ui, bg, false);
+    let mut x = left + px(code::CARD_BORDER + GUTTER_LEFT);
+    let mut pieces = vec![(title.name.clone(), ui.text)];
+    let counts = [
+        title.added_words().map(|w| (w, bars.added)),
+        title.removed_words().map(|w| (w, bars.deleted)),
+    ];
+    for (k, piece) in counts.into_iter().flatten().enumerate() {
+        let gap = if k == 0 { title.separator() } else { " " };
+        pieces.push((gap.to_string(), dim));
+        pieces.push(piece);
+    }
+    for (words, ink) in pieces {
+        let shaped = ui_words(&words, ink, window);
+        let _ = shaped.paint(point(x, y), h, TextAlign::Left, None, window, cx);
+        x += shaped.width;
+    }
+    if let Some(words) = title.lines_words() {
+        let shaped = ui_words(&words, dim, window);
+        let at = right - px(code::CARD_BORDER + GUTTER_LEFT) - shaped.width;
+        // Never over the name and counts (a narrow view): left out.
+        if at > x {
+            let _ = shaped.paint(point(at, y), h, TextAlign::Left, None, window, cx);
+        }
+    }
+}
+
+/// M11ah: folded stretch `stretch`'s row at `y` (window points): `⋯ 36 unchanged lines —
+/// click to show`, centred between the cards' sides, 12 pt UI text in `text_dim`.
+fn paint_unchanged(
+    f: &Frame,
+    g: &Geom,
+    stretch: usize,
+    y: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(s) = f
+        .cards
+        .as_ref()
+        .and_then(|c| c.parts.0.stretches.get(stretch))
+    else {
+        return;
+    };
+    let ui = f.theme.ui();
+    let ink = number_ink(&ui, f.theme.background, false);
+    let shaped = ui_words(&diff_cards::unchanged_words(s.rows.len()), ink, window);
+    let (left, right) = panel_x(g);
+    let x = left + ((right - left) - shaped.width) / 2.0;
+    let _ = shaped.paint(
+        point(x, y),
+        g.line_height,
+        TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
 }
 
 /// M11ah: the breadcrumb's parts laid out for `key`: each shaped, the ones that fit `key.room`
@@ -3549,6 +3907,12 @@ pub struct FileTab {
     folded: BTreeSet<usize>,
     folds_gen: u64,
     gutter_hover: bool,
+    /// M11ah: Diff mode's unchanged stretches shown and cards closed (keyed by the new-file
+    /// line each starts on: kept over a reload when it starts on the same line), cleared on
+    /// entering Diff; and how many times they changed (the row map's `layout` key).
+    shown_stretches: BTreeSet<usize>,
+    closed_cards: BTreeSet<usize>,
+    layout_gen: u64,
     /// M11ah: where ⌥↑ / ⌥↓ stop (`change_starts`), kept for the text's change bars it was made
     /// from (a layout cache: never made while drawing unless those changed).
     stops: RefCell<Option<Stops>>,
@@ -3678,6 +4042,9 @@ impl FileTab {
             folded: BTreeSet::new(),
             folds_gen: 0,
             gutter_hover: false,
+            shown_stretches: BTreeSet::new(),
+            closed_cards: BTreeSet::new(),
+            layout_gen: 0,
             stops: RefCell::new(None),
             nav_at: Rc::default(),
             place: Place::default(),
@@ -3736,7 +4103,7 @@ impl FileTab {
     }
 
     /// M11ah: the screen rows of `doc` shown in `mode`, cut at `columns` (Wrap) with rows
-    /// `row_h` tall and (File mode) the `folded` blocks' lines hidden. The one place a map is
+    /// `row_h` tall and (File mode) the `folded` blocks' lines hidden, (Diff mode) in `cards`. The one place a map is
     /// made (the canvas, Follow, a diff's reveal, a fold), so they never disagree.
     fn row_map_of(
         doc: &Doc,
@@ -3744,7 +4111,17 @@ impl FileTab {
         columns: Option<usize>,
         row_h: f32,
         folded: &BTreeSet<usize>,
+        cards: Option<&DiffParts>,
     ) -> RowMap {
+        if let (FileMode::Diff, Some((grouped, shown, closed))) = (mode, cards) {
+            let layout = DiffLayout {
+                grouped,
+                shown,
+                closed,
+                pairs: None,
+            };
+            return RowMap::diff(&doc.widths, columns, &layout, row_h);
+        }
         let hidden = match (mode, &doc.outline) {
             (FileMode::Plain, Some(outline)) if !folded.is_empty() => {
                 code_outline::hidden_ranges(outline, folded)
@@ -3767,7 +4144,98 @@ impl FileTab {
             columns,
             f32::from(g.line_height),
             &self.folded,
+            self.diff_parts().as_ref(),
         ))
+    }
+
+    /// M11ah: Diff mode's cards as they stand: the grouping, which stretches are shown, which
+    /// cards closed (none: no rows).
+    fn diff_parts(&self) -> Option<DiffParts> {
+        let DiffState::Rows(d) = &self.diff.state else {
+            return None;
+        };
+        Some(diff_parts(d, &self.shown_stretches, &self.closed_cards))
+    }
+
+    /// M11ah: the cards' or stretches' shown state changed: the rows are made again.
+    fn diff_layout_changed(&mut self, cx: &mut Context<Self>) {
+        self.layout_gen += 1;
+        self.refresh_place(cx);
+        cx.notify();
+    }
+
+    /// M11ah: a card's title pressed: the card closes to its title, or opens again.
+    fn toggle_card(&mut self, card: usize, cx: &mut Context<Self>) {
+        let Some(key) = self.card_key(card) else {
+            return;
+        };
+        if !self.closed_cards.remove(&key) {
+            self.closed_cards.insert(key);
+        }
+        self.diff_layout_changed(cx);
+    }
+
+    /// M11ah: a folded stretch pressed: its lines show.
+    fn show_stretch(&mut self, stretch: usize, cx: &mut Context<Self>) {
+        let DiffState::Rows(d) = &self.diff.state else {
+            return;
+        };
+        if let Some(key) = d.grouped.stretches.get(stretch).and_then(|s| s.new_start)
+            && self.shown_stretches.insert(key)
+        {
+            self.diff_layout_changed(cx);
+        }
+    }
+
+    /// M11ah: the palette's Show All Unchanged Lines (Diff mode): every stretch shows.
+    fn show_all_unchanged(&mut self, cx: &mut Context<Self>) {
+        if self.mode != FileMode::Diff {
+            return;
+        }
+        let DiffState::Rows(d) = &self.diff.state else {
+            return;
+        };
+        let keys: Vec<usize> = d
+            .grouped
+            .stretches
+            .iter()
+            .filter_map(|s| s.new_start)
+            .collect();
+        let before = self.shown_stretches.len();
+        self.shown_stretches.extend(keys);
+        if self.shown_stretches.len() != before {
+            self.diff_layout_changed(cx);
+        }
+    }
+
+    /// M11ah: card `card`'s key (`card_key`).
+    fn card_key(&self, card: usize) -> Option<usize> {
+        let DiffState::Rows(d) = &self.diff.state else {
+            return None;
+        };
+        Some(card_key(d.grouped.cards.get(card)?, &d.rows))
+    }
+
+    /// M11ah: the folds of Diff mode that hide row `line` open: its stretch shows, its closed
+    /// card opens (a find step or a jump went there). True when one opened (`layout_gen` moved;
+    /// the caller draws).
+    fn open_diff_at(&mut self, line: usize) -> bool {
+        let DiffState::Rows(d) = &self.diff.state else {
+            return false;
+        };
+        let mut opened = false;
+        if let Some(s) = d.grouped.stretches.iter().find(|s| s.rows.contains(&line))
+            && let Some(key) = s.new_start
+        {
+            opened |= self.shown_stretches.insert(key);
+        }
+        if let Some(c) = d.grouped.cards.iter().find(|c| c.rows.contains(&line)) {
+            opened |= self.closed_cards.remove(&card_key(c, &d.rows));
+        }
+        if opened {
+            self.layout_gen += 1;
+        }
+        opened
     }
 
     /// M11ah: whether blocks fold here: File mode (not Preview) on a file with blocks. The
@@ -3883,6 +4351,14 @@ impl FileTab {
 
     /// M11ah: the change a jump goes to, from the current line (else the view's top).
     fn change_target(&self, forward: bool) -> Option<usize> {
+        // M11ah: Diff mode stops at each card's first changed row.
+        if self.mode == FileMode::Diff {
+            let DiffState::Rows(d) = &self.diff.state else {
+                return None;
+            };
+            let stops: Vec<usize> = d.grouped.cards.iter().map(|c| c.changed.start).collect();
+            return step_change(&stops, self.diff_current, self.diff_top(), forward);
+        }
         let stops = self.change_stops()?;
         step_change(&stops, self.current, self.top_line().unwrap_or(0), forward)
     }
@@ -3890,10 +4366,15 @@ impl FileTab {
     /// M11ah: whether the bar's jump buttons show (File mode on a file with a change) and which
     /// of them can go (previous, next).
     fn change_nav(&self) -> Option<(bool, bool)> {
-        if self.mode != FileMode::Plain || self.preview_shown() {
+        if self.preview_shown() {
             return None;
         }
-        (!self.change_stops()?.is_empty()).then(|| {
+        let any = match (self.mode, &self.diff.state) {
+            (FileMode::Plain, _) => !self.change_stops()?.is_empty(),
+            (FileMode::Diff, DiffState::Rows(d)) => !d.grouped.cards.is_empty(),
+            (FileMode::Diff, _) => false,
+        };
+        any.then(|| {
             (
                 self.change_target(false).is_some(),
                 self.change_target(true).is_some(),
@@ -3906,6 +4387,10 @@ impl FileTab {
     /// the current line; a fold holding it opens. It is you moving the view: Follow ends. At
     /// the first or last change, nothing (no wrap-around). File mode only.
     fn jump_change(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.mode == FileMode::Diff {
+            self.jump_card(forward, cx);
+            return;
+        }
         if self.mode != FileMode::Plain || self.preview_shown() {
             return;
         }
@@ -3939,6 +4424,62 @@ impl FileTab {
         cx.notify();
     }
 
+    /// M11ah: ⌥↑ / ⌥↓ in Diff mode: the previous or next card's title at the top (a closed one
+    /// opens) and its first changed row current. At the first or last card, nothing.
+    fn jump_card(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(target) = self.change_target(forward) else {
+            return;
+        };
+        let opened = self.open_diff_at(target);
+        let map = if opened {
+            self.fresh_map(cx)
+        } else {
+            self.map_now(cx)
+        };
+        let (Some(map), DiffState::Rows(d)) = (map, &self.diff.state) else {
+            return;
+        };
+        let card = d
+            .grouped
+            .cards
+            .iter()
+            .position(|c| c.changed.start == target);
+        let Some(title) = card.and_then(|k| map.title_row(k)) else {
+            return;
+        };
+        let y = px(map.top(title));
+        if opened {
+            // Longer rows than the last drawing's: the next drawing keeps the scroll in them.
+            self.diff_scroll.y = y;
+            self.scrolled(cx);
+        } else {
+            self.set_scroll(point(self.diff_scroll.x, y), cx);
+        }
+        self.set_current(Some(target), cx);
+        self.refresh_place(cx);
+        cx.notify();
+    }
+
+    /// M11ah: the diff row at the view's top (a card's title: the card's first row; a folded
+    /// stretch: its first); 0 before the first drawing.
+    fn diff_top(&self) -> usize {
+        let (Some(g), DiffState::Rows(d)) = (self.geom.get(), &self.diff.state) else {
+            return 0;
+        };
+        let rows = self.rows.borrow();
+        let Some((_, map)) = rows.as_ref() else {
+            return 0;
+        };
+        match map.row(map.row_at(f32::from(g.scroll.y))) {
+            Some(Row::Line { line, .. }) => line,
+            Some(Row::Title { card }) => d.grouped.cards.get(card).map_or(0, |c| c.rows.start),
+            Some(Row::Unchanged { stretch }) => {
+                d.grouped.stretches.get(stretch).map_or(0, |s| s.rows.start)
+            }
+            _ => 0,
+        }
+    }
+
     /// M11ah: the folds that hide `line` open (a find step or Follow went there; not you
     /// moving the view, so Follow stays). True when one opened.
     fn open_folds_at(&mut self, line: usize) -> bool {
@@ -3969,6 +4510,7 @@ impl FileTab {
             && key.mode == self.mode
             && key.version == doc.version
             && key.folds == self.folds_gen
+            && key.layout == self.layout_gen
             && key.columns.is_some() == wrap
         {
             return Some(map.clone());
@@ -3980,6 +4522,21 @@ impl FileTab {
     /// breadcrumb for the line at the top, the sticky line for the line just under its row (a
     /// line exactly at the top has none pinned over it). Before the first drawing: the top.
     fn place_now(&self, cx: &App) -> Place {
+        // M11ah: Diff mode pins the title of the card the view's top is in.
+        if self.mode == FileMode::Diff {
+            let sticky = match (self.map_now(cx), self.geom.get()) {
+                (Some(map), Some(g)) => {
+                    let max = (map.height() - f32::from(g.bounds.size.height)).max(0.0);
+                    let y = f32::from(self.diff_scroll.y).clamp(0.0, max);
+                    sticky_title_at(&map, y).map(Sticky::Title)
+                }
+                _ => None,
+            };
+            return Place {
+                sticky,
+                crumbs: Vec::new(),
+            };
+        }
         let (Some(doc), true) = (self.doc(), self.folds_apply()) else {
             return Place::default();
         };
@@ -4593,6 +5150,7 @@ impl FileTab {
             return;
         }
         let (version, text, rows) = (d.doc.version, d.doc.text.clone(), d.rows.clone());
+        let grouped = d.grouped.clone();
         let Some(h) = self.shared_highlighter(cx) else {
             return;
         };
@@ -4603,7 +5161,7 @@ impl FileTab {
         let path = self.path.clone();
         cx.spawn(async move |this, cx| {
             let keep = rows.clone();
-            let spans = cx
+            let (spans, outlines, titles) = cx
                 .background_executor()
                 .spawn(async move {
                     // The rows' text without the `Doc`'s last `\n`.
@@ -4612,7 +5170,21 @@ impl FileTab {
                         text,
                         rows: keep.to_vec(),
                     };
-                    colour_rows(&h, &path, &parsed.rows, &sides(&parsed)).spans
+                    let both = sides(&parsed);
+                    let coloured = colour_rows(&h, &path, &parsed.rows, &both);
+                    // M11ah: the named lines came with them: the cards' titles name their
+                    // blocks now.
+                    let markdown = is_markdown(&path);
+                    let named = (coloured.old_named.as_slice(), coloured.new_named.as_slice());
+                    let (old_o, new_o) = side_outlines(&both, markdown, Some(named));
+                    let titles = card_titles(
+                        &parsed.rows,
+                        &grouped,
+                        &both,
+                        (old_o.as_ref(), new_o.as_ref()),
+                        markdown,
+                    );
+                    (coloured.spans, (old_o, new_o), titles)
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -4621,6 +5193,9 @@ impl FileTab {
                     && Arc::ptr_eq(&d.rows, &rows)
                     && d.doc.accept_spans(version, spans, &[])
                 {
+                    d.old_outline = outlines.0.map(Arc::new);
+                    d.new_outline = outlines.1.map(Arc::new);
+                    d.titles = Arc::new(titles);
                     cx.notify();
                 }
                 if this.colouring_diff.finish() {
@@ -4756,6 +5331,7 @@ impl FileTab {
             _ => None,
         };
         let (path, known) = (self.path.clone(), self.git_place.clone());
+        let markdown = is_markdown(&path);
         cx.spawn(async move |this, cx| {
             let (place, state) = cx
                 .background_executor()
@@ -4773,6 +5349,7 @@ impl FileTab {
                                 || file_diff(&p.git, &p.root, &p.rel, context_for(lines)),
                                 disk.as_deref(),
                                 version,
+                                markdown,
                                 colour,
                                 held.as_ref(),
                             )
@@ -4829,6 +5406,16 @@ impl FileTab {
         }
         // Redrawn below. The rows changed: the current row is another one's.
         self.diff_current = None;
+        // M11ah: a shown stretch stays shown when one starts on the same new-file line (a
+        // closed card, when one starts there too); the others fold again.
+        if let DiffState::Rows(d) = &self.diff.state {
+            let g = &d.grouped;
+            let starts: BTreeSet<usize> = g.stretches.iter().filter_map(|s| s.new_start).collect();
+            self.shown_stretches.retain(|k| starts.contains(k));
+            let cards: BTreeSet<usize> = g.cards.iter().map(|c| card_key(c, &d.rows)).collect();
+            self.closed_cards.retain(|k| cards.contains(k));
+        }
+        self.layout_gen += 1;
         self.take_diff_counts(counts);
         match &self.diff.state {
             DiffState::Rows(d) => {
@@ -5281,6 +5868,12 @@ impl FileTab {
             cx.notify();
             return;
         }
+        // M11ah: entering Diff folds its stretches and opens its cards again.
+        if mode == FileMode::Diff {
+            self.shown_stretches.clear();
+            self.closed_cards.clear();
+            self.layout_gen += 1;
+        }
         self.selection = None;
         self.selecting = false;
         // M11af: a mode switch ends Follow, and the marks' tooltip does not wait for the
@@ -5471,6 +6064,23 @@ impl FileTab {
             self.show_at_top(Some(line), cx);
             return;
         }
+        // M11ah: Diff mode: a pinned title closes its card (its title at the top); a title
+        // closes or opens its card; a folded stretch shows.
+        if let Some(card) = self.sticky_title_under(e.position) {
+            self.close_card_at_top(card, cx);
+            return;
+        }
+        match self.diff_row_under(e.position) {
+            Some(Row::Title { card }) => {
+                self.toggle_card(card, cx);
+                return;
+            }
+            Some(Row::Unchanged { stretch }) => {
+                self.show_stretch(stretch, cx);
+                return;
+            }
+            _ => {}
+        }
         // A change bar (or a deleted-lines ▸) in a file: its diff, at that change.
         if let Some(change) = self.bar_under(e.position) {
             self.choose_mode(FileMode::Diff, Some(change), cx);
@@ -5492,6 +6102,56 @@ impl FileTab {
             self.drag_at = None;
             cx.notify();
         }
+    }
+
+    /// M11ah: the pinned card title's card, when window point `p` is on it (as last drawn).
+    fn sticky_title_under(&self, p: Point<Pixels>) -> Option<usize> {
+        let Some(Sticky::Title(card)) = self.place.sticky else {
+            return None;
+        };
+        let g = self.geom.get()?;
+        (self.mode == FileMode::Diff
+            && g.bounds.contains(&p)
+            && p.y < g.bounds.top() + px(CARD_TITLE))
+        .then_some(card)
+    }
+
+    /// M11ah: a Diff card's title or a folded stretch's row under window point `p` (as last
+    /// drawn; a stretch's row only its own height, not the gap under it before a card).
+    fn diff_row_under(&self, p: Point<Pixels>) -> Option<Row> {
+        if self.mode != FileMode::Diff {
+            return None;
+        }
+        let g = self.geom.get()?;
+        let rows = self.rows.borrow();
+        let (_, map) = rows.as_ref()?;
+        let y = f32::from(p.y - g.bounds.top() + g.scroll.y);
+        if !g.bounds.contains(&p) || y < 0.0 || y >= map.height() {
+            return None;
+        }
+        let r = map.row_at(y);
+        match map.row(r)? {
+            row @ Row::Title { .. } => Some(row),
+            row @ Row::Unchanged { .. } if y < map.top(r) + map.row_h() => Some(row),
+            _ => None,
+        }
+    }
+
+    /// M11ah: the pinned title pressed: its card closes, its title at the top. You moved the
+    /// view.
+    fn close_card_at_top(&mut self, card: usize, cx: &mut Context<Self>) {
+        let Some(key) = self.card_key(card) else {
+            return;
+        };
+        self.closed_cards.insert(key);
+        self.layout_gen += 1;
+        if let Some(map) = self.fresh_map(cx)
+            && let Some(title) = map.title_row(card)
+        {
+            self.set_scroll(point(self.diff_scroll.x, px(map.top(title))), cx);
+        }
+        self.refresh_place(cx);
+        cx.notify();
     }
 
     /// M11ah: the block whose fold is under window point `p` (File mode, as last drawn): in the
@@ -5889,7 +6549,10 @@ impl FileTab {
             return;
         };
         // M11ah: a match inside a fold opens it; the rows are then made again at once.
-        let opened = self.mode == FileMode::Plain && self.open_folds_at(hit.line);
+        let opened = match self.mode {
+            FileMode::Plain => self.open_folds_at(hit.line),
+            FileMode::Diff => self.open_diff_at(hit.line),
+        };
         let map = if opened {
             cx.notify();
             self.fresh_map(cx)
@@ -5908,13 +6571,16 @@ impl FileTab {
         let columns = map.columns();
         let row = first + columns.map_or(0, |c| doc.cell_of(hit.line, hit.cols.start) / c);
         let (top, bottom) = (px(map.top(row)), px(map.top(row + 1)));
-        let covered = if self.place.sticky.is_some() {
-            g.line_height
-        } else {
-            px(0.0)
+        let covered = match self.place.sticky {
+            Some(Sticky::Line(_)) => g.line_height,
+            Some(Sticky::Title(_)) => px(CARD_TITLE),
+            None => px(0.0),
         };
         if top < to.y + covered || bottom > to.y + h {
-            to.y = px(map.top(reveal_top(row, |r| self.sticky_at_row(&map, r))));
+            to.y = px(match self.mode {
+                FileMode::Diff => diff_reveal_y(&map, row),
+                FileMode::Plain => map.top(reveal_top(row, |r| self.sticky_at_row(&map, r))),
+            });
         }
         // Wrapped (M11x part 2): no sideways scroll.
         if columns.is_some() {
@@ -6750,6 +7416,18 @@ impl FileTab {
                 Some(Sticky::Line(line)) if self.mode == FileMode::Plain => Some(line),
                 _ => None,
             },
+            cards: match (self.mode, &self.diff.state) {
+                (FileMode::Diff, DiffState::Rows(d)) => Some(CardsFrame {
+                    parts: diff_parts(d, &self.shown_stretches, &self.closed_cards),
+                    titles: d.titles.clone(),
+                }),
+                _ => None,
+            },
+            layout_gen: self.layout_gen,
+            sticky_title: match self.place.sticky {
+                Some(Sticky::Title(card)) if self.mode == FileMode::Diff => Some(card),
+                _ => None,
+            },
         });
         let geom = self.geom.clone();
         let row_map = self.rows.clone();
@@ -6806,7 +7484,11 @@ impl FileTab {
                             let wrap = cx.global::<Appearance>().file_wrap.then(|| {
                                 let cw = f32::from(m.cell_width).max(1.0);
                                 let left = columns(cw, gutter).text_left;
-                                let room = f32::from(bounds.size.width) - left - RIGHT_PAD;
+                                // M11ah: a diff's measured inside its cards.
+                                let room = f32::from(bounds.size.width)
+                                    - left
+                                    - RIGHT_PAD
+                                    - right_inset(gutter);
                                 (room / cw).floor().max(1.0) as usize
                             });
                             // M11ah: the row map, a layout cache made again only for another
@@ -6817,7 +7499,7 @@ impl FileTab {
                                 version: laid.doc.version,
                                 columns: wrap,
                                 folds: laid.folds_gen,
-                                layout: 0,
+                                layout: laid.layout_gen,
                                 side: false,
                             };
                             let before = row_map.borrow().clone();
@@ -6831,6 +7513,7 @@ impl FileTab {
                                     wrap,
                                     f32::from(row_h),
                                     &laid.folded,
+                                    laid.cards.as_ref().map(|c| &c.parts),
                                 ),
                             };
                             // The rows reflowed (Wrap switched, review fix; M11ah fix round 1:
@@ -6916,9 +7599,13 @@ impl FileTab {
                             let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
                             // M11ah: the sticky line, over the text's first row: a press there
                             // scrolls back to its line.
-                            let sticky = laid.sticky.map(|_| {
-                                let row =
-                                    Bounds::new(bounds.origin, size(bounds.size.width, row_h));
+                            let pinned = match (laid.sticky, laid.sticky_title) {
+                                (Some(_), _) => Some(row_h),
+                                (None, Some(_)) => Some(px(code::CARD_TITLE)),
+                                (None, None) => None,
+                            };
+                            let sticky = pinned.map(|h| {
+                                let row = Bounds::new(bounds.origin, size(bounds.size.width, h));
                                 window.insert_hitbox(row, HitboxBehavior::Normal)
                             });
                             (m, g, hitbox, map, sticky, marks)
@@ -6929,6 +7616,13 @@ impl FileTab {
                             if let (Some(line), Some(row)) = (frame.sticky, &sticky) {
                                 window.set_cursor_style(CursorStyle::PointingHand, row);
                                 paint_sticky(&frame, &g, &m, &map, line, window, cx);
+                            }
+                            // M11ah: a card's title pinned over the top of a card scrolled
+                            // under it.
+                            if let (Some(card), Some(row)) = (frame.sticky_title, &sticky) {
+                                window.set_cursor_style(CursorStyle::PointingHand, row);
+                                let top = g.bounds.top();
+                                paint_card_title(&frame, &g, card, top, true, window, cx);
                             }
                             // M11ah: the marks' lane, every frame (the thumb's fade leaves it),
                             // under the thumb.
@@ -7186,7 +7880,8 @@ impl FileTab {
         let h = cx.default_global::<Highlighters>().get(&theme);
         let disk = self.doc().map(|d| d.text.clone());
         let colour = h.as_deref().map(|h| (h, self.path.as_path()));
-        let state = diff_state(diff, disk.as_deref(), self.versions, colour, None);
+        let markdown = is_markdown(&self.path);
+        let state = diff_state(diff, disk.as_deref(), self.versions, markdown, colour, None);
         let version = self.versions;
         self.accept_diff(version, state, cx);
     }
@@ -7291,6 +7986,54 @@ impl FileTab {
         }
     }
 
+    /// M11ah: Diff mode's pinned card title (none: nothing pinned), its current row, and the
+    /// stretches shown and cards closed (by key).
+    pub fn sticky_title(&self) -> Option<usize> {
+        match self.place.sticky {
+            Some(Sticky::Title(card)) => Some(card),
+            _ => None,
+        }
+    }
+
+    pub fn diff_current(&self) -> Option<usize> {
+        self.diff_current
+    }
+
+    pub fn diff_folds_for_shots(&self) -> (Vec<usize>, Vec<usize>) {
+        (
+            self.shown_stretches.iter().copied().collect(),
+            self.closed_cards.iter().copied().collect(),
+        )
+    }
+
+    /// M11ah: line `line`'s top down the text shown (no scroll), by its rows as they are now
+    /// (none: hidden, or not drawn yet); a card's title's top.
+    pub fn line_top(&self, line: usize, cx: &App) -> Option<Pixels> {
+        let map = self.map_now(cx)?;
+        Some(px(map.top(map.first_row(line)?)))
+    }
+
+    pub fn title_top(&self, card: usize, cx: &App) -> Option<Pixels> {
+        let map = self.map_now(cx)?;
+        Some(px(map.top(map.title_row(card)?)))
+    }
+
+    /// M11ah: the row under a press at `y` points down the text is a stretch's or a title's.
+    pub fn row_kind_at(&self, y: f32, cx: &App) -> Option<Row> {
+        let map = self.map_now(cx)?;
+        map.row(map.row_at(y))
+    }
+
+    /// M11ah: stretch `stretch` shown (as a press on it would), and Diff's current row set.
+    pub fn show_stretch_for_shots(&mut self, stretch: usize, cx: &mut Context<Self>) {
+        self.show_stretch(stretch, cx);
+    }
+
+    pub fn set_current_diff_for_shots(&mut self, row: Option<usize>, cx: &mut Context<Self>) {
+        self.diff_current = row;
+        cx.notify();
+    }
+
     /// M11ah: the current line set (as a press there would).
     pub fn set_current_for_shots(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
         self.set_current(line, cx);
@@ -7345,8 +8088,8 @@ impl FileTab {
 }
 
 impl FileTab {
-    /// Diff mode with rows and a place to show: scroll it `REVEAL_ABOVE` rows from the top
-    /// (kept within the rows when drawn).
+    /// Diff mode with rows and a place to show: scroll its card's title to the top (M11ah;
+    /// kept within the rows when drawn).
     fn reveal_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode != FileMode::Diff {
             return;
@@ -7362,21 +8105,29 @@ impl FileTab {
             Reveal::Change(change) => reveal_row(&d.rows, change).or_else(|| first_change(&d.rows)),
         };
         let m = CellMetrics::measure(cx.global::<Appearance>(), window);
-        let line = row.unwrap_or(0).saturating_sub(REVEAL_ABOVE);
-        // By the row map (M11ah): that line's first screen row; Wrap on (M11x part 2): the diff
-        // wrapped at the width last drawn (its own gutter may move it a column; the next frame
-        // wraps it exactly).
+        let row = row.unwrap_or(0);
+        // By the row map (M11ah): the title of the change's card at the top; Wrap on (M11x
+        // part 2): the diff wrapped at the width last drawn (its own gutter may move it a
+        // column; the next frame wraps it exactly).
         let columns = self
             .wrap_columns()
             .filter(|_| cx.global::<Appearance>().file_wrap);
+        let parts = diff_parts(d, &self.shown_stretches, &self.closed_cards);
         let map = Self::row_map_of(
             &d.doc,
             FileMode::Diff,
             columns,
             f32::from(row_height(m.line_height)),
             &self.folded,
+            Some(&parts),
         );
-        let top = map.first_row(line).map_or(0.0, |r| map.top(r));
+        let card = d.grouped.cards.iter().position(|c| c.rows.contains(&row));
+        let top = match card.and_then(|k| map.title_row(k)) {
+            Some(title) => map.top(title),
+            None => map
+                .row_holding(row.saturating_sub(REVEAL_ABOVE))
+                .map_or(0.0, |r| map.top(r)),
+        };
         self.diff_scroll = point(px(0.0), px(top));
         // M11ae: a reveal scrolls, so the scrollbar shows (this frame draws it). Not through
         // `set_scroll`: the rows aren't drawn yet, so the last drawing's limits are another
@@ -7425,6 +8176,7 @@ impl Render for FileTab {
             .on_action(cx.listener(|this, _: &UnfoldHere, _, cx| this.fold_here(false, cx)))
             .on_action(cx.listener(|this, _: &FoldAll, _, cx| this.fold_all(true, cx)))
             .on_action(cx.listener(|this, _: &UnfoldAll, _, cx| this.fold_all(false, cx)))
+            .on_action(cx.listener(|this, _: &ShowAllUnchanged, _, cx| this.show_all_unchanged(cx)))
             // ⌥↑ / ⌥↓ act only while the tab itself has the keyboard (not the find box).
             .on_action(cx.listener(|this, _: &PrevChange, window, cx| {
                 if this.focus.is_focused(window) {
@@ -8333,11 +9085,12 @@ mod tests {
                 new_digits: 2,
             },
         );
-        assert_eq!(diff.old_right, Some(40.0));
-        assert_eq!(diff.new_right, 66.0);
+        // M11ah: inside the cards, `CARD_INSET` (12) further right.
+        assert_eq!(diff.old_right, Some(52.0));
+        assert_eq!(diff.new_right, 78.0);
         // The sign column's left, one cell wide, then the text.
-        assert_eq!(diff.bar_left, 76.0);
-        assert_eq!(diff.text_left, 98.0);
+        assert_eq!(diff.bar_left, 88.0);
+        assert_eq!(diff.text_left, 110.0);
     }
 
     #[test]
@@ -8448,6 +9201,7 @@ mod tests {
             FileDiff::Unified("@@ -1,2 +1,3 @@\n a\n+b\n \n".into()),
             None,
             4,
+            false,
             None,
             None,
         );
@@ -8469,18 +9223,18 @@ mod tests {
                 new_digits: 2
             }
         );
-        let all = diff_state(FileDiff::AllAdded, Some("x\n\n"), 1, None, None);
+        let all = diff_state(FileDiff::AllAdded, Some("x\n\n"), 1, false, None, None);
         let DiffState::Rows(d) = all else {
             panic!("rows");
         };
         assert_eq!((d.rows.len(), d.doc.lines.len()), (2, 2));
         assert_eq!(d.counts(), (2, 0, true), "every line added, new to git");
         assert!(matches!(
-            diff_state(FileDiff::Unified(String::new()), None, 1, None, None),
+            diff_state(FileDiff::Unified(String::new()), None, 1, false, None, None),
             DiffState::Same
         ));
         assert!(matches!(
-            diff_state(FileDiff::Binary, Some("x"), 1, None, None),
+            diff_state(FileDiff::Binary, Some("x"), 1, false, None, None),
             DiffState::Binary
         ));
     }
@@ -8489,14 +9243,28 @@ mod tests {
     fn diff_counts_are_the_added_and_removed_rows_not_the_hunk_headers() {
         // `-U<n>`: the header counts context lines (4 old, 5 new); the rows say +2 −1.
         let unified = "@@ -1,4 +1,5 @@\n a\n-b\n+bee\n c\n d\n+e\n";
-        let state = diff_state(FileDiff::Unified(unified.into()), None, 1, None, None);
+        let state = diff_state(
+            FileDiff::Unified(unified.into()),
+            None,
+            1,
+            false,
+            None,
+            None,
+        );
         let DiffState::Rows(d) = state else {
             panic!("rows");
         };
         assert_eq!(d.counts(), (2, 1, false));
         // Two hunks with a gap between them.
         let unified = "@@ -1,2 +1,2 @@\n-a\n+A\n b\n@@ -9,2 +9,1 @@\n i\n-j\n";
-        let state = diff_state(FileDiff::Unified(unified.into()), None, 1, None, None);
+        let state = diff_state(
+            FileDiff::Unified(unified.into()),
+            None,
+            1,
+            false,
+            None,
+            None,
+        );
         let DiffState::Rows(d) = state else {
             panic!("rows");
         };
@@ -8505,7 +9273,7 @@ mod tests {
 
     #[test]
     fn a_diff_answer_for_an_older_disk_version_is_dropped() {
-        let rows = |v: u64| diff_state(FileDiff::AllAdded, Some("x\n"), v, None, None);
+        let rows = |v: u64| diff_state(FileDiff::AllAdded, Some("x\n"), v, false, None, None);
         let mut held = HeldDiff::default();
         assert!(matches!(held.state, DiffState::Waiting));
         // Asked at version 2; version 3 was read and answered first: 2's answer is dropped.
@@ -8616,7 +9384,8 @@ mod tests {
             FileDiff::Unified(u)
         };
         // A small deleted file (no disk text): coloured.
-        let DiffState::Rows(small) = diff_state(deleted(10), None, 1, Some((&h, path)), None)
+        let DiffState::Rows(small) =
+            diff_state(deleted(10), None, 1, false, Some((&h, path)), None)
         else {
             panic!("rows");
         };
@@ -8626,7 +9395,7 @@ mod tests {
         );
         // Its old side over 2 MB: uncoloured, though there's no disk text to say so.
         let big = deleted(40_000);
-        let DiffState::Rows(d) = diff_state(big, None, 1, Some((&h, path)), None) else {
+        let DiffState::Rows(d) = diff_state(big, None, 1, false, Some((&h, path)), None) else {
             panic!("rows");
         };
         assert!(
@@ -8714,7 +9483,7 @@ mod tests {
         let diff =
             || FileDiff::Unified("@@ -1,2 +1,2 @@\n let a = 1;\n-let b = 2;\n+let b = 3;\n".into());
         let colour = Some((&h, path));
-        let DiffState::Rows(first) = diff_state(diff(), None, 1, colour, None) else {
+        let DiffState::Rows(first) = diff_state(diff(), None, 1, false, colour, None) else {
             panic!("rows");
         };
         assert!(first.doc.spans.is_some(), "first rows are coloured");
@@ -8723,7 +9492,7 @@ mod tests {
             rows: first.rows.clone(),
         };
         // The same text and rows again (a static tab's 5 s look-up): no highlighting, no spans.
-        let DiffState::Rows(again) = diff_state(diff(), None, 2, colour, Some(&held)) else {
+        let DiffState::Rows(again) = diff_state(diff(), None, 2, false, colour, Some(&held)) else {
             panic!("rows");
         };
         assert!(
@@ -8734,7 +9503,7 @@ mod tests {
         assert_eq!(*again.rows, *first.rows);
         // Through `diff_answer` too.
         let Some(DiffState::Rows(answer)) =
-            diff_answer(None, || Some(diff()), None, 2, colour, Some(&held))
+            diff_answer(None, || Some(diff()), None, 2, false, colour, Some(&held))
         else {
             panic!("rows");
         };
@@ -8742,7 +9511,7 @@ mod tests {
         // A changed parse is coloured.
         let changed =
             FileDiff::Unified("@@ -1,2 +1,2 @@\n let a = 1;\n-let b = 2;\n+let b = 4;\n".into());
-        let DiffState::Rows(new) = diff_state(changed, None, 3, colour, Some(&held)) else {
+        let DiffState::Rows(new) = diff_state(changed, None, 3, false, colour, Some(&held)) else {
             panic!("rows");
         };
         assert!(new.doc.spans.is_some(), "a changed parse is coloured");
@@ -8753,15 +9522,23 @@ mod tests {
         let rows = || Some(FileDiff::Unified("@@ -1 +1 @@\n-a\n+b\n".into()));
         // The old blob over the limit: refused, git's diff never asked.
         let over = Some(REFUSE_ABOVE + 1);
-        let refused = diff_answer(over, || unreachable!("no diff asked"), None, 1, None, None);
+        let refused = diff_answer(
+            over,
+            || unreachable!("no diff asked"),
+            None,
+            1,
+            false,
+            None,
+            None,
+        );
         assert!(matches!(refused, Some(DiffState::Refuse)));
         // At the limit, or not in HEAD: the diff.
         assert!(matches!(
-            diff_answer(Some(REFUSE_ABOVE), rows, None, 1, None, None),
+            diff_answer(Some(REFUSE_ABOVE), rows, None, 1, false, None, None),
             Some(DiffState::Rows(_))
         ));
         assert!(matches!(
-            diff_answer(None, rows, None, 1, None, None),
+            diff_answer(None, rows, None, 1, false, None, None),
             Some(DiffState::Rows(_))
         ));
         // git's answer itself over the limit (the backstop): refused.
@@ -8771,11 +9548,11 @@ mod tests {
             Some(FileDiff::Unified(u))
         };
         assert!(matches!(
-            diff_answer(None, huge, None, 1, None, None),
+            diff_answer(None, huge, None, 1, false, None, None),
             Some(DiffState::Refuse)
         ));
         // No answer from git: none (the rows shown stay).
-        assert!(diff_answer(None, || None, None, 1, None, None).is_none());
+        assert!(diff_answer(None, || None, None, 1, false, None, None).is_none());
     }
 
     /// M11ae: a drag past the text's edge scrolls faster the further out, from 1 pt a step to
@@ -9385,16 +10162,16 @@ mod tests {
         let slices: Vec<&str> = lines.clone();
         doc.outline = code_outline::outline(&slices, false, LIMIT).map(Arc::new);
         let folded: BTreeSet<usize> = [11].into();
-        let map = FileTab::row_map_of(&doc, FileMode::Plain, None, 10.0, &folded);
+        let map = FileTab::row_map_of(&doc, FileMode::Plain, None, 10.0, &folded, None);
         assert_eq!(map.row(11), Some(Row::Line { line: 11, cell0: 0 }));
         assert_eq!(map.row(12), Some(Row::Line { line: 36, cell0: 0 }));
         assert_eq!(map.hidden_after(11).len(), 24, "the pill's 24 lines");
         assert_eq!(map.len(), 40 - 24);
         // Wrap on: the same lines hidden.
-        let wrapped = FileTab::row_map_of(&doc, FileMode::Plain, Some(80), 10.0, &folded);
+        let wrapped = FileTab::row_map_of(&doc, FileMode::Plain, Some(80), 10.0, &folded, None);
         assert_eq!(wrapped.row(12), Some(Row::Line { line: 36, cell0: 0 }));
         // Not in Diff mode.
-        let diff = FileTab::row_map_of(&doc, FileMode::Diff, None, 10.0, &folded);
+        let diff = FileTab::row_map_of(&doc, FileMode::Diff, None, 10.0, &folded, None);
         assert_eq!(diff.row(12), Some(Row::Line { line: 12, cell0: 0 }));
     }
 

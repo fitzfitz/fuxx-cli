@@ -38,6 +38,7 @@ mod daemon;
 mod daemon_client;
 mod daemon_session;
 mod detector;
+mod diff_cards;
 mod diff_view;
 mod drag_gap;
 mod edit_ledger;

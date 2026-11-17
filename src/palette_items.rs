@@ -247,7 +247,9 @@ const OPEN_BROWSER: &str = "Open Browser\u{2026}";
 /// Every palette action, in its order (the agent presets' rows come from `action_rows`).
 pub static COMMANDS: &[Command] = {
     use crate::browser_tab::{FocusAddress, GoBack, GoForward, Reload, ResetZoom, ZoomIn, ZoomOut};
-    use crate::file_tab::{Find, FindNext, FindPrev, FoldAll, NextChange, PrevChange, UnfoldAll};
+    use crate::file_tab::{
+        Find, FindNext, FindPrev, FoldAll, NextChange, PrevChange, ShowAllUnchanged, UnfoldAll,
+    };
     use crate::terminal_view::{
         Copy, CopyCommand, CopyCommandAndOutput, CopyCommandOutput, NextCommand, Paste,
         PrevCommand, RerunCommand, ScrollPageDown, ScrollPageUp,
@@ -369,6 +371,13 @@ pub static COMMANDS: &[Command] = {
         ),
         cmd("Next Change", Tabs, "", F, Run::Action(act::<NextChange>)),
         cmd("Fold All", Tabs, "collapse", F, Run::Action(act::<FoldAll>)),
+        cmd(
+            "Show All Unchanged Lines",
+            Tabs,
+            "expand",
+            F,
+            Run::Action(act::<ShowAllUnchanged>),
+        ),
         cmd(
             "Unfold All",
             Tabs,
@@ -1496,9 +1505,11 @@ mod tests {
         let file = action_rows(Focused::File, false, true, &[], &pairs);
         let f = names(&file);
         assert!(f.contains(&"Fold All") && f.contains(&"Unfold All"));
+        assert!(f.contains(&"Show All Unchanged Lines"));
         let terminal = action_rows(Focused::Terminal, false, true, &[], &pairs);
         let t = names(&terminal);
         assert!(!t.contains(&"Fold All") && !t.contains(&"Unfold All"));
+        assert!(!t.contains(&"Show All Unchanged Lines"));
     }
 
     #[test]

@@ -226,6 +226,36 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "file-diff-cards",
+        run: file_diff_cards_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/diff_cards.rs",
+            "src/diff_view.rs",
+            "src/row_map.rs",
+            "src/code_outline.rs",
+            "src/scrollbar.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-diff-cards-fold",
+        run: file_diff_cards_fold_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/file_tab.rs",
+            "src/diff_cards.rs",
+            "src/row_map.rs",
+            "src/main.rs",
+            "src/palette_items.rs",
+        ],
+    },
+    Scene {
         name: "file-code-breadcrumb",
         run: file_code_breadcrumb_scenes,
         themes: Themes::Both,
@@ -2101,7 +2131,8 @@ fn file_diff_scenes() {
 
     type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
     let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
-    let dims = size(px(760.0), px(460.0));
+    // M11ah: taller, for the cards' titles: the second card's added row stays in sight.
+    let dims = size(px(760.0), px(560.0));
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -2142,6 +2173,10 @@ fn file_diff_scenes() {
         let keep_geom = geom_seen.clone();
         let texts: Rc<RefCell<Vec<String>>> = Rc::default();
         let keep_texts = texts.clone();
+        // M11ah: each row's top down the text, read from the tab's row map (cards and their
+        // titles move rows down).
+        let tops: Rc<RefCell<Vec<Pixels>>> = Rc::default();
+        let keep_tops = tops.clone();
         let act = {
             let n = n.clone();
             let unified = unified.clone();
@@ -2175,11 +2210,26 @@ fn file_diff_scenes() {
                 *keep_texts.borrow_mut() = lines;
                 let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
                 let first = first.expect("a change");
+                // M11ah: opened at its first card, its title at the top, the change 3 rows
+                // under it.
+                let (title, change) = cx.read(|cx| {
+                    let t = tab.read(cx);
+                    (t.title_top(0, cx), t.line_top(first, cx))
+                });
+                let (title, change) = (title.expect("a card"), change.expect("its row"));
+                assert_eq!(g.scroll.y, title, "{n}: opened at its first card");
                 assert_eq!(
-                    g.scroll.y,
-                    g.line_height * first.saturating_sub(3) as f32,
-                    "{n}: opened with its first change 3 rows from the top"
+                    change - title - px(crate::ui_tokens::code::CARD_TITLE),
+                    g.line_height * 3.0,
+                    "{n}: its first change 3 rows under the title"
                 );
+                let row_tops: Vec<Pixels> = cx.read(|cx| {
+                    let t = tab.read(cx);
+                    (0..=added_late)
+                        .map(|r| t.line_top(r, cx).expect("shown"))
+                        .collect()
+                });
+                *keep_tops.borrow_mut() = row_tops.clone();
                 cx.update_window(window, |_, window, cx| {
                     tab.read(cx).focus_handle(cx).focus(window, cx)
                 })
@@ -2194,7 +2244,7 @@ fn file_diff_scenes() {
                 let at = |row: usize, x: f32| {
                     point(
                         g.bounds.left() + g.text_left + px(x),
-                        g.bounds.top() + g.line_height * (row as f32 + 0.5) - g.scroll.y,
+                        g.bounds.top() + row_tops[row] + g.line_height / 2.0 - g.scroll.y,
                     )
                 };
                 let cw = f32::from(g.cell_width);
@@ -2226,10 +2276,11 @@ fn file_diff_scenes() {
         );
         let g = geom_seen.get().expect("drawn");
         let at = |x: Pixels, y: Pixels| pixel_at(&shot, dims, f32::from(x), f32::from(y));
-        let row_y = |row: usize| g.bounds.top() + g.line_height * (row as f32 + 0.5) - g.scroll.y;
-        // The tints, 2 pt inside the right edge (right of the scrollbar's thumb, which the
+        let tops = tops.borrow();
+        let row_y = |row: usize| g.bounds.top() + tops[row] + g.line_height / 2.0 - g.scroll.y;
+        // The tints, inside the card's right side (left of the scrollbar's thumb, which the
         // reveal shows, M11ae).
-        let right = g.bounds.right() - px(2.0);
+        let right = g.bounds.right() - px(crate::ui_tokens::code::CARD_INSET + 16.0);
         let red_tint = crate::theme::mix(theme.background, red, 0.12);
         let green_tint = crate::theme::mix(theme.background, green, 0.12);
         // The row the drag ended on is the current row: its tint over the band.
@@ -2301,7 +2352,10 @@ fn file_diff_scenes() {
         );
         // The number columns: (left, right) edges.
         let old_right = g.old_numbers_right.expect("two number columns");
-        let old_col = (px(crate::ui_tokens::code::GUTTER_LEFT), old_right);
+        let old_col = (
+            px(crate::ui_tokens::code::CARD_INSET + crate::ui_tokens::code::GUTTER_LEFT),
+            old_right,
+        );
         let new_col = (
             old_right + px(crate::ui_tokens::code::NUMBER_GAP),
             g.numbers_right,
@@ -2422,7 +2476,14 @@ fn file_diff_scenes() {
                 assert!(middle, "{n}: the note's words in the middle");
             } else {
                 let red_tint = crate::theme::mix(theme.background, red, 0.12);
-                let p = pixel_at(&shot, dims, w - 6.0, 70.0);
+                // M11ah: inside its one card, under the card's title.
+                let card = crate::ui_tokens::code::CARD_INSET + 16.0;
+                let p = pixel_at(
+                    &shot,
+                    dims,
+                    w - card,
+                    70.0 + crate::ui_tokens::code::CARD_TITLE,
+                );
                 assert!(
                     near(p, red_tint, 5),
                     "{n}: a removed row {p:?}, not {red_tint:?}"
@@ -2639,16 +2700,16 @@ fn file_diff_scenes() {
                     (FileMode::Diff, FileMode::Diff),
                     "{n}: a bar's click"
                 );
-                let (row, g) = cx.read(|cx| {
+                let (row, top, title, g) = cx.read(|cx| {
                     let t = view.read(cx);
                     let rows = &t.diff_doc().expect("its rows").rows;
-                    (
-                        reveal_row(rows, (7, LineChange::Changed)).expect("line 7's row"),
-                        t.geom(),
-                    )
+                    let row = reveal_row(rows, (7, LineChange::Changed)).expect("line 7's row");
+                    (row, t.line_top(row, cx), t.title_top(0, cx), t.geom())
                 });
-                let g = g.expect("drawn");
-                let (top, h) = (g.line_height * row as f32, g.bounds.size.height);
+                let (g, top) = (g.expect("drawn"), top.expect("its row shown"));
+                let h = g.bounds.size.height;
+                // M11ah: at its card, the card's title at the top.
+                assert_eq!(Some(g.scroll.y), title, "{n}: the bar's card at the top");
                 assert!(
                     top >= g.scroll.y && top + g.line_height <= g.scroll.y + h,
                     "{n}: row {row} in view ({:?})",
@@ -4002,8 +4063,10 @@ fn file_code_guides_scenes() {
             });
         });
         keep_shot(&n, &shot);
+        // M11ah: the rows are in one card, under its title row.
+        let title = crate::ui_tokens::code::CARD_TITLE;
         for cell in [0, 4] {
-            let p = guide(&shot, &g, cell, 3, f32::from(g.line_height) * 0.5);
+            let p = guide(&shot, &g, cell, 3, f32::from(g.line_height) * 0.5 + title);
             assert!(live_near(p, faint, 3), "{n}: diff row 3 cell {cell} {p:?}");
         }
         println!("ui-shots: {n} ok");
@@ -5636,4 +5699,608 @@ fn file_code_lane_scenes() {
         });
         println!("ui-shots: {n} ok");
     }
+}
+
+/// The cards' fixture (M11ah Task 9): the new file's text and the diff giving it (with the whole
+/// file as context, as fuxx asks git). The old file: a comment, a blank line, `fn setup() {`
+/// (line 3) with 41 lines (line 5 holds the only `needle`), `}`, a blank line,
+/// `fn refresh(&mut self) {` (line 47) with 48 lines, `}`. The new one: line 20 changed, 30
+/// lines added after line 70. Rows: 19 removed, 20 added, 71..101 added; cards on rows 16..24
+/// and 68..104; stretches 0..16, 24..68 (44 lines) and 104..127.
+fn cards_fixture() -> (String, String) {
+    let mut old: Vec<String> = vec!["// Sessions, for the cards' shots.".into(), String::new()];
+    old.push("fn setup() {".into());
+    for k in 4..=44 {
+        old.push(if k == 5 {
+            "    let needle = 5;".into()
+        } else {
+            format!("    let a{k} = {k};")
+        });
+    }
+    old.push("}".into());
+    old.push(String::new());
+    old.push("fn refresh(&mut self) {".into());
+    for k in 48..=95 {
+        old.push(format!("    let b{k} = {k};"));
+    }
+    old.push("}".into());
+    let mut new_text = String::new();
+    let mut u = format!(
+        "diff --git a/cards.rs b/cards.rs\n--- a/cards.rs\n+++ b/cards.rs\n@@ -1,{} +1,{} @@\n",
+        old.len(),
+        old.len() + 30
+    );
+    for (i, line) in old.iter().enumerate() {
+        if i == 19 {
+            let changed = "    let a20 = 2000;";
+            u.push_str(&format!("-{line}\n+{changed}\n"));
+            new_text.push_str(&format!("{changed}\n"));
+            continue;
+        }
+        u.push_str(&format!(" {line}\n"));
+        new_text.push_str(&format!("{line}\n"));
+        if i == 69 {
+            for k in 0..30 {
+                let added = format!("    let c{k} = {k};");
+                u.push_str(&format!("+{added}\n"));
+                new_text.push_str(&format!("{added}\n"));
+            }
+        }
+    }
+    (new_text, u)
+}
+
+/// A frozen tab on `path` shown in Diff mode with `unified` as its diff (drawn).
+fn cards_setup(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &gpui::Entity<crate::file_tab::FileTab>,
+    unified: &str,
+) {
+    cx.update(|cx| {
+        tab.update(cx, |t, cx| {
+            t.pretend_in_repo_for_shots(cx);
+            t.choose_mode_for_shots(crate::layout_model::FileMode::Diff, cx);
+            t.set_diff_for_shots(unified, cx);
+        })
+    });
+    live_frame(cx, window);
+    live_frame(cx, window);
+}
+
+/// `file-diff-cards` (both themes; M11ah Task 9): Diff mode's changes as cards: a rounded panel
+/// 12 pt in from the body's sides with a 1 pt `divider` border; 10 pt between two cards; each
+/// title row with the block's name in `text`, `+n` in green, `−n` in red and `lines a–b` on the
+/// right in `text_dim`; a folded stretch's `⋯ 44 unchanged lines — click to show` centred in
+/// `text_dim`, nothing in the gutter; the indent guides drawn inside the cards; the lane one mark
+/// per card (blue for both, green for added). A new file is one card, `New file · +12`, with
+/// nothing folded.
+fn file_diff_cards_scenes() {
+    use crate::diff_cards::CardKind;
+    use crate::theme::mix;
+    use crate::ui_tokens::code;
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+    use alacritty_terminal::vte::ansi::Rgb;
+
+    let (text, unified) = cards_fixture();
+    let path = live_file("cards.rs", &text);
+    let fresh_text: String = (1..=12).map(|k| format!("let n{k} = {k};\n")).collect();
+    let fresh_path = live_file("cards-new.rs", &fresh_text);
+    let fresh_diff = format!(
+        "diff --git a/cards-new.rs b/cards-new.rs\n@@ -0,0 +1,12 @@\n{}",
+        fresh_text
+            .lines()
+            .map(|l| format!("+{l}\n"))
+            .collect::<String>()
+    );
+    let dims = size(px(760.0), px(560.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = theme.background;
+        let fit = |c: Rgb| ensure_contrast(c, bg, MARK_MIN);
+        let (green, red, blue) = (
+            fit(theme.palette[2]),
+            fit(theme.palette[1]),
+            fit(theme.palette[4]),
+        );
+        let dim = ensure_contrast(ui.text_dim, bg, MARK_MIN);
+        let n = format!("file-diff-cards-{slug}");
+        type Read = (Vec<Option<Pixels>>, Vec<Option<Pixels>>, Vec<String>, usize);
+        let seen: std::rc::Rc<std::cell::RefCell<Option<Read>>> = std::rc::Rc::default();
+        let keep = seen.clone();
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cards_setup(cx, window, tab, &unified);
+            let read = cx.read(|cx| {
+                let t = tab.read(cx);
+                let d = t.diff_doc().expect("its rows");
+                let g = &d.grouped;
+                assert_eq!(g.cards.len(), 2, "two cards");
+                assert_eq!(g.cards[0].kind, CardKind::Both);
+                assert_eq!(g.cards[1].kind, CardKind::Added);
+                assert_eq!(
+                    g.stretches
+                        .iter()
+                        .map(|s| s.rows.clone())
+                        .collect::<Vec<_>>(),
+                    [0..16, 24..68, 104..127]
+                );
+                let words: Vec<String> = d
+                    .titles
+                    .iter()
+                    .map(|t| {
+                        format!(
+                            "{}{}{} {}",
+                            t.name,
+                            t.separator(),
+                            [t.added_words(), t.removed_words()]
+                                .into_iter()
+                                .flatten()
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                            t.lines_words().unwrap_or_default()
+                        )
+                    })
+                    .collect();
+                (
+                    (0..2).map(|k| t.title_top(k, cx)).collect(),
+                    [16, 17, 23].map(|l| t.line_top(l, cx)).to_vec(),
+                    words,
+                    t.lane_for_shots().len(),
+                )
+            });
+            *keep.borrow_mut() = Some(read);
+        });
+        keep_shot(&n, &shot);
+        let (titles, lines, words, marks) = seen.borrow_mut().take().expect("read");
+        assert_eq!(
+            words,
+            [
+                "fn setup()  +1 \u{2212}1 lines 17\u{2013}23",
+                "fn refresh(&mut self)  +30 lines 68\u{2013}103"
+            ],
+            "{n}: the titles"
+        );
+        assert_eq!(marks, 2, "{n}: one lane mark per card");
+        let lh = g.line_height;
+        let (title0, title1) = (titles[0].expect("card 0"), titles[1].expect("card 1"));
+        let (first, row17, last) = (
+            lines[0].expect("16"),
+            lines[1].expect("17"),
+            lines[2].expect("23"),
+        );
+        assert_eq!(
+            first - title0,
+            px(code::CARD_TITLE),
+            "{n}: the title's height"
+        );
+        // Card 0's last row, the ⋯ row, 10 pt, then card 1's title.
+        assert_eq!(
+            title1,
+            last + lh * 2.0 + px(code::CARD_GAP),
+            "{n}: 10 pt between the cards"
+        );
+        assert_eq!(g.scroll.y, title0, "{n}: opened at its first card");
+        let at = |x: Pixels, y: Pixels| pixel_at(&shot, dims, f32::from(x), f32::from(y));
+        let y_of = |top: Pixels, h: Pixels| g.bounds.top() + top - g.scroll.y + h / 2.0;
+        // The panel's border, 12 pt in from each side.
+        let row_mid = y_of(row17, lh);
+        let (left, right) = (
+            g.bounds.left() + px(code::CARD_INSET),
+            g.bounds.right() - px(code::CARD_INSET),
+        );
+        assert!(
+            live_near(at(left + px(0.5), row_mid), ui.divider, 12),
+            "{n}: the left border {:?}, not {:?}",
+            at(left + px(0.5), row_mid),
+            ui.divider
+        );
+        assert!(
+            live_near(at(right - px(0.5), row_mid), ui.divider, 12),
+            "{n}: the right border"
+        );
+        assert!(
+            live_near(at(left - px(4.0), row_mid), bg, 4),
+            "{n}: nothing outside the panel"
+        );
+        // The title: the name, +1 green, −1 red; the lines on the right in text_dim.
+        let has = |x0: Pixels, x1: Pixels, y: Pixels, h: Pixels, c: Rgb, by: u8| {
+            let (x0, x1) = (f32::from(x0) as i32, f32::from(x1) as i32);
+            (x0..x1).any(|x| {
+                (2..(f32::from(h) as i32 - 2))
+                    .any(|dy| live_near(at(px(x as f32), y + px(dy as f32)), c, by))
+            })
+        };
+        let title_y = g.bounds.top() + title0 - g.scroll.y;
+        let title_h = px(code::CARD_TITLE);
+        let text_x = left + px(code::CARD_BORDER + code::GUTTER_LEFT);
+        assert!(
+            has(text_x, text_x + px(90.0), title_y, title_h, ui.text, 30),
+            "{n}: the name in text"
+        );
+        assert!(
+            has(
+                text_x + px(60.0),
+                text_x + px(200.0),
+                title_y,
+                title_h,
+                green,
+                30
+            ),
+            "{n}: +1 in green"
+        );
+        assert!(
+            has(
+                text_x + px(60.0),
+                text_x + px(220.0),
+                title_y,
+                title_h,
+                red,
+                30
+            ),
+            "{n}: \u{2212}1 in red"
+        );
+        assert!(
+            has(
+                right - px(120.0),
+                right - px(17.0),
+                title_y,
+                title_h,
+                dim,
+                30
+            ),
+            "{n}: the lines in text_dim"
+        );
+        // The folded stretch's row, centred, in text_dim; nothing in the gutter.
+        let fold_y = g.bounds.top() + last + lh - g.scroll.y;
+        let mid = (left + right) / 2.0;
+        assert!(
+            has(mid - px(120.0), mid + px(120.0), fold_y, lh, dim, 30),
+            "{n}: the unchanged lines' words, centred"
+        );
+        assert!(
+            !has(g.bounds.left(), left + px(60.0), fold_y, lh, dim, 30),
+            "{n}: nothing at the left"
+        );
+        // The guides inside a card: line 17 (in `fn setup`) at the text's edge, `text` at 7 %.
+        let guide = mix(bg, ui.text, code::GUIDE_ALPHA);
+        assert!(
+            live_near(
+                at(g.bounds.left() + g.text_left + px(0.5), row_mid),
+                guide,
+                4
+            ),
+            "{n}: a guide in the card {:?}, not {guide:?}",
+            at(g.bounds.left() + g.text_left + px(0.5), row_mid)
+        );
+        // The lane: card 0 blue (both), card 1 green.
+        let lane_x = f32::from(g.bounds.right()) - 2.0;
+        let place = |top: Pixels| {
+            let (view, content) = (
+                f32::from(g.bounds.size.height),
+                f32::from(g.bounds.size.height + g.max_scroll.y),
+            );
+            f32::from(g.bounds.top()) + f32::from(top) * view / content
+        };
+        let lane_has = |top: Pixels, c: Rgb| {
+            (0..8).any(|k| {
+                live_near(
+                    pixel_at(&shot, dims, lane_x, place(top) + 0.25 + k as f32 * 0.3),
+                    c,
+                    12,
+                )
+            })
+        };
+        assert!(lane_has(title0, blue), "{n}: card 0's mark in blue");
+        assert!(lane_has(title1, green), "{n}: card 1's mark in green");
+        let _ = red;
+        println!("ui-shots: {n} ok");
+
+        // Scrolled into card 1 (taller than the view): its title pinned at the top, on the
+        // background, a `divider` line under it.
+        let n = format!("file-diff-cards-sticky-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cards_setup(cx, window, tab, &unified);
+            let lh = cx
+                .read(|cx| tab.read(cx).geom())
+                .expect("drawn")
+                .line_height;
+            let y = title1 + lh * 10.0;
+            cx.update(|cx| tab.update(cx, |t, cx| t.set_scroll(point(px(0.0), y), cx)));
+            live_frame(cx, window);
+            assert_eq!(cx.read(|cx| tab.read(cx).sticky_title()), Some(1), "pinned");
+        });
+        keep_shot(&n, &shot);
+        let at = |x: Pixels, y: Pixels| pixel_at(&shot, dims, f32::from(x), f32::from(y));
+        let top = g.bounds.top();
+        let has = |x0: Pixels, x1: Pixels, c: Rgb| {
+            let (x0, x1) = (f32::from(x0) as i32, f32::from(x1) as i32);
+            (x0..x1).any(|x| {
+                (2..(code::CARD_TITLE as i32 - 2))
+                    .any(|dy| live_near(at(px(x as f32), top + px(dy as f32)), c, 30))
+            })
+        };
+        assert!(
+            has(text_x, text_x + px(90.0), ui.text),
+            "{n}: the pinned name"
+        );
+        assert!(
+            has(text_x + px(100.0), text_x + px(260.0), green),
+            "{n}: the pinned +30"
+        );
+        let rule = top + px(code::CARD_TITLE - 0.5);
+        assert!(
+            live_near(at(mid, rule), ui.divider, 12),
+            "{n}: the line under it {:?}",
+            at(mid, rule)
+        );
+        println!("ui-shots: {n} ok");
+
+        // A new file: one card, nothing folded.
+        let n = format!("file-diff-cards-new-{slug}");
+        let fresh_diff = fresh_diff.clone();
+        let (shot, g) = code_shot(&theme, &fresh_path, dims, |cx, window, tab| {
+            cards_setup(cx, window, tab, &fresh_diff);
+            cx.read(|cx| {
+                let d = tab.read(cx).diff_doc().expect("its rows");
+                assert_eq!(d.grouped.cards.len(), 1, "one card");
+                assert!(d.grouped.stretches.is_empty(), "nothing folded");
+                let t = &d.titles[0];
+                assert_eq!(
+                    format!(
+                        "{}{}{}",
+                        t.name,
+                        t.separator(),
+                        t.added_words().unwrap_or_default()
+                    ),
+                    "New file \u{b7} +12"
+                );
+                assert_eq!(t.lines_words(), None);
+            });
+        });
+        keep_shot(&n, &shot);
+        let left = g.bounds.left() + px(code::CARD_INSET);
+        let y = g.bounds.top() + px(code::CARD_TITLE) + g.line_height * 2.5 - g.scroll.y;
+        assert!(
+            live_near(
+                pixel_at(&shot, dims, f32::from(left) + 0.5, f32::from(y)),
+                ui.divider,
+                12
+            ),
+            "{n}: its card's border"
+        );
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-diff-cards-fold` (M11ah Task 9): pressing a folded stretch shows it; pressing a title
+/// closes the card to its title and opens it again; Show All Unchanged Lines shows every
+/// stretch; leaving Diff and coming back folds them again; a new diff keeps a shown stretch that
+/// starts on the same new line and folds one that no longer does; a card taller than the view
+/// keeps its title pinned until it scrolls away, a press on the pinned title closing it; ⌥↓
+/// goes card to card (the title at the top, its first changed row current) and stops at the
+/// last; a change bar's press in File mode opens Diff at its card; a find step into a folded
+/// stretch opens it; the lane has one mark per card.
+fn file_diff_cards_fold_scenes() {
+    use crate::file_tab::ShowAllUnchanged;
+    use crate::git_status::LineChange;
+    use crate::layout_model::FileMode;
+    use crate::row_map::Row;
+    use crate::ui_tokens::code;
+    use gpui::{Focusable, Modifiers};
+
+    let (text, unified) = cards_fixture();
+    let path = live_file("cards-fold.rs", &text);
+    let dims = size(px(760.0), px(460.0));
+    let n = "file-diff-cards-fold";
+    let theme = shot_theme(shot_themes()[0].1);
+    let (shot, _) = code_shot(&theme, &path, dims, |cx, window, tab| {
+        cards_setup(cx, window, tab, &unified);
+        let folds =
+            |cx: &mut VisualTestAppContext| cx.read(|cx| tab.read(cx).diff_folds_for_shots());
+        let geom =
+            |cx: &mut VisualTestAppContext| cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+        let scroll_to = |cx: &mut VisualTestAppContext, y: Pixels| {
+            cx.update(|cx| tab.update(cx, |t, cx| t.set_scroll(point(px(0.0), y), cx)));
+            live_frame(cx, window);
+        };
+        // A press at `top` (down the text) + `dy`, in the body's middle.
+        let press = |cx: &mut VisualTestAppContext, top: Pixels, dy: Pixels| {
+            let g = geom(cx);
+            let p = point(
+                g.bounds.left() + g.bounds.size.width / 2.0,
+                g.bounds.top() + top - g.scroll.y + dy,
+            );
+            cx.simulate_click(window, p, Modifiers::none());
+            live_frame(cx, window);
+        };
+        let lh = geom(cx).line_height;
+        // The stretch above card 0 (rows 0..16, from new line 1): pressed, it shows.
+        scroll_to(cx, px(0.0));
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).row_kind_at(1.0, cx)),
+            Some(Row::Unchanged { stretch: 0 }),
+            "{n}: the first stretch folded"
+        );
+        press(cx, px(0.0), lh / 2.0);
+        assert_eq!(folds(cx), (vec![1], vec![]), "{n}: the stretch shown");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).line_top(3, cx)),
+            Some(lh * 3.0),
+            "{n}: its lines drawn"
+        );
+        // Card 0's title: closed, then open again.
+        let title0 = cx.read(|cx| tab.read(cx).title_top(0, cx)).expect("card 0");
+        press(cx, title0, px(code::CARD_TITLE / 2.0));
+        assert_eq!(
+            folds(cx).1,
+            vec![17],
+            "{n}: card 0 closed (by its first new line)"
+        );
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).line_top(18, cx)),
+            None,
+            "{n}: its rows hidden"
+        );
+        press(cx, title0, px(code::CARD_TITLE / 2.0));
+        assert!(folds(cx).1.is_empty(), "{n}: card 0 open again");
+        assert!(cx.read(|cx| tab.read(cx).line_top(18, cx)).is_some());
+        // Show All Unchanged Lines.
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx);
+            window.dispatch_action(Box::new(ShowAllUnchanged), cx);
+        })
+        .expect("the action");
+        live_frame(cx, window);
+        assert_eq!(folds(cx).0, vec![1, 24, 104], "{n}: every stretch shown");
+        // Leaving Diff and coming back: folded again.
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        live_frame(cx, window);
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Diff, cx)));
+        live_frame(cx, window);
+        assert_eq!(folds(cx), (vec![], vec![]), "{n}: folded again");
+        // A new diff: the stretch from new line 24 kept (the same start), one gone folded.
+        cx.update(|cx| tab.update(cx, |t, cx| t.show_stretch_for_shots(1, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.show_stretch_for_shots(0, cx)));
+        assert_eq!(folds(cx).0, vec![1, 24], "{n}: two shown");
+        // The same diff with line 3 changed too: the first stretch is gone (card 0 grows up to
+        // row 0), the one from new line 24 stays.
+        let reread = unified.replacen(
+            " fn setup() {\n",
+            "-fn setup() {\n+fn setup() { // again\n",
+            1,
+        );
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_diff_for_shots(&reread, cx)));
+        live_frame(cx, window);
+        assert_eq!(
+            folds(cx).0,
+            vec![24],
+            "{n}: the stretch on the same line kept"
+        );
+        // Back to the first diff, all folded.
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Diff, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_diff_for_shots(&unified, cx)));
+        live_frame(cx, window);
+        // Card 1 is taller than the view: its title pinned while the view is inside it (the
+        // stretch after it shown, so the view can go past it).
+        cx.update(|cx| tab.update(cx, |t, cx| t.show_stretch_for_shots(2, cx)));
+        live_frame(cx, window);
+        let title1 = cx.read(|cx| tab.read(cx).title_top(1, cx)).expect("card 1");
+        scroll_to(cx, title1 + lh * 10.0);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            Some(1),
+            "{n}: pinned"
+        );
+        scroll_to(cx, title1);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            None,
+            "{n}: at its own row"
+        );
+        let end = cx
+            .read(|cx| tab.read(cx).line_top(103, cx))
+            .expect("card 1's last row");
+        scroll_to(cx, end + lh * 1.5);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            None,
+            "{n}: scrolled away"
+        );
+        // A press on the pinned title closes the card, its title at the top.
+        scroll_to(cx, title1 + lh * 10.0);
+        let top = geom(cx).scroll.y;
+        press(cx, top, px(code::CARD_TITLE / 2.0));
+        assert_eq!(folds(cx).1, vec![68], "{n}: the pinned title's card closed");
+        assert_eq!(geom(cx).scroll.y, title1, "{n}: its title at the top");
+        press(cx, title1, px(code::CARD_TITLE / 2.0));
+        assert!(folds(cx).1.is_empty(), "{n}: open again");
+        // ⌥↓ from the top: card 0, card 1, then nothing.
+        scroll_to(cx, px(0.0));
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_current_diff_for_shots(None, cx)));
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+        for (card, row) in [(0, 19), (1, 71)] {
+            cx.simulate_keystrokes(window, "alt-down");
+            live_frame(cx, window);
+            let title = cx
+                .read(|cx| tab.read(cx).title_top(card, cx))
+                .expect("a card");
+            let g = geom(cx);
+            let max = g.max_scroll.y;
+            assert_eq!(
+                g.scroll.y,
+                title.min(max),
+                "{n}: card {card}'s title at the top"
+            );
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).diff_current()),
+                Some(row),
+                "{n}: card {card}'s first change current"
+            );
+        }
+        let before = geom(cx).scroll;
+        cx.simulate_keystrokes(window, "alt-down");
+        live_frame(cx, window);
+        assert_eq!(geom(cx).scroll, before, "{n}: no wrap-around");
+        assert_eq!(cx.read(|cx| tab.read(cx).diff_current()), Some(71));
+        cx.simulate_keystrokes(window, "alt-up");
+        live_frame(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).diff_current()),
+            Some(19),
+            "{n}: ⌥↑ back"
+        );
+        // The lane: one mark per card.
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).lane_for_shots().len()),
+            2,
+            "{n}: two marks"
+        );
+        // A find step into the first stretch opens it.
+        cx.simulate_keystrokes(window, "cmd-f");
+        cx.simulate_input(window, "needle");
+        live_frame(cx, window);
+        cx.simulate_keystrokes(window, "cmd-g");
+        live_frame(cx, window);
+        assert!(folds(cx).0.contains(&1), "{n}: the find opened its stretch");
+        assert!(
+            cx.read(|cx| tab.read(cx).line_top(4, cx)).is_some(),
+            "{n}: the match's line drawn"
+        );
+        // A change bar's press in File mode: Diff at its card.
+        cx.simulate_keystrokes(window, "escape");
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_changes(vec![(72, LineChange::Added)], cx)));
+        live_frame(cx, window);
+        let line71 = cx
+            .read(|cx| tab.read(cx).line_top(71, cx))
+            .expect("line 72");
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), line71 - lh * 2.0), cx)
+            })
+        });
+        live_frame(cx, window);
+        let g = geom(cx);
+        let bar = point(
+            g.bounds.left() + g.bar_left + px(1.5),
+            g.bounds.top() + line71 - g.scroll.y + lh / 2.0,
+        );
+        cx.simulate_click(window, bar, Modifiers::none());
+        live_frame(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).mode()),
+            FileMode::Diff,
+            "{n}: a bar's press"
+        );
+        let title1 = cx.read(|cx| tab.read(cx).title_top(1, cx)).expect("card 1");
+        let g = geom(cx);
+        assert_eq!(g.scroll.y, title1.min(g.max_scroll.y), "{n}: at its card");
+    });
+    keep_shot(n, &shot);
+    println!("ui-shots: {n} ok");
 }
