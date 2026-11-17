@@ -7,9 +7,11 @@ use alacritty_terminal::vte::ansi::Rgb;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
-use syntect::easy::HighlightLines;
-use syntect::highlighting::{Color, ScopeSelectors, StyleModifier, ThemeItem, ThemeSettings};
-use syntect::parsing::{SyntaxReference, SyntaxSet};
+use syntect::highlighting::{
+    Color, HighlightIterator, HighlightState, ScopeSelectors, StyleModifier, ThemeItem,
+    ThemeSettings,
+};
+use syntect::parsing::{ParseState, ScopeStack, ScopeStackOp, SyntaxReference, SyntaxSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Viewable {
@@ -44,8 +46,20 @@ pub struct Highlighter {
     foreground: Rgb,
 }
 
+/// The scopes that name a block's opener (M11ah): a line with one pushed is a named line.
+const NAMED_SCOPES: &str = "entity.name.function, entity.name.class, entity.name.type, \
+     entity.name.struct, entity.name.enum, entity.name.trait, entity.name.impl, \
+     entity.name.module, entity.name.namespace, entity.name.section, markup.heading";
+
 /// A byte range within one line, and its colour.
 pub type Span = (std::ops::Range<usize>, Rgb);
+
+/// A text coloured: each line's spans, and the lines that name something (a function, a type, a
+/// heading...), ascending.
+pub struct Coloured {
+    pub spans: Vec<Vec<Span>>,
+    pub named: Vec<usize>,
+}
 
 impl Highlighter {
     /// Blocking: loads the bundled syntaxes (the `extra_newlines` set, for line-by-line use).
@@ -84,54 +98,81 @@ impl Highlighter {
             .or_else(|| self.syntaxes.find_syntax_by_first_line(first_line))
     }
 
-    /// The name of the syntax `highlight` would use for this file (the same lookup), or
+    /// The name of the syntax `colour` would use for this file (the same lookup), or
     /// `"Plain Text"` when there is none.
     pub fn syntax_name(&self, path: &Path, first_line: &str) -> String {
         self.find_syntax(path, first_line)
             .map_or_else(|| "Plain Text".to_string(), |s| s.name.clone())
     }
 
-    /// One `Vec` per line (a line keeps its `\n`, so the ranges cover every byte). The syntax is
-    /// found by file extension, then by the first line; otherwise the text is plain. An empty text
-    /// is one empty line.
-    pub fn highlight(&self, path: &Path, text: &str) -> Vec<Vec<Span>> {
+    /// One `Vec` of spans per line (a line keeps its `\n`, so the ranges cover every byte), and
+    /// the lines that name something: after each scope pushed, the stack is matched against
+    /// `NAMED_SCOPES`. The syntax is found by file extension, then by the first line; otherwise
+    /// the text is plain (nothing named). An empty text is one empty line.
+    pub fn colour(&self, path: &Path, text: &str) -> Coloured {
         if text.is_empty() {
-            return vec![Vec::new()];
+            return Coloured {
+                spans: vec![Vec::new()],
+                named: Vec::new(),
+            };
         }
         let first_line = text.split_inclusive('\n').next().unwrap_or("");
-        let syntax = self.find_syntax(path, first_line);
-        let Some(syntax) = syntax else {
-            return text
-                .split_inclusive('\n')
-                .map(|l| vec![(0..l.len(), self.foreground)])
-                .collect();
+        let Some(syntax) = self.find_syntax(path, first_line) else {
+            return Coloured {
+                spans: text
+                    .split_inclusive('\n')
+                    .map(|l| vec![(0..l.len(), self.foreground)])
+                    .collect(),
+                named: Vec::new(),
+            };
         };
-        let mut hl = HighlightLines::new(syntax, &self.theme);
-        text.split_inclusive('\n')
-            .map(|line| match hl.highlight_line(line, &self.syntaxes) {
-                Ok(parts) => {
-                    let mut spans: Vec<Span> = Vec::with_capacity(parts.len());
-                    let mut at = 0;
-                    for (style, piece) in parts {
-                        let c = style.foreground;
-                        let rgb = Rgb {
-                            r: c.r,
-                            g: c.g,
-                            b: c.b,
-                        };
-                        let end = at + piece.len();
-                        match spans.last_mut() {
-                            Some((r, prev)) if *prev == rgb => r.end = end,
-                            _ => spans.push((at..end, rgb)),
-                        }
-                        at = end;
-                    }
-                    spans
-                }
+        let highlighter = syntect::highlighting::Highlighter::new(&self.theme);
+        let mut colours = HighlightState::new(&highlighter, ScopeStack::new());
+        let mut parse = ParseState::new(syntax);
+        // The scopes open, kept here as well: the colours' own copy is private.
+        let mut stack = ScopeStack::new();
+        let names = ScopeSelectors::from_str(NAMED_SCOPES).expect("a valid scope selector");
+        let (mut spans_by_line, mut named) = (Vec::new(), Vec::new());
+        for (i, line) in text.split_inclusive('\n').enumerate() {
+            let Ok(ops) = parse.parse_line(line, &self.syntaxes) else {
                 // A parse error: show the line plain.
-                Err(_) => vec![(0..line.len(), self.foreground)],
-            })
-            .collect()
+                spans_by_line.push(vec![(0..line.len(), self.foreground)]);
+                continue;
+            };
+            let mut names_something = false;
+            for (_, op) in &ops {
+                if stack.apply(op).is_ok()
+                    && matches!(op, ScopeStackOp::Push(_))
+                    && !names_something
+                {
+                    names_something = names.does_match(stack.as_slice()).is_some();
+                }
+            }
+            if names_something {
+                named.push(i);
+            }
+            let mut spans: Vec<Span> = Vec::new();
+            let mut at = 0;
+            for (style, piece) in HighlightIterator::new(&mut colours, &ops, line, &highlighter) {
+                let c = style.foreground;
+                let rgb = Rgb {
+                    r: c.r,
+                    g: c.g,
+                    b: c.b,
+                };
+                let end = at + piece.len();
+                match spans.last_mut() {
+                    Some((r, prev)) if *prev == rgb => r.end = end,
+                    _ => spans.push((at..end, rgb)),
+                }
+                at = end;
+            }
+            spans_by_line.push(spans);
+        }
+        Coloured {
+            spans: spans_by_line,
+            named,
+        }
     }
 }
 
@@ -225,7 +266,7 @@ mod tests {
         let theme = named("Catppuccin Mocha");
         let h = Highlighter::load(&theme);
         let text = "// hi\nfn main() {\n    let s = \"x\";\n    let n = 42;\n}\n";
-        let lines = h.highlight(Path::new("a.rs"), text);
+        let lines = h.colour(Path::new("a.rs"), text).spans;
         let mut colours = HashSet::new();
         for (spans, line) in lines.iter().zip(text.split_inclusive('\n')) {
             let mut at = 0;
@@ -243,7 +284,7 @@ mod tests {
     fn unknown_extension_is_one_foreground_span_per_line() {
         let theme = named("Catppuccin Mocha");
         let h = Highlighter::load(&theme);
-        let lines = h.highlight(Path::new("a.zzzzz"), "one two\nthree\n");
+        let lines = h.colour(Path::new("a.zzzzz"), "one two\nthree\n").spans;
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], vec![(0..8, theme.foreground)]);
         assert_eq!(lines[1], vec![(0..6, theme.foreground)]);
@@ -252,7 +293,7 @@ mod tests {
     #[test]
     fn empty_file_is_one_empty_line() {
         let h = Highlighter::load(&Theme::default());
-        let lines = h.highlight(Path::new("a.rs"), "");
+        let lines = h.colour(Path::new("a.rs"), "").spans;
         assert_eq!(lines.len(), 1);
         assert!(lines[0].is_empty());
     }
@@ -324,7 +365,7 @@ mod tests {
         let light = dark.with_theme(&latte);
         let text = "let s = \"x\";\n";
         let string = |h: &Highlighter| {
-            let lines = h.highlight(Path::new("a.rs"), text);
+            let lines = h.colour(Path::new("a.rs"), text).spans;
             let at = text.find('"').unwrap();
             lines[0].iter().find(|(r, _)| r.contains(&at)).unwrap().1
         };
@@ -342,7 +383,7 @@ mod tests {
     fn a_file_without_an_extension_is_found_by_name() {
         let h = Highlighter::load(&named("Catppuccin Mocha"));
         let text = "all:\n\techo hi\n";
-        let lines = h.highlight(Path::new("Makefile"), text);
+        let lines = h.colour(Path::new("Makefile"), text).spans;
         let mut colours = HashSet::new();
         for spans in &lines {
             for (_, c) in spans {
@@ -350,5 +391,27 @@ mod tests {
             }
         }
         assert!(colours.len() >= 2, "{colours:?}");
+    }
+
+    #[test]
+    fn named_lines_come_with_the_colours() {
+        let h = Highlighter::load(&named("Catppuccin Mocha"));
+        let text = "impl S {\n    fn r() {\n        x();\n    }\n}\n";
+        let coloured = h.colour(Path::new("a.rs"), text);
+        assert_eq!(coloured.named, vec![0, 1]);
+        assert_eq!(coloured.spans.len(), 5);
+        // Markdown headings are named; a `#` line inside a fence is a comment, not a heading.
+        let md = h.colour(
+            Path::new("a.md"),
+            "# Setup\n\n```sh\n# install\nmake\n```\n\n## Next\n",
+        );
+        assert_eq!(md.named, vec![0, 7]);
+        // No syntax, no text: nothing named.
+        assert!(
+            h.colour(Path::new("a.zzzzz"), "fn r() {}\n")
+                .named
+                .is_empty()
+        );
+        assert!(h.colour(Path::new("a.rs"), "").named.is_empty());
     }
 }

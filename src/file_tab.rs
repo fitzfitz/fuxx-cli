@@ -80,6 +80,7 @@ use gpui::{
 
 use crate::agent_markdown::Md;
 use crate::appearance::Appearance;
+use crate::code_outline::{self, Outline};
 use crate::diff_view::{
     BINARY, DiffRow, NO_CHANGES, NO_REPO, Outcome, Parsed, RowKind, context_for, diff_outcome,
     diff_spans, dim, first_change, reveal_row, sides,
@@ -663,6 +664,10 @@ pub struct Doc {
     pub spans: Option<Arc<Vec<Vec<Span>>>>,
     /// The version the colours were made for (an older one's carried over a reload).
     pub spans_version: Option<u64>,
+    /// The blocks (M11ah), made with the read, named once the colours land (it keeps the named
+    /// lines, which a reload carries as the colours). None: gave up past `code_outline::LIMIT`,
+    /// or not made (a diff's rows). Never for a refused file (no `Doc`).
+    pub outline: Option<Arc<Outline>>,
     pub changes: Arc<Changes>,
     /// The version the change bars were made for (an older one's carried over a reload).
     pub changes_version: Option<u64>,
@@ -705,6 +710,7 @@ impl Doc {
             lines: Arc::new(lines),
             spans: None,
             spans_version: None,
+            outline: None,
             changes: Arc::default(),
             changes_version: None,
             counts: None,
@@ -748,12 +754,15 @@ impl Doc {
     /// Colours made for `version`: taken if that is the text shown, or newer than the colours
     /// held (an older version's, carried over: a file that grows faster than it's coloured
     /// still gets fresher colours).
-    pub fn accept_spans(&mut self, version: u64, spans: Vec<Vec<Span>>) -> bool {
+    pub fn accept_spans(&mut self, version: u64, spans: Vec<Vec<Span>>, named: &[usize]) -> bool {
         if !fresher(version, self.version, self.spans_version) {
             return false;
         }
         self.spans = Some(Arc::new(spans));
         self.spans_version = Some(version);
+        if let Some(outline) = &mut self.outline {
+            Arc::make_mut(outline).name(named);
+        }
         true
     }
 
@@ -763,6 +772,9 @@ impl Doc {
         if !plain {
             self.spans = old.spans.clone();
             self.spans_version = old.spans_version;
+            if let (Some(new), Some(old)) = (&mut self.outline, &old.outline) {
+                Arc::make_mut(new).name(old.named_lines());
+            }
             self.syntax = old.syntax.clone();
         }
         self.changes = old.changes.clone();
@@ -938,14 +950,29 @@ struct ColouredRows {
 }
 
 /// A diff's rows coloured: the old and the new side each highlighted whole as `path`, each row
-/// taking its side's colours (blocking: the background executor's).
+/// taking its side's colours (blocking: the background executor's); and each side's named lines.
+struct ColouredDiff {
+    spans: Vec<Vec<Span>>,
+    /// The old side's named lines (ascending); the cards' titles read them (Task 9).
+    #[allow(dead_code)]
+    old_named: Vec<usize>,
+    /// The new side's named lines (ascending).
+    #[allow(dead_code)]
+    new_named: Vec<usize>,
+}
+
 fn colour_rows(
     h: &Highlighter,
     path: &Path,
     rows: &[DiffRow],
     (old, new): &(String, String),
-) -> Vec<Vec<Span>> {
-    diff_spans(rows, &h.highlight(path, old), &h.highlight(path, new))
+) -> ColouredDiff {
+    let (old, new) = (h.colour(path, old), h.colour(path, new));
+    ColouredDiff {
+        spans: diff_spans(rows, &old.spans, &new.spans),
+        old_named: old.named,
+        new_named: new.named,
+    }
 }
 
 /// Whether a diff with these `sides` and its longest line `longest` (bytes) may be coloured:
@@ -979,7 +1006,7 @@ fn diff_state(
                 && colourable
                 && !unchanged
             {
-                doc.spans = Some(Arc::new(colour_rows(h, path, &parsed.rows, &both)));
+                doc.spans = Some(Arc::new(colour_rows(h, path, &parsed.rows, &both).spans));
                 doc.spans_version = Some(version);
             }
             DiffState::Rows(DiffDoc {
@@ -1396,9 +1423,16 @@ fn read_file(path: &Path, known: Option<Stamp>, prev: Option<Prev>) -> Loaded {
     }
     let text = String::from_utf8(bytes)
         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-    let doc = Doc::new(text, 0);
+    let mut doc = Doc::new(text, 0);
     let plain = viewable == Viewable::PlainTooLarge || doc.longest > COLOUR_LINE_MAX;
     let compared = compare_with(prev.as_ref(), &doc, plain, LIMIT);
+    // M11ah: the blocks, for every text (a plain-too-large one too: indentation only).
+    doc.outline = code_outline::outline(
+        &line_slices(&doc.text, &doc.lines),
+        is_markdown(path),
+        code_outline::LIMIT,
+    )
+    .map(Arc::new);
     let real = std::fs::canonicalize(path).ok();
     Loaded::Text {
         stamp,
@@ -3426,17 +3460,17 @@ impl FileTab {
         self.coloured_with = Some(cx.global::<Appearance>().theme);
         let path = self.path.clone();
         cx.spawn(async move |this, cx| {
-            let (spans, syntax) = cx
+            let (coloured, syntax) = cx
                 .background_executor()
                 .spawn(async move {
                     let first = text.split_inclusive('\n').next().unwrap_or("");
                     let syntax: Arc<str> = h.syntax_name(&path, first).into();
-                    (h.highlight(&path, &text), syntax)
+                    (h.colour(&path, &text), syntax)
                 })
                 .await;
             this.update(cx, |this, cx| {
                 if let State::Text(doc) = &mut this.state
-                    && doc.accept_spans(version, spans)
+                    && doc.accept_spans(version, coloured.spans, &coloured.named)
                 {
                     doc.syntax = Some(syntax);
                     cx.notify();
@@ -3480,14 +3514,14 @@ impl FileTab {
                         text,
                         rows: keep.to_vec(),
                     };
-                    colour_rows(&h, &path, &parsed.rows, &sides(&parsed))
+                    colour_rows(&h, &path, &parsed.rows, &sides(&parsed)).spans
                 })
                 .await;
             this.update(cx, |this, cx| {
                 // Only onto the rows it was made for.
                 if let DiffState::Rows(d) = &mut this.diff.state
                     && Arc::ptr_eq(&d.rows, &rows)
-                    && d.doc.accept_spans(version, spans)
+                    && d.doc.accept_spans(version, spans, &[])
                 {
                     cx.notify();
                 }
@@ -6457,8 +6491,8 @@ mod tests {
         // coloured before version 3's colours arrive: those are dropped.
         let asked = Doc::new("fn a() {}\n".into(), 3).version;
         let mut doc = Doc::new("fn b() {}\n".into(), 4);
-        assert!(doc.accept_spans(4, spans()));
-        assert!(!doc.accept_spans(asked, vec![]));
+        assert!(doc.accept_spans(4, spans(), &[]));
+        assert!(!doc.accept_spans(asked, vec![], &[]));
         assert_eq!(doc.spans_version, Some(4));
         assert_eq!(doc.spans.as_deref().map(Vec::len), Some(1));
     }
@@ -6566,22 +6600,75 @@ mod tests {
         doc5.spans = Some(Arc::new(spans()));
         doc5.spans_version = Some(1);
         // Version 3's colours: newer than those held, so taken.
-        assert!(doc5.accept_spans(3, spans()));
+        assert!(doc5.accept_spans(3, spans(), &[]));
         assert_eq!(doc5.spans_version, Some(3));
         // Version 2's: older than those held now.
-        assert!(!doc5.accept_spans(2, spans()));
+        assert!(!doc5.accept_spans(2, spans(), &[]));
         // Newer than the text shown can't happen, and is dropped.
-        assert!(!doc5.accept_spans(6, spans()));
-        assert!(doc5.accept_spans(5, spans()));
+        assert!(!doc5.accept_spans(6, spans(), &[]));
+        assert!(doc5.accept_spans(5, spans(), &[]));
         assert_eq!(doc5.spans_version, Some(5));
         // Nothing held yet (it changed faster than its first colouring): any older version's
         // colours are taken, none newer than the text.
         let mut fresh = Doc::new("x\n".into(), 7);
-        assert!(!fresh.accept_spans(8, spans()));
-        assert!(fresh.accept_spans(2, spans()));
+        assert!(!fresh.accept_spans(8, spans(), &[]));
+        assert!(fresh.accept_spans(2, spans(), &[]));
         assert_eq!(fresh.spans_version, Some(2));
         let mut bars = Doc::new("x\n".into(), 7);
         assert!(bars.accept_changes(2, &[(1, LineChange::Added)], None));
+    }
+
+    #[test]
+    fn the_read_makes_the_outline_and_the_colours_name_it() {
+        let dir = std::env::temp_dir().join(format!("fuxx-outline-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("session.rs");
+        std::fs::write(&file, "impl S {\n    fn r() {\n        x();\n    }\n}\n").unwrap();
+        let Loaded::Text { doc, .. } = read_file(&file, None, None) else {
+            panic!("a text");
+        };
+        let mut doc = *doc;
+        let outline = doc.outline.clone().expect("an outline");
+        assert_eq!(outline.blocks.len(), 2);
+        assert!(!outline.blocks[0].named, "named once the colours land");
+        // The colours' named lines name the blocks that start on them.
+        assert!(doc.accept_spans(doc.version, vec![], &[0, 1]));
+        let named = doc.outline.as_ref().unwrap();
+        assert!(named.blocks.iter().all(|b| b.named));
+        assert!(!outline.blocks[0].named, "the Arc made before is untouched");
+        // A file with no structure has an outline without blocks; a markdown one has headings.
+        std::fs::write(&file, "one\ntwo\n").unwrap();
+        let Loaded::Text { doc, .. } = read_file(&file, None, None) else {
+            panic!("a text");
+        };
+        assert!(!doc.outline.as_ref().unwrap().has_structure());
+        let md = dir.join("notes.md");
+        std::fs::write(&md, "# A\n```\n# no\n```\n## B\n").unwrap();
+        let Loaded::Text { doc, .. } = read_file(&md, None, None) else {
+            panic!("a text");
+        };
+        assert_eq!(doc.outline.as_ref().unwrap().blocks.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_reload_carries_the_named_lines_onto_its_new_outline() {
+        let lines = ["fn a() {", "    x();", "}"];
+        let mut old = Doc::new("fn a() {\n    x();\n}\n".into(), 1);
+        old.outline = code_outline::outline(&lines, false, code_outline::LIMIT).map(Arc::new);
+        assert!(old.accept_spans(1, vec![vec![]], &[0]));
+        let mut fresh = Doc::new("fn a() {\n    x();\n    y();\n}\n".into(), 2);
+        let more = ["fn a() {", "    x();", "    y();", "}"];
+        fresh.outline = code_outline::outline(&more, false, code_outline::LIMIT).map(Arc::new);
+        fresh.carry_over(&old, false);
+        assert_eq!(fresh.outline.as_ref().unwrap().named_lines(), [0]);
+        assert!(fresh.outline.as_ref().unwrap().blocks[0].named);
+        // A text too large to colour has no names.
+        let mut plain = Doc::new("fn a() {\n    x();\n    y();\n}\n".into(), 2);
+        plain.outline = code_outline::outline(&more, false, code_outline::LIMIT).map(Arc::new);
+        plain.carry_over(&old, true);
+        assert!(plain.outline.as_ref().unwrap().named_lines().is_empty());
+        assert!(!plain.outline.as_ref().unwrap().blocks[0].named);
     }
 
     #[test]
