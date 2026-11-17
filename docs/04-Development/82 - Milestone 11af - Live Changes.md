@@ -1,6 +1,6 @@
 # Milestone 11af — Live Changes, with Who Wrote Them
 
-**Status:** 📝 design approved 2026-11-17 ("approve") on branch `m11af-live-changes`; plan written ([[M11af Plan - Live Changes]], 8 tasks), waiting for your review.
+**Status:** 🟨 built 2026-11-17 on branch `m11af-live-changes`, all 8 plan tasks, each reviewed clean; **not merged, not pushed**, waiting for your on-screen check (below). Design approved 2026-11-17 ("approve"); plan [[M11af Plan - Live Changes]].
 
 **Asked for:** 2026-11-16, by you, as near-future idea **1** of the file-view mockups ("1 and 3" → M11af and M11ag;
 order "your order is fine, go ahead"). Direction: [[Proposal - File View Upgrades]], mockup
@@ -136,7 +136,7 @@ The Activity log is not enough: it is per terminal, keeps 200 entries and does n
   from the provider.
 - **Off by default, never turns itself on** (AI's call: no surprise jumps).
 - While on: after a reload in which the agent changed lines, if the first changed line is not in view, the view
-  scrolls so it sits about a third from the top (as a diff opens today). Your own changes never move the view.
+  scrolls so it sits 3 lines from the top, as a diff opens. Your own changes never move the view.
 - **Turns off** when you scroll (wheel, scrollbar, keys, a find step, a change-bar click), switch mode, or the tab's
   marks are cleared. Selecting text does not turn it off.
 
@@ -159,6 +159,137 @@ The Activity log is not enough: it is per terminal, keeps 200 entries and does n
 - How the diff result is tied to `version` (as colours and bars are), so an older answer is dropped.
 - Tests: the diff mapping, the deciding rules (times passed in, as `status.rs` does), glow levels and age labels are
   pure and unit-tested; ui-shots scenes for a glowing file, exact and guessed marks, Follow on and off, light and dark.
+
+## What was built
+
+All eight plan tasks, on branch `m11af-live-changes`. One new crate: `similar` 3.2.1 (pure Rust, no default features).
+
+1. **`src/live_lines.rs` (Task 1).** Compare two texts (50 ms limit), the per-line record that follows its lines,
+   glow levels (under 15 s, 35 s, 60 s), age words.
+2. **Providers say which files a tool call writes (Task 2).** `Event::ToolStarted` carries `writes`; Claude's Edit,
+   Write, MultiEdit and NotebookEdit; agy's `edit_file` and `write_file`. `agy` joins `procs::AGENTS`, so a hand-typed
+   `agy` row reads `agy`.
+3. **`src/edit_ledger.rs` (Tasks 3, 4).** The app-wide record of edits and working spans (10 minutes) and the rule
+   that decides who made a change. Agent tabs and terminals that run a known agent feed it; a gone terminal or agent
+   slot closes its state.
+4. **The file tab keeps the record (Task 5).** Each reload that gives new text is compared with the last text on the
+   background executor, with the read; the ledger decides who; a late finish revises a mark to exact once within 2 s.
+5. **Drawing (Task 6).** The glow (three tints), the age words at the end of each warm block's first line, the mark
+   column (a circle and a letter, filled when exact, hollow when guessed) and its tooltip.
+6. **Follow (Task 7).** The pill in the bar, off by default; scrolls the agent's newest change into view; turns off
+   on scrolling, a mode switch or cleared marks.
+7. **Docs and hand-off (Task 8).** This note, the roadmap, the Progress Log, `STRUCTURE.md`, the file tab's module
+   docs.
+
+## Calls made while building (AI's, for you to check)
+
+- **Follow's place:** the change sits **3 lines from the top, as a diff opens** (`REVEAL_ABOVE`), not "about a third
+  from the top" as section 4 first said. One constant if you want it lower.
+- **Call ids are qualified by the agent tab's slot** ("a3:toolu_..."): tool ids are only unique per conversation, so
+  two agent tabs could close each other's edit.
+- **Working-span keys are namespaced:** a terminal uses its session id, an agent tab `(1<<63) | slot`; the two id
+  spaces can overlap.
+- **A run's open edits close as not ok when it ends** (exit, stop, close, failure): an edit left open would claim
+  later changes as exact for 10 minutes.
+- **`since` is the tab's previous look at the disk**, any poll including an unchanged one, not only the previous text
+  read. An agent that worked minutes ago is not credited with your later edit.
+- **The workspace hook** (which workspace a file tab belongs to) lives in `Workspace::show_file_tabs`, in
+  `src/file_tab.rs`; the plan pointed at `src/workspace.rs`.
+- **Colours:** yours is the theme's Teal; an agent with no colour of its own (codex and the rest) is the theme's Grey,
+  always hollow; Claude's colour is adjusted per theme to stay readable; the age words are darkened in the light
+  theme. The theme has no peach, so the glow and the words use the mockup's peach.
+- **The mark column** sits between the line numbers and the change bars, as section 3 says; the mockup had it left of
+  the numbers.
+- **Age words under Wrap** go on the row where the first line of the block ends.
+
+## Learned
+
+- agy's `edit_file` and `write_file` calls **do** carry a `Path`, so agy in an agent tab gets exact marks too, not
+  only a guess.
+- agy's paths may start with `~` (its `write_file` into its brain folder); fuxx expands it before comparing.
+- The file tab's compare trims `\r` and `\n` from each line first, so a line-ending-only change marks nothing.
+
+## Idle CPU (the M11p anti-goal) — code-level evidence
+
+Not measured by the builder: it needs a real window with a file tab opened by hand (your check, item 12). What the
+code does:
+
+- **No new always-on timer.** The only new timer is the one-shot 2 s revision after a guessed or "you" mark; it ends
+  within 2 s of the last such read.
+- The file tab's poll (the existing 1 s one) runs only while the tab is shown and the window is seen. Levels are
+  worked out on it, and the tab redraws (`cx.notify()`) **only when a glow level or an age label changes**. With
+  nothing warm, `Live::refresh` does no work.
+- `render` only clones two `Rc`s and a cached flag; with no marks the geometry is exactly the old one.
+
+## Findings
+
+- **`tests/ui-shots-ref/` is stale on this Mac.** Master itself shows about 360 "look different" against the
+  references today (the refs were made earlier on this Mac and no longer match), and so does this branch. It is a
+  report, not a failure; the refs were not updated here.
+
+## Limits (small things you might notice)
+
+- A mark's tooltip does not count up while you hover it ("12 s ago" stays until you move).
+- A reload that changes nothing (a `touch`, a line-ending-only rewrite) can drop a guessed or "you" mark's pending 2 s
+  revision, so a late finish then stays as guessed.
+- Follow with Wrap on rebuilds the wrapping on each reload.
+- Follow can stay on in Markdown Preview (its pill is hidden there).
+- The poll stops while the tab is hidden, so the glow refreshes when it is shown again.
+- Your letter comes from the git name known when the first mark appears, else the account's full name.
+
+## Final numbers (this Mac, debug build, 2026-11-17)
+
+| Check | Before (master, M11aa) | Now |
+| --- | --- | --- |
+| `cargo test --bin fuxx` | 1,787 passed (1 ignored) | **1,834 passed** (1 ignored) |
+| `cargo clippy --all-targets` | 14 (bin) / 27 (test) | 14 / 27 (no new warnings) |
+| `cargo clippy --all-targets --features ui-shots` | 16 / 29 | 16 / 29 (no new warnings) |
+| `cargo fmt --check` | clean | clean |
+| Full `scripts/ui-shots.sh` | 137 scenes | **146 passed, 0 failed**, 115.2 s (9 new scenes) |
+| Idle CPU, file tab shown, nothing changing | n/a | not measured by the builder: your check, item 12 |
+
+The reference fingerprints are report only and stale on this Mac (see "Findings"): they print "look different" for
+most scenes on master as well, so they say nothing about this branch.
+
+## On-screen check (yours, after the build)
+
+Run `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run` (debug only: **do not add `--release`**, it writes your real
+`sessions.json`) from the repo. Use a scratch folder, e.g. `~/code/scratch` (`git init` it, put a file with 40 or
+so lines in it, `app.txt`, and open it in a file tab).
+
+**The glow and the age**
+
+1. Open an agent tab (claude) in `~/code/scratch`, ask it to change two lines of `app.txt` near the top. The file
+   tab glows on those lines, the peach brightest, "just now" at the end of the first one, a filled `C` in the margin
+   (between the numbers and the change bars).
+2. Watch for a minute: the glow steps down (3 tints) and is gone at about 60 s; the words change ("12 s ago"...)
+   and go with it. The `C` stays. Hover the `C`: "claude · 40 s ago".
+3. A tab with nothing changed since you opened it looks exactly as before (no extra column, no glow).
+
+**Who changed it**
+
+4. In a plain terminal in the same folder, run `claude` and have it edit another line. That line gets a **hollow**
+   `C`; the tooltip says "probably claude · ... (it was working)".
+5. Edit another line in your own editor and save. It gets your letter (the first letter of your git name), filled;
+   tooltip "you · ...".
+6. If codex (or another agent) is installed: run it in a plain terminal and have it edit a line. The mark is its
+   first letter, grey, hollow; "probably codex · ...".
+7. In an agent tab running agy, have it edit a line: its letter `A`, filled (exact). Typing `agy` by hand in a
+   terminal shows `agy` on that sidebar row.
+
+**Follow**
+
+8. Follow is off when the pill first appears ("Follow claude", top right of the file tab's bar, only once an agent has
+   changed the file). Turn it on: "Following claude". Have the agent edit a line far down: the view scrolls so it is
+   3 lines from the top. Your own save never moves the view.
+9. With Follow on, turn the wheel: it turns off. Switching to Diff turns it off too.
+
+**Left alone, and limits**
+
+10. Diff and Preview look as before (no glow, no marks).
+11. A file over the size limit (over 2 MB shows as plain text, over 20 MB is refused) shows no marks.
+12. **Idle CPU:** with a file tab open on a file nothing is changing, compare fuxx's CPU in Activity Monitor on this
+    branch with master (same window, a minute each). They should match within noise.
 
 ## Related
 
