@@ -2431,7 +2431,7 @@ fn paint_number(
 /// The change bars of the rows in sight (a file's; a diff has signs): runs of neighbouring rows
 /// of one change are one bar, `BAR_WIDTH` wide with round ends, a `BAR_RUN_GAP` between runs of
 /// different changes. A run that goes on past the view's edge keeps a square end there. With Wrap
-/// a bar is on a line's first row only.
+/// a run spans every screen row of its lines.
 fn paint_bars(
     f: &Frame,
     g: &Geom,
@@ -2448,9 +2448,8 @@ fn paint_bars(
     let (from, to) = (rows.start.saturating_sub(1), (rows.end + 1).min(row_count));
     let shown: Vec<(usize, LineChange)> = (from..to)
         .filter_map(|r| {
-            let (i, cell0) = wrapped.map_or((r, 0), |w| w.row(r));
-            let change = f.doc.changes.by_line.get(&i)?;
-            (cell0 == 0).then_some((r, *change))
+            let i = wrapped.map_or(r, |w| w.row(r).0);
+            Some((r, *f.doc.changes.by_line.get(&i)?))
         })
         .collect();
     let runs = bar_runs(&shown);
