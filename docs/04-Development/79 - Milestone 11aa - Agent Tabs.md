@@ -1,7 +1,7 @@
 # Milestone 11aa — Agent Tabs and Providers
 
 **Status:** 🟨 built 2026-11-17 on branch `m11aa-ui` (from master; the safe part, Tasks 0, 2, 3, 4 and 6, was built on
-2026-11-13 and is already on master), every task reviewed, **not merged, not pushed**, waiting for your on-screen
+2026-11-13 and is already on master), every task reviewed, whole-branch review and fix wave clean, **merged to master 2026-11-17, not pushed**, waiting for your on-screen
 check (below). Plan [[M11aa Plan - Agent Tabs]], 14 / 14 tasks, then a whole-branch review and its fix wave. At the
 branch tip: 1,787 tests pass, clippy 14 / 27 (default) and 16 / 29 (`ui-shots`) = the baselines, `cargo fmt --check`
 clean, full `scripts/ui-shots.sh` 137 scenes passed, 0 failed, in 91.8 s.
@@ -161,13 +161,20 @@ into.
 - **An agy run left by a crash can be missed.** agy cannot be told a new conversation's id, so a brand-new agy
   conversation has no id on its command line. If fuxx crashes during its first turn, the `agy` it started keeps
   running unseen by the next launch's check, and the restored tab may start a second writer. Quit that `agy`
-  (`pgrep -fl agy`) before sending from the restored tab. (Claude tabs are covered: fuxx chooses their id.)
+  (`pgrep -fl agy`) before sending from the restored tab. (Claude tabs are covered: fuxx chooses their id, except an npm-installed `claude`, whose `ps` line hides its
+  arguments; quit a leftover `claude` the same way.)
 - **Scripting gaps.** No open or close events for agent tabs; `status.changed` also fires for restored tabs; a blank
   `fuxx answer` is a Deny; `new` over the API with a preset still opens a classic terminal. An agent tab's events
   have no `number` (no `#N` targets it): name it by its `aN`.
 - **R13 edges.** With the background service off, a stale saved classic id keeps the tab Blind on every run (fuxx
   cannot ask the service whether that terminal still exists). With it on, a stale id keeps the tab Blind for that
   run. Open in classic view during a send's check shows a notice instead of focusing the classic terminal.
+- **A conversation id that changes mid-run** (e.g. Claude's `/clear`) is followed by the tab, but the running
+  process's command line still shows the old id; if fuxx crashes after that, the leftover process writing the new
+  conversation isn't seen by the next launch's check. Quit leftover agents before sending from a restored tab.
+- **Test files from before the final fixes.** A `sessions-dev.json` written by an earlier test build may still
+  carry a classic-view terminal's preset; with a `claude -c` preset it could start a second writer on relaunch.
+  Close classic-view terminals (or delete `sessions-dev.json`) before testing this build.
 - **A preset's extra words** are split simply, so a quoted argument with spaces is not kept together.
 - **Dev builds touch the real fuxx's background service** unless you point them elsewhere; see the first line of the
   check below.
