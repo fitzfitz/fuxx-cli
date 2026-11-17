@@ -414,6 +414,9 @@ impl AgentTab {
             shown.model = Some(model);
             if effort.is_some() {
                 shown.effort = effort;
+            } else if self.model_choice(provider, id, cx).efforts.is_empty() {
+                // A model with no efforts has none to show (not the last model's).
+                shown.effort = None;
             }
         } else if shown.model.is_none()
             && let Some(catalog) = self.catalog(cx)
@@ -504,9 +507,9 @@ impl AgentTab {
         let applies = self
             .provider
             .map_or(Applies::Live, |p| p.applies(ChangeKind::Model));
-        let efforts_of = match &self.menu {
-            Some(BoxMenu::Model { efforts_of, .. }) => *efforts_of,
-            _ => None,
+        let (efforts_of, usage_open) = match &self.menu {
+            Some(BoxMenu::Model { efforts_of, usage }) => (*efforts_of, *usage),
+            _ => (None, false),
         };
         let mut top = Vec::new();
         let mut list = Vec::new();
@@ -514,7 +517,7 @@ impl AgentTab {
         for (i, row) in model_rows(&lookup, &shown, applies).iter().enumerate() {
             match row {
                 ModelRow::Heading => top.push(heading(MODEL_HEADING.into(), &ui)),
-                ModelRow::Note(note) => list.push(quiet(note, &ui)),
+                ModelRow::Note(note) => list.push(quiet(*note, &ui)),
                 ModelRow::Model { .. } => {
                     list.push(self.model_row(i, row, efforts_of, &ui, cx));
                 }
@@ -539,7 +542,6 @@ impl AgentTab {
                         .bg(hsla(ui.panel_border))
                         .into_any_element(),
                 ),
-                // Its submenu is a later task's (View Usage).
                 ModelRow::Usage => bottom.push(self.menu_row(
                     ("box-model", i),
                     VIEW_USAGE.into(),
@@ -547,7 +549,7 @@ impl AgentTab {
                     false,
                     &ui,
                     cx,
-                    |_, _, _| {},
+                    |this, _, cx| this.open_usage(cx),
                 )),
             }
         }
@@ -567,6 +569,7 @@ impl AgentTab {
             .children(bottom)
             .into_any_element();
         let side = match (efforts_of, &lookup) {
+            _ if usage_open => Some(self.usage_panel(&ui, cx)),
             (Some(ix), Lookup::Ready(catalog)) => {
                 let items: Vec<AnyElement> = effort_rows(catalog, ix, &shown)
                     .into_iter()
@@ -593,6 +596,133 @@ impl AgentTab {
             _ => None,
         };
         (menu, side)
+    }
+
+    /// `View Usage ▸`: the usage panel opens beside the model menu, and the agent's usage is
+    /// read now unless a reading under a minute old is there (or on its way). Never read while
+    /// drawing. A scene tab only marks it loading: it runs no process.
+    fn open_usage(&mut self, cx: &mut Context<Self>) {
+        self.open_menu(
+            BoxMenu::Model {
+                efforts_of: None,
+                usage: true,
+            },
+            cx,
+        );
+        let Some(provider) = self.provider.filter(|p| p.usage_probe().is_some()) else {
+            return;
+        };
+        if self.no_process {
+            let agent = provider.info().name;
+            cx.update_default_global(|c: &mut Catalogs, _| {
+                c.begin_usage(agent, std::time::Instant::now())
+            });
+        } else {
+            crate::agent_catalog::load_usage(provider, self.start.cwd.clone(), cx);
+        }
+    }
+
+    /// The View Usage lines for now: the agent's reading and what it said of its limits.
+    pub(crate) fn usage_rows_now(&self, cx: &App) -> Vec<UsageRow> {
+        let Some(provider) = self.provider else {
+            return Vec::new();
+        };
+        let agent = provider.info().name;
+        let catalogs = cx.try_global::<Catalogs>();
+        let found = catalogs.and_then(|c| c.usage(agent, std::time::Instant::now()));
+        let limits = catalogs.map_or(&[][..], |c| c.limits(agent));
+        let available = provider
+            .usage_probe()
+            .is_none()
+            .then(|| provider.info().label);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        let offset = crate::cli::local_utc_offset(now as u64 * 1000);
+        usage_rows(found, limits, available, now, offset)
+    }
+
+    /// The View Usage panel beside the model menu (§5): per group its name, each limit's name,
+    /// `N% left` with a ring and `Resets …`, what the agent said of it underneath.
+    fn usage_panel(&self, ui: &UiColors, cx: &App) -> AnyElement {
+        let items: Vec<AnyElement> = self
+            .usage_rows_now(cx)
+            .into_iter()
+            .map(|row| match row {
+                UsageRow::Heading(name) => heading(name, ui),
+                UsageRow::Quiet(text) => quiet(text, ui),
+                UsageRow::Text(text) => div()
+                    .px(px(8.))
+                    .py(px(4.))
+                    .text_color(hsla(ui.text_dim))
+                    .child(SharedString::from(text))
+                    .into_any_element(),
+                UsageRow::Limit {
+                    name,
+                    left_pct,
+                    resets,
+                    note,
+                } => self.limit_row(name, left_pct, resets, note, ui),
+            })
+            .collect();
+        let panel = crate::overlay_panel::shell(ui, USAGE_WIDTH)
+            .p(px(4.))
+            .gap(px(0.))
+            .occlude()
+            .children(items);
+        self.marked("usage", div().child(panel)).into_any_element()
+    }
+
+    /// One limit of the usage panel: its name, `N% left` and its ring (when the reading says),
+    /// `Resets …` under it, and what the agent said (close to, or at, its limit).
+    fn limit_row(
+        &self,
+        name: String,
+        left_pct: Option<u8>,
+        resets: Option<String>,
+        note: Option<String>,
+        ui: &UiColors,
+    ) -> AnyElement {
+        let small = |t: String, color| {
+            div()
+                .text_size(px(text::META))
+                .text_color(hsla(color))
+                .child(SharedString::from(t))
+        };
+        let (dim, track, arc) = (ui.text_dim, ui.panel_border, ui.accent);
+        let top = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(SharedString::from(name.clone())),
+            )
+            .children(left_pct.map(|left| {
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_color(hsla(dim))
+                    .child(SharedString::from(format!("{left}% left")))
+                    .child(ring(left, track, arc))
+            }));
+        let row = div()
+            .px(px(8.))
+            .py(px(4.))
+            .flex()
+            .flex_col()
+            .child(top)
+            .children(resets.map(|t| small(t, ui.text_faint)))
+            .children(note.map(|t| small(t, ui.ring_waiting)));
+        self.marked_row(format!("Usage \u{25b8} {name}"), row)
+            .into_any_element()
     }
 
     /// One model of the menu: ✓ when current, its name, its effort in grey (the current one's),
@@ -782,13 +912,56 @@ fn heading(text: String, ui: &UiColors) -> AnyElement {
 }
 
 /// A quiet line in a menu's list (no row to pick).
-fn quiet(text: &'static str, ui: &UiColors) -> AnyElement {
+fn quiet(text: impl Into<SharedString>, ui: &UiColors) -> AnyElement {
     div()
         .h(px(ROW_H))
         .px(px(26.))
         .flex()
         .items_center()
         .text_color(hsla(ui.text_dim))
-        .child(text)
+        .child(text.into())
         .into_any_element()
+}
+
+/// A small ring showing `left` percent: a quiet track, and over it an arc (from the top,
+/// clockwise) as long as what is left.
+fn ring(left: u8, track: Rgb, arc: Rgb) -> impl IntoElement {
+    gpui::canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let size = f32::from(bounds.size.width.min(bounds.size.height));
+            let r = (size - RING_STROKE) / 2.0;
+            let (cx, cy) = (
+                f32::from(bounds.origin.x) + size / 2.0,
+                f32::from(bounds.origin.y) + size / 2.0,
+            );
+            let at = |angle: f32| point(px(cx + r * angle.sin()), px(cy - r * angle.cos()));
+            let radii = point(px(r), px(r));
+            let tau = std::f32::consts::TAU;
+            let circle = |color: Rgb, fraction: f32| {
+                let mut path = gpui::PathBuilder::stroke(px(RING_STROKE));
+                path.move_to(at(0.0));
+                if fraction >= 0.999 {
+                    path.arc_to(radii, px(0.0), false, true, at(tau / 2.0));
+                    path.arc_to(radii, px(0.0), false, true, at(0.0));
+                } else {
+                    let end = tau * fraction;
+                    path.arc_to(radii, px(0.0), fraction > 0.5, true, at(end));
+                }
+                (path, color)
+            };
+            let fraction = f32::from(left.min(100)) / 100.0;
+            let mut paths = vec![circle(track, 1.0)];
+            if fraction > 0.0 {
+                paths.push(circle(arc, fraction));
+            }
+            for (path, color) in paths {
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, hsla(color));
+                }
+            }
+        },
+    )
+    .flex_none()
+    .size(px(RING_SIZE))
 }

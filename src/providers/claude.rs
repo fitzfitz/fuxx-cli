@@ -248,7 +248,9 @@ impl Provider for Claude {
     }
 
     /// The result's text lines (`Current session: 13% used · resets Nov 17 at 8:10pm (UTC)`),
-    /// as one nameless group.
+    /// as one nameless group. A line that is no `name: value` (the header, "What's contributing
+    /// to your usage?" and what explains it) is no limit and is dropped; a limit line it can't
+    /// read stays as text.
     fn read_usage(&self, output: &str) -> Result<Vec<UsageGroup>, String> {
         let text = serde_json::from_str::<Value>(output)
             .ok()
@@ -263,6 +265,10 @@ impl Provider for Claude {
                 .map(str::trim)
                 .filter(|l| !l.is_empty())
                 .map(usage_line)
+                .filter(|l| match l {
+                    UsageLimit::Text(text) => text.contains(": "),
+                    UsageLimit::Read { .. } => true,
+                })
                 .collect(),
         }])
     }
@@ -2228,6 +2234,34 @@ mod tests {
                     resets: None
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn usage_drops_the_header_and_the_explanations_but_keeps_a_limit_it_cannot_read() {
+        let text = "You are currently using your subscription to power your Claude Code usage\n\n\
+            Current session: 13% used \u{b7} resets Nov 17 at 8:10pm (UTC)\n\
+            Extra usage: off\n\
+            Current week: unavailable\n\
+            What's contributing to your usage?\n\
+            Most of it came from long sessions with a lot of context.";
+        let limits = &CLAUDE.read_usage(&usage_json(text)).unwrap()[0].limits;
+        assert_eq!(
+            limits,
+            &[
+                read("Current session", 87, "Nov 17 at 8:10pm"),
+                UsageLimit::Text("Extra usage: off".into()),
+                UsageLimit::Text("Current week: unavailable".into()),
+            ]
+        );
+        let fixture = CLAUDE.read_usage(USAGE).unwrap();
+        assert!(
+            fixture[0]
+                .limits
+                .iter()
+                .all(|l| matches!(l, UsageLimit::Read { .. })),
+            "the fixture's header is no limit: {:?}",
+            fixture[0].limits
         );
     }
 

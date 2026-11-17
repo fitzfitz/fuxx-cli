@@ -242,6 +242,13 @@ pub(super) const ORDER: &[&str] = &[
     "agent-box-model-fallback",
     "agent-box-model-choose-sends-nothing",
     "agent-box-model-effort-composes",
+    "agent-box-usage-claude",
+    "agent-box-usage-agy",
+    "agent-box-usage-checking",
+    "agent-box-usage-text-line",
+    "agent-box-usage-limit-close",
+    "agent-box-usage-cached",
+    "agent-box-model-waiting-no-efforts",
 ];
 
 /// Every scene, in `ORDER`. Panics, naming the scene, if one is in no area or in two, or if

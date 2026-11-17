@@ -15,14 +15,19 @@ use super::{
     Kind, Scene, Themes, frame_fresh, render_with, shoot_with, shot_appearance, shot_theme,
     shot_themes,
 };
-use crate::agent_box::{BoxMenu, Change, MOVE_HERE, ModelRow, NEW_CONVERSATION, PLACEHOLDER};
+use crate::agent_box::{
+    BoxMenu, CHECKING, Change, MOVE_HERE, ModelRow, NEW_CONVERSATION, PLACEHOLDER, UsageRow,
+};
 use crate::agent_catalog::{Catalogs, Lookup};
 use crate::agent_conversation::Item;
 use crate::agent_tab::{AgentTab, AgentTabEvent};
 use crate::folder_picker::{KnownFolders, PickerRow};
 use crate::providers::agy::AGY;
 use crate::providers::claude::CLAUDE;
-use crate::providers::{Catalog, ChangeKind, EffortChoice, Event, ModelChoice, Provider, Start};
+use crate::providers::{
+    Catalog, ChangeKind, EffortChoice, Event, LimitState, ModelChoice, Provider, RateLimit, Reset,
+    Start, UsageGroup, UsageLimit,
+};
 use crate::status::Status;
 
 /// This file, as `file!()` gives it: `registry::AREAS` pairs it with `SCENES`.
@@ -33,6 +38,7 @@ pub(super) const FILE: &str = file!();
 const BOX: &[&str] = &[
     "src/agent_tab.rs",
     "src/agent_box.rs",
+    "src/agent_box_menus.rs",
     "src/agent_conversation.rs",
     "src/providers/mod.rs",
     "src/providers/claude.rs",
@@ -45,6 +51,7 @@ const BOX: &[&str] = &[
 const LAYOUT: &[&str] = &[
     "src/agent_tab.rs",
     "src/agent_box.rs",
+    "src/agent_box_menus.rs",
     "src/agent_conversation.rs",
     "src/agent_catalog.rs",
     "src/composer.rs",
@@ -58,6 +65,7 @@ const LAYOUT: &[&str] = &[
 const FOLDER: &[&str] = &[
     "src/agent_tab.rs",
     "src/agent_box.rs",
+    "src/agent_box_menus.rs",
     "src/agent_conversation.rs",
     "src/agent_catalog.rs",
     "src/folder_picker.rs",
@@ -73,6 +81,7 @@ const FOLDER: &[&str] = &[
 const MODEL: &[&str] = &[
     "src/agent_tab.rs",
     "src/agent_box.rs",
+    "src/agent_box_menus.rs",
     "src/agent_conversation.rs",
     "src/agent_catalog.rs",
     "src/composer.rs",
@@ -82,11 +91,15 @@ const MODEL: &[&str] = &[
     "src/providers/agy.rs",
 ];
 
+/// The files View Usage is made of: the model menu's, and the usage the providers read.
+const USAGE: &[&str] = MODEL;
+
 /// The files the branch chip is made of: the box's, and the branch look-up and switcher it
 /// opens.
 const BRANCH: &[&str] = &[
     "src/agent_tab.rs",
     "src/agent_box.rs",
+    "src/agent_box_menus.rs",
     "src/agent_catalog.rs",
     "src/composer.rs",
     "src/git_branch.rs",
@@ -253,6 +266,62 @@ pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "agent-box-model-effort-composes",
         run: agent_box_model_effort_composes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: MODEL,
+    },
+    Scene {
+        name: "agent-box-usage-claude",
+        run: agent_box_usage_claude,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: USAGE,
+    },
+    Scene {
+        name: "agent-box-usage-agy",
+        run: agent_box_usage_agy,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: USAGE,
+    },
+    Scene {
+        name: "agent-box-usage-checking",
+        run: agent_box_usage_checking,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: USAGE,
+    },
+    Scene {
+        name: "agent-box-usage-text-line",
+        run: agent_box_usage_text_line,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: USAGE,
+    },
+    Scene {
+        name: "agent-box-usage-limit-close",
+        run: agent_box_usage_limit_close,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: USAGE,
+    },
+    Scene {
+        name: "agent-box-usage-cached",
+        run: agent_box_usage_cached,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: USAGE,
+    },
+    Scene {
+        name: "agent-box-model-waiting-no-efforts",
+        run: agent_box_model_waiting_no_efforts,
         themes: Themes::One,
         serial: false,
         kind: Kind::State,
@@ -2142,6 +2211,416 @@ pub(super) fn agent_box_model_effort_composes() {
             assert!(
                 lines.iter().filter(|l| l["type"] == "user").count() == 1,
                 "{n}: only yours"
+            );
+        },
+    );
+}
+
+// ---- View Usage (Task 9) ----
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// A limit read, Claude's way: the agent's own words for when it resets.
+fn claude_limit(name: &str, left_pct: u8, resets: &str) -> UsageLimit {
+    UsageLimit::Read {
+        name: name.into(),
+        left_pct,
+        resets: Some(Reset::Words(resets.into())),
+    }
+}
+
+fn claude_usage() -> Lookup<Vec<UsageGroup>> {
+    Lookup::Ready(vec![UsageGroup {
+        name: String::new(),
+        about: None,
+        limits: vec![
+            claude_limit("Current session", 100, "Nov 17 at 8:10pm"),
+            claude_limit("Current week (all models)", 63, "Nov 22 at 10pm"),
+        ],
+    }])
+}
+
+/// Open the model menu and press `View Usage ▸` (real clicks).
+fn open_usage(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+) {
+    click_model_chip(n, cx, window, tab);
+    click_row(n, cx, window, tab, "View Usage \u{25b8}");
+    assert_eq!(
+        menu(cx, tab),
+        Some(BoxMenu::Model {
+            efforts_of: None,
+            usage: true
+        }),
+        "{n}"
+    );
+}
+
+fn usage_rows_of(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<UsageRow> {
+    cx.read(|cx| tab.read(cx).shot_usage_rows(cx))
+}
+
+fn limit_row(name: &str, left: Option<u8>, resets: Option<&str>, note: Option<&str>) -> UsageRow {
+    UsageRow::Limit {
+        name: name.into(),
+        left_pct: left,
+        resets: resets.map(String::from),
+        note: note.map(String::from),
+    }
+}
+
+/// The usage panel is drawn beside the model menu, each of `names` has its row in it, top to
+/// bottom.
+fn assert_usage_panel(n: &str, cx: &VisualTestAppContext, tab: &Entity<AgentTab>, names: &[&str]) {
+    let side = part(cx, tab, n, "usage");
+    let menu_box = part(cx, tab, n, "menu");
+    assert!(side.left() >= menu_box.right(), "{n}: beside the menu");
+    let spots: Vec<Bounds<Pixels>> = names
+        .iter()
+        .map(|name| {
+            cx.read(|cx| {
+                tab.read(cx)
+                    .shot_menu_row(&format!("Usage \u{25b8} {name}"))
+            })
+            .unwrap_or_else(|| panic!("{n}: no usage row {name}"))
+        })
+        .collect();
+    assert!(spots.iter().all(|r| inside(*r, side)), "{n}: {spots:?}");
+    assert!(
+        spots.windows(2).all(|w| w[0].bottom() <= w[1].top()),
+        "{n}: in order {spots:?}"
+    );
+}
+
+/// §5, Claude: `View Usage ▸` opens the panel beside the menu: each limit's name, `N% left` with
+/// its ring, and `Resets …` in Claude's own words. Opening reads nothing from the screen.
+pub(super) fn agent_box_usage_claude() {
+    model_scene(
+        "agent-box-usage-claude",
+        Lookup::Ready(model_catalog()),
+        |n, cx, window, tab| {
+            feed(cx, tab, |t, cx| {
+                t.shot_usage(claude_usage(), Vec::new(), cx)
+            });
+            open_usage(n, cx, window, tab);
+            assert_eq!(
+                usage_rows_of(cx, tab),
+                [
+                    limit_row(
+                        "Current session",
+                        Some(100),
+                        Some("Resets Nov 17 at 8:10pm"),
+                        None
+                    ),
+                    limit_row(
+                        "Current week (all models)",
+                        Some(63),
+                        Some("Resets Nov 22 at 10pm"),
+                        None
+                    ),
+                ],
+                "{n}"
+            );
+            assert_usage_panel(
+                n,
+                cx,
+                tab,
+                &["Current session", "Current week (all models)"],
+            );
+            assert!(
+                written(cx, tab).is_empty(),
+                "{n}: nothing sent to the agent"
+            );
+            // A press on a model's `▸` swaps the panel for its efforts.
+            click_more(n, cx, window, tab, "Claude Example 4");
+            assert!(effort_row(cx, tab, "Low").is_some(), "{n}");
+            assert!(
+                cx.read(|cx| tab.read(cx).shot_menu_row("Usage \u{25b8} Current session"))
+                    .is_none(),
+                "{n}: the usage panel makes way"
+            );
+            // And the panel is back for the shot.
+            click_row(n, cx, window, tab, "View Usage \u{25b8}");
+            assert_usage_panel(n, cx, tab, &["Current session"]);
+        },
+    );
+}
+
+/// §5, agy: two groups, each named, each limit with its ring; a reset moment counts down.
+pub(super) fn agent_box_usage_agy() {
+    box_scene(
+        "agent-box-usage-agy",
+        &AGY,
+        start(None, Some("example-pro-high")),
+        Lookup::Ready(agy_example_catalog()),
+        |n, cx, window, tab| {
+            let at = |secs: i64| Some(Reset::At(now_unix() + secs + 30));
+            let read = |name: &str, left: u8, resets| UsageLimit::Read {
+                name: name.into(),
+                left_pct: left,
+                resets,
+            };
+            let found = Lookup::Ready(vec![
+                UsageGroup {
+                    name: "Example Pro".into(),
+                    about: None,
+                    limits: vec![
+                        read("5 hour", 23, at(2 * 3600 + 5 * 60)),
+                        read("Weekly", 78, at(3 * 86_400 + 16 * 3600)),
+                    ],
+                },
+                UsageGroup {
+                    name: "Example Flash".into(),
+                    about: None,
+                    limits: vec![read("Daily", 100, at(59 * 60)), read("Weekly", 0, None)],
+                },
+            ]);
+            feed(cx, tab, |t, cx| t.shot_usage(found, Vec::new(), cx));
+            open_usage(n, cx, window, tab);
+            assert_eq!(
+                usage_rows_of(cx, tab),
+                [
+                    UsageRow::Heading("Example Pro".into()),
+                    limit_row("5 hour", Some(23), Some("Resets in 2h 5m"), None),
+                    limit_row("Weekly", Some(78), Some("Resets in 3d 16h"), None),
+                    UsageRow::Heading("Example Flash".into()),
+                    limit_row("Daily", Some(100), Some("Resets in 59m"), None),
+                    limit_row("Weekly", Some(0), None, None),
+                ],
+                "{n}"
+            );
+            let side = part(cx, tab, n, "usage");
+            assert!(
+                side.right() <= px(DIMS.0),
+                "{n}: the panel is on screen {side:?}"
+            );
+        },
+    );
+}
+
+/// While the reading is made the panel says `Checking…`; opening asks for it (the scene tab runs
+/// no process: it marks the reading loading).
+pub(super) fn agent_box_usage_checking() {
+    model_scene(
+        "agent-box-usage-checking",
+        Lookup::Ready(model_catalog()),
+        |n, cx, window, tab| {
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_usage_lookup(cx)),
+                None,
+                "{n}"
+            );
+            open_usage(n, cx, window, tab);
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_usage_lookup(cx)),
+                Some(Lookup::Loading),
+                "{n}: opening asked"
+            );
+            assert_eq!(
+                usage_rows_of(cx, tab),
+                [UsageRow::Quiet(CHECKING.into())],
+                "{n}"
+            );
+            // The answer fills the panel in (no reopening).
+            feed(cx, tab, |t, cx| {
+                t.shot_usage(claude_usage(), Vec::new(), cx)
+            });
+            let _ = frame_fresh(cx, window);
+            assert_eq!(usage_rows_of(cx, tab).len(), 2, "{n}");
+            // A reading that failed says so.
+            feed(cx, tab, |t, cx| {
+                t.shot_usage(Lookup::Failed("exit 1".into()), Vec::new(), cx)
+            });
+            let _ = frame_fresh(cx, window);
+            assert_eq!(
+                usage_rows_of(cx, tab),
+                [UsageRow::Quiet("Couldn't read usage".into())],
+                "{n}"
+            );
+            // And the shot is of the wait.
+            feed(cx, tab, |t, cx| {
+                t.shot_usage(Lookup::Loading, Vec::new(), cx)
+            });
+            let _ = frame_fresh(cx, window);
+            assert_eq!(
+                usage_rows_of(cx, tab),
+                [UsageRow::Quiet(CHECKING.into())],
+                "{n}"
+            );
+        },
+    );
+}
+
+/// A line fuxx couldn't read is shown as the agent wrote it, beside the limits it could.
+pub(super) fn agent_box_usage_text_line() {
+    model_scene(
+        "agent-box-usage-text-line",
+        Lookup::Ready(model_catalog()),
+        |n, cx, window, tab| {
+            let found = Lookup::Ready(vec![UsageGroup {
+                name: String::new(),
+                about: None,
+                limits: vec![
+                    claude_limit("Current session", 87, "Nov 17 at 8:10pm"),
+                    UsageLimit::Text("Extra usage: off".into()),
+                ],
+            }]);
+            feed(cx, tab, |t, cx| t.shot_usage(found, Vec::new(), cx));
+            open_usage(n, cx, window, tab);
+            assert_eq!(
+                usage_rows_of(cx, tab),
+                [
+                    limit_row(
+                        "Current session",
+                        Some(87),
+                        Some("Resets Nov 17 at 8:10pm"),
+                        None
+                    ),
+                    UsageRow::Text("Extra usage: off".into()),
+                ],
+                "{n}"
+            );
+        },
+    );
+}
+
+/// A limit the agent says is close: the model chip carries a warning dot, the limit says
+/// `Close to limit`; when it is back to fine the dot goes (the state comes in as the agent's
+/// own `rate_limit_event`).
+pub(super) fn agent_box_usage_limit_close() {
+    model_scene(
+        "agent-box-usage-limit-close",
+        Lookup::Ready(model_catalog()),
+        |n, cx, window, tab| {
+            let said = |state| {
+                vec![Event::RateLimit(RateLimit {
+                    limit: "Current session".into(),
+                    state,
+                    resets_at: None,
+                })]
+            };
+            let warning =
+                |cx: &VisualTestAppContext| cx.read(|cx| tab.read(cx).shot_box(cx).limit_warning);
+            feed(cx, tab, |t, cx| {
+                t.shot_usage(claude_usage(), Vec::new(), cx)
+            });
+            let _ = frame_fresh(cx, window);
+            assert!(!warning(cx), "{n}: fine: no dot");
+            assert!(
+                cx.read(|cx| tab.read(cx).shot_part("limit-warning"))
+                    .is_none(),
+                "{n}"
+            );
+            feed(cx, tab, |t, cx| t.shot_feed(said(LimitState::Close), cx));
+            let _ = frame_fresh(cx, window);
+            assert!(warning(cx), "{n}: close: the dot");
+            let chip = part(cx, tab, n, "model");
+            let dot = part(cx, tab, n, "limit-warning");
+            assert!(inside(dot, chip), "{n}: on the chip {dot:?} {chip:?}");
+            // Back to fine.
+            feed(cx, tab, |t, cx| t.shot_feed(said(LimitState::Fine), cx));
+            assert!(!warning(cx), "{n}: fine again");
+            feed(cx, tab, |t, cx| t.shot_feed(said(LimitState::Close), cx));
+            open_usage(n, cx, window, tab);
+            assert_eq!(
+                usage_rows_of(cx, tab)[0],
+                limit_row(
+                    "Current session",
+                    Some(100),
+                    Some("Resets Nov 17 at 8:10pm"),
+                    Some("Close to limit")
+                ),
+                "{n}"
+            );
+            // Reached, with its moment: the line says when.
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(
+                    vec![Event::RateLimit(RateLimit {
+                        limit: "Current session".into(),
+                        state: LimitState::Reached,
+                        resets_at: Some(14 * 3600),
+                    })],
+                    cx,
+                )
+            });
+            let _ = frame_fresh(cx, window);
+            let UsageRow::Limit {
+                note: Some(note), ..
+            } = &usage_rows_of(cx, tab)[0]
+            else {
+                panic!("{n}: a note under the limit");
+            };
+            assert!(
+                note.starts_with("Limit reached \u{b7} resets "),
+                "{n}: {note}"
+            );
+            // Leave it close for the shot.
+            feed(cx, tab, |t, cx| t.shot_feed(said(LimitState::Close), cx));
+            let _ = frame_fresh(cx, window);
+        },
+    );
+}
+
+/// Opening the panel again within a minute starts no new reading (and shows the one it has).
+pub(super) fn agent_box_usage_cached() {
+    model_scene(
+        "agent-box-usage-cached",
+        Lookup::Ready(model_catalog()),
+        |n, cx, window, tab| {
+            feed(cx, tab, |t, cx| {
+                t.shot_usage(claude_usage(), Vec::new(), cx)
+            });
+            let ready = Some(claude_usage());
+            for round in 0..2 {
+                open_usage(n, cx, window, tab);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).shot_usage_lookup(cx)),
+                    ready,
+                    "{n}: round {round}: no new reading was begun"
+                );
+                assert_eq!(usage_rows_of(cx, tab).len(), 2, "{n}");
+                feed(cx, tab, |t, cx| t.close_menu(cx));
+            }
+        },
+    );
+}
+
+/// A model with no efforts, picked mid-turn, shows none in the menu (not the last model's).
+pub(super) fn agent_box_model_waiting_no_efforts() {
+    model_scene(
+        "agent-box-model-waiting-no-efforts",
+        Lookup::Ready(model_catalog()),
+        |n, cx, window, tab| {
+            feed(cx, tab, |t, cx| t.send("Fix notes.txt".into(), cx));
+            click_model_chip(n, cx, window, tab);
+            click_row(n, cx, window, tab, "Claude Tiny");
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).waiting_change().cloned()),
+                Some(Change::Model {
+                    id: "tiny".into(),
+                    effort: None
+                }),
+                "{n}"
+            );
+            click_model_chip(n, cx, window, tab);
+            let rows = model_rows_of(cx, tab);
+            assert!(
+                matches!(
+                    &rows[3],
+                    ModelRow::Model {
+                        current: true,
+                        effort: None,
+                        ..
+                    }
+                ),
+                "{n}: Tiny is current with no effort: {rows:?}"
             );
         },
     );

@@ -2095,7 +2095,12 @@ impl AgentTab {
 
     /// `id` as a model choice: from the catalog the menus show, else the provider's own list,
     /// else just the id.
-    fn model_choice(&self, provider: &'static dyn Provider, id: &str, cx: &App) -> ModelChoice {
+    pub(crate) fn model_choice(
+        &self,
+        provider: &'static dyn Provider,
+        id: &str,
+        cx: &App,
+    ) -> ModelChoice {
         use crate::agent_catalog::{Catalogs, Lookup};
         let listed = cx.try_global::<Catalogs>().and_then(|c| {
             match c.catalog(provider.info().name, &self.start.cwd) {

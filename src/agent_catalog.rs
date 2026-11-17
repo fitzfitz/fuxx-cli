@@ -123,7 +123,6 @@ impl Catalogs {
         }
     }
 
-    #[allow(dead_code)] // read by the agent box's menus (a later M11ak task)
     pub fn limits(&self, agent: &str) -> &[RateLimit] {
         self.limits.get(agent).map_or(&[], Vec::as_slice)
     }
@@ -283,7 +282,6 @@ pub fn load_catalog(provider: &'static dyn Provider, folder: PathBuf, cx: &mut A
 }
 
 /// Read `provider`'s usage limits in the background (unless a fresh reading is loading or read).
-#[allow(dead_code)] // read by View Usage (a later M11ak task)
 pub fn load_usage(provider: &'static dyn Provider, folder: PathBuf, cx: &mut App) {
     let agent = provider.info().name;
     let Some(probe) = provider.usage_probe() else {
