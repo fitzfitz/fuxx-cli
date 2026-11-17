@@ -91,6 +91,12 @@ impl Provider for Agy {
         conversation_after(args, CONVERSATION_FLAGS, uuid_shaped)
     }
 
+    /// A conversation id is a UUID (`init.conversation_id`). (agy picks a new conversation's
+    /// id itself: `fresh_conversation_id` stays None.)
+    fn is_conversation_id(&self, id: &str) -> bool {
+        uuid_shaped(id)
+    }
+
     fn translator(&self) -> Box<dyn Translator> {
         Box::new(AgyTranslator::default())
     }
@@ -344,6 +350,7 @@ mod tests {
         Start {
             cwd: PathBuf::from("/tmp/fx"),
             resume: resume.map(String::from),
+            new_id: None,
             mode: mode.map(String::from),
             extra_args: extra.iter().map(|s| s.to_string()).collect(),
         }
@@ -661,5 +668,19 @@ mod tests {
         assert!(!i.interrupts);
         assert_eq!(i.modes, ["accept-edits", "auto", "plan"]);
         assert_eq!(i.default_mode, Some("accept-edits"));
+    }
+
+    /// agy can't be told the id of a new conversation (Ruling 40: its crash orphan is a limit),
+    /// and only an id of its shape is ever typed into a shell (the classic view).
+    #[test]
+    fn agy_chooses_its_own_ids() {
+        assert_eq!(AGY.fresh_conversation_id(), None);
+        let s = Start {
+            new_id: Some("6a1c234d-7469-40ef-b093-c74ad8006c28".into()),
+            ..start(None, None, &[])
+        };
+        assert!(!AGY.argv(&s).iter().any(|w| w.contains("6a1c234d")));
+        assert!(AGY.is_conversation_id("6a1c234d-7469-40ef-b093-c74ad8006c28"));
+        assert!(!AGY.is_conversation_id("6a1c234d; open -a Calculator"));
     }
 }

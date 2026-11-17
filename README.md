@@ -114,7 +114,7 @@ workspaces live in `~/Library/Application Support/fuxx/sessions.json` if you wan
 Inside any fuxx terminal, the `fuxx` command talks to the app:
 
 ```sh
-fuxx ls                                   # every terminal: id, status, name…
+fuxx ls                                   # every terminal and agent tab: id, status, name…
 fuxx new --preset claude --split right    # start an agent next to you (prints its id, e.g. s4)
 fuxx wait s4                              # block until it needs you (or --for done|exit)
 fuxx question s4                          # what's it asking?

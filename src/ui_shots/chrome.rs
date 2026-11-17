@@ -1405,6 +1405,28 @@ pub(super) fn chrome_agent_tabs() {
             "{n}"
         );
     });
+    // Saved as a plain shell: restoring with agents never types a preset of the provider's name
+    // into it (today's might be `claude --continue`: a second writer of this conversation).
+    cx.read(|cx| {
+        let ws = ws.read(cx);
+        let classic = ws.classic_of[&tab].0;
+        let at = ws
+            .sessions
+            .items()
+            .iter()
+            .position(|s| s.id == classic)
+            .expect("it runs");
+        let saved = &ws.saved_state().sessions[at];
+        assert_eq!(
+            saved.preset, None,
+            "{n}: the classic view saved with no preset"
+        );
+        assert_eq!(saved.agent, None, "{n}: nor an agent");
+        let presets = &cx.global::<crate::appearance::Appearance>().presets;
+        let launch = crate::restore::launch(saved, crate::restore::RestoreMode::Agents, presets)
+            .expect("restored");
+        assert!(!launch.run_preset, "{n}: restored as a shell");
+    });
     // R13: sending from the paused tab while its classic terminal still runs `claude` warns and
     // keeps the text (never a second writer); once it doesn't, the tab resumes and sends.
     let classic = cx.read(|cx| ws.read(cx).classic_of[&tab].0);
@@ -1575,6 +1597,25 @@ pub(super) fn chrome_agent_tabs() {
         reopened.is_some_and(|id| id != classic),
         "{n}: the new classic view noted"
     );
+    // Its terminal is lost (the background service's connection went: it may still run there)
+    // and then closed: its classic view is not forgotten (R13, fail closed).
+    let reopened = reopened.expect("noted");
+    on_ws(&mut cx, window, ws, |ws, window, cx| {
+        let at = ws.index_of(reopened).expect("it runs");
+        ws.sessions.get_mut(at).expect("it runs").lost = true;
+        ws.close_at(at, window, cx);
+        ws.select_tab(tab, window, cx);
+    });
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let ws = ws.read(cx);
+        assert_eq!(ws.index_of(reopened), None, "{n}: the lost terminal closed");
+        assert_eq!(
+            ws.classic_of.get(&tab).map(|c| c.0),
+            Some(reopened),
+            "{n}: a lost classic terminal stays noted"
+        );
+    });
     // Its classic terminal no longer noted again, and nothing holds it: a send starts its
     // check, then Open in classic view while that check runs does nothing (the check could
     // answer Free and resume the tab beside a classic view opened meanwhile).

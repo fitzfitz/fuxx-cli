@@ -1353,6 +1353,10 @@ impl Workspace {
             }
         }
         let (workspaces, active_workspace) = self.model.to_saved(|id| self.index_of(id));
+        // An agent tab's classic view (R13) is saved as a plain shell: restoring with agents
+        // would type today's preset of the provider's name into it (`--continue`, say: a second
+        // writer of the tab's conversation), so it keeps neither its preset nor its agent.
+        let classic: HashSet<u64> = self.classic_of.values().map(|&(sid, _)| sid).collect();
         SavedState {
             version: restore::VERSION,
             active: self.sessions.active_index(),
@@ -1369,7 +1373,7 @@ impl Workspace {
                 .map(|s| SavedSession {
                     name: s.name.clone(),
                     project: s.project.clone(),
-                    preset: s.preset.clone(),
+                    preset: s.preset.clone().filter(|_| !classic.contains(&s.id)),
                     daemon_id: self.daemon_backed().then_some(s.id),
                     ssh: s.ssh.clone(),
                     // Colours are the workspaces' now (M11b).
@@ -1386,9 +1390,7 @@ impl Workspace {
                                 .or_else(|| self.places.folder(s.id).map(Path::to_path_buf))
                         })
                         .flatten(),
-                    agent: s
-                        .ssh
-                        .is_none()
+                    agent: (s.ssh.is_none() && !classic.contains(&s.id))
                         .then(|| self.agents_now.get(&s.id).cloned())
                         .flatten(),
                 })
@@ -2388,16 +2390,19 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((session_id, service)) = self
+        let Some((session_id, service, lost)) = self
             .sessions
             .items()
             .get(index)
-            .map(|s| (s.id, s.view.read(cx).daemon_id() == Some(s.id)))
+            .map(|s| (s.id, s.view.read(cx).daemon_id() == Some(s.id), s.lost))
         else {
             return;
         };
-        // An agent tab's classic view in it: forgotten (R13).
-        self.classic_terminal_closed(session_id, service);
+        // An agent tab's classic view in it: forgotten (R13). Not a lost one's: the service may
+        // still run it, so its note and saved id stay (fail closed).
+        if !lost {
+            self.classic_terminal_closed(session_id, service);
+        }
         // While its row number and name still stand.
         self.emit(&Event::Closed, Some(index));
         // Waits get a last look at its screen and status (PASS printed just before the shell

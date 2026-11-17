@@ -87,7 +87,9 @@ pub enum AgentTabEvent {
     Question(Option<String>),
     /// The first line of your first message (once).
     Title(String),
-    /// The conversation's id, when the agent first reports it (once).
+    /// The conversation's id: when your first message goes to a new conversation started under
+    /// an id fuxx chose, when the agent reports it, and again whenever it changes (an agent's
+    /// `/clear` may go on under a new id).
     Conversation(String),
     /// The error tab's Close.
     Close,
@@ -387,11 +389,14 @@ struct Row {
     blocks: Option<Rc<Vec<Md>>>,
 }
 
-/// This run of the process: what it was asked to resume, whether it said it started, where its
-/// rows begin, and what was sent during it (sent again if the resume fails).
+/// This run of the process: what it was asked to resume (until the agent says it started it),
+/// the id fuxx chose for it (a new conversation: `Provider::fresh_conversation_id`), whether it
+/// said it started, where its rows begin, and what was sent during it (sent again if the resume
+/// fails).
 #[derive(Default)]
 struct Run {
     resume: Option<String>,
+    fresh: Option<String>,
     started: bool,
     first_item: usize,
     sends: Vec<(String, Vec<String>)>,
@@ -417,7 +422,7 @@ struct Said {
     status: Option<Status>,
     question: Option<String>,
     title: bool,
-    conversation: bool,
+    conversation: Option<String>,
 }
 
 pub struct AgentTab {
@@ -448,6 +453,11 @@ pub struct AgentTab {
     paused: bool,
     queued: Vec<(String, Vec<String>)>,
     run: Run,
+    /// The id fuxx chose for a new conversation, taken as the tab's conversation at your first
+    /// message, while the agent hasn't said it started under it: a restart then starts a new
+    /// conversation again (under a new id: an agent may refuse an id used before) instead of
+    /// resuming one that may never have been made.
+    unconfirmed: Option<String>,
     /// Scenes: no process is ever started.
     no_process: bool,
     list: ListState,
@@ -687,6 +697,12 @@ impl AgentTab {
         self.stop_pressed(cx);
     }
 
+    /// Force stop, as its button does once offered.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_force_stop(&mut self, cx: &mut Context<Self>) {
+        self.force_stop(cx);
+    }
+
     /// Whether the `@` list has hits (scenes wait for the ranking).
     #[cfg(feature = "ui-shots")]
     pub fn at_hits(&self) -> usize {
@@ -727,6 +743,7 @@ impl AgentTab {
             paused: false,
             queued: Vec::new(),
             run: Run::default(),
+            unconfirmed: None,
             no_process: false,
             list,
             rows: Vec::new(),
@@ -868,8 +885,9 @@ impl AgentTab {
     /// A message from the paused tab (`ResumeAsked`), now that the Workspace knows whether
     /// another process holds the conversation (`holder`, from a fresh `ps`; `terminal`: the
     /// classic view's name, while it is open). Sent (the process started again with
-    /// `--resume`, the box cleared), or a notice saying why not with `text` left in the box:
-    /// never a second writer of one conversation, nor a start without an answer.
+    /// `--resume`, the box cleared unless you edited it during the check), or a notice saying
+    /// why not with `text` left in the box: never a second writer of one conversation, nor a
+    /// start without an answer.
     pub fn resume_after_classic(
         &mut self,
         text: String,
@@ -878,6 +896,7 @@ impl AgentTab {
         cx: &mut Context<Self>,
     ) {
         use crate::workspace_agent::{AfterClassic, after_classic, held_notice};
+        let sent = text.clone();
         match after_classic(self.paused, holder != Holder::Free) {
             AfterClassic::Warn => {
                 let notice = held_notice(self.label(), &holder, terminal.as_deref());
@@ -893,8 +912,11 @@ impl AgentTab {
             }
             AfterClassic::Send => self.send(text, cx),
         }
-        self.composer
-            .update(cx, |c, cx| c.set_text(String::new(), cx));
+        // What was typed while the check ran stays.
+        if self.composer.read(cx).text() == sent {
+            self.composer
+                .update(cx, |c, cx| c.set_text(String::new(), cx));
+        }
     }
 
     /// Whether the tab is paused for "Open in classic view".
@@ -959,19 +981,42 @@ impl AgentTab {
         }
     }
 
-    /// Show what you said and send it to the running process.
+    /// Show what you said and send it to the running process. The first message of a new
+    /// conversation started under an id fuxx chose makes that id the tab's conversation at once
+    /// (told, so saved: a process left running by a crash is found holding it, R13).
     fn say(&mut self, text: String, attachments: Vec<String>) {
+        if let Some(id) = self.run.fresh.clone()
+            && !self.run.started
+            && self.conversation.conversation() != Some(id.as_str())
+        {
+            self.conversation.apply(Event::Started {
+                conversation: id.clone(),
+                model: None,
+            });
+            self.unconfirmed = Some(id);
+        }
         let wire = wire_text(&text, &attachments);
         self.conversation.you(text.clone(), attachments.clone());
         self.run.sends.push((text, attachments));
         self.write(&Action::Send { text: wire });
     }
 
-    /// Start (or start again) the agent, resuming `resume`.
+    /// Start (or start again) the agent, resuming `resume`; with none, a new conversation (under
+    /// an id fuxx chooses, if the provider takes one).
     fn spawn_process(&mut self, resume: Option<String>, cx: &mut Context<Self>) {
         self.end_process();
+        // A process ended and not yet reported (Force stop within `END_WAIT`) never will be:
+        // sends go to this one.
+        self.ending = false;
+        // A chosen id the agent never said it took may never have been made: a new one again.
+        let resume = resume.filter(|id| self.unconfirmed.as_ref() != Some(id));
+        let fresh = match (&resume, self.provider) {
+            (None, Some(provider)) => provider.fresh_conversation_id(),
+            _ => None,
+        };
         self.run = Run {
             resume: resume.clone(),
+            fresh: fresh.clone(),
             started: false,
             first_item: self.conversation.items().len(),
             sends: Vec::new(),
@@ -983,6 +1028,7 @@ impl AgentTab {
         };
         let start = Start {
             resume,
+            new_id: fresh,
             ..self.start.clone()
         };
         let argv = provider.argv(&start);
@@ -1134,6 +1180,8 @@ impl AgentTab {
             let why = format!("Couldn't start {label}: {why}");
             self.conversation.failed_to_start(&why);
             cx.emit(AgentTabEvent::Failed(why));
+            // What waited for this run goes back into the box: you send it again.
+            self.unqueue(cx);
         } else if failed_resume {
             let sends = std::mem::take(&mut self.run.sends);
             // The "restored" notice said there was a conversation; there isn't.
@@ -1177,14 +1225,17 @@ impl AgentTab {
             match &event {
                 Event::Started { conversation, .. } => {
                     self.run.started = true;
+                    self.unconfirmed = None;
                     // Asked to resume one conversation, the agent began another: the one asked
                     // for is gone, and this is a new one (the id it reported is kept).
                     if self.run.resume.as_ref().is_some_and(|r| r != conversation) {
-                        self.run.resume = None;
                         self.start.resume = None;
                         self.conversation
                             .replace_notice(RESTORED_NOTICE, BAD_RESUME_NOTICE);
                     }
+                    // The resume is settled: a later id in this run (an agent's `/clear`) is the
+                    // conversation going on under it, followed (`after_change`), not a failure.
+                    self.run.resume = None;
                 }
                 Event::ToolStarted { id, .. } => {
                     self.tool_started.insert(id.clone(), Instant::now());
@@ -1220,10 +1271,10 @@ impl AgentTab {
             self.said.title = true;
             cx.emit(AgentTabEvent::Title(title));
         }
-        if !self.said.conversation
-            && let Some(id) = self.conversation.conversation()
+        if let Some(id) = self.conversation.conversation()
+            && self.said.conversation.as_deref() != Some(id)
         {
-            self.said.conversation = true;
+            self.said.conversation = Some(id.to_string());
             cx.emit(AgentTabEvent::Conversation(id.to_string()));
         }
         self.update_placeholder(cx);

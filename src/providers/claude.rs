@@ -30,6 +30,7 @@ const OWNED_FLAGS: &[(&str, bool)] = &[
     ("--permission-prompts", true),
     ("--resume", true),
     ("-r", true),
+    ("--session-id", true),
     ("--continue", false),
     ("-c", false),
 ];
@@ -57,11 +58,25 @@ impl Provider for Claude {
         ]
         .map(String::from)
         .to_vec();
-        if let Some(id) = &start.resume {
-            a.extend(["--resume".to_string(), id.clone()]);
+        match (&start.resume, &start.new_id) {
+            (Some(id), _) => a.extend(["--resume".to_string(), id.clone()]),
+            // A new conversation under the id fuxx chose: init reports that same id (checked
+            // with Claude Code 2.1.326; an id already used is refused).
+            (None, Some(id)) => a.extend(["--session-id".to_string(), id.clone()]),
+            (None, None) => {}
         }
         a.extend(pass_through(&start.extra_args, OWNED_FLAGS));
         a
+    }
+
+    /// A session id is a UUID.
+    fn is_conversation_id(&self, id: &str) -> bool {
+        uuid_shaped(id)
+    }
+
+    /// Claude takes `--session-id <uuid>` for a new conversation, so fuxx picks one.
+    fn fresh_conversation_id(&self) -> Option<String> {
+        new_uuid()
     }
 
     fn classic_argv(&self, conversation: &str) -> Vec<String> {
@@ -1015,6 +1030,7 @@ mod tests {
         let start = Start {
             cwd: PathBuf::from("/nonexistent/fuxx-test"),
             resume: Some("no-such-id".into()),
+            new_id: None,
             mode: None,
             extra_args: Vec::new(),
         };
@@ -1255,6 +1271,7 @@ mod tests {
         let s = Start {
             cwd: "/tmp".into(),
             resume: None,
+            new_id: None,
             mode: None,
             extra_args: vec![
                 "--model".into(),
@@ -1280,6 +1297,7 @@ mod tests {
         let s = Start {
             cwd: "/tmp".into(),
             resume: Some("abc".into()),
+            new_id: None,
             mode: None,
             extra_args: [
                 "--output-format",
@@ -1365,5 +1383,61 @@ mod tests {
     #[test]
     fn classic_argv_resumes_the_conversation() {
         assert_eq!(CLAUDE.classic_argv("abc"), ["claude", "--resume", "abc"]);
+    }
+
+    /// Ruling 40: a new conversation starts under an id fuxx chose (`--session-id`), so `ps`
+    /// names it from the first moment (a crash's orphan still holds it, R13).
+    #[test]
+    fn a_new_conversation_starts_under_the_id_fuxx_chose() {
+        let id = CLAUDE
+            .fresh_conversation_id()
+            .expect("Claude takes a chosen id");
+        assert!(uuid_shaped(&id), "{id}");
+        assert_ne!(
+            CLAUDE.fresh_conversation_id(),
+            Some(id.clone()),
+            "a new one each time"
+        );
+        let fresh = Start {
+            cwd: "/tmp".into(),
+            resume: None,
+            new_id: Some(id.clone()),
+            mode: None,
+            extra_args: ["--session-id", "mine", "--model", "sonnet"]
+                .map(String::from)
+                .to_vec(),
+        };
+        let a = CLAUDE.argv(&fresh);
+        assert!(
+            a.windows(2).any(|w| w == ["--session-id", id.as_str()]),
+            "{a:?}"
+        );
+        assert_eq!(
+            a.iter().filter(|w| *w == "--session-id").count(),
+            1,
+            "{a:?}"
+        );
+        assert!(
+            !a.contains(&"mine".to_string()),
+            "a preset's own id is dropped: {a:?}"
+        );
+        assert_eq!(CLAUDE.conversation_in_args(&a.join(" ")), Some(id.clone()));
+        // Resuming, the chosen id plays no part.
+        let resumed = Start {
+            resume: Some("abc".into()),
+            ..fresh
+        };
+        let a = CLAUDE.argv(&resumed);
+        assert!(a.windows(2).any(|w| w == ["--resume", "abc"]));
+        assert!(!a.contains(&"--session-id".to_string()), "{a:?}");
+    }
+
+    /// Only an id of Claude's shape is ever typed into a shell (the classic view).
+    #[test]
+    fn a_conversation_id_is_a_session_id() {
+        assert!(CLAUDE.is_conversation_id("0b3c4a5e-1f2d-4e6a-9b8c-7d6e5f4a3b2c"));
+        assert!(!CLAUDE.is_conversation_id("abc"));
+        assert!(!CLAUDE.is_conversation_id("0b3c4a5e-1f2d-4e6a-9b8c-7d6e5f4a3b2c; rm -rf ~"));
+        assert!(!CLAUDE.is_conversation_id(""));
     }
 }

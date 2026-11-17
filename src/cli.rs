@@ -1153,6 +1153,13 @@ mod tests {
         let ev = json!({"event": "status", "session": {"id": 4, "number": 2, "name": "api"}, "from": "working", "to": "waiting", "ts": 43_263_000u64});
         let line = render("events", &ev, false);
         assert!(line.ends_with("  s4 #2 api  working → waiting"), "{line}");
+        // An agent tab's event has no number.
+        let agent = json!({"event": "status.changed", "session": {"id": "a1", "name": "Fix the build"}, "from": "working", "to": "waiting", "ts": 0});
+        let line = render("events", &agent, false);
+        assert!(
+            line.ends_with("  a1 Fix the build  working → waiting"),
+            "{line}"
+        );
         let note = json!({"event": "notification", "title": "fuxx — api", "body": "Needs your input", "ts": 0});
         assert!(
             render("events", &note, false).ends_with("  notification fuxx — api: Needs your input"),
