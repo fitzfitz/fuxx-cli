@@ -185,6 +185,32 @@ pub(super) const SCENES: &[Scene] = &[
             "src/main.rs",
         ],
     },
+    Scene {
+        name: "file-code-sticky",
+        run: file_code_sticky_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/code_outline.rs",
+            "src/row_map.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-code-breadcrumb",
+        run: file_code_breadcrumb_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/code_outline.rs",
+            "src/highlight.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
 ];
 
 /// A file tab (M11g) in a pane beside a terminal's tab: opened twice for one file it is one tab,
@@ -3648,7 +3674,7 @@ fn file_follow_mode_scenes() {
 
 /// `file-code-calm` (both themes; M11ah Task 1): a 14-line Rust file with line 5 pressed. Rows
 /// are the font's line height x 1.2 and the text sits at the new columns; the first row starts
-/// `code::TOP_ROOM` under the body's top; line 5's row has the current band (`text` at 5 %
+/// `code::TOP_ROOM` under the body's top (under the breadcrumb, M11ah Task 6); line 5's row has the current band (`text` at 5 %
 /// over the background, to the right edge) and rows 4 and 6 have none; line 5's number is
 /// drawn in `text`, line 4's in the quiet ink (`text_dim`, held to 3:1).
 fn file_code_calm_scenes() {
@@ -3710,10 +3736,11 @@ fn file_code_calm_scenes() {
             plain_text_left(f32::from(g.cell_width)),
             "{n}: the text at the new columns"
         );
-        // The file bar is 42 pt tall; the first row starts `TOP_ROOM` under it.
+        // The file bar is 42 pt tall; the file has blocks, so the breadcrumb's strip (M11ah Task
+        // 6) is under it; the first row starts `TOP_ROOM` under that.
         assert_eq!(
             f32::from(g.bounds.top()),
-            42.0 + code::TOP_ROOM,
+            42.0 + code::BREADCRUMB + code::TOP_ROOM,
             "{n}: the first row's top"
         );
         let bg = theme.background;
@@ -4441,4 +4468,560 @@ fn file_code_fold_keys_scenes() {
         assert_eq!(g.fold_left, None, "{n}: no blocks, no fold column");
     }
     println!("ui-shots: {n} ok");
+}
+
+/// The sticky line and breadcrumb scenes' file: `impl Session` (0-based line 5) holds
+/// `fn refresh` (line 6, its first line far wider than the view, in tall letters), whose 30 lines
+/// (7..37) and `}` follow; then `fn small` (line 39).
+fn sticky_fixture() -> String {
+    let mut text = String::from(
+        "// A session, for the sticky line and breadcrumb scenes.\nstruct Session {\n    id: u32,\n}\n\nimpl Session {\n",
+    );
+    text.push_str(&format!(
+        "    fn refresh(&mut self, data: {}) {{\n",
+        "H".repeat(200)
+    ));
+    for k in 7..37 {
+        text.push_str(&format!("        let v{k} = {k};\n"));
+    }
+    text.push_str("    }\n\n    fn small(&self) {\n        let z = 0;\n    }\n}\n");
+    text
+}
+
+/// The pixel in `b` (window points) that stands out most from `bg`: a part's ink.
+fn ink_in(
+    shot: &Shot,
+    dims: gpui::Size<gpui::Pixels>,
+    b: gpui::Bounds<gpui::Pixels>,
+    bg: [u8; 3],
+) -> [u8; 3] {
+    let (x0, y0) = (f32::from(b.left()), f32::from(b.top()));
+    let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+    let far = |p: [u8; 3]| {
+        p.iter()
+            .zip(bg)
+            .map(|(a, b)| u32::from(a.abs_diff(b)))
+            .sum::<u32>()
+    };
+    let mut best = bg;
+    for i in 0..(w * 2.0) as usize {
+        for j in 0..(h * 2.0) as usize {
+            let p = pixel_at(shot, dims, x0 + i as f32 * 0.5, y0 + j as f32 * 0.5);
+            if far(p) > far(best) {
+                best = p;
+            }
+        }
+    }
+    best
+}
+
+/// `file-code-sticky` (both themes; M11ah Task 6): scrolled into `fn refresh`, its first line is
+/// pinned over the text's first row with its number, on the background, a 1 pt `divider` under
+/// it; with Wrap on it is one row, cut with "…"; a press on it scrolls back (that line on top,
+/// current, Follow off); Follow and a find step land below it (`REVEAL_ABOVE` rows under it), and
+/// a match under it is scrolled clear of it. The line exactly at the top has none over it.
+fn file_code_sticky_scenes() {
+    use crate::ui_tokens::code;
+    use gpui::{Focusable, Modifiers, MouseButton};
+
+    let path = live_file("sticky.rs", &sticky_fixture());
+    let dims = size(px(760.0), px(400.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = theme.background;
+        let bg3 = [bg.r, bg.g, bg.b];
+        // Scrolled so line 16 (0-based 15) is at the top.
+        let n = format!("file-code-sticky-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            // Line 16 (0-based 15, under the sticky line) and line 17 current: their band.
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_scroll(point(px(0.0), g.line_height * 15.0), cx);
+                    t.set_current_for_shots(Some(15), cx);
+                })
+            });
+            live_frame(cx, window);
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).sticky_line()),
+                Some(6),
+                "file-code-sticky: fn refresh pinned"
+            );
+        });
+        keep_shot(&n, &shot);
+        let lh = f32::from(g.line_height);
+        let top = f32::from(g.bounds.top());
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        let cell = |k: usize| f32::from(g.bounds.left() + g.text_left + g.cell_width * k as f32);
+        let row_box = |x0: f32, x1: f32, row: usize| {
+            gpui::Bounds::from_corners(
+                point(px(x0), px(top + lh * row as f32 + 2.0)),
+                point(px(x1), px(top + lh * (row as f32 + 1.0) - 2.0)),
+            )
+        };
+        // Its text: `fn` from cell 4 (line 16 has spaces there, its `let` at cell 8).
+        let fn_ink = ink_in(&shot, dims, row_box(cell(4), cell(6), 0), bg3);
+        assert!(
+            !live_near(fn_ink, bg, 40),
+            "{n}: `fn` drawn at cell 4 of row 0"
+        );
+        // Its number: 7, in the numbers' column.
+        let right = f32::from(g.bounds.left() + g.numbers_right);
+        let number = ink_in(
+            &shot,
+            dims,
+            row_box(right - f32::from(g.cell_width), right, 0),
+            bg3,
+        );
+        assert!(!live_near(number, bg, 40), "{n}: its number");
+        // On the background (the far right of its row), a divider 1 pt under it.
+        // On the background: the current line's band under it is covered.
+        let gutter = f32::from(g.bounds.left()) + 4.0;
+        let ground = at(gutter, top + lh * 0.5);
+        assert!(
+            live_near(ground, bg, 1),
+            "{n}: on the background {ground:?}"
+        );
+        let far = f32::from(g.bounds.right()) - 30.0;
+        let rule = at(far, top + lh + code::STICKY_RULE / 2.0);
+        assert!(
+            live_near(rule, ui.divider, 8),
+            "{n}: the divider {rule:?}, not {:?}",
+            ui.divider
+        );
+        assert!(
+            live_near(at(far, top + lh + 4.0), bg, 2),
+            "{n}: one point only"
+        );
+        println!("ui-shots: {n} ok");
+
+        // Wrap on: one row, cut with "…" (dots on the baseline, where `H` would stand tall).
+        let n = format!("file-code-sticky-wrap-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().file_wrap = true);
+            live_frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_scroll(point(px(0.0), g.line_height * 20.0), cx)
+                })
+            });
+            live_frame(cx, window);
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).sticky_line()),
+                Some(6),
+                "file-code-sticky-wrap"
+            );
+        });
+        keep_shot(&n, &shot);
+        let (lh, top) = (f32::from(g.line_height), f32::from(g.bounds.top()));
+        let cw = f32::from(g.cell_width);
+        let text_x = f32::from(g.bounds.left() + g.text_left);
+        let columns = ((f32::from(g.bounds.size.width) - f32::from(g.text_left) - 24.0) / cw)
+            .floor() as usize;
+        let upper = |k: usize, row: usize| {
+            gpui::Bounds::from_corners(
+                point(
+                    px(text_x + cw * k as f32 + 1.0),
+                    px(top + lh * row as f32 + lh * 0.2),
+                ),
+                point(
+                    px(text_x + cw * (k + 1) as f32 - 1.0),
+                    px(top + lh * row as f32 + lh * 0.45),
+                ),
+            )
+        };
+        let lower = |k: usize, row: usize| {
+            gpui::Bounds::from_corners(
+                point(
+                    px(text_x + cw * k as f32),
+                    px(top + lh * row as f32 + lh * 0.55),
+                ),
+                point(
+                    px(text_x + cw * (k + 1) as f32),
+                    px(top + lh * row as f32 + lh * 0.85),
+                ),
+            )
+        };
+        let tall = ink_in(&shot, dims, upper(columns - 2, 0), bg3);
+        assert!(
+            !live_near(tall, bg, 40),
+            "{n}: an H before the cut ({columns} cells)"
+        );
+        let dots_top = ink_in(&shot, dims, upper(columns - 1, 0), bg3);
+        assert!(
+            live_near(dots_top, bg, 30),
+            "{n}: no H in the last cell {dots_top:?}"
+        );
+        let dots = ink_in(&shot, dims, lower(columns - 1, 0), bg3);
+        assert!(!live_near(dots, bg, 40), "{n}: the … in the last cell");
+        // One row: the row under it is another line's (its `let`, at cell 8; nothing at 4).
+        let under = ink_in(&shot, dims, upper(4, 1), bg3);
+        assert!(live_near(under, bg, 30), "{n}: one row only");
+        println!("ui-shots: {n} ok");
+    }
+
+    // State: the press, Follow, and Find.
+    let n = "file-code-sticky-state";
+    let theme = shot_theme(shot_themes()[0].1);
+    code_shot(&theme, &path, dims, |cx, window, tab| {
+        let none = Modifiers::none();
+        let read = |cx: &mut VisualTestAppContext| {
+            live_frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let g = t.geom().expect("drawn");
+                let top = (f32::from(g.scroll.y) / f32::from(g.line_height)).round() as usize;
+                (top, t.sticky_line(), t.current_line(), t.follow_on(), g)
+            })
+        };
+        let scroll_to = |cx: &mut VisualTestAppContext, row: usize| {
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_scroll(point(px(0.0), g.line_height * row as f32), cx)
+                })
+            });
+        };
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+        live_frame(cx, window);
+        // Exactly at a block's own first line it is not pinned (`impl Session` has nothing
+        // above it; `fn refresh` has `impl Session` pinned); one point further, it is.
+        scroll_to(cx, 5);
+        assert_eq!(read(cx).1, None, "{n}: none at impl's own first line");
+        scroll_to(cx, 6);
+        assert_eq!(
+            read(cx).1,
+            Some(5),
+            "{n}: at fn refresh's own first line, impl"
+        );
+        let g = read(cx).4;
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), g.line_height * 6.0 + px(2.0)), cx)
+            })
+        });
+        assert_eq!(
+            read(cx).1,
+            Some(6),
+            "{n}: pinned once its line scrolls above the top"
+        );
+        // A press on it: back to its line, on top and current; Follow off.
+        scroll_to(cx, 15);
+        let codex = crate::live_lines::Who::Agent(crate::edit_ledger::agent_mark_for("codex"));
+        let record = live_record(
+            43,
+            &[(33..34, codex.clone(), crate::live_lines::Sure::Exact, 2)],
+        );
+        cx.update(|cx| {
+            tab.update(cx, |t, _| {
+                t.set_live_for_shot(record, live_now(), Some(true))
+            })
+        });
+        let (_, sticky, _, follow, g) = read(cx);
+        assert_eq!((sticky, follow), (Some(6), true), "{n}");
+        let on = point(
+            g.bounds.left() + g.text_left + px(40.0),
+            g.bounds.top() + g.line_height * 0.5,
+        );
+        cx.simulate_mouse_down(window, on, MouseButton::Left, none);
+        cx.simulate_mouse_up(window, on, MouseButton::Left, none);
+        let (top, sticky, current, follow, _) = read(cx);
+        assert_eq!(top, 6, "{n}: the press puts its line on top");
+        assert_eq!(current, Some(6), "{n}: and makes it current");
+        assert_eq!(
+            sticky,
+            Some(5),
+            "{n}: not itself pinned now (impl, above it, is)"
+        );
+        assert!(!follow, "{n}: a press on it ends Follow");
+        // Follow: the agent's change (line 27, 0-based 26) out of view lands 3 rows under the
+        // sticky line.
+        scroll_to(cx, 0);
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                let record = live_record(
+                    43,
+                    &[(26..27, codex.clone(), crate::live_lines::Sure::Exact, 2)],
+                );
+                t.set_live_for_shot(record, live_now(), Some(true));
+                t.follow_for_shots(cx);
+            })
+        });
+        let (top, sticky, _, follow, _) = read(cx);
+        assert_eq!(sticky, Some(6), "{n}: Follow under the sticky line");
+        assert_eq!(top, 26 - 4, "{n}: the change 3 rows below the sticky line");
+        assert!(follow, "{n}: Follow stays on");
+        // Find: a new query's match off screen lands 3 rows under the sticky line.
+        scroll_to(cx, 0);
+        cx.simulate_keystrokes(window, "cmd-f");
+        cx.simulate_input(window, "v25 ");
+        let (top, sticky, _, _, _) = read(cx);
+        assert_eq!(cx.read(|cx| tab.read(cx).find_label()), "1 of 1", "{n}");
+        assert_eq!(
+            (top, sticky),
+            (25 - 4, Some(6)),
+            "{n}: the find lands below it"
+        );
+        // A match under the sticky line (its line at the top) is scrolled clear of it by a
+        // step, which makes its line current.
+        scroll_to(cx, 25);
+        assert_eq!(read(cx).1, Some(6), "{n}");
+        cx.simulate_keystrokes(window, "cmd-g");
+        let (top, _, current, _, _) = read(cx);
+        assert_eq!(
+            (top, current),
+            (25 - 4, Some(25)),
+            "{n}: the step's match scrolled clear of the sticky line"
+        );
+    });
+    println!("ui-shots: {n} ok");
+}
+
+/// `file-code-breadcrumb` (both themes; M11ah Task 6): a strip `code::BREADCRUMB` tall under the
+/// file bar (under the find bar when open), its parts in `text_dim` and the last in `text`:
+/// `sticky.rs › impl Session › fn refresh(…`; narrow, `… › fn refresh(…`; a press on a part puts
+/// its line on top and current and ends Follow; the file's name goes to the top. No strip in Diff,
+/// in Preview, or for a flat text file; the text's top is the same with names (colours) or none.
+fn file_code_breadcrumb_scenes() {
+    use crate::ui_tokens::code;
+    use gpui::{Modifiers, MouseButton};
+
+    let text = sticky_fixture();
+    let path = live_file("sticky-crumbs.rs", &text);
+    // The same blocks in a file nothing colours: no names.
+    let unnamed = live_file("sticky-crumbs.zz", &text);
+    let flat = live_file("crumbs-flat.txt", "one\ntwo\nthree\n");
+    let md = live_file(
+        "crumbs.md",
+        "# Notes\n\nSome words.\n\n## More\n\nOther words.\n",
+    );
+    let dims = size(px(760.0), px(400.0));
+    let bar = 42.0;
+    let fn_words = "fn refresh(&mut self, data: HHHH\u{2026}";
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg3 = [theme.background.r, theme.background.g, theme.background.b];
+        let n = format!("file-code-breadcrumb-{slug}");
+        let drawn = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let keep = drawn.clone();
+        let (shot, g) = code_shot(&theme, &path, dims, move |cx, window, tab| {
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_scroll(point(px(0.0), g.line_height * 15.0), cx)
+                })
+            });
+            live_frame(cx, window);
+            *keep.borrow_mut() = cx.read(|cx| tab.read(cx).crumbs_drawn());
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).crumb_words()),
+                ["sticky-crumbs.rs", "impl Session", fn_words],
+                "file-code-breadcrumb: the path"
+            );
+        });
+        keep_shot(&n, &shot);
+        let parts = drawn.borrow().clone();
+        let words: Vec<&str> = parts.iter().map(|(_, w)| w.as_str()).collect();
+        assert_eq!(
+            words,
+            ["sticky-crumbs.rs", "impl Session", fn_words],
+            "{n}: all fit"
+        );
+        // The strip: 26 pt under the bar, the text's room under it.
+        let strip = parts[0].0;
+        assert_eq!(f32::from(strip.top()), bar, "{n}: under the bar");
+        assert_eq!(
+            f32::from(strip.size.height),
+            code::BREADCRUMB,
+            "{n}: 26 pt tall"
+        );
+        assert_eq!(
+            f32::from(g.bounds.top()),
+            bar + code::BREADCRUMB + code::TOP_ROOM,
+            "{n}: the text under the strip"
+        );
+        // Parts in text_dim, the last in text.
+        let first = ink_in(&shot, dims, parts[0].0, bg3);
+        let last = ink_in(&shot, dims, parts[2].0, bg3);
+        assert!(
+            live_near(first, ui.text_dim, 40),
+            "{n}: the file's name {first:?}, not {:?}",
+            ui.text_dim
+        );
+        assert!(
+            live_near(last, ui.text, 40),
+            "{n}: the last part {last:?}, not {:?}",
+            ui.text
+        );
+        assert!(
+            parts[0].0.right() < parts[1].0.left(),
+            "{n}: a separator between"
+        );
+        println!("ui-shots: {n} ok");
+
+        // Narrow: the outer parts fold into "…"; the innermost stays.
+        let n = format!("file-code-breadcrumb-narrow-{slug}");
+        let narrow = size(px(300.0), px(300.0));
+        let drawn = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let keep = drawn.clone();
+        let (shot, _) = code_shot(&theme, &path, narrow, move |cx, window, tab| {
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_scroll(point(px(0.0), g.line_height * 15.0), cx)
+                })
+            });
+            live_frame(cx, window);
+            *keep.borrow_mut() = cx.read(|cx| tab.read(cx).crumbs_drawn());
+        });
+        keep_shot(&n, &shot);
+        let words: Vec<String> = drawn.borrow().iter().map(|(_, w)| w.clone()).collect();
+        assert_eq!(words, ["\u{2026}", fn_words], "{n}: … › fn refresh");
+        println!("ui-shots: {n} ok");
+    }
+
+    // State: presses, the find bar, other modes, other files.
+    let n = "file-code-breadcrumb-state";
+    let theme = shot_theme(shot_themes()[0].1);
+    let (_, named) = code_shot(&theme, &path, dims, |cx, window, tab| {
+        let none = Modifiers::none();
+        let read = |cx: &mut VisualTestAppContext| {
+            live_frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let g = t.geom().expect("drawn");
+                let top = (f32::from(g.scroll.y) / f32::from(g.line_height)).round() as usize;
+                (top, t.current_line(), t.follow_on(), t.crumbs_drawn(), g)
+            })
+        };
+        let press = |cx: &mut VisualTestAppContext, at: gpui::Point<gpui::Pixels>| {
+            cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+            cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+        };
+        let g = read(cx).4;
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), g.line_height * 15.0), cx)
+            })
+        });
+        // The current line elsewhere (fn small's): the breadcrumb follows the top, not it.
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_current_for_shots(Some(40), cx)));
+        let codex = crate::live_lines::Who::Agent(crate::edit_ledger::agent_mark_for("codex"));
+        let record = live_record(43, &[(33..34, codex, crate::live_lines::Sure::Exact, 2)]);
+        cx.update(|cx| {
+            tab.update(cx, |t, _| {
+                t.set_live_for_shot(record, live_now(), Some(true))
+            })
+        });
+        let (_, current, follow, parts, _) = read(cx);
+        assert_eq!((current, follow), (Some(40), true), "{n}");
+        assert_eq!(
+            parts[1].1, "impl Session",
+            "{n}: the top's path, not the current line's"
+        );
+        // A press on `impl Session`: its line on top, current; Follow off.
+        press(cx, parts[1].0.center());
+        let (top, current, follow, _, _) = read(cx);
+        assert_eq!(
+            (top, current, follow),
+            (5, Some(5), false),
+            "{n}: a part's press"
+        );
+        // The file's name: the top.
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), g.line_height * 15.0), cx)
+            })
+        });
+        let parts = read(cx).3;
+        press(cx, parts[0].0.center());
+        let (top, current, _, _, _) = read(cx);
+        assert_eq!(
+            (top, current),
+            (0, Some(5)),
+            "{n}: the file's name goes to the top"
+        );
+        // The find bar open: the strip under it.
+        cx.simulate_keystrokes(window, "cmd-f");
+        let (_, _, _, parts, g) = read(cx);
+        let strip = parts[0].0;
+        assert!(f32::from(strip.top()) > bar, "{n}: under the find bar");
+        assert_eq!(
+            g.bounds.top(),
+            strip.bottom() + px(code::TOP_ROOM),
+            "{n}: the text under the strip"
+        );
+        cx.simulate_keystrokes(window, "escape");
+        // Diff mode: no strip.
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.pretend_in_repo_for_shots(cx);
+                t.choose_mode_for_shots(crate::layout_model::FileMode::Diff, cx);
+            })
+        });
+        assert!(
+            read_drawn(cx, window, tab).is_empty(),
+            "{n}: no strip in Diff"
+        );
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.choose_mode_for_shots(crate::layout_model::FileMode::Plain, cx)
+            })
+        });
+        assert!(
+            !read_drawn(cx, window, tab).is_empty(),
+            "{n}: back in File mode"
+        );
+    });
+    // Names or none (the colours landed, or a file nothing colours): the text's top is the same.
+    let (_, plain) = code_shot(&theme, &unnamed, dims, |_, _, _| {});
+    assert_eq!(
+        named.bounds.top(),
+        plain.bounds.top(),
+        "{n}: the text does not move for names"
+    );
+    // A flat text file: no strip.
+    let (_, g) = code_shot(&theme, &flat, dims, |cx, window, tab| {
+        assert!(
+            read_drawn(cx, window, tab).is_empty(),
+            "{n}: no strip for a flat file"
+        );
+    });
+    assert_eq!(
+        f32::from(g.bounds.top()),
+        bar + code::TOP_ROOM,
+        "{n}: flat: the text under the bar"
+    );
+    // Markdown: a strip in File mode, none in Preview.
+    code_shot(&theme, &md, dims, |cx, window, tab| {
+        assert!(
+            !read_drawn(cx, window, tab).is_empty(),
+            "{n}: Markdown headings in File mode"
+        );
+        cx.update_window(window, |_, window, cx| {
+            tab.update(cx, |t, cx| t.choose_preview_for_shots(true, window, cx))
+        })
+        .expect("preview");
+        assert!(
+            read_drawn(cx, window, tab).is_empty(),
+            "{n}: no strip in Preview"
+        );
+    });
+    println!("ui-shots: {n} ok");
+}
+
+/// The breadcrumb's pieces drawn this frame.
+fn read_drawn(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &gpui::Entity<crate::file_tab::FileTab>,
+) -> Vec<(gpui::Bounds<gpui::Pixels>, String)> {
+    live_frame(cx, window);
+    cx.read(|cx| tab.read(cx).crumbs_drawn())
 }
