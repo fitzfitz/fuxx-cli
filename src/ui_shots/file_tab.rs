@@ -158,6 +158,33 @@ pub(super) const SCENES: &[Scene] = &[
         kind: Kind::Visual,
         sources: &["src/file_tab.rs", "src/ui_tokens.rs"],
     },
+    Scene {
+        name: "file-code-fold",
+        run: file_code_fold_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/code_outline.rs",
+            "src/row_map.rs",
+            "src/live_lines.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-code-fold-keys",
+        run: file_code_fold_keys_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/file_tab.rs",
+            "src/code_outline.rs",
+            "src/row_map.rs",
+            "src/main.rs",
+        ],
+    },
 ];
 
 /// A file tab (M11g) in a pane beside a terminal's tab: opened twice for one file it is one tab,
@@ -2719,11 +2746,17 @@ fn live_near(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, by: u8) -> bool 
         .all(|(a, b)| a.abs_diff(b) <= by)
 }
 
-/// The gutter's text edge with no marks' column: `code::GUTTER_LEFT`, two digits,
-/// `NUMBER_GAP`, `BAR_WIDTH`, `TEXT_GAP`.
+/// The gutter's text edge of a file with blocks (`LIVE_FIXTURE`'s) with no marks' column:
+/// `code::GUTTER_LEFT`, two digits, `NUMBER_GAP`, the fold column (M11ah), `BAR_WIDTH`,
+/// `TEXT_GAP`.
 fn plain_text_left(cell: f32) -> f32 {
     use crate::ui_tokens::code;
-    code::GUTTER_LEFT + 2.0 * cell + code::NUMBER_GAP + code::BAR_WIDTH + code::TEXT_GAP
+    code::GUTTER_LEFT
+        + 2.0 * cell
+        + code::NUMBER_GAP
+        + code::FOLD_COLUMN
+        + code::BAR_WIDTH
+        + code::TEXT_GAP
 }
 
 /// `file-live-glow` (both themes): runs changed 2 s, 20 s, 40 s and 70 s ago (lines 2–3, 6,
@@ -4088,4 +4121,324 @@ fn file_code_bars_scenes() {
         });
         println!("ui-shots: {n} ok");
     }
+}
+
+/// A pixel as a colour.
+fn as_rgb([r, g, b]: [u8; 3]) -> alacritty_terminal::vte::ansi::Rgb {
+    alacritty_terminal::vte::ansi::Rgb { r, g, b }
+}
+
+/// The fold scenes' file: `fn refresh` (0-based line 11) holds 23 lines and its `}` (12..36), so
+/// folded it hides 24; blocks also start on lines 3, 7 and 37.
+fn fold_fixture() -> String {
+    let mut text = String::from(
+        "// A file with a long function, for the fold scenes.\nuse std::fmt;\n\nstruct Session {\n    id: u32,\n}\n\nfn small() {\n    let a = 1;\n}\n\nfn refresh(s: &mut Session) {\n",
+    );
+    for k in 12..35 {
+        text.push_str(&format!("    let v{k} = {k};\n"));
+    }
+    text.push_str("}\n\nfn after() {\n    let z = 0;\n}\n");
+    text
+}
+
+/// `file-code-fold` (both themes; M11ah Task 5): `fn refresh` (line 12) folded, with a git change
+/// (an added line 20) and an agent's warm lines (16, 40 s ago; 26, just now) inside: the fold
+/// column, 14 pt, sits between the numbers and the marks' column; the folded line has its ▸
+/// always, the open blocks' ▾ show only while the pointer is over the gutter; the pill comes
+/// after the folded line's text; the numbers go 12 then 37; the folded line draws the hidden
+/// change's bar, the warmest glow (just now's) and a mark.
+fn file_code_fold_scenes() {
+    use crate::file_tab::{GLOW, WARM_RGB};
+    use crate::git_status::LineChange;
+    use crate::live_lines::{Sure, Who};
+    use crate::theme::mix;
+    use crate::ui_tokens::{MARK_MIN, code, ensure_contrast};
+
+    let path = live_file("fold.rs", &fold_fixture());
+    let dims = size(px(760.0), px(400.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let bg = theme.background;
+        let green = ensure_contrast(theme.palette[2], bg, MARK_MIN);
+        let rows = std::rc::Rc::new(std::cell::Cell::new([None; 3]));
+        let seen = rows.clone();
+        let shoot = |hover: bool| {
+            let seen = seen.clone();
+            code_shot(&theme, &path, dims, move |cx, window, tab| {
+                let record = live_record(
+                    40,
+                    &[
+                        (
+                            15..16,
+                            Who::Agent(crate::edit_ledger::agent_mark_for("codex")),
+                            Sure::Exact,
+                            40,
+                        ),
+                        (
+                            25..26,
+                            Who::Agent(crate::edit_ledger::agent_mark_for("codex")),
+                            Sure::Exact,
+                            2,
+                        ),
+                    ],
+                );
+                cx.update(|cx| {
+                    tab.update(cx, |t, cx| {
+                        t.set_live_for_shot(record, live_now(), None);
+                        t.set_changes(vec![(20, LineChange::Added)], cx);
+                        t.fold_for_shots(&[11], cx);
+                    })
+                });
+                live_frame(cx, window);
+                let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+                // The pointer over the gutter (the numbers), or over the text.
+                let x = if hover {
+                    g.bounds.left() + g.numbers_right - px(4.0)
+                } else {
+                    g.bounds.left() + g.text_left + px(200.0)
+                };
+                let at = point(x, g.bounds.top() + g.line_height * 1.5);
+                cx.simulate_mouse_move(window, at, None, gpui::Modifiers::none());
+                live_frame(cx, window);
+                seen.set(cx.read(|cx| {
+                    let t = tab.read(cx);
+                    [t.line_at_row(11), t.line_at_row(12), t.line_at_row(13)]
+                }));
+            })
+        };
+        let n = format!("file-code-fold-{slug}");
+        let (shot, g) = shoot(false);
+        keep_shot(&n, &shot);
+        let lh = f32::from(g.line_height);
+        let mid = |row: usize| f32::from(g.bounds.top()) + lh * (row as f32 + 0.5);
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        // The lines drawn: 12, then 37 (0-based 11, then 36).
+        assert_eq!(
+            rows.get(),
+            [Some(11), Some(36), Some(37)],
+            "{n}: the rows after the fold"
+        );
+        // The columns: numbers · fold (14 pt) · marks · bar · text.
+        let fold_left = g.fold_left.expect("a fold column");
+        let marks_left = g.marks_left.expect("the marks' column");
+        assert_eq!(
+            fold_left,
+            g.numbers_right + px(code::NUMBER_GAP / 2.0),
+            "{n}"
+        );
+        assert_eq!(marks_left, fold_left + px(code::FOLD_COLUMN), "{n}: 14 pt");
+        assert!(
+            g.bar_left >= marks_left + px(16.0),
+            "{n}: the bar after the marks"
+        );
+        let column = |shot: &Shot, row: usize| {
+            let x0 = f32::from(g.bounds.left() + fold_left);
+            (2..26).any(|dx| {
+                (-4..=4).any(|dy| {
+                    let p = pixel_at(shot, dims, x0 + dx as f32 * 0.5, mid(row) + dy as f32);
+                    let ground = pixel_at(shot, dims, x0 + 0.5, mid(row) - lh * 0.4);
+                    !live_near(p, as_rgb(ground), 40)
+                })
+            })
+        };
+        assert!(column(&shot, 11), "{n}: ▸ on the folded line");
+        for row in [3, 7, 13] {
+            assert!(
+                !column(&shot, row),
+                "{n}: no ▾ on row {row} with the pointer away"
+            );
+        }
+        // The folded line: the hidden added line's bar, the warmest glow, a mark.
+        // (The row's glow is drawn over its bar, as on any warm changed line.)
+        let lit_green = mix(green, WARM_RGB, GLOW[2]);
+        let bar = at(f32::from(g.bounds.left() + g.bar_left) + 1.5, mid(11));
+        assert!(
+            live_near(bar, lit_green, 12),
+            "{n}: the bar {bar:?}, not {lit_green:?}"
+        );
+        let right = f32::from(g.bounds.right()) - 30.0;
+        let warm = mix(bg, WARM_RGB, GLOW[2]);
+        let p = at(right, mid(11));
+        assert!(live_near(p, warm, 3), "{n}: the glow {p:?}, not {warm:?}");
+        assert!(live_near(at(right, mid(12)), bg, 1), "{n}: line 37 unlit");
+        let marked = |row: usize| {
+            let x = f32::from(g.bounds.left() + marks_left) + 8.0;
+            let ground = at(x - 7.5, mid(row) - lh * 0.45);
+            (-4..=4).any(|dy| !live_near(at(x, mid(row) + dy as f32), as_rgb(ground), 40))
+        };
+        assert!(marked(11), "{n}: the folded line's mark");
+        assert!(!marked(12), "{n}: no mark on line 37");
+        // The pill: after the folded line's text, its ground and its words.
+        let text_end = f32::from(g.bounds.left() + g.text_left)
+            + f32::from(g.cell_width) * "fn refresh(s: &mut Session) {".len() as f32;
+        let ground = at(text_end + 2.0, mid(11));
+        assert!(live_near(ground, warm, 3), "{n}: the gap before the pill");
+        let pill = at(text_end + code::FOLD_PILL_GAP + 2.0, mid(11));
+        assert!(!live_near(pill, warm, 1), "{n}: the pill's ground {pill:?}");
+        let words = (0..120).any(|dx| {
+            let x = text_end + code::FOLD_PILL_GAP + code::FOLD_PILL_PAD + dx as f32 * 0.5;
+            !live_near(at(x, mid(11)), as_rgb(pill), 30)
+        });
+        assert!(words, "{n}: the pill's words");
+        println!("ui-shots: {n} ok");
+
+        // The pointer over the gutter: the open blocks show ▾ (faint); the folded line keeps ▸.
+        let n = format!("file-code-fold-hover-{slug}");
+        let (shot, _) = shoot(true);
+        keep_shot(&n, &shot);
+        for row in [3, 7, 11] {
+            assert!(column(&shot, row), "{n}: a fold mark on row {row}");
+        }
+        assert!(!column(&shot, 4), "{n}: none inside a block");
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-code-fold-keys` (M11ah Task 5): ⌥⌘[ on the current line folds its innermost block and
+/// ⌥⌘] unfolds it; a press on ▸ or the pill unfolds, on ▾ folds; Fold All / Unfold All; a press
+/// under a fold selects the line drawn there (Review Focus 5); Copy over a fold copies the hidden
+/// lines; a find to a hidden match opens its fold; Follow (on) after an agent's change inside a
+/// fold opens it and stays on; folding turns Follow off; a file with no blocks has no fold column.
+fn file_code_fold_keys_scenes() {
+    use crate::file_tab::{FoldAll, UnfoldAll};
+    use crate::live_lines::{Sure, Who};
+    use gpui::{Focusable, Modifiers, MouseButton};
+
+    let path = live_file("fold-keys.rs", &fold_fixture());
+    let flat = live_file("fold-flat.txt", "one\ntwo\nthree\n");
+    let dims = size(px(760.0), px(400.0));
+    let n = "file-code-fold-keys";
+    for &(_, name) in shot_themes() {
+        let theme = shot_theme(name);
+        code_shot(&theme, &path, dims, |cx, window, tab| {
+            let none = Modifiers::none();
+            let look = |cx: &mut VisualTestAppContext| {
+                live_frame(cx, window);
+                cx.read(|cx| {
+                    let t = tab.read(cx);
+                    (t.folded_lines(), t.current_line(), t.geom().expect("drawn"))
+                })
+            };
+            let row_y = |g: &crate::file_tab::Geom, row: usize| {
+                g.bounds.top() + g.line_height * (row as f32 + 0.5) - g.scroll.y
+            };
+            let press = |cx: &mut VisualTestAppContext, at: gpui::Point<gpui::Pixels>| {
+                cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+                cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+            };
+            cx.update_window(window, |_, window, cx| {
+                tab.read(cx).focus_handle(cx).focus(window, cx)
+            })
+            .expect("focus");
+            let (_, _, g) = look(cx);
+            // A press on line 13 (0-based 12), then ⌥⌘[: `fn refresh` folds, the current
+            // line moves up to it; ⌥⌘] opens it.
+            press(
+                cx,
+                point(g.bounds.left() + g.text_left + px(8.0), row_y(&g, 12)),
+            );
+            let (_, current, _) = look(cx);
+            assert_eq!(current, Some(12), "{n}: the press's line is current");
+            cx.simulate_keystrokes(window, "alt-cmd-[");
+            let (folded, current, _) = look(cx);
+            assert_eq!(folded, [11], "{n}: ⌥⌘[ folds the innermost block");
+            assert_eq!(current, Some(11), "{n}: the current line moves to its fold");
+            assert_eq!(cx.read(|cx| tab.read(cx).line_at_row(12)), Some(36), "{n}");
+            cx.simulate_keystrokes(window, "alt-cmd-]");
+            assert!(look(cx).0.is_empty(), "{n}: ⌥⌘] unfolds it");
+            // The fold column: ▾ folds, ▸ unfolds.
+            let (_, _, g) = look(cx);
+            let fold_x = g.bounds.left() + g.fold_left.expect("a fold column") + px(7.0);
+            press(cx, point(fold_x, row_y(&g, 11)));
+            assert_eq!(look(cx).0, [11], "{n}: a press on ▾ folds");
+            press(cx, point(fold_x, row_y(&g, 11)));
+            assert!(look(cx).0.is_empty(), "{n}: a press on ▸ unfolds");
+            // The pill unfolds.
+            cx.simulate_keystrokes(window, "alt-cmd-[");
+            let (folded, _, g) = look(cx);
+            assert_eq!(folded, [11], "{n}");
+            let text_end = g.bounds.left()
+                + g.text_left
+                + g.cell_width * "fn refresh(s: &mut Session) {".len() as f32;
+            press(cx, point(text_end + px(16.0), row_y(&g, 11)));
+            assert!(look(cx).0.is_empty(), "{n}: a press on the pill unfolds");
+            // Review Focus 5: a press under a fold selects the line drawn there.
+            cx.update(|cx| tab.update(cx, |t, cx| t.fold_for_shots(&[11], cx)));
+            let (_, _, g) = look(cx);
+            press(
+                cx,
+                point(g.bounds.left() + g.text_left + px(8.0), row_y(&g, 12)),
+            );
+            assert_eq!(look(cx).1, Some(36), "{n}: the line after the fold");
+            // Copy over the fold copies the real lines, the hidden ones too.
+            let from = point(g.bounds.left() + g.text_left + px(1.0), row_y(&g, 11));
+            let to = point(g.bounds.left() + g.text_left + px(1.0), row_y(&g, 13));
+            cx.simulate_mouse_down(window, from, MouseButton::Left, none);
+            cx.simulate_mouse_move(window, to, MouseButton::Left, none);
+            cx.simulate_mouse_up(window, to, MouseButton::Left, none);
+            live_frame(cx, window);
+            let copied = cx.read(|cx| tab.read(cx).selected_text());
+            assert!(
+                copied.starts_with("fn refresh(s: &mut Session) {\n    let v12 = 12;\n"),
+                "{n}: the copy starts {:?}",
+                copied.lines().take(2).collect::<Vec<_>>()
+            );
+            assert!(
+                copied.contains("    let v34 = 34;\n}\n"),
+                "{n}: and holds the rest"
+            );
+            // Fold All / Unfold All (the palette's).
+            for (action, want) in [
+                (
+                    Box::new(FoldAll) as Box<dyn gpui::Action>,
+                    vec![3, 7, 11, 37],
+                ),
+                (Box::new(UnfoldAll), vec![]),
+            ] {
+                cx.update_window(window, |_, window, cx| window.dispatch_action(action, cx))
+                    .expect("dispatch");
+                assert_eq!(look(cx).0, want, "{n}: Fold All / Unfold All");
+            }
+            // Find: a match inside a fold is counted, and stepping to it opens the fold.
+            cx.update(|cx| tab.update(cx, |t, cx| t.fold_for_shots(&[11], cx)));
+            live_frame(cx, window);
+            cx.simulate_keystrokes(window, "cmd-f");
+            cx.simulate_input(window, "v20 ");
+            live_frame(cx, window);
+            assert_eq!(cx.read(|cx| tab.read(cx).find_label()), "1 of 1", "{n}");
+            assert!(look(cx).0.is_empty(), "{n}: the find opened the fold");
+            cx.simulate_keystrokes(window, "escape");
+            cx.update_window(window, |_, window, cx| {
+                tab.read(cx).focus_handle(cx).focus(window, cx)
+            })
+            .expect("focus");
+            // Follow on: an agent's change inside a fold opens it, and Follow stays on.
+            cx.update(|cx| tab.update(cx, |t, cx| t.fold_for_shots(&[11], cx)));
+            live_frame(cx, window);
+            let codex = Who::Agent(crate::edit_ledger::agent_mark_for("codex"));
+            let record = live_record(40, &[(19..20, codex, Sure::Exact, 2)]);
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_live_for_shot(record, live_now(), Some(true));
+                    t.follow_for_shots(cx);
+                })
+            });
+            assert!(look(cx).0.is_empty(), "{n}: Follow opened the fold");
+            assert!(
+                cx.read(|cx| tab.read(cx).follow_on()),
+                "{n}: Follow stays on"
+            );
+            // Folding is you moving the view: Follow turns off.
+            cx.simulate_keystrokes(window, "alt-cmd-[");
+            assert!(!look(cx).0.is_empty(), "{n}: folded");
+            assert!(
+                !cx.read(|cx| tab.read(cx).follow_on()),
+                "{n}: folding ends Follow"
+            );
+        });
+        // A file with no blocks: no fold column.
+        let (_, g) = code_shot(&theme, &flat, dims, |_, _, _| {});
+        assert_eq!(g.fold_left, None, "{n}: no blocks, no fold column");
+    }
+    println!("ui-shots: {n} ok");
 }

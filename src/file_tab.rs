@@ -57,9 +57,19 @@
 //! mode only; Diff and Preview look as before. **Follow** (a pill in the bar, off by default,
 //! never turns itself on) scrolls the agent's newest change into view, 3 lines from the top as a
 //! diff opens; scrolling, a mode switch (Preview on or off too) or cleared marks turn it off.
+//!
+//! **Folding (M11ah).** In File mode a file with blocks (`code_outline`) has a fold column between
+//! the numbers and the marks: ▸ on a folded line, ▾ on an open block's first line while the
+//! pointer is over the gutter. A fold hides the block's lines after its first (`hidden_ranges`;
+//! the row map leaves them out), and a pill after the folded line's text says how many. A fold
+//! never hides a change: the folded line draws its hidden lines' bar (or ▸), warmest glow and
+//! newest mark (`folded_summary`). ⌥⌘[ / ⌥⌘] fold and unfold where the current line is; the
+//! palette folds or unfolds all. Folds follow their first lines over a reload (one whose first
+//! line changed opens), open for a find step or Follow into them, and are not kept over a
+//! restart. Folding is you moving the view: it ends Follow.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::io::Read;
 use std::ops::Range;
@@ -112,7 +122,14 @@ use crate::ui_tokens::{MARK_MIN, TEXT_MIN, contrast, ensure_contrast, text};
 use crate::workspace::Workspace;
 
 // Bound in main.rs in the "FileTab" key context: ⌘F, ⌘G, ⇧⌘G, and Esc to close the find bar.
-gpui::actions!(file_tab, [Find, FindNext, FindPrev, CloseFind]);
+// M11ah: ⌥⌘[ / ⌥⌘] fold and unfold the block the current line is in; the palette folds or
+// unfolds them all.
+gpui::actions!(
+    file_tab,
+    [
+        Find, FindNext, FindPrev, CloseFind, FoldHere, UnfoldHere, FoldAll, UnfoldAll
+    ]
+);
 
 /// The notes the tab shows for a file it can't colour or show.
 pub const MISSING: &str = "This file no longer exists";
@@ -494,7 +511,7 @@ fn age_units(secs: u64) -> Option<(u64, &'static str)> {
 }
 
 /// `n` with commas between thousands.
-fn thousands(n: usize) -> String {
+pub(crate) fn thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
@@ -1539,9 +1556,28 @@ pub fn bar_at_rows(y: f32, map: &RowMap, changes: &Changes) -> Option<(usize, Li
     let r = map.row_at(y);
     if y < map.height()
         && let Some(Row::Line { line, .. }) = map.row(r)
-        && let Some(&change) = changes.by_line.get(&line)
     {
-        return Some((line + 1, change));
+        if let Some(&change) = changes.by_line.get(&line) {
+            return Some((line + 1, change));
+        }
+        // M11ah: a folded line's bar (or ▸) is its hidden lines': the first of their changes.
+        let hidden = map.hidden_after(line);
+        let changed = hidden
+            .clone()
+            .find_map(|l| Some((l + 1, *changes.by_line.get(&l)?)));
+        let at = changes.deleted.partition_point(|&e| e < hidden.start);
+        let edge = changes
+            .deleted
+            .get(at)
+            .filter(|&&e| hidden.contains(&e))
+            .map(|&e| (e, LineChange::DeletedAfter));
+        // The one higher up: a changed (1-based) line c sits below the edge above line c - 1,
+        // so an edge e < c comes first.
+        match (changed, edge) {
+            (Some(c), Some(e)) => return Some(if e.0 < c.0 { e } else { c }),
+            (Some(found), None) | (None, Some(found)) => return Some(found),
+            (None, None) => {}
+        }
     }
     // The edge nearest `y`: row `r`'s top or bottom (none further than half a row below the end).
     let (top, bottom) = (map.top(r), map.top(r + 1));
@@ -1565,9 +1601,13 @@ pub fn bar_at_rows(y: f32, map: &RowMap, changes: &Changes) -> Option<(usize, Li
 /// as many digits as its largest number, at least 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gutter {
-    /// A file's: its numbers, and (M11af) a column for who changed each line while any is
-    /// marked.
-    Plain { digits: usize, marks: bool },
+    /// A file's: its numbers, (M11ah) a fold column for a file with blocks, and (M11af) a
+    /// column for who changed each line while any is marked.
+    Plain {
+        digits: usize,
+        marks: bool,
+        folds: bool,
+    },
     Diff {
         old_digits: usize,
         new_digits: usize,
@@ -1580,11 +1620,12 @@ fn digits(n: usize) -> usize {
 }
 
 impl Gutter {
-    /// The gutter for `count` lines of a file, with the marks' column or not.
-    fn plain(count: usize, marks: bool) -> Gutter {
+    /// The gutter for `count` lines of a file, with the marks' and the fold column or not.
+    fn plain(count: usize, marks: bool, folds: bool) -> Gutter {
         Gutter::Plain {
             digits: digits(count),
             marks,
+            folds,
         }
     }
 
@@ -1630,6 +1671,104 @@ fn carry_line(
     }
 }
 
+/// A folded line's pill (M11ah): `⋯ 24 lines`.
+fn fold_pill_words(hidden: usize) -> String {
+    format!("\u{22ef} {}", lines_label(hidden))
+}
+
+/// Where a folded line's pill sits (x from the body's left, its width): `code::FOLD_PILL_GAP`
+/// after the line's `width` cells drawn from `text_x`, its words (`hidden` lines) in cells with
+/// `code::FOLD_PILL_PAD` either side. Painting and pressing use it, so they agree.
+fn fold_pill_span(text_x: Pixels, cell: Pixels, width: usize, hidden: usize) -> (Pixels, Pixels) {
+    let words = fold_pill_words(hidden).chars().count();
+    let x0 = text_x + cell * width as f32 + px(code::FOLD_PILL_GAP);
+    (x0, cell * words as f32 + px(2.0 * code::FOLD_PILL_PAD))
+}
+
+/// Two changes on one bar: the same one, else Changed.
+fn either_change(a: Option<LineChange>, b: Option<LineChange>) -> Option<LineChange> {
+    match (a, b) {
+        (Some(a), Some(b)) if a != b => Some(LineChange::Changed),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The newest mark on `lines`, and its line.
+fn newest_mark(record: &LineRecord, lines: Range<usize>) -> Option<(usize, &Mark)> {
+    lines.filter_map(|l| Some((l, record.mark(l)?))).fold(
+        None,
+        |best: Option<(usize, &Mark)>, (l, m)| match best {
+            Some((_, b)) if b.when >= m.when => best,
+            _ => Some((l, m)),
+        },
+    )
+}
+
+/// What a folded line shows for the lines it hides (M11ah: a fold never hides a change).
+#[derive(Clone, Debug, Default, PartialEq)]
+struct FoldSummary {
+    change: Option<LineChange>,
+    glow: Option<u8>,
+    mark: Option<Mark>,
+}
+
+/// What a folded line shows for its `hidden` lines: the strongest change (all Added: Added; all
+/// deletions: DeletedAfter; else Changed), the warmest glow level, the newest mark.
+fn folded_summary(
+    hidden: Range<usize>,
+    changes: &Changes,
+    live: Option<&LiveFrame>,
+) -> FoldSummary {
+    // The hidden lines' changes: by line or by change, whichever list is shorter.
+    let mut change = None;
+    if hidden.len() <= changes.by_line.len() {
+        for l in hidden.clone() {
+            change = either_change(change, changes.by_line.get(&l).copied());
+        }
+    } else {
+        for (l, c) in &changes.by_line {
+            if hidden.contains(l) {
+                change = either_change(change, Some(*c));
+            }
+        }
+    }
+    // Lines deleted between two of the fold's lines (the edge above a hidden line).
+    let at = changes.deleted.partition_point(|&e| e < hidden.start);
+    if changes.deleted.get(at).is_some_and(|e| hidden.contains(e)) {
+        change = either_change(change, Some(LineChange::DeletedAfter));
+    }
+    let Some(live) = live else {
+        return FoldSummary {
+            change,
+            ..FoldSummary::default()
+        };
+    };
+    let from = live.warm.partition_point(|w| w.lines.end <= hidden.start);
+    let glow = live.warm[from..]
+        .iter()
+        .take_while(|w| w.lines.start < hidden.end)
+        .map(|w| w.level)
+        .max();
+    let mark = newest_mark(&live.record, hidden).map(|(_, m)| m.clone());
+    FoldSummary { change, glow, mark }
+}
+
+/// The folds after a reload: each follows its first line as the current line does
+/// (`carry_line`); one whose first line changed or is gone, or where the new outline has no
+/// block, opens.
+fn carry_folds(
+    folded: &BTreeSet<usize>,
+    new_of_old: Option<&[Option<usize>]>,
+    same: impl Fn(usize) -> bool,
+    outline: &Outline,
+) -> BTreeSet<usize> {
+    folded
+        .iter()
+        .filter_map(|&start| carry_line(new_of_old, start, &same))
+        .filter(|&line| outline.starting_at(line).is_some())
+        .collect()
+}
+
 /// The current line after a Find step: the line of the match stepped to; a step that found
 /// no match (`stepped` none: no matches) keeps `kept`.
 fn step_line(matches: &[Match], stepped: Option<usize>, kept: Option<usize>) -> Option<usize> {
@@ -1644,6 +1783,8 @@ fn step_line(matches: &[Match], stepped: Option<usize>, kept: Option<usize>) -> 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Columns {
     pub old_right: Option<f32>,
+    /// M11ah: the fold column's left edge (a file's with blocks, in File mode).
+    pub fold_left: Option<f32>,
     /// The marks' column's left edge (M11af; a file's, while any line is marked).
     pub marks_left: Option<f32>,
     pub new_right: f32,
@@ -1652,15 +1793,23 @@ pub struct Columns {
 }
 
 /// The gutter laid out for cells `cell` wide: `GUTTER_LEFT`, the numbers (old, `NUMBER_GAP`,
-/// new, for a diff), `NUMBER_GAP` (a file's marks' column, `MARK_COLUMN`, opened in its middle
-/// while any line is marked), the bar (`BAR_WIDTH`; a diff's sign, one cell), `TEXT_GAP`.
+/// new, for a diff), `NUMBER_GAP` (a file's fold column, `code::FOLD_COLUMN`, for a file with
+/// blocks, then its marks' column, `MARK_COLUMN`, while any line is marked, opened in its
+/// middle), the bar (`BAR_WIDTH`; a diff's sign, one cell), `TEXT_GAP`.
 pub fn columns(cell: f32, gutter: Gutter) -> Columns {
-    let mut marks_left = None;
+    let (mut marks_left, mut fold_left) = (None, None);
     let (old_right, new_right, mark) = match gutter {
-        Gutter::Plain { digits, marks } => {
+        Gutter::Plain {
+            digits,
+            marks,
+            folds,
+        } => {
             let right = GUTTER_LEFT + cell * digits as f32;
-            // M11af: the marks' column, half a gap from the numbers and half a gap from the bar.
-            marks_left = marks.then_some(right + NUMBER_GAP / 2.0);
+            // M11ah: the fold column, half a gap from the numbers; then (M11af) the marks'
+            // column; then half a gap to the bar.
+            fold_left = folds.then_some(right + NUMBER_GAP / 2.0);
+            let fold = if folds { code::FOLD_COLUMN } else { 0.0 };
+            marks_left = marks.then_some(right + NUMBER_GAP / 2.0 + fold);
             (None, right, BAR_WIDTH)
         }
         Gutter::Diff {
@@ -1676,9 +1825,15 @@ pub fn columns(cell: f32, gutter: Gutter) -> Columns {
     } else {
         0.0
     };
-    let bar_left = new_right + NUMBER_GAP + marks;
+    let folds = if fold_left.is_some() {
+        code::FOLD_COLUMN
+    } else {
+        0.0
+    };
+    let bar_left = new_right + NUMBER_GAP + folds + marks;
     Columns {
         old_right,
+        fold_left,
         marks_left,
         new_right,
         bar_left,
@@ -1754,6 +1909,8 @@ pub struct Geom {
     /// (before the sideways scroll).
     pub old_numbers_right: Option<Pixels>,
     pub numbers_right: Pixels,
+    /// M11ah: the fold column's left edge (none: not a file's with blocks).
+    pub fold_left: Option<Pixels>,
     /// M11af: the marks' column's left edge (none: no line is marked, or not a file's).
     pub marks_left: Option<Pixels>,
     pub bar_left: Pixels,
@@ -1786,6 +1943,7 @@ impl Geom {
             cell_width: m.cell_width,
             old_numbers_right: c.old_right.map(px),
             numbers_right: px(c.new_right),
+            fold_left: c.fold_left.map(px),
             marks_left: c.marks_left.map(px),
             bar_left: px(c.bar_left),
             text_left,
@@ -2224,6 +2382,11 @@ struct Frame {
     theme: Theme,
     /// M11af: the live changes drawn (a file in File mode with a line marked).
     live: Option<LiveFrame>,
+    /// M11ah: the folded blocks (File mode) and their generation (the row map's key), and
+    /// whether the pointer is over the gutter (the open blocks' ▾ show).
+    folded: BTreeSet<usize>,
+    folds_gen: u64,
+    gutter_hover: bool,
 }
 
 /// What the text body draws of the live changes (M11af): the marks, and the runs glowing as
@@ -2345,6 +2508,9 @@ fn paint_number(
     let _ = number.paint(at, row, TextAlign::Left, None, window, cx);
 }
 
+/// The folded lines in sight (M11ah): for each, how many lines it hides and what they hold.
+type Folds = HashMap<usize, (usize, FoldSummary)>;
+
 /// The change bars of the rows in sight (a file's; a diff has signs): runs of neighbouring rows
 /// of one change are one bar, `BAR_WIDTH` wide with round ends, a `BAR_RUN_GAP` between runs of
 /// different changes. A run that goes on past the view's edge keeps a square end there. With Wrap
@@ -2354,6 +2520,7 @@ fn paint_bars(
     g: &Geom,
     map: &RowMap,
     rows: &Range<usize>,
+    folds: &Folds,
     colours: &BarColours,
     window: &mut Window,
 ) {
@@ -2364,7 +2531,14 @@ fn paint_bars(
     let (from, to) = (rows.start.saturating_sub(1), (rows.end + 1).min(map.len()));
     let shown: Vec<(usize, LineChange)> = (from..to)
         .filter_map(|r| match map.row(r)? {
-            Row::Line { line, .. } => Some((r, *f.doc.changes.by_line.get(&line)?)),
+            Row::Line { line, .. } => {
+                // M11ah: a folded line's bar is its own and its hidden lines' (deletions alone
+                // are its ▸).
+                let own = f.doc.changes.by_line.get(&line).copied();
+                let hidden = folds.get(&line).and_then(|(_, s)| s.change);
+                let change = either_change(own, hidden).filter(|c| *c != LineChange::DeletedAfter);
+                Some((r, change?))
+            }
             _ => None,
         })
         .collect();
@@ -2467,7 +2641,32 @@ fn paint_body(
     });
     let guide = hsla(ui.text).opacity(code::GUIDE_ALPHA);
     let guide_active = hsla(ui.text).opacity(code::GUIDE_ACTIVE_ALPHA);
-    paint_bars(f, g, map, &rows, &bars, window);
+    // M11ah: the folded lines in sight (one row either side, for the bars' ends), and the fold
+    // column's ▸ (folded, always) and ▾ (open, faint, while the pointer is over the gutter).
+    let mut folds = Folds::new();
+    if f.mode == FileMode::Plain && !f.folded.is_empty() {
+        let around = rows.start.saturating_sub(1)..(rows.end + 1).min(map.len());
+        for r in around {
+            let Some(Row::Line { line, .. }) = map.row(r) else {
+                continue;
+            };
+            let hidden = map.hidden_after(line);
+            if !hidden.is_empty() && !folds.contains_key(&line) {
+                let summary = folded_summary(hidden.clone(), &f.doc.changes, f.live.as_ref());
+                folds.insert(line, (hidden.len(), summary));
+            }
+        }
+    }
+    let fold_outline = f
+        .doc
+        .outline
+        .as_deref()
+        .filter(|o| g.fold_left.is_some() && o.has_structure());
+    let (fold_shut, fold_open) = (
+        sign("\u{25b8}", quiet, window),
+        sign("\u{25be}", mix(bg, quiet, code::FOLD_OPEN_ALPHA), window),
+    );
+    paint_bars(f, g, map, &rows, &folds, &bars, window);
     for r in rows.clone() {
         let Some(Row::Line { line: i, cell0 }) = map.row(r) else {
             continue;
@@ -2508,11 +2707,10 @@ fn paint_body(
         }
         // M11af: a line changed on disk in the last minute glows, under the selection and find.
         let run = f.live.as_ref().and_then(|l| l.run_of(i));
-        let glow = run.and_then(|w| {
-            w.level
-                .checked_sub(1)
-                .and_then(|k| GLOW.get(usize::from(k)))
-        });
+        // M11ah: a folded line glows as its warmest hidden line, if warmer.
+        let fold = folds.get(&i);
+        let level = run.map(|w| w.level).max(fold.and_then(|(_, s)| s.glow));
+        let glow = level.and_then(|l| l.checked_sub(1).and_then(|k| GLOW.get(usize::from(k))));
         if let Some(level) = glow {
             let band = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
             window.paint_quad(fill(band, hsla(WARM_RGB).opacity(*level)));
@@ -2607,11 +2805,33 @@ fn paint_body(
                 let origin = point(text_x + laid.x0, y);
                 let _ = shaped.paint(origin, lh, TextAlign::Left, None, window, cx);
             }
-            // M11af: a warm run's age, after its first line's end (on the row it ends on).
             let ends_here = part.is_none_or(|(_, _, _, last)| last);
+            let width = f.doc.widths.get(i).copied().unwrap_or(0);
+            let mut after_text = text_x + g.cell_width * width as f32;
+            // M11ah: a folded line's pill, after its text (on the row it ends on).
+            if let Some((hidden, _)) = fold.filter(|_| ends_here) {
+                let (x0, w) = fold_pill_span(text_x - bounds.left(), g.cell_width, width, *hidden);
+                let inset = px(code::FOLD_PILL_INSET);
+                let pill = Bounds::new(
+                    point(bounds.left() + x0, y + inset),
+                    size(w, lh - inset * 2.0),
+                );
+                let ground = hsla(ui.text).opacity(code::FOLD_PILL_ALPHA);
+                window.paint_quad(fill(pill, ground).corner_radii((lh - inset * 2.0) / 2.0));
+                let label = fold_pill_words(*hidden);
+                let words = window.text_system().shape_line(
+                    SharedString::from(label.clone()),
+                    m.font_size,
+                    &[plain_run(label.len(), m, quiet)],
+                    None,
+                );
+                let at = point(bounds.left() + x0 + px(code::FOLD_PILL_PAD), y);
+                let _ = words.paint(at, lh, TextAlign::Left, None, window, cx);
+                after_text = bounds.left() + x0 + w;
+            }
+            // M11af: a warm run's age, after its first line's end (on the row it ends on).
             if let Some(w) = run.filter(|w| w.lines.start == i && ends_here) {
-                let width = f.doc.widths.get(i).copied().unwrap_or(0) as f32;
-                let x = text_x + g.cell_width * width + px(AGE_GAP);
+                let x = after_text + px(AGE_GAP);
                 let label = SharedString::from(w.words.clone());
                 let run = TextRun {
                     len: label.len(),
@@ -2634,8 +2854,28 @@ fn paint_body(
             None => {
                 let right = point(bounds.left() + g.numbers_right, y);
                 paint_number(i + 1, right, m, lh, ink_for(i), window, cx);
+                // M11ah: ▸ on a folded line, always; ▾ on an open block's while the pointer is
+                // over the gutter.
+                if let (Some(o), Some(left)) = (fold_outline, g.fold_left)
+                    && o.starting_at(i).is_some()
+                {
+                    let glyph = match fold {
+                        Some(_) => Some(&fold_shut),
+                        None => f.gutter_hover.then_some(&fold_open),
+                    };
+                    if let Some(glyph) = glyph {
+                        let x =
+                            bounds.left() + left + (px(code::FOLD_COLUMN) - glyph.width()) / 2.0;
+                        let _ = glyph.paint(point(x, y), lh, TextAlign::Left, None, window, cx);
+                    }
+                }
+                // M11af: its mark (M11ah: a folded line's, the newest of its hidden lines' too).
+                let hidden_mark = fold.and_then(|(_, s)| s.mark.as_ref());
                 if let (Some(l), Some(left)) = (&f.live, g.marks_left)
-                    && let Some(mark) = l.record.mark(i)
+                    && let Some(mark) = match (l.record.mark(i), hidden_mark) {
+                        (Some(own), Some(hid)) if hid.when > own.when => Some(hid),
+                        (own, hid) => own.or(hid),
+                    }
                 {
                     let look = mark_look(mark, l.your_letter, &ui, bg);
                     paint_mark(look, bounds.left() + left, y, lh, window, cx);
@@ -2676,7 +2916,21 @@ fn paint_body(
         &[run],
         None,
     );
+    // M11ah: lines deleted only inside a fold: the ▸ on the folded line's row, in its middle.
+    for (&line, (_, s)) in &folds {
+        let own = f.doc.changes.by_line.get(&line).copied();
+        if either_change(own, s.change) != Some(LineChange::DeletedAfter) {
+            continue;
+        }
+        let Some(row) = map.first_row(line).filter(|r| rows.contains(r)) else {
+            continue;
+        };
+        let y = bounds.top() + px(map.top(row)) - g.scroll.y;
+        let x = bounds.left() + g.bar_left + px(BAR_WIDTH / 2.0) - marker.width() / 2.0;
+        let _ = marker.paint(point(x, y), lh, TextAlign::Left, None, window, cx);
+    }
     for &edge in &f.doc.changes.deleted {
+        // A hidden edge is its fold's (above).
         let Some(edge) = map.first_row(edge) else {
             continue;
         };
@@ -2870,6 +3124,12 @@ pub struct FileTab {
     /// tab opens; Esc does not clear it.
     current: Option<usize>,
     diff_current: Option<usize>,
+    /// M11ah: the folded blocks (File mode), by their first line, and how many times they
+    /// changed (the row map's key); whether the pointer is over the gutter (the open blocks'
+    /// ▾ show). Not kept over a restart.
+    folded: BTreeSet<usize>,
+    folds_gen: u64,
+    gutter_hover: bool,
     /// M11ae: the pointer's last place while selecting, and whether the auto-scroll task runs
     /// (one at a time; only while the pointer is out of the text).
     drag_at: Option<Point<Pixels>>,
@@ -2983,6 +3243,9 @@ impl FileTab {
             selecting: false,
             current: None,
             diff_current: None,
+            folded: BTreeSet::new(),
+            folds_gen: 0,
+            gutter_hover: false,
             drag_at: None,
             autoscrolling: false,
             scrollbar: Bar::default(),
@@ -3033,6 +3296,150 @@ impl FileTab {
             (FileMode::Diff, DiffState::Rows(d)) => Some(&d.doc),
             (FileMode::Diff, _) => None,
         }
+    }
+
+    /// M11ah: the screen rows of `doc` shown in `mode`, cut at `columns` (Wrap) with rows
+    /// `row_h` tall and (File mode) the `folded` blocks' lines hidden. The one place a map is
+    /// made (the canvas, Follow, a diff's reveal, a fold), so they never disagree.
+    fn row_map_of(
+        doc: &Doc,
+        mode: FileMode,
+        columns: Option<usize>,
+        row_h: f32,
+        folded: &BTreeSet<usize>,
+    ) -> RowMap {
+        let hidden = match (mode, &doc.outline) {
+            (FileMode::Plain, Some(outline)) if !folded.is_empty() => {
+                code_outline::hidden_ranges(outline, folded)
+            }
+            _ => Vec::new(),
+        };
+        RowMap::file(&doc.widths, columns, &hidden, row_h)
+    }
+
+    /// The rows of the text shown now (its folds, the Wrap width and row height last drawn),
+    /// made fresh: a fold or a reload changed them since the last drawing. None before it.
+    fn fresh_map(&self, cx: &App) -> Option<RowMap> {
+        let (g, doc) = (self.geom.get()?, self.shown_doc()?);
+        let columns = self
+            .wrap_columns()
+            .filter(|_| cx.global::<Appearance>().file_wrap);
+        Some(Self::row_map_of(
+            doc,
+            self.mode,
+            columns,
+            f32::from(g.line_height),
+            &self.folded,
+        ))
+    }
+
+    /// M11ah: whether blocks fold here: File mode (not Preview) on a file with blocks.
+    fn folds_apply(&self) -> bool {
+        self.mode == FileMode::Plain
+            && !self.preview_shown()
+            && self
+                .doc()
+                .and_then(|d| d.outline.as_deref())
+                .is_some_and(Outline::has_structure)
+    }
+
+    /// M11ah: the blocks folded now `folded` (a fold, an unfold, Fold All...): the rows are made
+    /// again, the line at the top stays there (one now hidden: the folded line above it), a
+    /// current line now hidden moves up to its fold's line, and Follow ends (you moved the
+    /// view). Drawn again only when the folds changed.
+    fn set_folds(&mut self, folded: BTreeSet<usize>, cx: &mut Context<Self>) {
+        if folded == self.folded {
+            return;
+        }
+        let before = self.rows.borrow().as_ref().map(|(_, map)| map.clone());
+        self.folded = folded;
+        self.folds_gen += 1;
+        self.live.follow = false;
+        let Some(map) = self.fresh_map(cx) else {
+            cx.notify();
+            return;
+        };
+        if let Some(line) = self.current
+            && map.first_row(line).is_none()
+        {
+            self.current = (0..line).rev().find(|&l| map.first_row(l).is_some());
+        }
+        if let Some(before) = before {
+            let y = f32::from(self.scroll.y);
+            let top = before.row_at(y);
+            let row = rescroll_row(top, Some(&before), &map);
+            // Still shown: as far into its line as before; else the folded line's top.
+            let into = match before.row(top) {
+                Some(Row::Line { line, .. }) if map.first_row(line) == Some(row) => {
+                    y - before.top(before.first_row(line).unwrap_or(top))
+                }
+                _ => 0.0,
+            };
+            self.scroll.y = px(map.top(row) + into.max(0.0));
+        }
+        cx.notify();
+    }
+
+    /// M11ah: ⌥⌘[ folds the innermost open block holding the current line (none: the line at
+    /// the top); ⌥⌘] (`fold` false) unfolds the innermost folded one. File mode only.
+    fn fold_here(&mut self, fold: bool, cx: &mut Context<Self>) {
+        if !self.folds_apply() {
+            return;
+        }
+        let Some(outline) = self.doc().and_then(|d| d.outline.clone()) else {
+            return;
+        };
+        let Some(line) = self.current.or_else(|| self.top_line()) else {
+            return;
+        };
+        let start = outline
+            .containing(line)
+            .into_iter()
+            .rev()
+            .map(|b| outline.blocks[b].start)
+            .find(|start| self.folded.contains(start) != fold);
+        let Some(start) = start else {
+            return;
+        };
+        let mut folded = self.folded.clone();
+        if fold {
+            folded.insert(start);
+        } else {
+            folded.remove(&start);
+        }
+        self.set_folds(folded, cx);
+    }
+
+    /// M11ah: the palette's Fold All (every block) and Unfold All (`fold` false).
+    fn fold_all(&mut self, fold: bool, cx: &mut Context<Self>) {
+        if !self.folds_apply() {
+            return;
+        }
+        let folded = match self.doc().and_then(|d| d.outline.as_deref()) {
+            Some(outline) if fold => outline.blocks.iter().map(|b| b.start).collect(),
+            _ => BTreeSet::new(),
+        };
+        self.set_folds(folded, cx);
+    }
+
+    /// M11ah: the folds that hide `line` open (a find step or Follow went there; not you
+    /// moving the view, so Follow stays). True when one opened.
+    fn open_folds_at(&mut self, line: usize) -> bool {
+        let Some(outline) = self.doc().and_then(|d| d.outline.clone()) else {
+            return false;
+        };
+        let before = self.folded.len();
+        for b in outline.containing(line) {
+            let start = outline.blocks[b].start;
+            if start < line {
+                self.folded.remove(&start);
+            }
+        }
+        let opened = self.folded.len() != before;
+        if opened {
+            self.folds_gen += 1;
+        }
+        opened
     }
 
     /// The scroll of the mode shown.
@@ -3186,16 +3593,24 @@ impl FileTab {
                 let mut doc = *doc;
                 self.versions += 1;
                 doc.version = self.versions;
+                let mut folded = BTreeSet::new();
                 if let Some(old) = self.doc() {
                     doc.carry_over(old, plain);
                     // M11ah: the current line follows its line (the reload's comparison), or
-                    // without one stays when its text is unchanged.
-                    self.current = self.current.and_then(|line| {
-                        let map = compared.as_ref().map(|c| c.new_of_old.as_slice());
-                        carry_line(map, line, |l| {
-                            l < old.lines.len() && l < doc.lines.len() && old.line(l) == doc.line(l)
-                        })
-                    });
+                    // without one stays when its text is unchanged; so does each fold (one whose
+                    // first line changed or went opens).
+                    let map = compared.as_ref().map(|c| c.new_of_old.as_slice());
+                    let same = |l: usize| {
+                        l < old.lines.len() && l < doc.lines.len() && old.line(l) == doc.line(l)
+                    };
+                    if let Some(outline) = &doc.outline {
+                        folded = carry_folds(&self.folded, map, same, outline);
+                    }
+                    self.current = self.current.and_then(|line| carry_line(map, line, same));
+                }
+                if folded != self.folded {
+                    self.folded = folded;
+                    self.folds_gen += 1;
                 }
                 if real.is_some() {
                     self.live.real = real;
@@ -3323,7 +3738,7 @@ impl FileTab {
     /// (File mode, as last drawn; never while Preview shows). Not through `set_scroll`: that is yours, and ends Follow.
     /// The rows aren't drawn yet, so the scroll is kept within them when drawn (as a diff's
     /// reveal is). By the row map (M11ah): the line's first screen row, the new text's rows made
-    /// at the width last drawn.
+    /// at the width last drawn; a fold holding the line opens.
     fn follow_latest(&mut self, cx: &mut Context<Self>) {
         let (Some(line), Some(g)) = (self.live.follow_line(), self.geom.get()) else {
             return;
@@ -3331,13 +3746,13 @@ impl FileTab {
         if self.mode != FileMode::Plain || self.preview_shown() {
             return;
         }
-        let Some(doc) = self.doc() else {
+        // M11ah: a change inside a fold opens it (Follow stays on: not your move).
+        if self.open_folds_at(line) {
+            cx.notify();
+        }
+        let Some(map) = self.fresh_map(cx) else {
             return;
         };
-        let columns = self
-            .wrap_columns()
-            .filter(|_| cx.global::<Appearance>().file_wrap);
-        let map = RowMap::file(&doc.widths, columns, &[], f32::from(g.line_height));
         let Some(row) = map.first_row(line) else {
             return;
         };
@@ -3926,6 +4341,15 @@ impl FileTab {
             cx.notify();
         }
         self.hover_mark(None, cx);
+        self.hover_gutter(false, cx);
+    }
+
+    /// M11ah: whether the pointer is over the gutter (the ▾ show); drawn again only when it
+    /// changed.
+    fn hover_gutter(&mut self, on: bool, cx: &mut Context<Self>) {
+        if std::mem::replace(&mut self.gutter_hover, on) != on {
+            cx.notify();
+        }
     }
 
     /// M11af: the pointer at `p` (none: not over the text): on a mark, its tooltip shows at
@@ -3954,20 +4378,25 @@ impl FileTab {
             return None;
         }
         let y = f32::from(p.y - g.bounds.top() + g.scroll.y);
-        let (row, bottom) = {
+        let (row, bottom, hidden) = {
             let rows = self.rows.borrow();
             let (_, map) = rows.as_ref()?;
             if y >= map.height() {
                 return None;
             }
             let row = map.row_at(y);
-            (map.row(row), map.top(row + 1))
+            let hidden = match map.row(row) {
+                Some(Row::Line { line, .. }) => map.hidden_after(line),
+                _ => 0..0,
+            };
+            (map.row(row), map.top(row + 1), hidden)
         };
         // A line's first row (its number's): a wrapped line's other rows have no mark.
         let Some(Row::Line { line, cell0: 0 }) = row else {
             return None;
         };
-        self.live_marks().mark(line)?;
+        // M11ah: a folded line's mark is the newest of its own and its hidden lines'.
+        let (line, _) = newest_mark(self.live_marks(), line..hidden.end.max(line + 1))?;
         let below = px(bottom) - g.scroll.y + px(2.0);
         Some((line, point(g.bounds.left() + left, g.bounds.top() + below)))
     }
@@ -4320,6 +4749,8 @@ impl FileTab {
         let Some(Row::Line { line, cell0 }) = map.row(row) else {
             return None;
         };
+        // A map a version behind (a reload not drawn yet) may know more lines than the text.
+        let line = line.min(doc.lines.len().saturating_sub(1));
         // Wrapped (M11x part 2): in cells from the row's start, kept in the row (as it's drawn).
         if let Some(columns) = map.columns() {
             let span = wrapped_row(doc, line, cell0, columns);
@@ -4379,6 +4810,15 @@ impl FileTab {
             self.choose_mode(FileMode::Diff, Some(change), cx);
             return;
         }
+        // M11ah: a block's ▾ folds it; a folded line's ▸ or its pill unfolds it.
+        if let Some(start) = self.fold_under(e.position) {
+            let mut folded = self.folded.clone();
+            if !folded.remove(&start) {
+                folded.insert(start);
+            }
+            self.set_folds(folded, cx);
+            return;
+        }
         if let Some(pos) = self.pos_at(e.position, window, cx) {
             self.selection = Some((pos, pos));
             self.selecting = true;
@@ -4386,6 +4826,46 @@ impl FileTab {
             self.drag_at = None;
             cx.notify();
         }
+    }
+
+    /// M11ah: the block whose fold is under window point `p` (File mode, as last drawn): in the
+    /// fold column, on the first row of a block's first line; or on a folded line's pill.
+    fn fold_under(&self, p: Point<Pixels>) -> Option<usize> {
+        if !self.folds_apply() {
+            return None;
+        }
+        let g = self.geom.get()?;
+        let left = g.fold_left?;
+        let outline = self.doc()?.outline.clone()?;
+        let rows = self.rows.borrow();
+        let (_, map) = rows.as_ref()?;
+        let y = f32::from(p.y - g.bounds.top() + g.scroll.y);
+        if !g.bounds.contains(&p) || y >= map.height() {
+            return None;
+        }
+        let r = map.row_at(y);
+        let Some(Row::Line { line, cell0 }) = map.row(r) else {
+            return None;
+        };
+        let x = p.x - g.bounds.left();
+        let in_column = x >= left && x < left + px(code::FOLD_COLUMN);
+        if in_column && cell0 == 0 && outline.starting_at(line).is_some() {
+            return Some(line);
+        }
+        // The pill: after the text on the folded line's last row.
+        let hidden = map.hidden_after(line);
+        let last = !matches!(map.row(r + 1), Some(Row::Line { line: l, .. }) if l == line);
+        if hidden.is_empty() || !last {
+            return None;
+        }
+        let doc = self.doc()?;
+        let width = doc.widths.get(line).copied().unwrap_or(0);
+        let text_x = match map.columns() {
+            Some(_) => g.text_left - g.cell_width * cell0 as f32,
+            None => g.text_left - g.scroll.x,
+        };
+        let (x0, w) = fold_pill_span(text_x, g.cell_width, width, hidden.len());
+        (x >= x0 && x < x0 + w).then_some(line)
     }
 
     /// The change whose bar (or ▸) is under window point `p`, in Plain mode: a press from 2 pt
@@ -4434,6 +4914,14 @@ impl FileTab {
         // M11af: a mark's tooltip, while the pointer rests on it (not while selecting).
         let resting = over && !self.selecting && e.pressed_button.is_none();
         self.hover_mark(resting.then_some(e.position), cx);
+        // M11ah: over the gutter, the open blocks' ▾ show.
+        let in_gutter = over
+            && self
+                .geom
+                .get()
+                .filter(|g| g.fold_left.is_some())
+                .is_some_and(|g| e.position.x < g.bounds.left() + g.text_left);
+        self.hover_gutter(in_gutter, cx);
         self.mouse_drag(e, window, cx);
     }
 
@@ -4724,7 +5212,7 @@ impl FileTab {
     }
 
     /// Scroll the current match into sight: its line to the middle when off screen, and
-    /// sideways when it's out of the text's width.
+    /// sideways when it's out of the text's width (M11ah: a fold holding it opens).
     fn reveal_current(&mut self, cx: &mut Context<Self>) {
         let Some(hit) = self
             .find
@@ -4733,13 +5221,18 @@ impl FileTab {
         else {
             return;
         };
-        let (Some(g), Some(doc)) = (self.geom.get(), self.shown_doc()) else {
+        // M11ah: a match inside a fold opens it; the rows are then made again at once.
+        let opened = self.mode == FileMode::Plain && self.open_folds_at(hit.line);
+        let map = if opened {
+            cx.notify();
+            self.fresh_map(cx)
+        } else {
+            self.rows.borrow().as_ref().map(|(_, map)| map.clone())
+        };
+        let (Some(g), Some(doc), Some(map)) = (self.geom.get(), self.shown_doc(), map) else {
             return;
         };
         let (h, w) = (g.bounds.size.height, g.bounds.size.width);
-        let Some((_, map)) = self.rows.borrow().clone() else {
-            return;
-        };
         let Some(first) = map.first_row(hit.line) else {
             return;
         };
@@ -5420,6 +5913,12 @@ impl FileTab {
                 warm: self.live.warm.clone(),
                 your_letter: self.live.your_letter.unwrap_or('Y'),
             }),
+            folded: match self.mode {
+                FileMode::Plain => self.folded.clone(),
+                FileMode::Diff => BTreeSet::new(),
+            },
+            folds_gen: self.folds_gen,
+            gutter_hover: self.gutter_hover,
         });
         let geom = self.geom.clone();
         let row_map = self.rows.clone();
@@ -5460,9 +5959,16 @@ impl FileTab {
                         move |bounds, window, cx| {
                             let m = CellMetrics::measure(cx.global::<Appearance>(), window);
                             let count = laid.doc.lines.len();
-                            let gutter = laid
-                                .gutter
-                                .unwrap_or_else(|| Gutter::plain(count, laid.live.is_some()));
+                            // M11ah: a file with blocks has a fold column (File mode).
+                            let folds = laid.mode == FileMode::Plain
+                                && laid
+                                    .doc
+                                    .outline
+                                    .as_deref()
+                                    .is_some_and(Outline::has_structure);
+                            let gutter = laid.gutter.unwrap_or_else(|| {
+                                Gutter::plain(count, laid.live.is_some(), folds)
+                            });
                             // Wrap on (M11x part 2): rows cut at the text's width; no sideways
                             // scroll.
                             let wrap = cx.global::<Appearance>().file_wrap.then(|| {
@@ -5478,7 +5984,7 @@ impl FileTab {
                                 mode: laid.mode,
                                 version: laid.doc.version,
                                 columns: wrap,
-                                folds: 0,
+                                folds: laid.folds_gen,
                                 layout: 0,
                                 side: false,
                             };
@@ -5487,7 +5993,13 @@ impl FileTab {
                                 Some((k, map)) if *k == key && map.row_h() == f32::from(row_h) => {
                                     map.clone()
                                 }
-                                _ => RowMap::file(&laid.doc.widths, wrap, &[], f32::from(row_h)),
+                                _ => FileTab::row_map_of(
+                                    &laid.doc,
+                                    laid.mode,
+                                    wrap,
+                                    f32::from(row_h),
+                                    &laid.folded,
+                                ),
                             };
                             // Wrap switched: the same line stays at the top (review fix).
                             let before = before.map(|(_, map)| map);
@@ -5852,6 +6364,30 @@ impl FileTab {
         self.live.follow
     }
 
+    /// M11ah: the folded blocks (their first lines), the current line, and the line drawn on
+    /// screen row `row` (none: not a line's, or not drawn yet).
+    pub fn folded_lines(&self) -> Vec<usize> {
+        self.folded.iter().copied().collect()
+    }
+
+    pub fn current_line(&self) -> Option<usize> {
+        self.current
+    }
+
+    pub fn line_at_row(&self, row: usize) -> Option<usize> {
+        match self.rows.borrow().as_ref()?.1.row(row)? {
+            Row::Line { line, .. } => Some(line),
+            _ => None,
+        }
+    }
+
+    /// M11ah: fold the blocks starting on `lines` (as a press on their ▾ would).
+    pub fn fold_for_shots(&mut self, lines: &[usize], cx: &mut Context<Self>) {
+        let mut folded = self.folded.clone();
+        folded.extend(lines);
+        self.set_folds(folded, cx);
+    }
+
     /// Change bars from a list (git's answer; a scene's given list).
     pub fn set_changes(&mut self, changes: Vec<(usize, LineChange)>, cx: &mut Context<Self>) {
         if let Some(doc) = self.doc_mut() {
@@ -5888,11 +6424,12 @@ impl FileTab {
         let columns = self
             .wrap_columns()
             .filter(|_| cx.global::<Appearance>().file_wrap);
-        let map = RowMap::file(
-            &d.doc.widths,
+        let map = Self::row_map_of(
+            &d.doc,
+            FileMode::Diff,
             columns,
-            &[],
             f32::from(row_height(m.line_height)),
+            &self.folded,
         );
         let top = map.first_row(line).map_or(0.0, |r| map.top(r));
         self.diff_scroll = point(px(0.0), px(top));
@@ -5938,6 +6475,10 @@ impl Render for FileTab {
                 cx.listener(|this, _: &FindPrev, window, cx| this.find_step(false, window, cx)),
             )
             .on_action(cx.listener(|this, _: &CloseFind, window, cx| this.close_find(window, cx)))
+            .on_action(cx.listener(|this, _: &FoldHere, _, cx| this.fold_here(true, cx)))
+            .on_action(cx.listener(|this, _: &UnfoldHere, _, cx| this.fold_here(false, cx)))
+            .on_action(cx.listener(|this, _: &FoldAll, _, cx| this.fold_all(true, cx)))
+            .on_action(cx.listener(|this, _: &UnfoldAll, _, cx| this.fold_all(false, cx)))
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
             .child(toolbar)
             .children(find_bar)
@@ -6820,6 +7361,7 @@ mod tests {
             Gutter::Plain {
                 digits: 2,
                 marks: false,
+                folds: false,
             },
         );
         assert_eq!(plain.old_right, None);
@@ -6882,6 +7424,7 @@ mod tests {
             Gutter::Plain {
                 digits: 2,
                 marks: false,
+                folds: false,
             },
         );
         assert_eq!(c.new_right, 16.0 + 16.0);
@@ -6892,6 +7435,7 @@ mod tests {
             Gutter::Plain {
                 digits: 2,
                 marks: true,
+                folds: false,
             },
         );
         assert_eq!(
@@ -7670,8 +8214,8 @@ mod tests {
     /// marked; without it the gutter is as before M11af.
     #[test]
     fn the_marks_column_opens_only_while_marked() {
-        let without = columns(8.0, Gutter::plain(9, false));
-        let with = columns(8.0, Gutter::plain(9, true));
+        let without = columns(8.0, Gutter::plain(9, false, false));
+        let with = columns(8.0, Gutter::plain(9, true, false));
         assert_eq!(without.marks_left, None);
         assert_eq!(without.text_left, 59.0);
         assert_eq!(with.new_right, without.new_right);
@@ -7791,5 +8335,163 @@ mod tests {
         live.saw(Seen::Refused, t0, |_| unreachable!());
         assert!(!live.follow, "the marks cleared");
         assert_eq!(live.agent_name(), None);
+    }
+
+    // M11ah Task 5: folding in File mode.
+
+    #[test]
+    fn fold_pill_says_its_hidden_lines() {
+        assert_eq!(fold_pill_words(24), "\u{22ef} 24 lines");
+        assert_eq!(fold_pill_words(1204), "\u{22ef} 1,204 lines");
+        assert_eq!(fold_pill_words(1), "\u{22ef} 1 line");
+    }
+
+    #[test]
+    fn a_fold_never_hides_a_change() {
+        use LineChange::{Added, Changed, DeletedAfter};
+        // 0-based: line 2 added, line 3 changed, lines deleted above line 9.
+        let (by_line, deleted) = bars(&[(3, Added), (4, Changed), (9, DeletedAfter)]);
+        let changes = Changes { by_line, deleted };
+        let change = |hidden: Range<usize>| folded_summary(hidden, &changes, None).change;
+        assert_eq!(change(2..4), Some(Changed), "added and changed: changed");
+        assert_eq!(change(2..3), Some(Added), "all added: added");
+        assert_eq!(change(5..10), Some(DeletedAfter), "only deletions");
+        assert_eq!(change(2..10), Some(Changed), "added and deleted: changed");
+        assert_eq!(change(10..12), None);
+        // The edge under the fold's last hidden line is the next line's: not hidden.
+        assert_eq!(change(5..9), None);
+        // M11af: the warmest glow and the newest mark of the hidden lines.
+        let now = T0 + Duration::from_secs(1_000);
+        let ago = |s: u64| now - Duration::from_secs(s);
+        let mut r = LineRecord::baseline(14);
+        changed(&mut r, 14, 5..6, agent("claude"), Sure::Exact, ago(40));
+        changed(&mut r, 14, 8..9, Who::You, Sure::Exact, ago(2));
+        changed(&mut r, 14, 11..12, agent("agy"), Sure::Guess, ago(30));
+        let live = LiveFrame {
+            warm: Rc::new(warm_runs(&r, now)),
+            record: Rc::new(r.clone()),
+            your_letter: 'Y',
+        };
+        let all = folded_summary(4..12, &Changes::default(), Some(&live));
+        assert_eq!(all.glow, Some(3), "levels 1 and 3: 3");
+        assert_eq!(all.mark.as_ref(), r.mark(8), "the newest mark");
+        assert_eq!(all.change, None);
+        let cool = folded_summary(4..7, &Changes::default(), Some(&live));
+        assert_eq!((cool.glow, cool.mark.as_ref()), (Some(1), r.mark(5)));
+        assert_eq!(
+            folded_summary(12..14, &Changes::default(), Some(&live)),
+            FoldSummary::default()
+        );
+    }
+
+    /// Review Focus 2: a reload that removes a folded block's first line, or shrinks the file
+    /// below a fold, opens it; the current line clears; nothing indexes past the end.
+    #[test]
+    fn reload_drops_folds_and_current_line_that_are_gone() {
+        let new = ["// a", "// b", "fn a {", "    x", "}", "flat"];
+        let outline = code_outline::outline(&new, false, LIMIT).expect("an outline");
+        assert_eq!(outline.starting_at(2), Some(0));
+        let set = |s: &[usize]| s.iter().copied().collect::<BTreeSet<usize>>();
+        // Old line 0 moved down by 2 (followed); old 4 changed (opens); old 9 is past the
+        // comparison's end (opens).
+        let map = [Some(2), Some(3), Some(4), Some(5), None];
+        assert_eq!(
+            carry_folds(&set(&[0, 4, 9]), Some(&map), |_| true, &outline),
+            set(&[2])
+        );
+        // A start that lands where the new outline has no block opens.
+        assert_eq!(
+            carry_folds(&set(&[1]), Some(&map), |_| true, &outline),
+            set(&[])
+        );
+        // No comparison: kept where its line is the same, and never past the new end.
+        let same = |l: usize| l < new.len() && l == 2;
+        assert_eq!(carry_folds(&set(&[2, 40]), None, same, &outline), set(&[2]));
+        // The current line: gone with its line, or past the new end.
+        assert_eq!(carry_line(Some(&map), 4, |_| true), None);
+        assert_eq!(carry_line(None, 40, same), None);
+    }
+
+    /// A fold at (0-based) line 11 hiding 12..36: the row after it is line 36, drawn `37`; in
+    /// Diff mode nothing is folded.
+    #[test]
+    fn numbers_skip_hidden_lines() {
+        let mut lines = vec!["a"; 11];
+        lines.push("fn a {");
+        lines.extend(["    x"; 23]);
+        lines.push("}");
+        lines.extend(["b"; 4]);
+        let mut doc = doc(&lines.join("\n"));
+        let slices: Vec<&str> = lines.clone();
+        doc.outline = code_outline::outline(&slices, false, LIMIT).map(Arc::new);
+        let folded: BTreeSet<usize> = [11].into();
+        let map = FileTab::row_map_of(&doc, FileMode::Plain, None, 10.0, &folded);
+        assert_eq!(map.row(11), Some(Row::Line { line: 11, cell0: 0 }));
+        assert_eq!(map.row(12), Some(Row::Line { line: 36, cell0: 0 }));
+        assert_eq!(map.hidden_after(11).len(), 24, "the pill's 24 lines");
+        assert_eq!(map.len(), 40 - 24);
+        // Wrap on: the same lines hidden.
+        let wrapped = FileTab::row_map_of(&doc, FileMode::Plain, Some(80), 10.0, &folded);
+        assert_eq!(wrapped.row(12), Some(Row::Line { line: 36, cell0: 0 }));
+        // Not in Diff mode.
+        let diff = FileTab::row_map_of(&doc, FileMode::Diff, None, 10.0, &folded);
+        assert_eq!(diff.row(12), Some(Row::Line { line: 12, cell0: 0 }));
+    }
+
+    /// The fold column, 14 pt, between the numbers and the marks' column (numbers · fold ·
+    /// marks · bar · text).
+    #[test]
+    fn the_fold_column_sits_between_the_numbers_and_the_marks() {
+        let plain = |marks, folds| {
+            columns(
+                8.0,
+                Gutter::Plain {
+                    digits: 2,
+                    marks,
+                    folds,
+                },
+            )
+        };
+        let (none, fold, both) = (plain(false, false), plain(false, true), plain(true, true));
+        assert_eq!(none.fold_left, None);
+        assert_eq!(fold.fold_left, Some(32.0 + 5.0));
+        assert_eq!(fold.bar_left, none.bar_left + 14.0);
+        assert_eq!(fold.text_left, none.text_left + 14.0);
+        assert_eq!(both.fold_left, Some(37.0));
+        assert_eq!(both.marks_left, Some(37.0 + 14.0));
+        assert_eq!(both.text_left, none.text_left + 14.0 + 16.0);
+    }
+
+    /// Ruling: a change or a deletion edge under a fold is hit on the folded line's row.
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // one fold
+    fn a_press_on_a_folded_line_s_bar_finds_its_hidden_change() {
+        // Line 2 folded, hiding 3..7: rows 0 1 2 | 7 8 9.
+        let map = RowMap::file(&[1; 10], None, &[3..7], 10.0);
+        let deleted_only = Changes {
+            by_line: HashMap::new(),
+            deleted: vec![5],
+        };
+        assert_eq!(
+            bar_at_rows(25.0, &map, &deleted_only),
+            Some((5, LineChange::DeletedAfter))
+        );
+        let (by_line, deleted) = bars(&[(5, LineChange::Added), (8, LineChange::DeletedAfter)]);
+        let mixed = Changes { by_line, deleted };
+        // The first hidden change: (1-based) line 5, added.
+        assert_eq!(
+            bar_at_rows(25.0, &map, &mixed),
+            Some((5, LineChange::Added))
+        );
+        // The edge above line 7 (the next shown row) is drawn there, as before.
+        let edge = Changes {
+            by_line: HashMap::new(),
+            deleted: vec![7],
+        };
+        assert_eq!(
+            bar_at_rows(29.0, &map, &edge),
+            Some((7, LineChange::DeletedAfter))
+        );
+        assert_eq!(bar_at_rows(15.0, &map, &edge), None);
     }
 }
