@@ -110,6 +110,8 @@ pub enum BoxMenu {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BoxTexts {
     pub folder: String,
+    /// The branch chip, when the folder is in a repo.
+    pub branch: Option<String>,
     pub model: String,
     pub mode: Option<String>,
     /// `➤`, or the Stop button's label in its place.
@@ -228,6 +230,11 @@ pub fn folder_chip_text(folder: &Path) -> String {
     format!("\u{1f4c1} {name} \u{25be}")
 }
 
+/// The branch chip: `⑂ <branch> ▾` (it opens the branch switcher on the folder).
+pub fn branch_chip_text(branch: &str) -> String {
+    format!("\u{2442} {branch} \u{25be}")
+}
+
 /// What the pane's top line says after the status: `$0.21 · context 18%`, either part alone,
 /// or nothing.
 pub fn usage_line(cost_usd: Option<f64>, context_pct: Option<u8>) -> Option<String> {
@@ -336,6 +343,7 @@ impl AgentTab {
         });
         BoxTexts {
             folder: folder_chip_text(&self.start.cwd),
+            branch: self.branch.as_deref().map(branch_chip_text),
             model: model.unwrap_or_default(),
             mode,
             send: self.stop_label().unwrap_or(SEND).to_string(),
@@ -434,6 +442,28 @@ impl AgentTab {
                     d.child(self.menu_frame(Some(menu), side, cx))
                 },
             );
+        let branch = texts.branch.clone().map(|text| {
+            let hover = c.box_hover;
+            self.marked(
+                "branch",
+                div()
+                    .id("agent-branch")
+                    .flex_none()
+                    .h(px(CHIP_H))
+                    .px(px(CHIP_X))
+                    .flex()
+                    .items_center()
+                    .rounded(px(CHIP_RADIUS))
+                    .text_size(px(text::META))
+                    .text_color(hsla(c.dim))
+                    .child(SharedString::from(text)),
+            )
+            .cursor_pointer()
+            .hover(move |s| s.bg(hsla(hover)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.emit(AgentTabEvent::OpenBranchSwitcher(this.start.cwd.clone()))
+            }))
+        });
         let attach = self
             .marked(
                 "attach",
@@ -562,7 +592,8 @@ impl AgentTab {
                     .flex()
                     .items_center()
                     .gap(px(CHIP_GAP))
-                    .child(folder),
+                    .child(folder)
+                    .children(branch),
             )
             .child(the_box)
             .into_any_element()
@@ -1133,10 +1164,10 @@ impl AgentTab {
         self.start.cwd.clone()
     }
 
-    /// Put the tab in `folder` (and, for the branch chip, `branch`: Task 7 draws it), as a
-    /// scene sets the place without reading a disk.
+    /// Put the tab in `folder` on `branch` (the branch chip), as a scene sets the place without
+    /// reading a disk.
     pub fn shot_place(&mut self, folder: PathBuf, branch: Option<String>, cx: &mut Context<Self>) {
-        let _ = branch;
+        self.branch = branch;
         self.start.cwd = folder;
         self.refresh_picker(cx);
         cx.notify();
@@ -1395,6 +1426,15 @@ mod tests {
             mode_chip_text(&[], Some("plan"), None, None),
             None,
             "no modes"
+        );
+    }
+
+    #[test]
+    fn the_branch_chip_names_the_branch() {
+        assert_eq!(branch_chip_text("master"), "\u{2442} master \u{25be}");
+        assert_eq!(
+            branch_chip_text("feature/rows"),
+            "\u{2442} feature/rows \u{25be}"
         );
     }
 

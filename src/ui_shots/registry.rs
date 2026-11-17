@@ -232,6 +232,8 @@ pub(super) const ORDER: &[&str] = &[
     "agent-box-folder-move-ask",
     "agent-box-folder-move-new-only",
     "agent-box-folder-before-first",
+    "agent-box-branch",
+    "agent-box-branch-opens-switcher",
 ];
 
 /// Every scene, in `ORDER`. Panics, naming the scene, if one is in no area or in two, or if
