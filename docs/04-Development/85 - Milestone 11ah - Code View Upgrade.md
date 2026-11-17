@@ -1,6 +1,6 @@
 # Milestone 11ah — Code View Upgrade
 
-**Status:** 📝 design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). Plan next.
+**Status:** 📝 design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). Plan written 2026-11-17 ([[M11ah Plan - Code View Upgrade]], Tasks 0–12), waiting for build.
 does not quote you is marked **AI's call**.
 
 **Asked for:** 2026-11-16, by you, in the file-view mockups ("everything, all layout good"), recorded in
