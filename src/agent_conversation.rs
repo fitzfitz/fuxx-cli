@@ -146,6 +146,7 @@ impl Conversation {
                 summary,
                 parent,
                 detail,
+                writes: _,
             } => self.items.push(Item::Tool {
                 id,
                 name,
@@ -493,6 +494,7 @@ mod tests {
             summary: "ls".into(),
             parent: None,
             detail: None,
+            writes: Vec::new(),
         }
     }
 

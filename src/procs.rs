@@ -59,7 +59,7 @@ pub enum ProgramState {
 
 /// The coding agents fuxx knows, by the name they run as.
 const AGENTS: &[&str] = &[
-    "claude", "codex", "opencode", "aider", "gemini", "goose", "amp",
+    "claude", "codex", "opencode", "aider", "gemini", "goose", "amp", "agy",
 ];
 /// Agents run from an npm package (`node …/@anthropic-ai/claude-code/cli.js`): the package's
 /// path and the agent's name.
@@ -357,6 +357,12 @@ mod tests {
             assert!(!name.contains(hidden), "{args} keeps {hidden}");
             assert!(!name.contains(' '), "{args}: one word ({name})");
         }
+    }
+
+    #[test]
+    fn agy_is_a_known_agent() {
+        assert!(is_known_agent("agy"));
+        assert_eq!(program_name("agy --foo"), "agy");
     }
 
     #[test]

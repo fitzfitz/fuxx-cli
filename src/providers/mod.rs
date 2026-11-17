@@ -116,6 +116,9 @@ pub enum Event {
         summary: String,
         parent: Option<String>,
         detail: Option<ToolDetail>,
+        /// The files the call writes, as the provider read them (absolute, or relative to the
+        /// agent's cwd); empty for a call that writes none.
+        writes: Vec<String>,
     },
     ToolFinished {
         id: String,
