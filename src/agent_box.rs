@@ -280,6 +280,13 @@ pub fn usage_unavailable(label: &str) -> String {
     format!("Usage isn't available for {label}")
 }
 
+/// Now, in unix seconds.
+pub fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
 /// `Resets in 3d 16h`, `Resets in 2h 5m`, `Resets in 59m`, `Resets now`: the time left, to the
 /// minute (cut, never rounded up, but at least `1m` while any is left), with the day and hour
 /// parts only when they are not nil (`1d`, `1h`).
@@ -329,9 +336,17 @@ pub fn limit_line(limit: &RateLimit, utc_offset: i64) -> Option<String> {
     }
 }
 
-/// Whether the model chip carries the warning dot: any limit the agent said is close or reached.
-pub fn limits_warn(limits: &[RateLimit]) -> bool {
-    limits.iter().any(|l| l.state != LimitState::Fine)
+/// Whether the model chip carries the warning dot: any limit the agent said is close or reached
+/// (and has not reset since).
+/// A limit the agent said is close or reached counts until its reset moment has passed.
+pub fn limits_warn(limits: &[RateLimit], now_unix: i64) -> bool {
+    limits.iter().any(|l| is_live(l, now_unix))
+}
+
+/// Whether the agent's word on `limit` still stands: close or reached, and its reset (if it
+/// said one) not yet come.
+fn is_live(limit: &RateLimit, now_unix: i64) -> bool {
+    limit.state != LimitState::Fine && limit.resets_at.is_none_or(|at| at > now_unix)
 }
 
 /// One line of the View Usage panel, top to bottom.
@@ -385,7 +400,7 @@ pub fn usage_rows(
                             left_pct,
                             resets,
                         } => {
-                            let told = said(name);
+                            let told = said(name).filter(|l| is_live(l, now_unix));
                             shown.push(name);
                             let resets = match resets {
                                 Some(reset) => Some(reset_text(reset, now_unix)),
@@ -406,7 +421,10 @@ pub fn usage_rows(
             }
         }
     }
-    for limit in limits.iter().filter(|l| !shown.contains(&l.limit.as_str())) {
+    for limit in limits
+        .iter()
+        .filter(|l| !shown.contains(&l.limit.as_str()) && is_live(l, now_unix))
+    {
         if let Some(note) = limit_line(limit, utc_offset) {
             rows.push(UsageRow::Limit {
                 name: limit.limit.clone(),
@@ -626,7 +644,7 @@ impl AgentTab {
     fn limit_warning(&self, cx: &App) -> bool {
         self.provider
             .zip(cx.try_global::<Catalogs>())
-            .is_some_and(|(p, catalogs)| limits_warn(catalogs.limits(p.info().name)))
+            .is_some_and(|(p, catalogs)| limits_warn(catalogs.limits(p.info().name), now_unix()))
     }
 
     /// The box's edge: the focus ring while its text has the keyboard, else the quiet edge
@@ -1030,6 +1048,22 @@ impl AgentTab {
                 c.set_usage(agent, found, std::time::Instant::now());
                 for limit in limits {
                     c.note_limit(agent, limit);
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    /// Make the reading `secs` old (as if it had been read that long ago).
+    pub fn shot_age_usage(&mut self, secs: u64, cx: &mut Context<Self>) {
+        if let Some(provider) = self.provider {
+            let agent = provider.info().name;
+            cx.update_default_global(|c: &mut Catalogs, _| {
+                if let Some(found) = c.usage_last(agent).cloned() {
+                    let then = std::time::Instant::now()
+                        .checked_sub(std::time::Duration::from_secs(secs))
+                        .expect("an instant that far back");
+                    c.set_usage(agent, found, then);
                 }
             });
         }
@@ -1608,13 +1642,35 @@ mod tests {
 
     #[test]
     fn the_chip_warns_while_a_limit_is_close_or_reached() {
-        assert!(!limits_warn(&[]));
-        assert!(!limits_warn(&[rate("a", LimitState::Fine, None)]));
-        assert!(limits_warn(&[
-            rate("a", LimitState::Fine, None),
-            rate("b", LimitState::Close, None)
-        ]));
-        assert!(limits_warn(&[rate("a", LimitState::Reached, None)]));
+        assert!(!limits_warn(&[], 0));
+        assert!(!limits_warn(&[rate("a", LimitState::Fine, None)], 0));
+        assert!(limits_warn(
+            &[
+                rate("a", LimitState::Fine, None),
+                rate("b", LimitState::Close, None)
+            ],
+            0
+        ));
+        assert!(limits_warn(&[rate("a", LimitState::Reached, None)], 0));
+        // A limit whose reset has come is fine again (no dot), the moment itself included.
+        let gone = [rate("a", LimitState::Reached, Some(100))];
+        assert!(limits_warn(&gone, 99));
+        assert!(!limits_warn(&gone, 100));
+        assert!(!limits_warn(&gone, 500));
+    }
+
+    #[test]
+    fn a_limit_past_its_reset_says_nothing() {
+        let found = Lookup::Ready(vec![group("", vec![read("Session", 50, None)])]);
+        let said = [
+            rate("Session", LimitState::Reached, Some(100)),
+            rate("Opus", LimitState::Close, Some(100)),
+        ];
+        assert_eq!(
+            usage_rows(Some(&found), &said, None, 500, 0),
+            vec![limit_row("Session", Some(50), None, None)],
+            "no note, no reset, no line of its own"
+        );
     }
 
     fn read(name: &str, left: u8, resets: Option<Reset>) -> UsageLimit {

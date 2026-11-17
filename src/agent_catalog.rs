@@ -97,6 +97,12 @@ impl Catalogs {
             .map(|(found, _)| found)
     }
 
+    /// The usage last read (or being read), however old: what the open View Usage panel keeps
+    /// showing. `usage` says whether it is still fresh.
+    pub fn usage_last(&self, agent: &str) -> Option<&Lookup<Vec<UsageGroup>>> {
+        self.usage.get(agent).map(|(found, _)| found)
+    }
+
     /// Mark the usage loading; false when a fresh reading is loading or read (a failure, or a
     /// stale reading, is tried again).
     pub fn begin_usage(&mut self, agent: &str, now: Instant) -> bool {
@@ -459,6 +465,16 @@ mod tests {
         assert!(!c.begin_usage("claude", t + Duration::from_secs(59)));
         assert!(c.usage("claude", t + Duration::from_secs(60)).is_none());
         assert!(c.begin_usage("claude", t + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn a_stale_usage_is_still_the_last_one_read() {
+        let mut c = Catalogs::default();
+        let t = Instant::now();
+        assert!(c.usage_last("claude").is_none());
+        c.set_usage("claude", Lookup::Ready(Vec::new()), t);
+        assert!(c.usage("claude", t + Duration::from_secs(61)).is_none());
+        assert_eq!(c.usage_last("claude"), Some(&Lookup::Ready(Vec::new())));
     }
 
     #[test]

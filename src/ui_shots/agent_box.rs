@@ -2218,11 +2218,7 @@ pub(super) fn agent_box_model_effort_composes() {
 
 // ---- View Usage (Task 9) ----
 
-fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
+use crate::agent_box::now_unix;
 
 /// A limit read, Claude's way: the agent's own words for when it resets.
 fn claude_limit(name: &str, left_pct: u8, resets: &str) -> UsageLimit {
@@ -2545,7 +2541,7 @@ pub(super) fn agent_box_usage_limit_close() {
                     vec![Event::RateLimit(RateLimit {
                         limit: "Current session".into(),
                         state: LimitState::Reached,
-                        resets_at: Some(14 * 3600),
+                        resets_at: Some(now_unix() + 3600),
                     })],
                     cx,
                 )
@@ -2588,6 +2584,17 @@ pub(super) fn agent_box_usage_cached() {
                 assert_eq!(usage_rows_of(cx, tab).len(), 2, "{n}");
                 feed(cx, tab, |t, cx| t.close_menu(cx));
             }
+            // A minute on, the reading is stale (a reopening would read again) but the open
+            // panel keeps its numbers, not `Checking…`.
+            open_usage(n, cx, window, tab);
+            feed(cx, tab, |t, cx| t.shot_age_usage(61, cx));
+            let _ = frame_fresh(cx, window);
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_usage_lookup(cx)),
+                None,
+                "{n}: stale"
+            );
+            assert_eq!(usage_rows_of(cx, tab).len(), 2, "{n}: the numbers stay");
         },
     );
 }
