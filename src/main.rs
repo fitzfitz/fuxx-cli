@@ -39,6 +39,7 @@ mod daemon_session;
 mod detector;
 mod diff_view;
 mod drag_gap;
+mod edit_ledger;
 mod file_tab;
 mod file_tree;
 mod fonts;
