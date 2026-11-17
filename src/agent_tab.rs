@@ -740,10 +740,10 @@ impl AgentTab {
         self.toggle(ix, cx);
     }
 
-    /// The mode chip's click (call 6), as its click does.
+    /// The mode `id` chosen from the box's menu, as its row's click does.
     #[cfg(feature = "ui-shots")]
-    pub fn shot_next_mode(&mut self, cx: &mut Context<Self>) {
-        self.next_mode(cx);
+    pub fn shot_choose_mode(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.choose_mode(id, cx);
     }
 
     #[cfg(feature = "ui-shots")]
@@ -2481,26 +2481,6 @@ impl AgentTab {
             .items()
             .iter()
             .any(|i| matches!(i, Item::You { .. }))
-    }
-
-    /// The mode chip's click (call 6): before the first message, the agent's next mode, chosen
-    /// as the box chooses one (`choose`: live where the agent can, else a restart); after it,
-    /// the chip is read-only (the box's mode menu replaces it).
-    pub(crate) fn next_mode(&mut self, cx: &mut Context<Self>) {
-        let Some(provider) = self.provider else {
-            return;
-        };
-        let modes = provider.info().modes;
-        if modes.is_empty() || self.spoken() {
-            return;
-        }
-        let at = self
-            .start
-            .mode
-            .as_deref()
-            .and_then(|m| modes.iter().position(|x| x.id == m));
-        let next = modes[at.map_or(0, |i| (i + 1) % modes.len())];
-        self.choose(Change::Mode(next.id.to_string()), cx);
     }
 
     fn open_classic(&mut self, cx: &mut Context<Self>) {

@@ -703,8 +703,8 @@ pub(super) fn agent_tab_done() {
 }
 
 /// An Antigravity tab (M11aa Task 12), fed agy's own recordings through its own decoder: its
-/// mode chip steps through agy's modes before the first message and is read-only after; the
-/// tools pair up and the turns end Done. (The replies' AG avatar is in the picture only: this
+/// mode is chosen through the box's menu (`shot_choose_mode`) before and after the first
+/// message (no lock); the tools pair up and the turns end Done. (The replies' AG avatar is in the picture only: this
 /// scene reads view state, not pixels.)
 pub(super) fn agent_tab_agy() {
     use crate::providers::agy::AGY;
@@ -738,9 +738,9 @@ pub(super) fn agent_tab_agy() {
                     Some("accept-edits"),
                     "{n}: the default"
                 );
-                // Before the first message the chip steps through agy's modes, round to the start.
+                // Before the first message the menu's choices apply, one after another.
                 for want in ["auto", "plan", "accept-edits"] {
-                    feed(cx, &tab, |t, cx| t.shot_next_mode(cx));
+                    feed(cx, &tab, |t, cx| t.shot_choose_mode(want, cx));
                     assert_eq!(mode(cx).as_deref(), Some(want), "{n}");
                 }
                 feed(cx, &tab, |t, cx| t.send("Say hello in one word".into(), cx));
@@ -757,9 +757,10 @@ pub(super) fn agent_tab_agy() {
                         cx,
                     )
                 });
-                // After it the chip is read-only.
-                feed(cx, &tab, |t, cx| t.shot_next_mode(cx));
-                assert_eq!(mode(cx).as_deref(), Some("accept-edits"), "{n}: read-only");
+                // After it the mode can still be chosen (agy restarts on the same conversation).
+                feed(cx, &tab, |t, cx| t.shot_choose_mode("plan", cx));
+                assert_eq!(mode(cx).as_deref(), Some("plan"), "{n}: no lock");
+                feed(cx, &tab, |t, cx| t.shot_choose_mode("accept-edits", cx));
                 cx.read(|cx| {
                     let t = tab.read(cx);
                     assert_eq!(t.status(), Status::Done, "{n}");

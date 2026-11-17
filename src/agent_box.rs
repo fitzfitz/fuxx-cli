@@ -68,6 +68,8 @@ pub const NEW_CONVERSATION: &str = "New conversation";
 
 /// The model menu's words (§4).
 const MODEL_HEADING: &str = "Model";
+/// The mode menu's heading (§6).
+const MODE_HEADING: &str = "Mode";
 pub const LOADING: &str = "Loading\u{2026}";
 pub const MODEL_LIST_FAILED: &str = "Couldn't read the model list";
 pub const DEFAULT_LIST: &str = "(default list)";
@@ -227,6 +229,15 @@ pub fn chip_effort(catalog: Option<&Catalog>, start: &Start) -> Option<String> {
     carried.or_else(|| start.effort.clone())
 }
 
+/// The mode in force: the chosen one, else the one the agent reports, else the provider's default.
+pub fn current_mode<'a>(
+    chosen: Option<&'a str>,
+    reported: Option<&'a str>,
+    default: Option<&'a str>,
+) -> Option<&'a str> {
+    chosen.or(reported).or(default)
+}
+
 /// The mode chip: `🛡 <label> ▾` for the chosen mode, else the one the agent reports, else the
 /// provider's default (an id not in `modes` as it is); None when the provider has no modes or
 /// none is known.
@@ -239,7 +250,7 @@ pub fn mode_chip_text(
     if modes.is_empty() {
         return None;
     }
-    let id = chosen.or(reported).or(default)?;
+    let id = current_mode(chosen, reported, default)?;
     let label = modes.iter().find(|m| m.id == id).map_or(id, |m| m.label);
     Some(format!("\u{1f6e1} {label} \u{25be}"))
 }
@@ -492,6 +503,41 @@ pub fn model_rows(catalog: &Lookup<Catalog>, start: &Start, applies: Applies) ->
     }
     rows.push(ModelRow::Divider);
     rows.push(ModelRow::Usage);
+    rows
+}
+
+/// One row of the mode menu, top to bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ModeRow {
+    Heading,
+    Note(&'static str),
+    Mode {
+        id: &'static str,
+        label: &'static str,
+        about: &'static str,
+        current: bool,
+    },
+    NewConversation,
+}
+
+/// The mode menu's rows (§6): the heading, `applies to a new conversation` when a mode takes
+/// effect only then, each of the provider's modes (the one in force ticked), and a New
+/// conversation row in that case.
+pub fn mode_rows(modes: &[ModeChoice], current: Option<&str>, applies: Applies) -> Vec<ModeRow> {
+    let next = applies == Applies::NextConversation;
+    let mut rows = vec![ModeRow::Heading];
+    if next {
+        rows.push(ModeRow::Note(NEXT_CONVERSATION_NOTE));
+    }
+    rows.extend(modes.iter().map(|m| ModeRow::Mode {
+        id: m.id,
+        label: m.label,
+        about: m.about,
+        current: current == Some(m.id),
+    }));
+    if next {
+        rows.push(ModeRow::NewConversation);
+    }
     rows
 }
 
@@ -814,18 +860,23 @@ impl AgentTab {
                 d.child(self.menu_frame(Some(menu), side, cx))
             });
         let mode = texts.mode.clone().map(|text| {
-            // Before the first message it steps to the agent's next mode (the mode menu, a
-            // later task, replaces it).
-            let steps = !self.spoken();
             let hover = c.box_hover;
             self.marked("mode", box_chip("agent-mode", text, c))
-                .when(steps, |d| {
-                    d.cursor_pointer()
-                        .hover(move |s| s.bg(hsla(hover)))
-                        .on_click(cx.listener(|this, _, _, cx| this.next_mode(cx)))
-                })
+                .cursor_pointer()
+                .hover(move |s| s.bg(hsla(hover)))
+                .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                    let pressed = match event {
+                        ClickEvent::Mouse(click) => Some(click.down.position),
+                        _ => None,
+                    };
+                    // This press already closed the open menu (from outside it).
+                    let closed_at = this.chip_closed_at.take();
+                    if pressed.is_none() || closed_at != pressed {
+                        this.mode_clicked(cx)
+                    }
+                }))
                 .when(menu_on(|m| matches!(m, BoxMenu::Mode)), |d| {
-                    d.child(self.menu_frame(None, None, cx))
+                    d.child(self.menu_frame(Some(self.mode_menu(cx)), None, cx))
                 })
         });
         let send = match self.stop_label() {
@@ -1032,6 +1083,11 @@ impl AgentTab {
             .provider
             .map_or(Applies::Live, |p| p.applies(ChangeKind::Model));
         model_rows(&self.catalog_lookup(cx), &self.shown_start(cx), applies)
+    }
+
+    /// The mode menu's rows as drawn now (what `mode_rows` makes of the mode in force).
+    pub fn shot_mode_rows(&self, cx: &App) -> Vec<ModeRow> {
+        self.mode_rows_now(cx)
     }
 
     /// The usage the agent's View Usage shows, as if it had been read now, and what the agent
@@ -1458,6 +1514,63 @@ mod tests {
             None,
             "no modes"
         );
+    }
+
+    #[test]
+    fn mode_rows_list_the_modes_with_the_current_ticked() {
+        let words = |rows: &[ModeRow]| -> Vec<String> {
+            rows.iter()
+                .map(|r| match r {
+                    ModeRow::Heading => "Mode".into(),
+                    ModeRow::Mode { label, current, .. } => {
+                        format!("{}{label}", if *current { "+" } else { "" })
+                    }
+                    ModeRow::Note(n) => n.to_string(),
+                    ModeRow::NewConversation => "New conversation".into(),
+                })
+                .collect()
+        };
+        let modes = CLAUDE.info().modes;
+        let live = mode_rows(modes, Some("plan"), Applies::Live);
+        assert_eq!(
+            words(&live),
+            ["Mode", "Ask before edits", "Accept edits", "+Plan", "Auto"]
+        );
+        assert!(
+            live.iter().all(|r| match r {
+                ModeRow::Mode { about, .. } => !about.is_empty(),
+                _ => true,
+            }),
+            "each mode says what it does"
+        );
+        assert_eq!(
+            words(&mode_rows(modes, None, Applies::Restart))[1..],
+            ["Ask before edits", "Accept edits", "Plan", "Auto"],
+            "none known: none ticked; a restart is no note"
+        );
+        assert_eq!(
+            words(&mode_rows(modes, Some("plan"), Applies::NextConversation)),
+            [
+                "Mode",
+                "applies to a new conversation",
+                "Ask before edits",
+                "Accept edits",
+                "+Plan",
+                "Auto",
+                "New conversation"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_mode_in_force_is_chosen_then_reported_then_default() {
+        assert_eq!(
+            current_mode(Some("plan"), Some("auto"), Some("x")),
+            Some("plan")
+        );
+        assert_eq!(current_mode(None, Some("auto"), Some("x")), Some("auto"));
+        assert_eq!(current_mode(None, None, Some("x")), Some("x"));
+        assert_eq!(current_mode(None, None, None), None);
     }
 
     #[test]

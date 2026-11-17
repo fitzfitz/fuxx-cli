@@ -16,7 +16,8 @@ use super::{
     shot_themes,
 };
 use crate::agent_box::{
-    BoxMenu, CHECKING, Change, MOVE_HERE, ModelRow, NEW_CONVERSATION, PLACEHOLDER, UsageRow,
+    BoxMenu, CHECKING, Change, MOVE_HERE, ModeRow, ModelRow, NEW_CONVERSATION, PLACEHOLDER,
+    UsageRow,
 };
 use crate::agent_catalog::{Catalogs, Lookup};
 use crate::agent_conversation::Item;
@@ -90,6 +91,9 @@ const MODEL: &[&str] = &[
     "src/providers/claude.rs",
     "src/providers/agy.rs",
 ];
+
+/// The files the mode menu is made of: the model menu's (the same menu code and catalog).
+const MODE: &[&str] = MODEL;
 
 /// The files View Usage is made of: the model menu's, and the usage the providers read.
 const USAGE: &[&str] = MODEL;
@@ -326,6 +330,30 @@ pub(super) const SCENES: &[Scene] = &[
         serial: false,
         kind: Kind::State,
         sources: MODEL,
+    },
+    Scene {
+        name: "agent-box-mode-menu",
+        run: agent_box_mode_menu,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: MODE,
+    },
+    Scene {
+        name: "agent-box-mode-agy-after-message",
+        run: agent_box_mode_agy_after_message,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: MODE,
+    },
+    Scene {
+        name: "agent-box-mode-reported",
+        run: agent_box_mode_reported,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: MODE,
     },
     Scene {
         name: "agent-box-branch",
@@ -1869,6 +1897,191 @@ pub(super) fn agent_box_model_menu() {
             // Leave it open for the shot.
             click_model_chip(n, cx, window, tab);
             assert!(menu(cx, tab).is_some(), "{n}");
+        },
+    );
+}
+
+/// Click the mode chip (a real click), and draw what opened.
+fn click_mode_chip(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+) {
+    let chip = part(cx, tab, n, "mode");
+    cx.simulate_click(window, chip.center(), Modifiers::none());
+    cx.run_until_parked();
+    let _ = frame_fresh(cx, window);
+}
+
+fn mode_rows_of(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<ModeRow> {
+    cx.read(|cx| tab.read(cx).shot_mode_rows(cx))
+}
+
+/// §6's menu from the chip (a click): the `Mode` heading and Claude's four modes, each with its
+/// one-line description under it, the one in force ticked. Opening chooses nothing; the chip
+/// again closes it, and a press on another chip closes it (and opens nothing). Choosing asks
+/// Claude live (`set_permission_mode`), sends no message, and closes the menu.
+pub(super) fn agent_box_mode_menu() {
+    box_scene(
+        "agent-box-mode-menu",
+        &CLAUDE,
+        start(Some("acceptEdits"), Some("example-5")),
+        Lookup::Ready(model_catalog()),
+        |n, cx, window, tab| {
+            click_mode_chip(n, cx, window, tab);
+            assert_eq!(menu(cx, tab), Some(BoxMenu::Mode), "{n}");
+            let rows = mode_rows_of(cx, tab);
+            let ticked: Vec<&str> = rows
+                .iter()
+                .filter_map(|r| match r {
+                    ModeRow::Mode {
+                        label,
+                        current: true,
+                        ..
+                    } => Some(*label),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(ticked, ["Accept edits"], "{n}");
+            assert_eq!(rows.len(), 5, "{n}: the heading and four modes");
+            let at = |l: &str| {
+                cx.read(|cx| tab.read(cx).shot_menu_row(l))
+                    .unwrap_or_else(|| panic!("{n}: no row {l}"))
+            };
+            let (a, b, c, d) = (
+                at("Ask before edits"),
+                at("Accept edits"),
+                at("Plan"),
+                at("Auto"),
+            );
+            assert!(
+                a.bottom() <= b.top() && b.bottom() <= c.top() && c.bottom() <= d.top(),
+                "{n}: top to bottom"
+            );
+            let menu_box = part(cx, tab, n, "menu");
+            assert!(inside(d, menu_box), "{n}: inside the menu");
+            assert!(
+                part(cx, tab, n, "mode").top() >= menu_box.bottom(),
+                "{n}: upward"
+            );
+            assert!(written(cx, tab).is_empty(), "{n}: opening chooses nothing");
+            // The chip again closes it; a press on another chip closes it and opens nothing.
+            click_mode_chip(n, cx, window, tab);
+            assert_eq!(menu(cx, tab), None, "{n}: the chip closes it");
+            click_model_chip(n, cx, window, tab);
+            assert!(matches!(menu(cx, tab), Some(BoxMenu::Model { .. })), "{n}");
+            click_mode_chip(n, cx, window, tab);
+            assert_eq!(menu(cx, tab), None, "{n}: the mode chip's press closes it");
+            click_mode_chip(n, cx, window, tab);
+            click_folder_chip(n, cx, window, tab);
+            assert_eq!(menu(cx, tab), None, "{n}: and the folder chip's, this one");
+            // Choosing: live, nothing sent.
+            click_mode_chip(n, cx, window, tab);
+            click_row(n, cx, window, tab, "Plan");
+            assert_eq!(menu(cx, tab), None, "{n}: chosen, it closes");
+            let sent = written(cx, tab);
+            let asks: Vec<&serde_json::Value> = sent
+                .iter()
+                .filter(|l| l["type"] == "control_request")
+                .collect();
+            assert_eq!(asks.len(), 1, "{n}: {sent:?}");
+            assert_eq!(asks[0]["request"]["subtype"], "set_permission_mode", "{n}");
+            assert_eq!(asks[0]["request"]["mode"], "plan", "{n}");
+            assert!(sent.iter().all(|l| l["type"] != "user"), "{n}: no message");
+            // Left open for the shot.
+            click_mode_chip(n, cx, window, tab);
+            assert_eq!(menu(cx, tab), Some(BoxMenu::Mode), "{n}");
+        },
+    );
+}
+
+/// agy after a message is no longer locked (M11aa's lock goes): the chip opens the menu, and
+/// choosing `plan` restarts agy on the same conversation with `--mode plan`, with one quiet row
+/// and no message. agy's own `init` says `request-review` whatever it runs, so the chip shows
+/// what was chosen.
+pub(super) fn agent_box_mode_agy_after_message() {
+    box_scene(
+        "agent-box-mode-agy-after-message",
+        &AGY,
+        start(Some("accept-edits"), None),
+        Lookup::Ready(agy_example_catalog()),
+        |n, cx, window, tab| {
+            let id = agy_conversation();
+            feed(cx, tab, |t, cx| t.send("Say hello in one word".into(), cx));
+            feed(cx, tab, |t, cx| t.shot_feed(agy_text(), cx));
+            assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Done, "{n}");
+            let sent = written(cx, tab).len();
+            click_mode_chip(n, cx, window, tab);
+            assert_eq!(menu(cx, tab), Some(BoxMenu::Mode), "{n}: not locked");
+            assert_eq!(
+                labels(cx, tab),
+                ["Accept edits", "Auto", "Plan"],
+                "{n}: agy's three"
+            );
+            click_row(n, cx, window, tab, "Plan");
+            assert_eq!(menu(cx, tab), None, "{n}: chosen, it closes");
+            let a = argv(cx, tab);
+            assert_eq!(flag(&a, "--conversation"), Some(id), "{n}: {a:?}");
+            assert_eq!(flag(&a, "--mode").as_deref(), Some("plan"), "{n}: {a:?}");
+            assert_eq!(notices(cx, tab), ["Switched to Plan"], "{n}");
+            assert_eq!(written(cx, tab).len(), sent, "{n}: nothing sent");
+            let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
+            assert_eq!(
+                texts.mode.as_deref(),
+                Some("\u{1f6e1} Plan \u{25be}"),
+                "{n}"
+            );
+            // Left open, on the new mode, for the shot.
+            click_mode_chip(n, cx, window, tab);
+            let rows = mode_rows_of(cx, tab);
+            assert!(
+                rows.iter().any(|r| matches!(
+                    r,
+                    ModeRow::Mode {
+                        id: "plan",
+                        current: true,
+                        ..
+                    }
+                )),
+                "{n}: {rows:?}"
+            );
+        },
+    );
+}
+
+/// Claude with no mode chosen shows the one its catalog reports: `default` as `Ask before
+/// edits`, ticked in the menu.
+pub(super) fn agent_box_mode_reported() {
+    let list = Catalog {
+        mode: Some("default".into()),
+        ..model_catalog()
+    };
+    box_scene(
+        "agent-box-mode-reported",
+        &CLAUDE,
+        start(None, Some("example-5")),
+        Lookup::Ready(list),
+        |n, cx, window, tab| {
+            let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
+            assert_eq!(
+                texts.mode.as_deref(),
+                Some("\u{1f6e1} Ask before edits \u{25be}"),
+                "{n}"
+            );
+            click_mode_chip(n, cx, window, tab);
+            let rows = mode_rows_of(cx, tab);
+            assert!(
+                rows.iter().any(|r| matches!(
+                    r,
+                    ModeRow::Mode {
+                        id: "default",
+                        current: true,
+                        ..
+                    }
+                )),
+                "{n}: {rows:?}"
+            );
         },
     );
 }
