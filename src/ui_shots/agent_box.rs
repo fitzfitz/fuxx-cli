@@ -15,10 +15,11 @@ use super::{
     Kind, Scene, Themes, frame_fresh, render_with, shoot_with, shot_appearance, shot_theme,
     shot_themes,
 };
-use crate::agent_box::{BoxMenu, Change, PLACEHOLDER};
-use crate::agent_catalog::Lookup;
+use crate::agent_box::{BoxMenu, Change, MOVE_HERE, NEW_CONVERSATION, PLACEHOLDER};
+use crate::agent_catalog::{Catalogs, Lookup};
 use crate::agent_conversation::Item;
 use crate::agent_tab::{AgentTab, AgentTabEvent};
+use crate::folder_picker::{KnownFolders, PickerRow};
 use crate::providers::agy::AGY;
 use crate::providers::claude::CLAUDE;
 use crate::providers::{Catalog, ChangeKind, EffortChoice, Event, ModelChoice, Provider, Start};
@@ -46,6 +47,21 @@ const LAYOUT: &[&str] = &[
     "src/agent_box.rs",
     "src/agent_conversation.rs",
     "src/agent_catalog.rs",
+    "src/composer.rs",
+    "src/overlay_panel.rs",
+    "src/providers/mod.rs",
+    "src/providers/claude.rs",
+];
+
+/// The files the folder picker is made of: the box's, the picker's lists, its search box, and
+/// the version and folder lists the providers read.
+const FOLDER: &[&str] = &[
+    "src/agent_tab.rs",
+    "src/agent_box.rs",
+    "src/agent_conversation.rs",
+    "src/agent_catalog.rs",
+    "src/folder_picker.rs",
+    "src/name_input.rs",
     "src/composer.rs",
     "src/overlay_panel.rs",
     "src/providers/mod.rs",
@@ -85,6 +101,46 @@ pub(super) const SCENES: &[Scene] = &[
         serial: false,
         kind: Kind::Visual,
         sources: LAYOUT,
+    },
+    Scene {
+        name: "agent-box-folder-picker",
+        run: agent_box_folder_picker,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: FOLDER,
+    },
+    Scene {
+        name: "agent-box-folder-search",
+        run: agent_box_folder_search,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: FOLDER,
+    },
+    Scene {
+        name: "agent-box-folder-move-ask",
+        run: agent_box_folder_move_ask,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: FOLDER,
+    },
+    Scene {
+        name: "agent-box-folder-move-new-only",
+        run: agent_box_folder_move_new_only,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: FOLDER,
+    },
+    Scene {
+        name: "agent-box-folder-before-first",
+        run: agent_box_folder_before_first,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: FOLDER,
     },
     Scene {
         name: "agent-box-change-waits",
@@ -677,7 +733,7 @@ fn composer_bounds(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Bounds<
 pub(super) fn agent_box_empty() {
     layout_scene("agent-box-empty", |n, cx, window, tab| {
         let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
-        assert_eq!(texts.folder, "\u{1f4c1} my-app", "{n}");
+        assert_eq!(texts.folder, "\u{1f4c1} my-app \u{25be}", "{n}");
         assert_eq!(texts.model, "Claude Example 5  High \u{25be}", "{n}");
         assert_eq!(
             texts.mode.as_deref(),
@@ -937,4 +993,448 @@ pub(super) fn agent_box_long_text() {
             "{n}: no taller than 8 rows"
         );
     });
+}
+
+// ---- The folder chip and picker (Task 6) ----
+
+/// A made-up folder under your home (`~/code/<name>`); nothing is read from it.
+fn folder(name: &str) -> PathBuf {
+    cwd().with_file_name(name)
+}
+
+/// What the tab told of its folder: `Folder`, and `NewConversationIn` (as `true`).
+type Moves = Rc<RefCell<Vec<(PathBuf, bool)>>>;
+
+/// Shoot folder scene `name` in both themes: the layout scenes' Claude tab in `~/code/my-app`,
+/// fuxx knowing (made-up) `~/code/my-app` and `~/code/scratch` as Recent and as projects, Claude
+/// knowing `~/code/scratch`, and Claude's version `version` read; what it tells of its folder is
+/// kept. The picker is left as `act` leaves it for the shot.
+fn folder_scene(
+    name: &str,
+    version: &'static str,
+    act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>, &Moves)
+    + Clone
+    + 'static,
+) {
+    for &(slug, theme_name) in shot_themes() {
+        let theme = shot_theme(theme_name);
+        let slot: Slot = Rc::default();
+        let keep = slot.clone();
+        let moves: Moves = Rc::default();
+        let heard = moves.clone();
+        let n = format!("{name}-{slug}");
+        let act = act.clone();
+        let path = shoot_with(
+            name,
+            slug,
+            &theme,
+            size(px(DIMS.0), px(DIMS.1)),
+            move |window, cx| {
+                cx.set_global(shot_appearance(theme, cx));
+                cx.bind_keys(crate::key_bindings());
+                let both = vec![folder("my-app"), folder("scratch")];
+                cx.set_global(KnownFolders {
+                    recent: both.clone(),
+                    projects: both,
+                });
+                let catalogs = cx.default_global::<Catalogs>();
+                catalogs.set_version("claude", Lookup::Ready(Some(version.to_string())));
+                catalogs.set_known_folders("claude", Lookup::Ready(vec![folder("scratch")]));
+                let tab = cx.new(|cx| AgentTab::for_shots(&CLAUDE, example_start(), window, cx));
+                cx.subscribe(&tab, move |_, e: &AgentTabEvent, _| match e {
+                    AgentTabEvent::Folder(f) => heard.borrow_mut().push((f.clone(), false)),
+                    AgentTabEvent::NewConversationIn(f) => {
+                        heard.borrow_mut().push((f.clone(), true))
+                    }
+                    _ => {}
+                })
+                .detach();
+                let focus = tab.read(cx).focus_handle(cx);
+                focus.focus(window, cx);
+                *keep.borrow_mut() = Some(tab.clone());
+                tab.into()
+            },
+            move |cx, window| {
+                let tab = slot.borrow().clone().expect("the agent tab");
+                feed(cx, &tab, |t, cx| t.shot_history(Vec::new(), cx));
+                feed(cx, &tab, |t, cx| {
+                    t.shot_catalog(Lookup::Ready(example_catalog()), cx)
+                });
+                let _ = frame_fresh(cx, window);
+                act(&n, cx, window, &tab, &moves);
+                let _ = frame_fresh(cx, window);
+                slot.borrow_mut().take();
+            },
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// Click the folder chip (a real click), and draw what opened.
+fn click_folder_chip(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+) {
+    let chip = part(cx, tab, n, "folder");
+    cx.simulate_click(window, chip.center(), Modifiers::none());
+    cx.run_until_parked();
+    let _ = frame_fresh(cx, window);
+}
+
+/// Click the open menu's row saying `label` (a real click), and draw what follows.
+fn click_row(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+    label: &str,
+) {
+    let row = cx
+        .read(|cx| tab.read(cx).shot_menu_row(label))
+        .unwrap_or_else(|| panic!("{n}: no row {label} was drawn"));
+    cx.simulate_click(window, row.center(), Modifiers::none());
+    cx.run_until_parked();
+    let _ = frame_fresh(cx, window);
+}
+
+fn rows(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<PickerRow> {
+    cx.read(|cx| tab.read(cx).shot_picker_rows())
+}
+
+fn folder_row_of(name: &str, current: bool) -> PickerRow {
+    PickerRow::Folder {
+        path: folder(name),
+        shown: format!("~/code/{name}"),
+        current,
+    }
+}
+
+fn menu(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Option<BoxMenu> {
+    cx.read(|cx| tab.read(cx).shot_menu())
+}
+
+fn labels(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<String> {
+    cx.read(|cx| tab.read(cx).shot_menu_labels())
+}
+
+fn tab_cwd(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> PathBuf {
+    cx.read(|cx| tab.read(cx).shot_cwd())
+}
+
+/// Whether the keyboard is in `focus`'s view.
+fn has_keys(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    focus: impl Fn(&gpui::App) -> gpui::FocusHandle,
+) -> bool {
+    cx.update_window(window, |_, window, cx| focus(cx).is_focused(window))
+        .expect("the window")
+}
+
+/// The search box has the keyboard.
+fn search_has_keys(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+) -> bool {
+    let tab = tab.clone();
+    has_keys(cx, window, move |cx| {
+        let search = tab.read(cx).shot_search().expect("the search box");
+        search.read(cx).focus_handle(cx)
+    })
+}
+
+/// The conversation's first message has gone and Claude said it started (under the id fuxx
+/// chose): after this, the picker asks before it moves anything.
+fn first_message(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>) -> String {
+    let id = flag(&argv(cx, tab), "--session-id").expect("a new conversation's id");
+    feed(cx, tab, |t, cx| t.send("Fix notes.txt".into(), cx));
+    let started = Event::Started {
+        conversation: id.clone(),
+        model: None,
+    };
+    feed(cx, tab, |t, cx| t.shot_feed(vec![started, turn_done()], cx));
+    id
+}
+
+/// §2's picker from the chip (a click): its search on top, with the keyboard; Recent (✓ on the
+/// folder the agent is in); This Computer ▸, which opens fuxx's and Claude's folders beside it;
+/// New Project; No Project. Opening it chooses nothing.
+pub(super) fn agent_box_folder_picker() {
+    folder_scene(
+        "agent-box-folder-picker",
+        "2.1.326 (Claude Code)",
+        |n, cx, window, tab, moves| {
+            let before = argv(cx, tab);
+            click_folder_chip(n, cx, window, tab);
+            assert_eq!(
+                menu(cx, tab),
+                Some(BoxMenu::Folder),
+                "{n}: the chip opens it"
+            );
+            assert!(
+                search_has_keys(cx, window, tab),
+                "{n}: the search has the keyboard"
+            );
+            assert_eq!(
+                rows(cx, tab),
+                [
+                    PickerRow::Heading("Recent"),
+                    folder_row_of("my-app", true),
+                    folder_row_of("scratch", false),
+                    PickerRow::ThisComputer,
+                    PickerRow::NewProject,
+                    PickerRow::NoProject,
+                ],
+                "{n}"
+            );
+            assert_eq!(
+                labels(cx, tab),
+                [
+                    "~/code/my-app",
+                    "~/code/scratch",
+                    "This Computer",
+                    "New Project",
+                    "No Project"
+                ],
+                "{n}: drawn top to bottom"
+            );
+            let (the_menu, chip) = (part(cx, tab, n, "menu"), part(cx, tab, n, "folder"));
+            assert!(
+                the_menu.bottom() <= chip.top(),
+                "{n}: it opens up from the chip"
+            );
+            click_row(n, cx, window, tab, "This Computer");
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_computer_rows()),
+                Some(vec![
+                    folder_row_of("my-app", true),
+                    folder_row_of("scratch", false)
+                ]),
+                "{n}: fuxx's and Claude's folders, each once"
+            );
+            let beside = part(cx, tab, n, "computer");
+            assert!(
+                beside.left() >= the_menu.right(),
+                "{n}: beside the picker {beside:?} {the_menu:?}"
+            );
+            assert_eq!(menu(cx, tab), Some(BoxMenu::Folder), "{n}: still open");
+            assert_eq!(argv(cx, tab), before, "{n}: nothing restarted");
+            assert!(moves.borrow().is_empty(), "{n}: nothing chosen");
+            assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
+        },
+    );
+}
+
+/// The search filters every section as you type (`scr` leaves `~/code/scratch`); Esc closes the
+/// picker and gives the keyboard back to the box (stopping nothing).
+pub(super) fn agent_box_folder_search() {
+    folder_scene(
+        "agent-box-folder-search",
+        "2.1.326 (Claude Code)",
+        |n, cx, window, tab, moves| {
+            click_folder_chip(n, cx, window, tab);
+            cx.simulate_keystrokes(window, "escape");
+            cx.run_until_parked();
+            assert_eq!(menu(cx, tab), None, "{n}: Esc closed it");
+            let composer = cx.read(|cx| tab.read(cx).shot_composer());
+            assert!(
+                has_keys(cx, window, move |cx| composer.read(cx).focus_handle(cx)),
+                "{n}: the keyboard is back in the box"
+            );
+            assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Idle, "{n}");
+
+            click_folder_chip(n, cx, window, tab);
+            cx.simulate_input(window, "scr");
+            cx.run_until_parked();
+            let _ = frame_fresh(cx, window);
+            assert_eq!(
+                rows(cx, tab),
+                [
+                    PickerRow::Heading("Recent"),
+                    folder_row_of("scratch", false)
+                ],
+                "{n}"
+            );
+            assert_eq!(labels(cx, tab), ["~/code/scratch"], "{n}: drawn so");
+            assert!(moves.borrow().is_empty(), "{n}: typing chooses nothing");
+            assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
+        },
+    );
+}
+
+/// After the first message a folder chosen asks: New conversation opens a new tab there
+/// (this one stays as it is); Move this conversation restarts Claude on it in the new folder
+/// (`--resume`), with one quiet row, the folder saved and the menus' lists read for it.
+pub(super) fn agent_box_folder_move_ask() {
+    folder_scene(
+        "agent-box-folder-move-ask",
+        "2.1.326 (Claude Code)",
+        |n, cx, window, tab, moves| {
+            let id = first_message(cx, tab);
+            let before = argv(cx, tab);
+            let sent = |cx: &VisualTestAppContext| {
+                written(cx, tab)
+                    .iter()
+                    .filter(|l| l["type"] == "user")
+                    .count()
+            };
+            assert_eq!(sent(cx), 1, "{n}");
+
+            click_folder_chip(n, cx, window, tab);
+            click_row(n, cx, window, tab, "~/code/scratch");
+            assert_eq!(menu(cx, tab), Some(BoxMenu::Move(folder("scratch"))), "{n}");
+            assert_eq!(
+                labels(cx, tab),
+                [MOVE_HERE, NEW_CONVERSATION],
+                "{n}: it asks"
+            );
+            click_row(n, cx, window, tab, NEW_CONVERSATION);
+            assert_eq!(menu(cx, tab), None, "{n}");
+            assert_eq!(
+                *moves.borrow(),
+                [(folder("scratch"), true)],
+                "{n}: a new conversation there"
+            );
+            assert_eq!(tab_cwd(cx, tab), folder("my-app"), "{n}: this one stays");
+            assert_eq!(argv(cx, tab), before, "{n}: and isn't restarted");
+            assert!(notices(cx, tab).is_empty(), "{n}");
+
+            click_folder_chip(n, cx, window, tab);
+            click_row(n, cx, window, tab, "~/code/scratch");
+            click_row(n, cx, window, tab, MOVE_HERE);
+            assert_eq!(menu(cx, tab), None, "{n}");
+            assert_eq!(tab_cwd(cx, tab), folder("scratch"), "{n}: moved");
+            let a = argv(cx, tab);
+            assert_eq!(
+                flag(&a, "--resume"),
+                Some(id),
+                "{n}: the same conversation {a:?}"
+            );
+            assert_eq!(notices(cx, tab), ["Moved to ~/code/scratch"], "{n}");
+            assert_eq!(
+                moves.borrow().last().cloned(),
+                Some((folder("scratch"), false)),
+                "{n}: saved"
+            );
+            assert_eq!(
+                cx.read(|cx| cx
+                    .global::<Catalogs>()
+                    .catalog("claude", &folder("scratch"))
+                    .cloned()),
+                Some(Lookup::Loading),
+                "{n}: the menus' lists are read for the new folder"
+            );
+            assert_eq!(sent(cx), 1, "{n}: moving sends nothing");
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_box(cx)).folder,
+                "\u{1f4c1} scratch \u{25be}",
+                "{n}"
+            );
+
+            // The ✓ follows; choosing where it is does nothing; the ask stays open for the shot.
+            click_folder_chip(n, cx, window, tab);
+            assert_eq!(
+                rows(cx, tab)[1..3],
+                [
+                    folder_row_of("my-app", false),
+                    folder_row_of("scratch", true)
+                ],
+                "{n}"
+            );
+            click_row(n, cx, window, tab, "~/code/scratch");
+            assert_eq!(menu(cx, tab), None, "{n}: the folder it is in: nothing");
+            assert_eq!(moves.borrow().len(), 2, "{n}");
+            click_folder_chip(n, cx, window, tab);
+            click_row(n, cx, window, tab, "~/code/my-app");
+            assert_eq!(labels(cx, tab), [MOVE_HERE, NEW_CONVERSATION], "{n}");
+            let (the_menu, chip) = (part(cx, tab, n, "menu"), part(cx, tab, n, "folder"));
+            assert!(the_menu.bottom() <= chip.top(), "{n}: over the chip");
+        },
+    );
+}
+
+/// A Claude older than 2.1.223 can't resume a conversation from another folder: only New
+/// conversation is offered.
+pub(super) fn agent_box_folder_move_new_only() {
+    folder_scene(
+        "agent-box-folder-move-new-only",
+        "2.1.200 (Claude Code)",
+        |n, cx, window, tab, moves| {
+            feed(cx, tab, |t, cx| t.shot_place(folder("scratch"), None, cx));
+            first_message(cx, tab);
+            click_folder_chip(n, cx, window, tab);
+            assert_eq!(
+                rows(cx, tab)[1..3],
+                [
+                    folder_row_of("my-app", false),
+                    folder_row_of("scratch", true)
+                ],
+                "{n}: placed in scratch"
+            );
+            click_row(n, cx, window, tab, "~/code/my-app");
+            assert_eq!(menu(cx, tab), Some(BoxMenu::Move(folder("my-app"))), "{n}");
+            assert_eq!(labels(cx, tab), [NEW_CONVERSATION], "{n}: no Move");
+            assert!(moves.borrow().is_empty(), "{n}");
+            assert_eq!(tab_cwd(cx, tab), folder("scratch"), "{n}");
+        },
+    );
+}
+
+/// Before the first message a folder chosen just changes where the agent starts: the idle
+/// process starts again there on a new conversation (no `--resume`, no row), the folder saved;
+/// Return in the search picks its first folder.
+pub(super) fn agent_box_folder_before_first() {
+    folder_scene(
+        "agent-box-folder-before-first",
+        "2.1.326 (Claude Code)",
+        |n, cx, window, tab, moves| {
+            let first = flag(&argv(cx, tab), "--session-id").expect("a new conversation");
+            // Chosen from This Computer's list, beside the picker.
+            click_folder_chip(n, cx, window, tab);
+            click_row(n, cx, window, tab, "This Computer");
+            click_row(n, cx, window, tab, "This Computer \u{25b8} ~/code/scratch");
+            assert_eq!(menu(cx, tab), None, "{n}: chosen, it closes");
+            assert_eq!(tab_cwd(cx, tab), folder("scratch"), "{n}: it starts there");
+            let a = argv(cx, tab);
+            assert_eq!(flag(&a, "--resume"), None, "{n}: nothing to resume {a:?}");
+            let fresh = flag(&a, "--session-id").expect("a new conversation");
+            assert_ne!(fresh, first, "{n}: started again");
+            assert!(
+                notices(cx, tab).is_empty(),
+                "{n}: no row before a conversation"
+            );
+            assert_eq!(*moves.borrow(), [(folder("scratch"), false)], "{n}: saved");
+            assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
+            assert_eq!(
+                cx.read(|cx| cx
+                    .global::<Catalogs>()
+                    .catalog("claude", &folder("scratch"))
+                    .cloned()),
+                Some(Lookup::Loading),
+                "{n}: the lists are read for it"
+            );
+            let composer = cx.read(|cx| tab.read(cx).shot_composer());
+            assert!(
+                has_keys(cx, window, move |cx| composer.read(cx).focus_handle(cx)),
+                "{n}: the keyboard is back in the box"
+            );
+
+            // Return in the search picks the first folder listed.
+            click_folder_chip(n, cx, window, tab);
+            cx.simulate_input(window, "my-app");
+            cx.simulate_keystrokes(window, "enter");
+            cx.run_until_parked();
+            assert_eq!(tab_cwd(cx, tab), folder("my-app"), "{n}: Return chose it");
+            assert_eq!(menu(cx, tab), None, "{n}");
+            assert!(written(cx, tab).is_empty(), "{n}: and sent nothing");
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_box(cx)).folder,
+                "\u{1f4c1} my-app \u{25be}",
+                "{n}"
+            );
+        },
+    );
 }

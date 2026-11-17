@@ -38,6 +38,7 @@ use crate::browser_tab::BrowserTab;
 use crate::daemon_client::{self, DaemonClient};
 use crate::drag_gap::Slides;
 use crate::file_tab::FileTab;
+use crate::folder_picker::{KnownFolders, RecentFolders};
 use crate::git_branch::{self, Places};
 use crate::groups::{self, GroupKey};
 use crate::help_panel::HelpPanel;
@@ -736,6 +737,9 @@ pub struct Workspace {
     pub(crate) browser_data_kept: bool,
     /// The Welcome card has been shown (M11k): kept in the sessions file.
     pub(crate) welcomed: bool,
+    /// The folders agent tabs and workspaces were opened in, newest first (M11ak's Recent):
+    /// kept in the sessions file.
+    pub(crate) recent_folders: RecentFolders,
     /// Deleting the saved browser data is under way.
     pub(crate) browser_wiping: bool,
     /// True while the saved sessions are being reopened, so nothing is saved halfway (and no
@@ -811,7 +815,8 @@ pub struct Workspace {
     /// Bumped on every notify of this workspace (`_rows_observer`): what `rows_cache` is keyed on.
     pub(crate) rows_generation: u64,
     /// The workspace observing itself: each notify (once its effects flush, before the next
-    /// frame) bumps `rows_generation`.
+    /// frame) bumps `rows_generation`, and tells the agent boxes' folder pickers the folders
+    /// fuxx knows if they changed (`tell_known_folders`).
     _rows_observer: Subscription,
     /// Whether the workspace has rendered: until then, rows kept while it was being built are
     /// not trusted (its first frame is drawn before its notifies reach `_rows_observer`).
@@ -882,6 +887,7 @@ impl Workspace {
         if let Some(saved) = read_saved_quietly() {
             this.sidebar.load(&saved);
             this.right_sidebar.load(&saved);
+            this.recent_folders = RecentFolders::from_saved(saved.recent_folders);
         }
         // While a quit ends sessions first, the red button waits for it.
         let me = cx.weak_entity();
@@ -922,7 +928,10 @@ impl Workspace {
             }
         });
         // Any notify may change what the rows show: the next `rows` builds them again.
-        let rows_observer = cx.observe_self(|this, _| this.rows_generation += 1);
+        let rows_observer = cx.observe_self(|this, cx| {
+            this.rows_generation += 1;
+            this.tell_known_folders(cx);
+        });
         let (socket, requests) = scripting.unzip();
         Self {
             sessions: SessionList::new(),
@@ -975,6 +984,7 @@ impl Workspace {
             address_box: None,
             browser_data_kept: false,
             welcomed: true,
+            recent_folders: RecentFolders::default(),
             browser_wiping: false,
             restoring: true,
             hold_saving: false,
@@ -1313,6 +1323,36 @@ impl Workspace {
         }
     }
 
+    /// `folder` is the newest of Recent (an agent tab started or moved there, a workspace
+    /// opened on it); saved with the sessions file, and told to the folder pickers.
+    pub(crate) fn note_recent_folder(&mut self, folder: PathBuf, cx: &mut App) {
+        self.recent_folders.push(folder);
+        self.tell_known_folders(cx);
+    }
+
+    /// The folders the agent boxes' pickers offer (`KnownFolders`): Recent, and the folders of
+    /// the workspaces' sessions; set only when they changed.
+    pub(crate) fn tell_known_folders(&self, cx: &mut App) {
+        let mut projects: Vec<PathBuf> = Vec::new();
+        for project in self
+            .sessions
+            .items()
+            .iter()
+            .filter_map(|s| s.project.as_ref())
+        {
+            if !projects.contains(project) {
+                projects.push(project.clone());
+            }
+        }
+        let known = KnownFolders {
+            recent: self.recent_folders.folders().to_vec(),
+            projects,
+        };
+        if cx.try_global::<KnownFolders>() != Some(&known) {
+            cx.set_global(known);
+        }
+    }
+
     /// Save within a second, once however many changes come (M11u: a `cd`, an agent starting
     /// or ending): one small write, not one per change.
     pub(crate) fn save_soon(&mut self, cx: &mut Context<Self>) {
@@ -1433,6 +1473,7 @@ impl Workspace {
             right_sidebar_hidden: self.right_sidebar.hidden,
             right_sidebar_width: Some(self.right_sidebar.width),
             right_sidebar_panel: Some(self.right_sidebar.panel.key().to_string()),
+            recent_folders: self.recent_folders.folders().to_vec(),
         }
     }
 
@@ -1471,6 +1512,10 @@ impl Workspace {
                 then(self, None, window, cx);
             }
             return;
+        }
+        // A workspace opened on a folder: Recent (M11ak).
+        if let (At::New, Some(project)) = (&at, &launch.saved.project) {
+            self.note_recent_folder(project.clone(), cx);
         }
         self.open_now(launch, at, None, then, window, cx);
     }

@@ -227,6 +227,11 @@ pub(super) const ORDER: &[&str] = &[
     "agent-box-working",
     "agent-box-attachment",
     "agent-box-long-text",
+    "agent-box-folder-picker",
+    "agent-box-folder-search",
+    "agent-box-folder-move-ask",
+    "agent-box-folder-move-new-only",
+    "agent-box-folder-before-first",
 ];
 
 /// Every scene, in `ORDER`. Panics, naming the scene, if one is in no area or in two, or if

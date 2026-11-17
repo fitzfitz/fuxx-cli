@@ -350,14 +350,81 @@ impl Provider for Claude {
     /// `--resume` doesn't replay on stdout (Task 0): the turns come from Claude's transcript of
     /// the conversation. None to resume, no home, or a missing or unreadable file: none.
     fn history(&self, start: &Start) -> Vec<Past> {
-        let (Some(id), Some(home)) = (&start.resume, std::env::var_os("HOME")) else {
-            return Vec::new();
-        };
-        let cwd = std::fs::canonicalize(&start.cwd).unwrap_or_else(|_| start.cwd.clone());
-        std::fs::read_to_string(transcript_path(Path::new(&home), &cwd, id))
-            .map(|text| transcript_events(&text))
+        match std::env::var_os("HOME") {
+            Some(home) => history_in(Path::new(&home), start),
+            None => Vec::new(),
+        }
+    }
+
+    /// `claude --version` (`2.1.326 (Claude Code)`): Move needs `MOVE_SINCE`.
+    fn version_probe(&self) -> Option<Probe> {
+        Some(Probe {
+            argv: vec![self.program().to_string(), "--version".into()],
+            stdin: Vec::new(),
+            until: None,
+        })
+    }
+
+    /// `--resume` from another folder carries a conversation on since `MOVE_SINCE` (Task 0
+    /// recorded it with 2.1.326); an older or unknown version can't.
+    fn can_move(&self, version: Option<&str>) -> bool {
+        version.is_some_and(|v| version_at_least(v, MOVE_SINCE))
+    }
+
+    /// The `projects` keys of `~/.claude.json` (only read; missing or unreadable: none).
+    fn known_folders(&self, home: &Path) -> Vec<PathBuf> {
+        std::fs::read_to_string(home.join(".claude.json"))
+            .map(|text| claude_json_projects(&text))
             .unwrap_or_default()
     }
+}
+
+/// The first Claude Code that resumes a conversation from another folder.
+const MOVE_SINCE: (u32, u32, u32) = (2, 1, 223);
+
+/// Whether `claude --version`'s text (`2.1.326 (Claude Code)`) names a version at least `min`.
+/// Anything else: false.
+pub fn version_at_least(text: &str, min: (u32, u32, u32)) -> bool {
+    let word = text.split_whitespace().next().unwrap_or("");
+    let parts: Vec<u32> = word.split('.').map_while(|n| n.parse().ok()).collect();
+    match parts[..] {
+        [a, b, c, ..] => (a, b, c) >= min,
+        _ => false,
+    }
+}
+
+/// The folders `~/.claude.json` lists as projects (its `projects` object's keys); none from
+/// anything unreadable.
+pub fn claude_json_projects(text: &str) -> Vec<PathBuf> {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| {
+            v["projects"]
+                .as_object()
+                .map(|projects| projects.keys().map(PathBuf::from).collect())
+        })
+        .unwrap_or_default()
+}
+
+/// The history of the conversation `start` resumes, from its transcript under `home`. Claude
+/// keeps a transcript under the folder the conversation started in, also after it moved (Task
+/// 0: `--resume` from another folder writes on in the first folder's entry): so when it isn't
+/// under `start`'s folder, it is looked for under every folder's entry (an id is unique).
+fn history_in(home: &Path, start: &Start) -> Vec<Past> {
+    let Some(id) = &start.resume else {
+        return Vec::new();
+    };
+    let cwd = std::fs::canonicalize(&start.cwd).unwrap_or_else(|_| start.cwd.clone());
+    let here = transcript_path(home, &cwd, id);
+    let text = std::fs::read_to_string(&here).ok().or_else(|| {
+        let name = here.file_name()?;
+        std::fs::read_dir(home.join(".claude").join("projects"))
+            .ok()?
+            .flatten()
+            .find_map(|entry| std::fs::read_to_string(entry.path().join(name)).ok())
+    });
+    text.map(|text| transcript_events(&text))
+        .unwrap_or_default()
 }
 
 /// Where Claude keeps conversation `id` begun in folder `cwd` (its realpath: the caller resolves
@@ -2417,5 +2484,100 @@ mod tests {
         assert_eq!(CLAUDE.applies(ChangeKind::Effort), Applies::Live);
         assert_eq!(CLAUDE.applies(ChangeKind::Mode), Applies::Live);
         assert_eq!(CLAUDE.applies(ChangeKind::Folder), Applies::Restart);
+    }
+
+    #[test]
+    fn move_needs_2_1_223() {
+        assert!(!CLAUDE.can_move(Some("2.1.222 (Claude Code)")));
+        assert!(CLAUDE.can_move(Some("2.1.223 (Claude Code)")));
+        assert!(CLAUDE.can_move(Some(include_str!("fixtures/claude-version.txt").trim())));
+        assert!(CLAUDE.can_move(Some("3.0.0 (Claude Code)")));
+        assert!(!CLAUDE.can_move(Some("2.0.999 (Claude Code)")));
+        assert!(!CLAUDE.can_move(Some("Claude Code")), "garbage");
+        assert!(!CLAUDE.can_move(Some("2.1")), "too short");
+        assert!(!CLAUDE.can_move(Some("")));
+        assert!(!CLAUDE.can_move(None), "unknown");
+        assert!(version_at_least("2.1.223", (2, 1, 223)));
+        let probe = CLAUDE.version_probe().expect("Claude has a version");
+        assert_eq!(probe.argv, ["claude", "--version"]);
+    }
+
+    #[test]
+    fn claude_json_projects_are_its_project_keys() {
+        let text = json!({
+            "numStartups": 3,
+            "projects": {
+                "/tmp/fx/code/my-app": {"allowedTools": []},
+                "/tmp/fx/code/scratch": {}
+            }
+        })
+        .to_string();
+        let mut found = claude_json_projects(&text);
+        found.sort();
+        assert_eq!(
+            found,
+            ["/tmp/fx/code/my-app", "/tmp/fx/code/scratch"].map(PathBuf::from)
+        );
+        assert!(claude_json_projects("not json").is_empty());
+        assert!(claude_json_projects(r#"{"projects": []}"#).is_empty());
+        assert!(claude_json_projects("{}").is_empty());
+        // Read from the home given (a made-up one); a missing file is none.
+        let home = scratch_home("known");
+        std::fs::write(home.join(".claude.json"), &text).unwrap();
+        assert_eq!(CLAUDE.known_folders(&home).len(), 2);
+        std::fs::remove_file(home.join(".claude.json")).unwrap();
+        assert!(CLAUDE.known_folders(&home).is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// An empty made-up home folder for one test.
+    fn scratch_home(name: &str) -> PathBuf {
+        let home =
+            std::env::temp_dir().join(format!("fuxx-claude-home-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        home
+    }
+
+    /// Task 0 (`claude-move.jsonl`): after `--resume` from another folder, the transcript stays
+    /// under the folder the conversation started in. A tab now in the new folder still reads it.
+    #[test]
+    fn history_finds_a_moved_conversation() {
+        let home = scratch_home("moved");
+        let first = home.join("code/scratch");
+        let moved = first.join("moved");
+        std::fs::create_dir_all(&moved).unwrap();
+        let id = "6a1c234d-7469-40ef-b093-c74ad8006c28";
+        let first_real = std::fs::canonicalize(&first).unwrap();
+        let at = transcript_path(&home, &first_real, id);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(&at, include_str!("fixtures/claude-transcript.jsonl")).unwrap();
+        // The new folder's entry has only an empty `memory/` (as Task 0 found).
+        let moved_real = std::fs::canonicalize(&moved).unwrap();
+        let new_entry = transcript_path(&home, &moved_real, id);
+        std::fs::create_dir_all(new_entry.parent().unwrap().join("memory")).unwrap();
+        let start = Start {
+            cwd: moved.clone(),
+            resume: Some(id.into()),
+            new_id: None,
+            mode: None,
+            model: None,
+            effort: None,
+            extra_args: Vec::new(),
+        };
+        let past = history_in(&home, &start);
+        assert_eq!(
+            past.first(),
+            Some(&Past::You("Say hello in one word".into())),
+            "read from the first folder's entry: {past:?}"
+        );
+        assert_eq!(past.len(), 4);
+        // Another id is found nowhere.
+        let other = Start {
+            resume: Some("00000000-0000-4000-8000-000000000000".into()),
+            ..start
+        };
+        assert!(history_in(&home, &other).is_empty());
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
