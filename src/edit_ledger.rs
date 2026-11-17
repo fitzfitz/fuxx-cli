@@ -117,6 +117,36 @@ impl Ledger {
         since: Instant,
         now: Instant,
     ) -> (Who, Sure, bool) {
+        self.judge(path, ws, since, now, true)
+    }
+
+    /// A look decided while an edit to `path` was open, settled at its check (`read_at + SLACK`,
+    /// ruling R10): an edit that finished ok in `read_at ..= read_at + SLACK` made it, exact;
+    /// else the look is decided again as at `read_at` without open edits (one still open, or
+    /// one that failed, no longer counts): a working agent in `ws` is a guess, else you.
+    pub fn settle(
+        &self,
+        path: &Path,
+        ws: Option<WorkspaceId>,
+        since: Instant,
+        read_at: Instant,
+    ) -> (Who, Sure) {
+        if let Some(agent) = self.revise(path, read_at) {
+            return (Who::Agent(agent), Sure::Exact);
+        }
+        let (who, sure, _) = self.judge(path, ws, since, read_at, false);
+        (who, sure)
+    }
+
+    /// `decide`, open edits counted (as exact) or not. Only edits finished by `now` count.
+    fn judge(
+        &self,
+        path: &Path,
+        ws: Option<WorkspaceId>,
+        since: Instant,
+        now: Instant,
+        count_open: bool,
+    ) -> (Who, Sure, bool) {
         let from = since.checked_sub(SLACK).unwrap_or(since);
         // Exact: the latest agent-tab edit to `path` that finished ok since `from`, or is still open.
         let mut best: Option<(Instant, &AgentMark)> = None;
@@ -127,8 +157,8 @@ impl Ledger {
             .filter(|e| e.paths.iter().any(|p| p == path))
         {
             let when = match e.finished {
-                Some((f, true)) if f >= from => f,
-                None if e.started <= now => {
+                Some((f, true)) if f >= from && f <= now => f,
+                None if count_open && e.started <= now => {
                     open = true;
                     e.started
                 }
@@ -469,6 +499,82 @@ mod tests {
         assert_eq!(l.revise(&p("/a/f.rs"), secs(t0, 10)), None);
         // one that finished before the read is not a late finish either
         assert_eq!(l.revise(&p("/a/f.rs"), secs(t0, 14)), None);
+    }
+
+    /// Ruling R10: a look decided while an edit was open is settled at its 2 s check. An edit
+    /// still open then, or one that failed, no longer counts: the look is decided again without
+    /// it (a working agent in the workspace is a guess, else you).
+    #[test]
+    fn settle_an_open_edit_that_never_finishes_or_fails() {
+        let t0 = Instant::now();
+        let (since, read_at) = (secs(t0, 5), secs(t0, 12));
+        for fin in [None, Some((secs(t0, 13), false))] {
+            let mut l = Ledger::default();
+            edit(&mut l, "c1", "claude", "/a/f.rs", secs(t0, 10), None, true);
+            if let Some((f, ok)) = fin {
+                l.edit_finished("c1", ok, f);
+            }
+            assert_eq!(
+                l.settle(&p("/a/f.rs"), Some(WS1), since, read_at),
+                (Who::You, Sure::Exact),
+                "{fin:?}: nobody working: yours"
+            );
+            l.working(WS1, mark("codex"), 7, true, secs(t0, 3));
+            assert_eq!(
+                l.settle(&p("/a/f.rs"), Some(WS1), since, read_at),
+                (Who::Agent(mark("codex")), Sure::Guess),
+                "{fin:?}: an agent working in the workspace: a guess"
+            );
+        }
+    }
+
+    #[test]
+    fn settle_an_open_edit_that_finishes_ok_in_time_is_exact() {
+        let t0 = Instant::now();
+        let (since, read_at) = (secs(t0, 5), secs(t0, 12));
+        let mut l = Ledger::default();
+        edit(
+            &mut l,
+            "c1",
+            "claude",
+            "/a/f.rs",
+            secs(t0, 10),
+            Some(secs(t0, 13)),
+            true,
+        );
+        assert_eq!(
+            l.settle(&p("/a/f.rs"), Some(WS1), since, read_at),
+            (Who::Agent(mark("claude")), Sure::Exact)
+        );
+        // Finished ok, but after the 2 s: it did not make this look's change.
+        let mut l = Ledger::default();
+        edit(
+            &mut l,
+            "c1",
+            "claude",
+            "/a/f.rs",
+            secs(t0, 10),
+            Some(secs(t0, 15)),
+            true,
+        );
+        assert_eq!(
+            l.settle(&p("/a/f.rs"), Some(WS1), since, read_at),
+            (Who::You, Sure::Exact)
+        );
+        // Another edit to the file that finished ok before the look still counts.
+        edit(
+            &mut l,
+            "c0",
+            "agy",
+            "/a/f.rs",
+            secs(t0, 6),
+            Some(secs(t0, 7)),
+            true,
+        );
+        assert_eq!(
+            l.settle(&p("/a/f.rs"), Some(WS1), since, read_at),
+            (Who::Agent(mark("agy")), Sure::Exact)
+        );
     }
 
     #[test]

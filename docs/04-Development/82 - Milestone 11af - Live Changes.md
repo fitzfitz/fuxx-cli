@@ -1,6 +1,6 @@
 # Milestone 11af — Live Changes, with Who Wrote Them
 
-**Status:** 🟨 built 2026-11-17 on branch `m11af-live-changes`, all 8 plan tasks, each reviewed clean; **not merged, not pushed**, waiting for your on-screen check (below). Design approved 2026-11-17 ("approve"); plan [[M11af Plan - Live Changes]].
+**Status:** 🟨 built 2026-11-17 on branch `m11af-live-changes`, all 8 plan tasks, each reviewed clean, final-review fixes in; **not merged, not pushed**, waiting for your on-screen check (below). Design approved 2026-11-17 ("approve"); plan [[M11af Plan - Live Changes]].
 
 **Asked for:** 2026-11-16, by you, as near-future idea **1** of the file-view mockups ("1 and 3" → M11af and M11ag;
 order "your order is fine, go ahead"). Direction: [[Proposal - File View Upgrades]], mockup
@@ -24,7 +24,7 @@ file you have open in a file tab. It is a **file tab** feature; the agent tab on
 2. **Who changed it.** A margin mark per line changed *since the tab opened*: the agent's letter (**C** for Claude,
    **A** for agy) or your letter (**F**). The marks stay as long as the tab is open, so you can come back later and
    still see what the agent touched.
-3. **Follow.** A pill in the file tab's bar, "Follow claude" / "Following claude": while on, each new agent change
+3. **Follow.** A pill in the file tab's bar, "Follow claude" / "● Following claude": while on, each new agent change
    scrolls into view; scrolling yourself turns it off.
 
 ## Non-goals and anti-goals
@@ -105,9 +105,13 @@ name, else "Y" (AI's call).
    sees to path *P* is the agent's, **exact**, when an agent tab's edit to *P* finished ok since the tab's previous read
    (with 2 s of slack for the poll and the read). Any workspace's agent tab counts: the path is what matters.
    - **A finish that arrives late** (the file is written before the tool's finish reaches fuxx, so the 1 s read can
-     see the change first): an edit to *P* that has **started but not finished** at the read counts as exact, and a
-     change decided as guessed or yours is **revised to exact** if a matching edit finishes ok within 2 s after the
-     read. The line record allows that one revision; Follow acts on it (AI's call, after the builder check).
+     see the change first): an edit to *P* that has **started but not finished** at the read counts as exact for now,
+     and a change decided as guessed or yours is **revised to exact** if a matching edit finishes ok within 2 s after
+     the read. **An edit still open 2 s after the read is settled without it** (ruling R10, final review): if no edit
+     to *P* finished ok in those 2 s (it is still open — e.g. Claude waiting for your Allow — or it failed), the change
+     is decided again as if that edit did not exist: a guess when an agent in the workspace was working, else yours.
+     That may downgrade the mark. The line record allows that one revision; Follow acts on it (AI's call, after the
+     builder check).
    - Which tool calls write which paths is the **provider's** answer (a new provider method), not a name check in
      generic code. Claude: Edit, Write, MultiEdit, NotebookEdit. agy: whatever its events give; if they carry no
      path, agy's edits fall to the guess below.
@@ -137,8 +141,8 @@ The Activity log is not enough: it is per terminal, keeps 200 entries and does n
 - **Off by default, never turns itself on** (AI's call: no surprise jumps).
 - While on: after a reload in which the agent changed lines, if the first changed line is not in view, the view
   scrolls so it sits 3 lines from the top, as a diff opens. Your own changes never move the view.
-- **Turns off** when you scroll (wheel, scrollbar, keys, a find step, a change-bar click), switch mode, or the tab's
-  marks are cleared. Selecting text does not turn it off.
+- **Turns off** when you scroll (wheel, scrollbar, keys, a find step, a change-bar click), switch mode (Diff, or
+  Markdown Preview on or off), or the tab's marks are cleared. Selecting text does not turn it off.
 
 ### 5. Times
 
@@ -148,7 +152,8 @@ The Activity log is not enough: it is per terminal, keeps 200 entries and does n
 ## Calls made after the builder check (for you to check)
 
 - A late tool finish: an edit started but not finished at the read counts as exact; a guessed or "you" mark is
-  revised to exact if a matching edit finishes within 2 s after the read (section 3, rule 1).
+  revised to exact if a matching edit finishes within 2 s after the read; an edit still open (or failed) 2 s after
+  the read no longer counts, and the change is decided again without it (section 3, rule 1; final review).
 - Hidden-tab changes use a new app-wide record of agent working spans, not the Activity log (section 3).
 - Yours: every recognised terminal agent counts, others in grey and hollow; agy joins the sidebar's agent list.
 
@@ -173,7 +178,8 @@ All eight plan tasks, on branch `m11af-live-changes`. One new crate: `similar` 3
    that decides who made a change. Agent tabs and terminals that run a known agent feed it; a gone terminal or agent
    slot closes its state.
 4. **The file tab keeps the record (Task 5).** Each reload that gives new text is compared with the last text on the
-   background executor, with the read; the ledger decides who; a late finish revises a mark to exact once within 2 s.
+   background executor, with the read; the ledger decides who; a late finish revises a mark to exact once within 2 s,
+   and a change decided while an edit was open is settled at that 2 s check (final review).
 5. **Drawing (Task 6).** The glow (three tints), the age words at the end of each warm block's first line, the mark
    column (a circle and a letter, filled when exact, hollow when guessed) and its tooltip.
 6. **Follow (Task 7).** The pill in the bar, off by default; scrolls the agent's newest change into view; turns off
@@ -214,8 +220,8 @@ All eight plan tasks, on branch `m11af-live-changes`. One new crate: `similar` 3
 Not measured by the builder: it needs a real window with a file tab opened by hand (your check, item 12). What the
 code does:
 
-- **No new always-on timer.** The only new timer is the one-shot 2 s revision after a guessed or "you" mark; it ends
-  within 2 s of the last such read.
+- **No new always-on timer.** The only new timer is the one-shot 2 s revision after a guessed, "you" or open-edit
+  mark; it ends within 2 s of the last such read. The final review's fixes reuse it (no new timer).
 - The file tab's poll (the existing 1 s one) runs only while the tab is shown and the window is seen. Levels are
   worked out on it, and the tab redraws (`cx.notify()`) **only when a glow level or an age label changes**. With
   nothing warm, `Live::refresh` does no work.
@@ -227,25 +233,45 @@ code does:
   references today (the refs were made earlier on this Mac and no longer match), and so does this branch. It is a
   report, not a failure; the refs were not updated here.
 
+## Final review (whole branch, 2026-11-17)
+
+A whole-branch review after Task 8 found two Important issues and three minors; all fixed in one wave, each test
+first (RED seen, then GREEN):
+
+- **Follow stayed on in Markdown Preview** (Important). Preview is a flag inside File mode, so only Diff ended
+  Follow; an agent change while Preview showed moved the hidden File view, and a stale mark tooltip could come back.
+  Now Preview on or off ends Follow and drops the tooltip, and Follow never scrolls while Preview shows. The
+  `file-follow-mode` scene does File → Preview → File too.
+- **An open agent edit claimed any change as exact, never corrected** (Important, ruling R10). Claude's edit is
+  "open" while it waits for your Allow; a save of yours meanwhile was marked Claude's, filled, and stayed so. Now the
+  2 s check settles such a look: no ok finish in those 2 s → decided again without open edits (a guess or yours),
+  which may downgrade it (section 3, rule 1). `Ledger::settle` in `src/edit_ledger.rs` (generic).
+- **Age words per change block** (minor): two separate changes side by side at the same glow level shared one
+  label; runs now split where the change time differs.
+- **A read with no changed line** (a `touch`) no longer counts as the latest change (minor).
+- **Pill wording** in Goal 3 and check item 8 now reads "● Following claude" (minor); a new Limits line for
+  terminal agents seen late.
+
 ## Limits (small things you might notice)
 
 - A mark's tooltip does not count up while you hover it ("12 s ago" stays until you move).
-- A reload that changes nothing (a `touch`, a line-ending-only rewrite) can drop a guessed or "you" mark's pending 2 s
-  revision, so a late finish then stays as guessed.
+- A reload that changes nothing (a `touch`, a line-ending-only rewrite) within 2 s of a change can drop that change's
+  pending 2 s check, so a late finish then stays as guessed, and a change claimed by a then-open edit stays exact.
 - Follow with Wrap on rebuilds the wrapping on each reload.
-- Follow can stay on in Markdown Preview (its pill is hidden there).
 - The poll stops while the tab is hidden, so the glow refreshes when it is shown again.
 - Your letter comes from the git name known when the first mark appears, else the account's full name.
+- A terminal agent whose Working begins before fuxx sees its program as a known agent (the process check is
+  debounced) gets no working span for that stretch, so its edits then are marked as yours.
 
 ## Final numbers (this Mac, debug build, 2026-11-17)
 
 | Check | Before (master, M11aa) | Now |
 | --- | --- | --- |
-| `cargo test --bin fuxx` | 1,787 passed (1 ignored) | **1,834 passed** (1 ignored) |
+| `cargo test --bin fuxx` | 1,787 passed (1 ignored) | **1,839 passed** (1 ignored; 1,834 before the final review's 5 new tests) |
 | `cargo clippy --all-targets` | 14 (bin) / 27 (test) | 14 / 27 (no new warnings) |
 | `cargo clippy --all-targets --features ui-shots` | 16 / 29 | 16 / 29 (no new warnings) |
 | `cargo fmt --check` | clean | clean |
-| Full `scripts/ui-shots.sh` | 137 scenes | **146 passed, 0 failed**, 115.2 s (9 new scenes) |
+| Full `scripts/ui-shots.sh` | 137 scenes | **146 passed, 0 failed**, 115.7 s (9 new scenes; after the final review) |
 | Idle CPU, file tab shown, nothing changing | n/a | not measured by the builder: your check, item 12 |
 
 The reference fingerprints are report only and stale on this Mac (see "Findings"): they print "look different" for
@@ -280,9 +306,10 @@ so lines in it, `app.txt`, and open it in a file tab).
 **Follow**
 
 8. Follow is off when the pill first appears ("Follow claude", top right of the file tab's bar, only once an agent has
-   changed the file). Turn it on: "Following claude". Have the agent edit a line far down: the view scrolls so it is
+   changed the file). Turn it on: "● Following claude". Have the agent edit a line far down: the view scrolls so it is
    3 lines from the top. Your own save never moves the view.
-9. With Follow on, turn the wheel: it turns off. Switching to Diff turns it off too.
+9. With Follow on, turn the wheel: it turns off. Switching to Diff turns it off too, and so does Preview on a Markdown
+   file (back in File the pill says "Follow claude", the marks are still there, no tooltip left over).
 
 **Left alone, and limits**
 

@@ -172,17 +172,25 @@ impl LineRecord {
         &self.last
     }
 
-    /// Runs of neighbouring lines still glowing at the same level, as (lines, level).
+    /// Runs of neighbouring lines still glowing at the same level, as (lines, level); lines of
+    /// separate changes (another time) are separate runs, so each change gets its own words.
     pub fn warm_blocks(&self, now: SystemTime) -> Vec<(Range<usize>, u8)> {
         let mut out: Vec<(Range<usize>, u8)> = Vec::new();
+        let mut run_when: Option<SystemTime> = None;
         for (line, m) in self.marks.iter().enumerate() {
-            let level = m
-                .as_ref()
-                .and_then(|m| glow_level(now.duration_since(m.when).unwrap_or(Duration::ZERO)));
-            let Some(level) = level else { continue };
+            let Some(m) = m else { continue };
+            let age = now.duration_since(m.when).unwrap_or(Duration::ZERO);
+            let Some(level) = glow_level(age) else {
+                continue;
+            };
             match out.last_mut() {
-                Some((r, l)) if r.end == line && *l == level => r.end = line + 1,
-                _ => out.push((line..line + 1, level)),
+                Some((r, l)) if r.end == line && *l == level && run_when == Some(m.when) => {
+                    r.end = line + 1
+                }
+                _ => {
+                    out.push((line..line + 1, level));
+                    run_when = Some(m.when);
+                }
             }
         }
         out
@@ -380,6 +388,24 @@ mod tests {
         r.apply(&c2, 2, mark(Who::You, secs(20)));
         assert_eq!(r.warm_blocks(secs(20)), vec![(0..1, 2), (1..2, 3)]);
         assert_eq!(r.warm_blocks(secs(70)), vec![(1..2, 1)]);
+    }
+
+    /// Two separate changes side by side, glowing at one level, are two runs (one age label
+    /// each); the lines of one change stay one run.
+    #[test]
+    fn warm_blocks_split_neighbouring_changes() {
+        let mut r = LineRecord::baseline(3);
+        let c1 = Compared {
+            blocks: vec![0..2],
+            new_of_old: vec![None, None, Some(2)],
+        };
+        r.apply(&c1, 3, mark(Who::You, secs(0)));
+        let c2 = Compared {
+            blocks: vec![2..3],
+            new_of_old: vec![Some(0), Some(1), None],
+        };
+        r.apply(&c2, 3, mark(Who::You, secs(5)));
+        assert_eq!(r.warm_blocks(secs(10)), vec![(0..2, 3), (2..3, 3)]);
     }
 
     #[test]
