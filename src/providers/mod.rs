@@ -372,11 +372,45 @@ pub enum TodoState {
     Pending,
 }
 
-/// An image to send with a message: its type (`image/png`) and bytes.
+/// An image to send with a message: its type (`image/png`), its bytes and the same as base64
+/// (made once by `new`, which is for a background thread: encoding up to 5 MB is not for the
+/// UI thread, so a translator only copies `data`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Picture {
     pub media_type: &'static str,
     pub bytes: Arc<[u8]>,
+    pub data: Arc<str>,
+}
+
+impl Picture {
+    pub fn new(media_type: &'static str, bytes: Vec<u8>) -> Self {
+        let data = Arc::from(base64(&bytes));
+        Picture {
+            media_type,
+            bytes: Arc::from(bytes),
+            data,
+        }
+    }
+}
+
+/// `bytes` as standard base64 (RFC 4648, padded).
+pub fn base64(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(DIGITS[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 #[derive(Clone, Debug, PartialEq)]

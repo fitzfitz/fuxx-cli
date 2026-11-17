@@ -1503,7 +1503,7 @@ pub(super) fn agent_box_image_chip() {
         assert_eq!(blocks[0]["source"]["media_type"], "image/png", "{n}");
         assert_eq!(
             blocks[0]["source"]["data"],
-            crate::providers::claude::base64(PNG),
+            crate::providers::base64(PNG),
             "{n}"
         );
         assert_eq!(

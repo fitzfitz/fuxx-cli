@@ -339,10 +339,52 @@ pub fn picture(name: &str, media_type: &'static str, bytes: Vec<u8>) -> Result<P
     if bytes.len() > IMAGE_MAX {
         return Err(too_big(name));
     }
-    Ok(Picture {
-        media_type,
-        bytes: Arc::from(bytes),
-    })
+    Ok(Picture::new(media_type, bytes))
+}
+
+/// An image file's bytes, read no further than `IMAGE_MAX` (a device, a pipe or a growing file
+/// can't be read without end): more than that is the same notice as a big picture. Reads a
+/// file: call it off the UI thread.
+pub fn read_image(path: &Path, name: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(IMAGE_MAX as u64 + 1).read_to_end(&mut bytes))
+        .map_err(|e| format!("Couldn't read {name}: {e}"))?;
+    if bytes.len() > IMAGE_MAX {
+        return Err(too_big(name));
+    }
+    Ok(bytes)
+}
+
+/// Remove the files in `dir` (pasted images written for an agent told a path) last changed
+/// more than `age` before `now`; how many went. A folder that isn't there has none. Reads and
+/// removes files: call it off the UI thread.
+pub fn clean_pasted(dir: &Path, age: Duration, now: std::time::SystemTime) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .is_some_and(|old| old > age)
+        })
+        .filter(|e| std::fs::remove_file(e.path()).is_ok())
+        .count()
+}
+
+/// At start: pasted images older than a day are removed from the temp folder.
+pub fn clean_old_pasted() {
+    let day = Duration::from_secs(24 * 60 * 60);
+    clean_pasted(
+        &std::env::temp_dir().join(PASTED_DIR),
+        day,
+        std::time::SystemTime::now(),
+    );
 }
 
 /// Write a pasted `picture` to a new file in `dir` (made if needed), for an agent that is
@@ -1946,12 +1988,7 @@ impl AgentTab {
         let job = cx.background_spawn(async move {
             let (bytes, path) = match from {
                 ImageFrom::File(path) => {
-                    let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    if len > IMAGE_MAX as u64 {
-                        return Err(too_big(&name));
-                    }
-                    let bytes =
-                        std::fs::read(&path).map_err(|e| format!("Couldn't read {name}: {e}"))?;
+                    let bytes = read_image(&path, &name)?;
                     (bytes, Some(path))
                 }
                 ImageFrom::Clipboard(bytes) => (bytes, None),
@@ -3709,10 +3746,7 @@ mod tests {
     fn image(name: &str, path: Option<&str>) -> Attachment {
         Attachment::Image {
             name: name.into(),
-            picture: Picture {
-                media_type: "image/png",
-                bytes: Arc::from(&b"x"[..]),
-            },
+            picture: Picture::new("image/png", b"x".to_vec()),
             path: path.map(PathBuf::from),
         }
     }
@@ -3791,13 +3825,63 @@ mod tests {
     }
 
     #[test]
+    fn an_image_file_is_read_up_to_the_limit_only() {
+        let dir = std::env::temp_dir().join(format!("fuxx-test-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, len: usize| {
+            let path = dir.join(name);
+            std::fs::File::create(&path)
+                .unwrap()
+                .set_len(len as u64)
+                .unwrap();
+            path
+        };
+        let exact = read_image(&make("a.png", IMAGE_MAX), "a.png").expect("exactly 5 MB");
+        assert_eq!(exact.len(), IMAGE_MAX);
+        assert_eq!(
+            read_image(&make("b.png", IMAGE_MAX + 1), "b.png"),
+            Err("Image over 5 MB: b.png".to_string())
+        );
+        assert!(read_image(&dir.join("none.png"), "none.png").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_pasted_images_are_removed_and_new_ones_kept() {
+        let dir = std::env::temp_dir().join(format!("fuxx-test-clean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("old.png");
+        let new = dir.join("new.png");
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&new, b"x").unwrap();
+        let day = Duration::from_secs(24 * 60 * 60);
+        let now = std::time::SystemTime::now();
+        // Judged at a time 25 h on: both are old; at 1 h on: neither is.
+        assert_eq!(
+            clean_pasted(&dir, day, now + Duration::from_secs(60 * 60)),
+            0
+        );
+        assert!(old.exists() && new.exists());
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(now - Duration::from_secs(25 * 60 * 60))
+            .unwrap();
+        assert_eq!(clean_pasted(&dir, day, now), 1);
+        assert!(!old.exists() && new.exists());
+        // A folder that isn't there is nothing to clean.
+        assert_eq!(clean_pasted(&dir.join("none"), day, now), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_pasted_image_goes_to_a_new_file_in_the_temp_folder() {
         let dir = std::env::temp_dir().join(format!("fuxx-test-paste-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let picture = Picture {
-            media_type: "image/png",
-            bytes: Arc::from(&b"png bytes"[..]),
-        };
+        let picture = Picture::new("image/png", b"png bytes".to_vec());
         let a = write_pasted(&dir, &picture, "png").expect("written");
         let b = write_pasted(&dir, &picture, "png").expect("written");
         assert_ne!(a, b, "each paste its own file");

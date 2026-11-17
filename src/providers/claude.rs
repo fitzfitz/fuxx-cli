@@ -797,33 +797,13 @@ fn content(text: &str, images: &[Picture]) -> Value {
         .iter()
         .map(|p| {
             json!({"type": "image",
-            "source": {"type": "base64", "media_type": p.media_type, "data": base64(&p.bytes)}})
+            "source": {"type": "base64", "media_type": p.media_type, "data": &*p.data}})
         })
         .collect();
     if !text.is_empty() {
         blocks.push(json!({"type": "text", "text": text}));
     }
     Value::Array(blocks)
-}
-
-/// `bytes` as standard base64 (RFC 4648, padded).
-pub fn base64(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(DIGITS[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 fn control_response(request_id: &str, response: Value) -> String {
@@ -1699,10 +1679,7 @@ mod tests {
     fn a_send_with_an_image_is_a_content_array() {
         assert!(CLAUDE.sends_images());
         let mut t = CLAUDE.translator();
-        let picture = Picture {
-            media_type: "image/png",
-            bytes: Arc::from(&b"foo"[..]),
-        };
+        let picture = Picture::new("image/png", b"foo".to_vec());
         let out = t.encode(&Action::Send {
             text: "what colour".into(),
             images: vec![picture.clone(), picture],
@@ -1717,13 +1694,31 @@ mod tests {
         // An image alone has no (empty) text block: the API refuses one.
         let out = t.encode(&Action::Send {
             text: String::new(),
-            images: vec![Picture {
-                media_type: "image/png",
-                bytes: Arc::from(&b"foo"[..]),
-            }],
+            images: vec![Picture::new("image/png", b"foo".to_vec())],
         });
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(v["message"]["content"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn encode_uses_the_pictures_data_as_it_is() {
+        // The base64 is made once, off the UI thread, when the picture is built; `encode`
+        // (on the UI thread) only copies it.
+        let picture = Picture {
+            media_type: "image/png",
+            bytes: Arc::from(&b"foo"[..]),
+            data: Arc::from("VERBATIM"),
+        };
+        let out = CLAUDE.translator().encode(&Action::Send {
+            text: String::new(),
+            images: vec![picture],
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(v["message"]["content"][0]["source"]["data"], "VERBATIM");
+        assert_eq!(
+            Picture::new("image/png", b"foo".to_vec()).data.as_ref(),
+            "Zm9v"
+        );
     }
 
     #[test]
