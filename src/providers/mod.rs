@@ -63,7 +63,6 @@ pub struct EffortChoice {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandKind {
     Command,
-    #[allow(dead_code)] // the cache marks `Event::Skills` names so (a later M11ak task)
     Skill,
     Agent,
 }
@@ -78,7 +77,6 @@ pub struct AgentCommand {
 
 /// A short-lived process that answers part of the catalog: its command line, the lines to write
 /// to its stdin, and (when it keeps running) the stdout line that is the answer.
-#[allow(dead_code)] // read when the catalog is fetched (a later M11ak task)
 #[derive(Clone, Debug)]
 pub struct Probe {
     pub argv: Vec<String>,
@@ -183,18 +181,15 @@ pub trait Provider: Sync {
     fn translator(&self) -> Box<dyn Translator>;
     /// The short processes that answer the catalog, in the order `read_catalog` takes their
     /// outputs. None: the provider can't be asked.
-    #[allow(dead_code)] // read by the agent box's menus (a later M11ak task)
     fn catalog_probes(&self) -> Vec<Probe> {
         Vec::new()
     }
     /// Its own process's start answers the catalog (`Event::Catalog`), so no probe runs while
     /// it runs.
-    #[allow(dead_code)] // read by the agent box's menus (a later M11ak task)
     fn catalog_on_start(&self) -> bool {
         false
     }
     /// The catalog from the probes' outputs (stdout of each, in order).
-    #[allow(dead_code)] // read by the agent box's menus (a later M11ak task)
     fn read_catalog(&self, _outputs: &[String]) -> Result<Catalog, String> {
         Err("no list".into())
     }
@@ -211,12 +206,10 @@ pub trait Provider: Sync {
     }
     /// The short process that prints the agent's usage limits ($0, outside any conversation).
     /// None: the agent has no usage command.
-    #[allow(dead_code)] // read by View Usage (a later M11ak task)
     fn usage_probe(&self) -> Option<Probe> {
         None
     }
     /// The usage limits from the probe's stdout; Err is the line to show.
-    #[allow(dead_code)] // read by View Usage (a later M11ak task)
     fn read_usage(&self, _output: &str) -> Result<Vec<UsageGroup>, String> {
         Err("Usage isn't available".into())
     }
