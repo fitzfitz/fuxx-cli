@@ -709,9 +709,8 @@ impl ClaudeTranslator {
         format!("fuxx-set-{}", self.sets)
     }
 
-    /// A live change's request under a new id, kept as `asked` until its answer.
-    fn ask(&mut self, request: Value, asked: Asked) -> String {
-        let id = self.set_id();
+    /// A live change's request under `id`, kept as `asked` until its answer.
+    fn ask(&mut self, id: String, request: Value, asked: Asked) -> String {
         let line =
             json!({"type": "control_request", "request_id": id, "request": request}).to_string();
         self.asked.insert(id, asked);
@@ -746,7 +745,12 @@ impl ClaudeTranslator {
         }
         let body = &response["response"];
         let value = match asked {
-            Asked::Model(asked) => s(&body["model"]).unwrap_or(asked),
+            Asked::Model(asked) => {
+                let model = s(&body["model"]).unwrap_or(asked);
+                // The context is measured against the model it now runs.
+                self.model = Some(model.clone());
+                model
+            }
             Asked::Mode(asked) => s(&body["mode"]).unwrap_or(asked),
             Asked::Effort { .. } => return Vec::new(),
             Asked::ReadEffort(asked) => s(&body["applied"]["effort"]).unwrap_or(asked),
@@ -975,23 +979,29 @@ impl Translator for ClaudeTranslator {
                 }
                 vec![control_response(id, response)]
             }
-            Action::SetModel { model } => vec![self.ask(
-                json!({"subtype": "set_model", "model": model}),
-                Asked::Model(model.clone()),
-            )],
-            Action::SetMode { mode } => vec![self.ask(
-                json!({"subtype": "set_permission_mode", "mode": mode}),
-                Asked::Mode(mode.clone()),
-            )],
+            Action::SetModel { model } => {
+                let id = self.set_id();
+                let request = json!({"subtype": "set_model", "model": model});
+                vec![self.ask(id, request, Asked::Model(model.clone()))]
+            }
+            Action::SetMode { mode } => {
+                let id = self.set_id();
+                let request = json!({"subtype": "set_permission_mode", "mode": mode});
+                vec![self.ask(id, request, Asked::Mode(mode.clone()))]
+            }
             // The SDK's `applyFlagSettings`; its answer has no body, so `get_settings`, asked
             // right after it, reads the effort back (Task 0).
             Action::SetEffort { effort } => {
-                let read_back = format!("fuxx-set-{}", self.sets + 2);
+                let (apply_id, read_id) = (self.set_id(), self.set_id());
                 let apply = self.ask(
+                    apply_id,
                     json!({"subtype": "apply_flag_settings", "settings": {"effortLevel": effort}}),
-                    Asked::Effort { read_back },
+                    Asked::Effort {
+                        read_back: read_id.clone(),
+                    },
                 );
                 let read = self.ask(
+                    read_id,
                     json!({"subtype": "get_settings"}),
                     Asked::ReadEffort(effort.clone()),
                 );
@@ -2368,6 +2378,31 @@ mod tests {
             "request_id": "fuxx-set-9", "response": {"model": "x"}}})
         .to_string();
         assert!(applied(t.decode(&other)).is_empty());
+    }
+
+    /// A live switch to another model: the context is measured against the new model's window.
+    #[test]
+    fn a_switched_model_sizes_the_context() {
+        let init =
+            json!({"type":"system","subtype":"init","session_id":"s","model":"big"}).to_string();
+        let result = json!({"type":"result","subtype":"success","is_error":false,"result":"ok",
+            "modelUsage":{"small":{"contextWindow":200000},"big":{"contextWindow":1000000}},
+            "usage":{"iterations":[{"input_tokens":100000}]}})
+        .to_string();
+        let mut t = CLAUDE.translator();
+        t.decode(&init);
+        t.encode(&Action::SetModel {
+            model: "small-alias".into(),
+        });
+        let answer = json!({"type": "control_response", "response": {"subtype": "success",
+            "request_id": "fuxx-set-1", "response": {"model": "small"}}})
+        .to_string();
+        t.decode(&answer);
+        let pct = t.decode(&result).into_iter().find_map(|e| match e {
+            Event::Usage { context_pct, .. } => context_pct,
+            _ => None,
+        });
+        assert_eq!(pct, Some(50), "100k of small's 200k, not big's 1M");
     }
 
     #[test]
