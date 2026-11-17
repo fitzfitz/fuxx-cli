@@ -14,7 +14,6 @@ static INFO: ProviderInfo = ProviderInfo {
     label: "Antigravity",
     badge: "AG",
     badge_rgb: 0x2d4f8a,
-    routes_permissions: false,
     // The recordings show no way to stop a turn on stdin.
     interrupts: false,
     modes: &["accept-edits", "auto", "plan"],
@@ -305,7 +304,7 @@ impl Translator for AgyTranslator {
     }
 
     /// Each turn is one `{"event":"user"}` line (no `role`: agy rejects it). agy asks fuxx
-    /// nothing (`routes_permissions: false`), so there is nothing to answer; and the recordings
+    /// nothing (its prompts are not routed), so there is nothing to answer; and the recordings
     /// show no way to stop a turn, so `Interrupt` writes nothing (the tab's Force stop ends the
     /// process).
     fn encode(&mut self, action: &Action) -> Vec<String> {
@@ -659,7 +658,6 @@ mod tests {
             (i.name, i.label, i.badge, i.badge_rgb),
             ("agy", "Antigravity", "AG", 0x2d4f8a)
         );
-        assert!(!i.routes_permissions);
         assert!(!i.interrupts);
         assert_eq!(i.modes, ["accept-edits", "auto", "plan"]);
         assert_eq!(i.default_mode, Some("accept-edits"));
