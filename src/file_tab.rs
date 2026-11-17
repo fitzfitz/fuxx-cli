@@ -2702,40 +2702,61 @@ fn lane_marks(
     if f.mode != FileMode::Plain {
         return Vec::new();
     }
+    // The shown lines in order (a hidden line's mark goes to the shown line before it: its fold).
+    let mut shown_lines: Vec<usize> = Vec::new();
     let mut shown: Vec<(usize, LineChange)> = Vec::new();
-    if !f.doc.changes.by_line.is_empty() {
-        for r in 0..map.len() {
-            let Some(Row::Line { line, .. }) = map.row(r) else {
-                continue;
-            };
-            let own = f.doc.changes.by_line.get(&line).copied();
-            let hidden = map.hidden_after(line);
-            let folded = (!hidden.is_empty())
-                .then(|| folded_summary(hidden, &f.doc.changes, None).change)
-                .flatten();
-            let change = either_change(own, folded).filter(|c| *c != LineChange::DeletedAfter);
-            if let Some(change) = change {
-                shown.push((r, change));
-            }
+    // Deletion edges' tops: a folded line holding only deletions, and each edge on a shown row.
+    let mut deletions: Vec<f32> = Vec::new();
+    for r in 0..map.len() {
+        let Some(Row::Line { line, .. }) = map.row(r) else {
+            continue;
+        };
+        if shown_lines.last() != Some(&line) {
+            shown_lines.push(line);
+        }
+        let own = f.doc.changes.by_line.get(&line).copied();
+        let hidden = map.hidden_after(line);
+        let folded = (!hidden.is_empty())
+            .then(|| folded_summary(hidden, &f.doc.changes, None).change)
+            .flatten();
+        match either_change(own, folded) {
+            Some(LineChange::DeletedAfter) => deletions.push(map.top(r)),
+            Some(change) => shown.push((r, change)),
+            None => {}
         }
     }
-    let items: Vec<(f32, f32, Rgb)> = bar_runs(&shown)
+    // The row a line is on: its own, or (hidden) its fold's.
+    let row_of = |line: usize| {
+        map.first_row(line).or_else(|| {
+            let k = shown_lines.partition_point(|&l| l < line).checked_sub(1)?;
+            map.first_row(shown_lines[k])
+        })
+    };
+    deletions.extend(
+        f.doc
+            .changes
+            .deleted
+            .iter()
+            .filter_map(|&edge| map.first_row(edge).map(|r| map.top(r))),
+    );
+    deletions.sort_by(f32::total_cmp);
+    let mut items: Vec<(f32, f32, Rgb)> = bar_runs(&shown)
         .into_iter()
         .map(|(run, change)| {
             let top = map.top(run.start);
             (top, map.top(run.end) - top, bars.of_change(change))
         })
         .collect();
+    items.extend(deletions.into_iter().map(|top| (top, 0.0, bars.deleted)));
     let mut marks = scrollbar::lane(&items, content, track, code::LANE_MARK_MIN);
     let accent = f.theme.ui().accent;
-    // A match on a hidden line has no row: no tick.
     let ticks = |colour: Rgb, only: &dyn Fn(usize) -> bool| {
         let items: Vec<(f32, f32, Rgb)> = f
             .matches
             .iter()
             .enumerate()
             .filter(|(k, _)| only(*k))
-            .filter_map(|(_, m)| Some((map.top(map.first_row(m.line)?), 0.0, colour)))
+            .filter_map(|(_, m)| Some((map.top(row_of(m.line)?), 0.0, colour)))
             .collect();
         scrollbar::lane(&items, content, track, code::LANE_TICK)
     };
