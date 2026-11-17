@@ -241,8 +241,8 @@ impl Conversation {
                 }
             }
             Event::Notice(text) => self.items.push(Item::Notice(text)),
-            // The catalog and the skills are the tab's, not the conversation's.
-            Event::Catalog(_) | Event::Skills(_) => {}
+            // The catalog, the skills and the limits are the tab's, not the conversation's.
+            Event::Catalog(_) | Event::Skills(_) | Event::RateLimit(_) => {}
             Event::Error(text) => self.items.push(Item::Error(text)),
         }
     }

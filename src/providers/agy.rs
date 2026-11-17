@@ -6,6 +6,67 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+/// An RFC 3339 time (`2026-11-22T14:59:00Z`, `…+07:00`, fractions allowed) as unix seconds.
+pub fn rfc3339_unix(text: &str) -> Option<i64> {
+    let (date, rest) = text.split_once(['T', 't'])?;
+    let mut d = date.split('-');
+    let (year, month, day): (i64, i64, i64) = (
+        d.next()?.parse().ok()?,
+        d.next()?.parse().ok()?,
+        d.next()?.parse().ok()?,
+    );
+    if d.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // The time ends at the zone: `Z`, or a sign and `HH:MM`.
+    let zone_at = rest.find(['Z', 'z', '+', '-'])?;
+    let (time, zone) = rest.split_at(zone_at);
+    let offset = match zone {
+        "Z" | "z" => 0,
+        _ => {
+            let sign = if zone.starts_with('-') { -1 } else { 1 };
+            let (h, m) = zone[1..].split_once(':')?;
+            sign * (h.parse::<i64>().ok()? * 3600 + m.parse::<i64>().ok()? * 60)
+        }
+    };
+    // Fractions of a second are dropped.
+    let mut t = time.split('.').next()?.split(':');
+    let (h, m, s): (i64, i64, i64) = (
+        t.next()?.parse().ok()?,
+        t.next()?.parse().ok()?,
+        t.next()?.parse().ok()?,
+    );
+    if t.next().is_some() || h > 23 || m > 59 || s > 60 {
+        return None;
+    }
+    // Days since 1970-01-01 (the proleptic Gregorian calendar).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3600 + m * 60 + s - offset)
+}
+
+const UNREADABLE_USAGE: &str = "Couldn't read usage";
+
+/// A bucket as a limit: with no fraction left it is only its name (never a made-up number).
+fn usage_bucket(b: &Value) -> UsageLimit {
+    let name = s(&b["name"]).unwrap_or_default();
+    match b["remaining_fraction"].as_f64() {
+        Some(f) => UsageLimit::Read {
+            name,
+            left_pct: (f * 100.0).round().clamp(0.0, 100.0) as u8,
+            resets: b["reset_time"]
+                .as_str()
+                .and_then(rfc3339_unix)
+                .map(Reset::At),
+        },
+        None => UsageLimit::Text(name),
+    }
+}
+
 pub struct Agy;
 pub static AGY: Agy = Agy;
 
@@ -96,6 +157,38 @@ impl Provider for Agy {
         }
         a.extend(pass_through(&start.extra_args, &owned));
         a
+    }
+
+    /// `/usage` in print mode: about three seconds, no turn, no cost.
+    fn usage_probe(&self) -> Option<Probe> {
+        Some(Probe {
+            argv: ["agy", "-p", "/usage", "--output-format", "json"]
+                .map(String::from)
+                .to_vec(),
+            stdin: Vec::new(),
+            until: None,
+        })
+    }
+
+    /// `command.data.groups[].buckets[]`: each bucket's `remaining_fraction` is the share left.
+    fn read_usage(&self, output: &str) -> Result<Vec<UsageGroup>, String> {
+        let v: Value = serde_json::from_str(output).map_err(|_| UNREADABLE_USAGE.to_string())?;
+        let groups = v["command"]["data"]["groups"]
+            .as_array()
+            .ok_or_else(|| UNREADABLE_USAGE.to_string())?;
+        Ok(groups
+            .iter()
+            .map(|g| UsageGroup {
+                name: s(&g["name"]).unwrap_or_default(),
+                about: s(&g["description"]),
+                limits: g["buckets"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(usage_bucket)
+                    .collect(),
+            })
+            .collect())
     }
 
     /// `agy models` (about a second), then `/help` in print mode (about three).
@@ -1008,5 +1101,74 @@ mod tests {
                 .iter()
                 .all(|m| !m.label.is_empty() && !m.about.is_empty())
         );
+    }
+
+    const USAGE: &str = include_str!("fixtures/agy-usage.json");
+
+    #[test]
+    fn agy_usage_reads_groups_and_buckets() {
+        let groups = AGY.read_usage(USAGE).unwrap();
+        let v: Value = serde_json::from_str(USAGE).unwrap();
+        let listed = v["command"]["data"]["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), listed.len());
+        for (g, l) in groups.iter().zip(listed) {
+            assert_eq!(g.name, l["name"].as_str().unwrap());
+            assert_eq!(g.about.as_deref(), l["description"].as_str());
+            let buckets = l["buckets"].as_array().unwrap();
+            assert_eq!(g.limits.len(), buckets.len());
+            for (limit, b) in g.limits.iter().zip(buckets) {
+                let want = UsageLimit::Read {
+                    name: b["name"].as_str().unwrap().into(),
+                    left_pct: (b["remaining_fraction"].as_f64().unwrap() * 100.0).round() as u8,
+                    resets: Some(Reset::At(
+                        rfc3339_unix(b["reset_time"].as_str().unwrap()).unwrap(),
+                    )),
+                };
+                assert_eq!(*limit, want);
+            }
+        }
+        assert!(matches!(
+            groups[0].limits[0],
+            UsageLimit::Read { left_pct: 23, .. }
+        ));
+        // A bucket without a fraction is only its name; no number is made up.
+        let odd =
+            r#"{"command":{"data":{"groups":[{"name":"G","buckets":[{"name":"Mystery"}]}]}}}"#;
+        let g = AGY.read_usage(odd).unwrap();
+        assert_eq!(g[0].about, None);
+        assert_eq!(g[0].limits, [UsageLimit::Text("Mystery".into())]);
+        assert_eq!(
+            AGY.read_usage("not json"),
+            Err("Couldn't read usage".into())
+        );
+        assert!(AGY.read_usage(r#"{"command":{}}"#).is_err());
+    }
+
+    #[test]
+    fn agy_usage_runs_in_print_mode() {
+        let p = AGY.usage_probe().expect("agy has /usage");
+        assert_eq!(p.argv, ["agy", "-p", "/usage", "--output-format", "json"]);
+        assert!(p.stdin.is_empty() && p.until.is_none());
+    }
+
+    #[test]
+    fn rfc3339_reads_offsets_and_fractions() {
+        for t in [
+            "2026-11-22T14:59:00Z",
+            "2026-11-22T21:59:00+07:00",
+            "2026-11-22T14:59:00.123456+00:00",
+        ] {
+            assert_eq!(rfc3339_unix(t), Some(1795359540), "{t}");
+        }
+        assert_eq!(rfc3339_unix("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(rfc3339_unix("2026-11-22T09:59:00-05:00"), Some(1795359540));
+        for t in [
+            "nonsense",
+            "",
+            "2026-13-22T14:59:00Z",
+            "2026-11-22T14:59:00",
+        ] {
+            assert_eq!(rfc3339_unix(t), None, "{t}");
+        }
     }
 }
