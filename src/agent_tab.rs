@@ -383,6 +383,8 @@ pub struct Colors {
     /// The agent box (M11ak): its fill and edge, its quiet chips, and a hovered one.
     pub box_fill: Rgb,
     pub box_edge: Rgb,
+    /// The box's edge while its text has the keyboard.
+    pub box_focus: Rgb,
     pub box_dim: Rgb,
     pub box_hover: Rgb,
 }
@@ -424,6 +426,7 @@ impl Colors {
             // The fill the box's text field always had.
             box_fill: ui.sidebar_background,
             box_edge: ui.panel_border,
+            box_focus: ui.focus_ring,
             box_dim: fit(ui.text_dim, ui.sidebar_background),
             box_hover: ui.panel_hover,
         }
@@ -807,6 +810,12 @@ impl AgentTab {
     #[cfg(feature = "ui-shots")]
     pub fn shot_part(&self, part: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
         self.parts.borrow().get(part).copied()
+    }
+
+    /// The colour the box's edge is drawn in now.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_box_edge(&self, window: &Window, cx: &App) -> Rgb {
+        self.box_edge(&Colors::of(&cx.global::<Appearance>().theme), window, cx)
     }
 
     /// The box's open menu.
@@ -3118,7 +3127,7 @@ impl AgentTab {
 }
 
 impl Render for AgentTab {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let appearance = cx.global::<Appearance>();
         let theme = appearance.theme;
         let mono = appearance.font.family.clone();
@@ -3197,7 +3206,7 @@ impl Render for AgentTab {
             .children(pending)
             // An error tab (no such agent) has nothing to send to.
             .when(self.provider.is_some(), |d| {
-                d.child(self.box_area(&c, mono, cx))
+                d.child(self.box_area(&c, mono, window, cx))
             })
     }
 }

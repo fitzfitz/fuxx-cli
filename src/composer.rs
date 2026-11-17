@@ -833,17 +833,20 @@ impl EntityInputHandler for Composer {
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
-        let edge = if self.focus_handle.is_focused(window) {
-            ui.focus_ring
-        } else {
-            ui.text_dim
-        };
+        // Bare, the box around it draws the edge.
+        let edge = (!self.bare).then(|| {
+            if self.focus_handle.is_focused(window) {
+                ui.focus_ring
+            } else {
+                ui.text_dim
+            }
+        });
         let empty = self.buf.text().is_empty();
         let placeholder = self.placeholder.clone();
         div()
             .w_full()
             .overflow_hidden()
-            .when(!self.bare, |d| {
+            .when_some(edge, |d, edge| {
                 d.px_2()
                     .py_1()
                     .rounded_sm()

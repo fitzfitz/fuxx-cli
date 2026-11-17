@@ -774,6 +774,49 @@ pub(super) fn agent_box_empty() {
             assert_eq!(t.shot_stop_label(), None, "{n}: and stopped nothing");
         });
         assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
+
+        // The box's edge shows where the keyboard is: the focus ring while its text has it,
+        // the quiet edge when not; a click on the box's own room (not a chip) gives it back.
+        let colors = cx.read(|cx| {
+            crate::agent_tab::Colors::of(&cx.global::<crate::appearance::Appearance>().theme)
+        });
+        let edge = |cx: &mut VisualTestAppContext| {
+            let shot = frame_fresh(cx, window);
+            // Mid-way down the box's left edge (its probe sits just inside it).
+            let at = (
+                f32::from(the_box.left()) - 0.5,
+                f32::from(the_box.center().y),
+            );
+            (
+                cx.update_window(window, |_, window, cx| {
+                    tab.read(cx).shot_box_edge(window, cx)
+                })
+                .expect("the window"),
+                super::pixel_at(&shot, size(px(DIMS.0), px(DIMS.1)), at.0, at.1),
+            )
+        };
+        let (focused, focused_px) = edge(cx);
+        assert_eq!(focused, colors.box_focus, "{n}: focused, the focus ring");
+        cx.update_window(window, |_, window, _| window.blur())
+            .expect("the window");
+        cx.run_until_parked();
+        let (blurred, blurred_px) = edge(cx);
+        assert_eq!(blurred, colors.box_edge, "{n}: not focused, the quiet edge");
+        assert_ne!(focused_px, blurred_px, "{n}: and it is drawn so");
+        let room = gpui::point(the_box.center().x, send.center().y);
+        cx.simulate_click(window, room, Modifiers::none());
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            assert!(
+                tab.read(cx).focus_handle(cx).is_focused(window),
+                "{n}: a click in the box's room focuses its text"
+            );
+        })
+        .expect("the window");
+        let (back, back_px) = edge(cx);
+        assert_eq!(back, colors.box_focus, "{n}: focused again");
+        assert_eq!(back_px, focused_px, "{n}");
+        assert!(written(cx, tab).is_empty(), "{n}: the click sent nothing");
     });
 }
 
