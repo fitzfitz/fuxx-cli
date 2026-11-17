@@ -14,6 +14,7 @@ updated: 2026-11-17
 | **Design (the spec)** | [[82 - Milestone 11af - Live Changes]] |
 | **Status** | 📝 Planned 2026-11-17, waiting for your review |
 | **Tasks done** | 0 / 8 |
+| **Baselines** | 1,787 tests (1 ignored); clippy 14 (bin) / 27 (test) default, 16 / 29 with `ui-shots`; fmt clean |
 | **▶ Pick up here** | Task 1 |
 | **Decisions used** | Yours: approach A, "All it recognises" (every sidebar-recognised agent gets a mark; agy joins `procs::AGENTS`), "approve". The numbers in note 82 are the AI's calls, approved with the design. |
 | **Needs your eyes** | 👀 the on-screen check in note 82, after Task 8 |
