@@ -182,6 +182,8 @@ src/
 ├── activity.rs           M11h · each terminal's activity log: status changes, notes, progress (in memory, last 200; pure)
 ├── activity_panel.rs     M11h · the right sidebar's Activity panel: header, the waiting question, the timeline
 ├── file_tab.rs           M11g · read-only file tabs: colours, line numbers, change bars, live reload, find, selection, Open in Editor
+├── live_lines.rs        M11af · compare two texts, the per-line record (who changed it, exact or guessed, when) that follows its lines, glow steps, age words (pure)
+├── edit_ledger.rs       M11af · the app-wide record of agents' file edits and working spans, and the rule that decides who made a change (pure)
 ├── mermaid.rs            M11ac · Mermaid in the Markdown Preview: which blocks, limits, cache key (SHA-256) and LRU, the page and render script (pure)
 ├── mermaid_render.rs     M11ac · the hidden WKWebView that renders Mermaid offline and snapshots it to PNG; the `Mermaids` cache global
 ├── cursor_look.rs        M11f · the cursor's rules: shape (the HollowBlock marker = no program has chosen), colour, breathing, glide, trail, sparks, frames (pure)

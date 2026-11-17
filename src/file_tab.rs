@@ -41,6 +41,21 @@
 //! for the diff instead of the bars, on the same schedule, off the UI thread (`look_up_diff`);
 //! its answer carries the disk version, as the bars' does (`HeldDiff`). A refused file (over
 //! 20 MB or binary) never asks git.
+//!
+//! **Live changes (M11af).** Each reload that gives new text is compared with the text shown before
+//! (`live_lines::compare`, on the background executor with the read, given up after 50 ms; never
+//! for a plain-too-large or refused file). The first read is a baseline: nothing is marked. A
+//! `LineRecord` keeps, for each line, who last changed it this session (an agent, exact or guessed,
+//! or you) and when, and follows its lines when others are added or removed above them. Who is
+//! decided by the app-wide edit ledger (`edit_ledger`, fed by agent tabs and by terminals that run a
+//! known agent); a late tool finish revises a mark to exact once, within 2 s (one-shot timer, no
+//! other). A changed line glows in three steps over 60 s and shows its age at the end of the first
+//! line of each warm block; levels are worked out on the existing 1 s poll and the tab redraws only
+//! when a level or an age label changes. A mark column (a small circle with a letter; hollow when
+//! guessed) sits between the line numbers and the change bars, only while a line is marked. File
+//! mode only; Diff and Preview look as before. **Follow** (a pill in the bar, off by default,
+//! never turns itself on) scrolls the agent's newest change into view, 3 lines from the top as a
+//! diff opens; scrolling, a mode switch or cleared marks turn it off.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
