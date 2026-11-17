@@ -5,10 +5,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use gpui::Global;
+use gpui::{BorrowAppContext, Global};
 
 use crate::layout_model::WorkspaceId;
-use crate::live_lines::{AgentMark, Sure, Who};
+use crate::live_lines::{AgentMark, Sure, Who, letter_of};
 
 /// How long edits and finished working spans are remembered.
 pub const KEEP: Duration = Duration::from_secs(600);
@@ -155,10 +155,68 @@ impl Ledger {
     }
 }
 
+/// Runs `f` on the app's ledger at the present time, then prunes it. A scene that never set the
+/// global gets an empty ledger.
+pub fn update(cx: &mut gpui::App, f: impl FnOnce(&mut Ledger, Instant)) {
+    if !cx.has_global::<Ledger>() {
+        cx.set_global(Ledger::default());
+    }
+    cx.update_global::<Ledger, _>(|ledger, _| {
+        let now = Instant::now();
+        f(ledger, now);
+        ledger.prune(now);
+    });
+}
+
+/// The mark drawn for agent program `name`: a provider fuxx knows has its own colour; any other
+/// agent is drawn grey (`rgb: None`).
+pub fn agent_mark_for(name: &str) -> AgentMark {
+    match crate::providers::by_name(name) {
+        Some(p) => {
+            let info = p.info();
+            AgentMark {
+                name: info.name.into(),
+                letter: letter_of(info.name),
+                rgb: Some(info.badge_rgb),
+            }
+        }
+        None => AgentMark {
+            name: name.into(),
+            letter: letter_of(name),
+            rgb: None,
+        },
+    }
+}
+
+/// The canonical path of a file an agent's tool call writes, as the provider read it: empty is
+/// nothing; a leading `~` is the home folder; a relative path is the agent's `cwd`'s. The path is
+/// canonicalized when the file exists, else its folder is and the file name is put back, else it
+/// is kept as joined.
+pub fn resolve_write(raw: &str, cwd: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let expanded = match (raw.strip_prefix('~'), home) {
+        (Some(""), Some(h)) => h.to_path_buf(),
+        (Some(rest), Some(h)) if rest.starts_with('/') => h.join(rest.trim_start_matches('/')),
+        _ => PathBuf::from(raw),
+    };
+    let joined = cwd.join(expanded); // an absolute path replaces the cwd
+    if let Ok(c) = joined.canonicalize() {
+        return Some(c);
+    }
+    if let (Some(parent), Some(name)) = (joined.parent(), joined.file_name())
+        && let Ok(c) = parent.canonicalize()
+    {
+        return Some(c.join(name));
+    }
+    Some(joined)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live_lines::letter_of;
 
     fn mark(name: &str) -> AgentMark {
         AgentMark {
@@ -412,5 +470,49 @@ mod tests {
         assert_eq!(l.edits[0].call, "new");
         assert_eq!(l.spans.len(), 1);
         assert_eq!(&*l.spans[0].agent.name, "claude");
+    }
+
+    #[test]
+    fn agent_mark_for_known_and_unknown_agents() {
+        let claude = agent_mark_for("claude");
+        assert_eq!(&*claude.name, "claude");
+        assert_eq!(claude.letter, 'C');
+        let badge = crate::providers::by_name("claude")
+            .unwrap()
+            .info()
+            .badge_rgb;
+        assert_eq!(claude.rgb, Some(badge));
+        let codex = agent_mark_for("codex");
+        assert_eq!(&*codex.name, "codex");
+        assert_eq!(codex.letter, 'C');
+        assert_eq!(codex.rgb, None);
+    }
+
+    #[test]
+    fn resolve_write_joins_expands_and_canonicalizes() {
+        let cwd = Path::new("/nonexistent-fx/proj");
+        let home = Path::new("/nonexistent-home");
+        assert_eq!(resolve_write("", cwd, Some(home)), None);
+        assert_eq!(resolve_write("  ", cwd, Some(home)), None);
+        assert_eq!(
+            resolve_write("a/b.rs", cwd, Some(home)),
+            Some(p("/nonexistent-fx/proj/a/b.rs"))
+        );
+        assert_eq!(
+            resolve_write("/x/y.rs", cwd, Some(home)),
+            Some(p("/x/y.rs"))
+        );
+        assert_eq!(
+            resolve_write("~/n.txt", cwd, Some(home)),
+            Some(p("/nonexistent-home/n.txt"))
+        );
+        // An existing file is canonical (`..` and symlinks resolved); a new one in an existing
+        // folder gets the folder's canonical path.
+        let dir = std::env::temp_dir().canonicalize().unwrap();
+        assert_eq!(
+            resolve_write("new-file-fx.txt", &dir.join("."), None),
+            Some(dir.join("new-file-fx.txt"))
+        );
+        assert_eq!(resolve_write(".", &dir, None), Some(dir.clone()));
     }
 }

@@ -2227,6 +2227,30 @@ impl Workspace {
         }
     }
 
+    /// Tells the edit ledger terminal session `id` (at `index`) started or stopped working, when
+    /// what it runs is an agent: a known one, or one of the presets (as `note_agents`). A plain
+    /// shell running a build never reports.
+    fn ledger_terminal_working(&mut self, index: usize, id: u64, on: bool, cx: &mut Context<Self>) {
+        let ProgramState::Running(program) = self.programs.state(id) else {
+            // It no longer runs anything: an open span ends, and a new one needs an agent.
+            if !on && let Some(ws) = self.workspace_of(index) {
+                let mark = crate::edit_ledger::agent_mark_for("");
+                crate::edit_ledger::update(cx, |l, now| l.working(ws, mark, id, false, now));
+            }
+            return;
+        };
+        let is_agent = procs::is_known_agent(&program)
+            || crate::presets::agent_for(&program, &cx.global::<Appearance>().presets).is_some();
+        if !is_agent && on {
+            return;
+        }
+        let Some(ws) = self.workspace_of(index) else {
+            return;
+        };
+        let mark = crate::edit_ledger::agent_mark_for(&program);
+        crate::edit_ledger::update(cx, |l, now| l.working(ws, mark, id, on, now));
+    }
+
     /// Session `index`'s status is now `new`: scripts hear of a change, and with `notify` a
     /// notification follows the M4 rules (not while you look at it).
     pub(crate) fn set_status(
@@ -2268,6 +2292,12 @@ impl Workspace {
         };
         let id = session.id;
         let question = session.question.clone();
+        if old != new && (old == Status::Working || new == Status::Working) {
+            self.ledger_terminal_working(index, id, new == Status::Working, cx);
+        }
+        let Some(session) = self.sessions.get_mut(index) else {
+            return;
+        };
         if old != new {
             session
                 .activity

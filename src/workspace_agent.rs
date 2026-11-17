@@ -27,8 +27,10 @@ use crate::activity::ActivityLog;
 use crate::agent_tab::{AgentTab, AgentTabEvent};
 use crate::api_events::Event;
 use crate::block_view::{self, BlockDrag};
+use crate::edit_ledger::{self, agent_mark_for};
 use crate::groups;
 use crate::layout_model::{PaneId, TabId, TabKind, WorkspaceId};
+use crate::live_lines::AgentMark;
 use crate::notification_list;
 use crate::notifier;
 use crate::presets::{self, Preset};
@@ -675,6 +677,16 @@ impl Workspace {
             return;
         }
         if let Some(slot) = self.agents.get(&tab) {
+            // Its open edits end as not ok, and it stops working.
+            let id = slot.id;
+            let open = slot.view.read(cx).open_edit_calls();
+            edit_ledger::update(cx, |l, now| {
+                for call in open {
+                    l.edit_finished(&format!("a{id}:{call}"), false, now);
+                }
+            });
+            self.ledger_agent_working(tab, false, cx);
+            let slot = &self.agents[&tab];
             slot.view.update(cx, |view, _| view.end());
         }
         if self.model.close_tab(tab).is_none() {
@@ -780,7 +792,40 @@ impl Workspace {
                 }
             }
             AgentTabEvent::BlockDropped(drag) => self.attach_block(tab, drag, cx),
+            AgentTabEvent::Edit { call, paths } => {
+                if let Some((id, mark)) = self.agent_ledger_who(tab) {
+                    let (call, paths) = (format!("a{id}:{call}"), paths.clone());
+                    edit_ledger::update(cx, |l, now| l.edit_started(&call, mark, paths, now));
+                }
+            }
+            AgentTabEvent::EditDone { call, ok } => {
+                if let Some((id, _)) = self.agent_ledger_who(tab) {
+                    let call = format!("a{id}:{call}");
+                    let ok = *ok;
+                    edit_ledger::update(cx, |l, now| l.edit_finished(&call, ok, now));
+                }
+            }
         }
+    }
+
+    /// Agent tab `tab`'s slot id and the mark the edit ledger knows its agent by.
+    fn agent_ledger_who(&self, tab: TabId) -> Option<(u64, AgentMark)> {
+        let slot = self.agents.get(&tab)?;
+        let Some(TabKind::Agent { provider, .. }) = self.model.tab(tab).map(|t| &t.kind) else {
+            return None;
+        };
+        Some((slot.id, agent_mark_for(provider)))
+    }
+
+    /// Reports to the edit ledger that agent tab `tab` is (or no longer is) working. Its key is
+    /// its slot id with the top bit set, so it can't meet a terminal's session id.
+    fn ledger_agent_working(&self, tab: TabId, on: bool, cx: &mut Context<Self>) {
+        let (Some((id, mark)), Some((ws, _))) =
+            (self.agent_ledger_who(tab), self.model.locate(tab))
+        else {
+            return;
+        };
+        edit_ledger::update(cx, |l, now| l.working(ws, mark, (1u64 << 63) | id, on, now));
     }
 
     /// Command block `drag` dropped on agent tab `tab` (its body or its tab in a bar, spec
@@ -837,10 +882,18 @@ impl Workspace {
             Some(TabKind::Agent { title, .. }) => title.clone(),
             _ => None,
         };
+        let Some(old) = self.agents.get(&tab).map(|slot| slot.status) else {
+            return;
+        };
+        if old != new && (live || new != Status::Working) {
+            let (was, is) = (old == Status::Working, new == Status::Working);
+            if was != is {
+                self.ledger_agent_working(tab, is, cx);
+            }
+        }
         let Some(slot) = self.agents.get_mut(&tab) else {
             return;
         };
-        let old = slot.status;
         // How long it worked, when a Working stretch ends here (for a Done notification).
         let worked = (old == Status::Working && new != old).then(|| slot.since.elapsed());
         // The log's `lasted` is read before `since` is reset.

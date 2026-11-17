@@ -912,6 +912,8 @@ fn main() {
             // agent submenu is built from its presets, and `persistent-sessions` decides who
             // runs the sessions.
             cx.set_global(appearance::load(cx));
+            // The edit ledger (M11af): agents' file edits and working spans.
+            cx.set_global(edit_ledger::Ledger::default());
             // The key sounds (M11s): loaded now, and again whenever the settings change.
             sounds::sync(cx);
             cx.observe_global::<appearance::Appearance>(sounds::sync)
