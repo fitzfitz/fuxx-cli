@@ -6,8 +6,7 @@ use super::*;
 impl AgentTab {
     /// The open menu's panel (`content` in it), hung above its chip (a child of it) and opening
     /// upward, in the tab menu's look; `side` (This Computer's folders) beside it. A click
-    /// outside them closes it. What the model, mode and attach menus list comes with their own
-    /// tasks.
+    /// outside them closes it.
     pub(super) fn menu_frame(
         &self,
         content: Option<AnyElement>,
@@ -45,6 +44,7 @@ impl AgentTab {
                                             BoxMenu::Folder
                                                 | BoxMenu::Move(_)
                                                 | BoxMenu::Model { .. }
+                                                | BoxMenu::Mode
                                         )
                                     ) {
                                         this.chip_closed_at = Some(event.position);
@@ -596,6 +596,129 @@ impl AgentTab {
             _ => None,
         };
         (menu, side)
+    }
+
+    /// The mode in force: the chosen one, else the one the catalog says the agent runs, else
+    /// the provider's default (as the chip says it).
+    fn mode_now<'a>(&'a self, cx: &'a App) -> Option<&'a str> {
+        let provider = self.provider?;
+        current_mode(
+            self.start.mode.as_deref(),
+            self.catalog(cx).and_then(|c| c.mode.as_deref()),
+            provider.info().default_mode,
+        )
+    }
+
+    /// The mode menu's rows now.
+    pub(super) fn mode_rows_now(&self, cx: &App) -> Vec<ModeRow> {
+        let Some(provider) = self.provider else {
+            return Vec::new();
+        };
+        mode_rows(
+            provider.info().modes,
+            self.mode_now(cx),
+            provider.applies(ChangeKind::Mode),
+        )
+    }
+
+    /// The mode chip's click: the mode menu opens over it, or (open) closes.
+    pub(super) fn mode_clicked(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.menu, Some(BoxMenu::Mode)) {
+            self.close_menu(cx);
+        } else {
+            self.open_menu(BoxMenu::Mode, cx);
+        }
+    }
+
+    /// The mode `id` chosen: the menu closes and the change is asked for (`choose`: live where
+    /// the agent can, else a restart on the same conversation); nothing is sent.
+    pub(crate) fn choose_mode(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.close_menu(cx);
+        self.choose(Change::Mode(id.to_string()), cx);
+    }
+
+    /// The mode menu's panel content (§6): each mode's name, ✓ on the one in force, and what
+    /// it does in grey under it.
+    pub(super) fn mode_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let ui = cx.global::<Appearance>().theme.ui();
+        let mut items = Vec::new();
+        for (i, row) in self.mode_rows_now(cx).iter().enumerate() {
+            match row {
+                ModeRow::Heading => items.push(heading(MODE_HEADING.into(), &ui)),
+                ModeRow::Note(note) => items.push(quiet(*note, &ui)),
+                ModeRow::Mode {
+                    id,
+                    label,
+                    about,
+                    current,
+                } => items.push(self.mode_row(i, id, label, about, *current, &ui, cx)),
+                ModeRow::NewConversation => items.push(self.menu_row(
+                    ("box-mode", i),
+                    NEW_CONVERSATION.into(),
+                    false,
+                    false,
+                    &ui,
+                    cx,
+                    |this, window, cx| {
+                        this.close_menu(cx);
+                        cx.emit(AgentTabEvent::NewConversationIn(this.start.cwd.clone()));
+                        this.keyboard_back(window, cx);
+                    },
+                )),
+            }
+        }
+        div().flex().flex_col().children(items).into_any_element()
+    }
+
+    /// One mode of the menu: ✓ when in force, its name, and its one-line description under it.
+    #[allow(clippy::too_many_arguments)]
+    fn mode_row(
+        &self,
+        i: usize,
+        id: &'static str,
+        label: &'static str,
+        about: &'static str,
+        current: bool,
+        ui: &UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hover = ui.panel_hover;
+        let row = div()
+            .id(("box-mode", i))
+            .px(px(8.))
+            .py(px(4.))
+            .flex()
+            .items_start()
+            .gap(px(6.))
+            .rounded(px(ROW_RADIUS))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hsla(hover)))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(12.))
+                    .text_color(hsla(ui.accent))
+                    .child(if current { "\u{2713}" } else { "" }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().child(label))
+                    .child(
+                        div()
+                            .text_size(px(text::META))
+                            .text_color(hsla(ui.text_dim))
+                            .child(about),
+                    ),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.choose_mode(id, cx);
+                this.keyboard_back(window, cx);
+            }));
+        self.marked_row(label.to_string(), row).into_any_element()
     }
 
     /// `View Usage ▸`: the usage panel opens beside the model menu, and the agent's usage is
