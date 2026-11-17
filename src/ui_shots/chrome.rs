@@ -1821,6 +1821,74 @@ fn agent_hears(
     cx.update(|cx| view.update(cx, |t, cx| t.shot_feed(events, cx)));
 }
 
+/// One step of `chrome-agent-status`: `act`, then its agent tabs' ages held (`hold_ages`),
+/// which must read the same for the rest of the scene. Two Claudes there work at once, their
+/// live ages a fraction of a second apart: each turns every second, so under load a check (two
+/// whole-window captures) and its one retry each caught a turn (chore, 2026-11-17).
+fn agent_status_step(
+    steps: &mut Steps,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    what: &str,
+    seen: Seen,
+    act: impl FnOnce(&mut VisualTestAppContext),
+) {
+    steps.step(cx, window, what, seen, |cx| {
+        act(cx);
+        hold_ages(cx, ws);
+        assert_ages_hold(cx, ws, "chrome-agent-status", what);
+    });
+}
+
+/// Each busy terminal's and each agent tab's status dated ten minutes ahead: its age reads "0s"
+/// (the age of a status from the future) for the whole scene, so no label turns during a check.
+/// Run in a step's act once the app's own path has set each `since` (to now: "0s" too) and asked
+/// for its redraw, and before anything draws: it changes no pixel and needs no notify, so a source
+/// that doesn't notify still shows stale (unlike `minutes_old`). A Done after it worked "0 s": a
+/// short run.
+fn hold_ages(cx: &mut VisualTestAppContext, ws: &Entity<Workspace>) {
+    cx.run_until_parked();
+    cx.update(|cx| {
+        ws.update(cx, |ws, _| {
+            let held = Instant::now() + Duration::from_secs(10 * 60);
+            for i in 0..ws.sessions.items().len() {
+                let s = ws.sessions.get_mut(i).expect("a session");
+                if s.status != Status::Idle {
+                    s.status_since = held;
+                }
+            }
+            for slot in ws.agents.values_mut() {
+                slot.since = held;
+            }
+        })
+    });
+}
+
+/// Panics unless each busy terminal's and agent tab's age label reads the same now as a minute
+/// on (longer than the scene takes).
+fn assert_ages_hold(cx: &VisualTestAppContext, ws: &Entity<Workspace>, n: &str, what: &str) {
+    let now = Instant::now();
+    let later = now + Duration::from_secs(60);
+    cx.read(|cx| {
+        let ws = ws.read(cx);
+        let terminals = (ws.sessions.items().iter())
+            .filter(|s| s.status != Status::Idle)
+            .map(|s| (s.label().to_string(), s.status_since));
+        let agents = (ws.agents.values())
+            .filter(|a| a.status != Status::Idle)
+            .map(|a| (a.label.to_string(), a.since));
+        for (name, since) in terminals.chain(agents) {
+            let label = |at: Instant| crate::status::age_label(at.saturating_duration_since(since));
+            assert_eq!(
+                label(now),
+                label(later),
+                "{n}: {what}: {name}'s age turns during the scene"
+            );
+        }
+    });
+}
+
 /// M11aa Task 9: an agent tab's status reaches the chrome as a terminal's does, each by the
 /// app's own path (`send`, `shot_feed`'s decoded events, `answer`: the tab's `Status` /
 /// `Question` events, heard in `on_agent_event`, `set_agent_status`): agent's Claude (not
@@ -1855,9 +1923,11 @@ pub(super) fn chrome_agent_status() {
                 .expect("agent's row")
         })
     };
-    steps.step(
+    agent_status_step(
+        &mut steps,
         &mut cx,
         window,
+        ws,
         "agent's Claude works (elsewhere)",
         Seen::Changes,
         |cx| agent_sends(cx, &agent_claude, "Check the build"),
@@ -1868,18 +1938,26 @@ pub(super) fn chrome_agent_status() {
         (Some(agent_tab), Status::Working, true),
         "{n}: agent's row is about its Claude"
     );
-    steps.step(&mut cx, window, "api's Claude works", Seen::Changes, |cx| {
-        agent_sends(cx, &api_claude, "Fix the date check")
-    });
+    agent_status_step(
+        &mut steps,
+        &mut cx,
+        window,
+        ws,
+        "api's Claude works",
+        Seen::Changes,
+        |cx| agent_sends(cx, &api_claude, "Fix the date check"),
+    );
     let on_screen = cx.read(|cx| ws.read(cx).marks_on_screen());
     let key = cx.read(|cx| ws.read(cx).agents[&api_tab].id);
     assert!(
         on_screen.contains(&((crate::sidebar::AGENT_MARK, key), Status::Working)),
         "{n}: api's Claude's mark is on screen: {on_screen:?}"
     );
-    steps.step(
+    agent_status_step(
+        &mut steps,
         &mut cx,
         window,
+        ws,
         "the ticker turns api's Claude mark",
         Seen::Changes,
         |cx| {
@@ -1891,9 +1969,11 @@ pub(super) fn chrome_agent_status() {
     );
     let unseen = |cx: &VisualTestAppContext| cx.read(|cx| ws.read(cx).notifications.unseen());
     let before = unseen(&cx);
-    steps.step(
+    agent_status_step(
+        &mut steps,
         &mut cx,
         window,
+        ws,
         "agent's Claude asks",
         Seen::Changes,
         |cx| {
@@ -1931,20 +2011,30 @@ pub(super) fn chrome_agent_status() {
         }
         other => panic!("{n}: one banner, not {other:?}"),
     }
-    steps.step(&mut cx, window, "it is allowed", Seen::Changes, |cx| {
-        cx.update(|cx| {
-            agent_claude.update(cx, |t, cx| t.answer(Answer::Allowed, cx).expect("waiting"))
-        })
-    });
+    agent_status_step(
+        &mut steps,
+        &mut cx,
+        window,
+        ws,
+        "it is allowed",
+        Seen::Changes,
+        |cx| {
+            cx.update(|cx| {
+                agent_claude.update(cx, |t, cx| t.answer(Answer::Allowed, cx).expect("waiting"))
+            })
+        },
+    );
     assert_eq!(
         agent_row(&cx).status,
         Status::Working,
         "{n}: allowed: works"
     );
     let before = unseen(&cx);
-    steps.step(
+    agent_status_step(
+        &mut steps,
         &mut cx,
         window,
+        ws,
         "api's Claude is done",
         Seen::Changes,
         |cx| {
@@ -1969,19 +2059,29 @@ pub(super) fn chrome_agent_status() {
     let banners = cx.read(|cx| ws.read(cx).shot_banners.clone().unwrap_or_default());
     assert_eq!(banners.len(), 1, "{n}: a short run makes no banner");
     let key = GroupKey::Folder(super::API.into());
-    steps.step(&mut cx, window, "api's group closed", Seen::Changes, |cx| {
-        cx.update(|cx| ws.update(cx, |ws, cx| ws.toggle_group(&key, cx)))
-    });
-    steps.step(
+    agent_status_step(
+        &mut steps,
         &mut cx,
         window,
+        ws,
+        "api's group closed",
+        Seen::Changes,
+        |cx| cx.update(|cx| ws.update(cx, |ws, cx| ws.toggle_group(&key, cx))),
+    );
+    agent_status_step(
+        &mut steps,
+        &mut cx,
+        window,
+        ws,
         "api's Claude works in its closed group",
         Seen::Maybe,
         |cx| agent_sends(cx, &api_claude, "and the tests"),
     );
-    steps.step(
+    agent_status_step(
+        &mut steps,
         &mut cx,
         window,
+        ws,
         "agent's Claude asks again",
         Seen::Changes,
         |cx| {
@@ -1996,9 +2096,11 @@ pub(super) fn chrome_agent_status() {
         },
     );
     let row = agent_row(&cx);
-    steps.step(
+    agent_status_step(
+        &mut steps,
         &mut cx,
         window,
+        ws,
         "its row's Open goes to it",
         Seen::Changes,
         |cx| {
@@ -2039,9 +2141,11 @@ pub(super) fn chrome_agent_status() {
             }
         })
     };
-    steps.step(
+    agent_status_step(
+        &mut steps,
         &mut cx,
         window,
+        ws,
         "agent's Claude exits with an error",
         Seen::Changes,
         |cx| {
@@ -2068,9 +2172,11 @@ pub(super) fn chrome_agent_status() {
     );
     let rows = cx.read(|cx| ws.read(cx).activity_rows());
     assert_eq!(rows.len(), 6, "{n}: the note and Done in the panel's log");
-    steps.step(
+    agent_status_step(
+        &mut steps,
         &mut cx,
         window,
+        ws,
         "api's Claude can't start",
         Seen::Changes,
         |cx| {
@@ -2608,7 +2714,14 @@ pub(super) fn chrome_sidebar_scroll() {
         window,
         "a row out of view works",
         Seen::Maybe,
-        |cx| report(cx, ws, "w15", Status::Working),
+        |cx| {
+            // Its age held (`hold_ages`): the only age in the scene, live it turns every
+            // second, and under load a check and its retry each caught a turn (chore,
+            // 2026-11-17).
+            report(cx, ws, "w15", Status::Working);
+            hold_ages(cx, ws);
+            assert_ages_hold(cx, ws, n, "a row out of view works");
+        },
     );
     let list = super::sidebar::row_point(&mut cx, ws, 1, 0.0);
     steps.step(
