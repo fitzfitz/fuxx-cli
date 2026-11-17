@@ -409,9 +409,11 @@ pub fn claude_json_projects(text: &str) -> Vec<PathBuf> {
 /// The history of the conversation `start` resumes, from its transcript under `home`. Claude
 /// keeps a transcript under the folder the conversation started in, also after it moved (Task
 /// 0: `--resume` from another folder writes on in the first folder's entry): so when it isn't
-/// under `start`'s folder, it is looked for under every folder's entry (an id is unique).
+/// under `start`'s folder, it is looked for under every folder's entry (an id is unique). An id
+/// not of a session id's shape (a path, `..`) reads nothing.
 fn history_in(home: &Path, start: &Start) -> Vec<Past> {
-    let Some(id) = &start.resume else {
+    // The id comes from the sessions file: only a session id's shape is joined into a path.
+    let Some(id) = start.resume.as_ref().filter(|id| uuid_shaped(id)) else {
         return Vec::new();
     };
     let cwd = std::fs::canonicalize(&start.cwd).unwrap_or_else(|_| start.cwd.clone());
@@ -1571,12 +1573,15 @@ mod tests {
             model: None,
             effort: None,
         };
-        assert!(CLAUDE.history(&start).is_empty());
+        // A made-up home (never the real one: a miss looks under every folder's entry).
+        let home = scratch_home("missing");
+        assert!(history_in(&home, &start).is_empty());
         let fresh = Start {
             resume: None,
             ..start
         };
-        assert!(CLAUDE.history(&fresh).is_empty());
+        assert!(history_in(&home, &fresh).is_empty());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// An edit's diff is one hunk `diff_view::parse_diff` reads (it needs `@@ -a +c @@`).
@@ -2578,6 +2583,35 @@ mod tests {
             ..start
         };
         assert!(history_in(&home, &other).is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The id comes from the sessions file: one that isn't a session id (a path, `..`) is never
+    /// joined into a path, so nothing outside a transcript is read.
+    #[test]
+    fn history_reads_only_a_session_id_s_transcript() {
+        let home = scratch_home("escape");
+        let projects = home.join(".claude/projects");
+        let folder = home.join("code");
+        std::fs::create_dir_all(&folder).unwrap();
+        let entry = transcript_path(&home, &std::fs::canonicalize(&folder).unwrap(), "x");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        // Where `../escape` from the folder's entry, or from any entry, would lead.
+        let transcript = include_str!("fixtures/claude-transcript.jsonl");
+        std::fs::write(projects.join("escape.jsonl"), transcript).unwrap();
+        std::fs::write(home.join(".claude/escape.jsonl"), transcript).unwrap();
+        let start = |id: &str| Start {
+            cwd: folder.clone(),
+            resume: Some(id.into()),
+            new_id: None,
+            mode: None,
+            model: None,
+            effort: None,
+            extra_args: Vec::new(),
+        };
+        for id in ["../escape", "../../escape", "a/../../escape", ""] {
+            assert!(history_in(&home, &start(id)).is_empty(), "{id:?}");
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 }
