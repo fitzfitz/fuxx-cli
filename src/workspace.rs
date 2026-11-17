@@ -684,6 +684,8 @@ pub struct Workspace {
     /// The `aN` of agent tabs `sync` dropped since the last `check_waits`, which passes them as
     /// closed (their exit / change waits are met, the rest end).
     pub(crate) agents_closed: Vec<u64>,
+    /// Agent slots gone since the edit ledger was last told (`end_gone_agents`).
+    pub(crate) agents_ended: Vec<u64>,
     /// Each agent tab "Open in classic view" opened a terminal for: that terminal (`sN`) and
     /// when it opened (R13).
     pub(crate) classic_of: HashMap<TabId, (u64, Instant)>,
@@ -943,6 +945,7 @@ impl Workspace {
             agents: HashMap::new(),
             next_agent_id: 1,
             agents_closed: Vec::new(),
+            agents_ended: Vec::new(),
             classic_of: HashMap::new(),
             classic_opening: HashSet::new(),
             resume_checks: HashSet::new(),
@@ -1802,11 +1805,14 @@ impl Workspace {
                 .tab(*tab)
                 .is_some_and(|t| matches!(t.kind, TabKind::Agent { .. }))
         };
+        // A slot that left by any road leaves nothing open in the edit ledger.
+        let ended = &mut self.agents_ended;
         let closed = &mut self.agents_closed;
         self.agents.retain(|tab, slot| {
             let open = is_agent(tab);
             if !open {
                 closed.push(slot.id);
+                ended.push(slot.id);
             }
             open
         });
@@ -2231,24 +2237,24 @@ impl Workspace {
     /// what it runs is an agent: a known one, or one of the presets (as `note_agents`). A plain
     /// shell running a build never reports.
     fn ledger_terminal_working(&mut self, index: usize, id: u64, on: bool, cx: &mut Context<Self>) {
+        if !on {
+            // An open span ends; with none open, nothing happens.
+            crate::edit_ledger::update(cx, |l, now| l.end_working(id, now));
+            return;
+        }
         let ProgramState::Running(program) = self.programs.state(id) else {
-            // It no longer runs anything: an open span ends, and a new one needs an agent.
-            if !on && let Some(ws) = self.workspace_of(index) {
-                let mark = crate::edit_ledger::agent_mark_for("");
-                crate::edit_ledger::update(cx, |l, now| l.working(ws, mark, id, false, now));
-            }
             return;
         };
         let is_agent = procs::is_known_agent(&program)
             || crate::presets::agent_for(&program, &cx.global::<Appearance>().presets).is_some();
-        if !is_agent && on {
+        if !is_agent {
             return;
         }
         let Some(ws) = self.workspace_of(index) else {
             return;
         };
         let mark = crate::edit_ledger::agent_mark_for(&program);
-        crate::edit_ledger::update(cx, |l, now| l.working(ws, mark, id, on, now));
+        crate::edit_ledger::update(cx, |l, now| l.working(ws, mark, id, true, now));
     }
 
     /// Session `index`'s status is now `new`: scripts hear of a change, and with `notify` a
@@ -2445,6 +2451,8 @@ impl Workspace {
         if let Some(tab) = self.model.terminal_tab(session_id) {
             self.model.close_tab(tab);
         }
+        // A session gone while working (closed, lost or held) leaves no span open.
+        crate::edit_ledger::update(cx, |l, now| l.end_working(session_id, now));
         // Dropping the Session drops its view -> TerminalCore -> Pty, which kills the child
         // (Local), or detaches (background service; `close_at` already ended it there).
         self.sessions.remove(index);

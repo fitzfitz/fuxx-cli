@@ -841,12 +841,6 @@ impl AgentTab {
         self.end_process();
     }
 
-    /// The tool calls that write files and haven't finished (the Workspace closes them in the
-    /// edit ledger as the tab closes).
-    pub fn open_edit_calls(&self) -> Vec<String> {
-        self.open_edits.iter().cloned().collect()
-    }
-
     /// The run ended (or was stopped): its open edits end as not ok, so one that never finished
     /// can't claim later changes.
     fn abandon_edits(&mut self, cx: &mut Context<Self>) {

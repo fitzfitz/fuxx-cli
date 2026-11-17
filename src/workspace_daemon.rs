@@ -539,6 +539,9 @@ impl Workspace {
             return;
         };
         session.lost = true;
+        // A lost session's agent can't be known to work: its span ends.
+        let lost_id = session.id;
+        crate::edit_ledger::update(cx, |l, now| l.end_working(lost_id, now));
         // Only a view of the current connection speaks for it: a late one from a connection
         // already replaced (after a reconnect) loses just its own session.
         let current = match &self.service {
@@ -678,6 +681,7 @@ impl Workspace {
             .map(|s| s.id)
             .collect();
         // Dropping the views ends Local sessions and detaches the service's.
+        let terminals: Vec<u64> = self.sessions.items().iter().map(|s| s.id).collect();
         self.sessions = SessionList::new();
         self.model = Model::new();
         self.collapsed.clear();
@@ -691,6 +695,11 @@ impl Workspace {
         self.closed_browser_tabs.extend(closed);
         self.browser_titles.clear();
         self.file_tabs.clear();
+        let ids: Vec<u64> = self.agents.values().map(|s| s.id).collect();
+        crate::edit_ledger::update(cx, |l, now| {
+            ids.iter().for_each(|id| l.end_agent(*id, now));
+            terminals.iter().for_each(|id| l.end_working(*id, now));
+        });
         self.agents.clear();
         self.classic_of.clear();
         self.classic_opening.clear();
