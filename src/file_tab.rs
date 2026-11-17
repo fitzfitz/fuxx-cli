@@ -68,10 +68,14 @@ use crate::diff_view::{
     BINARY, DiffRow, NO_CHANGES, NO_REPO, Outcome, Parsed, RowKind, context_for, diff_outcome,
     diff_spans, dim, first_change, reveal_row, sides,
 };
-use crate::git_branch::find_git;
+use crate::edit_ledger::{Ledger, SLACK};
+use crate::git_branch::{GIT_CAP, find_git, run_capped_outcome, run_git};
 use crate::git_status::{FileDiff, LineChange, file_diff, head_size, line_changes, repo_root_at};
 use crate::highlight::{Highlighter, PLAIN_ABOVE, REFUSE_ABOVE, Span, Viewable, classify};
-use crate::layout_model::{FileMode, PaneId, TabId, TabKind};
+use crate::layout_model::{FileMode, PaneId, TabId, TabKind, WorkspaceId};
+use crate::live_lines::{
+    AgentMark, Compared, LIMIT, LineRecord, Mark, Sure, Who, compare, letter_of,
+};
 use crate::md_preview::{self, LinkTarget, is_markdown, link_target};
 use crate::mermaid::{self, Asked, Key};
 use crate::mermaid_render::{Drawn, Mermaids, Waiter};
@@ -975,6 +979,205 @@ struct Stamp {
     len: u64,
 }
 
+/// The text a file tab showed last, sent to the next read to be compared with (M11af).
+#[derive(Clone)]
+struct Prev {
+    text: Arc<str>,
+    lines: Arc<Vec<Range<usize>>>,
+}
+
+/// The text's lines without their endings, as `live_lines::compare` takes them: a CRLF text and
+/// its LF twin, or a missing last newline, are no change.
+fn line_slices<'a>(text: &'a str, lines: &[Range<usize>]) -> Vec<&'a str> {
+    lines
+        .iter()
+        .map(|r| {
+            text.get(r.clone())
+                .unwrap_or("")
+                .trim_end_matches(['\r', '\n'])
+        })
+        .collect()
+}
+
+/// The lines changed since `prev` (blocking: the background read's). None for the first read,
+/// a text shown `plain` (too large to colour), or a compare that took longer than `limit`.
+fn compare_with(prev: Option<&Prev>, doc: &Doc, plain: bool, limit: Duration) -> Option<Compared> {
+    if plain {
+        return None;
+    }
+    let prev = prev?;
+    let old = line_slices(&prev.text, &prev.lines);
+    let new = line_slices(&doc.text, &doc.lines);
+    compare(&old, &new, limit)
+}
+
+/// When a change was made, as its marks say: when fuxx saw it, unless the file's time is earlier
+/// (it changed while the tab was hidden).
+fn change_time(seen: SystemTime, modified: Option<SystemTime>) -> SystemTime {
+    modified.filter(|m| *m < seen).unwrap_or(seen)
+}
+
+/// The letter on your marks: git's `user.name` for the file's repo, else the account's full
+/// name, else `Y`.
+fn your_letter(git_name: Option<&str>, account_name: Option<&str>) -> char {
+    [git_name, account_name]
+        .into_iter()
+        .flatten()
+        .map(letter_of)
+        .find(|c| *c != '?')
+        .unwrap_or('Y')
+}
+
+/// Your letter (blocking): `git config user.name` with the tab's git and repo, else `id -F`.
+fn find_your_letter(place: Option<GitPlace>) -> char {
+    let git = place.and_then(|p| run_git(&p.git, &p.root, &["config", "user.name"]));
+    let account = || {
+        let mut id = std::process::Command::new("/usr/bin/id");
+        id.arg("-F");
+        run_capped_outcome(id, None, GIT_CAP).success()
+    };
+    let account = if git.as_deref().is_some_and(|n| letter_of(n) != '?') {
+        None
+    } else {
+        account()
+    };
+    your_letter(git.as_deref(), account.as_deref())
+}
+
+/// Who changed the file at `path` since `since` (the edit ledger's rule). A scene without a
+/// ledger: you.
+fn who_changed(
+    cx: &App,
+    path: &Path,
+    ws: Option<WorkspaceId>,
+    since: Instant,
+    now: Instant,
+) -> (Who, Sure, bool) {
+    cx.try_global::<Ledger>()
+        .map_or((Who::You, Sure::Exact, false), |ledger| {
+            ledger.decide(path, ws, since, now)
+        })
+}
+
+/// What a look at the disk means for the live record (M11af).
+enum Seen<'a> {
+    Unchanged,
+    Missing,
+    Refused,
+    Text {
+        doc: &'a Doc,
+        /// Against the last text (`compare_with`); None starts the record again.
+        compared: Option<Compared>,
+        when: SystemTime,
+    },
+}
+
+/// A file tab's live changes (M11af): who changed each line since the tab opened, and what the
+/// next read needs to keep that record.
+#[derive(Default)]
+struct Live {
+    record: LineRecord,
+    /// The last text read (kept while the file is missing): the next read compares with it.
+    last: Option<Prev>,
+    /// When the disk was last looked at: a change found next was made since then.
+    read_at: Option<Instant>,
+    /// The tab's workspace (the workspace says so each frame): its working agents are guessed.
+    workspace: Option<WorkspaceId>,
+    /// The letter on your marks, once found (`find_your_letter`, asked once per tab).
+    #[allow(dead_code)] // drawn by Task 6
+    your_letter: Option<char>,
+    letter_asked: bool,
+    /// Follow the agent's newest change (M11af part 4).
+    #[allow(dead_code)] // used by Task 7
+    follow: bool,
+    /// The revision check runs (one at a time), and the look whose decision it may revise.
+    revising: bool,
+    pending: Option<Instant>,
+    /// The file's canonical path, as the edit ledger keeps paths (found with each text read).
+    real: Option<PathBuf>,
+    /// The time the glow is worked out at: a scene's own (frozen tabs never poll).
+    #[cfg(feature = "ui-shots")]
+    #[allow(dead_code)] // used by Task 6
+    now: Option<SystemTime>,
+}
+
+impl Live {
+    /// The last text, for the next read to compare with.
+    fn prev(&self) -> Option<Prev> {
+        self.last.clone()
+    }
+
+    /// A look at the disk at `at`. A new text's changed lines are marked as `decide` says (given
+    /// the previous look's time); a missing file keeps the record and its last text; a refused
+    /// file, or a text with nothing to compare (the first read, plain, or given up), starts the
+    /// record again. True when the decision may be revised by a late finish: an edit still open,
+    /// a guess, or yours.
+    fn saw(
+        &mut self,
+        seen: Seen,
+        at: Instant,
+        decide: impl FnOnce(Instant) -> (Who, Sure, bool),
+    ) -> bool {
+        let since = self.read_at.replace(at).unwrap_or(at);
+        let (doc, compared, when) = match seen {
+            Seen::Unchanged | Seen::Missing => return false,
+            Seen::Refused => {
+                self.record.clear(0);
+                self.last = None;
+                self.pending = None;
+                return false;
+            }
+            Seen::Text {
+                doc,
+                compared,
+                when,
+            } => (doc, compared, when),
+        };
+        self.last = Some(Prev {
+            text: doc.text.clone(),
+            lines: doc.lines.clone(),
+        });
+        let lines = doc.lines.len();
+        let Some(c) = compared else {
+            self.record.clear(lines);
+            self.pending = None;
+            return false;
+        };
+        let (who, sure, open) = if c.blocks.is_empty() {
+            (Who::You, Sure::Exact, false)
+        } else {
+            decide(since)
+        };
+        let revisable = !c.blocks.is_empty() && (open || sure == Sure::Guess || who == Who::You);
+        self.record.apply(&c, lines, Mark { who, sure, when });
+        self.pending = revisable.then_some(at);
+        revisable
+    }
+
+    /// A late finish (`Ledger::revise`): the latest change's lines become that agent's, exact.
+    /// True when a mark changed.
+    fn revise(&mut self, found: Option<AgentMark>) -> bool {
+        let Some(agent) = found else {
+            return false;
+        };
+        let who = Who::Agent(agent);
+        let record = &self.record;
+        let changed = record
+            .last_blocks()
+            .iter()
+            .flat_map(Clone::clone)
+            .any(|line| {
+                record
+                    .mark(line)
+                    .is_some_and(|m| m.who != who || m.sure != Sure::Exact)
+            });
+        if changed {
+            self.record.revise_last(who, Sure::Exact);
+        }
+        changed
+    }
+}
+
 /// What a look at the disk found.
 enum Loaded {
     /// The same size and time as the text shown.
@@ -983,14 +1186,19 @@ enum Loaded {
     Refuse(Stamp),
     Text {
         stamp: Stamp,
-        doc: Doc,
+        /// Boxed: the other answers are small.
+        doc: Box<Doc>,
         plain: bool,
+        /// M11af: the lines changed since the text shown before (`compare_with`).
+        compared: Option<Compared>,
+        /// The file's canonical path, as the edit ledger keeps paths.
+        real: Option<PathBuf>,
     },
 }
 
 /// Read `path` (blocking: the background executor's) unless its size and time are still
-/// `known`.
-fn read_file(path: &Path, known: Option<Stamp>) -> Loaded {
+/// `known`; a new text is compared with `prev`, the text shown before (M11af).
+fn read_file(path: &Path, known: Option<Stamp>, prev: Option<Prev>) -> Loaded {
     let Ok(meta) = std::fs::metadata(path) else {
         return Loaded::Missing;
     };
@@ -1024,7 +1232,15 @@ fn read_file(path: &Path, known: Option<Stamp>) -> Loaded {
         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
     let doc = Doc::new(text, 0);
     let plain = viewable == Viewable::PlainTooLarge || doc.longest > COLOUR_LINE_MAX;
-    Loaded::Text { stamp, doc, plain }
+    let compared = compare_with(prev.as_ref(), &doc, plain, LIMIT);
+    let real = std::fs::canonicalize(path).ok();
+    Loaded::Text {
+        stamp,
+        doc: Box::new(doc),
+        plain,
+        compared,
+        real,
+    }
 }
 
 /// The shared highlighter (a GPUI global): its syntaxes loaded once, in the background, by the
@@ -2242,6 +2458,8 @@ pub struct FileTab {
     /// last frame.
     mermaid_plan: Option<(u64, bool, MermaidPlan)>,
     mermaid_shown: Rc<Vec<Option<md_preview::Shown>>>,
+    /// M11af: who changed each line since the tab opened.
+    live: Live,
     _appearance: Subscription,
 }
 
@@ -2330,6 +2548,7 @@ impl FileTab {
             parsed: None,
             mermaid_plan: None,
             mermaid_shown: Rc::default(),
+            live: Live::default(),
             _appearance: appearance,
         };
         tab.check_disk(cx);
@@ -2449,33 +2668,37 @@ impl FileTab {
             return;
         }
         self.reading = true;
-        let (path, known) = (self.path.clone(), self.stamp);
+        let (path, known, prev) = (self.path.clone(), self.stamp, self.live.prev());
+        let at = Instant::now();
         cx.spawn(async move |this, cx| {
             let loaded = cx
                 .background_executor()
-                .spawn(async move { read_file(&path, known) })
+                .spawn(async move { read_file(&path, known, prev) })
                 .await;
             this.update(cx, |this, cx| {
                 this.reading = false;
-                this.loaded(loaded, cx);
+                this.loaded(loaded, at, cx);
             })
             .ok();
         })
         .detach();
     }
 
-    /// Show what the disk gave: a new version of the text (the scroll kept; the old colours and
-    /// bars until the new ones come), or a note.
-    fn loaded(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
+    /// Show what the disk gave (looked at `at`): a new version of the text (the scroll kept; the
+    /// old colours and bars until the new ones come), or a note. The live record follows.
+    fn loaded(&mut self, loaded: Loaded, at: Instant, cx: &mut Context<Self>) {
         match loaded {
             // The same file: only its age may read differently (a tab back on screen).
             Loaded::Unchanged => {
+                self.live_saw(Seen::Unchanged, at, cx);
                 self.refresh_age(SystemTime::now(), cx);
                 return;
             }
             // Each look at the disk that finds something new is a version (a diff asked for an
             // older one is dropped).
             Loaded::Missing => {
+                // The marks and the last text stay: a file back is compared with it.
+                self.live_saw(Seen::Missing, at, cx);
                 if matches!(self.state, State::Missing) {
                     return;
                 }
@@ -2490,6 +2713,7 @@ impl FileTab {
                 self.drop_find_without_text();
             }
             Loaded::Refuse(stamp) => {
+                self.live_saw(Seen::Refused, at, cx);
                 self.versions += 1;
                 self.state = State::Refuse;
                 self.stamp = Some(stamp);
@@ -2498,14 +2722,27 @@ impl FileTab {
             }
             Loaded::Text {
                 stamp,
-                mut doc,
+                doc,
                 plain,
+                compared,
+                real,
             } => {
+                let mut doc = *doc;
                 self.versions += 1;
                 doc.version = self.versions;
                 if let Some(old) = self.doc() {
                     doc.carry_over(old, plain);
                 }
+                if real.is_some() {
+                    self.live.real = real;
+                }
+                let when = change_time(SystemTime::now(), stamp.modified);
+                let seen = Seen::Text {
+                    doc: &doc,
+                    compared,
+                    when,
+                };
+                self.live_saw(seen, at, cx);
                 self.stamp = Some(stamp);
                 let was_refused = matches!(self.state, State::Refuse);
                 self.state = if plain {
@@ -2522,6 +2759,97 @@ impl FileTab {
         self.keep_selection();
         self.find_again(cx);
         cx.notify();
+    }
+
+    /// M11af: what a look at the disk (at `at`) means for the live record. Who changed new
+    /// lines is the edit ledger's answer; a decision a late finish may revise starts the
+    /// revision check. Your letter is looked up once, at the first mark.
+    fn live_saw(&mut self, seen: Seen, at: Instant, cx: &mut Context<Self>) {
+        let path = self.live.real.clone().unwrap_or_else(|| self.path.clone());
+        let ws = self.live.workspace;
+        let revisable = self.live.saw(seen, at, |since| {
+            who_changed(cx, &path, ws, since, Instant::now())
+        });
+        if revisable {
+            self.revise_soon(cx);
+        }
+        if self.live.record.any() && !self.live.letter_asked && !self.frozen {
+            self.ask_your_letter(cx);
+        }
+    }
+
+    /// The revision check (one at a time): 2 s after the look it waits for, a late finish may
+    /// revise that look's change; then it ends (a later look meanwhile: it waits for that one).
+    fn revise_soon(&mut self, cx: &mut Context<Self>) {
+        if self.live.revising {
+            return;
+        }
+        self.live.revising = true;
+        cx.spawn(async move |this, cx| {
+            let mut wait = SLACK;
+            loop {
+                cx.background_executor().timer(wait).await;
+                match this.update(cx, |this, cx| this.revise_pending(cx)) {
+                    Ok(Some(more)) => wait = more,
+                    _ => break,
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The revision check's turn: the look waited for, once its 2 s have passed, is revised to
+    /// exact if an agent's edit to the file finished ok in them (drawn again only if a mark
+    /// changed), and the check ends. Some: that look's 2 s are still running, wait so long.
+    fn revise_pending(&mut self, cx: &mut Context<Self>) -> Option<Duration> {
+        let Some(read_at) = self.live.pending else {
+            self.live.revising = false;
+            return None;
+        };
+        let left = (read_at + SLACK).saturating_duration_since(Instant::now());
+        if !left.is_zero() {
+            return Some(left);
+        }
+        self.live.pending = None;
+        self.live.revising = false;
+        let path = self.live.real.as_deref().unwrap_or(&self.path);
+        let found = cx
+            .try_global::<Ledger>()
+            .and_then(|ledger| ledger.revise(path, read_at));
+        if self.live.revise(found) {
+            cx.notify();
+        }
+        None
+    }
+
+    /// Your letter, looked up once off the UI thread (`find_your_letter`).
+    fn ask_your_letter(&mut self, cx: &mut Context<Self>) {
+        self.live.letter_asked = true;
+        let place = self.git_place.clone();
+        cx.spawn(async move |this, cx| {
+            let letter = cx
+                .background_executor()
+                .spawn(async move { find_your_letter(place) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.live.your_letter = Some(letter);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The workspace's word, each frame: which workspace the tab is in (its working agents'
+    /// changes are guessed theirs). Nothing is drawn differently.
+    pub(crate) fn set_workspace(&mut self, ws: Option<WorkspaceId>) {
+        self.live.workspace = ws;
+    }
+
+    /// M11af: who changed each line since the tab opened.
+    #[allow(dead_code)] // drawn by Task 6
+    pub fn live_marks(&self) -> &LineRecord {
+        &self.live.record
     }
 
     /// The bar's "edited …" (M11ae) at `now`, from the file's time as last read (none without
@@ -4752,6 +5080,17 @@ impl FileTab {
         self.find.is_some()
     }
 
+    /// M11af: a scene's live record, its glow worked out at `now`, and Follow on or off
+    /// (none: as it is).
+    #[allow(dead_code)] // used by Task 6's scenes
+    pub fn set_live_for_shot(&mut self, record: LineRecord, now: SystemTime, follow: Option<bool>) {
+        self.live.record = record;
+        self.live.now = Some(now);
+        if let Some(follow) = follow {
+            self.live.follow = follow;
+        }
+    }
+
     /// Change bars from a list (git's answer; a scene's given list).
     pub fn set_changes(&mut self, changes: Vec<(usize, LineChange)>, cx: &mut Context<Self>) {
         if let Some(doc) = self.doc_mut() {
@@ -5012,7 +5351,12 @@ impl Workspace {
             .collect();
         for (tab, view) in &self.file_tabs {
             let on = shown.contains(tab);
-            view.update(cx, |view, cx| view.set_shown(on, cx));
+            // M11af: its workspace, for guessing whose change it was.
+            let ws = self.model.locate(*tab).map(|(ws, _)| ws);
+            view.update(cx, |view, cx| {
+                view.set_workspace(ws);
+                view.set_shown(on, cx);
+            });
         }
     }
 
@@ -5594,7 +5938,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let path = fifo.clone();
         std::thread::spawn(move || {
-            let refused = matches!(read_file(&path, None), Loaded::Refuse(_));
+            let refused = matches!(read_file(&path, None, None), Loaded::Refuse(_));
             let _ = tx.send(refused);
         });
         let got = rx.recv_timeout(Duration::from_secs(3));
@@ -6028,5 +6372,240 @@ mod tests {
         assert_eq!(outside(50.0, 0.0, 100.0), 0.0);
         assert_eq!(outside(130.0, 0.0, 100.0), 30.0);
         assert_eq!(outside(-20.0, 0.0, 100.0), -20.0);
+    }
+
+    // M11af: the live record kept on each reload.
+
+    const T0: SystemTime = SystemTime::UNIX_EPOCH;
+
+    fn agent(name: &str) -> Who {
+        Who::Agent(AgentMark {
+            name: name.into(),
+            letter: letter_of(name),
+            rgb: None,
+        })
+    }
+
+    fn doc(text: &str) -> Doc {
+        Doc::new(text.to_string(), 0)
+    }
+
+    /// A read of `text` after `live`'s last one, compared on the way (as the background read does).
+    fn text_read<'a>(live: &Live, doc: &'a Doc, when: SystemTime) -> Seen<'a> {
+        Seen::Text {
+            doc,
+            compared: compare_with(live.prev().as_ref(), doc, false, LIMIT),
+            when,
+        }
+    }
+
+    /// The first text read marks nothing and is what the next read compares with; the next
+    /// read's "since" is the look before it.
+    #[test]
+    fn first_read_is_a_baseline() {
+        let t0 = Instant::now();
+        let mut live = Live::default();
+        let first = doc("a\nb\nc\n");
+        assert!(compare_with(live.prev().as_ref(), &first, false, LIMIT).is_none());
+        let seen = text_read(&live, &first, T0);
+        let revise = live.saw(seen, t0, |_| unreachable!("nothing to decide"));
+        assert!(!revise);
+        assert!(!live.record.any());
+        assert_eq!(live.prev().map(|p| p.text), Some(first.text.clone()));
+        // A look that finds nothing new, then a change: decided over the time since that look.
+        let t1 = t0 + Duration::from_secs(1);
+        let t2 = t0 + Duration::from_secs(2);
+        assert!(!live.saw(Seen::Unchanged, t1, |_| unreachable!()));
+        let second = doc("a\nB\nc\n");
+        let seen = text_read(&live, &second, T0);
+        let revise = live.saw(seen, t2, |since| {
+            assert_eq!(since, t1);
+            (agent("claude"), Sure::Exact, false)
+        });
+        assert!(!revise, "an exact, finished edit is not revised");
+        assert!(live.record.mark(0).is_none());
+        assert_eq!(live.record.mark(1).map(|m| &m.who), Some(&agent("claude")));
+        assert!(live.record.mark(2).is_none());
+    }
+
+    /// A file that goes missing keeps its marks and its last text: when it comes back, the
+    /// new text is compared with that one.
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // one block
+    fn missing_then_back_compares_with_last_text() {
+        let t0 = Instant::now();
+        let mut live = Live::default();
+        let one = doc("a\nb\n");
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let two = doc("a\nB\n");
+        let revise = live.saw(text_read(&live, &two, T0), t0, |_| {
+            (Who::You, Sure::Exact, false)
+        });
+        assert!(revise, "yours may be revised by a late finish");
+        live.saw(Seen::Missing, t0, |_| unreachable!());
+        assert_eq!(live.record.mark(1).map(|m| &m.who), Some(&Who::You));
+        let back = doc("a\nB\nc\n");
+        let seen = text_read(&live, &back, T0);
+        let Seen::Text { compared, .. } = &seen else {
+            unreachable!()
+        };
+        assert_eq!(
+            compared.as_ref().map(|c| c.blocks.clone()),
+            Some(vec![2..3])
+        );
+        live.saw(seen, t0, |_| (agent("agy"), Sure::Guess, false));
+        assert_eq!(live.record.mark(1).map(|m| &m.who), Some(&Who::You));
+        assert_eq!(live.record.mark(2).map(|m| &m.who), Some(&agent("agy")));
+    }
+
+    /// A text shown plain (too large to colour), a compare given up and a refused file all
+    /// clear the marks; after a refusal the next text is a new baseline.
+    #[test]
+    fn plain_too_large_or_gave_up_clears_marks() {
+        let t0 = Instant::now();
+        let mut live = Live::default();
+        let marked = |live: &mut Live| {
+            let one = doc("a\nb\n");
+            live.saw(text_read(live, &one, T0), t0, |_| unreachable!());
+            let two = doc("a\nB\n");
+            live.saw(text_read(live, &two, T0), t0, |_| {
+                (Who::You, Sure::Exact, false)
+            });
+            assert!(live.record.any());
+        };
+        marked(&mut live);
+        let plain = doc("a\nB\nc\n");
+        assert!(compare_with(live.prev().as_ref(), &plain, true, LIMIT).is_none());
+        live.saw(text_read(&live, &doc("x"), T0), t0, |_| {
+            (Who::You, Sure::Exact, false)
+        });
+        let seen = Seen::Text {
+            doc: &plain,
+            compared: compare_with(live.prev().as_ref(), &plain, true, LIMIT),
+            when: T0,
+        };
+        live.saw(seen, t0, |_| unreachable!("nothing to decide"));
+        assert!(!live.record.any());
+        // Given up (out of time): no answer, the marks cleared.
+        let mut live = Live::default();
+        marked(&mut live);
+        let other = doc("q\nr\n");
+        let gave_up = compare_with(live.prev().as_ref(), &other, false, Duration::ZERO);
+        assert!(gave_up.is_none());
+        let seen = Seen::Text {
+            doc: &other,
+            compared: gave_up,
+            when: T0,
+        };
+        live.saw(seen, t0, |_| unreachable!("nothing to decide"));
+        assert!(!live.record.any());
+        // Refused: cleared, and the text after it is a baseline.
+        let mut live = Live::default();
+        marked(&mut live);
+        live.saw(Seen::Refused, t0, |_| unreachable!());
+        assert!(!live.record.any());
+        assert!(live.prev().is_none());
+    }
+
+    /// A change is dated when fuxx saw it, unless the file's time is earlier (it changed while
+    /// the tab was hidden): one seen 10 minutes after it was made is marked but not warm.
+    #[test]
+    fn when_is_the_mtime_if_earlier() {
+        let seen = T0 + Duration::from_secs(10_000);
+        let ten_min_ago = seen - Duration::from_secs(600);
+        assert_eq!(change_time(seen, Some(ten_min_ago)), ten_min_ago);
+        assert_eq!(change_time(seen, None), seen);
+        // A file time in the future (another clock): when it was seen.
+        assert_eq!(change_time(seen, Some(seen + Duration::from_secs(5))), seen);
+        let t0 = Instant::now();
+        let mut live = Live::default();
+        let one = doc("a\nb\n");
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let two = doc("a\nB\n");
+        let when = change_time(seen, Some(ten_min_ago));
+        live.saw(text_read(&live, &two, when), t0, |_| {
+            (Who::You, Sure::Exact, false)
+        });
+        assert_eq!(live.record.mark(1).map(|m| m.when), Some(ten_min_ago));
+        assert!(live.record.warm_blocks(seen).is_empty());
+    }
+
+    /// Your letter: git's user.name, else the account's full name, else Y.
+    #[test]
+    fn your_letter_from_git_name_then_account_then_y() {
+        assert_eq!(your_letter(Some("fitz gerald"), Some("Someone Else")), 'F');
+        assert_eq!(your_letter(None, Some("Someone Else")), 'S');
+        assert_eq!(your_letter(Some("  "), Some("Someone Else")), 'S');
+        assert_eq!(your_letter(Some("--"), Some("someone")), 'S');
+        assert_eq!(your_letter(None, None), 'Y');
+        assert_eq!(your_letter(Some(""), Some("\n")), 'Y');
+    }
+
+    /// The tab's own lines go to the compare without their endings: a CRLF text and its LF
+    /// twin, or a text with and without a last newline, have no changed lines.
+    #[test]
+    fn line_endings_alone_mark_nothing() {
+        let prev = |d: &Doc| Prev {
+            text: d.text.clone(),
+            lines: d.lines.clone(),
+        };
+        let lf = doc("a\nb\nc\n");
+        let crlf = doc("a\r\nb\r\nc\r\n");
+        let c = compare_with(Some(&prev(&lf)), &crlf, false, LIMIT).unwrap();
+        assert!(c.blocks.is_empty());
+        assert_eq!(c.new_of_old, vec![Some(0), Some(1), Some(2)]);
+        let without = doc("a\nb\nc");
+        let c = compare_with(Some(&prev(&lf)), &without, false, LIMIT).unwrap();
+        assert!(c.blocks.is_empty());
+        let c = compare_with(Some(&prev(&without)), &crlf, false, LIMIT).unwrap();
+        assert!(c.blocks.is_empty());
+        assert_eq!(line_slices("a\r\nb", &[0..3, 3..4]), vec!["a", "b"]);
+    }
+
+    /// A guess, yours, or an edit still open may be revised; a late finish revises the latest
+    /// change's lines to that agent, exact, and says whether anything changed.
+    #[test]
+    fn a_late_finish_revises_the_latest_change() {
+        let t0 = Instant::now();
+        let mut live = Live::default();
+        let one = doc("a\nb\nc\n");
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let two = doc("A\nb\nc\n");
+        assert!(live.saw(text_read(&live, &two, T0), t0, |_| (
+            agent("claude"),
+            Sure::Guess,
+            false
+        )));
+        let three = doc("A\nb\nC\n");
+        assert!(live.saw(text_read(&live, &three, T0), t0, |_| (
+            Who::You,
+            Sure::Exact,
+            false
+        )));
+        assert!(!live.revise(None));
+        let claude = || match agent("claude") {
+            Who::Agent(a) => a,
+            Who::You => unreachable!(),
+        };
+        assert!(live.revise(Some(claude())));
+        let m = live.record.mark(2).unwrap();
+        assert_eq!((&m.who, m.sure), (&agent("claude"), Sure::Exact));
+        // The earlier change is not the latest: still a guess.
+        assert_eq!(live.record.mark(0).unwrap().sure, Sure::Guess);
+        // Already so: nothing changes.
+        assert!(!live.revise(Some(claude())));
+        // An edit still open may be; an exact, finished one isn't.
+        let open = doc("A\nb\nC\nd\n");
+        assert!(live.saw(text_read(&live, &open, T0), t0, |_| (
+            agent("claude"),
+            Sure::Exact,
+            true
+        )));
+        let four = doc("A\nB\nC\nd\n");
+        assert!(!live.saw(text_read(&live, &four, T0), t0, |_| (
+            agent("claude"),
+            Sure::Exact,
+            false
+        )));
     }
 }

@@ -1,6 +1,5 @@
 //! The edit ledger: an app-wide record of agents' file edits and working spans, and the rule that
 //! decides who changed a file (M11af, design note 82 section 3). Pure: times are passed in.
-#![allow(dead_code)] // wired in by M11af Tasks 4-5
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
