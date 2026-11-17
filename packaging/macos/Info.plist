@@ -20,6 +20,8 @@
 	<string>@VERSION@</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Programs you run in fuxx, such as camera software, can use the camera.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>
