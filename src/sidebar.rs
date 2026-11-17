@@ -1562,8 +1562,15 @@ impl Workspace {
                 .into_iter()
                 .filter(|(status, _)| *status != Status::Idle)
                 .map(|(_, since)| since);
+            // And the 🔔 popover's entries, while it's open (each says how long ago).
+            let notifications = self
+                .notifications_popover
+                .iter()
+                .flat_map(|_| self.notifications.shown(|_| true))
+                .map(|(entry, _)| entry.at);
             sinces
                 .chain(palette)
+                .chain(notifications)
                 .map(|since| next_age_change(now.saturating_duration_since(since)))
                 .min()
         };
