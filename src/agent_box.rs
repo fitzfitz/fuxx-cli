@@ -21,7 +21,10 @@ use crate::folder_picker::{
     picker_rows,
 };
 use crate::name_input::{NameInput, NameInputEvent};
-use crate::providers::{Applies, Catalog, ChangeKind, ModeChoice, ModelChoice, Provider, Start};
+use crate::providers::{
+    Applies, Catalog, ChangeKind, LimitState, ModeChoice, ModelChoice, Provider, RateLimit, Reset,
+    Start, UsageGroup, UsageLimit,
+};
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::ui_tokens::text;
@@ -73,8 +76,14 @@ pub const VIEW_USAGE: &str = "View Usage \u{25b8}";
 /// The id of the effort list's rows, beside the model menu, and the width of its panel.
 const EFFORT_ROWS: &str = "box-effort";
 const EFFORT_WIDTH: f32 = 140.0;
+/// The View Usage panel's width, and its ring's size and stroke.
+const USAGE_WIDTH: f32 = 270.0;
+const RING_SIZE: f32 = 14.0;
+const RING_STROKE: f32 = 2.0;
 
 /// The send button's glyph.
+/// The warning dot on the model chip.
+const LIMIT_DOT: f32 = 6.0;
 const SEND: &str = "\u{27a4}";
 
 /// Where each part of the box was laid out, by name (scenes read it: `shot_part`).
@@ -129,6 +138,8 @@ pub struct BoxTexts {
     pub send: String,
     /// The top line's cost and context.
     pub usage: Option<String>,
+    /// The warning dot on the model chip: a limit is close or reached.
+    pub limit_warning: bool,
 }
 
 /// The catalog model (its place) and effort level that `start`'s flags name: a model whose id,
@@ -257,6 +268,155 @@ pub fn usage_line(cost_usd: Option<f64>, context_pct: Option<u8>) -> Option<Stri
     .flatten()
     .collect();
     (!parts.is_empty()).then(|| parts.join(" \u{b7} "))
+}
+
+/// What the View Usage panel says while a reading is made, when one failed, and when the agent
+/// has none.
+pub const CHECKING: &str = "Checking\u{2026}";
+pub const USAGE_FAILED: &str = "Couldn't read usage";
+
+/// `Usage isn't available for Claude`.
+pub fn usage_unavailable(label: &str) -> String {
+    format!("Usage isn't available for {label}")
+}
+
+/// `Resets in 3d 16h`, `Resets in 2h 5m`, `Resets in 59m`, `Resets now`: the time left, to the
+/// minute (cut, never rounded up, but at least `1m` while any is left), with the day and hour
+/// parts only when they are not nil (`1d`, `1h`).
+pub fn resets_in(secs: i64) -> String {
+    if secs <= 0 {
+        return "Resets now".into();
+    }
+    let (days, hours, mins) = (secs / 86_400, secs % 86_400 / 3600, secs % 3600 / 60);
+    let words = if days > 0 {
+        match hours {
+            0 => format!("{days}d"),
+            h => format!("{days}d {h}h"),
+        }
+    } else if hours > 0 {
+        match mins {
+            0 => format!("{hours}h"),
+            m => format!("{hours}h {m}m"),
+        }
+    } else {
+        format!("{}m", mins.max(1))
+    };
+    format!("Resets in {words}")
+}
+
+/// A limit's reset line at `now_unix`: a moment counts down (`resets_in`); the agent's own words
+/// (Claude's `Nov 17 at 8:10pm`) stay its words.
+pub fn reset_text(reset: &Reset, now_unix: i64) -> String {
+    match reset {
+        Reset::At(at) => resets_in(at - now_unix),
+        Reset::Words(words) => format!("Resets {words}"),
+    }
+}
+
+/// What the agent said of a limit that is close or reached (`Fine`: nothing), the time of day
+/// (24-hour) at `utc_offset` seconds east of UTC.
+pub fn limit_line(limit: &RateLimit, utc_offset: i64) -> Option<String> {
+    match limit.state {
+        LimitState::Fine => None,
+        LimitState::Close => Some("Close to limit".into()),
+        LimitState::Reached => Some(match limit.resets_at {
+            Some(at) => format!(
+                "Limit reached \u{b7} resets {}",
+                crate::activity::clock_hm(at, utc_offset)
+            ),
+            None => "Limit reached".into(),
+        }),
+    }
+}
+
+/// Whether the model chip carries the warning dot: any limit the agent said is close or reached.
+pub fn limits_warn(limits: &[RateLimit]) -> bool {
+    limits.iter().any(|l| l.state != LimitState::Fine)
+}
+
+/// One line of the View Usage panel, top to bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UsageRow {
+    /// A group's name (agy names its groups; Claude's lines have none).
+    Heading(String),
+    /// A limit: how much is left (none: the agent only said it is close or reached), when it
+    /// resets, and what the agent said of its state.
+    Limit {
+        name: String,
+        left_pct: Option<u8>,
+        resets: Option<String>,
+        note: Option<String>,
+    },
+    /// A line fuxx couldn't read, as the agent wrote it.
+    Text(String),
+    /// Checking, failed, or not available.
+    Quiet(String),
+}
+
+/// The View Usage panel's lines (§5). `found` is the reading (none: not asked yet, as loading);
+/// `limits` what the agent said of its limits while it ran, shown under the limit of that name,
+/// or on their own when the reading has none of that name (or none was read).
+pub fn usage_rows(
+    found: Option<&Lookup<Vec<UsageGroup>>>,
+    limits: &[RateLimit],
+    available: Option<&str>,
+    now_unix: i64,
+    utc_offset: i64,
+) -> Vec<UsageRow> {
+    let said = |name: &str| limits.iter().find(|l| l.limit == name);
+    // The agent's moment, while it is still ahead (a Fine limit's old one is not a reset).
+    let ahead = |l: &RateLimit| l.resets_at.filter(|at| *at > now_unix);
+    let mut rows = Vec::new();
+    let mut shown: Vec<&str> = Vec::new();
+    match (available, found) {
+        (Some(label), _) => rows.push(UsageRow::Quiet(usage_unavailable(label))),
+        (None, None | Some(Lookup::Loading)) => rows.push(UsageRow::Quiet(CHECKING.into())),
+        (None, Some(Lookup::Failed(_))) => rows.push(UsageRow::Quiet(USAGE_FAILED.into())),
+        (None, Some(Lookup::Ready(groups))) => {
+            for group in groups {
+                if !group.name.is_empty() {
+                    rows.push(UsageRow::Heading(group.name.clone()));
+                }
+                for limit in &group.limits {
+                    rows.push(match limit {
+                        UsageLimit::Text(text) => UsageRow::Text(text.clone()),
+                        UsageLimit::Read {
+                            name,
+                            left_pct,
+                            resets,
+                        } => {
+                            let told = said(name);
+                            shown.push(name);
+                            let resets = match resets {
+                                Some(reset) => Some(reset_text(reset, now_unix)),
+                                None => told.and_then(ahead).map(|at| resets_in(at - now_unix)),
+                            };
+                            UsageRow::Limit {
+                                name: name.clone(),
+                                left_pct: Some(*left_pct),
+                                resets,
+                                note: told.and_then(|l| limit_line(l, utc_offset)),
+                            }
+                        }
+                    });
+                }
+            }
+            if rows.is_empty() {
+                rows.push(UsageRow::Quiet(USAGE_FAILED.into()));
+            }
+        }
+    }
+    for limit in limits.iter().filter(|l| !shown.contains(&l.limit.as_str())) {
+        if let Some(note) = limit_line(limit, utc_offset) {
+            rows.push(UsageRow::Limit {
+                name: limit.limit.clone(),
+                left_pct: None,
+                resets: ahead(limit).map(|at| resets_in(at - now_unix)),
+                note: Some(note),
+            });
+        }
+    }
+    rows
 }
 
 /// One row of the model menu, top to bottom.
@@ -457,7 +617,16 @@ impl AgentTab {
                 self.conversation.cost_usd(),
                 self.conversation.context_pct(),
             ),
+            limit_warning: self.limit_warning(cx),
         }
+    }
+
+    /// Whether the agent said a limit is close or reached (`Event::RateLimit`, kept in
+    /// `Catalogs`); the model chip's warning dot.
+    fn limit_warning(&self, cx: &App) -> bool {
+        self.provider
+            .zip(cx.try_global::<Catalogs>())
+            .is_some_and(|(p, catalogs)| limits_warn(catalogs.limits(p.info().name)))
     }
 
     /// The box's edge: the focus ring while its text has the keyboard, else the quiet edge
@@ -589,8 +758,24 @@ impl AgentTab {
                 d.child(self.menu_frame(None, None, cx))
             });
         let model_hover = c.box_hover;
+        let warn = c.ask_edge;
         let model = self
             .marked("model", box_chip("agent-model", texts.model.clone(), c))
+            .relative()
+            .when(texts.limit_warning, |d| {
+                d.child(
+                    self.marked(
+                        "limit-warning",
+                        div()
+                            .absolute()
+                            .top(px(4.))
+                            .right(px(2.))
+                            .size(px(LIMIT_DOT))
+                            .rounded_full()
+                            .bg(hsla(warn)),
+                    ),
+                )
+            })
             .when(self.provider.is_some(), |d| {
                 d.cursor_pointer()
                     .hover(move |s| s.bg(hsla(model_hover)))
@@ -829,6 +1014,39 @@ impl AgentTab {
             .provider
             .map_or(Applies::Live, |p| p.applies(ChangeKind::Model));
         model_rows(&self.catalog_lookup(cx), &self.shown_start(cx), applies)
+    }
+
+    /// The usage the agent's View Usage shows, as if it had been read now, and what the agent
+    /// said of its limits.
+    pub fn shot_usage(
+        &mut self,
+        found: Lookup<Vec<UsageGroup>>,
+        limits: Vec<RateLimit>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(provider) = self.provider {
+            let agent = provider.info().name;
+            cx.update_default_global(|c: &mut Catalogs, _| {
+                c.set_usage(agent, found, std::time::Instant::now());
+                for limit in limits {
+                    c.note_limit(agent, limit);
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    /// The usage lines as drawn now.
+    pub fn shot_usage_rows(&self, cx: &App) -> Vec<UsageRow> {
+        self.usage_rows_now(cx)
+    }
+
+    /// The usage the agent's catalog holds now (none: not asked, or stale).
+    pub fn shot_usage_lookup(&self, cx: &App) -> Option<Lookup<Vec<UsageGroup>>> {
+        let agent = self.provider?.info().name;
+        cx.try_global::<Catalogs>()?
+            .usage(agent, std::time::Instant::now())
+            .cloned()
     }
 
     /// The folder the agent starts (or runs) in.
@@ -1316,6 +1534,206 @@ mod tests {
             switched_notice(&Change::Folder("/tmp/x".into()), None, None, Some(home)),
             "Moved to /tmp/x",
             "outside home: as it is"
+        );
+    }
+
+    fn rate(name: &str, state: LimitState, resets_at: Option<i64>) -> RateLimit {
+        RateLimit {
+            limit: name.into(),
+            state,
+            resets_at,
+        }
+    }
+
+    #[test]
+    fn resets_in_words() {
+        assert_eq!(resets_in(316_800), "Resets in 3d 16h");
+        assert_eq!(resets_in(7_500), "Resets in 2h 5m");
+        assert_eq!(resets_in(3_540), "Resets in 59m");
+        assert_eq!(resets_in(0), "Resets now");
+        assert_eq!(resets_in(-5), "Resets now");
+        // The boundaries: a minute short of an hour, the hour, a day, a day and an hour.
+        assert_eq!(resets_in(3_599), "Resets in 59m");
+        assert_eq!(resets_in(3_600), "Resets in 1h");
+        assert_eq!(resets_in(86_399), "Resets in 23h 59m");
+        assert_eq!(resets_in(86_400), "Resets in 1d");
+        assert_eq!(resets_in(90_000), "Resets in 1d 1h");
+        assert_eq!(
+            resets_in(90_059),
+            "Resets in 1d 1h",
+            "the minutes drop from a day"
+        );
+        // Under a minute is still a minute left, not "now".
+        assert_eq!(resets_in(1), "Resets in 1m");
+        assert_eq!(resets_in(59), "Resets in 1m");
+        assert_eq!(resets_in(60), "Resets in 1m");
+    }
+
+    #[test]
+    fn reset_text_counts_a_moment_down_and_keeps_the_agents_words() {
+        assert_eq!(
+            reset_text(&Reset::At(1_000 + 7_500), 1_000),
+            "Resets in 2h 5m"
+        );
+        assert_eq!(reset_text(&Reset::At(1_000), 1_000), "Resets now");
+        assert_eq!(
+            reset_text(&Reset::At(500), 1_000),
+            "Resets now",
+            "a past time"
+        );
+        assert_eq!(
+            reset_text(&Reset::Words("Nov 17 at 8:10pm".into()), 0),
+            "Resets Nov 17 at 8:10pm"
+        );
+    }
+
+    #[test]
+    fn limit_lines() {
+        assert_eq!(limit_line(&rate("s", LimitState::Fine, None), 0), None);
+        assert_eq!(
+            limit_line(&rate("s", LimitState::Close, Some(1)), 0).as_deref(),
+            Some("Close to limit")
+        );
+        // 14:00 local at +7 h.
+        let at = 7 * 3600;
+        assert_eq!(
+            limit_line(&rate("s", LimitState::Reached, Some(at)), 7 * 3600).as_deref(),
+            Some("Limit reached \u{b7} resets 14:00")
+        );
+        assert_eq!(
+            limit_line(&rate("s", LimitState::Reached, None), 0).as_deref(),
+            Some("Limit reached")
+        );
+    }
+
+    #[test]
+    fn the_chip_warns_while_a_limit_is_close_or_reached() {
+        assert!(!limits_warn(&[]));
+        assert!(!limits_warn(&[rate("a", LimitState::Fine, None)]));
+        assert!(limits_warn(&[
+            rate("a", LimitState::Fine, None),
+            rate("b", LimitState::Close, None)
+        ]));
+        assert!(limits_warn(&[rate("a", LimitState::Reached, None)]));
+    }
+
+    fn read(name: &str, left: u8, resets: Option<Reset>) -> UsageLimit {
+        UsageLimit::Read {
+            name: name.into(),
+            left_pct: left,
+            resets,
+        }
+    }
+
+    fn group(name: &str, limits: Vec<UsageLimit>) -> UsageGroup {
+        UsageGroup {
+            name: name.into(),
+            about: None,
+            limits,
+        }
+    }
+
+    fn limit_row(
+        name: &str,
+        left: Option<u8>,
+        resets: Option<&str>,
+        note: Option<&str>,
+    ) -> UsageRow {
+        UsageRow::Limit {
+            name: name.into(),
+            left_pct: left,
+            resets: resets.map(String::from),
+            note: note.map(String::from),
+        }
+    }
+
+    #[test]
+    fn usage_rows_say_checking_failed_and_unavailable() {
+        let quiet = |t: &str| vec![UsageRow::Quiet(t.into())];
+        assert_eq!(usage_rows(None, &[], None, 0, 0), quiet(CHECKING));
+        assert_eq!(
+            usage_rows(Some(&Lookup::Loading), &[], None, 0, 0),
+            quiet(CHECKING)
+        );
+        assert_eq!(
+            usage_rows(Some(&Lookup::Failed("why".into())), &[], None, 0, 0),
+            quiet(USAGE_FAILED)
+        );
+        assert_eq!(
+            usage_rows(Some(&Lookup::Ready(Vec::new())), &[], None, 0, 0),
+            quiet(USAGE_FAILED),
+            "a reading with nothing in it"
+        );
+        assert_eq!(
+            usage_rows(None, &[], Some("Claude"), 0, 0),
+            quiet("Usage isn't available for Claude")
+        );
+    }
+
+    #[test]
+    fn usage_rows_list_each_group_and_limit() {
+        let found = Lookup::Ready(vec![
+            group(
+                "Pro models",
+                vec![
+                    read("Daily", 63, Some(Reset::At(10_000 + 316_800))),
+                    UsageLimit::Text("Mystery".into()),
+                ],
+            ),
+            group(
+                "",
+                vec![read(
+                    "Session",
+                    100,
+                    Some(Reset::Words("Nov 17 at 8:10pm".into())),
+                )],
+            ),
+        ]);
+        assert_eq!(
+            usage_rows(Some(&found), &[], None, 10_000, 0),
+            vec![
+                UsageRow::Heading("Pro models".into()),
+                limit_row("Daily", Some(63), Some("Resets in 3d 16h"), None),
+                UsageRow::Text("Mystery".into()),
+                limit_row("Session", Some(100), Some("Resets Nov 17 at 8:10pm"), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn usage_rows_put_what_the_agent_said_under_its_limit() {
+        let found = Lookup::Ready(vec![group(
+            "",
+            vec![read("Session", 4, None), read("Weekly", 80, None)],
+        )]);
+        let said = [
+            rate("Session", LimitState::Reached, Some(7 * 3600)),
+            rate("Weekly", LimitState::Fine, Some(1)),
+            rate("Opus", LimitState::Close, Some(1_000 + 3_540)),
+        ];
+        assert_eq!(
+            usage_rows(Some(&found), &said, None, 1_000, 7 * 3600),
+            vec![
+                // No reset in the reading: the agent's moment fills it in.
+                limit_row(
+                    "Session",
+                    Some(4),
+                    Some("Resets in 6h 43m"),
+                    Some("Limit reached \u{b7} resets 14:00")
+                ),
+                // Fine says nothing, and a Fine limit's old moment isn't shown as a reset.
+                limit_row("Weekly", Some(80), None, None),
+                // A limit the reading doesn't have, on its own.
+                limit_row("Opus", None, Some("Resets in 59m"), Some("Close to limit")),
+            ]
+        );
+        // Without a reading, the limits that are close or reached still show.
+        assert_eq!(
+            usage_rows(Some(&Lookup::Failed("x".into())), &said, None, 1_000, 0)
+                .iter()
+                .filter(|r| matches!(r, UsageRow::Limit { .. }))
+                .count(),
+            2
         );
     }
 }
