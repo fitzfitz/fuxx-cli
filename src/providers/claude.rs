@@ -14,7 +14,6 @@ static INFO: ProviderInfo = ProviderInfo {
     label: "Claude",
     badge: "CC",
     badge_rgb: 0x7a4a2a,
-    routes_permissions: true,
     interrupts: true,
     modes: &[],
     default_mode: None,

@@ -3,7 +3,7 @@ tags: [development, proposal, design]
 status: proposal
 ---
 
-> [!info] In the plan as M11aa (Part 1) / M11ab (Part 2), 2026-11-13
+> [!info] Part 1 is now note 79 (2026-11-17). In the plan as M11aa (Part 1) / M11ab (Part 2), 2026-11-13
 > You approved it on 2026-11-13. **Part 1 is M11aa — Agent tabs and providers** ([[M11aa Plan - Agent Tabs]]) and
 > **Part 2 is M11ab — Chat-style shell tabs** (design first, not planned), both in [[12 - Scope]] and [[40 - Roadmap]],
 > **after M11z and after M11p**. The safe part of M11aa (Tasks 0, 2, 3, 4, 6: new pure modules, no UI) is being built
@@ -228,145 +228,10 @@ The agent tab is a **new view fed by JSON**: no terminal emulation, no change to
 - **Part 2 — Chat-style shell tabs.** Starts after Part 1 is on screen, with its own detailed design (like M11l had)
   before any code. This proposal fixes Part 2's intent and constraints, not its internals.
 
-## Part 1 — Agent tabs and providers
+## Part 1 — Agent tabs and providers (moved)
 
-### 1.1 The agent tab
-
-- `TabKind` gains an agent variant (shape is the builder's; it needs at least the provider name and the
-  conversation id for resume).
-- **Tab bar:** a small provider badge instead of `>_` (`CC` for Claude, `AG` for agy; colour per provider), the
-  tab's title (AI's call: the first line of your first message, renameable like any tab), and the status mark.
-- **Layout (from `c1-agent-tab.html`):** conversation stream on top, composer at the bottom.
-  - **Your messages:** right-aligned card. Attachments show as a chip under it.
-  - **Agent messages:** provider avatar + text, streamed as it arrives (partial messages). Markdown basics: paragraphs,
-    inline code, code blocks, lists. Links clickable.
-  - **Plan/todo:** when the agent publishes a todo list, show it as a checklist that updates in place (✓ / ◐ / ○).
-  - **Tool calls:** one row each: tool name (accent colour), its target (file, command), a result summary at the
-    right (`84 lines`, `✓ 4 passed`, `+3 −1`). Click to expand: edits expand to a diff, Bash to its output, reads to
-    nothing (AI's call). Running tool: spinner + elapsed time.
-  - **Subagents** (`parent_tool_use_id` set): nested under the tool row that started them, collapsed by default
-    (AI's call).
-  - **Hook output** (`system/hook_*`): hidden by default; failures show as a quiet warning row (AI's call).
-  - **Errors / stops:** an error row in the theme's red, with the provider's message.
-- **Top line of the pane:** status word (working / needs you / idle) and context used (`context 18%`), from usage
-  events.
-- **Composer:** a multi-line text box (Enter sends, ⇧Enter newline). Chips above it: model, branch, cost so far.
-  Hints: `/` for commands (sent as text), `@` for files (AI's call: a file picker from the workspace folder that
-  inserts the path). While the agent works, the button is **■ Stop (Esc)** and anything you send is queued for the
-  agent's next turn.
-- **Empty state:** a short line ("Ask Claude to do something in ~/code/my-app") and the composer focused.
-
-### 1.2 Permission prompts
-
-- **Claude (verified 2026-11-13 while planning M11aa):** start with the hidden flag `--permission-prompt-tool
-  stdio` and send `{"type":"control_request","request_id":…,"request":{"subtype":"initialize","hooks":null}}`
-  before the first message. Each prompt then arrives as `control_request` / `can_use_tool` (`tool_name`,
-  `display_name`, `input`, `description`, `permission_suggestions`, `tool_use_id`), answered with
-  `{"type":"control_response","response":{"subtype":"success","request_id":…,"response":{"behavior":"allow",
-  "updatedInput":…}}}` — a test Write went through. **Without the initialize request, `--permission-prompts host`
-  alone asks no one and denies every prompt** (`system/permission_denied`). Deny and "always allow" responses are
-  recorded in M11aa Task 0. Your own hooks (e.g. GateGuard) run in these sessions too; a hook that blocks a tool
-  arrives as a failed tool result.
-- **The card** (`c1-agent-tab.html`, right): amber border, "Claude wants to run", the exact command / file / diff,
-  buttons **Allow ⏎ · Always allow <thing> · Deny**. Typing in the composer and sending = **Deny with that text as
-  the reason**. "Always allow" writes the rule the way the provider's own "always" would (for Claude: the permission
-  response's update, not fuxx's own settings).
-- **agy (AI's call):** since it has no host routing, an agy tab starts in a mode you choose: a mode chip on the
-  composer with `accept-edits` (default) / `auto` / `plan`. No permission cards for agy until it supports routing.
-  Never `--dangerously-skip-permissions` by default.
-- When a prompt is waiting: the tab's status is **needs you**, the sidebar ring turns red and fuxx notifies you,
-  exactly like today's waiting state.
-
-### 1.3 Providers (`src/providers/`)
-
-- **`mod.rs`** — the shared language and nothing agent-specific:
-  - a provider description: name, badge text/colour, the command it starts, capabilities (can route permissions,
-    can resume, supports partial streaming, supports modes);
-  - **fuxx events** the chat view consumes, at minimum: session started (id, model, cwd), text delta, message done,
-    tool started (id, name, summary, parent), tool finished (id, ok/err, summary, optional diff/output), todo list,
-    permission request (id, what, details), usage (context %, cost), turn done, error, process ended;
-  - **fuxx actions** the view sends: user message (text + attachments), permission answer (allow / always / deny +
-    reason), stop / interrupt, close.
-- **`claude.rs`** — starts `claude -p --input-format stream-json --output-format stream-json --verbose
-  --include-partial-messages` (+ `--resume <id>` when reopening, + the permission flag from 1.2) in the tab's folder,
-  and translates both ways.
-- **`agy.rs`** — starts `agy -p= --input-format stream-json --output-format stream-json` (+ `--conversation <id>`,
-  `--mode`), and translates both ways.
-- **Unknown events are ignored, not fatal** (agents update often). A provider that can't parse its agent's output
-  shows one error row and offers "Open in classic view".
-- **Adding OpenCode or Codex later = one new file + one line registering it.** Nothing else should change; if it
-  would, `mod.rs` is wrong.
-
-### 1.4 Presets and the menu
-
-- A preset is backed by a provider when its **name** matches a registered provider (AI's call).
-- **Picking it (menu or ⌃⌘N) opens a new workspace split in two (your choice, 2026-11-13, after the builder
-  check):** a shell tab on one side and the agent tab on the other, both in the workspace's folder (the option 2
-  mockup, `tabs-and-threads.html`). The sidebar row keeps reading its branch, folder and ports from that shell, so
-  the sidebar, branch bar and Changes panel need no rework. The row's agent label and status come from the agent
-  tab.
-- **The pane `···` menu (and ⌘K) can add an agent tab** to any pane (AI's call on how: the same preset list, showing
-  only presets with a provider). The tab bar's `+` has no menu and stays "New terminal tab". (Corrected 2026-11-13.)
-- **`agy` becomes a fourth built-in preset** (built-ins: `claude`, `agy`, `opencode`, `codex`; AI's call on the
-  order). `opencode` and `codex` keep today's behaviour.
-- In the menu, presets that open a chat view are marked (AI's call: the provider badge before the name).
-- A user `agent-preset = claude: claude --model sonnet` still matches the `claude` provider by name; the extra
-  arguments are passed through (AI's call; builder decides which flags are safe to pass and which fuxx owns).
-- **Classic view stays one keystroke away:** typing `claude` / `agy` in a shell tab runs the TUI exactly as today.
-  An agent tab's `···` menu has **Open in classic view**, which opens a shell tab running
-  `claude --resume <id>` / `agy --conversation <id>` (AI's call).
-
-### 1.5 Status, notifications, activity
-
-- The provider's events set the tab's status directly, **using the existing `Status` enum, no new variant (AI's
-  call, after the builder check)**: tool running / streaming = `Working`; permission request = `Waiting`; turn done
-  = `Done`; nothing yet = `Idle`. An error or a non-zero process exit = `Done` plus an error row in the tab and an
-  Activity note — no fifth "failed" status, so the API, rings and notifications don't change. This replaces
-  `StatusTracker`'s heuristics **for agent tabs only**; terminal tabs keep `StatusTracker`.
-- Same ring colours, same notification path, same Activity entries as today.
-
-### 1.5b Scripting API and MCP (AI's call, after the builder check)
-
-- Agent tabs **are listed** by `fuxx status` and count for `fuxx wait --any --for waiting|done`, so launching
-  `claude` from the menu doesn't drop out of existing automation. They need a scripting id alongside the terminals'
-  `sN` (shape left to the builder).
-- `fuxx question` on an agent tab returns the pending permission request; `fuxx answer` answers it (allow / deny
-  + reason). Conversation text stays unexposed (Non-goals).
-
-### 1.6 Lifetime and restore (AI's calls)
-
-- The agent process is a **child of the app**, not of the background service (M10a). Quitting fuxx ends it.
-- The tab remembers its provider and conversation id. On restore (M11u), it reopens with `--resume` /
-  `--conversation` and shows the history the agent replays, or "Conversation restored" if it replays none.
-- **Classic sessions keep restoring as terminals (AI's call, after the builder check).** Today `restore.rs` and
-  `presets::agent_for` look presets up by name, and M11u's `agent` field records an agent typed at a prompt. Those
-  keep meaning "a terminal that runs this command". Agent tabs are saved as their own tab kind (provider +
-  conversation id), and only that kind restores as a chat view. So the menu's lookup ("does this preset have a
-  provider?") and restore's lookup ("what did this terminal run?") are separate. A saved session from before this
-  change, or a `claude` typed in a shell, comes back exactly as today.
-- **Local only (AI's call, after the builder check).** Agent tabs run on this Mac. In an SSH workspace (M10b),
-  provider presets behave as classic presets (the command is typed into the remote shell, as today) and the menu
-  shows no chat badge there.
-- Closing an agent tab while it's working asks first. (Corrected 2026-11-13: terminals never ask today, `close_tab` "Never asks"; this is new behaviour, for agent tabs only.)
-
-### 1.7 Handing shell output to an agent
-
-- Drag a command block (M11l) from a shell tab onto an agent tab: it's attached to your next message as
-  "command + exit code + output" text (AI's call; replaces the ⌘L of the C1 mockup, which assumed paired threads).
-- Plain text dropped or pasted into the composer works as normal text.
-
-### 1.8 Part 1 order (for the plan)
-
-1. **Verify before building — a go/no-go gate (AI's call, after the builder check):** record a real Claude stream
-   with tool calls, a partial message, a permission request in host mode (answer it, including an "always allow"),
-   a typed `/compact`, and `--resume`. Do the same for agy (if its login is set up). Write what you saw into this
-   note. **If Claude can't route permission prompts to fuxx well enough for the card (goal 4), stop and bring it
-   back to you** rather than quietly shipping Claude like agy.
-2. `providers/mod.rs` + `claude.rs` with recorded streams as test fixtures (pure, GPUI-free, unit-tested like
-   `presets.rs`).
-3. The agent tab view (stream, composer, tool rows, permission card) for Claude.
-4. Presets/menu, status/notifications, restore.
-5. `agy.rs` against its recorded fixtures.
+Part 1 is built as M11aa. Its design now lives in [[79 - Milestone 11aa - Agent Tabs]] ("The design"), with what was
+built, the limits and the on-screen check. The recorded research above stays here.
 
 ## Part 2 — Chat-style shell tabs (intent and constraints only)
 

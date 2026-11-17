@@ -12,12 +12,12 @@ updated: 2026-11-16
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[Proposal - Chat View and Agent Tabs]] — Part 1 only (Part 2 is M11ab, not planned) |
-| **Status** | 🟨 Safe part (Tasks 0, 2, 3, 4, 6) built 2026-11-13 and on `master` (since `5d7c258`). UI tasks started 2026-11-16 ("start M11aa UI next", after M11p merged); Tasks 1, 5, 7–13 **refreshed 2026-11-16** against M11p (cached chrome) and M11ac (`md_preview`). |
+| **Status** | 🟨 Built 2026-11-17 on branch `m11aa-ui` (all 14 tasks reviewed; not merged, not pushed). Waiting for your on-screen check in [[79 - Milestone 11aa - Agent Tabs]]. |
 | **Order** | After M11z and after M11p (the proposal's "Where it goes"). M11p and M11ac are merged (`master` `8d2b16f`). |
-| **Tasks done** | 5 / 14 — Tasks 0, 2, 3, 4, 6 (on `master`; 1661 tests at `8d2b16f`) |
-| **▶ Pick up here** | **Task 1**, in worktree `.worktrees/m11aa-ui` (branch `m11aa-ui`). Read "Refresh calls" below and the "Carried forward" blocks in Tasks 7 and 8 first. |
+| **Tasks done** | 14 / 14 (Tasks 0, 2, 3, 4, 6 on `master`; Tasks 1, 5, 7–13 on `m11aa-ui`) |
+| **▶ Pick up here** | Your on-screen check (note 79), then merge `m11aa-ui` to master on your word. Next: M11ad (background agents, design first). |
 | **Decisions used** | Yours (2026-11-13): chat view for agents (C → C1), fuxx launches the agent, Claude + agy first in their own provider files, one kind per tab, menu presets open a new workspace with a shell + the agent side by side, classic = type the command in a shell, M11aa in M11. Yours (2026-11-16): start the UI tasks; agents stay app children in M11aa, background agents are M11ad (next, design first). AI's calls: the proposal's numbered list, "Plan-time calls" and "Refresh calls" below. |
-| **Needs your eyes** | 👀 the on-screen checklist written in Task 13 |
+| **Needs your eyes** | 👀 the on-screen checklist in [[79 - Milestone 11aa - Agent Tabs]] |
 
 **Goal:** Picking **claude** or **agy** opens a workspace with a shell and an **agent tab** side by side; the agent
 tab runs the agent in its structured mode and shows the conversation as a chat (streamed text, tool rows that open
@@ -261,7 +261,7 @@ rules, [[77 - Milestone 11p - Chrome Caching]].
   Task 8.)
 - Unchanged: `procs::AGENTS` (`procs.rs:61`) — a classic `agy` typed in a shell is detected as today.
 
-- [ ] **Step 1: Failing tests** (replace `builtins_are_claude_opencode_codex`)
+- [x] **Step 1: Failing tests** (replace `builtins_are_claude_opencode_codex`)
 
 ```rust
 #[test] fn builtins_are_claude_agy_opencode_codex() {
@@ -274,14 +274,14 @@ rules, [[77 - Milestone 11p - Chrome Caching]].
 }
 ```
 
-- [ ] **Step 2:** `cargo test --bin fuxx presets` → FAIL. **Step 3:** implement. **Step 4:** → PASS; then fix the
+- [x] **Step 2:** `cargo test --bin fuxx presets` → FAIL. **Step 3:** implement. **Step 4:** → PASS; then fix the
   preset tests that count built-ins: `user_presets_add_replace_and_remove` (`:147`) →
   `["claude", "agy", "opencode", "aider"]` and `p[3].command == "aider --model sonnet"`;
   `bad_lines_and_overflow_are_skipped_with_warnings` (`:165`) → `p[8].name == "p4"` (4 built-ins + 7; `warnings.len()`
   stays 3: one line names every skipped preset). `welcome.rs:1021` passes `3` itself and stays. Run
   `cargo run --features ui-shots -- __ui-shots welcome` and look at the welcome card with four preset rows (it must
   fit; if not, say so in the report). Full gate.
-- [ ] **Step 5: Commit** `M11aa: agy built-in preset`.
+- [x] **Step 5: Commit** `M11aa: agy built-in preset`.
 
 ### Task 2: Providers — the event language and Claude's translator
 
@@ -555,7 +555,7 @@ File tabs). Agent tabs move between panes like File tabs. New match arms elsewhe
 like a file tab (no session id; `tab_bar::icon` → `TabIcon::File`, title = the provider name); Tasks 8–10 fill them
 in. `reconcile` (`:547`) and `terminals` (`:254`) ignore agent tabs (they are not terminals).
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```rust
 #[test] fn agent_tab_round_trips_through_saved() {
@@ -570,9 +570,9 @@ in. `reconcile` (`:547`) and `terminals` (`:254`) ignore agent tabs (they are no
 #[test] fn a_focused_agent_tab_is_saved_focus_agent() { /* saved_focus → Some(SavedFocus::Agent) */ }
 ```
 
-- [ ] **Step 2:** → FAIL. **Step 3:** implement; `cargo build` and `cargo build --features ui-shots` until every
+- [x] **Step 2:** → FAIL. **Step 3:** implement; `cargo build` and `cargo build --features ui-shots` until every
   match compiles. **Step 4:** → PASS (whole suite). Full gate.
-- [ ] **Step 5: Commit** `M11aa: agent tabs in the layout model`.
+- [x] **Step 5: Commit** `M11aa: agent tabs in the layout model`.
 
 ### Task 6: A multi-line composer input
 
@@ -711,12 +711,12 @@ pub fn column(blocks: &[Md], base: usize, draw: &Draw) -> AnyElement;   // block
 - **Expired permissions:** cards with `Answer::Expired` show as expired, not as open.
 - **Bad resume** and **spawn failure**: as in "Wiring" above.
 
-- [ ] **Step 0: Record a transcript fixture.** Extend `scripts/record-agent-fixture.py` so the `text` scenario also
+- [x] **Step 0: Record a transcript fixture.** Extend `scripts/record-agent-fixture.py` so the `text` scenario also
   copies `~/.claude/projects/<mangled realpath of workdir>/<session_id>.jsonl` to
   `src/providers/fixtures/claude-transcript.jsonl`, through the same always-on scrub (Rulings 4, 11). Run it once;
   read the file; if its lines are not the stream's `assistant` / `user` shapes, write what they are in the task
   report and map them in `history` accordingly.
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```rust
 // agent_conversation.rs
@@ -758,10 +758,10 @@ pub fn column(blocks: &[Md], base: usize, draw: &Draw) -> AnyElement;   // block
   `agent-tab-cached-current`: the view embedded `.cached(size_full)` as Task 8 will; `shot_feed` a delta, a tool
   finish and a permission, each followed by `settle_frames` only → the frame equals a full redraw and changed (RED:
   remove `on_events`' `cx.notify()`). Run `cargo run --features ui-shots -- __ui-shots agent-tab` → fails.
-- [ ] **Step 2:** Implement. **Step 3:** tests and scenes pass; compare each PNG with the mockup; check text
+- [x] **Step 2:** Implement. **Step 3:** tests and scenes pass; compare each PNG with the mockup; check text
   contrast ≥ `TEXT_MIN` with `ui_tokens::contrast` for `text_dim` on `panel` and on `card`.
-- [ ] **Step 4:** Full gate (both clippy counts at or under 30 / 32 with the six allows gone).
-- [ ] **Step 5: Commit** `M11aa: agent tab view`.
+- [x] **Step 4:** Full gate (both clippy counts at or under 30 / 32 with the six allows gone).
+- [x] **Step 5: Commit** `M11aa: agent tab view`.
 
 ### Task 8: Agent tabs in the workspace
 
@@ -884,7 +884,7 @@ impl Workspace { pub(crate) fn open_classic(&mut self, tab: TabId, window: &mut 
 - **Quit must kill synchronously:** an agent that ignores SIGTERM must still die before the app exits; don't rely on the killer thread or `Drop` (→ `end_all` in `flush_on_quit`).
 - **Process exit vs `Exited`:** closing a tab whose agent exited on its own while a straggler holds stdout is a no-op for `kill()` (the reaped pgid is not signalled); treat `Ended` as "done" and don't wait for `Exited` (`end_all` waits on the reap, not on `Exited`).
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```rust
 // workspace_agent.rs
@@ -936,11 +936,11 @@ impl Workspace { pub(crate) fn open_classic(&mut self, tab: TabId, window: &mut 
   box's Confirm, as `chrome-renaming`), "open it in classic view" (`open_classic`, Idle: no sheet; a terminal tab
   joins the pane), "close the agent tab" (`close_tab`, Idle: no sheet). Register it in `SCENES`.
   Run `cargo test --bin fuxx` and `__ui-shots agent-` / `__ui-shots chrome-agent` → FAIL.
-- [ ] **Step 2:** Implement. **Step 3:** tests and scenes pass. **RED:** delete the `cx.notify()` in
+- [x] **Step 2:** Implement. **Step 3:** tests and scenes pass. **RED:** delete the `cx.notify()` in
   `on_agent_event`'s `Title` arm → `chrome-agent-tabs` "the first message titles the tab" is STALE; restore it.
   Re-run `__ui-shots chrome` (all M11p scenes still pass) and `__ui-shots tab` / `__ui-shots sidebar`.
-- [ ] **Step 4:** Full gate (remove `presets.rs:27`'s allow).
-- [ ] **Step 5: Commit** `M11aa: agent tabs in the workspace`.
+- [x] **Step 4:** Full gate (remove `presets.rs:27`'s allow).
+- [x] **Step 5: Commit** `M11aa: agent tabs in the workspace`.
 
 ### Task 9: Status, marks, notifications, sidebar, Activity
 
@@ -1002,7 +1002,7 @@ impl Workspace {
 - `Steps`' age helpers (`clear_of_age_turns`, `ages`, `age_labels`, `past_age_turns`) read agent slots too, or an
   agent's label turning mid-check reads as STALE.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```rust
 // workspace_agent.rs
@@ -1033,14 +1033,14 @@ impl Workspace {
   frame equals a full redraw (as `chrome-ages-current`, `ui_shots.rs:1494`). `chrome-pixels-same` gains a Working
   agent tab (cached = uncached). Look scene `agent-sidebar-waiting` (red ring on the row).
   Run → FAIL.
-- [ ] **Step 2:** Implement. **Step 3:** tests and scenes pass. **RED ×3** (each restored after): delete the
+- [x] **Step 2:** Implement. **Step 3:** tests and scenes pass. **RED ×3** (each restored after): delete the
   `cx.notify()` at the end of `set_agent_status` → `chrome-agent-status` STALE; drop agent slots from
   `refresh_ages` → `chrome-agent-age` STALE (or its label never turns); drop `tab_agents()` from
   `marks_on_screen` → "the ticker turns api's Claude mark" STALE or unchanged. Re-run `__ui-shots chrome` (every
   M11p scene still passes). Full gate.
-- [ ] **Step 4:** Note for Task 13's checklist: a permission prompt while another workspace is focused → ring,
+- [x] **Step 4:** Note for Task 13's checklist: a permission prompt while another workspace is focused → ring,
   🔔 entry, banner (manual; the app is not launched here).
-- [ ] **Step 5: Commit** `M11aa: agent tab status, notifications and sidebar`.
+- [x] **Step 5: Commit** `M11aa: agent tab status, notifications and sidebar`.
 
 ### Task 10: Scripting API and MCP see agent tabs
 
@@ -1077,7 +1077,7 @@ pub(crate) fn emit_agent(&mut self, event: &Event, tab: TabId);   // EventSessio
   `Notification` through `emit_agent`; a closed agent tab passes `Subject::Agent(aN)` in `check_waits`' `closed`.
   A wait `--for` text on an agent tab never matches (no screen).
 
-- [ ] **Step 1: Failing tests** (pure)
+- [x] **Step 1: Failing tests** (pure)
 
 ```rust
 #[test] fn agent_targets_parse() {
@@ -1094,9 +1094,9 @@ pub(crate) fn emit_agent(&mut self, event: &Event, tab: TabId);   // EventSessio
 #[test] fn subjects_print_as_ids() { assert_eq!(Subject::Agent(2).to_string(), "a2"); assert_eq!(Subject::Terminal(2).to_string(), "s2"); }
 #[test] fn list_marks_terminal_rows() { /* list_entry(..) JSON has "kind":"terminal" */ }
 ```
-- [ ] **Step 2:** → FAIL. **Step 3:** implement. **Step 4:** → PASS; full gate. Note for Task 13's checklist:
+- [x] **Step 2:** → FAIL. **Step 3:** implement. **Step 4:** → PASS; full gate. Note for Task 13's checklist:
   `fuxx status a1`; `fuxx wait --any --for waiting` returns when the agent asks; `fuxx answer a1 yes` allows it.
-- [ ] **Step 5: Commit** `M11aa: agent tabs in the scripting API`.
+- [x] **Step 5: Commit** `M11aa: agent tabs in the scripting API`.
 
 ### Task 11: Drag a command block onto an agent tab
 
@@ -1127,7 +1127,7 @@ pub(crate) fn attach_block(&mut self, tab: TabId, drag: &BlockDrag, cx: &mut Con
   only — **no Workspace field changes during a drag-over** (a cached tab bar wouldn't show it). Paste into the
   composer is unchanged. Attachments show as chips under the composer until sent, then under the `You` card.
 
-- [ ] **Step 1: Failing test:** `attachment_text_formats_and_caps`:
+- [x] **Step 1: Failing test:** `attachment_text_formats_and_caps`:
 
 ```rust
 let out = "x".repeat(100 * 1024);
@@ -1136,17 +1136,17 @@ assert!(t.starts_with("$ npm test\n(exit 1)\n… (earlier output cut)\n"));
 assert!(t.len() <= ATTACH_CAP + 64);
 assert_eq!(attachment_text(None, Outcome::Unknown, "ok"), "ok");
 ```
-- [ ] **Step 2:** → FAIL. **Step 3:** implement. **Step 4:** scene `agent-tab-attachment` (a dropped block's chip in
+- [x] **Step 2:** → FAIL. **Step 3:** implement. **Step 4:** scene `agent-tab-attachment` (a dropped block's chip in
   the composer, then sent under the `You` card, by `attach_block`'s path with a shot terminal's block); full gate.
   Note for Task 13's checklist: drag a failed `npm test` block onto the agent.
-- [ ] **Step 5: Commit** `M11aa: attach a command block to an agent`.
+- [x] **Step 5: Commit** `M11aa: attach a command block to an agent`.
 
 ### Task 12: The agy provider
 
 **Files:** Create `src/providers/agy.rs`; modify `src/providers/mod.rs` (`all()` `:134`),
 `src/providers/fixtures/agy-*.jsonl` (re-recorded), `scripts/record-agent-fixture.py` if agy's scenarios need it.
 
-- [ ] **Step 0: Re-record the agy fixtures first** (Task 0 hit "Your AI credits balance is too low to continue",
+- [x] **Step 0: Re-record the agy fixtures first** (Task 0 hit "Your AI credits balance is too low to continue",
   429 RESOURCE_EXHAUSTED, so every saved `agy-*.jsonl` is an error). Run the recorder for `agy text`, `agy tools`,
   `agy resume` with the argv in Global Constraints. **If agy still fails** (credits, login, a changed schema):
   write what it printed into the proposal's agy section and the task report, leave this task's other steps
@@ -1168,14 +1168,14 @@ assert_eq!(attachment_text(None, Outcome::Unknown, "ok"), "ok");
   `--input-format`, `--output-format`, `--conversation`, `--continue`, `--mode` and
   `--dangerously-skip-permissions`. Registering `&agy::AGY` in `all()` makes the `agy` preset a provider preset
   (badge in menus, `···` "New Antigravity tab"), with no other file changed.
-- [ ] **Step 1: Failing tests:** `agy_text_fixture_streams_then_finishes` (Started first, a TextDelta, TurnDone ok
+- [x] **Step 1: Failing tests:** `agy_text_fixture_streams_then_finishes` (Started first, a TextDelta, TurnDone ok
   last), `agy_tools_fixture_pairs_tools` (every ToolStarted id has one ToolFinished), `agy_errors_map_to_an_error_row`
   (the old 429 recording, kept as `agy-credits.jsonl`: an `Error` then `TurnDone { ok: false }`),
   `agy_argv_has_mode_and_never_skips_permissions` (`--mode accept-edits` by default; `--dangerously-skip-permissions`
   absent even when in `extra_args`), `agy_resume_uses_conversation_flag`, and in `mod.rs` `by_name("agy")` is agy.
-- [ ] **Step 2:** → FAIL. **Step 3:** implement. **Step 4:** → PASS; scene `agent-tab-agy` (AG badge, the mode chip
+- [x] **Step 2:** → FAIL. **Step 3:** implement. **Step 4:** → PASS; scene `agent-tab-agy` (AG badge, the mode chip
   before the first message, read-only after); `__ui-shots chrome-agent` still passes. Full gate.
-- [ ] **Step 5: Commit** `M11aa: agy provider`.
+- [x] **Step 5: Commit** `M11aa: agy provider`.
 
 ### Task 13: Docs and the on-screen checklist
 
@@ -1183,9 +1183,9 @@ assert_eq!(attachment_text(None, Outcome::Unknown, "ok"), "ok");
 proposal's Part 1 moves here; the proposal keeps Part 2 for M11ab); modify `40 - Roadmap.md`,
 `60 - Progress Log.md` (an entry, and the "Current status snapshot"), this plan ("At a glance", checkboxes).
 
-- [ ] **Step 1:** `rg -n "allow\(dead_code\)" src/providers src/agent_*.rs src/composer.rs src/presets.rs` → nothing
+- [x] **Step 1:** `rg -n "allow\(dead_code\)" src/providers src/agent_*.rs src/composer.rs src/presets.rs` → nothing
   (or each hit names a reason the review accepted). Full gate; record the test count and both clippy counts.
-- [ ] **Step 2:** Milestone note: goal, what was built (per task), the refresh calls R1–R12, limits (incl. Ruling 17's
+- [x] **Step 2:** Milestone note: goal, what was built (per task), the refresh calls R1–R12, limits (incl. Ruling 17's
   straggler, agy's state if Task 12 parked, Mermaid shown as code in chat), and an **on-screen checklist** for the
   user, at least: ⌃⌘1 opens a shell and Claude side by side and the row reads "Claude"; a streamed reply with
   Markdown (list, code, table); a tool row opens to a diff; a Write asks and Allow / Allow all edits / Deny each
@@ -1197,6 +1197,6 @@ proposal's Part 1 moves here; the proposal keeps Part 2 for M11ab); modify `40 -
   `claude` still runs there warns instead of starting a second one, and after you quit it resumes; an agy tab in each mode (if Task 12 shipped); drag a failed
   `npm test` block onto the agent; `fuxx status a1`, `fuxx wait --any --for waiting`, `fuxx answer a1 yes`;
   `FUXX_CHROME_CACHE=off` looks identical with an agent tab open.
-- [ ] **Step 3:** Roadmap status "🟨 built, on-screen check pending" (M11ad stays next, design first); Progress Log
+- [x] **Step 3:** Roadmap status "🟨 built, on-screen check pending" (M11ad stays next, design first); Progress Log
   entry with the test count.
-- [ ] **Step 4: Commit** `M11aa: docs`.
+- [x] **Step 4: Commit** `M11aa: docs`.

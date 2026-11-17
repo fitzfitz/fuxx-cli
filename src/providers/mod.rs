@@ -15,9 +15,6 @@ pub struct ProviderInfo {
     /// The two-letter tab badge.
     pub badge: &'static str,
     pub badge_rgb: u32,
-    /// Whether the agent asks fuxx (not the user's terminal) before using a tool.
-    #[allow(dead_code)] // M11aa Task 13 (Claude true, agy false); nothing reads it yet
-    pub routes_permissions: bool,
     /// Whether a turn can be stopped by asking the agent (`Action::Interrupt`); if not, Stop
     /// offers Force stop (ending the process) at once.
     pub interrupts: bool,
@@ -245,7 +242,6 @@ mod tests {
         label: "Plain",
         badge: "PL",
         badge_rgb: 0,
-        routes_permissions: false,
         interrupts: false,
         modes: &[],
         default_mode: None,
