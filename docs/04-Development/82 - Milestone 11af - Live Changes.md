@@ -318,6 +318,30 @@ so lines in it, `app.txt`, and open it in a file tab).
 12. **Idle CPU:** with a file tab open on a file nothing is changing, compare fuxx's CPU in Activity Monitor on this
     branch with master (same window, a minute each). They should match within noise.
 
+## Chores after M11af (not part of the milestone)
+
+Asked for 2026-11-17, by you: "let's do chores not in milestone, but we can setup in last milestone. just push this one
+directly." Built on master, pushed directly.
+
+### Chore 1 — New terminals follow the current terminal's folder
+
+- **Asked:** "anything related to new terminal, will follow the current terminal directory. And when you cmd + shift + t,
+  it will start fresh like right now from the workspace".
+- **Built:** ⌘T, the tab bar's **+**, the pane menu's New Terminal, ⌘D, ⇧⌘D and ⌘N now start where the current terminal is
+  (its shell's own report of its folder, else the process look-up: the same "where it is now" M11u saves). **⇧⌘T** (new:
+  File → New Tab in Workspace Folder, also in the palette and the shortcut list) starts fresh in the workspace's folder,
+  as ⌘T did before. A folder that is gone falls back to the workspace's folder, then home, as a restore does.
+- **AI's calls (for you to check):** agent presets (⌃⌘1…) still start in the workspace's folder, so an agent starts at
+  the project's root; an SSH terminal still opens another one to its host (its folder is on the host). With a file or
+  browser tab in front, a new terminal follows the active terminal.
+- **Tests:** `a_new_terminal_follows_where_the_current_one_is` (the choice: the shell's report, else the look-up, none
+  for SSH) and ⇧⌘T in `command_t_is_a_new_tab_and_command_n_a_new_workspace`; 1,840 tests pass; clippy at the
+  baselines.
+- **On-screen check (yours):**
+  1. In a terminal, `cd src`, then ⌘T: the new tab's prompt is in `src`. Same for ⌘D and ⇧⌘D.
+  2. ⇧⌘T: the new tab starts in the workspace's folder.
+  3. ⌘N: the new workspace's terminal starts in the current terminal's folder.
+
 ## Related
 
 [[Proposal - File View Upgrades]] · [[80 - Milestone 11ae - File Tab Chores]] · [[79 - Milestone 11aa - Agent Tabs]] ·

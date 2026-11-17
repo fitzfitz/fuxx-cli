@@ -931,18 +931,30 @@ impl Workspace {
 
     /// A bar's "new terminal tab": a plain terminal at the end of `pane`'s tabs, in the group of
     /// the terminal the pane shows; or, for an SSH one, another session to its host.
+    /// With `follow`, it starts where the pane's terminal (else the active one) is now; without,
+    /// fresh in the workspace's folder (⇧⌘T).
     pub(crate) fn new_terminal_tab(
         &mut self,
         pane: PaneId,
+        follow: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let shown = self
-            .pane_session(pane)
-            .map(|s| (s.id, s.project.clone(), s.ssh.clone()));
-        let (project, ssh) = match shown {
-            Some((id, project, ssh)) => (project, ssh.zip(self.index_of(id))),
-            None => (self.active_project(), None),
+        let shown = self.pane_session(pane).map(|s| {
+            (
+                s.id,
+                s.project.clone(),
+                s.ssh.clone(),
+                follow.then(|| self.folder_now(s)).flatten(),
+            )
+        });
+        let (project, ssh, cwd) = match shown {
+            Some((id, project, ssh, cwd)) => (project, ssh.zip(self.index_of(id)), cwd),
+            None => (
+                self.active_project(),
+                None,
+                follow.then(|| self.active_folder_now()).flatten(),
+            ),
         };
         if let Some((target, of)) = ssh {
             self.open_ssh(target, Place::Tab { of }, window, cx);
@@ -951,6 +963,7 @@ impl Workspace {
         let launch = Launch {
             saved: SavedSession {
                 project,
+                cwd,
                 ..Default::default()
             },
             run_preset: false,
@@ -1041,7 +1054,7 @@ fn render_button(
                     .hover(move |s| s.bg(hsla(ui.tab_hover)))
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, window, cx| match button {
-                            BarButton::NewTerminal => this.new_terminal_tab(pane, window, cx),
+                            BarButton::NewTerminal => this.new_terminal_tab(pane, true, window, cx),
                             BarButton::More => {
                                 if let Some(b) = placed.get() {
                                     this.open_pane_actions(pane, b.bottom_right(), window, cx)

@@ -23,6 +23,11 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-17 — Chore: new terminals follow the current terminal's folder
+- **Asked:** chores outside a milestone, recorded under M11af, pushed straight to master. New terminals follow the current terminal's folder; ⇧⌘T starts fresh in the workspace's folder.
+- **Did:** ⌘T, the tab bar's +, ⌘D, ⇧⌘D and ⌘N start where the current terminal is (the folder M11u saves); new ⇧⌘T "New Tab in Workspace Folder" (File menu, palette, shortcut list). Agent presets and SSH terminals unchanged (your calls to check: note 82, "Chores after M11af").
+- **Tests:** 1,840 pass; clippy at the baselines; fmt clean. Your on-screen check: 3 items in note 82.
+
 ### 2026-11-17 — Info.plist: camera usage description
 - **Did:** committed and pushed (`fa561a8`, on your word) the `NSCameraUsageDescription` line in `packaging/macos/Info.plist` ("Programs you run in fuxx, such as camera software, can use the camera."), so macOS can ask for the camera when a program run in fuxx wants it. Not part of a milestone.
 

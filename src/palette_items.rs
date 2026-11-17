@@ -340,6 +340,13 @@ pub static COMMANDS: &[Command] = {
             Run::Action(act::<OpenBrowser>),
         ),
         cmd("New Tab", Tabs, "", A, Run::Action(act::<NewTab>)),
+        cmd(
+            "New Tab in Workspace Folder",
+            Tabs,
+            "fresh",
+            A,
+            Run::Action(act::<NewTabInWorkspaceFolder>),
+        ),
         cmd("New Browser Tab", Tabs, "web", A, Run::NewBrowserTab),
         cmd("Close Tab", Tabs, "", A, Run::Action(act::<CloseSession>)),
         cmd("Next Tab", Tabs, "", A, Run::Action(act::<NextTab>)),
