@@ -4,5 +4,6 @@
 /target-*/
 .playwright-mcp/
 .superpowers/
+.impeccable/
 __pycache__/
 scripts/bench/results/

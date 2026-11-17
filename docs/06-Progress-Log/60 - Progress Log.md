@@ -23,6 +23,9 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-17 — Chore: ignore `.impeccable/`
+- **Did:** `.impeccable/` (the impeccable design skill's local config and cache) added to `.gitignore`, on your word. The `backup/pre-scrub` branch you asked to delete was already gone (no local, remote or tag copy left).
+
 ### 2026-11-17 — Chore: new terminals follow the current terminal's folder
 - **Asked:** chores outside a milestone, recorded under M11af, pushed straight to master. New terminals follow the current terminal's folder; ⇧⌘T starts fresh in the workspace's folder.
 - **Did:** ⌘T, the tab bar's +, ⌘D, ⇧⌘D and ⌘N start where the current terminal is (the folder M11u saves); new ⇧⌘T "New Tab in Workspace Folder" (File menu, palette, shortcut list). Agent presets and SSH terminals unchanged (your calls to check: note 82, "Chores after M11af").
