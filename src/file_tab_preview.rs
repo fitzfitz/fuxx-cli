@@ -77,7 +77,7 @@ impl FileTab {
     /// the entry is checked again once the jump is laid out.
     pub(super) fn jump_to_row(&mut self, row: usize, cx: &mut Context<Self>) {
         self.place_at_row(row, cx);
-        if let Some(entry) = self.outline_rows().iter().position(|r| *r == row) {
+        if let Ok(entry) = self.outline_rows().binary_search(&row) {
             self.outline_current = Some(entry);
         }
         cx.notify();
@@ -98,16 +98,13 @@ impl FileTab {
         self.scrolled(cx);
     }
 
-    /// Each "On this page" entry's list row (none without an outline).
-    fn outline_rows(&self) -> Vec<usize> {
-        let Some((_, read)) = &self.parsed else {
-            return Vec::new();
-        };
-        let plan = &read.plan;
-        plan.outline
-            .iter()
-            .map(|e| plan.row_of_block(plan.headings[e.heading].block))
-            .collect()
+    /// Each "On this page" entry's list row, in order (none without an outline): the plan's,
+    /// worked out once per version.
+    fn outline_rows(&self) -> &[usize] {
+        match &self.parsed {
+            Some((_, read)) => &read.plan.outline_rows,
+            None => &[],
+        }
     }
 
     /// Which "On this page" entry is current (M11ai Task 8, plan-time call 12), from the list
@@ -115,7 +112,8 @@ impl FileTab {
     /// of the view's height under the view's top); scrolled to the very end, the last heading
     /// in view (drawn, its top over the view's bottom). None until the first is reached. Run
     /// at the start of a frame (`track_next_frame`), never while drawing; redraws only when
-    /// the entry changes.
+    /// the entry changes. The entry is found by binary search over the plan's outline rows
+    /// (`current_entry` says why these two predicates allow it).
     pub(super) fn track_heading(&mut self, cx: &mut Context<Self>) {
         if !self.preview_shown() {
             return;
@@ -126,7 +124,7 @@ impl FileTab {
         let top_row = list.logical_scroll_top().item_ix;
         let reach = view.top() + view.size.height * crate::ui_tokens::reader::REACH;
         let now = crate::md_reader::current_entry(
-            &rows,
+            rows,
             list.is_scrolled_to_end() == Some(true),
             |r| r < top_row || list.bounds_for_item(r).is_some_and(|b| b.top() <= reach),
             |r| {
@@ -365,6 +363,7 @@ impl FileTab {
                         view.update(cx, |this, cx| this.copy_anchor(row, cx)).ok();
                     })
                 },
+                on_wash: Cell::new(None),
                 #[cfg(feature = "ui-shots")]
                 anchor_drawn: {
                     self.anchor_drawn.borrow_mut().clear();
