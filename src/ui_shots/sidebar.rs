@@ -994,8 +994,16 @@ fn sidebar_comfortable_scenes() {
                 (3, ui.sidebar_background, "plain"),
             ] {
                 for p in ring(span(i)) {
-                    assert!(near_by(p, fill, 12), "{n}: the {what} row's ring: {p:?}");
+                    assert!(near(p, fill), "{n}: the {what} row's ring: {p:?}");
                 }
+            }
+            // The hovered ring took the hover's fill: it is not the canvas (a ring that kept
+            // the plain row's fill would pass a loose check, `row_hover` being close to it).
+            for p in ring(span(2)) {
+                assert!(
+                    !near(p, ui.sidebar_background),
+                    "{n}: the hovered row's ring is still the canvas: {p:?}"
+                );
             }
             // The age (api's "2m"), top right, at the default width only: right of the name's
             // short words, before the right padding.
