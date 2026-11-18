@@ -3,11 +3,15 @@
 //! (and before the first, after the last) folded from `FOLD_MIN` lines; each card's title.
 //! Worked out off the UI thread with the diff. Pure: no GPUI.
 
+use std::collections::HashMap;
 use std::ops::Range;
+use std::time::{Duration, Instant};
+
+use similar::{ChangeTag, InlineChangeMode, InlineChangeOptions, TextDiff};
 
 use crate::code_outline::{Outline, part_words};
 use crate::diff_view::{DiffRow, RowKind};
-use crate::file_tab::thousands;
+use crate::file_tab::{LONG_LINE, thousands};
 
 /// The unchanged lines a card keeps above and below its changes (git's usual context).
 pub const CONTEXT: usize = 3;
@@ -261,6 +265,132 @@ pub fn unchanged_words(n: usize) -> String {
     )
 }
 
+/// Word marks give up after this long (the whole diff's, not each pair's).
+pub const WORD_LIMIT: Duration = Duration::from_millis(50);
+
+/// A card's rows side by side: a Same row with itself; each run of Removed rows then Added rows zipped in
+/// order, the shorter side padded with None.
+pub fn pair(rows: &[DiffRow], range: Range<usize>) -> Vec<(Option<usize>, Option<usize>)> {
+    let mut out = Vec::new();
+    let mut i = range.start;
+    while i < range.end {
+        if !is_change(&rows[i]) {
+            out.push((Some(i), Some(i)));
+            i += 1;
+            continue;
+        }
+        let (mut removed, mut added) = (Vec::new(), Vec::new());
+        while i < range.end && is_change(&rows[i]) {
+            if rows[i].kind == RowKind::Removed {
+                removed.push(i);
+            } else {
+                added.push(i);
+            }
+            i += 1;
+        }
+        for k in 0..removed.len().max(added.len()) {
+            out.push((removed.get(k).copied(), added.get(k).copied()));
+        }
+    }
+    out
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// The emphasised byte ranges of one side of a diff: `parts` are the inline change's (emphasised,
+/// text) pieces in order, each range grown to the whole word it touches (the diff is by characters,
+/// so `old` -> `fresh` is not cut mid-word), touching ranges merged.
+fn grown_ranges<'a>(line: &str, parts: impl Iterator<Item = (bool, &'a str)>) -> Vec<Range<usize>> {
+    let mut out: Vec<Range<usize>> = Vec::new();
+    let mut at = 0;
+    for (emphasised, text) in parts {
+        let end = at + text.len();
+        if emphasised && !text.is_empty() {
+            let (mut from, mut to) = (at, end);
+            if text.chars().next().is_some_and(is_word_char) {
+                from = line[..from]
+                    .char_indices()
+                    .rev()
+                    .take_while(|(_, c)| is_word_char(*c))
+                    .last()
+                    .map_or(from, |(i, _)| i);
+            }
+            if text.chars().next_back().is_some_and(is_word_char) {
+                to += line[to..]
+                    .char_indices()
+                    .take_while(|(_, c)| is_word_char(*c))
+                    .last()
+                    .map_or(0, |(i, c)| i + c.len_utf8());
+            }
+            match out.last_mut() {
+                Some(last) if from <= last.end => last.end = last.end.max(to),
+                _ => out.push(from..to),
+            }
+        }
+        at = end;
+    }
+    out
+}
+
+/// The changed words of each paired Removed / Added row (doc row -> byte ranges in its line), each
+/// pair diffed alone by characters (`min_ratio(0.5)`: a pair sharing less than half is left
+/// unmarked) and the changes grown to whole words; a pair with a line over `LONG_LINE` cells
+/// skipped. None: gave up (`limit` over, whole diff's).
+pub fn word_marks(
+    rows: &[DiffRow],
+    lines: &[&str],
+    widths: &[usize],
+    cards: &[Card],
+    limit: Duration,
+) -> Option<HashMap<usize, Vec<Range<usize>>>> {
+    let deadline = Instant::now() + limit;
+    let mut options = InlineChangeOptions::new();
+    options.mode(InlineChangeMode::Chars).min_ratio(0.5);
+    let mut marks = HashMap::new();
+    for card in cards {
+        for (r, a) in pair(rows, card.rows.clone()) {
+            let (Some(r), Some(a)) = (r, a) else {
+                continue;
+            };
+            if rows[r].kind != RowKind::Removed || rows[a].kind != RowKind::Added {
+                continue;
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            let (old, new) = (lines[r], lines[a]);
+            if widths[r] > LONG_LINE || widths[a] > LONG_LINE {
+                continue;
+            }
+            let diff = TextDiff::configure()
+                .newline_terminated(false)
+                .diff_lines(old, new);
+            let (mut old_parts, mut new_parts) = (Vec::new(), Vec::new());
+            for op in diff.ops() {
+                for change in
+                    diff.iter_inline_changes_with_options_deadline(op, options, Some(deadline))
+                {
+                    let side = match change.tag() {
+                        ChangeTag::Delete => &mut old_parts,
+                        ChangeTag::Insert => &mut new_parts,
+                        ChangeTag::Equal => continue,
+                    };
+                    side.extend(change.values().iter().copied());
+                }
+            }
+            for (row, line, parts) in [(r, old, old_parts), (a, new, new_parts)] {
+                let ranges = grown_ranges(line, parts.into_iter());
+                if !ranges.is_empty() {
+                    marks.insert(row, ranges);
+                }
+            }
+        }
+    }
+    (Instant::now() < deadline).then_some(marks)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,5 +631,118 @@ mod tests {
             unchanged_words(1234),
             "\u{22ef} 1,234 unchanged lines \u{2014} click to show"
         );
+    }
+
+    /// Rows for `kinds` and a line per row from `texts` (one per row, in order).
+    fn marks_of(
+        kinds: &str,
+        texts: &[&str],
+        limit: Duration,
+    ) -> Option<HashMap<usize, Vec<Range<usize>>>> {
+        let rows = rows_of(kinds);
+        let g = group(&rows);
+        let widths: Vec<usize> = texts.iter().map(|t| t.chars().count()).collect();
+        word_marks(&rows, texts, &widths, &g.cards, limit)
+    }
+
+    fn marked<'a>(
+        text: &'a str,
+        marks: &HashMap<usize, Vec<Range<usize>>>,
+        row: usize,
+    ) -> Vec<&'a str> {
+        marks
+            .get(&row)
+            .map(|v| v.iter().map(|r| &text[r.clone()]).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn pairs_uneven_runs_pad_the_shorter_side() {
+        let rows = rows_of("srrra");
+        assert_eq!(
+            pair(&rows, 0..5),
+            vec![
+                (Some(0), Some(0)),
+                (Some(1), Some(4)),
+                (Some(2), None),
+                (Some(3), None)
+            ]
+        );
+        // More added than removed: padded the other way; a later run pairs on its own.
+        let rows = rows_of("raasra");
+        assert_eq!(
+            pair(&rows, 0..6),
+            vec![
+                (Some(0), Some(1)),
+                (None, Some(2)),
+                (Some(3), Some(3)),
+                (Some(4), Some(5))
+            ]
+        );
+    }
+
+    #[test]
+    fn only_the_changed_word_is_marked() {
+        let (old, new) = ("let token = old();", "let token = fresh();");
+        let marks = marked_pair(old, new);
+        assert_eq!(marked(old, &marks, 0), vec!["old"]);
+        assert_eq!(marked(new, &marks, 1), vec!["fresh"]);
+        assert_eq!(marks[&0].len(), 1);
+        assert_eq!(marks[&1].len(), 1);
+    }
+
+    fn marked_pair(old: &str, new: &str) -> HashMap<usize, Vec<Range<usize>>> {
+        marks_of("ra", &[old, new], WORD_LIMIT).expect("in time")
+    }
+
+    #[test]
+    fn lines_sharing_under_half_their_words_get_no_marks() {
+        let marks = marked_pair("fn refresh(&self) -> Token {", "return cache.lookup(key);");
+        assert!(marks.is_empty(), "{marks:?}");
+    }
+
+    #[test]
+    fn word_marks_sit_on_char_boundaries() {
+        let (old, new) = ("let caf\u{e9} = 1;", "let caf\u{e9}s = 1;");
+        let marks = marked_pair(old, new);
+        for (row, text) in [(0, old), (1, new)] {
+            for r in marks.get(&row).into_iter().flatten() {
+                assert!(
+                    text.is_char_boundary(r.start) && text.is_char_boundary(r.end),
+                    "{r:?}"
+                );
+                assert!(r.start < r.end);
+            }
+        }
+        // A pure insertion marks the word it grew; the old side has nothing to mark.
+        assert_eq!(marked(new, &marks, 1), vec!["cafés"]);
+        assert!(!marks.contains_key(&0));
+        let (old, new) = ("caf\u{e9} = 1;", "caf\u{e8} = 1;");
+        let marks = marked_pair(old, new);
+        assert_eq!(marked(old, &marks, 0), vec!["caf\u{e9}"]);
+        assert_eq!(marked(new, &marks, 1), vec!["caf\u{e8}"]);
+        // A tab-indented line: the marks are byte ranges, tab untouched.
+        let (old, new) = ("\t\tcall(old, 1);", "\t\tcall(fresh, 1);");
+        let marks = marked_pair(old, new);
+        assert_eq!(marked(old, &marks, 0), vec!["old"]);
+        assert_eq!(marked(new, &marks, 1), vec!["fresh"]);
+    }
+
+    #[test]
+    fn long_lines_are_not_paired() {
+        let long = format!("let x = {};", "a".repeat(crate::file_tab::LONG_LINE + 10));
+        let new = format!("let y = {};", "a".repeat(crate::file_tab::LONG_LINE + 10));
+        let rows = rows_of("ra");
+        let g = group(&rows);
+        let texts = [long.as_str(), new.as_str()];
+        let widths: Vec<usize> = texts.iter().map(|t| t.chars().count()).collect();
+        let marks = word_marks(&rows, &texts, &widths, &g.cards, WORD_LIMIT).unwrap();
+        assert!(marks.is_empty());
+    }
+
+    #[test]
+    fn gave_up_gives_no_marks() {
+        let texts = ["let token = old();", "let token = fresh();"];
+        assert_eq!(marks_of("ra", &texts, Duration::ZERO), None);
     }
 }

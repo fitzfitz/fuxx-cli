@@ -256,6 +256,20 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "file-diff-words",
+        run: file_diff_words_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/diff_cards.rs",
+            "src/diff_view.rs",
+            "src/row_map.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
         name: "file-code-breadcrumb",
         run: file_code_breadcrumb_scenes,
         themes: Themes::Both,
@@ -6112,6 +6126,187 @@ fn file_diff_cards_scenes() {
         );
         println!("ui-shots: {n} ok");
     }
+}
+
+/// A unified diff of a file whose line `at` (0-based) went from `old` to `new`, the lines `before`
+/// and `after` it unchanged; and the new file's text.
+fn words_diff(before: &[&str], old: &str, new: &str, after: &[&str]) -> (String, String) {
+    let mut u = format!(
+        "diff --git a/words.rs b/words.rs\n--- a/words.rs\n+++ b/words.rs\n@@ -1,{n} +1,{n} @@\n",
+        n = before.len() + after.len() + 1
+    );
+    let mut text = String::new();
+    for l in before {
+        u.push_str(&format!(" {l}\n"));
+        text.push_str(&format!("{l}\n"));
+    }
+    u.push_str(&format!("-{old}\n+{new}\n"));
+    text.push_str(&format!("{new}\n"));
+    for l in after {
+        u.push_str(&format!(" {l}\n"));
+        text.push_str(&format!("{l}\n"));
+    }
+    (text, u)
+}
+
+/// `file-diff-words` (both themes; M11ah Task 10): in a card, the changed word of a replaced
+/// line has a box in its row's red / green at about 35 % over the row's 12 % tint with 2 pt
+/// corners, the rest of the row only the light tint (`let token = old();` -> `fresh();`: `old`
+/// and `fresh`). With Wrap on, a word far along a long line is marked on the screen row it is
+/// drawn on and on no other.
+fn file_diff_words_scenes() {
+    use crate::theme::mix;
+    use crate::ui_tokens::code;
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+
+    let (text, unified) = words_diff(
+        &[
+            "// Sessions, for the words' shots.",
+            "fn refresh(&mut self) {",
+        ],
+        "    let token = old();",
+        "    let token = fresh();",
+        &["    self.keep(token);", "}"],
+    );
+    let path = live_file("words.rs", &text);
+    let lead = "    let message = \"";
+    let long = |word: &str| {
+        format!(
+            "{lead}{}{word} {}\";",
+            "word ".repeat(40),
+            "tail ".repeat(10)
+        )
+    };
+    let (long_text, long_unified) = words_diff(
+        &["// A long line, wrapped."],
+        &long("stale"),
+        &long("fresh"),
+        &["}"],
+    );
+    let long_path = live_file("words-wrap.rs", &long_text);
+    let dims = size(px(760.0), px(420.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let bg = theme.background;
+        let fit = |c: alacritty_terminal::vte::ansi::Rgb| ensure_contrast(c, bg, MARK_MIN);
+        let (green, red) = (fit(theme.palette[2]), fit(theme.palette[1]));
+        let tint = |c| mix(bg, c, 0.12);
+        let word = |c| mix(tint(c), c, code::WORD_ALPHA);
+        let n = format!("file-diff-words-{slug}");
+        let tops: std::rc::Rc<std::cell::RefCell<Vec<gpui::Pixels>>> = std::rc::Rc::default();
+        let keep = tops.clone();
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cards_setup(cx, window, tab, &unified);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let d = t.diff_doc().expect("its rows");
+                let w = d.words.as_ref().expect("in time");
+                assert_eq!(w[&2].len(), 1);
+                assert_eq!((w[&2][0].start, w[&2][0].end), (16, 19), "old");
+                assert_eq!(w[&3].len(), 1);
+                assert_eq!((w[&3][0].start, w[&3][0].end), (16, 21), "fresh");
+                assert_eq!(w.len(), 2, "only the pair");
+                *keep.borrow_mut() = (0..4).map(|r| t.line_top(r, cx).expect("shown")).collect();
+            });
+        });
+        keep_shot(&n, &shot);
+        let tops = tops.borrow().clone();
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        let cw = f32::from(g.cell_width);
+        let x_of = |cell: f32| f32::from(g.bounds.left() + g.text_left) + cw * cell;
+        let top_of = |row: usize| f32::from(g.bounds.top() + tops[row] - g.scroll.y);
+        for (row, c, from, to) in [(2, red, 16.0, 19.0), (3, green, 16.0, 21.0)] {
+            let y = top_of(row) + 1.0;
+            let inside = at(x_of((from + to) / 2.0), y);
+            assert!(
+                live_near(inside, word(c), 5),
+                "{n}: row {row}'s word {inside:?}, not {:?}",
+                word(c)
+            );
+            let before = at(x_of(from - 3.0), y);
+            assert!(
+                live_near(before, tint(c), 5),
+                "{n}: row {row} before the word {before:?}, not {:?}",
+                tint(c)
+            );
+            let after = at(x_of(to + 3.0), y);
+            assert!(
+                live_near(after, tint(c), 5),
+                "{n}: row {row} after the word {after:?}, not {:?}",
+                tint(c)
+            );
+            // 2 pt corners: the box's very corner pixel is not fully its colour.
+            let corner = at(x_of(from) + 0.1, y - 0.9);
+            let d = |a: [u8; 3], b: alacritty_terminal::vte::ansi::Rgb| {
+                a.iter()
+                    .zip([b.r, b.g, b.b])
+                    .map(|(a, b)| a.abs_diff(b) as u32)
+                    .sum::<u32>()
+            };
+            assert!(
+                d(corner, tint(c)) < d(corner, word(c)),
+                "{n}: row {row}'s corner {corner:?} is rounded"
+            );
+        }
+        println!("ui-shots: {n} ok");
+
+        // Wrap on: the word far along the long line, on the screen row it is drawn on.
+        let n = format!("file-diff-words-wrap-{slug}");
+        let rows: std::rc::Rc<std::cell::RefCell<(usize, gpui::Pixels)>> = std::rc::Rc::default();
+        let keep = rows.clone();
+        let (shot, g) = code_shot(&theme, &long_path, dims, |cx, window, tab| {
+            cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().file_wrap = true);
+            cards_setup(cx, window, tab, &long_unified);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let d = t.diff_doc().expect("its rows");
+                let w = d.words.as_ref().expect("in time");
+                let cell = lead.len() + "word ".repeat(40).len();
+                assert_eq!(w[&1].len(), 1);
+                assert_eq!((w[&1][0].start, w[&1][0].end), (cell, cell + 5), "stale");
+                let removed = t.line_top(1, cx).expect("shown");
+                let added = t.line_top(2, cx).expect("shown");
+                let lh = t.geom().expect("drawn").line_height;
+                let screen_rows = ((added - removed) / lh).round() as usize;
+                assert!(screen_rows >= 3, "wrapped to {screen_rows} rows");
+                *keep.borrow_mut() = (cell, removed);
+            });
+        });
+        keep_shot(&n, &shot);
+        let (cell, removed) = *rows.borrow();
+        let lh = f32::from(g.line_height);
+        let y0 = f32::from(g.bounds.top() + removed - g.scroll.y);
+        let colour = word(red);
+        let mut hits = Vec::new();
+        for k in 0..4 {
+            let y = y0 + lh * k as f32 + 1.0;
+            let first = (0..((f32::from(g.bounds.size.width) - f32::from(g.text_left)) as i32))
+                .find(|dx| {
+                    live_near(
+                        pixel_at(&shot, dims, x_of_left(&g) + *dx as f32, y),
+                        colour,
+                        5,
+                    )
+                });
+            if let Some(dx) = first {
+                hits.push((k, dx as f32 / f32::from(g.cell_width)));
+            }
+        }
+        assert_eq!(hits.len(), 1, "{n}: the word on one screen row: {hits:?}");
+        let (k, in_row) = hits[0];
+        assert!(k > 0, "{n}: not on the line's first screen row");
+        let columns = (cell as f32 - in_row.round()) / k as f32;
+        assert!(
+            columns.fract().abs() < 0.01 && columns > 20.0,
+            "{n}: the word's cell {cell} on row {k} at {in_row}: columns {columns}"
+        );
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// The text's left edge in points.
+fn x_of_left(g: &crate::file_tab::Geom) -> f32 {
+    f32::from(g.bounds.left() + g.text_left)
 }
 
 /// `file-diff-cards-fold` (M11ah Task 9): pressing a folded stretch shows it; pressing a title
