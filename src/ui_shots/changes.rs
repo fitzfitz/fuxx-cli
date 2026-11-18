@@ -997,8 +997,11 @@ fn changes_scenes() {
         // the right (faint), and under them the progress bar's track.
         assert_eq!(totals(&six), (18, 14), "{n}: the totals");
         assert_eq!(crate::git_stage::staged_summary(&six), (0, 9));
-        let line_top = header_top + (HEADER - 28.0) / 2.0;
-        let (left, right) = (sidebar_left + 10.0, sidebar_right - 6.0);
+        // Inside the repo card (M11al §6.3): the line (20), a 5 pt gap and the bar (3) centred.
+        use crate::right_sidebar::{REPO_BOTTOM, REPO_PAD_X, REPO_SIDE, REPO_TOP};
+        let line_top = header_top + REPO_TOP + (HEADER - REPO_TOP - REPO_BOTTOM - 28.0) / 2.0;
+        let inset = REPO_SIDE + REPO_PAD_X;
+        let (left, right) = (sidebar_left + inset - 20.0, sidebar_right - inset);
         assert!(
             has(
                 left + 20.0,
@@ -1025,9 +1028,9 @@ fn changes_scenes() {
             has(
                 left + 40.0,
                 right - 40.0,
-                line_top + 24.0,
-                line_top + 29.0,
-                ui.divider,
+                line_top + 25.0,
+                line_top + 28.0,
+                ui.progress_track,
                 6
             ),
             "{n}: the progress bar's track"

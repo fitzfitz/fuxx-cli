@@ -127,6 +127,8 @@ pub struct UiColors {
     pub card: Rgb,
     /// A card's 1 px edge, quiet on the canvas (the sidebar colour) and on the card.
     pub card_border: Rgb,
+    /// The Changes progress bar's unfilled track, on the repo card (`card_hover`; M11al Task 9).
+    pub progress_track: Rgb,
     /// The card's shadow: `shadow` at this opacity (0-1).
     pub card_shadow_alpha: f32,
     /// M11al: the sidebar search box's fill, halfway from the canvas to the card.
@@ -478,6 +480,7 @@ impl Theme {
                 mix(bg, fg, if dark { 0.10 } else { 0.12 }),
                 &[canvas, card, side],
             ),
+            progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
             card_shadow_alpha: if dark { 0.45 } else { 0.12 },
             raised,
             side,
@@ -643,6 +646,11 @@ impl Theme {
             // The sidebar's search box's edge on its own fill (M11al Task 7).
             (("card_border", ui.card_border), ("raised", ui.raised)),
             (("guide", ui.guide), ("card", ui.card)),
+            // The Changes progress bar's unfilled track on the repo card (M11al Task 9).
+            (
+                ("progress_track", ui.progress_track),
+                ("card_hover", ui.card_hover),
+            ),
         ];
         for (line, bg) in lines {
             pairs.push(pair(line, bg, QUIET_LINE_MIN));
