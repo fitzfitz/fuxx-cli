@@ -42,6 +42,22 @@ pub(super) const SCENES: &[Scene] = &[
             "src/ui_tokens.rs",
         ],
     },
+    Scene {
+        name: "file-tab-md-reader-callouts",
+        run: file_tab_md_reader_callout_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/file_tab_preview.rs",
+            "src/md_preview.rs",
+            "src/md_reader.rs",
+            "src/agent_markdown.rs",
+            "src/tab_bar.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
 ];
 
 /// A made-up "Setup guide": front matter, two badge rows, a title, sections and a subsection,
@@ -716,6 +732,182 @@ fn file_tab_md_reader_code_scenes() {
             &theme,
             dims,
             build_for(slot.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// M11ai Task 5's callouts on `READER_FIXTURE` plus a `[!FOO]` quote (SETUP.md), 1,200 × 700, in
+/// both themes, `file-tab-md-reader-callouts`: each of the five callouts, scrolled to, draws its
+/// title word (`callout_drawn`), a pixel of the kind's bar colour just inside the block's left
+/// edge (mid height), the kind's wash a little right of the bar; and the `[!FOO]` quote is still
+/// a quote: no title, the dim `line` bar at its left edge, no wash. Shot scrolled to the `Note`.
+fn file_tab_md_reader_callout_scenes() {
+    use crate::agent_markdown::Md;
+    use crate::file_tab::FileTab;
+    use crate::layout_model::FileMode;
+    use crate::md_preview::Colours;
+    use crate::md_reader::{BlockLook, Callout};
+    use gpui::{ListOffset, Modifiers};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-callouts");
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let guide = dir.join("SETUP.md");
+    std::fs::write(
+        &guide,
+        format!("{READER_FIXTURE}\n> [!FOO]\n> Not an alert.\n"),
+    )
+    .expect("SETUP.md");
+
+    type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
+    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+    };
+
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let dims = size(px(1200.0), px(700.0));
+        let n = format!("file-tab-md-reader-callouts-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = {
+            let (path, slot) = (guide.clone(), slot.clone());
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path.clone(), FileMode::Plain, window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = slot.borrow().clone().expect("the file tab");
+                frame(cx, window);
+                let button = cx
+                    .read(|cx| tab.read(cx).preview_bounds())
+                    .expect("Preview is drawn");
+                cx.simulate_click(window, button.center(), Modifiers::none());
+                frame(cx, window);
+                let doc = cx
+                    .read(|cx| tab.read(cx).reader_doc())
+                    .expect("the reader's document");
+                let colours = Colours::of(&theme);
+                let show = |cx: &mut VisualTestAppContext, row: usize| {
+                    cx.read(|cx| tab.read(cx).preview_list())
+                        .scroll_to(ListOffset {
+                            item_ix: row,
+                            offset_in_item: px(0.0),
+                        });
+                    frame(cx, window);
+                };
+                let mut seen = Vec::new();
+                for (b, look) in doc.plan.looks.iter().enumerate() {
+                    let row = doc.plan.row_of_block(b);
+                    if let BlockLook::Callout(kind, _) = look {
+                        seen.push(*kind);
+                        show(cx, row);
+                        let title = cx
+                            .read(|cx| tab.read(cx).callout_drawn())
+                            .get(&row)
+                            .copied();
+                        assert_eq!(title, Some(kind.title()), "{n}: row {row}'s title");
+                        let bounds = *cx
+                            .read(|cx| tab.read(cx).reader_drawn())
+                            .get(&row)
+                            .unwrap_or_else(|| panic!("{n}: row {row} is drawn"));
+                        let c = colours.callout(*kind);
+                        let shot = frame_now(cx, window);
+                        let y = f32::from(bounds.center().y);
+                        let bar = pixel_at(&shot, dims, f32::from(bounds.left()) + 1.0, y);
+                        assert!(
+                            gap(bar, c.bar) <= 6,
+                            "{n}: {} bar {bar:?} is not {:?}",
+                            kind.title(),
+                            c.bar
+                        );
+                        let wash = pixel_at(&shot, dims, f32::from(bounds.left()) + 8.0, y);
+                        assert!(
+                            gap(wash, c.wash) <= 6,
+                            "{n}: {} wash {wash:?} is not {:?}",
+                            kind.title(),
+                            c.wash
+                        );
+                    }
+                }
+                assert_eq!(
+                    seen,
+                    Callout::ALL.to_vec(),
+                    "{n}: the five callouts, in order"
+                );
+
+                // The unknown marker stays a quote: its text still shows `[!FOO]`.
+                let odd = doc
+                    .blocks
+                    .iter()
+                    .position(|md| matches!(md, Md::Quote(_)))
+                    .map(|_| doc.blocks.len() - 1)
+                    .expect("the [!FOO] quote");
+                assert!(
+                    matches!(doc.blocks[odd], Md::Quote(_)),
+                    "{n}: [!FOO] is a quote"
+                );
+                assert_eq!(
+                    doc.plan.looks[odd],
+                    BlockLook::Plain,
+                    "{n}: [!FOO] is plain"
+                );
+                let row = doc.plan.row_of_block(odd);
+                show(cx, row);
+                assert!(
+                    !cx.read(|cx| tab.read(cx).callout_drawn())
+                        .contains_key(&row),
+                    "{n}: no callout title on the quote"
+                );
+                let bounds = *cx
+                    .read(|cx| tab.read(cx).reader_drawn())
+                    .get(&row)
+                    .expect("the quote is drawn");
+                let shot = frame_now(cx, window);
+                let y = f32::from(bounds.center().y);
+                let bar = pixel_at(&shot, dims, f32::from(bounds.left()) + 1.0, y);
+                assert!(
+                    gap(bar, colours.line) <= 6,
+                    "{n}: the quote's bar {bar:?} is not {:?}",
+                    colours.line
+                );
+                let beside = pixel_at(&shot, dims, f32::from(bounds.left()) + 8.0, y);
+                assert!(
+                    gap(beside, theme.background) <= 6,
+                    "{n}: no wash behind the quote ({beside:?})"
+                );
+
+                let note = doc.plan.row_of_block(
+                    doc.plan
+                        .looks
+                        .iter()
+                        .position(|l| matches!(l, BlockLook::Callout(Callout::Note, _)))
+                        .expect("the Note"),
+                );
+                show(cx, note);
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-callouts",
+            slug,
+            &theme,
+            dims,
+            build,
             act,
         );
         println!("ui-shots: {}", path.display());

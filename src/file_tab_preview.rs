@@ -149,6 +149,11 @@ impl FileTab {
                     self.code_drawn.borrow_mut().clear();
                     self.code_drawn.clone()
                 },
+                #[cfg(feature = "ui-shots")]
+                callout_drawn: {
+                    self.callout_drawn.borrow_mut().clear();
+                    self.callout_drawn.clone()
+                },
             }),
         };
         let (bar, ink, state) = (self.scrollbar, theme.ui().text, self.preview_list.clone());

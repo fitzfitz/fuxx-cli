@@ -1145,6 +1145,14 @@ pub(crate) enum Glyph {
     /// back one showing at its top right; and Copied's tick.
     Copy,
     Check,
+    /// The Markdown reader's callouts (M11ai): a circle with an i (Note), a bulb (Tip), a speech
+    /// box with a ! (Important), a triangle with a ! (Warning) and an octagon with a ! (Caution;
+    /// `Stop` is a plain cross).
+    Info,
+    Bulb,
+    Report,
+    Alert,
+    Octagon,
 }
 
 /// `kind` in `color`, in a 12 px box.
@@ -1175,6 +1183,33 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                     |x: f32, y: f32| -> Point<Pixels> { point(o.x + px(x * u), o.y + px(y * u)) };
                 let mut paths: Vec<PathBuilder> = Vec::new();
                 let stroke = || PathBuilder::stroke(px(stroke * u));
+                // A ring and a filled dot (callouts' icons), centre and radius in the 12 box.
+                let ring = |c: (f32, f32), r: f32| {
+                    let mut e = stroke();
+                    let radii = point(px(r * u), px(r * u));
+                    e.move_to(p(c.0, c.1 - r));
+                    e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 + r));
+                    e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 - r));
+                    e.close();
+                    e
+                };
+                let dot = |c: (f32, f32)| {
+                    let r = 0.9;
+                    let mut d = PathBuilder::fill();
+                    let radii = point(px(r * u), px(r * u));
+                    d.move_to(p(c.0, c.1 - r));
+                    d.arc_to(radii, px(0.0), false, true, p(c.0, c.1 + r));
+                    d.arc_to(radii, px(0.0), false, true, p(c.0, c.1 - r));
+                    d.close();
+                    d
+                };
+                // A line from `a` to `b`.
+                let bar = |a: (f32, f32), b: (f32, f32)| {
+                    let mut l = stroke();
+                    l.move_to(p(a.0, a.1));
+                    l.line_to(p(b.0, b.1));
+                    l
+                };
                 match kind {
                     Glyph::Terminal => {
                         let mut chevron = stroke();
@@ -1579,6 +1614,65 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         tick.line_to(p(4.5, 9.5));
                         tick.line_to(p(10.5, 2.5));
                         paths.push(tick);
+                    }
+                    Glyph::Info => {
+                        paths.push(ring((6.0, 6.0), 5.0));
+                        paths.push(dot((6.0, 3.7)));
+                        paths.push(bar((6.0, 5.6), (6.0, 8.9)));
+                    }
+                    Glyph::Bulb => {
+                        paths.push(ring((6.0, 4.7), 3.5));
+                        let mut neck = stroke();
+                        neck.move_to(p(4.9, 7.6));
+                        neck.line_to(p(4.9, 9.6));
+                        neck.line_to(p(7.1, 9.6));
+                        neck.line_to(p(7.1, 7.6));
+                        paths.push(neck);
+                        paths.push(bar((5.0, 11.2), (7.0, 11.2)));
+                    }
+                    Glyph::Report => {
+                        let mut speech = stroke();
+                        speech.add_polygon(
+                            &[
+                                p(1.5, 1.5),
+                                p(10.5, 1.5),
+                                p(10.5, 8.5),
+                                p(7.0, 8.5),
+                                p(4.5, 10.8),
+                                p(4.5, 8.5),
+                                p(1.5, 8.5),
+                            ],
+                            true,
+                        );
+                        paths.push(speech);
+                        paths.push(bar((6.0, 3.3), (6.0, 5.4)));
+                        paths.push(dot((6.0, 7.0)));
+                    }
+                    Glyph::Alert => {
+                        let mut tri = stroke();
+                        tri.add_polygon(&[p(6.0, 1.3), p(11.0, 10.3), p(1.0, 10.3)], true);
+                        paths.push(tri);
+                        paths.push(bar((6.0, 4.6), (6.0, 7.0)));
+                        paths.push(dot((6.0, 8.7)));
+                    }
+                    Glyph::Octagon => {
+                        let mut oct = stroke();
+                        oct.add_polygon(
+                            &[
+                                p(4.0, 1.0),
+                                p(8.0, 1.0),
+                                p(11.0, 4.0),
+                                p(11.0, 8.0),
+                                p(8.0, 11.0),
+                                p(4.0, 11.0),
+                                p(1.0, 8.0),
+                                p(1.0, 4.0),
+                            ],
+                            true,
+                        );
+                        paths.push(oct);
+                        paths.push(bar((6.0, 3.4), (6.0, 6.5)));
+                        paths.push(dot((6.0, 8.3)));
                     }
                     Glyph::SideBySide => {
                         let mut frame = stroke();
