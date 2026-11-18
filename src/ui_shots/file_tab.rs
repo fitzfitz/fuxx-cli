@@ -1971,7 +1971,7 @@ fn file_diff_scenes() {
     use crate::git_status::LineChange;
     use crate::layout_model::{FileMode, TabKind};
     use crate::right_sidebar::{FILTER_BAND, HEADER, LIST_TOP, ROW};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use crate::ui_tokens::{MARK_MIN, ensure_contrast};
     use alacritty_terminal::vte::ansi::Rgb;
     use gpui::{Focusable, Modifiers, MouseButton};
@@ -2312,8 +2312,8 @@ fn file_diff_scenes() {
 
         // The toggle, in a workspace with the Files panel (as the files scenes lay it out).
         let window_dims = size(px(1100.0), px(560.0));
-        let sidebar_left = 1100.0 - GAP - 300.0 + FOCUS_RING;
-        let list_top = GAP + FOCUS_RING + TAB_BAR + HEADER + FILTER_BAND + LIST_TOP;
+        let sidebar_left = 1100.0 - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
+        let list_top = CARD_INSET + HAIRLINE + TAB_BAR + HEADER + FILTER_BAND + LIST_TOP;
         let build_ws = |slot: Slot| {
             let dir = dir.clone();
             move |window: &mut Window, cx: &mut App| -> AnyView {

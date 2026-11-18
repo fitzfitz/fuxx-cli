@@ -3881,6 +3881,9 @@ impl Render for AgentTab {
             .flex()
             .flex_col()
             .bg(hsla(c.page))
+            // Its page reaches the card's bottom: rounded there as the terminal is, so nothing
+            // square shows past the card's corner (GPUI's clip is a rectangle; M11al §3.4).
+            .rounded_b(px(crate::ui_tokens::size::CARD_RADIUS))
             .when(self.provider.is_some(), |d| {
                 d.drag_over::<BlockDrag>(move |s, _, _, _| s.bg(hsla(drop_fill)))
                     .on_drop(cx.listener(|_, drag: &BlockDrag, _, cx| {

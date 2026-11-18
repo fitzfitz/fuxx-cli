@@ -1,9 +1,9 @@
-//! Drawing a split layout: nested flex rows/columns of panes, each a raised card (M11i: its
-//! tab bar and shown tab on the card's fill, rounded, edged and shadowed) with a 6 pt gap of
-//! canvas between cards. In a split, the focused pane's edge is the accent (the focus ring)
-//! and the unfocused panes are dimmed. Each gap is the grab strip for resizing, lit by a 2 pt
-//! accent line in its middle while hovered or dragged. Stateless; the tree, the tabs, the
-//! hover and the drag live in the workspace.
+//! Drawing a split layout inside the one floating card (M11al §3.3; the workspace draws the
+//! card, `card`): nested flex rows/columns of panes, each its tab bar over its shown tab, with
+//! a 1 px `card_border` hairline between them. In a split the unfocused panes are veiled (no
+//! focus ring: a ring inside the card reads as a nested box). A 6 px grab strip centred on each
+//! hairline resizes it, lit by the 2 px resize line in its middle while hovered or dragged.
+//! Stateless; the tree, the tabs, the hover and the drag live in the workspace.
 
 use std::rc::Rc;
 
@@ -16,7 +16,9 @@ use crate::layout_model::PaneId;
 use crate::split_tree::{Axis, Node};
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
-use crate::ui_tokens::size::{CARD_GAP, CARD_RADIUS, DIVIDER_ACTIVE, FOCUS_RING, UNFOCUSED_VEIL};
+use crate::ui_tokens::size::{
+    CARD_RADIUS, CARD_SHADOW_BLUR, CARD_SHADOW_Y, DIVIDER_ACTIVE, HAIRLINE, UNFOCUSED_VEIL,
+};
 
 /// Called with a pane when it is clicked.
 pub type SelectPane = Rc<dyn Fn(PaneId, &mut Window, &mut App)>;
@@ -27,12 +29,9 @@ pub type StartDrag = Rc<dyn Fn(Vec<bool>, &mut Window, &mut App)>;
 /// Called with a split's path when the pointer enters (`true`) or leaves its line's grab strip.
 pub type HoverDivider = Rc<dyn Fn(Vec<bool>, bool, &mut Window, &mut App)>;
 
-/// Width of the invisible grab strip over each split's gap: the gap between its cards.
-const GRAB: f32 = CARD_GAP;
-
-/// A card's shadow (M11i): straight down this far, blurred this much.
-const CARD_SHADOW_Y: f32 = 1.0;
-const CARD_SHADOW_BLUR: f32 = 6.0;
+/// Width of the invisible grab strip centred on each split's hairline (M11al: as M11i's 6 pt
+/// gap was).
+const GRAB: f32 = 6.0;
 
 /// The colors a layout is drawn with.
 #[derive(Clone, Copy)]
@@ -41,12 +40,11 @@ pub struct PaneColors {
     pub dim: Hsla,
     /// A line under the pointer or being dragged.
     pub accent: Hsla,
-    /// A card's fill (the terminal background), its 1 pt edge, and the focused pane's edge in
-    /// a split.
+    /// The card's fill (the terminal background), and its 1 px edge and the hairlines between
+    /// panes.
     pub card: Hsla,
     pub card_border: Hsla,
-    pub focus: Hsla,
-    /// The cards' shadow: `shadow` at `shadow_alpha` (0-1).
+    /// The card's shadow: `shadow` at `shadow_alpha` (0-1).
     pub shadow: Hsla,
     pub shadow_alpha: f32,
 }
@@ -71,27 +69,23 @@ impl PaneColors {
             accent: resize_line(ui),
             card: hsla(ui.card),
             card_border: hsla(ui.card_border),
-            focus: hsla(ui.accent),
             shadow: hsla(ui.shadow),
             shadow_alpha: ui.card_shadow_alpha,
         }
     }
 }
 
-/// A raised card (M11i; each pane, the right sidebar): the card's fill, `CARD_RADIUS`
-/// corners, a `FOCUS_RING` edge (the accent while `focused_ring`, else `card_border`) drawn
-/// over its content, and its shadow. Its content is clipped to the inside of its edge (a
-/// rectangle: content that reaches a corner rounds its own background, see note 60 §5).
-pub fn card(colors: &PaneColors, focused_ring: bool) -> Div {
+/// The floating card (M11al §3.1; the one the panes sit in, and until it moves in, the right
+/// sidebar's): the card's fill, `CARD_RADIUS` corners, a `HAIRLINE` `card_border` edge drawn
+/// over its content, and its soft shadow (`CARD_SHADOW_Y` down, `CARD_SHADOW_BLUR` blurred).
+/// Its content is clipped to the inside of its edge (a rectangle: content that reaches a corner
+/// rounds its own background, see note 60 §5).
+pub fn card(colors: &PaneColors) -> Div {
     div()
         .bg(colors.card)
         .rounded(px(CARD_RADIUS))
-        .border(px(FOCUS_RING))
-        .border_color(if focused_ring {
-            colors.focus
-        } else {
-            colors.card_border
-        })
+        .border(px(HAIRLINE))
+        .border_color(colors.card_border)
         .shadow(vec![BoxShadow {
             color: Hsla {
                 a: colors.shadow_alpha,
@@ -135,34 +129,38 @@ pub fn divider_active(path: &[bool], hovered: Option<&[bool]>, dragging: Option<
     hovered == Some(path) || dragging == Some(path)
 }
 
-/// How far from the split's `ratio` of its width its grab strip (`gap` wide) starts, so that it
-/// covers exactly the gap between the two cards: the sides give up the gap in proportion to
-/// their shares, so the first ends at `ratio * (width - gap)`.
-pub fn grab_shift(ratio: f32, gap: f32) -> f32 {
-    -gap * ratio
+/// How far from the split's `ratio` of its width its grab strip (`grab` wide) starts, so that
+/// it is centred on the hairline (`line` wide): the sides give up the line in proportion to
+/// their shares, so the line starts at `ratio * (width - line)`, and the strip `(grab - line)
+/// / 2` before that.
+pub fn grab_shift(ratio: f32, line: f32, grab: f32) -> f32 {
+    -line * ratio - (grab - line) / 2.0
 }
 
-/// Where the 2 pt accent line starts in a split's grab strip (the gap, `gap` wide): its middle.
-pub fn accent_offset(gap: f32) -> f32 {
-    (gap - DIVIDER_ACTIVE) / 2.0
+/// Where the 2 px resize line starts in a split's grab strip (`grab` wide): its middle, so over
+/// the hairline's.
+pub fn accent_offset(grab: f32) -> f32 {
+    (grab - DIVIDER_ACTIVE) / 2.0
 }
 
-/// `tree` filling its parent. In a split, the focused pane's card has the focus ring.
+/// `tree` filling its parent (the card's inside).
 pub fn render_layout(tree: &Node<PaneId>, panes: &Panes) -> AnyElement {
-    let ring = matches!(tree, Node::Split { .. });
-    render_node(tree, Vec::new(), ring, panes)
+    render_node(tree, Vec::new(), panes)
 }
 
-/// `node`, reached from the root by `path`; `ring`: the focused pane's card is ringed.
-fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) -> AnyElement {
+/// `node`, reached from the root by `path`.
+fn render_node(node: &Node<PaneId>, path: Vec<bool>, panes: &Panes) -> AnyElement {
     match node {
         Node::Leaf(id) => {
             let id = *id;
             let select = panes.select.clone();
-            card(&panes.colors, ring && id == panes.active)
+            // Clipped as its card was (M11i): a narrow pane's content never paints into its
+            // neighbour.
+            div()
                 .flex()
                 .flex_col()
                 .size_full()
+                .overflow_hidden()
                 .children((panes.bar)(id))
                 .child(
                     // The terminal's area: what's left under the bar. (The bar handles its own
@@ -179,8 +177,9 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) 
                         })
                         .children((panes.view)(id))
                         // No listeners, so no hitbox: clicks go through to the terminal
-                        // underneath. Rounded at the bottom as the inside of the card's edge
-                        // (as the tab bar is at the top).
+                        // underneath. Rounded at the bottom as the inside of the card's edge,
+                        // as the terminal is: a pane at the card's bottom corner keeps it inside
+                        // the curve; elsewhere the corner shows the card, the terminal's colour.
                         .when(id != panes.active, |pane| {
                             pane.child(
                                 div()
@@ -188,7 +187,7 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) 
                                     .top_0()
                                     .left_0()
                                     .size_full()
-                                    .rounded_b(px(CARD_RADIUS - FOCUS_RING))
+                                    .rounded_b(px(CARD_RADIUS - HAIRLINE))
                                     .bg(panes.colors.dim),
                             )
                         }),
@@ -207,9 +206,8 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) 
                 p.push(to_second);
                 p
             };
-            // Each side takes its share; they shrink (in proportion) to make room for the gap.
-            // Not clipped, so the cards' shadows show in the gaps; a side may still shrink
-            // below its content (`min_*` 0).
+            // Each side takes its share; they shrink (in proportion) to make room for the
+            // hairline. A side may shrink below its content (`min_*` 0).
             let side = |node: &Node<PaneId>, share: f32, to_second: bool| {
                 div()
                     .flex_basis(relative(share))
@@ -218,14 +216,14 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) 
                     .min_w(px(0.0))
                     .min_h(px(0.0))
                     .map(|d| if row { d.h_full() } else { d.w_full() })
-                    .child(render_node(node, child_path(to_second), ring, panes))
+                    .child(render_node(node, child_path(to_second), panes))
             };
-            // The gap between the two cards: the canvas shows through.
-            let line = div().flex_none().map(|d| {
+            // The hairline between the two panes (M11al §3.3).
+            let line = div().flex_none().bg(panes.colors.card_border).map(|d| {
                 if row {
-                    d.w(px(CARD_GAP)).h_full()
+                    d.w(px(HAIRLINE)).h_full()
                 } else {
-                    d.h(px(CARD_GAP)).w_full()
+                    d.h(px(HAIRLINE)).w_full()
                 }
             });
             // Last child, so it sits above both panes' terminals. It blocks their clicks under it
@@ -235,10 +233,10 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) 
             let hover = panes.hover.clone();
             let hover_path = path.clone();
             let active = divider_active(&path, panes.hovered, panes.dragging);
-            // The accent line is drawn in the grab strip (the last child, so over both panes),
-            // in the middle of the gap (`accent_offset`).
+            // The resize line is drawn in the grab strip (the last child, so over both panes),
+            // in its middle, over the hairline (`accent_offset`).
             let accent = div().absolute().bg(panes.colors.accent).map(|d| {
-                let from = accent_offset(CARD_GAP);
+                let from = accent_offset(GRAB);
                 if row {
                     d.top_0().h_full().w(px(DIVIDER_ACTIVE)).left(px(from))
                 } else {
@@ -259,14 +257,14 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, ring: bool, panes: &Panes) 
                             .h_full()
                             .w(px(GRAB))
                             .left(relative(*ratio))
-                            .ml(px(grab_shift(*ratio, GRAB)))
+                            .ml(px(grab_shift(*ratio, HAIRLINE, GRAB)))
                             .cursor_col_resize()
                     } else {
                         d.left_0()
                             .w_full()
                             .h(px(GRAB))
                             .top(relative(*ratio))
-                            .mt(px(grab_shift(*ratio, GRAB)))
+                            .mt(px(grab_shift(*ratio, HAIRLINE, GRAB)))
                             .cursor_row_resize()
                     }
                 })
@@ -294,31 +292,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_grab_strip_covers_exactly_the_gap_at_any_ratio() {
-        // A split `w` wide: the sides take their shares and give up the gap in proportion
-        // (flex shrink), so the first side ends at `ratio * (w - gap)`. The strip is placed at
-        // `ratio * w`, shifted by `grab_shift`.
-        let gap = CARD_GAP;
-        for w in [400.0_f32, 708.0, 1028.0] {
-            for ratio in [0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9] {
-                let gap_start = ratio * (w - gap);
-                let strip_start = ratio * w + grab_shift(ratio, gap);
+    fn the_grab_strip_is_centred_on_the_hairline_at_any_ratio() {
+        // A split `w` wide: the sides take their shares and give up the 1 px hairline in
+        // proportion (flex shrink), so the first side ends, and the line starts, at
+        // `ratio * (w - line)`. The strip (`GRAB` wide) is placed at `ratio * w`, shifted by
+        // `grab_shift`: its middle is the line's middle.
+        let line = HAIRLINE;
+        for w in [400.0_f32, 961.0] {
+            for ratio in [0.1, 0.5, 0.9] {
+                let line_middle = ratio * (w - line) + line / 2.0;
+                let strip_start = ratio * w + grab_shift(ratio, line, GRAB);
+                let strip_middle = strip_start + GRAB / 2.0;
                 assert!(
-                    (strip_start - gap_start).abs() < 1e-3,
-                    "{w} at {ratio}: strip {strip_start}, gap {gap_start}"
+                    (strip_middle - line_middle).abs() < 0.01,
+                    "{w} at {ratio}: strip middle {strip_middle}, line middle {line_middle}"
                 );
             }
         }
+        assert_eq!(GRAB, 6.0, "the strip stays 6 px wide");
     }
 
     #[test]
-    fn the_accent_line_is_centred_in_the_gap() {
-        // The strip is the gap, so the 2 pt line sits as far from either card at any ratio.
+    fn the_accent_line_is_centred_in_the_strip() {
+        // The 2 px line sits as far from either side of the strip, so over the hairline's
+        // middle, at any ratio.
         assert_eq!(accent_offset(6.0), 2.0);
-        let line = accent_offset(CARD_GAP);
-        let (before, after) = (line, CARD_GAP - line - DIVIDER_ACTIVE);
+        let line = accent_offset(GRAB);
+        let (before, after) = (line, GRAB - line - DIVIDER_ACTIVE);
         assert!(line >= 0.0 && after >= 0.0, "{line}");
         assert!((before - after).abs() < 1e-4, "{before} vs {after}");
+        // Its middle is the hairline's middle (the strip's middle).
+        let hairline_middle = (GRAB - HAIRLINE) / 2.0 + HAIRLINE / 2.0;
+        assert!((line + DIVIDER_ACTIVE / 2.0 - hairline_middle).abs() < 1e-4);
     }
 
     #[test]

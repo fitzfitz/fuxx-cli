@@ -39,7 +39,7 @@ use crate::status::{self, Status};
 use crate::status_mark;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
-use crate::ui_tokens::size::{CARD_RADIUS, FOCUS_RING, TAB_BAR, TAB_TOP_GAP, TABS_LEFT};
+use crate::ui_tokens::size::{CARD_RADIUS, HAIRLINE, TAB_BAR, TAB_TOP_GAP, TABS_LEFT};
 use crate::ui_tokens::text;
 use crate::workspace::{At, Renaming, Workspace};
 use crate::workspace_ssh::Place;
@@ -517,8 +517,9 @@ impl Workspace {
                 .w_full()
                 .h(px(TAB_BAR))
                 .bg(hsla(ui.tab_bar))
-                // The top of its pane's card (M11i): rounded as the inside of the card's edge.
-                .rounded_t(px(CARD_RADIUS - FOCUS_RING))
+                // Rounded as the inside of the card's edge (M11i), for a bar at the card's top
+                // corner; until its fill goes (M11al Task 5).
+                .rounded_t(px(CARD_RADIUS - HAIRLINE))
                 // A press on the bar's empty part focuses its pane (a tab's own press selects it;
                 // one in a rename box stays there).
                 .on_mouse_down(

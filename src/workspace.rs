@@ -75,7 +75,7 @@ use crate::status_mark;
 use crate::tab_bar::TabGrab;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
-use crate::ui_tokens::size::{CARD_GAP, TOP_BAND};
+use crate::ui_tokens::size::{CARD_GAP, CARD_INSET, TOP_BAND};
 use crate::welcome::Welcome;
 use crate::welcome_items::Origin;
 use crate::workspace_agent::AgentSlot;
@@ -3464,15 +3464,15 @@ impl Workspace {
         Some(band.into_any_element())
     }
 
-    /// The 6 pt canvas strip above the cards (M11i): pressing it and moving drags the window,
-    /// as the top band does (not in full screen, where it is only a gap).
+    /// The `CARD_INSET` canvas strip above the card (M11i, M11al §3.7): pressing it and moving
+    /// drags the window, as the top band does (not in full screen, where it is only a gap).
     pub(crate) fn render_drag_strip(
         &self,
         id: &'static str,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let strip = div().id(id).flex_none().w_full().h(px(CARD_GAP));
+        let strip = div().id(id).flex_none().w_full().h(px(CARD_INSET));
         if window.is_fullscreen() {
             strip.into_any_element()
         } else {
@@ -3735,15 +3735,16 @@ impl Render for Workspace {
         self.refresh_palette(cx);
         // Last, once every overlay of this frame is known: which pages show.
         self.update_pages(window, cx);
-        // Above the cards: with the sidebar hidden, the window's top band (the name over it is
-        // drawn at the root); else the 6 pt canvas strip, which drags the window too (M11i).
+        // Above the card: with the sidebar hidden, the window's top band (the name over it is
+        // drawn at the root); else the `CARD_INSET` canvas strip, which drags the window too
+        // (M11i, M11al §3.7).
         let pane_band = if self.sidebar.hidden {
             self.render_top_band("pane-band", None, window, cx)
         } else {
             Some(self.render_drag_strip("pane-strip", window, cx))
         };
         let panes = self.render_panes(colors, ui, window, cx);
-        // M11v part 3: Settings → General → Status Bar off leaves it out; the cards take its
+        // M11v part 3: Settings → General → Status Bar off leaves it out; the card takes its
         // room.
         let status_bar = cx.global::<Appearance>().status_bar.then(|| {
             match self.chrome.status_bar.clone().filter(|_| cached) {
@@ -3769,8 +3770,12 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .size_full()
-            // The canvas the cards float on (M11i): the left sidebar's colour.
+            // The canvas the card floats on (M11i): the left sidebar's colour.
             .bg(hsla(ui.sidebar_background))
+            // Clipped at the window's edge (M11al plan-time call 4), not round the pane column:
+            // the card's shadow falls into the inset under it (and, once the status bar has no
+            // fill, over it) and nothing pokes past the window.
+            .overflow_hidden()
             .key_context("Workspace")
             // Esc during a tab drag cancels it, before the terminal (or a box) takes the key.
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -3902,7 +3907,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &LaunchPreset7, w, cx| this.launch_preset(6, w, cx)))
             .on_action(cx.listener(|this, _: &LaunchPreset8, w, cx| this.launch_preset(7, w, cx)))
             .on_action(cx.listener(|this, _: &LaunchPreset9, w, cx| this.launch_preset(8, w, cx)))
-            // The sidebars and the cards in a row, the status bar under them (M11i).
+            // The sidebars and the card in a row, the status bar under them (M11i, M11al).
             .child(
                 div()
                     .relative()
@@ -3922,8 +3927,6 @@ impl Render for Workspace {
                             // Not wider than its share: a pane's tab row scrolls rather than widen it.
                             .min_w(px(0.0))
                             .h_full()
-                            // Clipped here, not round the cards, so their shadows show in the gaps.
-                            .overflow_hidden()
                             .when(slide.is_some() && !self.sidebar.hidden, |column| {
                                 column.ml(px(sidebar_width))
                             })
@@ -3932,18 +3935,20 @@ impl Render for Workspace {
                                 column.mr(px(right_width + CARD_GAP))
                             })
                             .children(pane_band)
-                            // The cards, 6 pt from the sidebar (or the window's left edge), from the
-                            // right sidebar's card (or the window's right edge) and from the bottom.
+                            // The one floating card (M11al §3.1): flush against the sidebar
+                            // (with it hidden, `CARD_INSET` from the window's left),
+                            // `CARD_INSET` from the right sidebar's card (or the window's right
+                            // edge) and from the bottom. The panes inside it.
                             .child(
                                 div()
                                     .flex_1()
                                     .min_h(px(0.0))
                                     .w_full()
-                                    .pl(px(CARD_GAP))
-                                    .pr(px(CARD_GAP))
-                                    .pb(px(CARD_GAP))
+                                    .when(self.sidebar.hidden, |d| d.pl(px(CARD_INSET)))
+                                    .pr(px(CARD_INSET))
+                                    .pb(px(CARD_INSET))
                                     .child(
-                                        div()
+                                        panes::card(&colors)
                                             .relative()
                                             .size_full()
                                             .child(self.render_pane_area(cx))

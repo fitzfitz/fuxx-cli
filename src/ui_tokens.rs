@@ -47,15 +47,15 @@ pub mod size {
     pub const TOP_BAND: f32 = 38.0;
     /// Where the traffic lights go: (x, y) from the window's top left.
     pub const TRAFFIC_LIGHTS: (f32, f32) = (13.0, 12.0);
-    /// Terminal padding: (sides, top and bottom); smaller in splits. Both are larger than
-    /// `CARD_RADIUS`, so nothing the grid paints reaches into a card's rounded corner (M11i).
+    /// Terminal padding: (sides, top and bottom); smaller in splits. Enough that nothing the
+    /// grid paints reaches into the card's rounded corner (M11i): the grid's corner cell starts
+    /// inside the `CARD_RADIUS` curve.
     pub const TERMINAL_PADDING: (f32, f32) = (16.0, 12.0);
     pub const SPLIT_TERMINAL_PADDING: (f32, f32) = (12.0, 10.0);
-    /// M11i's raised cards (each pane, the right sidebar): the gap around and between them,
-    /// their corner radius, and a focused pane's edge in a split.
+    /// M11i's gap round the right sidebar's own card (until it moves into the one card).
     pub const CARD_GAP: f32 = 6.0;
-    pub const CARD_RADIUS: f32 = 8.0;
-    pub const FOCUS_RING: f32 = 1.0;
+    /// The floating card's corner radius (M11al §3.1; M11i's cards' was 8).
+    pub const CARD_RADIUS: f32 = 14.0;
     /// M11al's one floating card: the canvas inset around it, its shadow's drop and blur, and
     /// the 1 px lines.
     pub const CARD_INSET: f32 = 8.0;
