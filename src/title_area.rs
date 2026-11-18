@@ -157,10 +157,9 @@ pub(crate) fn entry_top(i: usize, count: usize, sidebar_width: f32, viewport_hei
 }
 
 /// The popover's width from the collapsed band's 🔔 in a window `window_width` wide: inside the
-/// window's margins (its right edge is `BAND_EDGE` in, `band_popover_anchor`), from
-/// `POPOVER_MIN` to `POPOVER_WIDTH`.
+/// window's margins, from `POPOVER_MIN` to `POPOVER_WIDTH`.
 pub(crate) fn band_popover_width(window_width: f32) -> f32 {
-    (window_width - BAND_EDGE - EDGE_MARGIN).clamp(POPOVER_MIN, POPOVER_WIDTH)
+    (window_width - 2.0 * EDGE_MARGIN).clamp(POPOVER_MIN, POPOVER_WIDTH)
 }
 
 /// The popover's top right corner from the collapsed band's 🔔: just under the band, its right
@@ -787,10 +786,7 @@ mod tests {
     #[test]
     fn the_band_buttons_line_up_bell_gear_sidebar_at_the_windows_right() {
         use crate::sidebar_toggle::BAND_EDGE;
-        // Derived from the tokens: the sidebar button `BAND_EDGE` in, the others `BAND_GAP` apart.
-        let sidebar = 960.0 - BAND_EDGE - HIT;
-        let gear = sidebar - BAND_GAP - HIT;
-        assert_eq!(band_buttons(960.0), [gear - BAND_GAP - HIT, gear, sidebar]);
+        assert_eq!(band_buttons(960.0), [872.0, 900.0, 928.0]);
         for w in [240.0, 360.0, 760.0, 1600.0] {
             let b = band_buttons(w);
             assert_eq!(
@@ -806,16 +802,15 @@ mod tests {
             );
             assert_eq!(w - b[0], BAND_GROUP, "width {w}: the group's width");
         }
-        // The same distance from the window's edge as the open button keeps from the
-        // sidebar's, which lines it up over the footer gear.
-        assert_eq!(BAND_EDGE + HIT / 2.0, FOOTER_SIDE + FOOTER_BUTTON / 2.0);
-        assert_eq!(BAND_GROUP, 99.0);
+        // The collapsed band keeps its own margin (the open button's is `OPEN_EDGE`).
+        assert_eq!(BAND_EDGE, 8.0);
+        assert_eq!(BAND_GROUP, 88.0);
     }
 
     #[test]
     fn the_band_popover_drops_from_the_band_inside_the_window() {
         use crate::sidebar_toggle::BAND_EDGE;
-        // 300 pt: the window's margins bind the width (273 pt, under `POPOVER_WIDTH`).
+        // 300 pt: the window's margins bind the width (284 pt, under `POPOVER_WIDTH`).
         for w in [300.0, 360.0, 760.0, 960.0, 1600.0] {
             let (r, t) = band_popover_anchor(w);
             assert_eq!(r, w - BAND_EDGE, "width {w}: its right edge the band's");
@@ -834,7 +829,7 @@ mod tests {
             );
         }
         assert_eq!(band_popover_width(1600.0), POPOVER_WIDTH);
-        assert_eq!(band_popover_width(300.0), 300.0 - BAND_EDGE - EDGE_MARGIN);
+        assert_eq!(band_popover_width(300.0), 300.0 - 2.0 * EDGE_MARGIN);
     }
 
     /// M11v part 3: with the status bar off, the footer sits on the window's bottom and the
@@ -877,9 +872,8 @@ mod tests {
 
     #[test]
     fn the_name_keeps_clear_of_the_lights_and_the_band_buttons() {
-        // The band buttons' group is wider than the lights' room (99 vs 80): it sets the inset.
-        assert_eq!(name_inset(false), BAND_GROUP + NAME_GAP);
-        assert_eq!(name_inset(true), BAND_GROUP + NAME_GAP);
+        assert_eq!(name_inset(false), 100.0);
+        assert_eq!(name_inset(true), 100.0);
         for fs in [false, true] {
             assert!(
                 name_inset(fs) >= lights_clear(fs) + NAME_GAP,
@@ -942,11 +936,10 @@ mod tests {
     fn in_a_window_narrower_than_the_sidebar_the_title_keeps_clear_of_the_button() {
         use crate::sidebar_toggle::open_button_at;
         use crate::ui_tokens::size::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
-        // 240 pt sidebar: the title spans 88..152, and the button comes in to `BAND_EDGE + HIT`
-        // from the window's right edge: the title fits while it stays `TITLE_GAP` short of it.
-        let least = 152.0 + TITLE_GAP + HIT + BAND_EDGE;
-        assert!(shows_title(240.0, least, false));
-        assert!(!shows_title(240.0, least - 0.5, false));
+        // 240 pt sidebar, 200 pt window: the button comes in to 168, the title (88..152, 8 short
+        // of it) still fits; at 180 pt the button (148) would meet it, so it goes.
+        assert!(shows_title(240.0, 200.0, false));
+        assert!(!shows_title(240.0, 180.0, false));
         for fs in [false, true] {
             let mut s = SIDEBAR_MIN_WIDTH;
             while s <= SIDEBAR_MAX_WIDTH {

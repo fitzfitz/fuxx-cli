@@ -1030,8 +1030,8 @@ pub(super) fn chrome_resize_title() {
 /// Workspace A: api, tests and build as tabs of one pane, web split right of it; B (docs) and
 /// C (notes) below it in the same group. api focused.
 fn drag_window() -> (ShotApp, AnyWindowHandle, Entity<Workspace>) {
-    // The usual 900 x 500, taller by the sidebar chrome's growth (M11al Task 7), so the list
-    // still shows the rows the drag goes over.
+    // The usual 900 x 500, taller by the sidebar chrome's growth (M11al Task 7): the rows
+    // the drag goes over (row 3's place) must lie inside the list, not under the hint.
     let dims = size(px(900.0), px(500.0 + super::SIDEBAR_CHROME_GROWTH));
     super::chrome_parts::chrome_window_sized(dims, |ws, window, cx| {
         let api = std::path::Path::new(super::API);
@@ -1277,7 +1277,10 @@ pub(super) fn chrome_agent_tabs() {
     use crate::pane_actions::PaneAction;
     let n = "chrome-agent-tabs";
     // 900 pt over the old 240 pt sidebar, wider by what the default sidebar grew: its three
-    // panes (api, tests, the agent tab) keep their width, and the agent tab's rename box its room.
+    // panes (api, tests, the agent tab) keep their width. At 900 the agent tab's pane is about
+    // 150 pt: its tab shows only a sliver, so the rename box has no room to show the typed text
+    // (it was right, "dates", but not on screen) and the "typed into" step passed only by
+    // chance (M11al Task 7 review: 5 of 6 runs failed).
     let dims = size(
         px(900.0 + (crate::ui_tokens::size::SIDEBAR_DEFAULT_WIDTH - 240.0)),
         px(500.0),
