@@ -368,6 +368,12 @@ impl Provider for Claude {
         true
     }
 
+    /// The API's per-image limit, 5 MB, is on the base64 it is sent as (Anthropic's vision
+    /// docs), so a file of 3.75 MB is the most it takes (R8).
+    fn image_limit(&self) -> ImageLimit {
+        ImageLimit::Encoded(5 * 1024 * 1024)
+    }
+
     /// "No conversation found with session ID: …" (on stderr and in the `result`'s errors).
     fn unknown_conversation(&self, said: &str) -> bool {
         said.contains("No conversation found")
@@ -950,8 +956,15 @@ impl ClaudeTranslator {
                 if let Some(skills) = v["skills"].as_array() {
                     out.push(Event::Skills(skills.iter().filter_map(s).collect()));
                 }
+                out.extend(s(&v["permissionMode"]).map(Event::Mode));
                 out
             }
+            // The mode it runs in, also one it changed to itself (R9); a status without one
+            // (`requesting`, …) says nothing.
+            Some("status") => s(&v["permissionMode"])
+                .map(Event::Mode)
+                .into_iter()
+                .collect(),
             Some("permission_denied") => s(&v["message"])
                 .or_else(|| s(&v["tool_name"]).map(|t| format!("{t} was denied")))
                 .map(Event::Notice)
@@ -1695,6 +1708,15 @@ mod tests {
             assert_eq!(base64(plain.as_bytes()), coded, "{plain:?}");
         }
         assert_eq!(base64(&[0xfb, 0xff, 0xfe]), "+//+", "the + and / digits");
+    }
+
+    #[test]
+    fn claudes_image_limit_is_5_mb_after_base64() {
+        // Anthropic's vision docs: the per-image 5 MB limit is on the base64-encoded image.
+        assert_eq!(
+            CLAUDE.image_limit(),
+            crate::providers::ImageLimit::Encoded(5 * 1024 * 1024)
+        );
     }
 
     #[test]
@@ -2604,6 +2626,26 @@ mod tests {
                 (Mode, "acceptEdits".to_string(), true),
             ]
         );
+    }
+
+    #[test]
+    fn the_mode_claude_reports_decodes_to_a_mode_event() {
+        // `system/status` and `system/init` carry the mode Claude runs in, also when it changes
+        // it itself (a plan approved leaves plan mode), R9.
+        let mut t = CLAUDE.translator();
+        let modes: Vec<String> = include_str!("fixtures/claude-set-mode.jsonl")
+            .lines()
+            .flat_map(|l| t.decode(l))
+            .filter_map(|e| match e {
+                Event::Mode(mode) => Some(mode),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(modes, ["plan", "plan", "acceptEdits", "acceptEdits"]);
+        let status = json!({"type":"system","subtype":"status","status":null,
+            "permissionMode":"default"})
+        .to_string();
+        assert_eq!(t.decode(&status), [Event::Mode("default".into())]);
     }
 
     #[test]

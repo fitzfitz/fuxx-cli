@@ -219,6 +219,10 @@ pub trait Provider: Sync {
     fn sends_images(&self) -> bool {
         false
     }
+    /// The biggest image it takes: by default 5 MB of the file (an agent told the image's path).
+    fn image_limit(&self) -> ImageLimit {
+        ImageLimit::Raw(5 * 1024 * 1024)
+    }
     /// The short processes that answer the catalog, in the order `read_catalog` takes their
     /// outputs. None: the provider can't be asked.
     fn catalog_probes(&self) -> Vec<Probe> {
@@ -357,6 +361,9 @@ pub enum Event {
     Skills(Vec<String>),
     /// A usage limit changed state.
     RateLimit(RateLimit),
+    /// The permission mode the agent says it runs in now, also one it changed to itself (a
+    /// plan approved leaves plan mode): the tab follows it unless a change of yours is pending.
+    Mode(String),
     /// The agent answered a live change (`Action::SetModel` …): `ok` with the value it now
     /// uses, else not, `value` saying why.
     Applied {
@@ -404,6 +411,48 @@ impl Picture {
             data,
         }
     }
+}
+
+/// The biggest image a provider takes, in bytes: of the file itself, or of its base64 (an
+/// image sent in the message, whose limit is on the encoded size).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ImageLimit {
+    Raw(usize),
+    Encoded(usize),
+}
+
+impl ImageLimit {
+    /// The biggest file that fits: base64 is 4 digits for every 3 bytes (or part of 3).
+    pub fn raw_max(self) -> usize {
+        match self {
+            ImageLimit::Raw(max) => max,
+            ImageLimit::Encoded(max) => max / 4 * 3,
+        }
+    }
+
+    /// Whether an image of `len` bytes is taken (checked before it is encoded).
+    pub fn fits(self, len: usize) -> bool {
+        match self {
+            ImageLimit::Raw(max) => len <= max,
+            ImageLimit::Encoded(max) => len.div_ceil(3) * 4 <= max,
+        }
+    }
+
+    /// The notice for image `name` that is too big for the agent called `label`: not attached.
+    pub fn refusal(self, label: &str, name: &str) -> String {
+        match self {
+            ImageLimit::Raw(max) => format!("Image over {} MB: {name}", megabytes(max)),
+            ImageLimit::Encoded(_) => format!(
+                "Image too big for {label} ({} MB max): {name}",
+                megabytes(self.raw_max())
+            ),
+        }
+    }
+}
+
+/// `bytes` in MB (MiB), as few digits as it needs: `5`, `3.75`.
+fn megabytes(bytes: usize) -> String {
+    format!("{}", bytes as f64 / (1024.0 * 1024.0))
 }
 
 /// `bytes` as standard base64 (RFC 4648, padded).
@@ -594,6 +643,29 @@ mod tests {
         fn translator(&self) -> Box<dyn Translator> {
             Box::new(Silent)
         }
+    }
+
+    #[test]
+    fn a_provider_takes_images_up_to_5_mb_raw_unless_it_says_otherwise() {
+        assert_eq!(Plain.image_limit(), ImageLimit::Raw(5 * 1024 * 1024));
+    }
+
+    #[test]
+    fn an_encoded_limit_is_checked_on_the_base64_size() {
+        let five = 5 * 1024 * 1024;
+        let encoded = ImageLimit::Encoded(five);
+        assert_eq!(encoded.raw_max(), 3_932_160);
+        assert_eq!(base64(&vec![0; encoded.raw_max()]).len(), five);
+        assert!(encoded.fits(3_932_160));
+        assert!(!encoded.fits(3_932_161), "4 more digits: over 5 MB");
+        assert_eq!(
+            encoded.refusal("Claude", "a.png"),
+            "Image too big for Claude (3.75 MB max): a.png"
+        );
+        let raw = ImageLimit::Raw(five);
+        assert_eq!(raw.raw_max(), five);
+        assert!(raw.fits(five) && !raw.fits(five + 1));
+        assert_eq!(raw.refusal("agy", "a.png"), "Image over 5 MB: a.png");
     }
 
     #[test]

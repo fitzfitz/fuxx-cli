@@ -71,7 +71,7 @@ impl AgentTab {
 
     /// Open the folder picker (§2), its search taking the keyboard. The first time in an app
     /// run it reads the folders the agent knows and the agent's version (whether it can move a
-    /// conversation); a scene tab reads neither.
+    /// conversation; a failed read is tried again); a scene tab reads neither.
     pub fn open_folder_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(provider) = self.provider else {
             return;
@@ -91,6 +91,8 @@ impl AgentTab {
             search,
             rows: Vec::new(),
             computer: None,
+            checks: FolderChecks::default(),
+            _check: None,
             _subscriptions: subscriptions,
         });
         self.refresh_picker(cx);
@@ -134,13 +136,44 @@ impl AgentTab {
         }
     }
 
-    /// Whether `folder` is there to start in. A scene tab reads no disk: its made-up folders are.
+    /// Whether `folder` is there to start in, as the open picker's check found it (never read
+    /// here: this runs on each keystroke). A scene tab reads no disk: its made-up folders are.
     fn folder_exists(&self, folder: &Path) -> bool {
-        self.no_process || folder.is_dir()
+        self.no_process
+            || self
+                .picker
+                .as_ref()
+                .is_some_and(|p| p.checks.exists(folder))
+    }
+
+    /// Check off the UI thread whether those of `folders` not checked yet are there; the picker's
+    /// rows are made again when the answers are in (R10).
+    fn check_folders(&mut self, folders: &[PathBuf], cx: &mut Context<Self>) {
+        if self.no_process {
+            return;
+        }
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        let Some(asked) = picker.checks.begin(folders) else {
+            return;
+        };
+        let job = cx.background_spawn(async move { FolderChecks::check(asked) });
+        picker._check = Some(cx.spawn(async move |this, cx| {
+            let found = job.await;
+            this.update(cx, |this, cx| {
+                if let Some(picker) = this.picker.as_mut() {
+                    picker.checks.done(found);
+                    this.refresh_picker(cx);
+                }
+            })
+            .ok();
+        }));
     }
 
     /// Make the open picker's rows again: for what is typed, from the folders fuxx knows
     /// (`KnownFolders`) and the agent's own (once read); This Computer's too while it is open.
+    /// Only folders found there are listed (their check runs off the UI thread).
     pub(crate) fn refresh_picker(&mut self, cx: &mut Context<Self>) {
         let Some(picker) = &self.picker else {
             return;
@@ -159,6 +192,8 @@ impl AgentTab {
             _ => Vec::new(),
         };
         let computer = computer_folders(&known.projects, &agents);
+        let all: Vec<PathBuf> = known.recent.iter().chain(&computer).cloned().collect();
+        self.check_folders(&all, cx);
         let home = crate::workspace::home_dir();
         let cwd = &self.start.cwd;
         let rows = picker_rows(

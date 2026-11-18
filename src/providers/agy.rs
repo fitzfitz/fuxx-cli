@@ -626,6 +626,15 @@ mod tests {
     const BAD_RESUME: &str = include_str!("fixtures/agy-bad-resume.jsonl");
     const BAD_RESUME_STDERR: &str = include_str!("fixtures/agy-bad-resume.jsonl.stderr");
 
+    #[test]
+    fn agys_image_limit_is_5_mb_of_the_file() {
+        // agy is told the image's path, so the file's own size is what counts.
+        assert_eq!(
+            AGY.image_limit(),
+            crate::providers::ImageLimit::Raw(5 * 1024 * 1024)
+        );
+    }
+
     fn decode_all(text: &str) -> Vec<Event> {
         let mut t = AGY.translator();
         text.lines().flat_map(|l| t.decode(l)).collect()

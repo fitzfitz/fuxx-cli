@@ -1,6 +1,6 @@
 # Milestone 11ak — Agent Box
 
-**Status:** 🟨 built on branch `m11ak-agent-box`, waiting for your on-screen check; not merged. All 15 plan tasks (0–14) built 2026-11-17/18, each reviewed ([[M11ak Plan - Agent Box]]); design approved 2026-11-17 ("approved").
+**Status:** 🟨 built on branch `m11ak-agent-box`, waiting for your on-screen check; not merged. All 15 plan tasks (0–14) built 2026-11-17/18, each reviewed ([[M11ak Plan - Agent Box]]); the whole-branch review's findings fixed 2026-11-18 ("Final review" below); design approved 2026-11-17 ("approved").
 
 **Asked for:** 2026-11-17, by you, while scoping M11ag ("Ask the agent from the code"). You showed three screenshots of
 another app's message box — a folder and branch chip above the box; a folder picker (Search, Recent, This Computer ▸,
@@ -180,7 +180,7 @@ restart for Claude too (Approach A's fallback) — no question to you needed.
 - A menu: **File…** (the macOS file panel; the path goes in as a chip and is sent as a path in the message — the agent
   reads it), **Image…** (Claude: sent as an image block; agy: as a path, per Task 0). Also paste an image from the
   clipboard and drop files onto the box (AI's call: same chips). Images over 5 MB are refused with a note (the smaller
-  API limit).
+  API limit; R8: for Claude the 5 MB is the image's base64, so 3.75 MB of file).
 
 ### 9. `/` menu
 
@@ -340,7 +340,8 @@ crate. The box is one `AgentBox` drawn by the agent tab; the provider files say 
 9. **View Usage ▸** (`src/agent_box_menus.rs` took the menus out of `agent_box.rs` first, no behaviour change) — "N% left"
    with a ring and "Resets in 3d 16h"; a warning dot on the model chip while a limit is close or reached.
 10. **Mode chip and menu** — Claude's four modes, agy's three; agy's mode lock is gone; nothing cycles modes.
-11. **`+` attach** — File… and Image…, paste an image, drop files; Claude gets image blocks, agy a path; over 5 MB refused.
+11. **`+` attach** — File… and Image…, paste an image, drop files; Claude gets image blocks, agy a path; too big refused
+    (Claude 3.75 MB of file, 5 MB once in base64; agy 5 MB; R8).
 12. **`/` menu** — commands, skills, sub-agents filtered as you type; Tab completes; `/usage`, `/model`, `/effort` open
     the box's own menus.
 13. **`@` menu** — Files, Agents, Skills.
@@ -359,6 +360,16 @@ crate. The box is one `AgentBox` drawn by the agent tab; the provider files say 
 - **R6:** the box's menus moved into `src/agent_box_menus.rs` (the file had passed 1,900 lines) as a pure move.
 - **R7:** the idle-CPU measurement needs a real window, so it is your check (item 15), as in M11af; the stray-process
   check was done here (below).
+- **R8:** Claude takes images in the message, and the API's 5 MB per-image limit is on the base64 (Anthropic's vision
+  docs), so for Claude an image over 3.75 MB of file (5 MB once encoded) is refused with "Image too big for Claude (3.75
+  MB max): <name>". agy is told a path and keeps 5 MB of file and "Image over 5 MB: <name>". The limit is the provider's
+  (`Provider::image_limit`); nothing is downscaled. The plan's raw-5 MB constraint reasoned from the wrong unit.
+- **R9:** the mode Claude reports (`system/status` and `system/init` `permissionMode`) is followed when no mode change of
+  yours is pending (asked, or waiting for the turn): after an approved plan Claude leaves plan mode itself, and the chip,
+  the menu's ✓ and the saved tab now say so (choosing Plan again works; a restart doesn't resume a stale plan mode).
+- **R10:** the final fix wave also took four small ones: a failed version read (Move needs it) is tried again; Return
+  is blocked only while the `/` list is "Loading…"; the folder picker checks which folders are there off the UI thread;
+  the doc fixes below.
 
 **Plan-time calls**
 
@@ -371,8 +382,8 @@ crate. The box is one `AgentBox` drawn by the agent tab; the provider files say 
 - The start-up probe's deadline is 30 s; a failed list is retried when a menu opens.
 - `/clear` is not intercepted (the tab already follows the new conversation id).
 - An own command (`/usage`, `/model`, `/effort`) is answered by the box only when it is the whole line; with more text
-  it is sent as text. While the `/` list shows "Loading…" or "Couldn't read the list", Return does nothing (it never
-  sends a half-typed `/xx`).
+  it is sent as text. While the `/` list shows "Loading…", Return does nothing (it never sends a half-typed `/xx`); R10
+  changed "Couldn't read the list": Return sends the line as typed.
 
 **From the tasks**
 
@@ -411,12 +422,11 @@ After the full `cargo test --bin fuxx` and the full `scripts/ui-shots.sh`: `ps -
 ## Limits (small things you might notice)
 
 - The model chip shows the running model while a change waits for the turn to end; the menu shows the waiting one.
-- Claude leaving plan mode by itself (after an approved plan) is not reflected in the mode chip until you choose a mode.
 - A conversation row lists attachments as 📎 for images too (the box's chip shows 🖼).
 - **Image…** silently skips non-image files, and a pasted format other than png, jpeg, gif or webp is ignored.
 - A conversation whose Claude session id is not a UUID shape has no history after a restart (fuxx refuses to read it).
-- The box belongs to agent tabs; background-service terminals have no box.
-- With a failed `/` list, a single "/word" message needs Esc before Return sends it.
+- The folder picker lists a folder once a quick check (off the UI thread) finds it there, so Recent can appear a moment
+  after the picker opens.
 - The `@` file rows have no matched-letter highlight; skills seen before Claude's first start-up message may sit under
   Commands in `/`, not `@` Skills, until it arrives.
 - Moving between two repos, the branch chip can flicker off and on once while the new branch is read.
@@ -425,11 +435,11 @@ After the full `cargo test --bin fuxx` and the full `scripts/ui-shots.sh`: `ps -
 
 | Check | Before (master/Task 0) | Now |
 | --- | --- | --- |
-| `cargo test --bin fuxx` | 1,840 passed (1 ignored) | **1,936 passed** (1 ignored) |
+| `cargo test --bin fuxx` | 1,840 passed (1 ignored) | **1,944 passed** (1 ignored) |
 | `cargo clippy --all-targets` | 14 (bin) / 27 (test) | 14 / 27 (no new warnings) |
 | `cargo clippy --all-targets --features ui-shots` | 16 / 29 | 16 / 29 (no new warnings) |
 | `cargo fmt --check` | clean | clean |
-| Full `scripts/ui-shots.sh` | 147 scenes (master) | **189 passed, 0 failed**, 130.1 s (42 new `agent-box-*` scenes in the list; master had 147) |
+| Full `scripts/ui-shots.sh` | 147 scenes (master) | **191 passed, 0 failed**, 125.8 s (44 new `agent-box-*` scenes in the list; master had 147) |
 | Stray `claude -p` / `agy -p` / `fuxx __ui-shots` processes | n/a | none left (see above) |
 | Idle CPU, agent tab shown, nothing happening | n/a | not measured by the builder: your check, item 15 |
 
@@ -460,9 +470,10 @@ it such as `~/code/my-app` for the picker). Open an agent tab (claude) there. Do
    model: nothing is sent; Claude's chip changes at once (live). With agy the chat restarts on the same conversation
    after the turn and a quiet "Switched to …" row appears.
 6. **View Usage ▸**, with claude and then agy: a panel with each limit's "% left", a ring and "Resets in …"; it says
-   "Checking…" first. Close and reopen within a minute: no new wait.
+   "Checking…" on a first read. Close and reopen within a minute: no new wait.
 7. Mode chip: Claude's four modes switch live (try Plan, then ask for a file: it plans; then Accept edits); agy's three
-   restart on the same conversation, and the chip no longer locks after the first message.
+   restart on the same conversation, and the chip no longer locks after the first message. In Plan, approve Claude's
+   plan: the chip leaves Plan by itself (R9).
 8. Change the model while the agent is working: the change waits for the turn to end; it never cuts the turn.
 
 **`+`, paste and drop**
@@ -470,7 +481,9 @@ it such as `~/code/my-app` for the picker). Open an agent tab (claude) there. Do
 9. `+`: **File…** opens the macOS panel; the file shows as a chip and goes to the agent as a path. **Image…** the same
    for an image; Claude describes it.
 10. Paste a screenshot (⌃⌘⇧4, then ⌘V in the box): a 🖼 chip. Send it: Claude describes it; with agy it gets a path.
-11. Drop a file from Finder onto the box: a chip, the box tinted while you hold it over. An image over 5 MB is refused with a note.
+11. Drop a file from Finder onto the box: a chip, the box tinted while you hold it over. An image too big is refused with
+    a note: with claude, over 3.75 MB, "Image too big for Claude (3.75 MB max): <name>"; with agy, over 5 MB,
+    "Image over 5 MB: <name>".
 
 **`/` and `@`**
 
@@ -484,6 +497,26 @@ it such as `~/code/my-app` for the picker). Open an agent tab (claude) there. Do
     you type meanwhile goes to the switched agent.
 15. **Idle CPU:** with an agent tab shown and idle (no menu open), compare fuxx's CPU in Activity Monitor on this branch
     with master (same window, a minute each). They should match within noise.
+
+## Final review (2026-11-18)
+
+The whole-branch review (`168aa86..b29fae5`) found two important things and some small ones; all were fixed in one
+wave (rulings R8–R10 above):
+
+- **Claude's image limit was measured on the file, not on its base64** (the API's 5 MB is after encoding): a 3.75–5 MB
+  image passed fuxx and Claude's API refused it. Now each provider says its limit (`Provider::image_limit`): Claude's is
+  5 MB of base64, checked before encoding; agy's stays 5 MB of file.
+- **The mode chip and the saved mode drifted** when Claude left plan mode itself: the chip still said Plan, choosing
+  Plan again did nothing, and a restart resumed in plan mode. Claude's reported mode is now followed (R9).
+- Small: a failed version read is tried again (Move could stay hidden for the app's run); Return sends on a `/` list
+  that couldn't be read (blocked only while it loads); the folder picker no longer checks folders on the disk on every
+  keystroke (a check off the UI thread, kept with the open picker); STRUCTURE.md's four new rows aligned; this note's
+  Limits, on-screen items 6, 7 and 11, and the plan's front-matter and steps.
+
+After the fixes: `cargo test --bin fuxx` 1,944 passed (1 ignored); clippy 14 / 27 and 16 / 29 (no new warnings);
+`cargo fmt --check` clean; full `scripts/ui-shots.sh` 191 passed, 0 failed (two new scenes:
+`agent-box-mode-follows-claude`, `agent-box-slash-failed-return-sends`); no stray `claude -p` / `agy -p` /
+`fuxx __ui-shots` process after.
 
 ## Related
 

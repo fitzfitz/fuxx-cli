@@ -49,8 +49,8 @@ use crate::file_tab::{DiffRowColours, diff_row_colours};
 use crate::md_preview::{self, LinkTarget};
 use crate::palette_items::FileHit;
 use crate::providers::{
-    Action, Applies, BoxCommand, ChangeKind, Event, ModelChoice, Past, Picture, Provider, Start,
-    TodoState, ToolDetail, Translator,
+    Action, Applies, BoxCommand, ChangeKind, Event, ImageLimit, ModelChoice, Past, Picture,
+    Provider, Start, TodoState, ToolDetail, Translator,
 };
 use crate::status::Status;
 use crate::terminal_view::hsla;
@@ -293,9 +293,6 @@ pub fn inserted_path(root: &Path, cwd: &Path, rel: &str) -> String {
     }
 }
 
-/// The biggest image taken (the API's limit is lower than a file's): 5 MB.
-pub const IMAGE_MAX: usize = 5 * 1024 * 1024;
-
 /// What goes with your next message, shown as a chip in the box until it is sent: a command
 /// block's text, a file's path, or an image (with the path it is at, when it has one).
 #[derive(Clone, Debug, PartialEq)]
@@ -351,30 +348,37 @@ pub fn media_type_for(path: &Path) -> Option<&'static str> {
     }
 }
 
-/// The notice for an image `name` over `IMAGE_MAX`: it is not attached.
-pub fn too_big(name: &str) -> String {
-    format!("Image over 5 MB: {name}")
-}
-
-/// `bytes` as a picture to send, or the notice saying it is too big.
-pub fn picture(name: &str, media_type: &'static str, bytes: Vec<u8>) -> Result<Picture, String> {
-    if bytes.len() > IMAGE_MAX {
-        return Err(too_big(name));
+/// `bytes` as a picture to send, or the notice saying it is too big for the agent called
+/// `label` (checked before it is encoded).
+pub fn picture(
+    name: &str,
+    media_type: &'static str,
+    bytes: Vec<u8>,
+    limit: ImageLimit,
+    label: &str,
+) -> Result<Picture, String> {
+    if !limit.fits(bytes.len()) {
+        return Err(limit.refusal(label, name));
     }
     Ok(Picture::new(media_type, bytes))
 }
 
-/// An image file's bytes, read no further than `IMAGE_MAX` (a device, a pipe or a growing file
-/// can't be read without end): more than that is the same notice as a big picture. Reads a
-/// file: call it off the UI thread.
-pub fn read_image(path: &Path, name: &str) -> Result<Vec<u8>, String> {
+/// An image file's bytes, read no further than `limit` allows (a device, a pipe or a growing
+/// file can't be read without end): more than that is the same notice as a big picture. Reads
+/// a file: call it off the UI thread.
+pub fn read_image(
+    path: &Path,
+    name: &str,
+    limit: ImageLimit,
+    label: &str,
+) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let mut bytes = Vec::new();
     std::fs::File::open(path)
-        .and_then(|f| f.take(IMAGE_MAX as u64 + 1).read_to_end(&mut bytes))
+        .and_then(|f| f.take(limit.raw_max() as u64 + 1).read_to_end(&mut bytes))
         .map_err(|e| format!("Couldn't read {name}: {e}"))?;
-    if bytes.len() > IMAGE_MAX {
-        return Err(too_big(name));
+    if !limit.fits(bytes.len()) {
+        return Err(limit.refusal(label, name));
     }
     Ok(bytes)
 }
@@ -1176,7 +1180,7 @@ impl AgentTab {
         }
     }
 
-    /// The mode the agent runs in (agy's chip; none for Claude).
+    /// The mode the agent starts with: chosen, or the one it last reported (R9).
     pub fn mode(&self) -> Option<&str> {
         self.start.mode.as_deref()
     }
@@ -1787,6 +1791,7 @@ impl AgentTab {
                     turn_ended = true;
                 }
                 Event::Applied { kind, value, ok } => self.applied(*kind, value, *ok, cx),
+                Event::Mode(mode) => self.reported_mode(mode, cx),
                 _ => {}
             }
             self.conversation.apply(event);
@@ -2007,9 +2012,9 @@ impl AgentTab {
         self.add_image(name, media_type, ImageFrom::Clipboard(image.bytes), cx);
     }
 
-    /// An image chip once its bytes are in: they are read, checked against `IMAGE_MAX` and, for
-    /// a pasted image with an agent that is told a path, written to the temp folder, all off the
-    /// UI thread. Too big (or unreadable): no chip, a notice says so.
+    /// An image chip once its bytes are in: they are read, checked against the provider's
+    /// `image_limit` and, for a pasted image with an agent that is told a path, written to the
+    /// temp folder, all off the UI thread. Too big (or unreadable): no chip, a notice says so.
     fn add_image(
         &mut self,
         name: String,
@@ -2021,16 +2026,17 @@ impl AgentTab {
             return;
         };
         let by_path = !provider.sends_images();
+        let (limit, label) = (provider.image_limit(), provider.info().label);
         let dir = std::env::temp_dir().join(PASTED_DIR);
         let job = cx.background_spawn(async move {
             let (bytes, path) = match from {
                 ImageFrom::File(path) => {
-                    let bytes = read_image(&path, &name)?;
+                    let bytes = read_image(&path, &name, limit, label)?;
                     (bytes, Some(path))
                 }
                 ImageFrom::Clipboard(bytes) => (bytes, None),
             };
-            let picture = picture(&name, media_type, bytes)?;
+            let picture = picture(&name, media_type, bytes, limit, label)?;
             let path = match path {
                 Some(path) => Some(path),
                 None if by_path => {
@@ -2185,8 +2191,8 @@ impl AgentTab {
                 if self.slash.is_some() && self.pick_slash(None, cx) {
                     return;
                 }
-                // A list still loading (or that could not be read) is a line in progress, not a
-                // complete one: Return does not send the half-typed `/xx`.
+                // A list still loading is a line in progress, not a complete one: Return does not
+                // send the half-typed `/xx`. One that could not be read sends as typed (R10).
                 if self.slash_list_pending(cx) {
                     return;
                 }
@@ -2560,13 +2566,13 @@ impl AgentTab {
         }
     }
 
-    /// Whether the `/` list is open with a note in place of its rows: the commands still load, or
-    /// could not be read.
+    /// Whether the `/` list is open while its commands still load (`Loading…` in place of its
+    /// rows).
     fn slash_list_pending(&self, cx: &App) -> bool {
         self.slash.is_some()
             && matches!(
                 self.catalog_lookup(cx),
-                crate::agent_catalog::Lookup::Loading | crate::agent_catalog::Lookup::Failed(_)
+                crate::agent_catalog::Lookup::Loading
             )
     }
 
@@ -3065,6 +3071,29 @@ impl AgentTab {
             ChangeKind::Mode => self.start.mode = Some(value.to_string()),
             ChangeKind::Folder => {}
         }
+        self.tell_settings(before, cx);
+    }
+
+    /// The agent says the mode it runs in, also one it changed to itself (a plan approved
+    /// leaves plan mode, R9). With no change of yours pending (asked, or waiting for the turn)
+    /// it is the mode the tab starts with from now on (the chip, the ✓ and the saved tab follow
+    /// it); the mode the chip already shows changes nothing.
+    fn reported_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
+        let pending =
+            self.asked.mode.is_some() || self.waiting.iter().any(|c| matches!(c, Change::Mode(_)));
+        let Some(provider) = self.provider.filter(|_| !pending) else {
+            return;
+        };
+        let shown = crate::agent_box::current_mode(
+            self.start.mode.as_deref(),
+            self.catalog(cx).and_then(|c| c.mode.as_deref()),
+            provider.info().default_mode,
+        );
+        if shown == Some(mode) {
+            return;
+        }
+        let before = self.settings();
+        self.start.mode = Some(mode.to_string());
         self.tell_settings(before, cx);
     }
 
@@ -4117,17 +4146,44 @@ mod tests {
         }
     }
 
+    /// 5 MB (MiB): agy's raw limit, and Claude's after base64 (the API's per-image limit).
+    const FIVE_MB: usize = 5 * 1024 * 1024;
+
     #[test]
-    fn an_image_over_5_mb_is_refused() {
-        assert_eq!(IMAGE_MAX, 5 * 1024 * 1024);
-        let ok =
-            picture("big.png", "image/png", vec![0; IMAGE_MAX]).expect("exactly 5 MB is taken");
-        assert_eq!(ok.bytes.len(), IMAGE_MAX);
+    fn an_image_told_as_a_path_is_refused_over_5_mb_raw() {
+        let raw = ImageLimit::Raw(FIVE_MB);
+        let ok = picture("big.png", "image/png", vec![0; FIVE_MB], raw, "agy")
+            .expect("exactly 5 MB is taken");
+        assert_eq!(ok.bytes.len(), FIVE_MB);
         assert_eq!(
-            picture("big.png", "image/png", vec![0; IMAGE_MAX + 1]),
+            picture("big.png", "image/png", vec![0; FIVE_MB + 1], raw, "agy"),
             Err("Image over 5 MB: big.png".to_string())
         );
-        assert_eq!(too_big("big.png"), "Image over 5 MB: big.png");
+    }
+
+    #[test]
+    fn an_image_sent_inline_is_refused_when_its_base64_is_over_5_mb() {
+        let encoded = ImageLimit::Encoded(FIVE_MB);
+        // 3,932,160 bytes are exactly 5 MB as base64; one more byte is 4 more digits.
+        let ok = picture(
+            "big.png",
+            "image/png",
+            vec![0; 3_932_160],
+            encoded,
+            "Claude",
+        )
+        .expect("exactly 5 MB once encoded is taken");
+        assert_eq!(ok.data.len(), FIVE_MB);
+        assert_eq!(
+            picture(
+                "big.png",
+                "image/png",
+                vec![0; 3_932_161],
+                encoded,
+                "Claude"
+            ),
+            Err("Image too big for Claude (3.75 MB max): big.png".to_string())
+        );
     }
 
     #[test]
@@ -4143,13 +4199,22 @@ mod tests {
                 .unwrap();
             path
         };
-        let exact = read_image(&make("a.png", IMAGE_MAX), "a.png").expect("exactly 5 MB");
-        assert_eq!(exact.len(), IMAGE_MAX);
+        let raw = ImageLimit::Raw(FIVE_MB);
+        let exact = read_image(&make("a.png", FIVE_MB), "a.png", raw, "agy").expect("exactly 5 MB");
+        assert_eq!(exact.len(), FIVE_MB);
         assert_eq!(
-            read_image(&make("b.png", IMAGE_MAX + 1), "b.png"),
+            read_image(&make("b.png", FIVE_MB + 1), "b.png", raw, "agy"),
             Err("Image over 5 MB: b.png".to_string())
         );
-        assert!(read_image(&dir.join("none.png"), "none.png").is_err());
+        let encoded = ImageLimit::Encoded(FIVE_MB);
+        let exact = read_image(&make("c.png", 3_932_160), "c.png", encoded, "Claude")
+            .expect("exactly 5 MB once encoded");
+        assert_eq!(exact.len(), 3_932_160);
+        assert_eq!(
+            read_image(&make("d.png", 3_932_161), "d.png", encoded, "Claude"),
+            Err("Image too big for Claude (3.75 MB max): d.png".to_string())
+        );
+        assert!(read_image(&dir.join("none.png"), "none.png", raw, "agy").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

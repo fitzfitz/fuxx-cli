@@ -137,6 +137,19 @@ impl Catalogs {
         self.versions.get(agent)
     }
 
+    /// Mark the version reading; false when it already is, or is read (a failure is tried
+    /// again, as `begin_catalog`).
+    pub fn begin_version(&mut self, agent: &str) -> bool {
+        if matches!(
+            self.versions.get(agent),
+            Some(Lookup::Loading | Lookup::Ready(_))
+        ) {
+            return false;
+        }
+        self.versions.insert(agent.to_string(), Lookup::Loading);
+        true
+    }
+
     pub fn set_version(&mut self, agent: &str, found: Lookup<Option<String>>) {
         self.versions.insert(agent.to_string(), found);
     }
@@ -313,18 +326,11 @@ pub fn load_usage(provider: &'static dyn Provider, folder: PathBuf, cx: &mut App
     .detach();
 }
 
-/// Read the agent's version (its `version_probe`) in the background, once per app run; an
-/// agent without one is known to have none.
+/// Read the agent's version (its `version_probe`) in the background, once per app run (a
+/// failed read is tried again); an agent without one is known to have none.
 pub fn load_version(provider: &'static dyn Provider, cx: &mut App) {
     let agent = provider.info().name;
-    let started = with_catalogs(cx, |c| {
-        let fresh = c.version(agent).is_none();
-        if fresh {
-            c.set_version(agent, Lookup::Loading);
-        }
-        fresh
-    });
-    if !started {
+    if !with_catalogs(cx, |c| c.begin_version(agent)) {
         return;
     }
     let Some(probe) = provider.version_probe() else {
@@ -409,6 +415,22 @@ mod tests {
             state,
             resets_at: None,
         }
+    }
+
+    #[test]
+    fn the_version_is_read_once_and_a_failure_is_tried_again() {
+        let mut c = Catalogs::default();
+        assert!(c.begin_version("claude"));
+        assert!(!c.begin_version("claude"), "reading already");
+        c.set_version(
+            "claude",
+            Lookup::Ready(Some("2.1.223 (Claude Code)".into())),
+        );
+        assert!(!c.begin_version("claude"), "read already");
+        assert!(c.begin_version("agy"));
+        c.set_version("agy", Lookup::Failed("timed out".into()));
+        assert!(c.begin_version("agy"), "a failure is tried again");
+        assert_eq!(c.version("agy"), Some(&Lookup::Loading));
     }
 
     #[test]
