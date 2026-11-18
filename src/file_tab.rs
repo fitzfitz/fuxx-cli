@@ -2467,6 +2467,8 @@ struct Track {
     area: Bounds<Pixels>,
     viewport: f32,
     content: f32,
+    /// How far it is scrolled along (M11ai Task 9: the reading-progress line's share).
+    offset: f32,
     thumb: Thumb,
 }
 
@@ -2490,6 +2492,7 @@ impl Track {
             area,
             viewport,
             content,
+            offset: f32::from(offset),
             thumb,
         })
     }
@@ -2504,6 +2507,7 @@ impl Track {
             area,
             viewport,
             content,
+            offset,
             thumb,
         })
     }
@@ -4408,6 +4412,11 @@ pub struct FileTab {
     outline_current: Option<usize>,
     outline_list: ListState,
     track_due: Rc<Cell<bool>>,
+    /// M11ai Task 9: the narrow outline's panel is open (it shows only while the outline is
+    /// narrow: `outline_panel_open`), and its button as last laid out (a press there is the
+    /// button's, not one outside the panel).
+    outline_panel: bool,
+    outline_button: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// M11ai: the outline's entries as last drawn (the scenes' probe).
     #[cfg(feature = "ui-shots")]
     outline_drawn: Rc<RefCell<std::collections::BTreeMap<usize, Bounds<Pixels>>>>,
@@ -4559,6 +4568,8 @@ impl FileTab {
             outline_current: None,
             outline_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)),
             track_due: Rc::default(),
+            outline_panel: false,
+            outline_button: Rc::default(),
             #[cfg(feature = "ui-shots")]
             outline_drawn: Rc::default(),
             #[cfg(feature = "ui-shots")]
@@ -6048,6 +6059,8 @@ impl FileTab {
             return;
         }
         self.preview = on;
+        // M11ai Task 9: the narrow outline's panel goes with it (⌘F comes here too).
+        self.outline_panel = false;
         // M11af: as a mode switch, Preview on or off ends Follow, and the marks' tooltip does
         // not wait for the way back.
         self.live.follow = false;
@@ -6181,6 +6194,8 @@ impl FileTab {
         }
         self.selection = None;
         self.selecting = false;
+        // M11ai Task 9: the narrow outline's panel closes.
+        self.outline_panel = false;
         // M11af: a mode switch ends Follow, and the marks' tooltip does not wait for the
         // way back.
         self.live.follow = false;
@@ -6898,10 +6913,15 @@ impl FileTab {
         cx.notify();
     }
 
-    /// Esc: the find bar closes and the tab takes the keyboard. With no bar, Esc goes on.
+    /// Esc: the find bar closes and the tab takes the keyboard. With no bar, M11ai Task 9: the
+    /// narrow outline's panel closes, if open; else Esc goes on.
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.find.take().is_none() {
-            cx.propagate();
+            if self.outline_panel_open() {
+                self.close_outline_panel(cx);
+            } else {
+                cx.propagate();
+            }
             return;
         }
         self.focus.focus(window, cx);

@@ -3,7 +3,9 @@
 //! fields, `preview_shown` and the switch).
 
 use super::*;
+use crate::ui_tokens::reader;
 use crate::ui_tokens::size::TERMINAL_PADDING;
+use gpui::{Anchor, Div, List, relative};
 
 impl FileTab {
     /// A link clicked in the Preview (M11ac, `md_preview::link_target`): a web or mail link
@@ -156,6 +158,26 @@ impl FileTab {
         }
     }
 
+    /// Whether the narrow outline's panel is open (M11ai Task 9): opened by its button, and
+    /// only while the outline is narrow (`outline_shown() == Some(false)`).
+    pub fn outline_panel_open(&self) -> bool {
+        self.outline_panel && self.outline_shown() == Some(false)
+    }
+
+    /// The narrow outline's button clicked: its panel opens, or (open) closes.
+    fn toggle_outline_panel(&mut self, cx: &mut Context<Self>) {
+        self.outline_panel = !self.outline_panel_open();
+        cx.notify();
+    }
+
+    /// The narrow outline's panel closes (Esc, a press outside it; an entry's click, Preview
+    /// off, ⌘F, a mode switch and the outline turning wide clear the flag where they happen).
+    pub(super) fn close_outline_panel(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.outline_panel) {
+            cx.notify();
+        }
+    }
+
     /// A press at `p` in the Preview's scrollbar zone (M11ae): the thumb is grabbed, or jumps to
     /// centre on the press and is dragged on, as in the code view. Whether it was in the zone
     /// (then the press goes no further: the list's links and diagrams get the rest).
@@ -281,8 +303,12 @@ impl FileTab {
         let has_outline = !read.plan.outline.is_empty();
         let column = (self.outline_shown() == Some(true))
             .then(|| self.outline_column(&read, md_preview::Colours::of(&theme), cx));
+        // M11ai Task 9: narrower, a button at the Preview's top-right instead, and under it,
+        // while open, the outline as a floating panel.
+        let button = (self.outline_shown() == Some(false))
+            .then(|| self.outline_button(&read, theme.ui(), md_preview::Colours::of(&theme), cx));
         #[cfg(feature = "ui-shots")]
-        if column.is_none() {
+        if column.is_none() && !self.outline_panel_open() {
             self.outline_drawn.borrow_mut().clear();
         }
         let view = cx.entity().downgrade();
@@ -350,6 +376,7 @@ impl FileTab {
             }),
         };
         let (bar, ink, state) = (self.scrollbar, theme.ui().text, self.preview_list.clone());
+        let progress = md_preview::Colours::of(&theme).progress;
         let view = cx.entity().downgrade();
         let prepaint = {
             let (fits, width, due) = (
@@ -361,7 +388,8 @@ impl FileTab {
             // M11ai Task 8 (plan-time calls 12, 13): the Preview's width as laid out decides
             // whether the outline's column fits (a layout cache, as `fits_side`): when that
             // changes, the tab is drawn again once (its rows measured again if the reader's
-            // area changed). A width change, or a check asked for since the last layout (a
+            // area changed; Task 9: turned wide, the narrow outline's panel closes there, out
+            // of drawing). A width change, or a check asked for since the last layout (a
             // remeasure, a reload, a jump, a scrollbar drag), works out the current entry at
             // the start of the next frame, once, from this layout.
             move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
@@ -376,6 +404,9 @@ impl FileTab {
                             if reflow {
                                 this.preview_list.remeasure();
                                 this.track_due.set(true);
+                            }
+                            if fit {
+                                this.outline_panel = false;
                             }
                             cx.notify();
                         })
@@ -405,11 +436,20 @@ impl FileTab {
                 .size_full(),
             )
             .children(column)
+            .children(button)
             // M11ae: the scrollbar over the list: its thumb (the fade read from the clock; the
             // fade task redraws), and the 12 pt edge zone's presses, taken before the list's
             // own (bubbling goes last-registered first); presses elsewhere reach the list.
+            // M11ai Task 9: the reading-progress line along the Preview's top edge, its length
+            // the share scrolled past as the scrollbar reckons it (none when the doc fits).
             .child(
-                canvas(prepaint, move |_, hitbox, window, _| {
+                canvas(prepaint, move |bounds, hitbox, window, _| {
+                    if let Some(share) = progress_of(preview_track(&state))
+                        && share > 0.0
+                    {
+                        let line = size(bounds.size.width * share, px(reader::PROGRESS));
+                        window.paint_quad(fill(Bounds::new(bounds.origin, line), hsla(progress)));
+                    }
                     let now = Instant::now();
                     if bar.is_shown(now)
                         && let Some(t) = preview_track(&state)
@@ -715,6 +755,14 @@ pub(super) fn outline_fits(width: f32) -> bool {
     width >= MEASURE + 2.0 * TERMINAL_PADDING.0 + OUTLINE_GAP + OUTLINE_W
 }
 
+/// The reading-progress line's share of `track` (M11ai Task 9): its offset over the room to
+/// scroll, kept within 0..1; None without a track (the doc fits).
+pub(super) fn progress_of(track: Option<Track>) -> Option<f32> {
+    let t = track?;
+    let room = t.content - t.viewport;
+    (room > 0.0).then(|| (t.offset / room).clamp(0.0, 1.0))
+}
+
 /// "On this page"'s current entry worked out at the start of the next frame (`track_heading`):
 /// out of any borrow of the list, and after the layout drawn last.
 pub(super) fn track_next_frame(view: WeakEntity<FileTab>, window: &Window) {
@@ -725,21 +773,57 @@ pub(super) fn track_next_frame(view: WeakEntity<FileTab>, window: &Window) {
 
 impl FileTab {
     /// "On this page" as a column (M11ai Task 8): `OUTLINE_W` wide, `TERMINAL_PADDING` from the
-    /// Preview's right and its top; a dim caption, then the entries in a list of their own
-    /// (only those in sight drawn; its own scroll, the wheel over it not reaching the text).
-    /// Each entry is an `OUTLINE_ROW` row of `OUTLINE_TEXT` text on one line (a long one ends
-    /// in "…", its full text in a tooltip), a level-3 heading's `OUTLINE_INDENT` in; the
-    /// current one in the accent with an `OUTLINE_BAR` bar on its left, the rest dim; a
-    /// hovered one on the panel hover fill. A click jumps to its heading.
+    /// Preview's right and its top; a dim caption, then the entries (`outline_entries`) in a
+    /// list of their own (its own scroll, the wheel over it not reaching the text).
     fn outline_column(
         &self,
         read: &Rc<md_preview::ReaderDoc>,
         c: md_preview::Colours,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        use crate::ui_tokens::reader::{
-            OUTLINE_BAR, OUTLINE_INDENT, OUTLINE_PAD, OUTLINE_ROW, OUTLINE_TEXT, OUTLINE_W,
+        use crate::ui_tokens::reader::{OUTLINE_TEXT, OUTLINE_W};
+        let look = md_preview::OutlineLook {
+            current: c.outline_current,
+            dim: c.outline_dim,
+            bar: c.outline_bar,
+            hover: c.outline_hover,
         };
+        let rows = self
+            .outline_entries(read, look, false, cx)
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full();
+        div()
+            .id("md-outline")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(px(TERMINAL_PADDING.0))
+            .w(px(OUTLINE_W))
+            .pt(px(TERMINAL_PADDING.1))
+            .flex()
+            .flex_col()
+            .text_size(px(OUTLINE_TEXT))
+            .occlude()
+            .child(outline_caption(c.dim))
+            .child(rows)
+            .into_any_element()
+    }
+
+    /// "On this page"'s entries in its own list (only those in sight drawn), in `look`'s
+    /// colours (M11ai Task 8; Task 9: the narrow panel's too, where a click also closes it).
+    /// Each entry is an `OUTLINE_ROW` row of text on one line (a long one ends in "…", its full
+    /// text in a tooltip), a level-3 heading's `OUTLINE_INDENT` in; the current one in the
+    /// accent with an `OUTLINE_BAR` bar on its left, the rest dim; a hovered one on the hover
+    /// fill. A click jumps to its heading.
+    fn outline_entries(
+        &self,
+        read: &Rc<md_preview::ReaderDoc>,
+        look: md_preview::OutlineLook,
+        in_panel: bool,
+        cx: &mut Context<Self>,
+    ) -> List {
+        use crate::ui_tokens::reader::{OUTLINE_BAR, OUTLINE_INDENT, OUTLINE_PAD, OUTLINE_ROW};
         let plan = &read.plan;
         let entries: Rc<Vec<(SharedString, bool)>> = Rc::new(
             plan.outline
@@ -754,14 +838,12 @@ impl FileTab {
             self.outline_drawn.borrow_mut().clear();
             self.outline_drawn.clone()
         };
-        let caption = div()
-            .h(px(OUTLINE_ROW))
-            .pl(px(OUTLINE_PAD))
-            .flex()
-            .items_center()
-            .text_color(hsla(c.dim))
-            .child("On this page");
-        let rows = list(self.outline_list.clone(), move |i, _, _| {
+        let id = if in_panel {
+            "md-outline-panel-entry"
+        } else {
+            "md-outline"
+        };
+        list(self.outline_list.clone(), move |i, _, _| {
             let Some((text, indent)) = entries.get(i).cloned() else {
                 return div().into_any_element();
             };
@@ -770,19 +852,19 @@ impl FileTab {
             let tip = text.clone();
             let inset = OUTLINE_PAD - OUTLINE_BAR + if indent { OUTLINE_INDENT } else { 0.0 };
             let entry = div()
-                .id(("md-outline", i))
+                .id((id, i))
                 .h(px(OUTLINE_ROW))
                 .w_full()
                 .flex()
                 .flex_row()
                 .items_center()
                 .cursor_pointer()
-                .hover(move |d| d.bg(hsla(c.outline_hover)))
+                .hover(move |d| d.bg(hsla(look.hover)))
                 .child(
                     div()
                         .w(px(OUTLINE_BAR))
                         .h_full()
-                        .when(on, |d| d.bg(hsla(c.outline_bar))),
+                        .when(on, |d| d.bg(hsla(look.bar))),
                 )
                 .child(
                     div()
@@ -790,12 +872,18 @@ impl FileTab {
                         .min_w(px(0.0))
                         .pl(px(inset))
                         .truncate()
-                        .text_color(hsla(if on { c.outline_current } else { c.outline_dim }))
+                        .text_color(hsla(if on { look.current } else { look.dim }))
                         .child(text),
                 )
                 .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone())).into() })
                 .on_click(move |_, _, cx| {
-                    view.update(cx, |this, cx| this.outline_jump(i, cx)).ok();
+                    view.update(cx, |this, cx| {
+                        if in_panel {
+                            this.outline_panel = false;
+                        }
+                        this.outline_jump(i, cx);
+                    })
+                    .ok();
                 });
             let row = div().w_full().child(entry);
             #[cfg(feature = "ui-shots")]
@@ -809,25 +897,101 @@ impl FileTab {
             };
             row.into_any_element()
         })
-        .flex_1()
-        .min_h(px(0.0))
-        .w_full();
+    }
+
+    /// The narrow outline's button (M11ai Task 9): an `Outline` glyph button (tooltip
+    /// `On this page`) `TERMINAL_PADDING` in from the Preview's top-right corner (where it is
+    /// laid out is kept: a press there is the button's, not one outside the panel); while open,
+    /// the outline hangs under it as a floating panel (`outline_panel`).
+    fn outline_button(
+        &self,
+        read: &Rc<md_preview::ReaderDoc>,
+        ui: UiColors,
+        c: md_preview::Colours,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.outline_panel_open();
+        let laid_out = self.outline_button.clone();
+        let panel = open.then(|| self.outline_panel(read, ui, c, cx));
         div()
-            .id("md-outline")
             .absolute()
-            .top_0()
-            .bottom_0()
+            .top(px(TERMINAL_PADDING.1))
             .right(px(TERMINAL_PADDING.0))
-            .w(px(OUTLINE_W))
-            .pt(px(TERMINAL_PADDING.1))
-            .flex()
-            .flex_col()
-            .text_size(px(OUTLINE_TEXT))
             .occlude()
-            .child(caption)
-            .child(rows)
+            .child(Self::icon_button(
+                "md-outline-button",
+                Glyph::Outline,
+                "On this page",
+                open,
+                ui,
+                |this, _, cx| this.toggle_outline_panel(cx),
+                cx,
+            ))
+            .children(panel)
+            .on_children_prepainted(move |bounds, _, _| laid_out.set(bounds.first().copied()))
             .into_any_element()
     }
+
+    /// The narrow outline's floating panel (M11ai Task 9): the overlay panel (`OUTLINE_W`
+    /// wide) hung `OUTLINE_PANEL_GAP` under its button, right edges together (as the agent
+    /// box's menus hang theirs: deferred, anchored, kept in the window), with the caption and
+    /// the entries in the panel's colours (at most `OUTLINE_PANEL_ROWS` at once; more scroll).
+    /// A press outside it (not on the button, whose click closes it) closes it.
+    fn outline_panel(
+        &self,
+        read: &Rc<md_preview::ReaderDoc>,
+        ui: UiColors,
+        c: md_preview::Colours,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::ui_tokens::reader::{
+            OUTLINE_PANEL_GAP, OUTLINE_PANEL_ROWS, OUTLINE_ROW, OUTLINE_TEXT, OUTLINE_W,
+        };
+        let look = c.outline_panel;
+        let shown = read.plan.outline.len().min(OUTLINE_PANEL_ROWS);
+        let rows = self
+            .outline_entries(read, look, true, cx)
+            .h(px(shown as f32 * OUTLINE_ROW))
+            .w_full();
+        let panel = crate::overlay_panel::shell(&ui, OUTLINE_W)
+            .id("md-outline-panel")
+            .gap(px(0.0))
+            .text_size(px(OUTLINE_TEXT))
+            .occlude()
+            .child(outline_caption(look.dim))
+            .child(rows);
+        let button = self.outline_button.clone();
+        div()
+            .absolute()
+            .top(relative(1.0))
+            .right_0()
+            .child(deferred(
+                anchored()
+                    .anchor(Anchor::TopRight)
+                    .offset(point(px(0.0), px(OUTLINE_PANEL_GAP)))
+                    .snap_to_window_with_margin(px(OUTLINE_PANEL_GAP))
+                    .child(div().child(panel).on_mouse_down_out(cx.listener(
+                        move |this, e: &MouseDownEvent, _, cx| {
+                            if !button.get().is_some_and(|b| b.contains(&e.position)) {
+                                this.close_outline_panel(cx);
+                            }
+                        },
+                    ))),
+            ))
+            .into_any_element()
+    }
+}
+
+/// "On this page"'s dim caption, an `OUTLINE_ROW` row, its text `OUTLINE_PAD` in.
+fn outline_caption(dim: Rgb) -> Div {
+    use crate::ui_tokens::reader::{OUTLINE_PAD, OUTLINE_ROW};
+    div()
+        .h(px(OUTLINE_ROW))
+        .pl(px(OUTLINE_PAD))
+        .flex()
+        .items_center()
+        .text_color(hsla(dim))
+        .child("On this page")
 }
 
 /// What the scenes read of "On this page" (M11ai Task 8).
@@ -842,6 +1006,22 @@ impl FileTab {
     /// column does not show).
     pub fn outline_entry_bounds(&self, entry: usize) -> Option<Bounds<Pixels>> {
         self.outline_drawn.borrow().get(&entry).copied()
+    }
+
+    /// The narrow outline's button as last laid out (M11ai Task 9; none unless narrow).
+    pub fn outline_button_bounds(&self) -> Option<Bounds<Pixels>> {
+        (self.outline_shown() == Some(false))
+            .then(|| self.outline_button.get())
+            .flatten()
+    }
+
+    /// The reading-progress line's share of the Preview's width (M11ai Task 9; None: hidden,
+    /// the doc fits or no Preview).
+    pub fn progress_share(&self) -> Option<f32> {
+        if !self.preview_shown() {
+            return None;
+        }
+        progress_of(preview_track(&self.preview_list))
     }
 }
 
@@ -859,5 +1039,22 @@ mod tests {
         assert!(outline_fits(1200.0));
         assert!(!outline_fits(from - 1.0));
         assert!(!outline_fits(700.0));
+    }
+
+    /// The reading-progress line's share (M11ai Task 9): the scroll offset over the room to
+    /// scroll (content less the view), 0 at the top and 1 at the end, kept within 0..1; none
+    /// when the doc fits (no track).
+    #[test]
+    fn the_progress_share_is_the_offset_over_the_room_to_scroll() {
+        let area = Bounds::new(point(px(0.0), px(40.0)), size(px(700.0), px(500.0)));
+        let share = |content: f32, offset: f32| progress_of(Track::of_list(area, content, offset));
+        assert_eq!(share(1500.0, 0.0), Some(0.0));
+        assert_eq!(share(1500.0, 250.0), Some(0.25));
+        assert_eq!(share(1500.0, 500.0), Some(0.5));
+        assert_eq!(share(1500.0, 1000.0), Some(1.0));
+        assert_eq!(share(1500.0, 1200.0), Some(1.0), "kept within 0..1");
+        assert_eq!(share(1500.0, -30.0), Some(0.0), "kept within 0..1");
+        assert_eq!(share(500.0, 0.0), None, "the doc fits");
+        assert_eq!(share(300.0, 0.0), None, "the doc fits");
     }
 }

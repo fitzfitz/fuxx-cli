@@ -104,6 +104,38 @@ pub(super) const SCENES: &[Scene] = &[
             "src/ui_tokens.rs",
         ],
     },
+    Scene {
+        name: "file-tab-md-reader-narrow",
+        run: file_tab_md_reader_narrow_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/file_tab_preview.rs",
+            "src/md_preview.rs",
+            "src/md_reader.rs",
+            "src/agent_markdown.rs",
+            "src/overlay_panel.rs",
+            "src/tab_bar.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-tab-md-reader-progress",
+        run: file_tab_md_reader_progress_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/file_tab_preview.rs",
+            "src/md_preview.rs",
+            "src/md_reader.rs",
+            "src/agent_markdown.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
 ];
 
 /// A made-up "Setup guide": front matter, two badge rows, a title, sections and a subsection,
@@ -2208,6 +2240,629 @@ fn file_tab_md_reader_outline_scenes() {
         };
         let path = shoot_with(
             "file-tab-md-reader-outline-none",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), one.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// A frame of the reader scenes (M11ai Task 9): a refresh, the effects settled.
+fn reader_frame(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
+    cx.update_window(window, |_, window, _| window.refresh())
+        .expect("refresh");
+    cx.run_until_parked();
+}
+
+/// A frame, then each next frame something asked for (the current entry is worked out at the
+/// start of the frame after a scroll; a fit change draws the tab again), each drawn.
+fn reader_settle(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
+    reader_frame(cx, window);
+    for _ in 0..10 {
+        if !next_frame(cx, window) {
+            break;
+        }
+        reader_frame(cx, window);
+    }
+}
+
+/// The file tab's Preview turned on with its switch.
+fn reader_preview_on(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &gpui::Entity<crate::file_tab::FileTab>,
+) {
+    reader_settle(cx, window);
+    let button = cx
+        .read(|cx| tab.read(cx).preview_bounds())
+        .expect("Preview is drawn");
+    cx.simulate_click(window, button.center(), gpui::Modifiers::none());
+    reader_settle(cx, window);
+    reader_settle(cx, window);
+}
+
+/// A wheel of `lines` down at `at`, then settled.
+fn reader_wheel(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    at: gpui::Point<Pixels>,
+    lines: f32,
+) {
+    use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+    cx.simulate_event(
+        window,
+        ScrollWheelEvent {
+            position: at,
+            delta: ScrollDelta::Lines(point(0.0, -lines)),
+            modifiers: Modifiers::none(),
+            touch_phase: TouchPhase::Moved,
+        },
+    );
+    reader_settle(cx, window);
+}
+
+/// The "On this page" entry whose heading reads `text`.
+fn reader_entry_of(
+    cx: &mut VisualTestAppContext,
+    tab: &gpui::Entity<crate::file_tab::FileTab>,
+    text: &str,
+) -> usize {
+    let doc = cx
+        .read(|cx| tab.read(cx).reader_doc())
+        .expect("the reader's document");
+    doc.plan
+        .outline
+        .iter()
+        .position(|e| doc.plan.headings[e.heading].text == text)
+        .unwrap_or_else(|| panic!("the entry {text}"))
+}
+
+/// The list row of entry `entry`'s heading.
+fn reader_entry_row(
+    cx: &mut VisualTestAppContext,
+    tab: &gpui::Entity<crate::file_tab::FileTab>,
+    entry: usize,
+) -> usize {
+    let doc = cx
+        .read(|cx| tab.read(cx).reader_doc())
+        .expect("the reader's document");
+    doc.plan
+        .row_of_block(doc.plan.headings[doc.plan.outline[entry].heading].block)
+}
+
+/// The fixtures of Task 9's scenes: GUIDE.md (`outline_fixture()`) and ONE.md (fits a 600 pt
+/// Preview).
+fn reader_task_9_fixtures(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(name);
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let guide = dir.join("GUIDE.md");
+    std::fs::write(&guide, outline_fixture()).expect("GUIDE.md");
+    let one = dir.join("ONE.md");
+    std::fs::write(
+        &one,
+        "# One section\n\nA short note with a single section under its title.\n\n\
+         ## The only section\n\nThere is nothing else to read here.\n",
+    )
+    .expect("ONE.md");
+    (guide, one)
+}
+
+/// M11ai Task 9's narrow "On this page", on `outline_fixture()` (GUIDE.md), in both themes:
+/// - `file-tab-md-reader-narrow` (700 × 600): `outline_shown() == Some(false)`; the `Outline`
+///   button drawn at the Preview's top-right (`TERMINAL_PADDING` in), the panel closed. A click
+///   opens the panel under it (its entries below the button, their right edge by the button's);
+///   a click on section 8's entry: its heading at the top `jump_offset` in, the entry current,
+///   the panel closed. Open again, Esc closes it (a second Esc leaves Preview on); open again, a
+///   press on the reader closes it; a click on the button while open closes it; ⌘F, Preview off
+///   and a mode switch (each turned back) each close it.
+/// - `file-tab-md-reader-narrow-panel` (700 × 600): wheel steps until section 2 is current,
+///   then the panel opened: the current entry the same, its bar in the panel's bar colour (the
+///   entry above has none). Shot then.
+/// - `file-tab-md-reader-narrow-wide` (1,200 × 600, the tab 700 wide in a host): the panel
+///   open, the tab widened to 1,200: the column shows and the panel is closed (and no button);
+///   narrowed back: the button again, the panel still closed.
+fn file_tab_md_reader_narrow_scenes() {
+    use crate::file_tab::FileTab;
+    use crate::layout_model::FileMode;
+    use crate::md_reader::jump_offset;
+    use crate::ui_tokens::reader::{HEADING_ABOVE, OUTLINE_BAR, OUTLINE_W};
+    use crate::ui_tokens::size::TERMINAL_PADDING;
+    use gpui::{Entity, Modifiers};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// The tab in a pane `width` wide (the window stays as it is).
+    struct WideHost {
+        tab: Entity<FileTab>,
+        width: Pixels,
+    }
+    impl Render for WideHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_row()
+                .child(div().h_full().w(self.width).flex().child(self.tab.clone()))
+        }
+    }
+
+    let (guide, _) = reader_task_9_fixtures("fuxx-ui-shots-md-reader-narrow");
+    type TabSlot = Rc<RefCell<Option<Entity<FileTab>>>>;
+    let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
+    let (side, top_pad) = TERMINAL_PADDING;
+    let click = |cx: &mut VisualTestAppContext, window, at: gpui::Point<Pixels>| {
+        cx.simulate_mouse_move(window, at, None, Modifiers::none());
+        cx.simulate_click(window, at, Modifiers::none());
+        reader_settle(cx, window);
+    };
+    let open = move |cx: &mut VisualTestAppContext, window, tab: &Entity<FileTab>, n: &str| {
+        let b = cx
+            .read(|cx| tab.read(cx).outline_button_bounds())
+            .unwrap_or_else(|| panic!("{n}: the button is drawn"));
+        click(cx, window, b.center());
+        assert!(
+            cx.read(|cx| tab.read(cx).outline_panel_open()),
+            "{n}: the button opens the panel"
+        );
+        b
+    };
+    let is_open = |cx: &mut VisualTestAppContext, tab: &Entity<FileTab>| {
+        cx.read(|cx| tab.read(cx).outline_panel_open())
+    };
+
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let colours = crate::md_preview::Colours::of(&theme);
+        let build_for = |slot: TabSlot, path: std::path::PathBuf| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                cx.bind_keys(crate::key_bindings());
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path.clone(), FileMode::Plain, window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+
+        // The button, the panel and what closes it.
+        let n = format!("file-tab-md-reader-narrow-{slug}");
+        let dims = size(px(700.0), px(600.0));
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                reader_preview_on(cx, window, &tab);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_shown()),
+                    Some(false),
+                    "{n}: too narrow for the column"
+                );
+                let view = cx.read(|cx| tab.read(cx).preview_list()).viewport_bounds();
+                let b = cx
+                    .read(|cx| tab.read(cx).outline_button_bounds())
+                    .unwrap_or_else(|| panic!("{n}: the button is drawn"));
+                println!("ui-shots: {n}: the button at {b:?}, the Preview at {view:?}");
+                assert!(
+                    (f32::from(b.right()) - (f32::from(view.right()) - side)).abs() <= 0.5
+                        && (f32::from(b.top()) - (f32::from(view.top()) + top_pad)).abs() <= 0.5,
+                    "{n}: the button {b:?} is not at the Preview's top-right ({view:?})"
+                );
+                // Its glyph: ink in its box.
+                let shot = frame_now(cx, window);
+                let inked = (0..24).any(|i| {
+                    (0..24).any(|j| {
+                        let p = pixel_at(
+                            &shot,
+                            dims,
+                            f32::from(b.left()) + i as f32 * f32::from(b.size.width) / 24.0,
+                            f32::from(b.top()) + j as f32 * f32::from(b.size.height) / 24.0,
+                        );
+                        gap(p, theme.background) > 60
+                    })
+                });
+                assert!(inked, "{n}: the button's glyph is drawn");
+                assert!(!is_open(cx, &tab), "{n}: the panel starts closed");
+
+                // Open: the entries under the button, as wide as the panel lets them be.
+                let b = open(cx, window, &tab, &n);
+                for e in 0..5 {
+                    let r = cx
+                        .read(|cx| tab.read(cx).outline_entry_bounds(e))
+                        .unwrap_or_else(|| panic!("{n}: panel entry {e} is drawn"));
+                    assert!(
+                        r.top() >= b.bottom()
+                            && f32::from(r.right()) <= f32::from(b.right()) + 0.5
+                            && f32::from(r.left()) >= f32::from(b.right()) - OUTLINE_W - 0.5,
+                        "{n}: panel entry {e} at {r:?}, not under the button {b:?}"
+                    );
+                }
+
+                // An entry's click jumps there and closes the panel.
+                let eight = reader_entry_of(cx, &tab, "Section 8");
+                let r = cx
+                    .read(|cx| tab.read(cx).outline_entry_bounds(eight))
+                    .unwrap_or_else(|| panic!("{n}: section 8's entry is drawn"));
+                click(cx, window, r.center());
+                let list = cx.read(|cx| tab.read(cx).preview_list());
+                let top = list.logical_scroll_top();
+                assert_eq!(
+                    (top.item_ix, f32::from(top.offset_in_item)),
+                    (
+                        reader_entry_row(cx, &tab, eight),
+                        jump_offset(HEADING_ABOVE)
+                    ),
+                    "{n}: section 8's heading at the top"
+                );
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_current()),
+                    Some(eight),
+                    "{n}: section 8 is current"
+                );
+                assert!(!is_open(cx, &tab), "{n}: an entry's click closes the panel");
+
+                // Esc closes it; with it closed, Esc leaves the Preview as it is.
+                open(cx, window, &tab, &n);
+                cx.simulate_keystrokes(window, "escape");
+                reader_settle(cx, window);
+                assert!(!is_open(cx, &tab), "{n}: Esc closes the panel");
+                cx.simulate_keystrokes(window, "escape");
+                reader_settle(cx, window);
+                assert!(
+                    cx.read(|cx| tab.read(cx).preview_shown()),
+                    "{n}: a second Esc leaves Preview on"
+                );
+
+                // A press on the reader closes it.
+                open(cx, window, &tab, &n);
+                let reader = point(view.left() + px(120.0), view.center().y);
+                click(cx, window, reader);
+                assert!(!is_open(cx, &tab), "{n}: a press outside closes the panel");
+
+                // The button again closes it.
+                let b = open(cx, window, &tab, &n);
+                click(cx, window, b.center());
+                assert!(!is_open(cx, &tab), "{n}: the button closes the open panel");
+
+                // ⌘F (Preview off for the find bar), then Preview on again: closed.
+                open(cx, window, &tab, &n);
+                cx.simulate_keystrokes(window, "cmd-f");
+                reader_settle(cx, window);
+                assert!(
+                    !cx.read(|cx| tab.read(cx).preview_shown()),
+                    "{n}: ⌘F turns Preview off"
+                );
+                let preview = |cx: &mut VisualTestAppContext, on: bool| {
+                    cx.update_window(window, |_, window, cx| {
+                        tab.update(cx, |t, cx| t.choose_preview_for_shots(on, window, cx))
+                    })
+                    .expect("the switch");
+                    reader_settle(cx, window);
+                    reader_settle(cx, window);
+                };
+                preview(cx, true);
+                assert!(!is_open(cx, &tab), "{n}: ⌘F closed the panel");
+
+                // Preview off and on: closed.
+                open(cx, window, &tab, &n);
+                preview(cx, false);
+                preview(cx, true);
+                assert!(!is_open(cx, &tab), "{n}: Preview off closed the panel");
+
+                // A mode switch and back: closed.
+                open(cx, window, &tab, &n);
+                for mode in [FileMode::Diff, FileMode::Plain] {
+                    cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(mode, cx)));
+                    reader_settle(cx, window);
+                }
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_shown()),
+                    Some(false),
+                    "{n}: back in Preview"
+                );
+                assert!(!is_open(cx, &tab), "{n}: a mode switch closed the panel");
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-narrow",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), guide.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+
+        // The panel open, with a current entry (the shot).
+        let n = format!("file-tab-md-reader-narrow-panel-{slug}");
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                reader_preview_on(cx, window, &tab);
+                let view = cx.read(|cx| tab.read(cx).preview_list()).viewport_bounds();
+                let at = point(view.left() + px(120.0), view.center().y);
+                let two = reader_entry_of(cx, &tab, "Section 2");
+                let mut steps = 0;
+                while cx.read(|cx| tab.read(cx).outline_current()) != Some(two) {
+                    reader_wheel(cx, window, at, 3.0);
+                    steps += 1;
+                    assert!(steps < 100, "{n}: section 2 is never current");
+                }
+                open(cx, window, &tab, &n);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_current()),
+                    Some(two),
+                    "{n}: the same current entry"
+                );
+                // Away from the entries, so none is hovered in the shot.
+                cx.simulate_mouse_move(
+                    window,
+                    point(view.left() + px(40.0), view.bottom() - px(20.0)),
+                    None,
+                    Modifiers::none(),
+                );
+                reader_settle(cx, window);
+                let shot = frame_now(cx, window);
+                let b = cx
+                    .read(|cx| tab.read(cx).outline_entry_bounds(two))
+                    .expect("section 2's entry");
+                let x = f32::from(b.left()) + OUTLINE_BAR / 2.0;
+                let bar = pixel_at(&shot, dims, x, f32::from(b.center().y));
+                assert!(
+                    gap(bar, colours.outline_panel.bar) <= 6,
+                    "{n}: section 2's bar {bar:?} is not {:?}",
+                    colours.outline_panel.bar
+                );
+                let above = cx
+                    .read(|cx| tab.read(cx).outline_entry_bounds(two - 1))
+                    .expect("section 1's entry");
+                let none = pixel_at(&shot, dims, x, f32::from(above.center().y));
+                assert!(
+                    gap(none, theme.ui().panel) <= 6,
+                    "{n}: section 1's entry has no bar ({none:?})"
+                );
+                assert!(is_open(cx, &tab), "{n}: open for the shot");
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-narrow-panel",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), guide.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+
+        // Wide again: the panel closes.
+        let n = format!("file-tab-md-reader-narrow-wide-{slug}");
+        let dims = size(px(1200.0), px(600.0));
+        type HostSlot = Rc<RefCell<Option<(Entity<FileTab>, Entity<WideHost>)>>>;
+        let slot: HostSlot = Rc::default();
+        let build = {
+            let (slot, path) = (slot.clone(), guide.clone());
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                cx.bind_keys(crate::key_bindings());
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path, FileMode::Plain, window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                let host = cx.new(|_| WideHost {
+                    tab: tab.clone(),
+                    width: px(700.0),
+                });
+                *slot.borrow_mut() = Some((tab, host.clone()));
+                host.into()
+            }
+        };
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let (tab, host) = slot.borrow().clone().expect("the tab");
+                reader_preview_on(cx, window, &tab);
+                let width = |cx: &mut VisualTestAppContext, w: f32| {
+                    cx.update(|cx| {
+                        host.update(cx, |h, cx| {
+                            h.width = px(w);
+                            cx.notify();
+                        })
+                    });
+                    reader_settle(cx, window);
+                    reader_settle(cx, window);
+                };
+                open(cx, window, &tab, &n);
+                width(cx, 1200.0);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_shown()),
+                    Some(true),
+                    "{n}: wide: the column"
+                );
+                assert!(!is_open(cx, &tab), "{n}: wide closes the panel");
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_button_bounds()),
+                    None,
+                    "{n}: wide: no button"
+                );
+                width(cx, 700.0);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_shown()),
+                    Some(false),
+                    "{n}: narrow again"
+                );
+                assert!(
+                    cx.read(|cx| tab.read(cx).outline_button_bounds()).is_some(),
+                    "{n}: narrow again: the button"
+                );
+                assert!(!is_open(cx, &tab), "{n}: narrow again: still closed");
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-narrow-wide",
+            slug,
+            &theme,
+            dims,
+            build,
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// M11ai Task 9's reading-progress line, in both themes (700 × 600):
+/// - `file-tab-md-reader-progress` on `outline_fixture()` (GUIDE.md): at the top
+///   `progress_share() == Some(0)` and no accent along the Preview's top edge past `PROGRESS`
+///   pt in. Wheel steps to about half-way: the share within 0.05 of the list's own (its offset
+///   over the room to scroll); along the top edge the line's colour up to that share of the
+///   width, and none past it. At the end (a wheel) the share is 1 and the line runs all along.
+/// - `file-tab-md-reader-progress-fits` on ONE.md (it fits): `None`, and no line.
+fn file_tab_md_reader_progress_scenes() {
+    use crate::file_tab::FileTab;
+    use crate::layout_model::FileMode;
+    use crate::ui_tokens::reader::PROGRESS;
+    use gpui::{Entity, ListState};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let (guide, one) = reader_task_9_fixtures("fuxx-ui-shots-md-reader-progress");
+    type TabSlot = Rc<RefCell<Option<Entity<FileTab>>>>;
+    let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
+    // The list's own share scrolled: its offset over the room to scroll.
+    let list_share = |list: &ListState| {
+        let height = f32::from(list.viewport_bounds().size.height);
+        let content = f32::from(list.max_offset_for_scrollbar().y) + height;
+        let offset = -f32::from(list.scroll_px_offset_for_scrollbar().y);
+        offset / (content - height)
+    };
+    // Clear of the scrollbar's zone at the Preview's right edge.
+    const CLEAR: f32 = 16.0;
+
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let line = crate::md_preview::Colours::of(&theme).progress;
+        let dims = size(px(700.0), px(600.0));
+        let build_for = |slot: TabSlot, path: std::path::PathBuf| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path.clone(), FileMode::Plain, window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+        // The pixels along the Preview's top edge (in its `PROGRESS` pt), from `from` to `to`
+        // every 6 pt: each the line's colour (`on`) or not.
+        let along = move |cx: &mut VisualTestAppContext,
+                          window: AnyWindowHandle,
+                          view: gpui::Bounds<Pixels>,
+                          (from, to): (f32, f32),
+                          on: bool,
+                          n: &str| {
+            let shot = frame_now(cx, window);
+            let y = f32::from(view.top()) + PROGRESS / 2.0;
+            let mut x = from;
+            while x <= to {
+                let p = pixel_at(&shot, dims, x, y);
+                if on {
+                    assert!(gap(p, line) <= 6, "{n}: at x {x}: {p:?} is not the line");
+                } else {
+                    assert!(gap(p, line) > 24, "{n}: at x {x}: {p:?} is the line");
+                }
+                x += 6.0;
+            }
+        };
+
+        let n = format!("file-tab-md-reader-progress-{slug}");
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                reader_preview_on(cx, window, &tab);
+                let list = cx.read(|cx| tab.read(cx).preview_list());
+                let view = list.viewport_bounds();
+                let (l, r) = (f32::from(view.left()), f32::from(view.right()));
+                let share = |cx: &mut VisualTestAppContext| {
+                    cx.read(|cx| tab.read(cx).progress_share())
+                        .unwrap_or_else(|| panic!("{n}: the line shows"))
+                };
+                // The top.
+                assert!(share(cx).abs() <= 0.001, "{n}: at the top, {}", share(cx));
+                along(cx, window, view, (l + PROGRESS + 1.0, r - CLEAR), false, &n);
+
+                // About half-way.
+                let at = point(view.left() + px(120.0), view.center().y);
+                let mut steps = 0;
+                while list_share(&list) < 0.45 {
+                    reader_wheel(cx, window, at, 3.0);
+                    steps += 1;
+                    assert!(steps < 300, "{n}: never half-way");
+                }
+                let (got, want) = (share(cx), list_share(&list));
+                println!("ui-shots: {n}: half-way after {steps} steps: {got} (the list's {want})");
+                assert!((got - want).abs() <= 0.05, "{n}: {got}, the list's {want}");
+                let end = l + got * (r - l);
+                along(cx, window, view, (l + 1.0, end - 3.0), true, &n);
+                along(cx, window, view, (end + 3.0, r - CLEAR), false, &n);
+
+                // The end.
+                reader_wheel(cx, window, at, 1000.0);
+                assert_eq!(list.is_scrolled_to_end(), Some(true), "{n}: at the end");
+                assert!(share(cx) >= 0.999, "{n}: at the end, {}", share(cx));
+                along(cx, window, view, (l + 1.0, r - 3.0), true, &n);
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-progress",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), guide.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+
+        let n = format!("file-tab-md-reader-progress-fits-{slug}");
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                reader_preview_on(cx, window, &tab);
+                assert!(
+                    cx.read(|cx| tab.read(cx).preview_shown()),
+                    "{n}: Preview shows"
+                );
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).progress_share()),
+                    None,
+                    "{n}: the doc fits: no line"
+                );
+                let view = cx.read(|cx| tab.read(cx).preview_list()).viewport_bounds();
+                let (l, r) = (f32::from(view.left()), f32::from(view.right()));
+                along(cx, window, view, (l + 1.0, r - CLEAR), false, &n);
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-progress-fits",
             slug,
             &theme,
             dims,
