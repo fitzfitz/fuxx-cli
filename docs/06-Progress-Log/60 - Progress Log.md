@@ -14,7 +14,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone (2026-11-18, latest):** **M11al — UI Uplift 3** 🟨 built (13 tasks + 8b, each reviewed; final-review fixes in), **merged to master 2026-11-18**, not pushed; waiting for your on-screen check (note 84, 14 items). M11ai (Markdown reader) resumes next, then M11ag.
+- **Current milestone (2026-11-18, latest):** **M11al — UI Uplift 3** 🟨 built (13 tasks + 8b, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`6dabcf9`); waiting for your on-screen check (note 84, 14 items). M11ai (Markdown reader) resumes next, then M11ag.
 - **Current milestone (2026-11-18, M11ah lane):** **M11ah — Code view upgrade** 🟨 built (all 13 tasks, each reviewed), **merged to master and pushed 2026-11-18**; waiting for your on-screen check (note 85, 15 items).
 - **Current milestone (2026-11-18, earlier):** **M11ak — Agent box** 🟨 built (15 tasks, reviewed; final-review fixes in), **merged to master and pushed**, waiting for your on-screen check (note 83).
 - **Previous snapshot (2026-11-17):** **M11af — Live changes** 🟨 built (8 tasks, reviewed, final-review fixes in), **merged to master and pushed (`d327d15`)**, waiting for your on-screen check (note 82). M11ae, M11aj and M11aa are built, merged and **pushed** (master `250faeb`). Your first look at M11aa: the agent tab's layout and flow are not what was discussed; revisit later. Your on-screen checks for notes 79, 80 and 81 are still open. Older history follows.
@@ -27,7 +27,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ## Entries
 
 ### 2026-11-18 — M11al UI Uplift 3: built, merged, waiting for your on-screen check
-- **Status:** 🟨 built on branch m11al-ui-uplift and **merged to master 2026-11-18** on your standing word (not pushed), waiting for your on-screen check. All 13 plan tasks
+- **Status:** 🟨 built on branch m11al-ui-uplift and **merged to master 2026-11-18** on your standing word, pushed on your word (`6dabcf9`), waiting for your on-screen check. All 13 plan tasks
   (0–12) plus Task 8b (your who-order ruling), each reviewed. The whole-branch review and its fix wave are pending,
   then the full ui-shots run again. Details, calls, limits and your 14-item check: note 84.
 - **Did:** every pane and the right panel sit in one floating card (rounded, soft shadow, 8 px in, flush against the
@@ -54,7 +54,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   200 inside the card's edges; Activity's header is 42 px; stale comments fixed.
 - **Numbers after the fix wave:** 1,962 tests pass (1 ignored); clippy 14/27 and 16/29 (unchanged); fmt clean. Full
   `scripts/ui-shots.sh`: 202 passed, 0 failed (131.9 s).
-- **Next:** your on-screen check; the push on your word. M11ai resumes, then M11ag.
+- **Next:** your on-screen check. M11ai resumes, then M11ag.
 
 ### 2026-11-18 — M11al UI Uplift 3: planned, building
 - **Status:** 📝 planned on your "go ahead with M11al": [[M11al Plan - UI Uplift 3]] — 13 tasks (Task 0 baselines

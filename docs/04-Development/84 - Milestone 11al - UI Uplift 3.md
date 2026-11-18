@@ -1,6 +1,6 @@
 # Milestone 11al — UI Uplift 3: one floating card, roomier sections
 
-**Status:** 🟨 built and **merged to master 2026-11-18** (not pushed), waiting for your on-screen check. All 13 plan
+**Status:** 🟨 built and **merged to master and pushed 2026-11-18** (`6dabcf9`), waiting for your on-screen check. All 13 plan
 tasks (0–12) plus 8b built 2026-11-18, each reviewed ([[M11al Plan - UI Uplift 3]]); the whole-branch review's fix wave
 is in, and the full ui-shots run passed 202 of 202. Design written 2026-11-18 on your "go ahead with M11al" (direction approved
 in mockups).
