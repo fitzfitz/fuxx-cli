@@ -2,17 +2,12 @@
 //! off before the parse; a `ReaderPlan` is worked out beside the parse, once per version: which
 //! top-level quotes are callouts, which paragraphs are badge rows, each heading's slug, and the
 //! "On this page" outline. Nothing here draws or touches GPUI, so all of it is tested.
-#![allow(dead_code)] // until Task 3 draws from it (Task 11 removes any that remains)
+#![allow(dead_code)] // the Preview draws from it as M11ai's tasks land (Task 11 removes any left)
 
 use crate::agent_markdown::{self, Md, Span};
+use crate::ui_tokens::reader::{FRONT_ROWS, JUMP_ROOM};
 use std::collections::HashMap;
 use std::path::Path;
-
-// Task 3 moves these two to `ui_tokens::reader` (FRONT_ROWS, JUMP_ROOM).
-/// Most key/value rows the front matter table shows; the rest are counted as "+ N more".
-const FRONT_ROWS: usize = 20;
-/// How far under the top of the Preview a jumped-to heading's text lands (pt).
-const JUMP_ROOM: f32 = 16.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrontTable {

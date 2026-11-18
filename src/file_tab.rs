@@ -4366,10 +4366,14 @@ pub struct FileTab {
     /// when a version is read and in each poll (`refresh_age`), never while drawing.
     age: Option<String>,
     /// M11ac: a Markdown file shown rendered (`md_preview`; only in File mode), the reader's
-    /// scroll (kept over a reload), and the blocks parsed for the version shown.
+    /// scroll (kept over a reload), and the file as read for the version shown (M11ai: its
+    /// blocks and reader plan).
     preview: bool,
     preview_list: ListState,
-    parsed: Option<(u64, Rc<Vec<Md>>)>,
+    parsed: Option<(u64, Rc<md_preview::ReaderDoc>)>,
+    /// M11ai: the Preview's rows as last drawn (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    reader_drawn: md_preview::Drawn,
     /// M11ac Part 2: what each block of the parsed version does as a Mermaid diagram, for the
     /// version and light or dark it was planned for (`mermaid::plan`), and how they were shown
     /// last frame.
@@ -4485,6 +4489,8 @@ impl FileTab {
             preview: false,
             preview_list: preview_list_of(0, cx.entity().downgrade()),
             parsed: None,
+            #[cfg(feature = "ui-shots")]
+            reader_drawn: Rc::default(),
             mermaid_plan: None,
             mermaid_shown: Rc::default(),
             live: Live::default(),
@@ -8063,6 +8069,17 @@ impl FileTab {
 
     pub fn parsed_version(&self) -> Option<u64> {
         self.parsed.as_ref().map(|(v, _)| *v)
+    }
+
+    /// M11ai: the file as the Preview read it (blocks and plan), for the version shown.
+    pub fn reader_doc(&self) -> Option<Rc<md_preview::ReaderDoc>> {
+        self.parsed.as_ref().map(|(_, read)| read.clone())
+    }
+
+    /// M11ai: each Preview row's content as last drawn (window points), by list row; only rows
+    /// in sight.
+    pub fn reader_drawn(&self) -> std::collections::BTreeMap<usize, Bounds<Pixels>> {
+        self.reader_drawn.borrow().clone()
     }
 
     /// The lines of the text shown.

@@ -3839,6 +3839,8 @@ impl Render for AgentTab {
                 }),
                 links: Cell::new(0),
                 mermaid: Rc::new(Vec::new()),
+                sizes: md_preview::Sizes::CHAT,
+                reader: None,
             },
             diff: diff_row_colours(&theme, theme.background),
             view: view.clone(),
