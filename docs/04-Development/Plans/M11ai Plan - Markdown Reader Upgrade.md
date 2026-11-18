@@ -14,8 +14,8 @@ updated: 2026-11-18
 | **Design (the spec)** | [[86 - Milestone 11ai - Markdown Reader Upgrade]] |
 | **Status** | 📝 planned 2026-11-18, from master `575d010` (M11ah and M11ak merged in) |
 | **Tasks done** | 0 / 12 |
-| **Baselines** | Task 0 fills this in |
-| **▶ Pick up here** | Task 0 |
+| **Baselines** | on commit 6c685ce: `cargo test --bin fuxx` 2024 passed, 1 ignored; clippy default 14 (bin) / 27 (test), `ui-shots` 16 / 29; `cargo fmt --check` clean; full `scripts/ui-shots.sh`: 205 passed, 0 failed, 167.2 s (no failures, no flake seen) |
+| **▶ Pick up here** | Task 1 |
 | **Decisions used** | Yours: "we already design it, layout is also built before. just go ahead" (design and its three open questions as AI's calls). The design's "AI's calls" and "Calls on the open questions". Plan-time calls below (AI's). |
 | **Needs your eyes** | 👀 the on-screen check in note 86, after Task 11 |
 
