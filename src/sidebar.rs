@@ -47,8 +47,8 @@ use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
 use crate::theme::{UiColors, mix};
 use crate::title_area::{
-    BELL_GROUP, FOOTER_BUTTON, FOOTER_GAP, NOTIFICATIONS_TIP, PREFERENCES_GROUP, PREFERENCES_TIP,
-    footer_icon, unseen_dot,
+    BELL_GROUP, FOOTER_BUTTON, FOOTER_GAP, FOOTER_NEW, FOOTER_SIDE, NOTIFICATIONS_TIP,
+    PREFERENCES_GROUP, PREFERENCES_TIP, footer_icon, unseen_dot,
 };
 use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
@@ -879,7 +879,7 @@ const SUB_LINE: f32 = 16.0;
 /// A header's + (a new workspace in the group), shown on hover.
 const ADD_BUTTON: f32 = 18.0;
 /// The footer under the rows; the resize strip along the right edge.
-pub(crate) const FOOTER: f32 = 36.0;
+pub(crate) const FOOTER: f32 = 62.0;
 const RESIZE_STRIP: f32 = 4.0;
 /// A row narrower than this leaves the age out, so the name keeps its room.
 const AGE_MIN_ROW: f32 = 220.0;
@@ -901,7 +901,11 @@ const NOT_LIVE: &str = "not live";
 /// A waiting row's button to its terminal (M11r).
 const OPEN: &str = "Open";
 /// The search button above the list (M11r): its height, words and keys.
-const SEARCH: f32 = 30.0;
+pub(crate) const SEARCH: f32 = 38.0;
+/// The margins around the search box: above, at the sides, below (M11al 2.2).
+pub(crate) const SEARCH_TOP: f32 = 4.0;
+pub(crate) const SEARCH_SIDE: f32 = 14.0;
+pub(crate) const SEARCH_BOTTOM: f32 = 10.0;
 const SEARCH_TEXT: &str = "Jump to a workspace\u{2026}";
 const SEARCH_KEYS: &str = "\u{2318}P";
 /// The footer's New button (M11r).
@@ -1244,14 +1248,14 @@ fn badge(status: Status, running: bool, ui: UiColors, surface: Rgb) -> Div {
 fn keycap(keys: &'static str, ui: UiColors) -> Div {
     div()
         .flex_none()
-        .px(px(5.0))
-        .h(px(16.0))
+        .px(px(6.0))
+        .py(px(1.0))
         .flex()
         .items_center()
-        .rounded(px(4.0))
+        .rounded(px(6.0))
         .border_1()
-        .border_color(hsla(ui.sidebar_border))
-        .text_size(px(text::META - 1.0))
+        .border_color(hsla(ui.card_border))
+        .text_size(px(text::KEYS))
         .text_color(hsla(ui.text_faint))
         .child(keys)
 }
@@ -1749,17 +1753,20 @@ impl Workspace {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(8.0))
-            .mx(px(ROW_INSET + CARD_PAD))
-            .mt(px(4.0))
+            .gap(px(10.0))
+            .mx(px(SEARCH_SIDE))
+            .mt(px(SEARCH_TOP))
+            .mb(px(SEARCH_BOTTOM))
             .h(px(SEARCH))
-            .px(px(10.0))
-            .rounded(px(ROW_RADIUS))
-            .bg(hsla(ui.row_hover))
-            .text_size(px(text::META + 1.0))
+            .px(px(12.0))
+            .rounded(px(10.0))
+            .bg(hsla(ui.raised))
+            .border_1()
+            .border_color(hsla(ui.card_border))
+            .text_size(px(text::UI))
             .text_color(hsla(ui.text_faint))
             .cursor_pointer()
-            .hover(|s| s.bg(hsla(ui.row_active)).text_color(hsla(ui.text_dim)))
+            .hover(|s| s.bg(hsla(ui.row_hover)).text_color(hsla(ui.text_dim)))
             .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
                 cx.stop_propagation()
             })
@@ -2782,11 +2789,22 @@ impl Workspace {
             .flex_none()
             .flex()
             .items_center()
+            .relative()
             .gap(px(FOOTER_GAP))
             .h(px(FOOTER))
-            .px(px(ROW_INSET))
-            .border_t_1()
-            .border_color(hsla(ui.sidebar_border))
+            .px(px(FOOTER_SIDE))
+            .py(px(12.0))
+            // The line on top is drawn over the padding, so the button sits 12 pt in from the
+            // footer's top and bottom (12 + 38 + 12 = `FOOTER`).
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(1.0))
+                    .bg(hsla(ui.card_border)),
+            )
             // "+ New Fuxxpace ⌘N" (M11r): the + menu, as the + was.
             .child(
                 button("sidebar-new")
@@ -2794,11 +2812,14 @@ impl Workspace {
                     .flex_1()
                     .min_w(px(0.0))
                     .justify_start()
-                    .gap(px(7.0))
-                    // The + where it was, in the middle of a footer button's room.
-                    .px(px(6.0))
-                    .bg(hsla(if open { ui.row_active } else { ui.row_hover }))
-                    .text_size(px(text::META + 1.0))
+                    .h(px(FOOTER_NEW))
+                    .gap(px(8.0))
+                    .px(px(12.0))
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(hsla(ui.card_border))
+                    .when(open, |b| b.bg(hsla(ui.row_active)))
+                    .text_size(px(text::UI))
                     .text_color(hsla(ui.text_dim))
                     .child(footer_icon(Glyph::Plus, ui, "sidebar-new", open))
                     .child(div().flex_1().min_w(px(0.0)).truncate().child(NEW_TEXT))

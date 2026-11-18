@@ -118,7 +118,9 @@ fn cached_panes() {
     use std::rc::Rc;
 
     let theme = shot_theme("Catppuccin Mocha");
-    let dims = size(px(640.0), px(400.0));
+    // Tall enough that the sidebar's list is not scrolled to the active row: a scroll is a
+    // redraw of the sidebar, not of the terminal.
+    let dims = size(px(640.0), px(400.0 + SIDEBAR_CHROME_GROWTH));
     let mut cx = ShotApp::new();
     let slot = Rc::new(RefCell::new(None));
     let window = {
@@ -167,7 +169,7 @@ fn cached_panes() {
 
 /// Sidebar rows as tabs, from real workspaces in both themes (the `sidebar` scene's eight
 /// sessions; claude orange, codex blue, tests green, the long one purple; shell active):
-/// - `tabs` and `tabs-narrow`: the rows with their colour dots and ⌘N, at 240 and 180 px (no
+/// - `tabs` and `tabs-narrow`: the rows with their colour dots and ⌘N, at 290 and 180 px (no
 ///   ages there).
 /// - `tabs-hover`: the pointer over codex: a × in its mark's place; `tabs-hover-close`: on the
 ///   × itself; `tabs-hover-active`: over shell, the active row (which shows its mark otherwise).
@@ -202,7 +204,11 @@ fn tab_scenes() {
             "tabs-menu",
             "tabs-switcher",
         ] {
-            let width = if scene == "tabs-narrow" { 180.0 } else { 240.0 };
+            let width = if scene == "tabs-narrow" {
+                180.0
+            } else {
+                ui_tokens::size::SIDEBAR_DEFAULT_WIDTH
+            };
             let dims = if scene == "tabs-narrow" {
                 size(px(720.0), px(600.0))
             } else {
@@ -2395,7 +2401,10 @@ fn tabs_minimal_scenes() {
         // shown, hovered): codex shrinks below `TAB_MIN_WIDTH` to fit the row, its tile, its
         // status dot and its × whole and drawn inside the row, left of the buttons; t1 keeps
         // `TAB_MIN_WIDTH` and is scrolled away.
-        let small = size(px(680.0), px(420.0));
+        // 680 pt over the old 240 pt sidebar: wider by what the default sidebar grew, so the panes
+        // stay about 215 pt each.
+        let small_w = 680.0 + (SIDEBAR_DEFAULT_WIDTH - 240.0);
+        let small = size(px(small_w), px(420.0));
         let slot: Slot = Rc::new(RefCell::new(None));
         let keep = slot.clone();
         let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -2439,7 +2448,7 @@ fn tabs_minimal_scenes() {
         let path = save_shot("tabs-minimal-narrow", slug, &shot);
         let n = format!("tabs-minimal-narrow-{slug}");
         let at = |x: f32, y: f32| pixel_at(&shot, small, x, y);
-        let scale = shot.width as f32 / 680.0;
+        let scale = shot.width as f32 / small_w;
         let in_box = |x0: f32, x1: f32, y0: f32, y1: f32| {
             let mut all = Vec::new();
             for dy in (y0 * scale) as usize..(y1 * scale) as usize {
@@ -2452,7 +2461,7 @@ fn tabs_minimal_scenes() {
         let tabs = places.borrow().clone();
         let (left, right) = (
             SIDEBAR_DEFAULT_WIDTH + HAIRLINE,
-            680.0 - CARD_INSET - HAIRLINE,
+            small_w - CARD_INSET - HAIRLINE,
         );
         let across = left + 0.5 * (right - left - HAIRLINE) + HAIRLINE / 2.0;
         let (row_left, row_right) = (

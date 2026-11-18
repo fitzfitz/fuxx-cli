@@ -38,6 +38,19 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "sidebar-band",
+        run: sidebar_band_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/sidebar.rs",
+            "src/title_area.rs",
+            "src/sidebar_toggle.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
         name: "sidebar-quiet",
         run: sidebar_quiet_scenes,
         themes: Themes::Both,
@@ -193,7 +206,7 @@ fn sidebar_scenes() {
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for (scene, width, dims) in [
-            ("sidebar", 240.0, dims),
+            ("sidebar", ui_tokens::size::SIDEBAR_DEFAULT_WIDTH, dims),
             ("sidebar-narrow", 180.0, size(px(720.0), px(600.0))),
             ("sidebar-wide", 400.0, dims),
         ] {
@@ -565,7 +578,7 @@ const ROWS: [ShotSession; 6] = [
     shot("notes", SCRATCH, Status::Idle, 0, SHELL_TEXT),
 ];
 
-/// The sidebar rows (M11b; compact in M11i), from real workspaces in both themes, at 240 pt
+/// The sidebar rows (M11b; compact in M11i), from real workspaces in both themes, at 290 pt
 /// (`sidebar-rows`) and 180 pt (`sidebar-rows-narrow`): deploy and claude pinned (📌, above
 /// every group header), claude waiting with "Needs input · question" under its name ("Needs
 /// input" alone at 180 pt); notes in no group, a gap under the pinned rows; each row in a repo
@@ -588,7 +601,10 @@ fn sidebar_row_scenes() {
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
-        for (scene, width) in [("sidebar-rows", 240.0), ("sidebar-rows-narrow", 180.0)] {
+        for (scene, width) in [
+            ("sidebar-rows", ui_tokens::size::SIDEBAR_DEFAULT_WIDTH),
+            ("sidebar-rows-narrow", 180.0),
+        ] {
             let dims = size(px(width + 300.0), px(720.0));
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
@@ -810,7 +826,8 @@ fn sidebar_selection_scenes() {
         shot("claude", API, Status::Waiting, 4 * 60, CLAUDE_PROMPT),
         shot("docs", API, Status::Idle, 0, SHELL_TEXT),
     ];
-    let dims = size(px(540.0), px(440.0));
+    // 440 pt over the old sidebar chrome: all five rows keep their room.
+    let dims = size(px(540.0), px(440.0 + SIDEBAR_CHROME_GROWTH));
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -1061,10 +1078,11 @@ fn sidebar_quiet_scenes() {
         shot("server", WEB, Status::Idle, 0, SHELL_TEXT),
         shot("deploy", INFRA, Status::Idle, 0, SHELL_TEXT),
     ];
-    // 460 pt over the old 22 pt status bar: the rows keep their room over M11al's roomier one.
+    // 460 pt over the old 22 pt status bar and the old sidebar chrome: the rows keep their room
+    // over M11al's roomier ones.
     let dims = size(
         px(520.0),
-        px(460.0 + (crate::ui_tokens::size::STATUS_BAR - 22.0)),
+        px(460.0 + (crate::ui_tokens::size::STATUS_BAR - 22.0) + SIDEBAR_CHROME_GROWTH),
     );
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
@@ -1206,5 +1224,131 @@ fn sidebar_quiet_scenes() {
             tick, 0,
             "{n}: infra (all idle) shows nothing after its name"
         );
+    }
+}
+
+/// The sidebar's search box and footer (M11al Task 7, spec 2.2 and 2.6), in both themes, in a
+/// new window (the default width): the search box `SEARCH` tall under the band at 4 / 14 / 10
+/// margins, `raised` fill, a 1 px `card_border` edge; the footer `FOOTER` tall with its 1 px
+/// top line, the "New Fuxxpace" button 38 tall (a `card_border` edge, no fill) reaching the
+/// bell's box a gap away; no line down the sidebar's right edge.
+///
+/// Panics unless a new window's sidebar is `SIDEBAR_DEFAULT_WIDTH` wide, the list starts 10 pt
+/// under the search box, and those edges and fills are read off the pixels.
+fn sidebar_band_scenes() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use crate::sidebar::{FOOTER, SEARCH, SEARCH_BOTTOM, SEARCH_SIDE, SEARCH_TOP};
+    use crate::title_area::{FOOTER_BUTTON, FOOTER_GAP, FOOTER_SIDE, footer_buttons};
+    use ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, STATUS_BAR, TOP_BAND};
+
+    let dims = size(px(960.0), px(600.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let n = format!("sidebar-band-{slug}");
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = sidebar_workspace(&EIGHT, Some(3), 3, &[WEB], window, cx);
+                ws.sidebar.hint_dismissed = true;
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let list_top = Rc::new(std::cell::Cell::new(0.0_f32));
+        let width = Rc::new(std::cell::Cell::new(0.0_f32));
+        let (found_top, found_width) = (list_top.clone(), width.clone());
+        let act = move |cx: &mut VisualTestAppContext, _: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                found_top.set(f32::from(ws.sidebar.scroll.bounds().top()));
+                found_width.set(ws.sidebar.width);
+            });
+            slot.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
+        let w = SIDEBAR_DEFAULT_WIDTH;
+        assert_eq!(w, 290.0, "{n}: the default width");
+        assert_eq!(width.get(), w, "{n}: a new window's sidebar width");
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        let (edge, fill, side) = (ui.card_border, ui.raised, ui.sidebar_background);
+
+        // The search box: SEARCH tall, SEARCH_TOP under the band, SEARCH_SIDE from the sides.
+        let top = TOP_BAND + SEARCH_TOP;
+        let mid = top + SEARCH / 2.0;
+        assert_eq!(SEARCH, 38.0, "{n}: the search box's height");
+        assert_eq!(
+            list_top.get(),
+            top + SEARCH + SEARCH_BOTTOM,
+            "{n}: the list starts under the box's bottom margin"
+        );
+        assert!(near(at(SEARCH_SIDE + 0.5, mid), edge), "{n}: left edge");
+        assert!(
+            near(at(w - SEARCH_SIDE - 0.5, mid), edge),
+            "{n}: right edge"
+        );
+        assert!(near(at(w / 2.0, top + 0.5), edge), "{n}: top edge");
+        assert!(
+            near(at(w / 2.0, top + SEARCH - 0.5), edge),
+            "{n}: bottom edge"
+        );
+        assert!(near(at(SEARCH_SIDE + 6.0, mid), fill), "{n}: raised fill");
+        assert!(near(at(SEARCH_SIDE - 2.0, mid), side), "{n}: margin, left");
+        assert!(near(at(w / 2.0, top - 2.0), side), "{n}: margin, above");
+        assert!(
+            near(at(w / 2.0, top + SEARCH + 2.0), side),
+            "{n}: margin, below"
+        );
+
+        // The footer: FOOTER tall above the status bar, its line on top, the button 38 tall
+        // with 12 above and below, from FOOTER_SIDE to a FOOTER_GAP short of the bell's box.
+        let foot = dims.height.as_f32() - STATUS_BAR - FOOTER;
+        assert_eq!(FOOTER, 62.0, "{n}: the footer's height");
+        assert!(
+            near(at(w / 2.0, foot + 0.5), edge),
+            "{n}: the footer's top line"
+        );
+        assert!(near(at(5.0, foot + 3.0), side), "{n}: under the line");
+        let [_, bell, _] = footer_buttons(w);
+        assert_eq!(FOOTER_BUTTON, 34.0, "{n}: the bell's box");
+        let right = bell - FOOTER_GAP;
+        let (button_top, button_mid) = (foot + 12.0, foot + FOOTER / 2.0);
+        assert!(
+            near(at(FOOTER_SIDE + 0.5, button_mid), edge),
+            "{n}: button, left"
+        );
+        assert!(
+            near(at(right - 0.5, button_mid), edge),
+            "{n}: button, right"
+        );
+        assert!(
+            near(at(right + 2.0, button_mid), side),
+            "{n}: gap to the bell"
+        );
+        assert!(near(at(60.0, button_top + 0.5), edge), "{n}: button, top");
+        assert!(
+            near(at(60.0, button_top + 37.5), edge),
+            "{n}: button, bottom"
+        );
+        assert!(
+            near(at(60.0, button_top - 1.5), side),
+            "{n}: 12 above the button"
+        );
+        assert!(
+            near(at(60.0, button_top + 39.5), side),
+            "{n}: 12 below the button"
+        );
+        // No edge line down the sidebar's right: the card's edge and shadow separate them.
+        assert!(
+            !near(at(w - 0.5, TOP_BAND + 200.0), edge),
+            "{n}: no line on the sidebar's right edge"
+        );
+        println!("ui-shots: {}", keep_shot(&n, &shot).display());
     }
 }

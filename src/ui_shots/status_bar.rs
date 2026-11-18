@@ -207,8 +207,10 @@ fn status_bar_hidden_scenes() {
                     status_bar: shown,
                     ..sidebar_appearance(theme, cx)
                 });
+                // A deep folder and a long branch: the words run on right of the (290 pt) sidebar,
+                // where nothing but the bar draws faint text.
                 let ws = cx.new(|cx| {
-                    bar_workspace(0, SIDEBAR_DEFAULT_WIDTH, (FUXX, "main"), &[], window, cx)
+                    bar_workspace(0, SIDEBAR_DEFAULT_WIDTH, (DEEP, BRANCH_40), &[], window, cx)
                 });
                 *keep.borrow_mut() = Some(ws.clone());
                 ws.into()

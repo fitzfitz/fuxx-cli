@@ -566,6 +566,16 @@ const WEB: &str = "/Users/me/code/web";
 /// A workspace showing `sessions` (each over a silent `cat`), statuses set the way the app
 /// sets them (so the waiting question is read off its screen). Session `split` is split from
 /// the one before it; `active` is focused; the `collapsed` folders are closed.
+/// How much taller the sidebar's chrome (band, search box with its bottom margin, footer) is
+/// since M11al Task 7 than it was (38 + 30 + 0 + 36 before; `TOP_BAND`, `SEARCH` and its bottom
+/// margin, `FOOTER` now): a scene whose window was sized for the old room adds this to its
+/// height, so the list keeps the rows it showed (a tight window scrolls the list to the active
+/// row, which a cached and a full redraw may do differently).
+pub(super) const SIDEBAR_CHROME_GROWTH: f32 = (ui_tokens::size::TOP_BAND - 38.0)
+    + (crate::sidebar::SEARCH - 30.0)
+    + crate::sidebar::SEARCH_BOTTOM
+    + (crate::sidebar::FOOTER - 36.0);
+
 fn sidebar_workspace(
     sessions: &[ShotSession],
     split: Option<usize>,

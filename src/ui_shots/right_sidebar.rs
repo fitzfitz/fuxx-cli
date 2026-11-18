@@ -76,7 +76,7 @@ const BAR_MIDDLE: f32 =
     CARD_INSET + crate::ui_tokens::size::HAIRLINE + crate::ui_tokens::size::TAB_BAR / 2.0;
 
 /// The right sidebar (M11g Task 4), over `tab_bar_workspace`'s two panes in a 1280 × 600
-/// window with the left sidebar shown (240 pt), in both themes:
+/// window with the left sidebar shown (the 290 pt default), in both themes:
 /// - `right-sidebar-closed`: as a first run has it: no right sidebar; each pane's right-sidebar
 ///   icon (the far right of its bar) unlit.
 /// - `right-sidebar-open`: open, 300 pt wide at the window's right; the icon lit (`ui.text` on
@@ -95,7 +95,7 @@ fn right_sidebar_scenes() {
     use std::time::Duration;
 
     let dims = size(px(1280.0), px(600.0));
-    let (left, window_right) = (240.0_f32, 1280.0_f32);
+    let (left, window_right) = (ui_tokens::size::SIDEBAR_DEFAULT_WIDTH, 1280.0_f32);
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -465,7 +465,7 @@ fn files_tree(root: &std::path::Path, open_util: bool) -> crate::file_tree::File
 ///   red, .toml cyan, .txt and .md dim), indent guides at depth 1 and 2, none at depth 0.
 /// - `files-filter`: "main" typed in the filter box: src and main.rs only.
 /// - `files-bare`: the left sidebar hidden: the header row is still level with the tab bar,
-///   both under the 38 pt band.
+///   both under the 52 pt band.
 /// - `files-header` (M11i): the root header above the filter: ▾, the root's name, collapse
 ///   all at the right, and the root's path under them, its start cut at the 300 pt sidebar.
 ///   After a click on collapse all, every folder is closed (the selection on src).

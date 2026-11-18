@@ -2144,7 +2144,7 @@ fn title_area_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    const FOOTER: f32 = 36.0;
+    use crate::sidebar::FOOTER;
     // Where the 🔔 and + sat in the band, right of the sidebar button's old place (x 80), before
     // they moved. With the sidebar shown the title is there now; hidden, the band is bare there.
     let (sx, sy) = (lights_clear(false), BUTTON_Y);
@@ -2165,12 +2165,16 @@ fn title_area_scenes() {
             "title-popover-empty",
             "title-popover-narrow",
         ] {
+            // The 200 pt windows with the sidebar shown are taller by the sidebar chrome's growth
+            // (M11al Task 7): its band, search box and footer would not fit above the status
+            // bar, and the footer would be pushed down over it.
+            let short = 200.0 + SIDEBAR_CHROME_GROWTH;
             let dims = match scene {
                 "title-narrow" => size(px(560.0), px(200.0)),
-                "title-footer-narrow" => size(px(360.0), px(200.0)),
+                "title-footer-narrow" => size(px(360.0), px(short)),
                 "title-popover" | "title-popover-empty" => size(px(960.0), px(480.0)),
                 "title-popover-narrow" => size(px(360.0), px(480.0)),
-                _ => size(px(760.0), px(200.0)),
+                _ => size(px(760.0), px(short)),
             };
             let sidebar_width = if matches!(
                 scene,
@@ -2182,9 +2186,9 @@ fn title_area_scenes() {
             };
             let (height, width) = (f32::from(dims.height), f32::from(dims.width));
             let [plus_x, bell_x, gear_x] = footer_buttons(sidebar_width);
-            // The footer's buttons sit centred in the footer under its 1 px edge.
-            // The footer sits on the status bar (M11i).
-            let centre_y = height - STATUS_BAR - FOOTER + 1.0 + (FOOTER - 1.0) / 2.0;
+            // The footer's buttons sit centred in it (its 1 px top line is drawn over its
+            // padding, M11al Task 7), and the footer sits on the status bar (M11i).
+            let centre_y = height - STATUS_BAR - FOOTER / 2.0;
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -2253,9 +2257,10 @@ fn title_area_scenes() {
                         assert!(bell_has(ui.text_dim), "{n}: the bell, dim");
                         // Each icon's drawn ink (pixels at least half-way from the footer's
                         // colour to the dim text colour): 14-16 px tall, the three centred on
-                        // one line, each centred in its `footer_buttons` slot, and the + as far
-                        // from the sidebar's left edge as the gear is from its right edge (no
-                        // border there since M11i). Every device pixel of a button is read, so
+                        // one line, the bell and gear centred in their `footer_buttons` slots,
+                        // the + centred in the New button's padding (its left edge as far from
+                        // the sidebar's left edge as the gear's box is from its right edge: the
+                        // footer's inset). Every device pixel of a button is read, so
                         // a box edge is the same at 1x and 2x (a point-by-point read rounds
                         // each side its own way, by up to a pixel).
                         let foot = bg(ui.sidebar_background);
@@ -2282,22 +2287,27 @@ fn title_area_scenes() {
                             );
                         }
                         // Where the model puts each button (the popover hangs from the gear's
-                        // edge) is where it is drawn: the ink's centre is the slot's.
-                        for ((name, slot), b) in ["+", "bell", "gear"]
-                            .iter()
-                            .zip([plus_x, bell_x, gear_x])
-                            .zip(boxes)
+                        // edge) is where it is drawn: the ink's centre is the slot's. The +
+                        // is inside the New button: its 1 px edge and 12 pt padding in, the
+                        // 15 pt icon's middle 7.5 further.
+                        let wants = [
+                            plus_x + 1.0 + 12.0 + 7.5,
+                            bell_x + FOOTER_BUTTON / 2.0,
+                            gear_x + FOOTER_BUTTON / 2.0,
+                        ];
+                        for ((name, want), b) in ["+", "bell", "gear"].iter().zip(wants).zip(boxes)
                         {
-                            let (mid, want) = ((b.0 + b.1) / 2.0, slot + FOOTER_BUTTON / 2.0);
+                            let mid = (b.0 + b.1) / 2.0;
                             assert!(
                                 (mid - want).abs() <= 0.5,
                                 "{n}: the {name}'s ink is centred at {mid}, its slot at {want}"
                             );
                         }
-                        let (left, right) = (boxes[0].0, sidebar_width - boxes[2].1);
+                        let (left, right) = (plus_x, sidebar_width - (gear_x + FOOTER_BUTTON));
                         assert!(
                             (left - right).abs() <= 0.5,
-                            "{n}: the + is {left} from the left, the gear {right} from the right"
+                            "{n}: the button's box is {left} from the left, the gear's {right} \
+                             from the right"
                         );
                     }
                     "title-hover" => {
@@ -2801,7 +2811,7 @@ fn title_bar_scenes() {
         }
     }
 
-    // A window narrower than the sidebar (200 pt, the default 240 pt sidebar): the open button
+    // A window narrower than the sidebar (200 pt, the default 290 pt sidebar): the open button
     // comes in to the window's edge (`open_button_at`), wholly inside it, and the title keeps
     // `TITLE_GAP` short of it.
     for &(slug, name) in shot_themes() {
@@ -3458,14 +3468,15 @@ fn title_bar_scenes() {
         );
         cx.simulate_keystrokes(window, "cmd-\\");
         assert!(!hidden(cx), "title-bar: ⌘\\ shows it again");
-        // With the sidebar shown there are no band buttons: a click where the band's sidebar
-        // button would be leaves this one shown. Beside it is the pane tab bar's own control
-        // (◧, the right sidebar; M11al: a 28 pt button in the 52 pt bar's middle, so no longer
-        // under the band's slot), which opens the right sidebar and leaves this one shown.
+        // With the sidebar shown there are no band buttons: a click above where the band's
+        // sidebar button would be (in the strip over the card, `CARD_INSET / 2` down: since
+        // M11al's 19 pt band edge the slot's middle is over the pane tab bar's own ◧, which is
+        // not this check) leaves this one shown. The ◧ (the right sidebar; a 28 pt button in
+        // the 52 pt bar's middle) opens the right sidebar and leaves this one shown.
         let right = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).right_sidebar.hidden);
         assert!(right(cx), "title-bar: the right sidebar starts hidden");
         let slot_x = band_buttons(960.0)[2] + HIT / 2.0;
-        cx.simulate_click(window, point(px(slot_x), px(TOP_BAND / 2.0)), none);
+        cx.simulate_click(window, point(px(slot_x), px(CARD_INSET / 2.0)), none);
         assert!(
             !hidden(cx),
             "title-bar: no band sidebar button while the sidebar is shown"

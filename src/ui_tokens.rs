@@ -33,10 +33,12 @@ pub mod size {
     /// A pane's tab bar (M11b; it replaced M11's 22 px pane header; 30 since M11i; 52 since
     /// M11al, level with the right panel's header).
     pub const TAB_BAR: f32 = 52.0;
-    /// The band at the top of the window that the traffic lights sit in (the drag area).
-    pub const TOP_BAND: f32 = 38.0;
-    /// Where the traffic lights go: (x, y) from the window's top left.
-    pub const TRAFFIC_LIGHTS: (f32, f32) = (13.0, 12.0);
+    /// The band at the top of the window that the traffic lights sit in (the drag area); 52
+    /// since M11al (38 before), level with the tab bars.
+    pub const TOP_BAND: f32 = 52.0;
+    /// Where the traffic lights go: (x, y) from the window's top left (centred in `TOP_BAND`
+    /// since M11al).
+    pub const TRAFFIC_LIGHTS: (f32, f32) = (18.0, 20.0);
     /// Terminal padding: (sides, top and bottom); smaller in splits. Enough that nothing the
     /// grid paints reaches into the card's rounded corner (M11i): the grid's corner cell starts
     /// inside the `CARD_RADIUS` curve.
@@ -58,7 +60,8 @@ pub mod size {
     pub const TABS_LEFT: f32 = 12.0;
     pub const SIDEBAR_MIN_WIDTH: f32 = 180.0;
     pub const SIDEBAR_MAX_WIDTH: f32 = 400.0;
-    pub const SIDEBAR_DEFAULT_WIDTH: f32 = 240.0;
+    /// 290 since M11al (240 before); a saved width is kept.
+    pub const SIDEBAR_DEFAULT_WIDTH: f32 = 290.0;
     /// The right sidebar's (M11g).
     pub const RIGHT_SIDEBAR_MIN_WIDTH: f32 = 220.0;
     pub const RIGHT_SIDEBAR_MAX_WIDTH: f32 = 560.0;
@@ -174,6 +177,17 @@ mod tests {
             g: (v >> 8) as u8,
             b: v as u8,
         }
+    }
+
+    #[test]
+    fn the_sidebars_band_and_default_width_are_the_uplifts() {
+        use super::size::*;
+        // M11al 2.1: the band is 52 with the lights centred in it; a new window's sidebar 290,
+        // inside its limits.
+        assert_eq!(TOP_BAND, 52.0);
+        assert_eq!(TRAFFIC_LIGHTS, (18.0, 20.0));
+        assert_eq!(SIDEBAR_DEFAULT_WIDTH, 290.0);
+        assert!((SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH).contains(&SIDEBAR_DEFAULT_WIDTH));
     }
 
     #[test]

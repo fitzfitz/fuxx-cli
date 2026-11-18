@@ -23,13 +23,13 @@ pub const SLIDE: Duration = Duration::from_millis(160);
 /// The hit area's side, and its corner radius.
 pub(crate) const HIT: f32 = 24.0;
 pub(crate) const HIT_RADIUS: f32 = 6.0;
-/// The icon: a 16 × 13 rounded outline with a divider a third of the way in.
-const ICON: (f32, f32) = (16.0, 13.0);
+/// The icon (15 px wide since M11al): a 15 × 12 rounded outline with a divider a third of the way in.
+const ICON: (f32, f32) = (15.0, 12.0);
 const STROKE: f32 = 1.5;
 const ICON_RADIUS: f32 = 3.0;
 /// How far the open sidebar's button keeps from the band's right edge: its centre is then the
-/// footer gear's (`BAND_EDGE + HIT / 2 == ROW_INSET + FOOTER_BUTTON / 2`).
-pub(crate) const BAND_EDGE: f32 = 8.0;
+/// footer gear's (`BAND_EDGE + HIT / 2 == FOOTER_SIDE + FOOTER_BUTTON / 2`; 19 since M11al).
+pub(crate) const BAND_EDGE: f32 = 19.0;
 /// The button's top: its hit area centred in the top band, on the traffic lights' line.
 pub(crate) const BUTTON_Y: f32 = (TOP_BAND - HIT) / 2.0;
 /// Where the traffic lights' area ends: just right of the green button (windowed), or where the

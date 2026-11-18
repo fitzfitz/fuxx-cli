@@ -638,6 +638,8 @@ impl Theme {
             (("card_border", ui.card_border), surfaces[0]),
             (("card_border", ui.card_border), ("card", ui.card)),
             (("card_border", ui.card_border), ("side", ui.side)),
+            // The sidebar's search box's edge on its own fill (M11al Task 7).
+            (("card_border", ui.card_border), ("raised", ui.raised)),
             (("guide", ui.guide), ("card", ui.card)),
         ];
         for (line, bg) in lines {

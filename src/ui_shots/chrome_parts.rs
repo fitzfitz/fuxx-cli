@@ -821,7 +821,10 @@ fn chrome_pane_churn() {
     use std::collections::HashSet;
 
     let n = "chrome-pane-churn";
-    let (mut cx, window, ws) = chrome_window(|ws, window, cx| {
+    // 900 x 500, taller by the sidebar chrome's growth (M11al Task 7): in a tight window the
+    // list scrolls to the active row, which a cached and a full redraw may do differently.
+    let dims = size(px(900.0), px(500.0 + SIDEBAR_CHROME_GROWTH));
+    let (mut cx, window, ws) = chrome_window_sized(dims, |ws, window, cx| {
         let api = std::path::Path::new("/Users/me/code/api");
         let web = std::path::Path::new("/Users/me/code/web");
         // A workspace not shown yet whose one pane holds more tabs than its bar shows, the

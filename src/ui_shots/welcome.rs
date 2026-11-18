@@ -718,7 +718,9 @@ fn welcome_narrow_scene() {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
-    let (w, h) = (480.0_f32, 420.0_f32);
+    // 420 pt under the old 38 pt band: the card keeps its room (and the chosen row its place)
+    // under M11al's 52 pt one.
+    let (w, h) = (480.0_f32, 420.0 + (ui_tokens::size::TOP_BAND - 38.0));
     let dims = size(px(w), px(h));
     let nine: Vec<crate::presets::Preset> = (1..=9)
         .map(|i| crate::presets::Preset {
