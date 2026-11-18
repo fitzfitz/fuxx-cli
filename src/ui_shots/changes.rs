@@ -108,15 +108,15 @@ fn changes_graph_scenes() {
     use crate::git_graph::{Commit, Details, Ref};
     use crate::git_status::ChangeList;
     use crate::right_sidebar::{Panel, ROW};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
     use std::rc::Rc;
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
-    let list_top = GAP + FOCUS_RING + TAB_BAR + crate::changes_panel::HEADER;
+    let sidebar_left = window_right - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
+    let list_top = CARD_INSET + HAIRLINE + TAB_BAR + crate::changes_panel::HEADER;
     let root = files_fixture();
     let commit = |hash: &str, parents: &[&str], subject: &str, refs: Vec<Ref>, head: bool| Commit {
         hash: hash.to_string(),
@@ -278,15 +278,15 @@ fn changes_sticky_scenes() {
     use crate::git_graph::Commit;
     use crate::git_status::ChangeList;
     use crate::right_sidebar::{Panel, ROW};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
     use std::rc::Rc;
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
-    let list_top = GAP + FOCUS_RING + TAB_BAR + crate::changes_panel::HEADER;
+    let sidebar_left = window_right - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
+    let list_top = CARD_INSET + HAIRLINE + TAB_BAR + crate::changes_panel::HEADER;
     let root = files_fixture();
     let commits: Vec<Commit> = (0..60)
         .map(|i| Commit {
@@ -397,7 +397,7 @@ fn changes_sticky_scenes() {
 fn changes_staging_scenes() {
     use crate::git_status::{Change, ChangeList, Counts, Mark};
     use crate::right_sidebar::{Panel, ROW};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use gpui::Modifiers;
     use std::cell::RefCell;
@@ -405,9 +405,9 @@ fn changes_staging_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
-    let sidebar_right = window_right - GAP - FOCUS_RING;
-    let header_top = GAP + FOCUS_RING + TAB_BAR;
+    let sidebar_left = window_right - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
+    let sidebar_right = window_right - RIGHT_CARD_GAP - HAIRLINE;
+    let header_top = CARD_INSET + HAIRLINE + TAB_BAR;
     let list_top = header_top + crate::changes_panel::HEADER;
     let root = files_fixture();
     let lines = |added, removed| Counts::Lines { added, removed };
@@ -653,7 +653,7 @@ fn changes_bar_scenes() {
     use crate::branch_sync::{Action, Sync, Upstream};
     use crate::git_status::{Change, ChangeList, Counts, Mark};
     use crate::right_sidebar::Panel;
-    use crate::ui_tokens::size::FOCUS_RING;
+    use crate::ui_tokens::size::HAIRLINE;
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -661,8 +661,8 @@ fn changes_bar_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
-    let sidebar_right = window_right - GAP - FOCUS_RING;
+    let sidebar_left = window_right - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
+    let sidebar_right = window_right - RIGHT_CARD_GAP - HAIRLINE;
     let root = files_fixture();
     let list = ChangeList {
         entries: vec![Change {
@@ -873,7 +873,7 @@ fn changes_scenes() {
     use crate::git_status::{Change, ChangeList, Counts, Mark};
     use crate::layout_model::{FileMode, TabKind};
     use crate::right_sidebar::{Panel, ROW, mark_color};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use gpui::{Focusable, Modifiers};
     use std::cell::RefCell;
@@ -881,9 +881,9 @@ fn changes_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
-    let sidebar_right = window_right - GAP - FOCUS_RING;
-    let card_top = GAP + FOCUS_RING;
+    let sidebar_left = window_right - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
+    let sidebar_right = window_right - RIGHT_CARD_GAP - HAIRLINE;
+    let card_top = CARD_INSET + HAIRLINE;
     let header_top = card_top + TAB_BAR;
     let list_top = header_top + HEADER;
     // M11v part 2: the CHANGES divider takes the first row; the entries start under it.
@@ -1266,7 +1266,7 @@ fn activity_scenes() {
     use crate::activity::Kind;
     use crate::activity_panel::{NO_ACTIVITY, NO_TERMINAL, RowMark};
     use crate::right_sidebar::{HEADER, ROW};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1274,9 +1274,9 @@ fn activity_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
-    let sidebar_right = window_right - GAP - FOCUS_RING;
-    let card_top = GAP + FOCUS_RING;
+    let sidebar_left = window_right - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
+    let sidebar_right = window_right - RIGHT_CARD_GAP - HAIRLINE;
+    let card_top = CARD_INSET + HAIRLINE;
     let header_top = card_top + TAB_BAR;
     let list_top = header_top + HEADER;
     let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {

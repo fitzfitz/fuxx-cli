@@ -439,16 +439,17 @@ pub(super) fn quiet_line(
     }
 }
 
-/// A 3-pane split in both themes, from a real `Workspace` (M11i: each pane a card, 6 pt gaps;
-/// the cards span 246–954 and 6–594):
-/// - `splits`: api focused (its card ringed), claude waiting, codex working; gaps quiet.
+/// A 3-pane split in both themes, from a real `Workspace` (M11al: the panes in the one card,
+/// 1 px hairlines between them; the card's inside spans from the sidebar's edge + 1 to
+/// `CARD_INSET` + 1 short of the window's right):
+/// - `splits`: api focused, claude waiting, codex working; lines quiet.
 /// - `splits-waiting`: the waiting pane focused.
-/// - `splits-hover`: the pointer over the vertical gap (2 px accent in its middle).
-/// - `splits-drag`: that gap dragged left (accent, the panes follow).
+/// - `splits-hover`: the pointer over the vertical line (the 2 px quiet line in its middle).
+/// - `splits-drag`: that line dragged left (the quiet line, the panes follow).
 ///
 /// Panics unless each shows 3 tabs, each pane's active tab is the card's colour with no line on
-/// top (M11i: the focus ring shows the focused pane, `cards-split`), and the gap shows the
-/// canvas except when hovered or dragged.
+/// top (the veil shows the unfocused panes, `card-split`), and the vertical line is a 1 px
+/// `card_border` hairline (never the canvas) except when hovered or dragged.
 fn split_scenes() {
     use gpui::{Modifiers, MouseButton};
     use std::cell::RefCell;
@@ -468,8 +469,15 @@ fn split_scenes() {
                 *keep.borrow_mut() = Some(ws.clone());
                 ws.into()
             };
-            // The middle of the vertical gap: the sides give it up in proportion.
-            let at = |ratio: f32| 246.0 + 708.0 * ratio + GAP * (0.5 - ratio);
+            // The card's inside, and the middle of the vertical hairline: the sides give it up
+            // in proportion.
+            use crate::ui_tokens::size::{HAIRLINE, SIDEBAR_DEFAULT_WIDTH, TAB_TOP_GAP};
+            let (area_left, area_right) = (
+                SIDEBAR_DEFAULT_WIDTH + HAIRLINE,
+                960.0 - CARD_INSET - HAIRLINE,
+            );
+            let area = area_right - area_left;
+            let at = |ratio: f32| area_left + ratio * (area - HAIRLINE) + HAIRLINE / 2.0;
             let acting = slot.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tabs = cx.read(|cx| slotted(&acting).read(cx).tab_sessions().len());
@@ -480,8 +488,8 @@ fn split_scenes() {
                 match scene {
                     "splits-hover" => cx.simulate_mouse_move(window, on, None, none),
                     "splits-drag" => {
-                        // To 0.4 of the pane area (246 + 0.4 × 708).
-                        let to = point(px(246.0 + 0.4 * 708.0), px(300.0));
+                        // To 0.4 of the pane area.
+                        let to = point(px(area_left + 0.4 * area), px(300.0));
                         cx.simulate_mouse_down(window, on, left, none);
                         cx.simulate_mouse_move(window, on - point(px(40.0), px(0.0)), left, none);
                         cx.simulate_mouse_move(window, to, left, none);
@@ -496,8 +504,8 @@ fn split_scenes() {
             let n = format!("{scene}-{slug}");
             // Tab fills, away from the text: api (left), claude (top right), both their pane's
             // active (and only) tab, 160 px into it (it is 200 wide; × sits at its end), in
-            // the bars that start inside the cards' 1 pt edges, 7 pt down; the tabs 4 pt
-            // further.
+            // the bars that start inside the card's 1 pt edge, `CARD_INSET` + 1 down; the tabs
+            // `TAB_TOP_GAP` further.
             let ratio = if scene == "splits-drag" { 0.4 } else { 0.5 };
             let right_tab = at(ratio) + 160.0;
             let (left_header, right_header) = ((400.0, 30.0), (right_tab, 30.0));
@@ -512,29 +520,35 @@ fn split_scenes() {
                 is(px_at(right_header), ui.card),
                 "{n}: active waiting tab, the card's colour too"
             );
-            // No line along the top of either tab (at 12, 1 pt into the tabs at 11).
+            // No line along the top of either tab (1 pt into the tabs).
+            let tab_top = CARD_INSET + HAIRLINE + TAB_TOP_GAP;
             for (which, x) in [("left", 400.0), ("right", right_tab)] {
-                let p = px_at((x, 12.0));
+                let p = px_at((x, tab_top + 1.0));
                 assert!(is(p, ui.card), "{n}: no line on the {which} tab: {p:?}");
             }
-            // The vertical gap, 6 pt of canvas; the 2 px accent in its middle only when hovered
-            // or dragged. Measured across at y = 450, in the lower panes: not at 300, where the
-            // right column's own gap (claude over codex) lies along the row. Only the gap: the
-            // focused card's edge beside it is the accent too.
-            // (Half a point in from each side: at 0.4 the gap starts mid-pixel.)
-            let (x0, x1) = (at(ratio) - GAP / 2.0 + 0.5, at(ratio) + GAP / 2.0 - 0.5);
+            // The vertical line, a 1 px `card_border` hairline with no canvas beside it; the
+            // 2 px quiet line over it only when hovered or dragged. Measured across at
+            // y = 450, in the lower panes: not at 300, where the right column's own line
+            // (claude over codex) lies along the row. 3 pt either side: the grab strip's half.
+            let (x0, x1) = (at(ratio) - 3.0, at(ratio) + 3.0);
             let scale = shot.width as f32 / 960.0;
             let accent = count_along(&shot, dims, ui.accent, 450.0, x0, x1);
+            for x in [x0, x1] {
+                let p = px_at((x, 450.0));
+                assert!(
+                    !is_canvas(p, &ui),
+                    "{n}: no canvas by the line at {x}: {p:?}"
+                );
+            }
             if matches!(scene, "splits-hover" | "splits-drag") {
-                // The quiet line (M11x: not the accent), 2 px.
-                let line = quiet_line(px_at((x0, 450.0)), &ui);
-                let quiet = count_along(&shot, dims, line, 450.0, x0, x1);
+                // The quiet line (M11x: not the accent), 2 px, over the hairline.
+                let quiet = super::window::quiet_over_line(&shot, dims, &ui, 450.0, (x0, x1));
                 assert_eq!(quiet, (2.0 * scale) as usize, "{n}: 2 px quiet line");
                 assert_eq!(accent, 0, "{n}: the line isn't the accent");
             } else {
-                assert_eq!(accent, 0, "{n}: no accent in a quiet gap");
-                let p = px_at((at(ratio), 450.0));
-                assert!(is_canvas(p, &ui), "{n}: the gap is the canvas: {p:?}");
+                assert_eq!(accent, 0, "{n}: no accent by a quiet line");
+                let lines = count_along(&shot, dims, ui.card_border, 450.0, x0, x1);
+                assert_eq!(lines, (HAIRLINE * scale) as usize, "{n}: the 1 px hairline");
             }
             println!("ui-shots: {}", path.display());
         }
@@ -642,9 +656,15 @@ const MORE_FROM_EDGE: f32 = 4.0 + 20.0 + 2.0 + 10.0;
 /// A bar's buttons sit in its middle: 5 pt from its top (30 pt bar, 20 pt buttons).
 const BUTTON_TOP: f32 = (ui_tokens::size::TAB_BAR - 20.0) / 2.0;
 
-/// The left pane's bar in the 1280 pt two-pane scenes (M11i): half the 1028 pt card area, less
-/// half the 6 pt gap and the card's 1 pt edge on either side.
-const LEFT_BAR_WIDTH: f32 = 1028.0 / 2.0 - 3.0 - 2.0;
+/// The left pane's bar in the 1280 pt two-pane scenes (M11al): half the inside of the one card
+/// (from the sidebar's edge to `CARD_INSET` short of the window's right, less its 1 pt edge on
+/// either side), less half the 1 pt hairline between the panes.
+const LEFT_BAR_WIDTH: f32 = (1280.0
+    - ui_tokens::size::SIDEBAR_DEFAULT_WIDTH
+    - ui_tokens::size::CARD_INSET
+    - 2.0 * ui_tokens::size::HAIRLINE
+    - ui_tokens::size::HAIRLINE)
+    / 2.0;
 
 /// Pane tab bars (M11b Task 3; M11i's cleaner bar), from real workspaces in both themes:
 /// - `tab-bars`: two panes; the left (focused) one with api (active: the card's colour, merging
@@ -710,14 +730,18 @@ fn tab_bar_scenes() {
                     .map(|i| tab_bounds(cx, &ws, panes[0], i).expect("laid out"))
                     .collect();
                 // Four tabs in the left bar, equally shrunk, between the bounds; 4 pt under the
-                // 30 pt bar's top (inside the card's 1 pt edge, under the 6 pt strip), down to
-                // its bottom.
+                // 30 pt bar's top (inside the card's 1 pt edge, under the `CARD_INSET` strip),
+                // down to its bottom.
                 for b in &tabs {
                     let w = f32::from(b.size.width);
                     assert!((90.0..200.0).contains(&w), "{n}: tab width {w}");
                     let first = f32::from(tabs[0].size.width);
                     assert!((w - first).abs() <= 1.0, "{n}: equal widths ({w}, {first})");
-                    assert_eq!(f32::from(b.top()), GAP + 1.0 + 4.0, "{n}: tabs 4 pt down");
+                    assert_eq!(
+                        f32::from(b.top()),
+                        CARD_INSET + 1.0 + 4.0,
+                        "{n}: tabs 4 pt down"
+                    );
                     assert_eq!(
                         f32::from(b.size.height),
                         26.0,
@@ -973,7 +997,7 @@ fn tab_bar_scenes() {
                     assert!(offset < 0.0, "{n}: scrolled to the last tab");
                     let last = tab_bounds(cx, &ws, panes[0], many - 1).expect("laid out");
                     assert!(
-                        f32::from(last.right()) <= 720.0 - GAP - 1.0 - BAR_BUTTONS + 1.0,
+                        f32::from(last.right()) <= 720.0 - CARD_INSET - 1.0 - BAR_BUTTONS + 1.0,
                         "{n}: last in view"
                     );
                 }
@@ -1818,11 +1842,16 @@ fn browser_tab_scenes() {
                 }
                 let field = field.expect("the field is drawn");
                 typed.set(Some(field));
-                // Under the 30 pt tab bar (M11i), centred in the 34 px bar; the card starts
-                // under the 6 pt strip, inside its 1 pt edge.
+                // Under the tab bar (M11i), centred in the 34 px bar; the card starts under the
+                // `CARD_INSET` strip, inside its 1 pt edge.
                 assert_eq!(f32::from(field.size.height), 24.0, "{n}: field height");
                 let top = f32::from(field.top());
-                assert!((40.0..=43.0).contains(&top), "{n}: field top {top}");
+                let bar_bottom =
+                    CARD_INSET + crate::ui_tokens::size::HAIRLINE + crate::ui_tokens::size::TAB_BAR;
+                assert!(
+                    (bar_bottom + 3.0..=bar_bottom + 6.0).contains(&top),
+                    "{n}: field top {top}"
+                );
                 if scene == "browser-tab-suggestions" {
                     cx.update(|cx| {
                         cx.bind_keys([KeyBinding::new("down", SuggestNext, Some("AddressField"))])

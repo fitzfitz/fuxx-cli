@@ -108,6 +108,35 @@ pub(super) const SCENES: &[Scene] = &[
         kind: Kind::Visual,
         sources: &["src/panes.rs", "src/terminal_view.rs"],
     },
+    Scene {
+        name: "card",
+        run: one_card_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/workspace.rs", "src/panes.rs", "src/terminal_view.rs"],
+    },
+    Scene {
+        name: "card-split",
+        run: one_card_split_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/workspace.rs",
+            "src/panes.rs",
+            "src/split_tree.rs",
+            "src/terminal_view.rs",
+        ],
+    },
+    Scene {
+        name: "card-sidebar-hidden",
+        run: one_card_sidebar_hidden_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/workspace.rs", "src/panes.rs", "src/title_area.rs"],
+    },
 ];
 
 /// A themed panel standing in for a real scene: proves the harness end to end.
@@ -637,9 +666,9 @@ fn window_scenes() {
     }
 }
 
-/// Panics unless the padding of the pane at the right (inside its card, M11i) is all terminal
-/// background, the gaps round the cards (and with the sidebar hidden, the top band) are the
-/// canvas, and the left pane's grid starts just inside its left padding.
+/// Panics unless the padding of the pane at the right (inside the one card, M11al) is all
+/// terminal background, the insets round the card (and with the sidebar hidden, the top band)
+/// are the canvas, and the left pane's grid starts just inside its left padding.
 fn check_window(
     shot: &Shot,
     theme: &Theme,
@@ -649,7 +678,7 @@ fn check_window(
     scene: &str,
     slug: &str,
 ) {
-    use ui_tokens::size::{CARD_RADIUS, FOCUS_RING, STATUS_BAR, TAB_BAR, TOP_BAND};
+    use ui_tokens::size::{CARD_RADIUS, HAIRLINE, STATUS_BAR, TAB_BAR, TOP_BAND};
 
     let scale = shot.width as f32 / f32::from(dims.width);
     let bg = theme.background;
@@ -668,12 +697,15 @@ fn check_window(
     } else {
         ui_tokens::size::TERMINAL_PADDING
     };
-    // The cards start under the band (sidebar hidden) or the 6 pt strip, and end 6 pt short of
-    // the window's right and the status bar (M11i); inside each card's 1 pt edge, its tab bar,
-    // then its terminal.
-    let card_top = if hidden { TOP_BAND } else { GAP };
-    let top = card_top + FOCUS_RING + TAB_BAR;
-    let (right, bottom) = (w - GAP - FOCUS_RING, h - STATUS_BAR - GAP - FOCUS_RING);
+    // The card starts under the band (sidebar hidden) or the `CARD_INSET` strip, and ends
+    // `CARD_INSET` short of the window's right and the status bar (M11al); inside its 1 pt edge,
+    // each pane's tab bar, then its terminal.
+    let card_top = if hidden { TOP_BAND } else { CARD_INSET };
+    let top = card_top + HAIRLINE + TAB_BAR;
+    let (right, bottom) = (
+        w - CARD_INSET - HAIRLINE,
+        h - STATUS_BAR - CARD_INSET - HAIRLINE,
+    );
     // The right pane's right padding, down to where its card's corner starts to round.
     let mut y = top;
     while y < bottom - CARD_RADIUS {
@@ -685,8 +717,8 @@ fn check_window(
         }
         y += 1.0;
     }
-    // Its top padding (right of a split's gap: the pane area starts after the sidebar, at most
-    // 1/4 in), short of the corner.
+    // Its top padding (right of a split's hairline: the pane area starts after the sidebar, at
+    // most 1/4 in), short of the corner.
     let mut x = w * 0.75;
     while x < right - CARD_RADIUS {
         for dy in 0..pad_y as usize {
@@ -704,18 +736,18 @@ fn check_window(
         );
     };
     for y in [top + 10.0, h / 2.0, bottom - 20.0] {
-        canvas(w - GAP / 2.0, y);
+        canvas(w - CARD_INSET / 2.0, y);
     }
-    canvas(w * 0.75, h - STATUS_BAR - GAP / 2.0);
+    canvas(w * 0.75, h - STATUS_BAR - CARD_INSET / 2.0);
     canvas(w * 0.75, card_top / 2.0);
     if hidden {
         for x in [w * 0.75, w - 20.0] {
             canvas(x, 6.0);
-            canvas(x, TOP_BAND - GAP / 2.0);
+            canvas(x, TOP_BAND - CARD_INSET / 2.0);
         }
     }
     // The left pane's left padding: where the terminal background starts (after the sidebar,
-    // the gap and the card's edge), `pad_x` of background, then the grid's first column (its
+    // or the inset, and the card's edge), `pad_x` of background, then the grid's first column (its
     // prompt and output) within a cell and a half (the grid's leftover width is shared by both
     // sides).
     let mid = (top + h) / 2.0;
@@ -723,7 +755,9 @@ fn check_window(
         .map(|x| x as f32)
         .find(|&x| is_bg(x, mid))
         .expect("a terminal");
-    let rows = (top + pad_y) as usize..(bottom - pad_y) as usize;
+    // Down to where the card's corner starts to round (as the right padding above): the
+    // curve (`CARD_RADIUS`, more than the bottom padding) takes the padding's corner.
+    let rows = (top + pad_y) as usize..(bottom - pad_y.max(CARD_RADIUS)) as usize;
     for y in rows.clone() {
         for dx in 0..pad_x as usize {
             assert!(
@@ -925,23 +959,26 @@ fn card_workspace(
     ws
 }
 
-/// M11i floating panels, from a real `Workspace` in both themes (1280 × 600, the sidebar 240
-/// wide):
-/// - `cards`: one pane and the right sidebar open (300 wide): both are cards on the canvas.
+/// M11i floating panels, M11al's one card, from a real `Workspace` in both themes (1280 × 600,
+/// the sidebar at its default width):
+/// - `cards`: one pane and the right sidebar open (300 wide): the panes' card flush against the
+///   sidebar, the right sidebar's card beside it (outside it until M11al Task 3).
 /// - `cards-narrow`: the same in a 440 pt window, too narrow for the right sidebar's card.
 ///
-/// Panics unless the gaps (between the sidebar and the pane card, the pane card and the right
-/// sidebar's, the right card and the window's right edge, above and below the cards) show the
-/// canvas, 20 pt into each card shows its fill, the left sidebar has no right border line, and
-/// just outside the pane card's top-left curve is the canvas (no square tab corner pokes out);
-/// in `cards-narrow`, unless the right card isn't drawn and the pane card ends 6 pt from the
-/// window's right edge.
+/// Panics unless the panes' card's left edge is the sidebar's right (no canvas between); the
+/// insets (between the panes' card and the right sidebar's, the right card and the window's
+/// right edge, above and below the cards) show the canvas; 20 pt into each card shows its fill;
+/// the left sidebar has no right border line; just outside the panes' card's top-left curve is
+/// the canvas (no square tab corner pokes out); and the first tab's own top-left corner is
+/// rounded inside the bar's. In `cards-narrow`, unless the right card isn't drawn and the panes'
+/// card ends `CARD_INSET` from the window's right edge.
 fn card_scenes() {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
 
     let dims = size(px(1280.0), px(600.0));
-    let (left, right) = (240.0_f32, 1280.0_f32);
+    let (left, right) = (SIDEBAR_DEFAULT_WIDTH, 1280.0_f32);
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -957,37 +994,67 @@ fn card_scenes() {
             *keep.borrow_mut() = Some(ws.clone());
             ws.into()
         };
+        // The first tab's top-left corner, as laid out.
+        let first_tab: Rc<Cell<(f32, f32)>> = Rc::default();
+        let seen = first_tab.clone();
         let acting = slot.clone();
         let act = move |cx: &mut VisualTestAppContext, _: AnyWindowHandle| {
-            let width = cx.read(|cx| slotted(&acting).read(cx).right_sidebar.width);
+            let ws = slotted(&acting);
+            let width = cx.read(|cx| ws.read(cx).right_sidebar.width);
             assert_eq!(width, 300.0, "cards-{slug}: the right sidebar is 300 wide");
+            let pane = shown_panes(cx, &ws)[0];
+            let tab = tab_bounds(cx, &ws, pane, 0).expect("laid out");
+            seen.set((f32::from(tab.left()), f32::from(tab.top())));
             acting.borrow_mut().take();
         };
         let shot = render_with(&theme, dims, build, act);
         let path = save_shot("cards", slug, &shot);
         let n = format!("cards-{slug}");
         let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
-        // The right card spans 974–1274: 6 pt from the window's edge, 300 wide.
-        let right_card = right - GAP - 300.0;
-        let pane_card_right = right_card - GAP;
+        // The right card: `RIGHT_CARD_GAP` from the window's edge, 300 wide; the panes' card
+        // `CARD_INSET` left of it.
+        let right_card = right - RIGHT_CARD_GAP - 300.0;
+        let pane_card_right = right_card - CARD_INSET;
+        let below = 600.0 - STATUS_BAR - CARD_INSET / 2.0;
+        // Between the two cards both shadows fall (until M11al Task 3 puts the right panel in
+        // the one card): the canvas there, darker than the canvas, never a card's fill.
+        let (x, y) = (pane_card_right + CARD_INSET / 2.0, 400.0);
+        let p = at(x, y);
+        assert!(
+            is_canvas_between_cards(p, &ui),
+            "{n}: the shadowed canvas between the cards at ({x}, {y}): {p:?}"
+        );
         for (what, x, y) in [
-            ("sidebar → pane card", left + GAP / 2.0, 100.0),
-            ("sidebar → pane card, low", left + GAP / 2.0, 500.0),
-            ("pane card → right card", pane_card_right + GAP / 2.0, 400.0),
-            ("right card → window edge", right - GAP / 2.0, 400.0),
-            ("above the pane card", 600.0, GAP / 2.0),
-            ("above the right card", 1100.0, GAP / 2.0),
-            ("below the pane card", 600.0, 600.0 - GAP / 2.0),
-            ("below the right card", 1100.0, 600.0 - GAP / 2.0),
+            (
+                "right card → window edge",
+                right - RIGHT_CARD_GAP / 2.0,
+                400.0,
+            ),
+            ("above the pane card", 600.0, CARD_INSET / 2.0),
+            ("above the right card", 1100.0, CARD_INSET / 2.0),
+            ("below the pane card", 600.0, below),
+            ("below the right card", 1100.0, below),
         ] {
             let p = at(x, y);
             assert!(is_canvas(p, &ui), "{n}: canvas {what} at ({x}, {y}): {p:?}");
         }
+        // Flush against the sidebar: its edge starts where the sidebar ends, high and low.
+        for y in [100.0, 500.0] {
+            let p = at(left + 0.5, y);
+            assert!(
+                near(p, ui.card_border),
+                "{n}: the pane card's edge against the sidebar at y {y}: {p:?}"
+            );
+        }
         for (what, x, y) in [
-            ("pane card", left + GAP + 20.0, 100.0),
+            ("pane card", left + 20.0, 100.0),
             ("pane card, right end", pane_card_right - 20.0, 400.0),
             ("right card", right_card + 20.0, 400.0),
-            ("right card, right end", right - GAP - 20.0, 400.0),
+            (
+                "right card, right end",
+                right - RIGHT_CARD_GAP - 20.0,
+                400.0,
+            ),
         ] {
             let p = at(x, y);
             assert!(near(p, ui.card), "{n}: {what} at ({x}, {y}): {p:?}");
@@ -1001,8 +1068,8 @@ fn card_scenes() {
         // Nothing square pokes out of the pane card's top-left corner (Task 4 review, M1): just
         // outside its curve, where a square first tab's corner (its fill, a top line) would
         // be, the canvas shows, not the tab or the card.
-        let (card_left, card_top) = (left + GAP, GAP);
-        for (dx, dy) in [(1.0, 1.0), (1.5, 1.5), (1.0, 2.0), (2.0, 1.0)] {
+        let (card_left, card_top) = (left, CARD_INSET);
+        for (dx, dy) in [(1.0, 1.0), (1.5, 1.5), (1.0, 2.0), (2.0, 1.0), (2.5, 2.5)] {
             let (x, y) = (card_left + dx, card_top + dy);
             let p = at(x, y);
             // Nearer the canvas than the bar, where the two are told apart at all: a light theme's
@@ -1016,10 +1083,11 @@ fn card_scenes() {
                 "{n}: canvas outside the card's top-left curve at ({x}, {y}): {p:?}"
             );
         }
-        // The first tab's own top-left corner is rounded (Task 5 review, Minor 1): just inside
-        // the bar, 1.5 pt into the tab's 6 pt corner (the tab starts at the card's 1 pt edge,
-        // 4 pt under the bar's top), the bar shows, not the active tab's card fill.
-        let (x, y) = (card_left + 2.5, card_top + 6.5);
+        // The first tab's own top-left corner is rounded (Task 5 review, Minor 1) and clear of
+        // the card's curve: 1.5 pt into its corner, the bar shows, not the active tab's card
+        // fill.
+        let (tab_left, tab_top) = first_tab.get();
+        let (x, y) = (tab_left + 1.5, tab_top + 1.5);
         let p = at(x, y);
         assert!(
             gap(p, ui.tab_bar) < gap(p, ui.card),
@@ -1029,7 +1097,7 @@ fn card_scenes() {
 
         // A window too narrow for the right sidebar beside the panes (its drawn width 0): no
         // card of it at all (not a 2 pt stub), and the pane card reaches the window's right
-        // gap (Task 4 review, M7).
+        // inset (Task 4 review, M7).
         let narrow = size(px(440.0), px(300.0));
         let build = move |window: &mut Window, cx: &mut App| -> AnyView {
             cx.set_global(shot_appearance(theme, cx));
@@ -1044,13 +1112,13 @@ fn card_scenes() {
         let path = save_shot("cards-narrow", slug, &shot);
         let n = format!("cards-narrow-{slug}");
         let at = |x: f32, y: f32| pixel_at(&shot, narrow, x, y);
-        let edge = 440.0 - GAP - 0.5;
+        let edge = 440.0 - CARD_INSET - 0.5;
         let p = at(edge, 150.0);
         assert!(
             near(p, ui.card_border),
             "{n}: the pane card's right edge at {edge}: {p:?}"
         );
-        for x in [440.0 - GAP / 2.0, 440.0 - 1.0] {
+        for x in [440.0 - CARD_INSET / 2.0, 440.0 - 1.0] {
             let p = at(x, 150.0);
             assert!(is_canvas(p, &ui), "{n}: canvas right of it at {x}: {p:?}");
         }
@@ -1058,24 +1126,54 @@ fn card_scenes() {
     }
 }
 
-/// M11i floating panels, a split, in both themes (960 × 600, the sidebar 240 wide; the cards
-/// span 246–954 and 6–594, each split side 351 wide with the 6 pt gap between, 597–603):
-/// - `cards-split`: two panes, the left one focused: its card's edge is `accent` (the focus
-///   ring), the other's `card_border`; the gap between them is the canvas.
-/// - `cards-split-hover`: the pointer over the gap: the 2 pt accent line in its middle.
-/// - `cards-split-refocus`: a click in the right pane: the ring follows it.
+/// A workspace whose panes' grids are filled blue (`ESC [44m`, then clear), once each terminal
+/// has its size in the card: so an unfocused pane's veil shows.
+fn fill_blue(cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>) {
+    let views: Vec<_> = cx.read(|cx| {
+        ws.read(cx)
+            .sessions
+            .items()
+            .iter()
+            .map(|s| s.view.clone())
+            .collect()
+    });
+    for view in views {
+        cx.read(|cx| view.read(cx).show_text("\x1b[44m\x1b[2J"));
+        cx.update(|cx| view.update(cx, |_, cx| cx.notify()));
+    }
+}
+
+/// The vertical hairline of a split at `ratio` across a pane area from `left` to `right` (the
+/// card's inside): its middle. The sides give up the 1 px line in proportion to their shares.
+fn hairline_middle(left: f32, right: f32, ratio: f32) -> f32 {
+    use ui_tokens::size::HAIRLINE;
+    left + ratio * (right - left - HAIRLINE) + HAIRLINE / 2.0
+}
+
+/// M11i floating panels, a split, now inside M11al's one card, in both themes (960 × 600, the
+/// sidebar at its default width), each grid blue (`fill_blue`):
+/// - `cards-split`: two panes, the left one focused: the right one veiled, the left not; a 1 px
+///   `card_border` hairline between them, no canvas.
+/// - `cards-split-hover`: the pointer over the hairline: the 2 pt quiet line in its middle.
+/// - `cards-split-refocus`: a click in the right pane: the veil moves to the left one.
+///
+/// Panics unless so, with no accent anywhere along the probed row (no focus ring) and the
+/// card's outer edges `card_border`.
 fn card_split_scenes() {
     use gpui::Modifiers;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use ui_tokens::size::{HAIRLINE, SIDEBAR_DEFAULT_WIDTH, UNFOCUSED_VEIL};
 
     let dims = size(px(960.0), px(600.0));
-    let (left_card, right_end) = (240.0 + GAP, 960.0 - GAP);
-    let middle = (left_card + right_end) / 2.0;
-    let (first_right, second_left) = (middle - GAP / 2.0, middle + GAP / 2.0);
+    let (left_card, right_end) = (SIDEBAR_DEFAULT_WIDTH, 960.0 - CARD_INSET);
+    let middle = hairline_middle(left_card + HAIRLINE, right_end - HAIRLINE, 0.5);
+    let (first_right, second_left) = (middle - HAIRLINE / 2.0, middle + HAIRLINE / 2.0);
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
+        let blue = theme.palette[4];
+        let veiled = crate::theme::mix(blue, ui.card, UNFOCUSED_VEIL);
         for scene in ["cards-split", "cards-split-hover", "cards-split-refocus"] {
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
@@ -1090,6 +1188,7 @@ fn card_split_scenes() {
                 let ws = slotted(&acting);
                 let panes = shown_panes(cx, &ws);
                 assert_eq!(panes.len(), 2, "{scene}-{slug}: two panes");
+                fill_blue(cx, &ws);
                 let none = Modifiers::none();
                 match scene {
                     "cards-split-hover" => {
@@ -1110,60 +1209,88 @@ fn card_split_scenes() {
             let path = save_shot(scene, slug, &shot);
             let n = format!("{scene}-{slug}");
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
-            let p = at(middle, 450.0);
-            if scene == "cards-split-hover" {
-                let scale = shot.width as f32 / 960.0;
-                // In the gap only (the focused card's edge beside it is the accent too).
-                // The quiet line (M11x: not the accent), 2 pt.
-                let line = quiet_line(at(first_right + 1.0, 450.0), &ui);
-                let quiet = count_along(&shot, dims, line, 450.0, first_right, second_left);
-                assert_eq!(quiet, (2.0 * scale) as usize, "{n}: the 2 pt quiet line");
-                let accent = count_along(&shot, dims, ui.accent, 450.0, first_right, second_left);
-                assert_eq!(accent, 0, "{n}: the line isn't the accent");
-                // In its middle: 2 pt of canvas either side.
-                for x in [first_right + 1.0, second_left - 1.0] {
-                    let p = at(x, 450.0);
-                    assert!(
-                        is_canvas(p, &ui),
-                        "{n}: canvas beside the line at {x}: {p:?}"
-                    );
-                }
-            } else {
-                assert!(is_canvas(p, &ui), "{n}: the gap is the canvas: {p:?}");
-                let accent = count_along(&shot, dims, ui.accent, 450.0, first_right, second_left);
-                assert_eq!(accent, 0, "{n}: no accent line in a quiet gap");
+            let scale = shot.width as f32 / 960.0;
+            let (x0, x1) = (middle - 4.0, middle + 4.0);
+            for x in [middle - 3.0, middle + 3.0] {
+                let p = at(x, 450.0);
+                assert!(
+                    !is_canvas(p, &ui),
+                    "{n}: no canvas by the line at {x}: {p:?}"
+                );
             }
-            // Each card's outer edges, half a point in: the focused one's in `accent`.
+            if scene == "cards-split-hover" {
+                // The quiet line (M11x: not the accent), 2 pt, over the hairline (half
+                // strength: over the card beside it, over `card_border` in its middle).
+                let quiet = quiet_over_line(&shot, dims, &ui, 450.0, (x0, x1));
+                assert_eq!(quiet, (2.0 * scale) as usize, "{n}: the 2 pt quiet line");
+            } else {
+                let lines = count_along(&shot, dims, ui.card_border, 450.0, x0, x1);
+                assert_eq!(lines, (HAIRLINE * scale) as usize, "{n}: the 1 pt hairline");
+            }
+            // No focus ring: no accent on the card's edges or by the line (the grids are left
+            // out: a theme's blue can be its accent).
+            for (x0, x1) in [
+                (left_card - 2.0, left_card + 4.0),
+                (x0, x1),
+                (right_end - 4.0, right_end + 2.0),
+            ] {
+                let accent = count_along(&shot, dims, ui.accent, 450.0, x0, x1);
+                assert_eq!(accent, 0, "{n}: no accent from {x0} to {x1}");
+            }
+            // The veil: on the unfocused pane only.
             let first_focused = scene != "cards-split-refocus";
             for (which, x, focused) in [
-                ("left card's left edge", left_card + 0.5, first_focused),
-                ("left card's right edge", first_right - 0.5, first_focused),
-                ("right card's left edge", second_left + 0.5, !first_focused),
-                ("right card's right edge", right_end - 0.5, !first_focused),
+                ("left pane", (left_card + first_right) / 2.0, first_focused),
+                (
+                    "right pane",
+                    (second_left + right_end) / 2.0,
+                    !first_focused,
+                ),
             ] {
                 let p = at(x, 300.0);
-                let want = if focused { ui.accent } else { ui.card_border };
-                assert!(near(p, want), "{n}: {which} ({focused}): {p:?}");
+                if focused {
+                    assert!(near(p, blue), "{n}: the {which}, focused, unveiled: {p:?}");
+                } else {
+                    assert!(
+                        near_by(p, veiled, 4) && !near(p, blue),
+                        "{n}: the {which} veiled: {p:?}, want {veiled:?}"
+                    );
+                }
+            }
+            // The card's outer edges, half a point in: `card_border`, never a ring.
+            for (which, x) in [
+                ("left edge", left_card + 0.5),
+                ("right edge", right_end - 0.5),
+            ] {
+                let p = at(x, 300.0);
+                assert!(near(p, ui.card_border), "{n}: the card's {which}: {p:?}");
             }
             println!("ui-shots: {}", path.display());
         }
     }
 }
 
-/// M11i Review Focus 1, in both themes (960 × 600, the sidebar 240 wide): `cards-corners`, a
-/// lone pane whose program filled the screen with a blue background (`ESC [44m`, then clear).
+/// M11i Review Focus 1, in both themes (960 × 600, the sidebar at its default width):
+/// `cards-corners`, a lone pane whose program filled the screen with a blue background
+/// (`ESC [44m`, then clear).
 ///
 /// Panics unless the pixel 2 pt inside each of the card's bottom corners is the canvas (the
-/// terminal's background and its cells stay inside the rounded corner), the grid is blue, and
-/// the lone card's edges are `card_border` with no focus ring.
+/// terminal's background and its cells stay inside the `CARD_RADIUS` corner), the grid is blue
+/// up to near the corner (the padding is all that's spared), and the card's edges are
+/// `card_border` with no focus ring.
 fn card_corner_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
+    use ui_tokens::size::{CARD_RADIUS, HAIRLINE, SIDEBAR_DEFAULT_WIDTH, TERMINAL_PADDING};
 
     let dims = size(px(960.0), px(600.0));
-    // The card ends 6 pt above the status bar (M11i).
+    // The card ends `CARD_INSET` above the status bar (M11al), flush against the sidebar.
     let bar = ui_tokens::size::STATUS_BAR;
-    let (left, right, bottom) = (240.0 + GAP, 960.0 - GAP, 600.0 - bar - GAP);
+    let (left, right, bottom) = (
+        SIDEBAR_DEFAULT_WIDTH,
+        960.0 - CARD_INSET,
+        600.0 - bar - CARD_INSET,
+    );
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -1180,9 +1307,7 @@ fn card_corner_scenes() {
         // grid takes the blue, as a full-screen program's background does).
         let act = move |cx: &mut VisualTestAppContext, _: AnyWindowHandle| {
             let ws = slotted(&slot);
-            let view = cx.read(|cx| ws.read(cx).sessions.items()[0].view.clone());
-            cx.read(|cx| view.read(cx).show_text("\x1b[44m\x1b[2J"));
-            cx.update(|cx| view.update(cx, |_, cx| cx.notify()));
+            fill_blue(cx, &ws);
             slot.borrow_mut().take();
         };
         let shot = render_with(&theme, dims, build, act);
@@ -1191,6 +1316,23 @@ fn card_corner_scenes() {
         let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
         let p = at(600.0, 300.0);
         assert!(near(p, blue), "{n}: the grid is blue: {p:?}");
+        // Blue up to the rounded corners: up each side's first column (just inside the
+        // padding, past the grid's half of its spare width), the blue starts within the bottom padding and a line of the card's bottom
+        // (the grid's spare height is at its bottom).
+        let (pad_x, pad_y) = TERMINAL_PADDING;
+        for (which, x) in [
+            ("left", left + HAIRLINE + pad_x + 6.0),
+            ("right", right - HAIRLINE - pad_x - 6.0),
+        ] {
+            let from_bottom = (1..80)
+                .map(|d| d as f32)
+                .find(|&d| near(at(x, bottom - d), blue))
+                .unwrap_or_else(|| panic!("{n}: no blue up the {which} side"));
+            assert!(
+                from_bottom <= HAIRLINE + pad_y + 24.0 && from_bottom > CARD_RADIUS / 2.0,
+                "{n}: the grid's blue starts {from_bottom} pt above the {which} corner"
+            );
+        }
         for (which, x, y) in [
             ("bottom left", left + 2.0, bottom - 2.0),
             ("bottom right", right - 2.0, bottom - 2.0),
@@ -1215,6 +1357,356 @@ fn card_corner_scenes() {
             assert!(near(p, ui.card_border), "{n}: {which} edge: {p:?}");
         }
         println!("ui-shots: {}", path.display());
+    }
+}
+
+/// How many device pixels along the row at `y`, between `x0` and `x1` points, show the 2 px
+/// resize line (`quiet_line`, half strength) over a split's hairline: over the card's fill
+/// (at `x0`) or over the hairline (`card_border`).
+pub(super) fn quiet_over_line(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    ui: &UiColors,
+    y: f32,
+    (x0, x1): (f32, f32),
+) -> usize {
+    let border = ui.card_border;
+    let over_card = quiet_line(pixel_at(shot, dims, x0, y), ui);
+    let over_line = quiet_line([border.r, border.g, border.b], ui);
+    count_along(shot, dims, over_card, y, x0, x1) + count_along(shot, dims, over_line, y, x0, x1)
+}
+
+/// The sum of a pixel's channels: lower is darker.
+fn brightness(p: [u8; 3]) -> u32 {
+    p.iter().map(|&c| u32::from(c)).sum()
+}
+
+/// How many device pixels down the column at `x` points, between `y0` and `y1` points, are `c`
+/// (give or take 3 per channel).
+fn count_down(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    c: alacritty_terminal::vte::ansi::Rgb,
+    x: f32,
+    y0: f32,
+    y1: f32,
+) -> usize {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let (a, b) = ((y0 * scale) as usize, (y1 * scale) as usize);
+    (a..b)
+        .filter(|&dy| near(pixel_at(shot, dims, x, dy as f32 / scale), c))
+        .count()
+}
+
+/// Panics unless the one card (M11al §3.1) spans `left`–`right` and `top`–`bottom` (its outer
+/// edges, in points): each edge `card_border` half a point in and the card's fill 20 pt in, the
+/// canvas 2 pt in from each corner of its box diagonally (outside the `CARD_RADIUS` curve), and
+/// 4 pt under its bottom middle darker than the canvas (its shadow).
+fn check_one_card(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    ui: &UiColors,
+    (left, top, right, bottom): (f32, f32, f32, f32),
+    n: &str,
+) {
+    let at = |x: f32, y: f32| pixel_at(shot, dims, x, y);
+    let (mid_x, mid_y) = ((left + right) / 2.0, (top + bottom) / 2.0);
+    for (which, x, y) in [
+        ("left", left + 0.5, mid_y),
+        ("top", mid_x, top + 0.5),
+        ("right", right - 0.5, mid_y),
+        ("bottom", mid_x, bottom - 0.5),
+    ] {
+        let p = at(x, y);
+        assert!(
+            near(p, ui.card_border),
+            "{n}: the card's {which} edge at ({x}, {y}): {p:?}"
+        );
+    }
+    for (which, x, y) in [
+        ("left", left + 20.0, mid_y),
+        ("right", right - 20.0, mid_y),
+        ("bottom", mid_x, bottom - 4.0),
+    ] {
+        let p = at(x, y);
+        assert!(
+            near(p, ui.card),
+            "{n}: the card's fill inside its {which} edge at ({x}, {y}): {p:?}"
+        );
+    }
+    for (which, x, y) in [
+        ("top left", left + 2.0, top + 2.0),
+        ("top right", right - 2.0, top + 2.0),
+        ("bottom left", left + 2.0, bottom - 2.0),
+        ("bottom right", right - 2.0, bottom - 2.0),
+    ] {
+        let p = at(x, y);
+        assert!(
+            is_canvas(p, ui),
+            "{n}: canvas outside the {which} curve at ({x}, {y}): {p:?}"
+        );
+    }
+    let canvas = ui.sidebar_background;
+    let p = at(mid_x, bottom + 4.0);
+    assert!(
+        is_canvas(p, ui) && brightness(p) < brightness([canvas.r, canvas.g, canvas.b]),
+        "{n}: the shadow 4 pt under the card at ({mid_x}, {}): {p:?} vs the canvas {canvas:?}",
+        bottom + 4.0
+    );
+}
+
+/// M11al §3.1, in both themes (960 × 600, the sidebar shown at its default width): `card`, one
+/// pane in the one floating card. Panics unless the card's left edge is the sidebar's right
+/// edge (no canvas between), its top `CARD_INSET` under the window's top (the drag strip), its
+/// right `CARD_INSET` from the window's right and its bottom `CARD_INSET` above the status bar
+/// (`check_one_card`: edges, corners, shadow); the canvas shows above and right of it.
+fn one_card_scene() {
+    use ui_tokens::size::{CARD_INSET, SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
+
+    let dims = size(px(960.0), px(600.0));
+    let (w, h) = (960.0_f32, 600.0_f32);
+    let bounds = (
+        SIDEBAR_DEFAULT_WIDTH,
+        CARD_INSET,
+        w - CARD_INSET,
+        h - STATUS_BAR - CARD_INSET,
+    );
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            cx.new(|cx| card_workspace(1, "", window, cx)).into()
+        };
+        let shot = render_with(&theme, dims, build, |_, _| ());
+        let path = save_shot("card", slug, &shot);
+        let n = format!("card-{slug}");
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        check_one_card(&shot, dims, &ui, bounds, &n);
+        // Flush against the sidebar: its last column is its own colour, the next the card's
+        // edge (above), so no canvas lies between.
+        let p = at(SIDEBAR_DEFAULT_WIDTH - 0.5, 300.0);
+        assert!(near(p, ui.sidebar_background), "{n}: the sidebar: {p:?}");
+        for (what, x, y) in [
+            ("above the card", 600.0, CARD_INSET / 2.0),
+            ("right of the card", w - CARD_INSET / 2.0, 300.0),
+        ] {
+            let p = at(x, y);
+            assert!(is_canvas(p, &ui), "{n}: canvas {what} at ({x}, {y}): {p:?}");
+        }
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// M11al §3.1 with the sidebar hidden (⌘B), in both themes (960 × 600): `card-sidebar-hidden`.
+/// Panics unless the card starts `CARD_INSET` from the window's left, right under the window's
+/// top band (`TOP_BAND`), and keeps its insets on the right and above the status bar
+/// (`check_one_card`); the canvas shows left of it and in the band.
+fn one_card_sidebar_hidden_scene() {
+    use ui_tokens::size::{CARD_INSET, STATUS_BAR, TOP_BAND};
+
+    let dims = size(px(960.0), px(600.0));
+    let (w, h) = (960.0_f32, 600.0_f32);
+    let bounds = (
+        CARD_INSET,
+        TOP_BAND,
+        w - CARD_INSET,
+        h - STATUS_BAR - CARD_INSET,
+    );
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            cx.new(|cx| {
+                let mut ws = card_workspace(1, "", window, cx);
+                ws.sidebar.hidden = true;
+                ws
+            })
+            .into()
+        };
+        let shot = render_with(&theme, dims, build, |_, _| ());
+        let path = save_shot("card-sidebar-hidden", slug, &shot);
+        let n = format!("card-sidebar-hidden-{slug}");
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        check_one_card(&shot, dims, &ui, bounds, &n);
+        // Left of the card, and the band above it (away from the name centred in it and the
+        // buttons at its right).
+        for (what, x, y) in [
+            ("left of the card", CARD_INSET / 2.0, 300.0),
+            ("in the band", 200.0, TOP_BAND / 2.0),
+            ("in the band, just above the card", 200.0, TOP_BAND - 2.0),
+        ] {
+            let p = at(x, y);
+            assert!(is_canvas(p, &ui), "{n}: canvas {what} at ({x}, {y}): {p:?}");
+        }
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// M11al §3.3, in both themes (960 × 600, the sidebar shown): a 2 × 2 split in the one card,
+/// the top-left pane focused, each grid filled blue (`ESC [44m`, then clear) so the veil shows:
+/// - `card-split`: quiet;
+/// - `card-split-hover`: the pointer over the vertical line.
+///
+/// Panics unless between the panes lies a 1 px `card_border` hairline (down the middle, and
+/// across each column) with no canvas beside it; the three unfocused panes are veiled (their
+/// blue `UNFOCUSED_VEIL` toward the card) and the focused one isn't; there is no accent (no
+/// focus ring) anywhere along the probed rows; and hovered, the 2 px quiet line covers the
+/// hairline, centred on it.
+fn one_card_split_scenes() {
+    use gpui::Modifiers;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use ui_tokens::size::{
+        CARD_INSET, HAIRLINE, SIDEBAR_DEFAULT_WIDTH, STATUS_BAR, UNFOCUSED_VEIL,
+    };
+
+    let dims = size(px(960.0), px(600.0));
+    let (w, h) = (960.0_f32, 600.0_f32);
+    // Inside the card's 1 px edge.
+    let (left, top) = (SIDEBAR_DEFAULT_WIDTH + HAIRLINE, CARD_INSET + HAIRLINE);
+    let (right, bottom) = (
+        w - CARD_INSET - HAIRLINE,
+        h - STATUS_BAR - CARD_INSET - HAIRLINE,
+    );
+    // Each split at 0.5: the sides give up the hairline in proportion.
+    let across = left + 0.5 * (right - left - HAIRLINE) + HAIRLINE / 2.0;
+    let down = top + 0.5 * (bottom - top - HAIRLINE) + HAIRLINE / 2.0;
+    // Each pane's middle, below its tab bar: top left (focused), top right, bottom left, bottom
+    // right.
+    let bar = ui_tokens::size::TAB_BAR;
+    let middles = [
+        ((left + across) / 2.0, (top + bar + down) / 2.0),
+        ((across + right) / 2.0, (top + bar + down) / 2.0),
+        ((left + across) / 2.0, (down + bar + bottom) / 2.0),
+        ((across + right) / 2.0, (down + bar + bottom) / 2.0),
+    ];
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let blue = theme.palette[4];
+        for scene in ["card-split", "card-split-hover"] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = Workspace::for_shots(window, cx);
+                    ws.sidebar.hint_dismissed = true;
+                    let project = std::path::Path::new(API);
+                    // pane0 | pane1, then pane2 under pane0 and pane3 under pane1.
+                    let mut ids = Vec::new();
+                    for (i, axis, from) in [
+                        (0, None, None),
+                        (1, Some(Axis::Row), None),
+                        (2, Some(Axis::Column), Some(0)),
+                        (3, Some(Axis::Column), Some(1)),
+                    ] {
+                        if let Some(from) = from {
+                            ws.select_pane(ids[from], window, cx);
+                        }
+                        ws.open_shot_session(&format!("pane{i}"), project, "", axis, window, cx);
+                        ids.push(ws.model.focused_pane().expect("a pane"));
+                    }
+                    ws.select_pane(ids[0], window, cx);
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&slot);
+                let panes = shown_panes(cx, &ws);
+                assert_eq!(panes.len(), 4, "{scene}-{slug}: four panes");
+                fill_blue(cx, &ws);
+                if scene == "card-split-hover" {
+                    let on = point(px(across), px(middles[3].1));
+                    cx.simulate_mouse_move(window, on, None, Modifiers::none());
+                }
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            let path = save_shot(scene, slug, &shot);
+            let n = format!("{scene}-{slug}");
+            let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+            let scale = shot.width as f32 / w;
+            let one = (HAIRLINE * scale) as usize;
+            // The veil: the focused pane's grid is blue; the others' the blue veiled toward the
+            // card.
+            let veiled = crate::theme::mix(blue, ui.card, UNFOCUSED_VEIL);
+            for (i, &(x, y)) in middles.iter().enumerate() {
+                let p = at(x, y);
+                if i == 0 {
+                    assert!(near(p, blue), "{n}: the focused pane, unveiled: {p:?}");
+                } else {
+                    assert!(
+                        near_by(p, veiled, 4) && !near(p, blue),
+                        "{n}: pane {i} veiled at ({x}, {y}): {p:?}, want {veiled:?}"
+                    );
+                }
+            }
+            // No focus ring: no accent on the card's edges or by the lines, along a row through
+            // each pair of panes (the grids are left out: a theme's blue can be its accent).
+            for (_, y) in [middles[0], middles[2]] {
+                for (x0, x1) in [
+                    (left - 2.0, left + 3.0),
+                    (across - 4.0, across + 4.0),
+                    (right - 3.0, right + 2.0),
+                ] {
+                    let accent = count_along(&shot, dims, ui.accent, y, x0, x1);
+                    assert_eq!(accent, 0, "{n}: no accent along y {y} from {x0} to {x1}");
+                }
+            }
+            // The horizontal hairlines, one per column: 1 px of `card_border`, the upper pane
+            // (no canvas) above it and the lower pane's tab bar directly under it (§3.3).
+            for x in [middles[0].0, middles[1].0] {
+                let lines = count_down(&shot, dims, ui.card_border, x, down - 4.0, down + 4.0);
+                assert_eq!(lines, one, "{n}: one hairline across the column at x {x}");
+                let p = at(x, down - 3.0);
+                assert!(
+                    !is_canvas(p, &ui),
+                    "{n}: no canvas above the line at x {x}: {p:?}"
+                );
+                let y = down + HAIRLINE / 2.0 + 0.5;
+                let p = at(x, y);
+                assert!(
+                    near(p, ui.tab_bar),
+                    "{n}: the bar right under the line at ({x}, {y}): {p:?}"
+                );
+            }
+            // The vertical one, in the lower panes (clear of the horizontal lines).
+            let y = middles[3].1;
+            let (x0, x1) = (across - 4.0, across + 4.0);
+            for x in [across - 3.0, across + 3.0] {
+                let p = at(x, y);
+                assert!(
+                    !is_canvas(p, &ui),
+                    "{n}: no canvas by the line at ({x}, {y})"
+                );
+            }
+            if scene == "card-split-hover" {
+                // The 2 px quiet line (M11x) over it, centred: the hairline is covered (the
+                // line at half strength over it).
+                let quiet = quiet_over_line(&shot, dims, &ui, y, (x0, x1));
+                assert_eq!(quiet, (2.0 * scale) as usize, "{n}: the 2 px quiet line");
+                let lines = count_along(&shot, dims, ui.card_border, y, x0, x1);
+                assert_eq!(lines, 0, "{n}: the hairline under the quiet line");
+                let over_card = quiet_line(at(x0, y), &ui);
+                let first = (0..(8.0 * scale) as usize)
+                    .find(|&d| near(at(x0 + d as f32 / scale, y), over_card))
+                    .expect("the line");
+                let middle = x0 + (first as f32 + scale) / scale;
+                assert!(
+                    (middle - across).abs() <= 0.5,
+                    "{n}: the line's middle {middle}, the hairline's {across}"
+                );
+            } else {
+                let lines = count_along(&shot, dims, ui.card_border, y, x0, x1);
+                assert_eq!(lines, one, "{n}: one hairline down the middle");
+            }
+            println!("ui-shots: {}", path.display());
+        }
     }
 }
 
@@ -1542,17 +2034,17 @@ fn title_area_scenes() {
             // the cards sit on (the sidebar's colour since M11i) from the band's left (the lights,
             // which shots don't draw) to the name's inset; its buttons are at its right now
             // (M11m). (With it shown the band holds the title there now: `title-bar`.)
-            let band_bg = ui.sidebar_background;
             let inset = name_inset(false);
             if hidden {
                 let stop = inset - 2.0;
                 for y in [sy + 2.0, sy + HIT / 2.0, sy + HIT - 2.0] {
                     let mut x = 0.0;
                     while x < stop {
-                        // (Near it: the cards' shadows reach a little way up into the band.)
+                        // (The canvas, within the shadow's slack: the card's shadow reaches a
+                        // little way up into the band.)
                         let p = at(x, y);
                         assert!(
-                            near(p, band_bg),
+                            is_canvas(p, &ui),
                             "{n}: the band is bare at ({x}, {y}): {p:?}"
                         );
                         x += 1.0;
@@ -1568,7 +2060,8 @@ fn title_area_scenes() {
                         let mut x = x0;
                         let mut inked = 0;
                         while x < x1 {
-                            inked += usize::from(!near(at(x, y), band_bg));
+                            // (Not the canvas: its shade under the card's shadow isn't ink.)
+                            inked += usize::from(!is_canvas(at(x, y), &ui));
                             x += 1.0;
                         }
                         inked
@@ -2165,6 +2658,12 @@ fn title_bar_scenes() {
                     })
                     .count()
             };
+            // The bare band at a point: the canvas, give or take the card's shadow (M11al: it
+            // reaches a little way up into the band), and nearer it than `other`.
+            let on_band = |p: [u8; 3], other: alacritty_terminal::vte::ansi::Rgb| {
+                gap(p, ui.sidebar_background) <= SHADOW_SLACK
+                    && gap(p, ui.sidebar_background) < gap(p, other)
+            };
             match scene {
                 "title-bar-collapsed" => {
                     icons_at_slots();
@@ -2179,7 +2678,8 @@ fn title_bar_scenes() {
                 }
                 "title-bar-collapsed-hover" => {
                     assert_eq!(at(b[1] + 1.5, 19.0), bg(ui.panel_hover), "{n}: ⚙ hovered");
-                    assert_eq!(at(b[0] + 1.5, 19.0), band, "{n}: 🔔 not hovered");
+                    let p = at(b[0] + 1.5, 19.0);
+                    assert!(on_band(p, ui.panel_hover), "{n}: 🔔 not hovered: {p:?}");
                 }
                 "title-bar-collapsed-hover-sidebar" => {
                     assert_eq!(
@@ -2187,11 +2687,13 @@ fn title_bar_scenes() {
                         bg(ui.panel_hover),
                         "{n}: the sidebar button hovered"
                     );
-                    assert_eq!(at(b[1] + 1.5, 19.0), band, "{n}: ⚙ not hovered");
+                    let p = at(b[1] + 1.5, 19.0);
+                    assert!(on_band(p, ui.panel_hover), "{n}: ⚙ not hovered: {p:?}");
                 }
                 "title-bar-unseen" => {
                     assert_eq!(at(dot.0, dot.1), bg(ui.accent), "{n}: the dot");
-                    assert_eq!(at(dot.0 + DOT / 2.0 - 1.0, dot.1), band, "{n}: its ring");
+                    let p = at(dot.0 + DOT / 2.0 - 1.0, dot.1);
+                    assert!(on_band(p, ui.accent), "{n}: its ring: {p:?}");
                 }
                 "title-bar-collapsed-narrow" => {
                     icons_at_slots();
@@ -2366,13 +2868,18 @@ fn title_bar_scenes() {
             // an unlit slot, which differs by nothing, fails on all three). The shadow also
             // darkens the difference itself (the canvas is darker since M11al, so it is a bigger
             // one in Mocha: 37, 38, 46 want, 35, 36, 45 got): up to an eighth of it more.
+            // M11al: the card's soft shadow reaches up into the band too, under the bare band
+            // beside the slot but not under the slot's fill (drawn over it): what it takes off
+            // the band, measured at the same height away from the popover, is allowed on top.
             let fill = at(b[0] + 1.5, 19.0);
             let beside = at(b[0] - 3.0, 19.0);
             let (hover, band) = (bg(ui.panel_hover), bg(ui.sidebar_background));
+            let card_shade = at(w * 0.25, 19.0);
             let off = (0..3).all(|k| {
                 let got = i32::from(fill[k]) - i32::from(beside[k]);
                 let want = i32::from(hover[k]) - i32::from(band[k]);
-                (got - want).abs() <= 1 + want.abs() / 8
+                let shade = (i32::from(band[k]) - i32::from(card_shade[k])).max(0);
+                (got - want).abs() <= 1 + want.abs() / 8 + shade
                     && (want == 0 || got.signum() == want.signum())
             });
             assert!(
@@ -2677,13 +3184,15 @@ fn title_bar_scenes() {
                 rgba: image.as_raw().to_vec(),
             };
             let ui = theme.ui();
+            // (Give or take the card's shadow, which reaches a little way up into the band since
+            // M11al, and nearer the band than the hover fill.)
             let corner = pixel_at(&shot, size(px(960.0), px(600.0)), b[0] + 1.5, 19.0);
-            let band = [
-                ui.sidebar_background.r,
-                ui.sidebar_background.g,
-                ui.sidebar_background.b,
-            ];
-            assert_eq!(corner, band, "{n}: after Escape the 🔔's fill is gone");
+            let band = ui.sidebar_background;
+            assert!(
+                gap(corner, band) <= SHADOW_SLACK
+                    && gap(corner, band) < gap(corner, ui.panel_hover),
+                "{n}: after Escape the 🔔's fill is gone: {corner:?}"
+            );
             // A click on the sidebar button shows the sidebar.
             cx.simulate_click(window, point(px(b[2] + HIT / 2.0), px(y)), none);
             assert!(!hidden(cx), "{n}: the sidebar button shows the sidebar");

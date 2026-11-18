@@ -2440,8 +2440,9 @@ fn paint_grid(
     window: &mut Window,
     cx: &mut App,
 ) {
-    // Its bottom corners rounded with its card's (M11i): the padding keeps the cells out of
-    // them, so nothing square shows past the card's edge.
+    // Its bottom corners rounded with the card's (M11i; `CARD_RADIUS`, 14 since M11al): the
+    // padding keeps the cells out of them, so nothing square shows past the card's edge. A
+    // pane away from the card's corners rounds too, onto the card's own colour (§3.4).
     let corner = px(ui_size::CARD_RADIUS);
     window.paint_quad(fill(bounds, hsla(theme.background)).corner_radii(Corners {
         bottom_left: corner,

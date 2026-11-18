@@ -4,8 +4,10 @@
 //! It opens and closes with ⌥⌘\, View → Toggle Right Sidebar, or the icon at the far right of
 //! every pane's tab bar (`tab_bar::BarButton::RightSidebar`, lit while it's open), sliding like
 //! the left sidebar (`sidebar_toggle::Slide`, not with Reduce motion on). It is a raised card
-//! (M11i, `panes::card`) 6 pt from the window's top, right and bottom edges and from the pane
-//! cards; the gap at its left resizes it (220–560 pt, 300 by default: the card's own width).
+//! (M11i, `panes::card`) 6 pt from the window's right edge, `CARD_INSET` from its top and
+//! bottom and from the panes' card (M11al Task 2; Task 3 moves it into that card); the 6 pt
+//! nearest it of the gap at its left resizes it (220–560 pt, 300 by default: the card's own
+//! width).
 //! Open state and width live in `sessions.json`. A narrow window draws it narrower
 //! (`drawn_width`) so the pane card keeps 200 pt.
 //!
@@ -78,7 +80,7 @@ use crate::terminal_view::hsla;
 use crate::theme::{Theme, UiColors, readable};
 use crate::ui_tokens::MARK_MIN;
 use crate::ui_tokens::size::{
-    CARD_GAP, CARD_RADIUS, DIVIDER_ACTIVE, FOCUS_RING, RIGHT_SIDEBAR_DEFAULT_WIDTH,
+    CARD_GAP, CARD_INSET, CARD_RADIUS, DIVIDER_ACTIVE, HAIRLINE, RIGHT_SIDEBAR_DEFAULT_WIDTH,
     RIGHT_SIDEBAR_MAX_WIDTH, RIGHT_SIDEBAR_MIN_WIDTH, TAB_BAR, TAB_TOP_GAP, TOP_BAND,
 };
 use crate::workspace::Workspace;
@@ -1379,10 +1381,11 @@ impl Workspace {
         drawn_width(self.right_sidebar.width, window_width, left)
     }
 
-    /// The right sidebar: a card `width` wide (M11i), with the 6 pt gap at its right and the
-    /// one at its bottom. Above it, with the left sidebar hidden, the window's top band (as over
-    /// the panes, so its header lines up with their tab bars), else the 6 pt strip that drags
-    /// the window. In the card: the panel tabs on a strip drawn like the pane tab bars (M11h;
+    /// The right sidebar: a card `width` wide (M11i), with the 6 pt gap at its right and, as
+    /// under the panes' card, `CARD_INSET` at its bottom (M11al Task 2; Task 3 moves it into
+    /// that card). Above it, with the left sidebar hidden, the window's top band (as over the
+    /// panes, so its header lines up with their tab bars), else the `CARD_INSET` strip that
+    /// drags the window. In the card: the panel tabs on a strip drawn like the pane tab bars (M11h;
     /// its empty part drags the window), then the shown panel. The gap at its left resizes it.
     fn render_right_sidebar(
         &self,
@@ -1399,7 +1402,7 @@ impl Workspace {
         } else {
             (
                 Some(self.render_drag_strip("right-sidebar-strip", window, cx)),
-                CARD_GAP,
+                CARD_INSET,
             )
         };
         // What the tabs leave empty: it drags the window (not in full screen).
@@ -1424,7 +1427,7 @@ impl Workspace {
             // The card's top, rounded as the inside of its edge (as a pane's tab bar); its
             // tabs clipped to the strip's bounds (GPUI's mask is a rectangle, not the rounded
             // corners), so a narrow card never lets a tab spill past the strip.
-            .rounded_t(px(CARD_RADIUS - FOCUS_RING))
+            .rounded_t(px(CARD_RADIUS - HAIRLINE))
             .overflow_hidden()
             // The tabs float 4 pt under its top, flush with its bottom.
             .pt(px(TAB_TOP_GAP))
@@ -1437,13 +1440,13 @@ impl Workspace {
             Panel::Changes => self.render_changes_panel(ui, width, cx),
             Panel::Activity => self.render_activity_panel(ui, width, cx),
         };
-        let card = panes::card(&PaneColors::of(&ui), false)
+        let card = panes::card(&PaneColors::of(&ui))
             .flex()
             .flex_col()
             .flex_1()
             .min_h(px(0.0))
             .mr(px(CARD_GAP))
-            .mb(px(CARD_GAP))
+            .mb(px(CARD_INSET))
             .child(strip)
             .child(body);
         div()
@@ -2138,7 +2141,7 @@ impl Workspace {
             .group("right-sidebar-edge")
             .absolute()
             .top(px(top))
-            .bottom(px(CARD_GAP))
+            .bottom(px(CARD_INSET))
             .left(px(-CARD_GAP))
             .w(px(CARD_GAP))
             .cursor_col_resize()

@@ -233,7 +233,7 @@ fn status_bar_scenes() {
     use crate::status_bar::{
         BRANCH_GAP, BRANCH_GLYPH, ITEM_GAP, MARK, MARK_GAP, PAD, StatusWord, text_width,
     };
-    use crate::ui_tokens::size::{CARD_GAP, SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
+    use crate::ui_tokens::size::{CARD_INSET, SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
     use gpui::FontWeight;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -354,14 +354,14 @@ fn status_bar_scenes() {
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
             let scale = shot.width as f32 / w;
             let canvas = |p: [u8; 3]| near_by(p, ui.sidebar_background, 2);
-            // 22 pt of canvas along the whole bottom (between its pieces), the cards' bottom
-            // 6 pt above it.
+            // `STATUS_BAR` of canvas along the whole bottom (between its pieces), the card's
+            // bottom `CARD_INSET` above it.
             for x in [2.0, w / 2.0 + 37.0, w - 2.0] {
                 assert!(canvas(at(x, top + 1.0)), "{n}: the bar's top at {x}");
                 assert!(canvas(at(x, h - 1.0)), "{n}: the bar's bottom at {x}");
             }
-            // The card's inside (the terminal's background) stops at its 1 pt edge, 6 pt above
-            // the bar (its shadow shades the gap, so the gap isn't looked at).
+            // The card's inside (the terminal's background) stops at its 1 pt edge, `CARD_INSET`
+            // above the bar (its shadow shades the inset, so the inset isn't looked at).
             let card_x = SIDEBAR_DEFAULT_WIDTH + 40.0;
             let inside = (0..(top * scale) as usize)
                 .map(|dy| dy as f32 / scale)
@@ -369,7 +369,7 @@ fn status_bar_scenes() {
                 .fold(0.0, f32::max)
                 + 1.0 / scale;
             assert!(
-                (top - inside - (CARD_GAP + 1.0)).abs() <= 0.75,
+                (top - inside - (CARD_INSET + 1.0)).abs() <= 0.75,
                 "{n}: the card's inside ends at {inside}, {} above the bar",
                 top - inside
             );
