@@ -3,11 +3,13 @@
 //!
 //! It opens and closes with ⌥⌘\, View → Toggle Right Sidebar, or the icon at the far right of
 //! every pane's tab bar (`tab_bar::BarButton::RightSidebar`, lit while it's open), sliding like
-//! the left sidebar (`sidebar_toggle::Slide`, not with Reduce motion on). It is a raised card
-//! (M11i, `panes::card`) 6 pt from the window's top, right and bottom edges and from the pane
-//! cards; the gap at its left resizes it (220–560 pt, 300 by default: the card's own width).
+//! the left sidebar (`sidebar_toggle::Slide`, not with Reduce motion on) in from the card's
+//! right edge, clipped by it. It sits inside the one floating card (M11al §3.2, §6.1), right of
+//! the panes behind a 1 px `card_border` hairline, the card's full height, filled `side` and
+//! rounding the card's top-right and bottom-right corners; a 6 pt strip centred on the hairline
+//! resizes it (220–560 pt, 300 by default: from the hairline to the card's outer right).
 //! Open state and width live in `sessions.json`. A narrow window draws it narrower
-//! (`drawn_width`) so the pane card keeps 200 pt.
+//! (`drawn_width`) so the panes keep 200 pt inside the card's 1 px edges.
 //!
 //! It follows the focused terminal (with a browser or file tab focused, the last terminal it
 //! followed; none yet, as after a relaunch, the focused workspace's first terminal): that
@@ -16,8 +18,8 @@
 //! reported). The lookup runs off the UI thread, on a focus change and every 2 s while the
 //! sidebar can be seen (`tick_right_sidebar`, which stops once it can't).
 //!
-//! M11h: the card's top strip, level with the pane tab bars and drawn like them, holds the
-//! panel tabs, Files · Changes · Activity (`Panel`; the last one shown is saved). Only the shown
+//! M11h: the panel's top strip, level with the pane tab bars, holds Files · Changes · Activity
+//! (`Panel`; the last one shown is saved), since M11al one segmented switch. Only the shown
 //! panel does any work: Files lists and marks, Changes (`changes_panel`) asks git, Activity
 //! asks nothing; switching brings the new one up to date at once, and leaving Files while it has
 //! the keyboard gives the keyboard to the focused tab (`show_right_panel`).
@@ -69,7 +71,7 @@ use crate::file_tree::{self, FileTree, Row, RowCache, TreeMemory, Want};
 use crate::git_branch::{find_git, is_this_mac, process_cwd};
 use crate::git_status::{self, DirEntry, Mark};
 use crate::name_input::{NameInput, NameInputEvent};
-use crate::panes::{self, PaneColors};
+use crate::panes;
 use crate::reduce_motion::WindowVisible;
 use crate::restore::SavedState;
 use crate::sidebar_toggle::{self, Slide, Tip};
@@ -78,8 +80,8 @@ use crate::terminal_view::hsla;
 use crate::theme::{Theme, UiColors, readable};
 use crate::ui_tokens::MARK_MIN;
 use crate::ui_tokens::size::{
-    CARD_GAP, CARD_RADIUS, DIVIDER_ACTIVE, FOCUS_RING, RIGHT_SIDEBAR_DEFAULT_WIDTH,
-    RIGHT_SIDEBAR_MAX_WIDTH, RIGHT_SIDEBAR_MIN_WIDTH, TAB_BAR, TAB_TOP_GAP, TOP_BAND,
+    CARD_INSET, CARD_RADIUS, DIVIDER_ACTIVE, HAIRLINE, RIGHT_SIDEBAR_DEFAULT_WIDTH,
+    RIGHT_SIDEBAR_MAX_WIDTH, RIGHT_SIDEBAR_MIN_WIDTH, TAB_BAR,
 };
 use crate::workspace::Workspace;
 
@@ -99,32 +101,53 @@ actions!(
 /// How often the followed terminal's folder is looked up again while the sidebar can be seen,
 /// and the shown panel (Files or Changes) refreshed.
 pub const REFRESH: Duration = Duration::from_secs(2);
-/// The panel tabs in the card's strip (M11h): the first's room from the strip's left, the
-/// room between them, each one's side padding; their top corners are the pane tabs'.
-const PANEL_TABS_LEFT: f32 = crate::ui_tokens::size::TABS_LEFT;
-const PANEL_TAB_GAP: f32 = 2.0;
-const PANEL_TAB_PAD: f32 = 10.0;
+/// The panel switch in the card's strip (M11al §6.2): a track `SWITCH_SIDE` from the panel's
+/// sides, `SWITCH_PAD` of padding inside its 1 pt edge, three equal segments `SWITCH_SEGMENT`
+/// tall; their corners, the track's corners and their words.
+pub(crate) const SWITCH_SIDE: f32 = 14.0;
+pub(crate) const SWITCH_PAD: f32 = 3.0;
+pub(crate) const SWITCH_SEGMENT: f32 = 28.0;
+pub(crate) const SWITCH_RADIUS: f32 = 10.0;
+const SWITCH_SEGMENT_RADIUS: f32 = 8.0;
+const SWITCH_LABEL: f32 = 13.0;
+/// The repo card (M11al §6.3) heading Files and Changes: its margin above, at the sides and
+/// below, its padding, its corners, and the line (name and meta) inside.
+pub(crate) const REPO_TOP: f32 = 4.0;
+pub(crate) const REPO_SIDE: f32 = 14.0;
+pub(crate) const REPO_BOTTOM: f32 = 6.0;
+pub(crate) const REPO_PAD_Y: f32 = 12.0;
+pub(crate) const REPO_PAD_X: f32 = 14.0;
+pub(crate) const REPO_RADIUS: f32 = 12.0;
+pub(crate) const REPO_LINE: f32 = 20.0;
+/// A section heading (§6.4): its side padding, the room under its words, its count pill's
+/// padding and corners.
+pub(crate) const SECTION_SIDE: f32 = 20.0;
+pub(crate) const SECTION_BELOW: f32 = 8.0;
+pub(crate) const COUNT_PAD_X: f32 = 8.0;
+pub(crate) const COUNT_PAD_Y: f32 = 1.0;
+pub(crate) const COUNT_RADIUS: f32 = 10.0;
 /// M11v part 4 (note 73): one system for the three panels, Files, Changes and Activity. A
 /// row's height; its text and its small text (marks, counts, times); a header's height and
 /// its title; an icon; the 12 pt left edge everything lines up on: a row's hover and
 /// selection are pills (`PILL_RADIUS` corners) inset `PILL_INSET` from the card's sides, with
 /// `PILL_PAD` inside them; a header's icon buttons (`HEADER_BUTTON`, their icons `HEADER_ICON`)
 /// and its room right of them.
-pub(crate) const ROW: f32 = 28.0;
+pub(crate) const ROW: f32 = 32.0;
 pub(crate) const TEXT: f32 = 14.0;
+/// A row's name (M11al §6.5) and its folder, faint beside it.
+pub(crate) const NAME: f32 = 13.5;
+pub(crate) const FOLDER: f32 = 12.0;
 pub(crate) const SMALL: f32 = 12.0;
-pub(crate) const HEADER: f32 = 42.0;
+pub(crate) const HEADER: f32 = REPO_TOP + REPO_PAD_Y + REPO_LINE + REPO_PAD_Y + REPO_BOTTOM;
 pub(crate) const TITLE: f32 = 14.0;
 pub(crate) const ICON: f32 = 16.0;
 pub(crate) const EDGE: f32 = 12.0;
-pub(crate) const PILL_INSET: f32 = 6.0;
-pub(crate) const PILL_PAD: f32 = 6.0;
-pub(crate) const PILL_RADIUS: f32 = 7.0;
+pub(crate) const PILL_INSET: f32 = 10.0;
+pub(crate) const PILL_PAD: f32 = 12.0;
+pub(crate) const PILL_RADIUS: f32 = 9.0;
 pub(crate) const HEADER_BUTTON: f32 = 26.0;
 pub(crate) const HEADER_ICON: f32 = 15.0;
 pub(crate) const HEADER_PAD_RIGHT: f32 = 8.0;
-/// The panel tabs' words (part 4: 13 pt).
-const TAB_LABEL: f32 = 13.0;
 /// A thin chevron's box (› / ⌄, part 4).
 pub(crate) const CHEVRON: f32 = 12.0;
 const CHEVRON_STROKE: f32 = 1.25;
@@ -133,8 +156,8 @@ const ICON_STROKE: f32 = 1.2;
 const HEADER_ICON_STROKE: f32 = 1.3;
 /// The filter field under the Files header: its height, its corners, its padding and the
 /// room under it; its search icon.
-pub(crate) const FILTER: f32 = 32.0;
-const FILTER_RADIUS: f32 = 8.0;
+pub(crate) const FILTER: f32 = 34.0;
+const FILTER_RADIUS: f32 = 10.0;
 const FILTER_PAD: f32 = 10.0;
 pub(crate) const FILTER_BELOW: f32 = 8.0;
 const FILTER_ICON: f32 = 14.0;
@@ -213,13 +236,13 @@ pub(crate) fn mark_ink(mark: Mark, theme: &Theme, ui: &UiColors) -> Rgb {
     on_rows(ansi, ui)
 }
 
-/// `colour` pushed (hue kept) to `MARK_MIN` on each fill a Files row has (M11i: the card, and
-/// `card_hover` / `card_selected` under a hovered or selected row), so a git mark or a type
-/// tint reads on all of them.
+/// `colour` pushed (hue kept) to `MARK_MIN` on each fill a Files row has (M11i; M11al §6.5: the panel's
+/// `side`, and `side_hover` / `side_selected` under a hovered or selected row, M11al §6.5), so a git mark
+/// or a type tint reads on all of them.
 fn on_rows(colour: Rgb, ui: &UiColors) -> Rgb {
     readable(
         colour,
-        &[ui.card, ui.card_hover, ui.card_selected],
+        &[ui.side, ui.side_hover, ui.side_selected],
         MARK_MIN,
     )
 }
@@ -429,7 +452,7 @@ fn file_row(
         .pl(px(left))
         .pr(px(PILL_PAD))
         .rounded(px(PILL_RADIUS))
-        .text_size(px(TEXT))
+        .text_size(px(NAME))
         .children(lines);
     // The pill in its row: inset from the card's sides.
     let place = |pill: AnyElement| {
@@ -468,9 +491,9 @@ fn file_row(
         (false, _) => Glyph::File,
     };
     let (rel, is_dir) = (row.rel.clone(), row.is_dir);
-    let hover = ui.card_hover;
+    let hover = ui.side_hover;
     place(
-        pill.when(chosen, |r| r.bg(hsla(ui.card_selected)))
+        pill.when(chosen, |r| r.bg(hsla(ui.side_selected)))
             .when(!chosen, |r| r.hover(move |s| s.bg(hsla(hover))))
             .cursor_pointer()
             .child(
@@ -872,18 +895,44 @@ pub(crate) fn note(ui: &UiColors, text: &'static str) -> AnyElement {
         .into_any_element()
 }
 
-/// A panel's header row (part 4): `HEADER` tall, its content from the 12 pt edge to
-/// `HEADER_PAD_RIGHT` from the right (where its icon buttons sit), centred.
-pub(crate) fn header_row() -> gpui::Div {
+/// A panel's plain header row (part 4), `height` tall (Activity's own `HEADER`, 42), its content
+/// from the 12 pt edge to `HEADER_PAD_RIGHT` from the right (where its icon buttons sit),
+/// centred.
+pub(crate) fn header_row(height: f32) -> gpui::Div {
     div()
         .flex_none()
         .flex()
         .items_center()
         .gap(px(8.0))
-        .h(px(HEADER))
+        .h(px(height))
         .w_full()
         .pl(px(EDGE))
         .pr(px(HEADER_PAD_RIGHT))
+}
+
+/// The repo card (M11al §6.3) round a header's content: `height` tall with its margin (4 above, 14
+/// at the sides, 6 below), the card `card_hover`-filled and rounded, its content from
+/// `REPO_PAD_X` in, centred.
+pub(crate) fn repo_card(height: f32, ui: UiColors) -> (gpui::Div, gpui::Div) {
+    let outer = div()
+        .flex_none()
+        .flex()
+        .w_full()
+        .h(px(height))
+        .pt(px(REPO_TOP))
+        .pb(px(REPO_BOTTOM))
+        .px(px(REPO_SIDE));
+    let card = div()
+        .flex()
+        .flex_1()
+        .min_w(px(0.0))
+        .h_full()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(REPO_PAD_X))
+        .rounded(px(REPO_RADIUS))
+        .bg(hsla(ui.card_hover));
+    (outer, card)
 }
 
 /// A header's icon button (part 4): `HEADER_BUTTON` square, its `HEADER_ICON` glyph faint, the
@@ -907,7 +956,8 @@ pub(crate) fn header_button(
         .size(px(HEADER_BUTTON))
         .rounded(px(6.0))
         .cursor_pointer()
-        .hover(move |s| s.bg(hsla(ui.card_hover)))
+        // On the repo card's `card_hover` fill: a step lighter.
+        .hover(move |s| s.bg(hsla(ui.card_lift)))
         .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
         .child(
             icon(ui.text_faint)
@@ -951,19 +1001,49 @@ pub fn clamp(width: Option<f32>) -> f32 {
 /// The narrowest the pane cards get for the right sidebar (there's no pane minimum elsewhere).
 pub const PANE_COLUMN_MIN: f32 = 200.0;
 
-/// How wide its card is drawn: its `width`, less what a window `window_width` wide needs to
-/// keep the pane cards `PANE_COLUMN_MIN` wide beside a left sidebar `left` wide (0 when
-/// hidden), with the three 6 pt gaps: before the pane cards (from the sidebar, or the window's
-/// left edge), between them and the right card, and after it. Never less than none. The saved
+/// How wide it is drawn: its `width`, less what a window `window_width` wide needs to keep the
+/// panes `PANE_COLUMN_MIN` wide beside a left sidebar `left` wide (0 when hidden), in the one
+/// card (M11al §3.1): flush against a shown sidebar, else `CARD_INSET` from the window's left;
+/// `CARD_INSET` from its right; less the card's 1 px left edge (inside which the panes are
+/// counted) and the 1 px hairline between the panes and it. Never less than none. The saved
 /// width stays as chosen.
 pub fn drawn_width(width: f32, window_width: f32, left: f32) -> f32 {
-    width.min((window_width - left - PANE_COLUMN_MIN - 3.0 * CARD_GAP).max(0.0))
+    let left_inset = if left > 0.0 { 0.0 } else { CARD_INSET };
+    let room = window_width - left - PANE_COLUMN_MIN - left_inset - CARD_INSET - 2.0 * HAIRLINE;
+    width.min(room.max(0.0))
 }
 
-/// Its card's width with the pointer at `x`, in the middle of the gap at its left, in a window
-/// `window_width` wide (the card ends 6 pt short of the window's right).
+/// Its width with the pointer at `x`, on the middle of the hairline at its left, in a window
+/// `window_width` wide (it ends where the card does, `CARD_INSET` short of the window's right).
 pub fn width_for_edge(window_width: f32, x: f32) -> f32 {
-    clamp(Some(window_width - CARD_GAP - (x + CARD_GAP / 2.0)))
+    clamp(Some(window_width - CARD_INSET - x - HAIRLINE / 2.0))
+}
+
+/// While it slides (M11al §6.7): the canvas outside the card's `top` (else bottom) right
+/// `CARD_RADIUS` curve, laid in the card over the sliding panel. The card clips its inside to a
+/// rectangle (GPUI's mask has no corners), so the panel, cut square at the card's right edge,
+/// would show past that curve. A ring of canvas `CARD_RADIUS` thick, its inner edge on the
+/// card's outer curve, covers it; the card's own edge is drawn over it after. Placed from the
+/// card's inside (its 1 px edge in), and twice its outer radius square so GPUI doesn't shrink
+/// that radius to fit; its straight parts lie outside the card, where the clip hides them.
+fn corner_cap(top: bool, canvas: gpui::Hsla) -> gpui::Div {
+    let ring = CARD_RADIUS;
+    let outer = CARD_RADIUS + ring;
+    let cap = div()
+        .absolute()
+        .size(px(2.0 * outer))
+        .right(px(-(ring + HAIRLINE)))
+        .border_r(px(ring))
+        .border_color(canvas);
+    if top {
+        cap.top(px(-(ring + HAIRLINE)))
+            .border_t(px(ring))
+            .rounded_tr(px(outer))
+    } else {
+        cap.bottom(px(-(ring + HAIRLINE)))
+            .border_b(px(ring))
+            .rounded_br(px(outer))
+    }
 }
 
 /// A terminal's folder: what it `reported` (OSC 7, already checked to be about this Mac for a
@@ -1307,10 +1387,10 @@ impl Workspace {
         .detach();
     }
 
-    /// The right sidebar and how it sits this frame: laid out beside the pane column, or (while
-    /// sliding) laid over it from the right; none when it's closed and still. Ends a slide past
-    /// its time; until then every frame asks for the next. Also: how much of it shows while
-    /// sliding.
+    /// The right sidebar and how it sits this frame, in the one card (M11al §3.2, §6.7): laid
+    /// out beside the panes, or (while sliding) laid over the card's inside from its right edge,
+    /// clipped by the card; none when it's closed and still. Ends a slide past its time; until
+    /// then every frame asks for the next.
     pub(crate) fn right_sidebar_layout(
         &mut self,
         ui: UiColors,
@@ -1353,13 +1433,23 @@ impl Workspace {
         let node = self.render_right_sidebar(ui, width, window, cx);
         match slide {
             Some(shown) => {
-                // The card and the gap at its right go out of sight together.
+                // The panel and its hairline go out past the card's right edge together, cut
+                // there by the card's clip (its inside, a rectangle). The card's rounded right
+                // corners: canvas caps over what the cut leaves square there.
+                let canvas = hsla(ui.sidebar_background);
                 let over = div()
                     .absolute()
-                    .top_0()
-                    .right(px(-(1.0 - shown) * (width + CARD_GAP)))
-                    .h_full()
-                    .child(node)
+                    .inset_0()
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right(px(-(1.0 - shown) * width))
+                            .child(node),
+                    )
+                    .child(corner_cap(true, canvas))
+                    .child(corner_cap(false, canvas))
                     .into_any_element();
                 (None, Some(over))
             }
@@ -1379,11 +1469,12 @@ impl Workspace {
         drawn_width(self.right_sidebar.width, window_width, left)
     }
 
-    /// The right sidebar: a card `width` wide (M11i), with the 6 pt gap at its right and the
-    /// one at its bottom. Above it, with the left sidebar hidden, the window's top band (as over
-    /// the panes, so its header lines up with their tab bars), else the 6 pt strip that drags
-    /// the window. In the card: the panel tabs on a strip drawn like the pane tab bars (M11h;
-    /// its empty part drags the window), then the shown panel. The gap at its left resizes it.
+    /// The right sidebar in the one card (M11al §3.2, §6.1), `width` wide from the hairline to
+    /// the card's outer right: the 1 px `card_border` hairline, then the panel, filled `side`
+    /// and rounding the card's top-right and bottom-right corners (`CARD_RADIUS` − the edge),
+    /// the card's full height. In the panel: the panel tabs on a strip drawn like the pane tab
+    /// bars, level with them (M11h; its empty part drags the window), then the shown panel. The
+    /// strip centred on the hairline resizes it.
     fn render_right_sidebar(
         &self,
         ui: UiColors,
@@ -1391,28 +1482,25 @@ impl Workspace {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (band, above) = if self.sidebar.hidden {
-            (
-                self.render_top_band("right-sidebar-top", None, window, cx),
-                TOP_BAND,
-            )
-        } else {
-            (
-                Some(self.render_drag_strip("right-sidebar-strip", window, cx)),
-                CARD_GAP,
-            )
-        };
-        // What the tabs leave empty: it drags the window (not in full screen).
-        let empty = div()
-            .id("right-sidebar-band-empty")
+        let corner = px(CARD_RADIUS - HAIRLINE);
+        // The switch: a track on `canvas` in a `card_border` edge, three equal segments. A press
+        // on it is its own (the header's padding round it drags the window, below).
+        let track = div()
+            .id("right-sidebar-switch")
+            .flex()
+            .flex_row()
             .flex_1()
             .min_w(px(0.0))
-            .h_full();
-        let empty = if window.is_fullscreen() {
-            empty
-        } else {
-            self.drag_window_by(empty, cx)
-        };
+            .items_center()
+            .p(px(SWITCH_PAD))
+            .rounded(px(SWITCH_RADIUS))
+            .border(px(HAIRLINE))
+            .border_color(hsla(ui.card_border))
+            .bg(hsla(ui.sidebar_background))
+            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                cx.stop_propagation()
+            })
+            .children(Panel::ALL.map(|p| self.render_panel_tab(p, ui, cx)));
         let strip = div()
             .id("right-sidebar-band")
             .flex()
@@ -1420,49 +1508,71 @@ impl Workspace {
             .flex_none()
             .w_full()
             .h(px(TAB_BAR))
-            .bg(hsla(ui.tab_bar))
-            // The card's top, rounded as the inside of its edge (as a pane's tab bar); its
-            // tabs clipped to the strip's bounds (GPUI's mask is a rectangle, not the rounded
-            // corners), so a narrow card never lets a tab spill past the strip.
-            .rounded_t(px(CARD_RADIUS - FOCUS_RING))
+            // No fill of its own (M11al, as the pane tab bars): the panel's `side` shows; a
+            // 1 pt `card_border` line along its bottom, level with theirs. The track clipped to
+            // the strip's bounds (GPUI's mask is a rectangle, not the rounded corners).
+            .relative()
             .overflow_hidden()
-            // The tabs float 4 pt under its top, flush with its bottom.
-            .pt(px(TAB_TOP_GAP))
-            .pl(px(PANEL_TABS_LEFT))
-            .gap(px(PANEL_TAB_GAP))
-            .children(Panel::ALL.map(|p| self.render_panel_tab(p, ui, cx)))
-            .child(empty);
+            .items_center()
+            .px(px(SWITCH_SIDE))
+            .child(track)
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .w_full()
+                    .h(px(HAIRLINE))
+                    .bg(hsla(ui.card_border)),
+            );
+        // What the switch leaves of the strip, its padding, drags the window (not in full
+        // screen).
+        let strip = if window.is_fullscreen() {
+            strip
+        } else {
+            self.drag_window_by(strip, cx)
+        };
         let body = match self.right_sidebar.panel {
             Panel::Files => self.render_files_panel(ui, width, cx),
             Panel::Changes => self.render_changes_panel(ui, width, cx),
             Panel::Activity => self.render_activity_panel(ui, width, cx),
         };
-        let card = panes::card(&PaneColors::of(&ui), false)
+        let panel = div()
             .flex()
             .flex_col()
             .flex_1()
-            .min_h(px(0.0))
-            .mr(px(CARD_GAP))
-            .mb(px(CARD_GAP))
+            .min_w(px(0.0))
+            .h_full()
+            .bg(hsla(ui.side))
+            .rounded_tr(corner)
+            .rounded_br(corner)
+            .overflow_hidden()
             .child(strip)
             .child(body);
         div()
             .id("right-sidebar")
             .relative()
             .flex()
-            .flex_col()
+            .flex_row()
             .flex_none()
-            .w(px(width + CARD_GAP))
+            .w(px(width))
             .h_full()
-            .children(band)
-            .child(card)
-            .child(self.render_right_resize_edge(ui, above, cx))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(HAIRLINE))
+                    .h_full()
+                    .bg(hsla(ui.card_border)),
+            )
+            .child(panel)
+            .child(self.render_right_resize_edge(ui, cx))
             .into_any_element()
     }
 
-    /// `panel`'s tab in the strip (M11h), drawn as a pane's tab: 13 pt words, 10 pt each side,
-    /// top corners rounded; the shown panel's filled with the card (merging into it) in the
-    /// text colour, the others unfilled, dim, `tab_hover` on hover. A click shows its panel.
+    /// `panel`'s segment in the switch (M11h, M11al §6.2): a third of the track, `SWITCH_SEGMENT`
+    /// tall, 13 pt words in the middle; the shown panel's on `card_lift` in the text colour,
+    /// semibold, the others unfilled, `text_faint`, `text_dim` under the pointer (words, not a
+    /// fill). A click shows its panel.
     fn render_panel_tab(&self, panel: Panel, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         let active = self.right_sidebar.panel == panel;
         let i = panel as usize;
@@ -1470,16 +1580,20 @@ impl Workspace {
             .id(("right-panel-tab", i))
             .relative()
             .flex()
-            .flex_none()
+            .flex_1()
+            .min_w(px(0.0))
             .items_center()
-            .h_full()
-            .px(px(PANEL_TAB_PAD))
-            .rounded_t(px(tab_bar::TAB_RADIUS))
-            .text_size(px(TAB_LABEL))
-            .text_color(hsla(if active { ui.text } else { ui.text_dim }))
-            .when(active, |t| t.bg(hsla(ui.card)))
+            .justify_center()
+            .h(px(SWITCH_SEGMENT))
+            .rounded(px(SWITCH_SEGMENT_RADIUS))
+            .text_size(px(SWITCH_LABEL))
+            .text_color(hsla(if active { ui.text } else { ui.text_faint }))
+            .when(active, |t| {
+                t.bg(hsla(ui.card_lift)).font_weight(FontWeight::SEMIBOLD)
+            })
             .when(!active, |t| {
-                t.cursor_pointer().hover(move |s| s.bg(hsla(ui.tab_hover)))
+                t.cursor_pointer()
+                    .hover(move |s| s.text_color(hsla(ui.text_dim)))
             })
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.show_right_panel(panel, window, cx)
@@ -1921,10 +2035,9 @@ impl Workspace {
                     .child(name),
             )
             .child(thin_chevron(!tree.root_collapsed(), ui.text_faint));
-        header_row()
-            .child(title)
-            .child(div().flex_1())
-            .child(collapse_all)
+        let (outer, card) = repo_card(HEADER, ui);
+        outer
+            .child(card.child(title).child(div().flex_1()).child(collapse_all))
             .into_any_element()
     }
 
@@ -1977,8 +2090,8 @@ impl Workspace {
             .map(|input| {
                 let empty = input.read(cx).text().is_empty();
                 let focus_box = input.clone();
-                // Part 4: a borderless field filled one step darker than the card (the tab
-                // strip's colour), a search icon, then the box (bare: the field is its edge).
+                // Part 4: a borderless field filled one step darker than the panel (`raised`,
+                // M11al §6.5), a search icon, then the box (bare: the field is its edge).
                 let field = div()
                     .flex()
                     .items_center()
@@ -1987,7 +2100,7 @@ impl Workspace {
                     .w_full()
                     .px(px(FILTER_PAD))
                     .rounded(px(FILTER_RADIUS))
-                    .bg(hsla(ui.tab_bar))
+                    .bg(hsla(ui.raised))
                     .child(tab_bar::footer_glyph(
                         Glyph::Search,
                         ui.text_faint,
@@ -2084,16 +2197,11 @@ impl Workspace {
         }
     }
 
-    /// The 6 pt gap left of the right sidebar's card, beside it from `top` down (M11i): drag it
-    /// to resize the sidebar. A 2 px accent line shows in its middle on hover and while
-    /// dragging; while dragging, the whole window follows the mouse until release (as the left
-    /// sidebar's edge does).
-    fn render_right_resize_edge(
-        &self,
-        ui: UiColors,
-        top: f32,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    /// The 6 pt grab strip centred on the hairline left of the right sidebar, the card's full
+    /// height (M11al §6.7, as a split's): drag it to resize the sidebar. A 2 px accent line shows
+    /// in its middle on hover and while dragging; while dragging, the whole window follows the
+    /// mouse until release (as the left sidebar's edge does).
+    fn render_right_resize_edge(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         let resizing = self.right_sidebar.resizing;
         let this = cx.entity().downgrade();
         let follow = canvas(
@@ -2137,10 +2245,10 @@ impl Workspace {
             .id("right-sidebar-resize")
             .group("right-sidebar-edge")
             .absolute()
-            .top(px(top))
-            .bottom(px(CARD_GAP))
-            .left(px(-CARD_GAP))
-            .w(px(CARD_GAP))
+            .top_0()
+            .bottom_0()
+            .left(px((HAIRLINE - panes::GRAB) / 2.0))
+            .w(px(panes::GRAB))
             .cursor_col_resize()
             .on_mouse_down(
                 MouseButton::Left,
@@ -2155,7 +2263,7 @@ impl Workspace {
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .left(px((CARD_GAP - DIVIDER_ACTIVE) / 2.0))
+                    .left(px(panes::accent_offset(panes::GRAB)))
                     .w(px(DIVIDER_ACTIVE))
                     .bg(crate::panes::resize_line(&ui))
                     .when(!resizing, |line| {
@@ -2249,11 +2357,12 @@ mod tests {
 
     #[test]
     fn its_left_edge_follows_the_pointer() {
-        // M11i: the pointer is in the middle of the 6 pt gap left of the card, and the card
-        // ends 6 pt short of the window's right. In a 1280 pt window, the pointer at x = 971
-        // makes it 300 wide (971 + 3 to 1274); 80 left, 80 wider.
-        assert_eq!(width_for_edge(1280.0, 971.0), 300.0);
-        assert_eq!(width_for_edge(1280.0, 891.0), 380.0);
+        // M11al §6.7: the pointer is on the 1 px hairline left of the panel, and the panel
+        // ends where the card does, `CARD_INSET` short of the window's right. In a 1280 pt
+        // window, the pointer at x = 971.5 (the middle of the line at 971) makes it 300 wide
+        // (972 to 1272); 80 left, 80 wider.
+        assert_eq!(width_for_edge(1280.0, 971.5), 300.0);
+        assert_eq!(width_for_edge(1280.0, 891.5), 380.0);
         // Never past its bounds.
         assert_eq!(width_for_edge(1280.0, 1270.0), 220.0);
         assert_eq!(width_for_edge(1280.0, 10.0), 560.0);
@@ -2292,17 +2401,91 @@ mod tests {
     fn a_narrow_window_keeps_the_panes_200_wide() {
         // Room for it: drawn as wide as saved.
         assert_eq!(drawn_width(300.0, 1280.0, 240.0), 300.0);
-        // 700 wide with the left sidebar's 240: the panes keep 200 and the three 6 pt gaps
-        // (sidebar → pane card → right card → window edge) take 18, so 242 is drawn.
-        assert_eq!(drawn_width(300.0, 700.0, 240.0), 242.0);
-        // Without the left sidebar (the window's edge → pane card gap instead): 500 wide
-        // leaves it 282.
+        // 700 wide with the left sidebar's 240: the card is flush against the sidebar and
+        // `CARD_INSET` from the window's right, the card's left edge and the hairline take 1
+        // each, the panes keep 200, so 250 is drawn.
+        assert_eq!(drawn_width(300.0, 700.0, 240.0), 250.0);
+        // Without the left sidebar (the card `CARD_INSET` from the window's left too): 500
+        // wide leaves it 282.
         assert_eq!(drawn_width(300.0, 518.0, 0.0), 300.0);
         assert_eq!(drawn_width(300.0, 500.0, 0.0), 282.0);
         assert_eq!(drawn_width(560.0, 500.0, 0.0), 282.0);
         // Too narrow for any of it: none drawn, never less.
         assert_eq!(drawn_width(300.0, 300.0, 240.0), 0.0);
         assert_eq!(PANE_COLUMN_MIN, 200.0);
+    }
+
+    /// Where the hairline left of the panel is drawn (its left x) for a panel `width` wide in
+    /// a window `window_width` wide (M11al §3.2): the panel runs to the card's outer right,
+    /// `CARD_INSET` from the window's right, the 1 px line just left of it.
+    fn hairline_left(window_width: f32, width: f32) -> f32 {
+        window_width - CARD_INSET - width - HAIRLINE
+    }
+
+    /// The panes' width from inside the card's 1 px left edge to the hairline (M11al §3.1: the
+    /// card is flush against a shown left sidebar `left` wide, else `CARD_INSET` from the
+    /// window's left).
+    fn panes_width(width: f32, window_width: f32, left: f32) -> f32 {
+        let card_left = if left > 0.0 { left } else { CARD_INSET };
+        let line = if width > 0.0 {
+            hairline_left(window_width, width)
+        } else {
+            window_width - CARD_INSET
+        };
+        line - card_left - HAIRLINE
+    }
+
+    #[test]
+    fn width_for_edge_puts_the_hairline_under_the_pointer() {
+        // M11al §6.7: the 6 pt grab strip is centred on the hairline, so the pointer is on the
+        // line: the panel's width for pointer x puts the line's middle at x, less than half a
+        // point off (the old maths, a 6 pt gap's middle, missed it by exactly that). The same
+        // with the left sidebar hidden or 290 wide: the panel's right is the card's, which no
+        // left sidebar moves.
+        let window = 1280.0;
+        for left in [0.0, 290.0] {
+            for x in [720.0, 760.25, 900.5, 971.5, 1000.0, 1050.0] {
+                let width = width_for_edge(window, x);
+                // Room for it in this window: drawn as wide as it is.
+                assert_eq!(
+                    drawn_width(width, window, left),
+                    width,
+                    "x {x}, left {left}"
+                );
+                let middle = hairline_left(window, width) + HAIRLINE / 2.0;
+                assert!(
+                    (middle - x).abs() < 0.5,
+                    "x {x}, left {left}: the hairline's middle at {middle}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn drawn_width_keeps_the_panes_their_minimum() {
+        // An 800 pt window beside a 290 pt left sidebar: 300 drawn, the panes keep at least
+        // `PANE_COLUMN_MIN`.
+        let drawn = drawn_width(300.0, 800.0, 290.0);
+        assert_eq!(drawn, 300.0);
+        assert!(panes_width(drawn, 800.0, 290.0) >= PANE_COLUMN_MIN);
+        // Narrower: the panel gives way, the panes keep exactly their minimum.
+        for (window, left) in [(520.0, 290.0), (700.0, 290.0), (600.0, 0.0), (450.0, 0.0)] {
+            let drawn = drawn_width(560.0, window, left);
+            assert!(drawn > 0.0 && drawn < 560.0, "{window}, {left}: {drawn}");
+            assert_eq!(
+                panes_width(drawn, window, left),
+                PANE_COLUMN_MIN,
+                "{window}, {left}"
+            );
+        }
+        // 520 beside 290 leaves the panel 20 (520 − 290 − 200 − `CARD_INSET` − the card's left
+        // edge − the hairline).
+        assert_eq!(drawn_width(300.0, 520.0, 290.0), 20.0);
+        // No room left for it: none drawn (never less), the panes keep the whole card.
+        for (window, left) in [(499.0, 290.0), (440.0, 240.0), (217.0, 0.0), (200.0, 0.0)] {
+            assert_eq!(drawn_width(300.0, window, left), 0.0, "{window}, {left}");
+        }
+        assert!(panes_width(0.0, 499.0, 290.0) >= PANE_COLUMN_MIN);
     }
 
     #[test]
@@ -2609,9 +2792,10 @@ mod tests {
         assert_eq!(file_kind("main.RS"), Red);
     }
 
-    /// Every colour a Files row draws over its fills (`card`, hovered, selected) reaches
+    /// Every colour a Files row draws over its fills (`side`, hovered, selected) reaches
     /// `MARK_MIN` on each, in every built-in theme (Task 1 review: the tints and git marks on
-    /// `card_hover` and `card_selected`).
+    /// the hovered and selected fills; M11al Task 10: those are now `side_hover` and
+    /// `side_selected`).
     #[test]
     fn type_tints_and_marks_read_on_every_files_row_fill() {
         use crate::ui_tokens::contrast;
@@ -2619,9 +2803,9 @@ mod tests {
         for (name, theme) in crate::theme::every_theme() {
             let ui = theme.ui();
             let fills = [
-                ("card", ui.card),
-                ("card_hover", ui.card_hover),
-                ("card_selected", ui.card_selected),
+                ("side", ui.side),
+                ("side_hover", ui.side_hover),
+                ("side_selected", ui.side_selected),
             ];
             let tints = FileKind::ALL.map(|k| (format!("{k:?}"), kind_color(k, &theme)));
             let marks = [Mark::Modified, Mark::Added, Mark::Deleted]
@@ -2667,12 +2851,12 @@ mod tests {
     }
 
     /// Part 4: no chevron column; each level is 16 pt, and a guide runs down the middle of
-    /// that level's 16 pt icon (from the pill's left: its 6 pt padding, then the levels).
+    /// that level's 16 pt icon (from the pill's left: its 12 pt padding, then the levels).
     #[test]
     fn guides_sit_at_each_ancestor_level_s_icon_centre() {
         assert!(guides(0).is_empty(), "none at the top level");
-        assert_eq!(guides(1), vec![14.0]);
-        assert_eq!(guides(3), vec![14.0, 30.0, 46.0]);
+        assert_eq!(guides(1), vec![20.0]);
+        assert_eq!(guides(3), vec![20.0, 36.0, 52.0]);
     }
 
     /// Part 4 (Files A): only changed files carry colour, a file's name and its letter; a
@@ -2724,11 +2908,22 @@ mod tests {
     /// text, 16 pt icons, pills inset 6 pt so everything starts on the 12 pt edge.
     #[test]
     fn the_panels_share_one_set_of_sizes() {
-        assert_eq!(ROW, 28.0);
-        assert_eq!(HEADER, 42.0);
+        // M11al §6.5: roomier rows, pills inset 10 with 12 inside, names 13.5.
+        assert_eq!(ROW, 32.0);
+        assert_eq!((PILL_INSET, PILL_PAD, PILL_RADIUS), (10.0, 12.0, 9.0));
+        assert_eq!((NAME, FOLDER), (13.5, 12.0));
+        assert_eq!((FILTER, FILTER_RADIUS), (34.0, 10.0));
+        // M11al §6.3: the header is the repo card (4 / 12 + 20 + 12 / 6), Changes' 8 more.
+        assert_eq!(HEADER, 54.0);
+        assert_eq!(crate::changes_panel::HEADER, 62.0);
+        assert_eq!((REPO_SIDE, REPO_PAD_X, REPO_RADIUS), (14.0, 14.0, 12.0));
+        // §6.2: the switch's track, its padding, its segments.
+        assert_eq!((SWITCH_SIDE, SWITCH_PAD, SWITCH_SEGMENT), (14.0, 3.0, 28.0));
+        assert_eq!(SWITCH_RADIUS, 10.0);
         assert_eq!((TEXT, SMALL, TITLE), (14.0, 12.0, 14.0));
         assert_eq!(ICON, 16.0);
-        assert_eq!(PILL_INSET + PILL_PAD, EDGE);
+        // A row's content starts 22 in (10 + 12); the headers keep the 12 pt edge.
+        assert_eq!(PILL_INSET + PILL_PAD, 22.0);
         assert_eq!(EDGE, 12.0);
         assert_eq!((HEADER_BUTTON, HEADER_ICON), (26.0, 15.0));
         assert_eq!(INDENT, 16.0);

@@ -14,8 +14,9 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
+- **Current milestone (2026-11-18, latest):** **M11al — UI Uplift 3** 🟨 built (13 tasks + 8b, each reviewed; final-review fixes in), **merged to master 2026-11-18**, not pushed; waiting for your on-screen check (note 84, 14 items). M11ai (Markdown reader) resumes next, then M11ag.
 - **Current milestone (2026-11-18, M11ah lane):** **M11ah — Code view upgrade** 🟨 built (all 13 tasks, each reviewed), **merged to master and pushed 2026-11-18**; waiting for your on-screen check (note 85, 15 items).
-- **Current milestone (2026-11-18, latest):** **M11ak — Agent box** 🟨 built (15 tasks, reviewed; final-review fixes in), **merged to master and pushed**, waiting for your on-screen check (note 83); not merged. Before that:
+- **Current milestone (2026-11-18, earlier):** **M11ak — Agent box** 🟨 built (15 tasks, reviewed; final-review fixes in), **merged to master and pushed**, waiting for your on-screen check (note 83).
 - **Previous snapshot (2026-11-17):** **M11af — Live changes** 🟨 built (8 tasks, reviewed, final-review fixes in), **merged to master and pushed (`d327d15`)**, waiting for your on-screen check (note 82). M11ae, M11aj and M11aa are built, merged and **pushed** (master `250faeb`). Your first look at M11aa: the agent tab's layout and flow are not what was discussed; revisit later. Your on-screen checks for notes 79, 80 and 81 are still open. Older history follows.
 - **Earlier snapshot:** **M11aa — Agent tabs and providers** 🟨 built 2026-11-17 on branch `m11aa-ui` (all 14 tasks reviewed; not merged, not pushed), waiting for your on-screen check (note 79); M11ad (background agents) is next, design first. Before: **M11p — Chrome caching** 🟨 built and reviewed 2026-11-14 on branch `m11p-chrome-cache` (not merged; −24 % idle CPU with the glow on, −23 % with an agent working; 30 % target narrowly missed), waiting for your on-screen check (note 77); **M11aa's UI tasks are next** (after M11p merges). Before: **M11ac — File tab polish** 🟨 built 2026-11-13 on branch `m11ac-file-tab-polish` (not merged), in parallel with M11p's planning; waiting for your on-screen check (note 78). **M11aa — Agent tabs and providers, safe part** 🟨 built 2026-11-13 on branch `m11aa-agent-tabs` (Tasks 0, 2, 3, 4, 6; pure modules, no UI; not merged); **M11p** is next, then M11aa Task 1 and the UI tasks. Before: **M11z — Helper-program plugins** 🟨 built 2026-11-13, merged to master and pushed (`e83f2d7`), waiting for your on-screen check (5 items in note 76); then M11p. Before: **M11y — Plugins and theme plugins** 🟨 built 2026-11-13, merged to master (with the 500 MB unpacked cap, your call), waiting for your on-screen check (note 76); then M11z's plan; before that: M11y was 📝 designed and approved 2026-11-13 (note 76); then M11z — helper-program plugins; both before M11p. Before: **M11x — Preferences panel** 🟨 released in **v0.10.0** (2026-11-12, run 43208136200), waiting for your check (note 75). Before: **M11w — Graph** 🟨 released in **v0.9.0** (2026-11-12, run 43177618415, with M11v parts 4–6), waiting for your check (note 74). Before: **M11v — branch bar** 🟨 released in **v0.8.0** (2026-11-11), waiting for your check (note 73). Before: **M11u — restore where you were** 🟨 released in **v0.7.2** (2026-11-11), waiting for your check (note 72). Before: **M11t — preview tabs** 🟨 released in **v0.7.1**, waiting for your check (note 71). **v0.7.0 released 2026-11-11** (M11r, M11s). Before: **M11s — key sounds** 🟨 released in v0.7.0, waiting for your check (note 70). Before it **M11r — premium sidebar** 🟨 pushed 2026-11-10 (`9eaf43e`), waiting for your on-screen check (note 69); both before M11p, your calls. Before it: **M11o — branch switcher** 🟨 built, reviewed, merged and pushed 2026-11-10 (merge `0dece54`), released in **v0.6.0** (2026-11-10, run 42753078149); waiting for your on-screen check (12 items in note 66). **v0.6.0 released 2026-11-10** (M11o, the sidebar's two-line rows, no grey line above prompts). **v0.5.0 released 2026-11-10** (M11i–M11n; run 42662570303). Next after that: M11p — chrome caching (a measuring prototype, a design with you, a plan), then M11q — which command finished (designed 2026-11-10, waiting for your review). Next: your combined on-screen check (129 checks; notes 59–65), then a chores round planned with you (the planning round may also pick up the fuxx-completes repo, `github.com/fitzfitz/fuxx-completes`, design stage). M11n — performance 🟨 built, reviewed, merged, pushed and released 2026-11-10 (every target met). M11m — title bar 🟨 built, reviewed, merged and pushed 2026-11-09; M11l — command blocks 🟨 built, reviewed, merged and pushed 2026-11-09; M11k — first-run screen 🟨 merged and pushed 2026-11-09; M11j — command palette 🟨 merged and pushed 2026-11-09; M11h — Changes, diff view, Activity 🟨 merged and pushed 2026-11-09; M11i — UI uplift 2 🟨 merged and pushed 2026-11-08 (all released in v0.5.0, 2026-11-10). Earlier: M11g released as v0.4.0/v0.4.1. M11e — Update Available 🟨 released as v0.3.0 (2026-11-08), on-screen check of an update pending. M11d — Help menu 🟨 merged and pushed, on-screen check pending. M11c — native notifications and the app icon 🟨 built, on master, on-screen check pending (the banner's icon is still blank). M10b, M10c, M11, the follow-up and M11b 🟨 merged and pushed, on-screen checks pending. Then M12. M0–M9 and M10a ✅ done. See [[00 - Plan Tracker (Start Here)]].
 - **Overall phase:** **PIVOTED.** v1 CLI wrapper shipped & archived; now building **fuxx**, a native GPU terminal for AI agents, in Rust (GPUI + `alacritty_terminal` + `portable-pty`). Repo repurposed; vault re-founded.
@@ -24,6 +25,42 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-18 — M11al UI Uplift 3: built, merged, waiting for your on-screen check
+- **Status:** 🟨 built on branch m11al-ui-uplift and **merged to master 2026-11-18** on your standing word (not pushed), waiting for your on-screen check. All 13 plan tasks
+  (0–12) plus Task 8b (your who-order ruling), each reviewed. The whole-branch review and its fix wave are pending,
+  then the full ui-shots run again. Details, calls, limits and your 14-item check: note 84.
+- **Did:** every pane and the right panel sit in one floating card (rounded, soft shadow, 8 px in, flush against the
+  sidebar); splits are hairlines; the sidebar is on the darkest colour with a 52 px band, a search box, 56 px rows
+  saying who and where ("✳ Claude · api"), quiet group headings and a roomy footer; minimal tabs (icon tile, title,
+  status dot, separators, accent wash on the shown tab); terminal padding 28 / 22; the right panel's segmented switch,
+  repo card, 32 px rows and outlined footer buttons; a 26 px status bar with no fill; the file and browser bars on the
+  card's colour.
+- **Calls:** yours: who follows the workspace's active tab; the branch leaves the rows (its click too); the full
+  ui-shots run only before the final review and after its fix wave. The AI's calls are in note 84, "Calls made while
+  building" (e.g. a narrow pane's shown tab shrinks to keep its dot and ×; no "N files" on the Files card; the
+  footer's icons all grey).
+- **Numbers:** 1,959 tests pass (1 ignored; was 1,944); clippy 14/27 and 16/29 (unchanged); fmt clean. Full
+  `scripts/ui-shots.sh`: 201 passed, 1 failed of 202 (126.3 s; 11 new scenes). The failure, `chrome-drag-cancel`
+  (1,731 bytes after Esc, eight scenes at once), was a harness timing race, not a stale chrome part: the focused api
+  terminal's pty echoes `^[` onto its reader thread between the harness's last `run_until_parked` and `frame_fresh`,
+  and the 1,731 bytes are the step's own change in the terminal pane, so M11p's rule holds. Hardened in the review
+  fix wave (below). No new `timer(`, `request_animation_frame` or `spawn(` in the code. Idle CPU is your check
+  (item 14).
+- **Review fix wave** (`M11al: final review fixes`; the review found no Critical or Important issues): the CHANGES
+  count pill adds the rows past the 1,000 cap (`ChangeList::more`, RED first); `chrome-drag-cancel` waits (5 s
+  deadline) for the `^[` echo after Esc, 6 of 6 alone; `WorkspaceRow.branch` and its lookup removed (only tests read
+  it); a row's shell is its launch program's file name, else `$SHELL`'s (RED first); `drawn_width` keeps the panes
+  200 inside the card's edges; Activity's header is 42 px; stale comments fixed.
+- **Numbers after the fix wave:** 1,962 tests pass (1 ignored); clippy 14/27 and 16/29 (unchanged); fmt clean. Full
+  `scripts/ui-shots.sh`: 202 passed, 0 failed (131.9 s).
+- **Next:** your on-screen check; the push on your word. M11ai resumes, then M11ag.
+
+### 2026-11-18 — M11al UI Uplift 3: planned, building
+- **Status:** 📝 planned on your "go ahead with M11al": [[M11al Plan - UI Uplift 3]] — 13 tasks (Task 0 baselines
+  done: 1,944 tests, clippy 14/27 and 16/29, fmt clean). Building subagent-driven on branch `m11al-ui-uplift`; not
+  merged. Plan-time calls (AI's) are listed in the plan; the main one: a waiting row keeps "Needs input" / its
+  question (§2.4 over the "needs you" wording).
 
 ### 2026-11-18 — M11ah built, merged and pushed: code view upgrade
 - **Did:** all 13 plan tasks on `m11ah-code-view`, each reviewed clean: current line, quieter numbers, indent guides, rounded bars; sticky line, breadcrumb, folding, scrollbar marks, ⌥↑ / ⌥↓ between changes; Diff cards with titles and counts, folded unchanged stretches, changed words, side by side (per tab, saved). Task 12 also removed the blanket dead-code allowance from `src/code_outline.rs` (clippy unchanged) and wrote the module docs and STRUCTURE.md entries.

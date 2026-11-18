@@ -7686,11 +7686,11 @@ impl FileTab {
             .items_center()
             .w_full()
             .h(px(FILE_TOOLBAR))
-            .px(px(BAR_PAD + 4.0))
+            .px(px(16.0))
             .gap(px(8.0))
-            .bg(hsla(ui.panel))
+            .bg(hsla(ui.card))
             .border_b_1()
-            .border_color(hsla(ui.panel_border))
+            .border_color(hsla(ui.card_border))
             // Too narrow even with Where gone, the parts kept whole are cut at the controls.
             .child(
                 div()
