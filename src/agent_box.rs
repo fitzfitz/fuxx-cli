@@ -35,31 +35,32 @@ use alacritty_terminal::vte::ansi::Rgb;
 
 /// The box's sizes, named here so the UI uplift (M11al) restyles them in one place.
 /// The room around the box: at its sides, above the folder row, under the box.
-const AREA_X: f32 = 14.0;
-const AREA_TOP: f32 = 6.0;
-const AREA_BOTTOM: f32 = 12.0;
+/// (`pub(crate)`: the conversation above keeps the same side room.)
+pub(crate) const AREA_X: f32 = 28.0;
+const AREA_TOP: f32 = 8.0;
+const AREA_BOTTOM: f32 = 20.0;
 /// Between the folder row and the box.
-const PLACE_GAP: f32 = 6.0;
+const PLACE_GAP: f32 = 8.0;
 /// The box: its corners, its inner room, the gap between its rows (attachments, text, chips).
-const BOX_RADIUS: f32 = 12.0;
-const BOX_X: f32 = 12.0;
-const BOX_Y: f32 = 10.0;
-const BOX_GAP: f32 = 8.0;
+const BOX_RADIUS: f32 = 14.0;
+const BOX_X: f32 = 14.0;
+const BOX_Y: f32 = 12.0;
+const BOX_GAP: f32 = 10.0;
 /// A chip: its height, inner room and corners; the gap between chips.
-const CHIP_H: f32 = 24.0;
-const CHIP_X: f32 = 8.0;
-const CHIP_RADIUS: f32 = 6.0;
-const CHIP_GAP: f32 = 4.0;
+const CHIP_H: f32 = 28.0;
+const CHIP_X: f32 = 10.0;
+const CHIP_RADIUS: f32 = 8.0;
+const CHIP_GAP: f32 = 6.0;
 /// The `+` and send buttons' side.
-const BUTTON: f32 = 24.0;
+const BUTTON: f32 = 28.0;
 /// A menu: its width, and the gap between it and the chip it opens up from.
-const MENU_WIDTH: f32 = 240.0;
+const MENU_WIDTH: f32 = 260.0;
 const MENU_GAP: f32 = 4.0;
 /// How far from the window's edges a menu keeps.
 const MENU_EDGE: f32 = 8.0;
 /// A menu row's height and corners; the most a menu's list grows before it scrolls.
-const ROW_H: f32 = 26.0;
-const ROW_RADIUS: f32 = 6.0;
+const ROW_H: f32 = 32.0;
+const ROW_RADIUS: f32 = 8.0;
 const MENU_LIST_MAX: f32 = 320.0;
 /// The `/` list's tallest height (it scrolls) and the width its names have before their lines.
 const SLASH_MAX_H: f32 = 340.0;

@@ -358,9 +358,13 @@ fn welcome_scene() {
                 );
             }
         }
+        // On the first tab (the card's colour: the bar beside it can be pure black, with
+        // nothing to dim), which reaches down past the band's foot (M11al: the card starts
+        // `CARD_INSET` down).
+        let tab_x = ui_tokens::size::SIDEBAR_DEFAULT_WIDTH + 60.0;
         let (above, below) = (
-            pixel_at(&shot, dims, 480.0, band - 1.0),
-            pixel_at(&bare, dims, 480.0, band - 1.0),
+            pixel_at(&shot, dims, tab_x, band - 1.0),
+            pixel_at(&bare, dims, tab_x, band - 1.0),
         );
         assert!(
             sum(above) + 6 <= sum(below),
@@ -636,10 +640,10 @@ fn welcome_keys_scene() {
             // The tab bar's +, in the top band (not under the scrim): a click there still
             // opens a tab.
             open_welcome_on(cx, window, &ws, first);
-            let right = 960.0 - GAP - 1.0;
+            let right = 960.0 - CARD_INSET - 1.0;
             let plus = point(
                 px(right - PLUS_FROM_EDGE),
-                px(GAP + 1.0 + ui_tokens::size::TAB_BAR / 2.0),
+                px(CARD_INSET + 1.0 + ui_tokens::size::TAB_BAR / 2.0),
             );
             cx.simulate_click(window, plus, gpui::Modifiers::none());
             settle(cx, window);
@@ -714,7 +718,9 @@ fn welcome_narrow_scene() {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
-    let (w, h) = (480.0_f32, 420.0_f32);
+    // 420 pt under the old 38 pt band: the card keeps its room (and the chosen row its place)
+    // under M11al's 52 pt one.
+    let (w, h) = (480.0_f32, 420.0 + (ui_tokens::size::TOP_BAND - 38.0));
     let dims = size(px(w), px(h));
     let nine: Vec<crate::presets::Preset> = (1..=9)
         .map(|i| crate::presets::Preset {

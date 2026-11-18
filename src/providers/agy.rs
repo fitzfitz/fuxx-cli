@@ -74,6 +74,7 @@ static INFO: ProviderInfo = ProviderInfo {
     name: "agy",
     label: "Antigravity",
     badge: "AG",
+    who: ("A", "agy"),
     badge_rgb: 0x2d4f8a,
     // The recordings show no way to stop a turn on stdin.
     interrupts: false,

@@ -15,17 +15,6 @@ pub const MARK_MIN: f32 = 3.0;
 /// `MARK_MIN`: the spec wants dividers "1 px and quiet", and a 3:1 hairline reads as heavy. Lines
 /// that carry meaning (the accent bar, a divider while hovered or dragged) use `MARK_MIN`.
 pub const QUIET_LINE_MIN: f32 = 1.4;
-/// The pane tab bar's empty strip against the card (the active tab's colour): enough that the
-/// two read as different surfaces. Stepped to from the canvas colour, within the floors.
-pub const TAB_BAR_MIN: f32 = 1.3;
-/// How far a light theme's tab bar may step from the canvas colour: further, and text, dim
-/// and faint text (all held to 4.5:1 on it) press together.
-pub const TAB_BAR_LIGHT_CAP: f32 = 1.15;
-/// What the strip still reaches against the card where `TAB_BAR_MIN` can't be had (a light
-/// theme at its cap, or a dark one whose bar is already black): checked by the unit test and
-/// the `tab-bars` ui-shot.
-#[cfg(any(test, feature = "ui-shots"))]
-pub const TAB_BAR_LOW_MIN: f32 = 1.15;
 
 /// M11ah (code view upgrade): every size the file tab's code view is drawn with, in points, in
 /// one place so M11al can move them together. Row = the font's line height x `ROW_SCALE`.
@@ -77,41 +66,45 @@ pub mod code {
 pub mod size {
     #![allow(dead_code)] // drawn with from M11 Task 2 on
 
-    /// A sidebar row with its name line only, and one with a second line under it (where it
-    /// is, what it waits on, a script's note, or "not live") (M11i: `sidebar::row_height`).
-    /// Each has 7 px above and below its text, and 4 px between the name and the lines under
-    /// it (the roomier sidebar, 2026-11-10, your call: "It's too compact").
-    pub const SIDEBAR_ROW: f32 = 42.0;
-    pub const SIDEBAR_ROW_TWO: f32 = 52.0;
-    /// A row in a git repo: its branch and its folder, each on its own line under the name
-    /// (2026-11-10, your call).
-    pub const SIDEBAR_ROW_THREE: f32 = 68.0;
-    pub const GROUP_HEADER: f32 = 28.0;
-    /// A pane's tab bar (M11b; it replaced M11's 22 px pane header; 30 since M11i).
-    pub const TAB_BAR: f32 = 30.0;
-    /// The band at the top of the window that the traffic lights sit in (the drag area).
-    pub const TOP_BAND: f32 = 38.0;
-    /// Where the traffic lights go: (x, y) from the window's top left.
-    pub const TRAFFIC_LIGHTS: (f32, f32) = (13.0, 12.0);
-    /// Terminal padding: (sides, top and bottom); smaller in splits. Both are larger than
-    /// `CARD_RADIUS`, so nothing the grid paints reaches into a card's rounded corner (M11i).
-    pub const TERMINAL_PADDING: (f32, f32) = (16.0, 12.0);
-    pub const SPLIT_TERMINAL_PADDING: (f32, f32) = (12.0, 10.0);
-    /// M11i's raised cards (each pane, the right sidebar): the gap around and between them,
-    /// their corner radius, and a focused pane's edge in a split.
-    pub const CARD_GAP: f32 = 6.0;
-    pub const CARD_RADIUS: f32 = 8.0;
-    pub const FOCUS_RING: f32 = 1.0;
+    /// A sidebar row with its name line only, and one with a second line under it (who and
+    /// where, what it waits on, a script's note, or "not live") (M11i: `sidebar::row_height`).
+    /// 56 each since M11al (§2.3): every row has line two since M11r.
+    pub const SIDEBAR_ROW: f32 = 56.0;
+    pub const SIDEBAR_ROW_TWO: f32 = 56.0;
+    /// A group heading: its 12 px words with 16 above and 8 below (M11al §2.5).
+    pub const GROUP_HEADER: f32 = 36.0;
+    /// A pane's tab bar (M11b; it replaced M11's 22 px pane header; 30 since M11i; 52 since
+    /// M11al, level with the right panel's header).
+    pub const TAB_BAR: f32 = 52.0;
+    /// The band at the top of the window that the traffic lights sit in (the drag area); 52
+    /// since M11al (38 before), level with the tab bars.
+    pub const TOP_BAND: f32 = 52.0;
+    /// Where the traffic lights go: (x, y) from the window's top left (centred in `TOP_BAND`
+    /// since M11al).
+    pub const TRAFFIC_LIGHTS: (f32, f32) = (18.0, 20.0);
+    /// Terminal padding: (sides, top and bottom); smaller in splits. Enough that nothing the
+    /// grid paints reaches into the card's rounded corner (M11i): the grid's corner cell starts
+    /// inside the `CARD_RADIUS` curve.
+    pub const TERMINAL_PADDING: (f32, f32) = (28.0, 22.0);
+    pub const SPLIT_TERMINAL_PADDING: (f32, f32) = (20.0, 14.0);
+    /// The floating card's corner radius (M11al §3.1; M11i's cards' was 8).
+    pub const CARD_RADIUS: f32 = 14.0;
+    /// M11al's one floating card: the canvas inset around it, its shadow's drop and blur, and
+    /// the 1 px lines.
+    pub const CARD_INSET: f32 = 8.0;
+    pub const CARD_SHADOW_Y: f32 = 8.0;
+    pub const CARD_SHADOW_BLUR: f32 = 28.0;
+    pub const HAIRLINE: f32 = 1.0;
     /// The status bar along the window's bottom edge (M11i).
-    pub const STATUS_BAR: f32 = 22.0;
-    /// How far below the tab bar's top its tabs start (M11i).
-    pub const TAB_TOP_GAP: f32 = 4.0;
+    pub const STATUS_BAR: f32 = 26.0;
     /// How far in from its card's left edge the first tab starts, in a pane's tab bar and in
-    /// the right sidebar's panel tabs alike (2026-11-10, your call: the pane's had none).
-    pub const TABS_LEFT: f32 = 6.0;
+    /// the right sidebar's panel tabs alike (2026-11-10, your call: the pane's had none; 12
+    /// since M11al).
+    pub const TABS_LEFT: f32 = 12.0;
     pub const SIDEBAR_MIN_WIDTH: f32 = 180.0;
     pub const SIDEBAR_MAX_WIDTH: f32 = 400.0;
-    pub const SIDEBAR_DEFAULT_WIDTH: f32 = 240.0;
+    /// 290 since M11al (240 before); a saved width is kept.
+    pub const SIDEBAR_DEFAULT_WIDTH: f32 = 290.0;
     /// The right sidebar's (M11g).
     pub const RIGHT_SIDEBAR_MIN_WIDTH: f32 = 220.0;
     pub const RIGHT_SIDEBAR_MAX_WIDTH: f32 = 560.0;
@@ -125,13 +118,17 @@ pub mod size {
     pub const UNFOCUSED_VEIL: f32 = 0.4;
 }
 
-/// Text sizes in pixels. Numbers and meta use tabular figures; group headers get letter spacing.
+/// Text sizes in pixels. Numbers and meta use tabular figures; group headings are in capitals.
 pub mod text {
     #![allow(dead_code)] // drawn with from M11 Task 2 on
 
-    pub const NAME: f32 = 13.0;
-    pub const META: f32 = 11.0;
-    pub const GROUP_HEADER: f32 = 11.0;
+    /// Names 14, the line under them 12.5, group headings 12 (M11al §11).
+    pub const NAME: f32 = 14.0;
+    pub const META: f32 = 12.5;
+    pub const GROUP_HEADER: f32 = 12.0;
+    /// M11al: tabs, search, buttons, right-panel rows; and shortcut keys.
+    pub const UI: f32 = 13.5;
+    pub const KEYS: f32 = 11.5;
 }
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
@@ -224,6 +221,17 @@ mod tests {
             g: (v >> 8) as u8,
             b: v as u8,
         }
+    }
+
+    #[test]
+    fn the_sidebars_band_and_default_width_are_the_uplifts() {
+        use super::size::*;
+        // M11al 2.1: the band is 52 with the lights centred in it; a new window's sidebar 290,
+        // inside its limits.
+        assert_eq!(TOP_BAND, 52.0);
+        assert_eq!(TRAFFIC_LIGHTS, (18.0, 20.0));
+        assert_eq!(SIDEBAR_DEFAULT_WIDTH, 290.0);
+        assert!((SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH).contains(&SIDEBAR_DEFAULT_WIDTH));
     }
 
     #[test]

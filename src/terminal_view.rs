@@ -2440,8 +2440,9 @@ fn paint_grid(
     window: &mut Window,
     cx: &mut App,
 ) {
-    // Its bottom corners rounded with its card's (M11i): the padding keeps the cells out of
-    // them, so nothing square shows past the card's edge.
+    // Its bottom corners rounded with the card's (M11i; `CARD_RADIUS`, 14 since M11al): the
+    // padding keeps the cells out of them, so nothing square shows past the card's edge. A
+    // pane away from the card's corners rounds too, onto the card's own colour (§3.4).
     let corner = px(ui_size::CARD_RADIUS);
     window.paint_quad(fill(bounds, hsla(theme.background)).corner_radii(Corners {
         bottom_left: corner,
@@ -2773,48 +2774,50 @@ mod tests {
     #[test]
     fn inset_balances_leftover() {
         let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(400.0), px(300.0)));
-        // 16 px sides, 12 px top and bottom; 12 and 10 in a split.
+        // 28 px sides, 22 px top and bottom; 20 and 14 in a split.
         assert_eq!(
             inset(bounds, false),
-            Bounds::new(point(px(16.0), px(12.0)), size(px(368.0), px(276.0)))
+            Bounds::new(point(px(28.0), px(22.0)), size(px(344.0), px(256.0)))
         );
         assert_eq!(
             inset(bounds, true),
-            Bounds::new(point(px(12.0), px(10.0)), size(px(376.0), px(280.0)))
+            Bounds::new(point(px(20.0), px(14.0)), size(px(360.0), px(272.0)))
         );
-        // 9 x 17 cells: 40 columns use 360 of 368 px, 16 rows 272 of 276. What's left over is
-        // shared evenly, so the grid sits 4 px further in on each side, 2 px top and bottom.
+        // 9 x 17 cells: 38 columns use 342 of 344 px, 15 rows 255 of 256. What's left over is
+        // shared evenly, so the grid sits 1 px further in on each side, half a px top and bottom.
         let grid = GridLayout::fit(inset(bounds, false), px(9.0), px(17.0));
-        assert_eq!((grid.dims.cols, grid.dims.rows), (40, 16));
-        assert_eq!(grid.origin, point(px(20.0), px(14.0)));
-        let right = bounds.size.width - (grid.origin.x + grid.cell_width * 40.0);
-        let bottom = bounds.size.height - (grid.origin.y + grid.line_height * 16.0);
-        assert_eq!((right, bottom), (px(20.0), px(14.0)));
+        assert_eq!((grid.dims.cols, grid.dims.rows), (38, 15));
+        assert_eq!(grid.origin, point(px(29.0), px(22.5)));
+        let right = bounds.size.width - (grid.origin.x + grid.cell_width * 38.0);
+        let bottom = bounds.size.height - (grid.origin.y + grid.line_height * 15.0);
+        assert_eq!((right, bottom), (px(29.0), px(22.5)));
     }
 
     #[test]
     fn hit_testing_uses_the_inset_origin() {
-        // A pane right of a 220 px sidebar: 568 x 376 inside the padding, 8 x 17 cells, so
-        // 71 x 22 cells with 0 and 2 px left over; the grid starts at (236, 13).
+        // A pane right of a 220 px sidebar: 544 x 356 inside the padding, 8 x 17 cells, so
+        // 68 x 20 cells with 0 and 16 px left over; the grid starts at (248, 30).
         let bounds = Bounds::new(point(px(220.0), px(0.0)), size(px(600.0), px(400.0)));
         let grid = GridLayout::fit(inset(bounds, false), px(8.0), px(17.0));
+        assert_eq!((grid.dims.cols, grid.dims.rows), (68, 20));
+        assert_eq!(grid.origin, point(px(248.0), px(30.0)));
         let at = |x: f32, y: f32| {
             let (p, _) = grid.grid_point(point(px(x), px(y)), 0);
             (p.column.0, p.line.0)
         };
         // Just inside cell (3, 2).
-        assert_eq!(at(236.0 + 3.0 * 8.0 + 1.0, 13.0 + 2.0 * 17.0 + 1.0), (3, 2));
+        assert_eq!(at(248.0 + 3.0 * 8.0 + 1.0, 30.0 + 2.0 * 17.0 + 1.0), (3, 2));
         // In the padding, left of and above the grid: the first cell, not the second.
-        assert_eq!(at(225.0, 4.0), (0, 0));
+        assert_eq!(at(235.0, 10.0), (0, 0));
         // The last cell's far edge.
         assert_eq!(
-            at(236.0 + 71.0 * 8.0 - 1.0, 13.0 + 22.0 * 17.0 - 1.0),
-            (70, 21)
+            at(248.0 + 68.0 * 8.0 - 1.0, 30.0 + 20.0 * 17.0 - 1.0),
+            (67, 19)
         );
-        // In a split the padding is 12 and 10: 576 x 380 inside, 72 x 22 cells with 0 and 6 px
-        // left over; the grid starts at (232, 13).
+        // In a split the padding is 20 and 14: 560 x 372 inside, 70 x 21 cells with 0 and 15 px
+        // left over; the grid starts at (240, 21.5).
         let grid = GridLayout::fit(inset(bounds, true), px(8.0), px(17.0));
-        assert_eq!((grid.dims.cols, grid.dims.rows), (72, 22));
-        assert_eq!(grid.origin, point(px(232.0), px(13.0)));
+        assert_eq!((grid.dims.cols, grid.dims.rows), (70, 21));
+        assert_eq!(grid.origin, point(px(240.0), px(21.5)));
     }
 }

@@ -563,6 +563,25 @@ const fn shot(
 const API: &str = "/Users/me/code/api";
 const WEB: &str = "/Users/me/code/web";
 
+/// How much taller the sidebar's chrome (band, search box with its bottom margin, footer) is
+/// since M11al Task 7 than it was (38 + 30 + 0 + 36 before; `TOP_BAND`, `SEARCH` and its bottom
+/// margin, `FOOTER` now): a scene whose window was sized for the old room adds this to its
+/// height, so the list keeps the rows it showed (a tight window scrolls the list to the active
+/// row, which a cached and a full redraw may do differently).
+pub(super) const SIDEBAR_CHROME_GROWTH: f32 = (ui_tokens::size::TOP_BAND - 38.0)
+    + (crate::sidebar::SEARCH - 30.0)
+    + crate::sidebar::SEARCH_BOTTOM
+    + (crate::sidebar::FOOTER - 36.0);
+
+/// How much taller `rows` sidebar rows and `headers` group headings are since M11al Task 8
+/// (rows 52 → `SIDEBAR_ROW_TWO`; headings 28, and 6 more above all but the first, →
+/// `GROUP_HEADER`): a scene whose window was sized for the old rows adds this to its height, so
+/// the list keeps the rows it showed.
+pub(super) const fn sidebar_list_growth(rows: f32, headers: f32) -> f32 {
+    rows * (ui_tokens::size::SIDEBAR_ROW_TWO - 52.0)
+        + headers * (ui_tokens::size::GROUP_HEADER - 28.0)
+}
+
 /// A workspace showing `sessions` (each over a silent `cat`), statuses set the way the app
 /// sets them (so the waiting question is read off its screen). Session `split` is split from
 /// the one before it; `active` is focused; the `collapsed` folders are closed.
@@ -618,8 +637,21 @@ fn slotted(slot: &Slot) -> gpui::Entity<Workspace> {
     slot.borrow().clone().expect("the workspace")
 }
 
-/// The 6 pt gap (M11i) all round the left sidebar's neighbours.
-const GAP: f32 = ui_tokens::size::CARD_GAP;
+/// The canvas round the one card (M11al §3.1): above it (the drag strip), at its right and
+/// under it.
+const CARD_INSET: f32 = ui_tokens::size::CARD_INSET;
+
+/// The right sidebar's panel's left (just right of its hairline) in a window `window_right` wide
+/// with it `width` wide (M11al §3.2): it runs from there to the card's outer right.
+fn right_panel_left(window_right: f32, width: f32) -> f32 {
+    window_right - CARD_INSET - width
+}
+
+/// The right sidebar's panel's right in a window `window_right` wide: inside the card's 1 pt
+/// edge, `CARD_INSET` from the window's right (M11al §3.2).
+fn right_panel_right(window_right: f32) -> f32 {
+    window_right - CARD_INSET - ui_tokens::size::HAIRLINE
+}
 
 /// A workspace for the tab bar scenes, focused on api. `four`: two panes, the left one with
 /// four tabs (api idle and active, claude waiting, codex working, a browser tab), the right one
@@ -704,9 +736,11 @@ fn shown_panes(
     })
 }
 
-/// How far left of its pane's right edge the + button's centre is: past the right sidebar's
-/// and ⋯ (each a button and a gap), then half a button.
-const PLUS_FROM_EDGE: f32 = 4.0 + 2.0 * (20.0 + 2.0) + 10.0;
+/// How far left of its pane's right edge the + button's centre is: past the buttons' room, the
+/// right sidebar's and ⋯ (each a button and a gap), then half a button (M11al §4.6).
+const PLUS_FROM_EDGE: f32 = crate::tab_bar::BUTTONS_PAD
+    + 2.0 * (crate::tab_bar::BUTTON + crate::tab_bar::BUTTON_GAP)
+    + crate::tab_bar::BUTTON / 2.0;
 /// What the browser tab scenes' page shows (no page is made off-screen: the bar is given it).
 const PAGE_URL: &str = "http://localhost:3000/dashboard";
 const PAGE_TITLE: &str = "Acme dashboard";
