@@ -377,6 +377,7 @@ mod tests {
                 path: "/w/api/src/main.rs".into(),
                 mode: crate::layout_model::FileMode::Plain,
                 preview: false,
+                side_by_side: false,
             }];
         }
         state.active_workspace = Some(0);

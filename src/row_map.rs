@@ -21,12 +21,47 @@ pub enum Row {
     Title { card: usize },
     /// Diff: a folded unchanged stretch.
     Unchanged { stretch: usize },
-    /// Diff side by side: an old (line, cell0) on the left and a new one on the right.
-    #[allow(dead_code)] // built by `RowMap::diff` with pairs (Task 11)
+    /// Diff side by side: an old (line, cell0) on the left and a new one on the right (none:
+    /// that half is empty, facing a longer line or a line only the other side has).
     Pair {
         old: Option<(usize, usize)>,
         new: Option<(usize, usize)>,
     },
+}
+
+/// M11ah: a side-by-side half: the old file on the left, the new one on the right.
+#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Half {
+    Old,
+    New,
+}
+
+#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
+impl Row {
+    /// The doc line a row shows (a pair's first: the old side's when both have one); none: a
+    /// title's or a folded stretch's row.
+    pub fn line(self) -> Option<usize> {
+        match self {
+            Row::Line { line, .. } => Some(line),
+            Row::Pair { old, new } => match (old, new) {
+                (Some((o, _)), Some((n, _))) => Some(o.min(n)),
+                (Some((l, _)), None) | (None, Some((l, _))) => Some(l),
+                (None, None) => None,
+            },
+            Row::Title { .. } | Row::Unchanged { .. } => None,
+        }
+    }
+
+    /// The (line, first cell) a row shows on `half` (a line's row: on both).
+    pub fn half(self, half: Half) -> Option<(usize, usize)> {
+        match (self, half) {
+            (Row::Line { line, cell0 }, _) => Some((line, cell0)),
+            (Row::Pair { old, .. }, Half::Old) => old,
+            (Row::Pair { new, .. }, Half::New) => new,
+            _ => None,
+        }
+    }
 }
 
 /// What a map was built for (rebuilt when any differs): mode, doc version, columns, folds'
@@ -100,6 +135,29 @@ fn line_rows(line: usize, width: usize, columns: Option<usize>) -> impl Iterator
     (0..count).map(move |k| Row::Line {
         line,
         cell0: k * step,
+    })
+}
+
+/// M11ah: a side-by-side pair's rows: each half's line cut at `columns` (none: one row), the
+/// pair as tall as its taller half, the shorter half padded with none.
+fn pair_rows(
+    (old, new): (Option<usize>, Option<usize>),
+    widths: &[usize],
+    columns: Option<usize>,
+) -> impl Iterator<Item = Row> {
+    let count = |l: Option<usize>| match (l, columns) {
+        (None, _) => 0,
+        (Some(_), None) => 1,
+        (Some(l), Some(c)) => widths[l].div_ceil(c).max(1),
+    };
+    let (o, n) = (count(old), count(new));
+    let step = columns.unwrap_or(0);
+    let at = move |l: Option<usize>, k: usize, upto: usize| {
+        l.filter(|_| k < upto).map(|l| (l, k * step))
+    };
+    (0..o.max(n).max(1)).map(move |k| Row::Pair {
+        old: at(old, k, o),
+        new: at(new, k, n),
     })
 }
 
@@ -262,12 +320,12 @@ pub struct DiffLayout<'a> {
     pub shown: &'a [bool],
     /// Per card: closed to its title.
     pub closed: &'a [bool],
-    #[allow(dead_code)] // side by side (M11ah Task 11)
     pub pairs: Option<&'a [CardPairs]>,
 }
 
 impl RowMap {
-    /// Diff mode's rows (M11ah): the rows outside the cards as lines, a folded stretch one `⋯`
+    /// Diff mode's rows (M11ah): the rows outside the cards as lines (side by side, `pairs` per
+    /// card given: every row a `Row::Pair`, a card's rows paired as `pairs` says), a folded stretch one `⋯`
     /// row (unless `shown`), each card a title row `code::CARD_TITLE` tall (`code::CARD_GAP`
     /// further down for every card but the first) and its lines (none when `closed`); lines cut
     /// at `columns` cells when wrapping.
@@ -304,6 +362,16 @@ impl RowMap {
                 let end = c.rows.end.min(lines);
                 if layout.closed.get(card).copied().unwrap_or(false) {
                     diff.held.push((line..end, title));
+                } else if let Some(pairs) = layout.pairs.and_then(|p| p.get(card)) {
+                    // Side by side: the card's rows paired.
+                    for &(o, n) in pairs {
+                        for l in [o, n].into_iter().flatten() {
+                            first[l] = Some(rows.len());
+                        }
+                        for row in pair_rows((o, n), widths, columns) {
+                            push(&mut rows, &mut heights, row, row_h);
+                        }
+                    }
                 } else {
                     for l in line..end {
                         first[l] = Some(rows.len());
@@ -334,8 +402,15 @@ impl RowMap {
                 }
             }
             first[line] = Some(rows.len());
-            for row in line_rows(line, widths[line], columns) {
-                push(&mut rows, &mut heights, row, row_h);
+            if layout.pairs.is_some() {
+                // Side by side: an unchanged line on both halves.
+                for row in pair_rows((Some(line), Some(line)), widths, columns) {
+                    push(&mut rows, &mut heights, row, row_h);
+                }
+            } else {
+                for row in line_rows(line, widths[line], columns) {
+                    push(&mut rows, &mut heights, row, row_h);
+                }
             }
             line += 1;
         }
@@ -823,5 +898,113 @@ mod tests {
             Some(Row::Line { line: 25, cell0: 0 })
         );
         assert_eq!(map.rows_in(0.0..10.0 + CARD_TITLE), 0..2);
+    }
+
+    /// M11ah Task 11: side by side, each card's rows paired (`diff_cards::pair`): a removed and
+    /// an added line level, each half cut at the half's columns, the pair as tall as its
+    /// taller half (the shorter padded with none); rows outside the cards are a line on both
+    /// halves; both lines of a pair start on its first row.
+    #[test]
+    fn pairs_take_the_taller_half_when_wrapped() {
+        use crate::diff_view::{DiffRow, RowKind};
+        let row = |kind, old, new| DiffRow { kind, old, new };
+        // s s - + + s : a card over all six (too few to fold anything).
+        let rows = vec![
+            row(RowKind::Same, Some(1), Some(1)),
+            row(RowKind::Same, Some(2), Some(2)),
+            row(RowKind::Removed, Some(3), None),
+            row(RowKind::Added, None, Some(3)),
+            row(RowKind::Added, None, Some(4)),
+            row(RowKind::Same, Some(4), Some(5)),
+        ];
+        let g = crate::diff_cards::group(&rows);
+        assert_eq!(g.cards.len(), 1);
+        let pairs: Vec<CardPairs> = g
+            .cards
+            .iter()
+            .map(|c| crate::diff_cards::pair(&rows, c.rows.clone()))
+            .collect();
+        let layout = DiffLayout {
+            grouped: &g,
+            shown: &[],
+            closed: &[false],
+            pairs: Some(&pairs),
+        };
+        // The removed line 9 cells (3 rows at 4 columns), the first added 2 (1 row).
+        let widths = [1, 1, 9, 2, 5, 1];
+        let map = RowMap::diff(&widths, Some(4), &layout, 10.0);
+        let got: Vec<Row> = (0..map.len()).filter_map(|r| map.row(r)).collect();
+        let both = |l: usize| Row::Pair {
+            old: Some((l, 0)),
+            new: Some((l, 0)),
+        };
+        assert_eq!(
+            got,
+            [
+                Row::Title { card: 0 },
+                both(0),
+                both(1),
+                Row::Pair {
+                    old: Some((2, 0)),
+                    new: Some((3, 0))
+                },
+                Row::Pair {
+                    old: Some((2, 4)),
+                    new: None
+                },
+                Row::Pair {
+                    old: Some((2, 8)),
+                    new: None
+                },
+                // The second added line (5 cells: 2 rows) faces an empty half.
+                Row::Pair {
+                    old: None,
+                    new: Some((4, 0))
+                },
+                Row::Pair {
+                    old: None,
+                    new: Some((4, 4))
+                },
+                both(5),
+            ]
+        );
+        assert_eq!(map.first_row(2), Some(3), "the removed line's first row");
+        assert_eq!(map.first_row(3), Some(3), "level with it, the added one");
+        assert_eq!(map.first_row(4), Some(6));
+        assert_eq!(map.row_holding(5), Some(8));
+        assert_eq!(map.card_rows(0), Some(0..9));
+        assert_eq!(got[4].line(), Some(2));
+        assert_eq!(got[6].line(), Some(4));
+        assert_eq!(got[3].half(Half::New), Some((3, 0)));
+        assert_eq!(got[4].half(Half::New), None);
+        assert_eq!(Row::Title { card: 0 }.line(), None);
+        // Without Wrap a pair is one row; a stretch outside the cards is a line on both halves.
+        let map = RowMap::diff(&widths, None, &layout, 10.0);
+        assert_eq!(map.len(), 1 + 6 - 1);
+        assert_eq!(
+            map.row(3),
+            Some(Row::Pair {
+                old: Some((2, 0)),
+                new: Some((3, 0))
+            })
+        );
+        let g2 = two_cards();
+        let pairs2: Vec<CardPairs> = g2
+            .cards
+            .iter()
+            .map(|c| c.rows.clone().map(|l| (Some(l), Some(l))).collect())
+            .collect();
+        let layout = DiffLayout {
+            grouped: &g2,
+            shown: &[true, false, false],
+            closed: &[false, false],
+            pairs: Some(&pairs2),
+        };
+        let map = RowMap::diff(&[1; 38], None, &layout, 10.0);
+        assert_eq!(
+            map.row(0),
+            Some(both(0)),
+            "a shown stretch's line, both halves"
+        );
     }
 }

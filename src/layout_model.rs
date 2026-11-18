@@ -165,6 +165,8 @@ pub struct Model {
     previews: Vec<TabId>,
     /// The file tabs showing their Markdown rendered (M11ac: Preview on). Saved with each tab.
     md_previews: Vec<TabId>,
+    /// M11ah: the file tabs showing their diff side by side. Saved with each tab.
+    side_by_sides: Vec<TabId>,
     /// The agent tabs whose classic view runs in a background-service terminal: that
     /// session's id (R13). Saved with each tab.
     agent_classics: Vec<(TabId, u64)>,
@@ -223,6 +225,9 @@ pub enum SavedTab {
         /// written when off, so older files load and the file reads as before.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         preview: bool,
+        /// M11ah: a diff shown side by side. Off when missing, and not written when off.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        side_by_side: bool,
     },
     /// M11aa: an agent tab keeps its provider, folder and (once it has one) conversation.
     Agent {
@@ -525,6 +530,29 @@ impl Model {
         self.md_previews.contains(&tab)
     }
 
+    /// M11ah: whether file tab `tab` shows its diff side by side.
+    pub fn side_by_side(&self, tab: TabId) -> bool {
+        self.side_by_sides.contains(&tab)
+    }
+
+    /// M11ah: turn file tab `tab`'s side by side on or off. False when `tab` is unknown, not a
+    /// file tab, or already so.
+    #[allow(dead_code)] // the file tab's button (M11ah Task 11, part 2) sets it
+    pub fn set_side_by_side(&mut self, tab: TabId, on: bool) -> bool {
+        let is_file = self
+            .tab(tab)
+            .is_some_and(|t| matches!(t.kind, TabKind::File { .. }));
+        if !is_file || self.side_by_side(tab) == on {
+            return false;
+        }
+        if on {
+            self.side_by_sides.push(tab);
+        } else {
+            self.side_by_sides.retain(|&t| t != tab);
+        }
+        true
+    }
+
     /// The background-service session agent tab `tab`'s classic view opened in, if it has one.
     pub fn agent_classic(&self, tab: TabId) -> Option<u64> {
         self.agent_classics
@@ -615,6 +643,7 @@ impl Model {
     pub fn close_tab(&mut self, tab: TabId) -> Option<Closed> {
         let (taken, mut closed) = self.take_tab(tab)?;
         self.md_previews.retain(|&t| t != tab);
+        self.side_by_sides.retain(|&t| t != tab);
         self.agent_classics.retain(|(t, _)| *t != tab);
         closed.tabs.insert(0, taken);
         Some(closed)
@@ -924,6 +953,7 @@ impl Model {
                             path: path.clone(),
                             mode: *mode,
                             preview: self.md_preview(t.id),
+                            side_by_side: self.side_by_side(t.id),
                         },
                         TabKind::Agent {
                             provider,
@@ -1193,6 +1223,12 @@ impl Model {
             }
             if let SavedTab::File { preview: true, .. } = st {
                 self.md_previews.push(id);
+            }
+            if let SavedTab::File {
+                side_by_side: true, ..
+            } = st
+            {
+                self.side_by_sides.push(id);
             }
             if let SavedTab::Agent {
                 classic: Some(session),
@@ -3034,6 +3070,7 @@ mod tests {
                     path: PathBuf::from("/w/api/src/main.rs"),
                     mode: FileMode::Plain,
                     preview: false,
+                    side_by_side: false,
                 },
             ]
         );
@@ -3064,6 +3101,7 @@ mod tests {
                 path: PathBuf::from("/x"),
                 mode: FileMode::Plain,
                 preview: false,
+                side_by_side: false,
             }
         );
         let diff: SavedTab =
@@ -3074,6 +3112,7 @@ mod tests {
                 path: PathBuf::from("/x"),
                 mode: FileMode::Diff,
                 preview: false,
+                side_by_side: false,
             }
         );
         assert_eq!(FileMode::default(), FileMode::Plain);
@@ -3090,6 +3129,7 @@ mod tests {
                 path: PathBuf::from("/x.md"),
                 mode: FileMode::Plain,
                 preview: false,
+                side_by_side: false,
             }
         );
         let off = serde_json::to_string(&old).unwrap();
@@ -3098,6 +3138,7 @@ mod tests {
             path: PathBuf::from("/x.md"),
             mode: FileMode::Plain,
             preview: true,
+            side_by_side: false,
         };
         let json = serde_json::to_string(&on).unwrap();
         assert!(json.contains(r#""preview":true"#), "{json}");
@@ -3140,6 +3181,63 @@ mod tests {
         m.set_md_preview(g.tab, true);
         m.close_tab(g.tab);
         assert!(!m.md_preview(g.tab));
+    }
+
+    /// M11ah: a file tab's side by side is saved with it; a file from before has it off, a tab
+    /// with it off is written as before (no `side_by_side` key), and a closed tab forgets it.
+    #[test]
+    fn side_by_side_is_saved_per_file_tab_and_off_by_default() {
+        let old: SavedTab =
+            serde_json::from_str(r#"{"kind":"file","path":"/x.rs","mode":"diff"}"#).unwrap();
+        assert_eq!(
+            old,
+            SavedTab::File {
+                path: PathBuf::from("/x.rs"),
+                mode: FileMode::Diff,
+                preview: false,
+                side_by_side: false,
+            }
+        );
+        let off = serde_json::to_string(&old).unwrap();
+        assert!(!off.contains("side_by_side"), "{off}");
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(11)).unwrap();
+        let f = m.add_tab(a.pane, file("/w/src/main.rs")).unwrap();
+        let g = m.add_tab(a.pane, file("/w/src/lib.rs")).unwrap();
+        assert!(!m.side_by_side(f.tab), "off by default");
+        assert!(m.set_side_by_side(f.tab, true));
+        assert!(!m.set_side_by_side(f.tab, true), "already on");
+        assert!(!m.set_side_by_side(TabId(999), true), "unknown");
+        assert!(!m.set_side_by_side(a.tab, true), "not a file tab");
+        assert!(m.side_by_side(f.tab));
+        assert!(!m.side_by_side(g.tab), "per tab");
+        let session = |id: u64| Some((id - 11) as usize);
+        let (saved, active) = m.to_saved(session);
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(json.contains(r#""side_by_side":true"#), "{json}");
+        assert_eq!(
+            json.matches("side_by_side").count(),
+            1,
+            "only its tab: {json}"
+        );
+        let back: Vec<SavedWorkspace> = serde_json::from_str(&json).unwrap();
+        let m2 = Model::from_saved(&back, active, &[Some(11)]);
+        let on: Vec<PathBuf> = m2
+            .panes()
+            .flat_map(|p| &p.tabs)
+            .filter(|t| m2.side_by_side(t.id))
+            .filter_map(|t| match &t.kind {
+                TabKind::File { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(on, [PathBuf::from("/w/src/main.rs")]);
+        assert_eq!(m2.to_saved(session), (saved, active));
+        assert!(m.set_side_by_side(f.tab, false));
+        assert!(!m.side_by_side(f.tab));
+        m.set_side_by_side(g.tab, true);
+        m.close_tab(g.tab);
+        assert!(!m.side_by_side(g.tab), "closed: forgotten");
     }
 
     /// A single click's preview tab (M11t) showing another file shows it as source.
