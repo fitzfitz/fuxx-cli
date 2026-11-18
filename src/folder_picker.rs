@@ -2,6 +2,7 @@
 //! folders fuxx knows (`KnownFolders`, a global the Workspace keeps up to date), and the rows the
 //! picker shows for a search. The tab draws them (`agent_box.rs`).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui::Global;
@@ -52,6 +53,55 @@ pub struct KnownFolders {
 }
 
 impl Global for KnownFolders {}
+
+/// Which folders the open picker may list are there to start in, as checked off the UI thread
+/// (R10: listing reads no disk on a keystroke). A folder not checked yet is not listed until
+/// it is; one check runs at a time.
+#[derive(Debug, Default)]
+pub struct FolderChecks {
+    there: HashMap<PathBuf, bool>,
+    checking: bool,
+}
+
+impl FolderChecks {
+    /// Whether `folder` was found there.
+    pub fn exists(&self, folder: &Path) -> bool {
+        self.there.get(folder) == Some(&true)
+    }
+
+    /// The folders of `folders` not checked yet (each once), to check now; None when there are
+    /// none or a check runs already (its end asks again).
+    pub fn begin(&mut self, folders: &[PathBuf]) -> Option<Vec<PathBuf>> {
+        if self.checking {
+            return None;
+        }
+        let mut new: Vec<PathBuf> = Vec::new();
+        for folder in folders {
+            if !self.there.contains_key(folder) && !new.contains(folder) {
+                new.push(folder.clone());
+            }
+        }
+        self.checking = !new.is_empty();
+        self.checking.then_some(new)
+    }
+
+    /// Whether each of `folders` is a folder. Reads the disk: call it off the UI thread.
+    pub fn check(folders: Vec<PathBuf>) -> Vec<(PathBuf, bool)> {
+        folders
+            .into_iter()
+            .map(|f| {
+                let there = f.is_dir();
+                (f, there)
+            })
+            .collect()
+    }
+
+    /// A check's answers are in.
+    pub fn done(&mut self, found: Vec<(PathBuf, bool)>) {
+        self.there.extend(found);
+        self.checking = false;
+    }
+}
 
 /// One row of the picker.
 #[derive(Clone, Debug, PartialEq)]
@@ -296,6 +346,35 @@ mod tests {
             shown(&rows)[..3],
             ["# Recent", "~/code/my-app", "~/code/scratch \u{2713}"]
         );
+    }
+
+    #[test]
+    fn a_folder_is_listed_once_checked_off_the_ui_thread() {
+        let dir = std::env::temp_dir().join(format!("fuxx-test-there-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gone = dir.join("gone");
+        let mut checks = FolderChecks::default();
+        assert!(!checks.exists(&dir), "not checked yet: not listed");
+        let asked = checks.begin(&[dir.clone(), gone.clone(), dir.clone()]);
+        assert_eq!(asked, Some(vec![dir.clone(), gone.clone()]), "each once");
+        assert_eq!(
+            checks.begin(std::slice::from_ref(&dir)),
+            None,
+            "one check at a time"
+        );
+        // The disk is read by `check` (a background thread's work), not by `exists`.
+        checks.done(FolderChecks::check(asked.unwrap()));
+        assert!(checks.exists(&dir));
+        assert!(!checks.exists(&gone), "a folder that isn't there");
+        assert_eq!(
+            checks.begin(&[dir.clone(), gone.clone()]),
+            None,
+            "known: not checked again"
+        );
+        let new = dir.join("new");
+        assert_eq!(checks.begin(&[dir.clone(), new.clone()]), Some(vec![new]));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 tags: [development, plan, milestone]
 milestone: M11ak
 status: built
-updated: 2026-11-17
+updated: 2026-11-18
 ---
 
 # M11ak Plan — Agent box
@@ -215,7 +215,7 @@ and RFC 3339 are small pure functions with test vectors here.
 - `Event::Catalog`: Claude's translator decodes the `control_response` to `fuxx-init`; `Event::Skills`: the names
   in Claude's `system/init` `skills` (the cache marks those commands `Skill`).
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `claude.rs` `the_initialize_answer_is_the_catalog`: `read_catalog` over `claude-slash.jsonl` (its line 9) and over
     `claude-initialize.jsonl` → models' ids `["default","opus","fable"]` (slash) with labels `Default (recommended)`,
     `Opus 5.5`, `Fable 5.2`, `resolves_to == Some("claude-opus-5-5")` for the first two, efforts
@@ -239,12 +239,12 @@ and RFC 3339 are small pure functions with test vectors here.
   - `agy.rs` `agy_argv_carries_the_chosen_model_and_mode` in the flag form Task 0 found (`--model <effort id>`, plus
     `--effort` only if Task 0 found it needed); `agy_modes_keep_their_names` (`accept-edits`, `auto`, `plan`).
   - `layout_model.rs` `an_agent_tab_keeps_its_model_and_effort` (round-trip; an old file without them loads).
-- [ ] **Step 2: Run** `cargo test --bin fuxx providers layout_model` — FAIL.
-- [ ] **Step 3: Implement** in the provider files; agy's `catalog_probes` are `["agy","models"]` and
+- [x] **Step 2: Run** `cargo test --bin fuxx providers layout_model` — FAIL.
+- [x] **Step 3: Implement** in the provider files; agy's `catalog_probes` are `["agy","models"]` and
   `["agy","-p","/help","--output-format","json"]` (outputs in that order); Claude's is its stream-json argv without
   resume, `stdin` the `initialize` line, `until` the line whose `request_id` is `fuxx-init`.
-- [ ] **Step 4: Run** — PASS; the gate.
-- [ ] **Step 5: Commit** `M11ak Task 1: providers say their models, efforts, modes and commands`.
+- [x] **Step 4: Run** — PASS; the gate.
+- [x] **Step 5: Commit** `M11ak Task 1: providers say their models, efforts, modes and commands`.
 
 ### Task 2: Usage and rate limits (pure)
 
@@ -272,7 +272,7 @@ and RFC 3339 are small pure functions with test vectors here.
   `/usage` text names them; any other type keeps its raw name); `allowed` → `Fine`, `allowed_warning` → `Close`,
   `rejected` → `Reached`.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `claude.rs` `usage_lines_read_as_percent_left`: inline result text `Current session: 0% used · resets Nov 17 at
     8:09pm (UTC)\nCurrent week (all models): 37% used · resets Nov 22 at 9:59pm (UTC)` → one group
     (name `""`) with `Read { "Current session", 100, Words("Nov 17 at 8:09pm") }` and `Read { "Current week (all
@@ -287,8 +287,8 @@ and RFC 3339 are small pure functions with test vectors here.
     without `remaining_fraction` → `Text(name)`; non-JSON → `Err`.
   - `agy.rs` `rfc3339_reads_offsets_and_fractions`: `2026-11-22T14:59:00Z`, `2026-11-22T21:59:00+07:00` and
     `2026-11-22T14:59:00.123456+00:00` → `Some(1795359540)`; `1970-01-01T00:00:00Z` → `Some(0)`; `nonsense` → `None`.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate.
-- [ ] **Step 5: Commit** `M11ak Task 2: providers read usage and rate limits`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate.
+- [x] **Step 5: Commit** `M11ak Task 2: providers read usage and rate limits`.
 
 ### Task 3: The start-up probe and the cache (`src/agent_catalog.rs`)
 
@@ -333,7 +333,7 @@ and RFC 3339 are small pure functions with test vectors here.
   and takes it from its own `Event::Catalog` (failed if the process ends without one); otherwise (agy always; Claude
   paused, held or failed) it calls `load_catalog`. Any `Event::Catalog` from a running agent refreshes the cache.
 
-- [ ] **Step 1: Write the failing tests** (`agent_catalog::tests`; probes are `/bin/sh -c …` stand-ins, never an agent):
+- [x] **Step 1: Write the failing tests** (`agent_catalog::tests`; probes are `/bin/sh -c …` stand-ins, never an agent):
   - `one_probe_per_agent_and_folder`: `begin_catalog` true once, false while loading and once ready; another folder
     or agent → true.
   - `usage_is_kept_sixty_seconds`: set at t → `usage(t + 59 s)` is `Some`, `usage(t + 60 s)` is `None` and
@@ -344,10 +344,10 @@ and RFC 3339 are small pure functions with test vectors here.
   - `a_probe_past_its_deadline_is_killed_and_fails` (`sleep 60`, deadline 300 ms → `Err` within 3 s; the pid is
     gone).
   - `a_missing_program_fails` (`fuxx-no-such-program` → `Err`).
-- [ ] **Step 2: Run** `cargo test --bin fuxx agent_catalog` — FAIL. **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS; the gate (agent-tab scenes unchanged: `for_shots` tabs never probe — they get a
+- [x] **Step 2: Run** `cargo test --bin fuxx agent_catalog` — FAIL. **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS; the gate (agent-tab scenes unchanged: `for_shots` tabs never probe — they get a
   catalog through `shot_catalog`, Task 5).
-- [ ] **Step 5: Commit** `M11ak Task 3: the start-up probe and the per-agent, per-folder cache`.
+- [x] **Step 5: Commit** `M11ak Task 3: the start-up probe and the per-agent, per-folder cache`.
 
 ### Task 4: Applying a change, live or by restart
 
@@ -396,7 +396,7 @@ and RFC 3339 are small pure functions with test vectors here.
   <why>` and changes nothing. A restart resumes `conversation_id()` and adds the switched notice; queued text is
   kept (as Force stop's restart). A folder change is only taken here when the folder is new.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `agent_box` `step_for_covers_every_case` (the rules above as a table: 3 `Applies` × running × spoken × working).
   - `agent_box` `switched_notices` (`Switched to Claude Sonnet 5.5 · medium`, `Switched to Claude Sonnet 5.5`,
     `Switched to Plan`, `Moved to ~/code/scratch`).
@@ -409,8 +409,8 @@ and RFC 3339 are small pure functions with test vectors here.
     `agent-box-change-restart` (agy after a message, idle: choose `plan` → `shot_last_argv` has `--conversation <id>`
     and `--mode plan`, a `Switched to plan` row); `agent-box-restart-keeps-queued-text` (a message queued while the
     restart's process starts is sent after it).
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate.
-- [ ] **Step 5: Commit** `M11ak Task 4: changes apply live or by restart, after the turn`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate.
+- [x] **Step 5: Commit** `M11ak Task 4: changes apply live or by restart, after the turn`.
 
 ### Task 5: The box's layout
 
@@ -445,17 +445,17 @@ and RFC 3339 are small pure functions with test vectors here.
   `chip_model_label`: the chosen model's label (`choice_of`); else the catalog model whose `resolves_to` (or id) is
   the reported model, preferring a non-default entry; else `provider.model_label(reported)`; else `Model`.
 
-- [ ] **Step 1: Write the failing tests:** `chip_model_label_prefers_the_named_model` (default resolving to
+- [x] **Step 1: Write the failing tests:** `chip_model_label_prefers_the_named_model` (default resolving to
   `claude-opus-5-5` and an `opus` entry → `Opus 5.5`); `choice_of_finds_agy_effort_ids` (`claude-opus-5-5-high` →
   that model, `Some("high")`); `effort_words`.
-- [ ] **Step 2: Write the failing scenes** (dark and light, `Kind::Visual`, made-up catalog `Claude Example 5`):
+- [x] **Step 2: Write the failing scenes** (dark and light, `Kind::Visual`, made-up catalog `Claude Example 5`):
   `agent-box-empty` (placeholder, `+`, model chip `Claude Example 5  High ▾`, mode chip, ➤),
   `agent-box-working` (■ Stop in send's place; top line `Working … $0.21 · context 18%`),
   `agent-box-attachment` (a command-block chip inside the box, its × removes it),
   `agent-box-long-text` (the box grows to 8 rows then scrolls; chips stay put).
-- [ ] **Step 3: Run** `scripts/ui-shots.sh --changed master` — the new scenes FAIL. **Step 4: Implement.**
-- [ ] **Step 5: Run** — PASS; unit tests; the gate; the full `scripts/ui-shots.sh`.
-- [ ] **Step 6: Commit** `M11ak Task 5: the agent box's layout`.
+- [x] **Step 3: Run** `scripts/ui-shots.sh --changed master` — the new scenes FAIL. **Step 4: Implement.**
+- [x] **Step 5: Run** — PASS; unit tests; the gate; the full `scripts/ui-shots.sh`.
+- [x] **Step 6: Commit** `M11ak Task 5: the agent box's layout`.
 
 ### Task 6: Folder chip and picker
 
@@ -502,7 +502,7 @@ and RFC 3339 are small pure functions with test vectors here.
   Move is offered when `applies(Folder) == Restart` and `can_move(version)`; otherwise only New conversation. The
   picker's choice of the current folder does nothing.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `folder_picker` `recent_keeps_eight_newest_first_without_twins`; `recent_skips_missing_folders` (via `exists`);
     `search_filters_every_section` (fuzzy on the shown path; empty sections leave their heading out);
     `rows_mark_the_current_folder`; `computer_folders_dedupe`.
@@ -516,8 +516,8 @@ and RFC 3339 are small pure functions with test vectors here.
     (`scr` leaves `~/code/scratch`), `agent-box-folder-move-ask` (after a message: both choices),
     `agent-box-folder-move-new-only` (Claude `2.1.200`: only `New conversation`), `agent-box-folder-before-first`
     (choosing `~/code/scratch` restarts the idle process there: `shot_last_argv` cwd, no `--resume`).
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
-- [ ] **Step 5: Commit** `M11ak Task 6: folder chip and picker, Recent, Move or New conversation`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
+- [x] **Step 5: Commit** `M11ak Task 6: folder chip and picker, Recent, Move or New conversation`.
 
 ### Task 7: Branch chip
 
@@ -532,11 +532,11 @@ and RFC 3339 are small pure functions with test vectors here.
 - Produces: `AgentTabEvent::OpenBranchSwitcher(PathBuf)`; `AgentTab::branch_changed(&mut self, cx)`;
   `Workspace::open_branch_switcher_in(&mut self, folder: PathBuf, window: &mut Window, cx: &mut Context<Self>)`.
 
-- [ ] **Step 1: Write the failing scenes:** `agent-box-branch` (`⑂ master ▾` beside `📁 my-app ▾`; no branch → no
+- [x] **Step 1: Write the failing scenes:** `agent-box-branch` (`⑂ master ▾` beside `📁 my-app ▾`; no branch → no
   chip); `agent-box-branch-opens-switcher` (clicking it opens the Workspace's branch switcher on that folder; the
   agent's process is not restarted — `shot_last_argv` unchanged).
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
-- [ ] **Step 5: Commit** `M11ak Task 7: branch chip opens the branch switcher`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
+- [x] **Step 5: Commit** `M11ak Task 7: branch chip opens the branch switcher`.
 
 ### Task 8: Model menu with effort
 
@@ -552,13 +552,13 @@ and RFC 3339 are small pure functions with test vectors here.
   by Task 5's `choice_of`)
   with `pub enum ModelRow { Heading, Model { ix: usize, label: String, effort: Option<String>, current: bool, has_efforts: bool }, Note(&'static str), NewConversation, Divider, Usage }`.
 
-- [ ] **Step 1: Write the failing tests:** `model_rows_loading_failed_and_fallback`; `model_rows_mark_the_chosen`.
-- [ ] **Step 2: Write the failing scenes:** `agent-box-model-menu` (made-up Claude list, ✓ and grey effort),
+- [x] **Step 1: Write the failing tests:** `model_rows_loading_failed_and_fallback`; `model_rows_mark_the_chosen`.
+- [x] **Step 2: Write the failing scenes:** `agent-box-model-menu` (made-up Claude list, ✓ and grey effort),
   `agent-box-effort-list` (▸ opens `Low … Max`), `agent-box-model-agy` (agy's grouped models),
   `agent-box-model-loading`, `agent-box-model-failed`, `agent-box-model-fallback`, `agent-box-model-choose-sends-nothing`
   (choosing writes no `Send` line; idle Claude writes the set request).
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
-- [ ] **Step 6: Commit** `M11ak Task 8: model menu with effort`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
+- [x] **Step 6: Commit** `M11ak Task 8: model menu with effort`.
 
 ### Task 9: View Usage
 
@@ -575,15 +575,15 @@ and RFC 3339 are small pure functions with test vectors here.
   (`activity::clock_hm`; `Fine` → None); under `ui-shots`, `AgentTab::shot_usage(&mut self, found:
   Lookup<Vec<UsageGroup>>, limits: Vec<RateLimit>, cx)`.
 
-- [ ] **Step 1: Write the failing tests:** `resets_in_words` (316800 → `Resets in 3d 16h`, 7500 → `Resets in 2h 5m`,
+- [x] **Step 1: Write the failing tests:** `resets_in_words` (316800 → `Resets in 3d 16h`, 7500 → `Resets in 2h 5m`,
   3540 → `Resets in 59m`, 0 and −5 → `Resets now`); `limit_lines` (`Close` → `Close to limit`; `Reached` at
   `14:00` local → `Limit reached · resets 14:00`).
-- [ ] **Step 2: Write the failing scenes:** `agent-box-usage-claude` (made-up 100 % / 63 % left, Claude's words),
+- [x] **Step 2: Write the failing scenes:** `agent-box-usage-claude` (made-up 100 % / 63 % left, Claude's words),
   `agent-box-usage-agy` (two groups, rings), `agent-box-usage-checking`, `agent-box-usage-text-line`,
   `agent-box-usage-limit-close` (warning dot on the chip, `Close to limit` line), `agent-box-usage-cached` (opening
   again within 60 s starts no fetch).
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
-- [ ] **Step 6: Commit** `M11ak Task 9: View Usage`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
+- [x] **Step 6: Commit** `M11ak Task 9: View Usage`.
 
 ### Task 10: Mode chip
 
@@ -598,11 +598,11 @@ and RFC 3339 are small pure functions with test vectors here.
 - Consumes: Task 4's `choose(Change::Mode(id))`; `ProviderInfo::modes`; `Catalog::mode`.
 - Produces: under `ui-shots`, `AgentTab::shot_choose_mode(&mut self, id: &str, cx: &mut Context<Self>)`.
 
-- [ ] **Step 1: Write the failing scenes:** `agent-box-mode-menu` (Claude's four with descriptions),
+- [x] **Step 1: Write the failing scenes:** `agent-box-mode-menu` (Claude's four with descriptions),
   `agent-box-mode-agy-after-message` (choosing `plan` restarts on the same conversation per Task 4; no lock),
   `agent-box-mode-reported` (Claude with no choice shows the catalog's `default` as `Ask before edits`).
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
-- [ ] **Step 5: Commit** `M11ak Task 10: mode chip and menu`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
+- [x] **Step 5: Commit** `M11ak Task 10: mode chip and menu`.
 
 ### Task 11: `+` attach
 
@@ -634,14 +634,14 @@ and RFC 3339 are small pure functions with test vectors here.
   `sends_images`, an image goes as its path (a pasted one written to `$TMPDIR/fuxx-images/<uuid>.<ext>`
   first, off the UI thread). Over `IMAGE_MAX` → no chip, a notice `Image over 5 MB: <name>`.
 
-- [ ] **Step 1: Write the failing tests:** `claude.rs` `base64_vectors` (`f` → `Zg==`, `fo` → `Zm8=`, `foo` → `Zm9v`,
+- [x] **Step 1: Write the failing tests:** `claude.rs` `base64_vectors` (`f` → `Zg==`, `fo` → `Zm8=`, `foo` → `Zm9v`,
   `foobar` → `Zm9vYmFy`); `a_send_with_an_image_is_a_content_array` (same shape as `claude-image.jsonl`'s user line);
   `a_send_without_images_is_as_before`; `agent_tab` `wire_text_puts_paths_after_the_text`,
   `media_types_by_extension`, `an_image_over_5_mb_is_refused` (exactly `IMAGE_MAX` accepted, +1 refused).
-- [ ] **Step 2: Write the failing scenes:** `agent-box-attach-menu`, `agent-box-image-chip`, `agent-box-file-chip`,
+- [x] **Step 2: Write the failing scenes:** `agent-box-attach-menu`, `agent-box-image-chip`, `agent-box-file-chip`,
   `agent-box-image-too-big` (the notice; no chip); and `agent-tab-attachment` follows the new chip.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
-- [ ] **Step 6: Commit** `M11ak Task 11: attach files and images`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
+- [x] **Step 6: Commit** `M11ak Task 11: attach files and images`.
 
 ### Task 12: `/` menu
 
@@ -663,13 +663,13 @@ and RFC 3339 are small pure functions with test vectors here.
   `pub enum SlashRow { Heading(CommandKind), Item { ix: usize, positions: Vec<usize> } }` (fuzzy on name and aliases,
   `SLASH_LIMIT = 8` per group).
 
-- [ ] **Step 1: Write the failing tests:** `slash_query_only_at_the_start` (`/mo` caret 3 → `mo`; `a /mo` → None;
+- [x] **Step 1: Write the failing tests:** `slash_query_only_at_the_start` (`/mo` caret 3 → `mo`; `a /mo` → None;
   `/model x` caret 9 → None); `slash_rows_group_and_filter`; `own_commands` (Claude `/usage` → `Usage`, `/clear` →
   None).
-- [ ] **Step 2: Write the failing scenes:** `agent-box-slash` (grouped, made-up commands), `agent-box-slash-filtered`,
+- [x] **Step 2: Write the failing scenes:** `agent-box-slash` (grouped, made-up commands), `agent-box-slash-filtered`,
   `agent-box-slash-tab-completes`, `agent-box-slash-usage-opens-menu` (no `Send` written).
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
-- [ ] **Step 6: Commit** `M11ak Task 12: the / menu`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
+- [x] **Step 6: Commit** `M11ak Task 12: the / menu`.
 
 ### Task 13: `@` menu with sections
 
@@ -682,10 +682,10 @@ and RFC 3339 are small pure functions with test vectors here.
 - Produces: `pub fn at_rows(files: &[FileHit], commands: &[AgentCommand], query: &str) -> Vec<AtRow>` with
   `pub enum AtRow { Heading(&'static str), File(usize), Named { ix: usize, positions: Vec<usize> } }`.
 
-- [ ] **Step 1: Write the failing tests:** `at_rows_have_sections_in_order`; `an_agent_pick_inserts_at_name`.
-- [ ] **Step 2: Write the failing scenes:** `agent-box-at-sections` (made-up files, agents, skills).
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
-- [ ] **Step 6: Commit** `M11ak Task 13: the @ menu's agents and skills`.
+- [x] **Step 1: Write the failing tests:** `at_rows_have_sections_in_order`; `an_agent_pick_inserts_at_name`.
+- [x] **Step 2: Write the failing scenes:** `agent-box-at-sections` (made-up files, agents, skills).
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`.
+- [x] **Step 6: Commit** `M11ak Task 13: the @ menu's agents and skills`.
 
 ### Task 14: Docs, verification, hand-off
 
@@ -696,12 +696,12 @@ and RFC 3339 are small pure functions with test vectors here.
 
 - [ ] **Step 1: Idle CPU (M11p):** an agent tab shown, idle, no menu open: `top -l 6 -s 5 -pid <fuxx>` median on the
   branch vs master, both in note 83; they match within noise.
-- [ ] **Step 2: No stray processes:** after opening five agent tabs and every menu, `pgrep -fl 'claude -p|agy'`
+- [x] **Step 2: No stray processes:** after opening five agent tabs and every menu, `pgrep -fl 'claude -p|agy'`
   shows only the tabs' own processes (probes ended).
-- [ ] **Step 3: Write note 83's on-screen check** (about 12 items): chips and placeholder; folder picker sections,
+- [x] **Step 3: Write note 83's on-screen check** (about 12 items): chips and placeholder; folder picker sections,
   New Project's New Folder, No Project; Move and New conversation; branch chip opens the switcher; model menu and
   effort; View Usage for Claude and agy; a model change mid-turn waits; agy mode after a message restarts on the same
   conversation; `+` file and image (and over 5 MB); paste and drop; `/` and `@`.
-- [ ] **Step 4: Full gate** and full `scripts/ui-shots.sh`; numbers into note 83 and the Progress Log; private-name
+- [x] **Step 4: Full gate** and full `scripts/ui-shots.sh`; numbers into note 83 and the Progress Log; private-name
   grep of `git diff master...HEAD`.
-- [ ] **Step 5: Commit** `M11ak Task 14: docs and hand-off`.
+- [x] **Step 5: Commit** `M11ak Task 14: docs and hand-off`.

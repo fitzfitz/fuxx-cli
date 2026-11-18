@@ -387,6 +387,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: SLASH,
     },
     Scene {
+        name: "agent-box-slash-failed-return-sends",
+        run: agent_box_slash_failed_return_sends,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: SLASH,
+    },
+    Scene {
         name: "agent-box-slash-filtered",
         run: agent_box_slash_filtered,
         themes: Themes::Both,
@@ -448,6 +456,14 @@ pub(super) const SCENES: &[Scene] = &[
         themes: Themes::Both,
         serial: false,
         kind: Kind::Visual,
+        sources: MODE,
+    },
+    Scene {
+        name: "agent-box-mode-follows-claude",
+        run: agent_box_mode_follows_claude,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
         sources: MODE,
     },
     Scene {
@@ -1612,21 +1628,22 @@ pub(super) fn agent_box_image_agy() {
     );
 }
 
-/// §8: an image over 5 MB (`IMAGE_MAX`) is refused: no chip, one notice, `Image over 5 MB:
-/// <name>`, in the conversation; a pasted one likewise. One of exactly 5 MB is taken.
+/// §8: an image too big for Claude (over 5 MB once in base64: 3.75 MB of file, R8) is refused:
+/// no chip, one notice, `Image too big for Claude (3.75 MB max): <name>`, in the conversation; a
+/// pasted one likewise. One of exactly 3.75 MB is taken.
 pub(super) fn agent_box_image_too_big() {
     layout_scene("agent-box-image-too-big", |n, cx, window, tab| {
-        use crate::agent_tab::IMAGE_MAX;
+        let max = CLAUDE.image_limit().raw_max();
         let files = Files::new("too-big");
-        let exact = files.make_sized("exact.png", IMAGE_MAX);
-        let big = files.make_sized("big-scan.png", IMAGE_MAX + 1);
+        let exact = files.make_sized("exact.png", max);
+        let big = files.make_sized("big-scan.png", max + 1);
         feed(cx, tab, |t, cx| t.attach_images(vec![exact.clone()], cx));
-        settle_until(n, cx, window, "exactly 5 MB is taken", |cx| {
+        settle_until(n, cx, window, "exactly 3.75 MB is taken", |cx| {
             chips(cx, tab).len() == 1
         });
         assert!(notices(cx, tab).is_empty(), "{n}");
         feed(cx, tab, |t, cx| t.attach_images(vec![big.clone()], cx));
-        let pasted = gpui::Image::from_bytes(gpui::ImageFormat::Png, vec![0; IMAGE_MAX + 1]);
+        let pasted = gpui::Image::from_bytes(gpui::ImageFormat::Png, vec![0; max + 1]);
         feed(cx, tab, |t, cx| t.attach_pasted_image(pasted, cx));
         settle_until(n, cx, window, "two notices", |cx| {
             notices(cx, tab).len() == 2
@@ -1636,8 +1653,8 @@ pub(super) fn agent_box_image_too_big() {
         assert_eq!(
             got,
             [
-                "Image over 5 MB: big-scan.png",
-                "Image over 5 MB: pasted-image.png"
+                "Image too big for Claude (3.75 MB max): big-scan.png",
+                "Image too big for Claude (3.75 MB max): pasted-image.png"
             ],
             "{n}"
         );
@@ -2558,6 +2575,94 @@ pub(super) fn agent_box_mode_reported() {
                 )),
                 "{n}: {rows:?}"
             );
+        },
+    );
+}
+
+/// R9: Claude leaving plan mode by itself (a plan approved) is followed: the chip, the menu's ✓
+/// and the saved mode say the mode it reports, so choosing Plan again asks for it (and a
+/// restart doesn't resume a stale plan mode). While a change of yours is pending (asked, or
+/// waiting for the turn), what Claude reports is not taken: yours is what it runs next.
+pub(super) fn agent_box_mode_follows_claude() {
+    run_scene(
+        "agent-box-mode-follows-claude",
+        &CLAUDE,
+        start(Some("plan"), Some("opus")),
+        |n, cx, tab, told| {
+            let chip = |cx: &VisualTestAppContext| cx.read(|cx| tab.read(cx).shot_box(cx).mode);
+            let mode =
+                |cx: &VisualTestAppContext| cx.read(|cx| tab.read(cx).mode().map(str::to_string));
+            feed(cx, tab, |t, cx| t.send("Plan the fix".into(), cx));
+            // The plan is approved: Claude says it runs in acceptEdits now.
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(vec![Event::Mode("acceptEdits".into())], cx)
+            });
+            assert_eq!(mode(cx).as_deref(), Some("acceptEdits"), "{n}");
+            assert_eq!(
+                chip(cx).as_deref(),
+                Some("\u{1f6e1} Accept edits \u{25be}"),
+                "{n}: the chip follows"
+            );
+            assert_eq!(
+                told.borrow().last().cloned(),
+                Some((Some("opus".into()), None, Some("acceptEdits".into()))),
+                "{n}: saved"
+            );
+            let saved = told.borrow().len();
+            // The same mode again changes nothing (nothing told).
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(vec![Event::Mode("acceptEdits".into())], cx)
+            });
+            assert_eq!(told.borrow().len(), saved, "{n}: nothing new to save");
+            feed(cx, tab, |t, cx| t.shot_feed(vec![turn_done()], cx));
+            assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Done, "{n}");
+
+            // Plan chosen again is asked for (it isn't "already plan").
+            let before = written(cx, tab).len();
+            feed(cx, tab, |t, cx| t.choose(Change::Mode("plan".into()), cx));
+            let asks = written(cx, tab).split_off(before);
+            assert_eq!(asks.len(), 1, "{n}: {asks:?}");
+            assert_eq!(asks[0]["request"]["subtype"], "set_permission_mode", "{n}");
+            assert_eq!(asks[0]["request"]["mode"], "plan", "{n}");
+            assert!(asks.iter().all(|l| l["type"] != "user"), "{n}: no message");
+            // Asked and not yet answered: a mode Claude reports meanwhile is not taken.
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(vec![Event::Mode("default".into())], cx)
+            });
+            assert_eq!(mode(cx).as_deref(), Some("acceptEdits"), "{n}: ignored");
+            assert_eq!(told.borrow().len(), saved, "{n}: nothing saved");
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(
+                    vec![Event::Applied {
+                        kind: ChangeKind::Mode,
+                        value: "plan".into(),
+                        ok: true,
+                    }],
+                    cx,
+                )
+            });
+            assert_eq!(mode(cx).as_deref(), Some("plan"), "{n}: yours, confirmed");
+            let saved = told.borrow().len();
+
+            // Waiting for the turn: what Claude reports meanwhile is not taken either.
+            feed(cx, tab, |t, cx| t.send("Go on".into(), cx));
+            feed(cx, tab, |t, cx| {
+                t.choose(Change::Mode("acceptEdits".into()), cx)
+            });
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).waiting_change().cloned()),
+                Some(Change::Mode("acceptEdits".into())),
+                "{n}: it waits"
+            );
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(vec![Event::Mode("default".into())], cx)
+            });
+            assert_eq!(
+                mode(cx).as_deref(),
+                Some("plan"),
+                "{n}: ignored while waiting"
+            );
+            assert_eq!(told.borrow().len(), saved, "{n}: nothing saved");
         },
     );
 }
@@ -3606,7 +3711,7 @@ pub(super) fn agent_box_slash() {
                 Some("Loading\u{2026}"),
                 "{n}"
             );
-            // Return does not send the half-typed `/` while the list is a note.
+            // Return does not send the half-typed `/` while the list loads.
             press(cx, window, "enter");
             assert_eq!(box_text(cx, tab), "/", "{n}: kept");
             nothing_sent(n, cx, tab);
@@ -3619,10 +3724,8 @@ pub(super) fn agent_box_slash() {
                 Some("Couldn't read the list"),
                 "{n}"
             );
-            press(cx, window, "enter");
-            assert_eq!(box_text(cx, tab), "/", "{n}: kept when it failed too");
-            nothing_sent(n, cx, tab);
-            assert_eq!(slash_rows_of(cx, tab), [], "{n}: and no made-up list");
+            assert_eq!(slash_rows_of(cx, tab), [], "{n}: no made-up list");
+            // (Return on a list that couldn't be read sends: agent-box-slash-failed-return-sends.)
             feed(cx, tab, |t, cx| {
                 t.shot_catalog(Lookup::Ready(slash_catalog()), cx)
             });
@@ -3683,6 +3786,36 @@ pub(super) fn agent_box_slash() {
             press(cx, window, "down down");
             assert_eq!(box_text(cx, tab), "/", "{n}: the keys moved no caret");
             nothing_sent(n, cx, tab);
+        },
+    );
+}
+
+/// R10: Return blocks only while the `/` list loads; one that couldn't be read is no list to
+/// pick from, so Return sends the line as typed (a `/command` Claude may know).
+pub(super) fn agent_box_slash_failed_return_sends() {
+    box_scene(
+        "agent-box-slash-failed-return-sends",
+        &CLAUDE,
+        example_start(),
+        Lookup::Loading,
+        |n, cx, window, tab| {
+            type_in_box(cx, window, "/compact");
+            press(cx, window, "enter");
+            assert_eq!(box_text(cx, tab), "/compact", "{n}: kept while it loads");
+            nothing_sent(n, cx, tab);
+            feed(cx, tab, |t, cx| {
+                t.shot_catalog(Lookup::Failed("it ended".into()), cx)
+            });
+            let _ = frame_fresh(cx, window);
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_slash_note(cx)),
+                Some("Couldn't read the list"),
+                "{n}"
+            );
+            press(cx, window, "enter");
+            assert_eq!(said(cx, tab), ["/compact"], "{n}: sent");
+            assert_eq!(box_text(cx, tab), "", "{n}: the box is empty");
+            assert_eq!(last_user(cx, tab)["message"]["content"], "/compact", "{n}");
         },
     );
 }

@@ -17,8 +17,8 @@ use crate::agent_catalog::{Catalogs, Lookup};
 use crate::agent_tab::{AgentTab, AgentTabEvent, Colors, button, chip};
 use crate::appearance::Appearance;
 use crate::folder_picker::{
-    KnownFolders, NEW_PROJECT, NO_PROJECT, PickerRow, THIS_COMPUTER, computer_folders, folder_row,
-    picker_rows,
+    FolderChecks, KnownFolders, NEW_PROJECT, NO_PROJECT, PickerRow, THIS_COMPUTER,
+    computer_folders, folder_row, picker_rows,
 };
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::palette::name_cell;
@@ -119,6 +119,10 @@ pub(crate) struct FolderPicker {
     search: Entity<NameInput>,
     rows: Vec<PickerRow>,
     computer: Option<(Vec<PickerRow>, bool)>,
+    /// Which of the folders it may list are there (checked off the UI thread), and the check
+    /// running (it ends with the picker).
+    checks: FolderChecks,
+    _check: Option<gpui::Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -783,7 +787,7 @@ pub fn slash_note(lookup: &Lookup<Catalog>, rows: &[SlashRow]) -> Option<&'stati
 
 impl AgentTab {
     /// The catalog the chips read (the tab's agent and folder), once it is read.
-    fn catalog<'a>(&self, cx: &'a App) -> Option<&'a Catalog> {
+    pub(crate) fn catalog<'a>(&self, cx: &'a App) -> Option<&'a Catalog> {
         let provider = self.provider?;
         match cx
             .try_global::<Catalogs>()?
