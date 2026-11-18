@@ -133,6 +133,7 @@ pub(super) const ORDER: &[&str] = &[
     "file-tab-md-reader-column",
     "file-tab-md-reader-code",
     "file-tab-md-reader-callouts",
+    "file-tab-md-reader-github",
     "file-tab-scrollbar",
     "file-live-glow",
     "file-live-marks",

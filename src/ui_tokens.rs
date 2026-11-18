@@ -119,6 +119,8 @@ pub mod reader {
     pub const TABLE_CELL: (f32, f32) = (13.0, 7.0);
     pub const TABLE_COL_MIN: f32 = 96.0;
     pub const STRIPE: f32 = 0.035;
+    /// A table's corners (M11ac's 4; the front matter's too).
+    pub const TABLE_RADIUS: f32 = 4.0;
     /// The front matter's text, and the most key/value rows it shows ("+ N more" for the rest).
     pub const FRONT_TEXT: f32 = 13.0;
     pub const FRONT_ROWS: usize = 20;
@@ -127,6 +129,12 @@ pub mod reader {
     pub const PILL_TEXT: f32 = 12.0;
     pub const PILL_PAD: f32 = 7.0;
     pub const PILL_GAP: f32 = 6.0;
+    /// A pill's fill, and its value half's (a step stronger): the text at these alphas over the
+    /// page (Task 6; the plan names no number).
+    pub const PILL_FILL: f32 = 0.08;
+    pub const PILL_VALUE_FILL: f32 = 0.16;
+    /// The front matter's grid (Task 6): of `.1` columns, a key takes `.0`, its value the rest.
+    pub const FRONT_GRID: (u16, u16) = (1, 3);
     /// "On this page": its width, the gap left of it, its text, a row, a level-3 entry's
     /// indent, the current entry's bar.
     pub const OUTLINE_W: f32 = 200.0;

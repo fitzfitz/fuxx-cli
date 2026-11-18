@@ -256,6 +256,8 @@ pub struct Badge {
     pub label: String,
     pub value: Option<String>,
     pub url: Option<String>,
+    /// Its alt text was empty: the label is the word `badge`, drawn dim.
+    pub empty: bool,
 }
 
 /// `"license: MIT"` becomes ("license", Some("MIT")); `""` becomes ("badge", None) (drawn dim).
@@ -285,7 +287,13 @@ pub fn badge_row(spans: &[Span]) -> Option<Vec<Badge>> {
         };
         all_badge_src &= is_badge_src(src);
         let (label, value) = pill(alt);
-        badges.push(Badge { label, value, url });
+        let empty = alt.trim().is_empty();
+        badges.push(Badge {
+            label,
+            value,
+            url,
+            empty,
+        });
     }
     (badges.len() >= 2 || (badges.len() == 1 && all_badge_src)).then_some(badges)
 }
