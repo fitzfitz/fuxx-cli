@@ -252,7 +252,7 @@ fn file_tab_md_reader_column_scenes() {
     use crate::md_reader::{BlockLook, RowKind};
     use crate::ui_tokens::reader::{BODY, BODY_LINE, MEASURE, OUTLINE_GAP, OUTLINE_W};
     use crate::ui_tokens::size::TERMINAL_PADDING;
-    use gpui::{Bounds, ListOffset, Modifiers, Pixels, SharedString};
+    use gpui::{Bounds, ListOffset, Pixels, SharedString};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::rc::Rc;
@@ -265,19 +265,6 @@ fn file_tab_md_reader_column_scenes() {
 
     type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
     let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
-    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
-        cx.update_window(window, |_, window, _| window.refresh())
-            .expect("refresh");
-        cx.run_until_parked();
-    };
-    let preview = move |cx: &mut VisualTestAppContext, window, tab: &gpui::Entity<FileTab>| {
-        frame(cx, window);
-        let button = cx
-            .read(|cx| tab.read(cx).preview_bounds())
-            .expect("Preview is drawn");
-        cx.simulate_click(window, button.center(), Modifiers::none());
-        frame(cx, window);
-    };
     // Every row's content as drawn: the list scrolled a screen at a time, then back to the top.
     let walk = move |cx: &mut VisualTestAppContext, window, tab: &gpui::Entity<FileTab>| {
         let list = cx.read(|cx| tab.read(cx).preview_list());
@@ -289,7 +276,7 @@ fn file_tab_md_reader_column_scenes() {
                 item_ix: next,
                 offset_in_item: px(0.0),
             });
-            frame(cx, window);
+            reader_frame(cx, window);
             let drawn = cx.read(|cx| tab.read(cx).reader_drawn());
             // Each row's content ends above the next row's (its row was measured as drawn).
             for ((a, above), (b, below)) in drawn.iter().zip(drawn.iter().skip(1)) {
@@ -308,7 +295,7 @@ fn file_tab_md_reader_column_scenes() {
             item_ix: 0,
             offset_in_item: px(0.0),
         });
-        frame(cx, window);
+        reader_frame(cx, window);
         assert_eq!(all.len(), rows, "every row drawn once: {:?}", all.keys());
         all
     };
@@ -382,7 +369,7 @@ fn file_tab_md_reader_column_scenes() {
             let (n, slot) = (n.clone(), slot.clone());
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = tab_of(&slot);
-                preview(cx, window, &tab);
+                reader_preview_on(cx, window, &tab);
                 let doc = cx
                     .read(|cx| tab.read(cx).reader_doc())
                     .expect("the reader's document");
@@ -499,7 +486,7 @@ fn file_tab_md_reader_column_scenes() {
             let slot = slot.clone();
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = tab_of(&slot);
-                preview(cx, window, &tab);
+                reader_preview_on(cx, window, &tab);
                 let doc = cx
                     .read(|cx| tab.read(cx).reader_doc())
                     .expect("the reader's document");
@@ -513,7 +500,7 @@ fn file_tab_md_reader_column_scenes() {
                     item_ix: doc.plan.row_of_block(at).saturating_sub(2),
                     offset_in_item: px(0.0),
                 });
-                frame(cx, window);
+                reader_frame(cx, window);
                 slot.borrow_mut().take();
             }
         };
@@ -535,7 +522,7 @@ fn file_tab_md_reader_column_scenes() {
             let (n, slot) = (n.clone(), slot.clone());
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = tab_of(&slot);
-                preview(cx, window, &tab);
+                reader_preview_on(cx, window, &tab);
                 let all = walk(cx, window, &tab);
                 tall_enough(cx, window, &tab, &all, &n);
                 let view = cx.read(|cx| tab.read(cx).preview_list()).viewport_bounds();
@@ -597,23 +584,13 @@ fn file_tab_md_reader_code_scenes() {
 
     type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
     let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
-    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
-        cx.update_window(window, |_, window, _| window.refresh())
-            .expect("refresh");
-        cx.run_until_parked();
-    };
     // Preview on, then frames until the colour job's answer is in (the syntaxes load and the
     // blocks colour on the background executor).
     let preview = move |cx: &mut VisualTestAppContext,
                         window: AnyWindowHandle,
                         tab: &gpui::Entity<FileTab>,
                         n: &str| {
-        frame(cx, window);
-        let button = cx
-            .read(|cx| tab.read(cx).preview_bounds())
-            .expect("Preview is drawn");
-        cx.simulate_click(window, button.center(), Modifiers::none());
-        frame(cx, window);
+        reader_preview_on(cx, window, tab);
         // The fixture's coloured blocks: `sh`, `ts` and `rust`.
         let coloured = settle_until(cx, window, 20, |cx| {
             cx.read(|cx| tab.read(cx).code_coloured()) == 3
@@ -631,7 +608,7 @@ fn file_tab_md_reader_code_scenes() {
             item_ix: row,
             offset_in_item: px(0.0),
         });
-        frame(cx, window);
+        reader_frame(cx, window);
     };
     // Each code block: its row and fence language.
     let code_rows = |tab: &gpui::Entity<FileTab>, cx: &mut VisualTestAppContext| {
@@ -661,7 +638,7 @@ fn file_tab_md_reader_code_scenes() {
             .read(|cx| tab.read(cx).copy_bounds(row))
             .unwrap_or_else(|| panic!("{n}: row {row}'s Copy is drawn"));
         cx.simulate_click(window, button.center(), Modifiers::none());
-        frame(cx, window);
+        reader_frame(cx, window);
     };
     let label = |cx: &mut VisualTestAppContext, tab: &gpui::Entity<FileTab>, row: usize| {
         cx.read(|cx| tab.read(cx).code_drawn())
@@ -733,17 +710,17 @@ fn file_tab_md_reader_code_scenes() {
                 assert_eq!(label(cx, &tab, sh_row), Some("Copied"), "{n}");
                 // Pressed again 1 s on: "Copied" lasts `COPIED` from the second press.
                 cx.advance_clock(Duration::from_millis(1_000));
-                frame(cx, window);
+                reader_frame(cx, window);
                 press_copy(cx, window, &tab, sh_row, &n);
                 cx.advance_clock(COPIED - Duration::from_millis(500));
-                frame(cx, window);
+                reader_frame(cx, window);
                 assert_eq!(
                     cx.read(|cx| tab.read(cx).copied()),
                     Some(Copied::Code(sh_row)),
                     "{n}: still Copied 1 s after the second press"
                 );
                 cx.advance_clock(Duration::from_millis(600));
-                frame(cx, window);
+                reader_frame(cx, window);
                 assert_eq!(cx.read(|cx| tab.read(cx).copied()), None, "{n}: Copy again");
                 assert_eq!(label(cx, &tab, sh_row), Some("Copy"), "{n}");
 
@@ -849,11 +826,6 @@ fn file_tab_md_reader_callout_scenes() {
     .expect("SETUP.md");
 
     type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
-    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
-        cx.update_window(window, |_, window, _| window.refresh())
-            .expect("refresh");
-        cx.run_until_parked();
-    };
 
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
@@ -877,12 +849,12 @@ fn file_tab_md_reader_callout_scenes() {
             let (n, slot) = (n.clone(), slot.clone());
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = slot.borrow().clone().expect("the file tab");
-                frame(cx, window);
+                reader_frame(cx, window);
                 let button = cx
                     .read(|cx| tab.read(cx).preview_bounds())
                     .expect("Preview is drawn");
                 cx.simulate_click(window, button.center(), Modifiers::none());
-                frame(cx, window);
+                reader_frame(cx, window);
                 let doc = cx
                     .read(|cx| tab.read(cx).reader_doc())
                     .expect("the reader's document");
@@ -893,7 +865,7 @@ fn file_tab_md_reader_callout_scenes() {
                             item_ix: row,
                             offset_in_item: px(0.0),
                         });
-                    frame(cx, window);
+                    reader_frame(cx, window);
                 };
                 let mut seen = Vec::new();
                 for (b, look) in doc.plan.looks.iter().enumerate() {
@@ -1054,19 +1026,6 @@ fn file_tab_md_reader_github_scenes() {
 
     type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
     let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
-    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
-        cx.update_window(window, |_, window, _| window.refresh())
-            .expect("refresh");
-        cx.run_until_parked();
-    };
-    let preview = move |cx: &mut VisualTestAppContext, window, tab: &gpui::Entity<FileTab>| {
-        frame(cx, window);
-        let button = cx
-            .read(|cx| tab.read(cx).preview_bounds())
-            .expect("Preview is drawn");
-        cx.simulate_click(window, button.center(), Modifiers::none());
-        frame(cx, window);
-    };
     let show = move |cx: &mut VisualTestAppContext,
                      window: AnyWindowHandle,
                      tab: &gpui::Entity<FileTab>,
@@ -1076,7 +1035,7 @@ fn file_tab_md_reader_github_scenes() {
                 item_ix: row,
                 offset_in_item: px(0.0),
             });
-        frame(cx, window);
+        reader_frame(cx, window);
     };
 
     for &(slug, name) in shot_themes() {
@@ -1103,7 +1062,7 @@ fn file_tab_md_reader_github_scenes() {
             let (n, slot) = (n.clone(), slot.clone());
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = tab_of(&slot);
-                preview(cx, window, &tab);
+                reader_preview_on(cx, window, &tab);
                 let doc = cx
                     .read(|cx| tab.read(cx).reader_doc())
                     .expect("the reader's document");
@@ -1213,7 +1172,7 @@ fn file_tab_md_reader_github_scenes() {
                     .expect("the build pill")
                     .bounds;
                 cx.simulate_click(window, build.center(), Modifiers::none());
-                frame(cx, window);
+                reader_frame(cx, window);
                 assert_eq!(
                     cx.read(|cx| tab.read(cx).followed_link()).as_deref(),
                     Some("https://example.com/ci"),
@@ -1239,7 +1198,7 @@ fn file_tab_md_reader_github_scenes() {
             let (n, slot) = (n.clone(), slot.clone());
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = tab_of(&slot);
-                preview(cx, window, &tab);
+                reader_preview_on(cx, window, &tab);
                 let doc = cx
                     .read(|cx| tab.read(cx).reader_doc())
                     .expect("the reader's document");
@@ -1315,7 +1274,7 @@ fn file_tab_md_reader_github_scenes() {
             let (n, slot) = (n.clone(), slot.clone());
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = tab_of(&slot);
-                preview(cx, window, &tab);
+                reader_preview_on(cx, window, &tab);
                 let front = cx
                     .read(|cx| tab.read(cx).front_drawn())
                     .unwrap_or_else(|| panic!("{n}: the front matter is drawn"));
@@ -1360,7 +1319,7 @@ fn file_tab_md_reader_github_scenes() {
                         item_ix: 0,
                         offset_in_item: front.bounds.size.height - px(160.0),
                     });
-                frame(cx, window);
+                reader_frame(cx, window);
                 slot.borrow_mut().take();
             }
         };
@@ -1381,7 +1340,7 @@ fn file_tab_md_reader_github_scenes() {
             let (n, slot) = (n.clone(), slot.clone());
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = tab_of(&slot);
-                preview(cx, window, &tab);
+                reader_preview_on(cx, window, &tab);
                 let front = cx
                     .read(|cx| tab.read(cx).front_drawn())
                     .unwrap_or_else(|| panic!("{n}: the front matter is drawn"));
@@ -1482,11 +1441,6 @@ fn file_tab_md_reader_anchor_scenes() {
     type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
     type Opened = Rc<RefCell<Option<(PathBuf, Option<String>)>>>;
     let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
-    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
-        cx.update_window(window, |_, window, _| window.refresh())
-            .expect("refresh");
-        cx.run_until_parked();
-    };
     let show = move |cx: &mut VisualTestAppContext,
                      window: AnyWindowHandle,
                      tab: &gpui::Entity<FileTab>,
@@ -1496,7 +1450,7 @@ fn file_tab_md_reader_anchor_scenes() {
                 item_ix: row,
                 offset_in_item: px(0.0),
             });
-        frame(cx, window);
+        reader_frame(cx, window);
     };
     // The row of the paragraph that is only the link `words`.
     let link_row = |cx: &mut VisualTestAppContext, tab: &gpui::Entity<FileTab>, words: &str| {
@@ -1526,7 +1480,7 @@ fn file_tab_md_reader_anchor_scenes() {
             point(at.left() + px(6.0), at.center().y),
             Modifiers::none(),
         );
-        frame(cx, window);
+        reader_frame(cx, window);
     };
     let heading_row = |cx: &mut VisualTestAppContext, tab: &gpui::Entity<FileTab>, words: &str| {
         let doc = cx
@@ -1594,12 +1548,12 @@ fn file_tab_md_reader_anchor_scenes() {
                 let tab = tab_of(&slot);
                 // The frozen tab's place for git, looked up now (a frozen tab does not).
                 cx.update(|cx| tab.update(cx, |tab, cx| tab.look_up_place_for_shots(cx)));
-                frame(cx, window);
+                reader_frame(cx, window);
                 cx.update_window(window, |_, window, cx| {
                     tab.update(cx, |tab, cx| tab.choose_preview_for_shots(true, window, cx))
                 })
                 .expect("Preview on");
-                frame(cx, window);
+                reader_frame(cx, window);
                 let configure = heading_row(cx, &tab, "Configure");
 
                 // `#configure`: a jump.
@@ -1635,7 +1589,7 @@ fn file_tab_md_reader_anchor_scenes() {
                     point(at.left() + px(6.0), at.center().y),
                     Modifiers::none(),
                 );
-                frame(cx, window);
+                reader_frame(cx, window);
                 let after = list.logical_scroll_top();
                 assert_eq!(
                     (after.item_ix, after.offset_in_item),
@@ -1663,7 +1617,7 @@ fn file_tab_md_reader_anchor_scenes() {
                     .get(&(configure + 1))
                     .expect("the paragraph under it is drawn");
                 cx.simulate_mouse_move(window, para.center(), None, Modifiers::none());
-                frame(cx, window);
+                reader_frame(cx, window);
                 assert!(
                     !cx.read(|cx| tab.read(cx).anchor_drawn())
                         .contains_key(&configure),
@@ -1675,7 +1629,7 @@ fn file_tab_md_reader_anchor_scenes() {
                     None,
                     Modifiers::none(),
                 );
-                frame(cx, window);
+                reader_frame(cx, window);
                 let probe = cx
                     .read(|cx| tab.read(cx).anchor_drawn())
                     .get(&configure)
@@ -1696,9 +1650,9 @@ fn file_tab_md_reader_anchor_scenes() {
 
                 // A click on it: the link to the heading copied, the `#` reads Copied.
                 cx.simulate_mouse_move(window, probe.bounds.center(), None, Modifiers::none());
-                frame(cx, window);
+                reader_frame(cx, window);
                 cx.simulate_click(window, probe.bounds.center(), Modifiers::none());
-                frame(cx, window);
+                reader_frame(cx, window);
                 let clip = cx.read_from_clipboard().and_then(|c| c.text());
                 println!("ui-shots: {n}: copied {clip:?}");
                 if in_repo {
@@ -1728,11 +1682,11 @@ fn file_tab_md_reader_anchor_scenes() {
                 );
                 at_top(cx, &tab, configure, &n);
                 cx.advance_clock(COPIED + Duration::from_millis(100));
-                frame(cx, window);
+                reader_frame(cx, window);
                 assert_eq!(cx.read(|cx| tab.read(cx).copied()), None, "{n}: # again");
                 // Shot with Copied showing.
                 cx.simulate_click(window, probe.bounds.center(), Modifiers::none());
-                frame(cx, window);
+                reader_frame(cx, window);
                 slot.borrow_mut().take();
             }
         };
@@ -1766,8 +1720,8 @@ fn file_tab_md_reader_anchor_scenes() {
             let (n, slot) = (n.clone(), slot.clone());
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = tab_of(&slot);
-                frame(cx, window);
-                frame(cx, window);
+                reader_frame(cx, window);
+                reader_frame(cx, window);
                 assert!(
                     cx.read(|cx| tab.read(cx).preview_shown()),
                     "{n}: in Preview"
@@ -1856,7 +1810,7 @@ fn file_tab_md_reader_outline_scenes() {
         HEADING_ABOVE, OUTLINE_BAR, OUTLINE_GAP, OUTLINE_ROW, OUTLINE_W, REACH,
     };
     use crate::ui_tokens::size::TERMINAL_PADDING;
-    use gpui::{ListState, Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+    use gpui::{ListState, Modifiers};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::time::Duration;
@@ -1876,64 +1830,6 @@ fn file_tab_md_reader_outline_scenes() {
 
     type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
     let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
-    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
-        cx.update_window(window, |_, window, _| window.refresh())
-            .expect("refresh");
-        cx.run_until_parked();
-    };
-    // A frame, then each next frame something asked for (the current entry is worked out at
-    // the start of the frame after a scroll), each drawn.
-    let settle = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
-        frame(cx, window);
-        for _ in 0..10 {
-            if !next_frame(cx, window) {
-                break;
-            }
-            frame(cx, window);
-        }
-    };
-    let preview = move |cx: &mut VisualTestAppContext, window, tab: &gpui::Entity<FileTab>| {
-        settle(cx, window);
-        let button = cx
-            .read(|cx| tab.read(cx).preview_bounds())
-            .expect("Preview is drawn");
-        cx.simulate_click(window, button.center(), Modifiers::none());
-        settle(cx, window);
-        settle(cx, window);
-    };
-    let wheel = move |cx: &mut VisualTestAppContext, window, at, lines: f32| {
-        cx.simulate_event(
-            window,
-            ScrollWheelEvent {
-                position: at,
-                delta: ScrollDelta::Lines(point(0.0, -lines)),
-                modifiers: Modifiers::none(),
-                touch_phase: TouchPhase::Moved,
-            },
-        );
-        settle(cx, window);
-    };
-    // Each outline entry's heading's list row.
-    let entry_rows = |cx: &mut VisualTestAppContext, tab: &gpui::Entity<FileTab>| {
-        let doc = cx
-            .read(|cx| tab.read(cx).reader_doc())
-            .expect("the reader's document");
-        doc.plan
-            .outline
-            .iter()
-            .map(|e| doc.plan.row_of_block(doc.plan.headings[e.heading].block))
-            .collect::<Vec<usize>>()
-    };
-    let entry_of = |cx: &mut VisualTestAppContext, tab: &gpui::Entity<FileTab>, text: &str| {
-        let doc = cx
-            .read(|cx| tab.read(cx).reader_doc())
-            .expect("the reader's document");
-        doc.plan
-            .outline
-            .iter()
-            .position(|e| doc.plan.headings[e.heading].text == text)
-            .unwrap_or_else(|| panic!("the entry {text}"))
-    };
     // The rule, from the list as it is: reached (above the top row, or its top in the view's
     // top quarter), in view (its top over the view's bottom), at the end.
     let reach_line = |list: &ListState| {
@@ -2007,13 +1903,13 @@ fn file_tab_md_reader_outline_scenes() {
             let (n, slot) = (n.clone(), slot.clone());
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = tab_of(&slot);
-                preview(cx, window, &tab);
+                reader_preview_on(cx, window, &tab);
                 assert_eq!(
                     cx.read(|cx| tab.read(cx).outline_shown()),
                     Some(true),
                     "{n}: the column shows"
                 );
-                let rows = entry_rows(cx, &tab);
+                let rows = reader_entry_rows(cx, &tab);
                 assert_eq!(rows.len(), 13, "{n}: 12 sections and a subsection");
                 let list = cx.read(|cx| tab.read(cx).preview_list());
                 let view = list.viewport_bounds();
@@ -2041,10 +1937,10 @@ fn file_tab_md_reader_outline_scenes() {
 
                 // Wheel steps down to section 5: the rule's entry after each.
                 let at = point(view.left() + px(120.0), view.center().y);
-                let five = entry_of(cx, &tab, "Section 5");
+                let five = reader_entry_of(cx, &tab, "Section 5");
                 let mut steps = 0;
                 while !reached(&list, rows[five]) {
-                    wheel(cx, window, at, 3.0);
+                    reader_wheel(cx, window, at, 3.0);
                     steps += 1;
                     assert!(steps < 200, "{n}: section 5 is never reached");
                     assert_eq!(
@@ -2093,7 +1989,7 @@ fn file_tab_md_reader_outline_scenes() {
                     (top.item_ix, f32::from(top.offset_in_item))
                 };
                 let before = place(&list);
-                wheel(cx, window, at, 3.0);
+                reader_wheel(cx, window, at, 3.0);
                 assert_ne!(place(&list), before, "{n}: the wheel step scrolled");
                 assert_eq!(
                     cx.read(|cx| tab.read(cx).outline_current()),
@@ -2102,7 +1998,7 @@ fn file_tab_md_reader_outline_scenes() {
                 );
 
                 // Section 7's entry's tooltip: its full text.
-                let seven = entry_of(cx, &tab, OUTLINE_LONG);
+                let seven = reader_entry_of(cx, &tab, OUTLINE_LONG);
                 let b = cx
                     .read(|cx| tab.read(cx).outline_entry_bounds(seven))
                     .expect("section 7's entry");
@@ -2111,7 +2007,7 @@ fn file_tab_md_reader_outline_scenes() {
                 }
                 cx.simulate_mouse_move(window, b.center(), None, Modifiers::none());
                 cx.advance_clock(Duration::from_secs(1));
-                settle(cx, window);
+                reader_settle(cx, window);
                 draw(cx, window);
                 let tip = crate::sidebar_toggle::SHOWN_TIP
                     .lock()
@@ -2119,10 +2015,10 @@ fn file_tab_md_reader_outline_scenes() {
                     .and_then(|t| t.clone());
                 assert_eq!(tip.as_deref(), Some(OUTLINE_LONG), "{n}: the tooltip");
                 cx.simulate_mouse_move(window, at, None, Modifiers::none());
-                settle(cx, window);
+                reader_settle(cx, window);
 
                 // The end: the last heading in view, though not reached.
-                wheel(cx, window, at, 1000.0);
+                reader_wheel(cx, window, at, 1000.0);
                 assert_eq!(list.is_scrolled_to_end(), Some(true), "{n}: at the end");
                 let last = rows.len() - 1;
                 assert!(
@@ -2136,13 +2032,13 @@ fn file_tab_md_reader_outline_scenes() {
                 );
 
                 // A click on section 8's entry: a jump there.
-                let eight = entry_of(cx, &tab, "Section 8");
+                let eight = reader_entry_of(cx, &tab, "Section 8");
                 let b = cx
                     .read(|cx| tab.read(cx).outline_entry_bounds(eight))
                     .expect("section 8's entry");
                 cx.simulate_mouse_move(window, b.center(), None, Modifiers::none());
                 cx.simulate_click(window, b.center(), Modifiers::none());
-                settle(cx, window);
+                reader_settle(cx, window);
                 let top = list.logical_scroll_top();
                 assert_eq!(
                     (top.item_ix, f32::from(top.offset_in_item)),
@@ -2191,7 +2087,7 @@ fn file_tab_md_reader_outline_scenes() {
             let (n, slot) = (n.clone(), slot.clone());
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = tab_of(&slot);
-                preview(cx, window, &tab);
+                reader_preview_on(cx, window, &tab);
                 assert_eq!(
                     cx.read(|cx| tab.read(cx).outline_shown()),
                     Some(false),
@@ -2226,7 +2122,7 @@ fn file_tab_md_reader_outline_scenes() {
             let (n, slot) = (n.clone(), slot.clone());
             move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let tab = tab_of(&slot);
-                preview(cx, window, &tab);
+                reader_preview_on(cx, window, &tab);
                 assert_eq!(
                     cx.read(|cx| tab.read(cx).outline_shown()),
                     None,
@@ -2320,17 +2216,19 @@ fn reader_entry_of(
         .unwrap_or_else(|| panic!("the entry {text}"))
 }
 
-/// The list row of entry `entry`'s heading.
-fn reader_entry_row(
+/// Each "On this page" entry's heading's list row.
+fn reader_entry_rows(
     cx: &mut VisualTestAppContext,
     tab: &gpui::Entity<crate::file_tab::FileTab>,
-    entry: usize,
-) -> usize {
+) -> Vec<usize> {
     let doc = cx
         .read(|cx| tab.read(cx).reader_doc())
         .expect("the reader's document");
     doc.plan
-        .row_of_block(doc.plan.headings[doc.plan.outline[entry].heading].block)
+        .outline
+        .iter()
+        .map(|e| doc.plan.row_of_block(doc.plan.headings[e.heading].block))
+        .collect()
 }
 
 /// The fixtures of Task 9's scenes: GUIDE.md (`outline_fixture()`) and ONE.md (fits a 600 pt
@@ -2496,7 +2394,7 @@ fn file_tab_md_reader_narrow_scenes() {
                 assert_eq!(
                     (top.item_ix, f32::from(top.offset_in_item)),
                     (
-                        reader_entry_row(cx, &tab, eight),
+                        reader_entry_rows(cx, &tab)[eight],
                         jump_offset(HEADING_ABOVE)
                     ),
                     "{n}: section 8's heading at the top"
