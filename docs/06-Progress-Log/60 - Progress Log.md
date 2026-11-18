@@ -24,6 +24,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-18 — M11al UI Uplift 3: planned, building
+- **Status:** 📝 planned on your "go ahead with M11al": [[M11al Plan - UI Uplift 3]] — 13 tasks (Task 0 baselines
+  done: 1,944 tests, clippy 14/27 and 16/29, fmt clean). Building subagent-driven on branch `m11al-ui-uplift`; not
+  merged. Plan-time calls (AI's) are listed in the plan; the main one: a waiting row keeps "Needs input" / its
+  question (§2.4 over the "needs you" wording).
+
 ### 2026-11-18 — M11ak Agent box: built, waiting for your on-screen check
 - **Status:** 🟨 built, merged to master 2026-11-18 (`cd2218b`) on your standing word after the final review's fix wave re-reviewed clean; 1,944 tests pass on the merged tree. Pushed on your word ("scrub then push"): the pre-push check found your time zone name in a `/usage` example (code comments, a test, the plan); the 31 unpushed commits were rewritten to say `UTC` (5 lines), tests re-run (1,944 pass), the check re-run clean, then a normal push. A local branch `backup/pre-scrub-m11ak` holds the pre-scrub copy until you say to delete it. Waiting for your on-screen check. All 15 plan tasks (0–14), each reviewed (most clean after one fix round). Details, calls, limits and your 15-item check: note 83.
 - **Did:** the agent tab's box now has the folder chip and picker (Search, Recent, This Computer, New Project, No Project; Move this conversation or New conversation after the first message), the branch chip (opens the branch switcher), the model menu with effort and View Usage (Claude and agy), the mode chip and menu (agy's mode lock is gone), `+` attach (file, image, paste, drop; over 5 MB refused), the `/` menu and the `@` menu (Files, Agents, Skills). Claude changes model, effort and mode live; agy and a folder Move restart on the same conversation, after the turn. Lists and usage come from short quick processes that never use the model; nothing is sent without your send.

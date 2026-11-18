@@ -1,7 +1,7 @@
 # Milestone 11al — UI Uplift 3: one floating card, roomier sections
 
 **Status:** 📝 design written 2026-11-18 on branch `m11al-ui-uplift`; the user said 'go ahead with M11al' — direction
-approved in mockups; plan next.
+approved in mockups; planned 2026-11-18: [[M11al Plan - UI Uplift 3]] (13 tasks, subagent-driven); building.
 
 **Asked for:** 2026-11-17, by you: "let's brainstorm on the UI/UX uplift … What do you think we need to improve on the
 layout part?" Then, after four structure options and their comfortable versions: "I don't like them all. I love the
