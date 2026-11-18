@@ -66,8 +66,6 @@ pub mod code {
 /// in one place (agent chat keeps its own, `md_preview::Sizes::CHAT`). The Preview's side and top
 /// padding is `size::TERMINAL_PADDING`.
 pub mod reader {
-    #![allow(dead_code)] // drawn with as M11ai's tasks land (Task 11 removes it)
-
     /// Body text, and its line height (a multiple of the size).
     pub const BODY: f32 = 16.0;
     pub const BODY_LINE: f32 = 1.65;
@@ -152,6 +150,25 @@ pub mod reader {
     pub const ANCHOR_GAP: f32 = 6.0;
     /// "Copied" beside a heading, once its `#` is clicked.
     pub const ANCHOR_TEXT: f32 = 12.0;
+    /// Between a callout's icon and its title (Task 11: was a literal).
+    pub const CALLOUT_GAP: f32 = 6.0;
+    /// A reader code block's border (its header's corners are this much less round).
+    pub const CODE_BORDER: f32 = 1.0;
+    /// A list level's indent (and the marker's column), and a number's gap to its text.
+    pub const LIST_INDENT: f32 = 20.0;
+    pub const MARKER_GAP: f32 = 6.0;
+    /// A plain quote's padding left of its text, and its bar.
+    pub const QUOTE_PAD: f32 = 12.0;
+    pub const QUOTE_BAR: f32 = 3.0;
+    /// A rule (`---`): its margin above and below, and its line.
+    pub const RULE_MARGIN: f32 = 4.0;
+    pub const RULE_LINE: f32 = 1.0;
+    /// A Mermaid diagram's corners; the note under a Mermaid block shown as code: its gap
+    /// above, its text and its line height (a multiple of the text).
+    pub const DIAGRAM_RADIUS: f32 = 6.0;
+    pub const NOTE_GAP: f32 = 4.0;
+    pub const NOTE_TEXT: f32 = 12.0;
+    pub const NOTE_LINE: f32 = 1.4;
 }
 
 /// Sizes in pixels, from the M11 plan's Global Constraints.

@@ -1,7 +1,6 @@
 # Milestone 11ai — Markdown Reader Upgrade
 
-**Status:** 📝 design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). **Planned 2026-11-18:** [[M11ai Plan - Markdown Reader Upgrade]] (Tasks 0–11), building on branch `m11ai-md-reader`. Built **after M11ah** (code view
-upgrade), in sequence: both live in the file tab.
+**Status:** 🟨 built on branch m11ai-md-reader, waiting for your on-screen check; not merged. All 12 plan tasks (0–11) built 2026-11-18, Tasks 0–10 reviewed ([[M11ai Plan - Markdown Reader Upgrade]]); the whole-branch review and the full ui-shots run come next. Design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). Built **after M11ah** (code view upgrade), in sequence: both live in the file tab. Anything here that does not quote you is marked **AI's call**.
 
 **Asked for:** 2026-11-16, by you, in the file-view mockups ("everything" → "your order is fine, go ahead"). Direction:
 [[Proposal - File View Upgrades]], section "M11ai — Markdown reader upgrade (directions A + B + C, merged)":
@@ -173,7 +172,7 @@ Who it's for: you, reading Markdown in a file tab, often next to an agent.
 - **Where (AI's calls):** a column **200 pt** wide on the right of the Preview, with a small dim caption
   "On this page". It stays put while the text scrolls and scrolls on its own if longer than the view. It shows when
   the Preview is wide enough for the column, a 48 pt gap and the outline (about 880 pt with M11al's padding; worked
-  out from the tokens).
+  out from the tokens — built: 784 pt, see "Calls made while building").
 - **Narrower:** the outline hides, and a small **list** icon button sits at the Preview's top-right corner (tooltip
   "On this page"). Click → the outline opens as a floating panel under it (the app's overlay panel). Clicking an entry
   jumps and closes it; **Esc** or a click outside closes it.
@@ -286,6 +285,289 @@ tags: [docs, setup]
    (AI's call: Preview only)?
 3. **Links to another doc's heading** (`guide.md#install`): open it in Preview at that heading (AI's call), or keep
    opening the source at the top as today?
+
+## What was built
+
+All 12 plan tasks (0–11) on `m11ai-md-reader`; Tasks 0–10 each reviewed (4, 6 and 9 after one fix round), Task 11 (this hand-off) goes to the whole-branch review. Not merged.
+
+- **Task 0, baselines:** the numbers the branch must not exceed (2,024 tests, clippy 14 / 27 and 16 / 29, the full
+  ui-shots 205 / 205).
+- **Task 1, the parser reads a linked image:** `[![alt](badge)](link)` is one span (`Span::LinkedImage`). Agent chat
+  shows it as `[alt]`, linked; before, it fell apart into `[`, `[alt]` and `](…)`. That is chat's only visible change.
+- **Task 2, the reader plan:** a new pure module, `src/md_reader.rs`. It splits off front matter, reads callouts,
+  badge rows, heading slugs and the "On this page" outline, and works out the current entry, jumps and copied links.
+  All of it is unit-tested.
+- **Task 3, the column, type and spacing:** the Preview's code moved to `src/file_tab_preview.rs`. Prose sits in a
+  480 pt centred column at 16 pt, with headings 30 / 24 / 20 / 17 / 16 / 15, 16 pt between blocks, and 32 pt above a
+  heading and 12 under it. Code blocks and tables are at least the column wide and grow to the Preview's width. A wide
+  table scrolls sideways inside itself. Chat keeps its sizes (`Sizes::CHAT`).
+- **Task 4, code blocks:** coloured by the fence's language (a background job, cached by language, text and theme),
+  with a header strip a shade darker than the code. The strip shows the language on the left and Copy on the right;
+  after a click, Copy shows a tick and "Copied" for 1.5 s. A Mermaid block shown as code gets a `mermaid` header.
+- **Task 5, callouts:** `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` and `[!CAUTION]`. Each has a coloured bar,
+  a wash behind it, an icon and a title. Any other `[!…]` stays a plain quote.
+- **Task 6, looks like GitHub:**
+  - Tables: roomier cells, and every second body row striped.
+  - Front matter: a small two-column table (keys dim), "+ N more" past 20 keys, and a `front matter` code block when
+    it isn't `key: value` lines.
+  - Badges: drawn as pills from their alt text (two halves when the text has a `:`), never fetched.
+- **Task 7, heading anchors:**
+  - Hovering a heading shows a dim `#` to its left. A click on it copies the heading's link, which reads "Copied".
+  - `#part` links jump inside the document.
+  - `other.md#part` opens that file in Preview at the heading.
+- **Task 8, "On this page" (wide):** a 200 pt column on the right once the Preview is 784 pt or wider. The current
+  entry is marked with a bar and the accent colour and follows the scroll. A click on an entry jumps to it, and a
+  long entry ends in "…" with a tooltip.
+- **Task 9, narrow outline and progress:**
+  - When the Preview is narrower, a list button sits at its top-right corner. It opens the outline as a floating
+    panel; Esc, a click outside or an entry's click closes it.
+  - A 2 pt accent line along the Preview's top shows how far you have read.
+- **Merge of master (M11al) into the branch** (`2b9eb70`, between Tasks 8 and 9): the conflicts in the roadmap, the
+  Progress Log and `tab_bar.rs` were resolved. The reader follows M11al's 28 / 22 pt padding from the token.
+- **Task 10, reloads and big documents:**
+  - A reload keeps your place even when front matter is added or removed.
+  - Code colours come back from the cache at once, "Copied" clears, and the panel closes (and stays closed) when a
+    reload leaves no outline.
+  - One current-entry check runs per frame, however many wheel events arrive.
+  - Code is coloured even if Preview was turned off while the syntaxes loaded.
+  - The relayout and parse timings were measured (below), and `PREVIEW_MEASURE_ALL` went from 2,000 to 700.
+- **Task 11, this hand-off:**
+  - These docs.
+  - The last literal sizes in the reader's drawing became `ui_tokens::reader` tokens, with chat's values kept in
+    `Sizes::CHAT`. They are the callout icon gap, the code border, the list indent and number gap, the quote's
+    padding and bar, the rule's margin and line, a table cell's padding, and the Mermaid diagram's corners and note.
+  - The `#![allow(dead_code)]` lines in `md_reader.rs` and `ui_tokens::reader` are gone (nothing was dead).
+
+### Calls made while building (AI's, for you to check)
+
+**Sizes and layout**
+- **Every size is a token** in `ui_tokens::reader`. Chat's sizes are kept exactly in `md_preview::Sizes::CHAT`. The
+  Preview's padding is the terminal's (`TERMINAL_PADDING`, 28 / 22 since M11al).
+- **The column is 480 pt, not 576.** A 70-character sentence measures 480 pt at 16 pt in the UI font. The design's
+  "36 em" (576 pt) holds about 84 characters. The `file-tab-md-reader-column` scene checks the 70 characters.
+- **The outline shows from 784 pt of Preview width**, worked out from the tokens: 480 + 2 × 28 + 48 + 200. The design
+  guessed "about 880".
+- **Inline code is drawn at the body size (16 pt), in the code font.** The design asked for 14 pt, but GPUI's text
+  highlights cannot change the size inside a line. Chat's inline code was never smaller either.
+- **Tables keep equal-width columns**, as the design says ("as today"). The side effect: a table with one long cell
+  can fill the whole width.
+- **Code blocks and tables are at least the column wide** and grow to the Preview's width. A table's columns are at
+  least 96 pt. A table wider than the Preview scrolls sideways inside itself, while an up-and-down wheel over it
+  scrolls the page.
+
+**Tokens the plan named no number for**
+- `COPY_GAP` 4: between Copy's icon and its word.
+- `CODE_HEADER_SHADE` 0.05: how much darker the header strip is.
+- `PILL_FILL` 0.08 and `PILL_VALUE_FILL` 0.16: a pill's two fills.
+- `FRONT_GRID` (1 of 3): the front matter's key column.
+- `TABLE_RADIUS` 4: a table's corners (M11ac's 4).
+- `ANCHOR_TEXT` 12: the "Copied" beside a heading.
+- `OUTLINE_PAD` 10: the outline's text inset.
+- `OUTLINE_PANEL_ROWS` 12 and `OUTLINE_PANEL_GAP` 4: the narrow panel.
+- Added in Task 11, each today's value:
+  - `CALLOUT_GAP` 6 and `CODE_BORDER` 1;
+  - `LIST_INDENT` 20 and `MARKER_GAP` 6;
+  - `QUOTE_PAD` 12 and `QUOTE_BAR` 3;
+  - `RULE_MARGIN` 4 and `RULE_LINE` 1;
+  - `DIAGRAM_RADIUS` 6, and the Mermaid note's `NOTE_GAP` 4, `NOTE_TEXT` 12 and `NOTE_LINE` 1.4.
+
+**Code blocks**
+- **The header strip is a shade darker than the code's fill in every theme.** The design says darker, and that won
+  over the plan's "toward the text", which made it lighter in dark themes. At 0.05 it is faint in a dark theme;
+  item 2 of your check asks you to judge it.
+- **The fence's first word is the language**, split at a space, `,` or `{`. The syntax colours are lifted to the text
+  contrast floor on the code fill, so they can differ slightly from the File view's.
+- **New icons** were drawn for Copy, Check, Outline and the callouts: Info, Bulb, Report, Alert and Octagon. The app's
+  icon set had none of them.
+
+**Parsing and links**
+- **Front matter is the list's first row.** A reload keeps your place by row, shifted by any front-matter change. An
+  empty front-matter block draws nothing.
+- **A linked badge inside a sentence draws as a pill**, not as a link, and still follows its link.
+- **The copied heading link** is the file's path from the repo's top plus `#slug` (e.g. `docs/SETUP.md#configure`).
+  Outside a repo it is the `~` path, and outside your home the full path.
+- **Anchors** match the slug exactly, then in lowercase. A bare `#` link does nothing.
+
+**The outline**
+- **The current entry is worked out after scrolling, never while drawing.** It runs from the scroll at the next frame
+  (at most once a frame), right after a jump, and once after a reload, a remeasure or a resize. Where no window is at
+  hand, a flag asks the Preview's next layout to arm that one-shot.
+- **"Scrolls on its own" means the outline has its own scroll.** It does not move by itself to keep the current
+  entry in view.
+- **The outline's caption is the entries' size.** Every entry has a tooltip, because GPUI cannot tell which ones were
+  cut off.
+- **Esc closes the narrow panel first** and stops there. A second Esc does what it did before.
+
+**Performance**
+- **The parse stays on the UI thread, lazily at draw time, once per file version** (M11ac's way). The anchor jump and
+  the code-colour job start at that same spot. Measured (debug, 1 MB): parse median 134.5 ms, plan 20.6 ms, so the
+  plan adds about 15 %.
+  - Plan-time call 15 said to move both off the UI thread if they passed 80 ms. The parse alone is already over that
+    in debug, and it is M11ac's, unchanged.
+  - The plan's share is the part this milestone adds, and it is well under the 50 % limit.
+  - The cost: a hitch when a 1 MB document opens or reloads in Preview. The final review weighs it.
+- **`PREVIEW_MEASURE_ALL` went from 2,000 blocks to 700.** The reader's full relayout of a 2,000-block file took 2.76×
+  master's in debug (table below). Call 15 lowers the limit by that ratio, rounded down to a hundred.
+  - Documents of 701–2,000 blocks now get the estimated scrollbar instead of an exact one.
+  - Where the time goes was not profiled.
+- **All timings are debug builds**, because `--release` is not run here (your rule). They stand in for the design's
+  release-build numbers.
+
+**Process and testing**
+- **Your calls during the build:**
+  - M11ai **paused after Task 8** so M11al had the machine, and resumed after M11al merged.
+  - From Task 9 on, each task ran `scripts/ui-shots.sh --changed master` only. The full suite runs once before the
+    final review and again after its fix wave.
+- **Test-only behaviour (ui-shots builds only):** frozen test tabs record a followed web link instead of opening a
+  browser. The anchors scene runs `git init` in its own folder, so the copied link is repo-relative.
+- **Docs were written once, in Task 11**, not per task.
+
+### Known small gaps (things you might notice)
+
+**The outline**
+- **The end of a big document** (over 700 blocks): at the very bottom the last short section is not marked. The
+  current entry is the last heading you scrolled past, because the "at the end" rule needs every row measured.
+- **Near-end entries:** clicking an outline entry near the end can light it for one frame, then the "at the end"
+  rule marks the last heading instead.
+- **The narrow panel** does not scroll to the current entry when it opens. With more than 12 entries, the current one
+  can be below the panel's visible rows.
+- **The narrow outline button** has no fill, so a wide code block or table at the very top can sit under it.
+
+**Drawing**
+- **"Copied" beside a heading** can spill past the Preview's left edge in a narrow layout.
+- **A very long badge pill** (a long value) runs past the column. Pills wrap between each other, not inside one.
+- **Inline code** is 16 pt, not the design's 14 (see the calls above).
+- **A wide table with one long cell** fills the whole width (equal columns).
+- **The code header strip** is faint in dark themes (item 2 of your check).
+
+**Themes and links**
+- **A theme switched while Preview is off:** when you turn Preview back on, the code blocks may show in the old
+  colours, or plain, for a moment before the new colours arrive. The theme handler's code-colour branch still waits
+  for the Preview to show; the same shape as the Task 4 race fixed in Task 10. Found in review, not seen on screen.
+- **A heading link into a Markdown file too big to preview** (over 1 MB) turns that file's Preview setting on and
+  saves it, which a hand click would refuse. The source still shows, since the file does not fit.
+- **The `#` copy right after a file opens**, before the repo is known, copies the `~` form.
+
+**Parsing**
+- **Front matter:** a list item `- name: x` under a key is read as a new key `- name`.
+- **Badges:** a badge source like `//img.shields.io/…` (no `https:`), or a host followed straight by `?`, is not
+  seen as a badge.
+- **Slugs:** an accented heading written with combining marks can get a slug that differs from GitHub's.
+
+**Performance**
+- **A 1 MB document in Preview** hitches on open and reload: about 155 ms in debug, mostly M11ac's parse.
+- **Documents of 701–2,000 blocks** get the estimated scrollbar.
+
+## Measured headlessly
+
+All timings are debug builds on this Mac. `--release` is not run here.
+
+**Full relayout of a 2,000-block mixed Markdown file in Preview** (remeasure plus one draw, 1,200 × 700, Mocha; 2
+warm-up runs, then 5 timed runs). The probe was temporary and not committed. Master ran from a temporary detached
+worktree that was removed afterwards.
+
+| Build | Runs (ms) | Median |
+|---|---|---|
+| master `884e63a` (M11ac / M11ae Preview) | 120.40, 120.55, 120.82, 121.64, 121.70 | **120.8 ms** |
+| master, second run | 120.26, 120.50, 120.89, 122.58, 122.93 | 120.9 ms |
+| branch (Task 10) | 331.93, 332.38, 333.26, 333.97, 335.09 | **333.3 ms** |
+| branch, second run (forced rebuild) | 335.95, 336.71, 339.33, 339.66, 361.73 | 339.3 ms |
+
+The ratio, branch over master, is **2.76** (2.81 on the second run). That is over 1.15, so `PREVIEW_MEASURE_ALL`
+became 2,000 / 2.76 = 724, rounded down to **700**.
+
+**Parse + plan of 1 MB** (`md_reader::tests::read_plans_a_megabyte_quickly`, 38,129 blocks, 5 runs):
+
+| | Parse | Plan | Total | Plan / parse |
+|---|---|---|---|---|
+| median | **134.5 ms** | **20.6 ms** | 155.1 ms | 15 % |
+| range | 125.2–171.1 ms | 19.0–30.7 ms | 144.2–195.7 ms | 14–22 % |
+
+The plan is well under the 50 % limit. The total is over the 80 ms line, and the parse alone (M11ac's) is too. Both
+stay on the UI thread (see the calls above).
+
+Idle CPU and the feel of scrolling need a real window. They are items 14 and 15 below.
+
+## Final numbers (this Mac, debug build, 2026-11-18)
+
+- `cargo test --bin fuxx`: 2,075 passed, 0 failed, 1 ignored (baseline 2,024).
+- clippy: 14 (bin) / 27 (test) by default, and 16 / 29 with `ui-shots`. These equal the baselines.
+- `cargo fmt --check`: clean.
+- `scripts/ui-shots.sh --changed master` (Task 11's gate): 226 passed, 0 failed, 150.2 s (every scene is selected, since shared sources changed). The reference fingerprints are stale on this Mac (339 "look different"); they are reported, not failures, and were not updated.
+- `scripts/ui-shots.sh` (full): (filled after the final full run).
+
+## On-screen check (yours, after the build)
+
+Run `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run` from the worktree. This is a debug build only: **do not add
+`--release`**.
+
+Make a made-up doc in a scratch repo (`git init ~/code/my-app`), at `~/code/my-app/docs/SETUP.md`. Give it:
+- a "Setup guide" README with front matter (`title`, `description`, `tags`, `owner`);
+- a row of badges (`[![build: passing](https://img.shields.io/badge/build-passing-green)](https://example.com/ci)`
+  and two more);
+- all five callouts;
+- code blocks in `sh`, `ts` and `rust`;
+- a wide 6-column table with 6 or more rows;
+- 12 or more `##` sections, one with a `###`;
+- a link `[see Configure](#configure)`, and a link `[the other guide](other.md#middle)` to a second file
+  `docs/other.md` with `## Middle` between plenty of paragraphs.
+
+Open `SETUP.md` in a file tab and turn Preview on.
+
+1. **Column and type:** in a wide window the text sits in a centred column of about 70 characters, at 16 pt. There is
+   clearly more room above each heading than under it. In a narrow pane the column fills the width, inside the
+   terminal's padding.
+2. **Code:**
+   - The three blocks are coloured. Each shows its language at the top left, and Copy at the top right, which gets
+     brighter under the pointer.
+   - Click Copy: a tick and "Copied" show for about 1.5 s, and pasting gives the block's text.
+   - In a dark theme, is the header strip visibly a shade darker than the code? If it is too faint, say so (one token
+     to change).
+3. **Callouts:** Note, Tip, Important, Warning and Caution each have a coloured bar on the left, a faint wash, an icon
+   and a bold title. A `> [!FOO]` quote stays a plain quote.
+4. **Table:**
+   - The header is filled, and every second body row is lightly striped.
+   - The wide table scrolls sideways (shift-wheel or a sideways swipe), while an up-and-down wheel over it scrolls the
+     page.
+5. **Front matter:** a small two-column table at the very top, keys dim. With more than 20 keys, the last row reads
+   "+ N more".
+6. **Badges:** the badge row shows pills (label, plus a darker value half), with no network use. Clicking a linked
+   pill opens its link in the browser. A badge inside a sentence shows as a pill too.
+7. **Heading anchors:**
+   - Hover a heading: a dim `#` shows to its left. Click it: "Copied", and the clipboard holds
+     `docs/SETUP.md#configure`.
+   - Click `see Configure`: the view jumps there, with the heading just under the top.
+8. **Cross-doc link:** click `the other guide`: `other.md` opens in a tab, in Preview, at "Middle".
+9. **Wide outline:** with the Preview about 800 pt or wider:
+   - "On this page" shows on the right, and the current entry (bar and accent colour) follows as you scroll.
+   - Click an entry: it jumps there.
+   - A long entry ends in "…" and its tooltip shows the full text.
+   - At the very bottom, the last section is current.
+10. **Narrow outline:** narrow the pane below about 780 pt:
+    - The outline hides and a list button sits at the top-right corner.
+    - Click it: the outline floats under it. Click an entry: it jumps and closes.
+    - Open it again: Esc closes it, and a second Esc leaves Preview on. A click outside also closes it.
+11. **Progress line:** a thin accent line along the Preview's top grows as you scroll and spans the width at the end.
+    A short doc that fits shows none.
+12. **Live reload:** scroll to a middle section. In another terminal, add three lines of front matter at the top of
+    the file and save:
+    - the view stays at the same section;
+    - the code colours stay;
+    - the outline still marks the same entry.
+
+    Remove the front matter and save: the view is still in place.
+13. **Light and dark:** switch between a light and a dark theme with Preview on. Everything stays readable: code
+    colours, callout titles, pills, striped rows, the outline and the panel.
+14. **Idle CPU (the M11p anti-goal), by hand:** with the long doc shown in Preview and nothing moving:
+    - run `top -l 6 -s 5 -pid <fuxx pid>` in another terminal, and take the median CPU of the samples;
+    - do the same with `master` built the same way (debug, `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`).
+
+    They should match within noise.
+15. **Scrolling feel on a long doc:**
+    - Paste the sections a few times, to about 600 blocks: scrolling stays smooth, and the outline keeps up without
+      flicker.
+    - Then go past 700 blocks: the scrollbar becomes an estimate, and scrolling should still feel the same.
+    - A 1 MB doc may pause briefly when it opens (known; see Known small gaps).
 
 ## Related
 

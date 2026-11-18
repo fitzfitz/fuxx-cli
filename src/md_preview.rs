@@ -35,9 +35,6 @@ use crate::ui_tokens::reader::TABLE_COL_MIN;
 use crate::ui_tokens::size::TERMINAL_PADDING;
 use crate::ui_tokens::{MARK_MIN, QUIET_LINE_MIN, TEXT_MIN, ensure_contrast};
 
-/// A list level's indent, and the marker's column.
-const INDENT: f32 = 20.0;
-
 /// The sizes a Markdown block is drawn with (M11ai plan-time call 1): agent chat keeps today's
 /// (`CHAT`), the Preview's reader has its own (`reader()`, from `ui_tokens::reader`). Line
 /// heights are multiples of their text's size.
@@ -58,6 +55,17 @@ pub struct Sizes {
     /// A code block's padding (sides, top and bottom) and corners.
     pub code_pad: (f32, f32),
     pub code_radius: f32,
+    /// A list level's indent (and the marker's column), and a number's gap to its text.
+    pub indent: f32,
+    pub marker_gap: f32,
+    /// A plain quote's padding left of its text, and its bar.
+    pub quote_pad: f32,
+    pub quote_bar: f32,
+    /// A rule's margin above and below, and its line.
+    pub rule_margin: f32,
+    pub rule_line: f32,
+    /// A table cell's padding (sides, top and bottom).
+    pub table_cell: (f32, f32),
 }
 
 impl Sizes {
@@ -76,6 +84,13 @@ impl Sizes {
         rule_below: 6.0,
         code_pad: (12.0, 10.0),
         code_radius: 6.0,
+        indent: 20.0,
+        marker_gap: 6.0,
+        quote_pad: 12.0,
+        quote_bar: 3.0,
+        rule_margin: 4.0,
+        rule_line: 1.0,
+        table_cell: (10.0, 5.0),
     };
 
     /// The Preview's reader (M11ai spec A): bigger type, more room.
@@ -95,6 +110,13 @@ impl Sizes {
             rule_below: r::RULE_BELOW,
             code_pad: r::CODE_PAD,
             code_radius: r::CODE_RADIUS,
+            indent: r::LIST_INDENT,
+            marker_gap: r::MARKER_GAP,
+            quote_pad: r::QUOTE_PAD,
+            quote_bar: r::QUOTE_BAR,
+            rule_margin: r::RULE_MARGIN,
+            rule_line: r::RULE_LINE,
+            table_cell: r::TABLE_CELL,
         }
     }
 }
@@ -877,13 +899,13 @@ fn reader_callout(
     draw: &Draw,
     #[cfg_attr(not(feature = "ui-shots"), allow(unused_variables))] reader: &ReaderDraw,
 ) -> AnyElement {
-    use crate::ui_tokens::reader::{CALLOUT_BAR, CALLOUT_PAD, CALLOUT_RADIUS};
+    use crate::ui_tokens::reader::{CALLOUT_BAR, CALLOUT_GAP, CALLOUT_PAD, CALLOUT_RADIUS};
     let (c, s) = (draw.colours.callout(kind), &draw.sizes);
     let title = div()
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(6.0))
+        .gap(px(CALLOUT_GAP))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(hsla(c.title))
         .child(glyph(callout_glyph(kind), c.bar))
@@ -1033,7 +1055,7 @@ fn code_frame(
     text: AnyElement,
     draw: &Draw,
 ) -> AnyElement {
-    use crate::ui_tokens::reader::{CODE_HEADER, CODE_HEADER_TEXT};
+    use crate::ui_tokens::reader::{CODE_BORDER, CODE_HEADER, CODE_HEADER_TEXT};
     let (c, s) = (draw.colours, &draw.sizes);
     let header = div()
         .flex()
@@ -1042,8 +1064,8 @@ fn code_frame(
         .justify_between()
         .h(px(CODE_HEADER))
         .px(px(s.code_pad.0))
-        // Inside the block's 1 pt border: its corners 1 pt less round.
-        .rounded_t(px((s.code_radius - 1.0).max(0.0)))
+        // Inside the block's border: its corners that much less round.
+        .rounded_t(px((s.code_radius - CODE_BORDER).max(0.0)))
         .bg(hsla(c.code_header_bg))
         .text_size(px(CODE_HEADER_TEXT))
         .text_color(hsla(c.code_header_text))
@@ -1055,7 +1077,7 @@ fn code_frame(
         .flex_col()
         .rounded(px(s.code_radius))
         .bg(hsla(c.code_bg))
-        .border_1()
+        .border(px(CODE_BORDER))
         .border_color(hsla(c.line))
         .child(header)
         .child(
@@ -1326,6 +1348,7 @@ pub fn column(blocks: &[Md], base: usize, draw: &Draw) -> AnyElement {
 /// whichever is less, its height kept in proportion; or its code (`code`: the reader's, with
 /// its header), with the reason under it.
 fn mermaid_block(shown: &Shown, draw: &Draw, code: impl FnOnce() -> AnyElement) -> AnyElement {
+    use crate::ui_tokens::reader::{DIAGRAM_RADIUS, NOTE_GAP, NOTE_LINE, NOTE_TEXT};
     match shown {
         Shown::Diagram { image, w, h } => div()
             .w_full()
@@ -1336,7 +1359,7 @@ fn mermaid_block(shown: &Shown, draw: &Draw, code: impl FnOnce() -> AnyElement) 
                     .w_full()
                     .max_w(px(*w))
                     .aspect_ratio(w / h.max(1.0))
-                    .child(img(image.clone()).size_full().rounded(px(6.0))),
+                    .child(img(image.clone()).size_full().rounded(px(DIAGRAM_RADIUS))),
             )
             .into_any_element(),
         Shown::Code(note) => div()
@@ -1347,9 +1370,9 @@ fn mermaid_block(shown: &Shown, draw: &Draw, code: impl FnOnce() -> AnyElement) 
             .when_some(note.clone(), |d, note| {
                 d.child(
                     div()
-                        .mt(px(4.0))
-                        .text_size(px(12.0))
-                        .line_height(relative(1.4))
+                        .mt(px(NOTE_GAP))
+                        .text_size(px(NOTE_TEXT))
+                        .line_height(relative(NOTE_LINE))
                         .text_color(hsla(draw.colours.dim))
                         .child(note),
                 )
@@ -1420,8 +1443,8 @@ fn block(md: &Md, draw: &Draw) -> AnyElement {
             .w_full()
             .flex()
             .flex_col()
-            .pl(px(12.0))
-            .border_l(px(3.0))
+            .pl(px(s.quote_pad))
+            .border_l(px(s.quote_bar))
             .border_color(hsla(c.line))
             .text_color(hsla(c.dim))
             .children(blocks_of(inner, draw))
@@ -1429,8 +1452,8 @@ fn block(md: &Md, draw: &Draw) -> AnyElement {
         Md::Table { align, head, rows } => table(align, head, rows, None, draw),
         Md::Rule => div()
             .w_full()
-            .my(px(4.0))
-            .h(px(1.0))
+            .my(px(s.rule_margin))
+            .h(px(s.rule_line))
             .bg(hsla(c.line))
             .into_any_element(),
     }
@@ -1443,16 +1466,17 @@ fn item(md: &Md, depth: u8, draw: &Draw) -> AnyElement {
         other => return block(other, draw),
     };
     let numbered = matches!(md, Md::Numbered(..));
+    let s = &draw.sizes;
     div()
         .w_full()
         .flex()
         .flex_row()
-        .pl(px(depth as f32 * INDENT))
+        .pl(px(depth as f32 * s.indent))
         .child(
             div()
                 .flex_none()
-                .min_w(px(INDENT))
-                .pr(px(if numbered { 6.0 } else { 0.0 }))
+                .min_w(px(s.indent))
+                .pr(px(if numbered { s.marker_gap } else { 0.0 }))
                 .text_color(hsla(draw.colours.dim))
                 .children(marker(md, depth)),
         )
@@ -1479,13 +1503,13 @@ fn table(
     min: Option<f32>,
     draw: &Draw,
 ) -> AnyElement {
-    use crate::ui_tokens::reader::{TABLE_CELL, TABLE_RADIUS};
+    use crate::ui_tokens::reader::TABLE_RADIUS;
     let c = draw.colours;
     let n = head.len().max(1);
     // The reader's tables (M11ai): more room in a cell, every 2nd body row striped; chat's as
     // M11ac drew them.
     let reader = draw.reader.is_some();
-    let (pad_x, pad_y) = if reader { TABLE_CELL } else { (10.0, 5.0) };
+    let (pad_x, pad_y) = draw.sizes.table_cell;
     let cell = |spans: &[Span], col: usize, row: usize, header: bool| {
         let d = div()
             .min_w(px(0.0))
@@ -2003,6 +2027,13 @@ mod tests {
                 rule_below: 6.0,
                 code_pad: (12.0, 10.0),
                 code_radius: 6.0,
+                indent: 20.0,
+                marker_gap: 6.0,
+                quote_pad: 12.0,
+                quote_bar: 3.0,
+                rule_margin: 4.0,
+                rule_line: 1.0,
+                table_cell: (10.0, 5.0),
             }
         );
         let chat = &Sizes::CHAT;
@@ -2041,5 +2072,27 @@ mod tests {
         assert_eq!(r.headings, [30.0, 24.0, 20.0, 17.0, 16.0, 15.0]);
         assert_eq!((r.code, r.code_line, r.rule_below), (14.0, 1.5, 8.0));
         assert_eq!((r.code_pad, r.code_radius), ((12.0, 10.0), 6.0));
+    }
+
+    /// Every size the reader draws with is a `ui_tokens::reader` token (spec: every size a named
+    /// token), and today's values are kept: the list's indent and a number's gap, a quote's
+    /// padding and bar, a rule's margin and line, a table cell's padding.
+    #[test]
+    fn the_reader_s_sizes_are_its_tokens() {
+        use crate::ui_tokens::reader as t;
+        let r = Sizes::reader();
+        assert_eq!((r.indent, r.marker_gap), (t::LIST_INDENT, t::MARKER_GAP));
+        assert_eq!((r.quote_pad, r.quote_bar), (t::QUOTE_PAD, t::QUOTE_BAR));
+        assert_eq!((r.rule_margin, r.rule_line), (t::RULE_MARGIN, t::RULE_LINE));
+        assert_eq!(r.table_cell, t::TABLE_CELL);
+        assert_eq!((t::LIST_INDENT, t::MARKER_GAP), (20.0, 6.0));
+        assert_eq!((t::QUOTE_PAD, t::QUOTE_BAR), (12.0, 3.0));
+        assert_eq!((t::RULE_MARGIN, t::RULE_LINE), (4.0, 1.0));
+        assert_eq!(t::CALLOUT_GAP, 6.0);
+        assert_eq!(t::CODE_BORDER, 1.0);
+        assert_eq!(
+            (t::DIAGRAM_RADIUS, t::NOTE_GAP, t::NOTE_TEXT, t::NOTE_LINE),
+            (6.0, 4.0, 12.0, 1.4)
+        );
     }
 }
