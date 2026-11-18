@@ -1098,6 +1098,7 @@ mod tests {
                 path: "/w/api/README.md".into(),
                 mode: crate::layout_model::FileMode::Plain,
                 preview: false,
+                side_by_side: false,
             };
             pane.active = 2;
         }

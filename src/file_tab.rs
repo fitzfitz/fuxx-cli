@@ -119,7 +119,7 @@ use crate::mermaid_render::{Drawn, Mermaids, Waiter};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
-use crate::row_map::{DiffLayout, MapKey, Row, RowMap, change_starts, step_change};
+use crate::row_map::{DiffLayout, Half, MapKey, Row, RowMap, change_starts, step_change};
 use crate::scrollbar::{self, Axis, Bar, LaneMark, Thumb};
 use crate::sidebar_toggle::{Tip, tip_box};
 use crate::tab_bar::{Glyph, glyph_with};
@@ -1730,6 +1730,72 @@ pub fn bar_at_rows(y: f32, map: &RowMap, changes: &Changes) -> Option<(usize, Li
         .copied()
         .find(|&e| map.first_row(e) == Some(edge_row))?;
     Some((edge, LineChange::DeletedAfter))
+}
+
+/// M11ah: side by side needs this many text cells in each half.
+#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
+pub const SIDE_MIN_CELLS: usize = 60;
+
+/// M11ah: a half's gutter side by side, from its own left edge: `GUTTER_LEFT`, its numbers (the
+/// wider of the diff's two columns, so both halves are alike), `NUMBER_GAP`, the sign (a cell),
+/// `TEXT_GAP`: the text's left edge.
+#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
+fn side_text_left(cell: f32, gutter: Gutter) -> f32 {
+    let digits = match gutter {
+        Gutter::Diff {
+            old_digits,
+            new_digits,
+        } => old_digits.max(new_digits),
+        Gutter::Plain { digits, .. } => digits,
+    };
+    GUTTER_LEFT + cell * digits as f32 + NUMBER_GAP + cell + TEXT_GAP
+}
+
+/// M11ah: a half's text cells side by side in a body `width` points wide (the halves split the
+/// room inside the cards' insets; each keeps `RIGHT_PAD` after its text).
+#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
+pub fn side_cells(width: f32, cell: f32, gutter: Gutter) -> usize {
+    let cell = cell.max(1.0);
+    let half = (width - 2.0 * code::CARD_INSET) / 2.0;
+    let room = half - side_text_left(cell, gutter) - RIGHT_PAD;
+    (room / cell).floor().max(0.0) as usize
+}
+
+/// Whether a body `width` points wide fits two halves of `SIDE_MIN_CELLS` cells with their
+/// gutters (a diff's only).
+#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
+pub fn fits_side_by_side(width: f32, cell: f32, gutter: Gutter) -> bool {
+    matches!(gutter, Gutter::Diff { .. }) && side_cells(width, cell, gutter) >= SIDE_MIN_CELLS
+}
+
+/// The selected text of one half: only rows on that side (Old: Same + Removed; New: Same +
+/// Added), the first and last in part, `\n` between them.
+#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
+pub fn half_text(doc: &Doc, rows: &[DiffRow], a: Pos, b: Pos, half: Half) -> String {
+    let (s, e) = if a <= b { (a, b) } else { (b, a) };
+    let Some(last) = doc.lines.len().checked_sub(1) else {
+        return String::new();
+    };
+    let on = |i: usize| {
+        rows.get(i).is_some_and(|r| match r.kind {
+            RowKind::Same => true,
+            RowKind::Removed => half == Half::Old,
+            RowKind::Added => half == Half::New,
+            RowKind::Gap => false,
+        })
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for i in (s.line..=e.line.min(last)).filter(|&i| on(i)) {
+        let l = doc.line(i);
+        let from = if i == s.line { clamp_col(l, s.col) } else { 0 };
+        let to = if i == e.line {
+            clamp_col(l, e.col)
+        } else {
+            l.len()
+        };
+        parts.push(&l[from..to.max(from)]);
+    }
+    parts.join("\n")
 }
 
 /// The gutter's number columns: the file's line numbers, or a diff's old and new numbers (each
@@ -9177,6 +9243,69 @@ mod tests {
             .expect("the second stretch's row");
         let row = rescroll_row(top, Some(&from), &to);
         assert_eq!(to.row(row), Some(Row::Unchanged { stretch: 1 }));
+    }
+
+    #[test]
+    fn fits_needs_sixty_cells_a_half() {
+        let gutter = Gutter::Diff {
+            old_digits: 2,
+            new_digits: 2,
+        };
+        // Each half: its numbers (16 + 2 cells), 10, the sign (a cell), 14, then the text and
+        // `RIGHT_PAD`; the halves inside the cards' insets. 60 cells of 8: 1160 points in all.
+        assert!(fits_side_by_side(1160.0, 8.0, gutter));
+        assert!(!fits_side_by_side(1159.0, 8.0, gutter));
+        assert_eq!(side_cells(1160.0, 8.0, gutter), SIDE_MIN_CELLS);
+        // The wider number column counts for both halves.
+        let wide = Gutter::Diff {
+            old_digits: 2,
+            new_digits: 4,
+        };
+        assert!(!fits_side_by_side(1160.0, 8.0, wide));
+        assert!(fits_side_by_side(1192.0, 8.0, wide));
+        // A file is never side by side.
+        let plain = Gutter::Plain {
+            digits: 2,
+            marks: false,
+            folds: false,
+        };
+        assert!(!fits_side_by_side(4000.0, 8.0, plain));
+    }
+
+    #[test]
+    fn half_text_copies_one_side() {
+        use crate::diff_view::{DiffRow, RowKind};
+        let row = |kind, old, new| DiffRow { kind, old, new };
+        let rows = [
+            row(RowKind::Same, Some(1), Some(1)),
+            row(RowKind::Removed, Some(2), None),
+            row(RowKind::Added, None, Some(2)),
+            row(RowKind::Same, Some(3), Some(3)),
+        ];
+        let doc = Doc::new("alpha\nold line\nnew line\nomega\n".into(), 1);
+        let pos = |line, col| Pos { line, col };
+        let (a, b) = (pos(0, 0), pos(3, 5));
+        assert_eq!(
+            half_text(&doc, &rows, a, b, Half::Old),
+            "alpha\nold line\nomega"
+        );
+        assert_eq!(
+            half_text(&doc, &rows, a, b, Half::New),
+            "alpha\nnew line\nomega"
+        );
+        // Either way round; the ends in part.
+        assert_eq!(
+            half_text(&doc, &rows, pos(3, 2), pos(0, 3), Half::New),
+            "ha\nnew line\nom"
+        );
+        assert_eq!(
+            half_text(&doc, &rows, pos(1, 4), pos(2, 3), Half::Old),
+            "line"
+        );
+        assert_eq!(
+            half_text(&doc, &rows, pos(1, 4), pos(2, 3), Half::New),
+            "new"
+        );
     }
 
     #[test]
