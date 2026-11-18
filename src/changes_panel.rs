@@ -720,9 +720,11 @@ fn circle(state: Circle, green: Rgb, ui: &UiColors) -> Div {
     }
 }
 
-/// How many of `list`'s entries are in the staged (`staged`) or the unstaged group.
+/// How many of `list`'s entries are in the staged (`staged`) or the unstaged group. The rows
+/// past the list's cap (`list.more`) all belong to the unstaged group, so they count there.
 fn group_count(list: &ChangeList, staged: bool) -> usize {
-    list.entries.iter().filter(|c| c.staged == staged).count()
+    let shown = list.entries.iter().filter(|c| c.staged == staged).count();
+    if staged { shown } else { shown + list.more }
 }
 
 /// A group's header row (parts 2 and 6, M11al §6.4): a thin chevron (› closed, ⌄ open),
@@ -1954,6 +1956,28 @@ mod tests {
             more,
             counts_failed: false,
         }
+    }
+
+    #[test]
+    fn the_changes_count_includes_the_rows_past_the_cap() {
+        let staged = Change {
+            staged: true,
+            ..change("s.rs", Mark::Modified, Counts::Unknown)
+        };
+        let list = list_of(
+            vec![staged, change("a.rs", Mark::Modified, Counts::Unknown)],
+            2_345,
+        );
+        assert_eq!(
+            group_count(&list, false),
+            1 + 2_345,
+            "unstaged plus the more row"
+        );
+        assert_eq!(
+            group_count(&list, true),
+            1,
+            "the staged group has no overflow"
+        );
     }
 
     #[test]

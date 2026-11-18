@@ -9,7 +9,7 @@
 //! rounding the card's top-right and bottom-right corners; a 6 pt strip centred on the hairline
 //! resizes it (220–560 pt, 300 by default: from the hairline to the card's outer right).
 //! Open state and width live in `sessions.json`. A narrow window draws it narrower
-//! (`drawn_width`) so the panes keep 200 pt.
+//! (`drawn_width`) so the panes keep 200 pt inside the card's 1 px edges.
 //!
 //! It follows the focused terminal (with a browser or file tab focused, the last terminal it
 //! followed; none yet, as after a relaunch, the focused workspace's first terminal): that
@@ -895,15 +895,16 @@ pub(crate) fn note(ui: &UiColors, text: &'static str) -> AnyElement {
         .into_any_element()
 }
 
-/// A panel's header row (part 4): `HEADER` tall, its content from the 12 pt edge to
-/// `HEADER_PAD_RIGHT` from the right (where its icon buttons sit), centred.
-pub(crate) fn header_row() -> gpui::Div {
+/// A panel's plain header row (part 4), `height` tall (Activity's own `HEADER`, 42), its content
+/// from the 12 pt edge to `HEADER_PAD_RIGHT` from the right (where its icon buttons sit),
+/// centred.
+pub(crate) fn header_row(height: f32) -> gpui::Div {
     div()
         .flex_none()
         .flex()
         .items_center()
         .gap(px(8.0))
-        .h(px(HEADER))
+        .h(px(height))
         .w_full()
         .pl(px(EDGE))
         .pr(px(HEADER_PAD_RIGHT))
@@ -1003,11 +1004,13 @@ pub const PANE_COLUMN_MIN: f32 = 200.0;
 /// How wide it is drawn: its `width`, less what a window `window_width` wide needs to keep the
 /// panes `PANE_COLUMN_MIN` wide beside a left sidebar `left` wide (0 when hidden), in the one
 /// card (M11al §3.1): flush against a shown sidebar, else `CARD_INSET` from the window's left;
-/// `CARD_INSET` from its right; the 1 px hairline between the panes and it. Never less than
-/// none. The saved width stays as chosen.
+/// `CARD_INSET` from its right; less the card's 1 px left edge (inside which the panes are
+/// counted) and the 1 px hairline between the panes and it. Never less than none. The saved
+/// width stays as chosen.
 pub fn drawn_width(width: f32, window_width: f32, left: f32) -> f32 {
     let left_inset = if left > 0.0 { 0.0 } else { CARD_INSET };
-    width.min((window_width - left - PANE_COLUMN_MIN - left_inset - CARD_INSET - HAIRLINE).max(0.0))
+    let room = window_width - left - PANE_COLUMN_MIN - left_inset - CARD_INSET - 2.0 * HAIRLINE;
+    width.min(room.max(0.0))
 }
 
 /// Its width with the pointer at `x`, on the middle of the hairline at its left, in a window
@@ -2399,14 +2402,14 @@ mod tests {
         // Room for it: drawn as wide as saved.
         assert_eq!(drawn_width(300.0, 1280.0, 240.0), 300.0);
         // 700 wide with the left sidebar's 240: the card is flush against the sidebar and
-        // `CARD_INSET` from the window's right, the hairline takes 1, the panes keep 200, so
-        // 251 is drawn.
-        assert_eq!(drawn_width(300.0, 700.0, 240.0), 251.0);
+        // `CARD_INSET` from the window's right, the card's left edge and the hairline take 1
+        // each, the panes keep 200, so 250 is drawn.
+        assert_eq!(drawn_width(300.0, 700.0, 240.0), 250.0);
         // Without the left sidebar (the card `CARD_INSET` from the window's left too): 500
-        // wide leaves it 283.
-        assert_eq!(drawn_width(300.0, 517.0, 0.0), 300.0);
-        assert_eq!(drawn_width(300.0, 500.0, 0.0), 283.0);
-        assert_eq!(drawn_width(560.0, 500.0, 0.0), 283.0);
+        // wide leaves it 282.
+        assert_eq!(drawn_width(300.0, 518.0, 0.0), 300.0);
+        assert_eq!(drawn_width(300.0, 500.0, 0.0), 282.0);
+        assert_eq!(drawn_width(560.0, 500.0, 0.0), 282.0);
         // Too narrow for any of it: none drawn, never less.
         assert_eq!(drawn_width(300.0, 300.0, 240.0), 0.0);
         assert_eq!(PANE_COLUMN_MIN, 200.0);
@@ -2419,8 +2422,9 @@ mod tests {
         window_width - CARD_INSET - width - HAIRLINE
     }
 
-    /// The panes' width from the card's outer left to the hairline (M11al §3.1: the card is
-    /// flush against a shown left sidebar `left` wide, else `CARD_INSET` from the window's left).
+    /// The panes' width from inside the card's 1 px left edge to the hairline (M11al §3.1: the
+    /// card is flush against a shown left sidebar `left` wide, else `CARD_INSET` from the
+    /// window's left).
     fn panes_width(width: f32, window_width: f32, left: f32) -> f32 {
         let card_left = if left > 0.0 { left } else { CARD_INSET };
         let line = if width > 0.0 {
@@ -2428,7 +2432,7 @@ mod tests {
         } else {
             window_width - CARD_INSET
         };
-        line - card_left
+        line - card_left - HAIRLINE
     }
 
     #[test]
@@ -2474,8 +2478,9 @@ mod tests {
                 "{window}, {left}"
             );
         }
-        // 520 beside 290 leaves the panel 21 (520 − 290 − 200 − `CARD_INSET` − the hairline).
-        assert_eq!(drawn_width(300.0, 520.0, 290.0), 21.0);
+        // 520 beside 290 leaves the panel 20 (520 − 290 − 200 − `CARD_INSET` − the card's left
+        // edge − the hairline).
+        assert_eq!(drawn_width(300.0, 520.0, 290.0), 20.0);
         // No room left for it: none drawn (never less), the panes keep the whole card.
         for (window, left) in [(499.0, 290.0), (440.0, 240.0), (217.0, 0.0), (200.0, 0.0)] {
             assert_eq!(drawn_width(300.0, window, left), 0.0, "{window}, {left}");

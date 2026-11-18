@@ -12,10 +12,10 @@ updated: 2026-11-18
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[84 - Milestone 11al - UI Uplift 3]] |
-| **Status** | 🟨 built on branch m11al-ui-uplift, waiting for your on-screen check; not merged (planned 2026-11-18 from `cc3b2b8`, built subagent-driven). The whole-branch review and its fix wave are pending |
+| **Status** | 🟨 built on branch m11al-ui-uplift, waiting for your on-screen check; not merged (planned 2026-11-18 from `cc3b2b8`, built subagent-driven). The whole-branch review is done and its fix wave applied (`M11al: final review fixes`; full ui-shots 202 passed, 0 failed) |
 | **Tasks done** | 13 / 13 (plus Task 8b, your who-order ruling) |
 | **Baselines** | Task 0, on `cc3b2b8`: `cargo test --bin fuxx` 1,944 passed, 1 ignored; clippy default 14 (bin) / 27 (test), `ui-shots` 16 / 29; `cargo fmt --check` clean; full `scripts/ui-shots.sh` 191 passed, 0 failed, 144.1 s |
-| **▶ Pick up here** | The whole-branch review and its fix wave, then the full `scripts/ui-shots.sh` again; then your on-screen check (note 84, 14 items) |
+| **▶ Pick up here** | Your on-screen check (note 84, 14 items), then the merge |
 | **Decisions used** | Yours: option 1 (one card), tab style E, "looks right, do it right after M11ak", "go ahead with M11al"; while building: who follows the active tab, the branch leaves the rows, the full ui-shots run only before the final review and after its fix wave. The design's AI's calls and "Calls on the drafter's open questions". Plan-time calls below (AI's). |
 | **Needs your eyes** | 👀 the on-screen check in note 84, after Task 12 |
 

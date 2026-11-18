@@ -35,8 +35,9 @@ pub(crate) const BAND_EDGE: f32 = 8.0;
 pub(crate) const OPEN_EDGE: f32 = 19.0;
 /// The button's top: its hit area centred in the top band, on the traffic lights' line.
 pub(crate) const BUTTON_Y: f32 = (TOP_BAND - HIT) / 2.0;
-/// Where the traffic lights' area ends: just right of the green button (windowed), or where the
-/// lights would start (full screen, which has none).
+/// Where the traffic lights' area ends: just right of the green button (windowed), or the band's
+/// left margin (full screen, which has no lights; it is where they started before M11al moved
+/// them to `TRAFFIC_LIGHTS`' 18).
 const LIGHTS_CLEAR: f32 = 80.0;
 const LIGHTS_CLEAR_FULL_SCREEN: f32 = 13.0;
 

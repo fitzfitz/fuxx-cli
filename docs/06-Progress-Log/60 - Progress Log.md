@@ -40,10 +40,19 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   footer's icons all grey).
 - **Numbers:** 1,959 tests pass (1 ignored; was 1,944); clippy 14/27 and 16/29 (unchanged); fmt clean. Full
   `scripts/ui-shots.sh`: 201 passed, 1 failed of 202 (126.3 s; 11 new scenes). The failure, `chrome-drag-cancel`
-  (1,731 bytes stale after Esc, eight scenes at once), passed alone; it is flagged for the final review. No new
-  `timer(`, `request_animation_frame` or `spawn(` in the code. Idle CPU is your check (item 14).
-- **Next:** the whole-branch review and its fix wave; the full ui-shots run again; your on-screen check; then the
-  merge. M11ag after.
+  (1,731 bytes after Esc, eight scenes at once), was a harness timing race, not a stale chrome part: the focused api
+  terminal's pty echoes `^[` onto its reader thread between the harness's last `run_until_parked` and `frame_fresh`,
+  and the 1,731 bytes are the step's own change in the terminal pane, so M11p's rule holds. Hardened in the review
+  fix wave (below). No new `timer(`, `request_animation_frame` or `spawn(` in the code. Idle CPU is your check
+  (item 14).
+- **Review fix wave** (`M11al: final review fixes`; the review found no Critical or Important issues): the CHANGES
+  count pill adds the rows past the 1,000 cap (`ChangeList::more`, RED first); `chrome-drag-cancel` waits (5 s
+  deadline) for the `^[` echo after Esc, 6 of 6 alone; `WorkspaceRow.branch` and its lookup removed (only tests read
+  it); a row's shell is its launch program's file name, else `$SHELL`'s (RED first); `drawn_width` keeps the panes
+  200 inside the card's edges; Activity's header is 42 px; stale comments fixed.
+- **Numbers after the fix wave:** 1,962 tests pass (1 ignored); clippy 14/27 and 16/29 (unchanged); fmt clean. Full
+  `scripts/ui-shots.sh`: 202 passed, 0 failed (131.9 s).
+- **Next:** your on-screen check; then the merge. M11ag after.
 
 ### 2026-11-18 — M11al UI Uplift 3: planned, building
 - **Status:** 📝 planned on your "go ahead with M11al": [[M11al Plan - UI Uplift 3]] — 13 tasks (Task 0 baselines

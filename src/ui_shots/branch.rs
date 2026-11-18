@@ -468,7 +468,7 @@ fn branch_switcher_open_scene() {
         .expect("point the terminals at the repo");
         settle(cx, window);
 
-        // The rows: a branch on claude's and shell's, none on an SSH row.
+        // The rows: an SSH row has its host (no row shows a branch any more).
         let rows = cx.read(|cx| ws.read(cx).rows_in_view(Instant::now()));
         let at = rows
             .iter()
@@ -478,11 +478,6 @@ fn branch_switcher_open_scene() {
             let SidebarRow::Workspace(w) = r else {
                 continue;
             };
-            let want = match w.label.as_str() {
-                "claude" | "tests" | "shell" => Some("main"),
-                _ => None,
-            };
-            assert_eq!(w.branch.as_deref(), want, "{n}: {}'s branch", w.label);
             if matches!(w.label.as_str(), "deploy" | "logs") {
                 assert!(w.folder.is_some() && i > 0, "{n}: an SSH row has its host");
             }

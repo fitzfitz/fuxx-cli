@@ -532,6 +532,9 @@ pub struct Session {
     pub lost: bool,
     /// The host an SSH session connects to (M10b); none for a local one.
     pub ssh: Option<SshTarget>,
+    /// The file name of the program it was started with (`sidebar::launch_name`); none for the
+    /// default shell. A row's *who* names it when no program is in front.
+    pub launched: Option<String>,
     /// SSH: the connection failed and the pane is held for a reconnect.
     pub(crate) disconnected: Option<Disconnected>,
     /// SSH: automatic reconnects in a row so far (each waits longer).
@@ -1570,6 +1573,7 @@ impl Workspace {
         } else {
             (program, cwd, startup)
         };
+        let launched = crate::sidebar::launch_name(program.as_deref());
         let session_id = self.next_id;
         self.next_id += 1;
         let env = session_env(
@@ -1589,8 +1593,18 @@ impl Workspace {
             }
         };
         // Not placed (a reconnect whose pane closed meanwhile): dropping the view ends it.
-        self.insert_session(session_id, view, saved, at, window, cx)
-            .then_some(session_id)
+        let placed = self.insert_session(session_id, view, saved, at, window, cx);
+        placed.then(|| self.set_launched(session_id, launched))?;
+        Some(session_id)
+    }
+
+    /// Note the program session `id` was started with (`Session::launched`).
+    fn set_launched(&mut self, id: u64, launched: Option<String>) {
+        if let Some(s) =
+            (self.sessions.position(|s| s.id == id)).and_then(|i| self.sessions.get_mut(i))
+        {
+            s.launched = launched;
+        }
     }
 
     /// A session the background service runs: created there off the UI thread, then shown.
@@ -1605,6 +1619,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let ssh = launch.saved.ssh.is_some();
+        let launched = crate::sidebar::launch_name(program.as_deref());
         let create = self.create_for(&launch, program, cx);
         let pending = client.create_in_background(create);
         cx.spawn_in(window, async move |this, cx| {
@@ -1617,6 +1632,9 @@ impl Workspace {
                 }
                 let id = id
                     .and_then(|id| this.attach_session(&client, id, launch.saved, at, window, cx));
+                if let Some(id) = id {
+                    this.set_launched(id, launched);
+                }
                 if let Some(then) = then {
                     then(this, id, window, cx);
                 }
@@ -1743,6 +1761,7 @@ impl Workspace {
                 activity: Default::default(),
                 lost: false,
                 ssh: saved.ssh,
+                launched: None,
                 disconnected: None,
                 retries: 0,
                 opened_at: Instant::now(),
