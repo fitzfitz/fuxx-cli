@@ -223,12 +223,12 @@ pub fn read_if_changed(
 }
 
 /// The lanes' inks: the theme's ANSI colours (blue, magenta, green, yellow, cyan, red), each
-/// pushed to `MARK_MIN` on the panel.
+/// pushed to `MARK_MIN` on the panel's `side` and a hovered row's `side_hover`.
 pub fn lane_inks(theme: &Theme) -> Vec<Rgb> {
     let ui = theme.ui();
     [4, 5, 2, 3, 6, 1]
         .into_iter()
-        .map(|i| readable(theme.palette[i], &[ui.card, ui.card_hover], MARK_MIN))
+        .map(|i| readable(theme.palette[i], &[ui.side, ui.side_hover], MARK_MIN))
         .collect()
 }
 
@@ -342,7 +342,7 @@ impl Workspace {
                 .cursor_pointer()
                 .text_size(px(SMALL))
                 .text_color(hsla(ui.text_dim))
-                .hover(move |s| s.bg(hsla(ui.card_hover)))
+                .hover(move |s| s.bg(hsla(ui.side_hover)))
                 .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
                     cx.stop_propagation()
                 })
@@ -484,7 +484,7 @@ impl Workspace {
             .min_w(px(0.0))
             .px(px(PILL_PAD))
             .rounded(px(PILL_RADIUS))
-            .hover(move |s| s.bg(hsla(ui.card_hover)))
+            .hover(move |s| s.bg(hsla(ui.side_hover)))
             .on_hover(
                 cx.listener(move |this, hovered: &bool, _, cx| this.graph_hover(i, *hovered, cx)),
             )
@@ -493,7 +493,7 @@ impl Workspace {
                 graph.columns,
                 commit.head,
                 inks.clone(),
-                ui.card,
+                ui.side,
             ))
             .child(
                 div()
@@ -738,6 +738,26 @@ mod tests {
     #[test]
     fn the_graph_starts_closed() {
         assert!(!GraphState::default().open);
+    }
+
+    /// M11al Task 10: the lanes are drawn on the panel's `side` and a hovered row's
+    /// `side_hover`; every lane ink reaches `MARK_MIN` on both, in every built-in theme.
+    #[test]
+    fn lane_inks_read_on_side_and_side_hover() {
+        use crate::ui_tokens::contrast;
+        let mut failures = vec![];
+        for (name, theme) in crate::theme::every_theme() {
+            let ui = theme.ui();
+            for (i, ink) in lane_inks(&theme).into_iter().enumerate() {
+                for (fill_name, fill) in [("side", ui.side), ("side_hover", ui.side_hover)] {
+                    let ratio = contrast(ink, fill);
+                    if ratio < MARK_MIN {
+                        failures.push(format!("{name}: lane {i} on {fill_name} is {ratio:.2}"));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "\n{}", failures.join("\n"));
     }
 
     fn row(lane: usize, into: &[usize], out: &[usize], through: &[usize]) -> Row {
