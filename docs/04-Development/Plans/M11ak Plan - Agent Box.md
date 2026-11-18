@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11ak
-status: planned
+status: built
 updated: 2026-11-17
 ---
 
@@ -12,10 +12,10 @@ updated: 2026-11-17
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[83 - Milestone 11ak - Agent Box]] |
-| **Status** | 📝 Planned 2026-11-17 on branch `m11ak-agent-box` (from master `ded19b9`) |
-| **Tasks done** | 1 / 15 (Task 0) |
+| **Status** | 🟨 built on branch `m11ak-agent-box`, waiting for your on-screen check; not merged (planned 2026-11-17, from master `ded19b9`) |
+| **Tasks done** | 15 / 15 |
 | **Baselines** | Task 0, on `1995aae`: `cargo test --bin fuxx` 1,840 passed, 1 ignored; clippy default 14 (bin) / 27 (test), `ui-shots` 16 / 29; `cargo fmt --check` clean |
-| **▶ Pick up here** | Task 1 (Task 0's findings are in note 83, "Task 0 findings") |
+| **▶ Pick up here** | The final review of the whole branch, then the merge (after your on-screen check in note 83) |
 | **Decisions used** | Yours: approach A (live where the agent can, restart where it can't), "split it — box first, drop mic and main agent", `/` and `@` "include both in the box milestone", "approved". The design's "AI's calls" sections. Plan-time calls below (AI's). |
 | **Needs your eyes** | 👀 the on-screen check in note 83, after Task 14 |
 

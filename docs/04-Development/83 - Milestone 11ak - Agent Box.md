@@ -1,6 +1,6 @@
 # Milestone 11ak — Agent Box
 
-**Status:** 📝 design approved 2026-11-17 ("approved") on branch `m11ak-agent-box`; plan written 2026-11-17 ([[M11ak Plan - Agent Box]], 15 tasks), waiting for your review.
+**Status:** 🟨 built on branch `m11ak-agent-box`, waiting for your on-screen check; not merged. All 15 plan tasks (0–14) built 2026-11-17/18, each reviewed ([[M11ak Plan - Agent Box]]); design approved 2026-11-17 ("approved").
 
 **Asked for:** 2026-11-17, by you, while scoping M11ag ("Ask the agent from the code"). You showed three screenshots of
 another app's message box — a folder and branch chip above the box; a folder picker (Search, Recent, This Computer ▸,
@@ -316,6 +316,174 @@ it recalled the first message) (`agy-move.jsonl`). A message naming a PNG's abso
 | Effort | **Live** (`apply_flag_settings` `effortLevel`; read back with `get_settings`) | **Restart** (the effort is in the model id) |
 | Mode | **Live** (`set_permission_mode`) | **Restart** (same `--conversation`, `--mode`) |
 | Folder (Move) | **Restart** (`--resume` from the new folder; 2.1.326 ≥ 2.1.223) | **Restart** (same `--conversation` from the new folder) |
+
+## What was built
+
+All fifteen plan tasks (0–14), on branch `m11ak-agent-box`; each task reviewed clean (most after one fix round). No new
+crate. The box is one `AgentBox` drawn by the agent tab; the provider files say what each agent can do.
+
+0. **Task 0 — recordings.** Real fixtures from Claude and agy and the "Task 0 findings" above; `scripts/record-agent-fixture.py`.
+1. **The provider's catalog** (`src/providers/`): models with efforts, modes, slash commands, skills and sub-agents,
+   usage limits, "live or restart" per change; `model` and `effort` saved with the agent tab.
+2. **Usage and rate limits** read from `/usage` (Claude's lines, agy's structured groups) and Claude's `rate_limit_event`.
+3. **`src/agent_catalog.rs`** — short probe processes per agent and folder (kept for the app's run; 30 s deadline; a
+   usage reading kept 60 s). A probe starts only from a tab opening, a folder change or a menu opening.
+4. **Applying a change** — Claude live (`set_model`, `apply_flag_settings`, `set_permission_mode`), agy and a folder
+   Move by restart on the same conversation; a change waits for the turn to end; a quiet "Switched to …" row after a restart.
+5. **The box's layout** (`src/agent_box.rs`) — folder and branch chips on top, the box with its chips inside, `+`, model,
+   mode and send along the bottom; cost and context % moved to the pane's top line.
+6. **Folder chip and picker** (`src/folder_picker.rs`) — Search, Recent (up to 8), This Computer ▸, New Project (macOS
+   panel with New Folder), No Project; after the first message Move this conversation or New conversation.
+7. **Branch chip** — the folder's branch; a click opens the branch switcher (M11o).
+8. **Model menu with effort** — models, ✓, effort in grey, `▸` effort list, `(default list)` fallback, "Loading…" and
+   "Couldn't read the model list".
+9. **View Usage ▸** (`src/agent_box_menus.rs` took the menus out of `agent_box.rs` first, no behaviour change) — "N% left"
+   with a ring and "Resets in 3d 16h"; a warning dot on the model chip while a limit is close or reached.
+10. **Mode chip and menu** — Claude's four modes, agy's three; agy's mode lock is gone; nothing cycles modes.
+11. **`+` attach** — File… and Image…, paste an image, drop files; Claude gets image blocks, agy a path; over 5 MB refused.
+12. **`/` menu** — commands, skills, sub-agents filtered as you type; Tab completes; `/usage`, `/model`, `/effort` open
+    the box's own menus.
+13. **`@` menu** — Files, Agents, Skills.
+14. **Docs and hand-off** — this note, the roadmap, the Progress Log, the plan's table.
+
+## Calls made while building (AI's, for you to check)
+
+**Rulings during the run**
+
+- **R1:** every later task was built on Task 0's findings; where a finding differs from the plan's text, the finding wins.
+- **R2:** the plan-time calls below stand (you saw them with the plan and said "go ahead").
+- **R3:** Task 0's fixtures were scrubbed of your own skills, plugins, agents and paths before commit.
+- **R4:** the folder-change hook for the catalog is Task 6's, not Task 3's (the tab had no folder change before then).
+- **R5:** sends are held only while a waiting change applies by **restart** (agy, a folder Move). A Claude live change
+  never holds a message you send.
+- **R6:** the box's menus moved into `src/agent_box_menus.rs` (the file had passed 1,900 lines) as a pure move.
+- **R7:** the idle-CPU measurement needs a real window, so it is your check (item 15), as in M11af; the stray-process
+  check was done here (below).
+
+**Plan-time calls**
+
+- The agent already runs when a tab opens, so a change applies by the rules in section 7 from the start (note 83's
+  first wording, "before the first message nothing restarts", was written before this was checked).
+- Model and effort are saved with the tab and come back after a restart of fuxx.
+- Flags (`--model`, `--effort`, `--permission-mode`) go to the agent only when you chose something.
+- Claude's reset words keep Claude's own zone-less text ("Nov 22 at 10pm"); agy's come from its timestamp.
+- agy's pasted images are written to `$TMPDIR/fuxx-images/` and cleaned when older than 24 h, at app start.
+- The start-up probe's deadline is 30 s; a failed list is retried when a menu opens.
+- `/clear` is not intercepted (the tab already follows the new conversation id).
+- An own command (`/usage`, `/model`, `/effort`) is answered by the box only when it is the whole line; with more text
+  it is sent as text. While the `/` list shows "Loading…" or "Couldn't read the list", Return does nothing (it never
+  sends a half-typed `/xx`).
+
+**From the tasks**
+
+- agy's mode lock (M11aa) is removed; its mode, model and effort change by restart on the same conversation.
+- Nothing cycles modes: the old click-to-cycle (`next_mode`) is gone; Claude's mode changes only from the menu.
+- agy gets `--model <id from agy models>` alone and never `--effort` (an id with an effort plus a different `--effort` is
+  refused by agy: Task 0).
+- The effort rule on a model switch: keep the level if the new model has it; an agy model must name one (medium, else the first).
+- Base64 for Claude's images is fuxx's own small encoder in `src/providers/mod.rs` (no crate), run on a background job.
+- Claude's moved-conversation history is found by scanning `~/.claude/projects/*/<id>.jsonl` (the transcript stays under
+  the folder it started in, Task 0), off the UI thread and only when it is not under the current folder.
+- The box's edge follows keyboard focus by reading focus while drawing (the tab is cached, so a listener could not).
+- Provider-specific code stayed in the provider files; a new `Provider::stands_for_default` and `own_command` ask them.
+- The `/` list's selected row uses the panel's hover fill (the code fill was invisible in the dark theme).
+
+## Learned
+
+- Claude's `/usage` in print mode leaves a hidden transcript unless `--no-session-persistence` is passed; fuxx passes it.
+- A Claude `initialize` probe answers in about half a second and leaves no transcript.
+- agy's `init.permission_mode` always says `request-review`, so a mode can't be confirmed from agy; the chip shows what you chose.
+- A scene cannot drive the macOS file panel, a real Finder drop or the clipboard; those are on-screen checks (items 10–11).
+
+## Idle CPU (the M11p anti-goal): code-level evidence
+
+Not measured by the builder: it needs a real window with an agent tab shown, by hand (your check, item 15). What the code does:
+
+- **No new always-on timer.** A catalog probe or a usage read starts only from a tab opening, a folder change or a menu
+  opening; none from drawing or from a timer. A probe ends on its answer or at the 30 s deadline.
+- The box's menus and lists are drawn only while open; the chips read cached text.
+- Claude's `rate_limit_event` updates the limits when it arrives (an event the agent already sends), not on a poll.
+
+## Stray processes (checked 2026-11-18)
+
+After the full `cargo test --bin fuxx` and the full `scripts/ui-shots.sh`: `ps -axo pid,command | grep -E 'claude -p|agy -p|fuxx __ui-shots'` finds **no process** (0 matches): every probe and every scene's process had ended.
+
+## Limits (small things you might notice)
+
+- The model chip shows the running model while a change waits for the turn to end; the menu shows the waiting one.
+- Claude leaving plan mode by itself (after an approved plan) is not reflected in the mode chip until you choose a mode.
+- A conversation row lists attachments as 📎 for images too (the box's chip shows 🖼).
+- **Image…** silently skips non-image files, and a pasted format other than png, jpeg, gif or webp is ignored.
+- A conversation whose Claude session id is not a UUID shape has no history after a restart (fuxx refuses to read it).
+- The box belongs to agent tabs; background-service terminals have no box.
+- With a failed `/` list, a single "/word" message needs Esc before Return sends it.
+- The `@` file rows have no matched-letter highlight; skills seen before Claude's first start-up message may sit under
+  Commands in `/`, not `@` Skills, until it arrives.
+- Moving between two repos, the branch chip can flicker off and on once while the new branch is read.
+
+## Final numbers (this Mac, debug build, 2026-11-18)
+
+| Check | Before (master/Task 0) | Now |
+| --- | --- | --- |
+| `cargo test --bin fuxx` | 1,840 passed (1 ignored) | **1,936 passed** (1 ignored) |
+| `cargo clippy --all-targets` | 14 (bin) / 27 (test) | 14 / 27 (no new warnings) |
+| `cargo clippy --all-targets --features ui-shots` | 16 / 29 | 16 / 29 (no new warnings) |
+| `cargo fmt --check` | clean | clean |
+| Full `scripts/ui-shots.sh` | 147 scenes (master) | **189 passed, 0 failed**, 130.1 s (42 new `agent-box-*` scenes in the list; master had 147) |
+| Stray `claude -p` / `agy -p` / `fuxx __ui-shots` processes | n/a | none left (see above) |
+| Idle CPU, agent tab shown, nothing happening | n/a | not measured by the builder: your check, item 15 |
+
+The reference fingerprints are report only and stale on this Mac (note 82, "Findings").
+
+## On-screen check (yours, after the build)
+
+Run `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run` (debug only: **do not add `--release`**, it writes your real
+`sessions.json`) from the repo. Use a scratch folder, `~/code/scratch` (`git init` it, with a second folder next to
+it such as `~/code/my-app` for the picker). Open an agent tab (claude) there. Do this once with claude and, where an item says so, with agy.
+
+**The box and its folder**
+
+1. The box shows the folder chip (the active terminal's folder) and, in a git repo, the branch chip above it; inside:
+   the placeholder "Ask anything, @ to mention, / for actions", `+`, the model chip, the mode chip and ➤. Click the
+   box's edge area: the text caret takes focus and the edge shows it.
+2. Folder chip: the picker opens upward with Search, Recent, This Computer ▸, New Project, No Project and a ✓ on the
+   current folder. Type to search. Pick `~/code/my-app`: the chip changes and nothing is sent. **New Project** opens the
+   macOS panel with New Folder; the folder you make is used. **No Project** is your home folder.
+3. Send one message, then pick another folder: the picker asks **Move this conversation** or **New conversation**.
+   Move: the same conversation carries on in the new folder (ask "what did I just say?"). New conversation: a new agent
+   tab in that folder.
+4. The branch chip opens the branch switcher for that folder; switching a branch does not restart the agent.
+
+**Model, effort, usage and mode**
+
+5. Model chip: Model heading, the models, ✓ on the current one, its effort in grey, `▸` opens its effort list. Choose a
+   model: nothing is sent; Claude's chip changes at once (live). With agy the chat restarts on the same conversation
+   after the turn and a quiet "Switched to …" row appears.
+6. **View Usage ▸**, with claude and then agy: a panel with each limit's "% left", a ring and "Resets in …"; it says
+   "Checking…" first. Close and reopen within a minute: no new wait.
+7. Mode chip: Claude's four modes switch live (try Plan, then ask for a file: it plans; then Accept edits); agy's three
+   restart on the same conversation, and the chip no longer locks after the first message.
+8. Change the model while the agent is working: the change waits for the turn to end; it never cuts the turn.
+
+**`+`, paste and drop**
+
+9. `+`: **File…** opens the macOS panel; the file shows as a chip and goes to the agent as a path. **Image…** the same
+   for an image; Claude describes it.
+10. Paste a screenshot (⌃⌘⇧4, then ⌘V in the box): a 🖼 chip. Send it: Claude describes it; with agy it gets a path.
+11. Drop a file from Finder onto the box: a chip, the box tinted while you hold it over. An image over 5 MB is refused with a note.
+
+**`/` and `@`**
+
+12. Type `/` at the start: commands, skills and sub-agents, filtered as you type; ↑↓ move, Tab completes, Esc closes.
+    `/usage` opens View Usage; `/model` the model menu. `/clear` still starts a new conversation.
+13. Type `@`: Files (as before), Agents and Skills; picking a file inserts its path, an agent or skill inserts `@name`.
+
+**A change that waits, and the cost**
+
+14. While the agent works, choose a mode (agy) or a folder Move: it says it waits and applies after the turn; a message
+    you type meanwhile goes to the switched agent.
+15. **Idle CPU:** with an agent tab shown and idle (no menu open), compare fuxx's CPU in Activity Monitor on this branch
+    with master (same window, a minute each). They should match within noise.
 
 ## Related
 
