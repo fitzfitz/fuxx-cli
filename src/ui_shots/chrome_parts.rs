@@ -821,9 +821,7 @@ fn chrome_pane_churn() {
     use std::collections::HashSet;
 
     let n = "chrome-pane-churn";
-    // 900 x 500, taller by the sidebar chrome's growth (M11al Task 7): in a tight window the
-    // list scrolls to the active row, which a cached and a full redraw may do differently.
-    let dims = size(px(900.0), px(500.0 + SIDEBAR_CHROME_GROWTH));
+    let dims = size(px(900.0), px(500.0));
     let (mut cx, window, ws) = chrome_window_sized(dims, |ws, window, cx| {
         let api = std::path::Path::new("/Users/me/code/api");
         let web = std::path::Path::new("/Users/me/code/web");
@@ -835,6 +833,31 @@ fn chrome_pane_churn() {
         }
         ws.open_shot_session("a", api, SHELL_TEXT, None, window, cx);
     });
+    // A tight list: the active workspace's row needs the sidebar to scroll to it. The scroll
+    // is asked for in a render and applied once the list is laid out, a frame later (the
+    // sidebar asks that frame with `on_next_frame`): so the frames come as the app gets them
+    // (`settle_frames`) before any check, as with a draw alone the first render's pending
+    // reveal is consumed only by a full redraw (found in M11al Task 7: no stale part, the
+    // scene had not let the frame in). Then the row shows and cached equals fresh.
+    settle_frames(&mut cx, window);
+    let in_view = cx.read(|cx| {
+        let ws = ws.read(cx);
+        let rows = ws.rows_in_view(std::time::Instant::now());
+        let active = rows
+            .iter()
+            .position(|r| matches!(r, crate::sidebar::SidebarRow::Workspace(w) if w.active))
+            .expect("an active row");
+        let scroll = &ws.sidebar.scroll;
+        let view = scroll.bounds();
+        let mut row = scroll.bounds_for_item(active).expect("laid out");
+        row.origin.y += scroll.offset().y;
+        row.top() >= view.top() - px(1.0) && row.bottom() <= view.bottom() + px(1.0)
+    });
+    assert!(in_view, "{n}: the active row is scrolled into view");
+    assert!(
+        !cx.read(|cx| ws.read(cx).sidebar.reveal_active),
+        "{n}: the reveal is done"
+    );
     let check = |cx: &mut VisualTestAppContext, step: &str, panes: usize| {
         cx.run_until_parked();
         draw(cx, window);

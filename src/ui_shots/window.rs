@@ -3468,11 +3468,11 @@ fn title_bar_scenes() {
         );
         cx.simulate_keystrokes(window, "cmd-\\");
         assert!(!hidden(cx), "title-bar: ⌘\\ shows it again");
-        // With the sidebar shown there are no band buttons: a click above where the band's
-        // sidebar button would be (in the strip over the card, `CARD_INSET / 2` down: since
-        // M11al's 19 pt band edge the slot's middle is over the pane tab bar's own ◧, which is
-        // not this check) leaves this one shown. The ◧ (the right sidebar; a 28 pt button in
-        // the 52 pt bar's middle) opens the right sidebar and leaves this one shown.
+        // With the sidebar shown there are no band buttons: a click over where the band's
+        // sidebar button would be (in the strip above the card, `CARD_INSET / 2` down: the
+        // slot's middle, at `TOP_BAND / 2`, is now inside the pane tab bar's own ◧, a 28 pt
+        // button in the 52 pt bar's middle) leaves this one shown. The ◧ opens the right
+        // sidebar and leaves this one shown.
         let right = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).right_sidebar.hidden);
         assert!(right(cx), "title-bar: the right sidebar starts hidden");
         let slot_x = band_buttons(960.0)[2] + HIT / 2.0;

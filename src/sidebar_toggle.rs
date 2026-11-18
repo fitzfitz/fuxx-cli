@@ -27,9 +27,12 @@ pub(crate) const HIT_RADIUS: f32 = 6.0;
 const ICON: (f32, f32) = (15.0, 12.0);
 const STROKE: f32 = 1.5;
 const ICON_RADIUS: f32 = 3.0;
-/// How far the open sidebar's button keeps from the band's right edge: its centre is then the
-/// footer gear's (`BAND_EDGE + HIT / 2 == FOOTER_SIDE + FOOTER_BUTTON / 2`; 19 since M11al).
-pub(crate) const BAND_EDGE: f32 = 19.0;
+/// How far the collapsed title band's buttons keep from the window's right edge (and the
+/// open button, in a window narrower than its sidebar).
+pub(crate) const BAND_EDGE: f32 = 8.0;
+/// How far the open sidebar's button keeps from its band's right edge: its centre is then the
+/// footer gear's (`OPEN_EDGE + HIT / 2 == FOOTER_SIDE + FOOTER_BUTTON / 2`; M11al).
+pub(crate) const OPEN_EDGE: f32 = 19.0;
 /// The button's top: its hit area centred in the top band, on the traffic lights' line.
 pub(crate) const BUTTON_Y: f32 = (TOP_BAND - HIT) / 2.0;
 /// Where the traffic lights' area ends: just right of the green button (windowed), or where the
@@ -74,9 +77,9 @@ pub fn lights_clear(full_screen: bool) -> f32 {
 }
 
 /// The open sidebar's button's left edge in a sidebar `sidebar_width` wide: at the band's right
-/// edge, `BAND_EDGE` in.
+/// edge, `OPEN_EDGE` in.
 pub fn open_button_x(sidebar_width: f32) -> f32 {
-    sidebar_width - BAND_EDGE - HIT
+    sidebar_width - OPEN_EDGE - HIT
 }
 
 /// Where the open sidebar's button is drawn in a window `window_width` wide: at the sidebar
@@ -223,7 +226,7 @@ mod tests {
         use crate::title_area::{FOOTER_BUTTON, footer_buttons};
         for w in [180.0, 240.0, 260.0, 340.0, 400.0] {
             assert_eq!(
-                open_button_x(w) + HIT + BAND_EDGE,
+                open_button_x(w) + HIT + OPEN_EDGE,
                 w,
                 "width {w}: the band's edge"
             );

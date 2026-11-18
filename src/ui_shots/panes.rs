@@ -118,9 +118,7 @@ fn cached_panes() {
     use std::rc::Rc;
 
     let theme = shot_theme("Catppuccin Mocha");
-    // Tall enough that the sidebar's list is not scrolled to the active row: a scroll is a
-    // redraw of the sidebar, not of the terminal.
-    let dims = size(px(640.0), px(400.0 + SIDEBAR_CHROME_GROWTH));
+    let dims = size(px(640.0), px(400.0));
     let mut cx = ShotApp::new();
     let slot = Rc::new(RefCell::new(None));
     let window = {
@@ -149,6 +147,9 @@ fn cached_panes() {
             .expect("capture the window")
             .into_raw()
     };
+    // The frames as the app gets them first: the sidebar's pending scroll to the active row is
+    // done there (a tight list), not by the frame under test.
+    settle_frames(&mut cx, window.into());
     frame(&mut cx);
     let before = frame(&mut cx);
     let ws = slot.borrow().clone().expect("the workspace");
