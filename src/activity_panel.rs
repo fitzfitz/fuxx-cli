@@ -30,7 +30,7 @@ use crate::activity::{
 use crate::cli;
 use crate::layout_model::TabId;
 use crate::procs::ProgramState;
-use crate::right_sidebar::{EDGE, Panel, SMALL, TEXT, TITLE, header_row, note};
+use crate::right_sidebar::{EDGE, Panel, SECTION_SIDE, SMALL, TEXT, TITLE, header_row, note};
 use crate::sidebar::tabular;
 use crate::sidebar_toggle::Tip;
 use crate::status::Status;
@@ -63,8 +63,8 @@ const QUESTION_PAD_Y: f32 = 8.0;
 const QUESTION_CORNER: f32 = 8.0;
 const QUESTION_TEXT: f32 = 13.0;
 /// A day's heading: its room above and below.
-const DAY_TOP: f32 = 10.0;
-const DAY_BELOW: f32 = 4.0;
+const DAY_TOP: f32 = 16.0;
+const DAY_BELOW: f32 = crate::right_sidebar::SECTION_BELOW;
 /// The header's pill: its padding and how much of its colour tints its fill.
 const PILL_PAD_X: f32 = 8.0;
 const PILL_PAD_Y: f32 = 2.0;
@@ -200,7 +200,7 @@ fn dot_ink(mark: RowMark, ui: &UiColors) -> Rgb {
 fn day_row(words: &str, ui: &UiColors) -> AnyElement {
     div()
         .w_full()
-        .px(px(EDGE))
+        .px(px(SECTION_SIDE))
         .pt(px(DAY_TOP))
         .pb(px(DAY_BELOW))
         .text_size(px(SMALL))

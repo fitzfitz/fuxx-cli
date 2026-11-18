@@ -151,6 +151,7 @@ pub(super) const ORDER: &[&str] = &[
     "files",
     "files-follow",
     "right-panels",
+    "right-panel-comfortable",
     "changes",
     "changes-bar",
     "changes-staging",
