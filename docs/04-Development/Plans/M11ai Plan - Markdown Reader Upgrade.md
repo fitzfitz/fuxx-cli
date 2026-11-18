@@ -538,7 +538,7 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
     accent pixel along the top edge past 2 pt; scrolled half-way → share within 0.05 of the track's offset share,
     accent pixels along the top edge up to that share of the width and none past it; at the end ≈ 1.0; a doc that
     fits → `None`.
-- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots (--changed master only, by your gate change; the full suite ran once before the final review).
 - [x] **Step 5: Commit** `M11ai Task 9: the narrow outline and the progress line`.
 
 ### Task 10: Reloads, big documents and the measurements
@@ -565,7 +565,7 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
   file in Preview, full relayout time, on this branch and on master (same file, debug); record both and the ratio;
   lower `PREVIEW_MEASURE_ALL` if over 1.15 ×. Record Task 2's parse + plan timing; move them to the background if
   over its limits. Numbers go into note 86 in Task 11.
-- [x] **Step 5: Run** — PASS; the gate; the full ui-shots. **Commit** `M11ai Task 10: reloads and big documents`.
+- [x] **Step 5: Run** — PASS; the gate; the full ui-shots (--changed master only, by your gate change; the full suite ran once before the final review). **Commit** `M11ai Task 10: reloads and big documents`.
 
 ### Task 11: Hand-off — docs and the on-screen check
 
@@ -579,7 +579,7 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
 - On-screen items include idle CPU with a long doc shown (`top -l 6 -s 5 -pid <pid>`, branch vs master) and the
   outline's feel while scrolling; the user runs them, not the agent.
 
-- [x] **Step 1:** Write the docs; the gate; the full ui-shots; the numbers into note 86.
+- [x] **Step 1:** Write the docs; the gate; the full ui-shots (--changed master only, by your gate change; the full suite ran once before the final review); the numbers into note 86.
 - [x] **Step 2:** Commit `M11ai Task 11: hand-off docs` (explicit paths).
 
 ## Self-review (done at plan time)

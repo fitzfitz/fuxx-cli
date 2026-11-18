@@ -1,6 +1,6 @@
 # Milestone 11ai — Markdown Reader Upgrade
 
-**Status:** 🟨 built on branch m11ai-md-reader, waiting for your on-screen check; not merged. All 12 plan tasks (0–11) built 2026-11-18, Tasks 0–10 reviewed ([[M11ai Plan - Markdown Reader Upgrade]]); the whole-branch review and the full ui-shots run come next. Design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). Built **after M11ah** (code view upgrade), in sequence: both live in the file tab. Anything here that does not quote you is marked **AI's call**.
+**Status:** 🟨 built on branch m11ai-md-reader, waiting for your on-screen check; not merged. All 12 plan tasks (0–11) built 2026-11-18, Tasks 0–10 reviewed ([[M11ai Plan - Markdown Reader Upgrade]]); the full ui-shots run and the whole-branch review done, **the final review's fixes are in**. Design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). Built **after M11ah** (code view upgrade), in sequence: both live in the file tab. Anything here that does not quote you is marked **AI's call**.
 
 **Asked for:** 2026-11-16, by you, in the file-view mockups ("everything" → "your order is fine, go ahead"). Direction:
 [[Proposal - File View Upgrades]], section "M11ai — Markdown reader upgrade (directions A + B + C, merged)":
@@ -337,6 +337,13 @@ All 12 plan tasks (0–11) on `m11ai-md-reader`; Tasks 0–10 each reviewed (4, 
     `Sizes::CHAT`. They are the callout icon gap, the code border, the list indent and number gap, the quote's
     padding and bar, the rule's margin and line, a table cell's padding, and the Mermaid diagram's corners and note.
   - The `#![allow(dead_code)]` lines in `md_reader.rs` and `ui_tokens::reader` are gone (nothing was dead).
+- **The final review's fixes** (one wave, after the full ui-shots run and the whole-branch review):
+  - "On this page"'s current entry is found by binary search over the outline's rows, which are worked out once per
+    version (the plan's `outline_rows`), not by a scan that built a new list on every scroll frame.
+  - Links and dim text inside a callout are held to the text floor on its wash, as its body text is (agent chat
+    draws as before).
+  - Front matter: a list of maps under a key (`- name: x`) reads as that key's items, not as new keys.
+  - A theme change recolours the Preview's code blocks while Preview is off too.
 
 ### Calls made while building (AI's, for you to check)
 
@@ -406,12 +413,25 @@ All 12 plan tasks (0–11) on `m11ai-md-reader`; Tasks 0–10 each reviewed (4, 
     in debug, and it is M11ac's, unchanged.
   - The plan's share is the part this milestone adds, and it is well under the 50 % limit.
   - The cost: a hitch when a 1 MB document opens or reloads in Preview. The final review weighs it.
+  - **For you to decide:** keep the Markdown parse (about 134 ms parse + 20 ms plan for a 1 MB file, debug) on the
+    UI thread, or move the parse and the plan to the background in a follow-up.
 - **`PREVIEW_MEASURE_ALL` went from 2,000 blocks to 700.** The reader's full relayout of a 2,000-block file took 2.76×
   master's in debug (table below). Call 15 lowers the limit by that ratio, rounded down to a hundred.
   - Documents of 701–2,000 blocks now get the estimated scrollbar instead of an exact one.
   - Where the time goes was not profiled.
+  - The 2.76× was measured in debug ui-shots builds, which add test-only probes to every Preview row (master has
+    none), so it overstates the app's cost. The limit 700 is the safe side.
 - **All timings are debug builds**, because `--release` is not run here (your rule). They stand in for the design's
   release-build numbers.
+
+**Rulings during the build**
+- **The Preview's code moved to `src/file_tab_preview.rs`**, a `#[path]` child module of `file_tab.rs` (which is
+  about 11,000 lines). `file_tab.rs` keeps the fields, `preview_shown` and the switch.
+- **Task 4's Mermaid header** is asserted on whatever code-shown state the scene reaches (waiting, too many or
+  failed): the plain scenes have no WebKit, so they never draw a diagram.
+- **Task 10's RED** included the front-matter shift test failing first (a reload that adds or removes front matter).
+- **The "quote in a list item" test became "quote inside a quote"** (a callout marker there stays a plain quote).
+  The parser never nests a quote in a list item.
 
 **Process and testing**
 - **Your calls during the build:**
@@ -439,17 +459,17 @@ All 12 plan tasks (0–11) on `m11ai-md-reader`; Tasks 0–10 each reviewed (4, 
 - **Inline code** is 16 pt, not the design's 14 (see the calls above).
 - **A wide table with one long cell** fills the whole width (equal columns).
 - **The code header strip** is faint in dark themes (item 2 of your check).
+- **A wide table scrolling sideways** is not proven by a scene: the 500 pt scene does not show a table wider than
+  the Preview scrolling inside itself.
 
 **Themes and links**
-- **A theme switched while Preview is off:** when you turn Preview back on, the code blocks may show in the old
-  colours, or plain, for a moment before the new colours arrive. The theme handler's code-colour branch still waits
-  for the Preview to show; the same shape as the Task 4 race fixed in Task 10. Found in review, not seen on screen.
 - **A heading link into a Markdown file too big to preview** (over 1 MB) turns that file's Preview setting on and
   saves it, which a hand click would refuse. The source still shows, since the file does not fit.
 - **The `#` copy right after a file opens**, before the repo is known, copies the `~` form.
 
 **Parsing**
-- **Front matter:** a list item `- name: x` under a key is read as a new key `- name`.
+- **Anchors:** `%+1` is accepted as a percent escape (the hex reader takes a leading `+`), so such a part decodes to
+  a control character instead of staying as written.
 - **Badges:** a badge source like `//img.shields.io/…` (no `https:`), or a host followed straight by `?`, is not
   seen as a badge.
 - **Slugs:** an accented heading written with combining marks can get a slug that differs from GitHub's.
@@ -490,11 +510,12 @@ Idle CPU and the feel of scrolling need a real window. They are items 14 and 15 
 
 ## Final numbers (this Mac, debug build, 2026-11-18)
 
-- `cargo test --bin fuxx`: 2,075 passed, 0 failed, 1 ignored (baseline 2,024).
+- `cargo test --bin fuxx`: 2,076 passed, 0 failed, 1 ignored (baseline 2,024), after the final review's fixes.
 - clippy: 14 (bin) / 27 (test) by default, and 16 / 29 with `ui-shots`. These equal the baselines.
 - `cargo fmt --check`: clean.
-- `scripts/ui-shots.sh --changed master` (Task 11's gate): 226 passed, 0 failed, 150.2 s (every scene is selected, since shared sources changed). The reference fingerprints are stale on this Mac (339 "look different"); they are reported, not failures, and were not updated.
-- `scripts/ui-shots.sh` (full): (filled after the final full run).
+- `scripts/ui-shots.sh --changed master` (Task 11's gate): 226 passed, 0 failed, 150.2 s (every scene is selected, since shared sources changed); after the final review's fixes: 226 passed, 0 failed, 146.0 s. The reference fingerprints are stale on this Mac (339 "look different"); they are reported, not failures, and were not updated.
+- `scripts/ui-shots.sh` (full): 226 passed, 0 failed, 151.3 s before the final review's fixes.
+  (after the fixes: filled by the controller)
 
 ## On-screen check (yours, after the build)
 
