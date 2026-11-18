@@ -1135,6 +1135,12 @@ pub(crate) enum Glyph {
     /// the right, back to the left); Open in Editor, a box with an arrow leaving its top right.
     Wrap,
     OpenExternal,
+    /// The file bar's jumps between changes (M11ah): an arrow up and an arrow down, a shaft and
+    /// a head with no line.
+    ChangeUp,
+    ChangeDown,
+    /// The file bar's Side by side (M11ah): a box split in two columns.
+    SideBySide,
 }
 
 /// `kind` in `color`, in a 12 px box.
@@ -1473,6 +1479,20 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         line.line_to(p(10.0, rule));
                         paths.push(line);
                     }
+                    Glyph::ChangeUp | Glyph::ChangeDown => {
+                        let up = matches!(kind, Glyph::ChangeUp);
+                        let (from, to) = if up { (10.0, 2.0) } else { (2.0, 10.0) };
+                        let back = if up { to + 3.0 } else { to - 3.0 };
+                        let mut shaft = stroke();
+                        shaft.move_to(p(6.0, from));
+                        shaft.line_to(p(6.0, to));
+                        paths.push(shaft);
+                        let mut head = stroke();
+                        head.move_to(p(3.0, back));
+                        head.line_to(p(6.0, to));
+                        head.line_to(p(9.0, back));
+                        paths.push(head);
+                    }
                     Glyph::Publish => {
                         // Part 6 (your pick, C): a branch (two commits on a trunk) and, beside
                         // it, an arrow going up: "send this branch up".
@@ -1532,6 +1552,19 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         head.line_to(p(6.5, 10.0));
                         head.line_to(p(8.3, 11.8));
                         paths.push(head);
+                    }
+                    Glyph::SideBySide => {
+                        let mut frame = stroke();
+                        frame.move_to(p(1.5, 2.0));
+                        frame.line_to(p(10.5, 2.0));
+                        frame.line_to(p(10.5, 10.0));
+                        frame.line_to(p(1.5, 10.0));
+                        frame.line_to(p(1.5, 2.0));
+                        paths.push(frame);
+                        let mut middle = stroke();
+                        middle.move_to(p(6.0, 2.0));
+                        middle.line_to(p(6.0, 10.0));
+                        paths.push(middle);
                     }
                     Glyph::OpenExternal => {
                         // The box, open at its top right corner.
@@ -1961,6 +1994,8 @@ mod tests {
                         conversation: None,
                         mode: None,
                         title: Some("fix tests".into()),
+                        model: None,
+                        effort: None,
                     },
                 },
                 crate::layout_model::Tab {
@@ -1971,6 +2006,8 @@ mod tests {
                         conversation: None,
                         mode: None,
                         title: None,
+                        model: None,
+                        effort: None,
                     },
                 },
             ],

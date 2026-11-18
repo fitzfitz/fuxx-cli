@@ -247,7 +247,9 @@ const OPEN_BROWSER: &str = "Open Browser\u{2026}";
 /// Every palette action, in its order (the agent presets' rows come from `action_rows`).
 pub static COMMANDS: &[Command] = {
     use crate::browser_tab::{FocusAddress, GoBack, GoForward, Reload, ResetZoom, ZoomIn, ZoomOut};
-    use crate::file_tab::{Find, FindNext, FindPrev};
+    use crate::file_tab::{
+        Find, FindNext, FindPrev, FoldAll, NextChange, PrevChange, ShowAllUnchanged, UnfoldAll,
+    };
     use crate::terminal_view::{
         Copy, CopyCommand, CopyCommandAndOutput, CopyCommandOutput, NextCommand, Paste,
         PrevCommand, RerunCommand, ScrollPageDown, ScrollPageUp,
@@ -360,6 +362,29 @@ pub static COMMANDS: &[Command] = {
         ),
         cmd("Find Next", Tabs, "", F, Run::Action(act::<FindNext>)),
         cmd("Find Previous", Tabs, "", F, Run::Action(act::<FindPrev>)),
+        cmd(
+            "Previous Change",
+            Tabs,
+            "",
+            F,
+            Run::Action(act::<PrevChange>),
+        ),
+        cmd("Next Change", Tabs, "", F, Run::Action(act::<NextChange>)),
+        cmd("Fold All", Tabs, "collapse", F, Run::Action(act::<FoldAll>)),
+        cmd(
+            "Show All Unchanged Lines",
+            Tabs,
+            "expand",
+            F,
+            Run::Action(act::<ShowAllUnchanged>),
+        ),
+        cmd(
+            "Unfold All",
+            Tabs,
+            "expand",
+            F,
+            Run::Action(act::<UnfoldAll>),
+        ),
         cmd("Split Right", Panes, "", A, Run::Action(act::<SplitRight>)),
         cmd("Split Down", Panes, "", A, Run::Action(act::<SplitDown>)),
         cmd("Previous Pane", Panes, "", A, Run::Action(act::<PrevPane>)),
@@ -646,6 +671,9 @@ pub const NOT_IN_PALETTE: &[&str] = &[
     "workspace::OpenPalette",
     "edit::Cut",
     "edit::SelectAll",
+    // M11ah: the keys fold where the current line is; the palette has Fold All / Unfold All.
+    "file_tab::FoldHere",
+    "file_tab::UnfoldHere",
 ];
 
 /// ⋯ menu items (`pane_actions`) the palette lists under another name: the same action.
@@ -1469,6 +1497,19 @@ mod tests {
         assert!(applies(Place::Anywhere, Focused::Nothing, false, true));
         assert!(applies(Place::TerminalOrFile, Focused::File, false, true));
         assert!(!applies(Place::Persistent, Focused::Terminal, false, true));
+    }
+
+    #[test]
+    fn fold_all_is_a_file_command() {
+        let pairs = real_pairs();
+        let file = action_rows(Focused::File, false, true, &[], &pairs);
+        let f = names(&file);
+        assert!(f.contains(&"Fold All") && f.contains(&"Unfold All"));
+        assert!(f.contains(&"Show All Unchanged Lines"));
+        let terminal = action_rows(Focused::Terminal, false, true, &[], &pairs);
+        let t = names(&terminal);
+        assert!(!t.contains(&"Fold All") && !t.contains(&"Unfold All"));
+        assert!(!t.contains(&"Show All Unchanged Lines"));
     }
 
     #[test]

@@ -128,6 +128,10 @@ src/
 ├── welcome.rs            M11k · the Welcome card: folder, agents, three shortcuts; opening it on a first run or from Help; the pick
 ├── welcome_items.rs      M11k · the card's rules: rows, the default row, what a pick opens and closes, the copy (pure)
 ├── agent_detect.rs       M11k · is a preset's program on your login shell's PATH? (pure core; one capped background read)
+├── agent_catalog.rs      M11ak · what an agent says about itself (models, commands, usage), read by short probe processes per agent and folder; no timer
+├── agent_box.rs          M11ak · the agent tab's box: the pure rules (a choice, when it applies, chip texts, usage and list rows) and the box's drawing
+├── agent_box_menus.rs    M11ak · the box's menus: the folder picker and its panels, model, effort, usage, mode, attach (a submodule of agent_box.rs)
+├── folder_picker.rs      M11ak · the folder picker's pure part: Recent (up to 8), the folders fuxx knows, the rows for a search, which folders are there (checked off the UI thread)
 ├── shell_marks.rs        M11l · OSC 133 mark scanner over raw bytes (A, B, C with the command, D with the exit code; pure)
 ├── blocks.rs             M11l · command tags kept as hidden hyperlinks on the grid; `advance` splits at each mark; list, visible, output text, prompt_ready
 ├── shell_integration.rs  M11l · installs the zsh scripts, `ZDOTDIR` env for a login zsh, the `command-blocks` switch
@@ -183,6 +187,9 @@ src/
 ├── activity_panel.rs     M11h · the right sidebar's Activity panel: header, the waiting question, the timeline
 ├── file_tab.rs           M11g · read-only file tabs: colours, line numbers, change bars, live reload, find, selection, Open in Editor
 ├── live_lines.rs        M11af · compare two texts, the per-line record (who changed it, exact or guessed, when) that follows its lines, glow steps, age words (pure)
+├── code_outline.rs      M11ah · the outline of a file's blocks (indentation, Markdown headings, named lines): guides, folds, sticky line, breadcrumb, card titles (pure)
+├── row_map.rs           M11ah · the one map of screen rows (hidden lines, card titles, folded stretches, side-by-side pairs, Wrap): y ↔ line, next change (pure)
+├── diff_cards.rs        M11ah · Diff mode's cards: grouping with context, titles and counts, folded unchanged stretches, changed-word marks, side-by-side pairing (pure)
 ├── edit_ledger.rs       M11af · the app-wide record of agents' file edits and working spans, and the rule that decides who made a change (pure)
 ├── mermaid.rs            M11ac · Mermaid in the Markdown Preview: which blocks, limits, cache key (SHA-256) and LRU, the page and render script (pure)
 ├── mermaid_render.rs     M11ac · the hidden WKWebView that renders Mermaid offline and snapshots it to PNG; the `Mermaids` cache global

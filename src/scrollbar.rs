@@ -11,6 +11,7 @@ use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{Bounds, Pixels, Window, fill, point, px, size};
 
 use crate::terminal_view::hsla;
+use crate::ui_tokens::code;
 
 /// The thumb's width (6 pt), corner radius, inset from the text's edge, and least length.
 const WIDTH: f32 = 6.0;
@@ -197,6 +198,57 @@ pub fn paint(
     window.paint_quad(quad.corner_radii(px(RADIUS)));
 }
 
+/// A mark on the lane (M11ah): its top and length along the lane, in points, and its colour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaneMark {
+    pub top: f32,
+    pub len: f32,
+    pub color: Rgb,
+}
+
+/// Items (content top, content height, colour) scaled onto a `track`-long lane for `content`, each
+/// at least `min` long, touching or overlapping marks of one colour merged. Items of one colour
+/// come in order of their top; marks come out in the order their first item came.
+pub fn lane(items: &[(f32, f32, Rgb)], content: f32, track: f32, min: f32) -> Vec<LaneMark> {
+    if content <= 0.0 || track <= 0.0 {
+        return Vec::new();
+    }
+    let scale = track / content;
+    let mut marks: Vec<LaneMark> = Vec::new();
+    // The last mark of each colour, to grow it when the next touches it.
+    let mut last: Vec<(Rgb, usize)> = Vec::new();
+    for &(top, len, color) in items {
+        let len = (len * scale).max(min).min(track);
+        let top = (top * scale).clamp(0.0, track - len);
+        match last.iter_mut().find(|(c, _)| *c == color) {
+            Some((_, k)) if top <= marks[*k].top + marks[*k].len => {
+                let m = &mut marks[*k];
+                m.len = m.len.max(top + len - m.top);
+            }
+            Some((_, k)) => {
+                *k = marks.len();
+                marks.push(LaneMark { top, len, color });
+            }
+            None => {
+                last.push((color, marks.len()));
+                marks.push(LaneMark { top, len, color });
+            }
+        }
+    }
+    marks
+}
+
+/// Draw `marks` down the right edge of `area`, `code::LANE` wide (under the thumb).
+pub fn paint_lane(window: &mut Window, area: Bounds<Pixels>, marks: &[LaneMark]) {
+    for m in marks {
+        let at = point(area.right() - px(code::LANE), area.top() + px(m.top));
+        window.paint_quad(fill(
+            Bounds::new(at, size(px(code::LANE), px(m.len))),
+            hsla(m.color),
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,5 +377,86 @@ mod tests {
         bar.set_hot(true);
         assert_eq!(bar.fade_step(t0 + s(1.4)), (false, false));
         assert!(bar.begin_fade());
+    }
+
+    const RED: Rgb = Rgb {
+        r: 200,
+        g: 40,
+        b: 40,
+    };
+    const BLUE: Rgb = Rgb {
+        r: 40,
+        g: 40,
+        b: 200,
+    };
+
+    #[test]
+    fn lane_marks_scale_to_the_track() {
+        // A 1000 pt text on a 100 pt lane: a mark 500 down and 100 tall is 50 down, 10 long.
+        let marks = lane(&[(500.0, 100.0, RED)], 1000.0, 100.0, 2.0);
+        assert_eq!(
+            marks,
+            [LaneMark {
+                top: 50.0,
+                len: 10.0,
+                color: RED
+            }]
+        );
+        assert!(lane(&[(1.0, 1.0, RED)], 0.0, 100.0, 2.0).is_empty());
+        assert!(lane(&[], 1000.0, 100.0, 2.0).is_empty());
+    }
+
+    #[test]
+    fn a_lane_mark_is_at_least_two_points() {
+        let marks = lane(
+            &[(500.0, 1.0, RED), (1000.0, 1.0, BLUE)],
+            1000.0,
+            100.0,
+            2.0,
+        );
+        assert_eq!(marks[0].len, 2.0);
+        // The last one is kept on the track.
+        assert_eq!(marks[1].len, 2.0);
+        assert_eq!(marks[1].top, 98.0);
+    }
+
+    #[test]
+    fn lane_marks_on_one_point_merge() {
+        // Two runs 10 content points apart on a 10x scaled-down lane: 1 pt apart, so each
+        // grown to 2 pt they touch and are one mark.
+        let marks = lane(
+            &[(100.0, 10.0, RED), (120.0, 10.0, RED)],
+            1000.0,
+            100.0,
+            2.0,
+        );
+        assert_eq!(
+            marks,
+            [LaneMark {
+                top: 10.0,
+                len: 4.0,
+                color: RED
+            }]
+        );
+        // Far apart: two.
+        let two = lane(
+            &[(100.0, 10.0, RED), (600.0, 10.0, RED)],
+            1000.0,
+            100.0,
+            2.0,
+        );
+        assert_eq!(two.len(), 2);
+    }
+
+    #[test]
+    fn different_colours_do_not_merge() {
+        let marks = lane(
+            &[(100.0, 10.0, RED), (120.0, 10.0, BLUE)],
+            1000.0,
+            100.0,
+            2.0,
+        );
+        assert_eq!(marks.len(), 2);
+        assert_eq!((marks[0].color, marks[1].color), (RED, BLUE));
     }
 }

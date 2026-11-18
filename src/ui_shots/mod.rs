@@ -50,6 +50,7 @@ use crate::ui_tokens::{self, contrast};
 use crate::workspace::{Overlay, Workspace};
 
 mod agent;
+mod agent_box;
 mod args;
 mod branch;
 mod changed;

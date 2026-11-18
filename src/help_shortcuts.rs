@@ -88,6 +88,13 @@ pub fn describe(action: &str) -> Describe {
         "file_tab::Find" => Listed(Tabs, "Find in File\u{2026}"),
         "file_tab::FindNext" => Listed(Tabs, "Find Next"),
         "file_tab::FindPrev" => Listed(Tabs, "Find Previous"),
+        "file_tab::FoldHere" => Listed(Tabs, "Fold"),
+        "file_tab::UnfoldHere" => Listed(Tabs, "Unfold"),
+        "file_tab::FoldAll" => Listed(Tabs, "Fold All"),
+        "file_tab::UnfoldAll" => Listed(Tabs, "Unfold All"),
+        "file_tab::ShowAllUnchanged" => Listed(Tabs, "Show All Unchanged Lines"),
+        "file_tab::PrevChange" => Listed(Tabs, "Previous Change"),
+        "file_tab::NextChange" => Listed(Tabs, "Next Change"),
 
         "workspace::SplitRight" => Listed(Panes, "Split Right"),
         "workspace::SplitDown" => Listed(Panes, "Split Down"),

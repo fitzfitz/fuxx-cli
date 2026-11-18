@@ -134,6 +134,177 @@ pub(super) const SCENES: &[Scene] = &[
         kind: Kind::State,
         sources: &["src/file_tab.rs", "src/live_lines.rs"],
     },
+    Scene {
+        name: "file-code-calm",
+        run: file_code_calm_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/file_tab.rs", "src/ui_tokens.rs"],
+    },
+    Scene {
+        name: "file-code-guides",
+        run: file_code_guides_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/file_tab.rs", "src/code_outline.rs", "src/ui_tokens.rs"],
+    },
+    Scene {
+        name: "file-code-bars",
+        run: file_code_bars_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/file_tab.rs", "src/ui_tokens.rs"],
+    },
+    Scene {
+        name: "file-code-fold",
+        run: file_code_fold_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/code_outline.rs",
+            "src/row_map.rs",
+            "src/live_lines.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-code-nav",
+        run: file_code_nav_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/file_tab.rs",
+            "src/row_map.rs",
+            "src/tab_bar.rs",
+            "src/main.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-code-fold-keys",
+        run: file_code_fold_keys_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/file_tab.rs",
+            "src/code_outline.rs",
+            "src/row_map.rs",
+            "src/main.rs",
+        ],
+    },
+    Scene {
+        name: "file-code-sticky",
+        run: file_code_sticky_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/code_outline.rs",
+            "src/row_map.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-code-lane",
+        run: file_code_lane_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/scrollbar.rs",
+            "src/row_map.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-diff-cards",
+        run: file_diff_cards_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/diff_cards.rs",
+            "src/diff_view.rs",
+            "src/row_map.rs",
+            "src/code_outline.rs",
+            "src/scrollbar.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-diff-cards-fold",
+        run: file_diff_cards_fold_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/file_tab.rs",
+            "src/diff_cards.rs",
+            "src/row_map.rs",
+            "src/main.rs",
+            "src/palette_items.rs",
+        ],
+    },
+    Scene {
+        name: "file-diff-words",
+        run: file_diff_words_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/diff_cards.rs",
+            "src/diff_view.rs",
+            "src/row_map.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-diff-side",
+        run: file_diff_side_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/diff_cards.rs",
+            "src/diff_view.rs",
+            "src/row_map.rs",
+            "src/tab_bar.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-diff-side-narrow",
+        run: file_diff_side_narrow_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &["src/file_tab.rs", "src/diff_cards.rs", "src/row_map.rs"],
+    },
+    Scene {
+        name: "file-code-breadcrumb",
+        run: file_code_breadcrumb_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/code_outline.rs",
+            "src/highlight.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
 ];
 
 /// A file tab (M11g) in a pane beside a terminal's tab: opened twice for one file it is one tab,
@@ -1231,7 +1402,13 @@ fn file_view_scenes() {
         assert!(near(p, theme.background, 6), "{n}: no bar on line 0: {p:?}");
         // The tint at the far right of a changed line: its colour at 12 % over the background.
         let right = g.bounds.right() - px(6.0);
-        let tint = crate::theme::mix(theme.background, green, 0.12);
+        // Line 3 (0-based 2) is where the drag ended: the current line, its tint over the band.
+        let band = crate::theme::mix(
+            theme.background,
+            theme.ui().text,
+            crate::ui_tokens::code::CURRENT_ALPHA,
+        );
+        let tint = crate::theme::mix(band, green, 0.12);
         let p = at(right, row_y(2));
         assert!(near(p, tint, 6), "{n}: the tint {p:?}, not {tint:?}");
         assert!(
@@ -1443,9 +1620,9 @@ fn file_view_scenes() {
         let shot = render_with(&theme, dims, build, act);
         let (w, h) = (f32::from(dims.width), f32::from(dims.height));
         let tint = crate::theme::mix(theme.background, fit(theme.palette[4]), 0.12);
-        // The last line, tinted, above the room ...
+        // The last line, tinted, above the room (left of the scrollbar's lane, which marks it) ...
         let room = ui_tokens::size::CARD_RADIUS;
-        let p = pixel_at(&shot, dims, w - 2.0, h - room - 2.0);
+        let p = pixel_at(&shot, dims, w - 14.0, h - room - 2.0);
         assert!(
             near(p, tint, 4) && !near(p, theme.background, 4),
             "{n}: the last line is tinted: {p:?}, not {tint:?}"
@@ -1662,7 +1839,7 @@ fn file_view_scenes() {
         .map(|l| format!("{l}\n"))
         .collect();
     let started = std::time::Instant::now();
-    let lines = h.highlight(std::path::Path::new("big.rs"), &text);
+    let lines = h.colour(std::path::Path::new("big.rs"), &text).spans;
     let took = started.elapsed();
     assert_eq!(lines.len(), 5000);
     println!(
@@ -1991,7 +2168,8 @@ fn file_diff_scenes() {
 
     type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
     let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
-    let dims = size(px(760.0), px(460.0));
+    // M11ah: taller, for the cards' titles: the second card's added row stays in sight.
+    let dims = size(px(760.0), px(560.0));
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -2032,6 +2210,10 @@ fn file_diff_scenes() {
         let keep_geom = geom_seen.clone();
         let texts: Rc<RefCell<Vec<String>>> = Rc::default();
         let keep_texts = texts.clone();
+        // M11ah: each row's top down the text, read from the tab's row map (cards and their
+        // titles move rows down).
+        let tops: Rc<RefCell<Vec<Pixels>>> = Rc::default();
+        let keep_tops = tops.clone();
         let act = {
             let n = n.clone();
             let unified = unified.clone();
@@ -2065,11 +2247,26 @@ fn file_diff_scenes() {
                 *keep_texts.borrow_mut() = lines;
                 let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
                 let first = first.expect("a change");
+                // M11ah: opened at its first card, its title at the top, the change 3 rows
+                // under it.
+                let (title, change) = cx.read(|cx| {
+                    let t = tab.read(cx);
+                    (t.title_top(0, cx), t.line_top(first, cx))
+                });
+                let (title, change) = (title.expect("a card"), change.expect("its row"));
+                assert_eq!(g.scroll.y, title, "{n}: opened at its first card");
                 assert_eq!(
-                    g.scroll.y,
-                    g.line_height * first.saturating_sub(3) as f32,
-                    "{n}: opened with its first change 3 rows from the top"
+                    change - title - px(crate::ui_tokens::code::CARD_TITLE),
+                    g.line_height * 3.0,
+                    "{n}: its first change 3 rows under the title"
                 );
+                let row_tops: Vec<Pixels> = cx.read(|cx| {
+                    let t = tab.read(cx);
+                    (0..=added_late)
+                        .map(|r| t.line_top(r, cx).expect("shown"))
+                        .collect()
+                });
+                *keep_tops.borrow_mut() = row_tops.clone();
                 cx.update_window(window, |_, window, cx| {
                     tab.read(cx).focus_handle(cx).focus(window, cx)
                 })
@@ -2084,7 +2281,7 @@ fn file_diff_scenes() {
                 let at = |row: usize, x: f32| {
                     point(
                         g.bounds.left() + g.text_left + px(x),
-                        g.bounds.top() + g.line_height * (row as f32 + 0.5) - g.scroll.y,
+                        g.bounds.top() + row_tops[row] + g.line_height / 2.0 - g.scroll.y,
                     )
                 };
                 let cw = f32::from(g.cell_width);
@@ -2116,15 +2313,23 @@ fn file_diff_scenes() {
         );
         let g = geom_seen.get().expect("drawn");
         let at = |x: Pixels, y: Pixels| pixel_at(&shot, dims, f32::from(x), f32::from(y));
-        let row_y = |row: usize| g.bounds.top() + g.line_height * (row as f32 + 0.5) - g.scroll.y;
-        // The tints, 2 pt inside the right edge (right of the scrollbar's thumb, which the
+        let tops = tops.borrow();
+        let row_y = |row: usize| g.bounds.top() + tops[row] + g.line_height / 2.0 - g.scroll.y;
+        // The tints, inside the card's right side (left of the scrollbar's thumb, which the
         // reveal shows, M11ae).
-        let right = g.bounds.right() - px(2.0);
+        let right = g.bounds.right() - px(crate::ui_tokens::code::CARD_INSET + 16.0);
         let red_tint = crate::theme::mix(theme.background, red, 0.12);
         let green_tint = crate::theme::mix(theme.background, green, 0.12);
+        // The row the drag ended on is the current row: its tint over the band.
+        let band = crate::theme::mix(
+            theme.background,
+            theme.ui().text,
+            crate::ui_tokens::code::CURRENT_ALPHA,
+        );
+        let green_current = crate::theme::mix(band, green, 0.12);
         for (row, tint, what) in [
             (removed, red_tint, "removed"),
-            (added, green_tint, "added"),
+            (added, green_current, "added (current)"),
             (added_late, green_tint, "added"),
             (same, theme.background, "unchanged"),
         ] {
@@ -2184,8 +2389,14 @@ fn file_diff_scenes() {
         );
         // The number columns: (left, right) edges.
         let old_right = g.old_numbers_right.expect("two number columns");
-        let old_col = (px(12.0), old_right);
-        let new_col = (old_right + px(8.0), g.numbers_right);
+        let old_col = (
+            px(crate::ui_tokens::code::CARD_INSET + crate::ui_tokens::code::GUTTER_LEFT),
+            old_right,
+        );
+        let new_col = (
+            old_right + px(crate::ui_tokens::code::NUMBER_GAP),
+            g.numbers_right,
+        );
         let inked = |row: usize, (l, r): (Pixels, Pixels), base: Rgb| {
             let top = row_y(row) - g.line_height / 2.0;
             (f32::from(l) as i32..f32::from(r) as i32).any(|x| {
@@ -2199,11 +2410,11 @@ fn file_diff_scenes() {
             })
         };
         assert!(
-            !inked(added, old_col, green_tint),
+            !inked(added, old_col, green_current),
             "{n}: no old number on an added row"
         );
         assert!(
-            inked(added, new_col, green_tint),
+            inked(added, new_col, green_current),
             "{n}: the added row's new number"
         );
         assert!(
@@ -2302,7 +2513,14 @@ fn file_diff_scenes() {
                 assert!(middle, "{n}: the note's words in the middle");
             } else {
                 let red_tint = crate::theme::mix(theme.background, red, 0.12);
-                let p = pixel_at(&shot, dims, w - 6.0, 70.0);
+                // M11ah: inside its one card, under the card's title.
+                let card = crate::ui_tokens::code::CARD_INSET + 16.0;
+                let p = pixel_at(
+                    &shot,
+                    dims,
+                    w - card,
+                    70.0 + crate::ui_tokens::code::CARD_TITLE,
+                );
                 assert!(
                     near(p, red_tint, 5),
                     "{n}: a removed row {p:?}, not {red_tint:?}"
@@ -2519,16 +2737,16 @@ fn file_diff_scenes() {
                     (FileMode::Diff, FileMode::Diff),
                     "{n}: a bar's click"
                 );
-                let (row, g) = cx.read(|cx| {
+                let (row, top, title, g) = cx.read(|cx| {
                     let t = view.read(cx);
                     let rows = &t.diff_doc().expect("its rows").rows;
-                    (
-                        reveal_row(rows, (7, LineChange::Changed)).expect("line 7's row"),
-                        t.geom(),
-                    )
+                    let row = reveal_row(rows, (7, LineChange::Changed)).expect("line 7's row");
+                    (row, t.line_top(row, cx), t.title_top(0, cx), t.geom())
                 });
-                let g = g.expect("drawn");
-                let (top, h) = (g.line_height * row as f32, g.bounds.size.height);
+                let (g, top) = (g.expect("drawn"), top.expect("its row shown"));
+                let h = g.bounds.size.height;
+                // M11ah: at its card, the card's title at the top.
+                assert_eq!(Some(g.scroll.y), title, "{n}: the bar's card at the top");
                 assert!(
                     top >= g.scroll.y && top + g.line_height <= g.scroll.y + h,
                     "{n}: row {row} in view ({:?})",
@@ -2679,10 +2897,17 @@ fn live_near(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, by: u8) -> bool 
         .all(|(a, b)| a.abs_diff(b) <= by)
 }
 
-/// The gutter's text edge before M11af (no marks' column): `GUTTER_LEFT` 12, two digits,
-/// `NUMBER_GAP` 8, `BAR_WIDTH` 3, `TEXT_GAP` 10.
+/// The gutter's text edge of a file with blocks (`LIVE_FIXTURE`'s) with no marks' column:
+/// `code::GUTTER_LEFT`, two digits, `NUMBER_GAP`, the fold column (M11ah), `BAR_WIDTH`,
+/// `TEXT_GAP`.
 fn plain_text_left(cell: f32) -> f32 {
-    12.0 + 2.0 * cell + 8.0 + 3.0 + 10.0
+    use crate::ui_tokens::code;
+    code::GUTTER_LEFT
+        + 2.0 * cell
+        + code::NUMBER_GAP
+        + code::FOLD_COLUMN
+        + code::BAR_WIDTH
+        + code::TEXT_GAP
 }
 
 /// `file-live-glow` (both themes): runs changed 2 s, 20 s, 40 s and 70 s ago (lines 2–3, 6,
@@ -3570,4 +3795,3500 @@ fn file_follow_mode_scenes() {
         );
         println!("ui-shots: {n} ok");
     }
+}
+
+/// `file-code-calm` (both themes; M11ah Task 1): a 14-line Rust file with line 5 pressed. Rows
+/// are the font's line height x 1.2 and the text sits at the new columns; the first row starts
+/// `code::TOP_ROOM` under the body's top (under the breadcrumb, M11ah Task 6); line 5's row has the current band (`text` at 5 %
+/// over the background, to the right edge) and rows 4 and 6 have none; line 5's number is
+/// drawn in `text`, line 4's in the quiet ink (`text_dim`, held to 3:1).
+fn file_code_calm_scenes() {
+    use crate::ui_tokens::{MARK_MIN, code, contrast, ensure_contrast};
+    use gpui::{Modifiers, MouseButton};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let path = live_file("calm.rs", LIVE_FIXTURE);
+    let dims = size(px(760.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let n = format!("file-code-calm-{slug}");
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let slot: LiveSlot = Rc::default();
+        let build = live_tab(theme, path.clone(), slot.clone());
+        let seen: Rc<RefCell<Option<(crate::file_tab::Geom, gpui::Pixels)>>> = Rc::default();
+        let keep = seen.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let tab = slot.borrow().clone().expect("the file tab");
+            live_frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            // Line 5 (0-based 4): a press without a drag.
+            let at = point(
+                g.bounds.left() + g.text_left + px(4.0),
+                g.bounds.top() + g.line_height * 4.5,
+            );
+            let none = Modifiers::none();
+            cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+            cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+            live_frame(cx, window);
+            let line = cx
+                .update_window(window, |_, window, cx| {
+                    let m = crate::terminal_view::CellMetrics::measure(
+                        cx.global::<crate::appearance::Appearance>(),
+                        window,
+                    );
+                    m.line_height
+                })
+                .expect("metrics");
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            *keep.borrow_mut() = Some((g, line));
+        };
+        let shot = render_with(&theme, dims, build, act);
+        keep_shot(&n, &shot);
+        let (g, line) = seen.borrow().expect("read");
+        assert_eq!(
+            g.line_height,
+            crate::file_tab::row_height(line),
+            "{n}: a row is the line height x 1.2"
+        );
+        assert!(
+            (f32::from(g.line_height) - f32::from(line) * 1.2).abs() < 0.01,
+            "{n}: a row is {:?}, the line height {line:?} x 1.2",
+            g.line_height
+        );
+        assert_eq!(
+            f32::from(g.text_left),
+            plain_text_left(f32::from(g.cell_width)),
+            "{n}: the text at the new columns"
+        );
+        // The file bar is 42 pt tall; the file has blocks, so the breadcrumb's strip (M11ah Task
+        // 6) is under it; the first row starts `TOP_ROOM` under that.
+        assert_eq!(
+            f32::from(g.bounds.top()),
+            42.0 + code::BREADCRUMB + code::TOP_ROOM,
+            "{n}: the first row's top"
+        );
+        let bg = theme.background;
+        let band = crate::theme::mix(bg, ui.text, code::CURRENT_ALPHA);
+        let right = f32::from(g.bounds.right()) - 3.0;
+        let top = f32::from(g.bounds.top());
+        let row = f32::from(g.line_height);
+        let at = |r: usize| pixel_at(&shot, dims, right, top + row * (r as f32 + 0.5));
+        assert!(live_near(at(4), band, 2), "{n}: line 5's band {:?}", at(4));
+        assert!(live_near(at(3), bg, 1), "{n}: line 4 has none {:?}", at(3));
+        assert!(live_near(at(5), bg, 1), "{n}: line 6 has none {:?}", at(5));
+        // The band covers the whole row and no more.
+        let edge = |y: f32| pixel_at(&shot, dims, right, y);
+        assert!(
+            live_near(edge(top + row * 4.0 + 1.0), band, 2),
+            "{n}: its top"
+        );
+        assert!(
+            live_near(edge(top + row * 5.0 - 1.0), band, 2),
+            "{n}: its bottom"
+        );
+        assert!(
+            live_near(edge(top + row * 4.0 - 1.0), bg, 1),
+            "{n}: above it"
+        );
+        assert!(
+            live_near(edge(top + row * 5.0 + 1.0), bg, 1),
+            "{n}: below it"
+        );
+        // The numbers: the most inked pixel of each, against its row's background.
+        let inkiest = |r: usize, back: [u8; 3]| {
+            let (x1, y0) = (
+                f32::from(g.bounds.left() + g.numbers_right),
+                top + row * r as f32,
+            );
+            let cell = f32::from(g.cell_width);
+            let mut best = (0, back);
+            for dx in 0..(cell * 2.0 * 2.0) as i32 {
+                for dy in 0..(row * 2.0) as i32 {
+                    let p = pixel_at(
+                        &shot,
+                        dims,
+                        x1 - cell * 2.0 + dx as f32 * 0.5,
+                        y0 + dy as f32 * 0.5,
+                    );
+                    let d: i32 = (0..3).map(|k| (p[k] as i32 - back[k] as i32).abs()).sum();
+                    if d > best.0 {
+                        best = (d, p);
+                    }
+                }
+            }
+            best.1
+        };
+        let dist = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| -> i32 {
+            [(p[0], c.r), (p[1], c.g), (p[2], c.b)]
+                .iter()
+                .map(|&(a, b)| (a as i32 - b as i32).abs())
+                .sum()
+        };
+        let quiet = ensure_contrast(ui.text_dim, bg, MARK_MIN);
+        assert!(contrast(quiet, bg) >= MARK_MIN, "{n}: the quiet ink reads");
+        let (five, four) = (inkiest(4, at(4)), inkiest(3, at(3)));
+        assert!(
+            dist(five, ui.text) <= 30,
+            "{n}: line 5's number in text {five:?}"
+        );
+        assert!(
+            dist(four, quiet) <= 30 && dist(four, quiet) < dist(four, ui.text),
+            "{n}: line 4's number quiet {four:?}"
+        );
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// A frozen tab on `path` shot in `theme` after `setup` (given the tab): the shot and the
+/// geometry last drawn.
+fn code_shot(
+    theme: &Theme,
+    path: &std::path::Path,
+    dims: gpui::Size<gpui::Pixels>,
+    setup: impl FnOnce(
+        &mut VisualTestAppContext,
+        AnyWindowHandle,
+        &gpui::Entity<crate::file_tab::FileTab>,
+    ),
+) -> (Shot, crate::file_tab::Geom) {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let slot: LiveSlot = Rc::default();
+    let build = live_tab(*theme, path.to_path_buf(), slot.clone());
+    let seen: Rc<Cell<Option<crate::file_tab::Geom>>> = Rc::default();
+    let keep = seen.clone();
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let tab = slot.borrow().clone().expect("the file tab");
+        live_frame(cx, window);
+        setup(cx, window, &tab);
+        live_frame(cx, window);
+        keep.set(cx.read(|cx| tab.read(cx).geom()));
+    };
+    let shot = render_with(theme, dims, build, act);
+    (shot, seen.get().expect("drawn"))
+}
+
+/// The fixture of the guide scenes: a block inside a block, a blank line inside the inner one.
+const GUIDES_FIXTURE: &str = "fn main() {
+    if ready {
+        let a = 1;
+
+        let b = 2;
+    }
+    let c = 3;
+}
+";
+
+/// `file-code-guides` (both themes; M11ah Task 3): in a nested Rust file with line 3 (0-based
+/// 2) pressed, a level-2 line has a 1 pt guide at cell 0 and at cell 4 (the step) in `text` at
+/// 7 %, the pressed line's block (the `if`) drawing its own at 14 %; the blank line inside the
+/// block has both; a line outside the `if` has none at cell 4. A wrapped line's continuation
+/// rows (Wrap on) have them too; a flat text file none; Diff mode draws them over its rows.
+fn file_code_guides_scenes() {
+    use crate::ui_tokens::code;
+    use gpui::{Modifiers, MouseButton};
+
+    let nested = live_file("guides.rs", GUIDES_FIXTURE);
+    let flat = live_file("guides-flat.txt", "one\ntwo\n\nthree\nfour\n");
+    let long = live_file(
+        "guides-wrap.rs",
+        &format!(
+            "fn main() {{\n    if ready {{\n        let a = 1; // {}end\n        let b = 2;\n    }}\n}}\n",
+            " ".repeat(400)
+        ),
+    );
+    let dims = size(px(760.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = theme.background;
+        let faint = crate::theme::mix(bg, ui.text, code::GUIDE_ALPHA);
+        let strong = crate::theme::mix(bg, ui.text, code::GUIDE_ACTIVE_ALPHA);
+        // The guide's pixel at `cell`, `dy` points down row `row` (scroll counted).
+        let guide = |shot: &Shot, g: &crate::file_tab::Geom, cell: usize, row: usize, dy: f32| {
+            let x = f32::from(g.bounds.left() + g.text_left + g.cell_width * cell as f32) + 0.5;
+            let y = f32::from(g.bounds.top() + g.line_height * row as f32 - g.scroll.y) + dy;
+            pixel_at(shot, dims, x, y)
+        };
+
+        // File mode: line 3 pressed.
+        let n = format!("file-code-guides-{slug}");
+        let (shot, g) = code_shot(&theme, &nested, dims, |cx, window, tab| {
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let at = point(
+                g.bounds.left() + g.text_left + g.cell_width * 12.0,
+                g.bounds.top() + g.line_height * 2.5,
+            );
+            let none = Modifiers::none();
+            cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+            cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+        });
+        keep_shot(&n, &shot);
+        let lh = f32::from(g.line_height);
+        for dy in [lh * 0.3, lh * 0.5, lh * 0.8] {
+            // Row 4 (`let b`) and the blank row 3: cell 0 quiet, cell 4 the pressed block's.
+            for row in [3, 4] {
+                let (a, b) = (guide(&shot, &g, 0, row, dy), guide(&shot, &g, 4, row, dy));
+                assert!(
+                    live_near(a, faint, 3),
+                    "{n}: row {row} cell 0 {a:?}, not {faint:?}"
+                );
+                assert!(
+                    live_near(b, strong, 3),
+                    "{n}: row {row} cell 4 {b:?}, not {strong:?}"
+                );
+            }
+            // Row 5 (`    }`, the closer, level 1): cell 0 quiet.
+            let a = guide(&shot, &g, 0, 5, dy);
+            assert!(
+                live_near(a, faint, 3),
+                "{n}: row 5 cell 0 {a:?}, not {faint:?}"
+            );
+        }
+        // Row 6 (`    let c`): cell 0 quiet; its cell 4 holds the text, no guide drawn there.
+        let a = guide(&shot, &g, 0, 6, lh * 0.5);
+        assert!(live_near(a, faint, 3), "{n}: row 6 cell 0 {a:?}");
+        println!("ui-shots: {n} ok");
+
+        // Wrap on: the long line's continuation rows (just spaces) have the guides.
+        let n = format!("file-code-guides-wrap-{slug}");
+        let (shot, g) = code_shot(&theme, &long, dims, |cx, _, _| {
+            cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().file_wrap = true);
+        });
+        keep_shot(&n, &shot);
+        let lh = f32::from(g.line_height);
+        for row in [3, 4] {
+            for cell in [0, 4] {
+                let p = guide(&shot, &g, cell, row, lh * 0.5);
+                assert!(
+                    live_near(p, faint, 3),
+                    "{n}: continuation row {row} cell {cell} {p:?}, not {faint:?}"
+                );
+            }
+        }
+        println!("ui-shots: {n} ok");
+
+        // A flat text file: none, even through its blank line.
+        let n = format!("file-code-guides-flat-{slug}");
+        let (shot, g) = code_shot(&theme, &flat, dims, |_, _, _| {});
+        keep_shot(&n, &shot);
+        for cell in [0, 4] {
+            let p = guide(&shot, &g, cell, 2, f32::from(g.line_height) * 0.5);
+            assert!(live_near(p, bg, 1), "{n}: no guide at cell {cell} {p:?}");
+        }
+        println!("ui-shots: {n} ok");
+
+        // Diff mode: the rows' own outline; the blank context row (3) has both.
+        let n = format!("file-code-guides-diff-{slug}");
+        let old: Vec<&str> = GUIDES_FIXTURE.lines().collect();
+        let mut unified = format!(
+            "diff --git a/guides.rs b/guides.rs\n--- a/guides.rs\n+++ b/guides.rs\n@@ -1,{} +1,{} @@\n",
+            old.len() - 1,
+            old.len()
+        );
+        for (i, line) in old.iter().enumerate() {
+            let sign = if i == 2 { '+' } else { ' ' };
+            unified.push_str(&format!("{sign}{line}\n"));
+        }
+        let (shot, g) = code_shot(&theme, &nested, dims, |cx, _, tab| {
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.choose_mode_for_shots(crate::layout_model::FileMode::Diff, cx);
+                    t.set_diff_for_shots(&unified, cx);
+                })
+            });
+        });
+        keep_shot(&n, &shot);
+        // M11ah: the rows are in one card, under its title row.
+        let title = crate::ui_tokens::code::CARD_TITLE;
+        for cell in [0, 4] {
+            let p = guide(&shot, &g, cell, 3, f32::from(g.line_height) * 0.5 + title);
+            assert!(live_near(p, faint, 3), "{n}: diff row 3 cell {cell} {p:?}");
+        }
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-code-bars` (both themes; M11ah Task 3): three Added rows are one 3 pt bar with rounded
+/// ends (its corner pixels show the row's tint, not the green; its middle the green); an Added
+/// run touching a Changed run leaves 2 pt between them (1 pt of each row's tint); the deleted
+/// lines' ▸ is still drawn; a press on any row of a run opens Diff.
+fn file_code_bars_scenes() {
+    use crate::git_status::LineChange;
+    use crate::layout_model::FileMode;
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+    use gpui::{Modifiers, MouseButton};
+
+    let path = live_file("bars.rs", LIVE_FIXTURE);
+    let dims = size(px(760.0), px(360.0));
+    // Lines counted from 1, as git does: 3-5 added, 6 changed, lines deleted above line 12.
+    let changes = || {
+        vec![
+            (3, LineChange::Added),
+            (4, LineChange::Added),
+            (5, LineChange::Added),
+            (6, LineChange::Changed),
+            (11, LineChange::DeletedAfter),
+        ]
+    };
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let bg = theme.background;
+        let fit = |c: alacritty_terminal::vte::ansi::Rgb| ensure_contrast(c, bg, MARK_MIN);
+        let (green, blue, red) = (
+            fit(theme.palette[2]),
+            fit(theme.palette[4]),
+            fit(theme.palette[1]),
+        );
+        let (tint_green, tint_blue) = (
+            crate::theme::mix(bg, green, 0.12),
+            crate::theme::mix(bg, blue, 0.12),
+        );
+        let n = format!("file-code-bars-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, _, tab| {
+            cx.update(|cx| tab.update(cx, |t, cx| t.set_changes(changes(), cx)));
+        });
+        keep_shot(&n, &shot);
+        let (lh, top) = (f32::from(g.line_height), f32::from(g.bounds.top()));
+        let left = f32::from(g.bounds.left() + g.bar_left);
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        let (y0, y1) = (top + lh * 2.0, top + lh * 5.0);
+        // The run's middle is the green, at its full width.
+        for dx in [0.4, 1.5, 2.6] {
+            let p = at(left + dx, y0 + lh * 1.5);
+            assert!(
+                live_near(p, green, 12),
+                "{n}: middle at {dx}: {p:?}, not {green:?}"
+            );
+        }
+        // Its top corners are cut round: the row's tint shows there, not the green.
+        for x in [left + 0.25, left + 2.75] {
+            let p = at(x, y0 + 0.25);
+            assert!(
+                live_near(p, tint_green, 10),
+                "{n}: top corner {p:?}, not {tint_green:?}"
+            );
+        }
+        let p = at(left + 1.5, y0 + 2.0);
+        assert!(live_near(p, green, 12), "{n}: below the corner {p:?}");
+        // The bottom end (touching the Changed run) is shortened by 1 pt and round.
+        for x in [left + 0.25, left + 2.75] {
+            let p = at(x, y1 - 1.25);
+            assert!(live_near(p, tint_green, 10), "{n}: bottom corner {p:?}");
+        }
+        let p = at(left + 1.5, y1 - 3.0);
+        assert!(live_near(p, green, 12), "{n}: above the gap {p:?}");
+        // The 2 pt gap: 1 pt under the Added run, 1 pt above the Changed one, each its row's tint.
+        let (up, down) = (at(left + 1.5, y1 - 0.5), at(left + 1.5, y1 + 0.5));
+        assert!(
+            live_near(up, tint_green, 10),
+            "{n}: gap above {up:?}, not {tint_green:?}"
+        );
+        assert!(
+            live_near(down, tint_blue, 10),
+            "{n}: gap below {down:?}, not {tint_blue:?}"
+        );
+        let p = at(left + 1.5, y1 + 3.0);
+        assert!(
+            live_near(p, blue, 12),
+            "{n}: the Changed run {p:?}, not {blue:?}"
+        );
+        // The deleted-lines ▸ over the bar's place, on the edge above line 12 (0-based 11).
+        let edge = top + lh * 11.0;
+        let drawn = (-8..=8).any(|dx| {
+            (-10..=10).any(|dy| {
+                let p = at(left + 1.5 + dx as f32 * 0.5, edge + dy as f32 * lh / 20.0);
+                live_near(p, red, 40)
+            })
+        });
+        assert!(drawn, "{n}: the ▸ is still drawn");
+        println!("ui-shots: {n} ok");
+
+        // Wrap on: two wrapped Added lines are one bar over every row of both, continuation
+        // rows and the seam between the lines included.
+        let n = format!("file-code-bars-wrap-{slug}");
+        let wide = live_file(
+            "bars-wrap.rs",
+            &format!("a\n// {0}end\n// {0}end\nb\n", " ".repeat(400)),
+        );
+        let rows = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = rows.clone();
+        let (shot, g) = code_shot(&theme, &wide, dims, |cx, window, tab| {
+            cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().file_wrap = true);
+            live_frame(cx, window);
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_changes(vec![(2, LineChange::Added), (3, LineChange::Added)], cx)
+                })
+            });
+            live_frame(cx, window);
+            seen.set(cx.read(|cx| tab.read(cx).wrapped_rows()).expect("wrapped"));
+        });
+        keep_shot(&n, &shot);
+        let each = (rows.get() - 2) / 2;
+        assert!(each >= 3, "{n}: each long line takes {each} rows");
+        let (lh, top) = (f32::from(g.line_height), f32::from(g.bounds.top()));
+        let x = f32::from(g.bounds.left() + g.bar_left) + 1.5;
+        let seam = top + lh * (1 + each) as f32;
+        for (what, y) in [
+            ("a continuation row", top + lh * 2.5),
+            ("above the seam", seam - 1.5),
+            ("the seam", seam - 0.25),
+            ("below the seam", seam + 1.5),
+            ("the last row", top + lh * (1 + 2 * each) as f32 - lh * 0.5),
+        ] {
+            let p = pixel_at(&shot, dims, x, y);
+            assert!(live_near(p, green, 12), "{n}: {what} {p:?}, not {green:?}");
+        }
+        let p = pixel_at(&shot, dims, x, top + lh * 0.5);
+        assert!(live_near(p, bg, 6), "{n}: none on the unchanged line {p:?}");
+        println!("ui-shots: {n} ok");
+
+        // A press on any row of the run opens Diff.
+        let n = format!("file-code-bars-press-{slug}");
+        let (_, _) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.pretend_in_repo_for_shots(cx);
+                    t.set_changes(changes(), cx);
+                })
+            });
+            live_frame(cx, window);
+            for row in 2..6 {
+                let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+                let at = point(
+                    g.bounds.left() + g.bar_left + px(1.5),
+                    g.bounds.top() + g.line_height * (row as f32 + 0.5) - g.scroll.y,
+                );
+                let none = Modifiers::none();
+                cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+                cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+                live_frame(cx, window);
+                let mode = cx.read(|cx| tab.read(cx).mode());
+                assert_eq!(mode, FileMode::Diff, "{n}: a press on row {row} opens Diff");
+                cx.update(|cx| {
+                    tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx))
+                });
+                live_frame(cx, window);
+            }
+        });
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// A pixel as a colour.
+fn as_rgb([r, g, b]: [u8; 3]) -> alacritty_terminal::vte::ansi::Rgb {
+    alacritty_terminal::vte::ansi::Rgb { r, g, b }
+}
+
+/// The fold scenes' file: `fn refresh` (0-based line 11) holds 23 lines and its `}` (12..36), so
+/// folded it hides 24; blocks also start on lines 3, 7 and 37.
+fn fold_fixture() -> String {
+    let mut text = String::from(
+        "// A file with a long function, for the fold scenes.\nuse std::fmt;\n\nstruct Session {\n    id: u32,\n}\n\nfn small() {\n    let a = 1;\n}\n\nfn refresh(s: &mut Session) {\n",
+    );
+    for k in 12..35 {
+        text.push_str(&format!("    let v{k} = {k};\n"));
+    }
+    text.push_str("}\n\nfn after() {\n    let z = 0;\n}\n");
+    text
+}
+
+/// `file-code-fold` (both themes; M11ah Task 5): `fn refresh` (line 12) folded, with a git change
+/// (an added line 20) and an agent's warm lines (16, 40 s ago; 26, just now) inside: the fold
+/// column, 14 pt, sits between the numbers and the marks' column; the folded line has its ▸
+/// always, the open blocks' ▾ show only while the pointer is over the gutter; the pill comes
+/// after the folded line's text; the numbers go 12 then 37; the folded line draws the hidden
+/// change's bar, the warmest glow (just now's) and a mark.
+fn file_code_fold_scenes() {
+    use crate::file_tab::{GLOW, WARM_RGB};
+    use crate::git_status::LineChange;
+    use crate::live_lines::{Sure, Who};
+    use crate::theme::mix;
+    use crate::ui_tokens::{MARK_MIN, code, ensure_contrast};
+
+    let path = live_file("fold.rs", &fold_fixture());
+    let dims = size(px(760.0), px(400.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let bg = theme.background;
+        let green = ensure_contrast(theme.palette[2], bg, MARK_MIN);
+        let rows = std::rc::Rc::new(std::cell::Cell::new([None; 3]));
+        let seen = rows.clone();
+        let shoot = |hover: bool| {
+            let seen = seen.clone();
+            code_shot(&theme, &path, dims, move |cx, window, tab| {
+                let record = live_record(
+                    40,
+                    &[
+                        (
+                            15..16,
+                            Who::Agent(crate::edit_ledger::agent_mark_for("codex")),
+                            Sure::Exact,
+                            40,
+                        ),
+                        (
+                            25..26,
+                            Who::Agent(crate::edit_ledger::agent_mark_for("codex")),
+                            Sure::Exact,
+                            2,
+                        ),
+                    ],
+                );
+                cx.update(|cx| {
+                    tab.update(cx, |t, cx| {
+                        t.set_live_for_shot(record, live_now(), None);
+                        t.set_changes(vec![(20, LineChange::Added)], cx);
+                        t.fold_for_shots(&[11], cx);
+                    })
+                });
+                live_frame(cx, window);
+                let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+                // The pointer over the gutter (the numbers), or over the text.
+                let x = if hover {
+                    g.bounds.left() + g.numbers_right - px(4.0)
+                } else {
+                    g.bounds.left() + g.text_left + px(200.0)
+                };
+                let at = point(x, g.bounds.top() + g.line_height * 1.5);
+                cx.simulate_mouse_move(window, at, None, gpui::Modifiers::none());
+                live_frame(cx, window);
+                seen.set(cx.read(|cx| {
+                    let t = tab.read(cx);
+                    [t.line_at_row(11), t.line_at_row(12), t.line_at_row(13)]
+                }));
+            })
+        };
+        let n = format!("file-code-fold-{slug}");
+        let (shot, g) = shoot(false);
+        keep_shot(&n, &shot);
+        let lh = f32::from(g.line_height);
+        let mid = |row: usize| f32::from(g.bounds.top()) + lh * (row as f32 + 0.5);
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        // The lines drawn: 12, then 37 (0-based 11, then 36).
+        assert_eq!(
+            rows.get(),
+            [Some(11), Some(36), Some(37)],
+            "{n}: the rows after the fold"
+        );
+        // The columns: numbers · fold (14 pt) · marks · bar · text.
+        let fold_left = g.fold_left.expect("a fold column");
+        let marks_left = g.marks_left.expect("the marks' column");
+        assert_eq!(
+            fold_left,
+            g.numbers_right + px(code::NUMBER_GAP / 2.0),
+            "{n}"
+        );
+        assert_eq!(marks_left, fold_left + px(code::FOLD_COLUMN), "{n}: 14 pt");
+        assert!(
+            g.bar_left >= marks_left + px(16.0),
+            "{n}: the bar after the marks"
+        );
+        let column = |shot: &Shot, row: usize| {
+            let x0 = f32::from(g.bounds.left() + fold_left);
+            (2..26).any(|dx| {
+                (-4..=4).any(|dy| {
+                    let p = pixel_at(shot, dims, x0 + dx as f32 * 0.5, mid(row) + dy as f32);
+                    let ground = pixel_at(shot, dims, x0 + 0.5, mid(row) - lh * 0.4);
+                    !live_near(p, as_rgb(ground), 40)
+                })
+            })
+        };
+        assert!(column(&shot, 11), "{n}: ▸ on the folded line");
+        for row in [3, 7, 13] {
+            assert!(
+                !column(&shot, row),
+                "{n}: no ▾ on row {row} with the pointer away"
+            );
+        }
+        // The folded line: the hidden added line's bar, the warmest glow, a mark.
+        // (The row's glow is drawn over its bar, as on any warm changed line.)
+        let lit_green = mix(green, WARM_RGB, GLOW[2]);
+        let bar = at(f32::from(g.bounds.left() + g.bar_left) + 1.5, mid(11));
+        assert!(
+            live_near(bar, lit_green, 12),
+            "{n}: the bar {bar:?}, not {lit_green:?}"
+        );
+        let right = f32::from(g.bounds.right()) - 30.0;
+        let warm = mix(bg, WARM_RGB, GLOW[2]);
+        let p = at(right, mid(11));
+        assert!(live_near(p, warm, 3), "{n}: the glow {p:?}, not {warm:?}");
+        assert!(live_near(at(right, mid(12)), bg, 1), "{n}: line 37 unlit");
+        let marked = |row: usize| {
+            let x = f32::from(g.bounds.left() + marks_left) + 8.0;
+            let ground = at(x - 7.5, mid(row) - lh * 0.45);
+            (-4..=4).any(|dy| !live_near(at(x, mid(row) + dy as f32), as_rgb(ground), 40))
+        };
+        assert!(marked(11), "{n}: the folded line's mark");
+        assert!(!marked(12), "{n}: no mark on line 37");
+        // The pill: after the folded line's text, its ground and its words.
+        let text_end = f32::from(g.bounds.left() + g.text_left)
+            + f32::from(g.cell_width) * "fn refresh(s: &mut Session) {".len() as f32;
+        let ground = at(text_end + 2.0, mid(11));
+        assert!(live_near(ground, warm, 3), "{n}: the gap before the pill");
+        let pill = at(text_end + code::FOLD_PILL_GAP + 2.0, mid(11));
+        assert!(!live_near(pill, warm, 1), "{n}: the pill's ground {pill:?}");
+        let words = (0..120).any(|dx| {
+            let x = text_end + code::FOLD_PILL_GAP + code::FOLD_PILL_PAD + dx as f32 * 0.5;
+            !live_near(at(x, mid(11)), as_rgb(pill), 30)
+        });
+        assert!(words, "{n}: the pill's words");
+        println!("ui-shots: {n} ok");
+
+        // The pointer over the gutter: the open blocks show ▾ (faint); the folded line keeps ▸.
+        let n = format!("file-code-fold-hover-{slug}");
+        let (shot, _) = shoot(true);
+        keep_shot(&n, &shot);
+        for row in [3, 7, 11] {
+            assert!(column(&shot, row), "{n}: a fold mark on row {row}");
+        }
+        assert!(!column(&shot, 4), "{n}: none inside a block");
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-code-fold-keys` (M11ah Task 5): ⌥⌘[ on the current line folds its innermost block and
+/// ⌥⌘] unfolds it; a press on ▸ or the pill unfolds, on ▾ folds; Fold All / Unfold All; a press
+/// under a fold selects the line drawn there (Review Focus 5); Copy over a fold copies the hidden
+/// lines; a find to a hidden match opens its fold; Follow (on) after an agent's change inside a
+/// fold opens it and stays on; folding turns Follow off; a file with no blocks has no fold column.
+fn file_code_fold_keys_scenes() {
+    use crate::file_tab::{FoldAll, UnfoldAll};
+    use crate::live_lines::{Sure, Who};
+    use gpui::{Focusable, Modifiers, MouseButton};
+
+    let path = live_file("fold-keys.rs", &fold_fixture());
+    let flat = live_file("fold-flat.txt", "one\ntwo\nthree\n");
+    let dims = size(px(760.0), px(400.0));
+    let n = "file-code-fold-keys";
+    for &(_, name) in shot_themes() {
+        let theme = shot_theme(name);
+        code_shot(&theme, &path, dims, |cx, window, tab| {
+            let none = Modifiers::none();
+            let look = |cx: &mut VisualTestAppContext| {
+                live_frame(cx, window);
+                cx.read(|cx| {
+                    let t = tab.read(cx);
+                    (t.folded_lines(), t.current_line(), t.geom().expect("drawn"))
+                })
+            };
+            let row_y = |g: &crate::file_tab::Geom, row: usize| {
+                g.bounds.top() + g.line_height * (row as f32 + 0.5) - g.scroll.y
+            };
+            let press = |cx: &mut VisualTestAppContext, at: gpui::Point<gpui::Pixels>| {
+                cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+                cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+            };
+            cx.update_window(window, |_, window, cx| {
+                tab.read(cx).focus_handle(cx).focus(window, cx)
+            })
+            .expect("focus");
+            let (_, _, g) = look(cx);
+            // A press on line 13 (0-based 12), then ⌥⌘[: `fn refresh` folds, the current
+            // line moves up to it; ⌥⌘] opens it.
+            press(
+                cx,
+                point(g.bounds.left() + g.text_left + px(8.0), row_y(&g, 12)),
+            );
+            let (_, current, _) = look(cx);
+            assert_eq!(current, Some(12), "{n}: the press's line is current");
+            cx.simulate_keystrokes(window, "alt-cmd-[");
+            let (folded, current, _) = look(cx);
+            assert_eq!(folded, [11], "{n}: ⌥⌘[ folds the innermost block");
+            assert_eq!(current, Some(11), "{n}: the current line moves to its fold");
+            assert_eq!(cx.read(|cx| tab.read(cx).line_at_row(12)), Some(36), "{n}");
+            cx.simulate_keystrokes(window, "alt-cmd-]");
+            assert!(look(cx).0.is_empty(), "{n}: ⌥⌘] unfolds it");
+            // The fold column: ▾ folds, ▸ unfolds.
+            let (_, _, g) = look(cx);
+            let fold_x = g.bounds.left() + g.fold_left.expect("a fold column") + px(7.0);
+            press(cx, point(fold_x, row_y(&g, 11)));
+            assert_eq!(look(cx).0, [11], "{n}: a press on ▾ folds");
+            press(cx, point(fold_x, row_y(&g, 11)));
+            assert!(look(cx).0.is_empty(), "{n}: a press on ▸ unfolds");
+            // The pill unfolds.
+            cx.simulate_keystrokes(window, "alt-cmd-[");
+            let (folded, _, g) = look(cx);
+            assert_eq!(folded, [11], "{n}");
+            let text_end = g.bounds.left()
+                + g.text_left
+                + g.cell_width * "fn refresh(s: &mut Session) {".len() as f32;
+            press(cx, point(text_end + px(16.0), row_y(&g, 11)));
+            assert!(look(cx).0.is_empty(), "{n}: a press on the pill unfolds");
+            // Review Focus 5: a press under a fold selects the line drawn there.
+            cx.update(|cx| tab.update(cx, |t, cx| t.fold_for_shots(&[11], cx)));
+            let (_, _, g) = look(cx);
+            press(
+                cx,
+                point(g.bounds.left() + g.text_left + px(8.0), row_y(&g, 12)),
+            );
+            assert_eq!(look(cx).1, Some(36), "{n}: the line after the fold");
+            // Copy over the fold copies the real lines, the hidden ones too.
+            let from = point(g.bounds.left() + g.text_left + px(1.0), row_y(&g, 11));
+            let to = point(g.bounds.left() + g.text_left + px(1.0), row_y(&g, 13));
+            cx.simulate_mouse_down(window, from, MouseButton::Left, none);
+            cx.simulate_mouse_move(window, to, MouseButton::Left, none);
+            cx.simulate_mouse_up(window, to, MouseButton::Left, none);
+            live_frame(cx, window);
+            let copied = cx.read(|cx| tab.read(cx).selected_text());
+            assert!(
+                copied.starts_with("fn refresh(s: &mut Session) {\n    let v12 = 12;\n"),
+                "{n}: the copy starts {:?}",
+                copied.lines().take(2).collect::<Vec<_>>()
+            );
+            assert!(
+                copied.contains("    let v34 = 34;\n}\n"),
+                "{n}: and holds the rest"
+            );
+            // Fold All / Unfold All (the palette's).
+            for (action, want) in [
+                (
+                    Box::new(FoldAll) as Box<dyn gpui::Action>,
+                    vec![3, 7, 11, 37],
+                ),
+                (Box::new(UnfoldAll), vec![]),
+            ] {
+                cx.update_window(window, |_, window, cx| window.dispatch_action(action, cx))
+                    .expect("dispatch");
+                assert_eq!(look(cx).0, want, "{n}: Fold All / Unfold All");
+            }
+            // Find: a match inside a fold is counted, and stepping to it opens the fold.
+            cx.update(|cx| tab.update(cx, |t, cx| t.fold_for_shots(&[11], cx)));
+            live_frame(cx, window);
+            cx.simulate_keystrokes(window, "cmd-f");
+            cx.simulate_input(window, "v20 ");
+            live_frame(cx, window);
+            assert_eq!(cx.read(|cx| tab.read(cx).find_label()), "1 of 1", "{n}");
+            assert!(look(cx).0.is_empty(), "{n}: the find opened the fold");
+            cx.simulate_keystrokes(window, "escape");
+            cx.update_window(window, |_, window, cx| {
+                tab.read(cx).focus_handle(cx).focus(window, cx)
+            })
+            .expect("focus");
+            // Follow on: an agent's change inside a fold opens it, and Follow stays on.
+            cx.update(|cx| tab.update(cx, |t, cx| t.fold_for_shots(&[11], cx)));
+            live_frame(cx, window);
+            let codex = Who::Agent(crate::edit_ledger::agent_mark_for("codex"));
+            let record = live_record(40, &[(19..20, codex, Sure::Exact, 2)]);
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_live_for_shot(record, live_now(), Some(true));
+                    t.follow_for_shots(cx);
+                })
+            });
+            assert!(look(cx).0.is_empty(), "{n}: Follow opened the fold");
+            assert!(
+                cx.read(|cx| tab.read(cx).follow_on()),
+                "{n}: Follow stays on"
+            );
+            // Folding is you moving the view: Follow turns off.
+            cx.simulate_keystrokes(window, "alt-cmd-[");
+            assert!(!look(cx).0.is_empty(), "{n}: folded");
+            assert!(
+                !cx.read(|cx| tab.read(cx).follow_on()),
+                "{n}: folding ends Follow"
+            );
+            // Final review: Fold All leaves rows that fit the view (no scroll at all); a find
+            // step into `fn refresh` opens its fold and the match lands on screen, not cut
+            // short by the shorter rows' limit.
+            cx.update_window(window, |_, window, cx| {
+                window.dispatch_action(Box::new(FoldAll), cx)
+            })
+            .expect("dispatch");
+            let (_, _, g) = look(cx);
+            assert_eq!(g.max_scroll.y, px(0.0), "{n}: folded, it fits");
+            cx.simulate_keystrokes(window, "cmd-f");
+            cx.simulate_input(window, "v30 ");
+            live_frame(cx, window);
+            assert_eq!(cx.read(|cx| tab.read(cx).find_label()), "1 of 1", "{n}");
+            let (folded, _, g) = look(cx);
+            assert!(!folded.contains(&11), "{n}: the find opened the fold");
+            let top = cx
+                .read(|cx| tab.read(cx).line_top(30, cx))
+                .expect("the match's line drawn");
+            assert!(
+                top >= g.scroll.y && top + g.line_height <= g.scroll.y + g.bounds.size.height,
+                "{n}: the match on screen: its top {top:?}, the scroll {:?}, the view {:?}",
+                g.scroll.y,
+                g.bounds.size.height
+            );
+            cx.simulate_keystrokes(window, "escape");
+        });
+        // A file with no blocks: no fold column.
+        let (_, g) = code_shot(&theme, &flat, dims, |_, _, _| {});
+        assert_eq!(g.fold_left, None, "{n}: no blocks, no fold column");
+    }
+    println!("ui-shots: {n} ok");
+}
+
+/// `file-code-nav` (M11ah Task 8): the bar's previous / next change buttons (24 pt) show only when
+/// the file has a change; ⌥↓ goes to the next change (its first line current, 3 rows from the
+/// top, 4 under a sticky line), opening a fold that holds it; at the last change the button is
+/// faint and ⌥↓ does nothing (no wrap-around); ⌥↑ goes back; a jump ends Follow; plain ↑ / ↓ and
+/// ⌥↓ in the find box change nothing; the buttons click.
+fn file_code_nav_scenes() {
+    use crate::git_status::LineChange;
+    use crate::live_lines::{Sure, Who};
+    use crate::ui_tokens::code;
+    use gpui::{Focusable, Modifiers, MouseButton};
+
+    let path = live_file("nav.rs", &fold_fixture());
+    let flat = live_file("nav-flat.txt", "one\ntwo\nthree\n");
+    let dims = size(px(760.0), px(400.0));
+    let n = "file-code-nav";
+    let theme = shot_theme(shot_themes()[0].1);
+    let ui = theme.ui();
+    // 1-based, as git counts: lines 2, 21 (inside `fn refresh`) and 39 changed.
+    let changes = vec![
+        (2, LineChange::Changed),
+        (21, LineChange::Added),
+        (39, LineChange::Changed),
+    ];
+    let ends: std::rc::Rc<std::cell::Cell<[Option<gpui::Bounds<gpui::Pixels>>; 2]>> =
+        std::rc::Rc::default();
+    let ends_in = ends.clone();
+    let (shot, _) = code_shot(&theme, &path, dims, |cx, window, tab| {
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_changes(changes, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.fold_for_shots(&[11], cx)));
+        live_frame(cx, window);
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+        let look = |cx: &mut VisualTestAppContext| {
+            live_frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                (
+                    t.current_line(),
+                    t.top_line_for_shots(),
+                    t.folded_lines(),
+                    t.change_nav_for_shots(),
+                )
+            })
+        };
+        // Both buttons, 24 pt; at the top with no current line: nothing before, a change after.
+        let (current, top, _, nav) = look(cx);
+        assert_eq!((current, top), (None, Some(0)), "{n}");
+        assert_eq!(nav, Some((false, true)), "{n}: previous faint, next live");
+        let [prev, next] = cx.read(|cx| tab.read(cx).nav_drawn());
+        let (prev, next) = (prev.expect("previous drawn"), next.expect("next drawn"));
+        for b in [prev, next] {
+            assert_eq!(
+                (f32::from(b.size.width), f32::from(b.size.height)),
+                (code::NAV_BUTTON, code::NAV_BUTTON),
+                "{n}: the buttons are 24 pt"
+            );
+        }
+        assert!(prev.right() <= next.left(), "{n}: previous, then next");
+        // ⌥↓: the first change; the fold holding the next one is still shut.
+        cx.simulate_keystrokes(window, "alt-down");
+        let (current, top, folded, nav) = look(cx);
+        assert_eq!(current, Some(1), "{n}: the first change is current");
+        assert_eq!(top, Some(0), "{n}: near the top it stays there");
+        assert_eq!(folded, [11], "{n}");
+        assert_eq!(nav, Some((false, true)), "{n}");
+        // ⌥↓: a change inside the fold opens it; the line sits 4 rows down (3, and one more for
+        // the sticky line `fn refresh` pins there).
+        cx.simulate_keystrokes(window, "alt-down");
+        let (current, top, folded, nav) = look(cx);
+        assert_eq!(current, Some(20), "{n}");
+        assert!(folded.is_empty(), "{n}: the fold opened");
+        assert_eq!(
+            top,
+            Some(16),
+            "{n}: 4 rows from the top under a sticky line"
+        );
+        assert_eq!(nav, Some((true, true)), "{n}");
+        // ⌥↓ to the last change: next goes faint; again does nothing.
+        cx.simulate_keystrokes(window, "alt-down");
+        let (current, top, _, nav) = look(cx);
+        assert_eq!(current, Some(38), "{n}: the last change");
+        assert_eq!(
+            nav,
+            Some((true, false)),
+            "{n}: next is faint at the last change"
+        );
+        cx.simulate_keystrokes(window, "alt-down");
+        let (again, top_again, _, _) = look(cx);
+        assert_eq!((again, top_again), (Some(38), top), "{n}: no wrap-around");
+        // Plain arrows change nothing, as before.
+        for key in ["up", "down"] {
+            cx.simulate_keystrokes(window, key);
+            let (c, t, _, _) = look(cx);
+            assert_eq!((c, t), (Some(38), top), "{n}: plain {key} does nothing");
+        }
+        // ⌥↓ typed in the find box is the box's, not a jump.
+        cx.simulate_keystrokes(window, "alt-up");
+        assert_eq!(look(cx).0, Some(20), "{n}: ⌥↑ goes back");
+        cx.simulate_keystrokes(window, "cmd-f");
+        live_frame(cx, window);
+        cx.simulate_keystrokes(window, "alt-down");
+        assert_eq!(
+            look(cx).0,
+            Some(20),
+            "{n}: not while the find box has the keys"
+        );
+        cx.simulate_keystrokes(window, "escape");
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+        // ⌥↑ to the first change: previous goes faint; again does nothing.
+        cx.simulate_keystrokes(window, "alt-up");
+        let (current, top, _, nav) = look(cx);
+        assert_eq!(current, Some(1), "{n}");
+        assert_eq!(
+            nav,
+            Some((false, true)),
+            "{n}: previous is faint at the first change"
+        );
+        cx.simulate_keystrokes(window, "alt-up");
+        assert_eq!(look(cx).0, Some(1), "{n}: no wrap-around");
+        assert_eq!(look(cx).1, top, "{n}");
+        // The buttons click.
+        let centre = |b: gpui::Bounds<gpui::Pixels>| b.center();
+        let none = Modifiers::none();
+        let [_, next] = cx.read(|cx| tab.read(cx).nav_drawn());
+        let at = centre(next.expect("next drawn"));
+        cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+        cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+        assert_eq!(look(cx).0, Some(20), "{n}: the next button jumps");
+        // A jump ends Follow.
+        let codex = Who::Agent(crate::edit_ledger::agent_mark_for("codex"));
+        let record = live_record(40, &[(30..31, codex, Sure::Exact, 2)]);
+        cx.update(|cx| {
+            tab.update(cx, |t, _| {
+                t.set_live_for_shot(record, live_now(), Some(true));
+            })
+        });
+        assert!(cx.read(|cx| tab.read(cx).follow_on()), "{n}: Follow is on");
+        cx.simulate_keystrokes(window, "alt-down");
+        assert_eq!(look(cx).0, Some(38), "{n}");
+        assert!(
+            !cx.read(|cx| tab.read(cx).follow_on()),
+            "{n}: a jump ends Follow"
+        );
+        ends_in.set(cx.read(|cx| tab.read(cx).nav_drawn()));
+    });
+    keep_shot(n, &shot);
+    // At the last change, previous is live and next is faint (nearer `text_faint` than `text`).
+    let [prev, next] = ends.get().map(|b| b.expect("drawn"));
+    let dist = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
+        p.iter()
+            .zip([c.r, c.g, c.b])
+            .map(|(a, b)| u32::from(a.abs_diff(b)))
+            .sum::<u32>()
+    };
+    let (live_ink, faint_ink) = (
+        ink_in(&shot, dims, prev, [ui.panel.r, ui.panel.g, ui.panel.b]),
+        ink_in(&shot, dims, next, [ui.panel.r, ui.panel.g, ui.panel.b]),
+    );
+    assert!(
+        dist(live_ink, ui.text) < dist(live_ink, ui.text_faint),
+        "{n}: previous is live"
+    );
+    assert!(
+        dist(faint_ink, ui.text_faint) < dist(faint_ink, ui.text),
+        "{n}: next is faint"
+    );
+    // A file with no change: no buttons.
+    code_shot(&theme, &flat, dims, |cx, window, tab| {
+        live_frame(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).change_nav_for_shots()),
+            None,
+            "{n}"
+        );
+        assert_eq!(cx.read(|cx| tab.read(cx).nav_drawn()), [None, None], "{n}");
+    });
+    println!("ui-shots: {n} ok");
+}
+
+/// The sticky line and breadcrumb scenes' file: `impl Session` (0-based line 5) holds
+/// `fn refresh` (line 6, its first line far wider than the view, in tall letters), whose 30 lines
+/// (7..37) and `}` follow; then `fn small` (line 39). Then `impl Other` (line 44) holds a note
+/// and `fn last` (line 46), whose 20 lines (47..67) follow.
+fn sticky_fixture() -> String {
+    let mut text = String::from(
+        "// A session, for the sticky line and breadcrumb scenes.\nstruct Session {\n    id: u32,\n}\n\nimpl Session {\n",
+    );
+    text.push_str(&format!(
+        "    fn refresh(&mut self, data: {}) {{\n",
+        "H".repeat(200)
+    ));
+    for k in 7..37 {
+        text.push_str(&format!("        let v{k} = {k};\n"));
+    }
+    text.push_str("    }\n\n    fn small(&self) {\n        let z = 0;\n    }\n}\n");
+    text.push_str("\nimpl Other {\n    // A note.\n    fn last(&self) {\n");
+    for k in 47..67 {
+        text.push_str(&format!("        let w{k} = {k};\n"));
+    }
+    text.push_str("    }\n}\n");
+    text
+}
+
+/// `sticky_fixture`'s line count.
+const STICKY_LINES: usize = 69;
+
+/// The pixel in `b` (window points) that stands out most from `bg`: a part's ink.
+fn ink_in(
+    shot: &Shot,
+    dims: gpui::Size<gpui::Pixels>,
+    b: gpui::Bounds<gpui::Pixels>,
+    bg: [u8; 3],
+) -> [u8; 3] {
+    let (x0, y0) = (f32::from(b.left()), f32::from(b.top()));
+    let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+    let far = |p: [u8; 3]| {
+        p.iter()
+            .zip(bg)
+            .map(|(a, b)| u32::from(a.abs_diff(b)))
+            .sum::<u32>()
+    };
+    let mut best = bg;
+    for i in 0..(w * 2.0) as usize {
+        for j in 0..(h * 2.0) as usize {
+            let p = pixel_at(shot, dims, x0 + i as f32 * 0.5, y0 + j as f32 * 0.5);
+            if far(p) > far(best) {
+                best = p;
+            }
+        }
+    }
+    best
+}
+
+/// `file-code-sticky` (both themes; M11ah Task 6): scrolled into `fn refresh`, its first line is
+/// pinned over the text's first row with its number, on the background, a 1 pt `divider` under
+/// it; with Wrap on it is one row, cut with "…"; a press on it scrolls back (that line on top,
+/// current, Follow off); Follow and a find step land below it (`REVEAL_ABOVE` rows under it), and
+/// a match under it is scrolled clear of it. The line exactly at the top has none over it.
+fn file_code_sticky_scenes() {
+    use crate::ui_tokens::code;
+    use gpui::{Focusable, Modifiers, MouseButton};
+
+    let path = live_file("sticky.rs", &sticky_fixture());
+    let dims = size(px(760.0), px(400.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = theme.background;
+        let bg3 = [bg.r, bg.g, bg.b];
+        // Scrolled so line 16 (0-based 15) is at the top.
+        let n = format!("file-code-sticky-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            // Line 16 (0-based 15, under the sticky line) and line 17 current: their band.
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_scroll(point(px(0.0), g.line_height * 15.0), cx);
+                    t.set_current_for_shots(Some(15), cx);
+                })
+            });
+            live_frame(cx, window);
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).sticky_line()),
+                Some(6),
+                "file-code-sticky: fn refresh pinned"
+            );
+        });
+        keep_shot(&n, &shot);
+        let lh = f32::from(g.line_height);
+        let top = f32::from(g.bounds.top());
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        let cell = |k: usize| f32::from(g.bounds.left() + g.text_left + g.cell_width * k as f32);
+        let row_box = |x0: f32, x1: f32, row: usize| {
+            gpui::Bounds::from_corners(
+                point(px(x0), px(top + lh * row as f32 + 2.0)),
+                point(px(x1), px(top + lh * (row as f32 + 1.0) - 2.0)),
+            )
+        };
+        // Its text: `fn` from cell 4 (line 16 has spaces there, its `let` at cell 8).
+        let fn_ink = ink_in(&shot, dims, row_box(cell(4), cell(6), 0), bg3);
+        assert!(
+            !live_near(fn_ink, bg, 40),
+            "{n}: `fn` drawn at cell 4 of row 0"
+        );
+        // Its number: 7, in the numbers' column.
+        let right = f32::from(g.bounds.left() + g.numbers_right);
+        let number = ink_in(
+            &shot,
+            dims,
+            row_box(right - f32::from(g.cell_width), right, 0),
+            bg3,
+        );
+        assert!(!live_near(number, bg, 40), "{n}: its number");
+        // On the background (the far right of its row), a divider 1 pt under it.
+        // On the background: the current line's band under it is covered.
+        let gutter = f32::from(g.bounds.left()) + 4.0;
+        let ground = at(gutter, top + lh * 0.5);
+        assert!(
+            live_near(ground, bg, 1),
+            "{n}: on the background {ground:?}"
+        );
+        let far = f32::from(g.bounds.right()) - 30.0;
+        let rule = at(far, top + lh + code::STICKY_RULE / 2.0);
+        assert!(
+            live_near(rule, ui.divider, 8),
+            "{n}: the divider {rule:?}, not {:?}",
+            ui.divider
+        );
+        assert!(
+            live_near(at(far, top + lh + 4.0), bg, 2),
+            "{n}: one point only"
+        );
+        println!("ui-shots: {n} ok");
+
+        // Wrap on: one row, cut with "…" (dots on the baseline, where `H` would stand tall).
+        let n = format!("file-code-sticky-wrap-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().file_wrap = true);
+            live_frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_scroll(point(px(0.0), g.line_height * 20.0), cx)
+                })
+            });
+            live_frame(cx, window);
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).sticky_line()),
+                Some(6),
+                "file-code-sticky-wrap"
+            );
+        });
+        keep_shot(&n, &shot);
+        let (lh, top) = (f32::from(g.line_height), f32::from(g.bounds.top()));
+        let cw = f32::from(g.cell_width);
+        let text_x = f32::from(g.bounds.left() + g.text_left);
+        let columns = ((f32::from(g.bounds.size.width) - f32::from(g.text_left) - 24.0) / cw)
+            .floor() as usize;
+        let upper = |k: usize, row: usize| {
+            gpui::Bounds::from_corners(
+                point(
+                    px(text_x + cw * k as f32 + 1.0),
+                    px(top + lh * row as f32 + lh * 0.2),
+                ),
+                point(
+                    px(text_x + cw * (k + 1) as f32 - 1.0),
+                    px(top + lh * row as f32 + lh * 0.45),
+                ),
+            )
+        };
+        let lower = |k: usize, row: usize| {
+            gpui::Bounds::from_corners(
+                point(
+                    px(text_x + cw * k as f32),
+                    px(top + lh * row as f32 + lh * 0.55),
+                ),
+                point(
+                    px(text_x + cw * (k + 1) as f32),
+                    px(top + lh * row as f32 + lh * 0.85),
+                ),
+            )
+        };
+        let tall = ink_in(&shot, dims, upper(columns - 2, 0), bg3);
+        assert!(
+            !live_near(tall, bg, 40),
+            "{n}: an H before the cut ({columns} cells)"
+        );
+        let dots_top = ink_in(&shot, dims, upper(columns - 1, 0), bg3);
+        assert!(
+            live_near(dots_top, bg, 30),
+            "{n}: no H in the last cell {dots_top:?}"
+        );
+        let dots = ink_in(&shot, dims, lower(columns - 1, 0), bg3);
+        assert!(!live_near(dots, bg, 40), "{n}: the … in the last cell");
+        // One row: the row under it is another line's (its `let`, at cell 8; nothing at 4).
+        let under = ink_in(&shot, dims, upper(4, 1), bg3);
+        assert!(live_near(under, bg, 30), "{n}: one row only");
+        println!("ui-shots: {n} ok");
+    }
+
+    // State: the press, Follow, and Find.
+    let n = "file-code-sticky-state";
+    let theme = shot_theme(shot_themes()[0].1);
+    code_shot(&theme, &path, dims, |cx, window, tab| {
+        let none = Modifiers::none();
+        let read = |cx: &mut VisualTestAppContext| {
+            live_frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let g = t.geom().expect("drawn");
+                let top = (f32::from(g.scroll.y) / f32::from(g.line_height)).round() as usize;
+                (top, t.sticky_line(), t.current_line(), t.follow_on(), g)
+            })
+        };
+        let scroll_to = |cx: &mut VisualTestAppContext, row: usize| {
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_scroll(point(px(0.0), g.line_height * row as f32), cx)
+                })
+            });
+        };
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+        live_frame(cx, window);
+        // Exactly at a block's own first line it is not pinned (`impl Session` has nothing
+        // above it; `fn refresh` has `impl Session` pinned); one point further, it is.
+        scroll_to(cx, 5);
+        assert_eq!(read(cx).1, None, "{n}: none at impl's own first line");
+        scroll_to(cx, 6);
+        assert_eq!(
+            read(cx).1,
+            Some(5),
+            "{n}: at fn refresh's own first line, impl"
+        );
+        let g = read(cx).4;
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), g.line_height * 6.0 + px(2.0)), cx)
+            })
+        });
+        assert_eq!(
+            read(cx).1,
+            Some(6),
+            "{n}: pinned once its line scrolls above the top"
+        );
+        // A press on it: back to its line, on top and current; Follow off.
+        scroll_to(cx, 15);
+        let codex = crate::live_lines::Who::Agent(crate::edit_ledger::agent_mark_for("codex"));
+        let record = live_record(
+            STICKY_LINES,
+            &[(33..34, codex.clone(), crate::live_lines::Sure::Exact, 2)],
+        );
+        cx.update(|cx| {
+            tab.update(cx, |t, _| {
+                t.set_live_for_shot(record, live_now(), Some(true))
+            })
+        });
+        let (_, sticky, _, follow, g) = read(cx);
+        assert_eq!((sticky, follow), (Some(6), true), "{n}");
+        let on = point(
+            g.bounds.left() + g.text_left + px(40.0),
+            g.bounds.top() + g.line_height * 0.5,
+        );
+        cx.simulate_mouse_down(window, on, MouseButton::Left, none);
+        cx.simulate_mouse_up(window, on, MouseButton::Left, none);
+        // Fix round 1: its line is the first row seen, right under the sticky line pinned
+        // there now (impl, which holds it), not covered by it.
+        // (A sticky line would pin impl over it at the top: one row lower, impl's own line is
+        // at the top, so nothing is pinned and its line is the first row under it.)
+        let (top, sticky, current, follow, _) = read(cx);
+        assert_eq!((top, sticky), (5, None), "{n}: impl's own line on top");
+        let seen = cx.read(|cx| tab.read(cx).line_at_row(top + 1));
+        assert_eq!(seen, Some(6), "{n}: its line right under it, seen");
+        assert_eq!(current, Some(6), "{n}: and makes it current");
+        assert!(!follow, "{n}: a press on it ends Follow");
+        // In `fn last` (a note between it and `impl Other`): pressed, its line lands right
+        // under `impl Other` pinned, seen (not covered), and current.
+        scroll_to(cx, 52);
+        assert_eq!(read(cx).1, Some(46), "{n}: fn last pinned");
+        cx.simulate_mouse_down(window, on, MouseButton::Left, none);
+        cx.simulate_mouse_up(window, on, MouseButton::Left, none);
+        let (top, sticky, current, _, _) = read(cx);
+        assert_eq!(sticky, Some(44), "{n}: impl Other pinned over the note");
+        assert_eq!(top, 45, "{n}: the note under the sticky line");
+        let seen = cx.read(|cx| tab.read(cx).line_at_row(top + 1));
+        assert_eq!(seen, Some(46), "{n}: fn last right under the sticky line");
+        assert_eq!(current, Some(46), "{n}: and current");
+        // Follow: the agent's change (line 27, 0-based 26) out of view lands 3 rows under the
+        // sticky line.
+        scroll_to(cx, 0);
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                let record = live_record(
+                    STICKY_LINES,
+                    &[(26..27, codex.clone(), crate::live_lines::Sure::Exact, 2)],
+                );
+                t.set_live_for_shot(record, live_now(), Some(true));
+                t.follow_for_shots(cx);
+            })
+        });
+        let (top, sticky, _, follow, _) = read(cx);
+        assert_eq!(sticky, Some(6), "{n}: Follow under the sticky line");
+        assert_eq!(top, 26 - 4, "{n}: the change 3 rows below the sticky line");
+        assert!(follow, "{n}: Follow stays on");
+        // Find: a new query's match off screen lands 3 rows under the sticky line.
+        scroll_to(cx, 0);
+        cx.simulate_keystrokes(window, "cmd-f");
+        cx.simulate_input(window, "v25 ");
+        let (top, sticky, _, _, _) = read(cx);
+        assert_eq!(cx.read(|cx| tab.read(cx).find_label()), "1 of 1", "{n}");
+        assert_eq!(
+            (top, sticky),
+            (25 - 4, Some(6)),
+            "{n}: the find lands below it"
+        );
+        // A match under the sticky line (its line at the top) is scrolled clear of it by a
+        // step, which makes its line current.
+        scroll_to(cx, 25);
+        assert_eq!(read(cx).1, Some(6), "{n}");
+        cx.simulate_keystrokes(window, "cmd-g");
+        let (top, _, current, _, _) = read(cx);
+        assert_eq!(
+            (top, current),
+            (25 - 4, Some(25)),
+            "{n}: the step's match scrolled clear of the sticky line"
+        );
+        // Fix round 1: the rows reflow with no scroll of yours (Wrap on, then a bigger font,
+        // then a narrower window): the line at the top stays, and the place with it.
+        cx.simulate_keystrokes(window, "escape");
+        cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().file_wrap = true);
+        live_frame(cx, window);
+        scroll_to(cx, 20);
+        let place = |cx: &mut VisualTestAppContext| {
+            live_frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let g = t.geom().expect("drawn");
+                (t.top_line_for_shots(), t.sticky_line(), t.crumb_words(), g)
+            })
+        };
+        let (top, sticky, words, g0) = place(cx);
+        assert_eq!(sticky, Some(6), "{n}: wrapped, inside fn refresh");
+        assert!(top.is_some_and(|l| l > 6), "{n}: the top line {top:?}");
+        cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().font_size *= 1.5);
+        let (after, sticky_after, words_after, g1) = place(cx);
+        assert!(g1.line_height > g0.line_height, "{n}: a bigger font");
+        assert_eq!(after, top, "{n}: a font change keeps the top line");
+        assert_eq!(
+            (sticky_after, &words_after),
+            (sticky, &words),
+            "{n}: and the place"
+        );
+    });
+    // A narrower pane, Wrap on (the rows cut at another width): the top line stays, and the place
+    // with it. (The off-screen window keeps its size: the tab is narrowed in a host.)
+    let slot: LiveSlot = std::rc::Rc::default();
+    let host: std::rc::Rc<std::cell::RefCell<Option<gpui::Entity<NarrowHost>>>> =
+        std::rc::Rc::default();
+    let tab_build = live_tab(theme, path.clone(), slot.clone());
+    let keep = host.clone();
+    let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+        let tab = tab_build(window, cx);
+        let h = cx.new(|_| NarrowHost { tab, width: 760.0 });
+        *keep.borrow_mut() = Some(h.clone());
+        h.into()
+    };
+    render_with(&theme, dims, build, move |cx, window| {
+        let tab = slot.borrow_mut().take().expect("the file tab");
+        let host = host.borrow_mut().take().expect("the host");
+        cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().file_wrap = true);
+        live_frame(cx, window);
+        let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), g.line_height * 20.0), cx)
+            })
+        });
+        let place = |cx: &mut VisualTestAppContext| {
+            live_frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let g = t.geom().expect("drawn");
+                (t.top_line_for_shots(), t.sticky_line(), t.crumb_words(), g)
+            })
+        };
+        let (top, sticky, words, g0) = place(cx);
+        assert_eq!(sticky, Some(6), "{n}: wrapped, inside fn refresh");
+        cx.update(|cx| {
+            host.update(cx, |h, cx| {
+                h.width = 480.0;
+                cx.notify();
+            })
+        });
+        let (after, sticky_after, words_after, g1) = place(cx);
+        assert!(
+            g1.bounds.size.width < g0.bounds.size.width,
+            "{n}: a narrower pane ({:?})",
+            g1.bounds.size.width
+        );
+        assert_eq!(after, top, "{n}: a narrower pane keeps the top line");
+        assert_eq!(
+            (sticky_after, &words_after),
+            (sticky, &words),
+            "{n}: and the place"
+        );
+    });
+    println!("ui-shots: {n} ok");
+}
+
+/// A file tab in a host `width` points wide (a pane narrowed; the scene changes it).
+struct NarrowHost {
+    tab: AnyView,
+    width: f32,
+}
+
+impl gpui::Render for NarrowHost {
+    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+        use gpui::{ParentElement, Styled};
+        gpui::div()
+            .h_full()
+            .w(px(self.width))
+            .child(self.tab.clone())
+    }
+}
+
+/// `file-code-breadcrumb` (both themes; M11ah Task 6): a strip `code::BREADCRUMB` tall under the
+/// file bar (under the find bar when open), its parts in `text_dim` and the last in `text`:
+/// `sticky.rs › impl Session › fn refresh(…`; narrow, `… › fn refresh(…`; a press on a part puts
+/// its line on top and current and ends Follow; the file's name goes to the top. No strip in Diff,
+/// in Preview, or for a flat text file; the text's top is the same with names (colours) or none.
+fn file_code_breadcrumb_scenes() {
+    use crate::ui_tokens::code;
+    use gpui::{Modifiers, MouseButton};
+
+    let text = sticky_fixture();
+    let path = live_file("sticky-crumbs.rs", &text);
+    // The same blocks in a file nothing colours: no names.
+    let unnamed = live_file("sticky-crumbs.zz", &text);
+    let flat = live_file("crumbs-flat.txt", "one\ntwo\nthree\n");
+    let md = live_file(
+        "crumbs.md",
+        "# Notes\n\nSome words.\n\n## More\n\nOther words.\n",
+    );
+    let dims = size(px(760.0), px(400.0));
+    let bar = 42.0;
+    let fn_words = "fn refresh(&mut self, data: HHHH\u{2026}";
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg3 = [theme.background.r, theme.background.g, theme.background.b];
+        let n = format!("file-code-breadcrumb-{slug}");
+        let drawn = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let keep = drawn.clone();
+        let (shot, g) = code_shot(&theme, &path, dims, move |cx, window, tab| {
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_scroll(point(px(0.0), g.line_height * 15.0), cx)
+                })
+            });
+            live_frame(cx, window);
+            *keep.borrow_mut() = cx.read(|cx| tab.read(cx).crumbs_drawn());
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).crumb_words()),
+                ["sticky-crumbs.rs", "impl Session", fn_words],
+                "file-code-breadcrumb: the path"
+            );
+        });
+        keep_shot(&n, &shot);
+        let parts = drawn.borrow().clone();
+        let words: Vec<&str> = parts.iter().map(|(_, w)| w.as_str()).collect();
+        assert_eq!(
+            words,
+            ["sticky-crumbs.rs", "impl Session", fn_words],
+            "{n}: all fit"
+        );
+        // The strip: 26 pt under the bar, the text's room under it.
+        let strip = parts[0].0;
+        assert_eq!(f32::from(strip.top()), bar, "{n}: under the bar");
+        assert_eq!(
+            f32::from(strip.size.height),
+            code::BREADCRUMB,
+            "{n}: 26 pt tall"
+        );
+        assert_eq!(
+            f32::from(g.bounds.top()),
+            bar + code::BREADCRUMB + code::TOP_ROOM,
+            "{n}: the text under the strip"
+        );
+        // Parts in text_dim, the last in text.
+        let first = ink_in(&shot, dims, parts[0].0, bg3);
+        let last = ink_in(&shot, dims, parts[2].0, bg3);
+        assert!(
+            live_near(first, ui.text_dim, 40),
+            "{n}: the file's name {first:?}, not {:?}",
+            ui.text_dim
+        );
+        assert!(
+            live_near(last, ui.text, 40),
+            "{n}: the last part {last:?}, not {:?}",
+            ui.text
+        );
+        assert!(
+            parts[0].0.right() < parts[1].0.left(),
+            "{n}: a separator between"
+        );
+        println!("ui-shots: {n} ok");
+
+        // Narrow: the outer parts fold into "…"; the innermost stays.
+        let n = format!("file-code-breadcrumb-narrow-{slug}");
+        let narrow = size(px(300.0), px(300.0));
+        let drawn = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let keep = drawn.clone();
+        let (shot, _) = code_shot(&theme, &path, narrow, move |cx, window, tab| {
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_scroll(point(px(0.0), g.line_height * 15.0), cx)
+                })
+            });
+            live_frame(cx, window);
+            *keep.borrow_mut() = cx.read(|cx| tab.read(cx).crumbs_drawn());
+        });
+        keep_shot(&n, &shot);
+        let words: Vec<String> = drawn.borrow().iter().map(|(_, w)| w.clone()).collect();
+        assert_eq!(words, ["\u{2026}", fn_words], "{n}: … › fn refresh");
+        println!("ui-shots: {n} ok");
+    }
+
+    // State: presses, the find bar, other modes, other files.
+    let n = "file-code-breadcrumb-state";
+    let theme = shot_theme(shot_themes()[0].1);
+    let (_, named) = code_shot(&theme, &path, dims, |cx, window, tab| {
+        let none = Modifiers::none();
+        let read = |cx: &mut VisualTestAppContext| {
+            live_frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let g = t.geom().expect("drawn");
+                let top = (f32::from(g.scroll.y) / f32::from(g.line_height)).round() as usize;
+                (top, t.current_line(), t.follow_on(), t.crumbs_drawn(), g)
+            })
+        };
+        let press = |cx: &mut VisualTestAppContext, at: gpui::Point<gpui::Pixels>| {
+            cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+            cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+        };
+        let g = read(cx).4;
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), g.line_height * 15.0), cx)
+            })
+        });
+        // The current line elsewhere (fn small's): the breadcrumb follows the top, not it.
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_current_for_shots(Some(40), cx)));
+        let codex = crate::live_lines::Who::Agent(crate::edit_ledger::agent_mark_for("codex"));
+        let record = live_record(
+            STICKY_LINES,
+            &[(33..34, codex, crate::live_lines::Sure::Exact, 2)],
+        );
+        cx.update(|cx| {
+            tab.update(cx, |t, _| {
+                t.set_live_for_shot(record, live_now(), Some(true))
+            })
+        });
+        let (_, current, follow, parts, _) = read(cx);
+        assert_eq!((current, follow), (Some(40), true), "{n}");
+        assert_eq!(
+            parts[1].1, "impl Session",
+            "{n}: the top's path, not the current line's"
+        );
+        // A press on `impl Session`: its line on top, current; Follow off.
+        press(cx, parts[1].0.center());
+        let (top, current, follow, _, _) = read(cx);
+        assert_eq!(
+            (top, current, follow),
+            (5, Some(5), false),
+            "{n}: a part's press"
+        );
+        // Fix round 1: a nested part (`fn refresh`): its line right under the sticky line
+        // pinned there (impl), current.
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), g.line_height * 15.0), cx)
+            })
+        });
+        let parts = read(cx).3;
+        press(cx, parts[2].0.center());
+        let (top, current, _, _, _) = read(cx);
+        assert_eq!(cx.read(|cx| tab.read(cx).sticky_line()), None, "{n}");
+        assert_eq!((top, current), (5, Some(6)), "{n}: a nested part's press");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).line_at_row(top + 1)),
+            Some(6),
+            "{n}"
+        );
+        // `fn last` (a note between it and `impl Other`): right under `impl Other` pinned.
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), g.line_height * 52.0), cx)
+            })
+        });
+        let parts = read(cx).3;
+        assert_eq!(parts[2].1, "fn last(&self)", "{n}");
+        press(cx, parts[2].0.center());
+        let (top, current, _, _, _) = read(cx);
+        assert_eq!(cx.read(|cx| tab.read(cx).sticky_line()), Some(44), "{n}");
+        assert_eq!(
+            (top, current),
+            (45, Some(46)),
+            "{n}: a nested part under the sticky line"
+        );
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).line_at_row(top + 1)),
+            Some(46),
+            "{n}"
+        );
+        // The file's name: the top.
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), g.line_height * 15.0), cx)
+            })
+        });
+        let parts = read(cx).3;
+        press(cx, parts[0].0.center());
+        let (top, current, _, _, _) = read(cx);
+        assert_eq!(
+            (top, current),
+            (0, Some(46)),
+            "{n}: the file's name goes to the top"
+        );
+        // The find bar open: the strip under it.
+        cx.simulate_keystrokes(window, "cmd-f");
+        let (_, _, _, parts, g) = read(cx);
+        let strip = parts[0].0;
+        assert!(f32::from(strip.top()) > bar, "{n}: under the find bar");
+        assert_eq!(
+            g.bounds.top(),
+            strip.bottom() + px(code::TOP_ROOM),
+            "{n}: the text under the strip"
+        );
+        cx.simulate_keystrokes(window, "escape");
+        // Diff mode: no strip.
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.pretend_in_repo_for_shots(cx);
+                t.choose_mode_for_shots(crate::layout_model::FileMode::Diff, cx);
+            })
+        });
+        assert!(
+            read_drawn(cx, window, tab).is_empty(),
+            "{n}: no strip in Diff"
+        );
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.choose_mode_for_shots(crate::layout_model::FileMode::Plain, cx)
+            })
+        });
+        assert!(
+            !read_drawn(cx, window, tab).is_empty(),
+            "{n}: back in File mode"
+        );
+    });
+    // Names or none (the colours landed, or a file nothing colours): the text's top is the same.
+    let (_, plain) = code_shot(&theme, &unnamed, dims, |_, _, _| {});
+    assert_eq!(
+        named.bounds.top(),
+        plain.bounds.top(),
+        "{n}: the text does not move for names"
+    );
+    // A flat text file: no strip.
+    let (_, g) = code_shot(&theme, &flat, dims, |cx, window, tab| {
+        assert!(
+            read_drawn(cx, window, tab).is_empty(),
+            "{n}: no strip for a flat file"
+        );
+    });
+    assert_eq!(
+        f32::from(g.bounds.top()),
+        bar + code::TOP_ROOM,
+        "{n}: flat: the text under the bar"
+    );
+    // Markdown: a strip in File mode, none in Preview.
+    code_shot(&theme, &md, dims, |cx, window, tab| {
+        assert!(
+            !read_drawn(cx, window, tab).is_empty(),
+            "{n}: Markdown headings in File mode"
+        );
+        cx.update_window(window, |_, window, cx| {
+            tab.update(cx, |t, cx| t.choose_preview_for_shots(true, window, cx))
+        })
+        .expect("preview");
+        assert!(
+            read_drawn(cx, window, tab).is_empty(),
+            "{n}: no strip in Preview"
+        );
+    });
+    println!("ui-shots: {n} ok");
+}
+
+/// The breadcrumb's pieces drawn this frame.
+fn read_drawn(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &gpui::Entity<crate::file_tab::FileTab>,
+) -> Vec<(gpui::Bounds<gpui::Pixels>, String)> {
+    live_frame(cx, window);
+    cx.read(|cx| tab.read(cx).crumbs_drawn())
+}
+
+/// The lane scene's file: 100 four-line functions (400 lines), a "needle" on lines 100, 250 and
+/// 330 (0-based 99, 249, 329).
+fn lane_fixture() -> String {
+    let mut lines: Vec<String> = (0..100)
+        .flat_map(|k| {
+            [
+                format!("fn f{k}() {{"),
+                "    let a = 1;".to_string(),
+                "    let b = 2;".to_string(),
+                "}".to_string(),
+            ]
+        })
+        .collect();
+    for at in [99, 249, 329] {
+        lines[at] = "    let needle = 3;".to_string();
+    }
+    lines.join("\n") + "\n"
+}
+
+/// `file-code-lane` (both themes; M11ah Task 7): in a 400-line file with changes near the top,
+/// the middle and the end and three find matches, the scrollbar's lane (4 pt, at the right
+/// edge) carries a mark at each change's place in the bar colours (at least 2 pt) and an accent
+/// tick at each match, the current one brighter; the marks are still drawn once the thumb has
+/// faded; a fold above a change moves its mark up; a press on the lane jumps as a track press.
+fn file_code_lane_scenes() {
+    use crate::git_status::LineChange;
+    use crate::scrollbar::Axis;
+    use crate::theme::mix;
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+    use gpui::{Focusable, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, TouchPhase};
+
+    let path = live_file("lane.rs", &lane_fixture());
+    let dims = size(px(760.0), px(400.0));
+    // 1-based, as git counts: lines 30 and 390 added, 200 changed.
+    let changes = || {
+        vec![
+            (30, LineChange::Added),
+            (200, LineChange::Changed),
+            (390, LineChange::Added),
+        ]
+    };
+    let setup = |cx: &mut VisualTestAppContext,
+                 window: AnyWindowHandle,
+                 tab: &gpui::Entity<crate::file_tab::FileTab>| {
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_changes(changes(), cx)));
+        live_frame(cx, window);
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+        cx.simulate_keystrokes(window, "cmd-f");
+        cx.simulate_input(window, "needle ");
+        live_frame(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).find_label()),
+            "1 of 3",
+            "file-code-lane: three matches"
+        );
+    };
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let bg = theme.background;
+        let fit = |c: alacritty_terminal::vte::ansi::Rgb| ensure_contrast(c, bg, MARK_MIN);
+        let (green, blue) = (fit(theme.palette[2]), fit(theme.palette[4]));
+        let accent = theme.ui().accent;
+        let (found, now) = (mix(bg, accent, 0.25), mix(bg, accent, 0.55));
+        // The mark at `line` (0-based, `hidden` lines folded away above it): the lane's place
+        // by the geometry, and the pixels there.
+        let place = |g: &crate::file_tab::Geom, line: usize, hidden: usize| {
+            let (viewport, content) = (
+                f32::from(g.bounds.size.height),
+                f32::from(g.bounds.size.height + g.max_scroll.y),
+            );
+            f32::from(g.bounds.top())
+                + (line - hidden) as f32 * f32::from(g.line_height) * viewport / content
+        };
+        let lane_x = |g: &crate::file_tab::Geom| f32::from(g.bounds.right()) - 2.0;
+        // Some pixel within the mark's first 2 pt (y..y+2) is `want`.
+        let has = |shot: &Shot, g: &crate::file_tab::Geom, y: f32, want, by| {
+            (0..6).any(|k| {
+                live_near(
+                    pixel_at(shot, dims, lane_x(g), y + 0.25 + k as f32 * 0.3),
+                    want,
+                    by,
+                )
+            })
+        };
+
+        // Marks at the changes and the matches, the first match current.
+        let n = format!("file-code-lane-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            setup(cx, window, tab);
+            let marks = cx.read(|cx| tab.read(cx).lane_for_shots());
+            let lens: Vec<f32> = marks.iter().map(|m| m.len).collect();
+            assert!(
+                lens.iter().all(|l| *l >= 2.0),
+                "{n}: every mark is at least 2 pt: {lens:?}"
+            );
+            assert_eq!(marks.len(), 6, "{n}: 3 changes and 3 matches: {marks:?}");
+        });
+        keep_shot(&n, &shot);
+        for (line, colour) in [(29, green), (199, blue), (389, green)] {
+            let y = place(&g, line, 0);
+            assert!(
+                has(&shot, &g, y, colour, 12),
+                "{n}: change at {line} (y {y})"
+            );
+        }
+        for (line, colour, what) in [
+            (99, now, "current"),
+            (249, found, "match"),
+            (329, found, "match"),
+        ] {
+            let y = place(&g, line, 0);
+            assert!(
+                has(&shot, &g, y, colour, 8),
+                "{n}: the {what} at {line} (y {y}), not {colour:?}"
+            );
+        }
+        assert!(
+            !has(&shot, &g, place(&g, 150, 0), green, 40)
+                && live_near(pixel_at(&shot, dims, lane_x(&g), place(&g, 150, 0)), bg, 6),
+            "{n}: nothing drawn between the marks"
+        );
+        println!("ui-shots: {n} ok");
+
+        // The thumb faded: the marks stay.
+        let n = format!("file-code-lane-faded-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            setup(cx, window, tab);
+            // The find scrolled the text down to its match; back up, then a wheel step shows
+            // the thumb, and 1.5 s later it has faded.
+            cx.update(|cx| tab.update(cx, |t, cx| t.set_scroll(point(px(0.0), px(0.0)), cx)));
+            live_frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            cx.simulate_event(
+                window,
+                ScrollWheelEvent {
+                    position: g.bounds.center(),
+                    delta: ScrollDelta::Lines(point(0.0, -1.0)),
+                    modifiers: Modifiers::none(),
+                    touch_phase: TouchPhase::Moved,
+                },
+            );
+            live_frame(cx, window);
+            assert!(cx.read(|cx| tab.read(cx).scrollbar_shown()), "{n}: shown");
+            prof::sleep(std::time::Duration::from_millis(1500));
+            cx.advance_clock(std::time::Duration::from_millis(1500));
+            live_frame(cx, window);
+            assert!(!cx.read(|cx| tab.read(cx).scrollbar_shown()), "{n}: faded");
+        });
+        keep_shot(&n, &shot);
+        // Scrolled one step, the marks are where the geometry puts them still.
+        for (line, colour) in [(29, green), (199, blue), (389, green)] {
+            let y = place(&g, line, 0);
+            assert!(
+                has(&shot, &g, y, colour, 12),
+                "{n}: change at {line} (y {y})"
+            );
+        }
+        println!("ui-shots: {n} ok");
+
+        // Three blocks (12 lines) folded above the first change: its mark moves up.
+        let n = format!("file-code-lane-fold-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_changes(changes(), cx);
+                    t.fold_for_shots(&[0, 4, 8], cx);
+                })
+            });
+            live_frame(cx, window);
+        });
+        keep_shot(&n, &shot);
+        let y = place(&g, 29, 9);
+        assert!(
+            has(&shot, &g, y, green, 12),
+            "{n}: the mark moved up to y {y}"
+        );
+        println!("ui-shots: {n} ok");
+
+        // Hidden matches and deletions tick at their fold's row: blocks at lines 5 and 97
+        // (0-based 4 and 96) folded, lines deleted above 0-based line 6 (hidden in the first)
+        // and above line 150 (shown), the needle on line 100 (hidden in the second, current).
+        let n = format!("file-code-lane-hidden-{slug}");
+        let red = fit(theme.palette[1]);
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            setup(cx, window, tab);
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| {
+                    t.set_changes(
+                        vec![
+                            (6, LineChange::DeletedAfter),
+                            (150, LineChange::DeletedAfter),
+                        ],
+                        cx,
+                    );
+                    t.fold_for_shots(&[4, 96], cx);
+                })
+            });
+            live_frame(cx, window);
+        });
+        keep_shot(&n, &shot);
+        for (line, hidden, colour, what) in [
+            (4, 0, red, "the hidden deletion, on its fold's row"),
+            (150, 6, red, "the shown deletion"),
+            (96, 3, now, "the hidden current match, on its fold's row"),
+            (249, 6, found, "a shown match"),
+        ] {
+            let y = place(&g, line, hidden);
+            assert!(has(&shot, &g, y, colour, 12), "{n}: {what} (y {y})");
+        }
+        println!("ui-shots: {n} ok");
+
+        // A press on the lane (between marks) jumps as a track press does: the thumb centres on it.
+        let n = format!("file-code-lane-press-{slug}");
+        code_shot(&theme, &path, dims, |cx, window, tab| {
+            setup(cx, window, tab);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let at = point(
+                g.bounds.right() - px(2.0),
+                g.bounds.top() + g.bounds.size.height * 0.7,
+            );
+            let none = Modifiers::none();
+            cx.simulate_mouse_down(window, at, MouseButton::Left, none);
+            cx.simulate_mouse_up(window, at, MouseButton::Left, none);
+            live_frame(cx, window);
+            let thumb = cx
+                .read(|cx| tab.read(cx).thumb_bounds(Axis::Vertical))
+                .expect("a thumb");
+            assert!(
+                (thumb.center().y - at.y).abs() < px(3.0),
+                "{n}: the thumb {thumb:?} is not centred on the press {at:?}"
+            );
+            assert!(
+                cx.read(|cx| tab.read(cx).selection()).is_none(),
+                "{n}: a press on the lane selects nothing"
+            );
+        });
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// The cards' fixture (M11ah Task 9): the new file's text and the diff giving it (with the whole
+/// file as context, as fuxx asks git). The old file: a comment, a blank line, `fn setup() {`
+/// (line 3) with 41 lines (line 5 holds the only `needle`), `}`, a blank line,
+/// `fn refresh(&mut self) {` (line 47) with 48 lines, `}`. The new one: line 20 changed, 30
+/// lines added after line 70. Rows: 19 removed, 20 added, 71..101 added; cards on rows 16..24
+/// and 68..104; stretches 0..16, 24..68 (44 lines) and 104..127.
+fn cards_fixture() -> (String, String) {
+    let mut old: Vec<String> = vec!["// Sessions, for the cards' shots.".into(), String::new()];
+    old.push("fn setup() {".into());
+    for k in 4..=44 {
+        old.push(if k == 5 {
+            "    let needle = 5;".into()
+        } else {
+            format!("    let a{k} = {k};")
+        });
+    }
+    old.push("}".into());
+    old.push(String::new());
+    old.push("fn refresh(&mut self) {".into());
+    for k in 48..=95 {
+        old.push(format!("    let b{k} = {k};"));
+    }
+    old.push("}".into());
+    let mut new_text = String::new();
+    let mut u = format!(
+        "diff --git a/cards.rs b/cards.rs\n--- a/cards.rs\n+++ b/cards.rs\n@@ -1,{} +1,{} @@\n",
+        old.len(),
+        old.len() + 30
+    );
+    for (i, line) in old.iter().enumerate() {
+        if i == 19 {
+            let changed = "    let a20 = 2000;";
+            u.push_str(&format!("-{line}\n+{changed}\n"));
+            new_text.push_str(&format!("{changed}\n"));
+            continue;
+        }
+        u.push_str(&format!(" {line}\n"));
+        new_text.push_str(&format!("{line}\n"));
+        if i == 69 {
+            for k in 0..30 {
+                let added = format!("    let c{k} = {k};");
+                u.push_str(&format!("+{added}\n"));
+                new_text.push_str(&format!("{added}\n"));
+            }
+        }
+    }
+    (new_text, u)
+}
+
+/// A frozen tab on `path` shown in Diff mode with `unified` as its diff (drawn).
+fn cards_setup(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &gpui::Entity<crate::file_tab::FileTab>,
+    unified: &str,
+) {
+    cx.update(|cx| {
+        tab.update(cx, |t, cx| {
+            t.pretend_in_repo_for_shots(cx);
+            t.choose_mode_for_shots(crate::layout_model::FileMode::Diff, cx);
+            t.set_diff_for_shots(unified, cx);
+        })
+    });
+    live_frame(cx, window);
+    live_frame(cx, window);
+}
+
+/// `file-diff-cards` (both themes; M11ah Task 9): Diff mode's changes as cards: a rounded panel
+/// 12 pt in from the body's sides with a 1 pt `divider` border; 10 pt between two cards; each
+/// title row with the block's name in `text`, `+n` in green, `−n` in red and `lines a–b` on the
+/// right in `text_dim`; a folded stretch's `⋯ 44 unchanged lines — click to show` centred in
+/// `text_dim`, nothing in the gutter; the indent guides drawn inside the cards; the lane one mark
+/// per card (blue for both, green for added). A new file is one card, `New file · +12`, with
+/// nothing folded.
+fn file_diff_cards_scenes() {
+    use crate::diff_cards::CardKind;
+    use crate::theme::mix;
+    use crate::ui_tokens::code;
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+    use alacritty_terminal::vte::ansi::Rgb;
+
+    let (text, unified) = cards_fixture();
+    let path = live_file("cards.rs", &text);
+    let fresh_text: String = (1..=12).map(|k| format!("let n{k} = {k};\n")).collect();
+    let fresh_path = live_file("cards-new.rs", &fresh_text);
+    let fresh_diff = format!(
+        "diff --git a/cards-new.rs b/cards-new.rs\n@@ -0,0 +1,12 @@\n{}",
+        fresh_text
+            .lines()
+            .map(|l| format!("+{l}\n"))
+            .collect::<String>()
+    );
+    let gone_path = live_file("cards-gone.rs", "");
+    let gone_diff = format!(
+        "diff --git a/cards-gone.rs b/cards-gone.rs\n@@ -1,60 +0,0 @@\n{}",
+        (1..=60)
+            .map(|k| format!("-let g{k} = {k};\n"))
+            .collect::<String>()
+    );
+    let dims = size(px(760.0), px(560.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let bg = theme.background;
+        let fit = |c: Rgb| ensure_contrast(c, bg, MARK_MIN);
+        let (green, red, blue) = (
+            fit(theme.palette[2]),
+            fit(theme.palette[1]),
+            fit(theme.palette[4]),
+        );
+        let dim = ensure_contrast(ui.text_dim, bg, MARK_MIN);
+        let n = format!("file-diff-cards-{slug}");
+        type Read = (Vec<Option<Pixels>>, Vec<Option<Pixels>>, Vec<String>, usize);
+        let seen: std::rc::Rc<std::cell::RefCell<Option<Read>>> = std::rc::Rc::default();
+        let keep = seen.clone();
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cards_setup(cx, window, tab, &unified);
+            let read = cx.read(|cx| {
+                let t = tab.read(cx);
+                let d = t.diff_doc().expect("its rows");
+                let g = &d.grouped;
+                assert_eq!(g.cards.len(), 2, "two cards");
+                assert_eq!(g.cards[0].kind, CardKind::Both);
+                assert_eq!(g.cards[1].kind, CardKind::Added);
+                assert_eq!(
+                    g.stretches
+                        .iter()
+                        .map(|s| s.rows.clone())
+                        .collect::<Vec<_>>(),
+                    [0..16, 24..68, 104..127]
+                );
+                let words: Vec<String> = d
+                    .titles
+                    .iter()
+                    .map(|t| {
+                        format!(
+                            "{}{}{} {}",
+                            t.name,
+                            t.separator(),
+                            [t.added_words(), t.removed_words()]
+                                .into_iter()
+                                .flatten()
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                            t.lines_words().unwrap_or_default()
+                        )
+                    })
+                    .collect();
+                (
+                    (0..2).map(|k| t.title_top(k, cx)).collect(),
+                    [16, 17, 23].map(|l| t.line_top(l, cx)).to_vec(),
+                    words,
+                    t.lane_for_shots().len(),
+                )
+            });
+            *keep.borrow_mut() = Some(read);
+        });
+        keep_shot(&n, &shot);
+        let (titles, lines, words, marks) = seen.borrow_mut().take().expect("read");
+        assert_eq!(
+            words,
+            [
+                "fn setup()  +1 \u{2212}1 lines 17\u{2013}23",
+                "fn refresh(&mut self)  +30 lines 68\u{2013}103"
+            ],
+            "{n}: the titles"
+        );
+        assert_eq!(marks, 2, "{n}: one lane mark per card");
+        let lh = g.line_height;
+        let (title0, title1) = (titles[0].expect("card 0"), titles[1].expect("card 1"));
+        let (first, row17, last) = (
+            lines[0].expect("16"),
+            lines[1].expect("17"),
+            lines[2].expect("23"),
+        );
+        assert_eq!(
+            first - title0,
+            px(code::CARD_TITLE),
+            "{n}: the title's height"
+        );
+        // Card 0's last row, the ⋯ row, 10 pt, then card 1's title.
+        assert_eq!(
+            title1,
+            last + lh * 2.0 + px(code::CARD_GAP),
+            "{n}: 10 pt between the cards"
+        );
+        assert_eq!(g.scroll.y, title0, "{n}: opened at its first card");
+        let at = |x: Pixels, y: Pixels| pixel_at(&shot, dims, f32::from(x), f32::from(y));
+        let y_of = |top: Pixels, h: Pixels| g.bounds.top() + top - g.scroll.y + h / 2.0;
+        // The panel's border, 12 pt in from each side.
+        let row_mid = y_of(row17, lh);
+        let (left, right) = (
+            g.bounds.left() + px(code::CARD_INSET),
+            g.bounds.right() - px(code::CARD_INSET),
+        );
+        assert!(
+            live_near(at(left + px(0.5), row_mid), ui.divider, 12),
+            "{n}: the left border {:?}, not {:?}",
+            at(left + px(0.5), row_mid),
+            ui.divider
+        );
+        assert!(
+            live_near(at(right - px(0.5), row_mid), ui.divider, 12),
+            "{n}: the right border"
+        );
+        assert!(
+            live_near(at(left - px(4.0), row_mid), bg, 4),
+            "{n}: nothing outside the panel"
+        );
+        // The title: the name, +1 green, −1 red; the lines on the right in text_dim.
+        let has = |x0: Pixels, x1: Pixels, y: Pixels, h: Pixels, c: Rgb, by: u8| {
+            let (x0, x1) = (f32::from(x0) as i32, f32::from(x1) as i32);
+            (x0..x1).any(|x| {
+                (2..(f32::from(h) as i32 - 2))
+                    .any(|dy| live_near(at(px(x as f32), y + px(dy as f32)), c, by))
+            })
+        };
+        let title_y = g.bounds.top() + title0 - g.scroll.y;
+        let title_h = px(code::CARD_TITLE);
+        let text_x = left + px(code::CARD_BORDER + code::GUTTER_LEFT);
+        assert!(
+            has(text_x, text_x + px(90.0), title_y, title_h, ui.text, 30),
+            "{n}: the name in text"
+        );
+        assert!(
+            has(
+                text_x + px(60.0),
+                text_x + px(200.0),
+                title_y,
+                title_h,
+                green,
+                30
+            ),
+            "{n}: +1 in green"
+        );
+        assert!(
+            has(
+                text_x + px(60.0),
+                text_x + px(220.0),
+                title_y,
+                title_h,
+                red,
+                30
+            ),
+            "{n}: \u{2212}1 in red"
+        );
+        assert!(
+            has(
+                right - px(120.0),
+                right - px(17.0),
+                title_y,
+                title_h,
+                dim,
+                30
+            ),
+            "{n}: the lines in text_dim"
+        );
+        // The folded stretch's row, centred, in text_dim; nothing in the gutter.
+        let fold_y = g.bounds.top() + last + lh - g.scroll.y;
+        let mid = (left + right) / 2.0;
+        assert!(
+            has(mid - px(120.0), mid + px(120.0), fold_y, lh, dim, 30),
+            "{n}: the unchanged lines' words, centred"
+        );
+        assert!(
+            !has(g.bounds.left(), left + px(60.0), fold_y, lh, dim, 30),
+            "{n}: nothing at the left"
+        );
+        // The guides inside a card: line 17 (in `fn setup`) at the text's edge, `text` at 7 %.
+        let guide = mix(bg, ui.text, code::GUIDE_ALPHA);
+        assert!(
+            live_near(
+                at(g.bounds.left() + g.text_left + px(0.5), row_mid),
+                guide,
+                4
+            ),
+            "{n}: a guide in the card {:?}, not {guide:?}",
+            at(g.bounds.left() + g.text_left + px(0.5), row_mid)
+        );
+        // The lane: card 0 blue (both), card 1 green.
+        let lane_x = f32::from(g.bounds.right()) - 2.0;
+        let place = |top: Pixels| {
+            let (view, content) = (
+                f32::from(g.bounds.size.height),
+                f32::from(g.bounds.size.height + g.max_scroll.y),
+            );
+            f32::from(g.bounds.top()) + f32::from(top) * view / content
+        };
+        let lane_has = |top: Pixels, c: Rgb| {
+            (0..8).any(|k| {
+                live_near(
+                    pixel_at(&shot, dims, lane_x, place(top) + 0.25 + k as f32 * 0.3),
+                    c,
+                    12,
+                )
+            })
+        };
+        assert!(lane_has(title0, blue), "{n}: card 0's mark in blue");
+        assert!(lane_has(title1, green), "{n}: card 1's mark in green");
+        println!("ui-shots: {n} ok");
+
+        // A deleted file (taller than the view): one card, its lane mark red.
+        let n = format!("file-diff-cards-deleted-{slug}");
+        let gone_diff = gone_diff.clone();
+        let (shot, g) = code_shot(&theme, &gone_path, dims, |cx, window, tab| {
+            cards_setup(cx, window, tab, &gone_diff);
+            cx.read(|cx| {
+                let d = tab.read(cx).diff_doc().expect("its rows");
+                assert_eq!(d.grouped.cards.len(), 1, "one card");
+                assert_eq!(d.grouped.cards[0].kind, CardKind::Removed);
+            });
+        });
+        keep_shot(&n, &shot);
+        let lane_x = f32::from(g.bounds.right()) - 2.0;
+        assert!(
+            (0..8).any(|k| live_near(
+                pixel_at(
+                    &shot,
+                    dims,
+                    lane_x,
+                    f32::from(g.bounds.top()) + 0.25 + k as f32 * 0.3
+                ),
+                red,
+                12
+            )),
+            "{n}: its lane mark in red"
+        );
+        println!("ui-shots: {n} ok");
+
+        // Scrolled into card 1 (taller than the view): its title pinned at the top, on the
+        // background, a `divider` line under it.
+        let n = format!("file-diff-cards-sticky-{slug}");
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cards_setup(cx, window, tab, &unified);
+            let lh = cx
+                .read(|cx| tab.read(cx).geom())
+                .expect("drawn")
+                .line_height;
+            let y = title1 + lh * 10.0;
+            cx.update(|cx| tab.update(cx, |t, cx| t.set_scroll(point(px(0.0), y), cx)));
+            live_frame(cx, window);
+            assert_eq!(cx.read(|cx| tab.read(cx).sticky_title()), Some(1), "pinned");
+        });
+        keep_shot(&n, &shot);
+        let at = |x: Pixels, y: Pixels| pixel_at(&shot, dims, f32::from(x), f32::from(y));
+        let top = g.bounds.top();
+        let has = |x0: Pixels, x1: Pixels, c: Rgb| {
+            let (x0, x1) = (f32::from(x0) as i32, f32::from(x1) as i32);
+            (x0..x1).any(|x| {
+                (2..(code::CARD_TITLE as i32 - 2))
+                    .any(|dy| live_near(at(px(x as f32), top + px(dy as f32)), c, 30))
+            })
+        };
+        assert!(
+            has(text_x, text_x + px(90.0), ui.text),
+            "{n}: the pinned name"
+        );
+        assert!(
+            has(text_x + px(100.0), text_x + px(260.0), green),
+            "{n}: the pinned +30"
+        );
+        let rule = top + px(code::CARD_TITLE - 0.5);
+        assert!(
+            live_near(at(mid, rule), ui.divider, 12),
+            "{n}: the line under it {:?}",
+            at(mid, rule)
+        );
+        println!("ui-shots: {n} ok");
+
+        // A new file: one card, nothing folded.
+        let n = format!("file-diff-cards-new-{slug}");
+        let fresh_diff = fresh_diff.clone();
+        let (shot, g) = code_shot(&theme, &fresh_path, dims, |cx, window, tab| {
+            cards_setup(cx, window, tab, &fresh_diff);
+            cx.read(|cx| {
+                let d = tab.read(cx).diff_doc().expect("its rows");
+                assert_eq!(d.grouped.cards.len(), 1, "one card");
+                assert!(d.grouped.stretches.is_empty(), "nothing folded");
+                let t = &d.titles[0];
+                assert_eq!(
+                    format!(
+                        "{}{}{}",
+                        t.name,
+                        t.separator(),
+                        t.added_words().unwrap_or_default()
+                    ),
+                    "New file \u{b7} +12"
+                );
+                assert_eq!(t.lines_words(), None);
+            });
+        });
+        keep_shot(&n, &shot);
+        let left = g.bounds.left() + px(code::CARD_INSET);
+        // Fix round 1: the last row's tint keeps inside the card's rounded bottom corners.
+        let bottom = g.bounds.top() + px(code::CARD_TITLE) + g.line_height * 12.0 - g.scroll.y;
+        let corner = pixel_at(&shot, dims, f32::from(left) + 1.5, f32::from(bottom) - 1.5);
+        assert!(
+            live_near(corner, bg, 4),
+            "{n}: outside the bottom-left corner's arc {corner:?}, not {bg:?}"
+        );
+        let y = g.bounds.top() + px(code::CARD_TITLE) + g.line_height * 2.5 - g.scroll.y;
+        assert!(
+            live_near(
+                pixel_at(&shot, dims, f32::from(left) + 0.5, f32::from(y)),
+                ui.divider,
+                12
+            ),
+            "{n}: its card's border"
+        );
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// A unified diff of a file whose line `at` (0-based) went from `old` to `new`, the lines `before`
+/// and `after` it unchanged; and the new file's text.
+fn words_diff(before: &[&str], old: &str, new: &str, after: &[&str]) -> (String, String) {
+    let mut u = format!(
+        "diff --git a/words.rs b/words.rs\n--- a/words.rs\n+++ b/words.rs\n@@ -1,{n} +1,{n} @@\n",
+        n = before.len() + after.len() + 1
+    );
+    let mut text = String::new();
+    for l in before {
+        u.push_str(&format!(" {l}\n"));
+        text.push_str(&format!("{l}\n"));
+    }
+    u.push_str(&format!("-{old}\n+{new}\n"));
+    text.push_str(&format!("{new}\n"));
+    for l in after {
+        u.push_str(&format!(" {l}\n"));
+        text.push_str(&format!("{l}\n"));
+    }
+    (text, u)
+}
+
+/// `file-diff-words` (both themes; M11ah Task 10): in a card, the changed word of a replaced
+/// line has a box in its row's red / green at about 35 % over the row's 12 % tint with 2 pt
+/// corners, the rest of the row only the light tint (`let token = old();` -> `fresh();`: `old`
+/// and `fresh`). With Wrap on, a word far along a long line is marked on the screen row it is
+/// drawn on and on no other.
+fn file_diff_words_scenes() {
+    use crate::theme::mix;
+    use crate::ui_tokens::code;
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+
+    let (text, unified) = words_diff(
+        &[
+            "// Sessions, for the words' shots.",
+            "fn refresh(&mut self) {",
+        ],
+        "    let token = old();",
+        "    let token = fresh();",
+        &["    self.keep(token);", "}"],
+    );
+    let path = live_file("words.rs", &text);
+    let lead = "    let message = \"";
+    let long = |word: &str| {
+        format!(
+            "{lead}{}{word} {}\";",
+            "word ".repeat(40),
+            "tail ".repeat(10)
+        )
+    };
+    let (long_text, long_unified) = words_diff(
+        &["// A long line, wrapped."],
+        &long("stale"),
+        &long("fresh"),
+        &["}"],
+    );
+    let long_path = live_file("words-wrap.rs", &long_text);
+    let dims = size(px(760.0), px(420.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let bg = theme.background;
+        let fit = |c: alacritty_terminal::vte::ansi::Rgb| ensure_contrast(c, bg, MARK_MIN);
+        let (green, red) = (fit(theme.palette[2]), fit(theme.palette[1]));
+        let tint = |c| mix(bg, c, 0.12);
+        let word = |c| mix(tint(c), c, code::WORD_ALPHA);
+        let n = format!("file-diff-words-{slug}");
+        let tops: std::rc::Rc<std::cell::RefCell<Vec<gpui::Pixels>>> = std::rc::Rc::default();
+        let keep = tops.clone();
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cards_setup(cx, window, tab, &unified);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let d = t.diff_doc().expect("its rows");
+                let w = d.words.as_ref().expect("in time");
+                assert_eq!(w[&2].len(), 1);
+                assert_eq!((w[&2][0].start, w[&2][0].end), (16, 19), "old");
+                assert_eq!(w[&3].len(), 1);
+                assert_eq!((w[&3][0].start, w[&3][0].end), (16, 21), "fresh");
+                assert_eq!(w.len(), 2, "only the pair");
+                *keep.borrow_mut() = (0..4).map(|r| t.line_top(r, cx).expect("shown")).collect();
+            });
+        });
+        keep_shot(&n, &shot);
+        let tops = tops.borrow().clone();
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        let cw = f32::from(g.cell_width);
+        let x_of = |cell: f32| f32::from(g.bounds.left() + g.text_left) + cw * cell;
+        let top_of = |row: usize| f32::from(g.bounds.top() + tops[row] - g.scroll.y);
+        for (row, c, from, to) in [(2, red, 16.0, 19.0), (3, green, 16.0, 21.0)] {
+            let y = top_of(row) + 1.0;
+            let inside = at(x_of((from + to) / 2.0), y);
+            assert!(
+                live_near(inside, word(c), 5),
+                "{n}: row {row}'s word {inside:?}, not {:?}",
+                word(c)
+            );
+            let before = at(x_of(from - 3.0), y);
+            assert!(
+                live_near(before, tint(c), 5),
+                "{n}: row {row} before the word {before:?}, not {:?}",
+                tint(c)
+            );
+            let after = at(x_of(to + 3.0), y);
+            assert!(
+                live_near(after, tint(c), 5),
+                "{n}: row {row} after the word {after:?}, not {:?}",
+                tint(c)
+            );
+            // 2 pt corners: the box's very corner pixel is not fully its colour.
+            let corner = at(x_of(from) + 0.1, y - 0.9);
+            let d = |a: [u8; 3], b: alacritty_terminal::vte::ansi::Rgb| {
+                a.iter()
+                    .zip([b.r, b.g, b.b])
+                    .map(|(a, b)| a.abs_diff(b) as u32)
+                    .sum::<u32>()
+            };
+            assert!(
+                d(corner, tint(c)) < d(corner, word(c)),
+                "{n}: row {row}'s corner {corner:?} is rounded"
+            );
+        }
+        println!("ui-shots: {n} ok");
+
+        // Wrap on: the word far along the long line, on the screen row it is drawn on.
+        let n = format!("file-diff-words-wrap-{slug}");
+        let rows: std::rc::Rc<std::cell::RefCell<(usize, gpui::Pixels)>> = std::rc::Rc::default();
+        let keep = rows.clone();
+        let (shot, g) = code_shot(&theme, &long_path, dims, |cx, window, tab| {
+            cx.update(|cx| cx.global_mut::<crate::appearance::Appearance>().file_wrap = true);
+            cards_setup(cx, window, tab, &long_unified);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let d = t.diff_doc().expect("its rows");
+                let w = d.words.as_ref().expect("in time");
+                let cell = lead.len() + "word ".repeat(40).len();
+                assert_eq!(w[&1].len(), 1);
+                assert_eq!((w[&1][0].start, w[&1][0].end), (cell, cell + 5), "stale");
+                let removed = t.line_top(1, cx).expect("shown");
+                let added = t.line_top(2, cx).expect("shown");
+                let lh = t.geom().expect("drawn").line_height;
+                let screen_rows = ((added - removed) / lh).round() as usize;
+                assert!(screen_rows >= 3, "wrapped to {screen_rows} rows");
+                *keep.borrow_mut() = (cell, removed);
+            });
+        });
+        keep_shot(&n, &shot);
+        let (cell, removed) = *rows.borrow();
+        let lh = f32::from(g.line_height);
+        let y0 = f32::from(g.bounds.top() + removed - g.scroll.y);
+        let colour = word(red);
+        let mut hits = Vec::new();
+        for k in 0..4 {
+            let y = y0 + lh * k as f32 + 1.0;
+            let first = (0..((f32::from(g.bounds.size.width) - f32::from(g.text_left)) as i32))
+                .find(|dx| {
+                    live_near(
+                        pixel_at(&shot, dims, x_of_left(&g) + *dx as f32, y),
+                        colour,
+                        5,
+                    )
+                });
+            if let Some(dx) = first {
+                hits.push((k, dx as f32 / f32::from(g.cell_width)));
+            }
+        }
+        assert_eq!(hits.len(), 1, "{n}: the word on one screen row: {hits:?}");
+        let (k, in_row) = hits[0];
+        assert!(k > 0, "{n}: not on the line's first screen row");
+        let columns = (cell as f32 - in_row.round()) / k as f32;
+        assert!(
+            columns.fract().abs() < 0.01 && columns > 20.0,
+            "{n}: the word's cell {cell} on row {k} at {in_row}: columns {columns}"
+        );
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// The text's left edge in points.
+fn x_of_left(g: &crate::file_tab::Geom) -> f32 {
+    f32::from(g.bounds.left() + g.text_left)
+}
+
+/// `file-diff-cards-fold` (M11ah Task 9): pressing a folded stretch shows it; pressing a title
+/// closes the card to its title and opens it again; Show All Unchanged Lines shows every
+/// stretch; leaving Diff and coming back folds them again; a new diff keeps a shown stretch that
+/// starts on the same new line and folds one that no longer does; a card taller than the view
+/// keeps its title pinned until it scrolls away, a press on the pinned title closing it; ⌥↓
+/// goes card to card (the title at the top, its first changed row current) and stops at the
+/// last; a change bar's press in File mode opens Diff at its card; a find step into a folded
+/// stretch opens it; the lane has one mark per card.
+fn file_diff_cards_fold_scenes() {
+    use crate::file_tab::ShowAllUnchanged;
+    use crate::git_status::LineChange;
+    use crate::layout_model::FileMode;
+    use crate::row_map::Row;
+    use crate::ui_tokens::code;
+    use gpui::{Focusable, Modifiers};
+
+    let (text, unified) = cards_fixture();
+    let path = live_file("cards-fold.rs", &text);
+    let dims = size(px(760.0), px(460.0));
+    let n = "file-diff-cards-fold";
+    let theme = shot_theme(shot_themes()[0].1);
+    let (shot, _) = code_shot(&theme, &path, dims, |cx, window, tab| {
+        cards_setup(cx, window, tab, &unified);
+        let folds =
+            |cx: &mut VisualTestAppContext| cx.read(|cx| tab.read(cx).diff_folds_for_shots());
+        let geom =
+            |cx: &mut VisualTestAppContext| cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+        let scroll_to = |cx: &mut VisualTestAppContext, y: Pixels| {
+            cx.update(|cx| tab.update(cx, |t, cx| t.set_scroll(point(px(0.0), y), cx)));
+            live_frame(cx, window);
+        };
+        // A press at `top` (down the text) + `dy`, in the body's middle.
+        let press = |cx: &mut VisualTestAppContext, top: Pixels, dy: Pixels| {
+            let g = geom(cx);
+            let p = point(
+                g.bounds.left() + g.bounds.size.width / 2.0,
+                g.bounds.top() + top - g.scroll.y + dy,
+            );
+            cx.simulate_click(window, p, Modifiers::none());
+            live_frame(cx, window);
+        };
+        let lh = geom(cx).line_height;
+        // The stretch above card 0 (rows 0..16, from new line 1): pressed, it shows.
+        scroll_to(cx, px(0.0));
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).row_kind_at(1.0, cx)),
+            Some(Row::Unchanged { stretch: 0 }),
+            "{n}: the first stretch folded"
+        );
+        press(cx, px(0.0), lh / 2.0);
+        assert_eq!(folds(cx), (vec![1], vec![]), "{n}: the stretch shown");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).line_top(3, cx)),
+            Some(lh * 3.0),
+            "{n}: its lines drawn"
+        );
+        // Card 0's title: closed, then open again.
+        let title0 = cx.read(|cx| tab.read(cx).title_top(0, cx)).expect("card 0");
+        press(cx, title0, px(code::CARD_TITLE / 2.0));
+        assert_eq!(
+            folds(cx).1,
+            vec![17],
+            "{n}: card 0 closed (by its first new line)"
+        );
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).line_top(18, cx)),
+            None,
+            "{n}: its rows hidden"
+        );
+        press(cx, title0, px(code::CARD_TITLE / 2.0));
+        assert!(folds(cx).1.is_empty(), "{n}: card 0 open again");
+        assert!(cx.read(|cx| tab.read(cx).line_top(18, cx)).is_some());
+        // Show All Unchanged Lines.
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx);
+            window.dispatch_action(Box::new(ShowAllUnchanged), cx);
+        })
+        .expect("the action");
+        live_frame(cx, window);
+        assert_eq!(folds(cx).0, vec![1, 24, 104], "{n}: every stretch shown");
+        // Leaving Diff and coming back: folded again.
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        live_frame(cx, window);
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Diff, cx)));
+        live_frame(cx, window);
+        assert_eq!(folds(cx), (vec![], vec![]), "{n}: folded again");
+        // A new diff: the stretch from new line 24 kept (the same start), one gone folded.
+        cx.update(|cx| tab.update(cx, |t, cx| t.show_stretch_for_shots(1, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.show_stretch_for_shots(0, cx)));
+        assert_eq!(folds(cx).0, vec![1, 24], "{n}: two shown");
+        // The same diff with line 3 changed too: the first stretch is gone (card 0 grows up to
+        // row 0), the one from new line 24 stays.
+        let reread = unified.replacen(
+            " fn setup() {\n",
+            "-fn setup() {\n+fn setup() { // again\n",
+            1,
+        );
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_diff_for_shots(&reread, cx)));
+        live_frame(cx, window);
+        assert_eq!(
+            folds(cx).0,
+            vec![24],
+            "{n}: the stretch on the same line kept"
+        );
+        // Back to the first diff, all folded.
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Diff, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_diff_for_shots(&unified, cx)));
+        live_frame(cx, window);
+        // Card 1 is taller than the view: its title pinned while the view is inside it (the
+        // stretch after it shown, so the view can go past it).
+        cx.update(|cx| tab.update(cx, |t, cx| t.show_stretch_for_shots(2, cx)));
+        live_frame(cx, window);
+        let title1 = cx.read(|cx| tab.read(cx).title_top(1, cx)).expect("card 1");
+        scroll_to(cx, title1 + lh * 10.0);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            Some(1),
+            "{n}: pinned"
+        );
+        scroll_to(cx, title1);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            None,
+            "{n}: at its own row"
+        );
+        let end = cx
+            .read(|cx| tab.read(cx).line_top(103, cx))
+            .expect("card 1's last row");
+        scroll_to(cx, end + lh * 1.5);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            None,
+            "{n}: scrolled away"
+        );
+        // Fix round 1: the card's bottom less than a title's height below the top: not pinned
+        // (the title would hang over what follows the card).
+        scroll_to(cx, end + lh - px(code::CARD_TITLE / 2.0));
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            None,
+            "{n}: not pinned past its card's end"
+        );
+        // A press on the pinned title closes the card, its title at the top.
+        scroll_to(cx, title1 + lh * 10.0);
+        let top = geom(cx).scroll.y;
+        press(cx, top, px(code::CARD_TITLE / 2.0));
+        assert_eq!(folds(cx).1, vec![68], "{n}: the pinned title's card closed");
+        assert_eq!(geom(cx).scroll.y, title1, "{n}: its title at the top");
+        press(cx, title1, px(code::CARD_TITLE / 2.0));
+        assert!(folds(cx).1.is_empty(), "{n}: open again");
+        // ⌥↓ from the top: card 0, card 1, then nothing.
+        scroll_to(cx, px(0.0));
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_current_diff_for_shots(None, cx)));
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+        for (card, row) in [(0, 19), (1, 71)] {
+            cx.simulate_keystrokes(window, "alt-down");
+            live_frame(cx, window);
+            let title = cx
+                .read(|cx| tab.read(cx).title_top(card, cx))
+                .expect("a card");
+            let g = geom(cx);
+            let max = g.max_scroll.y;
+            assert_eq!(
+                g.scroll.y,
+                title.min(max),
+                "{n}: card {card}'s title at the top"
+            );
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).diff_current()),
+                Some(row),
+                "{n}: card {card}'s first change current"
+            );
+        }
+        let before = geom(cx).scroll;
+        cx.simulate_keystrokes(window, "alt-down");
+        live_frame(cx, window);
+        assert_eq!(geom(cx).scroll, before, "{n}: no wrap-around");
+        assert_eq!(cx.read(|cx| tab.read(cx).diff_current()), Some(71));
+        cx.simulate_keystrokes(window, "alt-up");
+        live_frame(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).diff_current()),
+            Some(19),
+            "{n}: ⌥↑ back"
+        );
+        // The lane: one mark per card.
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).lane_for_shots().len()),
+            2,
+            "{n}: two marks"
+        );
+        // A find step into the first stretch opens it.
+        cx.simulate_keystrokes(window, "cmd-f");
+        cx.simulate_input(window, "needle");
+        live_frame(cx, window);
+        cx.simulate_keystrokes(window, "cmd-g");
+        live_frame(cx, window);
+        assert!(folds(cx).0.contains(&1), "{n}: the find opened its stretch");
+        assert!(
+            cx.read(|cx| tab.read(cx).line_top(4, cx)).is_some(),
+            "{n}: the match's line drawn"
+        );
+        // A change bar's press in File mode: Diff at its card.
+        cx.simulate_keystrokes(window, "escape");
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_changes(vec![(72, LineChange::Added)], cx)));
+        live_frame(cx, window);
+        let line71 = cx
+            .read(|cx| tab.read(cx).line_top(71, cx))
+            .expect("line 72");
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_scroll(point(px(0.0), line71 - lh * 2.0), cx)
+            })
+        });
+        live_frame(cx, window);
+        let g = geom(cx);
+        let bar = point(
+            g.bounds.left() + g.bar_left + px(1.5),
+            g.bounds.top() + line71 - g.scroll.y + lh / 2.0,
+        );
+        cx.simulate_click(window, bar, Modifiers::none());
+        live_frame(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).mode()),
+            FileMode::Diff,
+            "{n}: a bar's press"
+        );
+        let title1 = cx.read(|cx| tab.read(cx).title_top(1, cx)).expect("card 1");
+        let g = geom(cx);
+        assert_eq!(g.scroll.y, title1.min(g.max_scroll.y), "{n}: at its card");
+
+        // Fix round 1: pinned inside card 1, then card 0's bar in File mode: Diff at card 0,
+        // nothing pinned.
+        cx.update(|cx| tab.update(cx, |t, cx| t.show_stretch_for_shots(2, cx)));
+        live_frame(cx, window);
+        let title1 = cx.read(|cx| tab.read(cx).title_top(1, cx)).expect("card 1");
+        scroll_to(cx, title1 + lh * 10.0);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            Some(1),
+            "{n}: pinned"
+        );
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_changes(vec![(20, LineChange::Changed)], cx);
+            })
+        });
+        live_frame(cx, window);
+        let line19 = cx
+            .read(|cx| tab.read(cx).line_top(19, cx))
+            .expect("line 20");
+        scroll_to(cx, line19 - lh * 2.0);
+        let g = geom(cx);
+        let bar = point(
+            g.bounds.left() + g.bar_left + px(1.5),
+            g.bounds.top() + line19 - g.scroll.y + lh / 2.0,
+        );
+        cx.simulate_click(window, bar, Modifiers::none());
+        live_frame(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).mode()),
+            FileMode::Diff,
+            "{n}: card 0's bar"
+        );
+        let title0 = cx.read(|cx| tab.read(cx).title_top(0, cx)).expect("card 0");
+        assert_eq!(geom(cx).scroll.y, title0, "{n}: card 0's bar: at card 0");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            None,
+            "{n}: nothing pinned at card 0's title"
+        );
+        // Pinned deep in `fn refresh`'s card, a new diff adds a card above it: the pin names
+        // the card under the top, `fn refresh`'s.
+        cx.update(|cx| tab.update(cx, |t, cx| t.show_stretch_for_shots(2, cx)));
+        live_frame(cx, window);
+        let title1 = cx.read(|cx| tab.read(cx).title_top(1, cx)).expect("card 1");
+        scroll_to(cx, title1 + lh * 20.0);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            Some(1),
+            "{n}: pinned"
+        );
+        let more = unified.replacen(
+            "\n     let a40 = 40;\n",
+            "\n-    let a40 = 40;\n+    let a40 = 4000;\n",
+            1,
+        );
+        assert_ne!(more, unified, "{n}: the second change");
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_diff_for_shots(&more, cx)));
+        live_frame(cx, window);
+        let pinned = cx.read(|cx| {
+            let t = tab.read(cx);
+            let titles = &t.diff_doc().expect("rows").titles;
+            assert_eq!(titles.len(), 3, "{n}: a third card");
+            t.sticky_title().map(|k| titles[k].name.clone())
+        });
+        assert_eq!(
+            pinned.as_deref(),
+            Some("fn refresh(&mut self)"),
+            "{n}: the pin follows its card"
+        );
+
+        // Fix round 1: Show All Unchanged Lines keeps the line at the top where it is.
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_diff_for_shots(&unified, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Diff, cx)));
+        live_frame(cx, window);
+        let line80 = cx
+            .read(|cx| tab.read(cx).line_top(80, cx))
+            .expect("line 81");
+        scroll_to(cx, line80);
+        assert_eq!(geom(cx).scroll.y, line80, "{n}: line 81 at the top");
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_action(Box::new(ShowAllUnchanged), cx);
+        })
+        .expect("the action");
+        live_frame(cx, window);
+        assert_eq!(folds(cx).0, vec![1, 24, 104], "{n}: every stretch shown");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).line_top(80, cx)),
+            Some(geom(cx).scroll.y),
+            "{n}: Show All keeps the line at the top"
+        );
+
+        // Final review: a find step deep into the last folded stretch opens it and the match
+        // lands on screen, not cut short by the shorter rows' limit.
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Diff, cx)));
+        live_frame(cx, window);
+        scroll_to(cx, px(0.0));
+        assert_eq!(folds(cx), (vec![], vec![]), "{n}: all folded");
+        cx.simulate_keystrokes(window, "cmd-f");
+        cx.simulate_input(window, "b90 ");
+        live_frame(cx, window);
+        assert_eq!(cx.read(|cx| tab.read(cx).find_label()), "1 of 1", "{n}");
+        assert!(
+            folds(cx).0.contains(&104),
+            "{n}: the find opened its stretch"
+        );
+        let row = cx.read(|cx| {
+            let doc = &tab.read(cx).diff_doc().expect("rows").doc;
+            (0..doc.lines.len())
+                .find(|&r| doc.line(r).contains("b90 "))
+                .expect("the match's row")
+        });
+        let top = cx
+            .read(|cx| tab.read(cx).line_top(row, cx))
+            .expect("the match's row drawn");
+        let g = geom(cx);
+        assert!(
+            top >= g.scroll.y && top + lh <= g.scroll.y + g.bounds.size.height,
+            "{n}: the match on screen: its top {top:?}, the scroll {:?}, the view {:?}",
+            g.scroll.y,
+            g.bounds.size.height
+        );
+        cx.simulate_keystrokes(window, "escape");
+    });
+    keep_shot(n, &shot);
+    println!("ui-shots: {n} ok");
+}
+
+/// The side-by-side scenes' diff: 12 unchanged lines, `fn refresh`, two lines replaced by three,
+/// two more, 12 unchanged: one card between two folded stretches. Its rows: 0 the comment,
+/// 1–12, 13 `fn refresh`, 14–15 removed, 16–18 added, 19 `self.keep(token);`, 20 `}`, 21–32.
+fn side_fixture() -> (String, String) {
+    let mut before: Vec<String> = vec!["// Sessions, for the side-by-side shots.".into()];
+    before.extend((1..=12).map(|k| format!("    let a{k} = {k};")));
+    before.push("fn refresh(&mut self) {".into());
+    let old = ["    let token = old();", "    let count = old_count();"];
+    let new = [
+        "    let token = fresh(count);",
+        "    let count = fresh_count();",
+        "    self.count += 1;",
+    ];
+    let mut after: Vec<String> = vec!["    self.keep(token);".into(), "}".into()];
+    after.extend((1..=12).map(|k| format!("    let b{k} = {k};")));
+    let mut u = format!(
+        "diff --git a/side.rs b/side.rs\n--- a/side.rs\n+++ b/side.rs\n@@ -1,{} +1,{} @@\n",
+        before.len() + old.len() + after.len(),
+        before.len() + new.len() + after.len()
+    );
+    let mut text = String::new();
+    for l in &before {
+        u.push_str(&format!(" {l}\n"));
+        text.push_str(&format!("{l}\n"));
+    }
+    for l in old {
+        u.push_str(&format!("-{l}\n"));
+    }
+    for l in new {
+        u.push_str(&format!("+{l}\n"));
+        text.push_str(&format!("{l}\n"));
+    }
+    for l in &after {
+        u.push_str(&format!(" {l}\n"));
+        text.push_str(&format!("{l}\n"));
+    }
+    (text, u)
+}
+
+/// `file-diff-side` (both themes; M11ah Task 11): side by side on, the old file on the left
+/// with its numbers and the new on the right with its, a 1 pt `divider` hairline between them
+/// on the lines' rows (not across a title); the removed row level with its added one (red tint
+/// left, green right); the extra added row facing a faintly shaded empty left half; an unchanged
+/// row plain on both; each changed word marked on its half; the `⋯` row's words centred across
+/// both halves; a find match on an unchanged line on both halves; the button filled.
+fn file_diff_side_scenes() {
+    use crate::row_map::Row;
+    use crate::theme::mix;
+    use crate::ui_tokens::code;
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+    use gpui::{Bounds, Focusable};
+
+    let (text, unified) = side_fixture();
+    let path = live_file("side.rs", &text);
+    let dims = size(px(1240.0), px(620.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let (bg, ui) = (theme.background, theme.ui());
+        let fit = |c: alacritty_terminal::vte::ansi::Rgb| ensure_contrast(c, bg, MARK_MIN);
+        let (green, red) = (fit(theme.palette[2]), fit(theme.palette[1]));
+        let tint = |c| mix(bg, c, 0.12);
+        let word = |c| mix(tint(c), c, code::WORD_ALPHA);
+        let n = format!("file-diff-side-{slug}");
+        type Seen = (
+            Vec<Pixels>,
+            (usize, usize),
+            (usize, usize),
+            Option<Bounds<Pixels>>,
+        );
+        let seen: std::rc::Rc<std::cell::RefCell<Option<Seen>>> = std::rc::Rc::default();
+        let keep = seen.clone();
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cards_setup(cx, window, tab, &unified);
+            // On, as the bar's button turns it.
+            let (_, _, _, button) = cx.read(|cx| tab.read(cx).side_button_for_shots());
+            let button = button.expect("the button drawn in Diff mode");
+            cx.simulate_click(window, button.center(), gpui::Modifiers::none());
+            live_frame(cx, window);
+            // A find match on an unchanged line.
+            cx.update_window(window, |_, window, cx| {
+                tab.read(cx).focus_handle(cx).focus(window, cx)
+            })
+            .expect("focus");
+            cx.simulate_keystrokes(window, "cmd-f");
+            cx.simulate_input(window, "keep");
+            live_frame(cx, window);
+            live_frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let (chosen, on, _, _) = t.side_by_side_for_shots();
+                assert!(chosen && on, "side by side on");
+                assert_eq!(t.find_label(), "1 of 1");
+                let d = t.diff_doc().expect("its rows");
+                let w = d.words.as_ref().expect("in time");
+                let (old, new) = (w[&14][0].clone(), w[&16][0].clone());
+                let tops = (0..=21).map(|l| t.line_top(l, cx).unwrap_or_default());
+                let (_, _, _, button) = t.side_button_for_shots();
+                *keep.borrow_mut() = Some((
+                    tops.collect(),
+                    (old.start, old.end),
+                    (new.start, new.end),
+                    button,
+                ));
+                // The extra added row faces an empty old half.
+                let map_row = (0..40).find(|&r| {
+                    matches!(
+                        t.row_for_shots(r),
+                        Some(Row::Pair {
+                            new: Some((18, 0)),
+                            ..
+                        })
+                    )
+                });
+                let row = map_row.and_then(|r| t.row_for_shots(r));
+                assert_eq!(
+                    row,
+                    Some(Row::Pair {
+                        old: None,
+                        new: Some((18, 0))
+                    }),
+                    "line 18 faces an empty half"
+                );
+            });
+        });
+        keep_shot(&n, &shot);
+        let (tops, old_word, new_word, button) = seen.borrow().clone().expect("read");
+        let shift = g.side.unwrap_or_else(|| panic!("{n}: drawn side by side"));
+        let at = |x: Pixels, y: Pixels| pixel_at(&shot, dims, f32::from(x), f32::from(y));
+        let left = g.bounds.left();
+        let mid = left + px(code::CARD_INSET) + shift;
+        let lh = g.line_height;
+        let y_of = |line: usize| g.bounds.top() + tops[line] - g.scroll.y + lh / 2.0;
+        let far = |a: [u8; 3], b: alacritty_terminal::vte::ansi::Rgb| {
+            a.iter()
+                .zip([b.r, b.g, b.b])
+                .map(|(a, b)| u32::from(a.abs_diff(b)))
+                .sum::<u32>()
+        };
+        let near = |p: [u8; 3], c, what: &str| {
+            assert!(live_near(p, c, 5), "{n}: {what}: {p:?}, not {c:?}");
+        };
+        // The hairline, on an unchanged line's row and on a changed one's; not on the title.
+        near(
+            at(mid + px(0.5), y_of(19)),
+            ui.divider,
+            "the hairline (line 19)",
+        );
+        near(
+            at(mid + px(0.5), y_of(14)),
+            ui.divider,
+            "the hairline (line 14)",
+        );
+        let title = g.bounds.top() + tops[11] - g.scroll.y - px(code::CARD_TITLE / 2.0);
+        near(at(mid + px(0.5), title), bg, "no hairline across the title");
+        // Fix round 1: the card's title spans both halves: its name and counts on the left,
+        // `lines a–b` at the panel's right edge, past the middle.
+        let title_ink = |x0: Pixels, x1: Pixels| {
+            let b = Bounds::from_corners(
+                gpui::point(x0, title - px(6.0)),
+                gpui::point(x1, title + px(6.0)),
+            );
+            far(ink_in(&shot, dims, b, [bg.r, bg.g, bg.b]), bg) > 120
+        };
+        let panel_right = g.bounds.right() - px(code::CARD_INSET + 4.0);
+        assert!(
+            title_ink(left + px(code::CARD_INSET + 4.0), mid - px(40.0)),
+            "{n}: the title's name on the left"
+        );
+        assert!(
+            title_ink(mid + px(40.0), panel_right),
+            "{n}: the title's lines at the right edge, across the new half"
+        );
+        // Level: the removed row red on the left, its added row green on the right.
+        let right_end = g.bounds.right() - px(code::CARD_INSET + 20.0);
+        near(at(mid - px(20.0), y_of(14)), tint(red), "removed, left");
+        near(at(right_end, y_of(14)), tint(green), "added, right");
+        // The extra added row: a faintly shaded empty left half.
+        let empty = mix(bg, ui.text, code::SIDE_EMPTY_ALPHA);
+        let shade = at(mid - px(20.0), y_of(18));
+        near(shade, empty, "the empty half");
+        assert!(
+            far(shade, bg) >= 3,
+            "{n}: the empty half is shaded: {shade:?}"
+        );
+        near(at(right_end, y_of(18)), tint(green), "the extra added row");
+        // An unchanged row: plain on both.
+        near(at(mid - px(20.0), y_of(19)), bg, "unchanged, left");
+        near(at(right_end, y_of(19)), bg, "unchanged, right");
+        // Numbers: the old on the left, the new on the right.
+        let numbers = |dx: Pixels, line: usize, base: alacritty_terminal::vte::ansi::Rgb| {
+            let x0 = left + px(code::CARD_INSET + code::GUTTER_LEFT) + dx;
+            let b = Bounds::from_corners(
+                gpui::point(x0, y_of(line) - lh / 2.0 + px(2.0)),
+                gpui::point(left + g.numbers_right + dx, y_of(line) + lh / 2.0 - px(2.0)),
+            );
+            far(ink_in(&shot, dims, b, [base.r, base.g, base.b]), base) > 120
+        };
+        assert!(
+            numbers(px(0.0), 14, tint(red)),
+            "{n}: line 14's old number on the left"
+        );
+        assert!(
+            numbers(shift, 14, tint(green)),
+            "{n}: line 16's new number level with it on the right"
+        );
+        assert!(
+            numbers(shift, 18, tint(green)),
+            "{n}: line 18's new number on the right"
+        );
+        assert!(
+            !numbers(px(0.0), 18, empty),
+            "{n}: no number on the empty half"
+        );
+        // The changed words, each on its own half.
+        let cw = g.cell_width;
+        let word_x = |dx: Pixels, (a, b): (usize, usize)| {
+            left + g.text_left + dx + cw * ((a + b) as f32 / 2.0)
+        };
+        // Above the glyphs: a row's top + 1.5.
+        let edge = |line: usize| y_of(line) - lh / 2.0 + px(1.5);
+        near(
+            at(word_x(px(0.0), old_word), edge(14)),
+            word(red),
+            "the old word",
+        );
+        near(
+            at(word_x(shift, new_word), edge(16)),
+            word(green),
+            "the new word",
+        );
+        // The `⋯` row's words centred across both halves (the first row).
+        let row0 = g.bounds.top() - g.scroll.y;
+        let centre = Bounds::from_corners(
+            gpui::point(mid - px(40.0), row0 + px(2.0)),
+            gpui::point(mid + px(40.0), row0 + lh - px(2.0)),
+        );
+        assert!(
+            far(ink_in(&shot, dims, centre, [bg.r, bg.g, bg.b]), bg) > 120,
+            "{n}: the ⋯ row's words across the middle"
+        );
+        // The match on line 19, on both halves alike.
+        // `keep` at cells 9–13 of `    self.keep(token);`.
+        let x = |dx: Pixels| left + g.text_left + dx + cw * 11.0;
+        let (l, r) = (at(x(px(0.0)), edge(19)), at(x(shift), edge(19)));
+        assert!(far(l, bg) > 30, "{n}: the match on the left: {l:?}");
+        assert!(
+            live_near(r, as_rgb(l), 4),
+            "{n}: the match on the right {r:?} as the left {l:?}"
+        );
+        // The button filled.
+        let b = button.expect("drawn");
+        near(
+            at(b.left() + px(3.0), b.top() + px(12.0)),
+            ui.card_selected,
+            "the button filled",
+        );
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-diff-side-narrow` (M11ah Task 11): off by default; the button turns side by side on
+/// (`FileTabEvent::SideBySide` for the workspace to keep per tab); below 60 cells a half the
+/// view is unified, the button faint and deaf with the tooltip `Too narrow for side by side`;
+/// wide again, side by side comes back. A drag stays in the half it started in and Copy gives
+/// that half; the current row is on the half pressed (an empty half: that side's nearest
+/// line); find steps row by row, left before right.
+fn file_diff_side_narrow_scenes() {
+    use crate::file_tab::{FileTab, FileTabEvent, TIP_SIDE_BY_SIDE, TIP_SIDE_TOO_NARROW};
+    use crate::row_map::{Half, Row};
+    use gpui::{Entity, Focusable, Modifiers, MouseButton};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// The tab in a pane `width` wide (the window stays as it is).
+    struct SideHost {
+        tab: Entity<FileTab>,
+        width: Pixels,
+    }
+    impl Render for SideHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_row()
+                .child(div().h_full().w(self.width).flex().child(self.tab.clone()))
+        }
+    }
+
+    let (text, unified) = side_fixture();
+    let path = live_file("side-narrow.rs", &text);
+    let dims = size(px(1240.0), px(620.0));
+    let n = "file-diff-side-narrow";
+    let theme = shot_theme(shot_themes()[0].1);
+    type Slot = Rc<RefCell<Option<(Entity<FileTab>, Entity<SideHost>)>>>;
+    let slot: Slot = Rc::default();
+    let events: Rc<RefCell<Vec<bool>>> = Rc::default();
+    let build = {
+        let (slot, events) = (slot.clone(), events.clone());
+        move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            cx.bind_keys(crate::key_bindings());
+            let tab = cx.new(|cx| {
+                let mut tab = FileTab::new(path, crate::layout_model::FileMode::Plain, window, cx);
+                tab.frozen = true;
+                tab
+            });
+            cx.subscribe(&tab, move |_, e: &FileTabEvent, _| {
+                if let FileTabEvent::SideBySide(on) = e {
+                    events.borrow_mut().push(*on);
+                }
+            })
+            .detach();
+            let host = cx.new(|_| SideHost {
+                tab: tab.clone(),
+                width: px(1240.0),
+            });
+            *slot.borrow_mut() = Some((tab, host.clone()));
+            host.into()
+        }
+    };
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let (tab, host) = slot.borrow().clone().expect("the tab");
+        live_frame(cx, window);
+        cards_setup(cx, window, &tab, &unified);
+        let look =
+            |cx: &mut VisualTestAppContext| cx.read(|cx| tab.read(cx).side_by_side_for_shots());
+        let button =
+            |cx: &mut VisualTestAppContext| cx.read(|cx| tab.read(cx).side_button_for_shots());
+        let width = |cx: &mut VisualTestAppContext, w: f32| {
+            cx.update(|cx| {
+                host.update(cx, |h, cx| {
+                    h.width = px(w);
+                    cx.notify();
+                })
+            });
+            live_frame(cx, window);
+            live_frame(cx, window);
+        };
+        // Off by default; the button takes a click.
+        assert!(!look(cx).0, "{n}: off by default");
+        let (filled, enabled, tip, at) = button(cx);
+        assert_eq!(
+            (filled, enabled, tip),
+            (false, true, TIP_SIDE_BY_SIDE),
+            "{n}"
+        );
+        cx.simulate_click(window, at.expect("drawn").center(), Modifiers::none());
+        live_frame(cx, window);
+        assert_eq!((look(cx).0, look(cx).1), (true, true), "{n}: on");
+        assert_eq!(*events.borrow(), [true], "{n}: the workspace told");
+        let pair = |cx: &mut VisualTestAppContext| {
+            matches!(
+                cx.read(|cx| tab.read(cx).row_for_shots(2)),
+                Some(Row::Pair { .. })
+            )
+        };
+        assert!(pair(cx), "{n}: paired rows");
+        assert!(button(cx).0, "{n}: filled");
+        // Too narrow: unified, the button faint and deaf.
+        width(cx, 800.0);
+        assert_eq!(
+            (look(cx).0, look(cx).1),
+            (true, false),
+            "{n}: unified when narrow"
+        );
+        assert!(!pair(cx), "{n}: the rows unified");
+        let (filled, enabled, tip, at) = button(cx);
+        assert_eq!(
+            (filled, enabled, tip),
+            (false, false, TIP_SIDE_TOO_NARROW),
+            "{n}"
+        );
+        cx.simulate_click(window, at.expect("drawn").center(), Modifiers::none());
+        live_frame(cx, window);
+        assert!(look(cx).0, "{n}: a press on the faint button does nothing");
+        assert_eq!(events.borrow().len(), 1, "{n}: nothing told");
+        // Wide again: back.
+        width(cx, 1240.0);
+        assert_eq!(
+            (look(cx).0, look(cx).1),
+            (true, true),
+            "{n}: back when wide"
+        );
+        assert!(pair(cx), "{n}: paired again");
+        // A drag in the right half, from line 13 to past line 19's end: Copy gives the new half.
+        let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+        let shift = g.side.expect("side by side");
+        let top = |cx: &mut VisualTestAppContext, line: usize| {
+            cx.read(|cx| tab.read(cx).line_top(line, cx))
+                .expect("shown")
+        };
+        let at = |cx: &mut VisualTestAppContext, line: usize, dx: Pixels, cells: f32| {
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            point(
+                g.bounds.left() + g.text_left + dx + g.cell_width * cells,
+                g.bounds.top() + top(cx, line) - g.scroll.y + g.line_height / 2.0,
+            )
+        };
+        let (from, to) = (at(cx, 13, shift, 0.1), at(cx, 19, shift, 40.0));
+        cx.simulate_mouse_down(window, from, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(window, to, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(window, to, MouseButton::Left, Modifiers::none());
+        live_frame(cx, window);
+        cx.simulate_keystrokes(window, "cmd-c");
+        let copied = cx.read_from_clipboard().and_then(|c| c.text());
+        assert_eq!(
+            copied.as_deref(),
+            Some(
+                "fn refresh(&mut self) {\n    let token = fresh(count);\n    let count = \
+                 fresh_count();\n    self.count += 1;\n    self.keep(token);"
+            ),
+            "{n}: the new half copied"
+        );
+        let current = |cx: &mut VisualTestAppContext| {
+            cx.read(|cx| {
+                (
+                    tab.read(cx).diff_current(),
+                    tab.read(cx).side_by_side_for_shots().2,
+                )
+            })
+        };
+        assert_eq!(
+            current(cx),
+            (Some(19), Some(Half::New)),
+            "{n}: current, right"
+        );
+        // A press on the left: line 13 current, on the left.
+        let p = at(cx, 13, px(0.0), 2.0);
+        cx.simulate_click(window, p, Modifiers::none());
+        live_frame(cx, window);
+        assert_eq!(
+            current(cx),
+            (Some(13), Some(Half::Old)),
+            "{n}: current, left"
+        );
+        // A press on the empty left half facing line 18: the old side's line above it.
+        let p = at(cx, 18, px(0.0), 2.0);
+        cx.simulate_click(window, p, Modifiers::none());
+        live_frame(cx, window);
+        assert_eq!(
+            current(cx),
+            (Some(15), Some(Half::Old)),
+            "{n}: the empty half's"
+        );
+        // Find: row by row, left before right (16 is level with 14, 15 with 17).
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+        cx.simulate_keystrokes(window, "cmd-f");
+        cx.simulate_input(window, "count");
+        live_frame(cx, window);
+        live_frame(cx, window);
+        let mut steps = Vec::new();
+        for _ in 0..6 {
+            cx.simulate_keystrokes(window, "cmd-g");
+            live_frame(cx, window);
+            steps.push(current(cx));
+        }
+        let want = [
+            (Some(16), Some(Half::New)),
+            (Some(15), Some(Half::Old)),
+            (Some(15), Some(Half::Old)),
+            (Some(17), Some(Half::New)),
+            (Some(17), Some(Half::New)),
+            (Some(18), Some(Half::New)),
+        ];
+        assert!(
+            (0..6).any(|k| (0..6).all(|i| steps[i] == want[(i + k) % 6])),
+            "{n}: the steps {steps:?}, not in turn {want:?}"
+        );
+        println!("ui-shots: {n} ok");
+    };
+    let _ = render_with(&theme, dims, build, act);
+
+    // Fix round 1: a change bar's press opens Diff side by side with its card's title at the
+    // top, worked out for the layout drawn: (a) chosen (restored so) before any Diff drawing;
+    // (b) the pane narrowed below the fit while in File mode (unified, then).
+    let n = "file-diff-side-narrow-reveal";
+    let (text, unified) = cards_fixture();
+    let path = live_file("side-reveal.rs", &text);
+    let slot: Slot = Rc::default();
+    let build = {
+        let slot = slot.clone();
+        move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            cx.bind_keys(crate::key_bindings());
+            let tab = cx.new(|cx| {
+                let mut tab = FileTab::new(path, crate::layout_model::FileMode::Plain, window, cx);
+                tab.frozen = true;
+                tab
+            });
+            let host = cx.new(|_| SideHost {
+                tab: tab.clone(),
+                width: px(1240.0),
+            });
+            *slot.borrow_mut() = Some((tab, host.clone()));
+            host.into()
+        }
+    };
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        use crate::git_status::LineChange;
+        use crate::layout_model::FileMode;
+        let (tab, host) = slot.borrow().clone().expect("the tab");
+        live_frame(cx, window);
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.pretend_in_repo_for_shots(cx);
+                t.set_side_by_side_for_shots(true);
+                t.set_diff_for_shots(&unified, cx);
+                t.set_changes(vec![(72, LineChange::Added)], cx);
+            })
+        });
+        live_frame(cx, window);
+        // Card 1's added line 72 (0-based 71): its bar pressed in File mode.
+        let press_bar = |cx: &mut VisualTestAppContext| {
+            let top = cx
+                .read(|cx| tab.read(cx).line_top(71, cx))
+                .expect("line 72");
+            let lh = cx
+                .read(|cx| tab.read(cx).geom())
+                .expect("drawn")
+                .line_height;
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| t.set_scroll(point(px(0.0), top - lh * 2.0), cx))
+            });
+            live_frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let bar = point(
+                g.bounds.left() + g.bar_left + px(1.5),
+                g.bounds.top() + top - g.scroll.y + g.line_height / 2.0,
+            );
+            cx.simulate_click(window, bar, Modifiers::none());
+            live_frame(cx, window);
+            live_frame(cx, window);
+            assert_eq!(cx.read(|cx| tab.read(cx).mode()), FileMode::Diff, "{n}");
+            let title = cx.read(|cx| tab.read(cx).title_top(1, cx)).expect("card 1");
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            (title, g.scroll.y, g.max_scroll.y)
+        };
+        let (title, scroll, max) = press_bar(cx);
+        assert!(title < max, "{n}: card 1's title can reach the top");
+        assert!(
+            cx.read(|cx| tab.read(cx).side_by_side_for_shots().1),
+            "{n}: side by side"
+        );
+        assert_eq!(scroll, title, "{n}: (a) card 1's title at the top");
+        // (b) Back to File, the pane too narrow, the bar again: unified, at its title.
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        cx.update(|cx| {
+            host.update(cx, |h, cx| {
+                h.width = px(800.0);
+                cx.notify();
+            })
+        });
+        live_frame(cx, window);
+        live_frame(cx, window);
+        let (title, scroll, max) = press_bar(cx);
+        assert!(title < max, "{n}: card 1's title can reach the top");
+        assert!(
+            !cx.read(|cx| tab.read(cx).side_by_side_for_shots().1),
+            "{n}: unified"
+        );
+        assert_eq!(scroll, title, "{n}: (b) card 1's title at the top");
+        println!("ui-shots: {n} ok");
+    };
+    let _ = render_with(&theme, dims, build, act);
 }

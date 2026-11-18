@@ -429,6 +429,8 @@ fn start() -> Start {
         new_id: None,
         mode: None,
         extra_args: Vec::new(),
+        model: None,
+        effort: None,
     }
 }
 
@@ -701,8 +703,8 @@ pub(super) fn agent_tab_done() {
 }
 
 /// An Antigravity tab (M11aa Task 12), fed agy's own recordings through its own decoder: its
-/// mode chip steps through agy's modes before the first message and is read-only after; the
-/// tools pair up and the turns end Done. (The replies' AG avatar is in the picture only: this
+/// mode is chosen through the box's menu (`shot_choose_mode`) before and after the first
+/// message (no lock); the tools pair up and the turns end Done. (The replies' AG avatar is in the picture only: this
 /// scene reads view state, not pixels.)
 pub(super) fn agent_tab_agy() {
     use crate::providers::agy::AGY;
@@ -736,9 +738,9 @@ pub(super) fn agent_tab_agy() {
                     Some("accept-edits"),
                     "{n}: the default"
                 );
-                // Before the first message the chip steps through agy's modes, round to the start.
+                // Before the first message the menu's choices apply, one after another.
                 for want in ["auto", "plan", "accept-edits"] {
-                    feed(cx, &tab, |t, cx| t.shot_next_mode(cx));
+                    feed(cx, &tab, |t, cx| t.shot_choose_mode(want, cx));
                     assert_eq!(mode(cx).as_deref(), Some(want), "{n}");
                 }
                 feed(cx, &tab, |t, cx| t.send("Say hello in one word".into(), cx));
@@ -755,9 +757,10 @@ pub(super) fn agent_tab_agy() {
                         cx,
                     )
                 });
-                // After it the chip is read-only.
-                feed(cx, &tab, |t, cx| t.shot_next_mode(cx));
-                assert_eq!(mode(cx).as_deref(), Some("accept-edits"), "{n}: read-only");
+                // After it the mode can still be chosen (agy restarts on the same conversation).
+                feed(cx, &tab, |t, cx| t.shot_choose_mode("plan", cx));
+                assert_eq!(mode(cx).as_deref(), Some("plan"), "{n}: no lock");
+                feed(cx, &tab, |t, cx| t.shot_choose_mode("accept-edits", cx));
                 cx.read(|cx| {
                     let t = tab.read(cx);
                     assert_eq!(t.status(), Status::Done, "{n}");
@@ -1279,6 +1282,8 @@ pub(super) fn agent_tab_close() {
                             conversation: None,
                             mode: None,
                             title: None,
+                            model: None,
+                            effort: None,
                         },
                     )
                     .expect("an agent tab");
@@ -2028,6 +2033,12 @@ pub(super) fn agent_tab_held() {
                     let t = tab.read(cx);
                     let argv = t.shot_last_argv();
                     let text = t.shot_composer().read(cx).text().to_string();
+                    // A scene tab never probes the real agent.
+                    assert!(
+                        cx.try_global::<crate::agent_catalog::Catalogs>()
+                            .is_none_or(|c| c.catalog("claude", &start().cwd).is_none()),
+                        "{n}: {holder:?}: no probe"
+                    );
                     if starts {
                         assert!(!t.shot_paused(), "{n}: {holder:?}: started");
                         assert!(argv.windows(2).any(|w| w == ["--resume", "c1"]), "{n}");
@@ -2279,7 +2290,14 @@ pub(super) fn agent_tab_attachment() {
             let output = ATTACHMENT_OUTPUT.replace('\r', "");
             let npm = attachment_text(Some("npm test"), Outcome::Failed(1), output.trim_end());
             let done = attachment_text(Some("echo done"), Outcome::Ok, "done");
-            let attached = |cx: &App| view.read(cx).shot_attachments().to_vec();
+            // (A command block's chip's label is its whole text.)
+            let attached = |cx: &App| -> Vec<String> {
+                view.read(cx)
+                    .shot_attachments()
+                    .iter()
+                    .map(crate::agent_tab::Attachment::label)
+                    .collect()
+            };
             let block = |cmd: &str, cx: &mut VisualTestAppContext| {
                 cx.read(|cx| {
                     let b = shell.read(cx).shot_blocks();
@@ -2445,7 +2463,11 @@ pub(super) fn agent_tab_attachment() {
                 assert!(t.shot_paused(), "{n}: still paused");
                 assert_eq!(t.shot_last_argv(), argv, "{n}: nothing started");
                 assert_eq!(t.status(), Status::Done, "{n}");
-                assert_eq!(t.shot_attachments(), std::slice::from_ref(&done), "{n}");
+                assert_eq!(
+                    t.shot_attachments(),
+                    [crate::agent_tab::Attachment::Text(done.clone())],
+                    "{n}"
+                );
             });
         });
         println!("ui-shots: {n}-{slug}: dropped on the body and the tab, removed, sent, paused");

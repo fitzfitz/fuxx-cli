@@ -57,9 +57,45 @@
 //! mode only; Diff and Preview look as before. **Follow** (a pill in the bar, off by default,
 //! never turns itself on) scrolls the agent's newest change into view, 3 lines from the top as a
 //! diff opens; scrolling, a mode switch (Preview on or off too) or cleared marks turn it off.
+//!
+//! **Folding (M11ah).** In File mode a file with blocks (`code_outline`) has a fold column between
+//! the numbers and the marks: ▸ on a folded line, ▾ on an open block's first line while the
+//! pointer is over the gutter. A fold hides the block's lines after its first (`hidden_ranges`;
+//! the row map leaves them out), and a pill after the folded line's text says how many. A fold
+//! never hides a change: the folded line draws its hidden lines' bar (or ▸), warmest glow and
+//! newest mark (`folded_summary`). ⌥⌘[ / ⌥⌘] fold and unfold where the current line is; the
+//! palette folds or unfolds all. Folds follow their first lines over a reload (one whose first
+//! line changed opens), open for a find step or Follow into them, and are not kept over a
+//! restart. Folding is you moving the view: it ends Follow.
+//!
+//! **The sticky line and the breadcrumb (M11ah).** In File mode a file with blocks has a strip
+//! between the bar (and the find bar) and the text: the file's name, then the blocks the top line
+//! is in, outer to inner (`crumbs`; the outer ones fold into "…" when narrow, `fit_crumbs`). Once
+//! a block's first line scrolls above the top, it is pinned over the text's first row (one line,
+//! the innermost named block). Both are worked out when the view moves (`refresh_place`: a
+//! scroll, a read, the colours landing, a fold or a mode change), never while drawing; a press on
+//! either puts its line at the top, current, and ends Follow. Find, Follow and the change jumps
+//! land `REVEAL_ABOVE` rows from the top, one more under a sticky line (`reveal_top`).
+//!
+//! **Code view (M11ah).** Every read also works out an outline of the file's blocks
+//! (`code_outline`: from indentation, or a Markdown file's headings; off the UI thread, given up
+//! after 50 ms) and the colouring pass names the lines that open functions, types and headings.
+//! Guides, folds, the sticky line, the breadcrumb and the Diff cards' titles read it. What is on
+//! screen is one `RowMap` (`row_map`), a cache of layout keyed by mode, version, columns, folds,
+//! layout and side: it replaces the old wrap cache and is the only place that knows which line
+//! sits at which y (hidden lines, card titles, folded stretches and side-by-side pairs included).
+//! The clicked line is the current line (a faint band, a bright number); change bars are rounded
+//! runs; a lane on the scrollbar marks changes and find matches (`scrollbar::lane`); ⌥↓ / ⌥↑ or
+//! the bar's two buttons step between changes (`step_change`, which opens a fold around the
+//! target). In Diff mode `diff_cards::group` makes cards (3 lines of context, a title with the
+//! function and its +/− counts, unchanged stretches of 8 lines or more folded) and the exact
+//! changed words are marked (`word_marks`, `similar`'s inline mode, given up after 50 ms). A
+//! diff can also be drawn side by side (old half, new half, equal widths; off by default, kept
+//! per tab in the saved layout, needs 60 cells per half). All of it changes only in
+//! event handlers and reads, never while drawing, and nothing animates (M11p).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::io::Read;
 use std::ops::Range;
@@ -80,6 +116,8 @@ use gpui::{
 
 use crate::agent_markdown::Md;
 use crate::appearance::Appearance;
+use crate::code_outline::{self, Outline};
+use crate::diff_cards::{self, CardKind, CardTitle, Grouped};
 use crate::diff_view::{
     BINARY, DiffRow, NO_CHANGES, NO_REPO, Outcome, Parsed, RowKind, context_for, diff_outcome,
     diff_spans, dim, first_change, reveal_row, sides,
@@ -98,18 +136,40 @@ use crate::mermaid_render::{Drawn, Mermaids, Waiter};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
-use crate::scrollbar::{self, Axis, Bar, Thumb};
+use crate::row_map::{
+    CardPairs, DiffLayout, Half, MapKey, Row, RowMap, change_starts, step_change,
+};
+use crate::scrollbar::{self, Axis, Bar, LaneMark, Thumb};
 use crate::sidebar_toggle::{Tip, tip_box};
 use crate::tab_bar::{Glyph, glyph_with};
 use crate::tab_color::TabColor;
 use crate::terminal_view::{CellMetrics, Copy, hsla};
 use crate::theme::{Theme, UiColors, mix};
+use crate::ui_tokens::code::CARD_TITLE;
+use crate::ui_tokens::code::{self, BAR_WIDTH, GUTTER_LEFT, NUMBER_GAP, TEXT_GAP, TOP_ROOM};
 use crate::ui_tokens::size::CARD_RADIUS;
 use crate::ui_tokens::{MARK_MIN, TEXT_MIN, contrast, ensure_contrast, text};
 use crate::workspace::Workspace;
 
 // Bound in main.rs in the "FileTab" key context: ⌘F, ⌘G, ⇧⌘G, and Esc to close the find bar.
-gpui::actions!(file_tab, [Find, FindNext, FindPrev, CloseFind]);
+// M11ah: ⌥⌘[ / ⌥⌘] fold and unfold the block the current line is in; the palette folds or
+// unfolds them all; ⌥↑ / ⌥↓ jump to the previous / next change.
+gpui::actions!(
+    file_tab,
+    [
+        Find,
+        FindNext,
+        FindPrev,
+        CloseFind,
+        FoldHere,
+        UnfoldHere,
+        FoldAll,
+        UnfoldAll,
+        PrevChange,
+        NextChange,
+        ShowAllUnchanged
+    ]
+);
 
 /// The notes the tab shows for a file it can't colour or show.
 pub const MISSING: &str = "This file no longer exists";
@@ -120,7 +180,13 @@ const OPEN_IN_EDITOR: &str = "Open in Editor";
 /// and tooltips.
 const TOGGLE_FILE: &str = "File";
 const TOGGLE_DIFF: &str = "Diff";
+/// The bar's jumps between changes (M11ah), with their keys.
+const TIP_PREV_CHANGE: &str = "Previous change (\u{2325}\u{2191})";
+const TIP_NEXT_CHANGE: &str = "Next change (\u{2325}\u{2193})";
 const TIP_WRAP: &str = "Wrap long lines at the tab\u{2019}s width";
+/// M11ah: the bar's Side by side, and its tooltip while the body is too narrow for two halves.
+pub const TIP_SIDE_BY_SIDE: &str = "Side by side";
+pub const TIP_SIDE_TOO_NARROW: &str = "Too narrow for side by side";
 const PREVIEW: &str = "Preview";
 const TIP_PREVIEW: &str = "Show the Markdown rendered";
 const TIP_PREVIEW_TOO_LARGE: &str = "Too large to preview";
@@ -143,7 +209,7 @@ const HEAD: usize = 8 * 1024;
 const COLOUR_LINE_MAX: usize = 20_000;
 /// A line wider than this (cells) is shaped only where it is in sight, and found from its
 /// checkpoints (one every `CHECKPOINT` cells), never scanned from its start each frame.
-const LONG_LINE: usize = 1_000;
+pub(crate) const LONG_LINE: usize = 1_000;
 const CHECKPOINT: usize = 256;
 
 // The view's geometry, in points.
@@ -154,15 +220,9 @@ const BAR_PAD: f32 = 6.0;
 const BUTTON: f32 = 24.0;
 const BUTTON_STROKE: f32 = 1.75;
 const FIND_BOX: f32 = 260.0;
-const GUTTER_LEFT: f32 = 12.0;
-/// The room above the first line (M11i: as the gutter's at its left).
-const TOP_ROOM: f32 = 12.0;
 /// The room below the last line (M11i): as tall as the card's rounded corners, so no line's
 /// tint, match or selection reaches them.
 const BOTTOM_ROOM: f32 = CARD_RADIUS;
-const NUMBER_GAP: f32 = 8.0;
-const BAR_WIDTH: f32 = 3.0;
-const TEXT_GAP: f32 = 10.0;
 const RIGHT_PAD: f32 = 24.0;
 /// M11af: the column of who-changed-what marks, between the numbers and the bar; a mark's
 /// circle and its letter in it; the age words' size and their gap after the line's end (as the
@@ -199,6 +259,10 @@ const MARKER_SCALE: f32 = 1.3;
 /// (M11af) puts the agent's change there too.
 const REVEAL_ABOVE: usize = 3;
 /// A diff row's sign: removed (U+2212) and added.
+/// M11ah: between the breadcrumb's parts, and in place of the outer ones that do not fit (and
+/// at the end of a sticky line cut by Wrap).
+const CRUMB_SEPARATOR: &str = " \u{203a} ";
+const ELLIPSIS: &str = "\u{2026}";
 const SIGN_REMOVED: &str = "\u{2212}";
 const SIGN_ADDED: &str = "+";
 
@@ -497,7 +561,7 @@ fn age_units(secs: u64) -> Option<(u64, &'static str)> {
 }
 
 /// `n` with commas between thousands.
-fn thousands(n: usize) -> String {
+pub(crate) fn thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
@@ -542,6 +606,28 @@ pub fn selection_text(text: &str, lines: &[Range<usize>], a: Pos, b: Pos) -> Str
         }
     }
     out
+}
+
+/// Runs of neighbouring shown rows with the same change, in row order: (rows, change).
+pub fn bar_runs(changes: &[(usize, LineChange)]) -> Vec<(Range<usize>, LineChange)> {
+    let mut runs: Vec<(Range<usize>, LineChange)> = Vec::new();
+    for &(row, change) in changes {
+        match runs.last_mut() {
+            Some((rows, kind)) if rows.end == row && *kind == change => rows.end = row + 1,
+            _ => runs.push((row..row + 1, change)),
+        }
+    }
+    runs
+}
+
+/// The pixel span of a run drawn at `top..bottom`: shortened by half of `code::BAR_RUN_GAP` at an
+/// end that touches a run of another kind.
+pub fn bar_span(top: f32, bottom: f32, gap_above: bool, gap_below: bool) -> (f32, f32) {
+    let half = code::BAR_RUN_GAP / 2.0;
+    (
+        if gap_above { top + half } else { top },
+        if gap_below { bottom - half } else { bottom },
+    )
 }
 
 /// A change list (1-based new lines, from `line_changes`) as bars by 0-based line, and the
@@ -660,6 +746,9 @@ pub struct Changes {
     pub deleted: Vec<usize>,
 }
 
+/// `FileTab::stops`: the change bars, the line count and the stops made from them.
+type Stops = (Arc<Changes>, usize, Arc<Vec<usize>>);
+
 /// A loaded text: its lines, colours (once highlighted) and change bars (once git answered).
 #[derive(Clone)]
 pub struct Doc {
@@ -668,6 +757,10 @@ pub struct Doc {
     pub spans: Option<Arc<Vec<Vec<Span>>>>,
     /// The version the colours were made for (an older one's carried over a reload).
     pub spans_version: Option<u64>,
+    /// The blocks (M11ah), made with the read, named once the colours land (it keeps the named
+    /// lines, which a reload carries as the colours). None: gave up past `code_outline::LIMIT`,
+    /// or not made (a diff's rows). Never for a refused file (no `Doc`).
+    pub outline: Option<Arc<Outline>>,
     pub changes: Arc<Changes>,
     /// The version the change bars were made for (an older one's carried over a reload).
     pub changes_version: Option<u64>,
@@ -710,6 +803,7 @@ impl Doc {
             lines: Arc::new(lines),
             spans: None,
             spans_version: None,
+            outline: None,
             changes: Arc::default(),
             changes_version: None,
             counts: None,
@@ -753,12 +847,15 @@ impl Doc {
     /// Colours made for `version`: taken if that is the text shown, or newer than the colours
     /// held (an older version's, carried over: a file that grows faster than it's coloured
     /// still gets fresher colours).
-    pub fn accept_spans(&mut self, version: u64, spans: Vec<Vec<Span>>) -> bool {
+    pub fn accept_spans(&mut self, version: u64, spans: Vec<Vec<Span>>, named: &[usize]) -> bool {
         if !fresher(version, self.version, self.spans_version) {
             return false;
         }
         self.spans = Some(Arc::new(spans));
         self.spans_version = Some(version);
+        if let Some(outline) = &mut self.outline {
+            Arc::make_mut(outline).name(named);
+        }
         true
     }
 
@@ -768,6 +865,9 @@ impl Doc {
         if !plain {
             self.spans = old.spans.clone();
             self.spans_version = old.spans_version;
+            if let (Some(new), Some(old)) = (&mut self.outline, &old.outline) {
+                Arc::make_mut(new).name(old.named_lines());
+            }
             self.syntax = old.syntax.clone();
         }
         self.changes = old.changes.clone();
@@ -870,7 +970,8 @@ pub enum DiffState {
     /// Not asked yet (or no answer yet).
     #[default]
     Waiting,
-    Rows(DiffDoc),
+    /// Boxed: a diff's rows, cards and outlines are far bigger than the other answers.
+    Rows(Box<DiffDoc>),
     /// "No changes since the last commit."
     Same,
     /// "This file is binary: no diff to show." (git's answer, or binary on disk.)
@@ -896,6 +997,64 @@ pub struct DiffDoc {
     /// Untracked, or no commits yet: git said the whole file is added (`FileDiff::AllAdded`).
     /// For the header chip's `A` (M11ae).
     pub new: bool,
+    /// M11ah: the rows grouped into cards and folded stretches, and each card's title (named
+    /// from both sides' outlines once the colours name their lines).
+    pub grouped: Arc<Grouped>,
+    pub titles: Arc<Vec<CardTitle>>,
+    /// M11ah: each card's rows paired for side by side (removed and added in order, as git
+    /// lists them).
+    pub pairs: Arc<Vec<CardPairs>>,
+    /// M11ah: the changed words of each paired removed / added row (none: gave up past 50 ms).
+    pub words: Option<Arc<WordMarks>>,
+    /// M11ah: the old and the new side's outlines (none: gave up past the limit).
+    pub old_outline: Option<Arc<Outline>>,
+    pub new_outline: Option<Arc<Outline>>,
+}
+
+/// M11ah: a diff row's changed words, as byte ranges of its line.
+pub type WordMarks = HashMap<usize, Vec<Range<usize>>>;
+
+/// M11ah: a diff's two sides' outlines (from their texts, `sides`), named with each side's
+/// named lines when the colours gave them.
+fn side_outlines(
+    (old, new): &(String, String),
+    markdown: bool,
+    named: Option<(&[usize], &[usize])>,
+) -> (Option<Outline>, Option<Outline>) {
+    let of = |text: &str, named: Option<&[usize]>| {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut o = code_outline::outline(&lines, markdown, code_outline::LIMIT)?;
+        if let Some(named) = named {
+            o.name(named);
+        }
+        Some(o)
+    };
+    (of(old, named.map(|n| n.0)), of(new, named.map(|n| n.1)))
+}
+
+/// M11ah: each card's title, from both sides' texts and outlines.
+fn card_titles(
+    rows: &[DiffRow],
+    grouped: &Grouped,
+    (old, new): &(String, String),
+    (old_o, new_o): (Option<&Outline>, Option<&Outline>),
+    markdown: bool,
+) -> Vec<CardTitle> {
+    let (old_l, new_l): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    grouped
+        .cards
+        .iter()
+        .map(|card| {
+            diff_cards::title(
+                card,
+                rows,
+                grouped.whole,
+                new_o.map(|o| (o, new_l.as_slice())),
+                old_o.map(|o| (o, old_l.as_slice())),
+                markdown,
+            )
+        })
+        .collect()
 }
 
 impl DiffDoc {
@@ -943,14 +1102,27 @@ struct ColouredRows {
 }
 
 /// A diff's rows coloured: the old and the new side each highlighted whole as `path`, each row
-/// taking its side's colours (blocking: the background executor's).
+/// taking its side's colours (blocking: the background executor's); and each side's named lines.
+struct ColouredDiff {
+    spans: Vec<Vec<Span>>,
+    /// The old side's named lines (ascending); the cards' titles read them.
+    old_named: Vec<usize>,
+    /// The new side's named lines (ascending).
+    new_named: Vec<usize>,
+}
+
 fn colour_rows(
     h: &Highlighter,
     path: &Path,
     rows: &[DiffRow],
     (old, new): &(String, String),
-) -> Vec<Vec<Span>> {
-    diff_spans(rows, &h.highlight(path, old), &h.highlight(path, new))
+) -> ColouredDiff {
+    let (old, new) = (h.colour(path, old), h.colour(path, new));
+    ColouredDiff {
+        spans: diff_spans(rows, &old.spans, &new.spans),
+        old_named: old.named,
+        new_named: new.named,
+    }
 }
 
 /// Whether a diff with these `sides` and its longest line `longest` (bytes) may be coloured:
@@ -967,6 +1139,7 @@ fn diff_state(
     diff: FileDiff,
     disk_text: Option<&str>,
     version: u64,
+    markdown: bool,
     colour: Option<(&Highlighter, &Path)>,
     held: Option<&ColouredRows>,
 ) -> DiffState {
@@ -976,24 +1149,67 @@ fn diff_state(
         Outcome::Binary => DiffState::Binary,
         Outcome::Rows(parsed) => {
             let mut doc = Doc::new(format!("{}\n", parsed.text), version);
+            // M11ah: the rows' own outline, for the guides (made here, off the UI thread).
+            doc.outline = code_outline::outline(
+                &line_slices(&doc.text, &doc.lines),
+                false,
+                code_outline::LIMIT,
+            )
+            .map(Arc::new);
             let both = sides(&parsed);
             let colourable = colourable(&both, doc.longest);
             // The rows held, coloured, again: not highlighted again (`accept_diff` keeps them).
             let unchanged = held.is_some_and(|h| *h.text == *doc.text && *h.rows == parsed.rows);
+            let mut named = None;
             if let Some((h, path)) = colour
                 && colourable
                 && !unchanged
             {
-                doc.spans = Some(Arc::new(colour_rows(h, path, &parsed.rows, &both)));
+                let coloured = colour_rows(h, path, &parsed.rows, &both);
+                doc.spans = Some(Arc::new(coloured.spans));
                 doc.spans_version = Some(version);
+                named = Some((coloured.old_named, coloured.new_named));
             }
-            DiffState::Rows(DiffDoc {
+            // M11ah: the cards, and their titles from both sides' outlines.
+            let grouped = diff_cards::group(&parsed.rows);
+            let (old_o, new_o) = side_outlines(
+                &both,
+                markdown,
+                named.as_ref().map(|(o, n)| (o.as_slice(), n.as_slice())),
+            );
+            let titles = card_titles(
+                &parsed.rows,
+                &grouped,
+                &both,
+                (old_o.as_ref(), new_o.as_ref()),
+                markdown,
+            );
+            // M11ah: each card's rows paired, for side by side.
+            let pairs = (grouped.cards.iter())
+                .map(|c| diff_cards::pair(&parsed.rows, c.rows.clone()))
+                .collect();
+            // M11ah: the changed words of the paired rows (given up after 50 ms: none).
+            let words = diff_cards::word_marks(
+                &parsed.rows,
+                &line_slices(&doc.text, &doc.lines),
+                &doc.widths,
+                &grouped.cards,
+                diff_cards::WORD_LIMIT,
+            )
+            .map(Arc::new);
+            DiffState::Rows(Box::new(DiffDoc {
                 doc,
                 gutter: Gutter::diff(&parsed.rows),
                 rows: Arc::new(parsed.rows),
                 colourable,
                 new,
-            })
+                grouped: Arc::new(grouped),
+                titles: Arc::new(titles),
+                pairs: Arc::new(pairs),
+                words,
+                old_outline: old_o.map(Arc::new),
+                new_outline: new_o.map(Arc::new),
+            }))
         }
     }
 }
@@ -1007,6 +1223,7 @@ fn diff_answer(
     diff: impl FnOnce() -> Option<FileDiff>,
     disk_text: Option<&str>,
     version: u64,
+    markdown: bool,
     colour: Option<(&Highlighter, &Path)>,
     held: Option<&ColouredRows>,
 ) -> Option<DiffState> {
@@ -1019,7 +1236,7 @@ fn diff_answer(
     {
         return Some(DiffState::Refuse);
     }
-    Some(diff_state(diff, disk_text, version, colour, held))
+    Some(diff_state(diff, disk_text, version, markdown, colour, held))
 }
 
 /// A file's size and time, to tell whether it changed.
@@ -1122,10 +1339,15 @@ enum Seen<'a> {
     },
 }
 
-/// Follow's scroll (M11af): the first row to show so `line` sits `top_rows` from the top, none
-/// when `line` is already in `view` (rows).
-fn follow_scroll(view: Range<usize>, line: usize, top_rows: usize) -> Option<usize> {
-    (!view.contains(&line)).then(|| line.saturating_sub(top_rows))
+/// Follow's scroll (M11af): the first row to show so `line` sits `REVEAL_ABOVE` rows from the
+/// top (M11ah: one more under a sticky line, `reveal_top`), none when `line` is already in
+/// `view` (rows; M11ah: not the row under a sticky line).
+fn follow_scroll(
+    view: Range<usize>,
+    line: usize,
+    sticky_at: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    (!view.contains(&line)).then(|| reveal_top(line, sticky_at))
 }
 
 /// A file tab's live changes (M11af): who changed each line since the tab opened, and what the
@@ -1401,9 +1623,16 @@ fn read_file(path: &Path, known: Option<Stamp>, prev: Option<Prev>) -> Loaded {
     }
     let text = String::from_utf8(bytes)
         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-    let doc = Doc::new(text, 0);
+    let mut doc = Doc::new(text, 0);
     let plain = viewable == Viewable::PlainTooLarge || doc.longest > COLOUR_LINE_MAX;
     let compared = compare_with(prev.as_ref(), &doc, plain, LIMIT);
+    // M11ah: the blocks, for every text (a plain-too-large one too: indentation only).
+    doc.outline = code_outline::outline(
+        &line_slices(&doc.text, &doc.lines),
+        is_markdown(path),
+        code_outline::LIMIT,
+    )
+    .map(Arc::new);
     let real = std::fs::canonicalize(path).ok();
     Loaded::Text {
         stamp,
@@ -1438,34 +1667,6 @@ impl Highlighters {
     }
 }
 
-/// The screen rows of lines `widths` cells wide (M11x part 2): each as (line, the cell it starts
-/// at). With `wrap`, a line takes a row per `columns` cells (at least one row, an empty line
-/// too); without it, one row each.
-pub fn visual_rows(widths: &[usize], columns: usize, wrap: bool) -> Vec<(usize, usize)> {
-    let columns = columns.max(1);
-    let mut rows = Vec::with_capacity(widths.len());
-    for (line, &width) in widths.iter().enumerate() {
-        let count = if wrap {
-            width.div_ceil(columns).max(1)
-        } else {
-            1
-        };
-        rows.extend((0..count).map(|k| (line, k * columns)));
-    }
-    rows
-}
-
-/// Each line's first row in `rows` (from `visual_rows`), then the row count: `lines + 1` long.
-pub fn first_rows(rows: &[(usize, usize)], lines: usize) -> Vec<usize> {
-    let mut first = vec![rows.len(); lines + 1];
-    for (r, &(line, cell)) in rows.iter().enumerate().rev() {
-        if cell == 0 && line < lines {
-            first[line] = r;
-        }
-    }
-    first
-}
-
 /// A wrapped row of line `i` that starts at cell `cell0`, `columns` wide: its bytes
 /// `from..to` and the cell `from` starts at (`start`: a character crossing the row's start, a
 /// tab, begins the row whole). Painting and clicking both use it, so they agree.
@@ -1485,59 +1686,200 @@ pub fn row_hit(doc: &Doc, i: usize, row: (usize, usize, usize), last: bool, x_ce
     b.clamp(from, end.max(from))
 }
 
-/// The top row after Wrap is switched (`from` → `to`, each wrapped or not): the row of the same
-/// line, so the line at the top stays at the top.
-pub fn rescroll_row(top: usize, from: Option<&Wrapped>, to: Option<&Wrapped>) -> usize {
-    let line = from.map_or(top, |w| w.row(top).0);
-    to.map_or(line, |w| w.first_row(line))
+/// The top row after the rows are made again (`from` → `to`; Wrap switched; `from` none: a row
+/// a line): the row of the same line, so the line at the top stays at the top (a hidden line:
+/// the shown line above it).
+pub fn rescroll_row(top: usize, from: Option<&RowMap>, to: &RowMap) -> usize {
+    let line = match from.and_then(|m| m.row(top)) {
+        // M11ah: a side-by-side pair's line (the old side's when both).
+        Some(row @ (Row::Line { .. } | Row::Pair { .. })) => row.line().unwrap_or(0),
+        // A Diff card's title: that card's title.
+        Some(Row::Title { card }) => {
+            return to
+                .title_row(card)
+                .unwrap_or_else(|| top.min(to.len().saturating_sub(1)));
+        }
+        // A folded stretch (fix round 1): the row its first line is drawn on now.
+        Some(Row::Unchanged { .. }) => {
+            return from
+                .and_then(|m| m.lines_held_at(top))
+                .and_then(|lines| to.row_holding(lines.start))
+                .unwrap_or_else(|| top.min(to.len().saturating_sub(1)));
+        }
+        None => top,
+    };
+    (0..=line).rev().find_map(|l| to.first_row(l)).unwrap_or(0)
 }
 
-/// `bar_at` in wrapped rows: a press `y` on any of a changed line's rows is its bar; within half
-/// a row of the edge where lines were deleted, that ▸.
-pub fn bar_at_rows(
-    y: f32,
-    line_height: f32,
-    w: &Wrapped,
-    changes: &Changes,
-) -> Option<(usize, LineChange)> {
-    if y < 0.0 || line_height <= 0.0 {
+/// The change under a press `y` points down the text (scroll included) in the bar column, by
+/// `map`'s rows: on any of a changed line's rows, (its 1-based line, its change); else within
+/// half a row of an edge where lines were deleted, that ▸.
+pub fn bar_at_rows(y: f32, map: &RowMap, changes: &Changes) -> Option<(usize, LineChange)> {
+    if y < 0.0 || map.len() == 0 {
         return None;
     }
-    let row = (y / line_height).floor() as usize;
-    if row < w.rows.len() {
-        let line = w.row(row).0;
+    let r = map.row_at(y);
+    if y < map.height()
+        && let Some(Row::Line { line, .. }) = map.row(r)
+    {
         if let Some(&change) = changes.by_line.get(&line) {
             return Some((line + 1, change));
         }
+        // M11ah: a folded line's bar (or ▸) is its hidden lines': the first of their changes.
+        let hidden = map.hidden_after(line);
+        let changed = hidden
+            .clone()
+            .find_map(|l| Some((l + 1, *changes.by_line.get(&l)?)));
+        let at = changes.deleted.partition_point(|&e| e < hidden.start);
+        let edge = changes
+            .deleted
+            .get(at)
+            .filter(|&&e| hidden.contains(&e))
+            .map(|&e| (e, LineChange::DeletedAfter));
+        // The one higher up: a changed (1-based) line c sits below the edge above line c - 1,
+        // so an edge e < c comes first.
+        match (changed, edge) {
+            (Some(c), Some(e)) => return Some(if e.0 < c.0 { e } else { c }),
+            (Some(found), None) | (None, Some(found)) => return Some(found),
+            (None, None) => {}
+        }
     }
-    let edge_row = (y / line_height).round() as usize;
-    let edge = w.first.binary_search(&edge_row).ok()?;
-    changes
+    // The edge nearest `y`: row `r`'s top or bottom (none further than half a row below the end).
+    let (top, bottom) = (map.top(r), map.top(r + 1));
+    let half = (bottom - top) / 2.0;
+    let edge_row = if y < top + half {
+        r
+    } else if y < bottom + half {
+        r + 1
+    } else {
+        return None;
+    };
+    let edge = changes
         .deleted
-        .contains(&edge)
-        .then_some((edge, LineChange::DeletedAfter))
+        .iter()
+        .copied()
+        .find(|&e| map.first_row(e) == Some(edge_row))?;
+    Some((edge, LineChange::DeletedAfter))
 }
 
-/// The lines in sight: from `scroll_y` down `height`, `line_height` each, of `count`.
-fn visible_rows(
-    scroll_y: Pixels,
-    height: Pixels,
-    line_height: Pixels,
-    count: usize,
-) -> Range<usize> {
-    let lh = f32::from(line_height).max(1.0);
-    let first = (f32::from(scroll_y) / lh).floor().max(0.0) as usize;
-    let last = ((f32::from(scroll_y + height) / lh).ceil().max(0.0) as usize).min(count);
-    first.min(last)..last
+/// M11ah: side by side needs this many text cells in each half.
+pub const SIDE_MIN_CELLS: usize = 60;
+
+/// M11ah: a half's gutter side by side, from its own left edge: `GUTTER_LEFT`, its numbers (the
+/// wider of the diff's two columns, so both halves are alike), `NUMBER_GAP`, the sign (a cell),
+/// `TEXT_GAP`: the text's left edge.
+fn side_text_left(cell: f32, gutter: Gutter) -> f32 {
+    let digits = match gutter {
+        Gutter::Diff {
+            old_digits,
+            new_digits,
+        } => old_digits.max(new_digits),
+        Gutter::Plain { digits, .. } => digits,
+    };
+    GUTTER_LEFT + cell * digits as f32 + NUMBER_GAP + cell + TEXT_GAP
+}
+
+/// M11ah: a half's text cells side by side in a body `width` points wide (the halves split the
+/// room inside the cards' insets; each keeps `RIGHT_PAD` after its text).
+pub fn side_cells(width: f32, cell: f32, gutter: Gutter) -> usize {
+    let cell = cell.max(1.0);
+    let half = (width - 2.0 * code::CARD_INSET) / 2.0;
+    let room = half - side_text_left(cell, gutter) - RIGHT_PAD;
+    (room / cell).floor().max(0.0) as usize
+}
+
+/// Whether a body `width` points wide fits two halves of `SIDE_MIN_CELLS` cells with their
+/// gutters (a diff's only).
+pub fn fits_side_by_side(width: f32, cell: f32, gutter: Gutter) -> bool {
+    matches!(gutter, Gutter::Diff { .. }) && side_cells(width, cell, gutter) >= SIDE_MIN_CELLS
+}
+
+/// The selected text of one half: only rows on that side (Old: Same + Removed; New: Same +
+/// Added), the first and last in part, `\n` between them.
+pub fn half_text(doc: &Doc, rows: &[DiffRow], a: Pos, b: Pos, half: Half) -> String {
+    let (s, e) = if a <= b { (a, b) } else { (b, a) };
+    let Some(last) = doc.lines.len().checked_sub(1) else {
+        return String::new();
+    };
+    let on = |i: usize| {
+        rows.get(i).is_some_and(|r| match r.kind {
+            RowKind::Same => true,
+            RowKind::Removed => half == Half::Old,
+            RowKind::Added => half == Half::New,
+            RowKind::Gap => false,
+        })
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for i in (s.line..=e.line.min(last)).filter(|&i| on(i)) {
+        let l = doc.line(i);
+        let from = if i == s.line { clamp_col(l, s.col) } else { 0 };
+        let to = if i == e.line {
+            clamp_col(l, e.col)
+        } else {
+            l.len()
+        };
+        parts.push(&l[from..to.max(from)]);
+    }
+    parts.join("\n")
+}
+
+/// M11ah: the bar's Side by side as it looks: filled (chosen and fitting), whether it takes a
+/// click (it fits), and its tooltip.
+pub fn side_button_look(chosen: bool, fits: bool) -> (bool, bool, &'static str) {
+    if fits {
+        (chosen, true, TIP_SIDE_BY_SIDE)
+    } else {
+        (false, false, TIP_SIDE_TOO_NARROW)
+    }
+}
+
+/// M11ah: the half a diff row's line is drawn on side by side: an added line's on the right,
+/// a removed or unchanged line's on the left (where a step or a jump to it lands).
+fn half_of(rows: &[DiffRow], line: usize) -> Half {
+    match rows.get(line).map(|r| r.kind) {
+        Some(RowKind::Added) => Half::New,
+        _ => Half::Old,
+    }
+}
+
+/// M11ah: side by side, the matches' indices in the order a find step visits them: row by row
+/// (`row_of`: the screen row a match is drawn on), on each row left before right, then along
+/// the line. (An unchanged line's matches show on both halves; a step stops on the left one.)
+pub fn side_order(
+    matches: &[Match],
+    rows: &[DiffRow],
+    row_of: impl Fn(&Match) -> Option<usize>,
+) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..matches.len()).collect();
+    order.sort_by_key(|&k| {
+        let m = &matches[k];
+        (row_of(m), half_of(rows, m.line) == Half::New, m.cols.start)
+    });
+    order
+}
+
+/// M11ah: Wrap's cells per row in a body `width` points wide: a diff's inside its cards (side
+/// by side: a half's, `side_cells`), a file's from its gutter; at least one.
+pub fn wrap_cells(width: f32, cell: f32, gutter: Gutter, side: bool) -> usize {
+    let cell = cell.max(1.0);
+    if side {
+        return side_cells(width, cell, gutter).max(1);
+    }
+    let room = width - columns(cell, gutter).text_left - RIGHT_PAD - right_inset(gutter);
+    (room / cell).floor().max(1.0) as usize
 }
 
 /// The gutter's number columns: the file's line numbers, or a diff's old and new numbers (each
 /// as many digits as its largest number, at least 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gutter {
-    /// A file's: its numbers, and (M11af) a column for who changed each line while any is
-    /// marked.
-    Plain { digits: usize, marks: bool },
+    /// A file's: its numbers, (M11ah) a fold column for a file with blocks, and (M11af) a
+    /// column for who changed each line while any is marked.
+    Plain {
+        digits: usize,
+        marks: bool,
+        folds: bool,
+    },
     Diff {
         old_digits: usize,
         new_digits: usize,
@@ -1550,11 +1892,12 @@ fn digits(n: usize) -> usize {
 }
 
 impl Gutter {
-    /// The gutter for `count` lines of a file, with the marks' column or not.
-    fn plain(count: usize, marks: bool) -> Gutter {
+    /// The gutter for `count` lines of a file, with the marks' and the fold column or not.
+    fn plain(count: usize, marks: bool, folds: bool) -> Gutter {
         Gutter::Plain {
             digits: digits(count),
             marks,
+            folds,
         }
     }
 
@@ -1570,12 +1913,297 @@ impl Gutter {
     }
 }
 
+/// A row's height (M11ah): the font's line height times `code::ROW_SCALE`; the text is painted
+/// with it, so GPUI centres the line in its row.
+pub fn row_height(line_height: Pixels) -> Pixels {
+    line_height * code::ROW_SCALE
+}
+
+/// A line number's colour: the current line's in `text`; the others quiet, `text_dim` held to
+/// `MARK_MIN` on the background so they stay readable.
+fn number_ink(ui: &UiColors, bg: Rgb, current: bool) -> Rgb {
+    if current {
+        ui.text
+    } else {
+        ensure_contrast(ui.text_dim, bg, MARK_MIN)
+    }
+}
+
+/// Where the current line `line` is after a reload: its new place when the reload's line
+/// comparison (`new_of_old`) says where it went, none when that line is gone; with no
+/// comparison, kept when `same` says the line there is unchanged.
+fn carry_line(
+    new_of_old: Option<&[Option<usize>]>,
+    line: usize,
+    same: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    match new_of_old {
+        Some(map) => map.get(line).copied().flatten(),
+        None => same(line).then_some(line),
+    }
+}
+
+/// A folded line's pill (M11ah): `⋯ 24 lines`.
+fn fold_pill_words(hidden: usize) -> String {
+    format!("\u{22ef} {}", lines_label(hidden))
+}
+
+/// Where a folded line's pill sits (x from the body's left, its width): `code::FOLD_PILL_GAP`
+/// after the line's `width` cells drawn from `text_x`, its words (`hidden` lines) in cells with
+/// `code::FOLD_PILL_PAD` either side. Painting and pressing use it, so they agree.
+fn fold_pill_span(text_x: Pixels, cell: Pixels, width: usize, hidden: usize) -> (Pixels, Pixels) {
+    let words = fold_pill_words(hidden).chars().count();
+    let x0 = text_x + cell * width as f32 + px(code::FOLD_PILL_GAP);
+    (x0, cell * words as f32 + px(2.0 * code::FOLD_PILL_PAD))
+}
+
+/// Two changes on one bar: the same one, else Changed.
+fn either_change(a: Option<LineChange>, b: Option<LineChange>) -> Option<LineChange> {
+    match (a, b) {
+        (Some(a), Some(b)) if a != b => Some(LineChange::Changed),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The newest mark on `lines`, and its line.
+fn newest_mark(record: &LineRecord, lines: Range<usize>) -> Option<(usize, &Mark)> {
+    lines.filter_map(|l| Some((l, record.mark(l)?))).fold(
+        None,
+        |best: Option<(usize, &Mark)>, (l, m)| match best {
+            Some((_, b)) if b.when >= m.when => best,
+            _ => Some((l, m)),
+        },
+    )
+}
+
+/// What a folded line shows for the lines it hides (M11ah: a fold never hides a change).
+#[derive(Clone, Debug, Default, PartialEq)]
+struct FoldSummary {
+    change: Option<LineChange>,
+    glow: Option<u8>,
+    mark: Option<Mark>,
+}
+
+/// What a folded line shows for its `hidden` lines: the strongest change (all Added: Added; all
+/// deletions: DeletedAfter; else Changed), the warmest glow level, the newest mark.
+fn folded_summary(
+    hidden: Range<usize>,
+    changes: &Changes,
+    live: Option<&LiveFrame>,
+) -> FoldSummary {
+    // The hidden lines' changes: by line or by change, whichever list is shorter.
+    let mut change = None;
+    if hidden.len() <= changes.by_line.len() {
+        for l in hidden.clone() {
+            change = either_change(change, changes.by_line.get(&l).copied());
+        }
+    } else {
+        for (l, c) in &changes.by_line {
+            if hidden.contains(l) {
+                change = either_change(change, Some(*c));
+            }
+        }
+    }
+    // Lines deleted between two of the fold's lines (the edge above a hidden line).
+    let at = changes.deleted.partition_point(|&e| e < hidden.start);
+    if changes.deleted.get(at).is_some_and(|e| hidden.contains(e)) {
+        change = either_change(change, Some(LineChange::DeletedAfter));
+    }
+    let Some(live) = live else {
+        return FoldSummary {
+            change,
+            ..FoldSummary::default()
+        };
+    };
+    let from = live.warm.partition_point(|w| w.lines.end <= hidden.start);
+    let glow = live.warm[from..]
+        .iter()
+        .take_while(|w| w.lines.start < hidden.end)
+        .map(|w| w.level)
+        .max();
+    let mark = newest_mark(&live.record, hidden).map(|(_, m)| m.clone());
+    FoldSummary { change, glow, mark }
+}
+
+/// The folds after a reload: each follows its first line as the current line does
+/// (`carry_line`); one whose first line changed or is gone, or where the new outline has no
+/// block, opens.
+fn carry_folds(
+    folded: &BTreeSet<usize>,
+    new_of_old: Option<&[Option<usize>]>,
+    same: impl Fn(usize) -> bool,
+    outline: &Outline,
+) -> BTreeSet<usize> {
+    folded
+        .iter()
+        .filter_map(|&start| carry_line(new_of_old, start, &same))
+        .filter(|&line| outline.starting_at(line).is_some())
+        .collect()
+}
+
+/// The current line after a Find step: the line of the match stepped to; a step that found
+/// no match (`stepped` none: no matches) keeps `kept`.
+fn step_line(matches: &[Match], stepped: Option<usize>, kept: Option<usize>) -> Option<usize> {
+    stepped
+        .and_then(|k| matches.get(k))
+        .map_or(kept, |m| Some(m.line))
+}
+
+/// M11ah: where the view is (File mode), worked out when it moves (a scroll, a read, the colours
+/// landing, a fold or a mode change), never while drawing: the sticky line and the breadcrumb's
+/// parts.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Place {
+    sticky: Option<Sticky>,
+    crumbs: Vec<Crumb>,
+}
+
+/// What is pinned at the top of the text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sticky {
+    /// A block's first line (File mode).
+    Line(usize),
+    /// A Diff card's title row (by card).
+    Title(usize),
+}
+
+/// M11ah: the card whose title is pinned with the view's top `y` points down a diff's rows: the
+/// card the top is inside, its title scrolled above it, while at least a title's height of it is
+/// still below the top (the title never hangs past the card's end over what follows it).
+fn sticky_title_at(map: &RowMap, y: f32) -> Option<usize> {
+    let card = map.card_at(map.row_at(y))?;
+    let rows = map.card_rows(card)?;
+    (map.top(rows.start) < y && map.top(rows.end) - y >= CARD_TITLE).then_some(card)
+}
+
+/// M11ah: where a diff scrolls to show row `row`: `REVEAL_ABOVE` rows above it at the top, a
+/// card's title's height higher when that title would be pinned over them.
+fn diff_reveal_y(map: &RowMap, row: usize) -> f32 {
+    let y = map.top(row.saturating_sub(REVEAL_ABOVE));
+    if sticky_title_at(map, y).is_some() {
+        (y - CARD_TITLE).max(0.0)
+    } else {
+        y
+    }
+}
+
+/// What the breadcrumb's parts were laid out for (its layout cache's key): the parts, the room,
+/// the font and its size, and the inks (the parts', the last part's).
+#[derive(Clone, Debug, PartialEq)]
+struct CrumbFitKey {
+    crumbs: Vec<Crumb>,
+    room: f32,
+    font: gpui::Font,
+    font_size: Pixels,
+    inks: (Rgb, Rgb),
+}
+
+/// What a piece of the breadcrumb is: a part (a press takes it), the "…" of the outer parts
+/// folded, or a " › " between two.
+#[derive(Clone, Debug)]
+enum CrumbPiece {
+    Part(Crumb),
+    Folded,
+    Separator,
+}
+
+/// The breadcrumb laid out: each piece's x from the strip's text edge, shaped.
+type CrumbsLaid = Vec<(Pixels, gpui::ShapedLine, CrumbPiece)>;
+
+/// The breadcrumb's parts and "…" as drawn (window points), each with its crumb (none: the "…",
+/// which a press does not take).
+type CrumbsDrawn = Vec<(Bounds<Pixels>, Option<Crumb>)>;
+
+/// A breadcrumb part: its words, and the line a press goes to (none: the file's name, the top).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Crumb {
+    pub words: String,
+    pub line: Option<usize>,
+}
+
+/// The breadcrumb for `top` the line at the top of the text: the file's name, then each block
+/// naming where `top` is, outer to inner (`Outline::path`), in their first lines' words
+/// (`code_outline::part_words`). `line` gives a line's text (only the path's are read).
+pub fn crumbs<'a>(
+    file_name: &str,
+    outline: &Outline,
+    line: impl Fn(usize) -> &'a str,
+    top: usize,
+    markdown: bool,
+) -> Vec<Crumb> {
+    let file = Crumb {
+        words: file_name.to_string(),
+        line: None,
+    };
+    let parts = outline.path(top).into_iter().map(|b| {
+        let start = outline.blocks[b].start;
+        Crumb {
+            words: code_outline::part_words(line(start), markdown),
+            line: Some(start),
+        }
+    });
+    std::iter::once(file).chain(parts).collect()
+}
+
+/// Which crumbs fit `room` points (widths measured): outer ones fold into one "…" first; the last
+/// always stays. Each part shown in order (none: the "…").
+pub fn fit_crumbs(widths: &[f32], room: f32, ellipsis: f32, separator: f32) -> Vec<Option<usize>> {
+    let n = widths.len();
+    // `k` outer parts folded into the "…" (none for k = 0).
+    for k in 0..n {
+        let shown = &widths[k..];
+        let mut width: f32 = shown.iter().sum();
+        let mut parts = shown.len();
+        if k > 0 {
+            width += ellipsis;
+            parts += 1;
+        }
+        width += separator * parts.saturating_sub(1) as f32;
+        if width <= room {
+            let fold = (k > 0).then_some(None);
+            return fold.into_iter().chain((k..n).map(Some)).collect();
+        }
+    }
+    n.checked_sub(1).map(Some).into_iter().collect()
+}
+
+/// The first row to show so `target_row` sits `REVEAL_ABOVE` rows down, one more when a sticky
+/// line shows there (`sticky_at`: with that row at the top).
+fn reveal_top(target_row: usize, sticky_at: impl Fn(usize) -> bool) -> usize {
+    let top = target_row.saturating_sub(REVEAL_ABOVE);
+    if top > 0 && sticky_at(top) {
+        top - 1
+    } else {
+        top
+    }
+}
+
+/// The place shown with `top` the line at the text's top and `under` the line just under the
+/// sticky line's row (the sticky line pins the innermost named block holding `under` whose
+/// first line is above it: `Outline::sticky`; at that block's own first line, none).
+fn place_of<'a>(
+    file_name: &str,
+    outline: &Outline,
+    line: impl Fn(usize) -> &'a str,
+    (top, under): (usize, usize),
+    markdown: bool,
+) -> Place {
+    Place {
+        sticky: outline
+            .sticky(under)
+            .map(|b| Sticky::Line(outline.blocks[b].start)),
+        crumbs: crumbs(file_name, outline, line, top, markdown),
+    }
+}
+
 /// Where the gutter's parts sit, in points from the body's left edge: the old numbers' right
 /// edge (a diff's), the (new) numbers' right edge, the change bar's left edge (a diff's sign
 /// column), the text's left edge.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Columns {
     pub old_right: Option<f32>,
+    /// M11ah: the fold column's left edge (a file's with blocks, in File mode).
+    pub fold_left: Option<f32>,
     /// The marks' column's left edge (M11af; a file's, while any line is marked).
     pub marks_left: Option<f32>,
     pub new_right: f32,
@@ -1583,23 +2211,33 @@ pub struct Columns {
     pub text_left: f32,
 }
 
-/// The gutter laid out for cells `cell` wide: `GUTTER_LEFT`, the numbers (old, `NUMBER_GAP`,
-/// new, for a diff), `NUMBER_GAP` (a file's marks' column, `MARK_COLUMN`, opened in its middle
-/// while any line is marked), the bar (`BAR_WIDTH`; a diff's sign, one cell), `TEXT_GAP`.
+/// The gutter laid out for cells `cell` wide: `GUTTER_LEFT` (a diff's inside its cards'
+/// `code::CARD_INSET`), the numbers (old, `NUMBER_GAP`,
+/// new, for a diff), `NUMBER_GAP` (a file's fold column, `code::FOLD_COLUMN`, for a file with
+/// blocks, then its marks' column, `MARK_COLUMN`, while any line is marked, opened in its
+/// middle), the bar (`BAR_WIDTH`; a diff's sign, one cell), `TEXT_GAP`.
 pub fn columns(cell: f32, gutter: Gutter) -> Columns {
-    let mut marks_left = None;
+    let (mut marks_left, mut fold_left) = (None, None);
     let (old_right, new_right, mark) = match gutter {
-        Gutter::Plain { digits, marks } => {
+        Gutter::Plain {
+            digits,
+            marks,
+            folds,
+        } => {
             let right = GUTTER_LEFT + cell * digits as f32;
-            // M11af: the marks' column, half a gap from the numbers and half a gap from the bar.
-            marks_left = marks.then_some(right + NUMBER_GAP / 2.0);
+            // M11ah: the fold column, half a gap from the numbers; then (M11af) the marks'
+            // column; then half a gap to the bar.
+            fold_left = folds.then_some(right + NUMBER_GAP / 2.0);
+            let fold = if folds { code::FOLD_COLUMN } else { 0.0 };
+            marks_left = marks.then_some(right + NUMBER_GAP / 2.0 + fold);
             (None, right, BAR_WIDTH)
         }
         Gutter::Diff {
             old_digits,
             new_digits,
         } => {
-            let old = GUTTER_LEFT + cell * old_digits as f32;
+            // M11ah: inside the cards, `code::CARD_INSET` from the body's left edge.
+            let old = code::CARD_INSET + GUTTER_LEFT + cell * old_digits as f32;
             (Some(old), old + NUMBER_GAP + cell * new_digits as f32, cell)
         }
     };
@@ -1608,13 +2246,56 @@ pub fn columns(cell: f32, gutter: Gutter) -> Columns {
     } else {
         0.0
     };
-    let bar_left = new_right + NUMBER_GAP + marks;
+    let folds = if fold_left.is_some() {
+        code::FOLD_COLUMN
+    } else {
+        0.0
+    };
+    let bar_left = new_right + NUMBER_GAP + folds + marks;
     Columns {
         old_right,
+        fold_left,
         marks_left,
         new_right,
         bar_left,
         text_left: bar_left + mark + TEXT_GAP,
+    }
+}
+
+/// M11ah: Diff mode's cards: the grouping, and per stretch whether it is shown, per card
+/// whether it is closed; each card's rows paired (side by side).
+type DiffParts = (Arc<Grouped>, Vec<bool>, Vec<bool>, Arc<Vec<CardPairs>>);
+
+/// M11ah: what a card is known by over a reload: the new-file line of its first row that has
+/// one (a deleted file's one card: 0).
+fn card_key(card: &diff_cards::Card, rows: &[DiffRow]) -> usize {
+    rows.get(card.rows.clone())
+        .and_then(|rows| rows.iter().find_map(|r| r.new))
+        .unwrap_or(0)
+}
+
+/// M11ah: the cards of `d` with the stretches `shown` and the cards `closed` (by key).
+fn diff_parts(d: &DiffDoc, shown: &BTreeSet<usize>, closed: &BTreeSet<usize>) -> DiffParts {
+    let g = &d.grouped;
+    let shown = g
+        .stretches
+        .iter()
+        .map(|s| s.new_start.is_some_and(|n| shown.contains(&n)))
+        .collect();
+    let closed = g
+        .cards
+        .iter()
+        .map(|c| closed.contains(&card_key(c, &d.rows)))
+        .collect();
+    (g.clone(), shown, closed, d.pairs.clone())
+}
+
+/// M11ah: the room a diff's cards leave at the body's right edge (a file's: none): the text
+/// stops `RIGHT_PAD` inside it, wraps and scrolls sideways within it.
+fn right_inset(gutter: Gutter) -> f32 {
+    match gutter {
+        Gutter::Diff { .. } => code::CARD_INSET,
+        Gutter::Plain { .. } => 0.0,
     }
 }
 
@@ -1674,27 +2355,11 @@ pub fn current_view(mode: FileMode, preview_on_and_fits: bool) -> View {
     }
 }
 
-/// The change under a press `y` points down the text (scroll included) in the bar column: a
-/// changed line's (1-based line, change), else the deleted-lines ▸ on the edge nearest to it.
-pub fn bar_at(y: f32, line_height: f32, changes: &Changes) -> Option<(usize, LineChange)> {
-    if y < 0.0 || line_height <= 0.0 {
-        return None;
-    }
-    let line = (y / line_height).floor() as usize;
-    if let Some(&change) = changes.by_line.get(&line) {
-        return Some((line + 1, change));
-    }
-    let edge = (y / line_height).round() as usize;
-    changes
-        .deleted
-        .contains(&edge)
-        .then_some((edge, LineChange::DeletedAfter))
-}
-
 /// Where the text body's parts sit, as last drawn (for the mouse, the wheel and find).
 #[derive(Clone, Copy, Debug)]
 pub struct Geom {
     pub bounds: Bounds<Pixels>,
+    /// A row's height (`row_height`: the font's line height times `code::ROW_SCALE`).
     pub line_height: Pixels,
     pub cell_width: Pixels,
     /// From the body's left edge: a diff's old numbers' right edge, the (new) line numbers'
@@ -1702,6 +2367,8 @@ pub struct Geom {
     /// (before the sideways scroll).
     pub old_numbers_right: Option<Pixels>,
     pub numbers_right: Pixels,
+    /// M11ah: the fold column's left edge (none: not a file's with blocks).
+    pub fold_left: Option<Pixels>,
     /// M11af: the marks' column's left edge (none: no line is marked, or not a file's).
     pub marks_left: Option<Pixels>,
     pub bar_left: Pixels,
@@ -1709,36 +2376,81 @@ pub struct Geom {
     /// The scroll drawn (kept within `max_scroll`).
     pub scroll: Point<Pixels>,
     pub max_scroll: Point<Pixels>,
+    /// M11ah: side by side, how far right the new half is drawn from the old (each half's
+    /// parts as the old half's above, moved by it); none: unified.
+    pub side: Option<Pixels>,
 }
 
 impl Geom {
+    /// `(gutter, side)`: the gutter's columns, and (M11ah) whether drawn side by side.
     fn of(
         bounds: Bounds<Pixels>,
         m: &CellMetrics,
-        lines: usize,
-        gutter: Gutter,
+        row: Pixels,
+        height: Pixels,
+        (gutter, side): (Gutter, bool),
         widest: usize,
         scroll: Point<Pixels>,
     ) -> Geom {
-        let c = columns(f32::from(m.cell_width), gutter);
+        let cw = f32::from(m.cell_width);
+        let mut c = columns(cw, gutter);
+        // M11ah: side by side, the old half's gutter (one number column) inside the cards; its
+        // text ends at the middle.
+        let shift = side.then(|| (f32::from(bounds.size.width) - 2.0 * code::CARD_INSET) / 2.0);
+        let mut right_edge = bounds.size.width - px(right_inset(gutter));
+        if let Some(shift) = shift {
+            let text_left = code::CARD_INSET + side_text_left(cw, gutter);
+            let bar_left = text_left - TEXT_GAP - cw;
+            c = Columns {
+                old_right: None,
+                fold_left: None,
+                marks_left: None,
+                new_right: bar_left - NUMBER_GAP,
+                bar_left,
+                text_left,
+            };
+            right_edge = px(code::CARD_INSET + shift);
+        }
         let text_left = px(c.text_left);
         let max_scroll = point(
-            (text_left + m.cell_width * widest as f32 + px(RIGHT_PAD) - bounds.size.width)
-                .max(px(0.0)),
-            (m.line_height * lines as f32 - bounds.size.height).max(px(0.0)),
+            (text_left + m.cell_width * widest as f32 + px(RIGHT_PAD) - right_edge).max(px(0.0)),
+            (height - bounds.size.height).max(px(0.0)),
         );
         Geom {
             bounds,
-            line_height: m.line_height,
+            line_height: row,
             cell_width: m.cell_width,
             old_numbers_right: c.old_right.map(px),
             numbers_right: px(c.new_right),
+            fold_left: c.fold_left.map(px),
             marks_left: c.marks_left.map(px),
             bar_left: px(c.bar_left),
             text_left,
             scroll: Geom::clamp(scroll, max_scroll),
             max_scroll,
+            side: shift.map(px),
         }
+    }
+
+    /// M11ah: side by side, the middle (the hairline), from the body's left edge.
+    pub fn middle(&self) -> Option<Pixels> {
+        self.side.map(|s| px(code::CARD_INSET) + s)
+    }
+
+    /// The text's room across (a half's side by side), right of `text_left`, less `RIGHT_PAD`.
+    fn text_room(&self) -> Pixels {
+        let right = self.middle().unwrap_or(self.bounds.size.width);
+        right - self.text_left - px(RIGHT_PAD)
+    }
+
+    /// M11ah: the half window point `p` is over, side by side (none: unified).
+    fn half_at(&self, p: Point<Pixels>) -> Option<Half> {
+        let middle = self.middle()?;
+        Some(if p.x < self.bounds.left() + middle {
+            Half::Old
+        } else {
+            Half::New
+        })
     }
 
     fn clamp(p: Point<Pixels>, max: Point<Pixels>) -> Point<Pixels> {
@@ -2151,44 +2863,6 @@ fn plain_run(len: usize, m: &CellMetrics, color: Rgb) -> TextRun {
     }
 }
 
-/// A text body wrapped at its width (M11x part 2): its screen rows and each line's first row,
-/// for the doc, mode and column count they were made for.
-#[derive(Clone)]
-pub struct Wrapped {
-    key: (FileMode, u64, usize),
-    rows: Arc<Vec<(usize, usize)>>,
-    first: Arc<Vec<usize>>,
-    columns: usize,
-}
-
-impl Wrapped {
-    /// `doc` wrapped at `columns` (each line's width from its cells).
-    fn of(doc: &Doc, mode: FileMode, columns: usize) -> Wrapped {
-        let count = doc.lines.len();
-        let rows = visual_rows(&doc.widths, columns, true);
-        let first = first_rows(&rows, count);
-        Wrapped {
-            key: (mode, doc.version, columns),
-            rows: Arc::new(rows),
-            first: Arc::new(first),
-            columns: columns.max(1),
-        }
-    }
-
-    /// Screen row `r` as (line, its first cell).
-    fn row(&self, r: usize) -> (usize, usize) {
-        self.rows.get(r).copied().unwrap_or((r, 0))
-    }
-
-    /// Line `i`'s first row (past the last line: the row count).
-    fn first_row(&self, i: usize) -> usize {
-        self.first
-            .get(i)
-            .copied()
-            .unwrap_or_else(|| self.rows.len())
-    }
-}
-
 /// Everything one frame of the text body draws, read in `render`.
 struct Frame {
     doc: Doc,
@@ -2202,9 +2876,37 @@ struct Frame {
     selection: Option<(Pos, Pos)>,
     matches: Arc<Vec<Match>>,
     current: Option<usize>,
+    /// M11ah: the current line (a file's line, or a diff's row), drawn with a band.
+    current_line: Option<usize>,
+    /// M11ah: whether indent guides are drawn (not in a Markdown file: its outline is headings).
+    guides: bool,
     theme: Theme,
     /// M11af: the live changes drawn (a file in File mode with a line marked).
     live: Option<LiveFrame>,
+    /// M11ah: the folded blocks (File mode) and their generation (the row map's key), and
+    /// whether the pointer is over the gutter (the open blocks' ▾ show).
+    folded: BTreeSet<usize>,
+    folds_gen: u64,
+    gutter_hover: bool,
+    /// M11ah: the line pinned at the top of the text (File mode), as the place says.
+    sticky: Option<usize>,
+    /// M11ah: Diff mode's cards (their grouping, shown stretches and closed cards, titles) and
+    /// their layout's generation (the row map's key); the card whose title is pinned at the top.
+    cards: Option<CardsFrame>,
+    layout_gen: u64,
+    sticky_title: Option<usize>,
+    /// M11ah: side by side chosen (drawn so where the body fits two halves), the half the
+    /// current row is on, and the half the selection is in.
+    side_by_side: bool,
+    current_half: Option<Half>,
+    sel_half: Option<Half>,
+}
+
+/// What the text body draws of Diff mode's cards (M11ah).
+struct CardsFrame {
+    parts: DiffParts,
+    titles: Arc<Vec<CardTitle>>,
+    words: Option<Arc<WordMarks>>,
 }
 
 /// What the text body draws of the live changes (M11af): the marks, and the runs glowing as
@@ -2311,6 +3013,7 @@ fn paint_number(
     n: usize,
     right: Point<Pixels>,
     m: &CellMetrics,
+    row: Pixels,
     ink: Rgb,
     window: &mut Window,
     cx: &mut App,
@@ -2322,7 +3025,294 @@ fn paint_number(
             .text_system()
             .shape_line(SharedString::from(label), m.font_size, &[run], None);
     let at = point(right.x - number.width(), right.y);
-    let _ = number.paint(at, m.line_height, TextAlign::Left, None, window, cx);
+    let _ = number.paint(at, row, TextAlign::Left, None, window, cx);
+}
+
+/// What the scrollbar's change marks were worked out for (M11ah): the rows (their key and
+/// height), the changes (the very list: compared by identity, so a new answer, even an equal
+/// one, works them out again) and the bar colours (the theme). Not the find's matches nor the
+/// lane's length: a Find keystroke, a ⌘G step or a resize never works them out again.
+#[derive(Clone)]
+struct ChangeKey {
+    map: MapKey,
+    row_h: f32,
+    changes: Arc<Changes>,
+    colours: [Rgb; 3],
+}
+
+impl PartialEq for ChangeKey {
+    fn eq(&self, o: &ChangeKey) -> bool {
+        self.map == o.map
+            && self.row_h == o.row_h
+            && Arc::ptr_eq(&self.changes, &o.changes)
+            && self.colours == o.colours
+    }
+}
+
+/// What the scrollbar's marks were worked out for: the change marks' key, the find's matches
+/// (the very list; no matches at all are always the same), the current match, the lane's
+/// length and the text's, and the match ticks' colours (the theme).
+#[derive(Clone)]
+struct LaneKey {
+    changes: ChangeKey,
+    matches: Arc<Vec<Match>>,
+    current: Option<usize>,
+    extent: (f32, f32),
+    colours: [Rgb; 2],
+}
+
+impl PartialEq for LaneKey {
+    fn eq(&self, o: &LaneKey) -> bool {
+        self.changes == o.changes
+            && (Arc::ptr_eq(&self.matches, &o.matches)
+                || (self.matches.is_empty() && o.matches.is_empty()))
+            && self.current == o.current
+            && self.extent == o.extent
+            && self.colours == o.colours
+    }
+}
+
+/// A lane item: its top and height down the text, in points, and its colour.
+type LaneItem = (f32, f32, Rgb);
+
+/// The scrollbar's lane, kept with the keys it was worked out for: the change items (by
+/// `ChangeKey`), and the marks scaled onto the lane with the find's ticks (by `LaneKey`).
+#[derive(Default)]
+struct LaneCache {
+    items: Option<(ChangeKey, Arc<Vec<LaneItem>>)>,
+    marks: Option<(LaneKey, Vec<LaneMark>)>,
+}
+
+type Lane = Rc<RefCell<LaneCache>>;
+
+impl LaneCache {
+    /// The lane's marks for `key`: kept, or scaled again from the change items (kept, or
+    /// worked out again for another `ChangeKey`) with the find's ticks.
+    fn marks(&mut self, key: LaneKey, f: &Frame, map: &RowMap, bars: &BarColours) -> Vec<LaneMark> {
+        if let Some((k, marks)) = &self.marks
+            && *k == key
+        {
+            return marks.clone();
+        }
+        let items = match &self.items {
+            Some((k, items)) if *k == key.changes => items.clone(),
+            _ => {
+                let items = Arc::new(change_items(f, map, bars));
+                self.items = Some((key.changes.clone(), items.clone()));
+                items
+            }
+        };
+        let (content, track) = (key.extent.1, key.extent.0);
+        let marks = lane_marks(f, map, &items, content, track);
+        self.marks = Some((key, marks.clone()));
+        marks
+    }
+}
+
+/// The scrollbar's marks of a file (M11ah), scaled onto a lane `track` long for a text `content`
+/// long: the change `items` (`change_items`), then each find match a `LANE_TICK` tick in the
+/// accent at `MATCH_TINT` on the row holding its line (a hidden one's: its fold's), the current
+/// one last, at `CURRENT_TINT`. Worked out only when the key changes, never in a timer.
+fn lane_marks(
+    f: &Frame,
+    map: &RowMap,
+    items: &[LaneItem],
+    content: f32,
+    track: f32,
+) -> Vec<LaneMark> {
+    let mut marks = scrollbar::lane(items, content, track, code::LANE_MARK_MIN);
+    marks.extend(match_ticks(f, map, content, track, |l| map.row_holding(l)));
+    marks
+}
+
+/// The scrollbar's change items (M11ah), down the text in points. Diff mode: one per card
+/// (green, red, or blue for both). File mode: `file_change_items`.
+fn change_items(f: &Frame, map: &RowMap, bars: &BarColours) -> Vec<LaneItem> {
+    match f.mode {
+        FileMode::Diff => {
+            let Some(cards) = &f.cards else {
+                return Vec::new();
+            };
+            (cards.parts.0.cards.iter().enumerate())
+                .filter_map(|(k, card)| {
+                    let rows = map.card_rows(k)?;
+                    let top = map.top(rows.start);
+                    let colour = match card.kind {
+                        CardKind::Added => bars.added,
+                        CardKind::Removed => bars.deleted,
+                        CardKind::Both => bars.changed,
+                    };
+                    Some((top, map.top(rows.end) - top, colour))
+                })
+                .collect()
+        }
+        FileMode::Plain => file_change_items(&f.doc.changes, map, bars),
+    }
+}
+
+/// A file's change items (M11ah final review), worked out from the changes and the folds, not
+/// the rows (O(changes + folds)): each change bar's run at its line's rows (Wrap: all of them), a
+/// folded line showing its hidden lines' strongest change (`folded_summary`'s rule) on its rows,
+/// in the bar colours; then each deletion edge one mark in the deletion colour at its line's
+/// first row (a hidden one's: in its fold's change), a fold holding only deletions one at its
+/// folded line's first row.
+fn file_change_items(changes: &Changes, map: &RowMap, bars: &BarColours) -> Vec<LaneItem> {
+    let mut lines: Vec<(usize, LineChange)> =
+        changes.by_line.iter().map(|(&l, &c)| (l, c)).collect();
+    lines.sort_unstable_by_key(|&(l, _)| l);
+    // Each line drawn with a change: by its first row, its own change and its fold's.
+    let mut heads: Vec<(usize, usize, LineChange)> = lines
+        .iter()
+        .filter_map(|&(line, change)| Some((map.first_row(line)?, line, change)))
+        .filter(|&(r, line, _)| map.row(r).and_then(Row::line) == Some(line))
+        .collect();
+    for (hidden, row) in map.held() {
+        let from = lines.partition_point(|&(l, _)| l < hidden.start);
+        let to = lines.partition_point(|&(l, _)| l < hidden.end);
+        let mut change = lines[from..to]
+            .iter()
+            .fold(None, |c, &(_, l)| either_change(c, Some(l)));
+        // Lines deleted between two of the fold's lines (the edge above a hidden line).
+        let at = changes.deleted.partition_point(|&e| e < hidden.start);
+        if changes.deleted.get(at).is_some_and(|e| hidden.contains(e)) {
+            change = either_change(change, Some(LineChange::DeletedAfter));
+        }
+        if let (Some(change), Some(line)) = (change, map.row(*row).and_then(Row::line)) {
+            heads.push((*row, line, change));
+        }
+    }
+    heads.sort_by_key(|&(r, _, _)| r);
+    let mut shown: Vec<(usize, LineChange)> = Vec::new();
+    let mut deletions: Vec<f32> = Vec::new();
+    let mut k = 0;
+    while k < heads.len() {
+        let (row, line, mut change) = heads[k];
+        k += 1;
+        // A folded line's own change and its fold's: one bar.
+        while let Some(&(_, _, c)) = heads.get(k).filter(|h| h.0 == row) {
+            change = either_change(Some(change), Some(c)).unwrap_or(c);
+            k += 1;
+        }
+        if change == LineChange::DeletedAfter {
+            deletions.push(map.top(row));
+            continue;
+        }
+        let mut r = row;
+        while map.row(r).and_then(Row::line) == Some(line) {
+            shown.push((r, change));
+            r += 1;
+        }
+    }
+    deletions.extend(
+        changes
+            .deleted
+            .iter()
+            .filter_map(|&edge| map.first_row(edge).map(|r| map.top(r))),
+    );
+    deletions.sort_by(f32::total_cmp);
+    let mut items: Vec<LaneItem> = bar_runs(&shown)
+        .into_iter()
+        .map(|(run, change)| {
+            let top = map.top(run.start);
+            (top, map.top(run.end) - top, bars.of_change(change))
+        })
+        .collect();
+    items.extend(deletions.into_iter().map(|top| (top, 0.0, bars.deleted)));
+    items
+}
+
+/// The scrollbar's find ticks (M11ah): each match a `LANE_TICK` tick in the accent at
+/// `MATCH_TINT` on the row `row_of` its line (a hidden one's: its fold's), the current one last,
+/// at `CURRENT_TINT`.
+fn match_ticks(
+    f: &Frame,
+    map: &RowMap,
+    content: f32,
+    track: f32,
+    row_of: impl Fn(usize) -> Option<usize>,
+) -> Vec<LaneMark> {
+    let accent = f.theme.ui().accent;
+    let ticks = |colour: Rgb, only: &dyn Fn(usize) -> bool| {
+        let items: Vec<(f32, f32, Rgb)> = f
+            .matches
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| only(*k))
+            .filter_map(|(_, m)| Some((map.top(row_of(m.line)?), 0.0, colour)))
+            .collect();
+        scrollbar::lane(&items, content, track, code::LANE_TICK)
+    };
+    let (found, now) = (
+        mix(f.theme.background, accent, MATCH_TINT),
+        mix(f.theme.background, accent, CURRENT_TINT),
+    );
+    let mut marks = ticks(found, &|k| f.current != Some(k));
+    marks.extend(ticks(now, &|k| f.current == Some(k)));
+    marks
+}
+
+/// The folded lines in sight (M11ah): for each, how many lines it hides and what they hold.
+type Folds = HashMap<usize, (usize, FoldSummary)>;
+
+/// The change bars of the rows in sight (a file's; a diff has signs): runs of neighbouring rows
+/// of one change are one bar, `BAR_WIDTH` wide with round ends, a `BAR_RUN_GAP` between runs of
+/// different changes. A run that goes on past the view's edge keeps a square end there. With Wrap
+/// a run spans every screen row of its lines.
+fn paint_bars(
+    f: &Frame,
+    g: &Geom,
+    map: &RowMap,
+    rows: &Range<usize>,
+    folds: &Folds,
+    colours: &BarColours,
+    window: &mut Window,
+) {
+    if f.mode != FileMode::Plain || f.doc.changes.by_line.is_empty() {
+        return;
+    }
+    // One row either side of the view, to tell a cut run and a touching one from a free end.
+    let (from, to) = (rows.start.saturating_sub(1), (rows.end + 1).min(map.len()));
+    let shown: Vec<(usize, LineChange)> = (from..to)
+        .filter_map(|r| match map.row(r)? {
+            Row::Line { line, .. } => {
+                // M11ah: a folded line's bar is its own and its hidden lines' (deletions alone
+                // are its ▸).
+                let own = f.doc.changes.by_line.get(&line).copied();
+                let hidden = folds.get(&line).and_then(|(_, s)| s.change);
+                let change = either_change(own, hidden).filter(|c| *c != LineChange::DeletedAfter);
+                Some((r, change?))
+            }
+            _ => None,
+        })
+        .collect();
+    let runs = bar_runs(&shown);
+    let top = f32::from(g.bounds.top() - g.scroll.y);
+    let x = g.bounds.left() + g.bar_left;
+    for (k, (run, change)) in runs.iter().enumerate() {
+        let touches = |other: Option<&(Range<usize>, LineChange)>, at: usize| {
+            other.is_some_and(|(rows, _)| rows.contains(&at))
+        };
+        let gap_above =
+            run.start > 0 && touches(k.checked_sub(1).and_then(|p| runs.get(p)), run.start - 1);
+        let gap_below = touches(runs.get(k + 1), run.end);
+        let (y0, y1) = bar_span(
+            top + map.top(run.start),
+            top + map.top(run.end),
+            gap_above,
+            gap_below,
+        );
+        // Cut by the view's edge (the run goes on to the extra row): square there.
+        let radius = px(BAR_WIDTH / 2.0);
+        let (cut_top, cut_bottom) = (run.start < rows.start, run.end > rows.end);
+        let corners = gpui::Corners {
+            top_left: if cut_top { px(0.0) } else { radius },
+            top_right: if cut_top { px(0.0) } else { radius },
+            bottom_right: if cut_bottom { px(0.0) } else { radius },
+            bottom_left: if cut_bottom { px(0.0) } else { radius },
+        };
+        let bar = Bounds::new(point(x, px(y0)), size(px(BAR_WIDTH), px(y1 - y0)));
+        window.paint_quad(fill(bar, hsla(colours.of_change(*change))).corner_radii(corners));
+    }
 }
 
 /// Paint the text body: `f`'s lines in sight, laid out as `g`. A file: its numbers, change bars
@@ -2332,7 +3322,7 @@ fn paint_body(
     f: &Frame,
     g: &Geom,
     m: &CellMetrics,
-    wrapped: Option<&Wrapped>,
+    map: &RowMap,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -2340,19 +3330,73 @@ fn paint_body(
     let bars = BarColours::of(&f.theme);
     let bounds = g.bounds;
     let lh = g.line_height;
-    // Wrapped (M11x part 2): screen rows, each a part of a line; else a row a line.
-    let row_count = wrapped.map_or(f.doc.lines.len(), |w| w.rows.len());
-    let rows = visible_rows(g.scroll.y, bounds.size.height, lh, row_count);
-    let mask = ContentMask {
-        bounds: Bounds::from_corners(
-            point(
-                bounds.left() + g.text_left - px(TEXT_GAP - 1.0),
-                bounds.top(),
-            ),
-            bounds.bottom_right(),
-        ),
+    // The screen rows in sight (M11ah: the row map's), each a line or (Wrap) a part of one.
+    let scroll_y = f32::from(g.scroll.y);
+    let rows = map.rows_in(scroll_y..scroll_y + f32::from(bounds.size.height));
+    // M11ah: a diff's rows are inside its cards: the bands and the text stop at their sides.
+    let inside = if f.cards.is_some() {
+        px(code::CARD_INSET + code::CARD_BORDER)
+    } else {
+        px(0.0)
     };
-    let (seen_left, seen_right) = (mask.bounds.left(), mask.bounds.right());
+    // M11ah: side by side, the middle (the hairline) in window points; the new half is drawn
+    // `g.side` right of where the old one is.
+    let middle = g.middle().map(|m| bounds.left() + m);
+    let shift = |half: Option<Half>| match half {
+        Some(Half::New) => g.side.unwrap_or_default(),
+        _ => px(0.0),
+    };
+    // A row's height drawn inside its card: a card's last row's stops above the card's bottom
+    // border (fix round 1).
+    let card_last = |r: usize| {
+        f.cards.is_some()
+            && map
+                .card_at(r)
+                .and_then(|k| map.card_rows(k))
+                .is_some_and(|card| card.end == r + 1)
+    };
+    // A band across row `r` at `y` in `colour` (side by side: across `half`), its outer bottom
+    // corners rounded inside the card's on a card's last row.
+    let band_at = |y: Pixels, r: usize, half: Option<Half>, colour: gpui::Hsla| {
+        let (h, round) = if card_last(r) {
+            (
+                lh - px(code::CARD_BORDER),
+                px(CARD_RADIUS - code::CARD_BORDER),
+            )
+        } else {
+            (lh, px(0.0))
+        };
+        let (mut x0, mut x1) = (bounds.left() + inside, bounds.right() - inside);
+        let (mut left_round, mut right_round) = (round, round);
+        match (half, middle) {
+            (Some(Half::Old), Some(m)) => (x1, right_round) = (m, px(0.0)),
+            (Some(Half::New), Some(m)) => (x0, left_round) = (m, px(0.0)),
+            _ => {}
+        }
+        let band = Bounds::from_corners(point(x0, y), point(x1, y + h));
+        fill(band, colour).corner_radii(gpui::Corners {
+            top_left: px(0.0),
+            top_right: px(0.0),
+            bottom_right: right_round,
+            bottom_left: left_round,
+        })
+    };
+    // The text's clip (side by side: its half's, the old one's ending at the middle).
+    let mask_of = |half: Option<Half>| {
+        let right = match (half, middle) {
+            (Some(Half::Old), Some(m)) => m,
+            _ => bounds.right() - inside,
+        };
+        ContentMask {
+            bounds: Bounds::from_corners(
+                point(
+                    bounds.left() + g.text_left + shift(half) - px(TEXT_GAP - 1.0),
+                    bounds.top(),
+                ),
+                point(right, bounds.bottom()),
+            ),
+        }
+    };
     let spans = f.doc.spans.as_deref().filter(|_| f.coloured);
     let accent = hsla(ui.accent);
     let bg = f.theme.background;
@@ -2364,6 +3408,7 @@ fn paint_body(
             None,
         )
     };
+    let (quiet, bright) = (number_ink(&ui, bg, false), number_ink(&ui, bg, true));
     let (removed_ink, added_ink) = sign_inks(&bars, bg);
     // M11af: the age words in the warm accent, readable on the background.
     let age_ink = ensure_contrast(WARM_RGB, bg, TEXT_MIN);
@@ -2371,27 +3416,121 @@ fn paint_body(
         sign(SIGN_REMOVED, removed_ink, window),
         sign(SIGN_ADDED, added_ink, window),
     );
-    for r in rows.clone() {
-        let (i, cell0) = wrapped.map_or((r, 0), |w| w.row(r));
-        let y = bounds.top() + lh * r as f32 - g.scroll.y;
+    // M11ah: indent guides (a file with blocks), the current line's block drawn stronger.
+    let outline = f
+        .doc
+        .outline
+        .as_deref()
+        .filter(|o| f.guides && o.has_structure());
+    let active = outline.and_then(|o| {
+        let block = *o.containing(f.current_line?).last()?;
+        Some((
+            o.blocks[block].start..o.blocks[block].end,
+            o.blocks[block].indent / o.step.max(1),
+        ))
+    });
+    let guide = hsla(ui.text).opacity(code::GUIDE_ALPHA);
+    let guide_active = hsla(ui.text).opacity(code::GUIDE_ACTIVE_ALPHA);
+    // M11ah: the folded lines in sight (one row either side, for the bars' ends), and the fold
+    // column's ▸ (folded, always) and ▾ (open, faint, while the pointer is over the gutter).
+    let mut folds = Folds::new();
+    if f.mode == FileMode::Plain && !f.folded.is_empty() {
+        let around = rows.start.saturating_sub(1)..(rows.end + 1).min(map.len());
+        for r in around {
+            let Some(Row::Line { line, .. }) = map.row(r) else {
+                continue;
+            };
+            let hidden = map.hidden_after(line);
+            if !hidden.is_empty() && !folds.contains_key(&line) {
+                let summary = folded_summary(hidden.clone(), &f.doc.changes, f.live.as_ref());
+                folds.insert(line, (hidden.len(), summary));
+            }
+        }
+    }
+    let fold_outline = f
+        .doc
+        .outline
+        .as_deref()
+        .filter(|o| g.fold_left.is_some() && o.has_structure());
+    let (fold_shut, fold_open) = (
+        sign("\u{25b8}", quiet, window),
+        sign("\u{25be}", mix(bg, quiet, code::FOLD_OPEN_ALPHA), window),
+    );
+    paint_bars(f, g, map, &rows, &folds, &bars, window);
+    // M11ah: Diff mode's cards in sight, under their rows: rounded panels with a 1 pt border.
+    if f.cards.is_some() {
+        let (left, right) = panel_x(g);
+        for k in map.cards_in(rows.clone()) {
+            let Some(card) = map.card_rows(k) else {
+                continue;
+            };
+            let top = bounds.top() + px(map.top(card.start)) - g.scroll.y;
+            let bottom = bounds.top() + px(map.top(card.end)) - g.scroll.y;
+            let panel = Bounds::from_corners(point(left, top), point(right, bottom));
+            window.paint_quad(quad(
+                panel,
+                px(CARD_RADIUS),
+                hsla(bg),
+                px(code::CARD_BORDER),
+                hsla(ui.divider),
+                gpui::BorderStyle::Solid,
+            ));
+        }
+    }
+    // Line `i`'s row `r` at `y` (from its cell `cell0`): unified (`half` none), or side by side
+    // on `half`, its parts moved right by the half's shift.
+    let paint_line = |r: usize,
+                      y: Pixels,
+                      (i, cell0): (usize, usize),
+                      half: Option<Half>,
+                      window: &mut Window,
+                      cx: &mut App| {
+        let dx = shift(half);
+        let mask = mask_of(half);
+        let (seen_left, seen_right) = (mask.bounds.left(), mask.bounds.right());
         let line = f.doc.line(i);
         // A wrapped row: its line's part, drawn from the text's left edge; the line's first row
         // has its number, bar and sign, its last row the selection's line end.
         let first_row = cell0 == 0;
-        let part = wrapped.map(|w| {
-            let (from, to, start) = wrapped_row(&f.doc, i, cell0, w.columns);
-            let last = w.row(r + 1).0 != i || r + 1 >= w.rows.len();
+        let part = map.columns().map(|columns| {
+            let (from, to, start) = wrapped_row(&f.doc, i, cell0, columns);
+            // The next row on this half (a line's row: the line's) is this line's: not its last.
+            let next = map
+                .row(r + 1)
+                .and_then(|n| n.half(half.unwrap_or(Half::Old)));
+            let last = !matches!(next, Some((line, _)) if line == i);
             (from, to, start, last)
         });
         let text_x = match part {
-            Some((_, _, start, _)) => bounds.left() + g.text_left - g.cell_width * start as f32,
-            None => bounds.left() + g.text_left - g.scroll.x,
+            Some((_, _, start, _)) => {
+                bounds.left() + g.text_left + dx - g.cell_width * start as f32
+            }
+            None => bounds.left() + g.text_left + dx - g.scroll.x,
         };
         let row = f.diff.as_ref().and_then(|d| d.get(i)).copied();
         let change = match f.mode {
             FileMode::Plain => f.doc.changes.by_line.get(&i).copied(),
             FileMode::Diff => None,
         };
+        // M11ah: side by side, an unchanged current row is on the half pressed only.
+        let current = f.current_line == Some(i)
+            && half.is_none_or(|h| {
+                let own = match row.map(|r| r.kind) {
+                    Some(RowKind::Added) => Half::New,
+                    _ => Half::Old,
+                };
+                f.current_half.unwrap_or(own) == h
+            });
+        let ink = if current { bright } else { quiet };
+        // The current line's band, first: under the tints, the glow, the selection and matches.
+        if current {
+            window.paint_quad(band_at(
+                y,
+                r,
+                half,
+                hsla(ui.text).opacity(code::CURRENT_ALPHA),
+            ));
+        }
         let tint = match (row.map(|r| r.kind), change) {
             (Some(RowKind::Removed), _) => Some(bars.deleted),
             (Some(RowKind::Added), _) => Some(bars.added),
@@ -2399,19 +3538,16 @@ fn paint_body(
             _ => None,
         };
         if let Some(tint) = tint {
-            let band = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
-            window.paint_quad(fill(band, hsla(tint).opacity(TINT)));
+            window.paint_quad(band_at(y, r, half, hsla(tint).opacity(TINT)));
         }
         // M11af: a line changed on disk in the last minute glows, under the selection and find.
         let run = f.live.as_ref().and_then(|l| l.run_of(i));
-        let glow = run.and_then(|w| {
-            w.level
-                .checked_sub(1)
-                .and_then(|k| GLOW.get(usize::from(k)))
-        });
+        // M11ah: a folded line glows as its warmest hidden line, if warmer.
+        let fold = folds.get(&i);
+        let level = run.map(|w| w.level).max(fold.and_then(|(_, s)| s.glow));
+        let glow = level.and_then(|l| l.checked_sub(1).and_then(|k| GLOW.get(usize::from(k))));
         if let Some(level) = glow {
-            let band = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
-            window.paint_quad(fill(band, hsla(WARM_RGB).opacity(*level)));
+            window.paint_quad(band_at(y, r, half, hsla(WARM_RGB).opacity(*level)));
         }
         let line_spans = spans.and_then(|s| s.get(i)).map(Vec::as_slice);
         // An unchanged diff row: its colours mixed toward the background, still readable.
@@ -2444,9 +3580,49 @@ fn paint_body(
         };
         let x_of = |col: usize| text_x + laid.x(col);
         window.with_content_mask(Some(mask), |window| {
+            // Indent guides, under the selection, the matches and the text: a 1 pt line at each
+            // of the line's levels (the same cells on every row of a wrapped line).
+            if let Some(o) = outline {
+                let origin =
+                    text_x + g.cell_width * part.map_or(0, |(_, _, start, _)| start) as f32;
+                for k in 0..o.levels(i) {
+                    let on = active
+                        .as_ref()
+                        .is_some_and(|(span, level)| *level == k && span.contains(&i));
+                    let x = origin + g.cell_width * (k * o.step) as f32;
+                    let line = Bounds::new(point(x, y), size(px(code::GUIDE), lh));
+                    window.paint_quad(fill(line, if on { guide_active } else { guide }));
+                }
+            }
+            // M11ah: the row's changed words, over its tint, under the selection and the matches.
+            if let Some(words) = f
+                .cards
+                .as_ref()
+                .and_then(|c| c.words.as_deref())
+                .and_then(|w| w.get(&i))
+            {
+                let word = match row.map(|r| r.kind) {
+                    Some(RowKind::Removed) => Some(bars.deleted),
+                    Some(RowKind::Added) => Some(bars.added),
+                    _ => None,
+                };
+                if let Some(word) = word {
+                    let ink = hsla(word).opacity(code::WORD_ALPHA);
+                    for range in words {
+                        let (x0, x1) = (x_of(range.start), x_of(range.end));
+                        if x1 <= x0 || x1 < seen_left || x0 > seen_right {
+                            continue;
+                        }
+                        let b = Bounds::from_corners(point(x0, y), point(x1, y + lh));
+                        window.paint_quad(fill(b, ink).corner_radii(px(code::WORD_RADIUS)));
+                    }
+                }
+            }
+            // M11ah: side by side, only in the half the selection is in.
             if let Some((s, e)) = f.selection
                 && (s.line..=e.line).contains(&i)
                 && s != e
+                && half.is_none_or(|h| f.sel_half.unwrap_or(Half::Old) == h)
             {
                 let from = if i == s.line { s.col } else { 0 };
                 let to = if i == e.line { e.col } else { line.len() };
@@ -2489,11 +3665,33 @@ fn paint_body(
                 let origin = point(text_x + laid.x0, y);
                 let _ = shaped.paint(origin, lh, TextAlign::Left, None, window, cx);
             }
-            // M11af: a warm run's age, after its first line's end (on the row it ends on).
             let ends_here = part.is_none_or(|(_, _, _, last)| last);
+            let width = f.doc.widths.get(i).copied().unwrap_or(0);
+            let mut after_text = text_x + g.cell_width * width as f32;
+            // M11ah: a folded line's pill, after its text (on the row it ends on).
+            if let Some((hidden, _)) = fold.filter(|_| ends_here) {
+                let (x0, w) = fold_pill_span(text_x - bounds.left(), g.cell_width, width, *hidden);
+                let inset = px(code::FOLD_PILL_INSET);
+                let pill = Bounds::new(
+                    point(bounds.left() + x0, y + inset),
+                    size(w, lh - inset * 2.0),
+                );
+                let ground = hsla(ui.text).opacity(code::FOLD_PILL_ALPHA);
+                window.paint_quad(fill(pill, ground).corner_radii((lh - inset * 2.0) / 2.0));
+                let label = fold_pill_words(*hidden);
+                let words = window.text_system().shape_line(
+                    SharedString::from(label.clone()),
+                    m.font_size,
+                    &[plain_run(label.len(), m, quiet)],
+                    None,
+                );
+                let at = point(bounds.left() + x0 + px(code::FOLD_PILL_PAD), y);
+                let _ = words.paint(at, lh, TextAlign::Left, None, window, cx);
+                after_text = bounds.left() + x0 + w;
+            }
+            // M11af: a warm run's age, after its first line's end (on the row it ends on).
             if let Some(w) = run.filter(|w| w.lines.start == i && ends_here) {
-                let width = f.doc.widths.get(i).copied().unwrap_or(0) as f32;
-                let x = text_x + g.cell_width * width + px(AGE_GAP);
+                let x = after_text + px(AGE_GAP);
                 let label = SharedString::from(w.words.clone());
                 let run = TextRun {
                     len: label.len(),
@@ -2510,34 +3708,58 @@ fn paint_body(
             }
         });
         if !first_row {
-            continue;
+            return;
         }
         match row {
             None => {
                 let right = point(bounds.left() + g.numbers_right, y);
-                paint_number(i + 1, right, m, ui.text_faint, window, cx);
+                paint_number(i + 1, right, m, lh, ink, window, cx);
+                // M11ah: ▸ on a folded line, always; ▾ on an open block's while the pointer is
+                // over the gutter.
+                if let (Some(o), Some(left)) = (fold_outline, g.fold_left)
+                    && o.starting_at(i).is_some()
+                {
+                    let glyph = match fold {
+                        Some(_) => Some(&fold_shut),
+                        None => f.gutter_hover.then_some(&fold_open),
+                    };
+                    if let Some(glyph) = glyph {
+                        let x =
+                            bounds.left() + left + (px(code::FOLD_COLUMN) - glyph.width()) / 2.0;
+                        let _ = glyph.paint(point(x, y), lh, TextAlign::Left, None, window, cx);
+                    }
+                }
+                // M11af: its mark (M11ah: a folded line's, the newest of its hidden lines' too).
+                let hidden_mark = fold.and_then(|(_, s)| s.mark.as_ref());
                 if let (Some(l), Some(left)) = (&f.live, g.marks_left)
-                    && let Some(mark) = l.record.mark(i)
+                    && let Some(mark) = match (l.record.mark(i), hidden_mark) {
+                        (Some(own), Some(hid)) if hid.when > own.when => Some(hid),
+                        (own, hid) => own.or(hid),
+                    }
                 {
                     let look = mark_look(mark, l.your_letter, &ui, bg);
                     paint_mark(look, bounds.left() + left, y, lh, window, cx);
                 }
-                if let Some(change) = change {
-                    let bar = Bounds::new(
-                        point(bounds.left() + g.bar_left, y),
-                        size(px(BAR_WIDTH), lh),
-                    );
-                    window.paint_quad(fill(bar, hsla(bars.of_change(change))));
-                }
             }
             Some(row) => {
-                if let (Some(n), Some(right)) = (row.old, g.old_numbers_right) {
+                // Side by side: the old half's old number, the new half's new number, each in
+                // its half's one column.
+                let (old, new) = match half {
+                    None => (row.old, row.new),
+                    Some(Half::Old) => (row.old, None),
+                    Some(Half::New) => (None, row.new),
+                };
+                let old_right = match half {
+                    None => g.old_numbers_right,
+                    Some(_) => Some(g.numbers_right),
+                };
+                if let (Some(n), Some(right)) = (old, old_right) {
                     let right = point(bounds.left() + right, y);
-                    paint_number(n, right, m, ui.text_faint, window, cx);
+                    paint_number(n, right, m, lh, ink, window, cx);
                 }
-                if let Some(n) = row.new {
-                    let right = point(bounds.left() + g.numbers_right, y);
-                    paint_number(n, right, m, ui.text_faint, window, cx);
+                if let Some(n) = new {
+                    let right = point(bounds.left() + g.numbers_right + dx, y);
+                    paint_number(n, right, m, lh, ink, window, cx);
                 }
                 let sign = match row.kind {
                     RowKind::Removed => Some(&removed_sign),
@@ -2546,10 +3768,41 @@ fn paint_body(
                 };
                 if let Some(sign) = sign {
                     // Centred in its one-cell column.
-                    let x = bounds.left() + g.bar_left + (g.cell_width - sign.width()) / 2.0;
+                    let x = bounds.left() + g.bar_left + dx + (g.cell_width - sign.width()) / 2.0;
                     let _ = sign.paint(point(x, y), lh, TextAlign::Left, None, window, cx);
                 }
             }
+        }
+    };
+    for r in rows.clone() {
+        let y = bounds.top() + px(map.top(r)) - g.scroll.y;
+        match map.row(r) {
+            Some(Row::Line { line, cell0 }) => paint_line(r, y, (line, cell0), None, window, cx),
+            // M11ah: side by side, each half's line, an empty half faintly shaded; the hairline
+            // between them.
+            Some(Row::Pair { old, new }) => {
+                for (half, shown) in [(Half::Old, old), (Half::New, new)] {
+                    match shown {
+                        Some(at) => paint_line(r, y, at, Some(half), window, cx),
+                        None => {
+                            let shade = hsla(ui.text).opacity(code::SIDE_EMPTY_ALPHA);
+                            window.paint_quad(band_at(y, r, Some(half), shade));
+                        }
+                    }
+                }
+                if let Some(m) = middle {
+                    let h = if card_last(r) {
+                        lh - px(code::CARD_BORDER)
+                    } else {
+                        lh
+                    };
+                    let rule = Bounds::new(point(m, y), size(px(code::SIDE_HAIRLINE), h));
+                    window.paint_quad(fill(rule, hsla(ui.divider)));
+                }
+            }
+            Some(Row::Title { card }) => paint_card_title(f, g, card, y, false, window, cx),
+            Some(Row::Unchanged { stretch }) => paint_unchanged(f, g, stretch, y, window, cx),
+            None => {}
         }
     }
     if f.mode == FileMode::Diff {
@@ -2565,16 +3818,305 @@ fn paint_body(
         &[run],
         None,
     );
+    // M11ah: lines deleted only inside a fold: the ▸ on the folded line's row, in its middle.
+    for (&line, (_, s)) in &folds {
+        let own = f.doc.changes.by_line.get(&line).copied();
+        if either_change(own, s.change) != Some(LineChange::DeletedAfter) {
+            continue;
+        }
+        let Some(row) = map.first_row(line).filter(|r| rows.contains(r)) else {
+            continue;
+        };
+        let y = bounds.top() + px(map.top(row)) - g.scroll.y;
+        let x = bounds.left() + g.bar_left + px(BAR_WIDTH / 2.0) - marker.width() / 2.0;
+        let _ = marker.paint(point(x, y), lh, TextAlign::Left, None, window, cx);
+    }
     for &edge in &f.doc.changes.deleted {
-        let edge = wrapped.map_or(edge, |w| w.first_row(edge));
+        // A hidden edge is its fold's (above).
+        let Some(edge) = map.first_row(edge) else {
+            continue;
+        };
         if edge < rows.start || edge > rows.end {
             continue;
         }
-        let y = bounds.top() + lh * edge as f32 - g.scroll.y;
+        let y = bounds.top() + px(map.top(edge)) - g.scroll.y;
         let top = if edge == 0 { y } else { y - lh / 2.0 };
         let x = bounds.left() + g.bar_left + px(BAR_WIDTH / 2.0) - marker.width() / 2.0;
         let _ = marker.paint(point(x, top), lh, TextAlign::Left, None, window, cx);
     }
+}
+
+/// M11ah: a diff card's panel's left and right edges, in window points.
+fn panel_x(g: &Geom) -> (Pixels, Pixels) {
+    (
+        g.bounds.left() + px(code::CARD_INSET),
+        g.bounds.right() - px(code::CARD_INSET),
+    )
+}
+
+/// M11ah: 12 pt UI text `words` in `ink`, shaped.
+fn ui_words(words: &str, ink: Rgb, window: &mut Window) -> gpui::ShapedLine {
+    let run = TextRun {
+        len: words.len(),
+        font: window.text_style().font(),
+        color: hsla(ink),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window.text_system().shape_line(
+        SharedString::from(words.to_string()),
+        px(code::UNCHANGED_TEXT),
+        &[run],
+        None,
+    )
+}
+
+/// M11ah: card `card`'s title row at `y` (window points), `code::CARD_TITLE` tall: the block's
+/// name in `text`, its `+n` in green and `−n` in red, and on the right `lines a–b` in
+/// `text_dim`. `pinned` (the sticky title): over the rows of its card scrolled under it, on the
+/// background, with the card's sides and a `divider` line under it.
+fn paint_card_title(
+    f: &Frame,
+    g: &Geom,
+    card: usize,
+    y: Pixels,
+    pinned: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(title) = f.cards.as_ref().and_then(|c| c.titles.get(card)) else {
+        return;
+    };
+    let ui = f.theme.ui();
+    let bg = f.theme.background;
+    let bars = BarColours::of(&f.theme);
+    let (left, right) = panel_x(g);
+    let h = px(code::CARD_TITLE);
+    if pinned {
+        let ground = Bounds::from_corners(point(left, y), point(right, y + h));
+        let border = px(code::CARD_BORDER);
+        let sides = gpui::Edges {
+            top: px(0.0),
+            right: border,
+            bottom: border,
+            left: border,
+        };
+        window.paint_quad(quad(
+            ground,
+            px(0.0),
+            hsla(bg),
+            sides,
+            hsla(ui.divider),
+            gpui::BorderStyle::Solid,
+        ));
+    }
+    let dim = number_ink(&ui, bg, false);
+    let mut x = left + px(code::CARD_BORDER + GUTTER_LEFT);
+    let mut pieces = vec![(title.name.clone(), ui.text)];
+    let counts = [
+        title.added_words().map(|w| (w, bars.added)),
+        title.removed_words().map(|w| (w, bars.deleted)),
+    ];
+    for (k, piece) in counts.into_iter().flatten().enumerate() {
+        let gap = if k == 0 { title.separator() } else { " " };
+        pieces.push((gap.to_string(), dim));
+        pieces.push(piece);
+    }
+    for (words, ink) in pieces {
+        let shaped = ui_words(&words, ink, window);
+        let _ = shaped.paint(point(x, y), h, TextAlign::Left, None, window, cx);
+        x += shaped.width;
+    }
+    if let Some(words) = title.lines_words() {
+        let shaped = ui_words(&words, dim, window);
+        let at = right - px(code::CARD_BORDER + GUTTER_LEFT) - shaped.width;
+        // Never over the name and counts (a narrow view): left out.
+        if at > x {
+            let _ = shaped.paint(point(at, y), h, TextAlign::Left, None, window, cx);
+        }
+    }
+}
+
+/// M11ah: folded stretch `stretch`'s row at `y` (window points): `⋯ 36 unchanged lines —
+/// click to show`, centred between the cards' sides, 12 pt UI text in `text_dim`.
+fn paint_unchanged(
+    f: &Frame,
+    g: &Geom,
+    stretch: usize,
+    y: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(s) = f
+        .cards
+        .as_ref()
+        .and_then(|c| c.parts.0.stretches.get(stretch))
+    else {
+        return;
+    };
+    let ui = f.theme.ui();
+    let ink = number_ink(&ui, f.theme.background, false);
+    let shaped = ui_words(&diff_cards::unchanged_words(s.rows.len()), ink, window);
+    let (left, right) = panel_x(g);
+    let x = left + ((right - left) - shaped.width) / 2.0;
+    let _ = shaped.paint(
+        point(x, y),
+        g.line_height,
+        TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
+}
+
+/// M11ah: the breadcrumb's parts laid out for `key`: each shaped, the ones that fit `key.room`
+/// (`fit_crumbs`) placed left to right with " › " between them and "…" for the folded outer
+/// ones. A part's x is from the strip's text edge; the last part may run past the room (cut
+/// where it is drawn).
+fn lay_out_crumbs(key: &CrumbFitKey, window: &mut Window) -> CrumbsLaid {
+    let shape = |words: &str, ink: Rgb, window: &mut Window| {
+        let run = TextRun {
+            len: words.len(),
+            font: key.font.clone(),
+            color: hsla(ink),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        window.text_system().shape_line(
+            SharedString::from(words.to_string()),
+            key.font_size,
+            &[run],
+            None,
+        )
+    };
+    let (dim, bright) = key.inks;
+    let last = key.crumbs.len().saturating_sub(1);
+    let parts: Vec<gpui::ShapedLine> = key
+        .crumbs
+        .iter()
+        .enumerate()
+        .map(|(i, c)| shape(&c.words, if i == last { bright } else { dim }, window))
+        .collect();
+    let separator = shape(CRUMB_SEPARATOR, dim, window);
+    let dots = shape(ELLIPSIS, dim, window);
+    let widths: Vec<f32> = parts.iter().map(|p| f32::from(p.width)).collect();
+    let shown = fit_crumbs(
+        &widths,
+        key.room,
+        f32::from(dots.width),
+        f32::from(separator.width),
+    );
+    let mut x = px(0.0);
+    let mut laid = Vec::new();
+    for (k, part) in shown.into_iter().enumerate() {
+        if k > 0 {
+            laid.push((x, separator.clone(), CrumbPiece::Separator));
+            x += separator.width;
+        }
+        let (shaped, piece) = match part {
+            Some(i) => (parts[i].clone(), CrumbPiece::Part(key.crumbs[i].clone())),
+            None => (dots.clone(), CrumbPiece::Folded),
+        };
+        let width = shaped.width;
+        laid.push((x, shaped, piece));
+        x += width;
+    }
+    laid
+}
+
+/// M11ah: the sticky line (File mode): block line `line` pinned over the text's first row, on
+/// the background, with its number (as bright as the current line's when it is current) and a
+/// `STICKY_RULE` `divider` line under it. Its text as the line's own row draws it, following
+/// the sideways scroll; with Wrap, one row, cut with "…" when the line takes more.
+fn paint_sticky(
+    f: &Frame,
+    g: &Geom,
+    m: &CellMetrics,
+    map: &RowMap,
+    line: usize,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let ui = f.theme.ui();
+    let bg = f.theme.background;
+    let (bounds, lh) = (g.bounds, g.line_height);
+    let y = bounds.top();
+    let row = Bounds::new(point(bounds.left(), y), size(bounds.size.width, lh));
+    window.paint_quad(fill(row, hsla(bg)));
+    let rule = Bounds::new(
+        point(bounds.left(), y + lh),
+        size(bounds.size.width, px(code::STICKY_RULE)),
+    );
+    window.paint_quad(fill(rule, hsla(ui.divider)));
+    let ink = number_ink(&ui, bg, f.current_line == Some(line));
+    let right = point(bounds.left() + g.numbers_right, y);
+    paint_number(line + 1, right, m, lh, ink, window, cx);
+    let spans = f
+        .doc
+        .spans
+        .as_deref()
+        .filter(|_| f.coloured)
+        .and_then(|s| s.get(line))
+        .map(Vec::as_slice);
+    let fg = f.theme.foreground;
+    let (laid, text_x, cut) = match map.columns() {
+        Some(columns) => {
+            let width = f.doc.widths.get(line).copied().unwrap_or(0);
+            let cut = width > columns;
+            // Cut: one cell less, for the "…".
+            let cells = if cut {
+                columns.saturating_sub(1)
+            } else {
+                columns
+            };
+            let (from, to, start) = wrapped_row(&f.doc, line, 0, cells.max(1));
+            let laid = Laid::part(&f.doc, line, from, to, start, spans, fg, m, window);
+            (laid, bounds.left() + g.text_left, cut)
+        }
+        None => {
+            let laid = Laid::new(
+                &f.doc,
+                line,
+                spans,
+                fg,
+                m,
+                g.scroll.x,
+                bounds.size.width,
+                window,
+            );
+            (laid, bounds.left() + g.text_left - g.scroll.x, false)
+        }
+    };
+    let mask = ContentMask {
+        bounds: Bounds::from_corners(
+            point(bounds.left() + g.text_left - px(TEXT_GAP - 1.0), y),
+            point(bounds.right(), y + lh),
+        ),
+    };
+    window.with_content_mask(Some(mask), |window| {
+        if let Some(shaped) = &laid.shaped {
+            let _ = shaped.paint(
+                point(text_x + laid.x0, y),
+                lh,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+        if cut {
+            let dots = window.text_system().shape_line(
+                SharedString::from(ELLIPSIS),
+                m.font_size,
+                &[plain_run(ELLIPSIS.len(), m, fg)],
+                None,
+            );
+            let x = text_x + laid.x0 + laid.width;
+            let _ = dots.paint(point(x, y), lh, TextAlign::Left, None, window, cx);
+        }
+    });
 }
 
 /// What the tab asks of its workspace.
@@ -2586,6 +4128,8 @@ pub enum FileTabEvent {
     Mode(FileMode),
     /// The toolbar's Preview turned on or off (M11ac): the workspace saves it.
     Preview(bool),
+    /// M11ah: the bar's Side by side turned on or off: the workspace keeps it per tab.
+    SideBySide(bool),
     /// A link in the Preview to a file (M11ac): the workspace opens it in a tab.
     OpenFile(PathBuf),
 }
@@ -2746,12 +4290,54 @@ pub struct FileTab {
     scroll: Point<Pixels>,
     diff_scroll: Point<Pixels>,
     geom: Rc<Cell<Option<Geom>>>,
-    /// The text body wrapped at its width, as last drawn with Wrap on (M11x part 2); none
-    /// with it off.
-    wrapped: Rc<RefCell<Option<Wrapped>>>,
+    /// M11ah: the text body's screen rows as last drawn (with Wrap on, cut at its width) and
+    /// what they were made for; none before the first drawing.
+    rows: Rc<RefCell<Option<(MapKey, RowMap)>>>,
+    /// M11ah: the scrollbar's marks (changes, find matches) as last worked out, and what for.
+    lane: Lane,
     /// The selection: where the mouse went down, and where it is.
     selection: Option<(Pos, Pos)>,
     selecting: bool,
+    /// M11ah: the current line: the last press's line, or where a drag ended, a find step's
+    /// line (File mode: a line), and the same in Diff mode (a `DiffDoc` row). None when the
+    /// tab opens; Esc does not clear it.
+    current: Option<usize>,
+    diff_current: Option<usize>,
+    /// M11ah: Diff mode side by side: chosen (off by default; kept per tab by the workspace),
+    /// and the fit as last drawn in Diff mode (decided in the prepaint, a layout cache; none:
+    /// no Diff drawing yet), whose change draws the tab again once (the bar's button, a reveal
+    /// held for a first drawing). The half the current row was pressed in or stepped to, and
+    /// the half the selection started in.
+    side_by_side: bool,
+    fits_side: Rc<Cell<Option<bool>>>,
+    current_half: Option<Half>,
+    sel_half: Option<Half>,
+    /// Where the bar's Side by side was last drawn.
+    side_at: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// M11ah: the folded blocks (File mode), by their first line, and how many times they
+    /// changed (the row map's key); whether the pointer is over the gutter (the open blocks'
+    /// ▾ show). Not kept over a restart.
+    folded: BTreeSet<usize>,
+    folds_gen: u64,
+    gutter_hover: bool,
+    /// M11ah: Diff mode's unchanged stretches shown and cards closed (keyed by the new-file
+    /// line each starts on: kept over a reload when it starts on the same line), cleared on
+    /// entering Diff; and how many times they changed (the row map's `layout` key).
+    shown_stretches: BTreeSet<usize>,
+    closed_cards: BTreeSet<usize>,
+    layout_gen: u64,
+    /// M11ah: where ⌥↑ / ⌥↓ stop (`change_starts`), kept for the text's change bars it was made
+    /// from (a layout cache: never made while drawing unless those changed).
+    stops: RefCell<Option<Stops>>,
+    /// Where the jump buttons (previous, next) were last drawn.
+    nav_at: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>,
+    /// M11ah: the sticky line and the breadcrumb's parts (File mode), worked out when the view
+    /// moves (`refresh_place`), never while drawing.
+    place: Place,
+    /// M11ah: the breadcrumb's parts as last drawn (a press finds its part), and how they were
+    /// laid out, for the words and the room they were measured in.
+    crumbs_at: Rc<RefCell<CrumbsDrawn>>,
+    crumbs_fit: Rc<RefCell<Option<(CrumbFitKey, CrumbsLaid)>>>,
     /// M11ae: the pointer's last place while selecting, and whether the auto-scroll task runs
     /// (one at a time; only while the pointer is out of the text).
     drag_at: Option<Point<Pixels>>,
@@ -2860,9 +4446,28 @@ impl FileTab {
             scroll: Point::default(),
             diff_scroll: Point::default(),
             geom: Rc::default(),
-            wrapped: Rc::default(),
+            rows: Rc::default(),
+            lane: Rc::default(),
             selection: None,
             selecting: false,
+            current: None,
+            diff_current: None,
+            side_by_side: false,
+            fits_side: Rc::default(),
+            current_half: None,
+            sel_half: None,
+            side_at: Rc::default(),
+            folded: BTreeSet::new(),
+            folds_gen: 0,
+            gutter_hover: false,
+            shown_stretches: BTreeSet::new(),
+            closed_cards: BTreeSet::new(),
+            layout_gen: 0,
+            stops: RefCell::new(None),
+            nav_at: Rc::default(),
+            place: Place::default(),
+            crumbs_at: Rc::default(),
+            crumbs_fit: Rc::default(),
             drag_at: None,
             autoscrolling: false,
             scrollbar: Bar::default(),
@@ -2915,6 +4520,607 @@ impl FileTab {
         }
     }
 
+    /// M11ah: the screen rows of `doc` shown in `mode`, cut at `columns` (Wrap) with rows
+    /// `row_h` tall and (File mode) the `folded` blocks' lines hidden, (Diff mode) in `cards`,
+    /// paired when `side` (side by side). The one place a map is made (the canvas, Follow, a
+    /// diff's reveal, a fold), so they never disagree.
+    fn row_map_of(
+        doc: &Doc,
+        mode: FileMode,
+        columns: Option<usize>,
+        row_h: f32,
+        folded: &BTreeSet<usize>,
+        cards: Option<&DiffParts>,
+        side: bool,
+    ) -> RowMap {
+        if let (FileMode::Diff, Some((grouped, shown, closed, pairs))) = (mode, cards) {
+            let layout = DiffLayout {
+                grouped,
+                shown,
+                closed,
+                pairs: side.then_some(&pairs[..]),
+            };
+            return RowMap::diff(&doc.widths, columns, &layout, row_h);
+        }
+        let hidden = match (mode, &doc.outline) {
+            (FileMode::Plain, Some(outline)) if !folded.is_empty() => {
+                code_outline::hidden_ranges(outline, folded)
+            }
+            _ => Vec::new(),
+        };
+        RowMap::file(&doc.widths, columns, &hidden, row_h)
+    }
+
+    /// The rows of the text shown now (its folds, the Wrap width and row height last drawn),
+    /// made fresh: a fold or a reload changed them since the last drawing. None before it.
+    fn fresh_map(&self, cx: &App) -> Option<RowMap> {
+        let (g, doc) = (self.geom.get()?, self.shown_doc()?);
+        Some(Self::row_map_of(
+            doc,
+            self.mode,
+            self.columns_now(cx),
+            f32::from(g.line_height),
+            &self.folded,
+            self.diff_parts().as_ref(),
+            self.side_on(),
+        ))
+    }
+
+    /// M11ah: whether the diff shows side by side now: in Diff mode, chosen, and the body last
+    /// drawn fits two halves.
+    fn side_on(&self) -> bool {
+        self.mode == FileMode::Diff && self.side_by_side && self.fits_now() == Some(true)
+    }
+
+    /// M11ah: whether the body as last drawn (in either mode: it is as wide in both) fits the
+    /// diff's two halves; none: no rows, or nothing drawn yet. (Fix round 1: not the fit last
+    /// drawn in Diff mode, which a reveal on entering Diff would read stale or unset.)
+    fn fits_now(&self) -> Option<bool> {
+        let (DiffState::Rows(d), Some(g)) = (&self.diff.state, self.geom.get()) else {
+            return None;
+        };
+        let (width, cell) = (f32::from(g.bounds.size.width), f32::from(g.cell_width));
+        Some(fits_side_by_side(width, cell, d.gutter))
+    }
+
+    /// M11ah: Wrap's cells per row now (none: Wrap off): a diff's from the width last drawn
+    /// and its layout (side by side: a half's, as the next drawing cuts them); a file's as last
+    /// drawn (none before the first drawing).
+    fn columns_now(&self, cx: &App) -> Option<usize> {
+        if !cx.global::<Appearance>().file_wrap {
+            return None;
+        }
+        match (self.mode, &self.diff.state, self.geom.get()) {
+            (FileMode::Diff, DiffState::Rows(d), Some(g)) => Some(wrap_cells(
+                f32::from(g.bounds.size.width),
+                f32::from(g.cell_width),
+                d.gutter,
+                self.side_on(),
+            )),
+            _ => self.wrap_columns(),
+        }
+    }
+
+    /// M11ah: the bar's Side by side pressed (it fits): the diff shows the other way, the line
+    /// at the top kept; the selection ends; the workspace keeps the choice for the tab.
+    fn toggle_side_by_side(&mut self, cx: &mut Context<Self>) {
+        if self.mode != FileMode::Diff || self.fits_now() != Some(true) {
+            return;
+        }
+        self.side_by_side = !self.side_by_side;
+        self.selection = None;
+        self.selecting = false;
+        self.sel_half = None;
+        cx.emit(FileTabEvent::SideBySide(self.side_by_side));
+        self.diff_layout_changed(cx);
+    }
+
+    /// M11ah: Diff mode's cards as they stand: the grouping, which stretches are shown, which
+    /// cards closed (none: no rows).
+    fn diff_parts(&self) -> Option<DiffParts> {
+        let DiffState::Rows(d) = &self.diff.state else {
+            return None;
+        };
+        Some(diff_parts(d, &self.shown_stretches, &self.closed_cards))
+    }
+
+    /// M11ah: the cards' or stretches' shown state changed: the rows are made again, the line
+    /// at the top kept where it is (fix round 1: rows shown or hidden above it don't move it).
+    fn diff_layout_changed(&mut self, cx: &mut Context<Self>) {
+        let before = self.rows.borrow().as_ref().map(|(_, map)| map.clone());
+        self.layout_gen += 1;
+        if let (Some(before), Some(map)) = (before, self.fresh_map(cx)) {
+            let y = f32::from(self.diff_scroll.y);
+            let top = before.row_at(y);
+            let row = rescroll_row(top, Some(&before), &map);
+            // As far into the top row as before (it is the same row, or the first of the
+            // stretch's lines it showed).
+            let into = (y - before.top(top)).clamp(0.0, map.top(row + 1) - map.top(row));
+            self.diff_scroll.y = px(map.top(row) + into);
+        }
+        self.refresh_place(cx);
+        cx.notify();
+    }
+
+    /// M11ah: a card's title pressed: the card closes to its title, or opens again.
+    fn toggle_card(&mut self, card: usize, cx: &mut Context<Self>) {
+        let Some(key) = self.card_key(card) else {
+            return;
+        };
+        if !self.closed_cards.remove(&key) {
+            self.closed_cards.insert(key);
+        }
+        self.diff_layout_changed(cx);
+    }
+
+    /// M11ah: a folded stretch pressed: its lines show.
+    fn show_stretch(&mut self, stretch: usize, cx: &mut Context<Self>) {
+        let DiffState::Rows(d) = &self.diff.state else {
+            return;
+        };
+        if let Some(key) = d.grouped.stretches.get(stretch).and_then(|s| s.new_start)
+            && self.shown_stretches.insert(key)
+        {
+            self.diff_layout_changed(cx);
+        }
+    }
+
+    /// M11ah: the palette's Show All Unchanged Lines (Diff mode): every stretch shows.
+    fn show_all_unchanged(&mut self, cx: &mut Context<Self>) {
+        if self.mode != FileMode::Diff {
+            return;
+        }
+        let DiffState::Rows(d) = &self.diff.state else {
+            return;
+        };
+        let keys: Vec<usize> = d
+            .grouped
+            .stretches
+            .iter()
+            .filter_map(|s| s.new_start)
+            .collect();
+        let before = self.shown_stretches.len();
+        self.shown_stretches.extend(keys);
+        if self.shown_stretches.len() != before {
+            self.diff_layout_changed(cx);
+        }
+    }
+
+    /// M11ah: card `card`'s key (`card_key`).
+    fn card_key(&self, card: usize) -> Option<usize> {
+        let DiffState::Rows(d) = &self.diff.state else {
+            return None;
+        };
+        Some(card_key(d.grouped.cards.get(card)?, &d.rows))
+    }
+
+    /// M11ah: the folds of Diff mode that hide row `line` open: its stretch shows, its closed
+    /// card opens (a find step or a jump went there). True when one opened (`layout_gen` moved;
+    /// the caller draws).
+    fn open_diff_at(&mut self, line: usize) -> bool {
+        let DiffState::Rows(d) = &self.diff.state else {
+            return false;
+        };
+        let mut opened = false;
+        if let Some(s) = d.grouped.stretches.iter().find(|s| s.rows.contains(&line))
+            && let Some(key) = s.new_start
+        {
+            opened |= self.shown_stretches.insert(key);
+        }
+        if let Some(c) = d.grouped.cards.iter().find(|c| c.rows.contains(&line)) {
+            opened |= self.closed_cards.remove(&card_key(c, &d.rows));
+        }
+        if opened {
+            self.layout_gen += 1;
+        }
+        opened
+    }
+
+    /// M11ah: whether blocks fold here: File mode (not Preview) on a file with blocks. The
+    /// breadcrumb and the sticky line show by the same rule.
+    fn folds_apply(&self) -> bool {
+        self.mode == FileMode::Plain
+            && !self.preview_shown()
+            && self
+                .doc()
+                .and_then(|d| d.outline.as_deref())
+                .is_some_and(Outline::has_structure)
+    }
+
+    /// M11ah: the blocks folded now `folded` (a fold, an unfold, Fold All...): the rows are made
+    /// again, the line at the top stays there (one now hidden: the folded line above it), a
+    /// current line now hidden moves up to its fold's line, and Follow ends (you moved the
+    /// view). Drawn again only when the folds changed.
+    fn set_folds(&mut self, folded: BTreeSet<usize>, cx: &mut Context<Self>) {
+        if folded == self.folded {
+            return;
+        }
+        let before = self.rows.borrow().as_ref().map(|(_, map)| map.clone());
+        self.folded = folded;
+        self.folds_gen += 1;
+        self.live.follow = false;
+        let Some(map) = self.fresh_map(cx) else {
+            cx.notify();
+            return;
+        };
+        if let Some(line) = self.current
+            && map.first_row(line).is_none()
+        {
+            self.current = (0..line).rev().find(|&l| map.first_row(l).is_some());
+        }
+        if let Some(before) = before {
+            let y = f32::from(self.scroll.y);
+            let top = before.row_at(y);
+            let row = rescroll_row(top, Some(&before), &map);
+            // Still shown: as far into its line as before; else the folded line's top.
+            let into = match before.row(top) {
+                Some(Row::Line { line, .. }) if map.first_row(line) == Some(row) => {
+                    y - before.top(before.first_row(line).unwrap_or(top))
+                }
+                _ => 0.0,
+            };
+            self.scroll.y = px(map.top(row) + into.max(0.0));
+        }
+        self.refresh_place(cx);
+        cx.notify();
+    }
+
+    /// M11ah: ⌥⌘[ folds the innermost open block holding the current line (none: the line at
+    /// the top); ⌥⌘] (`fold` false) unfolds the innermost folded one. File mode only.
+    fn fold_here(&mut self, fold: bool, cx: &mut Context<Self>) {
+        if !self.folds_apply() {
+            return;
+        }
+        let Some(outline) = self.doc().and_then(|d| d.outline.clone()) else {
+            return;
+        };
+        let Some(line) = self.current.or_else(|| self.top_line()) else {
+            return;
+        };
+        let start = outline
+            .containing(line)
+            .into_iter()
+            .rev()
+            .map(|b| outline.blocks[b].start)
+            .find(|start| self.folded.contains(start) != fold);
+        let Some(start) = start else {
+            return;
+        };
+        let mut folded = self.folded.clone();
+        if fold {
+            folded.insert(start);
+        } else {
+            folded.remove(&start);
+        }
+        self.set_folds(folded, cx);
+    }
+
+    /// M11ah: the palette's Fold All (every block) and Unfold All (`fold` false).
+    fn fold_all(&mut self, fold: bool, cx: &mut Context<Self>) {
+        if !self.folds_apply() {
+            return;
+        }
+        let folded = match self.doc().and_then(|d| d.outline.as_deref()) {
+            Some(outline) if fold => outline.blocks.iter().map(|b| b.start).collect(),
+            _ => BTreeSet::new(),
+        };
+        self.set_folds(folded, cx);
+    }
+
+    /// M11ah: the lines ⌥↑ / ⌥↓ stop at (the first line of each change), in order; kept until
+    /// the change bars or the line count change.
+    fn change_stops(&self) -> Option<Arc<Vec<usize>>> {
+        let doc = self.doc()?;
+        let lines = doc.lines.len();
+        if let Some((changes, n, stops)) = self.stops.borrow().as_ref()
+            && Arc::ptr_eq(changes, &doc.changes)
+            && *n == lines
+        {
+            return Some(stops.clone());
+        }
+        let stops = Arc::new(change_starts(
+            &doc.changes.by_line,
+            &doc.changes.deleted,
+            lines,
+        ));
+        *self.stops.borrow_mut() = Some((doc.changes.clone(), lines, stops.clone()));
+        Some(stops)
+    }
+
+    /// M11ah: the change a jump goes to, from the current line (else the view's top).
+    fn change_target(&self, forward: bool) -> Option<usize> {
+        // M11ah: Diff mode stops at each card's first changed row.
+        if self.mode == FileMode::Diff {
+            let DiffState::Rows(d) = &self.diff.state else {
+                return None;
+            };
+            let stops: Vec<usize> = d.grouped.cards.iter().map(|c| c.changed.start).collect();
+            return step_change(&stops, self.diff_current, self.diff_top(), forward);
+        }
+        let stops = self.change_stops()?;
+        step_change(&stops, self.current, self.top_line().unwrap_or(0), forward)
+    }
+
+    /// M11ah: whether the bar's jump buttons show (File mode on a file with a change) and which
+    /// of them can go (previous, next).
+    fn change_nav(&self) -> Option<(bool, bool)> {
+        if self.preview_shown() {
+            return None;
+        }
+        let any = match (self.mode, &self.diff.state) {
+            (FileMode::Plain, _) => !self.change_stops()?.is_empty(),
+            (FileMode::Diff, DiffState::Rows(d)) => !d.grouped.cards.is_empty(),
+            (FileMode::Diff, _) => false,
+        };
+        any.then(|| {
+            (
+                self.change_target(false).is_some(),
+                self.change_target(true).is_some(),
+            )
+        })
+    }
+
+    /// M11ah: ⌥↑ / ⌥↓ (or the bar's buttons): the next (`forward`) or previous change's first
+    /// line lands `REVEAL_ABOVE` rows from the top (one more under a sticky line) and becomes
+    /// the current line; a fold holding it opens. It is you moving the view: Follow ends. At
+    /// the first or last change, nothing (no wrap-around). File mode only.
+    fn jump_change(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.mode == FileMode::Diff {
+            self.jump_card(forward, cx);
+            return;
+        }
+        if self.mode != FileMode::Plain || self.preview_shown() {
+            return;
+        }
+        let Some(target) = self.change_target(forward) else {
+            return;
+        };
+        let opened = self.open_folds_at(target);
+        let map = if opened {
+            self.fresh_map(cx)
+        } else {
+            self.map_now(cx)
+        };
+        let Some(map) = map else {
+            return;
+        };
+        let Some(row) = map.first_row(target) else {
+            return;
+        };
+        let y = px(map.top(reveal_top(row, |r| self.sticky_at_row(&map, r))));
+        self.live.follow = false;
+        if opened {
+            // The rows are longer now than the last drawing's: its limit would cut the jump
+            // short; the next drawing keeps the scroll inside the new one.
+            self.scroll.y = y;
+            self.scrolled(cx);
+        } else {
+            self.set_scroll(point(self.scroll.x, y), cx);
+        }
+        self.set_current(Some(target), cx);
+        self.refresh_place(cx);
+        cx.notify();
+    }
+
+    /// M11ah: ⌥↑ / ⌥↓ in Diff mode: the previous or next card's title at the top (a closed one
+    /// opens) and its first changed row current. At the first or last card, nothing.
+    fn jump_card(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(target) = self.change_target(forward) else {
+            return;
+        };
+        let opened = self.open_diff_at(target);
+        let map = if opened {
+            self.fresh_map(cx)
+        } else {
+            self.map_now(cx)
+        };
+        let (Some(map), DiffState::Rows(d)) = (map, &self.diff.state) else {
+            return;
+        };
+        let card = d
+            .grouped
+            .cards
+            .iter()
+            .position(|c| c.changed.start == target);
+        let Some(title) = card.and_then(|k| map.title_row(k)) else {
+            return;
+        };
+        let y = px(map.top(title));
+        if opened {
+            // Longer rows than the last drawing's: the next drawing keeps the scroll in them.
+            self.diff_scroll.y = y;
+            self.scrolled(cx);
+        } else {
+            self.set_scroll(point(self.diff_scroll.x, y), cx);
+        }
+        self.set_current(Some(target), cx);
+        self.refresh_place(cx);
+        cx.notify();
+    }
+
+    /// M11ah: the diff row at the view's top (a card's title: the card's first row; a folded
+    /// stretch: its first); 0 before the first drawing.
+    fn diff_top(&self) -> usize {
+        let (Some(g), DiffState::Rows(d)) = (self.geom.get(), &self.diff.state) else {
+            return 0;
+        };
+        let rows = self.rows.borrow();
+        let Some((_, map)) = rows.as_ref() else {
+            return 0;
+        };
+        match map.row(map.row_at(f32::from(g.scroll.y))) {
+            Some(row @ (Row::Line { .. } | Row::Pair { .. })) => row.line().unwrap_or(0),
+            Some(Row::Title { card }) => d.grouped.cards.get(card).map_or(0, |c| c.rows.start),
+            Some(Row::Unchanged { stretch }) => {
+                d.grouped.stretches.get(stretch).map_or(0, |s| s.rows.start)
+            }
+            _ => 0,
+        }
+    }
+
+    /// M11ah: the folds that hide `line` open (a find step or Follow went there; not you
+    /// moving the view, so Follow stays). True when one opened.
+    fn open_folds_at(&mut self, line: usize) -> bool {
+        let Some(outline) = self.doc().and_then(|d| d.outline.clone()) else {
+            return false;
+        };
+        let before = self.folded.len();
+        for b in outline.containing(line) {
+            let start = outline.blocks[b].start;
+            if start < line {
+                self.folded.remove(&start);
+            }
+        }
+        let opened = self.folded.len() != before;
+        if opened {
+            self.folds_gen += 1;
+        }
+        opened
+    }
+
+    /// M11ah: the rows of the text shown as they are now: the last drawing's when made for this
+    /// mode, version, folds and Wrap; else made fresh (a read or a fold since then). None
+    /// before the first drawing.
+    fn map_now(&self, cx: &App) -> Option<RowMap> {
+        let doc = self.shown_doc()?;
+        let wrap = cx.global::<Appearance>().file_wrap;
+        if let Some((key, map)) = self.rows.borrow().as_ref()
+            && key.mode == self.mode
+            && key.version == doc.version
+            && key.folds == self.folds_gen
+            && key.layout == self.layout_gen
+            && key.columns.is_some() == wrap
+            && key.side == self.side_on()
+        {
+            return Some(map.clone());
+        }
+        self.fresh_map(cx)
+    }
+
+    /// M11ah: the place shown now (File mode, a file with blocks, not Preview; else none): the
+    /// breadcrumb for the line at the top, the sticky line for the line just under its row (a
+    /// line exactly at the top has none pinned over it). Before the first drawing: the top.
+    fn place_now(&self, cx: &App) -> Place {
+        // M11ah: Diff mode pins the title of the card the view's top is in.
+        if self.mode == FileMode::Diff {
+            let sticky = match (self.map_now(cx), self.geom.get()) {
+                (Some(map), Some(g)) => {
+                    let max = (map.height() - f32::from(g.bounds.size.height)).max(0.0);
+                    let y = f32::from(self.diff_scroll.y).clamp(0.0, max);
+                    sticky_title_at(&map, y).map(Sticky::Title)
+                }
+                _ => None,
+            };
+            return Place {
+                sticky,
+                crumbs: Vec::new(),
+            };
+        }
+        let (Some(doc), true) = (self.doc(), self.folds_apply()) else {
+            return Place::default();
+        };
+        let Some(outline) = doc.outline.as_deref() else {
+            return Place::default();
+        };
+        let (top, under) = match (self.map_now(cx), self.geom.get()) {
+            (Some(map), Some(g)) => {
+                // As the next drawing keeps the scroll (`Geom::clamp`).
+                let max = (map.height() - f32::from(g.bounds.size.height)).max(0.0);
+                let y = f32::from(self.scroll.y).clamp(0.0, max);
+                let line_at = |y: f32| match map.row(map.row_at(y)) {
+                    Some(Row::Line { line, .. }) => line,
+                    _ => 0,
+                };
+                (line_at(y), line_at(y + map.row_h() - 1.0))
+            }
+            _ => (0, 0),
+        };
+        let name = self
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let markdown = is_markdown(&self.path);
+        place_of(&name, outline, |i| doc.line(i), (top, under), markdown)
+    }
+
+    /// M11ah: the place worked out again (a scroll, a read, the colours landing, a fold or a
+    /// mode change); drawn again only when it changed.
+    fn refresh_place(&mut self, cx: &mut Context<Self>) {
+        let place = self.place_now(cx);
+        if place != self.place {
+            self.place = place;
+            cx.notify();
+        }
+    }
+
+    /// M11ah: a breadcrumb part or the sticky line pressed: its line becomes the first row you
+    /// see (the top row; when a sticky line shows there, the row under it, as `reveal_top`
+    /// leaves room) and current; the file's name (`None`) goes to the top. You moved the view:
+    /// Follow ends.
+    fn show_at_top(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
+        let y = match line {
+            Some(line) => {
+                let Some(map) = self.map_now(cx) else {
+                    return;
+                };
+                // A line with no row (hidden): nowhere to go.
+                let Some(row) = map.first_row(line) else {
+                    return;
+                };
+                let top = if row > 0 && self.sticky_at_row(&map, row) {
+                    row - 1
+                } else {
+                    row
+                };
+                map.top(top)
+            }
+            None => 0.0,
+        };
+        self.live.follow = false;
+        self.set_scroll(point(self.scroll.x, px(y)), cx);
+        if line.is_some() {
+            self.set_current(line, cx);
+        }
+        self.refresh_place(cx);
+        cx.notify();
+    }
+
+    /// M11ah: the sticky line's line, when window point `p` is on it (as last drawn).
+    fn sticky_under(&self, p: Point<Pixels>) -> Option<usize> {
+        let Some(Sticky::Line(line)) = self.place.sticky else {
+            return None;
+        };
+        let g = self.geom.get()?;
+        (g.bounds.contains(&p) && p.y < g.bounds.top() + g.line_height).then_some(line)
+    }
+
+    /// M11ah: whether a sticky line shows with row `r` of `map` at the top (File mode): what a
+    /// reveal leaves one more row of room for (`reveal_top`).
+    fn sticky_at_row(&self, map: &RowMap, r: usize) -> bool {
+        if !self.folds_apply() {
+            return false;
+        }
+        let outline = self.doc().and_then(|d| d.outline.as_deref());
+        match (outline, map.row(r)) {
+            (Some(o), Some(Row::Line { line, .. })) => o.sticky(line).is_some(),
+            _ => false,
+        }
+    }
+
+    /// M11ah: a press in the breadcrumb: the part under it (as last drawn) goes to the top.
+    fn crumb_press(&mut self, p: Point<Pixels>, cx: &mut Context<Self>) {
+        let hit = self
+            .crumbs_at
+            .borrow()
+            .iter()
+            .find(|(b, _)| b.contains(&p))
+            .and_then(|(_, c)| c.clone());
+        if let Some(crumb) = hit {
+            self.show_at_top(crumb.line, cx);
+        }
+    }
+
     /// The scroll of the mode shown.
     fn mode_scroll(&self) -> Point<Pixels> {
         match self.mode {
@@ -2932,6 +5138,14 @@ impl FileTab {
 
     /// The selected text (empty: none): a diff's without its signs or numbers.
     pub fn selected_text(&self) -> String {
+        // M11ah: side by side, only the half the selection is in.
+        // (A selection made unified, the fit then changing: the old half's, as drawn.)
+        if let (true, DiffState::Rows(d), Some((a, b))) =
+            (self.side_on(), &self.diff.state, self.selection)
+        {
+            let half = self.sel_half.unwrap_or(Half::Old);
+            return half_text(&d.doc, &d.rows, a, b, half);
+        }
         match (self.shown_doc(), self.selection) {
             (Some(doc), Some((a, b))) => selection_text(&doc.text, &doc.lines, a, b),
             _ => String::new(),
@@ -3066,8 +5280,24 @@ impl FileTab {
                 let mut doc = *doc;
                 self.versions += 1;
                 doc.version = self.versions;
+                let mut folded = BTreeSet::new();
                 if let Some(old) = self.doc() {
                     doc.carry_over(old, plain);
+                    // M11ah: the current line follows its line (the reload's comparison), or
+                    // without one stays when its text is unchanged; so does each fold (one whose
+                    // first line changed or went opens).
+                    let map = compared.as_ref().map(|c| c.new_of_old.as_slice());
+                    let same = |l: usize| {
+                        l < old.lines.len() && l < doc.lines.len() && old.line(l) == doc.line(l)
+                    };
+                    if let Some(outline) = &doc.outline {
+                        folded = carry_folds(&self.folded, map, same, outline);
+                    }
+                    self.current = self.current.and_then(|line| carry_line(map, line, same));
+                }
+                if folded != self.folded {
+                    self.folded = folded;
+                    self.folds_gen += 1;
                 }
                 if real.is_some() {
                     self.live.real = real;
@@ -3095,6 +5325,8 @@ impl FileTab {
         self.refresh_age(SystemTime::now(), cx);
         self.keep_selection();
         self.find_again(cx);
+        // M11ah: the sticky line and the breadcrumb, for the new text (or none without one).
+        self.refresh_place(cx);
         cx.notify();
     }
 
@@ -3194,8 +5426,8 @@ impl FileTab {
     /// M11af part 4: with Follow on, after a change by an agent, bring its first line into view
     /// (File mode, as last drawn; never while Preview shows). Not through `set_scroll`: that is yours, and ends Follow.
     /// The rows aren't drawn yet, so the scroll is kept within them when drawn (as a diff's
-    /// reveal is). Wrapped (M11x part 2): the line's first screen row, the text wrapped at the
-    /// width last drawn.
+    /// reveal is). By the row map (M11ah): the line's first screen row, the new text's rows made
+    /// at the width last drawn; a fold holding the line opens.
     fn follow_latest(&mut self, cx: &mut Context<Self>) {
         let (Some(line), Some(g)) = (self.live.follow_line(), self.geom.get()) else {
             return;
@@ -3203,20 +5435,27 @@ impl FileTab {
         if self.mode != FileMode::Plain || self.preview_shown() {
             return;
         }
-        let mut row = line;
-        let columns = self.wrapped.borrow().as_ref().map(|w| w.columns);
-        if let (Some(columns), true, Some(doc)) =
-            (columns, cx.global::<Appearance>().file_wrap, self.doc())
-        {
-            row = Wrapped::of(doc, FileMode::Plain, columns).first_row(line);
+        // M11ah: a change inside a fold opens it (Follow stays on: not your move).
+        if self.open_folds_at(line) {
+            cx.notify();
         }
-        let top = (g.scroll.y / g.line_height).floor().max(0.0) as usize;
+        let Some(map) = self.fresh_map(cx) else {
+            return;
+        };
+        let Some(row) = map.first_row(line) else {
+            return;
+        };
+        let top = map.row_at(f32::from(g.scroll.y));
         let rows = (g.bounds.size.height / g.line_height).floor().max(1.0) as usize;
-        if let Some(first) = follow_scroll(top..top + rows, row, REVEAL_ABOVE) {
-            self.scroll = point(g.scroll.x, g.line_height * first as f32);
+        // M11ah: a row under the sticky line is not in view; the change lands below it.
+        let covered = usize::from(self.place.sticky.is_some());
+        let view = (top + covered).min(top + rows)..top + rows;
+        if let Some(first) = follow_scroll(view, row, |r| self.sticky_at_row(&map, r)) {
+            self.scroll = point(g.scroll.x, px(map.top(first)));
             self.scrolled(cx);
             cx.notify();
         }
+        self.refresh_place(cx);
     }
 
     /// Your letter, looked up once off the UI thread (`find_your_letter`).
@@ -3360,19 +5599,22 @@ impl FileTab {
         self.coloured_with = Some(cx.global::<Appearance>().theme);
         let path = self.path.clone();
         cx.spawn(async move |this, cx| {
-            let (spans, syntax) = cx
+            let (coloured, syntax) = cx
                 .background_executor()
                 .spawn(async move {
                     let first = text.split_inclusive('\n').next().unwrap_or("");
                     let syntax: Arc<str> = h.syntax_name(&path, first).into();
-                    (h.highlight(&path, &text), syntax)
+                    (h.colour(&path, &text), syntax)
                 })
                 .await;
             this.update(cx, |this, cx| {
                 if let State::Text(doc) = &mut this.state
-                    && doc.accept_spans(version, spans)
+                    && doc.accept_spans(version, coloured.spans, &coloured.named)
                 {
                     doc.syntax = Some(syntax);
+                    // M11ah: the named lines came with them: the sticky line and the
+                    // breadcrumb name their blocks now.
+                    this.refresh_place(cx);
                     cx.notify();
                 }
                 if this.colouring.finish() {
@@ -3395,6 +5637,7 @@ impl FileTab {
             return;
         }
         let (version, text, rows) = (d.doc.version, d.doc.text.clone(), d.rows.clone());
+        let grouped = d.grouped.clone();
         let Some(h) = self.shared_highlighter(cx) else {
             return;
         };
@@ -3405,7 +5648,7 @@ impl FileTab {
         let path = self.path.clone();
         cx.spawn(async move |this, cx| {
             let keep = rows.clone();
-            let spans = cx
+            let (spans, outlines, titles) = cx
                 .background_executor()
                 .spawn(async move {
                     // The rows' text without the `Doc`'s last `\n`.
@@ -3414,15 +5657,32 @@ impl FileTab {
                         text,
                         rows: keep.to_vec(),
                     };
-                    colour_rows(&h, &path, &parsed.rows, &sides(&parsed))
+                    let both = sides(&parsed);
+                    let coloured = colour_rows(&h, &path, &parsed.rows, &both);
+                    // M11ah: the named lines came with them: the cards' titles name their
+                    // blocks now.
+                    let markdown = is_markdown(&path);
+                    let named = (coloured.old_named.as_slice(), coloured.new_named.as_slice());
+                    let (old_o, new_o) = side_outlines(&both, markdown, Some(named));
+                    let titles = card_titles(
+                        &parsed.rows,
+                        &grouped,
+                        &both,
+                        (old_o.as_ref(), new_o.as_ref()),
+                        markdown,
+                    );
+                    (coloured.spans, (old_o, new_o), titles)
                 })
                 .await;
             this.update(cx, |this, cx| {
                 // Only onto the rows it was made for.
                 if let DiffState::Rows(d) = &mut this.diff.state
                     && Arc::ptr_eq(&d.rows, &rows)
-                    && d.doc.accept_spans(version, spans)
+                    && d.doc.accept_spans(version, spans, &[])
                 {
+                    d.old_outline = outlines.0.map(Arc::new);
+                    d.new_outline = outlines.1.map(Arc::new);
+                    d.titles = Arc::new(titles);
                     cx.notify();
                 }
                 if this.colouring_diff.finish() {
@@ -3558,6 +5818,7 @@ impl FileTab {
             _ => None,
         };
         let (path, known) = (self.path.clone(), self.git_place.clone());
+        let markdown = is_markdown(&path);
         cx.spawn(async move |this, cx| {
             let (place, state) = cx
                 .background_executor()
@@ -3575,6 +5836,7 @@ impl FileTab {
                                 || file_diff(&p.git, &p.root, &p.rel, context_for(lines)),
                                 disk.as_deref(),
                                 version,
+                                markdown,
                                 colour,
                                 held.as_ref(),
                             )
@@ -3629,7 +5891,18 @@ impl FileTab {
         if !self.diff.accept(version, self.versions, state) {
             return;
         }
-        // Redrawn below.
+        // Redrawn below. The rows changed: the current row is another one's.
+        self.diff_current = None;
+        // M11ah: a shown stretch stays shown when one starts on the same new-file line (a
+        // closed card, when one starts there too); the others fold again.
+        if let DiffState::Rows(d) = &self.diff.state {
+            let g = &d.grouped;
+            let starts: BTreeSet<usize> = g.stretches.iter().filter_map(|s| s.new_start).collect();
+            self.shown_stretches.retain(|k| starts.contains(k));
+            let cards: BTreeSet<usize> = g.cards.iter().map(|c| card_key(c, &d.rows)).collect();
+            self.closed_cards.retain(|k| cards.contains(k));
+        }
+        self.layout_gen += 1;
         self.take_diff_counts(counts);
         match &self.diff.state {
             DiffState::Rows(d) => {
@@ -3648,6 +5921,9 @@ impl FileTab {
             self.keep_selection();
             self.drop_find_without_text();
             self.find_again(cx);
+            // M11ah fix round 1: a pinned title is a card of the rows before: worked out again
+            // on the new cards.
+            self.refresh_place(cx);
         }
         cx.notify();
     }
@@ -3693,6 +5969,7 @@ impl FileTab {
         self.selection = None;
         self.selecting = false;
         cx.emit(FileTabEvent::Preview(on));
+        self.refresh_place(cx);
         cx.notify();
     }
 
@@ -3794,6 +6071,15 @@ impl FileTab {
             cx.notify();
         }
         self.hover_mark(None, cx);
+        self.hover_gutter(false, cx);
+    }
+
+    /// M11ah: whether the pointer is over the gutter (the ▾ show); drawn again only when it
+    /// changed.
+    fn hover_gutter(&mut self, on: bool, cx: &mut Context<Self>) {
+        if std::mem::replace(&mut self.gutter_hover, on) != on {
+            cx.notify();
+        }
     }
 
     /// M11af: the pointer at `p` (none: not over the text): on a mark, its tooltip shows at
@@ -3818,20 +6104,35 @@ impl FileTab {
         let g = self.geom.get()?;
         let left = g.marks_left?;
         let x = p.x - g.bounds.left() - left;
-        if x < px(0.0) || x > px(MARK_COLUMN) || !g.bounds.contains(&p) {
+        // M11ah: the sticky line covers the marks of the row under it.
+        if x < px(0.0)
+            || x > px(MARK_COLUMN)
+            || !g.bounds.contains(&p)
+            || self.sticky_under(p).is_some()
+        {
             return None;
         }
-        let row = ((p.y - g.bounds.top() + g.scroll.y) / g.line_height).floor() as usize;
-        let line = match self.wrapped.borrow().as_ref() {
-            Some(w) if row < w.rows.len() => match w.row(row) {
-                (line, 0) => line,
-                _ => return None,
-            },
-            Some(_) => return None,
-            None => row,
+        let y = f32::from(p.y - g.bounds.top() + g.scroll.y);
+        let (row, bottom, hidden) = {
+            let rows = self.rows.borrow();
+            let (_, map) = rows.as_ref()?;
+            if y >= map.height() {
+                return None;
+            }
+            let row = map.row_at(y);
+            let hidden = match map.row(row) {
+                Some(Row::Line { line, .. }) => map.hidden_after(line),
+                _ => 0..0,
+            };
+            (map.row(row), map.top(row + 1), hidden)
         };
-        self.live_marks().mark(line)?;
-        let below = g.line_height * (row + 1) as f32 - g.scroll.y + px(2.0);
+        // A line's first row (its number's): a wrapped line's other rows have no mark.
+        let Some(Row::Line { line, cell0: 0 }) = row else {
+            return None;
+        };
+        // M11ah: a folded line's mark is the newest of its own and its hidden lines'.
+        let (line, _) = newest_mark(self.live_marks(), line..hidden.end.max(line + 1))?;
+        let below = px(bottom) - g.scroll.y + px(2.0);
         Some((line, point(g.bounds.left() + left, g.bounds.top() + below)))
     }
 
@@ -4057,6 +6358,12 @@ impl FileTab {
             cx.notify();
             return;
         }
+        // M11ah: entering Diff folds its stretches and opens its cards again.
+        if mode == FileMode::Diff {
+            self.shown_stretches.clear();
+            self.closed_cards.clear();
+            self.layout_gen += 1;
+        }
         self.selection = None;
         self.selecting = false;
         // M11af: a mode switch ends Follow, and the marks' tooltip does not wait for the
@@ -4079,6 +6386,7 @@ impl FileTab {
         }
         self.drop_find_without_text();
         self.find_again(cx);
+        self.refresh_place(cx);
         cx.notify();
     }
 
@@ -4110,6 +6418,7 @@ impl FileTab {
         if to != *scroll {
             *scroll = to;
             self.scrolled(cx);
+            self.refresh_place(cx);
             cx.notify();
         }
     }
@@ -4153,30 +6462,69 @@ impl FileTab {
         self.set_scroll(point(g.scroll.x - d.x, g.scroll.y - d.y), cx);
     }
 
+    /// Wrap's cells per row as last drawn (none: Wrap off, or not drawn yet).
+    fn wrap_columns(&self) -> Option<usize> {
+        self.rows
+            .borrow()
+            .as_ref()
+            .and_then(|(_, map)| map.columns())
+    }
+
+    /// The line drawn at the top of the text, as last drawn (none: not drawn yet).
+    fn top_line(&self) -> Option<usize> {
+        let g = self.geom.get()?;
+        let rows = self.rows.borrow();
+        let (_, map) = rows.as_ref()?;
+        // M11ah: side by side, a pair's line.
+        map.row(map.row_at(f32::from(g.scroll.y)))?.line()
+    }
+
     /// The place under window point `p` (the nearest character edge; above or below the text,
     /// its first or last line).
     fn pos_at(&self, p: Point<Pixels>, window: &mut Window, cx: &App) -> Option<Pos> {
         let g = self.geom.get()?;
         let doc = self.shown_doc()?;
-        let wrapped = self.wrapped.borrow().clone();
-        let count = wrapped.as_ref().map_or(doc.lines.len(), |w| w.rows.len());
-        let y = p.y - g.bounds.top() + g.scroll.y;
-        let row = if y < px(0.0) {
-            0
-        } else {
-            ((y / g.line_height).floor() as usize).min(count.saturating_sub(1))
+        let (_, map) = self.rows.borrow().clone()?;
+        // The row drawn there (M11ah: by the row map; above or below the text, the first or last).
+        let row = map.row_at(f32::from(p.y - g.bounds.top() + g.scroll.y));
+        let last_line = doc.lines.len().saturating_sub(1);
+        // M11ah: side by side, the half the selection is in (`mouse_down` sets it: the half
+        // pressed), and that half's line on the row.
+        let half = g.side.map(|_| self.sel_half.unwrap_or(Half::Old));
+        let (line, cell0, dx) = match (map.row(row), half) {
+            (Some(Row::Line { line, cell0 }), _) => (line, cell0, px(0.0)),
+            (Some(pair @ Row::Pair { .. }), Some(h)) => {
+                let dx = match h {
+                    Half::Old => px(0.0),
+                    Half::New => g.side.unwrap_or_default(),
+                };
+                match pair.half(h) {
+                    Some((line, cell0)) => (line, cell0, dx),
+                    // An empty half: that side's nearest line, at its end (above) or start.
+                    None => {
+                        let (line, above) = map.nearest_on(row, h)?;
+                        let line = line.min(last_line);
+                        let col = if above { doc.line(line).len() } else { 0 };
+                        return Some(Pos { line, col });
+                    }
+                }
+            }
+            _ => return None,
         };
+        // A map a version behind (a reload not drawn yet) may know more lines than the text.
+        let line = line.min(last_line);
         // Wrapped (M11x part 2): in cells from the row's start, kept in the row (as it's drawn).
-        if let Some(w) = &wrapped {
-            let (line, cell0) = w.row(row);
-            let span = wrapped_row(doc, line, cell0, w.columns);
-            let last = w.row(row + 1).0 != line || row + 1 >= w.rows.len();
-            let x = p.x - g.bounds.left() - g.text_left;
+        if let Some(columns) = map.columns() {
+            let span = wrapped_row(doc, line, cell0, columns);
+            let next = map
+                .row(row + 1)
+                .and_then(|n| n.half(half.unwrap_or(Half::Old)));
+            let last = !matches!(next, Some((next, _)) if next == line);
+            let x = p.x - g.bounds.left() - g.text_left - dx;
             let col = row_hit(doc, line, span, last, x / g.cell_width.max(px(1.0)));
             return Some(Pos { line, col });
         }
-        let line = row;
-        let x = p.x - g.bounds.left() - g.text_left + g.scroll.x;
+        let x = p.x - g.bounds.left() - g.text_left - dx + g.scroll.x;
         if x <= px(0.0) {
             return Some(Pos { line, col: 0 });
         }
@@ -4221,18 +6569,146 @@ impl FileTab {
             cx.notify();
             return;
         }
+        // M11ah: the sticky line scrolls back to its line (the top line, current); what it
+        // covers takes no press.
+        if let Some(line) = self.sticky_under(e.position) {
+            self.show_at_top(Some(line), cx);
+            return;
+        }
+        // M11ah: Diff mode: a pinned title closes its card (its title at the top); a title
+        // closes or opens its card; a folded stretch shows.
+        if let Some(card) = self.sticky_title_under(e.position) {
+            self.close_card_at_top(card, cx);
+            return;
+        }
+        match self.diff_row_under(e.position) {
+            Some(Row::Title { card }) => {
+                self.toggle_card(card, cx);
+                return;
+            }
+            Some(Row::Unchanged { stretch }) => {
+                self.show_stretch(stretch, cx);
+                return;
+            }
+            _ => {}
+        }
         // A change bar (or a deleted-lines ▸) in a file: its diff, at that change.
         if let Some(change) = self.bar_under(e.position) {
             self.choose_mode(FileMode::Diff, Some(change), cx);
             return;
         }
-        if let Some(pos) = self.pos_at(e.position, window, cx) {
-            self.selection = Some((pos, pos));
-            self.selecting = true;
-            // The last drag's pointer is not this one's (an old auto-scroll task ends).
-            self.drag_at = None;
-            cx.notify();
+        // M11ah: a block's ▾ folds it; a folded line's ▸ or its pill unfolds it.
+        if let Some(start) = self.fold_under(e.position) {
+            let mut folded = self.folded.clone();
+            if !folded.remove(&start) {
+                folded.insert(start);
+            }
+            self.set_folds(folded, cx);
+            return;
         }
+        // M11ah: side by side, the selection stays in the half pressed (a press that starts
+        // none keeps the last one's half with its selection).
+        let kept = self.sel_half;
+        self.sel_half = self.geom.get().and_then(|g| g.half_at(e.position));
+        let Some(pos) = self.pos_at(e.position, window, cx) else {
+            self.sel_half = kept;
+            return;
+        };
+        self.selection = Some((pos, pos));
+        self.selecting = true;
+        // The last drag's pointer is not this one's (an old auto-scroll task ends).
+        self.drag_at = None;
+        cx.notify();
+    }
+
+    /// M11ah: the pinned card title's card, when window point `p` is on it (as last drawn).
+    fn sticky_title_under(&self, p: Point<Pixels>) -> Option<usize> {
+        let Some(Sticky::Title(card)) = self.place.sticky else {
+            return None;
+        };
+        let g = self.geom.get()?;
+        (self.mode == FileMode::Diff
+            && g.bounds.contains(&p)
+            && p.y < g.bounds.top() + px(CARD_TITLE))
+        .then_some(card)
+    }
+
+    /// M11ah: a Diff card's title or a folded stretch's row under window point `p` (as last
+    /// drawn; a stretch's row only its own height, not the gap under it before a card).
+    fn diff_row_under(&self, p: Point<Pixels>) -> Option<Row> {
+        if self.mode != FileMode::Diff {
+            return None;
+        }
+        let g = self.geom.get()?;
+        let rows = self.rows.borrow();
+        let (_, map) = rows.as_ref()?;
+        let y = f32::from(p.y - g.bounds.top() + g.scroll.y);
+        if !g.bounds.contains(&p) || y < 0.0 || y >= map.height() {
+            return None;
+        }
+        let r = map.row_at(y);
+        match map.row(r)? {
+            row @ Row::Title { .. } => Some(row),
+            row @ Row::Unchanged { .. } if y < map.top(r) + map.row_h() => Some(row),
+            _ => None,
+        }
+    }
+
+    /// M11ah: the pinned title pressed: its card closes, its title at the top. You moved the
+    /// view.
+    fn close_card_at_top(&mut self, card: usize, cx: &mut Context<Self>) {
+        let Some(key) = self.card_key(card) else {
+            return;
+        };
+        self.closed_cards.insert(key);
+        self.layout_gen += 1;
+        if let Some(map) = self.fresh_map(cx)
+            && let Some(title) = map.title_row(card)
+        {
+            self.set_scroll(point(self.diff_scroll.x, px(map.top(title))), cx);
+        }
+        self.refresh_place(cx);
+        cx.notify();
+    }
+
+    /// M11ah: the block whose fold is under window point `p` (File mode, as last drawn): in the
+    /// fold column, on the first row of a block's first line; or on a folded line's pill.
+    fn fold_under(&self, p: Point<Pixels>) -> Option<usize> {
+        if !self.folds_apply() {
+            return None;
+        }
+        let g = self.geom.get()?;
+        let left = g.fold_left?;
+        let outline = self.doc()?.outline.clone()?;
+        let rows = self.rows.borrow();
+        let (_, map) = rows.as_ref()?;
+        let y = f32::from(p.y - g.bounds.top() + g.scroll.y);
+        if !g.bounds.contains(&p) || y >= map.height() {
+            return None;
+        }
+        let r = map.row_at(y);
+        let Some(Row::Line { line, cell0 }) = map.row(r) else {
+            return None;
+        };
+        let x = p.x - g.bounds.left();
+        let in_column = x >= left && x < left + px(code::FOLD_COLUMN);
+        if in_column && cell0 == 0 && outline.starting_at(line).is_some() {
+            return Some(line);
+        }
+        // The pill: after the text on the folded line's last row.
+        let hidden = map.hidden_after(line);
+        let last = !matches!(map.row(r + 1), Some(Row::Line { line: l, .. }) if l == line);
+        if hidden.is_empty() || !last {
+            return None;
+        }
+        let doc = self.doc()?;
+        let width = doc.widths.get(line).copied().unwrap_or(0);
+        let text_x = match map.columns() {
+            Some(_) => g.text_left - g.cell_width * cell0 as f32,
+            None => g.text_left - g.scroll.x,
+        };
+        let (x0, w) = fold_pill_span(text_x, g.cell_width, width, hidden.len());
+        (x >= x0 && x < x0 + w).then_some(line)
     }
 
     /// The change whose bar (or ▸) is under window point `p`, in Plain mode: a press from 2 pt
@@ -4247,10 +6723,8 @@ impl FileTab {
             return None;
         }
         let y = f32::from(p.y - g.bounds.top() + g.scroll.y);
-        if let Some(w) = self.wrapped.borrow().as_ref() {
-            return bar_at_rows(y, f32::from(g.line_height), w, &doc.changes);
-        }
-        bar_at(y, f32::from(g.line_height), &doc.changes)
+        let rows = self.rows.borrow();
+        bar_at_rows(y, &rows.as_ref()?.1, &doc.changes)
     }
 
     /// The pointer moved anywhere in the window (`over` the text, not covered): a thumb drag
@@ -4283,11 +6757,30 @@ impl FileTab {
         // M11af: a mark's tooltip, while the pointer rests on it (not while selecting).
         let resting = over && !self.selecting && e.pressed_button.is_none();
         self.hover_mark(resting.then_some(e.position), cx);
+        // M11ah: over the gutter, the open blocks' ▾ show.
+        let in_gutter = over
+            && self
+                .geom
+                .get()
+                .filter(|g| g.fold_left.is_some())
+                .is_some_and(|g| e.position.x < g.bounds.left() + g.text_left);
+        self.hover_gutter(in_gutter, cx);
         self.mouse_drag(e, window, cx);
     }
 
     /// The button released anywhere in the window: a selection or a thumb drag ends.
     fn mouse_up(&mut self, cx: &mut Context<Self>) {
+        // M11ah: the selection's moving end (a press without a drag: the press) is the current
+        // line.
+        if self.selecting {
+            let line = self.selection.map(|(_, head)| head.line);
+            self.set_current(line, cx);
+            // M11ah: side by side, the current row is on the half pressed.
+            if self.sel_half.is_some() && self.current_half != self.sel_half {
+                self.current_half = self.sel_half;
+                cx.notify();
+            }
+        }
         self.selecting = false;
         // No old auto-scroll task resumes on a quick press again.
         self.drag_at = None;
@@ -4295,6 +6788,31 @@ impl FileTab {
             // Idempotent: a Preview thumb's drag may end here too.
             self.preview_list.scrollbar_drag_ended();
             self.scrolled(cx);
+            cx.notify();
+        }
+    }
+
+    /// M11ah: the current line of the mode shown (a file's line, a diff's row) set to `line`;
+    /// drawn again only when it changed.
+    fn set_current(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
+        // M11ah: Diff mode's row's half side by side, by its kind (a press sets the half
+        // pressed after this: `mouse_up`).
+        let half = match (&self.diff.state, line) {
+            (DiffState::Rows(d), Some(l)) if self.mode == FileMode::Diff => {
+                Some(half_of(&d.rows, l))
+            }
+            _ => None,
+        };
+        let slot = match self.mode {
+            FileMode::Plain => &mut self.current,
+            FileMode::Diff => &mut self.diff_current,
+        };
+        if *slot != line {
+            *slot = line;
+            cx.notify();
+        }
+        if self.mode == FileMode::Diff && self.current_half != half {
+            self.current_half = half;
             cx.notify();
         }
     }
@@ -4312,7 +6830,7 @@ impl FileTab {
         }
         self.drag_at = Some(e.position);
         self.drag_head(e.position, window, cx);
-        let wrap = self.wrapped.borrow().is_some();
+        let wrap = self.wrap_columns().is_some();
         let out = self
             .geom
             .get()
@@ -4329,7 +6847,7 @@ impl FileTab {
         let Some(g) = self.geom.get() else {
             return;
         };
-        let wrap = self.wrapped.borrow().is_some();
+        let wrap = self.wrap_columns().is_some();
         let now = Geom::clamp(self.mode_scroll(), g.max_scroll);
         let ahead = point(
             if wrap { px(0.0) } else { now.x - g.scroll.x },
@@ -4377,7 +6895,7 @@ impl FileTab {
     /// to the place under it held inside the text. False (the task ends): not selecting, the
     /// pointer back in the text, or the scroll didn't move.
     fn autoscroll_step(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let wrap = self.wrapped.borrow().is_some();
+        let wrap = self.wrap_columns().is_some();
         let step = match (self.selecting, self.drag_at, self.geom.get()) {
             (true, Some(p), Some(g)) => Some((p, g)),
             _ => None,
@@ -4502,11 +7020,7 @@ impl FileTab {
                 .spawn(async move { find_matches(&text, &lines, &query, FIND_CAP) })
                 .await;
             this.update(cx, |this, cx| {
-                let top = this
-                    .geom
-                    .get()
-                    .map_or(0, |g| (g.scroll.y / g.line_height).floor() as usize);
-                let top = this.wrapped.borrow().as_ref().map_or(top, |w| w.row(top).0);
+                let top = this.top_line().unwrap_or(0);
                 // Scrolled to its current match only for a new query (⌘G, ⇧⌘G and Return scroll
                 // by themselves): a reload's search leaves the view where it is.
                 let taken = this
@@ -4536,7 +7050,35 @@ impl FileTab {
             return;
         };
         let finds = &mut find.finds;
-        finds.current = step(finds.current, finds.matches.len(), forward);
+        // M11ah: side by side, row by row, left before right.
+        let side = match (&self.diff.state, self.rows.borrow().as_ref()) {
+            (DiffState::Rows(d), Some((key, map))) if key.side && self.mode == FileMode::Diff => {
+                Some(side_order(&finds.matches, &d.rows, |m| {
+                    let cell = map
+                        .columns()
+                        .map_or(0, |c| d.doc.cell_of(m.line, m.cols.start) / c);
+                    map.first_row(m.line)
+                        .map(|r| r + cell)
+                        .or_else(|| map.row_holding(m.line))
+                }))
+            }
+            _ => None,
+        };
+        finds.current = match side {
+            Some(order) => {
+                let at = finds
+                    .current
+                    .and_then(|c| order.iter().position(|&k| k == c));
+                step(at, order.len(), forward).map(|k| order[k])
+            }
+            None => step(finds.current, finds.matches.len(), forward),
+        };
+        let kept = match self.mode {
+            FileMode::Plain => self.current,
+            FileMode::Diff => self.diff_current,
+        };
+        let line = step_line(&finds.matches, finds.current, kept);
+        self.set_current(line, cx);
         self.reveal_current(cx);
         cx.notify();
     }
@@ -4551,8 +7093,9 @@ impl FileTab {
         cx.notify();
     }
 
-    /// Scroll the current match into sight: its line to the middle when off screen, and
-    /// sideways when it's out of the text's width.
+    /// Scroll the current match into sight: off screen (M11ah: or under the sticky line), its
+    /// row `REVEAL_ABOVE` rows from the top, one more under a sticky line (`reveal_top`); and
+    /// sideways when it's out of the text's width (M11ah: a fold holding it opens).
     fn reveal_current(&mut self, cx: &mut Context<Self>) {
         let Some(hit) = self
             .find
@@ -4561,33 +7104,75 @@ impl FileTab {
         else {
             return;
         };
-        let (Some(g), Some(doc)) = (self.geom.get(), self.shown_doc()) else {
+        // M11ah: a match inside a fold opens it; the rows are then made again at once.
+        let opened = match self.mode {
+            FileMode::Plain => self.open_folds_at(hit.line),
+            FileMode::Diff => self.open_diff_at(hit.line),
+        };
+        let map = if opened {
+            cx.notify();
+            self.fresh_map(cx)
+        } else {
+            self.rows.borrow().as_ref().map(|(_, map)| map.clone())
+        };
+        let (Some(g), Some(doc), Some(map)) = (self.geom.get(), self.shown_doc(), map) else {
             return;
         };
-        let (lh, h, w) = (g.line_height, g.bounds.size.height, g.bounds.size.width);
-        let mut to = g.scroll;
-        // Wrapped (M11x part 2): the row the match starts on; no sideways scroll.
-        let wrapped = self.wrapped.borrow().clone();
-        if let Some(w) = wrapped.as_ref() {
-            let cell = doc.cell_of(hit.line, hit.cols.start);
-            let top = lh * (w.first_row(hit.line) + cell / w.columns) as f32;
-            if top < to.y || top + lh > to.y + h {
-                to.y = top - (h - lh) / 2.0;
-            }
-            self.set_scroll(to, cx);
+        let h = g.bounds.size.height;
+        let Some(first) = map.first_row(hit.line) else {
             return;
+        };
+        let mut to = g.scroll;
+        // The row the match starts on (Wrap: the part of its line it is in).
+        let columns = map.columns();
+        let row = first + columns.map_or(0, |c| doc.cell_of(hit.line, hit.cols.start) / c);
+        let (top, bottom) = (px(map.top(row)), px(map.top(row + 1)));
+        let covered = match self.place.sticky {
+            Some(Sticky::Line(_)) => g.line_height,
+            Some(Sticky::Title(_)) => px(CARD_TITLE),
+            None => px(0.0),
+        };
+        if top < to.y + covered || bottom > to.y + h {
+            to.y = px(match self.mode {
+                FileMode::Diff => diff_reveal_y(&map, row),
+                FileMode::Plain => map.top(reveal_top(row, |r| self.sticky_at_row(&map, r))),
+            });
         }
-        let top = lh * hit.line as f32;
-        if top < to.y || top + lh > to.y + h {
-            to.y = top - (h - lh) / 2.0;
+        // Wrapped (M11x part 2): no sideways scroll.
+        if columns.is_some() {
+            self.reveal_scroll(to, opened, cx);
+            self.refresh_place(cx);
+            return;
         }
         let x = |col: usize| g.cell_width * doc.cell_of(hit.line, col) as f32;
         let (x0, x1) = (x(hit.cols.start), x(hit.cols.end));
-        let room = w - g.text_left - px(RIGHT_PAD);
+        let room = g.text_room();
         if x0 < to.x || x1 > to.x + room {
             to.x = (x0 + x1) / 2.0 - room / 2.0;
         }
-        self.set_scroll(to, cx);
+        self.reveal_scroll(to, opened, cx);
+        // M11ah: a fold opened with no scroll needed: the place still moves.
+        self.refresh_place(cx);
+    }
+
+    /// A find step's scroll to `to` (`reveal_current`): kept within the text as last drawn, as
+    /// any scroll; but after a fold or stretch `opened` the rows are longer than the last
+    /// drawing's, whose limit would cut the step short: the scroll is written as it is, and the
+    /// next drawing keeps it inside the new rows (as `jump_change` does). Either way it is your
+    /// scroll: Follow ends.
+    fn reveal_scroll(&mut self, to: Point<Pixels>, opened: bool, cx: &mut Context<Self>) {
+        if !opened {
+            self.set_scroll(to, cx);
+            return;
+        }
+        self.live.follow = false;
+        let mode = self.mode;
+        let scroll = self.mode_scroll_mut(mode);
+        if to != *scroll {
+            *scroll = to;
+            self.scrolled(cx);
+        }
+        cx.notify();
     }
 
     /// Open the file in the default text editor, or show a refused one in the Finder
@@ -4631,6 +7216,97 @@ impl FileTab {
             .child(glyph_with(kind, ui.text, BUTTON_STROKE))
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, window, cx| on_click(this, window, cx)),
+            )
+            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
+            .into_any_element()
+    }
+
+    /// M11ah: a jump button (`code::NAV_BUTTON` square; `forward`: the next change's, else the
+    /// previous): faint, with no hover and no click, when there is no change that way
+    /// (`enabled` false); its tooltip still tells the key. Where it is drawn is kept (`nav_at`).
+    fn change_button(
+        &self,
+        forward: bool,
+        enabled: bool,
+        ui: UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (id, kind, tip) = if forward {
+            ("file-change-next", Glyph::ChangeDown, TIP_NEXT_CHANGE)
+        } else {
+            ("file-change-prev", Glyph::ChangeUp, TIP_PREV_CHANGE)
+        };
+        let ink = if enabled { ui.text } else { ui.text_faint };
+        let at = self.nav_at.clone();
+        div()
+            .id(id)
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(px(code::NAV_BUTTON))
+            .rounded(px(5.0))
+            .when(enabled, |b| {
+                b.cursor_pointer()
+                    .hover(move |s| s.bg(hsla(ui.panel_hover)))
+                    .on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.jump_change(forward, cx)
+                        }),
+                    )
+            })
+            .child(glyph_with(kind, ink, BUTTON_STROKE))
+            .child(
+                canvas(
+                    move |b, _, _| {
+                        let mut both = at.get();
+                        both[usize::from(forward)] = Some(b);
+                        at.set(both);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
+            .into_any_element()
+    }
+
+    /// M11ah: the bar's Side by side (Diff mode): filled when on and fitting, like Wrap; while
+    /// the body is too narrow, faint with no hover and no click, its tooltip saying so. Where
+    /// it is drawn is kept (`side_at`).
+    fn side_button(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+        let fits = self.fits_now().unwrap_or(false);
+        let (filled, enabled, tip) = side_button_look(self.side_by_side, fits);
+        let ink = if enabled { ui.text } else { ui.text_faint };
+        let at = self.side_at.clone();
+        div()
+            .id("file-side-by-side")
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(px(BUTTON))
+            .rounded(px(5.0))
+            .when(filled, |b| b.bg(hsla(ui.card_selected)))
+            .when(enabled, |b| {
+                b.cursor_pointer()
+                    .when(!filled, |b| b.hover(move |s| s.bg(hsla(ui.panel_hover))))
+                    .on_click(
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_side_by_side(cx)),
+                    )
+            })
+            .child(glyph_with(Glyph::SideBySide, ink, BUTTON_STROKE))
+            .child(
+                canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
             )
             .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
             .into_any_element()
@@ -4897,6 +7573,18 @@ impl FileTab {
                 cx,
             )
         });
+        // M11ah: side by side, in Diff mode (with rows), after Wrap.
+        self.side_at.set(None);
+        let side = (self.mode == FileMode::Diff && matches!(self.diff.state, DiffState::Rows(_)))
+            .then(|| self.side_button(ui, cx));
+        // M11ah: the jumps between changes, left of the view switch, when the file has a change.
+        self.nav_at.set([None; 2]);
+        let jumps = self.change_nav().map(|(prev, next)| {
+            [
+                self.change_button(false, prev, ui, cx),
+                self.change_button(true, next, ui, cx),
+            ]
+        });
         // A refused file has its button in the middle; a missing one has none.
         let open = matches!(
             self.state,
@@ -5031,8 +7719,10 @@ impl FileTab {
                     .items_center()
                     .gap(px(8.0))
                     .children(follow)
+                    .children(jumps.into_iter().flatten())
                     .children(switch)
                     .children(wrap)
+                    .children(side)
                     .children(open)
                     // Where they are (the scenes check they stay in the pane).
                     .child(
@@ -5124,6 +7814,95 @@ impl FileTab {
                 .child(next)
                 .child(div().flex_1())
                 .child(close)
+                .into_any_element(),
+        )
+    }
+
+    /// M11ah: the breadcrumb, a strip `code::BREADCRUMB` tall between the bar (and the find bar)
+    /// and the text, whenever the file has blocks (File mode, not Preview: `folds_apply`), so the
+    /// text never moves when its parts fill in: the file's name, then each block the top line is
+    /// in, outer to inner, in `code::BREADCRUMB_TEXT` UI text, `text_dim`, the last part in
+    /// `text`. Too narrow, the outer parts fold into "…" first (`fit_crumbs`, measured in the
+    /// prepaint, a layout cache keyed by its inputs). A press on a part puts its line at the top.
+    fn breadcrumb(&self, ui: UiColors, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.folds_apply() {
+            // Not drawn: no part to press.
+            self.crumbs_at.borrow_mut().clear();
+            return None;
+        }
+        let crumbs = self.place.crumbs.clone();
+        let (at, fit) = (self.crumbs_at.clone(), self.crumbs_fit.clone());
+        Some(
+            div()
+                .flex_none()
+                .w_full()
+                .h(px(code::BREADCRUMB))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, e: &MouseDownEvent, _, cx| this.crumb_press(e.position, cx)),
+                )
+                .child(
+                    canvas(
+                        move |bounds, window, _| {
+                            let key = CrumbFitKey {
+                                crumbs,
+                                room: f32::from(bounds.size.width) - 2.0 * GUTTER_LEFT,
+                                font: window.text_style().font(),
+                                font_size: px(code::BREADCRUMB_TEXT),
+                                inks: (ui.text_dim, ui.text),
+                            };
+                            let laid = match fit.borrow().as_ref() {
+                                Some((k, laid)) if *k == key => Some(laid.clone()),
+                                _ => None,
+                            };
+                            let laid = laid.unwrap_or_else(|| {
+                                let laid = lay_out_crumbs(&key, window);
+                                *fit.borrow_mut() = Some((key, laid.clone()));
+                                laid
+                            });
+                            let left = bounds.left() + px(GUTTER_LEFT);
+                            let mut hits = Vec::new();
+                            let mut boxes = Vec::new();
+                            for (x, shaped, piece) in &laid {
+                                let b = Bounds::new(
+                                    point(left + *x, bounds.top()),
+                                    size(shaped.width, bounds.size.height),
+                                );
+                                match piece {
+                                    CrumbPiece::Part(crumb) => {
+                                        let hit = HitboxBehavior::Normal;
+                                        boxes.push(window.insert_hitbox(b, hit));
+                                        hits.push((b, Some(crumb.clone())));
+                                    }
+                                    CrumbPiece::Folded => hits.push((b, None)),
+                                    CrumbPiece::Separator => {}
+                                }
+                            }
+                            *at.borrow_mut() = hits;
+                            (laid, boxes)
+                        },
+                        move |bounds, (laid, boxes), window, cx| {
+                            for b in &boxes {
+                                window.set_cursor_style(CursorStyle::PointingHand, b);
+                            }
+                            let left = bounds.left() + px(GUTTER_LEFT);
+                            let mask = ContentMask {
+                                bounds: Bounds::from_corners(
+                                    point(left, bounds.top()),
+                                    point(bounds.right() - px(GUTTER_LEFT), bounds.bottom()),
+                                ),
+                            };
+                            window.with_content_mask(Some(mask), |window| {
+                                for (x, shaped, _) in &laid {
+                                    let at = point(left + *x, bounds.top());
+                                    let h = bounds.size.height;
+                                    let _ = shaped.paint(at, h, TextAlign::Left, None, window, cx);
+                                }
+                            });
+                        },
+                    )
+                    .size_full(),
+                )
                 .into_any_element(),
         )
     }
@@ -5234,16 +8013,49 @@ impl FileTab {
                 .map(|(a, b)| if a <= b { (a, b) } else { (b, a) }),
             matches,
             current,
+            current_line: match self.mode {
+                FileMode::Plain => self.current,
+                FileMode::Diff => self.diff_current,
+            },
+            guides: !is_markdown(&self.path),
             theme,
             live: (self.mode == FileMode::Plain && self.live.marked).then(|| LiveFrame {
                 record: self.live.record.clone(),
                 warm: self.live.warm.clone(),
                 your_letter: self.live.your_letter.unwrap_or('Y'),
             }),
+            folded: match self.mode {
+                FileMode::Plain => self.folded.clone(),
+                FileMode::Diff => BTreeSet::new(),
+            },
+            folds_gen: self.folds_gen,
+            gutter_hover: self.gutter_hover,
+            sticky: match self.place.sticky {
+                Some(Sticky::Line(line)) if self.mode == FileMode::Plain => Some(line),
+                _ => None,
+            },
+            cards: match (self.mode, &self.diff.state) {
+                (FileMode::Diff, DiffState::Rows(d)) => Some(CardsFrame {
+                    parts: diff_parts(d, &self.shown_stretches, &self.closed_cards),
+                    titles: d.titles.clone(),
+                    words: d.words.clone(),
+                }),
+                _ => None,
+            },
+            layout_gen: self.layout_gen,
+            sticky_title: match self.place.sticky {
+                Some(Sticky::Title(card)) if self.mode == FileMode::Diff => Some(card),
+                _ => None,
+            },
+            side_by_side: self.mode == FileMode::Diff && self.side_by_side,
+            current_half: self.current_half,
+            sel_half: self.sel_half,
         });
         let geom = self.geom.clone();
-        let wrapped = self.wrapped.clone();
+        let row_map = self.rows.clone();
+        let fits_side = self.fits_side.clone();
         let drawn = self.drawn.clone();
+        let lane = self.lane.clone();
         let bar = self.scrollbar;
         let view = cx.entity();
         let keep = view.clone();
@@ -5280,52 +8092,171 @@ impl FileTab {
                         move |bounds, window, cx| {
                             let m = CellMetrics::measure(cx.global::<Appearance>(), window);
                             let count = laid.doc.lines.len();
-                            let gutter = laid
-                                .gutter
-                                .unwrap_or_else(|| Gutter::plain(count, laid.live.is_some()));
-                            // Wrap on (M11x part 2): rows at the text's width, made again only
-                            // for another version, mode or width; no sideways scroll.
-                            let wrap = cx.global::<Appearance>().file_wrap.then(|| {
-                                let cw = f32::from(m.cell_width).max(1.0);
-                                let left = columns(cw, gutter).text_left;
-                                let room = f32::from(bounds.size.width) - left - RIGHT_PAD;
-                                let cols = (room / cw).floor().max(1.0) as usize;
-                                let key = (laid.mode, laid.doc.version, cols);
-                                let kept = wrapped.borrow().clone().filter(|w| w.key == key);
-                                kept.unwrap_or_else(|| Wrapped::of(&laid.doc, laid.mode, cols))
+                            // M11ah: a file with blocks has a fold column (File mode).
+                            let folds = laid.mode == FileMode::Plain
+                                && laid
+                                    .doc
+                                    .outline
+                                    .as_deref()
+                                    .is_some_and(Outline::has_structure);
+                            let gutter = laid.gutter.unwrap_or_else(|| {
+                                Gutter::plain(count, laid.live.is_some(), folds)
                             });
-                            // Wrap switched: the same line stays at the top (review fix).
-                            let before = wrapped.borrow().clone();
+                            // M11ah: side by side where chosen and the body fits two halves
+                            // (a diff's); the fit kept for the bar, which is drawn again once
+                            // when it changes.
+                            let (width, cw) =
+                                (f32::from(bounds.size.width), f32::from(m.cell_width));
+                            let fits = fits_side_by_side(width, cw, gutter);
+                            let side = laid.side_by_side && fits;
+                            let fit_changed =
+                                laid.mode == FileMode::Diff && fits_side.get() != Some(fits);
+                            if fit_changed {
+                                fits_side.set(Some(fits));
+                                let keep = keep.clone();
+                                cx.defer(move |cx| keep.update(cx, |_, cx| cx.notify()));
+                            }
+                            // Wrap on (M11x part 2): rows cut at the text's width (M11ah: a
+                            // diff's inside its cards; side by side, a half's); no sideways
+                            // scroll.
+                            let wrap = cx
+                                .global::<Appearance>()
+                                .file_wrap
+                                .then(|| wrap_cells(width, cw, gutter, side));
+                            // M11ah: the row map, a layout cache made again only for another
+                            // key (mode, version, width...) or row height.
+                            let row_h = row_height(m.line_height);
+                            let key = MapKey {
+                                mode: laid.mode,
+                                version: laid.doc.version,
+                                columns: wrap,
+                                folds: laid.folds_gen,
+                                layout: laid.layout_gen,
+                                side,
+                            };
+                            let before = row_map.borrow().clone();
+                            let map = match &before {
+                                Some((k, map)) if *k == key && map.row_h() == f32::from(row_h) => {
+                                    map.clone()
+                                }
+                                _ => FileTab::row_map_of(
+                                    &laid.doc,
+                                    laid.mode,
+                                    wrap,
+                                    f32::from(row_h),
+                                    &laid.folded,
+                                    laid.cards.as_ref().map(|c| &c.parts),
+                                    side,
+                                ),
+                            };
+                            // The rows reflowed (Wrap switched, review fix; M11ah fix round 1:
+                            // another width with Wrap on, or another row height): the same line
+                            // stays at the top, so the place worked out from it (the sticky line,
+                            // the breadcrumb) stays right with no scroll. A map of the other mode
+                            // says nothing of this one's rows.
+                            let wrap_switched =
+                                before.as_ref().and_then(|(_, b)| b.columns()).is_some()
+                                    != wrap.is_some();
+                            // M11ah: side by side on or off by the fit changing, too (pressed,
+                            // its handler kept the line at the top already).
+                            let reflowed = before.as_ref().is_some_and(|(k, b)| {
+                                k.mode == laid.mode
+                                    && if k.side != side {
+                                        fit_changed
+                                    } else {
+                                        b.columns() != wrap || b.row_h() != f32::from(row_h)
+                                    }
+                            });
+                            let before = before.map(|(_, map)| map);
                             let mut scroll = laid.scroll;
-                            if before.is_some() != wrap.is_some() {
-                                let lh = f32::from(m.line_height).max(1.0);
-                                let top = (f32::from(scroll.y) / lh).floor().max(0.0) as usize;
-                                let row = rescroll_row(top, before.as_ref(), wrap.as_ref());
-                                scroll = point(px(0.0), m.line_height * row as f32);
+                            if wrap_switched || reflowed {
+                                let y = f32::from(scroll.y);
+                                let top = before.as_ref().map_or_else(
+                                    || (y / f32::from(row_h).max(1.0)).floor().max(0.0) as usize,
+                                    |b| b.row_at(y),
+                                );
+                                let row = rescroll_row(top, before.as_ref(), &map);
+                                let x = if wrap.is_some() { px(0.0) } else { scroll.x };
+                                scroll = point(x, px(map.top(row)));
                                 let mode = laid.mode;
                                 keep.update(cx, |this, _| *this.mode_scroll_mut(mode) = scroll);
                             }
-                            *wrapped.borrow_mut() = wrap.clone();
-                            let (rows, widest) = match &wrap {
-                                Some(w) => (w.rows.len(), 0),
-                                None => (count, laid.doc.widest),
-                            };
-                            let g = Geom::of(bounds, &m, rows, gutter, widest, scroll);
+                            *row_map.borrow_mut() = Some((key, map.clone()));
+                            let widest = if wrap.is_some() { 0 } else { laid.doc.widest };
+                            let g = Geom::of(
+                                bounds,
+                                &m,
+                                row_h,
+                                px(map.height()),
+                                (gutter, side),
+                                widest,
+                                scroll,
+                            );
                             geom.set(Some(g));
                             // A new version (or mode) drawn: the scroll as kept in it is the
                             // scroll (after a shrink, the view doesn't jump back down when the
                             // file grows again).
-                            let key = (laid.mode, laid.doc.version);
-                            if drawn.replace(key) != key && g.scroll != laid.scroll {
+                            let shown = (laid.mode, laid.doc.version);
+                            if drawn.replace(shown) != shown && g.scroll != laid.scroll {
                                 let (kept, mode) = (g.scroll, laid.mode);
                                 keep.update(cx, |this, _| *this.mode_scroll_mut(mode) = kept);
                             }
+                            // M11ah: the scrollbar's marks, a layout cache worked out again
+                            // only for another key.
+                            let marks = match Track::of(&g, Axis::Vertical) {
+                                Some(t) => {
+                                    let colours = BarColours::of(&laid.theme);
+                                    let key = LaneKey {
+                                        changes: ChangeKey {
+                                            map: key,
+                                            row_h: f32::from(row_h),
+                                            changes: laid.doc.changes.clone(),
+                                            colours: [
+                                                colours.added,
+                                                colours.changed,
+                                                colours.deleted,
+                                            ],
+                                        },
+                                        matches: laid.matches.clone(),
+                                        current: laid.current,
+                                        extent: (t.viewport, t.content),
+                                        colours: [laid.theme.ui().accent, laid.theme.background],
+                                    };
+                                    lane.borrow_mut().marks(key, &laid, &map, &colours)
+                                }
+                                None => Vec::new(),
+                            };
                             let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-                            (m, g, hitbox, wrap)
+                            // M11ah: the sticky line, over the text's first row: a press there
+                            // scrolls back to its line.
+                            let pinned = match (laid.sticky, laid.sticky_title) {
+                                (Some(_), _) => Some(row_h),
+                                (None, Some(_)) => Some(px(code::CARD_TITLE)),
+                                (None, None) => None,
+                            };
+                            let sticky = pinned.map(|h| {
+                                let row = Bounds::new(bounds.origin, size(bounds.size.width, h));
+                                window.insert_hitbox(row, HitboxBehavior::Normal)
+                            });
+                            (m, g, hitbox, map, sticky, marks)
                         },
-                        move |_, (m, g, hitbox, wrap), window, cx| {
+                        move |_, (m, g, hitbox, map, sticky, marks), window, cx| {
                             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
-                            paint_body(&frame, &g, &m, wrap.as_ref(), window, cx);
+                            paint_body(&frame, &g, &m, &map, window, cx);
+                            if let (Some(line), Some(row)) = (frame.sticky, &sticky) {
+                                window.set_cursor_style(CursorStyle::PointingHand, row);
+                                paint_sticky(&frame, &g, &m, &map, line, window, cx);
+                            }
+                            // M11ah: a card's title pinned over the top of a card scrolled
+                            // under it.
+                            if let (Some(card), Some(row)) = (frame.sticky_title, &sticky) {
+                                window.set_cursor_style(CursorStyle::PointingHand, row);
+                                let top = g.bounds.top();
+                                paint_card_title(&frame, &g, card, top, true, window, cx);
+                            }
+                            // M11ah: the marks' lane, every frame (the thumb's fade leaves it),
+                            // under the thumb.
+                            scrollbar::paint_lane(window, g.bounds, &marks);
                             // M11ae: the scrollbar's thumbs over the text (the fade read from
                             // the clock; its task redraws).
                             let now = Instant::now();
@@ -5413,7 +8344,9 @@ impl FileTab {
 
     /// The screen rows as last drawn with Wrap on (M11x part 2); none with it off.
     pub fn wrapped_rows(&self) -> Option<usize> {
-        self.wrapped.borrow().as_ref().map(|w| w.rows.len())
+        let rows = self.rows.borrow();
+        let (_, map) = rows.as_ref()?;
+        map.columns().map(|_| map.len())
     }
 
     /// "loading", "text", "plain", "refuse" or "missing".
@@ -5577,7 +8510,8 @@ impl FileTab {
         let h = cx.default_global::<Highlighters>().get(&theme);
         let disk = self.doc().map(|d| d.text.clone());
         let colour = h.as_deref().map(|h| (h, self.path.as_path()));
-        let state = diff_state(diff, disk.as_deref(), self.versions, colour, None);
+        let markdown = is_markdown(&self.path);
+        let state = diff_state(diff, disk.as_deref(), self.versions, markdown, colour, None);
         let version = self.versions;
         self.accept_diff(version, state, cx);
     }
@@ -5646,6 +8580,157 @@ impl FileTab {
         self.live.follow
     }
 
+    /// M11ah: the folded blocks (their first lines), the current line, and the line drawn on
+    /// screen row `row` (none: not a line's, or not drawn yet).
+    pub fn folded_lines(&self) -> Vec<usize> {
+        self.folded.iter().copied().collect()
+    }
+
+    /// M11ah: the jump buttons' state (previous can go, next can go; none: not shown) and where
+    /// they were drawn (previous, next).
+    pub fn change_nav_for_shots(&self) -> Option<(bool, bool)> {
+        self.change_nav()
+    }
+
+    pub fn nav_drawn(&self) -> [Option<Bounds<Pixels>>; 2] {
+        self.nav_at.get()
+    }
+
+    pub fn current_line(&self) -> Option<usize> {
+        self.current
+    }
+
+    pub fn line_at_row(&self, row: usize) -> Option<usize> {
+        self.rows.borrow().as_ref()?.1.row(row)?.line()
+    }
+
+    /// M11ah: the line pinned as the sticky line (none: nothing pinned), the breadcrumb's
+    /// parts' words, and the pieces it drew: each part's (or the "…"'s) bounds and words.
+    pub fn sticky_line(&self) -> Option<usize> {
+        match self.place.sticky {
+            Some(Sticky::Line(line)) => Some(line),
+            _ => None,
+        }
+    }
+
+    /// M11ah: Diff mode's pinned card title (none: nothing pinned), its current row, and the
+    /// stretches shown and cards closed (by key).
+    pub fn sticky_title(&self) -> Option<usize> {
+        match self.place.sticky {
+            Some(Sticky::Title(card)) => Some(card),
+            _ => None,
+        }
+    }
+
+    pub fn diff_current(&self) -> Option<usize> {
+        self.diff_current
+    }
+
+    /// M11ah: side by side: chosen, drawn now, the half the current row and the selection are
+    /// on, the bar's button as it looks (filled, takes a click, tooltip) and where it was drawn.
+    pub fn side_by_side_for_shots(&self) -> (bool, bool, Option<Half>, Option<Half>) {
+        (
+            self.side_by_side,
+            self.side_on(),
+            self.current_half,
+            self.sel_half,
+        )
+    }
+
+    /// M11ah: side by side chosen, as restoring the tab sets it (no drawing, no event).
+    pub fn set_side_by_side_for_shots(&mut self, on: bool) {
+        self.side_by_side = on;
+    }
+
+    pub fn side_button_for_shots(&self) -> (bool, bool, &'static str, Option<Bounds<Pixels>>) {
+        let fits = self.fits_now().unwrap_or(false);
+        let (filled, enabled, tip) = side_button_look(self.side_by_side, fits);
+        (filled, enabled, tip, self.side_at.get())
+    }
+
+    /// M11ah: the drawn row `row`'s kind (a pair's halves too).
+    pub fn row_for_shots(&self, row: usize) -> Option<Row> {
+        self.rows.borrow().as_ref()?.1.row(row)
+    }
+
+    pub fn diff_folds_for_shots(&self) -> (Vec<usize>, Vec<usize>) {
+        (
+            self.shown_stretches.iter().copied().collect(),
+            self.closed_cards.iter().copied().collect(),
+        )
+    }
+
+    /// M11ah: line `line`'s top down the text shown (no scroll), by its rows as they are now
+    /// (none: hidden, or not drawn yet); a card's title's top.
+    pub fn line_top(&self, line: usize, cx: &App) -> Option<Pixels> {
+        let map = self.map_now(cx)?;
+        Some(px(map.top(map.first_row(line)?)))
+    }
+
+    pub fn title_top(&self, card: usize, cx: &App) -> Option<Pixels> {
+        let map = self.map_now(cx)?;
+        Some(px(map.top(map.title_row(card)?)))
+    }
+
+    /// M11ah: the row under a press at `y` points down the text is a stretch's or a title's.
+    pub fn row_kind_at(&self, y: f32, cx: &App) -> Option<Row> {
+        let map = self.map_now(cx)?;
+        map.row(map.row_at(y))
+    }
+
+    /// M11ah: stretch `stretch` shown (as a press on it would), and Diff's current row set.
+    pub fn show_stretch_for_shots(&mut self, stretch: usize, cx: &mut Context<Self>) {
+        self.show_stretch(stretch, cx);
+    }
+
+    pub fn set_current_diff_for_shots(&mut self, row: Option<usize>, cx: &mut Context<Self>) {
+        self.diff_current = row;
+        cx.notify();
+    }
+
+    /// M11ah: the current line set (as a press there would).
+    pub fn set_current_for_shots(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
+        self.set_current(line, cx);
+    }
+
+    /// M11ah: the line drawn at the top of the text (none: not drawn yet).
+    pub fn top_line_for_shots(&self) -> Option<usize> {
+        self.top_line()
+    }
+
+    pub fn crumb_words(&self) -> Vec<String> {
+        self.place.crumbs.iter().map(|c| c.words.clone()).collect()
+    }
+
+    pub fn crumbs_drawn(&self) -> Vec<(Bounds<Pixels>, String)> {
+        self.crumbs_at
+            .borrow()
+            .iter()
+            .map(|(b, c)| {
+                (
+                    *b,
+                    c.as_ref().map_or(ELLIPSIS.to_string(), |c| c.words.clone()),
+                )
+            })
+            .collect()
+    }
+
+    /// M11ah: the scrollbar's marks as last worked out.
+    pub fn lane_for_shots(&self) -> Vec<LaneMark> {
+        self.lane
+            .borrow()
+            .marks
+            .as_ref()
+            .map_or_else(Vec::new, |(_, marks)| marks.clone())
+    }
+
+    /// M11ah: fold the blocks starting on `lines` (as a press on their ▾ would).
+    pub fn fold_for_shots(&mut self, lines: &[usize], cx: &mut Context<Self>) {
+        let mut folded = self.folded.clone();
+        folded.extend(lines);
+        self.set_folds(folded, cx);
+    }
+
     /// Change bars from a list (git's answer; a scene's given list).
     pub fn set_changes(&mut self, changes: Vec<(usize, LineChange)>, cx: &mut Context<Self>) {
         if let Some(doc) = self.doc_mut() {
@@ -5658,8 +8743,8 @@ impl FileTab {
 }
 
 impl FileTab {
-    /// Diff mode with rows and a place to show: scroll it `REVEAL_ABOVE` rows from the top
-    /// (kept within the rows when drawn).
+    /// Diff mode with rows and a place to show: scroll its card's title to the top (M11ah;
+    /// kept within the rows when drawn).
     fn reveal_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode != FileMode::Diff {
             return;
@@ -5667,6 +8752,11 @@ impl FileTab {
         let DiffState::Rows(d) = &self.diff.state else {
             return;
         };
+        // M11ah fix round 1: side by side chosen and nothing drawn yet (so no fit known): held
+        // for the first drawing (its fit, new, draws the tab again).
+        if self.side_by_side && self.geom.get().is_none() {
+            return;
+        }
         let Some(reveal) = self.reveal.take() else {
             return;
         };
@@ -5675,18 +8765,36 @@ impl FileTab {
             Reveal::Change(change) => reveal_row(&d.rows, change).or_else(|| first_change(&d.rows)),
         };
         let m = CellMetrics::measure(cx.global::<Appearance>(), window);
-        let mut rows_up = row.unwrap_or(0).saturating_sub(REVEAL_ABOVE);
-        // Wrap on (M11x part 2): that line's first screen row, the diff wrapped at the width
-        // last drawn (its own gutter may move it a column; the next frame wraps it exactly).
-        let columns = self.wrapped.borrow().as_ref().map(|w| w.columns);
-        if let (Some(columns), true) = (columns, cx.global::<Appearance>().file_wrap) {
-            rows_up = Wrapped::of(&d.doc, FileMode::Diff, columns).first_row(rows_up);
-        }
-        self.diff_scroll = point(px(0.0), m.line_height * rows_up as f32);
+        let row = row.unwrap_or(0);
+        // By the row map (M11ah): the title of the change's card at the top; Wrap on (M11x
+        // part 2): the diff wrapped at the width last drawn (its own gutter may move it a
+        // column; the next frame wraps it exactly).
+        let columns = self.columns_now(cx);
+        let parts = diff_parts(d, &self.shown_stretches, &self.closed_cards);
+        let map = Self::row_map_of(
+            &d.doc,
+            FileMode::Diff,
+            columns,
+            f32::from(row_height(m.line_height)),
+            &self.folded,
+            Some(&parts),
+            self.side_on(),
+        );
+        let card = d.grouped.cards.iter().position(|c| c.rows.contains(&row));
+        let top = match card.and_then(|k| map.title_row(k)) {
+            Some(title) => map.top(title),
+            None => map
+                .row_holding(row.saturating_sub(REVEAL_ABOVE))
+                .map_or(0.0, |r| map.top(r)),
+        };
+        self.diff_scroll = point(px(0.0), px(top));
         // M11ae: a reveal scrolls, so the scrollbar shows (this frame draws it). Not through
         // `set_scroll`: the rows aren't drawn yet, so the last drawing's limits are another
         // text's.
         self.scrolled(cx);
+        // M11ah fix round 1: the place for the new scroll (a title at the top is not pinned),
+        // before this frame's body reads it.
+        self.place = self.place_now(cx);
     }
 }
 
@@ -5701,6 +8809,7 @@ impl Render for FileTab {
         self.reveal_diff(window, cx);
         let toolbar = self.toolbar(&theme, ui, cx);
         let find_bar = self.find_bar(ui, cx);
+        let crumbs = self.breadcrumb(ui, cx);
         let body = match self.body_note() {
             Some(words) if words == MISSING || words == REFUSED => self.notice(ui, cx),
             Some(words) => Self::diff_note(words, ui),
@@ -5725,9 +8834,26 @@ impl Render for FileTab {
                 cx.listener(|this, _: &FindPrev, window, cx| this.find_step(false, window, cx)),
             )
             .on_action(cx.listener(|this, _: &CloseFind, window, cx| this.close_find(window, cx)))
+            .on_action(cx.listener(|this, _: &FoldHere, _, cx| this.fold_here(true, cx)))
+            .on_action(cx.listener(|this, _: &UnfoldHere, _, cx| this.fold_here(false, cx)))
+            .on_action(cx.listener(|this, _: &FoldAll, _, cx| this.fold_all(true, cx)))
+            .on_action(cx.listener(|this, _: &UnfoldAll, _, cx| this.fold_all(false, cx)))
+            .on_action(cx.listener(|this, _: &ShowAllUnchanged, _, cx| this.show_all_unchanged(cx)))
+            // ⌥↑ / ⌥↓ act only while the tab itself has the keyboard (not the find box).
+            .on_action(cx.listener(|this, _: &PrevChange, window, cx| {
+                if this.focus.is_focused(window) {
+                    this.jump_change(false, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &NextChange, window, cx| {
+                if this.focus.is_focused(window) {
+                    this.jump_change(true, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
             .child(toolbar)
             .children(find_bar)
+            .children(crumbs)
             .child(body)
     }
 }
@@ -5857,10 +8983,12 @@ impl Workspace {
     ) {
         let frozen = self.places.frozen;
         let preview = self.model.md_preview(tab);
+        let side_by_side = self.model.side_by_side(tab);
         let view = cx.new(|cx| {
             let mut view = FileTab::new(path, mode, window, cx);
             view.frozen = frozen;
             view.preview = preview;
+            view.side_by_side = side_by_side;
             view
         });
         // A missing file's Close button closes its tab; a new mode is the model's, saved.
@@ -5881,6 +9009,13 @@ impl Workspace {
                 FileTabEvent::Preview(on) => {
                     this.pin_tab(tab, cx);
                     if this.model.set_md_preview(tab, *on) {
+                        this.save();
+                    }
+                }
+                // M11ah: side by side turned on or off: kept per tab, and saved.
+                FileTabEvent::SideBySide(on) => {
+                    this.pin_tab(tab, cx);
+                    if this.model.set_side_by_side(tab, *on) {
                         this.save();
                     }
                 }
@@ -5981,25 +9116,6 @@ mod tests {
         assert_eq!(*doc.widths, [2, 5, 0, 2]);
     }
 
-    /// M11x part 2: each screen row as (line, its first cell); wrapped at `columns`, else one
-    /// row a line.
-    #[test]
-    fn wrapped_lines_take_as_many_rows_as_they_need() {
-        assert_eq!(
-            visual_rows(&[3, 10, 0], 4, true),
-            [(0, 0), (1, 0), (1, 4), (1, 8), (2, 0)]
-        );
-        assert_eq!(visual_rows(&[3, 10], 4, false), [(0, 0), (1, 0)]);
-        // Exactly full: no empty row after it.
-        assert_eq!(visual_rows(&[8], 4, true), [(0, 0), (0, 4)]);
-        // No room at all is one column.
-        assert_eq!(visual_rows(&[2], 0, true), [(0, 0), (0, 1)]);
-        // Each line's first row, and after the last line the row count.
-        let rows = visual_rows(&[3, 10, 0], 4, true);
-        assert_eq!(first_rows(&rows, 3), [0, 1, 4, 5]);
-        assert_eq!(first_rows(&[(0, 0), (1, 0)], 2), [0, 1, 2]);
-    }
-
     /// Review fixes (M11x part 2): a row's span is where its first character starts (a tab that
     /// crosses the row's end moves whole to the next row), and a click lands in its own row.
     #[test]
@@ -6019,15 +9135,22 @@ mod tests {
 
     /// Review fix (M11x part 2): switching Wrap keeps the same line at the top.
     #[test]
+    #[allow(clippy::single_range_in_vec_init)] // `hidden`: one hidden run
     fn switching_wrap_keeps_the_top_line() {
         let doc = Doc::new("a\nbbbbbbbbbb\nc".to_string(), 0);
-        let w = Wrapped::of(&doc, FileMode::Plain, 4);
+        let w = RowMap::file(&doc.widths, Some(4), &[], 10.0);
+        let plain = RowMap::file(&doc.widths, None, &[], 10.0);
         // Rows: a | bbbb bbbb bb | c.
-        assert_eq!(rescroll_row(4, Some(&w), None), 2);
-        assert_eq!(rescroll_row(2, None, Some(&w)), 4);
+        assert_eq!(rescroll_row(4, Some(&w), &plain), 2);
+        assert_eq!(rescroll_row(2, Some(&plain), &w), 4);
+        assert_eq!(rescroll_row(2, None, &w), 4);
         // Inside line 1's rows: line 1's first row.
-        assert_eq!(rescroll_row(2, Some(&w), None), 1);
-        assert_eq!(rescroll_row(1, None, Some(&w)), 1);
+        assert_eq!(rescroll_row(2, Some(&w), &plain), 1);
+        assert_eq!(rescroll_row(1, None, &w), 1);
+        // M11ah: a line hidden in the rows made: the shown line above it.
+        let hidden = RowMap::file(&doc.widths, Some(4), &[1..2], 10.0);
+        assert_eq!(rescroll_row(1, Some(&plain), &hidden), 0);
+        assert_eq!(rescroll_row(2, Some(&plain), &hidden), 1);
     }
 
     /// Review fix (M11x part 2): with Wrap on, a press finds a change bar by its rows, and a
@@ -6035,29 +9158,25 @@ mod tests {
     #[test]
     fn bars_are_hit_by_their_rows_when_wrapped() {
         let doc = Doc::new("a\nbbbbbbbbbb\nc".to_string(), 0);
-        let w = Wrapped::of(&doc, FileMode::Plain, 4);
-        let lh = 10.0;
+        let w = RowMap::file(&doc.widths, Some(4), &[], 10.0);
         let mut changes = Changes::default();
         changes.by_line.insert(1, LineChange::Changed);
         // Any of line 1's three rows (rows 1-3): line 2 (1-based), changed.
         for y in [12.0, 25.0, 39.0] {
-            assert_eq!(
-                bar_at_rows(y, lh, &w, &changes),
-                Some((2, LineChange::Changed))
-            );
+            assert_eq!(bar_at_rows(y, &w, &changes), Some((2, LineChange::Changed)));
         }
-        assert_eq!(bar_at_rows(5.0, lh, &w, &changes), None);
+        assert_eq!(bar_at_rows(5.0, &w, &changes), None);
         // Lines deleted after line 1 (the edge at row 4): within half a row of it, either side.
         let mut deleted = Changes::default();
         deleted.deleted.push(2);
         for y in [36.0, 44.0] {
             assert_eq!(
-                bar_at_rows(y, lh, &w, &deleted),
+                bar_at_rows(y, &w, &deleted),
                 Some((2, LineChange::DeletedAfter))
             );
         }
-        assert_eq!(bar_at_rows(30.0, lh, &w, &deleted), None);
-        assert_eq!(bar_at_rows(-3.0, lh, &w, &deleted), None);
+        assert_eq!(bar_at_rows(30.0, &w, &deleted), None);
+        assert_eq!(bar_at_rows(-3.0, &w, &deleted), None);
     }
     use alacritty_terminal::vte::ansi::Rgb;
 
@@ -6352,8 +9471,8 @@ mod tests {
         // coloured before version 3's colours arrive: those are dropped.
         let asked = Doc::new("fn a() {}\n".into(), 3).version;
         let mut doc = Doc::new("fn b() {}\n".into(), 4);
-        assert!(doc.accept_spans(4, spans()));
-        assert!(!doc.accept_spans(asked, vec![]));
+        assert!(doc.accept_spans(4, spans(), &[]));
+        assert!(!doc.accept_spans(asked, vec![], &[]));
         assert_eq!(doc.spans_version, Some(4));
         assert_eq!(doc.spans.as_deref().map(Vec::len), Some(1));
     }
@@ -6461,22 +9580,109 @@ mod tests {
         doc5.spans = Some(Arc::new(spans()));
         doc5.spans_version = Some(1);
         // Version 3's colours: newer than those held, so taken.
-        assert!(doc5.accept_spans(3, spans()));
+        assert!(doc5.accept_spans(3, spans(), &[]));
         assert_eq!(doc5.spans_version, Some(3));
         // Version 2's: older than those held now.
-        assert!(!doc5.accept_spans(2, spans()));
+        assert!(!doc5.accept_spans(2, spans(), &[]));
         // Newer than the text shown can't happen, and is dropped.
-        assert!(!doc5.accept_spans(6, spans()));
-        assert!(doc5.accept_spans(5, spans()));
+        assert!(!doc5.accept_spans(6, spans(), &[]));
+        assert!(doc5.accept_spans(5, spans(), &[]));
         assert_eq!(doc5.spans_version, Some(5));
         // Nothing held yet (it changed faster than its first colouring): any older version's
         // colours are taken, none newer than the text.
         let mut fresh = Doc::new("x\n".into(), 7);
-        assert!(!fresh.accept_spans(8, spans()));
-        assert!(fresh.accept_spans(2, spans()));
+        assert!(!fresh.accept_spans(8, spans(), &[]));
+        assert!(fresh.accept_spans(2, spans(), &[]));
         assert_eq!(fresh.spans_version, Some(2));
         let mut bars = Doc::new("x\n".into(), 7);
         assert!(bars.accept_changes(2, &[(1, LineChange::Added)], None));
+    }
+
+    #[test]
+    fn bar_runs_join_rows_of_one_kind() {
+        let changes = [
+            (2, LineChange::Added),
+            (3, LineChange::Added),
+            (4, LineChange::Added),
+            (5, LineChange::Changed),
+            (9, LineChange::Added),
+        ];
+        assert_eq!(
+            bar_runs(&changes),
+            vec![
+                (2..5, LineChange::Added),
+                (5..6, LineChange::Changed),
+                (9..10, LineChange::Added),
+            ]
+        );
+        assert!(bar_runs(&[]).is_empty());
+    }
+
+    #[test]
+    fn bar_span_leaves_a_gap_only_between_kinds() {
+        let gap = code::BAR_RUN_GAP;
+        assert_eq!(bar_span(10.0, 40.0, false, false), (10.0, 40.0));
+        // Two runs touching at y = 40: each gives up half the gap, so 2 pt shows between them.
+        let (_, above_end) = bar_span(10.0, 40.0, false, true);
+        let (below_start, _) = bar_span(40.0, 70.0, true, false);
+        assert!((below_start - above_end - gap).abs() < f32::EPSILON);
+        assert_eq!(
+            bar_span(10.0, 40.0, true, true),
+            (10.0 + gap / 2.0, 40.0 - gap / 2.0)
+        );
+    }
+
+    #[test]
+    fn the_read_makes_the_outline_and_the_colours_name_it() {
+        let dir = std::env::temp_dir().join(format!("fuxx-outline-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("session.rs");
+        std::fs::write(&file, "impl S {\n    fn r() {\n        x();\n    }\n}\n").unwrap();
+        let Loaded::Text { doc, .. } = read_file(&file, None, None) else {
+            panic!("a text");
+        };
+        let mut doc = *doc;
+        let outline = doc.outline.clone().expect("an outline");
+        assert_eq!(outline.blocks.len(), 2);
+        assert!(!outline.blocks[0].named, "named once the colours land");
+        // The colours' named lines name the blocks that start on them.
+        assert!(doc.accept_spans(doc.version, vec![], &[0, 1]));
+        let named = doc.outline.as_ref().unwrap();
+        assert!(named.blocks.iter().all(|b| b.named));
+        assert!(!outline.blocks[0].named, "the Arc made before is untouched");
+        // A file with no structure has an outline without blocks; a markdown one has headings.
+        std::fs::write(&file, "one\ntwo\n").unwrap();
+        let Loaded::Text { doc, .. } = read_file(&file, None, None) else {
+            panic!("a text");
+        };
+        assert!(!doc.outline.as_ref().unwrap().has_structure());
+        let md = dir.join("notes.md");
+        std::fs::write(&md, "# A\n```\n# no\n```\n## B\n").unwrap();
+        let Loaded::Text { doc, .. } = read_file(&md, None, None) else {
+            panic!("a text");
+        };
+        assert_eq!(doc.outline.as_ref().unwrap().blocks.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_reload_carries_the_named_lines_onto_its_new_outline() {
+        let lines = ["fn a() {", "    x();", "}"];
+        let mut old = Doc::new("fn a() {\n    x();\n}\n".into(), 1);
+        old.outline = code_outline::outline(&lines, false, code_outline::LIMIT).map(Arc::new);
+        assert!(old.accept_spans(1, vec![vec![]], &[0]));
+        let mut fresh = Doc::new("fn a() {\n    x();\n    y();\n}\n".into(), 2);
+        let more = ["fn a() {", "    x();", "    y();", "}"];
+        fresh.outline = code_outline::outline(&more, false, code_outline::LIMIT).map(Arc::new);
+        fresh.carry_over(&old, false);
+        assert_eq!(fresh.outline.as_ref().unwrap().named_lines(), [0]);
+        assert!(fresh.outline.as_ref().unwrap().blocks[0].named);
+        // A text too large to colour has no names.
+        let mut plain = Doc::new("fn a() {\n    x();\n    y();\n}\n".into(), 2);
+        plain.outline = code_outline::outline(&more, false, code_outline::LIMIT).map(Arc::new);
+        plain.carry_over(&old, true);
+        assert!(plain.outline.as_ref().unwrap().named_lines().is_empty());
+        assert!(!plain.outline.as_ref().unwrap().blocks[0].named);
     }
 
     #[test]
@@ -6529,6 +9735,208 @@ mod tests {
         assert_eq!(deleted, [0, 5]);
     }
 
+    /// Fix round 1: a folded stretch at the top stays at the top when the rows are made again
+    /// (Wrap switched): its row in the new map, not the old row's index.
+    #[test]
+    fn rescroll_keeps_a_folded_stretch_at_the_top() {
+        let mut u = String::from("@@ -1,40 +1,41 @@\n");
+        for k in 0..41 {
+            u.push_str(&if k == 20 {
+                "+new\n".to_string()
+            } else {
+                format!(" line {k}\n")
+            });
+        }
+        let rows = crate::diff_view::parse_diff(&u).rows;
+        let grouped = diff_cards::group(&rows);
+        assert_eq!(grouped.stretches.len(), 2);
+        let parts: DiffParts = (
+            Arc::new(grouped),
+            vec![false, false],
+            vec![false],
+            Arc::default(),
+        );
+        let layout = DiffLayout {
+            grouped: &parts.0,
+            shown: &parts.1,
+            closed: &parts.2,
+            pairs: None,
+        };
+        let widths = vec![9; 41];
+        let from = RowMap::diff(&widths, None, &layout, 10.0);
+        let to = RowMap::diff(&widths, Some(4), &layout, 10.0);
+        let top = (0..from.len())
+            .find(|&r| from.row(r) == Some(Row::Unchanged { stretch: 1 }))
+            .expect("the second stretch's row");
+        let row = rescroll_row(top, Some(&from), &to);
+        assert_eq!(to.row(row), Some(Row::Unchanged { stretch: 1 }));
+    }
+
+    #[test]
+    fn fits_needs_sixty_cells_a_half() {
+        let gutter = Gutter::Diff {
+            old_digits: 2,
+            new_digits: 2,
+        };
+        // Each half: its numbers (16 + 2 cells), 10, the sign (a cell), 14, then the text and
+        // `RIGHT_PAD`; the halves inside the cards' insets. 60 cells of 8: 1160 points in all.
+        assert!(fits_side_by_side(1160.0, 8.0, gutter));
+        assert!(!fits_side_by_side(1159.0, 8.0, gutter));
+        assert_eq!(side_cells(1160.0, 8.0, gutter), SIDE_MIN_CELLS);
+        // The wider number column counts for both halves.
+        let wide = Gutter::Diff {
+            old_digits: 2,
+            new_digits: 4,
+        };
+        assert!(!fits_side_by_side(1160.0, 8.0, wide));
+        assert!(fits_side_by_side(1192.0, 8.0, wide));
+        // A file is never side by side.
+        let plain = Gutter::Plain {
+            digits: 2,
+            marks: false,
+            folds: false,
+        };
+        assert!(!fits_side_by_side(4000.0, 8.0, plain));
+    }
+
+    /// M11ah Task 11: side by side, a find step goes row by row, left before right: a removed
+    /// line, then the added line level with it, then the next pair.
+    #[test]
+    fn side_steps_go_row_by_row_left_before_right() {
+        use crate::diff_view::{DiffRow, RowKind};
+        use crate::row_map::CardPairs;
+        let row = |kind, old, new| DiffRow { kind, old, new };
+        let rows = vec![
+            row(RowKind::Same, Some(1), Some(1)),
+            row(RowKind::Removed, Some(2), None),
+            row(RowKind::Removed, Some(3), None),
+            row(RowKind::Added, None, Some(2)),
+            row(RowKind::Added, None, Some(3)),
+            row(RowKind::Same, Some(4), Some(4)),
+        ];
+        let g = diff_cards::group(&rows);
+        let pairs: Vec<CardPairs> = (g.cards.iter())
+            .map(|c| diff_cards::pair(&rows, c.rows.clone()))
+            .collect();
+        let layout = DiffLayout {
+            grouped: &g,
+            shown: &[],
+            closed: &[false],
+            pairs: Some(&pairs),
+        };
+        let map = RowMap::diff(&[6; 6], None, &layout, 10.0);
+        let hit = |line, at: usize| Match {
+            line,
+            cols: at..at + 1,
+        };
+        let matches = [
+            hit(0, 0),
+            hit(1, 0),
+            hit(2, 0),
+            hit(3, 0),
+            hit(3, 4),
+            hit(4, 0),
+        ];
+        let order = side_order(&matches, &rows, |m| map.first_row(m.line));
+        assert_eq!(order, [0, 1, 3, 4, 2, 5]);
+        assert_eq!(half_of(&rows, 3), Half::New);
+        assert_eq!(half_of(&rows, 1), Half::Old);
+        assert_eq!(half_of(&rows, 0), Half::Old);
+    }
+
+    /// M11ah Task 11: switching side by side (or the fit changing) keeps the line at the top:
+    /// a pair's row maps to its line's row unified, and back.
+    #[test]
+    fn rescroll_keeps_the_line_between_unified_and_side_by_side() {
+        use crate::diff_view::{DiffRow, RowKind};
+        use crate::row_map::CardPairs;
+        let row = |kind, old, new| DiffRow { kind, old, new };
+        let rows = vec![
+            row(RowKind::Same, Some(1), Some(1)),
+            row(RowKind::Same, Some(2), Some(2)),
+            row(RowKind::Removed, Some(3), None),
+            row(RowKind::Added, None, Some(3)),
+            row(RowKind::Added, None, Some(4)),
+            row(RowKind::Same, Some(4), Some(5)),
+        ];
+        let g = diff_cards::group(&rows);
+        let pairs: Vec<CardPairs> = (g.cards.iter())
+            .map(|c| diff_cards::pair(&rows, c.rows.clone()))
+            .collect();
+        let widths = [1, 1, 9, 2, 5, 1];
+        let layout = |pairs| DiffLayout {
+            grouped: &g,
+            shown: &[],
+            closed: &[false],
+            pairs,
+        };
+        let side = RowMap::diff(&widths, Some(4), &layout(Some(&pairs)), 10.0);
+        let unified = RowMap::diff(&widths, Some(4), &layout(None), 10.0);
+        // Side: title | 0 | 1 | 2·3 | 2·_ | 2·_ | _·4 | _·4 | 5. Unified: title | 0 | 1 | 2 2 2
+        // | 3 | 4 4 | 5.
+        assert_eq!(rescroll_row(6, Some(&side), &unified), 7, "line 4");
+        assert_eq!(rescroll_row(4, Some(&side), &unified), 3, "line 2");
+        assert_eq!(rescroll_row(7, Some(&unified), &side), 6, "back");
+        assert_eq!(rescroll_row(0, Some(&unified), &side), 0, "a title");
+    }
+
+    /// M11ah Task 11: Wrap's cells: a diff's inside its cards; side by side a half's.
+    #[test]
+    fn wrap_cells_side_by_side_are_a_halfs() {
+        let gutter = Gutter::Diff {
+            old_digits: 2,
+            new_digits: 2,
+        };
+        let unified =
+            (1160.0 - columns(8.0, gutter).text_left - RIGHT_PAD - code::CARD_INSET) / 8.0;
+        assert_eq!(wrap_cells(1160.0, 8.0, gutter, false), unified as usize);
+        assert_eq!(wrap_cells(1160.0, 8.0, gutter, true), SIDE_MIN_CELLS);
+        assert_eq!(wrap_cells(10.0, 8.0, gutter, true), 1, "at least one");
+        let plain = Gutter::Plain {
+            digits: 2,
+            marks: false,
+            folds: false,
+        };
+        let room = 400.0 - columns(8.0, plain).text_left - RIGHT_PAD;
+        assert_eq!(wrap_cells(400.0, 8.0, plain, false), (room / 8.0) as usize);
+    }
+
+    #[test]
+    fn half_text_copies_one_side() {
+        use crate::diff_view::{DiffRow, RowKind};
+        let row = |kind, old, new| DiffRow { kind, old, new };
+        let rows = [
+            row(RowKind::Same, Some(1), Some(1)),
+            row(RowKind::Removed, Some(2), None),
+            row(RowKind::Added, None, Some(2)),
+            row(RowKind::Same, Some(3), Some(3)),
+        ];
+        let doc = Doc::new("alpha\nold line\nnew line\nomega\n".into(), 1);
+        let pos = |line, col| Pos { line, col };
+        let (a, b) = (pos(0, 0), pos(3, 5));
+        assert_eq!(
+            half_text(&doc, &rows, a, b, Half::Old),
+            "alpha\nold line\nomega"
+        );
+        assert_eq!(
+            half_text(&doc, &rows, a, b, Half::New),
+            "alpha\nnew line\nomega"
+        );
+        // Either way round; the ends in part.
+        assert_eq!(
+            half_text(&doc, &rows, pos(3, 2), pos(0, 3), Half::New),
+            "ha\nnew line\nom"
+        );
+        assert_eq!(
+            half_text(&doc, &rows, pos(1, 4), pos(2, 3), Half::Old),
+            "line"
+        );
+        assert_eq!(
+            half_text(&doc, &rows, pos(1, 4), pos(2, 3), Half::New),
+            "new"
+        );
+    }
+
     #[test]
     fn columns_lay_out_one_or_two_number_columns() {
         let plain = columns(
@@ -6536,12 +9944,13 @@ mod tests {
             Gutter::Plain {
                 digits: 2,
                 marks: false,
+                folds: false,
             },
         );
         assert_eq!(plain.old_right, None);
-        assert_eq!(plain.new_right, 28.0);
-        assert_eq!(plain.bar_left, 36.0);
-        assert_eq!(plain.text_left, 49.0);
+        assert_eq!(plain.new_right, 32.0);
+        assert_eq!(plain.bar_left, 42.0);
+        assert_eq!(plain.text_left, 59.0);
         let diff = columns(
             8.0,
             Gutter::Diff {
@@ -6549,34 +9958,113 @@ mod tests {
                 new_digits: 2,
             },
         );
-        assert_eq!(diff.old_right, Some(36.0));
-        assert_eq!(diff.new_right, 60.0);
+        // M11ah: inside the cards, `CARD_INSET` (12) further right.
+        assert_eq!(diff.old_right, Some(52.0));
+        assert_eq!(diff.new_right, 78.0);
         // The sign column's left, one cell wide, then the text.
-        assert_eq!(diff.bar_left, 68.0);
-        assert_eq!(diff.text_left, 86.0);
+        assert_eq!(diff.bar_left, 88.0);
+        assert_eq!(diff.text_left, 110.0);
     }
 
     #[test]
     fn a_press_on_a_bar_or_a_mark_finds_its_change() {
         let (by_line, deleted) = bars(&[(3, LineChange::Changed), (6, LineChange::DeletedAfter)]);
         let changes = Changes { by_line, deleted };
-        let lh = 10.0;
+        // A row a line (the identity map), 10 pt each.
+        let map = RowMap::file(&[1; 10], None, &[], 10.0);
         // 0-based line 2 is (1-based) line 3.
-        assert_eq!(bar_at(25.0, lh, &changes), Some((3, LineChange::Changed)));
-        assert_eq!(bar_at(20.0, lh, &changes), Some((3, LineChange::Changed)));
+        assert_eq!(
+            bar_at_rows(25.0, &map, &changes),
+            Some((3, LineChange::Changed))
+        );
+        assert_eq!(
+            bar_at_rows(20.0, &map, &changes),
+            Some((3, LineChange::Changed))
+        );
         // The ▸ on the edge above 0-based line 6, from either side.
         assert_eq!(
-            bar_at(57.0, lh, &changes),
+            bar_at_rows(57.0, &map, &changes),
             Some((6, LineChange::DeletedAfter))
         );
         assert_eq!(
-            bar_at(63.0, lh, &changes),
+            bar_at_rows(63.0, &map, &changes),
             Some((6, LineChange::DeletedAfter))
         );
         // A line without a change, away from the mark.
-        assert_eq!(bar_at(5.0, lh, &changes), None);
-        assert_eq!(bar_at(45.0, lh, &changes), None);
-        assert_eq!(bar_at(-3.0, lh, &changes), None);
+        assert_eq!(bar_at_rows(5.0, &map, &changes), None);
+        assert_eq!(bar_at_rows(45.0, &map, &changes), None);
+        assert_eq!(bar_at_rows(-3.0, &map, &changes), None);
+    }
+
+    #[test]
+    fn rows_are_the_line_height_times_1_2() {
+        assert_eq!(row_height(px(15.0)), px(18.0));
+    }
+
+    #[test]
+    fn columns_use_the_code_sizes() {
+        let c = columns(
+            8.0,
+            Gutter::Plain {
+                digits: 2,
+                marks: false,
+                folds: false,
+            },
+        );
+        assert_eq!(c.new_right, 16.0 + 16.0);
+        assert_eq!(c.bar_left, 32.0 + 10.0);
+        assert_eq!(c.text_left, 42.0 + 3.0 + 14.0);
+        let m = columns(
+            8.0,
+            Gutter::Plain {
+                digits: 2,
+                marks: true,
+                folds: false,
+            },
+        );
+        assert_eq!(
+            m.text_left,
+            c.text_left + 16.0,
+            "the marks' column is 16 more"
+        );
+    }
+
+    #[test]
+    fn quiet_numbers_stay_readable() {
+        for (name, theme) in crate::theme::every_theme() {
+            let ui = theme.ui();
+            let quiet = number_ink(&ui, theme.background, false);
+            assert!(
+                contrast(quiet, theme.background) >= MARK_MIN,
+                "{name}: quiet numbers {:.2}",
+                contrast(quiet, theme.background)
+            );
+            assert_ne!(quiet, ui.text, "{name}: quieter than the current number");
+            assert_eq!(number_ink(&ui, theme.background, true), ui.text, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_current_line_follows_its_line_or_clears() {
+        let map = [Some(2), None, Some(3)];
+        assert_eq!(carry_line(Some(&map), 0, |_| false), Some(2));
+        assert_eq!(carry_line(Some(&map), 1, |_| true), None);
+        assert_eq!(
+            carry_line(Some(&map), 9, |_| true),
+            None,
+            "past the old text"
+        );
+        assert_eq!(carry_line(None, 4, |l| l == 4), Some(4));
+        assert_eq!(carry_line(None, 4, |_| false), None);
+    }
+
+    #[test]
+    fn a_find_step_sets_the_current_line_and_a_miss_keeps_it() {
+        let hit = |line| Match { line, cols: 0..1 };
+        let matches = [hit(3), hit(7)];
+        assert_eq!(step_line(&matches, Some(1), Some(5)), Some(7));
+        assert_eq!(step_line(&matches, None, Some(5)), Some(5), "no matches");
+        assert_eq!(step_line(&[], None, None), None);
     }
 
     #[test]
@@ -6586,6 +10074,7 @@ mod tests {
             FileDiff::Unified("@@ -1,2 +1,3 @@\n a\n+b\n \n".into()),
             None,
             4,
+            false,
             None,
             None,
         );
@@ -6607,18 +10096,18 @@ mod tests {
                 new_digits: 2
             }
         );
-        let all = diff_state(FileDiff::AllAdded, Some("x\n\n"), 1, None, None);
+        let all = diff_state(FileDiff::AllAdded, Some("x\n\n"), 1, false, None, None);
         let DiffState::Rows(d) = all else {
             panic!("rows");
         };
         assert_eq!((d.rows.len(), d.doc.lines.len()), (2, 2));
         assert_eq!(d.counts(), (2, 0, true), "every line added, new to git");
         assert!(matches!(
-            diff_state(FileDiff::Unified(String::new()), None, 1, None, None),
+            diff_state(FileDiff::Unified(String::new()), None, 1, false, None, None),
             DiffState::Same
         ));
         assert!(matches!(
-            diff_state(FileDiff::Binary, Some("x"), 1, None, None),
+            diff_state(FileDiff::Binary, Some("x"), 1, false, None, None),
             DiffState::Binary
         ));
     }
@@ -6627,14 +10116,28 @@ mod tests {
     fn diff_counts_are_the_added_and_removed_rows_not_the_hunk_headers() {
         // `-U<n>`: the header counts context lines (4 old, 5 new); the rows say +2 −1.
         let unified = "@@ -1,4 +1,5 @@\n a\n-b\n+bee\n c\n d\n+e\n";
-        let state = diff_state(FileDiff::Unified(unified.into()), None, 1, None, None);
+        let state = diff_state(
+            FileDiff::Unified(unified.into()),
+            None,
+            1,
+            false,
+            None,
+            None,
+        );
         let DiffState::Rows(d) = state else {
             panic!("rows");
         };
         assert_eq!(d.counts(), (2, 1, false));
         // Two hunks with a gap between them.
         let unified = "@@ -1,2 +1,2 @@\n-a\n+A\n b\n@@ -9,2 +9,1 @@\n i\n-j\n";
-        let state = diff_state(FileDiff::Unified(unified.into()), None, 1, None, None);
+        let state = diff_state(
+            FileDiff::Unified(unified.into()),
+            None,
+            1,
+            false,
+            None,
+            None,
+        );
         let DiffState::Rows(d) = state else {
             panic!("rows");
         };
@@ -6643,7 +10146,7 @@ mod tests {
 
     #[test]
     fn a_diff_answer_for_an_older_disk_version_is_dropped() {
-        let rows = |v: u64| diff_state(FileDiff::AllAdded, Some("x\n"), v, None, None);
+        let rows = |v: u64| diff_state(FileDiff::AllAdded, Some("x\n"), v, false, None, None);
         let mut held = HeldDiff::default();
         assert!(matches!(held.state, DiffState::Waiting));
         // Asked at version 2; version 3 was read and answered first: 2's answer is dropped.
@@ -6754,7 +10257,8 @@ mod tests {
             FileDiff::Unified(u)
         };
         // A small deleted file (no disk text): coloured.
-        let DiffState::Rows(small) = diff_state(deleted(10), None, 1, Some((&h, path)), None)
+        let DiffState::Rows(small) =
+            diff_state(deleted(10), None, 1, false, Some((&h, path)), None)
         else {
             panic!("rows");
         };
@@ -6764,7 +10268,7 @@ mod tests {
         );
         // Its old side over 2 MB: uncoloured, though there's no disk text to say so.
         let big = deleted(40_000);
-        let DiffState::Rows(d) = diff_state(big, None, 1, Some((&h, path)), None) else {
+        let DiffState::Rows(d) = diff_state(big, None, 1, false, Some((&h, path)), None) else {
             panic!("rows");
         };
         assert!(
@@ -6852,7 +10356,7 @@ mod tests {
         let diff =
             || FileDiff::Unified("@@ -1,2 +1,2 @@\n let a = 1;\n-let b = 2;\n+let b = 3;\n".into());
         let colour = Some((&h, path));
-        let DiffState::Rows(first) = diff_state(diff(), None, 1, colour, None) else {
+        let DiffState::Rows(first) = diff_state(diff(), None, 1, false, colour, None) else {
             panic!("rows");
         };
         assert!(first.doc.spans.is_some(), "first rows are coloured");
@@ -6861,7 +10365,7 @@ mod tests {
             rows: first.rows.clone(),
         };
         // The same text and rows again (a static tab's 5 s look-up): no highlighting, no spans.
-        let DiffState::Rows(again) = diff_state(diff(), None, 2, colour, Some(&held)) else {
+        let DiffState::Rows(again) = diff_state(diff(), None, 2, false, colour, Some(&held)) else {
             panic!("rows");
         };
         assert!(
@@ -6872,7 +10376,7 @@ mod tests {
         assert_eq!(*again.rows, *first.rows);
         // Through `diff_answer` too.
         let Some(DiffState::Rows(answer)) =
-            diff_answer(None, || Some(diff()), None, 2, colour, Some(&held))
+            diff_answer(None, || Some(diff()), None, 2, false, colour, Some(&held))
         else {
             panic!("rows");
         };
@@ -6880,7 +10384,7 @@ mod tests {
         // A changed parse is coloured.
         let changed =
             FileDiff::Unified("@@ -1,2 +1,2 @@\n let a = 1;\n-let b = 2;\n+let b = 4;\n".into());
-        let DiffState::Rows(new) = diff_state(changed, None, 3, colour, Some(&held)) else {
+        let DiffState::Rows(new) = diff_state(changed, None, 3, false, colour, Some(&held)) else {
             panic!("rows");
         };
         assert!(new.doc.spans.is_some(), "a changed parse is coloured");
@@ -6891,15 +10395,23 @@ mod tests {
         let rows = || Some(FileDiff::Unified("@@ -1 +1 @@\n-a\n+b\n".into()));
         // The old blob over the limit: refused, git's diff never asked.
         let over = Some(REFUSE_ABOVE + 1);
-        let refused = diff_answer(over, || unreachable!("no diff asked"), None, 1, None, None);
+        let refused = diff_answer(
+            over,
+            || unreachable!("no diff asked"),
+            None,
+            1,
+            false,
+            None,
+            None,
+        );
         assert!(matches!(refused, Some(DiffState::Refuse)));
         // At the limit, or not in HEAD: the diff.
         assert!(matches!(
-            diff_answer(Some(REFUSE_ABOVE), rows, None, 1, None, None),
+            diff_answer(Some(REFUSE_ABOVE), rows, None, 1, false, None, None),
             Some(DiffState::Rows(_))
         ));
         assert!(matches!(
-            diff_answer(None, rows, None, 1, None, None),
+            diff_answer(None, rows, None, 1, false, None, None),
             Some(DiffState::Rows(_))
         ));
         // git's answer itself over the limit (the backstop): refused.
@@ -6909,11 +10421,11 @@ mod tests {
             Some(FileDiff::Unified(u))
         };
         assert!(matches!(
-            diff_answer(None, huge, None, 1, None, None),
+            diff_answer(None, huge, None, 1, false, None, None),
             Some(DiffState::Refuse)
         ));
         // No answer from git: none (the rows shown stay).
-        assert!(diff_answer(None, || None, None, 1, None, None).is_none());
+        assert!(diff_answer(None, || None, None, 1, false, None, None).is_none());
     }
 
     /// M11ae: a drag past the text's edge scrolls faster the further out, from 1 pt a step to
@@ -7310,12 +10822,12 @@ mod tests {
     /// marked; without it the gutter is as before M11af.
     #[test]
     fn the_marks_column_opens_only_while_marked() {
-        let without = columns(8.0, Gutter::plain(9, false));
-        let with = columns(8.0, Gutter::plain(9, true));
+        let without = columns(8.0, Gutter::plain(9, false, false));
+        let with = columns(8.0, Gutter::plain(9, true, false));
         assert_eq!(without.marks_left, None);
-        assert_eq!(without.text_left, 49.0);
+        assert_eq!(without.text_left, 59.0);
         assert_eq!(with.new_right, without.new_right);
-        assert_eq!(with.marks_left, Some(32.0));
+        assert_eq!(with.marks_left, Some(37.0));
         assert_eq!(with.bar_left, without.bar_left + MARK_COLUMN);
         assert_eq!(with.text_left, without.text_left + MARK_COLUMN);
     }
@@ -7369,24 +10881,26 @@ mod tests {
     // M11af part 4: Follow.
     #[test]
     fn follow_scroll_is_none_when_in_view() {
-        assert_eq!(follow_scroll(10..40, 10, 3), None);
-        assert_eq!(follow_scroll(10..40, 39, 3), None);
+        assert_eq!(follow_scroll(10..40, 10, |_| false), None);
+        assert_eq!(follow_scroll(10..40, 39, |_| false), None);
     }
 
     #[test]
     fn follow_scroll_puts_line_at_top_rows() {
-        assert_eq!(follow_scroll(10..40, 400, 3), Some(397));
+        assert_eq!(follow_scroll(10..40, 400, |_| false), Some(397));
         assert_eq!(
-            follow_scroll(10..40, 40, 3),
+            follow_scroll(10..40, 40, |_| false),
             Some(37),
             "just below the view"
         );
         assert_eq!(
-            follow_scroll(10..40, 2, 3),
+            follow_scroll(10..40, 2, |_| false),
             Some(0),
             "never above the first row"
         );
-        assert_eq!(follow_scroll(10..40, 5, 3), Some(2));
+        assert_eq!(follow_scroll(10..40, 5, |_| false), Some(2));
+        // M11ah: under a sticky line, one row more.
+        assert_eq!(follow_scroll(10..40, 400, |_| true), Some(396));
     }
 
     #[test]
@@ -7431,5 +10945,366 @@ mod tests {
         live.saw(Seen::Refused, t0, |_| unreachable!());
         assert!(!live.follow, "the marks cleared");
         assert_eq!(live.agent_name(), None);
+    }
+
+    // M11ah Task 5: folding in File mode.
+
+    #[test]
+    fn fold_pill_says_its_hidden_lines() {
+        assert_eq!(fold_pill_words(24), "\u{22ef} 24 lines");
+        assert_eq!(fold_pill_words(1204), "\u{22ef} 1,204 lines");
+        assert_eq!(fold_pill_words(1), "\u{22ef} 1 line");
+    }
+
+    /// Final review: the scrollbar's change items, worked out from the changes and the folds
+    /// (not a walk of every row): each bar's run on its line's rows (Wrap: all of them), a
+    /// folded line's own change and its hidden lines' as one, a deletion edge one mark at its
+    /// line's first row (hidden: in its fold's change; a fold of only deletions: one mark, with
+    /// Wrap too), changes past the end ignored.
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // `hidden`: one hidden run
+    fn lane_change_items_come_from_the_changes_and_folds() {
+        use LineChange::{Added, Changed, DeletedAfter};
+        let ink = BarColours {
+            added: Rgb { r: 1, g: 0, b: 0 },
+            changed: Rgb { r: 2, g: 0, b: 0 },
+            deleted: Rgb { r: 3, g: 0, b: 0 },
+        };
+        let (a, c, d) = (ink.added, ink.changed, ink.deleted);
+        // 1-based as git counts: `bars` makes them 0-based.
+        let changes = |list: &[(usize, LineChange)]| {
+            let (by_line, deleted) = bars(list);
+            Changes { by_line, deleted }
+        };
+        // Nothing hidden, no Wrap: lines 1–2 added (one run), 4 changed, deleted above 6, and
+        // a change past the end.
+        let ch = changes(&[
+            (2, Added),
+            (3, Added),
+            (5, Changed),
+            (6, DeletedAfter),
+            (40, Added),
+        ]);
+        let map = RowMap::file(&[1; 10], None, &[], 10.0);
+        assert_eq!(
+            file_change_items(&ch, &map, &ink),
+            [(10.0, 20.0, a), (40.0, 10.0, c), (60.0, 0.0, d)]
+        );
+        // Lines 3..7 hidden under line 2 (row 2): its own added line, a hidden added line and a
+        // deletion edge above hidden line 5: changed, on the fold's row; line 8 changed on row
+        // 4; the deletion above line 9 on row 5 (the hidden edge drawn by its fold only).
+        let ch = changes(&[
+            (3, Added),
+            (5, Added),
+            (9, Changed),
+            (5, DeletedAfter),
+            (9, DeletedAfter),
+        ]);
+        let map = RowMap::file(&[1; 10], None, &[3..7], 10.0);
+        assert_eq!(
+            file_change_items(&ch, &map, &ink),
+            [(20.0, 10.0, c), (40.0, 10.0, c), (50.0, 0.0, d)]
+        );
+        // A hidden line's change on a fold whose line has none: the hidden change's colour.
+        let ch = changes(&[(5, Added)]);
+        assert_eq!(file_change_items(&ch, &map, &ink), [(20.0, 10.0, a)]);
+        // Wrap: line 1 is 3 rows (1..4); its change covers them all.
+        let ch = changes(&[(2, Changed), (5, Added)]);
+        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[], 10.0);
+        assert_eq!(
+            file_change_items(&ch, &map, &ink),
+            [(10.0, 30.0, c), (60.0, 10.0, a)]
+        );
+        // Wrap and a fold of only deletions (above hidden line 3): one mark at its folded
+        // line's first row (not one per wrapped row).
+        let ch = changes(&[(3, DeletedAfter), (5, Added)]);
+        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[2..4], 10.0);
+        assert_eq!(
+            file_change_items(&ch, &map, &ink),
+            [(40.0, 10.0, a), (10.0, 0.0, d)]
+        );
+        // No changes: nothing, whatever is folded.
+        let none = changes(&[]);
+        assert!(file_change_items(&none, &map, &ink).is_empty());
+    }
+
+    #[test]
+    fn a_fold_never_hides_a_change() {
+        use LineChange::{Added, Changed, DeletedAfter};
+        // 0-based: line 2 added, line 3 changed, lines deleted above line 9.
+        let (by_line, deleted) = bars(&[(3, Added), (4, Changed), (9, DeletedAfter)]);
+        let changes = Changes { by_line, deleted };
+        let change = |hidden: Range<usize>| folded_summary(hidden, &changes, None).change;
+        assert_eq!(change(2..4), Some(Changed), "added and changed: changed");
+        assert_eq!(change(2..3), Some(Added), "all added: added");
+        assert_eq!(change(5..10), Some(DeletedAfter), "only deletions");
+        assert_eq!(change(2..10), Some(Changed), "added and deleted: changed");
+        assert_eq!(change(10..12), None);
+        // The edge under the fold's last hidden line is the next line's: not hidden.
+        assert_eq!(change(5..9), None);
+        // M11af: the warmest glow and the newest mark of the hidden lines.
+        let now = T0 + Duration::from_secs(1_000);
+        let ago = |s: u64| now - Duration::from_secs(s);
+        let mut r = LineRecord::baseline(14);
+        changed(&mut r, 14, 5..6, agent("claude"), Sure::Exact, ago(40));
+        changed(&mut r, 14, 8..9, Who::You, Sure::Exact, ago(2));
+        changed(&mut r, 14, 11..12, agent("agy"), Sure::Guess, ago(30));
+        let live = LiveFrame {
+            warm: Rc::new(warm_runs(&r, now)),
+            record: Rc::new(r.clone()),
+            your_letter: 'Y',
+        };
+        let all = folded_summary(4..12, &Changes::default(), Some(&live));
+        assert_eq!(all.glow, Some(3), "levels 1 and 3: 3");
+        assert_eq!(all.mark.as_ref(), r.mark(8), "the newest mark");
+        assert_eq!(all.change, None);
+        let cool = folded_summary(4..7, &Changes::default(), Some(&live));
+        assert_eq!((cool.glow, cool.mark.as_ref()), (Some(1), r.mark(5)));
+        assert_eq!(
+            folded_summary(12..14, &Changes::default(), Some(&live)),
+            FoldSummary::default()
+        );
+    }
+
+    /// Review Focus 2: a reload that removes a folded block's first line, or shrinks the file
+    /// below a fold, opens it; the current line clears; nothing indexes past the end.
+    #[test]
+    fn reload_drops_folds_and_current_line_that_are_gone() {
+        let new = ["// a", "// b", "fn a {", "    x", "}", "flat"];
+        let outline = code_outline::outline(&new, false, LIMIT).expect("an outline");
+        assert_eq!(outline.starting_at(2), Some(0));
+        let set = |s: &[usize]| s.iter().copied().collect::<BTreeSet<usize>>();
+        // Old line 0 moved down by 2 (followed); old 4 changed (opens); old 9 is past the
+        // comparison's end (opens).
+        let map = [Some(2), Some(3), Some(4), Some(5), None];
+        assert_eq!(
+            carry_folds(&set(&[0, 4, 9]), Some(&map), |_| true, &outline),
+            set(&[2])
+        );
+        // A start that lands where the new outline has no block opens.
+        assert_eq!(
+            carry_folds(&set(&[1]), Some(&map), |_| true, &outline),
+            set(&[])
+        );
+        // No comparison: kept where its line is the same, and never past the new end.
+        let same = |l: usize| l < new.len() && l == 2;
+        assert_eq!(carry_folds(&set(&[2, 40]), None, same, &outline), set(&[2]));
+        // The current line: gone with its line, or past the new end.
+        assert_eq!(carry_line(Some(&map), 4, |_| true), None);
+        assert_eq!(carry_line(None, 40, same), None);
+    }
+
+    /// A fold at (0-based) line 11 hiding 12..36: the row after it is line 36, drawn `37`; in
+    /// Diff mode nothing is folded.
+    #[test]
+    fn numbers_skip_hidden_lines() {
+        let mut lines = vec!["a"; 11];
+        lines.push("fn a {");
+        lines.extend(["    x"; 23]);
+        lines.push("}");
+        lines.extend(["b"; 4]);
+        let mut doc = doc(&lines.join("\n"));
+        let slices: Vec<&str> = lines.clone();
+        doc.outline = code_outline::outline(&slices, false, LIMIT).map(Arc::new);
+        let folded: BTreeSet<usize> = [11].into();
+        let map = FileTab::row_map_of(&doc, FileMode::Plain, None, 10.0, &folded, None, false);
+        assert_eq!(map.row(11), Some(Row::Line { line: 11, cell0: 0 }));
+        assert_eq!(map.row(12), Some(Row::Line { line: 36, cell0: 0 }));
+        assert_eq!(map.hidden_after(11).len(), 24, "the pill's 24 lines");
+        assert_eq!(map.len(), 40 - 24);
+        // Wrap on: the same lines hidden.
+        let wrapped =
+            FileTab::row_map_of(&doc, FileMode::Plain, Some(80), 10.0, &folded, None, false);
+        assert_eq!(wrapped.row(12), Some(Row::Line { line: 36, cell0: 0 }));
+        // Not in Diff mode.
+        let diff = FileTab::row_map_of(&doc, FileMode::Diff, None, 10.0, &folded, None, false);
+        assert_eq!(diff.row(12), Some(Row::Line { line: 12, cell0: 0 }));
+    }
+
+    /// The fold column, 14 pt, between the numbers and the marks' column (numbers · fold ·
+    /// marks · bar · text).
+    #[test]
+    fn the_fold_column_sits_between_the_numbers_and_the_marks() {
+        let plain = |marks, folds| {
+            columns(
+                8.0,
+                Gutter::Plain {
+                    digits: 2,
+                    marks,
+                    folds,
+                },
+            )
+        };
+        let (none, fold, both) = (plain(false, false), plain(false, true), plain(true, true));
+        assert_eq!(none.fold_left, None);
+        assert_eq!(fold.fold_left, Some(32.0 + 5.0));
+        assert_eq!(fold.bar_left, none.bar_left + 14.0);
+        assert_eq!(fold.text_left, none.text_left + 14.0);
+        assert_eq!(both.fold_left, Some(37.0));
+        assert_eq!(both.marks_left, Some(37.0 + 14.0));
+        assert_eq!(both.text_left, none.text_left + 14.0 + 16.0);
+    }
+
+    /// Ruling: a change or a deletion edge under a fold is hit on the folded line's row.
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // one fold
+    fn a_press_on_a_folded_line_s_bar_finds_its_hidden_change() {
+        // Line 2 folded, hiding 3..7: rows 0 1 2 | 7 8 9.
+        let map = RowMap::file(&[1; 10], None, &[3..7], 10.0);
+        let deleted_only = Changes {
+            by_line: HashMap::new(),
+            deleted: vec![5],
+        };
+        assert_eq!(
+            bar_at_rows(25.0, &map, &deleted_only),
+            Some((5, LineChange::DeletedAfter))
+        );
+        let (by_line, deleted) = bars(&[(5, LineChange::Added), (8, LineChange::DeletedAfter)]);
+        let mixed = Changes { by_line, deleted };
+        // The first hidden change: (1-based) line 5, added.
+        assert_eq!(
+            bar_at_rows(25.0, &map, &mixed),
+            Some((5, LineChange::Added))
+        );
+        // The edge above line 7 (the next shown row) is drawn there, as before.
+        let edge = Changes {
+            by_line: HashMap::new(),
+            deleted: vec![7],
+        };
+        assert_eq!(
+            bar_at_rows(29.0, &map, &edge),
+            Some((7, LineChange::DeletedAfter))
+        );
+        assert_eq!(bar_at_rows(15.0, &map, &edge), None);
+    }
+
+    /// M11ah: a file with `impl Session` holding `fn refresh` (the outline is by indentation, so
+    /// any words do) and `fn small` after it.
+    const PLACE_FIXTURE: &str = "impl Session {
+    fn refresh {
+        let a = 1;
+        if a > 0 {
+            a;
+        }
+    }
+}
+
+fn small {
+    let b = 2;
+}
+";
+
+    fn place_outline(named: &[usize]) -> (Vec<&'static str>, Outline) {
+        let lines: Vec<&str> = PLACE_FIXTURE.lines().collect();
+        let mut outline =
+            code_outline::outline(&lines, false, code_outline::LIMIT).expect("an outline");
+        outline.name(named);
+        (lines, outline)
+    }
+
+    fn words(crumbs: &[Crumb]) -> String {
+        crumbs
+            .iter()
+            .map(|c| c.words.as_str())
+            .collect::<Vec<_>>()
+            .join(" \u{203a} ")
+    }
+
+    #[test]
+    fn crumbs_go_outer_to_inner_from_the_file() {
+        let (lines, outline) = place_outline(&[0, 1, 9]);
+        // A top line inside `fn refresh` (its `let`; inside the `if`, the unnamed `if` is not
+        // a part).
+        for top in [2, 4] {
+            let c = crumbs("session.rs", &outline, |i| lines[i], top, false);
+            assert_eq!(
+                words(&c),
+                "session.rs \u{203a} impl Session \u{203a} fn refresh"
+            );
+            assert_eq!(
+                c.iter().map(|c| c.line).collect::<Vec<_>>(),
+                [None, Some(0), Some(1)],
+                "the file's name goes to the top; each part to its first line"
+            );
+        }
+        // Outside every block: the file's name alone.
+        let c = crumbs("session.rs", &outline, |i| lines[i], 8, false);
+        assert_eq!(words(&c), "session.rs");
+        // No names yet (the colours not in): every block holding it.
+        let (lines, outline) = place_outline(&[]);
+        let c = crumbs("session.rs", &outline, |i| lines[i], 4, false);
+        assert_eq!(
+            words(&c),
+            "session.rs \u{203a} impl Session \u{203a} fn refresh \u{203a} if a > 0"
+        );
+    }
+
+    #[test]
+    fn crumbs_follow_the_top_not_the_current_line() {
+        // The breadcrumb is worked out from the line at the top (the place has no current
+        // line among its inputs): two tops, two paths, whatever line is current.
+        let (lines, outline) = place_outline(&[0, 1, 9]);
+        let at = |top: usize| place_of("session.rs", &outline, |i| lines[i], (top, top), false);
+        assert_eq!(
+            words(&at(2).crumbs),
+            "session.rs \u{203a} impl Session \u{203a} fn refresh"
+        );
+        assert_eq!(words(&at(10).crumbs), "session.rs \u{203a} fn small");
+        // `top` and `under` differ (the sticky line's row): the breadcrumb takes `top`.
+        let place = place_of("session.rs", &outline, |i| lines[i], (8, 10), false);
+        assert_eq!(words(&place.crumbs), "session.rs");
+        assert_eq!(place.sticky, Some(Sticky::Line(9)));
+    }
+
+    #[test]
+    fn fit_crumbs_folds_outer_parts_first() {
+        // Three parts, 60, 90 and 80 wide; " › " 20, "…" 15.
+        let widths = [60.0, 90.0, 80.0];
+        let fit = |room: f32| fit_crumbs(&widths, room, 15.0, 20.0);
+        // All: 230 + 2 × 20 = 270.
+        assert_eq!(fit(300.0), [Some(0), Some(1), Some(2)]);
+        assert_eq!(fit(270.0), [Some(0), Some(1), Some(2)]);
+        // The file's name into "…": 15 + 90 + 80 + 40 = 225.
+        assert_eq!(fit(260.0), [None, Some(1), Some(2)]);
+        // Narrow: "… › fn refresh", 15 + 20 + 80 = 115.
+        assert_eq!(fit(120.0), [None, Some(2)]);
+        // Very narrow: the last part still (cut where it is drawn).
+        assert_eq!(fit(50.0), [Some(2)]);
+        assert_eq!(fit(0.0), [Some(2)]);
+        // One part, or none.
+        assert_eq!(fit_crumbs(&[500.0], 10.0, 15.0, 20.0), [Some(0)]);
+        assert!(fit_crumbs(&[], 10.0, 15.0, 20.0).is_empty());
+    }
+
+    #[test]
+    fn reveal_top_leaves_room_for_the_sticky_line() {
+        assert_eq!(reveal_top(40, |_| true), 36);
+        assert_eq!(reveal_top(40, |_| false), 37);
+        // Asked with the row it would put at the top.
+        assert_eq!(reveal_top(40, |r| r == 37), 36);
+        assert_eq!(reveal_top(40, |r| r != 37), 37);
+        // Near the top: from the first row.
+        assert_eq!(reveal_top(2, |_| true), 0);
+        assert_eq!(reveal_top(3, |_| true), 0);
+        assert_eq!(reveal_top(0, |_| false), 0);
+    }
+
+    #[test]
+    fn the_sticky_line_is_none_at_its_own_first_line() {
+        let (lines, outline) = place_outline(&[0, 1, 9]);
+        let sticky = |under: usize| {
+            place_of("session.rs", &outline, |i| lines[i], (under, under), false).sticky
+        };
+        // At `impl Session`'s own first line: nothing above to pin.
+        assert_eq!(sticky(0), None);
+        // At `fn refresh`'s first line: not itself, the block above holding it (impl).
+        assert_eq!(sticky(1), Some(Sticky::Line(0)));
+        // Inside `fn refresh` (the `if` is not named): fn refresh.
+        assert_eq!(sticky(2), Some(Sticky::Line(1)));
+        assert_eq!(sticky(4), Some(Sticky::Line(1)));
+        // Between blocks, and at `fn small`'s first line: none.
+        assert_eq!(sticky(8), None);
+        assert_eq!(sticky(9), None);
+        assert_eq!(sticky(10), Some(Sticky::Line(9)));
     }
 }

@@ -131,6 +131,23 @@ pub fn idle_mark(running: bool, ui: &UiColors) -> impl IntoElement {
     }
 }
 
+/// The sidebar's Done (chore, 2026-11-17: colour means activity, so a finished one isn't a
+/// bright dot): the check alone in `color` (a muted one), in a `size` box. Drawn still.
+pub fn done_check(color: Rgb, size: Pixels) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            // The check is 4.6 units across: most of the box at 8 units to its side.
+            let unit = f32::from(bounds.size.width.min(bounds.size.height)) / 8.0;
+            if let Ok(path) = check(bounds.center(), unit).build() {
+                window.paint_path(path, hsla(color));
+            }
+        },
+    )
+    .flex_none()
+    .size(size)
+}
+
 /// Line width, in a 12 px box.
 const STROKE: f32 = 1.5;
 /// The ring's and the arc's radius to the middle of the line, in a 12 px box (so 10 px across).

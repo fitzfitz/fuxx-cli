@@ -150,6 +150,9 @@ pub struct SavedState {
     /// The Welcome card has been shown (M11k); a file from before it: welcomed.
     #[serde(default = "already_welcomed")]
     pub welcomed: bool,
+    /// The agent box's Recent folders (M11ak), newest first; a file from before it: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_folders: Vec<PathBuf>,
 }
 
 /// The right sidebar's state in a file without it: closed.
@@ -178,6 +181,7 @@ impl Default for SavedState {
             right_sidebar_width: None,
             right_sidebar_panel: None,
             welcomed: false,
+            recent_folders: Vec::new(),
         }
     }
 }
@@ -377,6 +381,7 @@ mod tests {
                 path: "/w/api/src/main.rs".into(),
                 mode: crate::layout_model::FileMode::Plain,
                 preview: false,
+                side_by_side: false,
             }];
         }
         state.active_workspace = Some(0);
@@ -587,6 +592,21 @@ mod tests {
             crate::right_sidebar::Panel::Files
         );
         assert!(!encode(&SavedState::default()).contains("right_sidebar_panel"));
+    }
+
+    #[test]
+    fn recent_folders_round_trip() {
+        let state = SavedState {
+            recent_folders: vec![PathBuf::from("/w/scratch"), PathBuf::from("/w/my-app")],
+            ..sample()
+        };
+        let text = encode(&state);
+        assert!(text.contains("\"recent_folders\""), "{text}");
+        assert_eq!(decode(&text), Some(state));
+        // A file from before M11ak: no Recent.
+        let old = decode(r#"{"version":2,"sessions":[{}]}"#).expect("an old file loads");
+        assert!(old.recent_folders.is_empty());
+        assert!(SavedState::default().recent_folders.is_empty());
     }
 
     #[test]
