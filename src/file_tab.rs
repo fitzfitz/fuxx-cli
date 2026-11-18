@@ -2616,7 +2616,8 @@ const PREVIEW_BLOCK_HINT: f32 = 45.0;
 /// The Preview's list for `count` blocks: all measured at once when few (`PREVIEW_MEASURE_ALL`),
 /// else each row measured as it is drawn. Each of its own scrolls (the wheel) shows the
 /// scrollbar: the handler runs from the wheel's event, never from drawing, and only notes it and
-/// redraws.
+/// redraws; M11ai: "On this page"'s current entry is worked out at the start of the next frame
+/// (`track_heading`; the handler runs while the list is borrowed, so it cannot read it now).
 fn preview_list_of(count: usize, view: WeakEntity<FileTab>) -> ListState {
     let state = ListState::new(count, ListAlignment::Top, px(PREVIEW_OVERDRAW));
     let state = if count <= PREVIEW_MEASURE_ALL {
@@ -2624,12 +2625,13 @@ fn preview_list_of(count: usize, view: WeakEntity<FileTab>) -> ListState {
     } else {
         state
     };
-    state.set_scroll_handler(move |_, _, cx| {
+    state.set_scroll_handler(move |_, window, cx| {
         view.update(cx, |this, cx| {
             this.scrolled(cx);
             cx.notify();
         })
         .ok();
+        preview::track_next_frame(view.clone(), window);
     });
     state
 }
@@ -4395,6 +4397,20 @@ pub struct FileTab {
     /// M11ai: the heading to jump to once the Preview has read the file (a link to it from
     /// another file, `show_anchor`).
     pending_anchor: Option<String>,
+    /// M11ai: "On this page" (Task 8): whether the Preview is wide enough for its column and
+    /// the Preview's width, both as last laid out (decided in the Preview canvas's prepaint, a
+    /// layout cache: a change of the fit draws the tab again once); the current entry (worked
+    /// out by `track_heading`, never while drawing); the outline's own list (its scroll); and
+    /// a check of the current entry asked for the frame after the next layout (a remeasure, a
+    /// reload, a width change, a jump or a scrollbar drag: armed in that layout's prepaint).
+    outline_fits: Rc<Cell<Option<bool>>>,
+    preview_width: Rc<Cell<Option<Pixels>>>,
+    outline_current: Option<usize>,
+    outline_list: ListState,
+    track_due: Rc<Cell<bool>>,
+    /// M11ai: the outline's entries as last drawn (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    outline_drawn: Rc<RefCell<std::collections::BTreeMap<usize, Bounds<Pixels>>>>,
     /// M11ai: the headings' `#` as last drawn (the scenes' probe).
     #[cfg(feature = "ui-shots")]
     anchor_drawn: md_preview::AnchorDrawn,
@@ -4457,8 +4473,10 @@ impl FileTab {
                 // M11ai: the Preview's code blocks in the new theme's colours.
                 this.colour_code(cx);
             }
-            // The Preview's rows may change height (another font or size).
+            // The Preview's rows may change height (another font or size); the current outline
+            // entry is checked again after they are measured.
             this.preview_list.remeasure();
+            this.track_due.set(true);
             cx.notify();
         });
         let mut tab = Self {
@@ -4536,6 +4554,13 @@ impl FileTab {
             copied: None,
             copy_gen: 0,
             pending_anchor: None,
+            outline_fits: Rc::default(),
+            preview_width: Rc::default(),
+            outline_current: None,
+            outline_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)),
+            track_due: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            outline_drawn: Rc::default(),
             #[cfg(feature = "ui-shots")]
             anchor_drawn: Rc::default(),
             #[cfg(feature = "ui-shots")]

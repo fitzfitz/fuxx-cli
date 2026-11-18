@@ -88,6 +88,22 @@ pub(super) const SCENES: &[Scene] = &[
             "src/ui_tokens.rs",
         ],
     },
+    Scene {
+        name: "file-tab-md-reader-outline",
+        run: file_tab_md_reader_outline_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/file_tab_preview.rs",
+            "src/md_preview.rs",
+            "src/md_reader.rs",
+            "src/agent_markdown.rs",
+            "src/sidebar_toggle.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
 ];
 
 /// A made-up "Setup guide": front matter, two badge rows, a title, sections and a subsection,
@@ -189,7 +205,8 @@ const SEVENTY: &str = "Clone the repository, run the installer, then open the pr
 /// - `file-tab-md-reader-column` (1,200 × 700): Preview on. Every prose row (paragraphs,
 ///   headings, lists, quotes, callouts, badges) is at most `MEASURE` wide and centred in the
 ///   reader's area (the list less `TERMINAL_PADDING` each side, ±1 pt); every code block and the
-///   table at least the column wide and inside the area; the long paragraph fills the column;
+///   table at least the column wide and inside the area (Task 8: less "On this page"'s column
+///   and gap, which show here); the long paragraph fills the column;
 ///   the table is wider than it; a one-line paragraph is one 16 pt line (16 × 1.65 high). The
 ///   70-character sentence shaped in the UI font at 16 pt is within 8 % of `MEASURE`.
 /// - `file-tab-md-reader-column-narrow` (500 × 700): nothing drawn past the area's right edge
@@ -201,7 +218,7 @@ fn file_tab_md_reader_column_scenes() {
     use crate::file_tab::FileTab;
     use crate::layout_model::FileMode;
     use crate::md_reader::{BlockLook, RowKind};
-    use crate::ui_tokens::reader::{BODY, BODY_LINE, MEASURE};
+    use crate::ui_tokens::reader::{BODY, BODY_LINE, MEASURE, OUTLINE_GAP, OUTLINE_W};
     use crate::ui_tokens::size::TERMINAL_PADDING;
     use gpui::{Bounds, ListOffset, Modifiers, Pixels, SharedString};
     use std::cell::RefCell;
@@ -343,9 +360,15 @@ fn file_tab_md_reader_column_scenes() {
                 let all = walk(cx, window, &tab);
                 tall_enough(cx, window, &tab, &all, &n);
                 let view = list.viewport_bounds();
+                // Task 8: the guide's "On this page" column and its gap are not the reader's.
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_shown()),
+                    Some(true),
+                    "{n}: the outline's column shows"
+                );
                 let (left, right) = (
                     f32::from(view.left()) + side,
-                    f32::from(view.right()) - side,
+                    f32::from(view.right()) - side - OUTLINE_W - OUTLINE_GAP,
                 );
                 let (width, middle) = (right - left, (left + right) / 2.0);
                 let column = MEASURE.min(width);
@@ -1728,6 +1751,467 @@ fn file_tab_md_reader_anchor_scenes() {
             &theme,
             dims,
             build,
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// A made-up "Field guide" for "On this page" (M11ai Task 8): a title, three paragraphs of
+/// introduction, then 12 sections (`## Section 1` … `## Section 12`) of four paragraphs each;
+/// section 2 has a subsection (`### Section 2 details`), section 7's heading is too long for one
+/// line of the outline, and section 12 is a single short line.
+fn outline_fixture() -> String {
+    use std::fmt::Write as _;
+    let para = |s: &str, j: usize| {
+        format!(
+            "Paragraph {j} of {s} of the field guide: it says what this part covers, which \
+             settings it reads and what to check when something does not work as it should, so \
+             a reader can follow along without the source open.\n"
+        )
+    };
+    let mut doc = String::from("# Field guide\n\n");
+    for j in 1..=3 {
+        writeln!(doc, "{}", para("the introduction", j)).expect("a line");
+    }
+    for i in 1..=12 {
+        let title = if i == 7 {
+            OUTLINE_LONG.to_string()
+        } else {
+            format!("Section {i}")
+        };
+        writeln!(doc, "## {title}\n").expect("a heading");
+        if i == 12 {
+            doc.push_str("The end of the guide.\n");
+            break;
+        }
+        for j in 1..=4 {
+            writeln!(doc, "{}", para(&format!("section {i}"), j)).expect("a line");
+            if i == 2 && j == 2 {
+                doc.push_str("### Section 2 details\n\n");
+            }
+        }
+    }
+    doc
+}
+
+/// Section 7's heading: longer than one line of the outline.
+const OUTLINE_LONG: &str =
+    "Section 7: a heading long enough that it cannot fit on one line of the outline";
+
+/// M11ai Task 8's "On this page" (wide), on `outline_fixture()` (GUIDE.md), in both themes:
+/// - `file-tab-md-reader-outline` (1,200 × 700): `outline_shown() == Some(true)`; the outline's
+///   entries are `OUTLINE_ROW` high inside the `OUTLINE_W` column (`TERMINAL_PADDING` from the
+///   right); a paragraph is centred in the reader's area, which ends `OUTLINE_GAP` left of the
+///   column. At the top no entry is current. Wheel steps down: after each, the current entry is
+///   the one the rule gives (`md_reader::current_entry`: the last heading at or above the top
+///   quarter of the view) until section 5's heading is reached; then it is section 5's, its
+///   `OUTLINE_BAR` drawn in the outline's bar colour (the entry above has none). A wheel step
+///   that crosses no heading leaves it. Section 7's entry's tooltip is its full text. Scrolled
+///   to the end (a wheel), the current entry is section 12's (in view, not reached: the end's
+///   rule). A click on section 8's entry: its heading's row at the top `jump_offset` in, the
+///   entry current, the scrollbar shown, the hovered entry on the panel hover fill. Shot then.
+/// - `file-tab-md-reader-outline-narrow` (700 × 700): `Some(false)`: no column drawn, the
+///   paragraph centred in the whole area.
+/// - `file-tab-md-reader-outline-none` (1,200 × 700): a title and one section: `None`, and the
+///   paragraph centred in the whole area.
+fn file_tab_md_reader_outline_scenes() {
+    use crate::agent_markdown::Md;
+    use crate::file_tab::FileTab;
+    use crate::layout_model::FileMode;
+    use crate::md_reader::{current_entry, jump_offset};
+    use crate::ui_tokens::reader::{
+        HEADING_ABOVE, OUTLINE_BAR, OUTLINE_GAP, OUTLINE_ROW, OUTLINE_W, REACH,
+    };
+    use crate::ui_tokens::size::TERMINAL_PADDING;
+    use gpui::{ListState, Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-outline");
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let guide = dir.join("GUIDE.md");
+    std::fs::write(&guide, outline_fixture()).expect("GUIDE.md");
+    let one = dir.join("ONE.md");
+    std::fs::write(
+        &one,
+        "# One section\n\nA short note with a single section under its title.\n\n\
+         ## The only section\n\nThere is nothing else to read here.\n",
+    )
+    .expect("ONE.md");
+
+    type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
+    let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
+    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+    };
+    // A frame, then each next frame something asked for (the current entry is worked out at
+    // the start of the frame after a scroll), each drawn.
+    let settle = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        frame(cx, window);
+        for _ in 0..10 {
+            if !next_frame(cx, window) {
+                break;
+            }
+            frame(cx, window);
+        }
+    };
+    let preview = move |cx: &mut VisualTestAppContext, window, tab: &gpui::Entity<FileTab>| {
+        settle(cx, window);
+        let button = cx
+            .read(|cx| tab.read(cx).preview_bounds())
+            .expect("Preview is drawn");
+        cx.simulate_click(window, button.center(), Modifiers::none());
+        settle(cx, window);
+        settle(cx, window);
+    };
+    let wheel = move |cx: &mut VisualTestAppContext, window, at, lines: f32| {
+        cx.simulate_event(
+            window,
+            ScrollWheelEvent {
+                position: at,
+                delta: ScrollDelta::Lines(point(0.0, -lines)),
+                modifiers: Modifiers::none(),
+                touch_phase: TouchPhase::Moved,
+            },
+        );
+        settle(cx, window);
+    };
+    // Each outline entry's heading's list row.
+    let entry_rows = |cx: &mut VisualTestAppContext, tab: &gpui::Entity<FileTab>| {
+        let doc = cx
+            .read(|cx| tab.read(cx).reader_doc())
+            .expect("the reader's document");
+        doc.plan
+            .outline
+            .iter()
+            .map(|e| doc.plan.row_of_block(doc.plan.headings[e.heading].block))
+            .collect::<Vec<usize>>()
+    };
+    let entry_of = |cx: &mut VisualTestAppContext, tab: &gpui::Entity<FileTab>, text: &str| {
+        let doc = cx
+            .read(|cx| tab.read(cx).reader_doc())
+            .expect("the reader's document");
+        doc.plan
+            .outline
+            .iter()
+            .position(|e| doc.plan.headings[e.heading].text == text)
+            .unwrap_or_else(|| panic!("the entry {text}"))
+    };
+    // The rule, from the list as it is: reached (above the top row, or its top in the view's
+    // top quarter), in view (its top over the view's bottom), at the end.
+    let reach_line = |list: &ListState| {
+        let v = list.viewport_bounds();
+        f32::from(v.top()) + REACH * f32::from(v.size.height)
+    };
+    let reached = move |list: &ListState, row: usize| {
+        row < list.logical_scroll_top().item_ix
+            || list
+                .bounds_for_item(row)
+                .is_some_and(|b| f32::from(b.top()) <= reach_line(list))
+    };
+    let expected = move |list: &ListState, rows: &[usize]| {
+        let bottom = list.viewport_bounds().bottom();
+        current_entry(
+            rows,
+            list.is_scrolled_to_end() == Some(true),
+            |r| reached(list, r),
+            |r| list.bounds_for_item(r).is_some_and(|b| b.top() < bottom),
+        )
+    };
+    let (side, _) = TERMINAL_PADDING;
+    // A plain paragraph drawn now, centred in `left..right` (±1 pt).
+    let centred = |cx: &mut VisualTestAppContext,
+                   tab: &gpui::Entity<FileTab>,
+                   left: f32,
+                   right: f32,
+                   n: &str| {
+        let doc = cx
+            .read(|cx| tab.read(cx).reader_doc())
+            .expect("the reader's document");
+        let drawn = cx.read(|cx| tab.read(cx).reader_drawn());
+        let (row, b) = drawn
+            .iter()
+            .find(|(row, _)| {
+                matches!(
+                    doc.plan.row_kind(**row),
+                    crate::md_reader::RowKind::Block(i) if matches!(doc.blocks[i], Md::Para(_))
+                )
+            })
+            .unwrap_or_else(|| panic!("{n}: a paragraph is drawn"));
+        let mid = (f32::from(b.left()) + f32::from(b.right())) / 2.0;
+        println!("ui-shots: {n}: paragraph row {row} at {b:?}, area {left}..{right}");
+        assert!(
+            (mid - (left + right) / 2.0).abs() <= 1.0,
+            "{n}: the paragraph (row {row}, {b:?}) is not centred in {left}..{right}"
+        );
+    };
+
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let colours = crate::md_preview::Colours::of(&theme);
+        let build_for = |slot: TabSlot, path: std::path::PathBuf| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path.clone(), FileMode::Plain, window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+
+        // 1,200 pt wide: the column.
+        let n = format!("file-tab-md-reader-outline-{slug}");
+        let dims = size(px(1200.0), px(700.0));
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                preview(cx, window, &tab);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_shown()),
+                    Some(true),
+                    "{n}: the column shows"
+                );
+                let rows = entry_rows(cx, &tab);
+                assert_eq!(rows.len(), 13, "{n}: 12 sections and a subsection");
+                let list = cx.read(|cx| tab.read(cx).preview_list());
+                let view = list.viewport_bounds();
+                let (l, r) = (f32::from(view.left()), f32::from(view.right()));
+                let column = (r - side - OUTLINE_W, r - side);
+                // The entries: a row each, inside the column.
+                for e in 0..rows.len() {
+                    let b = cx
+                        .read(|cx| tab.read(cx).outline_entry_bounds(e))
+                        .unwrap_or_else(|| panic!("{n}: entry {e} is drawn"));
+                    assert!(
+                        f32::from(b.left()) >= column.0 - 0.5
+                            && f32::from(b.right()) <= column.1 + 0.5
+                            && (f32::from(b.size.height) - OUTLINE_ROW).abs() <= 0.5,
+                        "{n}: entry {e} at {b:?}, not an {OUTLINE_ROW} row in {column:?}"
+                    );
+                }
+                // The reader's area ends the gap left of the column.
+                centred(cx, &tab, l + side, column.0 - OUTLINE_GAP, &n);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_current()),
+                    None,
+                    "{n}: at the top, no entry is current"
+                );
+
+                // Wheel steps down to section 5: the rule's entry after each.
+                let at = point(view.left() + px(120.0), view.center().y);
+                let five = entry_of(cx, &tab, "Section 5");
+                let mut steps = 0;
+                while !reached(&list, rows[five]) {
+                    wheel(cx, window, at, 3.0);
+                    steps += 1;
+                    assert!(steps < 200, "{n}: section 5 is never reached");
+                    assert_eq!(
+                        cx.read(|cx| tab.read(cx).outline_current()),
+                        expected(&list, &rows),
+                        "{n}: after wheel step {steps}"
+                    );
+                }
+                println!("ui-shots: {n}: section 5 reached after {steps} wheel steps");
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_current()),
+                    Some(five),
+                    "{n}: section 5 is current"
+                );
+                let shot = frame_now(cx, window);
+                let b = cx
+                    .read(|cx| tab.read(cx).outline_entry_bounds(five))
+                    .expect("section 5's entry");
+                let x = f32::from(b.left()) + OUTLINE_BAR / 2.0;
+                let bar = pixel_at(&shot, dims, x, f32::from(b.center().y));
+                assert!(
+                    gap(bar, colours.outline_bar) <= 6,
+                    "{n}: section 5's bar {bar:?} is not {:?}",
+                    colours.outline_bar
+                );
+                let above = cx
+                    .read(|cx| tab.read(cx).outline_entry_bounds(five - 1))
+                    .expect("section 4's entry");
+                let none = pixel_at(&shot, dims, x, f32::from(above.center().y));
+                assert!(
+                    gap(none, theme.background) <= 6,
+                    "{n}: section 4's entry has no bar ({none:?})"
+                );
+
+                // A step that crosses no heading.
+                let six = list
+                    .bounds_for_item(rows[five + 1])
+                    .map(|b| f32::from(b.top()))
+                    .expect("section 6 is measured");
+                assert!(
+                    six - 60.0 > reach_line(&list) + 1.0,
+                    "{n}: section 6 ({six}) is near the line"
+                );
+                let place = |list: &ListState| {
+                    let top = list.logical_scroll_top();
+                    (top.item_ix, f32::from(top.offset_in_item))
+                };
+                let before = place(&list);
+                wheel(cx, window, at, 3.0);
+                assert_ne!(place(&list), before, "{n}: the wheel step scrolled");
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_current()),
+                    Some(five),
+                    "{n}: still section 5"
+                );
+
+                // Section 7's entry's tooltip: its full text.
+                let seven = entry_of(cx, &tab, OUTLINE_LONG);
+                let b = cx
+                    .read(|cx| tab.read(cx).outline_entry_bounds(seven))
+                    .expect("section 7's entry");
+                if let Ok(mut shown) = crate::sidebar_toggle::SHOWN_TIP.lock() {
+                    *shown = None;
+                }
+                cx.simulate_mouse_move(window, b.center(), None, Modifiers::none());
+                cx.advance_clock(Duration::from_secs(1));
+                settle(cx, window);
+                draw(cx, window);
+                let tip = crate::sidebar_toggle::SHOWN_TIP
+                    .lock()
+                    .ok()
+                    .and_then(|t| t.clone());
+                assert_eq!(tip.as_deref(), Some(OUTLINE_LONG), "{n}: the tooltip");
+                cx.simulate_mouse_move(window, at, None, Modifiers::none());
+                settle(cx, window);
+
+                // The end: the last heading in view, though not reached.
+                wheel(cx, window, at, 1000.0);
+                assert_eq!(list.is_scrolled_to_end(), Some(true), "{n}: at the end");
+                let last = rows.len() - 1;
+                assert!(
+                    !reached(&list, rows[last]),
+                    "{n}: section 12 is under the top quarter"
+                );
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_current()),
+                    Some(last),
+                    "{n}: at the end, section 12 is current"
+                );
+
+                // A click on section 8's entry: a jump there.
+                let eight = entry_of(cx, &tab, "Section 8");
+                let b = cx
+                    .read(|cx| tab.read(cx).outline_entry_bounds(eight))
+                    .expect("section 8's entry");
+                cx.simulate_mouse_move(window, b.center(), None, Modifiers::none());
+                cx.simulate_click(window, b.center(), Modifiers::none());
+                settle(cx, window);
+                let top = list.logical_scroll_top();
+                assert_eq!(
+                    (top.item_ix, f32::from(top.offset_in_item)),
+                    (rows[eight], jump_offset(HEADING_ABOVE)),
+                    "{n}: section 8's heading at the top"
+                );
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_current()),
+                    Some(eight),
+                    "{n}: section 8 is current"
+                );
+                assert!(
+                    cx.read(|cx| tab.read(cx).scrollbar_shown()),
+                    "{n}: a jump shows the scrollbar"
+                );
+                let shot = frame_now(cx, window);
+                let fill = pixel_at(
+                    &shot,
+                    dims,
+                    f32::from(b.right()) - 4.0,
+                    f32::from(b.center().y),
+                );
+                assert!(
+                    gap(fill, colours.outline_hover) <= 6,
+                    "{n}: the hovered entry's fill {fill:?} is not {:?}",
+                    colours.outline_hover
+                );
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-outline",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), guide.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+
+        // 700 pt wide: no column (the narrow button is Task 9's).
+        let n = format!("file-tab-md-reader-outline-narrow-{slug}");
+        let dims = size(px(700.0), px(700.0));
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                preview(cx, window, &tab);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_shown()),
+                    Some(false),
+                    "{n}: too narrow for the column"
+                );
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_entry_bounds(0)),
+                    None,
+                    "{n}: no column drawn"
+                );
+                let view = cx.read(|cx| tab.read(cx).preview_list()).viewport_bounds();
+                let (l, r) = (f32::from(view.left()), f32::from(view.right()));
+                centred(cx, &tab, l + side, r - side, &n);
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-outline-narrow",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), guide.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+
+        // One section under the title: no outline.
+        let n = format!("file-tab-md-reader-outline-none-{slug}");
+        let dims = size(px(1200.0), px(700.0));
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                preview(cx, window, &tab);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_shown()),
+                    None,
+                    "{n}: one entry: no outline"
+                );
+                let view = cx.read(|cx| tab.read(cx).preview_list()).viewport_bounds();
+                let (l, r) = (f32::from(view.left()), f32::from(view.right()));
+                centred(cx, &tab, l + side, r - side, &n);
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-outline-none",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), one.clone()),
             act,
         );
         println!("ui-shots: {}", path.display());
