@@ -12,7 +12,7 @@ updated: 2026-11-18
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[85 - Milestone 11ah - Code View Upgrade]] (incl. its "Calls on the open questions") |
-| **Status** | 🟨 built on branch m11ah-code-view, waiting for your on-screen check; not merged |
+| **Status** | 🟨 built, **merged to master 2026-11-18, not pushed**, waiting for your on-screen check |
 | **Tasks done** | 13 / 13 (Task 0 – Task 12) |
 | **Baselines** | 1,840 tests (1 ignored); clippy 14 (bin) / 27 (test) default, 16 / 29 with `ui-shots`; fmt clean; full `scripts/ui-shots.sh` 143 passed, 3 failed (`chrome-agent-status` known; `agent-tab-cached-current` and `chrome-drag-cancel` flaked under load and pass alone) |
 | **▶ Pick up here** | your on-screen check in note 85 |
