@@ -105,6 +105,8 @@ pub mod reader {
     pub const CODE_HEADER_TEXT: f32 = 12.0;
     pub const CODE_PAD: (f32, f32) = (12.0, 10.0);
     pub const CODE_RADIUS: f32 = 6.0;
+    /// The header strip's fill: the code's, this much toward black (a shade darker).
+    pub const CODE_HEADER_SHADE: f32 = 0.05;
     /// Between the Copy button's icon and its word.
     pub const COPY_GAP: f32 = 4.0;
     /// A callout's bar, padding, corners, and its wash (the kind's colour at this alpha).
@@ -214,7 +216,7 @@ const WHITE: Rgb = Rgb {
 };
 
 /// WCAG relative luminance (0 black, 1 white): each sRGB channel linearised, then weighted.
-fn relative_luminance(c: Rgb) -> f32 {
+pub fn relative_luminance(c: Rgb) -> f32 {
     let lin = |v: u8| {
         let v = v as f32 / 255.0;
         if v <= 0.04045 {
