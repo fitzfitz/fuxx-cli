@@ -115,7 +115,7 @@ fn changes_graph_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
+    let sidebar_left = right_panel_left(window_right, 300.0);
     let list_top = CARD_INSET + HAIRLINE + TAB_BAR + crate::changes_panel::HEADER;
     let root = files_fixture();
     let commit = |hash: &str, parents: &[&str], subject: &str, refs: Vec<Ref>, head: bool| Commit {
@@ -285,7 +285,7 @@ fn changes_sticky_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
+    let sidebar_left = right_panel_left(window_right, 300.0);
     let list_top = CARD_INSET + HAIRLINE + TAB_BAR + crate::changes_panel::HEADER;
     let root = files_fixture();
     let commits: Vec<Commit> = (0..60)
@@ -405,8 +405,8 @@ fn changes_staging_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
-    let sidebar_right = window_right - RIGHT_CARD_GAP - HAIRLINE;
+    let sidebar_left = right_panel_left(window_right, 300.0);
+    let sidebar_right = right_panel_right(window_right);
     let header_top = CARD_INSET + HAIRLINE + TAB_BAR;
     let list_top = header_top + crate::changes_panel::HEADER;
     let root = files_fixture();
@@ -653,7 +653,6 @@ fn changes_bar_scenes() {
     use crate::branch_sync::{Action, Sync, Upstream};
     use crate::git_status::{Change, ChangeList, Counts, Mark};
     use crate::right_sidebar::Panel;
-    use crate::ui_tokens::size::HAIRLINE;
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -661,8 +660,8 @@ fn changes_bar_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
-    let sidebar_right = window_right - RIGHT_CARD_GAP - HAIRLINE;
+    let sidebar_left = right_panel_left(window_right, 300.0);
+    let sidebar_right = right_panel_right(window_right);
     let root = files_fixture();
     let list = ChangeList {
         entries: vec![Change {
@@ -881,8 +880,8 @@ fn changes_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
-    let sidebar_right = window_right - RIGHT_CARD_GAP - HAIRLINE;
+    let sidebar_left = right_panel_left(window_right, 300.0);
+    let sidebar_right = right_panel_right(window_right);
     let card_top = CARD_INSET + HAIRLINE;
     let header_top = card_top + TAB_BAR;
     let list_top = header_top + HEADER;
@@ -1069,15 +1068,15 @@ fn changes_scenes() {
             !more(8, ui.text_faint),
             "{n}: nothing after the GRAPH header"
         );
-        // The hovered row filled `card_hover`, the one above it the card (part 4: a pill 6 pt
-        // in from the side, so read 4 pt inside it).
+        // The hovered row filled `card_hover`, the one above it the panel's `side` (part 4: a
+        // pill 6 pt in from the side, so read 4 pt inside it; M11al §6.1).
         let fill = |i: usize| at(sidebar_left + 10.0, row_mid(i));
         assert!(
             near(fill(4), ui.card_hover, 3),
             "{n}: hovered {:?}",
             fill(4)
         );
-        assert!(near(fill(3), ui.card, 3), "{n}: not hovered {:?}", fill(3));
+        assert!(near(fill(3), ui.side, 3), "{n}: not hovered {:?}", fill(3));
 
         // The empty states.
         for (case, list, in_repo, ssh, note) in [
@@ -1203,7 +1202,7 @@ fn changes_scenes() {
             fill(0)
         );
         assert!(
-            near(fill(1), ui.card, 3),
+            near(fill(1), ui.side, 3),
             "{n}: the next isn't: {:?}",
             fill(1)
         );
@@ -1274,8 +1273,8 @@ fn activity_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
-    let sidebar_right = window_right - RIGHT_CARD_GAP - HAIRLINE;
+    let sidebar_left = right_panel_left(window_right, 300.0);
+    let sidebar_right = right_panel_right(window_right);
     let card_top = CARD_INSET + HAIRLINE;
     let header_top = card_top + TAB_BAR;
     let list_top = header_top + HEADER;

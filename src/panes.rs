@@ -30,8 +30,8 @@ pub type StartDrag = Rc<dyn Fn(Vec<bool>, &mut Window, &mut App)>;
 pub type HoverDivider = Rc<dyn Fn(Vec<bool>, bool, &mut Window, &mut App)>;
 
 /// Width of the invisible grab strip centred on each split's hairline (M11al: as M11i's 6 pt
-/// gap was).
-const GRAB: f32 = 6.0;
+/// gap was), and on the right sidebar's (§6.7).
+pub(crate) const GRAB: f32 = 6.0;
 
 /// The colors a layout is drawn with.
 #[derive(Clone, Copy)]

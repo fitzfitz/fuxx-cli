@@ -619,12 +619,20 @@ fn slotted(slot: &Slot) -> gpui::Entity<Workspace> {
 }
 
 /// The canvas round the one card (M11al §3.1): above it (the drag strip), at its right and
-/// under it; and between it and the right sidebar's card.
+/// under it.
 const CARD_INSET: f32 = ui_tokens::size::CARD_INSET;
 
-/// The right sidebar's own card's gap at its right, and the width of its resize edge (M11i's
-/// `CARD_GAP`), until M11al Task 3 moves it into the one card.
-const RIGHT_CARD_GAP: f32 = ui_tokens::size::CARD_GAP;
+/// The right sidebar's panel's left (just right of its hairline) in a window `window_right` wide
+/// with it `width` wide (M11al §3.2): it runs from there to the card's outer right.
+fn right_panel_left(window_right: f32, width: f32) -> f32 {
+    window_right - CARD_INSET - width
+}
+
+/// The right sidebar's panel's right in a window `window_right` wide: inside the card's 1 pt
+/// edge, `CARD_INSET` from the window's right (M11al §3.2).
+fn right_panel_right(window_right: f32) -> f32 {
+    window_right - CARD_INSET - ui_tokens::size::HAIRLINE
+}
 
 /// A workspace for the tab bar scenes, focused on api. `four`: two panes, the left one with
 /// four tabs (api idle and active, claude waiting, codex working, a browser tab), the right one

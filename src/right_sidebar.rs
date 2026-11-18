@@ -3,13 +3,13 @@
 //!
 //! It opens and closes with ⌥⌘\, View → Toggle Right Sidebar, or the icon at the far right of
 //! every pane's tab bar (`tab_bar::BarButton::RightSidebar`, lit while it's open), sliding like
-//! the left sidebar (`sidebar_toggle::Slide`, not with Reduce motion on). It is a raised card
-//! (M11i, `panes::card`) 6 pt from the window's right edge, `CARD_INSET` from its top and
-//! bottom and from the panes' card (M11al Task 2; Task 3 moves it into that card); the 6 pt
-//! nearest it of the gap at its left resizes it (220–560 pt, 300 by default: the card's own
-//! width).
+//! the left sidebar (`sidebar_toggle::Slide`, not with Reduce motion on) in from the card's
+//! right edge, clipped by it. It sits inside the one floating card (M11al §3.2, §6.1), right of
+//! the panes behind a 1 px `card_border` hairline, the card's full height, filled `side` and
+//! rounding the card's top-right and bottom-right corners; a 6 pt strip centred on the hairline
+//! resizes it (220–560 pt, 300 by default: from the hairline to the card's outer right).
 //! Open state and width live in `sessions.json`. A narrow window draws it narrower
-//! (`drawn_width`) so the pane card keeps 200 pt.
+//! (`drawn_width`) so the panes keep 200 pt.
 //!
 //! It follows the focused terminal (with a browser or file tab focused, the last terminal it
 //! followed; none yet, as after a relaunch, the focused workspace's first terminal): that
@@ -71,7 +71,7 @@ use crate::file_tree::{self, FileTree, Row, RowCache, TreeMemory, Want};
 use crate::git_branch::{find_git, is_this_mac, process_cwd};
 use crate::git_status::{self, DirEntry, Mark};
 use crate::name_input::{NameInput, NameInputEvent};
-use crate::panes::{self, PaneColors};
+use crate::panes;
 use crate::reduce_motion::WindowVisible;
 use crate::restore::SavedState;
 use crate::sidebar_toggle::{self, Slide, Tip};
@@ -80,8 +80,8 @@ use crate::terminal_view::hsla;
 use crate::theme::{Theme, UiColors, readable};
 use crate::ui_tokens::MARK_MIN;
 use crate::ui_tokens::size::{
-    CARD_GAP, CARD_INSET, CARD_RADIUS, DIVIDER_ACTIVE, HAIRLINE, RIGHT_SIDEBAR_DEFAULT_WIDTH,
-    RIGHT_SIDEBAR_MAX_WIDTH, RIGHT_SIDEBAR_MIN_WIDTH, TAB_BAR, TAB_TOP_GAP, TOP_BAND,
+    CARD_INSET, CARD_RADIUS, DIVIDER_ACTIVE, HAIRLINE, RIGHT_SIDEBAR_DEFAULT_WIDTH,
+    RIGHT_SIDEBAR_MAX_WIDTH, RIGHT_SIDEBAR_MIN_WIDTH, TAB_BAR, TAB_TOP_GAP,
 };
 use crate::workspace::Workspace;
 
@@ -953,19 +953,47 @@ pub fn clamp(width: Option<f32>) -> f32 {
 /// The narrowest the pane cards get for the right sidebar (there's no pane minimum elsewhere).
 pub const PANE_COLUMN_MIN: f32 = 200.0;
 
-/// How wide its card is drawn: its `width`, less what a window `window_width` wide needs to
-/// keep the pane cards `PANE_COLUMN_MIN` wide beside a left sidebar `left` wide (0 when
-/// hidden), with the three 6 pt gaps: before the pane cards (from the sidebar, or the window's
-/// left edge), between them and the right card, and after it. Never less than none. The saved
-/// width stays as chosen.
+/// How wide it is drawn: its `width`, less what a window `window_width` wide needs to keep the
+/// panes `PANE_COLUMN_MIN` wide beside a left sidebar `left` wide (0 when hidden), in the one
+/// card (M11al §3.1): flush against a shown sidebar, else `CARD_INSET` from the window's left;
+/// `CARD_INSET` from its right; the 1 px hairline between the panes and it. Never less than
+/// none. The saved width stays as chosen.
 pub fn drawn_width(width: f32, window_width: f32, left: f32) -> f32 {
-    width.min((window_width - left - PANE_COLUMN_MIN - 3.0 * CARD_GAP).max(0.0))
+    let left_inset = if left > 0.0 { 0.0 } else { CARD_INSET };
+    width.min((window_width - left - PANE_COLUMN_MIN - left_inset - CARD_INSET - HAIRLINE).max(0.0))
 }
 
-/// Its card's width with the pointer at `x`, in the middle of the gap at its left, in a window
-/// `window_width` wide (the card ends 6 pt short of the window's right).
+/// Its width with the pointer at `x`, on the middle of the hairline at its left, in a window
+/// `window_width` wide (it ends where the card does, `CARD_INSET` short of the window's right).
 pub fn width_for_edge(window_width: f32, x: f32) -> f32 {
-    clamp(Some(window_width - CARD_GAP - (x + CARD_GAP / 2.0)))
+    clamp(Some(window_width - CARD_INSET - x - HAIRLINE / 2.0))
+}
+
+/// While it slides (M11al §6.7): the canvas outside the card's `top` (else bottom) right
+/// `CARD_RADIUS` curve, laid in the card over the sliding panel. The card clips its inside to a
+/// rectangle (GPUI's mask has no corners), so the panel, cut square at the card's right edge,
+/// would show past that curve. A ring of canvas `CARD_RADIUS` thick, its inner edge on the
+/// card's outer curve, covers it; the card's own edge is drawn over it after. Placed from the
+/// card's inside (its 1 px edge in), and twice its outer radius square so GPUI doesn't shrink
+/// that radius to fit; its straight parts lie outside the card, where the clip hides them.
+fn corner_cap(top: bool, canvas: gpui::Hsla) -> gpui::Div {
+    let ring = CARD_RADIUS;
+    let outer = CARD_RADIUS + ring;
+    let cap = div()
+        .absolute()
+        .size(px(2.0 * outer))
+        .right(px(-(ring + HAIRLINE)))
+        .border_r(px(ring))
+        .border_color(canvas);
+    if top {
+        cap.top(px(-(ring + HAIRLINE)))
+            .border_t(px(ring))
+            .rounded_tr(px(outer))
+    } else {
+        cap.bottom(px(-(ring + HAIRLINE)))
+            .border_b(px(ring))
+            .rounded_br(px(outer))
+    }
 }
 
 /// A terminal's folder: what it `reported` (OSC 7, already checked to be about this Mac for a
@@ -1309,10 +1337,10 @@ impl Workspace {
         .detach();
     }
 
-    /// The right sidebar and how it sits this frame: laid out beside the pane column, or (while
-    /// sliding) laid over it from the right; none when it's closed and still. Ends a slide past
-    /// its time; until then every frame asks for the next. Also: how much of it shows while
-    /// sliding.
+    /// The right sidebar and how it sits this frame, in the one card (M11al §3.2, §6.7): laid
+    /// out beside the panes, or (while sliding) laid over the card's inside from its right edge,
+    /// clipped by the card; none when it's closed and still. Ends a slide past its time; until
+    /// then every frame asks for the next.
     pub(crate) fn right_sidebar_layout(
         &mut self,
         ui: UiColors,
@@ -1355,13 +1383,23 @@ impl Workspace {
         let node = self.render_right_sidebar(ui, width, window, cx);
         match slide {
             Some(shown) => {
-                // The card and the gap at its right go out of sight together.
+                // The panel and its hairline go out past the card's right edge together, cut
+                // there by the card's clip (its inside, a rectangle). The card's rounded right
+                // corners: canvas caps over what the cut leaves square there.
+                let canvas = hsla(ui.sidebar_background);
                 let over = div()
                     .absolute()
-                    .top_0()
-                    .right(px(-(1.0 - shown) * (width + CARD_GAP)))
-                    .h_full()
-                    .child(node)
+                    .inset_0()
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right(px(-(1.0 - shown) * width))
+                            .child(node),
+                    )
+                    .child(corner_cap(true, canvas))
+                    .child(corner_cap(false, canvas))
                     .into_any_element();
                 (None, Some(over))
             }
@@ -1381,12 +1419,12 @@ impl Workspace {
         drawn_width(self.right_sidebar.width, window_width, left)
     }
 
-    /// The right sidebar: a card `width` wide (M11i), with the 6 pt gap at its right and, as
-    /// under the panes' card, `CARD_INSET` at its bottom (M11al Task 2; Task 3 moves it into
-    /// that card). Above it, with the left sidebar hidden, the window's top band (as over the
-    /// panes, so its header lines up with their tab bars), else the `CARD_INSET` strip that
-    /// drags the window. In the card: the panel tabs on a strip drawn like the pane tab bars (M11h;
-    /// its empty part drags the window), then the shown panel. The gap at its left resizes it.
+    /// The right sidebar in the one card (M11al §3.2, §6.1), `width` wide from the hairline to
+    /// the card's outer right: the 1 px `card_border` hairline, then the panel, filled `side`
+    /// and rounding the card's top-right and bottom-right corners (`CARD_RADIUS` − the edge),
+    /// the card's full height. In the panel: the panel tabs on a strip drawn like the pane tab
+    /// bars, level with them (M11h; its empty part drags the window), then the shown panel. The
+    /// strip centred on the hairline resizes it.
     fn render_right_sidebar(
         &self,
         ui: UiColors,
@@ -1394,17 +1432,6 @@ impl Workspace {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (band, above) = if self.sidebar.hidden {
-            (
-                self.render_top_band("right-sidebar-top", None, window, cx),
-                TOP_BAND,
-            )
-        } else {
-            (
-                Some(self.render_drag_strip("right-sidebar-strip", window, cx)),
-                CARD_INSET,
-            )
-        };
         // What the tabs leave empty: it drags the window (not in full screen).
         let empty = div()
             .id("right-sidebar-band-empty")
@@ -1416,6 +1443,7 @@ impl Workspace {
         } else {
             self.drag_window_by(empty, cx)
         };
+        let corner = px(CARD_RADIUS - HAIRLINE);
         let strip = div()
             .id("right-sidebar-band")
             .flex()
@@ -1424,10 +1452,10 @@ impl Workspace {
             .w_full()
             .h(px(TAB_BAR))
             .bg(hsla(ui.tab_bar))
-            // The card's top, rounded as the inside of its edge (as a pane's tab bar); its
-            // tabs clipped to the strip's bounds (GPUI's mask is a rectangle, not the rounded
-            // corners), so a narrow card never lets a tab spill past the strip.
-            .rounded_t(px(CARD_RADIUS - HAIRLINE))
+            // At the card's top-right corner, rounded as the inside of its edge (as a pane's
+            // tab bar); its tabs clipped to the strip's bounds (GPUI's mask is a rectangle, not
+            // the rounded corners), so a narrow panel never lets a tab spill past the strip.
+            .rounded_tr(corner)
             .overflow_hidden()
             // The tabs float 4 pt under its top, flush with its bottom.
             .pt(px(TAB_TOP_GAP))
@@ -1440,26 +1468,35 @@ impl Workspace {
             Panel::Changes => self.render_changes_panel(ui, width, cx),
             Panel::Activity => self.render_activity_panel(ui, width, cx),
         };
-        let card = panes::card(&PaneColors::of(&ui))
+        let panel = div()
             .flex()
             .flex_col()
             .flex_1()
-            .min_h(px(0.0))
-            .mr(px(CARD_GAP))
-            .mb(px(CARD_INSET))
+            .min_w(px(0.0))
+            .h_full()
+            .bg(hsla(ui.side))
+            .rounded_tr(corner)
+            .rounded_br(corner)
+            .overflow_hidden()
             .child(strip)
             .child(body);
         div()
             .id("right-sidebar")
             .relative()
             .flex()
-            .flex_col()
+            .flex_row()
             .flex_none()
-            .w(px(width + CARD_GAP))
+            .w(px(width))
             .h_full()
-            .children(band)
-            .child(card)
-            .child(self.render_right_resize_edge(ui, above, cx))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(HAIRLINE))
+                    .h_full()
+                    .bg(hsla(ui.card_border)),
+            )
+            .child(panel)
+            .child(self.render_right_resize_edge(ui, cx))
             .into_any_element()
     }
 
@@ -1480,7 +1517,8 @@ impl Workspace {
             .rounded_t(px(tab_bar::TAB_RADIUS))
             .text_size(px(TAB_LABEL))
             .text_color(hsla(if active { ui.text } else { ui.text_dim }))
-            .when(active, |t| t.bg(hsla(ui.card)))
+            // Merging into the panel's `side` under it.
+            .when(active, |t| t.bg(hsla(ui.side)))
             .when(!active, |t| {
                 t.cursor_pointer().hover(move |s| s.bg(hsla(ui.tab_hover)))
             })
@@ -2087,16 +2125,11 @@ impl Workspace {
         }
     }
 
-    /// The 6 pt gap left of the right sidebar's card, beside it from `top` down (M11i): drag it
-    /// to resize the sidebar. A 2 px accent line shows in its middle on hover and while
-    /// dragging; while dragging, the whole window follows the mouse until release (as the left
-    /// sidebar's edge does).
-    fn render_right_resize_edge(
-        &self,
-        ui: UiColors,
-        top: f32,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    /// The 6 pt grab strip centred on the hairline left of the right sidebar, the card's full
+    /// height (M11al §6.7, as a split's): drag it to resize the sidebar. A 2 px accent line shows
+    /// in its middle on hover and while dragging; while dragging, the whole window follows the
+    /// mouse until release (as the left sidebar's edge does).
+    fn render_right_resize_edge(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         let resizing = self.right_sidebar.resizing;
         let this = cx.entity().downgrade();
         let follow = canvas(
@@ -2140,10 +2173,10 @@ impl Workspace {
             .id("right-sidebar-resize")
             .group("right-sidebar-edge")
             .absolute()
-            .top(px(top))
-            .bottom(px(CARD_INSET))
-            .left(px(-CARD_GAP))
-            .w(px(CARD_GAP))
+            .top_0()
+            .bottom_0()
+            .left(px((HAIRLINE - panes::GRAB) / 2.0))
+            .w(px(panes::GRAB))
             .cursor_col_resize()
             .on_mouse_down(
                 MouseButton::Left,
@@ -2158,7 +2191,7 @@ impl Workspace {
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .left(px((CARD_GAP - DIVIDER_ACTIVE) / 2.0))
+                    .left(px(panes::accent_offset(panes::GRAB)))
                     .w(px(DIVIDER_ACTIVE))
                     .bg(crate::panes::resize_line(&ui))
                     .when(!resizing, |line| {
@@ -2252,11 +2285,12 @@ mod tests {
 
     #[test]
     fn its_left_edge_follows_the_pointer() {
-        // M11i: the pointer is in the middle of the 6 pt gap left of the card, and the card
-        // ends 6 pt short of the window's right. In a 1280 pt window, the pointer at x = 971
-        // makes it 300 wide (971 + 3 to 1274); 80 left, 80 wider.
-        assert_eq!(width_for_edge(1280.0, 971.0), 300.0);
-        assert_eq!(width_for_edge(1280.0, 891.0), 380.0);
+        // M11al §6.7: the pointer is on the 1 px hairline left of the panel, and the panel
+        // ends where the card does, `CARD_INSET` short of the window's right. In a 1280 pt
+        // window, the pointer at x = 971.5 (the middle of the line at 971) makes it 300 wide
+        // (972 to 1272); 80 left, 80 wider.
+        assert_eq!(width_for_edge(1280.0, 971.5), 300.0);
+        assert_eq!(width_for_edge(1280.0, 891.5), 380.0);
         // Never past its bounds.
         assert_eq!(width_for_edge(1280.0, 1270.0), 220.0);
         assert_eq!(width_for_edge(1280.0, 10.0), 560.0);
@@ -2295,17 +2329,89 @@ mod tests {
     fn a_narrow_window_keeps_the_panes_200_wide() {
         // Room for it: drawn as wide as saved.
         assert_eq!(drawn_width(300.0, 1280.0, 240.0), 300.0);
-        // 700 wide with the left sidebar's 240: the panes keep 200 and the three 6 pt gaps
-        // (sidebar → pane card → right card → window edge) take 18, so 242 is drawn.
-        assert_eq!(drawn_width(300.0, 700.0, 240.0), 242.0);
-        // Without the left sidebar (the window's edge → pane card gap instead): 500 wide
-        // leaves it 282.
-        assert_eq!(drawn_width(300.0, 518.0, 0.0), 300.0);
-        assert_eq!(drawn_width(300.0, 500.0, 0.0), 282.0);
-        assert_eq!(drawn_width(560.0, 500.0, 0.0), 282.0);
+        // 700 wide with the left sidebar's 240: the card is flush against the sidebar and
+        // `CARD_INSET` from the window's right, the hairline takes 1, the panes keep 200, so
+        // 251 is drawn.
+        assert_eq!(drawn_width(300.0, 700.0, 240.0), 251.0);
+        // Without the left sidebar (the card `CARD_INSET` from the window's left too): 500
+        // wide leaves it 283.
+        assert_eq!(drawn_width(300.0, 517.0, 0.0), 300.0);
+        assert_eq!(drawn_width(300.0, 500.0, 0.0), 283.0);
+        assert_eq!(drawn_width(560.0, 500.0, 0.0), 283.0);
         // Too narrow for any of it: none drawn, never less.
         assert_eq!(drawn_width(300.0, 300.0, 240.0), 0.0);
         assert_eq!(PANE_COLUMN_MIN, 200.0);
+    }
+
+    /// Where the hairline left of the panel is drawn (its left x) for a panel `width` wide in
+    /// a window `window_width` wide (M11al §3.2): the panel runs to the card's outer right,
+    /// `CARD_INSET` from the window's right, the 1 px line just left of it.
+    fn hairline_left(window_width: f32, width: f32) -> f32 {
+        window_width - CARD_INSET - width - HAIRLINE
+    }
+
+    /// The panes' width from the card's outer left to the hairline (M11al §3.1: the card is
+    /// flush against a shown left sidebar `left` wide, else `CARD_INSET` from the window's left).
+    fn panes_width(width: f32, window_width: f32, left: f32) -> f32 {
+        let card_left = if left > 0.0 { left } else { CARD_INSET };
+        let line = if width > 0.0 {
+            hairline_left(window_width, width)
+        } else {
+            window_width - CARD_INSET
+        };
+        line - card_left
+    }
+
+    #[test]
+    fn width_for_edge_puts_the_hairline_under_the_pointer() {
+        // M11al §6.7: the 6 pt grab strip is centred on the hairline, so the pointer is on the
+        // line: the panel's width for pointer x puts the line's middle at x, less than half a
+        // point off (the old maths, a 6 pt gap's middle, missed it by exactly that). The same
+        // with the left sidebar hidden or 290 wide: the panel's right is the card's, which no
+        // left sidebar moves.
+        let window = 1280.0;
+        for left in [0.0, 290.0] {
+            for x in [720.0, 760.25, 900.5, 971.5, 1000.0, 1050.0] {
+                let width = width_for_edge(window, x);
+                // Room for it in this window: drawn as wide as it is.
+                assert_eq!(
+                    drawn_width(width, window, left),
+                    width,
+                    "x {x}, left {left}"
+                );
+                let middle = hairline_left(window, width) + HAIRLINE / 2.0;
+                assert!(
+                    (middle - x).abs() < 0.5,
+                    "x {x}, left {left}: the hairline's middle at {middle}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn drawn_width_keeps_the_panes_their_minimum() {
+        // An 800 pt window beside a 290 pt left sidebar: 300 drawn, the panes keep at least
+        // `PANE_COLUMN_MIN`.
+        let drawn = drawn_width(300.0, 800.0, 290.0);
+        assert_eq!(drawn, 300.0);
+        assert!(panes_width(drawn, 800.0, 290.0) >= PANE_COLUMN_MIN);
+        // Narrower: the panel gives way, the panes keep exactly their minimum.
+        for (window, left) in [(520.0, 290.0), (700.0, 290.0), (600.0, 0.0), (450.0, 0.0)] {
+            let drawn = drawn_width(560.0, window, left);
+            assert!(drawn > 0.0 && drawn < 560.0, "{window}, {left}: {drawn}");
+            assert_eq!(
+                panes_width(drawn, window, left),
+                PANE_COLUMN_MIN,
+                "{window}, {left}"
+            );
+        }
+        // 520 beside 290 leaves the panel 21 (520 − 290 − 200 − `CARD_INSET` − the hairline).
+        assert_eq!(drawn_width(300.0, 520.0, 290.0), 21.0);
+        // No room left for it: none drawn (never less), the panes keep the whole card.
+        for (window, left) in [(499.0, 290.0), (440.0, 240.0), (217.0, 0.0), (200.0, 0.0)] {
+            assert_eq!(drawn_width(300.0, window, left), 0.0, "{window}, {left}");
+        }
+        assert!(panes_width(0.0, 499.0, 290.0) >= PANE_COLUMN_MIN);
     }
 
     #[test]

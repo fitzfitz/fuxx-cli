@@ -2312,7 +2312,7 @@ fn file_diff_scenes() {
 
         // The toggle, in a workspace with the Files panel (as the files scenes lay it out).
         let window_dims = size(px(1100.0), px(560.0));
-        let sidebar_left = 1100.0 - RIGHT_CARD_GAP - 300.0 + HAIRLINE;
+        let sidebar_left = right_panel_left(1100.0, 300.0);
         let list_top = CARD_INSET + HAIRLINE + TAB_BAR + HEADER + FILTER_BAND + LIST_TOP;
         let build_ws = |slot: Slot| {
             let dir = dir.clone();

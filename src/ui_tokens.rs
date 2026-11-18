@@ -52,8 +52,6 @@ pub mod size {
     /// inside the `CARD_RADIUS` curve.
     pub const TERMINAL_PADDING: (f32, f32) = (16.0, 12.0);
     pub const SPLIT_TERMINAL_PADDING: (f32, f32) = (12.0, 10.0);
-    /// M11i's gap round the right sidebar's own card (until it moves into the one card).
-    pub const CARD_GAP: f32 = 6.0;
     /// The floating card's corner radius (M11al §3.1; M11i's cards' was 8).
     pub const CARD_RADIUS: f32 = 14.0;
     /// M11al's one floating card: the canvas inset around it, its shadow's drop and blur, and

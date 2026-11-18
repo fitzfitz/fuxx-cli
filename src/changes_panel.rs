@@ -47,6 +47,7 @@ use crate::tab_bar::{Glyph, footer_glyph, glyph};
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, UiColors, readable};
 use crate::ui_tokens::TEXT_MIN;
+use crate::ui_tokens::size::{CARD_RADIUS, HAIRLINE};
 use crate::workspace::Workspace;
 
 pub(crate) const NO_CHANGES: &str = "No changes since the last commit.";
@@ -775,7 +776,7 @@ fn divider_row(
                             "change-divider",
                             &ui,
                         )
-                        .group_hover("change-divider", move |s| s.visible().bg(hsla(ui.card)))
+                        .group_hover("change-divider", move |s| s.visible().bg(hsla(ui.side)))
                         .on_click(cx.listener(
                             |this, _: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
@@ -1529,6 +1530,8 @@ impl Workspace {
                 a: 0.45,
                 ..hsla(ui.shadow)
             })
+            // At the card's bottom-right corner (M11al §3.4), rounded as the panel is.
+            .rounded_br(px(CARD_RADIUS - HAIRLINE))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -1631,6 +1634,8 @@ impl Workspace {
             .border_t_1()
             .border_color(hsla(ui.divider))
             .bg(hsla(ui.tab_bar))
+            // At the card's bottom-right corner (M11al §3.4), rounded as the panel is.
+            .rounded_br(px(CARD_RADIUS - HAIRLINE))
             .child(left)
             .children(fetch)
             .children(primary)
@@ -1834,7 +1839,8 @@ impl Workspace {
                         .top(px(0.0))
                         .left(px(0.0))
                         .right(px(0.0))
-                        .bg(hsla(ui.card))
+                        // The panel's own fill (M11al §6.1): rows scroll under it unseen.
+                        .bg(hsla(ui.side))
                         .border_b_1()
                         .border_color(hsla(ui.divider))
                         .child(row)
