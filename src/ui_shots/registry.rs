@@ -14,8 +14,9 @@
 //! `--changed` follows.
 
 use super::{
-    Scene, agent, agent_box, branch, changes, chrome, chrome_parts, file_tab, file_tab_md, naming,
-    overlays, palette, panes, right_sidebar, sidebar, status_bar, terminal, welcome, window,
+    Scene, agent, agent_box, branch, changes, chrome, chrome_parts, file_tab, file_tab_md,
+    file_tab_md_reader, naming, overlays, palette, panes, right_sidebar, sidebar, status_bar,
+    terminal, welcome, window,
 };
 
 /// Files that run or declare the suite but change no scene's picture: an edit to one of these
@@ -38,6 +39,7 @@ pub(super) const AREAS: &[(&str, &[Scene])] = &[
     (chrome::FILE, chrome::SCENES),
     (file_tab::FILE, file_tab::SCENES),
     (file_tab_md::FILE, file_tab_md::SCENES),
+    (file_tab_md_reader::FILE, file_tab_md_reader::SCENES),
     (right_sidebar::FILE, right_sidebar::SCENES),
     (changes::FILE, changes::SCENES),
     (branch::FILE, branch::SCENES),
@@ -128,6 +130,7 @@ pub(super) const ORDER: &[&str] = &[
     "file-diff",
     "file-tab-md",
     "file-tab-md-mermaid",
+    "file-tab-md-reader-column",
     "file-tab-scrollbar",
     "file-live-glow",
     "file-live-marks",

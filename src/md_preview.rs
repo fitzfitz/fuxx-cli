@@ -8,7 +8,7 @@
 //! default browser, one to a file next to it opens that file in a tab; anything else does
 //! nothing. Colours come from the theme (`UiColors`), the text held to `TEXT_MIN`.
 //!
-//! `is_markdown`, `link_target`, `inline`, `marker` and `gap_before` are pure and tested.
+//! `is_markdown`, `link_target`, `inline`, `marker` and `gap_between` are pure and tested.
 
 use std::cell::Cell;
 use std::ops::Range;
@@ -24,21 +24,69 @@ use gpui::{
 
 use crate::agent_markdown::{Align, Md, Span};
 use crate::file_tab::expand_tabs;
+use crate::md_reader::{ReaderPlan, RowKind};
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, mix};
+use crate::ui_tokens::reader::TABLE_COL_MIN;
+use crate::ui_tokens::size::TERMINAL_PADDING;
 use crate::ui_tokens::{QUIET_LINE_MIN, TEXT_MIN, ensure_contrast};
 
-/// Prose size, and the headings' by level (1–6).
-pub const BODY: f32 = 14.0;
-const HEADINGS: [f32; 6] = [24.0, 20.0, 17.0, 15.0, 14.0, 13.0];
-/// Code (blocks and inline), in the terminal's font.
-const CODE: f32 = 13.0;
 /// A list level's indent, and the marker's column.
 const INDENT: f32 = 20.0;
-/// The reader's column: padding round it, and its widest (long lines read badly).
-const PAD_X: f32 = 24.0;
-const PAD_Y: f32 = 16.0;
-pub const COLUMN_MAX: f32 = 860.0;
+
+/// The sizes a Markdown block is drawn with (M11ai plan-time call 1): agent chat keeps today's
+/// (`CHAT`), the Preview's reader has its own (`reader()`, from `ui_tokens::reader`). Line
+/// heights are multiples of their text's size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sizes {
+    pub body: f32,
+    pub line: f32,
+    pub headings: [f32; 6],
+    pub heading_line: f32,
+    pub code: f32,
+    pub code_line: f32,
+    pub block_gap: f32,
+    pub item_gap: f32,
+    pub heading_above: f32,
+    pub heading_below: f32,
+    /// H1 / H2's underline, this far under the text.
+    pub rule_below: f32,
+}
+
+impl Sizes {
+    /// M11ac's sizes, which agent chat keeps.
+    pub const CHAT: Sizes = Sizes {
+        body: 14.0,
+        line: 1.5,
+        headings: [24.0, 20.0, 17.0, 15.0, 14.0, 13.0],
+        heading_line: 1.3,
+        code: 13.0,
+        code_line: 1.45,
+        block_gap: 12.0,
+        item_gap: 4.0,
+        heading_above: 12.0,
+        heading_below: 12.0,
+        rule_below: 6.0,
+    };
+
+    /// The Preview's reader (M11ai spec A): bigger type, more room.
+    pub fn reader() -> Sizes {
+        use crate::ui_tokens::reader as r;
+        Sizes {
+            body: r::BODY,
+            line: r::BODY_LINE,
+            headings: r::HEADINGS,
+            heading_line: r::HEADING_LINE,
+            code: r::CODE,
+            code_line: r::CODE_LINE,
+            block_gap: r::BLOCK_GAP,
+            item_gap: r::ITEM_GAP,
+            heading_above: r::HEADING_ABOVE,
+            heading_below: r::HEADING_BELOW,
+            rule_below: r::RULE_BELOW,
+        }
+    }
+}
 
 /// Whether `path` names a Markdown file: `.md` or `.markdown`, in any case.
 pub fn is_markdown(path: &Path) -> bool {
@@ -198,18 +246,24 @@ fn is_item(md: &Md) -> bool {
 }
 
 /// Space above block `cur` (after `prev`), in points: none for the first, a little between
-/// items of one list, more between other blocks.
-pub fn gap_before(prev: Option<&Md>, cur: &Md) -> f32 {
+/// items of one list, `heading_above` over a heading, `heading_below` under one, `block_gap`
+/// between other blocks.
+pub fn gap_between(sizes: &Sizes, prev: Option<&Md>, cur: &Md) -> f32 {
     match prev {
         None => 0.0,
-        Some(prev) if is_item(prev) && is_item(cur) => ITEM_GAP,
-        Some(_) => BLOCK_GAP,
+        Some(prev) if is_item(prev) && is_item(cur) => sizes.item_gap,
+        Some(prev) => gap_after(sizes, Some(prev), cur),
     }
 }
 
-/// Between items of one list, and between other blocks.
-const ITEM_GAP: f32 = 4.0;
-const BLOCK_GAP: f32 = 12.0;
+/// Space above `cur` after something that isn't its list's item (`None`: the front matter).
+fn gap_after(sizes: &Sizes, prev: Option<&Md>, cur: &Md) -> f32 {
+    match (prev, cur) {
+        (_, Md::Heading(..)) => sizes.heading_above,
+        (Some(Md::Heading(..)), _) => sizes.heading_below,
+        _ => sizes.block_gap,
+    }
+}
 
 /// The reader's colours, from the theme (on its background, as the tab's).
 #[derive(Clone, Copy, Debug)]
@@ -264,44 +318,137 @@ pub enum Shown {
 }
 
 /// What drawing needs besides the blocks: the colours, the code font, what a link click does,
-/// a count for the links' element ids, and how each Mermaid block is shown (by block index;
-/// `None` or missing for every other block).
+/// a count for the links' element ids, how each Mermaid block is shown (by block index;
+/// `None` or missing for every other block), the sizes, and the reader's document and looks
+/// (the Preview's; `None` in agent chat).
 pub struct Draw {
     pub colours: Colours,
     pub code_font: SharedString,
     pub on_link: OnLink,
     pub links: Cell<usize>,
     pub mermaid: Rc<Vec<Option<Shown>>>,
+    pub sizes: Sizes,
+    pub reader: Option<ReaderDraw>,
 }
 
-/// Block `ix` of `blocks` as one row of the reader's list (review fix: GPUI's `list` draws
-/// only the rows in sight): padded at the sides, the space above it (`gap_before`; the
-/// column's top padding over the first, its bottom padding under the last), at most
-/// `COLUMN_MAX` wide. Its links' element ids start from its index, so they stay the same from
-/// frame to frame (a click's press and release meet).
-pub fn row(blocks: &[Md], ix: usize, draw: &Draw) -> AnyElement {
-    let Some(md) = blocks.get(ix) else {
+/// A Markdown file as the Preview reads it (M11ai), once per version: its blocks and its plan
+/// (front matter, looks, headings, outline).
+pub struct ReaderDoc {
+    pub blocks: Vec<Md>,
+    pub plan: ReaderPlan,
+}
+
+/// What only the Preview's reader draws with: its document and the prose column's widest.
+pub struct ReaderDraw {
+    pub doc: Rc<ReaderDoc>,
+    pub measure: f32,
+    /// The scenes' probe: each drawn row's content, as last prepainted (window points).
+    #[cfg(feature = "ui-shots")]
+    pub drawn: Drawn,
+}
+
+/// Each drawn row's content bounds, by list row (the scenes read it).
+#[cfg(feature = "ui-shots")]
+pub type Drawn =
+    Rc<std::cell::RefCell<std::collections::BTreeMap<usize, gpui::Bounds<gpui::Pixels>>>>;
+
+/// Row `row` of the Preview: the front matter or a block, in the centred column. The row is
+/// the Preview's full width, `TERMINAL_PADDING.0` in at each side (its `.1` over the first row
+/// and under the last), with the space above it (`gap_between`); inside that, the reader's area,
+/// its content centred: prose at most `measure` wide; code blocks and tables (`wide`) at least
+/// the column and up to the area; a diagram at most the column. Its links' element ids start
+/// from the row's index, so they stay the same from frame to frame (a click's press and release
+/// meet).
+pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
+    let Some(reader) = &draw.reader else {
         return div().into_any_element();
     };
-    draw.links.set(ix << 20);
-    let top = match ix {
-        0 => PAD_Y,
-        _ => gap_before(blocks.get(ix - 1), md),
+    let (doc, rows) = (&reader.doc, reader.doc.plan.rows());
+    if row >= rows {
+        return div().into_any_element();
+    }
+    draw.links.set(row << 20);
+    let s = &draw.sizes;
+    let prose = |e: AnyElement| {
+        div()
+            .w_full()
+            .max_w(px(reader.measure))
+            .child(e)
+            .into_any_element()
     };
-    let bottom = if ix + 1 == blocks.len() { PAD_Y } else { 0.0 };
+    let (gap, content) = match doc.plan.row_kind(row) {
+        // Task 6 draws the front matter.
+        RowKind::Front => (0.0, div().into_any_element()),
+        RowKind::Block(b) => {
+            let Some(md) = doc.blocks.get(b) else {
+                return div().into_any_element();
+            };
+            let gap = match b.checked_sub(1) {
+                Some(prev) => gap_between(s, doc.blocks.get(prev), md),
+                None => gap_after(s, None, md),
+            };
+            let content = match (draw.mermaid.get(b), md) {
+                (Some(Some(shown @ Shown::Diagram { .. })), _) => {
+                    prose(mermaid_block(md, shown, draw))
+                }
+                (Some(Some(shown)), _) => wide(reader.measure, mermaid_block(md, shown, draw)),
+                (_, Md::Table { align, head, rows }) => {
+                    let min = head.len().max(1) as f32 * TABLE_COL_MIN;
+                    let mut scroll = div()
+                        .id(("md-table", row))
+                        .w_full()
+                        .overflow_x_scroll()
+                        .child(table(align, head, rows, Some(min), draw));
+                    // A wheel's up and down scroll the page, not the table.
+                    scroll.style().restrict_scroll_to_axis = Some(true);
+                    wide(reader.measure, scroll.into_any_element())
+                }
+                (_, Md::Code { .. }) => wide(reader.measure, block(md, draw)),
+                _ => prose(block(md, draw)),
+            };
+            (gap, content)
+        }
+    };
+    let (side, end) = TERMINAL_PADDING;
+    let top = if row == 0 { end } else { gap };
+    let bottom = if row + 1 == rows { end } else { 0.0 };
+    // The reader's area (the outline, when it shows, will take its share of the row), its
+    // content centred along a row: the content's width is settled before its height is
+    // measured (centred in a column, taffy measured a paragraph's height at the area's width).
+    let area = div().w_full().flex().flex_row().justify_center();
+    #[cfg(feature = "ui-shots")]
+    let area = {
+        let drawn = reader.drawn.clone();
+        area.on_children_prepainted(move |bounds, _, _| {
+            if let Some(b) = bounds.first() {
+                drawn.borrow_mut().insert(row, *b);
+            }
+        })
+    };
     div()
         .w_full()
-        .max_w(px(COLUMN_MAX + 2.0 * PAD_X))
-        .px(px(PAD_X))
+        .px(px(side))
         .pt(px(top))
         .pb(px(bottom))
-        .text_size(px(BODY))
-        .line_height(relative(1.5))
+        .text_size(px(s.body))
+        .line_height(relative(s.line))
         .text_color(hsla(draw.colours.text))
-        .child(match draw.mermaid.get(ix) {
-            Some(Some(shown)) => mermaid_block(md, shown, draw),
-            _ => block(md, draw),
-        })
+        .child(area.child(content))
+        .into_any_element()
+}
+
+/// A code block or table in the reader (plan-time call 7): as wide as its content, but at
+/// least the column (`measure`, or the area when that is narrower) and at most the area. (The
+/// spacer, as wide as the column and no height, makes its content at least that wide; the area
+/// caps it.)
+fn wide(measure: f32, e: AnyElement) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .min_w(px(0.0))
+        .max_w_full()
+        .child(div().w(px(measure)).max_w_full().h(px(0.0)))
+        .child(e)
         .into_any_element()
 }
 
@@ -359,7 +506,7 @@ fn blocks_of(blocks: &[Md], draw: &Draw) -> Vec<AnyElement> {
     blocks
         .iter()
         .map(|md| {
-            let gap = gap_before(prev, md);
+            let gap = gap_between(&draw.sizes, prev, md);
             prev = Some(md);
             div()
                 .w_full()
@@ -371,18 +518,24 @@ fn blocks_of(blocks: &[Md], draw: &Draw) -> Vec<AnyElement> {
 }
 
 fn block(md: &Md, draw: &Draw) -> AnyElement {
-    let c = draw.colours;
+    let (c, s) = (draw.colours, &draw.sizes);
     match md {
         Md::Para(spans) => text(spans, draw),
         Md::Heading(level, spans) => {
-            let size = HEADINGS[(*level as usize).clamp(1, 6) - 1];
+            let size = s.headings[(*level as usize).clamp(1, 6) - 1];
             div()
                 .w_full()
                 .text_size(px(size))
-                .line_height(relative(1.3))
+                .line_height(relative(s.heading_line))
                 .font_weight(FontWeight::SEMIBOLD)
+                // The reader's H6 is dim (chat's is not).
+                .when(*level == 6 && draw.reader.is_some(), |d| {
+                    d.text_color(hsla(c.dim))
+                })
                 .when(*level <= 2, |d| {
-                    d.pb(px(6.0)).border_b_1().border_color(hsla(c.line))
+                    d.pb(px(s.rule_below))
+                        .border_b_1()
+                        .border_color(hsla(c.line))
                 })
                 .child(text(spans, draw))
                 .into_any_element()
@@ -400,8 +553,8 @@ fn block(md: &Md, draw: &Draw) -> AnyElement {
                 .border_1()
                 .border_color(hsla(c.line))
                 .font_family(draw.code_font.clone())
-                .text_size(px(CODE))
-                .line_height(relative(1.45))
+                .text_size(px(s.code))
+                .line_height(relative(s.code_line))
                 .text_color(hsla(c.code_text))
                 .child(SharedString::from(shown.join("\n")))
                 .into_any_element()
@@ -416,7 +569,7 @@ fn block(md: &Md, draw: &Draw) -> AnyElement {
             .text_color(hsla(c.dim))
             .children(blocks_of(inner, draw))
             .into_any_element(),
-        Md::Table { align, head, rows } => table(align, head, rows, draw),
+        Md::Table { align, head, rows } => table(align, head, rows, None, draw),
         Md::Rule => div()
             .w_full()
             .my(px(4.0))
@@ -450,8 +603,15 @@ fn item(md: &Md, depth: u8, draw: &Draw) -> AnyElement {
         .into_any_element()
 }
 
-/// A table: a grid of equal columns, the header filled and bold, lines between the cells.
-fn table(align: &[Align], head: &[Vec<Span>], rows: &[Vec<Vec<Span>>], draw: &Draw) -> AnyElement {
+/// A table: a grid of equal columns, the header filled and bold, lines between the cells; at
+/// least `min` wide (the reader's: its columns at least `TABLE_COL_MIN` each).
+fn table(
+    align: &[Align],
+    head: &[Vec<Span>],
+    rows: &[Vec<Vec<Span>>],
+    min: Option<f32>,
+    draw: &Draw,
+) -> AnyElement {
     let c = draw.colours;
     let n = head.len().max(1);
     let cell = |spans: &[Span], col: usize, row: usize, header: bool| {
@@ -490,6 +650,7 @@ fn table(align: &[Align], head: &[Vec<Span>], rows: &[Vec<Vec<Span>>], draw: &Dr
         .w_full()
         .grid()
         .grid_cols(n.min(u16::MAX as usize) as u16)
+        .when_some(min, |d, min| d.min_w(px(min)))
         .border_1()
         .border_color(hsla(c.line))
         .rounded(px(4.0))
@@ -619,6 +780,8 @@ mod tests {
             on_link: Rc::new(|_, _, _| {}),
             links: Cell::new(0),
             mermaid: Rc::new(Vec::new()),
+            sizes: Sizes::CHAT,
+            reader: None,
         };
         let blocks = crate::agent_markdown::parse(
             "See [the docs](https://e.x) and [more](https://f.x).\n\n- [a](https://g.x)",
@@ -719,20 +882,60 @@ mod tests {
         assert_eq!(marker(&Md::Para(vec![]), 0), None);
     }
 
+    /// Agent chat draws as today (plan-time call 1): `Sizes::CHAT` is M11ac's numbers, and its
+    /// gaps are M11ac's `gap_before`'s (its test, moved).
     #[test]
-    fn list_items_sit_close_and_other_blocks_apart() {
+    fn chat_keeps_today_s_sizes() {
+        assert_eq!(
+            Sizes::CHAT,
+            Sizes {
+                body: 14.0,
+                line: 1.5,
+                headings: [24.0, 20.0, 17.0, 15.0, 14.0, 13.0],
+                heading_line: 1.3,
+                code: 13.0,
+                code_line: 1.45,
+                block_gap: 12.0,
+                item_gap: 4.0,
+                heading_above: 12.0,
+                heading_below: 12.0,
+                rule_below: 6.0,
+            }
+        );
+        let chat = &Sizes::CHAT;
         let item = Md::Bullet(vec![]);
         let nested = Md::Nested(1, Box::new(Md::Task(false, vec![])));
         let para = Md::Para(vec![]);
-        assert_eq!(gap_before(None, &para), 0.0);
-        assert!(gap_before(Some(&item), &nested) < gap_before(Some(&para), &item));
-        assert_eq!(
-            gap_before(Some(&item), &nested),
-            gap_before(Some(&nested), &item)
-        );
-        assert_eq!(
-            gap_before(Some(&item), &para),
-            gap_before(Some(&para), &para)
-        );
+        let heading = Md::Heading(2, vec![]);
+        assert_eq!(gap_between(chat, None, &para), 0.0);
+        assert_eq!(gap_between(chat, Some(&item), &nested), 4.0);
+        assert_eq!(gap_between(chat, Some(&nested), &item), 4.0);
+        assert_eq!(gap_between(chat, Some(&para), &item), 12.0);
+        assert_eq!(gap_between(chat, Some(&item), &para), 12.0);
+        assert_eq!(gap_between(chat, Some(&para), &para), 12.0);
+        assert_eq!(gap_between(chat, Some(&para), &heading), 12.0);
+        assert_eq!(gap_between(chat, Some(&heading), &para), 12.0);
+    }
+
+    /// The reader's spacing (spec A): 1 em between blocks, 32 pt above a heading and 12 under
+    /// it, list items 6 apart, nothing over the first block.
+    #[test]
+    fn the_reader_s_gaps() {
+        let r = &Sizes::reader();
+        let para = Md::Para(vec![]);
+        let heading = Md::Heading(2, vec![]);
+        let item = Md::Bullet(vec![]);
+        let nested = Md::Nested(1, Box::new(Md::Bullet(vec![])));
+        assert_eq!(gap_between(r, Some(&para), &para), 16.0);
+        assert_eq!(gap_between(r, Some(&para), &heading), 32.0);
+        assert_eq!(gap_between(r, Some(&heading), &para), 12.0);
+        assert_eq!(gap_between(r, Some(&item), &nested), 6.0);
+        assert_eq!(gap_between(r, Some(&item), &item), 6.0);
+        assert_eq!(gap_between(r, None, &para), 0.0);
+        assert_eq!(gap_between(r, None, &heading), 0.0);
+        assert_eq!(r.body, 16.0);
+        assert_eq!(r.line, 1.65);
+        assert_eq!(r.headings, [30.0, 24.0, 20.0, 17.0, 16.0, 15.0]);
+        assert_eq!((r.code, r.code_line, r.rule_below), (14.0, 1.5, 8.0));
     }
 }

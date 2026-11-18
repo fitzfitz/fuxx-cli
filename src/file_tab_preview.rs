@@ -85,27 +85,29 @@ impl FileTab {
         }
     }
 
-    /// The Preview's body (M11ac): the file's Markdown drawn as a reader, a GPUI `list` of
-    /// its blocks (only those in sight are drawn). The text is parsed again only for a new
-    /// version; the list then keeps its place by block.
+    /// The Preview's body (M11ac, M11ai): the file's Markdown drawn as a reader, a GPUI `list`
+    /// of its rows (the front matter, if any, then a row per block; only those in sight are
+    /// drawn). The text is read again (`md_reader::read`: front matter, parse, plan) only for a
+    /// new version; the list then keeps its place by row.
     pub(super) fn preview_body(&mut self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let Some(doc) = self.doc() else {
             return div().flex_1().into_any_element();
         };
         let version = doc.version;
-        let blocks = match &self.parsed {
-            Some((v, blocks)) if *v == version => blocks.clone(),
+        let read = match &self.parsed {
+            Some((v, read)) if *v == version => read.clone(),
             _ => {
-                let blocks = Rc::new(crate::agent_markdown::parse(&doc.text));
-                // A new list (its measuring is by the block count), at the place kept.
+                let (blocks, plan) = crate::md_reader::read(&doc.text);
+                let read = Rc::new(md_preview::ReaderDoc { blocks, plan });
+                // A new list (its measuring is by the row count), at the place kept.
                 let top = self.preview_list.logical_scroll_top();
-                self.preview_list = preview_list_of(blocks.len(), cx.entity().downgrade());
+                self.preview_list = preview_list_of(read.plan.rows(), cx.entity().downgrade());
                 self.preview_list.scroll_to(top);
-                self.parsed = Some((version, blocks.clone()));
-                blocks
+                self.parsed = Some((version, read.clone()));
+                read
             }
         };
-        let mermaid = self.mermaid_shown(version, &blocks, theme.is_dark(), cx);
+        let mermaid = self.mermaid_shown(version, &read.blocks, theme.is_dark(), cx);
         let view = cx.entity().downgrade();
         let draw = md_preview::Draw {
             colours: md_preview::Colours::of(&theme),
@@ -115,6 +117,16 @@ impl FileTab {
             }),
             links: Cell::new(0),
             mermaid,
+            sizes: md_preview::Sizes::reader(),
+            reader: Some(md_preview::ReaderDraw {
+                doc: read,
+                measure: crate::ui_tokens::reader::MEASURE,
+                #[cfg(feature = "ui-shots")]
+                drawn: {
+                    self.reader_drawn.borrow_mut().clear();
+                    self.reader_drawn.clone()
+                },
+            }),
         };
         let (bar, ink, state) = (self.scrollbar, theme.ui().text, self.preview_list.clone());
         let view = cx.entity().downgrade();
@@ -125,8 +137,8 @@ impl FileTab {
             .min_h(px(0.0))
             .w_full()
             .child(
-                list(self.preview_list.clone(), move |ix, _, _| {
-                    md_preview::row(&blocks, ix, &draw)
+                list(self.preview_list.clone(), move |row, _, _| {
+                    md_preview::reader_row(row, &draw)
                 })
                 .size_full(),
             )
@@ -204,7 +216,7 @@ impl FileTab {
     fn mermaid_shown(
         &mut self,
         version: u64,
-        blocks: &Rc<Vec<Md>>,
+        blocks: &[Md],
         dark: bool,
         cx: &mut Context<Self>,
     ) -> Rc<Vec<Option<md_preview::Shown>>> {
