@@ -2463,7 +2463,17 @@ pub(super) fn agent_box_model_menu() {
             );
             click_model_chip(n, cx, window, tab);
             assert!(matches!(menu(cx, tab), Some(BoxMenu::Model { .. })), "{n}");
-            click_folder_chip(n, cx, window, tab);
+            // The folder chip where the open menu leaves it showing (M11al: `text::META` 12.5
+            // widened the chip, its middle now under the menu's left edge).
+            let (chip, open) = (part(cx, tab, n, "folder"), part(cx, tab, n, "menu"));
+            assert!(
+                chip.left() + px(8.) < open.left(),
+                "{n}: the chip's left shows"
+            );
+            let at = gpui::point(chip.left() + px(4.), chip.center().y);
+            cx.simulate_click(window, at, Modifiers::none());
+            cx.run_until_parked();
+            let _ = frame_fresh(cx, window);
             assert_eq!(
                 menu(cx, tab),
                 None,

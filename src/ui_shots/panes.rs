@@ -371,9 +371,11 @@ fn tab_scenes() {
                 Some("shell".to_string()),
                 "{slug}: the active session stays"
             );
-            // codex's × (on hover, in its mark's place).
-            let line = row_point(cx, &ws, 2, -7.5);
-            let close = point(px(6.0 + 8.0 + 7.0), line.y);
+            // codex's × (on hover, over its avatar: the row `ROW_INSET` in, the avatar
+            // `ROW_PAD` into it, centred in the row).
+            use crate::sidebar::{AVATAR, ROW_INSET, ROW_PAD};
+            let line = row_point(cx, &ws, 2, 0.0);
+            let close = point(px(ROW_INSET + ROW_PAD + AVATAR / 2.0), line.y);
             cx.simulate_mouse_move(window, close, None, none);
             cx.simulate_click(window, close, none);
             let left = names(cx);
@@ -667,9 +669,10 @@ fn workspace_scenes() {
                     f32::from(b.size.height)
                 };
                 // The waiting one with "Needs input" under its name; api, in its folder's group,
-                // one line (M11r: the header says where it is).
-                assert_eq!(height(2), 52.0, "{n}: agent's waiting row");
-                assert_eq!(height(4), 52.0, "{n}: api's row");
+                // who and where under its name: every row `SIDEBAR_ROW_TWO` (56, M11al).
+                let two = crate::ui_tokens::size::SIDEBAR_ROW_TWO;
+                assert_eq!(height(2), two, "{n}: agent's waiting row");
+                assert_eq!(height(4), two, "{n}: api's row");
                 let api = ws.model.focused_workspace().expect("focused");
                 let ring = ws
                     .rollup_session(api)
@@ -1414,9 +1417,10 @@ fn tab_drag_scenes() {
                     no_line();
                 }
                 _ => {
-                    // The ring along docs's row's left edge, mid-height (4 pt into its group's
-                    // card, since 2026-11-10).
-                    let (x, y) = (f32::from(g.row.left()) + 5.0, f32::from(g.row.center().y));
+                    // The ring along docs's row's left edge, mid-height (M11al: the row is its
+                    // place's full width, no group card around it).
+                    let ring = crate::ui_tokens::size::DIVIDER_ACTIVE / 2.0;
+                    let (x, y) = (f32::from(g.row.left()) + ring, f32::from(g.row.center().y));
                     assert!(is(px_at(x, y), ui.accent), "{n}: docs's row ringed");
                     // Its own bar closed up: the browser tab's place is empty.
                     empty(tabs[3], "the left bar's last place");

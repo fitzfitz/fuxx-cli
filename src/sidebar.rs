@@ -4,12 +4,13 @@
 //!
 //! `rows` is the pure view-model: what each row shows (its name in semibold, its most urgent
 //! terminal's status and how long it has been in it, whether a program runs there, focused,
-//! pinned, its colour, and one line under the name: `line_two`), built from facts the
-//! Workspace hands over. The rest of the file draws it (M11i: compact, 22 pt with one line and
-//! 32 pt with two); the selected row is a soft tint of the accent with a 2 pt accent bar at its
-//! left, everything on it in its own colours. Rows behave like tabs: a × on hover in the mark's
-//! place, a middle-click closes, a right-click opens the row's menu (`tab_menu`, with Pin /
-//! Unpin); on the right, the colour's dot and, on hover, the ⌘1–⌘9 shortcut.
+//! pinned, its colour, and one line under the name: `line_two`, who is in front and where when
+//! nothing else applies), built from facts the Workspace hands over. The rest of the file draws
+//! it (M11al: 56 pt rows on the canvas, group headings as quiet capitals, no group cards); the
+//! selected row is a soft tint of the accent with a 3 pt accent bar at the sidebar's left edge,
+//! everything on it in its own colours. Rows behave like tabs: a × over the avatar on hover, a
+//! middle-click closes, a right-click opens the row's menu (`tab_menu`, with Pin / Unpin); on
+//! the right, the age and, on hover, the ⌘1–⌘9 shortcut.
 
 use std::cell::Cell;
 use std::f32::consts::TAU;
@@ -52,7 +53,7 @@ use crate::title_area::{
 };
 use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
-    SIDEBAR_ROW, SIDEBAR_ROW_THREE, SIDEBAR_ROW_TWO, STATUS_MARK,
+    SIDEBAR_ROW, SIDEBAR_ROW_TWO, STATUS_MARK,
 };
 use crate::ui_tokens::text;
 use crate::workspace::{POP_SHOWN, Renaming, Session, Workspace};
@@ -98,6 +99,89 @@ pub struct WorkspaceFacts<'a> {
     /// One of its terminals or agent tabs is Working, whatever `status` won (a closed group's
     /// header shows work in progress over a finished one's ✓).
     pub working: bool,
+    /// Who is in front (`who_in_front`): line two's first half (M11al §2.4).
+    pub who: Who,
+    /// An SSH workspace's host: line two's where.
+    pub ssh_host: Option<&'a str>,
+}
+
+/// Who is in front in a workspace (M11al §2.4): an agent (its provider's glyph and name), else
+/// a program other than the shell, else the shell.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Who {
+    Agent {
+        glyph: &'static str,
+        name: &'static str,
+    },
+    Program(String),
+    Shell(String),
+}
+
+impl Who {
+    /// As line two says it: "✳ Claude", "› npm", "›_ zsh".
+    pub fn label(&self) -> String {
+        match self {
+            Who::Agent { glyph, name } => format!("{glyph} {name}"),
+            Who::Program(name) => format!("\u{203a} {name}"),
+            Who::Shell(name) => format!("\u{203a}_ {name}"),
+        }
+    }
+}
+
+/// Line two's "who · where" (`·` with a space each side), or who alone with no where.
+pub fn who_where(who: &Who, place: Option<&str>) -> String {
+    match place {
+        Some(place) => format!("{}{WHO_SEP}{place}", who.label()),
+        None => who.label(),
+    }
+}
+
+/// Who is in front (plan-time call 6): the first of `agents` (provider names, most telling
+/// first: the row's agent tab, the agent running in its terminal, the workspace's agent tabs)
+/// that fuxx has a provider for, else `program` (what runs in front of the shell, if anything),
+/// else the `shell`.
+pub fn who_in_front<'a>(
+    agents: impl IntoIterator<Item = Option<&'a str>>,
+    program: Option<&str>,
+    shell: &str,
+) -> Who {
+    let agent = agents
+        .into_iter()
+        .flatten()
+        .find_map(crate::providers::by_name);
+    if let Some(provider) = agent {
+        let (glyph, name) = provider.info().who;
+        return Who::Agent { glyph, name };
+    }
+    match program.filter(|p| !p.is_empty()) {
+        Some(program) => Who::Program(program.to_string()),
+        None => Who::Shell(shell.to_string()),
+    }
+}
+
+/// A local shell's name: the file name of `shell` (`$SHELL`, a login shell's `-` dropped),
+/// else "shell".
+pub fn shell_name(shell: Option<&std::ffi::OsStr>) -> String {
+    let name = shell
+        .and_then(|s| Path::new(s).file_name())
+        .map(|n| n.to_string_lossy().trim_start_matches('-').to_string())
+        .unwrap_or_default();
+    if name.is_empty() {
+        SHELL_NAME.to_string()
+    } else {
+        name
+    }
+}
+
+/// The local shell's name (`shell_name` of `$SHELL`), read once.
+pub(crate) fn local_shell() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| shell_name(std::env::var_os("SHELL").as_deref()))
+}
+
+/// A group heading's words (M11al §2.5): its name in capitals.
+pub fn heading_words(label: &str) -> String {
+    label.to_uppercase()
 }
 
 /// One row of the sidebar.
@@ -162,10 +246,9 @@ pub struct WorkspaceRow {
     pub running: bool,
     /// The program's title when it says more than the name (M11r, `groups::extra_title`).
     pub title: Option<String>,
-    /// In a folder's group: its header says the folder and the branch, so the row doesn't.
-    pub folder_group: bool,
-    /// In a folder's group: where its terminal is now ("~/code/api/src").
-    pub here: Option<String>,
+    /// Who is in front, and where (`where_of`): line two's words (M11al §2.4).
+    pub who: Who,
+    pub place: Option<String>,
 }
 
 /// The line under a workspace's name.
@@ -247,8 +330,8 @@ pub fn rows(
                     folder: s.folder.clone(),
                     running: s.running,
                     title: groups::extra_title(s.label, s.title).map(String::from),
-                    folder_group: grouped && matches!(s.group, Some(GroupKey::Folder(_))),
-                    here: s.here.clone(),
+                    who: s.who.clone(),
+                    place: where_of(s),
                 })
             }
         })
@@ -394,49 +477,39 @@ pub enum LineTwo {
     Note(String),
     /// The program's own title (M11r).
     Title(String),
-    /// In a folder's group, idle or done: the folder its terminal is in now.
-    Here(String),
-    /// Nothing else to say: its status in words (M11r: every row has its line, as the mockup).
-    State(&'static str),
-    /// Where it is: the branch and the folder, each on its own line (`lines_under`).
-    Place,
+    /// Nothing else to say: who is in front and where (M11al §2.4; it replaced the place, the
+    /// folder in a group and the status words).
+    WhoWhere { who: Who, place: Option<String> },
 }
 
 /// What a row shows under its name (M11i), the first that applies: "not live" for a lost
-/// background session; waiting, "Needs input" and its question; a script's note; else where it
-/// is (its branch and folder). None when there's nothing to say.
+/// background session; waiting, "Needs input" and its question; a script's note; the program's
+/// own title; else who is in front and where (M11al).
 pub fn line_two(row: &WorkspaceRow) -> Option<LineTwo> {
-    match &row.sub {
-        Some(Sub::NotLive) => Some(LineTwo::NotLive),
-        Some(Sub::Question(q)) => Some(LineTwo::Waiting(Some(q.clone()))),
-        Some(Sub::NeedsInput) => Some(LineTwo::Waiting(None)),
-        Some(Sub::Note(note)) => Some(LineTwo::Note(note.clone())),
-        None => Some(match &row.title {
+    Some(match &row.sub {
+        Some(Sub::NotLive) => LineTwo::NotLive,
+        Some(Sub::Question(q)) => LineTwo::Waiting(Some(q.clone())),
+        Some(Sub::NeedsInput) => LineTwo::Waiting(None),
+        Some(Sub::Note(note)) => LineTwo::Note(note.clone()),
+        None => match &row.title {
             Some(title) => LineTwo::Title(title.clone()),
-            // In a folder's group the header says where it is (M11r).
-            None if !row.folder_group && (row.branch.is_some() || row.folder.is_some()) => {
-                LineTwo::Place
-            }
-            // In a group: where it is now, but a working one says it works.
-            None => match &row.here {
-                Some(here) if row.folder_group && row.status != Status::Working => {
-                    LineTwo::Here(here.clone())
-                }
-                _ => LineTwo::State(state_words(row.status, row.running)),
+            None => LineTwo::WhoWhere {
+                who: row.who.clone(),
+                place: row.place.clone(),
             },
-        }),
-    }
+        },
+    })
 }
 
-/// A row's status in words, when nothing else goes under its name (M11r).
-pub fn state_words(status: Status, running: bool) -> &'static str {
-    match status {
-        Status::Working => "Cultivating\u{2026}",
-        Status::Waiting => NEEDS_INPUT,
-        Status::Done => "\u{2713} Done",
-        Status::Idle if running => "Running",
-        Status::Idle => "Idle",
+/// A workspace's where: an SSH one's host, else the last part of the folder it is in now (in a
+/// folder's group, `here`), else of its folder.
+fn where_of(s: &WorkspaceFacts) -> Option<String> {
+    if let Some(host) = s.ssh_host {
+        return Some(host.to_string());
     }
+    let folder = s.here.as_deref().or(s.folder.as_deref())?;
+    let last = folder.rsplit('/').find(|part| !part.is_empty());
+    Some(last.unwrap_or(folder).to_string())
 }
 
 /// A workspace's avatar letters (M11r): the first letter (or digit) of its first two words,
@@ -474,7 +547,7 @@ pub fn avatar_color(color: Option<TabColor>, label: &str) -> TabColor {
 }
 
 /// How many lines a row has under its name: the one `line_two` says (since M11r every row
-/// has one; where it is, out of a group, is one line: the branch, then the folder).
+/// has one).
 pub fn lines_under(row: &WorkspaceRow) -> usize {
     usize::from(line_two(row).is_some())
 }
@@ -485,19 +558,18 @@ pub fn place_lines(row: &WorkspaceRow) -> Vec<String> {
         None => return Vec::new(),
         Some(LineTwo::NotLive) => NOT_LIVE.to_string(),
         Some(LineTwo::Waiting(q)) => q.unwrap_or_else(|| NEEDS_INPUT.into()),
-        Some(LineTwo::Note(t) | LineTwo::Title(t) | LineTwo::Here(t)) => t,
-        Some(LineTwo::State(words)) => words.to_string(),
-        Some(LineTwo::Place) => fit_place(row.branch.as_deref(), row.folder.as_deref(), |_| true),
+        Some(LineTwo::Note(t) | LineTwo::Title(t)) => t,
+        Some(LineTwo::WhoWhere { who, place }) => who_where(&who, place.as_deref()),
     };
     vec![line]
 }
 
-/// A row's height: its name line alone, or with the lines under it (`lines_under`).
+/// A row's height: its name line alone, or with the line under it (`lines_under`); both 56
+/// since M11al.
 pub fn row_height(row: &WorkspaceRow) -> f32 {
     match lines_under(row) {
         0 => SIDEBAR_ROW,
-        1 => SIDEBAR_ROW_TWO,
-        _ => SIDEBAR_ROW_THREE,
+        _ => SIDEBAR_ROW_TWO,
     }
 }
 
@@ -628,56 +700,6 @@ pub fn cross_offsets(count: usize, own: usize, at: usize, size: f32) -> Vec<f32>
         .collect()
 }
 
-/// Which part of its group's card a list item is (2026-11-10): none (pinned and ungrouped
-/// rows, above every header), a header with rows under it, a header alone (a closed or empty
-/// group), a row with more under it, or a group's last row.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CardPart {
-    Out,
-    Top,
-    Alone,
-    Middle,
-    Bottom,
-}
-
-/// Each list item's part of a card, from whether each is a header: a header opens a card that
-/// its rows fill until the next header or the end.
-pub fn card_parts(headers: &[bool]) -> Vec<CardPart> {
-    let mut in_card = false;
-    (0..headers.len())
-        .map(|i| {
-            let last = headers.get(i + 1).is_none_or(|&next| next);
-            if headers[i] {
-                in_card = true;
-                if last { CardPart::Alone } else { CardPart::Top }
-            } else if !in_card {
-                CardPart::Out
-            } else if last {
-                CardPart::Bottom
-            } else {
-                CardPart::Middle
-            }
-        })
-        .collect()
-}
-
-/// `card_parts` while the row at `own` is dragged to land before item `at`: the parts of the
-/// list as it will be (that row taken out, a row put in before `at`); the dragged row's own
-/// part is the gap's, where its card is drawn (2026-11-10: the gap is part of the card it opens
-/// in, and nothing is drawn where the row was).
-pub fn drag_parts(headers: &[bool], own: usize, at: usize) -> Vec<CardPart> {
-    // The order as it will be: every item but `own`, the gap (`own`) before `at`.
-    let mut order: Vec<usize> = (0..headers.len()).filter(|&i| i != own).collect();
-    let place = order.iter().position(|&i| i >= at).unwrap_or(order.len());
-    order.insert(place, own);
-    let flags: Vec<bool> = order.iter().map(|&i| i != own && headers[i]).collect();
-    let mut parts = vec![CardPart::Out; headers.len()];
-    for (part, &i) in card_parts(&flags).into_iter().zip(&order) {
-        parts[i] = part;
-    }
-    parts
-}
-
 /// How far from its place the dragged row (item `own`, laid out at `spans`) is drawn: at the
 /// gap that opens before item `at`, `size` tall with the gap after it (`cross_offsets`).
 pub fn gap_offset(spans: &[(f32, f32)], own: usize, at: usize, size: f32) -> f32 {
@@ -687,31 +709,6 @@ pub fn gap_offset(spans: &[(f32, f32)], own: usize, at: usize, size: f32) -> f32
     };
     let gap = if at <= own { top(at) } else { top(at) - size };
     gap - top(own)
-}
-
-/// The card behind list item `part`, `offset` from its place (the item's drag slide): joined
-/// across the gap under it to the next item of its group, past the header's top and the last
-/// row's bottom by `CARD_PAD`; none outside a card.
-fn card_band(part: CardPart, offset: f32, ui: &UiColors) -> Option<Div> {
-    let (top, bottom, opens, closes) = match part {
-        CardPart::Out => return None,
-        CardPart::Top => (-CARD_PAD, -ROW_GAP, true, false),
-        CardPart::Alone => (-CARD_PAD, -CARD_PAD, true, true),
-        CardPart::Middle => (0.0, -ROW_GAP, false, false),
-        CardPart::Bottom => (0.0, -CARD_PAD, false, true),
-    };
-    Some(
-        div()
-            .absolute()
-            .left_0()
-            .right_0()
-            .top(px(offset + top))
-            .bottom(px(bottom - offset))
-            // Soft (M11r): the card's colour alone, no edge.
-            .bg(hsla(ui.card))
-            .when(opens, |d| d.rounded_t(px(CARD_RADIUS)))
-            .when(closes, |d| d.rounded_b(px(CARD_RADIUS))),
-    )
 }
 
 /// An item of the sidebar list (`listed`).
@@ -824,70 +821,71 @@ pub fn in_view(top: f32, bottom: f32, view_top: f32, view_bottom: f32, offset: f
 }
 
 /// Layout, in pixels (row and header heights, text sizes and widths are in `ui_tokens`).
-/// Rows' margin from the sidebar's sides, and their own padding each side.
-pub(crate) const ROW_INSET: f32 = 6.0;
-const ROW_PAD: f32 = 8.0;
-/// Between rows; above every group header but the first row, more.
-const ROW_GAP: f32 = 4.0;
+/// Rows' margin from the sidebar's sides, and their own padding each side (M11al §2.3).
+pub(crate) const ROW_INSET: f32 = 10.0;
+pub(crate) const ROW_PAD: f32 = 12.0;
+/// Above and below each row; the list's gap between rows is both.
+const ROW_MARGIN: f32 = 2.0;
+const ROW_GAP: f32 = 2.0 * ROW_MARGIN;
+/// Under the pinned rows, before the first unpinned one, more.
 const GROUP_GAP: f32 = 10.0;
 /// Above the list, under the top band (the title isn't crowded by the first group).
 const LIST_TOP: f32 = 10.0;
-/// Above and below a row's text: `ui_tokens`' row heights are its lines plus twice this.
+/// Above and below a row's avatar: `ui_tokens`' row height is the avatar plus twice this.
 #[cfg(test)]
-const ROW_PAD_Y: f32 = 7.0;
-/// A workspace's avatar (M11r): its side.
-pub(crate) const AVATAR: f32 = 28.0;
-const AVATAR_RADIUS: f32 = 8.0;
-const AVATAR_TEXT: f32 = 11.0;
+const ROW_PAD_Y: f32 = 11.0;
+/// A workspace's avatar (M11r; roomier in M11al): its side, corners and letters.
+pub(crate) const AVATAR: f32 = 34.0;
+const AVATAR_RADIUS: f32 = 10.0;
+const AVATAR_TEXT: f32 = 12.0;
 /// Between the avatar and the name.
-const AVATAR_GAP: f32 = 10.0;
-/// The status badge: a circle of the row's colour round the mark, reaching this far past the
-/// avatar's corner; the mark in it.
-const BADGE: f32 = 14.0;
-const BADGE_OUT: f32 = 3.0;
+pub(crate) const AVATAR_GAP: f32 = 12.0;
+/// The status badge (M11al §2.3): a mark this wide in a ring of the row's own fill this thick,
+/// reaching this far past the avatar's bottom-right corner; Working's dot in its halo.
+pub(crate) const BADGE: f32 = 10.0;
+pub(crate) const BADGE_RING: f32 = 2.5;
+pub(crate) const BADGE_OUT: f32 = 3.0;
 const BADGE_DOT: f32 = 6.0;
-/// A group header's letter tile.
-const TILE: f32 = 18.0;
-const BRANCH_SHRINK: f32 = 20.0;
-/// A row's (and a header's) corners, as the panes' cards.
-const ROW_RADIUS: f32 = 8.0;
-/// A group's card (2026-11-10, your call: "make it cool so I can tell the workspaces are
-/// grouped"): the room inside it around its header and rows, and its corners.
-const CARD_PAD: f32 = 4.0;
-const CARD_RADIUS: f32 = 12.0;
+/// The selected row's accent bar at the sidebar's very left edge: its width, and how far in
+/// from the row's top and bottom it stops.
+pub(crate) const SELECTED_BAR: f32 = 3.0;
+pub(crate) const SELECTED_BAR_INSET: f32 = 12.0;
+/// A row's corners (M11al §2.3).
+const ROW_RADIUS: f32 = 12.0;
 /// The slot a status mark (or a header's chevron) sits in; a waiting mark fills it.
 pub(crate) const MARK_SLOT: f32 = 14.0;
-/// A group header's name and count (M11v part 4: a size up, 14 and 12 pt; the rows keep
-/// theirs) and its chevron's line.
-const HEADER_NAME: f32 = 14.0;
+/// A group heading (M11al §2.5, quiet text): room above and below its words and at the
+/// sidebar's sides; its count's size and its chevron's line.
+pub(crate) const HEADING_ABOVE: f32 = 16.0;
+const HEADING_BELOW: f32 = 8.0;
+pub(crate) const HEADING_SIDE: f32 = 20.0;
 const HEADER_COUNT: f32 = 12.0;
 const CHEVRON_STROKE: f32 = 1.25;
 /// The space between the mark and the name, and before the age.
 const SLOT_GAP: f32 = 8.0;
-/// A row's name line, and the small line under it (M11i).
-/// The branch and folder lines' glyphs (the 12 px box `tab_bar::glyph` draws in) and the space
-/// after them (2026-11-10, your call: "add icon git and icon folder as well").
-const PLACE_ICON_GAP: f32 = 4.0;
-/// The branch button's pill: its side padding (it reaches that far left of the text column,
-/// so the branch glyph stays in line with the folder's).
-const BRANCH_CHIP_PAD: f32 = 4.0;
-/// Between a row's name and the lines under it (2026-11-10, your call: "add more gaps between
-/// title and git/folder").
-const NAME_GAP: f32 = 4.0;
-const NAME_LINE: f32 = 18.0;
-const SUB_LINE: f32 = 16.0;
+/// A row's name line, and the small line under it (M11i), 3 px under it (M11al §2.3).
+pub(crate) const NAME_GAP: f32 = 3.0;
+pub(crate) const NAME_LINE: f32 = 18.0;
+pub(crate) const SUB_LINE: f32 = 16.0;
+/// A row's age (and, on hover, its shortcut and pin), top right (M11al §2.3).
+const AGE_TEXT: f32 = 12.0;
 /// A header's + (a new workspace in the group), shown on hover.
 const ADD_BUTTON: f32 = 18.0;
 /// The footer under the rows; the resize strip along the right edge.
 pub(crate) const FOOTER: f32 = 62.0;
 const RESIZE_STRIP: f32 = 4.0;
-/// A row narrower than this leaves the age out, so the name keeps its room.
-const AGE_MIN_ROW: f32 = 220.0;
+/// A row narrower than this leaves the age out, so the name keeps its room (220 before
+/// M11al's wider avatar).
+pub(crate) const AGE_MIN_ROW: f32 = 240.0;
 /// The tab colour dot, and the space before it and before the shortcut.
 const COLOR_DOT: f32 = 8.0;
 const META_GAP: f32 = 6.0;
-/// Between a row's branch and folder.
+/// Between a row's branch and folder (`fit_place`, the right panel's).
 const PLACE_SEP: &str = " • ";
+/// Between line two's who and where.
+const WHO_SEP: &str = " \u{b7} ";
+/// A shell whose name isn't known.
+const SHELL_NAME: &str = "shell";
 /// A long branch keeps this many characters before the folder gives way.
 const BRANCH_KEEP: usize = 8;
 /// A waiting row narrower than this leaves the question out ("Needs input" alone).
@@ -1047,7 +1045,7 @@ struct DragPreview {
 impl Render for DragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
-        let badge = badge(self.status, self.running, ui, ui.row_active);
+        let badge = badge(self.status, self.running, ui, ui.row_active, None);
         let face = avatar(&self.label, self.color, ui, AVATAR)
             .flex()
             .items_center()
@@ -1076,7 +1074,7 @@ impl Render for DragPreview {
             .flex()
             .items_center()
             .gap(px(AVATAR_GAP))
-            .w(px(self.width - 2.0 * (ROW_INSET + CARD_PAD)))
+            .w(px(self.width - 2.0 * ROW_INSET))
             .h(px(self.height))
             .px(px(ROW_PAD))
             .rounded(px(ROW_RADIUS))
@@ -1210,38 +1208,50 @@ pub fn closed_mark(header: &HeaderRow) -> Option<ClosedMark> {
     }
 }
 
-/// A row's status badge (M11r, as the mockup): a ring of the row's `surface` over the avatar's
-/// bottom-right corner holding `badge_look`: a dot in the status colour (working: with a soft
-/// halo; idle: dim while a program runs, fainter at the prompt), or Done's muted ✓. Drawn
-/// still: no animation, so no redraws.
-fn badge(status: Status, running: bool, ui: UiColors, surface: Rgb) -> Div {
-    let (inside, halo) = match badge_look(status, running, &ui) {
-        BadgeLook::Dot { color, halo } => (
-            div()
-                .size(px(BADGE_DOT))
-                .rounded_full()
-                .bg(hsla(color))
-                .into_any_element(),
-            halo.then(|| mix(surface, color, 0.35)),
-        ),
+/// A row's status badge (M11r; M11al §2.3): a `BADGE` mark in a `BADGE_RING` ring of the
+/// row's own fill (`surface`; `hover` while the row is hovered), set `BADGE_OUT` past the
+/// avatar's bottom-right corner, holding `badge_look`: a dot in the status colour (working: a
+/// smaller dot in its soft halo; idle: dim while a program runs, fainter at the prompt), or
+/// Done's muted ✓ on the row's fill. Drawn still: no animation, so no redraws.
+fn badge(status: Status, running: bool, ui: UiColors, surface: Rgb, hover: Option<Rgb>) -> Div {
+    let dot = |color: Rgb| {
+        div()
+            .size(px(BADGE_DOT))
+            .rounded_full()
+            .bg(hsla(color))
+            .into_any_element()
+    };
+    // The mark's own fill, what it holds, and whether its fill is the row's (it follows hover).
+    let (fill, inside, on_row) = match badge_look(status, running, &ui) {
+        BadgeLook::Dot { color, halo: true } => {
+            (mix(surface, color, 0.35), Some(dot(color)), false)
+        }
+        BadgeLook::Dot { color, halo: false } => (color, None, false),
         BadgeLook::Check(color) => (
-            status_mark::done_check(color, px(BADGE - 4.0)).into_any_element(),
-            None,
+            surface,
+            Some(status_mark::done_check(color, px(BADGE)).into_any_element()),
+            true,
         ),
     };
     div()
         .absolute()
         .right(px(-BADGE_OUT))
         .bottom(px(-BADGE_OUT))
-        .size(px(BADGE))
+        .size(px(BADGE + 2.0 * BADGE_RING))
         .rounded_full()
-        .bg(hsla(halo.unwrap_or(surface)))
-        .border_2()
+        .bg(hsla(fill))
+        .border(px(BADGE_RING))
         .border_color(hsla(surface))
+        .when_some(hover, |ring, hover| {
+            ring.group_hover(ROW_GROUP, move |s| {
+                let s = s.border_color(hsla(hover));
+                if on_row { s.bg(hsla(hover)) } else { s }
+            })
+        })
         .flex()
         .items_center()
         .justify_center()
-        .child(inside)
+        .children(inside)
 }
 
 /// A shortcut's keys in a small cap (the search and New buttons, M11r).
@@ -1412,6 +1422,11 @@ impl Workspace {
                         || (self.model.agent_tabs(ws).iter())
                             .filter_map(|tab| self.agents.get(tab))
                             .any(|a| a.status == Status::Working),
+                    who: self.row_who(ws, agent),
+                    ssh_host: (self.branch_terminal(ws))
+                        .and_then(|id| items.iter().find(|s| s.id == id))
+                        .and_then(|s| s.ssh.as_ref())
+                        .map(|ssh| ssh.host.as_str()),
                 }
             })
             .collect();
@@ -1422,6 +1437,35 @@ impl Workspace {
             &[],
             now,
         )
+    }
+
+    /// Who is in front in workspace `ws` (plan-time call 6, from what is already known: no
+    /// lookup of its own): the provider of the agent tab its row is about (`agent`), else of
+    /// the agent running in its named terminal, else of its first agent tab; else the program
+    /// in front in that terminal; else its shell (`ssh` for an SSH one, `$SHELL`'s name).
+    fn row_who(&self, ws: WorkspaceId, agent: Option<TabId>) -> Who {
+        let items = self.sessions.items();
+        let terminal = (self.named_terminal(ws)).and_then(|id| items.iter().find(|s| s.id == id));
+        let provider = |tab: TabId| match self.model.tab(tab).map(|t| &t.kind) {
+            Some(TabKind::Agent { provider, .. }) => Some(provider.as_str()),
+            _ => None,
+        };
+        let in_terminal = terminal
+            .and_then(|s| self.agents_now.get(&s.id))
+            .map(String::as_str);
+        let tabs = self.model.agent_tabs(ws).into_iter().map(provider);
+        let agents = [agent.and_then(provider), in_terminal]
+            .into_iter()
+            .chain(tabs);
+        let program = terminal.and_then(|s| match self.programs.state(s.id) {
+            ProgramState::Running(name) => Some(name),
+            _ => None,
+        });
+        let shell = match terminal {
+            Some(s) if s.ssh.is_some() => "ssh",
+            _ => local_shell(),
+        };
+        who_in_front(agents, program.as_deref(), shell)
     }
 
     /// The sidebar's rows as they are now (`sidebar_rows`), built once per change: kept until
@@ -1693,19 +1737,6 @@ impl Workspace {
             }
         }
         let targets = self.row_drag_offsets(&rows, cx);
-        let headers: Vec<bool> = rows
-            .iter()
-            .map(|r| matches!(r, SidebarRow::Header(_)))
-            .collect();
-        // While a row is dragged to a gap: the cards as they will be after the drop.
-        let dragging = self.dragged_row(cx).and_then(|ws| {
-            rows.iter()
-                .position(|r| matches!(r, SidebarRow::Workspace(s) if s.workspace == ws))
-        });
-        let parts = match (dragging, &self.sidebar.drop_at) {
-            (Some(own), Some((at, _, _))) => drag_parts(&headers, own, *at),
-            _ => card_parts(&headers),
-        };
         let (now, animate) = (Instant::now(), !cx.reduce_motion());
         let elements: Vec<AnyElement> = rows
             .iter()
@@ -1719,7 +1750,7 @@ impl Workspace {
                         now,
                         animate,
                     );
-                    self.render_header(h, i == 0, offset, parts[i], ui, cx)
+                    self.render_header(h, offset, ui, cx)
                 }
                 SidebarRow::Workspace(s) => {
                     let gap = gap_before(i.checked_sub(1).map(|p| &rows[p]), row);
@@ -1729,7 +1760,7 @@ impl Workspace {
                         now,
                         animate,
                     );
-                    self.render_workspace_row(s, gap, offset, parts[i], ui, cx)
+                    self.render_workspace_row(s, gap, offset, ui, cx)
                 }
             })
             .collect();
@@ -1844,9 +1875,7 @@ impl Workspace {
     fn render_header(
         &self,
         header: &HeaderRow,
-        first: bool,
         offset: f32,
-        part: CardPart,
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1882,7 +1911,7 @@ impl Workspace {
                     .rounded_full()
                     .whitespace_nowrap()
                     .bg(hsla(ui.waiting_tint))
-                    .text_size(px(text::META))
+                    .text_size(px(HEADER_COUNT))
                     .text_color(hsla(ui.ring_waiting))
                     .child(format!("{n} waiting"))
                     .into_any_element(),
@@ -1898,34 +1927,34 @@ impl Workspace {
             div().flex_none().ml(px(6.0)).child(mark)
         });
         // What the group is: a folder (open while the group is), or a host's globe (2026-11-10,
-        // your call: "ganti avatar group title jadi ikon folder").
-        let tile = div()
-            .flex_none()
-            .size(px(TILE))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(glyph(
-                match (&header.key, header.collapsed) {
-                    (GroupKey::Host(_), _) => Glyph::Globe,
-                    (GroupKey::Folder(_), true) => Glyph::Folder,
-                    (GroupKey::Folder(_), false) => Glyph::FolderOpen,
-                },
-                ui.text_dim,
-            ));
+        // your call: "ganti avatar group title jadi ikon folder"); no tile behind it (M11al).
+        let icon = div().flex_none().flex().items_center().child(glyph(
+            match (&header.key, header.collapsed) {
+                (GroupKey::Host(_), _) => Glyph::Globe,
+                (GroupKey::Folder(_), true) => Glyph::Folder,
+                (GroupKey::Folder(_), false) => Glyph::FolderOpen,
+            },
+            ui.text_faint,
+        ));
+        // Quiet text on the canvas (M11al §2.5): no card, no fill; 16 above the words, 8 below,
+        // 20 from the sidebar's sides. Hovered, the words come up a step. (GPUI has no letter
+        // spacing: the mockup's 0.04 em, half a pixel at 12, is left out.)
         let header_row = div()
             .id(("group", group_id(&header.key)))
             .group("sidebar-header")
+            .relative()
+            .top(px(offset))
             .flex()
             .items_center()
             .h(px(GROUP_HEADER))
-            .mx(px(CARD_PAD))
-            .px(px(ROW_PAD - CARD_PAD + 2.0))
-            .rounded(px(ROW_RADIUS))
+            .pt(px(HEADING_ABOVE))
+            .pb(px(HEADING_BELOW))
+            .px(px(HEADING_SIDE))
+            .text_color(hsla(ui.text_faint))
             .cursor_pointer()
-            .hover(|style| style.bg(hsla(ui.card_hover)))
+            .hover(|style| style.text_color(hsla(ui.text_dim)))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_group(&key, cx)))
-            .child(tile)
+            .child(icon)
             .child(
                 div()
                     .flex_shrink(1.0)
@@ -1934,14 +1963,14 @@ impl Workspace {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis_start()
-                    .text_size(px(HEADER_NAME))
+                    .text_size(px(text::GROUP_HEADER))
+                    .line_height(px(text::GROUP_HEADER + 4.0))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(hsla(ui.text_dim))
-                    .child(header.label.clone()),
+                    .child(heading_words(&header.label)),
             )
             .child(div().flex_1())
             .children(closed_marks)
-            // The count, flush right like the rows' ages; on hover the + takes its place.
+            // The count, flush right; on hover the + takes its place.
             .child(
                 div()
                     .flex_none()
@@ -1988,37 +2017,24 @@ impl Workspace {
             )
             // The thin chevron at the far right, after the count (part 4).
             .child(div().flex_none().ml(px(6.0)).child(chevron));
-        div()
-            .flex_none()
-            .when(!first, |gap| gap.pt(px(GROUP_GAP - ROW_GAP)))
-            // Its card's top (and, closed, all of it); while a row is dragged past it into another
-            // group, it slides with the rows.
-            .child(
-                div()
-                    .relative()
-                    .mx(px(ROW_INSET))
-                    .top(px(offset))
-                    .children(card_band(part, 0.0, &ui))
-                    .child(header_row),
-            )
-            .into_any_element()
+        // While a row is dragged past it into another group, it slides with the rows.
+        div().flex_none().child(header_row).into_any_element()
     }
 
-    /// A workspace's row (M11i: compact): its most urgent terminal's mark (idle: a dot while a
-    /// program runs, else a ring; a × in its place on hover), its name in semibold (or the
-    /// rename box), age (when the row is wide enough), 📌 when pinned, on-screen pip, colour dot
-    /// and, on hover, its ⌘N shortcut; under them one line (`line_two`): "not live", "Needs
-    /// input · question", a script's note, or where it is (`branch • ~/folder`); a script's
-    /// progress along the bottom. The selected row is a soft tint of the accent with a 2 pt
-    /// accent bar at its left, its text and marks in their own colours. Click selects,
-    /// double-click renames, the × or a middle-click closes, a right-click opens its menu; it
-    /// can be dragged within its run (`sidebar_run`).
+    /// A workspace's row (M11al §2.3: 56 tall on the canvas): its avatar with its status badge
+    /// (a × over the letters on hover), its name in semibold (or the rename box), age top right
+    /// (when the row is wide enough), 📌 when pinned, on-screen pip and, on hover, its ⌘N
+    /// shortcut; under them one line (`line_two`): "not live", "Needs input · question", a
+    /// script's note, the program's title, or who is in front and where; a script's progress
+    /// along the bottom. The selected row is a soft tint of the accent with a 3 px accent bar
+    /// at the sidebar's left edge, its text and marks in their own colours. Click selects,
+    /// double-click renames, the avatar's × or a middle-click closes, a right-click opens its
+    /// menu; it can be dragged within its run (`sidebar_run`).
     fn render_workspace_row(
         &self,
         row: &WorkspaceRow,
         gap: bool,
         offset: f32,
-        part: CardPart,
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2027,14 +2043,8 @@ impl Workspace {
         // The selected row is a soft tint of the accent (waiting or not); an unselected waiting
         // one keeps its waiting tint. Hover deepens an unselected one a little; the selected
         // one stays as it is.
-        // In a group's card (2026-11-10): inset in it, on its colour, with the card's own hover
-        // and selection.
-        let in_card = part != CardPart::Out;
-        // Out of a card too (M11r), so every avatar is in line.
-        let inset = CARD_PAD;
-        // Selected: a neutral lift of what it sits on (M11r, as the mockup), not the accent.
         let fill = if row.active {
-            Some(if in_card { ui.card_lift } else { ui.row_active })
+            Some(ui.row_selected)
         } else if waiting {
             Some(ui.waiting_tint)
         } else {
@@ -2043,13 +2053,9 @@ impl Workspace {
         let hover = match fill {
             _ if row.active => None,
             Some(_) => Some(ui.waiting_hover),
-            None => Some(if in_card { ui.card_hover } else { ui.row_hover }),
+            None => Some(ui.row_hover),
         };
-        let surface = fill.unwrap_or(if in_card {
-            ui.card
-        } else {
-            ui.sidebar_background
-        });
+        let surface = fill.unwrap_or(ui.sidebar_background);
         let rename_box = self
             .renaming
             .as_ref()
@@ -2076,7 +2082,7 @@ impl Workspace {
             div()
                 .flex_none()
                 .ml(px(META_GAP))
-                .text_size(px(text::META))
+                .text_size(px(AGE_TEXT))
                 .font_features(tabular())
                 .text_color(hsla(ui.text_faint))
                 .child(child)
@@ -2097,7 +2103,8 @@ impl Workspace {
             // that changes what takes room (`hidden` → `flex`) makes GPUI paint an element it
             // never prepainted. ⌘1–⌘9 work either way.
             // With no age (a narrow sidebar), an empty slot at the right edge: the shortcut
-            // shows there on hover, over the name's end.
+            // shows there on hover, over the name's end, on the hovered row's own fill (M11al:
+            // the name's end goes under it, nothing overlaps).
             .when(
                 age.is_some() || shortcut_label(row.index).is_some(),
                 |line| {
@@ -2120,6 +2127,7 @@ impl Workspace {
                                     .bottom(px(0.0))
                                     .flex()
                                     .items_center()
+                                    .bg(hsla(hover.unwrap_or(surface)))
                                     .invisible()
                                     .group_hover(ROW_GROUP, |s| s.visible())
                                     .child(meta(keys.into_any_element()))
@@ -2158,7 +2166,7 @@ impl Workspace {
                 .text_color(hsla(color))
                 .child(line)
         };
-        let row_width = self.sidebar.width - 2.0 * (ROW_INSET + inset);
+        let row_width = self.sidebar.width - 2.0 * ROW_INSET;
         let second = line_two(row).map(|line| match line {
             LineTwo::NotLive => under().child(text(NOT_LIVE.into(), ui.text_faint)),
             // The question in the waiting colour (cut at its end; "Needs input" when none was
@@ -2201,61 +2209,9 @@ impl Workspace {
                 }),
             LineTwo::Note(note) => under().child(text(note, ui.text_faint)),
             LineTwo::Title(title) => under().child(text(title, ui.text_faint)),
-            LineTwo::State(words) => under().child(text(words.into(), ui.text_faint)),
-            // Where it is in its group's folder, losing its start when long.
-            LineTwo::Here(here) => under().child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis_start()
-                    .text_color(hsla(ui.text_faint))
-                    .child(here),
-            ),
-            // Out of a group: where it is on one line, the branch (a button to the branch
-            // switcher; it gives way first) then the folder (losing its start).
-            LineTwo::Place => {
-                let branch = row.branch.clone().map(|b| {
-                    div()
-                        .id(("row-branch", ws.0 as usize))
-                        .flex_shrink(BRANCH_SHRINK)
-                        .min_w(px(0.0))
-                        .max_w(relative(0.5))
-                        .flex()
-                        .items_center()
-                        .gap(px(PLACE_ICON_GAP))
-                        .mr(px(META_GAP))
-                        .px(px(BRANCH_CHIP_PAD))
-                        .h(px(SUB_LINE))
-                        .rounded(px(4.0))
-                        .overflow_hidden()
-                        .text_color(hsla(ui.text_dim))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hsla(ui.row_active)).text_color(hsla(ui.text)))
-                        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
-                            cx.stop_propagation()
-                        })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            cx.stop_propagation();
-                            if let Some(terminal) = this.branch_terminal(ws) {
-                                this.open_branch_switcher(terminal, window, cx);
-                            }
-                        }))
-                        .child(glyph(Glyph::Branch, ui.text_dim))
-                        .child(div().min_w(px(0.0)).truncate().child(b))
-                });
-                let folder = row.folder.clone().map(|f| {
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis_start()
-                        .text_color(hsla(ui.text_faint))
-                        .child(f)
-                });
-                under().children(branch).children(folder)
+            // Who is in front and where (M11al §2.4), cut at its end.
+            LineTwo::WhoWhere { who, place } => {
+                under().child(text(who_where(&who, place.as_deref()), ui.text_faint))
             }
         });
         let (source, tab_source) = (self.sidebar.drag_source.clone(), self.tab_drag.clone());
@@ -2275,8 +2231,8 @@ impl Workspace {
             .group(ROW_GROUP)
             .absolute()
             .top(px(offset))
-            .left(px(inset))
-            .right(px(inset))
+            .left_0()
+            .right_0()
             .h_full()
             .flex()
             .items_center()
@@ -2286,6 +2242,20 @@ impl Workspace {
             .text_size(px(text::NAME))
             .text_color(hsla(ui.text))
             .when_some(fill, |row, fill| row.bg(hsla(fill)))
+            // Selected: the accent bar at the sidebar's very left edge (M11al §2.3), inset from
+            // the row's top and bottom, its right corners rounded; it rides the row's slide.
+            .when(row.active, |row| {
+                row.child(
+                    div()
+                        .absolute()
+                        .left(px(-ROW_INSET))
+                        .top(px(SELECTED_BAR_INSET))
+                        .bottom(px(SELECTED_BAR_INSET))
+                        .w(px(SELECTED_BAR))
+                        .rounded_r(px(SELECTED_BAR))
+                        .bg(hsla(ui.accent)),
+                )
+            })
             // Waiting: edged in the waiting colour too (M11r).
             .when(waiting, |row| {
                 row.border_1()
@@ -2348,7 +2318,7 @@ impl Workspace {
                 let here = |at| at == TabDrop::Workspace(ws);
                 this.drop_tab(dragged.tab, here, window, cx);
             }))
-            .child(self.avatar_slot(ws, row, ui, surface, cx))
+            .child(self.avatar_slot(ws, row, ui, surface, hover, cx))
             .child(
                 div()
                     .flex_1()
@@ -2400,8 +2370,6 @@ impl Workspace {
             // Under the pinned rows, a group's gap sets the rest apart.
             .when(gap, |place| place.mt(px(GROUP_GAP - ROW_GAP)))
             .mx(px(ROW_INSET))
-            // Its group's card behind it, sliding with it.
-            .children(card_band(part, offset, &ui))
             .child(row_el)
             .into_any_element()
     }
@@ -2555,9 +2523,10 @@ impl Workspace {
         row: &WorkspaceRow,
         ui: UiColors,
         surface: Rgb,
+        hover: Option<Rgb>,
         cx: &mut Context<Self>,
     ) -> Div {
-        let badge = badge(row.status, row.running, ui, surface);
+        let badge = badge(row.status, row.running, ui, surface, hover);
         let (fill, _, ink) = ui.avatars[avatar_color(row.color, &row.label) as usize];
         let close = div()
             .id(("row-close", ws.0 as usize))
@@ -3175,6 +3144,8 @@ mod tests {
             title: None,
             here: None,
             working: false,
+            who: Who::Shell("zsh".into()),
+            ssh_host: None,
         }
     }
 
@@ -3321,11 +3292,11 @@ mod tests {
     }
 
     #[test]
-    fn the_age_shows_only_on_rows_220_px_or_wider() {
-        assert!(shows_age(220.0));
-        assert!(shows_age(388.0));
-        assert!(!shows_age(219.0));
-        assert!(!shows_age(168.0)); // the narrowest sidebar's row
+    fn the_age_shows_only_on_rows_240_px_or_wider() {
+        assert!(shows_age(240.0));
+        assert!(shows_age(380.0));
+        assert!(!shows_age(239.0));
+        assert!(!shows_age(160.0)); // the narrowest sidebar's row
     }
 
     #[test]
@@ -3342,35 +3313,6 @@ mod tests {
     }
 
     #[test]
-    fn while_dragging_the_cards_are_drawn_as_they_will_be_after_the_drop() {
-        use CardPart::{Alone, Bottom, Middle, Out, Top};
-        // 0 an ungrouped row, 1 header a, 2 a row, 3 the dragged row, 4 header b, 5 a row.
-        let headers = [false, true, false, false, true, false];
-        // Out to the top: a is left with one row; the gap (3) is out of every card.
-        assert_eq!(
-            drag_parts(&headers, 3, 0),
-            [Out, Top, Bottom, Out, Top, Bottom]
-        );
-        // Into b, before its row: the gap is b's first row; a ends at its row.
-        assert_eq!(
-            drag_parts(&headers, 3, 5),
-            [Out, Top, Bottom, Middle, Top, Bottom]
-        );
-        // To b's end: the gap is b's last row.
-        assert_eq!(
-            drag_parts(&headers, 3, 6),
-            [Out, Top, Bottom, Bottom, Top, Middle]
-        );
-        // A group's only row dragged to the end: its header is alone; the gap ends the next.
-        assert_eq!(
-            drag_parts(&[true, false, true, false], 1, 4),
-            [Alone, Bottom, Top, Middle]
-        );
-        // The only row of the only group, out to the top: the header alone, the gap out.
-        assert_eq!(drag_parts(&[true, false], 1, 0), [Alone, Out]);
-    }
-
-    #[test]
     fn the_dragged_row_is_drawn_at_its_gap() {
         // Rows 40 tall with 4 between: tops at 0, 44, 88, 132.
         let spans = [(0.0, 40.0), (44.0, 84.0), (88.0, 128.0), (132.0, 172.0)];
@@ -3382,20 +3324,6 @@ mod tests {
         assert_eq!(gap_offset(&spans, 0, 4, 44.0), 132.0);
         // Where it is: no move.
         assert_eq!(gap_offset(&spans, 1, 1, 44.0), 0.0);
-    }
-
-    #[test]
-    fn a_group_s_card_runs_from_its_header_to_its_last_row() {
-        use CardPart::{Alone, Bottom, Middle, Out, Top};
-        // Two ungrouped rows, a group of three, a closed group, a group of one.
-        let headers = [false, false, true, false, false, false, true, true, false];
-        assert_eq!(
-            card_parts(&headers),
-            [Out, Out, Top, Middle, Middle, Bottom, Alone, Top, Bottom]
-        );
-        assert_eq!(card_parts(&[]), []);
-        assert_eq!(card_parts(&[true]), [Alone]);
-        assert_eq!(card_parts(&[false]), [Out]);
     }
 
     #[test]
@@ -3879,8 +3807,7 @@ mod tests {
     }
 
     /// Every row has one line under its name (M11r, as the mockup): what it waits on, a note,
-    /// the program's title, where it is (out of a group: the branch then the folder, on one
-    /// line), else its status in words. So every row is two lines, 52 pt.
+    /// the program's title, else who is in front and where (M11al §2.4). So every row is 56.
     #[test]
     fn every_row_has_one_line_under_its_name() {
         let now = Instant::now();
@@ -3889,34 +3816,150 @@ mod tests {
             let row = session(&rows[0]);
             (line_two(row), lines_under(row), row_height(row))
         };
-        let two = SIDEBAR_ROW_TWO;
+        let zsh = Who::Shell("zsh".into());
         let mut both = facts("api", Status::Idle, now, None);
         both.folder = Some("~/api".into());
         both.branch = Some("main");
-        assert_eq!(under(both), (Some(LineTwo::Place), 1, two));
+        let api = Some("api".to_string());
+        let here = LineTwo::WhoWhere {
+            who: zsh.clone(),
+            place: api.clone(),
+        };
+        assert_eq!(under(both), (Some(here), 1, SIDEBAR_ROW_TWO));
         let mut waiting = facts("claude", Status::Waiting, now, None);
         waiting.folder = Some("~/api".into());
+        let two = SIDEBAR_ROW_TWO;
         assert_eq!(under(waiting), (Some(LineTwo::Waiting(None)), 1, two));
-        let words = |status, running| {
-            let mut f = facts("shell", status, now, None);
-            f.running = running;
-            under(f).0
-        };
-        assert_eq!(words(Status::Idle, false), Some(LineTwo::State("Idle")));
-        assert_eq!(words(Status::Idle, true), Some(LineTwo::State("Running")));
-        assert_eq!(
-            words(Status::Working, false),
-            Some(LineTwo::State("Cultivating\u{2026}"))
-        );
-        assert_eq!(
-            words(Status::Done, false),
-            Some(LineTwo::State("\u{2713} Done"))
-        );
+        // No status words any more (the badge says it): who, whatever the status.
+        for status in [Status::Idle, Status::Working, Status::Done] {
+            let line = under(facts("shell", status, now, None)).0;
+            let who = zsh.clone();
+            assert_eq!(line, Some(LineTwo::WhoWhere { who, place: None }));
+        }
         assert_eq!(under(facts("shell", Status::Idle, now, None)).2, two);
     }
 
+    /// M11al §2.4: who is in front ("✳ Claude", "› npm", "›_ zsh") and where (the last part of
+    /// the folder it is in now; an SSH row: its host), in and out of a folder's group.
     #[test]
-    fn a_dragged_row_shows_its_line_two() {
+    fn line_two_says_who_and_where() {
+        let now = Instant::now();
+        let said = |f: WorkspaceFacts| {
+            let rows = rows(&numbered(vec![f]), &[], None, &[], now);
+            let row = rows
+                .iter()
+                .find_map(|r| match r {
+                    SidebarRow::Workspace(s) => Some(s.clone()),
+                    SidebarRow::Header(_) => None,
+                })
+                .expect("a row");
+            match line_two(&row) {
+                Some(LineTwo::WhoWhere { who, place }) => who_where(&who, place.as_deref()),
+                other => panic!("not who · where: {other:?}"),
+            }
+        };
+        let claude = Who::Agent {
+            glyph: "\u{2733}",
+            name: "Claude",
+        };
+        let npm = Who::Program("npm".into());
+        let zsh = Who::Shell("zsh".into());
+        assert_eq!(claude.label(), "\u{2733} Claude");
+        assert_eq!(npm.label(), "\u{203a} npm");
+        assert_eq!(zsh.label(), "\u{203a}_ zsh");
+        assert_eq!(who_where(&zsh, None), "\u{203a}_ zsh");
+        let at = |who: &Who, folder: Option<&str>| {
+            let mut f = facts("x", Status::Working, now, None);
+            f.who = who.clone();
+            f.folder = folder.map(String::from);
+            f.branch = Some("main");
+            f
+        };
+        assert_eq!(
+            said(at(&claude, Some("~/code/api"))),
+            "\u{2733} Claude \u{b7} api"
+        );
+        assert_eq!(
+            said(at(&npm, Some("~/my-app"))),
+            "\u{203a} npm \u{b7} my-app"
+        );
+        assert_eq!(
+            said(at(&zsh, Some("~/my-app"))),
+            "\u{203a}_ zsh \u{b7} my-app"
+        );
+        // No folder known: who alone. Home and the root are their own last part.
+        assert_eq!(said(at(&zsh, None)), "\u{203a}_ zsh");
+        assert_eq!(said(at(&zsh, Some("~"))), "\u{203a}_ zsh \u{b7} ~");
+        assert_eq!(said(at(&zsh, Some("/"))), "\u{203a}_ zsh \u{b7} /");
+        assert_eq!(
+            said(at(&zsh, Some("/tmp/scratch/"))),
+            "\u{203a}_ zsh \u{b7} scratch"
+        );
+        // An SSH row: its host, not the folder there.
+        let mut ssh = at(&Who::Shell("ssh".into()), Some("devbox:/home/me/api"));
+        ssh.ssh_host = Some("devbox");
+        assert_eq!(said(ssh), "\u{203a}_ ssh \u{b7} devbox");
+        // In a folder's group: where it is now, not the group's folder.
+        let grouped = |here: Option<&str>| {
+            let mut f = at(&claude, Some("~/w/api"));
+            f.group = Some(folder("/w/api"));
+            f.here = here.map(String::from);
+            f
+        };
+        assert_eq!(
+            said(grouped(Some("~/w/api/src"))),
+            "\u{2733} Claude \u{b7} src"
+        );
+        assert_eq!(said(grouped(Some("~/w/api"))), "\u{2733} Claude \u{b7} api");
+        assert_eq!(said(grouped(None)), "\u{2733} Claude \u{b7} api");
+        // A pinned one is out of its group: the same.
+        let mut pinned = grouped(Some("~/w/api/src"));
+        pinned.pinned = true;
+        assert_eq!(said(pinned), "\u{2733} Claude \u{b7} src");
+    }
+
+    /// Who is in front (plan-time call 6): the first agent fuxx has a provider for (the row's
+    /// agent tab, the agent in its terminal, the workspace's agent tabs), else the program in
+    /// front, else the shell; an agent with no provider is just a program.
+    #[test]
+    fn who_is_the_agent_then_the_program_then_the_shell() {
+        let claude = Who::Agent {
+            glyph: "\u{2733}",
+            name: "Claude",
+        };
+        let agy = Who::Agent {
+            glyph: "A",
+            name: "agy",
+        };
+        assert_eq!(who_in_front([Some("claude")], Some("npm"), "zsh"), claude);
+        assert_eq!(who_in_front([None, Some("agy")], None, "zsh"), agy);
+        assert_eq!(
+            who_in_front([Some("codex"), Some("claude")], None, "zsh"),
+            claude
+        );
+        assert_eq!(
+            who_in_front([Some("codex")], Some("codex"), "zsh"),
+            Who::Program("codex".into())
+        );
+        assert_eq!(
+            who_in_front([None], Some("npm"), "zsh"),
+            Who::Program("npm".into())
+        );
+        assert_eq!(
+            who_in_front([None, None], None, "zsh"),
+            Who::Shell("zsh".into())
+        );
+        assert_eq!(who_in_front([], Some(""), "ssh"), Who::Shell("ssh".into()));
+        // The shell's name: the file name of `$SHELL`, else "shell".
+        assert_eq!(shell_name(Some("/bin/zsh".as_ref())), "zsh");
+        assert_eq!(shell_name(Some("-bash".as_ref())), "bash");
+        assert_eq!(shell_name(Some("".as_ref())), "shell");
+        assert_eq!(shell_name(None), "shell");
+    }
+
+    /// A dragged row's copy shows its line two's words (`place_lines`), who · where included.
+    #[test]
+    fn place_lines_follow_who_where() {
         let now = Instant::now();
         let lines = |f: WorkspaceFacts| {
             let rows = rows(&numbered(vec![f]), &[], None, &[], now);
@@ -3925,53 +3968,65 @@ mod tests {
         let mut both = facts("api", Status::Idle, now, None);
         both.folder = Some("~/api".into());
         both.branch = Some("main");
-        assert_eq!(lines(both), ["main • ~/api"]);
-        let mut folder_only = facts("api", Status::Idle, now, None);
-        folder_only.folder = Some("/tmp/scratch".into());
-        assert_eq!(lines(folder_only), ["/tmp/scratch"]);
+        assert_eq!(lines(both), ["\u{203a}_ zsh \u{b7} api"]);
+        let mut npm = facts("api", Status::Idle, now, None);
+        npm.who = Who::Program("npm".into());
+        npm.folder = Some("/tmp/scratch".into());
+        assert_eq!(lines(npm), ["\u{203a} npm \u{b7} scratch"]);
         let mut waiting = facts("claude", Status::Waiting, now, None);
         waiting.question = Some("Proceed?");
         assert_eq!(lines(waiting), ["Proceed?"]);
-        assert_eq!(lines(facts("shell", Status::Idle, now, None)), ["Idle"]);
+        let mut asking = facts("claude", Status::Waiting, now, None);
+        asking.folder = Some("~/api".into());
+        assert_eq!(lines(asking), [NEEDS_INPUT]);
+        assert_eq!(
+            lines(facts("shell", Status::Idle, now, None)),
+            ["\u{203a}_ zsh"]
+        );
     }
 
+    /// M11al §2.3: every row 56 (34 avatar, 11 above and below it), roomier text and avatar.
     #[test]
-    fn a_row_is_52_with_room_around_its_avatar_and_its_text() {
-        assert_eq!((SIDEBAR_ROW, SIDEBAR_ROW_TWO), (42.0, 52.0));
-        assert_eq!(NAME_GAP, 4.0);
+    fn every_row_is_56() {
+        assert_eq!((SIDEBAR_ROW, SIDEBAR_ROW_TWO), (56.0, 56.0));
+        assert_eq!(NAME_GAP, 3.0);
         assert_eq!((NAME_LINE, SUB_LINE), (18.0, 16.0));
-        // 7 above and 7 below the avatar (M11r), or the text when it is taller.
-        assert_eq!(AVATAR, 28.0);
+        assert_eq!(
+            (AVATAR, AVATAR_RADIUS, AVATAR_TEXT, AVATAR_GAP),
+            (34.0, 10.0, 12.0, 12.0)
+        );
         assert_eq!(SIDEBAR_ROW - AVATAR, 2.0 * ROW_PAD_Y);
+        // The two lines fit with 9.5 above and below them.
+        assert_eq!(SIDEBAR_ROW - (NAME_LINE + NAME_GAP + SUB_LINE), 2.0 * 9.5);
         assert_eq!(
-            SIDEBAR_ROW_TWO - NAME_LINE - NAME_GAP - SUB_LINE,
-            2.0 * ROW_PAD_Y
+            (ROW_INSET, ROW_PAD, ROW_RADIUS, ROW_MARGIN),
+            (10.0, 12.0, 12.0, 2.0)
         );
-        assert_eq!(
-            SIDEBAR_ROW_THREE - NAME_LINE - NAME_GAP - 2.0 * SUB_LINE,
-            2.0 * ROW_PAD_Y
-        );
+        assert_eq!(ROW_GAP, 2.0 * ROW_MARGIN);
+        assert_eq!((BADGE, BADGE_RING, BADGE_OUT), (10.0, 2.5, 3.0));
+        assert_eq!((SELECTED_BAR, SELECTED_BAR_INSET), (3.0, 12.0));
+        assert_eq!(AGE_MIN_ROW, 240.0);
         let now = Instant::now();
         let height = |f: WorkspaceFacts| {
             let rows = rows(&numbered(vec![f]), &[], None, &[], now);
             row_height(session(&rows[0]))
         };
-        // Nothing else to say: its status in words, two lines (M11r).
-        assert_eq!(height(facts("shell", Status::Idle, now, None)), 52.0);
-        // Its place only.
-        let mut placed = facts("api", Status::Idle, now, None);
+        assert_eq!(height(facts("shell", Status::Idle, now, None)), 56.0);
+        let mut placed = facts("api", Status::Idle, now, Some(folder("/api")));
         placed.folder = Some("~/api".into());
-        assert_eq!(height(placed), 52.0);
-        // Waiting, with a place and a question: still two lines.
+        placed.pinned = true;
+        assert_eq!(height(placed), 56.0);
         let mut waiting = facts("claude", Status::Waiting, now, None);
         waiting.folder = Some("~/api".into());
         waiting.branch = Some("main");
         waiting.question = Some("Proceed? (y/n)");
-        assert_eq!(height(waiting), 52.0);
-        // Lost.
+        assert_eq!(height(waiting), 56.0);
         let mut lost = facts("api", Status::Idle, now, None);
         lost.lost = true;
-        assert_eq!(height(lost), 52.0);
+        assert_eq!(height(lost), 56.0);
+        let mut noted = facts("api", Status::Working, now, None);
+        noted.note = Some("3 of 7");
+        assert_eq!(height(noted), 56.0);
     }
 
     #[test]
@@ -3979,20 +4034,35 @@ mod tests {
         assert_eq!(LIST_TOP, 10.0);
         assert_eq!(ROW_GAP, 4.0);
         assert_eq!(GROUP_GAP, 10.0);
-        assert_eq!(GROUP_HEADER, 28.0);
-        assert_eq!(ROW_RADIUS, 8.0);
+        // A heading: 16 above its words, 8 below, 20 from the sidebar's sides (M11al §2.5).
+        assert_eq!(GROUP_HEADER, 36.0);
+        assert_eq!(
+            (HEADING_ABOVE, HEADING_BELOW, HEADING_SIDE),
+            (16.0, 8.0, 20.0)
+        );
+        assert_eq!(
+            GROUP_HEADER,
+            HEADING_ABOVE + text::GROUP_HEADER + HEADING_BELOW
+        );
     }
 
-    /// M11v part 4: a group header's name and count a size up (14 / 12 pt); the rows' text
-    /// keeps its size.
+    /// M11al §2.3, §2.5 and §11: names 14, line two 12.5, ages and headings 12.
     #[test]
-    fn group_headers_are_a_size_up_and_rows_keep_theirs() {
-        assert_eq!((HEADER_NAME, HEADER_COUNT), (14.0, 12.0));
-        assert_eq!((text::NAME, text::META), (13.0, 11.0));
+    fn rows_and_headings_take_the_comfortable_text_sizes() {
+        assert_eq!(
+            (text::NAME, text::META, text::GROUP_HEADER),
+            (14.0, 12.5, 12.0)
+        );
+        assert_eq!((AGE_TEXT, HEADER_COUNT), (12.0, 12.0));
+        // Quiet headings: the name in capitals.
+        assert_eq!(heading_words("my-app"), "MY-APP");
+        assert_eq!(heading_words("devbox"), "DEVBOX");
     }
 
+    /// Precedence unchanged (M11al §2.4): not live, then waiting (its question, or "Needs
+    /// input"), then a script's note, then the program's own title; else who · where.
     #[test]
-    fn line_two_prefers_not_live_then_waiting_then_note_then_place() {
+    fn line_two_keeps_not_live_waiting_note_and_title_first() {
         let now = Instant::now();
         let line = |f: WorkspaceFacts| {
             let rows = rows(&numbered(vec![f]), &[], None, &[], now);
@@ -4004,13 +4074,14 @@ mod tests {
             f.branch = Some("main");
             f.note = Some("3 of 7");
             f.question = Some("Proceed? (y/n)");
+            f.title = Some("vim");
             f
         };
         // Lost beats everything, waiting included.
         let mut lost = base(Status::Waiting);
         lost.lost = true;
         assert_eq!(line(lost), Some(LineTwo::NotLive));
-        // Waiting beats the note and the place; with its question, or without one.
+        // Waiting beats the note, the title and who · where; with its question, or without one.
         assert_eq!(
             line(base(Status::Waiting)),
             Some(LineTwo::Waiting(Some("Proceed? (y/n)".into())))
@@ -4018,22 +4089,22 @@ mod tests {
         let mut asking = base(Status::Waiting);
         asking.question = None;
         assert_eq!(line(asking), Some(LineTwo::Waiting(None)));
-        // A script's note beats the place.
+        // A script's note beats the title.
         assert_eq!(
             line(base(Status::Working)),
             Some(LineTwo::Note("3 of 7".into()))
         );
-        // The place, else nothing.
-        let mut placed = base(Status::Idle);
-        placed.note = None;
-        assert_eq!(line(placed), Some(LineTwo::Place));
-        let mut branch_only = facts("api", Status::Idle, now, None);
-        branch_only.branch = Some("main");
-        assert_eq!(line(branch_only), Some(LineTwo::Place));
-        assert_eq!(
-            line(facts("shell", Status::Idle, now, None)),
-            Some(LineTwo::State("Idle"))
-        );
+        // The title beats who · where.
+        let mut titled = base(Status::Idle);
+        titled.note = None;
+        assert_eq!(line(titled), Some(LineTwo::Title("vim".into())));
+        // Else who · where.
+        let mut plain = base(Status::Idle);
+        plain.note = None;
+        plain.title = None;
+        let who = Who::Shell("zsh".into());
+        let place = Some("api".into());
+        assert_eq!(line(plain), Some(LineTwo::WhoWhere { who, place }));
     }
 
     #[test]
@@ -4205,7 +4276,7 @@ mod tests {
     }
 
     #[test]
-    fn the_title_says_what_it_does_under_the_name_after_the_note_and_before_the_place() {
+    fn the_title_says_what_it_does_under_the_name_after_the_note_and_before_who_and_where() {
         let now = Instant::now();
         let line = |f: WorkspaceFacts| {
             let rows = rows(&numbered(vec![f]), &[], None, &[], now);
@@ -4218,11 +4289,12 @@ mod tests {
             line(f),
             Some(LineTwo::Title("✳ Fix the sidebar drag".into()))
         );
-        // The same as the name: nothing more to say, so the place.
+        // The same as the name: nothing more to say, so who · where.
         let mut same = facts("claude", Status::Idle, now, None);
         same.title = Some("claude");
         same.folder = Some("~/api".into());
-        assert_eq!(line(same), Some(LineTwo::Place));
+        let (who, place) = (Who::Shell("zsh".into()), Some("api".into()));
+        assert_eq!(line(same), Some(LineTwo::WhoWhere { who, place }));
         // A note and a question still come first.
         let mut noted = facts("build", Status::Working, now, None);
         noted.title = Some("cargo");
@@ -4237,8 +4309,11 @@ mod tests {
         );
     }
 
+    /// M11al §2.4: a row says who and where in a folder's group too (where it is now; the
+    /// header no longer stands in for it), in a host's group and out of any; its title still
+    /// comes first.
     #[test]
-    fn rows_in_a_folder_group_leave_the_place_to_the_header() {
+    fn rows_in_and_out_of_groups_say_who_and_where() {
         let now = Instant::now();
         let row = |f: WorkspaceFacts| {
             let rows = rows(&numbered(vec![f]), &[], None, &[], now);
@@ -4255,18 +4330,20 @@ mod tests {
             f.branch = Some("main");
             f
         };
+        let api = LineTwo::WhoWhere {
+            who: Who::Shell("zsh".into()),
+            place: Some("api".into()),
+        };
         let in_folder = row(placed(Some(folder("/api"))));
-        assert_eq!(line_two(&in_folder), Some(LineTwo::State("Idle")));
+        assert_eq!(line_two(&in_folder), Some(api.clone()));
         assert_eq!(row_height(&in_folder), SIDEBAR_ROW_TWO);
-        // A host's group still says the folder there; a row out of any group, both lines.
         let in_host = row(placed(Some(GroupKey::Host("box".into()))));
-        assert_eq!(line_two(&in_host), Some(LineTwo::Place));
+        assert_eq!(line_two(&in_host), Some(api.clone()));
         let out = row(placed(None));
-        assert_eq!(line_two(&out), Some(LineTwo::Place));
-        // A pinned one is out of its group: its place comes back.
+        assert_eq!(line_two(&out), Some(api.clone()));
         let mut pinned = placed(Some(folder("/api")));
         pinned.pinned = true;
-        assert_eq!(line_two(&row(pinned)), Some(LineTwo::Place));
+        assert_eq!(line_two(&row(pinned)), Some(api));
         // Its title still shows in the group.
         let mut titled = placed(Some(folder("/api")));
         titled.title = Some("vim");
@@ -4373,6 +4450,8 @@ mod tests {
         assert_eq!(closed_mark(header(&rows[0])), None);
     }
 
+    /// In a folder's group, where it is now, whatever its status (M11al: a working one no
+    /// longer says "Cultivating…", its badge does).
     #[test]
     fn a_grouped_row_with_nothing_else_to_say_shows_where_it_is() {
         let now = Instant::now();
@@ -4382,19 +4461,15 @@ mod tests {
             let rows = rows(&numbered(vec![f]), &[], None, &[], now);
             line_two(session(&rows[1]))
         };
-        assert_eq!(
-            line(Status::Idle, Some("~/api/src")),
-            Some(LineTwo::Here("~/api/src".into()))
-        );
-        assert_eq!(
-            line(Status::Done, Some("~/api")),
-            Some(LineTwo::Here("~/api".into()))
-        );
-        // Working says so; nothing known: its status.
-        assert_eq!(
-            line(Status::Working, Some("~/api/src")),
-            Some(LineTwo::State("Cultivating\u{2026}"))
-        );
-        assert_eq!(line(Status::Idle, None), Some(LineTwo::State("Idle")));
+        let at = |place: Option<&str>| {
+            Some(LineTwo::WhoWhere {
+                who: Who::Shell("zsh".into()),
+                place: place.map(String::from),
+            })
+        };
+        assert_eq!(line(Status::Idle, Some("~/api/src")), at(Some("src")));
+        assert_eq!(line(Status::Done, Some("~/api")), at(Some("api")));
+        assert_eq!(line(Status::Working, Some("~/api/src")), at(Some("src")));
+        assert_eq!(line(Status::Idle, None), at(None));
     }
 }

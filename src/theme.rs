@@ -282,6 +282,8 @@ impl Theme {
             )
         };
         let (row_hover, row_active) = rows_on(canvas);
+        // Nothing draws these since M11al Task 8 (no group cards, rows on the canvas); kept as
+        // floors because without them Mocha's `text_faint` moves a step (9fa2b3 → 9fa2b2).
         let (legacy_hover, legacy_active) = rows_on(base);
         let plain = [
             base,
