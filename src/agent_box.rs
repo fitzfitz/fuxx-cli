@@ -1494,6 +1494,11 @@ impl AgentTab {
             .map_or_else(Vec::new, |a| a.hits.iter().map(|h| h.rel.clone()).collect())
     }
 
+    /// Whether the `@` or `/` list is scrolled off its top.
+    pub fn shot_list_scrolled(&self) -> bool {
+        self.slash_scroll.offset().y != gpui::px(0.)
+    }
+
     /// The `@` list's selected pick (none: it is closed).
     pub fn shot_at_selected(&self) -> Option<usize> {
         self.at.as_ref().map(|a| a.selected)
