@@ -576,6 +576,15 @@ pub(super) const SIDEBAR_CHROME_GROWTH: f32 = (ui_tokens::size::TOP_BAND - 38.0)
     + crate::sidebar::SEARCH_BOTTOM
     + (crate::sidebar::FOOTER - 36.0);
 
+/// How much taller `rows` sidebar rows and `headers` group headings are since M11al Task 8
+/// (rows 52 → `SIDEBAR_ROW_TWO`; headings 28, and 6 more above all but the first, →
+/// `GROUP_HEADER`): a scene whose window was sized for the old rows adds this to its height, so
+/// the list keeps the rows it showed.
+pub(super) const fn sidebar_list_growth(rows: f32, headers: f32) -> f32 {
+    rows * (ui_tokens::size::SIDEBAR_ROW_TWO - 52.0)
+        + headers * (ui_tokens::size::GROUP_HEADER - 28.0)
+}
+
 fn sidebar_workspace(
     sessions: &[ShotSession],
     split: Option<usize>,

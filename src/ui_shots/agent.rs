@@ -2150,6 +2150,16 @@ pub(super) fn agent_sidebar_waiting() {
                     "{n}: web's row waits on its Claude"
                 );
                 assert_eq!(row.age.as_deref(), Some("4m"), "{n}: its age");
+                // Who is in front: its Claude tab (M11al §2.4); the line itself says the
+                // question while it waits (plan-time call 1).
+                assert_eq!(
+                    row.who,
+                    crate::sidebar::Who::Agent {
+                        glyph: "\u{2733}",
+                        name: "Claude"
+                    },
+                    "{n}: web's row is Claude's"
+                );
             },
         );
         println!("ui-shots: {n}: {}", path.display());

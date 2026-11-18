@@ -20,16 +20,13 @@ pub const QUIET_LINE_MIN: f32 = 1.4;
 pub mod size {
     #![allow(dead_code)] // drawn with from M11 Task 2 on
 
-    /// A sidebar row with its name line only, and one with a second line under it (where it
-    /// is, what it waits on, a script's note, or "not live") (M11i: `sidebar::row_height`).
-    /// Each has 7 px above and below its text, and 4 px between the name and the lines under
-    /// it (the roomier sidebar, 2026-11-10, your call: "It's too compact").
-    pub const SIDEBAR_ROW: f32 = 42.0;
-    pub const SIDEBAR_ROW_TWO: f32 = 52.0;
-    /// A row in a git repo: its branch and its folder, each on its own line under the name
-    /// (2026-11-10, your call).
-    pub const SIDEBAR_ROW_THREE: f32 = 68.0;
-    pub const GROUP_HEADER: f32 = 28.0;
+    /// A sidebar row with its name line only, and one with a second line under it (who and
+    /// where, what it waits on, a script's note, or "not live") (M11i: `sidebar::row_height`).
+    /// 56 each since M11al (§2.3): every row has line two since M11r.
+    pub const SIDEBAR_ROW: f32 = 56.0;
+    pub const SIDEBAR_ROW_TWO: f32 = 56.0;
+    /// A group heading: its 12 px words with 16 above and 8 below (M11al §2.5).
+    pub const GROUP_HEADER: f32 = 36.0;
     /// A pane's tab bar (M11b; it replaced M11's 22 px pane header; 30 since M11i; 52 since
     /// M11al, level with the right panel's header).
     pub const TAB_BAR: f32 = 52.0;
@@ -75,13 +72,14 @@ pub mod size {
     pub const UNFOCUSED_VEIL: f32 = 0.4;
 }
 
-/// Text sizes in pixels. Numbers and meta use tabular figures; group headers get letter spacing.
+/// Text sizes in pixels. Numbers and meta use tabular figures; group headings are in capitals.
 pub mod text {
     #![allow(dead_code)] // drawn with from M11 Task 2 on
 
-    pub const NAME: f32 = 13.0;
-    pub const META: f32 = 11.0;
-    pub const GROUP_HEADER: f32 = 11.0;
+    /// Names 14, the line under them 12.5, group headings 12 (M11al §11).
+    pub const NAME: f32 = 14.0;
+    pub const META: f32 = 12.5;
+    pub const GROUP_HEADER: f32 = 12.0;
     /// M11al: tabs, search, buttons, right-panel rows; and shortcut keys.
     pub const UI: f32 = 13.5;
     pub const KEYS: f32 = 11.5;
