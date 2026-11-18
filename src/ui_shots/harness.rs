@@ -1206,8 +1206,9 @@ pub(super) fn count_along(
 }
 
 /// How far a gap's pixel may be from the canvas: the cards' shadows (`card_shadow_alpha`,
-/// blurred 6 pt) reach into the 6 pt gaps and darken them a little (M11i).
-const SHADOW_SLACK: u8 = 12;
+/// blurred 6 pt) reach into the 6 pt gaps and darken them a little (M11i). 12 at M11i's alphas
+/// (0.30 dark, 0.08 light); 18 since M11al raised them to 0.45 / 0.12 (the same 1.5 times).
+pub(super) const SHADOW_SLACK: u8 = 18;
 
 /// Whether pixel `p` shows the canvas (`sidebar_background`) between cards: within the
 /// shadow's reach of it, and nearer it than the card's fill.

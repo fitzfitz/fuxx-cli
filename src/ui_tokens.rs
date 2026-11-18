@@ -56,6 +56,12 @@ pub mod size {
     pub const CARD_GAP: f32 = 6.0;
     pub const CARD_RADIUS: f32 = 8.0;
     pub const FOCUS_RING: f32 = 1.0;
+    /// M11al's one floating card: the canvas inset around it, its shadow's drop and blur, and
+    /// the 1 px lines.
+    pub const CARD_INSET: f32 = 8.0;
+    pub const CARD_SHADOW_Y: f32 = 8.0;
+    pub const CARD_SHADOW_BLUR: f32 = 28.0;
+    pub const HAIRLINE: f32 = 1.0;
     /// The status bar along the window's bottom edge (M11i).
     pub const STATUS_BAR: f32 = 22.0;
     /// How far below the tab bar's top its tabs start (M11i).
@@ -86,6 +92,9 @@ pub mod text {
     pub const NAME: f32 = 13.0;
     pub const META: f32 = 11.0;
     pub const GROUP_HEADER: f32 = 11.0;
+    /// M11al: tabs, search, buttons, right-panel rows; and shortcut keys.
+    pub const UI: f32 = 13.5;
+    pub const KEYS: f32 = 11.5;
 }
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };

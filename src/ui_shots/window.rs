@@ -1005,8 +1005,14 @@ fn card_scenes() {
         for (dx, dy) in [(1.0, 1.0), (1.5, 1.5), (1.0, 2.0), (2.0, 1.0)] {
             let (x, y) = (card_left + dx, card_top + dy);
             let p = at(x, y);
+            // Nearer the canvas than the bar, where the two are told apart at all: a light theme's
+            // bar (stepped from its pre-M11al sidebar colour, until Task 5 retires it) now sits
+            // within the shadow's reach of the darker canvas, so a shadowed canvas pixel can be
+            // as near the bar as the canvas.
+            let bar = ui.tab_bar;
+            let bar_apart = gap([bar.r, bar.g, bar.b], ui.sidebar_background) > SHADOW_SLACK;
             assert!(
-                is_canvas(p, &ui) && gap(p, ui.sidebar_background) < gap(p, ui.tab_bar),
+                is_canvas(p, &ui) && (!bar_apart || gap(p, ui.sidebar_background) < gap(p, bar)),
                 "{n}: canvas outside the card's top-left curve at ({x}, {y}): {p:?}"
             );
         }
@@ -2357,14 +2363,17 @@ fn title_bar_scenes() {
             // 🔔): the slot's corner differs from the band just left of the 🔔, under the same
             // shadow, by what `panel_hover` differs from the band's colour: within 1 a channel,
             // and the same way on every channel that differs at all (in Latte that is 3, 1, 1, so
-            // an unlit slot, which differs by nothing, fails on all three).
+            // an unlit slot, which differs by nothing, fails on all three). The shadow also
+            // darkens the difference itself (the canvas is darker since M11al, so it is a bigger
+            // one in Mocha: 37, 38, 46 want, 35, 36, 45 got): up to an eighth of it more.
             let fill = at(b[0] + 1.5, 19.0);
             let beside = at(b[0] - 3.0, 19.0);
             let (hover, band) = (bg(ui.panel_hover), bg(ui.sidebar_background));
             let off = (0..3).all(|k| {
                 let got = i32::from(fill[k]) - i32::from(beside[k]);
                 let want = i32::from(hover[k]) - i32::from(band[k]);
-                (got - want).abs() <= 1 && (want == 0 || got.signum() == want.signum())
+                (got - want).abs() <= 1 + want.abs() / 8
+                    && (want == 0 || got.signum() == want.signum())
             });
             assert!(
                 off,

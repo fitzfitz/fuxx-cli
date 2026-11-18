@@ -131,6 +131,15 @@ pub struct UiColors {
     pub card_border: Rgb,
     /// The card's shadow: `shadow` at this opacity (0-1).
     pub card_shadow_alpha: f32,
+    /// M11al: the sidebar search box's fill, halfway from the canvas to the card.
+    pub raised: Rgb,
+    /// The attached sidebar's surface (between the canvas and the card), its hovered tint and
+    /// its selected tint (the `row_selected` formula on it).
+    pub side: Rgb,
+    pub side_hover: Rgb,
+    pub side_selected: Rgb,
+    /// The active tab's fill: a faint wash of the accent over the card.
+    pub tab_active: Rgb,
     /// The selected sidebar row's soft tint of the accent (its text keeps its own colours).
     pub row_selected: Rgb,
     /// A hovered and a selected row on a card (the right sidebar's rows).
@@ -239,63 +248,100 @@ impl Theme {
         let black = hex(0x000000);
         let white = hex(0xffffff);
         let dark = self.is_dark();
-        // A dark sidebar sinks below the terminal. A light one dips slightly toward the theme's
-        // own ink (black would turn it grey).
-        let sidebar = if dark {
+        // The sidebar colour is the window's canvas (M11al): the darkest surface. A dark one sinks
+        // well below the terminal; a light one dips toward the theme's own ink (black would turn
+        // it grey).
+        let canvas = if dark {
+            mix(bg, black, 0.42)
+        } else {
+            mix(bg, fg, 0.08)
+        };
+        // The sidebar colour before M11al. Text and selections keep mixing from it, and the
+        // surfaces that were derived from it (rows, tints, the tab bar) are also kept as
+        // "legacy" floors for text and marks, so the text hierarchy does not drift while the
+        // canvas darkens (pinned by `dim_and_faint_text_keep_todays_values`).
+        let base = if dark {
             mix(bg, black, 0.18)
         } else {
             mix(bg, fg, 0.04)
         };
-        // Rows are mixed from the sidebar they sit on, toward the ink: hover a little, active more.
-        let row_hover = mix(sidebar, fg, 0.06);
-        let row_active = mix(sidebar, fg, if dark { 0.14 } else { 0.10 });
+        // M11al's floating card holds the panes; the attached sidebar sits between it and the
+        // canvas; the sidebar's search box a half step from the canvas to the card.
+        let card = bg;
+        let card_lift = mix(card, fg, if dark { 0.10 } else { 0.07 });
+        let raised = mix(canvas, card, 0.5);
+        let side = mix(card, canvas, 0.33);
+        let side_hover = mix(side, fg, 0.06);
         // Overlays are raised: a little lighter than the terminal on dark, near white on light.
         let panel = if dark {
             mix(bg, fg, 0.06)
         } else {
             mix(bg, white, 0.65)
         };
-
         let panel_hover = mix(panel, fg, 0.08);
-        let plain = [sidebar, row_hover, row_active, panel, panel_hover, bg];
-        let waiting = readable(self.palette[1], &plain, MARK_MIN);
-        let done = readable(self.palette[2], &plain, MARK_MIN);
-        // A soft wash of the status colour; done is subtler (it needs you less).
-        let waiting_tint = mix(sidebar, waiting, if dark { 0.12 } else { 0.08 });
-        let done_tint = mix(sidebar, done, if dark { 0.07 } else { 0.05 });
-        let waiting_hover = mix(waiting_tint, fg, 0.06);
-        // M11i's cards and tab bars. The card is the terminal; the tab bar sits halfway between
-        // it and the canvas (the sidebar colour) so it reads as the card's top.
-        let card = bg;
-        let card_hover = mix(card, fg, 0.06);
-        // The bar's empty strip starts at the canvas colour and steps away from the card (dark
-        // themes toward black, light ones toward the foreground) until it stands apart from the
-        // active tab (`TAB_BAR_MIN`), stopping short of reading as a separate band (< 1.6:1
-        // against the canvas).
-        let tab_bar = {
-            let toward = if dark { Rgb { r: 0, g: 0, b: 0 } } else { fg };
-            // Light themes keep the cap lower: a darker bar squeezes text, text_dim and
-            // text_faint (all ≥ 4.5:1 on it) together until they stop looking different.
-            let cap = if dark { 1.6 } else { TAB_BAR_LIGHT_CAP };
-            let mut bar = sidebar;
-            for n in 0..100 {
-                if contrast(bar, card) >= TAB_BAR_MIN {
-                    break;
-                }
-                let next = mix(sidebar, toward, 0.01 * (n + 1) as f32);
-                if contrast(next, sidebar) >= cap {
-                    break;
-                }
-                bar = next;
-            }
-            bar
+        // Rows are mixed from the sidebar they sit on, toward the ink: hover a little, active more.
+        let rows_on = |on: Rgb| {
+            (
+                mix(on, fg, 0.06),
+                mix(on, fg, if dark { 0.14 } else { 0.10 }),
+            )
         };
-        let tab_hover = mix(tab_bar, fg, 0.06);
-        // Every surface something is drawn on: rows, tinted rows, overlays, pane tabs.
-        let surfaces = [
-            sidebar,
+        let (row_hover, row_active) = rows_on(canvas);
+        let (legacy_hover, legacy_active) = rows_on(base);
+        let plain = [
+            base,
+            legacy_hover,
+            legacy_active,
+            panel,
+            panel_hover,
+            bg,
+            canvas,
             row_hover,
             row_active,
+        ];
+        let waiting = readable(self.palette[1], &plain, MARK_MIN);
+        let done = readable(self.palette[2], &plain, MARK_MIN);
+        // M11i's cards and tab bars. The card is the terminal; the tab bar sits halfway between
+        // it and the canvas (the sidebar colour) so it reads as the card's top.
+        let card_hover = mix(card, fg, 0.06);
+        // What a sidebar colour `on` carries: a soft wash of the status colour (done is subtler:
+        // it needs you less), and the tab bar. The bar's empty strip starts at that colour and
+        // steps away from the card (dark themes toward black, light ones toward the foreground)
+        // until it stands apart from the active tab (`TAB_BAR_MIN`), stopping short of reading as
+        // a separate band (< 1.6:1 against it).
+        let family = |on: Rgb| {
+            let waiting_tint = mix(on, waiting, if dark { 0.12 } else { 0.08 });
+            let done_tint = mix(on, done, if dark { 0.07 } else { 0.05 });
+            let waiting_hover = mix(waiting_tint, fg, 0.06);
+            let toward = if dark { Rgb { r: 0, g: 0, b: 0 } } else { fg };
+            // Light themes keep the cap lower: a darker bar squeezes text, text_dim and
+            // text_faint (all >= 4.5:1 on it) together until they stop looking different.
+            let cap = if dark { 1.6 } else { TAB_BAR_LIGHT_CAP };
+            let mut tab_bar = on;
+            for n in 0..100 {
+                if contrast(tab_bar, card) >= TAB_BAR_MIN {
+                    break;
+                }
+                let next = mix(on, toward, 0.01 * (n + 1) as f32);
+                if contrast(next, on) >= cap {
+                    break;
+                }
+                tab_bar = next;
+            }
+            let tab_hover = mix(tab_bar, fg, 0.06);
+            [waiting_tint, done_tint, waiting_hover, tab_bar, tab_hover]
+        };
+        // Tints and the tab bar stay on the pre-M11al colour (the tab bar goes in Task 5, the
+        // tinted rows are redrawn on `side`): from the darker canvas they would press the text
+        // of a light theme together.
+        let [waiting_tint, done_tint, waiting_hover, tab_bar, tab_hover] = family(base);
+        // Every surface something is drawn on: rows, tinted rows, overlays, pane tabs. The
+        // older ones come first, in their old order: `readable` moves a colour step by step, so
+        // the order keeps the text's values where they were.
+        let legacy_surfaces = [
+            base,
+            legacy_hover,
+            legacy_active,
             panel,
             panel_hover,
             bg,
@@ -305,6 +351,12 @@ impl Theme {
             tab_bar,
             tab_hover,
         ];
+        // The rows on the canvas, and M11al's: the canvas, the search box, the attached
+        // sidebar and its hover, the lift.
+        let fresh_surfaces = [
+            row_hover, row_active, canvas, raised, side, side_hover, card_lift,
+        ];
+        let surfaces = [&legacy_surfaces[..], &fresh_surfaces[..]].concat();
         let mark = |c: Rgb| readable(c, &surfaces, MARK_MIN);
         let accent = mark(self.palette[4]);
         let ring_working = mark(self.palette[3]);
@@ -313,7 +365,7 @@ impl Theme {
         // the surface itself, which the text reads on.
         let plain_text = readable(
             fg,
-            &[&surfaces[..], &[card_hover, tab_bar, tab_hover]].concat(),
+            &[&legacy_surfaces[..], &[card_hover]].concat(),
             TEXT_MIN,
         );
         // 18 % on dark themes, 12 % on light ones, in 2 % steps.
@@ -325,38 +377,52 @@ impl Theme {
                 .find(|&s| contrast(plain_text, s) >= TEXT_MIN)
                 .unwrap_or(on)
         };
-        let row_selected = tint(sidebar);
+        let row_selected = tint(canvas);
+        let legacy_selected = tint(base);
         let card_selected = tint(card);
+        let side_selected = tint(side);
         // Text reads on every surface, the new ones too.
-        let card_lift = mix(card, fg, if dark { 0.10 } else { 0.07 });
         let text_surfaces = [
-            &surfaces[..],
-            &[
-                card_hover,
-                tab_bar,
-                tab_hover,
-                row_selected,
-                card_selected,
-                card_lift,
-            ],
+            &legacy_surfaces[..],
+            &[card_hover, legacy_selected, card_selected, card_lift],
+            &fresh_surfaces[..6],
+            &[row_selected, side_selected],
         ]
         .concat();
         let text = |c: Rgb| readable(c, &text_surfaces, TEXT_MIN);
-        let text_dim = text(mix(sidebar, fg, 0.72));
+        if std::env::var("DBGT").is_ok() {
+            for (i, x) in text_surfaces.iter().enumerate() {
+                eprintln!(
+                    "DBG {i} {:?} dim {:.3} faint {:.3}",
+                    x,
+                    contrast(hex(0x5a5a6c), *x),
+                    contrast(hex(0x5a5b66), *x)
+                );
+            }
+        }
+        let text_dim = text(mix(base, fg, 0.72));
         let quiet = |c: Rgb, on: &[Rgb]| readable(c, on, QUIET_LINE_MIN);
         let ink = text(fg);
         // The accent over the box (drawn on the sidebar colour), 30 % or less: as much as keeps
         // the text on it readable. At 0 it is the box itself, which the text reads on.
         let selection = (0..=6)
-            .map(|step| mix(sidebar, accent, 0.30 - 0.05 * step as f32))
+            .map(|step| mix(base, accent, 0.30 - 0.05 * step as f32))
             .find(|&s| contrast(ink, s) >= TEXT_MIN)
-            .unwrap_or(sidebar);
-        let text_faint = text(mix(sidebar, fg, 0.55));
+            .unwrap_or(base);
+        let text_faint = text(mix(base, fg, 0.55));
         // Also text: the browser panel's error on the sidebar, and a waiting row's "Needs
         // input" on its tint (hovered or not) or, selected, on the selection's (M11i).
         let ring_waiting = readable(
             mark(waiting),
-            &[sidebar, waiting_tint, waiting_hover, row_selected],
+            &[
+                canvas,
+                base,
+                waiting_tint,
+                waiting_hover,
+                row_selected,
+                side_selected,
+                legacy_selected,
+            ],
             TEXT_MIN,
         );
         let ring_done = mark(done);
@@ -382,6 +448,13 @@ impl Theme {
             (ring_done, MARK_MIN),
             (accent, MARK_MIN),
         ];
+        // The active tab: the accent over the card at 10 % (8 % on light), lowered in 2 % steps
+        // while the words or the tab's marks would fall below their floors. At 0 it is the card.
+        let tab_active = wash(
+            card,
+            if dark { 0.10 } else { 0.08 },
+            &[&words[..], &tab_marks[..]].concat(),
+        );
         let drop_tab = wash(tab_bar, 0.20, &[&words[..], &tab_marks[..]].concat());
         let drop_card = wash(card, 0.08, &words);
         let tab_colors = TabColor::ALL.map(|c| mark(c.base()));
@@ -409,8 +482,8 @@ impl Theme {
             (top, bottom, readable(ink, &[top, bottom], TEXT_MIN))
         });
         UiColors {
-            sidebar_background: sidebar,
-            sidebar_border: quiet(mix(sidebar, fg, 0.12), &[sidebar, bg]),
+            sidebar_background: canvas,
+            sidebar_border: quiet(mix(canvas, fg, 0.12), &[canvas, bg]),
             row_active,
             row_hover,
             text: ink,
@@ -437,9 +510,14 @@ impl Theme {
             card,
             card_border: quiet(
                 mix(bg, fg, if dark { 0.10 } else { 0.12 }),
-                &[sidebar, card],
+                &[canvas, card, side],
             ),
-            card_shadow_alpha: if dark { 0.30 } else { 0.08 },
+            card_shadow_alpha: if dark { 0.45 } else { 0.12 },
+            raised,
+            side,
+            side_hover,
+            side_selected,
+            tab_active,
             row_selected,
             card_hover,
             card_selected,
@@ -485,6 +563,10 @@ impl Theme {
             ("panel", ui.panel),
             ("panel_hover", ui.panel_hover),
             ("terminal", self.background),
+            // M11al: the search box, the attached sidebar and its hover (marks read on these).
+            ("raised", ui.raised),
+            ("side", ui.side),
+            ("side_hover", ui.side_hover),
         ];
         let text = [
             ("text", ui.text),
@@ -513,6 +595,7 @@ impl Theme {
         // M11i's surfaces. The selected sidebar row keeps its marks and tab dot in their own
         // colours, so they are checked there too.
         let row_selected = ("row_selected", ui.row_selected);
+        let side_selected = ("side_selected", ui.side_selected);
         // Text-only here: no status mark or tab colour is drawn on these. `card_hover` and
         // `card_selected` are the Files tree's hovered and selected rows: besides text, they
         // carry only the tree's git marks and file-type tints, which `right_sidebar` pushes to
@@ -533,8 +616,14 @@ impl Theme {
             ("tab_bar", ui.tab_bar),
             ("tab_hover", ui.tab_hover),
             ("drop_tab", ui.drop_tab),
+            // M11al's active tab: words and the tab's marks.
+            ("tab_active", ui.tab_active),
         ];
-        let marked: Vec<_> = surfaces.iter().copied().chain([row_selected]).collect();
+        let marked: Vec<_> = surfaces
+            .iter()
+            .copied()
+            .chain([row_selected, side_selected])
+            .collect();
         let mark_room: Vec<_> = marked.iter().copied().chain(tab_bars).collect();
         let written: Vec<_> = mark_room.iter().copied().chain(text_only).collect();
         let mut pairs = vec![];
@@ -573,6 +662,7 @@ impl Theme {
             ("waiting_tint", ui.waiting_tint),
             ("waiting_hover", ui.waiting_hover),
             row_selected,
+            side_selected,
         ] {
             pairs.push(pair(("ring_waiting", ui.ring_waiting), on, TEXT_MIN));
         }
@@ -587,6 +677,7 @@ impl Theme {
             // A card's edge on the canvas and on the card; the Files tree's guides on the card.
             (("card_border", ui.card_border), surfaces[0]),
             (("card_border", ui.card_border), ("card", ui.card)),
+            (("card_border", ui.card_border), ("side", ui.side)),
             (("guide", ui.guide), ("card", ui.card)),
         ];
         for (line, bg) in lines {
@@ -1123,8 +1214,128 @@ mod tests {
             ui.row_selected,
             ui.accent
         );
-        assert_eq!(ui.card_shadow_alpha, 0.30);
-        assert_eq!(named("Catppuccin Latte").ui().card_shadow_alpha, 0.08);
+        assert_eq!(ui.card_shadow_alpha, 0.45);
+        assert_eq!(named("Catppuccin Latte").ui().card_shadow_alpha, 0.12);
+    }
+
+    #[test]
+    fn the_canvas_is_darkest_and_side_between() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let l = |c| relative_luminance_for_test(c);
+            assert!(
+                l(ui.sidebar_background) < l(ui.side) && l(ui.side) < l(ui.card),
+                "{name}: canvas {:?}, side {:?}, card {:?}",
+                ui.sidebar_background,
+                ui.side,
+                ui.card
+            );
+        }
+    }
+
+    fn relative_luminance_for_test(c: Rgb) -> f32 {
+        // contrast against black is monotonic in luminance
+        contrast(c, hex(0x000000))
+    }
+
+    #[test]
+    fn card_border_is_quiet_on_canvas_card_and_side() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            for (what, on) in [
+                ("canvas", ui.sidebar_background),
+                ("card", ui.card),
+                ("side", ui.side),
+            ] {
+                let r = contrast(ui.card_border, on);
+                assert!(
+                    r >= QUIET_LINE_MIN,
+                    "{name}: card_border on {what} is {r:.2}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn text_reads_on_the_new_surfaces() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            for (sn, s) in [
+                ("raised", ui.raised),
+                ("side", ui.side),
+                ("side_hover", ui.side_hover),
+                ("side_selected", ui.side_selected),
+                ("tab_active", ui.tab_active),
+            ] {
+                for (tn, t) in [
+                    ("text", ui.text),
+                    ("text_dim", ui.text_dim),
+                    ("text_faint", ui.text_faint),
+                ] {
+                    let r = contrast(t, s);
+                    assert!(r >= TEXT_MIN, "{name}: {tn} on {sn} is {r:.2}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn marks_read_on_the_new_surfaces() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            for (sn, s) in [
+                ("tab_active", ui.tab_active),
+                ("side", ui.side),
+                ("card_lift", ui.card_lift),
+            ] {
+                for (mn, m) in [
+                    ("ring_working", ui.ring_working),
+                    ("ring_waiting", ui.ring_waiting),
+                    ("ring_done", ui.ring_done),
+                    ("accent", ui.accent),
+                ] {
+                    let r = contrast(m, s);
+                    assert!(r >= MARK_MIN, "{name}: {mn} on {sn} is {r:.2}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tab_active_keeps_the_accent_hue() {
+        // Like `row_selected`'s check: the washes of a few themes are too faint for the 8-bit
+        // channels to keep a hue, so the two reference themes carry it.
+        for (name, theme) in every_theme() {
+            if !matches!(name, "Catppuccin Mocha" | "Catppuccin Latte") {
+                continue;
+            }
+            let ui = theme.ui();
+            let d = (hue(ui.tab_active) - hue(ui.accent)).abs();
+            assert!(
+                d.min(360.0 - d) <= 15.0,
+                "{name}: tab_active {:?} is {d:.1} degrees from the accent {:?}",
+                ui.tab_active,
+                ui.accent
+            );
+        }
+        let (_, mocha) = every_theme()
+            .into_iter()
+            .find(|(n, _)| *n == "Catppuccin Mocha")
+            .unwrap();
+        assert_ne!(mocha.ui().tab_active, mocha.ui().card);
+    }
+
+    #[test]
+    fn dim_and_faint_text_keep_todays_values() {
+        // Read from master before M11al darkened the canvas (the text hierarchy must not drift).
+        let themes = every_theme();
+        let named = |name: &str| themes.iter().find(|(n, _)| *n == name).unwrap().1.ui();
+        let mocha = named("Catppuccin Mocha");
+        assert_eq!(mocha.text_dim, hex(0x9ca2ba));
+        assert_eq!(mocha.text_faint, hex(0x9fa2b3));
+        let latte = named("Catppuccin Latte");
+        assert_eq!(latte.text_dim, hex(0x5a5a6c));
+        assert_eq!(latte.text_faint, hex(0x5a5b66));
     }
 
     #[test]
