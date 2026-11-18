@@ -22,6 +22,7 @@ use crate::folder_picker::{
 };
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::palette::name_cell;
+use crate::palette_items::FileHit;
 use crate::palette_match::fuzzy;
 use crate::providers::{
     AgentCommand, Applies, Catalog, ChangeKind, CommandKind, LimitState, ModeChoice, ModelChoice,
@@ -79,6 +80,9 @@ pub const LOADING: &str = "Loading\u{2026}";
 /// The `/` list's group headings, and its notes.
 pub const SLASH_HEADINGS: [&str; 3] = ["Commands", "Skills", "Agents"];
 pub const SLASH_LIST_FAILED: &str = "Couldn't read the list";
+/// The `@` list's group headings, and the most agents or skills it shows of each.
+pub const AT_HEADINGS: [&str; 3] = ["Files", "Agents", "Skills"];
+pub const AT_NAMED_LIMIT: usize = 5;
 pub const SLASH_NONE: &str = "No command matches";
 pub const MODEL_LIST_FAILED: &str = "Couldn't read the model list";
 pub const DEFAULT_LIST: &str = "(default list)";
@@ -714,6 +718,59 @@ pub fn slash_rows(commands: &[AgentCommand], query: &str, limit: usize) -> Vec<S
     rows
 }
 
+/// A row of the `@` list: a section's heading, a file (its place among the hits), or a sub-agent
+/// or skill (its place in the catalog's list, and the chars of its name the query matched).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AtRow {
+    Heading(&'static str),
+    File(usize),
+    Named { ix: usize, positions: Vec<usize> },
+}
+
+/// The `@` list for `query`: the ranked file `files` as they are, then the sub-agents, then the
+/// skills that match it (fuzzy, best first, at most `AT_NAMED_LIMIT` of each), each section under
+/// its heading; a section with nothing in it is left out.
+pub fn at_rows(files: &[FileHit], commands: &[AgentCommand], query: &str) -> Vec<AtRow> {
+    let mut rows = Vec::new();
+    if !files.is_empty() {
+        rows.push(AtRow::Heading(AT_HEADINGS[0]));
+        rows.extend((0..files.len()).map(AtRow::File));
+    }
+    for (kind, heading) in [
+        (CommandKind::Agent, AT_HEADINGS[1]),
+        (CommandKind::Skill, AT_HEADINGS[2]),
+    ] {
+        let mut found: Vec<(i32, usize, Vec<usize>)> = commands
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.kind == kind)
+            .filter_map(|(ix, c)| fuzzy(query, &c.name).map(|m| (m.score, ix, m.positions)))
+            .collect();
+        found.sort_by_key(|(score, ..)| std::cmp::Reverse(*score));
+        found.truncate(AT_NAMED_LIMIT);
+        if found.is_empty() {
+            continue;
+        }
+        rows.push(AtRow::Heading(heading));
+        rows.extend(
+            found
+                .into_iter()
+                .map(|(_, ix, positions)| AtRow::Named { ix, positions }),
+        );
+    }
+    rows
+}
+
+/// What the `@` list says of its Agents and Skills while the agent's list is unknown (the files
+/// are listed regardless).
+pub fn at_list_note(lookup: &Lookup<Catalog>) -> Option<&'static str> {
+    match lookup {
+        Lookup::Loading => Some(LOADING),
+        Lookup::Failed(_) => Some(SLASH_LIST_FAILED),
+        Lookup::Ready(_) => None,
+    }
+}
+
 /// The line the `/` list says in place of rows: while the commands load or could not be read,
 /// or when nothing matches.
 pub fn slash_note(lookup: &Lookup<Catalog>, rows: &[SlashRow]) -> Option<&'static str> {
@@ -1131,6 +1188,132 @@ impl AgentTab {
         Some(self.marked("slash", div().w_full().child(panel)))
     }
 
+    /// The `@` list, over the box while it is open: the files ranked for what follows the `@`,
+    /// then the agent's sub-agents and skills that match, each section under its heading.
+    pub(crate) fn at_list(
+        &self,
+        c: &Colors,
+        mono: SharedString,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let at = self.at.as_ref()?;
+        let lookup = self.catalog_lookup(cx);
+        let commands: &[AgentCommand] = match &lookup {
+            Lookup::Ready(catalog) => &catalog.commands,
+            _ => &[],
+        };
+        let mut pick = 0;
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for row in at_rows(&at.hits, commands, &at.query) {
+            let (this, label, positions, about) = match &row {
+                AtRow::Heading(heading) => {
+                    rows.push(
+                        div()
+                            .px(px(8.))
+                            .pt(px(4.))
+                            .pb(px(1.))
+                            .text_size(px(text::META))
+                            .text_color(hsla(c.panel_dim))
+                            .child(*heading)
+                            .into_any_element(),
+                    );
+                    continue;
+                }
+                AtRow::File(i) => {
+                    let Some(hit) = at.hits.get(*i) else {
+                        continue;
+                    };
+                    (pick, hit.rel.clone(), Vec::new(), None)
+                }
+                AtRow::Named { ix, positions } => {
+                    let Some(command) = commands.get(*ix) else {
+                        continue;
+                    };
+                    // The matched letters are the name's; the `@` shifts them by one.
+                    let shifted = positions.iter().map(|p| p + 1).collect();
+                    let about = command.about.lines().next().unwrap_or("").to_string();
+                    (pick, format!("@{}", command.name), shifted, Some(about))
+                }
+            };
+            pick += 1;
+            let selected = this == at.selected;
+            let el = div()
+                .id(("agent-at", this))
+                .px(px(8.))
+                .py(px(3.))
+                .gap(px(10.))
+                .flex()
+                .rounded(px(4.))
+                .when(selected, |d| d.bg(hsla(c.panel_hover)))
+                .text_color(hsla(c.panel_text))
+                .cursor_pointer()
+                .on_click(cx.listener(move |t, _, _, cx| t.pick_at(Some(this), cx)));
+            rows.push(match about {
+                None => el.child(SharedString::from(label)).into_any_element(),
+                Some(about) => el
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .w(px(SLASH_NAME_W))
+                            .child(name_cell(&label, &positions, selected)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(hsla(c.panel_dim))
+                            .child(SharedString::from(about)),
+                    )
+                    .into_any_element(),
+            });
+        }
+        let file_note = if self.listing {
+            Some("Listing files\u{2026}")
+        } else if at.query.is_empty() {
+            Some("Type to find a file")
+        } else if at.hits.is_empty() {
+            Some("No file matches")
+        } else {
+            None
+        };
+        // Agents and skills come from the agent: its list is not made up while it is unknown.
+        let list_note = at_list_note(&lookup);
+        let note = |n: &'static str| {
+            div()
+                .px(px(8.))
+                .py(px(3.))
+                .text_color(hsla(c.panel_dim))
+                .child(n)
+        };
+        let panel = div()
+            .w_full()
+            .mb(px(8.))
+            .p(px(4.))
+            .rounded(px(7.))
+            .bg(hsla(c.panel))
+            .border_1()
+            .border_color(hsla(c.panel_border))
+            .font_family(mono)
+            .text_size(px(text::META + 0.5))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id("agent-at")
+                    .flex()
+                    .flex_col()
+                    .max_h(px(SLASH_MAX_H))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.slash_scroll)
+                    .children(rows),
+            )
+            .children(file_note.map(note))
+            .children(list_note.map(note));
+        Some(self.marked("at", div().w_full().child(panel)))
+    }
+
     /// The `/` list's rows as elements: a heading, or a command (its pick number is how many
     /// commands come before it).
     fn slash_row_els(
@@ -1297,6 +1480,29 @@ impl AgentTab {
     /// The picker's search box.
     pub fn shot_search(&self) -> Option<Entity<NameInput>> {
         self.picker.as_ref().map(|p| p.search.clone())
+    }
+
+    /// The `@` list's rows as drawn now (headings, files, agents and skills).
+    pub fn shot_at_rows(&self, cx: &App) -> Vec<AtRow> {
+        self.at_rows_now(cx)
+    }
+
+    /// The paths of the `@` list's ranked files, in order.
+    pub fn shot_at_paths(&self) -> Vec<String> {
+        self.at
+            .as_ref()
+            .map_or_else(Vec::new, |a| a.hits.iter().map(|h| h.rel.clone()).collect())
+    }
+
+    /// The `@` list's selected pick (none: it is closed).
+    pub fn shot_at_selected(&self) -> Option<usize> {
+        self.at.as_ref().map(|a| a.selected)
+    }
+
+    /// What the `@` list says of its agents and skills now.
+    pub fn shot_at_note(&self, cx: &App) -> Option<&'static str> {
+        self.at.as_ref()?;
+        at_list_note(&self.catalog_lookup(cx))
     }
 
     /// The `/` list's text and its selected pick (none: it is closed).
@@ -1497,6 +1703,62 @@ mod tests {
         assert_eq!(slash_query("/mo", 0), None, "caret before the slash");
         assert_eq!(slash_query("", 0), None);
         assert_eq!(slash_query("/a\nb", 4), None);
+    }
+
+    #[test]
+    fn at_rows_have_sections_in_order() {
+        use CommandKind::{Agent, Command, Skill};
+        let file = |rel: &str| FileHit {
+            rel: rel.into(),
+            positions: Vec::new(),
+            score: 0,
+        };
+        let files = vec![file("src/a.rs"), file("src/b.rs")];
+        let list = vec![
+            command("model", Command, &[]),
+            command("example-skill", Skill, &[]),
+            command("example-agent", Agent, &[]),
+            command("example-review", Skill, &[]),
+        ];
+        let named = |ix: usize| AtRow::Named {
+            ix,
+            positions: Vec::new(),
+        };
+        // Files, then Agents, then Skills; commands are not in it.
+        assert_eq!(
+            at_rows(&files, &list, ""),
+            vec![
+                AtRow::Heading("Files"),
+                AtRow::File(0),
+                AtRow::File(1),
+                AtRow::Heading("Agents"),
+                named(2),
+                AtRow::Heading("Skills"),
+                named(1),
+                named(3),
+            ]
+        );
+        // A section with nothing is left out.
+        assert_eq!(
+            at_rows(&[], &list, "agent"),
+            vec![
+                AtRow::Heading("Agents"),
+                AtRow::Named {
+                    ix: 2,
+                    positions: vec![8, 9, 10, 11, 12]
+                }
+            ]
+        );
+        assert_eq!(
+            at_rows(&files, &[], ""),
+            vec![AtRow::Heading("Files"), AtRow::File(0), AtRow::File(1)]
+        );
+        assert!(at_rows(&[], &list, "zzz").is_empty());
+        // At most five of each.
+        let many: Vec<AgentCommand> = (0..7)
+            .map(|i| command(&format!("skill-{i}"), Skill, &[]))
+            .collect();
+        assert_eq!(at_rows(&[], &many, "").len(), 1 + AT_NAMED_LIMIT);
     }
 
     #[test]

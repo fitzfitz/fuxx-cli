@@ -261,6 +261,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-box-slash-filtered",
     "agent-box-slash-tab-completes",
     "agent-box-slash-usage-opens-menu",
+    "agent-box-at-sections",
 ];
 
 /// Every scene, in `ORDER`. Panics, naming the scene, if one is in no area or in two, or if
