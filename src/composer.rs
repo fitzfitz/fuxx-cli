@@ -56,7 +56,8 @@ actions!(
         SelectWordLeft,
         SelectWordRight,
         SelectToStart,
-        SelectToEnd
+        SelectToEnd,
+        Complete
     ]
 );
 
@@ -68,6 +69,8 @@ pub enum ComposerEvent {
     Stop,
     /// An `@` was typed at the start of a word.
     AtTyped,
+    /// Tab while a list is open over the box: complete with the selected row.
+    Complete,
     /// Paste with an image (and no text) on the clipboard: the box makes it an attachment.
     PasteImage(gpui::Image),
 }
@@ -601,6 +604,10 @@ impl Composer {
         cx.emit(ComposerEvent::Stop);
     }
 
+    fn complete(&mut self, _: &Complete, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(ComposerEvent::Complete);
+    }
+
     fn copy_selection(&self, cx: &mut Context<Self>) {
         let sel = self.buf.selection();
         if !sel.is_empty() {
@@ -870,6 +877,7 @@ impl Render for Composer {
             .on_action(cx.listener(Self::send))
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::stop))
+            .on_action(cx.listener(Self::complete))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::clear))
             .on_action(cx.listener(Self::delete))

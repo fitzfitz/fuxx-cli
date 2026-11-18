@@ -34,7 +34,10 @@ use gpui::{
     Subscription, Task, WeakEntity, Window, actions, div, list, prelude::*, px, relative,
 };
 
-use crate::agent_box::{BoxMenu, Change, PLACEHOLDER, Step, step_for, switched_notice, usage_line};
+use crate::agent_box::{
+    BoxMenu, Change, PLACEHOLDER, SLASH_LIMIT, SlashRow, Step, slash_query, slash_rows, step_for,
+    switched_notice, usage_line,
+};
 use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
@@ -46,8 +49,8 @@ use crate::file_tab::{DiffRowColours, diff_row_colours};
 use crate::md_preview::{self, LinkTarget};
 use crate::palette_items::FileHit;
 use crate::providers::{
-    Action, Applies, ChangeKind, Event, ModelChoice, Past, Picture, Provider, Start, TodoState,
-    ToolDetail, Translator,
+    Action, Applies, BoxCommand, ChangeKind, Event, ModelChoice, Past, Picture, Provider, Start,
+    TodoState, ToolDetail, Translator,
 };
 use crate::status::Status;
 use crate::terminal_view::hsla;
@@ -55,8 +58,8 @@ use crate::theme::{Theme, UiColors, mix};
 use crate::ui_tokens::{TEXT_MIN, ensure_contrast, text};
 use crate::workspace_agent::Holder;
 
-// ↑ / ↓ in the `@` file list (bound in main.rs to "AtPopup > Composer", so they reach the
-// list, not the caret, only while it is open).
+// ↑ / ↓ in the `@` file list and the `/` list (bound in main.rs to "AtPopup > Composer", so they
+// reach the list, not the caret, only while it is open).
 actions!(agent_tab, [AtUp, AtDown]);
 
 /// After Stop, how long the tab waits for the turn to end before offering **Force stop**
@@ -632,6 +635,13 @@ struct AtList {
     selected: usize,
 }
 
+/// The `/` list: the first word's text after the `/`, and the selected command (counted among
+/// the rows that are commands, not the headings).
+pub(crate) struct SlashList {
+    pub(crate) query: String,
+    pub(crate) selected: usize,
+}
+
 /// The agent's folder's files for `@`: listed once per tab (off the UI thread), then kept.
 struct Files {
     root: PathBuf,
@@ -728,6 +738,11 @@ pub struct AgentTab {
     files: Option<Files>,
     listing: bool,
     at: Option<AtList>,
+    /// The `/` list, while it is open.
+    pub(crate) slash: Option<SlashList>,
+    /// Esc closed the `/` list: it stays closed until the box leaves the `/` word.
+    slash_dismissed: bool,
+    pub(crate) slash_scroll: gpui::ScrollHandle,
     rank_generation: Arc<AtomicU64>,
     ticker: Option<Task<()>>,
     end_timer: Option<Task<()>>,
@@ -1102,6 +1117,9 @@ impl AgentTab {
             files: None,
             listing: false,
             at: None,
+            slash: None,
+            slash_dismissed: false,
+            slash_scroll: gpui::ScrollHandle::new(),
             rank_generation: Arc::new(AtomicU64::new(0)),
             ticker: None,
             end_timer: None,
@@ -2143,6 +2161,11 @@ impl AgentTab {
                     self.pick_at(None, cx);
                     return;
                 }
+                // A list with a command to pick: Return picks it. With none (a complete line
+                // that names nothing listed), Return sends as ever.
+                if self.slash.is_some() && self.pick_slash(None, cx) {
+                    return;
+                }
                 self.submit(text.clone(), composer, cx);
             }
             ComposerEvent::Stop => {
@@ -2150,11 +2173,15 @@ impl AgentTab {
                     self.close_menu(cx);
                 } else if self.at.take().is_some() {
                     cx.notify();
+                } else if self.slash.take().is_some() {
+                    self.slash_dismissed = true;
+                    cx.notify();
                 } else {
                     self.stop(cx);
                 }
             }
             ComposerEvent::AtTyped => self.open_at(cx),
+            ComposerEvent::Complete => self.complete_slash(cx),
             ComposerEvent::PasteImage(image) => self.attach_pasted_image(image.clone(), cx),
         }
     }
@@ -2176,6 +2203,9 @@ impl AgentTab {
                 Answer::Denied(Some(text.trim().to_string()))
             };
             self.answer(answer, cx).ok();
+        } else if let Some(command) = self.provider.and_then(|p| p.own_command(&text)) {
+            // What fuxx answers itself opens its menu: nothing is sent.
+            self.open_box_command(command, cx);
         } else if text.trim().is_empty() && self.attachments.is_empty() {
             return;
         } else if self.paused {
@@ -2191,6 +2221,7 @@ impl AgentTab {
     /// Open `menu` over its chip, in place of any other (Esc closes it).
     pub fn open_menu(&mut self, menu: BoxMenu, cx: &mut Context<Self>) {
         self.at = None;
+        self.slash = None;
         self.picker = None;
         self.menu = Some(menu);
         #[cfg(feature = "ui-shots")]
@@ -2247,6 +2278,7 @@ impl AgentTab {
 
     /// The composer changed: the `@` list follows its query, or closes.
     fn composer_changed(&mut self, cx: &mut Context<Self>) {
+        self.slash_follow(cx);
         let Some(at) = &self.at else {
             return;
         };
@@ -2317,7 +2349,163 @@ impl AgentTab {
         cx.notify();
     }
 
+    /// The `/` list follows the box: it opens on a `/` at its start, filters as the first word
+    /// grows or shrinks, and closes when the caret leaves that word (or the box's first word is
+    /// no longer a `/` one). Esc keeps it closed until then. It stays out of the way of an open
+    /// menu, the `@` list and a permission that waits for its answer.
+    fn slash_follow(&mut self, cx: &mut Context<Self>) {
+        let composer = self.composer.read(cx);
+        let query = slash_query(composer.text(), composer.cursor()).map(str::to_string);
+        let Some(query) = query else {
+            self.slash_dismissed = false;
+            if self.slash.take().is_some() {
+                cx.notify();
+            }
+            return;
+        };
+        let allowed = self.provider.is_some()
+            && self.menu.is_none()
+            && self.at.is_none()
+            && !self.slash_dismissed
+            && self.conversation.pending_permission().is_none();
+        if !allowed {
+            if self.slash.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
+        match &mut self.slash {
+            Some(list) if list.query == query => {}
+            Some(list) => {
+                list.query = query;
+                list.selected = 0;
+                self.slash_scroll.scroll_to_item(0);
+                cx.notify();
+            }
+            None => {
+                self.slash = Some(SlashList { query, selected: 0 });
+                self.slash_scroll.scroll_to_item(0);
+                // As the model menu: a list that could not be read is asked for again.
+                if let Some(provider) = self.provider
+                    && !self.no_process
+                {
+                    crate::agent_catalog::load_catalog(provider, self.start.cwd.clone(), cx);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// The `/` list's commands, in the order they are drawn: the places in the catalog's list.
+    pub(crate) fn slash_picks(&self, cx: &App) -> Vec<usize> {
+        self.slash_rows_now(cx)
+            .into_iter()
+            .filter_map(|row| match row {
+                SlashRow::Item { ix, .. } => Some(ix),
+                SlashRow::Heading(_) => None,
+            })
+            .collect()
+    }
+
+    /// The rows of the open `/` list: none while the catalog isn't read.
+    pub(crate) fn slash_rows_now(&self, cx: &App) -> Vec<SlashRow> {
+        let Some(list) = &self.slash else {
+            return Vec::new();
+        };
+        match self.catalog_lookup(cx) {
+            crate::agent_catalog::Lookup::Ready(catalog) => {
+                slash_rows(&catalog.commands, &list.query, SLASH_LIMIT)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether the `/` list has a command a key could pick (the keys ↑ ↓ Tab are the list's
+    /// only then).
+    pub(crate) fn slash_has_picks(&self, cx: &App) -> bool {
+        self.slash.is_some() && !self.slash_picks(cx).is_empty()
+    }
+
+    /// The command of the `/` list at pick `index` (else the selected one).
+    fn slash_command(
+        &self,
+        index: Option<usize>,
+        cx: &App,
+    ) -> Option<crate::providers::AgentCommand> {
+        let list = self.slash.as_ref()?;
+        let picks = self.slash_picks(cx);
+        let want = index.unwrap_or(list.selected.min(picks.len().saturating_sub(1)));
+        let at = *picks.get(want)?;
+        match self.catalog_lookup(cx) {
+            crate::agent_catalog::Lookup::Ready(catalog) => catalog.commands.get(at).cloned(),
+            _ => None,
+        }
+    }
+
+    /// Where the first word of the box ends (a byte offset).
+    fn first_word_end(&self, cx: &App) -> usize {
+        let text = self.composer.read(cx).text();
+        text.find(char::is_whitespace).unwrap_or(text.len())
+    }
+
+    /// Return or a click on a command of the `/` list: `/name ` goes in place of the first word
+    /// (nothing is sent). A command fuxx answers with its own menu opens that menu instead,
+    /// and the box is cleared. False: there was nothing to pick.
+    pub(crate) fn pick_slash(&mut self, index: Option<usize>, cx: &mut Context<Self>) -> bool {
+        let Some(command) = self.slash_command(index, cx) else {
+            return false;
+        };
+        let typed = format!("/{}", command.name);
+        if let Some(own) = self.provider.and_then(|p| p.own_command(&typed)) {
+            self.slash = None;
+            self.composer
+                .update(cx, |c, cx| c.set_text(String::new(), cx));
+            self.open_box_command(own, cx);
+        } else {
+            self.insert_command(&typed, cx);
+        }
+        true
+    }
+
+    /// Tab: the selected command's `/name ` goes in the box, as typed (nothing opens).
+    fn complete_slash(&mut self, cx: &mut Context<Self>) {
+        if let Some(command) = self.slash_command(None, cx) {
+            self.insert_command(&format!("/{}", command.name), cx);
+        }
+    }
+
+    /// `typed` and a space in place of the box's first word; the list closes (the caret is past
+    /// the word).
+    fn insert_command(&mut self, typed: &str, cx: &mut Context<Self>) {
+        let end = self.first_word_end(cx);
+        self.slash = None;
+        self.composer
+            .update(cx, |c, cx| c.replace(0..end, &format!("{typed} "), cx));
+        cx.notify();
+    }
+
+    /// What `command` opens: View Usage, the model menu, or the model menu with the running
+    /// model's efforts beside it.
+    fn open_box_command(&mut self, command: BoxCommand, cx: &mut Context<Self>) {
+        match command {
+            BoxCommand::Usage => self.open_usage(cx),
+            BoxCommand::Model => self.open_model_menu(None, cx),
+            BoxCommand::Effort => {
+                let efforts_of = self.running_model_place(cx);
+                self.open_model_menu(efforts_of, cx);
+            }
+        }
+    }
+
     fn at_up(&mut self, _: &AtUp, _: &mut Window, cx: &mut Context<Self>) {
+        if self.slash.is_some() {
+            if let Some(list) = &mut self.slash {
+                list.selected = list.selected.saturating_sub(1);
+                let selected = list.selected;
+                self.scroll_slash_to(selected, cx);
+            }
+            return;
+        }
         if let Some(at) = &mut self.at {
             at.selected = at.selected.saturating_sub(1);
             cx.notify();
@@ -2325,10 +2513,34 @@ impl AgentTab {
     }
 
     fn at_down(&mut self, _: &AtDown, _: &mut Window, cx: &mut Context<Self>) {
+        if self.slash.is_some() {
+            let last = self.slash_picks(cx).len().saturating_sub(1);
+            if let Some(list) = &mut self.slash {
+                list.selected = (list.selected + 1).min(last);
+                let selected = list.selected;
+                self.scroll_slash_to(selected, cx);
+            }
+            return;
+        }
         if let Some(at) = &mut self.at {
             at.selected = (at.selected + 1).min(at.hits.len().saturating_sub(1));
             cx.notify();
         }
+    }
+
+    /// Keep pick `selected` of the `/` list in view (and drawn as selected).
+    fn scroll_slash_to(&mut self, selected: usize, cx: &mut Context<Self>) {
+        let row = self
+            .slash_rows_now(cx)
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(r, SlashRow::Item { .. }))
+            .nth(selected)
+            .map(|(i, _)| i);
+        if let Some(row) = row {
+            self.slash_scroll.scroll_to_item(row);
+        }
+        cx.notify();
     }
 
     /// A tool row's click: open or close its detail.

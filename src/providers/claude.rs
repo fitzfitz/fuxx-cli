@@ -228,6 +228,16 @@ impl Provider for Claude {
             .ok_or_else(|| "no answer to initialize".to_string())
     }
 
+    /// The commands the box answers with its own menus (a whole line, no arguments).
+    fn own_command(&self, typed: &str) -> Option<BoxCommand> {
+        match typed.trim() {
+            "/usage" => Some(BoxCommand::Usage),
+            "/model" => Some(BoxCommand::Model),
+            "/effort" => Some(BoxCommand::Effort),
+            _ => None,
+        }
+    }
+
     /// `/usage` in print mode ($0, no turn); `--no-session-persistence` keeps it from leaving a
     /// transcript behind (Task 0).
     fn usage_probe(&self) -> Option<Probe> {
@@ -1139,6 +1149,18 @@ mod tests {
     fn decode_all(p: &dyn Provider, text: &str) -> Vec<Event> {
         let mut t = p.translator();
         text.lines().flat_map(|l| t.decode(l)).collect()
+    }
+
+    #[test]
+    fn own_commands() {
+        assert_eq!(CLAUDE.own_command("/usage"), Some(BoxCommand::Usage));
+        assert_eq!(CLAUDE.own_command("/model"), Some(BoxCommand::Model));
+        assert_eq!(CLAUDE.own_command("/effort"), Some(BoxCommand::Effort));
+        assert_eq!(CLAUDE.own_command(" /usage \n"), Some(BoxCommand::Usage));
+        // Anything else (or a command with arguments) is sent as text.
+        assert_eq!(CLAUDE.own_command("/clear"), None);
+        assert_eq!(CLAUDE.own_command("/model sonnet"), None);
+        assert_eq!(CLAUDE.own_command("usage"), None);
     }
 
     fn lines_of(text: &str) -> Vec<Value> {

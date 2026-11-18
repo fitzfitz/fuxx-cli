@@ -159,6 +159,16 @@ impl Provider for Agy {
         a
     }
 
+    /// The commands the box answers with its own menus (a whole line, no arguments).
+    fn own_command(&self, typed: &str) -> Option<BoxCommand> {
+        match typed.trim() {
+            "/usage" => Some(BoxCommand::Usage),
+            "/model" => Some(BoxCommand::Model),
+            "/effort" => Some(BoxCommand::Effort),
+            _ => None,
+        }
+    }
+
     /// `/usage` in print mode: about three seconds, no turn, no cost.
     fn usage_probe(&self) -> Option<Probe> {
         Some(Probe {
@@ -1038,6 +1048,15 @@ mod tests {
             read_models("\nno tab here\nid-only\t\n\t\nm-2\tTwo\n").len(),
             1
         );
+    }
+
+    #[test]
+    fn own_commands() {
+        assert_eq!(AGY.own_command("/usage"), Some(BoxCommand::Usage));
+        assert_eq!(AGY.own_command("/model"), Some(BoxCommand::Model));
+        assert_eq!(AGY.own_command("/effort"), Some(BoxCommand::Effort));
+        assert_eq!(AGY.own_command("/help"), None);
+        assert_eq!(AGY.own_command("/usage now"), None);
     }
 
     #[test]

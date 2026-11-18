@@ -17,7 +17,7 @@ use super::{
 };
 use crate::agent_box::{
     BoxMenu, CHECKING, Change, MOVE_HERE, ModeRow, ModelRow, NEW_CONVERSATION, PLACEHOLDER,
-    UsageRow,
+    SlashRow, UsageRow,
 };
 use crate::agent_catalog::{Catalogs, Lookup};
 use crate::agent_conversation::Item;
@@ -377,6 +377,38 @@ pub(super) const SCENES: &[Scene] = &[
         serial: false,
         kind: Kind::State,
         sources: USAGE,
+    },
+    Scene {
+        name: "agent-box-slash",
+        run: agent_box_slash,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: SLASH,
+    },
+    Scene {
+        name: "agent-box-slash-filtered",
+        run: agent_box_slash_filtered,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: SLASH,
+    },
+    Scene {
+        name: "agent-box-slash-tab-completes",
+        run: agent_box_slash_tab_completes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: SLASH,
+    },
+    Scene {
+        name: "agent-box-slash-usage-opens-menu",
+        run: agent_box_slash_usage_opens_menu,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: SLASH,
     },
     Scene {
         name: "agent-box-model-waiting-no-efforts",
@@ -3424,4 +3456,409 @@ pub(super) fn agent_box_branch_opens_switcher() {
     );
     let _ = std::fs::remove_dir_all(&base);
     println!("ui-shots: {n} ok");
+}
+
+// ---- The `/` menu (Task 12) ----
+
+/// The files the `/` list is made of: the box's, the composer it follows, the catalog it lists,
+/// the list's name cells and fuzzy match, and the providers that say which commands are the
+/// box's own.
+const SLASH: &[&str] = &[
+    "src/agent_tab.rs",
+    "src/agent_box.rs",
+    "src/agent_box_menus.rs",
+    "src/agent_conversation.rs",
+    "src/agent_catalog.rs",
+    "src/composer.rs",
+    "src/overlay_panel.rs",
+    "src/palette.rs",
+    "src/palette_match.rs",
+    "src/providers/mod.rs",
+    "src/providers/claude.rs",
+    "src/providers/agy.rs",
+];
+
+/// A made-up list of commands, skills and sub-agents, with the model that has efforts.
+fn slash_catalog() -> Catalog {
+    use crate::providers::{AgentCommand, CommandKind};
+    let item = |name: &str, about: &str, kind: CommandKind| AgentCommand {
+        name: name.into(),
+        about: about.into(),
+        kind,
+        aliases: Vec::new(),
+    };
+    let command = |name: &str, about: &str| item(name, about, CommandKind::Command);
+    let commands = vec![
+        command("help", "Show what can be done here"),
+        command("clear", "Start over with an empty conversation"),
+        command("compact", "Shrink the conversation to a summary"),
+        command("export", "Write the conversation out to a file"),
+        command("model", "Choose the model"),
+        command("effort", "Choose how hard the model thinks"),
+        command("usage", "Show how much of the limits is left"),
+        item(
+            "example-skill",
+            "A made-up skill that tidies the notes",
+            CommandKind::Skill,
+        ),
+        item(
+            "example-review",
+            "A made-up skill that reviews a change",
+            CommandKind::Skill,
+        ),
+        item(
+            "example-agent",
+            "A made-up sub-agent that looks things up",
+            CommandKind::Agent,
+        ),
+    ];
+    Catalog {
+        commands,
+        ..example_catalog()
+    }
+}
+
+/// A scene of the `/` list: Claude on `example-5`, the made-up list read.
+fn slash_scene(
+    name: &str,
+    act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + Clone + 'static,
+) {
+    box_scene(
+        name,
+        &CLAUDE,
+        example_start(),
+        Lookup::Ready(slash_catalog()),
+        act,
+    );
+}
+
+/// Type `text` into the box (real input), and draw what it opened.
+fn type_in_box(cx: &mut VisualTestAppContext, window: AnyWindowHandle, text: &str) {
+    cx.simulate_input(window, text);
+    cx.run_until_parked();
+    let _ = frame_fresh(cx, window);
+}
+
+/// Press `keys` (real keystrokes), and draw what changed.
+fn press(cx: &mut VisualTestAppContext, window: AnyWindowHandle, keys: &str) {
+    cx.simulate_keystrokes(window, keys);
+    cx.run_until_parked();
+    let _ = frame_fresh(cx, window);
+}
+
+fn box_text(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> String {
+    cx.read(|cx| tab.read(cx).shot_composer().read(cx).text().to_string())
+}
+
+fn slash_rows_of(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<SlashRow> {
+    cx.read(|cx| tab.read(cx).shot_slash_rows(cx))
+}
+
+fn slash_state(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Option<(String, usize)> {
+    cx.read(|cx| tab.read(cx).shot_slash())
+}
+
+/// The names of the `/` list's rows as `Heading` or `/name`, in order.
+fn slash_names(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<String> {
+    let commands = slash_catalog().commands;
+    slash_rows_of(cx, tab)
+        .iter()
+        .map(|row| match row {
+            SlashRow::Heading(kind) => format!("{kind:?}s"),
+            SlashRow::Item { ix, .. } => format!("/{}", commands[*ix].name),
+        })
+        .collect()
+}
+
+fn nothing_sent(n: &str, cx: &VisualTestAppContext, tab: &Entity<AgentTab>) {
+    assert!(
+        written(cx, tab).iter().all(|l| l["type"] != "user"),
+        "{n}: no message was written: {:?}",
+        written(cx, tab)
+    );
+    assert_eq!(said(cx, tab), Vec::<String>::new(), "{n}: nothing said");
+}
+
+/// §9: a `/` at the start of the box opens a list over it, grouped (Commands, Skills, Agents),
+/// each row a name and its one line; the first is selected; ↑ ↓ move (and stop at the ends);
+/// nothing is sent. While the list loads it says `Loading…`, and `Couldn't read the list` when
+/// it could not be read: no list is made up.
+pub(super) fn agent_box_slash() {
+    box_scene(
+        "agent-box-slash",
+        &CLAUDE,
+        example_start(),
+        Lookup::Loading,
+        |n, cx, window, tab| {
+            type_in_box(cx, window, "/");
+            assert_eq!(slash_state(cx, tab), Some((String::new(), 0)), "{n}");
+            assert_eq!(slash_rows_of(cx, tab), [], "{n}: no rows while it loads");
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_slash_note(cx)),
+                Some("Loading\u{2026}"),
+                "{n}"
+            );
+            feed(cx, tab, |t, cx| {
+                t.shot_catalog(Lookup::Failed("it ended".into()), cx)
+            });
+            let _ = frame_fresh(cx, window);
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_slash_note(cx)),
+                Some("Couldn't read the list"),
+                "{n}"
+            );
+            assert_eq!(slash_rows_of(cx, tab), [], "{n}: and no made-up list");
+            feed(cx, tab, |t, cx| {
+                t.shot_catalog(Lookup::Ready(slash_catalog()), cx)
+            });
+            let _ = frame_fresh(cx, window);
+            assert_eq!(
+                slash_names(cx, tab),
+                [
+                    "Commands",
+                    "/help",
+                    "/clear",
+                    "/compact",
+                    "/export",
+                    "/model",
+                    "/effort",
+                    "/usage",
+                    "Skills",
+                    "/example-skill",
+                    "/example-review",
+                    "Agents",
+                    "/example-agent"
+                ],
+                "{n}"
+            );
+            assert_eq!(cx.read(|cx| tab.read(cx).shot_slash_note(cx)), None, "{n}");
+            // Drawn over the box, inside the window, rows top to bottom, in the list's panel.
+            let list = part(cx, tab, n, "slash");
+            let folder = part(cx, tab, n, "folder");
+            assert!(list.bottom() <= folder.top(), "{n}: above the box {list:?}");
+            let row = |cx: &VisualTestAppContext, i: usize| {
+                cx.read(|cx| tab.read(cx).shot_slash_row(i))
+                    .unwrap_or_else(|| panic!("{n}: row {i} was never drawn"))
+            };
+            let spots: Vec<_> = (0..13).map(|i| row(cx, i)).collect();
+            assert!(
+                spots.windows(2).all(|w| w[0].bottom() <= w[1].top()),
+                "{n}: top to bottom"
+            );
+            assert!(inside(spots[0], list), "{n}: in the panel");
+            // ↓ and ↑ move the selection and stop at the ends.
+            press(cx, window, "down down");
+            assert_eq!(slash_state(cx, tab), Some((String::new(), 2)), "{n}");
+            press(cx, window, "up");
+            assert_eq!(slash_state(cx, tab), Some((String::new(), 1)), "{n}");
+            press(cx, window, "up up up");
+            assert_eq!(slash_state(cx, tab), Some((String::new(), 0)), "{n}");
+            press(
+                cx,
+                window,
+                "down down down down down down down down down down down down",
+            );
+            assert_eq!(
+                slash_state(cx, tab),
+                Some((String::new(), 9)),
+                "{n}: the last"
+            );
+            press(cx, window, "up up up up up up up up up");
+            assert_eq!(slash_state(cx, tab), Some((String::new(), 0)), "{n}");
+            press(cx, window, "down down");
+            assert_eq!(box_text(cx, tab), "/", "{n}: the keys moved no caret");
+            nothing_sent(n, cx, tab);
+        },
+    );
+}
+
+/// §9: the list filters as you type (fuzzy; a group with no match has no heading; the matched
+/// letters are marked); Esc closes it and it stays closed until the `/` word is left.
+pub(super) fn agent_box_slash_filtered() {
+    slash_scene("agent-box-slash-filtered", |n, cx, window, tab| {
+        type_in_box(cx, window, "/ex");
+        assert_eq!(
+            slash_names(cx, tab),
+            [
+                "Commands",
+                "/export",
+                "Skills",
+                "/example-skill",
+                "/example-review",
+                "Agents",
+                "/example-agent"
+            ],
+            "{n}"
+        );
+        assert_eq!(slash_state(cx, tab), Some(("ex".into(), 0)), "{n}");
+        // Narrower: the group with nothing left has no heading.
+        type_in_box(cx, window, "a");
+        assert_eq!(
+            slash_names(cx, tab),
+            [
+                "Skills",
+                "/example-skill",
+                "/example-review",
+                "Agents",
+                "/example-agent"
+            ],
+            "{n}"
+        );
+        type_in_box(cx, window, "zz");
+        assert_eq!(slash_names(cx, tab), Vec::<String>::new(), "{n}");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).shot_slash_note(cx)),
+            Some("No command matches"),
+            "{n}"
+        );
+        // Esc closes it (stopping nothing) and keeps it closed while typing on.
+        press(cx, window, "escape");
+        assert_eq!(slash_state(cx, tab), None, "{n}: Esc closed it");
+        assert_eq!(box_text(cx, tab), "/exazz", "{n}: the text stays");
+        cx.read(|cx| assert_eq!(tab.read(cx).shot_stop_label(), None, "{n}: nothing stopped"));
+        press(cx, window, "backspace");
+        assert_eq!(slash_state(cx, tab), None, "{n}: still closed");
+        // Out of the word and back: it opens again.
+        press(
+            cx,
+            window,
+            "backspace backspace backspace backspace backspace backspace",
+        );
+        assert_eq!(box_text(cx, tab), "", "{n}");
+        type_in_box(cx, window, "/ex");
+        assert_eq!(
+            slash_state(cx, tab),
+            Some(("ex".into(), 0)),
+            "{n}: opens again"
+        );
+        press(cx, window, "down");
+        assert_eq!(slash_state(cx, tab), Some(("ex".into(), 1)), "{n}");
+        // A `/` that isn't at the start opens nothing.
+        feed(cx, tab, |t, cx| {
+            t.shot_composer()
+                .update(cx, |c, cx| c.set_text("fix /ex".into(), cx))
+        });
+        let _ = frame_fresh(cx, window);
+        assert_eq!(slash_state(cx, tab), None, "{n}: not at the start");
+        feed(cx, tab, |t, cx| {
+            t.shot_composer()
+                .update(cx, |c, cx| c.set_text(String::new(), cx))
+        });
+        type_in_box(cx, window, "/ex");
+        press(cx, window, "down");
+        assert_eq!(slash_state(cx, tab), Some(("ex".into(), 1)), "{n}");
+        nothing_sent(n, cx, tab);
+    });
+}
+
+/// §9: Return picks the selected command (`/name ` goes in the box and nothing is sent), and
+/// Return again on the complete line sends it as text. Tab completes the selected row as text.
+pub(super) fn agent_box_slash_tab_completes() {
+    slash_scene("agent-box-slash-tab-completes", |n, cx, window, tab| {
+        // Return picks; the next Return sends the line as text, as it always did.
+        type_in_box(cx, window, "/clear");
+        assert_eq!(slash_names(cx, tab), ["Commands", "/clear"], "{n}");
+        press(cx, window, "enter");
+        assert_eq!(box_text(cx, tab), "/clear ", "{n}: picked");
+        assert_eq!(slash_state(cx, tab), None, "{n}: closed");
+        nothing_sent(n, cx, tab);
+        press(cx, window, "enter");
+        let sent = last_user(cx, tab);
+        assert_eq!(
+            sent["message"]["content"].as_str().map(str::trim),
+            Some("/clear"),
+            "{n}: sent as text {sent}"
+        );
+        assert_eq!(box_text(cx, tab), "", "{n}: the box is clear");
+        let sent_lines = written(cx, tab).len();
+        // A caret past the first word is out of the list.
+        feed(cx, tab, |t, cx| {
+            t.shot_composer()
+                .update(cx, |c, cx| c.set_text("/co now".into(), cx))
+        });
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            slash_state(cx, tab),
+            None,
+            "{n}: the caret is past the word"
+        );
+        feed(cx, tab, |t, cx| {
+            t.shot_composer()
+                .update(cx, |c, cx| c.set_text(String::new(), cx))
+        });
+        // Tab completes the selected row, not the first.
+        type_in_box(cx, window, "/c");
+        assert_eq!(
+            slash_names(cx, tab),
+            ["Commands", "/clear", "/compact"],
+            "{n}"
+        );
+        press(cx, window, "down");
+        press(cx, window, "tab");
+        assert_eq!(box_text(cx, tab), "/compact ", "{n}: completed");
+        assert_eq!(slash_state(cx, tab), None, "{n}: closed");
+        assert_eq!(written(cx, tab).len(), sent_lines, "{n}: Tab sends nothing");
+    });
+}
+
+/// §9: `/usage`, `/model` and `/effort` open the box's own menus (View Usage, the model list,
+/// the running model's efforts) and clear the box: picked from the list, or typed whole and sent.
+/// None writes a message.
+pub(super) fn agent_box_slash_usage_opens_menu() {
+    slash_scene("agent-box-slash-usage-opens-menu", |n, cx, window, tab| {
+        feed(cx, tab, |t, cx| {
+            t.shot_usage(claude_usage(), Vec::new(), cx)
+        });
+        let model = |efforts_of, usage| Some(BoxMenu::Model { efforts_of, usage });
+        // Picked from the list.
+        type_in_box(cx, window, "/model");
+        press(cx, window, "enter");
+        assert_eq!(menu(cx, tab), model(None, false), "{n}: the model menu");
+        assert_eq!(box_text(cx, tab), "", "{n}: the box is clear");
+        assert_eq!(slash_state(cx, tab), None, "{n}");
+        press(cx, window, "escape");
+        assert_eq!(menu(cx, tab), None, "{n}");
+        type_in_box(cx, window, "/effort");
+        press(cx, window, "enter");
+        assert_eq!(menu(cx, tab), model(Some(0), false), "{n}: the efforts");
+        assert!(
+            effort_row(cx, tab, "High").is_some(),
+            "{n}: its efforts are drawn"
+        );
+        press(cx, window, "escape");
+        // Typed whole and sent (the list is dismissed).
+        type_in_box(cx, window, "/effort");
+        press(cx, window, "escape");
+        press(cx, window, "enter");
+        assert_eq!(
+            menu(cx, tab),
+            model(Some(0), false),
+            "{n}: sent, it opens the menu"
+        );
+        assert_eq!(box_text(cx, tab), "", "{n}");
+        press(cx, window, "escape");
+        // `/usage` with a space (completed by Tab), then Return.
+        type_in_box(cx, window, "/us");
+        press(cx, window, "tab");
+        assert_eq!(box_text(cx, tab), "/usage ", "{n}");
+        press(cx, window, "enter");
+        assert_eq!(menu(cx, tab), model(None, true), "{n}: View Usage");
+        assert_eq!(box_text(cx, tab), "", "{n}");
+        nothing_sent(n, cx, tab);
+        // A command with something after it is not one of these: it goes as text.
+        press(cx, window, "escape");
+        type_in_box(cx, window, "/usage now");
+        press(cx, window, "enter");
+        assert_eq!(menu(cx, tab), None, "{n}: not the menu");
+        assert_eq!(
+            last_user(cx, tab)["message"]["content"].as_str(),
+            Some("/usage now"),
+            "{n}"
+        );
+        // Left for the shot: View Usage, from the list.
+        type_in_box(cx, window, "/usage");
+        press(cx, window, "enter");
+        assert_eq!(menu(cx, tab), model(None, true), "{n}");
+        assert_eq!(box_text(cx, tab), "", "{n}");
+    });
 }
