@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11ai
-status: planned
+status: built
 updated: 2026-11-18
 ---
 
@@ -12,10 +12,10 @@ updated: 2026-11-18
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[86 - Milestone 11ai - Markdown Reader Upgrade]] |
-| **Status** | 📝 planned 2026-11-18, from master `575d010` (M11ah and M11ak merged in) |
-| **Tasks done** | 0 / 12 |
+| **Status** | 🟨 built on branch `m11ai-md-reader`, waiting for the on-screen check, not merged (planned 2026-11-18 from master `575d010`; master with M11al merged in at `2b9eb70`) |
+| **Tasks done** | 12 / 12 |
 | **Baselines** | on commit 6c685ce: `cargo test --bin fuxx` 2024 passed, 1 ignored; clippy default 14 (bin) / 27 (test), `ui-shots` 16 / 29; `cargo fmt --check` clean; full `scripts/ui-shots.sh`: 205 passed, 0 failed, 167.2 s (no failures, no flake seen) |
-| **▶ Pick up here** | Task 1 |
+| **▶ Pick up here** | Your on-screen check ([[86 - Milestone 11ai - Markdown Reader Upgrade]], "On-screen check") |
 | **Decisions used** | Yours: "we already design it, layout is also built before. just go ahead" (design and its three open questions as AI's calls). The design's "AI's calls" and "Calls on the open questions". Plan-time calls below (AI's). |
 | **Needs your eyes** | 👀 the on-screen check in note 86, after Task 11 |
 
@@ -150,10 +150,10 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
 **Files:**
 - Modify: this plan's "At a glance"
 
-- [ ] **Step 1:** On the clean branch run the gate; write the test count (passed, ignored), clippy warning counts
+- [x] **Step 1:** On the clean branch run the gate; write the test count (passed, ignored), clippy warning counts
   (bin / test, default and `ui-shots`), fmt state and the full `scripts/ui-shots.sh` result (passed / failed, time,
   any known flake) into "At a glance".
-- [ ] **Step 2:** Commit `M11ai Task 0: baselines` (`git add "docs/04-Development/Plans/M11ai Plan - Markdown Reader Upgrade.md"`).
+- [x] **Step 2:** Commit `M11ai Task 0: baselines` (`git add "docs/04-Development/Plans/M11ai Plan - Markdown Reader Upgrade.md"`).
 
 ### Task 1: The parser learns a linked image
 
@@ -165,16 +165,16 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
 - Produces: `Span::LinkedImage { alt: String, src: String, url: String }` — `[![alt](src)](url)`; the scan stays
   linear (stops at a line break or a second `[` outside the image, as `link` does).
 
-- [ ] **Step 1: Write the failing tests** in `agent_markdown.rs`:
+- [x] **Step 1: Write the failing tests** in `agent_markdown.rs`:
   - `a_linked_image_is_one_span`: `[![build: passing](https://img.shields.io/b.svg)](https://example.com/ci) after`
     → `[LinkedImage { alt: "build: passing", src: "https://img.shields.io/b.svg", url: "https://example.com/ci" },
     Text(" after")]`; `[![a](s)]` (no link) → `[Text("["), Image { alt: "a", url: "s" }, Text("]")]`;
     `[![a](s)](` (unclosed) keeps the image; plain `[x](y)` and `![x](y)` parse as before.
   - `md_preview.rs` `a_linked_image_reads_as_its_alt_linked`: `inline(&[LinkedImage{alt:"ci",src:"s",url:"u"}])` →
     text `[ci]`, looks `[(0..4, Link(0))]`, links `[(0..4, "u")]`.
-- [ ] **Step 2: Run** `cargo test --bin fuxx linked_image` — FAIL (no variant). **Step 3: Implement.**
+- [x] **Step 2: Run** `cargo test --bin fuxx linked_image` — FAIL (no variant). **Step 3: Implement.**
   **Step 4: Run** — PASS; `a_megabyte_of_unclosed_markers_parses_quickly` still passes; the gate.
-- [ ] **Step 5: Commit** `M11ai Task 1: the parser reads a linked image`.
+- [x] **Step 5: Commit** `M11ai Task 1: the parser reads a linked image`.
 
 ### Task 2: The reader plan (`src/md_reader.rs`, pure)
 
@@ -234,7 +234,7 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
   spaces is a badge row whatever the sources. Outline: levels 1–3, H3 `indent`; a file whose only H1 is its first
   heading leaves it out; fewer than 2 entries → empty. `FRONT_ROWS` (20) rows, then `more`.
 
-- [ ] **Step 1: Write the failing tests** (in `md_reader.rs`):
+- [x] **Step 1: Write the failing tests** (in `md_reader.rs`):
   - `front_matter_reads_key_value_pairs`: `"---\ntitle: Setup guide\nstatus: draft\ntags: [docs, setup]\n---\n# Hi"`
     → `Table { rows: [("title","Setup guide"),("status","draft"),("tags","docs, setup")], more: 0 }`, body `"# Hi"`;
     a `- item` list under `tags:` → `"item, item"`; `title: "Quoted"` → `Quoted`; `...` closes too; 25 keys → 20
@@ -268,11 +268,11 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
     repo with home `/h` and path `/h/notes/a.md` → `~/notes/a.md#install`.
   - `fence_lang_is_the_first_word`: `rust,ignore` → `rust`; `{.python}` → `python`; `sh title="x"` → `sh`; `""` /
     None → None.
-- [ ] **Step 2: Run** `cargo test --bin fuxx md_reader` — FAIL. **Step 3: Implement** (`#![allow(dead_code)]` at the
+- [x] **Step 2: Run** `cargo test --bin fuxx md_reader` — FAIL. **Step 3: Implement** (`#![allow(dead_code)]` at the
   module top until Task 3 uses it; Task 11 removes any that remains).
-- [ ] **Step 4: Run** — PASS; add `read_plans_a_megabyte_quickly` (a 1 MB mixed doc: plan time ≤ parse time × 1.5,
+- [x] **Step 4: Run** — PASS; add `read_plans_a_megabyte_quickly` (a 1 MB mixed doc: plan time ≤ parse time × 1.5,
   printed; plan-time call 15); the gate.
-- [ ] **Step 5: Commit** `M11ai Task 2: the reader plan`.
+- [x] **Step 5: Commit** `M11ai Task 2: the reader plan`.
 
 ### Task 3: The reader's column, type and spacing
 
@@ -311,7 +311,7 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
   diagram at most the column (as today, centred). The front matter's row draws nothing yet (Task 6), but exists.
   H6 is `dim`. COLUMN_MAX goes.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `md_preview.rs` `chat_keeps_today_s_sizes`: `Sizes::CHAT` equals today's literal numbers;
     `gap_between(&Sizes::CHAT, …)` reproduces today's `gap_before` cases (the old test, moved).
   - `md_preview.rs` `the_reader_s_gaps`: with `Sizes::reader()`: para→para 16, para→heading 32, heading→para 12,
@@ -326,10 +326,10 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
     list's right edge.
   - The existing agent chat Markdown scene (`ui_shots/agent.rs`, "Markdown in a reply") still passes untouched —
     the chat-unchanged proof.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** (move the Preview code first as its own step, gate green, then
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement** (move the Preview code first as its own step, gate green, then
   the reader's parse and layout).
-- [ ] **Step 4: Run** — PASS; the gate; the full `scripts/ui-shots.sh`.
-- [ ] **Step 5: Commit** `M11ai Task 3: the reader's column, type and spacing`.
+- [x] **Step 4: Run** — PASS; the gate; the full `scripts/ui-shots.sh`.
+- [x] **Step 5: Commit** `M11ai Task 3: the reader's column, type and spacing`.
 
 ### Task 4: Code blocks — colours, language, Copy
 
@@ -367,7 +367,7 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
   to the clipboard, sets `copied = Some(Code(row))` with a generation, and a one-shot 1.5 s timer clears it if the
   generation is unchanged. Element ids from the row (`("md-copy", row)`).
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `highlight.rs` `the_fence_s_first_word_is_the_language`: `highlight_lang("rust", "fn main() {}")` has a
     keyword colour (palette 5) on `fn`; `"RUST"` and `"rs"` the same; `"ts"`, `"sh"` some colour other than the
     foreground; `an_unknown_language_is_plain`: `"foo"` → None. The existing `highlight.rs` tests unchanged.
@@ -380,8 +380,8 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
     click on Copy of the tab block → the clipboard holds the block's text with its `\t`; `copied()` =
     `Some(Code(row))` and the button's bounds hold the `Copied` label; shot `…-code-copied`. The Mermaid block,
     shown as code while waiting, has a `mermaid` header.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
-- [ ] **Step 5: Commit** `M11ai Task 4: coloured code blocks with their language and Copy`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
+- [x] **Step 5: Commit** `M11ai Task 4: coloured code blocks with their language and Copy`.
 
 ### Task 5: Callouts
 
@@ -399,14 +399,14 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
   kind's glyph and title, semibold, in `title`), then the body blocks with the reader's gaps; a body-less callout
   shows its title alone.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `md_preview.rs` `callout_colours_meet_their_floors_in_every_theme`: for each kind and theme, title and body text
     ≥ `TEXT_MIN` on the wash, bar ≥ `MARK_MIN` on the wash.
   - Scene `file-tab-md-reader-callouts` (both themes): each of the five callouts in the fixture: its title text
     present, a pixel of the bar in the kind's bar colour at the block's left edge, the wash behind the body; a
     `[!FOO]` quote still drawn as a quote (dim bar colour `line`).
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
-- [ ] **Step 5: Commit** `M11ai Task 5: GitHub callouts`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
+- [x] **Step 5: Commit** `M11ai Task 5: GitHub callouts`.
 
 ### Task 6: Looks like GitHub — striped tables, front matter, badges
 
@@ -426,7 +426,7 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
   `label | value` with the value on `pill_value_bg`; empty alt `badge` dim; a linked pill follows its link through
   `on_link` (today's rules), its `src` never opened. No colour guessed from words.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `md_preview.rs` contrast test grows: table text on `stripe`, `pill_text` on `pill_bg` and on `pill_value_bg`, at
     `TEXT_MIN` in every theme.
   - Scene `file-tab-md-reader-github` (both themes): the table's 2nd body row's fill is `stripe`, the 1st's the page;
@@ -434,8 +434,8 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
     row draws one pill per badge, 20 pt high (bounds probe), the `license | MIT` pill with two fills; a click on the
     linked `build` pill reaches `on_link` with `https://example.com/ci` (a recorded link, no browser in shots); a
     file with 25 front-matter keys shows `+ 5 more`; a raw block shows a `front matter` header.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
-- [ ] **Step 5: Commit** `M11ai Task 6: striped tables, front matter and badges`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
+- [x] **Step 5: Commit** `M11ai Task 6: striped tables, front matter and badges`.
 
 ### Task 7: Heading anchors
 
@@ -461,7 +461,7 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
   `ANCHOR_GAP` left of the text, shown on the heading's hover (a GPUI `group`); a click copies `heading_link(…)` and
   sets `copied = Some(Anchor(row))` (the `#` reads `Copied` for 1.5 s, the same one-shot).
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `md_preview.rs` `links_go_to_the_web_a_file_beside_it_a_heading_or_nowhere` (replaces the old test): `#install`
     → `Here("install")`; `guide.md#install` → `File("/w/docs/guide.md", Some("install"))`; `../src/main.rs#L3` →
     `File(…, Some("L3"))`; `guide.md` → `File(…, None)`; the rest as before.
@@ -472,8 +472,8 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
     `Anchor(row)`. A second tab: a link `other.md#middle` in a fixture opens `other.md` (via the workspace's
     handler in a workspace scene, or by calling `show_anchor` on a fresh tab) in Preview with `## Middle` at the
     top after parking.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
-- [ ] **Step 5: Commit** `M11ai Task 7: heading anchors`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
+- [x] **Step 5: Commit** `M11ai Task 7: heading anchors`.
 
 ### Task 8: "On this page" — the wide outline and the current entry
 
@@ -500,7 +500,7 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
   `REACH` × its height; `in_view(row)` = drawn and its top < the viewport's bottom; `at_end` =
   `is_scrolled_to_end() == Some(true)`.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `md_preview.rs` contrast test grows: the outline's current entry (accent) and dim entries on the background.
   - Scene `file-tab-md-reader-outline` (both themes, a 1,200 × 700 tab, a long made-up doc with 12 sections):
     `outline_shown() == Some(true)`; at the top no entry current, after wheel steps until section 5's heading is in
@@ -508,8 +508,8 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
     scrolled to the end → the last heading in view is current; a click on entry 8 → section 8's row at the top
     (`jump_offset`), entry 8 current, the scrollbar shown; a wheel step that crosses no heading leaves
     `outline_current` unchanged. A doc with one H2 → `outline_shown() == None`; an 800 pt-wide tab → `Some(false)` (the threshold is 856 pt with today's padding).
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
-- [ ] **Step 5: Commit** `M11ai Task 8: the On this page outline`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
+- [x] **Step 5: Commit** `M11ai Task 8: the On this page outline`.
 
 ### Task 9: The narrow outline panel and the progress line
 
@@ -529,7 +529,7 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
 - Progress: `PROGRESS` pt along the Preview's top edge in the accent (at `MARK_MIN` on the background), its length
   the share `offset / (content − viewport)` from `preview_track`; hidden when the doc fits (no track).
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - Scene `file-tab-md-reader-narrow` (both themes, a 700 × 600 tab on the long doc): `outline_shown() ==
     Some(false)`, the button drawn; a click opens the panel (`outline_panel_open()`), shot `…-narrow-panel`; an
     entry click → that section at the top, the panel closed; open again, Esc → closed; open again, a click on the
@@ -538,8 +538,8 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
     accent pixel along the top edge past 2 pt; scrolled half-way → share within 0.05 of the track's offset share,
     accent pixels along the top edge up to that share of the width and none past it; at the end ≈ 1.0; a doc that
     fits → `None`.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
-- [ ] **Step 5: Commit** `M11ai Task 9: the narrow outline and the progress line`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate; the full ui-shots.
+- [x] **Step 5: Commit** `M11ai Task 9: the narrow outline and the progress line`.
 
 ### Task 10: Reloads, big documents and the measurements
 
@@ -552,7 +552,7 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
 - Consumes: everything above.
 - Produces: nothing new for later tasks.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - Scene `file-tab-md-reader-reload` (one theme, state; Review Focus 4): scrolled to section 6 with Copied showing
     and the narrow panel open, the file rewritten with front matter added at the top → the same heading at the top
     (row + 1), `copied() == None`, `code_coloured()` unchanged at once (no wait) for unchanged blocks, the panel
@@ -560,12 +560,12 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
     switch → colours recomputed for the new theme (cache keyed by theme).
   - Scene `file-tab-md-reader-big` (one theme, state): a 3,000-block file (over `PREVIEW_MEASURE_ALL`) in Preview:
     the outline's current entry follows wheel steps by block index; the progress share moves; nothing panics.
-- [ ] **Step 2: Run** — FAIL where behaviour is missing. **Step 3: Implement.**
-- [ ] **Step 4: Measure** (plan-time call 15): a temporary probe (not committed) laying out a 2,000-block mixed
+- [x] **Step 2: Run** — FAIL where behaviour is missing. **Step 3: Implement.**
+- [x] **Step 4: Measure** (plan-time call 15): a temporary probe (not committed) laying out a 2,000-block mixed
   file in Preview, full relayout time, on this branch and on master (same file, debug); record both and the ratio;
   lower `PREVIEW_MEASURE_ALL` if over 1.15 ×. Record Task 2's parse + plan timing; move them to the background if
   over its limits. Numbers go into note 86 in Task 11.
-- [ ] **Step 5: Run** — PASS; the gate; the full ui-shots. **Commit** `M11ai Task 10: reloads and big documents`.
+- [x] **Step 5: Run** — PASS; the gate; the full ui-shots. **Commit** `M11ai Task 10: reloads and big documents`.
 
 ### Task 11: Hand-off — docs and the on-screen check
 
@@ -579,8 +579,8 @@ Read [[85 - Milestone 11ah - Code View Upgrade]] for the file tab as it is now.
 - On-screen items include idle CPU with a long doc shown (`top -l 6 -s 5 -pid <pid>`, branch vs master) and the
   outline's feel while scrolling; the user runs them, not the agent.
 
-- [ ] **Step 1:** Write the docs; the gate; the full ui-shots; the numbers into note 86.
-- [ ] **Step 2:** Commit `M11ai Task 11: hand-off docs` (explicit paths).
+- [x] **Step 1:** Write the docs; the gate; the full ui-shots; the numbers into note 86.
+- [x] **Step 2:** Commit `M11ai Task 11: hand-off docs` (explicit paths).
 
 ## Self-review (done at plan time)
 

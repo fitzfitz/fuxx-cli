@@ -2,7 +2,6 @@
 //! off before the parse; a `ReaderPlan` is worked out beside the parse, once per version: which
 //! top-level quotes are callouts, which paragraphs are badge rows, each heading's slug, and the
 //! "On this page" outline. Nothing here draws or touches GPUI, so all of it is tested.
-#![allow(dead_code)] // the Preview draws from it as M11ai's tasks land (Task 11 removes any left)
 
 use crate::agent_markdown::{self, Md, Span};
 use crate::ui_tokens::reader::{FRONT_ROWS, JUMP_ROOM};
