@@ -12,7 +12,7 @@ updated: 2026-11-18
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[83 - Milestone 11ak - Agent Box]] |
-| **Status** | 🟨 built, merged to master 2026-11-18 (`cd2218b`), not pushed; waiting for your on-screen check (planned 2026-11-17, from master `ded19b9`) |
+| **Status** | 🟨 built, merged to master and pushed 2026-11-18; waiting for your on-screen check (planned 2026-11-17, from master `ded19b9`) |
 | **Tasks done** | 15 / 15 |
 | **Baselines** | Task 0, on `1995aae`: `cargo test --bin fuxx` 1,840 passed, 1 ignored; clippy default 14 (bin) / 27 (test), `ui-shots` 16 / 29; `cargo fmt --check` clean |
 | **▶ Pick up here** | Your on-screen check (note 83, 15 items); then the push, on your word |
