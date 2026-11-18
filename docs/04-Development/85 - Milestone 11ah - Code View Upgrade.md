@@ -1,7 +1,6 @@
 # Milestone 11ah — Code View Upgrade
 
-**Status:** 📝 design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). Plan written 2026-11-17 ([[M11ah Plan - Code View Upgrade]], Tasks 0–12), waiting for build.
-does not quote you is marked **AI's call**.
+**Status:** 🟨 built on branch m11ah-code-view, waiting for your on-screen check; not merged. Design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). Plan: [[M11ah Plan - Code View Upgrade]] (Tasks 0–12, all built and reviewed). Anything here that does not quote you is marked **AI's call**.
 
 **Asked for:** 2026-11-16, by you, in the file-view mockups ("everything, all layout good"), recorded in
 [[Proposal - File View Upgrades]]:
@@ -326,6 +325,94 @@ Two notes on M11af:
   merging, folds and the current line following a reload — all pure and unit-tested. ui-shots scenes for each part,
   light and dark, unified and side by side, with M11af's glow and Follow on a folded file.
 - Measure idle CPU with a file tab open (as M11af's item 12): it must match master.
+
+## What was built
+
+All 13 plan tasks, each reviewed, on `m11ah-code-view` (not merged, not pushed).
+
+- **Task 0, baselines:** the numbers this branch must not exceed (tests, clippy, ui-shots).
+- **Task 1, sizes and the current line:** every size in one `code` group in `ui_tokens.rs`; rows 1.2 times the font's line height; quieter line numbers; a click makes a line current (faint band, bright number).
+- **Task 2, the outline:** the file's blocks from indentation (a Markdown file: from headings), and the colouring pass names the lines that open functions, types and headings. Worked out with each read, off the UI thread, given up after 50 ms.
+- **Task 3, guides and bars:** faint indent guides (the current block's stronger), change bars as rounded runs with a small gap between kinds, a bar spanning a wrapped line's rows.
+- **Task 4, the row map:** one map of screen rows (replaces the old wrap cache) that knows hidden lines, card titles, folded stretches and side-by-side pairs, so a click always lands on the line drawn there.
+- **Task 5, folding:** ▸ / ▾ in a fold column, a pill ("⋯ 24 lines"), ⌥⌘[ and ⌥⌘], Fold All / Unfold All in the palette. A fold never hides a change.
+- **Task 6, sticky line and breadcrumb:** a 26 pt strip with the file name and the blocks you are in, and the innermost block pinned over the first row; a click on either puts that line at the top.
+- **Task 7, scrollbar marks:** a thin lane with change marks and find ticks.
+- **Task 8, jumps between changes:** ⌥↓ / ⌥↑ and two small buttons; they open a fold around the target and turn Follow off.
+- **Task 9, Diff cards:** each change a card with a title (`fn refresh` · `+12 −3` · `lines 40–58`), 3 lines of context, unchanged stretches of 8 or more folded into "⋯ 36 unchanged lines — click to show", "New file" / "Deleted file" cards, a pinned title, three palette entries.
+- **Task 10, changed words:** the exact changed words tinted inside a changed line (`similar`'s `inline` feature on, no new crate).
+- **Task 11, side by side:** a button (off by default, kept per tab, saved in the layout) that draws a diff as two equal halves; needs 60 cells per half, otherwise the button says "Too narrow for side by side".
+- **Task 12, this hand-off:** the docs, the headless outline timing, the dead-code allowance removed from `code_outline.rs`.
+
+### Calls made while building (AI's, for you to check)
+
+- Jumps are ⌥↑ / ⌥↓ with tooltips to match; plain ↑ / ↓ stay unbound in a file tab, as the spec's "Calls on the open questions" say (its body text said plain arrows).
+- Docs for the whole milestone were written once, in the last task, not per task.
+- The part names in the breadcrumb are cut at 32 characters (the spec's number); the plan's 33-character example was a mistake.
+- The sticky line is the innermost named block whose first line has scrolled above the top.
+- Markdown files draw no indent guides (their blocks are headings, not indentation).
+- The row map remembers its own row height and is rebuilt when the font size changes.
+- The sticky line overlays the top row while you scroll freely, instead of pushing the text down a row (that would make the view jump by itself); reveals (Find, Follow, jumps) leave one row of room.
+- A click on the sticky line or a breadcrumb puts that line on top, below any sticky line pinned there.
+- A resize or font-size change keeps the line at the top of the view, so the sticky line and breadcrumb stay right.
+- A find match inside a fold ticks the lane at the fold's row; a deletion-only edge gets a lane mark too; no lane when the text fits.
+- A current line hidden by a fold moves to the fold's line; ⌥⌘[ on an already folded block folds the next block out; one hidden line says "⋯ 1 line".
+- A deletion edge touching a changed run is one stop for the jump, as git shows it as one change.
+- Card gap sits above every card but the first; "lines a–b" spans the card including context; a card's title pins whenever its card is under the top of the view, and pressing it folds that card; the lane shows find ticks in Diff too; cards you closed stay closed over a reload.
+- Show All Unchanged Lines keeps your top line.
+- Changed words use `similar`'s character mode, each changed range grown to the whole word it touches (its word mode splits on spaces only and would mark `old();` whole).
+- Both side-by-side halves use the wider of the two line-number columns, so they are equal width and wrap at the same column.
+- A change in whether side by side fits notifies once through one deferred notify (no timer, no frame task); entering Diff from File uses the last measured fit.
+
+### Known small gaps (things you might notice)
+
+- With Wrap on, a fold's pill can run past the right edge, and a tab at the wrap boundary can offset the pill's click spot by a cell.
+- A reload can leave the current line inside a fold with no band showing.
+- Card titles and the "⋯ N unchanged lines" rows have no pointing-hand cursor.
+- A pure insertion (`café` to `cafés`) marks only the new side's word.
+- A deletion inside a fold whose strongest change is an addition has no separate lane mark.
+- In side by side, a selection made in unified view and carried over is invisible but copies both halves mixed; the sideways scrollbar's track spans both halves.
+- A diff of a file emptied entirely reads "Deleted file".
+- Pressing a pinned card title or a fold's top half can prefer a hidden change over a deletion edge above it.
+- Folds are not kept over a restart (as designed).
+
+## Measured headlessly (outline time)
+
+Outline time, headless: `code_outline::outline` on this branch, debug build, run once from a temporary ignored test that was not committed (text generated in memory):
+
+| Input | Lines | With the 50 ms `LIMIT` | Without a limit |
+|---|---|---|---|
+| 15 MB flat text | 247,497 | 17 ms, outline built | 14 ms |
+| 15 MB indented text (6 levels) | 479,993 | 52 ms, **gave up** (no outline) | 80 ms |
+| 1.9 MB source-like | 137,304 | 28 ms, outline built | 27 ms |
+
+So the outline adds at most about 50 ms to a read and a file that is too slow simply gets no outline. Idle CPU and tab-open-to-first-frame need a real window: they are items 13 and 14 below.
+
+## Final numbers (this Mac, debug build, 2026-11-18)
+
+- `cargo test --bin fuxx`: 1,917 passed, 0 failed, 1 ignored (baseline 1,840).
+- clippy: 14 (bin) / 27 (test) default, 16 / 29 with `ui-shots` (baselines 14 / 27 and 16 / 29; unchanged); `cargo fmt --check` clean.
+- `scripts/ui-shots.sh` (full): 160 passed, 0 failed, 119.3 s. The reference fingerprints are stale on this Mac (they say "look different" and never fail); not updated.
+
+## On-screen check (yours, after the build)
+
+Run `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run` (debug only: **do not add `--release`**) from the worktree. Use a scratch repo (`git init`, commit a 900-line Rust file such as `~/code/my-app/src/auth/session.rs`, then change six places in it) and open it in a file tab.
+
+1. **Current line:** click a line: a faint band across it and its number bright; the other numbers quieter.
+2. **Guides and bars:** faint vertical guides at each indent level, the block you are in a little stronger; change bars are rounded with a small gap between an added and a changed run.
+3. **Sticky line and breadcrumb:** scroll into a long function: its first line pins at the top, the strip above reads like `session.rs › impl Session › fn refresh`; click a crumb and the pinned line: each puts that line at the top and current.
+4. **Folding:** hover the gutter, click ▾ to fold a function ("⋯ 24 lines"), click ▸ to open; ⌥⌘[ and ⌥⌘] fold and unfold where the current line is; fold a block holding a change: its bar still shows on the folded line.
+5. **Jumps:** ⌥↓ / ⌥↑ and the two buttons step between changes, open a fold around the target, stop at the ends (no wrap-around).
+6. **Scrollbar marks:** a thin lane at the right edge with your changes; open Find: match ticks join it.
+7. **Diff cards:** switch to Diff: one card per change with `fn refresh · +12 −3 · lines 40–58`, 3 lines of context, a long unchanged stretch as "⋯ 36 unchanged lines — click to show"; click it to open it; scroll a tall card: its title pins; fold a card by its title.
+8. **Changed words:** in a changed line only the words that changed are tinted more strongly (try an accent such as `café` and a tab-indented line).
+9. **Side by side:** the button in the bar: two equal halves, old left and new right, with the wide pane; in a narrow pane the button is greyed ("Too narrow for side by side").
+10. **Follow with folds:** fold a function, turn Follow on, have an agent change a line inside it: the fold opens and the change shows below the sticky line.
+11. **Wrap:** turn Wrap on and repeat a click below a fold and below a card title: it lands on the line drawn there.
+12. **Palette:** Fold All, Unfold All and Show All Unchanged Lines each do what they say.
+13. **Idle CPU (the M11p anti-goal), by hand:** with the 900-line Rust file shown and nothing warm, run `top -l 6 -s 5 -pid <fuxx pid>` in another terminal and take the median CPU of the samples; do the same with `master` built the same way (debug, `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`). They should match within noise.
+14. **Open time, by hand:** open a 15 MB generated text file and a 1.9 MB source file, branch and `master`: the first text should appear as fast as before (the outline adds up to 50 ms, see the headless table above).
+15. **Side by side survives a restart:** switch it on in a diff, quit and start fuxx again: the tab is still side by side (its save-and-restore path is not covered by a test).
 
 ## Related
 
