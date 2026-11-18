@@ -27,7 +27,7 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, AnyView, App, Bounds, ClickEvent, Context, CursorStyle, Div, DragMoveEvent,
     Focusable, FontWeight, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, ScrollHandle,
-    SharedString, Window, canvas, div, point, prelude::*, px,
+    SharedString, Window, canvas, div, point, prelude::*, px, relative,
 };
 
 use crate::appearance::Appearance;
@@ -651,6 +651,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let look = look(&ui, tab.status, tab.active, pane_focused);
+        let shown = tab.active;
         let surface = look.fill.unwrap_or(ui.card);
         let id = tab.tab;
         let group: SharedString = format!("pane-tab-{}", id.0).into();
@@ -736,6 +737,14 @@ impl Workspace {
         let (chip_title, chip_icon) = (tab.title.clone(), tab.icon);
         let attachable = self.agents.get(&id).is_some_and(|slot| slot.attachable);
         let tile = tile(tab.icon, &ui);
+        // The gap between two parts: `PART_GAP`, giving way (down to none) only once the title
+        // is gone, so a shown tab squeezed into a narrow pane keeps its tile, dot and × whole.
+        let part_gap = || {
+            div()
+                .flex_basis(px(PART_GAP))
+                .flex_shrink_1()
+                .min_w(px(0.0))
+        };
         let tab = div()
             .id(("pane-tab", id.0 as usize))
             .group(group)
@@ -746,15 +755,20 @@ impl Workspace {
             .flex_row()
             .items_center()
             .px(px(TAB_PAD))
-            .gap(px(PART_GAP))
             .rounded(px(TAB_RADIUS))
             .text_size(px(text::UI))
             .text_color(hsla(look.text))
             .when_some(look.fill, |t, fill| t.bg(hsla(fill)))
             .when_some(look.hover, |t, hover| t.hover(move |s| s.bg(hsla(hover))))
             .child(tile)
+            .child(part_gap())
             .child(title)
-            .children(dot)
+            .children(
+                dot.map(|dot| [part_gap().into_any_element(), dot.into_any_element()])
+                    .into_iter()
+                    .flatten(),
+            )
+            .child(part_gap())
             .child(close)
             .on_drag(DraggedTab { tab: id }, move |dragged, at, window, cx| {
                 source.set(Some(TabGrab {
@@ -832,14 +846,26 @@ impl Workspace {
             });
         // Its place in the row: the size the row gives it (the tab and the separator's room),
         // `TAB` tall in the bar's middle; the tab and its separator are drawn from it, slid by
-        // `offset`. Its chip is it while it's dragged: its place shows empty.
-        div()
+        // `offset`. Its chip is it while it's dragged: its place shows empty. At least
+        // `TAB_MIN_WIDTH` (then the row scrolls); but the shown tab, in a row narrower than that,
+        // fits the row (its title gives way): its minimum is its content's (a strut that wide),
+        // held to the row's width by its `max_w` (taffy's automatic minimum size of a flex item,
+        // css-flexbox-1 §4.5, clamps the content size by the max size).
+        let place = div()
             .relative()
             .flex_basis(px(TAB_MAX_WIDTH + AFTER))
             .flex_shrink_1()
-            .min_w(px(TAB_MIN_WIDTH + AFTER))
-            .max_w(px(TAB_MAX_WIDTH + AFTER))
-            .h(px(TAB))
+            .h(px(TAB));
+        let place = if shown {
+            place
+                .max_w(relative(1.0))
+                .child(div().w(px(TAB_MIN_WIDTH + AFTER)).h(px(0.0)))
+        } else {
+            place
+                .min_w(px(TAB_MIN_WIDTH + AFTER))
+                .max_w(px(TAB_MAX_WIDTH + AFTER))
+        };
+        place
             .child(
                 div()
                     .absolute()

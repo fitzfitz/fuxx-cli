@@ -2087,6 +2087,8 @@ fn browser_tab_scenes() {
 ///   (working), tests (done), a Claude agent tab (idle), a browser tab and notes.md (a preview).
 /// - `tabs-minimal-hover`: the pointer over codex.
 /// - `tabs-minimal-overflow`: a split in a narrow window, the right pane with twelve tabs.
+/// - `tabs-minimal-narrow`: two panes of about 215 pt; the right one's shown tab (working,
+///   hovered) shrinks below `TAB_MIN_WIDTH` to fit its row, its tile, dot and × whole.
 ///
 /// Panics unless the bar has no fill (the card shows above the tabs and beside the buttons) and
 /// a `card_border` line along its bottom; the tabs are `TAB` tall in its middle; every tab has
@@ -2387,6 +2389,128 @@ fn tabs_minimal_scenes() {
             assert!(contrast(ui.text_faint, ui.waiting_tint) >= TEXT_MIN, "{n}");
             println!("ui-shots: {}", path.display());
         }
+
+        // A narrow pane (fix round 1): two panes in a 680 pt window, each about 215 pt, the
+        // row narrower than one tab's place. The right one has t1 (idle) and codex (working,
+        // shown, hovered): codex shrinks below `TAB_MIN_WIDTH` to fit the row, its tile, its
+        // status dot and its × whole and drawn inside the row, left of the buttons; t1 keeps
+        // `TAB_MIN_WIDTH` and is scrolled away.
+        let small = size(px(680.0), px(420.0));
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                ws.sidebar.hint_dismissed = true;
+                let project = std::path::Path::new(API);
+                ws.open_shot_session("api", project, SHELL_TEXT, None, window, cx);
+                ws.open_shot_session("t1", project, SHELL_TEXT, Some(Axis::Row), window, cx);
+                ws.open_shot_tab("codex", project, AGENT_TEXT, window, cx);
+                let i = ws
+                    .sessions
+                    .position(|x| x.label() == "codex")
+                    .expect("codex");
+                ws.set_status(i, Status::Working, false, cx);
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let places: Rc<RefCell<Vec<gpui::Bounds<Pixels>>>> = Rc::default();
+        let seen = places.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            // A second frame: the first laid the tabs out, this one scrolls to the shown one.
+            cx.update_window(window, |_, window, _| window.refresh())
+                .expect("refresh");
+            cx.run_until_parked();
+            let ws = slotted(&slot);
+            let n = format!("tabs-minimal-narrow-{slug}");
+            let panes = shown_panes(cx, &ws);
+            assert_eq!(panes.len(), 2, "{n}: two panes");
+            let tabs: Vec<_> = (0..2)
+                .map(|i| tab_bounds(cx, &ws, panes[1], i).expect("laid out"))
+                .collect();
+            cx.simulate_mouse_move(window, tabs[1].center(), None, Modifiers::none());
+            *seen.borrow_mut() = tabs;
+            slot.borrow_mut().take();
+        };
+        let shot = render_with(&theme, small, build, act);
+        let path = save_shot("tabs-minimal-narrow", slug, &shot);
+        let n = format!("tabs-minimal-narrow-{slug}");
+        let at = |x: f32, y: f32| pixel_at(&shot, small, x, y);
+        let scale = shot.width as f32 / 680.0;
+        let in_box = |x0: f32, x1: f32, y0: f32, y1: f32| {
+            let mut all = Vec::new();
+            for dy in (y0 * scale) as usize..(y1 * scale) as usize {
+                for dx in (x0 * scale) as usize..(x1 * scale) as usize {
+                    all.push(at(dx as f32 / scale, dy as f32 / scale));
+                }
+            }
+            all
+        };
+        let tabs = places.borrow().clone();
+        let (left, right) = (
+            SIDEBAR_DEFAULT_WIDTH + HAIRLINE,
+            680.0 - CARD_INSET - HAIRLINE,
+        );
+        let across = left + 0.5 * (right - left - HAIRLINE) + HAIRLINE / 2.0;
+        let (row_left, row_right) = (
+            across + HAIRLINE / 2.0 + crate::ui_tokens::size::TABS_LEFT,
+            right - buttons,
+        );
+        assert!(
+            row_right - row_left < TAB_MIN_WIDTH + after,
+            "{n}: the row ({row_left}–{row_right}) is narrower than one tab's place"
+        );
+        // t1 keeps the narrowest width (and is scrolled away).
+        let t1 = f32::from(tabs[0].size.width) - after;
+        assert!(t1 >= TAB_MIN_WIDTH - 0.5, "{n}: t1 {t1} wide");
+        // codex, the shown tab, fits the row: whole, left of the buttons.
+        let (codex_left, codex_right) = (
+            f32::from(tabs[1].left()),
+            f32::from(tabs[1].right()) - after,
+        );
+        assert!(
+            codex_left >= row_left - 0.5 && codex_right <= row_right + 0.5,
+            "{n}: the shown tab {codex_left}–{codex_right} inside the row {row_left}–{row_right}"
+        );
+        // Its tile, its working dot and its × (hovered), drawn inside it.
+        let tile = codex_left + TAB_PAD;
+        let top_of_tile = at(tile + TILE / 2.0, cy - TILE / 2.0 + 1.5);
+        assert!(
+            near(top_of_tile, ui.card_lift),
+            "{n}: the tile {top_of_tile:?}"
+        );
+        let close = codex_right - TAB_PAD - CLOSE;
+        let dot = in_box(
+            tile + TILE,
+            close,
+            cy - STATUS_DOT / 2.0 - 1.0,
+            cy + STATUS_DOT / 2.0 + 1.0,
+        );
+        let off = dot
+            .iter()
+            .map(|&p| gap(p, ui.ring_working))
+            .min()
+            .unwrap_or(255);
+        assert!(off <= 30, "{n}: the working dot is drawn ({off} off)");
+        let fill = ui.tab_active;
+        let x_box = in_box(close + 2.0, close + CLOSE - 2.0, cy - 5.0, cy + 5.0);
+        assert!(
+            x_box.iter().any(|&p| gap(p, fill) > 30),
+            "{n}: its × drawn on hover"
+        );
+        // The buttons stay drawn, in the pane.
+        for k in 0..3 {
+            let centre = right - BUTTONS_PAD - BUTTON / 2.0 - k as f32 * (BUTTON + BUTTON_GAP);
+            let half = BUTTON_ICON / 2.0;
+            let inked = in_box(centre - half, centre + half, cy - half, cy + half)
+                .iter()
+                .any(|&p| gap(p, ui.card) > 40);
+            assert!(inked, "{n}: button {k} drawn at {centre}");
+        }
+        println!("ui-shots: {}", path.display());
 
         // Overflowing: twelve tabs in the right pane of a split, in a narrow window.
         let narrow = size(px(960.0), px(480.0));
