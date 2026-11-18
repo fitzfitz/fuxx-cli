@@ -145,7 +145,7 @@ pub struct UiColors {
     /// A hovered and a selected row on a card (the right sidebar's rows).
     pub card_hover: Rgb,
     pub card_selected: Rgb,
-    /// The Files tree's 1 px indent guides, quiet on the card.
+    /// The Files tree's 1 px indent guides, quiet on `side` and its hover and selection.
     pub guide: Rgb,
     /// Command blocks' gutter bars (M11l), held to `MARK_MIN` on the terminal: a finished
     /// command (exit 0 or not reported), a failed one, a running one.
@@ -490,7 +490,7 @@ impl Theme {
             row_selected,
             card_hover,
             card_selected,
-            guide: quiet(mix(card, fg, 0.12), &[card]),
+            guide: quiet(mix(side, fg, 0.12), &[side, side_hover, side_selected]),
             block_ok: ensure_contrast(self.palette[8], bg, MARK_MIN),
             block_failed: ensure_contrast(self.palette[1], bg, MARK_MIN),
             block_running: ensure_contrast(ring_working, bg, MARK_MIN),
@@ -639,13 +639,16 @@ impl Theme {
             (("divider", ui.divider), terminal),
             (("panel_border", ui.panel_border), ("panel", ui.panel)),
             (("panel_border", ui.panel_border), terminal),
-            // A card's edge on the canvas and on the card; the Files tree's guides on the card.
+            // A card's edge on the canvas and on the card; the Files tree's guides on the panel's
+            // fills (M11al Task 10).
             (("card_border", ui.card_border), surfaces[0]),
             (("card_border", ui.card_border), ("card", ui.card)),
             (("card_border", ui.card_border), ("side", ui.side)),
             // The sidebar's search box's edge on its own fill (M11al Task 7).
             (("card_border", ui.card_border), ("raised", ui.raised)),
-            (("guide", ui.guide), ("card", ui.card)),
+            (("guide", ui.guide), ("side", ui.side)),
+            (("guide", ui.guide), ("side_hover", ui.side_hover)),
+            (("guide", ui.guide), ("side_selected", ui.side_selected)),
             // The Changes progress bar's unfilled track on the repo card (M11al Task 9).
             (
                 ("progress_track", ui.progress_track),
@@ -1104,7 +1107,13 @@ mod tests {
                 "card_border on the card",
                 contrast(ui.card_border, mocha.background),
             ),
-            ("guide on the card", contrast(ui.guide, mocha.background)),
+            // M11al Task 10: the tree's guides are drawn on the attached sidebar's fills.
+            ("guide on side", contrast(ui.guide, ui.side)),
+            ("guide on side_hover", contrast(ui.guide, ui.side_hover)),
+            (
+                "guide on side_selected",
+                contrast(ui.guide, ui.side_selected),
+            ),
         ] {
             assert!(ratio >= QUIET_LINE_MIN, "{what} is {ratio:.2}: invisible");
             assert!(ratio < MARK_MIN, "{what} is {ratio:.2}: too loud");
