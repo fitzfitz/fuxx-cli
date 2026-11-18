@@ -132,16 +132,19 @@ pub(crate) const COUNT_RADIUS: f32 = 10.0;
 /// selection are pills (`PILL_RADIUS` corners) inset `PILL_INSET` from the card's sides, with
 /// `PILL_PAD` inside them; a header's icon buttons (`HEADER_BUTTON`, their icons `HEADER_ICON`)
 /// and its room right of them.
-pub(crate) const ROW: f32 = 28.0;
+pub(crate) const ROW: f32 = 32.0;
 pub(crate) const TEXT: f32 = 14.0;
+/// A row's name (M11al §6.5) and its folder, faint beside it.
+pub(crate) const NAME: f32 = 13.5;
+pub(crate) const FOLDER: f32 = 12.0;
 pub(crate) const SMALL: f32 = 12.0;
 pub(crate) const HEADER: f32 = REPO_TOP + REPO_PAD_Y + REPO_LINE + REPO_PAD_Y + REPO_BOTTOM;
 pub(crate) const TITLE: f32 = 14.0;
 pub(crate) const ICON: f32 = 16.0;
 pub(crate) const EDGE: f32 = 12.0;
-pub(crate) const PILL_INSET: f32 = 6.0;
-pub(crate) const PILL_PAD: f32 = 6.0;
-pub(crate) const PILL_RADIUS: f32 = 7.0;
+pub(crate) const PILL_INSET: f32 = 10.0;
+pub(crate) const PILL_PAD: f32 = 12.0;
+pub(crate) const PILL_RADIUS: f32 = 9.0;
 pub(crate) const HEADER_BUTTON: f32 = 26.0;
 pub(crate) const HEADER_ICON: f32 = 15.0;
 pub(crate) const HEADER_PAD_RIGHT: f32 = 8.0;
@@ -153,8 +156,8 @@ const ICON_STROKE: f32 = 1.2;
 const HEADER_ICON_STROKE: f32 = 1.3;
 /// The filter field under the Files header: its height, its corners, its padding and the
 /// room under it; its search icon.
-pub(crate) const FILTER: f32 = 32.0;
-const FILTER_RADIUS: f32 = 8.0;
+pub(crate) const FILTER: f32 = 34.0;
+const FILTER_RADIUS: f32 = 10.0;
 const FILTER_PAD: f32 = 10.0;
 pub(crate) const FILTER_BELOW: f32 = 8.0;
 const FILTER_ICON: f32 = 14.0;
@@ -233,13 +236,13 @@ pub(crate) fn mark_ink(mark: Mark, theme: &Theme, ui: &UiColors) -> Rgb {
     on_rows(ansi, ui)
 }
 
-/// `colour` pushed (hue kept) to `MARK_MIN` on each fill a Files row has (M11i: the card, and
-/// `card_hover` / `card_selected` under a hovered or selected row), so a git mark or a type
-/// tint reads on all of them.
+/// `colour` pushed (hue kept) to `MARK_MIN` on each fill a Files row has (M11i; M11al §6.5: the panel's
+/// `side`, and `side_hover` / `side_selected` under a hovered or selected row, M11al §6.5), so a git mark
+/// or a type tint reads on all of them.
 fn on_rows(colour: Rgb, ui: &UiColors) -> Rgb {
     readable(
         colour,
-        &[ui.card, ui.card_hover, ui.card_selected],
+        &[ui.side, ui.side_hover, ui.side_selected],
         MARK_MIN,
     )
 }
@@ -449,7 +452,7 @@ fn file_row(
         .pl(px(left))
         .pr(px(PILL_PAD))
         .rounded(px(PILL_RADIUS))
-        .text_size(px(TEXT))
+        .text_size(px(NAME))
         .children(lines);
     // The pill in its row: inset from the card's sides.
     let place = |pill: AnyElement| {
@@ -488,9 +491,9 @@ fn file_row(
         (false, _) => Glyph::File,
     };
     let (rel, is_dir) = (row.rel.clone(), row.is_dir);
-    let hover = ui.card_hover;
+    let hover = ui.side_hover;
     place(
-        pill.when(chosen, |r| r.bg(hsla(ui.card_selected)))
+        pill.when(chosen, |r| r.bg(hsla(ui.side_selected)))
             .when(!chosen, |r| r.hover(move |s| s.bg(hsla(hover))))
             .cursor_pointer()
             .child(
@@ -2784,9 +2787,10 @@ mod tests {
         assert_eq!(file_kind("main.RS"), Red);
     }
 
-    /// Every colour a Files row draws over its fills (`card`, hovered, selected) reaches
+    /// Every colour a Files row draws over its fills (`side`, hovered, selected) reaches
     /// `MARK_MIN` on each, in every built-in theme (Task 1 review: the tints and git marks on
-    /// `card_hover` and `card_selected`).
+    /// the hovered and selected fills; M11al Task 10: those are now `side_hover` and
+    /// `side_selected`).
     #[test]
     fn type_tints_and_marks_read_on_every_files_row_fill() {
         use crate::ui_tokens::contrast;
@@ -2794,9 +2798,9 @@ mod tests {
         for (name, theme) in crate::theme::every_theme() {
             let ui = theme.ui();
             let fills = [
-                ("card", ui.card),
-                ("card_hover", ui.card_hover),
-                ("card_selected", ui.card_selected),
+                ("side", ui.side),
+                ("side_hover", ui.side_hover),
+                ("side_selected", ui.side_selected),
             ];
             let tints = FileKind::ALL.map(|k| (format!("{k:?}"), kind_color(k, &theme)));
             let marks = [Mark::Modified, Mark::Added, Mark::Deleted]
@@ -2842,12 +2846,12 @@ mod tests {
     }
 
     /// Part 4: no chevron column; each level is 16 pt, and a guide runs down the middle of
-    /// that level's 16 pt icon (from the pill's left: its 6 pt padding, then the levels).
+    /// that level's 16 pt icon (from the pill's left: its 12 pt padding, then the levels).
     #[test]
     fn guides_sit_at_each_ancestor_level_s_icon_centre() {
         assert!(guides(0).is_empty(), "none at the top level");
-        assert_eq!(guides(1), vec![14.0]);
-        assert_eq!(guides(3), vec![14.0, 30.0, 46.0]);
+        assert_eq!(guides(1), vec![20.0]);
+        assert_eq!(guides(3), vec![20.0, 36.0, 52.0]);
     }
 
     /// Part 4 (Files A): only changed files carry colour, a file's name and its letter; a
@@ -2899,7 +2903,11 @@ mod tests {
     /// text, 16 pt icons, pills inset 6 pt so everything starts on the 12 pt edge.
     #[test]
     fn the_panels_share_one_set_of_sizes() {
-        assert_eq!(ROW, 28.0);
+        // M11al §6.5: roomier rows, pills inset 10 with 12 inside, names 13.5.
+        assert_eq!(ROW, 32.0);
+        assert_eq!((PILL_INSET, PILL_PAD, PILL_RADIUS), (10.0, 12.0, 9.0));
+        assert_eq!((NAME, FOLDER), (13.5, 12.0));
+        assert_eq!((FILTER, FILTER_RADIUS), (34.0, 10.0));
         // M11al §6.3: the header is the repo card (4 / 12 + 20 + 12 / 6), Changes' 8 more.
         assert_eq!(HEADER, 54.0);
         assert_eq!(crate::changes_panel::HEADER, 62.0);
@@ -2909,7 +2917,8 @@ mod tests {
         assert_eq!(SWITCH_RADIUS, 10.0);
         assert_eq!((TEXT, SMALL, TITLE), (14.0, 12.0, 14.0));
         assert_eq!(ICON, 16.0);
-        assert_eq!(PILL_INSET + PILL_PAD, EDGE);
+        // A row's content starts 22 in (10 + 12); the headers keep the 12 pt edge.
+        assert_eq!(PILL_INSET + PILL_PAD, 22.0);
         assert_eq!(EDGE, 12.0);
         assert_eq!((HEADER_BUTTON, HEADER_ICON), (26.0, 15.0));
         assert_eq!(INDENT, 16.0);

@@ -643,9 +643,10 @@ fn files_scenes() {
                 "files-filter" => &[0, 1],
                 _ => &[0, 0, 1, 1, 1, 0, 0, 0, 0],
             };
-            // A row's icon box (M11v part 4): on the 12 pt edge (the pill 6 pt in, its padding
-            // 6), 16 pt a level, no chevron column.
-            let icon_left = |row: usize| sidebar_left + 12.0 + depths[row] as f32 * 16.0;
+            // A row's icon box (M11v part 4): on the 22 pt edge (the pill `PILL_INSET` in, its
+            // padding `PILL_PAD`; M11al §6.5), 16 pt a level, no chevron column.
+            let edge = crate::right_sidebar::PILL_INSET + crate::right_sidebar::PILL_PAD;
+            let icon_left = |row: usize| sidebar_left + edge + depths[row] as f32 * 16.0;
             let ink_in = |row: usize, x0: f32, x1: f32, c: alacritty_terminal::vte::ansi::Rgb| {
                 let y0 = list_top + row as f32 * ROW;
                 let steps = ((x1 - x0) * 2.0) as usize;
@@ -720,18 +721,18 @@ fn files_scenes() {
                 );
             }
             // An open folder's icon differs from a closed one's: its flap's top edge crosses
-            // the middle of the 16 pt box (6 pt down the 28 pt row), where a closed folder is
+            // the middle of the 16 pt box (`(ROW - 16) / 2` down the row), where a closed folder is
             // empty. (No triangles, part 4: the icon alone says open or closed.)
             let open_flap = |row: usize| {
                 let (x, y) = (
                     icon_left(row) + 8.0,
-                    list_top + row as f32 * ROW + 6.0 + 7.3,
+                    list_top + row as f32 * ROW + (ROW - 16.0) / 2.0 + 7.3,
                 );
                 near(at(x, y), quiet, 40)
             };
             assert!(open_flap(1) && !open_flap(0), "{n}: src open, docs closed");
             // Indent guides: 1 pt in `guide` at each level above the row, at the middle of
-            // that level's chevron column (8 + 14 d + 6), the row's full height; none at the
+            // that level's icon (`edge` + 8 + 16 d), the row's full height; none at the
             // top level. (It spans x - 0.5 to x + 0.5: on a 1x shot it lands on one side.)
             let guide_at = |row: usize, x: f32| {
                 let y0 = list_top + row as f32 * ROW;
@@ -744,13 +745,13 @@ fn files_scenes() {
             // Part 4: a level's guide runs down the middle of that level's icon box: 12 pt
             // in, 16 pt a level, 8 pt to its middle.
             for row in [2, 3, 4, 5] {
-                assert!(guide_at(row, 20.0), "{n}: row {row}'s depth-1 guide");
+                assert!(guide_at(row, edge + 8.0), "{n}: row {row}'s depth-1 guide");
             }
-            assert!(guide_at(3, 36.0), "{n}: a.rs's depth-2 guide");
-            assert!(!guide_at(4, 36.0), "{n}: main.rs is at depth 1");
+            assert!(guide_at(3, edge + 24.0), "{n}: a.rs's depth-2 guide");
+            assert!(!guide_at(4, edge + 24.0), "{n}: main.rs is at depth 1");
             for row in [6, 7, 9] {
                 assert!(
-                    !guide_at(row, 20.0),
+                    !guide_at(row, edge + 8.0),
                     "{n}: no guide at the top level ({row})"
                 );
             }
@@ -932,8 +933,9 @@ fn files_scenes() {
                 })
                 .expect("read")
             };
-            // A click below the rows: the panel takes the keyboard.
-            cx.simulate_click(window, row_at(12), none);
+            // A click below the rows (still inside the card, which ends before row 12 at the
+            // 32 pt `ROW`): the panel takes the keyboard.
+            cx.simulate_click(window, row_at(10), none);
             assert_eq!(
                 panel_keys(cx),
                 (true, true),
@@ -1035,7 +1037,7 @@ fn files_scenes() {
             );
             assert!(preview && after == count, "{n}: no new tab");
             // Back in the tree, Esc: the pane's tab takes the keyboard back.
-            cx.simulate_click(window, row_at(12), none);
+            cx.simulate_click(window, row_at(10), none);
             assert_eq!(panel_keys(cx), (true, true), "{n}: the tree again");
             cx.simulate_keystrokes(window, "escape");
             let back = cx
@@ -1385,6 +1387,9 @@ fn right_panel_scenes() {
 ///   the shown one on `card_lift` in the text colour, the others unfilled in `text_faint`, the
 ///   hovered one's words `text_dim` with no fill; the repo card (4 / 14 / 6 margin, `card_hover`
 ///   fill) with the folder's name in the text colour.
+/// - On Files (M11al Task 10, §6.5): the filter field `FILTER` (34) tall in `raised` with its
+///   placeholder in `text_faint`. (The rows' hover, selection and guides are read in `files`,
+///   `changes`; the footer's buttons in `changes-bar`.)
 /// - The same on Changes: the repo card's meta (`N of M staged`) `text_faint`; the STAGED
 ///   heading's words in capitals (`text_faint`) and, at its right, the count's `card_lift` pill.
 fn right_panel_comfortable_scenes() {
@@ -1544,6 +1549,31 @@ fn right_panel_comfortable_scenes() {
                 );
             }
 
+            // M11al Task 10 (§6.5): the filter field under the Files header is `FILTER` (34) tall
+            // in `raised`, with `text_faint` words; read down its right end, clear of the words.
+            if panel == Panel::Files {
+                let band_top = header_top + crate::right_sidebar::HEADER;
+                let x = card_right - crate::right_sidebar::EDGE - 20.0;
+                let run = (0..(crate::right_sidebar::FILTER_BAND * 2.0) as usize)
+                    .filter(|&i| near(at(x, band_top + i as f32 * 0.5), ui.raised, 0))
+                    .count() as f32
+                    / 2.0;
+                assert!(
+                    (run - crate::right_sidebar::FILTER).abs() <= 1.0,
+                    "{n}: the filter field is {run} pt tall"
+                );
+                assert!(
+                    has(
+                        sidebar_left + 30.0,
+                        sidebar_left + 120.0,
+                        band_top,
+                        band_top + crate::right_sidebar::FILTER_BAND,
+                        ui.text_faint,
+                        24
+                    ),
+                    "{n}: the placeholder in `text_faint`"
+                );
+            }
             // The repo card: 4 / 14 / 6 margin, `card_hover`, the folder's name in `text`.
             let top = header_top + REPO_TOP;
             let header = if panel == Panel::Files {

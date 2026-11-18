@@ -38,9 +38,9 @@ use crate::git_stage::{self, FileWork};
 use crate::git_status::{self, Change, ChangeList, Counts, Mark};
 use crate::layout_model::{FileMode, TabKind};
 use crate::right_sidebar::{
-    COUNT_PAD_X, COUNT_PAD_Y, COUNT_RADIUS, EDGE, NO_FOLDER, PILL_INSET, PILL_PAD, PILL_RADIUS,
-    Panel, REFRESH, ROW, SECTION_BELOW, SECTION_SIDE, SMALL, TEXT, TITLE, back_off, due, find_root,
-    mark_ink, note,
+    COUNT_PAD_X, COUNT_PAD_Y, COUNT_RADIUS, FOLDER, NAME, NO_FOLDER, PILL_INSET, PILL_PAD,
+    PILL_RADIUS, Panel, REFRESH, ROW, SECTION_BELOW, SECTION_SIDE, SMALL, TEXT, TITLE, back_off,
+    due, find_root, mark_ink, note,
 };
 use crate::sidebar::tabular;
 use crate::sidebar_toggle::{Tip, tip_box};
@@ -71,10 +71,13 @@ const CIRCLE: f32 = 16.0;
 const CONFIRM_WIDTH: f32 = 280.0;
 /// The branch bar (M11v): its padding, its buttons' size and corner, the gap between them,
 /// the tooltip's gap above its button and how long the pointer rests before it shows.
-const BAR_PAD_X: f32 = 12.0;
-const BAR_PAD_Y: f32 = 8.0;
-const BAR_BUTTON: f32 = 26.0;
-const BAR_BUTTON_RADIUS: f32 = 6.0;
+const BAR_PAD_X: f32 = 16.0;
+const BAR_PAD_Y: f32 = 14.0;
+const BAR_BUTTON: f32 = 34.0;
+const BAR_BUTTON_RADIUS: f32 = 9.0;
+/// The branch glyph's box and the line under the name (M11al §6.6).
+const BAR_BRANCH_ICON: f32 = 16.0;
+const BAR_LINE: f32 = 12.5;
 /// The bar's icons: 15 pt (part 6, as the mockup), their lines 1.2 pt.
 const BAR_ICON: f32 = 15.0;
 const BAR_ICON_STROKE: f32 = 1.2;
@@ -627,10 +630,10 @@ pub fn split_path(rel: &Path) -> (String, String) {
 }
 
 /// The counts' inks: the theme's ANSI green (added) and red (removed), pushed (hue kept) to
-/// read as text (`TEXT_MIN`) on each fill a row has: the card, hovered, selected.
+/// read as text (`TEXT_MIN`) on each fill a row has: `side`, hovered, selected (M11al §6.5).
 pub fn count_inks(theme: &Theme) -> (Rgb, Rgb) {
     let ui = theme.ui();
-    let fills = [ui.card, ui.card_hover, ui.card_selected];
+    let fills = [ui.side, ui.side_hover, ui.side_selected];
     (
         readable(theme.palette[2], &fills, TEXT_MIN),
         readable(theme.palette[1], &fills, TEXT_MIN),
@@ -726,7 +729,7 @@ fn group_count(list: &ChangeList, staged: bool) -> usize {
 /// `STAGED` / `CHANGES` in capitals (12 pt semibold, faint) and, at the right, the group's
 /// `count` in a `card_lift` pill; a click opens or closes the group. Its words sit at the row's
 /// foot, which leaves room above it, between the groups (the list's rows are one height, so
-/// the 16 pt above them is what `ROW` leaves). CHANGES' shows ↺ "Revert all…" on hover
+/// what `ROW` leaves above them is all there is: about 8 pt at 32, not §6.4's 16). CHANGES' shows ↺ "Revert all…" on hover
 /// (`revert_all`), over the pill.
 fn divider_row(
     staged: bool,
@@ -890,7 +893,7 @@ fn change_row(
     };
     let full: SharedString = change.path.display().to_string().into();
     let rel = change.path.clone();
-    let hover = ui.card_hover;
+    let hover = ui.side_hover;
     let opens = opens_diff(change);
     // Part 2: its circle stages or unstages it; under Changes, ↺ (on hover) asks to revert it.
     let staged = change.staged;
@@ -957,9 +960,9 @@ fn change_row(
         .pr(px(PILL_PAD))
         .rounded(px(PILL_RADIUS))
         .gap(px(ROW_GAP))
-        .text_size(px(TEXT))
+        .text_size(px(NAME))
         .when(opens, |r| r.cursor_pointer())
-        .when(selected, |r| r.bg(hsla(ui.card_selected)))
+        .when(selected, |r| r.bg(hsla(ui.side_selected)))
         .when(!selected && opens, |r| r.hover(move |s| s.bg(hsla(hover))))
         .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(full.clone())).into() })
         .child(tick)
@@ -968,6 +971,7 @@ fn change_row(
                 .flex_none()
                 .w(px(MARK_COLUMN))
                 .text_size(px(SMALL))
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(hsla(ink))
                 .child(mark_letter(change.mark)),
         )
@@ -984,7 +988,7 @@ fn change_row(
                 .flex_1()
                 .min_w(px(0.0))
                 .truncate()
-                .text_size(px(SMALL))
+                .text_size(px(FOLDER))
                 .text_color(hsla(ui.text_faint))
                 .child(folder),
         )
@@ -1012,7 +1016,7 @@ fn clean_row(ui: &UiColors) -> AnyElement {
         .items_center()
         .h(px(ROW))
         .w_full()
-        .pl(px(EDGE))
+        .pl(px(PILL_INSET + PILL_PAD))
         .text_size(px(SMALL))
         .text_color(hsla(ui.text_dim))
         .child(NO_CHANGES)
@@ -1031,7 +1035,7 @@ fn load_more_row(ui: &UiColors, cx: &mut Context<Workspace>) -> AnyElement {
         .px(px(PILL_PAD))
         .rounded(px(PILL_RADIUS))
         .cursor_pointer()
-        .hover(move |s| s.bg(hsla(ui.card_hover)))
+        .hover(move |s| s.bg(hsla(ui.side_hover)))
         .text_size(px(SMALL))
         .text_color(hsla(ui.text_faint))
         .child("Load more\u{2026}")
@@ -1047,8 +1051,12 @@ fn more_row(more: usize, ui: &UiColors) -> AnyElement {
         .items_center()
         .h(px(ROW))
         .w_full()
-        .pl(px(EDGE + CIRCLE + MARK_COLUMN + 2.0 * ROW_GAP))
-        .text_size(px(TEXT))
+        .pl(px(PILL_INSET
+            + PILL_PAD
+            + CIRCLE
+            + MARK_COLUMN
+            + 2.0 * ROW_GAP))
+        .text_size(px(NAME))
         .text_color(hsla(ui.text_faint))
         .child(format!("\u{2026} {more} more"))
         .into_any_element()
@@ -1612,13 +1620,18 @@ impl Workspace {
             .px(px(BRANCH_PAD))
             .rounded(px(4.0))
             .cursor_pointer()
-            .hover(move |s| s.bg(hsla(ui.card_hover)))
+            .hover(move |s| s.bg(hsla(ui.side_hover)))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 if let Some(terminal) = followed {
                     this.open_branch_switcher(terminal, window, cx);
                 }
             }))
-            .child(glyph(Glyph::Branch, ui.text_dim))
+            .child(footer_glyph(
+                Glyph::Branch,
+                ui.text_dim,
+                BAR_BRANCH_ICON,
+                BAR_ICON_STROKE,
+            ))
             .child(
                 div()
                     .min_w(px(0.0))
@@ -1639,7 +1652,7 @@ impl Workspace {
                     .pl(px(BRANCH_PAD))
                     .min_w(px(0.0))
                     .truncate()
-                    .text_size(px(SMALL))
+                    .text_size(px(BAR_LINE))
                     .text_color(hsla(ink))
                     .child(words),
             );
@@ -1657,7 +1670,7 @@ impl Workspace {
             .px(px(BAR_PAD_X))
             .py(px(BAR_PAD_Y))
             .border_t_1()
-            .border_color(hsla(ui.divider))
+            .border_color(hsla(ui.card_border))
             .bg(hsla(ui.side))
             // At the card's bottom-right corner (M11al §3.4), rounded as the panel is.
             .rounded_br(px(CARD_RADIUS - HAIRLINE))
@@ -1667,7 +1680,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// One bar button: `action`'s glyph, the accent fill for the one action, dimmed and dead
+    /// One bar button: `action`'s glyph in a `card_border` edge, dimmed and dead
     /// while an action runs; its tooltip above it once the pointer has rested, lined up with
     /// its right edge (so the rightmost one never runs past the panel).
     fn bar_button(
@@ -1681,16 +1694,15 @@ impl Workspace {
         let ui = *ui;
         let changes = &self.right_sidebar.changes;
         let enabled = changes.work().is_none();
-        let primary = which == BarButton::Action;
         let kind = match action {
             Action::Fetch => Glyph::Reload,
             Action::Pull(_) => Glyph::Pull,
             Action::Push(_) => Glyph::Push,
             Action::Publish => Glyph::Publish,
         };
-        // Just the icon (your call: "make it just icon there waiting to be clicked"): the
-        // action's in the accent, Fetch's dim; a fill only under the pointer.
-        let ink = if primary { ui.accent } else { ui.text_dim };
+        // The icon in a `card_border` edge (M11al §6.6, as the mockup: both `text_dim`); the
+        // hover fill under the pointer.
+        let ink = ui.text_dim;
         let shown = enabled && changes.hover == Some((which, true));
         let tip_text: SharedString = branch_sync::tip(action, branch).into();
         let id = match which {
@@ -1706,10 +1718,12 @@ impl Workspace {
             .justify_center()
             .size(px(BAR_BUTTON))
             .rounded(px(BAR_BUTTON_RADIUS))
+            .border_1()
+            .border_color(hsla(ui.card_border))
             .when(!enabled, |d| d.opacity(0.4))
             .when(enabled, |d| {
                 d.cursor_pointer()
-                    .hover(move |s| s.bg(hsla(ui.card_hover)))
+                    .hover(move |s| s.bg(hsla(ui.side_hover)))
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                         this.bar_hover(which, *hovered, cx)
                     }))
@@ -2435,7 +2449,7 @@ mod tests {
         assert_eq!(totals(&ChangeList::default()), (0, 0));
     }
 
-    /// The counts are text: both inks reach 4.5:1 on each fill a Changes row has (the card,
+    /// The counts are text: both inks reach 4.5:1 on each fill a Changes row has (`side`,
     /// hovered, selected), in every built-in theme, keeping the ANSI green and red's hue.
     #[test]
     fn count_inks_read_on_every_files_row_fill() {
@@ -2445,9 +2459,9 @@ mod tests {
             let (added, removed) = count_inks(&theme);
             for (what, ink) in [("added", added), ("removed", removed)] {
                 for (fill_name, fill) in [
-                    ("card", ui.card),
-                    ("card_hover", ui.card_hover),
-                    ("card_selected", ui.card_selected),
+                    ("side", ui.side),
+                    ("side_hover", ui.side_hover),
+                    ("side_selected", ui.side_selected),
                 ] {
                     let ratio = contrast(ink, fill);
                     if ratio < TEXT_MIN {
