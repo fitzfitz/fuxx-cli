@@ -14,7 +14,8 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone (2026-11-18, latest):** **M11al — UI Uplift 3** 🟨 built (13 tasks + 8b, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`6dabcf9`); waiting for your on-screen check (note 84, 14 items). M11ai (Markdown reader) resumes next, then M11ag.
+- **Current milestone (2026-11-18, latest):** **M11ai — Markdown reader upgrade** 🟨 built (12 tasks, each reviewed; final-review fixes in), **merged to master 2026-11-18**, not pushed; waiting for your on-screen check (note 86, 15 items). M11ag is next.
+- **Current milestone (2026-11-18, M11al):** **M11al — UI Uplift 3** 🟨 built (13 tasks + 8b, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`6dabcf9`); waiting for your on-screen check (note 84, 14 items). M11ai (Markdown reader) resumes next, then M11ag.
 - **Current milestone (2026-11-18, M11ah lane):** **M11ah — Code view upgrade** 🟨 built (all 13 tasks, each reviewed), **merged to master and pushed 2026-11-18**; waiting for your on-screen check (note 85, 15 items).
 - **Current milestone (2026-11-18, earlier):** **M11ak — Agent box** 🟨 built (15 tasks, reviewed; final-review fixes in), **merged to master and pushed**, waiting for your on-screen check (note 83).
 - **Previous snapshot (2026-11-17):** **M11af — Live changes** 🟨 built (8 tasks, reviewed, final-review fixes in), **merged to master and pushed (`d327d15`)**, waiting for your on-screen check (note 82). M11ae, M11aj and M11aa are built, merged and **pushed** (master `250faeb`). Your first look at M11aa: the agent tab's layout and flow are not what was discussed; revisit later. Your on-screen checks for notes 79, 80 and 81 are still open. Older history follows.
@@ -25,6 +26,59 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-18 — M11ai merged into master
+- **Status:** 🟨 merged into master 2026-11-18 on your standing word (not pushed); the merge re-ran the gate (below). Waiting for your on-screen check (note 86). M11ag is next.
+
+### 2026-11-18 — M11ai: the final review's fixes
+- **Status:** 🟨 built on branch `m11ai-md-reader`, the final review's fixes are in; still waiting for your on-screen
+  check; **not merged, not pushed**. The full ui-shots run before the review: 226 passed, 0 failed, 151.3 s.
+- **Fixed (one wave):**
+  - "On this page"'s current entry is a binary search over the outline's rows, worked out once per version (was a
+    scan, and a new list, on every scroll frame).
+  - Links and dim text inside a callout are held to the text floor on its wash (agent chat unchanged).
+  - Front matter: a list of maps under a key (`- name: x`) reads as that key's items, not as new keys.
+  - A theme change recolours the Preview's code blocks while Preview is off too.
+  - Docs: four rulings, two known gaps, the 2.76× measurement's caveat (debug ui-shots builds with test probes) and a
+    decision for you in note 86: keep the 1 MB parse on the UI thread, or move parse and plan to the background later.
+- **Numbers:** 2,076 tests pass (1 ignored); clippy 14/27 and 16/29 (baseline); fmt clean;
+  `scripts/ui-shots.sh --changed master` 226 passed, 0 failed (146.0 s). The full ui-shots after the fixes: run by
+  the controller.
+
+### 2026-11-18 — M11ai built: Markdown reader upgrade (not merged)
+- **Status:** 🟨 built on branch `m11ai-md-reader`, waiting for your on-screen check; **not merged, not pushed**. All
+  12 plan tasks (0–11); Tasks 0–10 each reviewed (4, 6 and 9 after one fix round). The build paused after Task 8 so
+  M11al had the machine (your call), and master (M11al) was merged into the branch before Task 9. Next: the
+  whole-branch review, its fix wave and the full ui-shots run. Details, calls, gaps and your 15-item check: note 86.
+- **Did:** the Preview reads like a docs page:
+  - a centred 480 pt column at 16 pt, with roomier headings and gaps;
+  - code blocks coloured by their language, with a header (the language, Copy / Copied);
+  - the five GitHub callouts;
+  - striped tables, front matter as a small table, and badges as pills drawn from their alt text (offline);
+  - a heading `#` that copies its link, `#part` jumps, and `other.md#part` opening in Preview at that heading;
+  - "On this page" (a column from 784 pt wide, a button and floating panel when narrower) following the scroll;
+  - a 2 pt progress line;
+  - a reload that keeps your place even when front matter comes or goes.
+
+  Agent chat is unchanged apart from a linked image now reading `[alt]`.
+- **Calls (AI's, in note 86):**
+  - The column is 480 pt (a 70-character sentence measures that; the design's 576 holds about 84).
+  - The outline shows from 784 pt (the design guessed about 880).
+  - Inline code stays at body size (GPUI cannot size inside a line).
+  - The code header is darker in every theme.
+  - The parse stays on the UI thread (1 MB: parse 134.5 ms, plan 20.6 ms, debug).
+  - `PREVIEW_MEASURE_ALL` went from 2,000 to 700 (the reader's relayout is 2.76× master's, debug).
+  - Your gate change: per task, only `--changed master`; the full suite before and after the final review.
+- **Task 11 chores:** the last literal sizes in the reader's drawing became `ui_tokens::reader` tokens (chat's values
+  kept in `Sizes::CHAT`; RED first). The `#![allow(dead_code)]` lines in `md_reader.rs` and `ui_tokens::reader` were
+  removed (nothing was dead).
+- **Numbers:** 2,075 tests pass (1 ignored; baseline 2,024); clippy 14/27 and 16/29 (unchanged); fmt clean;
+  `scripts/ui-shots.sh --changed master` 226 passed, 0 failed (150.2 s). The full run is left for the final review.
+- **Not measured by me:** idle CPU and the feel of scrolling need a real window. They are items 14 and 15 of your
+  check.
+- **Blocked:** nothing.
+- **Next task:** the whole-branch review and fix wave; then your on-screen check in
+  [[86 - Milestone 11ai - Markdown Reader Upgrade]]; then the merge (your call).
 
 ### 2026-11-18 — M11al UI Uplift 3: built, merged, waiting for your on-screen check
 - **Status:** 🟨 built on branch m11al-ui-uplift and **merged to master 2026-11-18** on your standing word, pushed on your word (`6dabcf9`), waiting for your on-screen check. All 13 plan tasks
@@ -54,13 +108,21 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   200 inside the card's edges; Activity's header is 42 px; stale comments fixed.
 - **Numbers after the fix wave:** 1,962 tests pass (1 ignored); clippy 14/27 and 16/29 (unchanged); fmt clean. Full
   `scripts/ui-shots.sh`: 202 passed, 0 failed (131.9 s).
-- **Next:** your on-screen check. M11ai resumes, then M11ag.
+- **Next:** your on-screen check. M11ai (merged after), then M11ag.
 
 ### 2026-11-18 — M11al UI Uplift 3: planned, building
 - **Status:** 📝 planned on your "go ahead with M11al": [[M11al Plan - UI Uplift 3]] — 13 tasks (Task 0 baselines
   done: 1,944 tests, clippy 14/27 and 16/29, fmt clean). Building subagent-driven on branch `m11al-ui-uplift`; not
   merged. Plan-time calls (AI's) are listed in the plan; the main one: a waiting row keeps "Needs input" / its
   question (§2.4 over the "needs you" wording).
+
+### 2026-11-18 — M11ai planned: Markdown reader upgrade
+
+- **What:** the plan for M11ai, [[M11ai Plan - Markdown Reader Upgrade]] (Tasks 0–11), from the approved design
+  [[86 - Milestone 11ai - Markdown Reader Upgrade]], fitted to the file tab as M11ah left it. Plan-time calls (AI's)
+  are listed in the plan: chat keeps today's sizes, tokens in `ui_tokens::reader`, the Preview's code moves to
+  `src/file_tab_preview.rs`, front matter is list row 0, the outline is tracked on scroll (never while drawing).
+- **Where:** branch `m11ai-md-reader` (its own worktree). Next: Task 0 (baselines), then the build, task by task.
 
 ### 2026-11-18 — M11ah built, merged and pushed: code view upgrade
 - **Did:** all 13 plan tasks on `m11ah-code-view`, each reviewed clean: current line, quieter numbers, indent guides, rounded bars; sticky line, breadcrumb, folding, scrollbar marks, ⌥↑ / ⌥↓ between changes; Diff cards with titles and counts, folded unchanged stretches, changed words, side by side (per tab, saved). Task 12 also removed the blanket dead-code allowance from `src/code_outline.rs` (clippy unchanged) and wrote the module docs and STRUCTURE.md entries.

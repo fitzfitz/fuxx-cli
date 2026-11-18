@@ -62,6 +62,115 @@ pub mod code {
     pub const SIDE_EMPTY_ALPHA: f32 = 0.03;
 }
 
+/// M11ai (Markdown reader): every size the file tab's Markdown Preview is drawn with, in points,
+/// in one place (agent chat keeps its own, `md_preview::Sizes::CHAT`). The Preview's side and top
+/// padding is `size::TERMINAL_PADDING`.
+pub mod reader {
+    /// Body text, and its line height (a multiple of the size).
+    pub const BODY: f32 = 16.0;
+    pub const BODY_LINE: f32 = 1.65;
+    /// Headings H1–H6 (H6 dim), and their line height.
+    pub const HEADINGS: [f32; 6] = [30.0, 24.0, 20.0, 17.0, 16.0, 15.0];
+    pub const HEADING_LINE: f32 = 1.3;
+    /// Between blocks; above and under a heading; between a list's items.
+    pub const BLOCK_GAP: f32 = 16.0;
+    pub const HEADING_ABOVE: f32 = 32.0;
+    pub const HEADING_BELOW: f32 = 12.0;
+    pub const ITEM_GAP: f32 = 6.0;
+    /// Code (blocks and inline), in the terminal's font, and a block's line height.
+    pub const CODE: f32 = 14.0;
+    pub const CODE_LINE: f32 = 1.5;
+    /// H1 / H2's underline, this far under the text.
+    pub const RULE_BELOW: f32 = 8.0;
+    /// The prose column's widest: about 70 characters of the UI font at `BODY`. Tuned (Task 3):
+    /// the plan's 576 (36 em) holds about 84; a 70-character sentence shapes to 480 pt (30 em),
+    /// checked by the `file-tab-md-reader-column` scene.
+    pub const MEASURE: f32 = 480.0;
+    /// A code block's header strip and its words; the code's padding (sides, top and bottom)
+    /// and corners.
+    pub const CODE_HEADER: f32 = 28.0;
+    pub const CODE_HEADER_TEXT: f32 = 12.0;
+    pub const CODE_PAD: (f32, f32) = (12.0, 10.0);
+    pub const CODE_RADIUS: f32 = 6.0;
+    /// The header strip's fill: the code's, this much toward black (a shade darker).
+    pub const CODE_HEADER_SHADE: f32 = 0.05;
+    /// Between the Copy button's icon and its word.
+    pub const COPY_GAP: f32 = 4.0;
+    /// A callout's bar, padding, corners, and its wash (the kind's colour at this alpha).
+    pub const CALLOUT_BAR: f32 = 3.0;
+    pub const CALLOUT_PAD: f32 = 12.0;
+    pub const CALLOUT_RADIUS: f32 = 6.0;
+    pub const CALLOUT_WASH: f32 = 0.08;
+    /// A table cell's padding (sides, top and bottom), a column's narrowest, and a striped
+    /// row's tint (the text at this alpha).
+    pub const TABLE_CELL: (f32, f32) = (13.0, 7.0);
+    pub const TABLE_COL_MIN: f32 = 96.0;
+    pub const STRIPE: f32 = 0.035;
+    /// A table's corners (M11ac's 4; the front matter's too).
+    pub const TABLE_RADIUS: f32 = 4.0;
+    /// The front matter's text, and the most key/value rows it shows ("+ N more" for the rest).
+    pub const FRONT_TEXT: f32 = 13.0;
+    pub const FRONT_ROWS: usize = 20;
+    /// A badge's pill: height, text, padding, and the gap between pills.
+    pub const PILL_H: f32 = 20.0;
+    pub const PILL_TEXT: f32 = 12.0;
+    pub const PILL_PAD: f32 = 7.0;
+    pub const PILL_GAP: f32 = 6.0;
+    /// A pill's fill, and its value half's (a step stronger): the text at these alphas over the
+    /// page (Task 6; the plan names no number).
+    pub const PILL_FILL: f32 = 0.08;
+    pub const PILL_VALUE_FILL: f32 = 0.16;
+    /// The front matter's grid (Task 6): of `.1` columns, a key takes `.0`, its value the rest.
+    pub const FRONT_GRID: (u16, u16) = (1, 3);
+    /// "On this page": its width, the gap left of it, its text, a row, a level-3 entry's
+    /// indent, the current entry's bar.
+    pub const OUTLINE_W: f32 = 200.0;
+    pub const OUTLINE_GAP: f32 = 48.0;
+    pub const OUTLINE_TEXT: f32 = 13.0;
+    pub const OUTLINE_ROW: f32 = 26.0;
+    pub const OUTLINE_INDENT: f32 = 12.0;
+    pub const OUTLINE_BAR: f32 = 2.0;
+    /// An entry's text (and the caption), this far in from the column's left edge, where the
+    /// current entry's bar is (Task 8; the plan names no number).
+    pub const OUTLINE_PAD: f32 = 10.0;
+    /// The narrow outline's floating panel (Task 9; the plan names no numbers): at most this
+    /// many entries show at once (more scroll), and it hangs this far under its button (and
+    /// keeps this far in from the window's edges).
+    pub const OUTLINE_PANEL_ROWS: usize = 12;
+    pub const OUTLINE_PANEL_GAP: f32 = 4.0;
+    /// The reading-progress line's height.
+    pub const PROGRESS: f32 = 2.0;
+    /// How far under the Preview's top a jumped-to heading's text lands.
+    pub const JUMP_ROOM: f32 = 16.0;
+    /// A heading counts as reached once it is this share of the Preview's height from its top.
+    pub const REACH: f32 = 0.25;
+    /// How long "Copied" shows.
+    pub const COPIED: std::time::Duration = std::time::Duration::from_millis(1_500);
+    /// The `#` left of a hovered heading, this far from its text.
+    pub const ANCHOR_GAP: f32 = 6.0;
+    /// "Copied" beside a heading, once its `#` is clicked.
+    pub const ANCHOR_TEXT: f32 = 12.0;
+    /// Between a callout's icon and its title (Task 11: was a literal).
+    pub const CALLOUT_GAP: f32 = 6.0;
+    /// A reader code block's border (its header's corners are this much less round).
+    pub const CODE_BORDER: f32 = 1.0;
+    /// A list level's indent (and the marker's column), and a number's gap to its text.
+    pub const LIST_INDENT: f32 = 20.0;
+    pub const MARKER_GAP: f32 = 6.0;
+    /// A plain quote's padding left of its text, and its bar.
+    pub const QUOTE_PAD: f32 = 12.0;
+    pub const QUOTE_BAR: f32 = 3.0;
+    /// A rule (`---`): its margin above and below, and its line.
+    pub const RULE_MARGIN: f32 = 4.0;
+    pub const RULE_LINE: f32 = 1.0;
+    /// A Mermaid diagram's corners; the note under a Mermaid block shown as code: its gap
+    /// above, its text and its line height (a multiple of the text).
+    pub const DIAGRAM_RADIUS: f32 = 6.0;
+    pub const NOTE_GAP: f32 = 4.0;
+    pub const NOTE_TEXT: f32 = 12.0;
+    pub const NOTE_LINE: f32 = 1.4;
+}
+
 /// Sizes in pixels, from the M11 plan's Global Constraints.
 pub mod size {
     #![allow(dead_code)] // drawn with from M11 Task 2 on
@@ -139,7 +248,7 @@ const WHITE: Rgb = Rgb {
 };
 
 /// WCAG relative luminance (0 black, 1 white): each sRGB channel linearised, then weighted.
-fn relative_luminance(c: Rgb) -> f32 {
+pub fn relative_luminance(c: Rgb) -> f32 {
     let lin = |v: u8| {
         let v = v as f32 / 255.0;
         if v <= 0.04045 {

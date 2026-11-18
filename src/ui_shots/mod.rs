@@ -59,6 +59,7 @@ mod chrome;
 mod chrome_parts;
 mod file_tab;
 mod file_tab_md;
+mod file_tab_md_reader;
 mod harness;
 mod naming;
 mod overlays;

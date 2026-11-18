@@ -1655,6 +1655,16 @@ pub struct Highlighters {
 
 impl Global for Highlighters {}
 
+/// The syntaxes are in (loaded in `theme`'s colours): the tabs waiting for them are coloured.
+fn syntaxes_loaded(loaded: Highlighter, theme: Theme, cx: &mut App) {
+    let all = cx.default_global::<Highlighters>();
+    all.loading = false;
+    all.ready = Some((Arc::new(loaded), theme));
+    for tab in std::mem::take(&mut all.waiting) {
+        tab.update(cx, |tab, cx| tab.colour(cx)).ok();
+    }
+}
+
 impl Highlighters {
     /// The highlighter in `theme`'s colours, once the syntaxes are loaded.
     fn get(&mut self, theme: &Theme) -> Option<Arc<Highlighter>> {
@@ -2467,6 +2477,8 @@ struct Track {
     area: Bounds<Pixels>,
     viewport: f32,
     content: f32,
+    /// How far it is scrolled along (M11ai Task 9: the reading-progress line's share).
+    offset: f32,
     thumb: Thumb,
 }
 
@@ -2490,6 +2502,7 @@ impl Track {
             area,
             viewport,
             content,
+            offset: f32::from(offset),
             thumb,
         })
     }
@@ -2504,6 +2517,7 @@ impl Track {
             area,
             viewport,
             content,
+            offset,
             thumb,
         })
     }
@@ -2604,8 +2618,11 @@ fn hold_inside(p: Point<Pixels>, g: &Geom, wrap: bool) -> Point<Pixels> {
 /// A Preview of up to this many blocks measures every row at its first layout (and again after a
 /// reset, a remeasure or a width change), so its scrollbar is exact. Measured on a release build
 /// (M11ae fix round 1): a full relayout is ~3 ms for 585 blocks (20 KB) but ~160 ms for 29,115
-/// (1 MB), about 5.5 us a block; 2,000 blocks keeps it near 11 ms, under a frame.
-pub const PREVIEW_MEASURE_ALL: usize = 2_000;
+/// (1 MB), about 5.5 us a block; 2,000 blocks kept it near 11 ms, under a frame. M11ai Task 10
+/// (plan-time call 15): a full relayout of a 2,000-block mixed file measured 2.76x M11ac's
+/// (333 ms against 121 ms) in a debug ui-shots build (test probes included); cause not
+/// profiled. The limit drops by that ratio, rounded down to a hundred.
+pub const PREVIEW_MEASURE_ALL: usize = 700;
 
 /// A block's height as the scrollbar of a longer Preview reckons it (the mean of a mixed 1 MB
 /// file's blocks: 45 pt). GPUI's list drops its height hints at its first layout and at each
@@ -2616,20 +2633,23 @@ const PREVIEW_BLOCK_HINT: f32 = 45.0;
 /// The Preview's list for `count` blocks: all measured at once when few (`PREVIEW_MEASURE_ALL`),
 /// else each row measured as it is drawn. Each of its own scrolls (the wheel) shows the
 /// scrollbar: the handler runs from the wheel's event, never from drawing, and only notes it and
-/// redraws.
-fn preview_list_of(count: usize, view: WeakEntity<FileTab>) -> ListState {
+/// redraws; M11ai: "On this page"'s current entry is worked out at the start of the next frame
+/// (`track_heading`; the handler runs while the list is borrowed, so it cannot read it now),
+/// once however many wheel events came in the frame (`armed`, the tab's `track_armed`).
+fn preview_list_of(count: usize, view: WeakEntity<FileTab>, armed: Rc<Cell<bool>>) -> ListState {
     let state = ListState::new(count, ListAlignment::Top, px(PREVIEW_OVERDRAW));
     let state = if count <= PREVIEW_MEASURE_ALL {
         state.measure_all()
     } else {
         state
     };
-    state.set_scroll_handler(move |_, _, cx| {
+    state.set_scroll_handler(move |_, window, cx| {
         view.update(cx, |this, cx| {
             this.scrolled(cx);
             cx.notify();
         })
         .ok();
+        preview::track_next_frame(view.clone(), &armed, window);
     });
     state
 }
@@ -4130,8 +4150,9 @@ pub enum FileTabEvent {
     Preview(bool),
     /// M11ah: the bar's Side by side turned on or off: the workspace keeps it per tab.
     SideBySide(bool),
-    /// A link in the Preview to a file (M11ac): the workspace opens it in a tab.
-    OpenFile(PathBuf),
+    /// A link in the Preview to a file (M11ac): the workspace opens it in a tab; M11ai: with a
+    /// `#part`, a Markdown file opens in Preview at that heading.
+    OpenFile(PathBuf, Option<String>),
 }
 
 /// The find bar: its box and what it found.
@@ -4366,15 +4387,76 @@ pub struct FileTab {
     /// when a version is read and in each poll (`refresh_age`), never while drawing.
     age: Option<String>,
     /// M11ac: a Markdown file shown rendered (`md_preview`; only in File mode), the reader's
-    /// scroll (kept over a reload), and the blocks parsed for the version shown.
+    /// scroll (kept over a reload), and the file as read for the version shown (M11ai: its
+    /// blocks and reader plan).
     preview: bool,
     preview_list: ListState,
-    parsed: Option<(u64, Rc<Vec<Md>>)>,
+    parsed: Option<(u64, Rc<md_preview::ReaderDoc>)>,
+    /// M11ai: the Preview's rows as last drawn (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    reader_drawn: md_preview::Drawn,
     /// M11ac Part 2: what each block of the parsed version does as a Mermaid diagram, for the
     /// version and light or dark it was planned for (`mermaid::plan`), and how they were shown
     /// last frame.
     mermaid_plan: Option<(u64, bool, MermaidPlan)>,
     mermaid_shown: Rc<Vec<Option<md_preview::Shown>>>,
+    /// M11ai: the Preview's code colours: each coloured block's look (by block) for the version
+    /// and theme in `code_for`; and the cache they come from, by (language, code text), in
+    /// `code_cache_theme`'s colours, holding only the parsed version's blocks (`None`: no
+    /// syntax by that name).
+    code_looks: Rc<HashMap<usize, Rc<md_preview::CodeLook>>>,
+    code_for: Option<(u64, Theme)>,
+    code_cache: HashMap<(String, String), Option<Rc<md_preview::CodeLook>>>,
+    code_cache_theme: Option<Theme>,
+    /// M11ai Task 10: how many code-colour jobs were started (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    code_jobs: usize,
+    /// M11ai: what shows "Copied", and the last press's number (its one-shot timer clears
+    /// `copied` only if no press came after it).
+    copied: Option<md_preview::Copied>,
+    copy_gen: u64,
+    /// M11ai: the heading to jump to once the Preview has read the file (a link to it from
+    /// another file, `show_anchor`).
+    pending_anchor: Option<String>,
+    /// M11ai: "On this page" (Task 8): whether the Preview is wide enough for its column and
+    /// the Preview's width, both as last laid out (decided in the Preview canvas's prepaint, a
+    /// layout cache: a change of the fit draws the tab again once); the current entry (worked
+    /// out by `track_heading`, never while drawing); the outline's own list (its scroll); and
+    /// a check of the current entry asked for the frame after the next layout (a remeasure, a
+    /// reload, a width change, a jump or a scrollbar drag: armed in that layout's prepaint).
+    outline_fits: Rc<Cell<Option<bool>>>,
+    preview_width: Rc<Cell<Option<Pixels>>>,
+    outline_current: Option<usize>,
+    outline_list: ListState,
+    track_due: Rc<Cell<bool>>,
+    /// M11ai Task 10: a current-entry check is pending for the next frame (`track_next_frame`:
+    /// at most one at a time; cleared when it runs).
+    track_armed: Rc<Cell<bool>>,
+    /// M11ai Task 9: the narrow outline's panel is open (it shows only while the outline is
+    /// narrow: `outline_panel_open`), and its button as last laid out (a press there is the
+    /// button's, not one outside the panel).
+    outline_panel: bool,
+    outline_button: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// M11ai: the outline's entries as last drawn (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    outline_drawn: Rc<RefCell<std::collections::BTreeMap<usize, Bounds<Pixels>>>>,
+    /// M11ai: the headings' `#` as last drawn (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    anchor_drawn: md_preview::AnchorDrawn,
+    /// M11ai: the code blocks' headers as last drawn (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    code_drawn: md_preview::CodeDrawn,
+    /// M11ai: the callouts' titles as last drawn (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    callout_drawn: md_preview::CalloutDrawn,
+    /// M11ai: the front matter and the badge rows' pills as last drawn (the scenes' probe), and
+    /// the last link a frozen tab followed (scenes record it instead of opening the browser).
+    #[cfg(feature = "ui-shots")]
+    front_drawn: md_preview::FrontDrawn,
+    #[cfg(feature = "ui-shots")]
+    pills_drawn: md_preview::PillsDrawn,
+    #[cfg(feature = "ui-shots")]
+    followed: Option<String>,
     /// M11af: who changed each line since the tab opened.
     live: Live,
     /// M11af: the mark under the pointer: its tooltip's place (window points) and words.
@@ -4416,11 +4498,18 @@ impl FileTab {
             let theme = cx.global::<Appearance>().theme;
             if this.coloured_with.is_some_and(|t| t != theme) {
                 this.colour(cx);
+            } else if this.code_for.is_some_and(|(_, t)| t != theme) {
+                // M11ai: the Preview's code blocks in the new theme's colours (with Preview off
+                // too, so they are ready when it shows).
+                this.colour_code(cx);
             }
-            // The Preview's rows may change height (another font or size).
+            // The Preview's rows may change height (another font or size); the current outline
+            // entry is checked again after they are measured.
             this.preview_list.remeasure();
+            this.track_due.set(true);
             cx.notify();
         });
+        let track_armed: Rc<Cell<bool>> = Rc::default();
         let mut tab = Self {
             path,
             since: Instant::now(),
@@ -4483,10 +4572,43 @@ impl FileTab {
             meta_at: Rc::default(),
             age: None,
             preview: false,
-            preview_list: preview_list_of(0, cx.entity().downgrade()),
+            preview_list: preview_list_of(0, cx.entity().downgrade(), track_armed.clone()),
             parsed: None,
+            #[cfg(feature = "ui-shots")]
+            reader_drawn: Rc::default(),
             mermaid_plan: None,
             mermaid_shown: Rc::default(),
+            code_looks: Rc::default(),
+            code_for: None,
+            code_cache: HashMap::new(),
+            code_cache_theme: None,
+            #[cfg(feature = "ui-shots")]
+            code_jobs: 0,
+            copied: None,
+            copy_gen: 0,
+            pending_anchor: None,
+            outline_fits: Rc::default(),
+            preview_width: Rc::default(),
+            outline_current: None,
+            outline_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)),
+            track_due: Rc::default(),
+            track_armed,
+            outline_panel: false,
+            outline_button: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            outline_drawn: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            anchor_drawn: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            code_drawn: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            callout_drawn: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            front_drawn: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            pills_drawn: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            followed: None,
             live: Live::default(),
             mark_tip: None,
             _appearance: appearance,
@@ -5322,6 +5444,9 @@ impl FileTab {
                 self.follow_latest(cx);
             }
         }
+        // M11ai Task 10: a new version: a "Copied" label goes (its row may be another block now;
+        // its one-shot timer then finds nothing to clear).
+        self.copied = None;
         self.refresh_age(SystemTime::now(), cx);
         self.keep_selection();
         self.find_again(cx);
@@ -5563,24 +5688,21 @@ impl FileTab {
                     .background_executor()
                     .spawn(async move { Highlighter::load(&theme) })
                     .await;
-                cx.update(|cx| {
-                    let all = cx.default_global::<Highlighters>();
-                    all.loading = false;
-                    all.ready = Some((Arc::new(loaded), theme));
-                    for tab in std::mem::take(&mut all.waiting) {
-                        tab.update(cx, |tab, cx| tab.colour(cx)).ok();
-                    }
-                });
+                cx.update(|cx| syntaxes_loaded(loaded, theme, cx));
             })
             .detach();
         }
         None
     }
 
-    /// Colour the text and the diff's rows (off the UI thread), in the current theme.
+    /// Colour the text and the diff's rows (off the UI thread), in the current theme; and the
+    /// Preview's code blocks (M11ai), if the version shown was read for it. Task 10: shown or
+    /// not, so a Preview turned off while the syntaxes load is coloured when they come in
+    /// (`code_for` was set when it asked; turned on again it would not ask).
     fn colour(&mut self, cx: &mut Context<Self>) {
         self.colour_text(cx);
         self.colour_diff(cx);
+        self.colour_code(cx);
     }
 
     /// Colour the file's text (off the UI thread), in the current theme.
@@ -5958,6 +6080,8 @@ impl FileTab {
             return;
         }
         self.preview = on;
+        // M11ai Task 9: the narrow outline's panel goes with it (⌘F comes here too).
+        self.outline_panel = false;
         // M11af: as a mode switch, Preview on or off ends Follow, and the marks' tooltip does
         // not wait for the way back.
         self.live.follow = false;
@@ -5989,77 +6113,6 @@ impl FileTab {
                     self.choose_preview(true, window, cx);
                 }
             }
-        }
-    }
-
-    /// A link clicked in the Preview (M11ac, `md_preview::link_target`): a web or mail link
-    /// opens in the default browser, a file opens in a tab (if it is one); nothing else.
-    fn follow_link(&mut self, url: &str, cx: &mut Context<Self>) {
-        let base = self.path.parent().unwrap_or(Path::new("/"));
-        match link_target(base, url) {
-            LinkTarget::Web(url) => cx.open_url(&url),
-            LinkTarget::File(path) if path.is_file() => cx.emit(FileTabEvent::OpenFile(path)),
-            LinkTarget::File(_) | LinkTarget::Nowhere => {}
-        }
-    }
-
-    /// A press at `p` in the Preview's scrollbar zone (M11ae): the thumb is grabbed, or jumps to
-    /// centre on the press and is dragged on, as in the code view. Whether it was in the zone
-    /// (then the press goes no further: the list's links and diagrams get the rest).
-    fn preview_press(&mut self, p: Point<Pixels>, cx: &mut Context<Self>) -> bool {
-        let Some(track) = preview_track(&self.preview_list).filter(|t| t.zone_has(p)) else {
-            return false;
-        };
-        let (at, t) = (track.along(p), track.thumb);
-        // Frozen content height for the drag, before the first move of the list.
-        self.preview_list.scrollbar_drag_started();
-        let grab = if (t.start..=t.start + t.len).contains(&at) {
-            at - t.start
-        } else {
-            self.preview_scroll_to(&track, at - t.len / 2.0, cx);
-            t.len / 2.0
-        };
-        self.scrollbar.start_drag(Axis::Vertical, grab);
-        cx.notify();
-        true
-    }
-
-    /// Scroll the list so the thumb starts at `start` along `track` (`set_offset_from_scrollbar`
-    /// takes the offset with a negative `y`).
-    fn preview_scroll_to(&mut self, track: &Track, start: f32, cx: &mut Context<Self>) {
-        let to = scrollbar::offset_for(start, track.viewport, track.content);
-        if to >= track.content - track.viewport - 1.0 {
-            // The thumb at its end: the text's true end, whatever rows were not yet measured.
-            self.preview_list.scroll_to_end();
-        } else if self.preview_list.item_count() > PREVIEW_MEASURE_ALL {
-            let item_ix = (to / PREVIEW_BLOCK_HINT) as usize;
-            self.preview_list.scroll_to(ListOffset {
-                item_ix,
-                offset_in_item: px(0.0),
-            });
-        } else {
-            self.preview_list
-                .set_offset_from_scrollbar(point(px(0.0), px(-to)));
-        }
-        self.scrolled(cx);
-        cx.notify();
-    }
-
-    /// The pointer moved anywhere in the window while Preview shows: a thumb drag follows it;
-    /// near the list's right edge the scrollbar shows.
-    fn preview_move(&mut self, e: &MouseMoveEvent, over: bool, cx: &mut Context<Self>) {
-        if let Some((_, grab)) = self.scrollbar.drag() {
-            if e.pressed_button != Some(MouseButton::Left) {
-                self.preview_release(cx);
-            } else if let Some(track) = preview_track(&self.preview_list) {
-                self.preview_scroll_to(&track, track.along(e.position) - grab, cx);
-            }
-            return;
-        }
-        let hot = over && preview_track(&self.preview_list).is_some_and(|t| t.zone_has(e.position));
-        if self.scrollbar.set_hot(hot) {
-            self.scrolled(cx);
-            cx.notify();
         }
     }
 
@@ -6136,210 +6189,6 @@ impl FileTab {
         Some((line, point(g.bounds.left() + left, g.bounds.top() + below)))
     }
 
-    /// The button released anywhere in the window: a thumb drag ends.
-    fn preview_release(&mut self, cx: &mut Context<Self>) {
-        if self.scrollbar.end_drag(Instant::now()) {
-            self.preview_list.scrollbar_drag_ended();
-            self.scrolled(cx);
-            cx.notify();
-        }
-    }
-
-    /// The Preview's body (M11ac): the file's Markdown drawn as a reader, a GPUI `list` of
-    /// its blocks (only those in sight are drawn). The text is parsed again only for a new
-    /// version; the list then keeps its place by block.
-    fn preview_body(&mut self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let Some(doc) = self.doc() else {
-            return div().flex_1().into_any_element();
-        };
-        let version = doc.version;
-        let blocks = match &self.parsed {
-            Some((v, blocks)) if *v == version => blocks.clone(),
-            _ => {
-                let blocks = Rc::new(crate::agent_markdown::parse(&doc.text));
-                // A new list (its measuring is by the block count), at the place kept.
-                let top = self.preview_list.logical_scroll_top();
-                self.preview_list = preview_list_of(blocks.len(), cx.entity().downgrade());
-                self.preview_list.scroll_to(top);
-                self.parsed = Some((version, blocks.clone()));
-                blocks
-            }
-        };
-        let mermaid = self.mermaid_shown(version, &blocks, theme.is_dark(), cx);
-        let view = cx.entity().downgrade();
-        let draw = md_preview::Draw {
-            colours: md_preview::Colours::of(&theme),
-            code_font: cx.global::<Appearance>().font.family.clone(),
-            on_link: Rc::new(move |url, _, cx| {
-                view.update(cx, |this, cx| this.follow_link(&url, cx)).ok();
-            }),
-            links: Cell::new(0),
-            mermaid,
-        };
-        let (bar, ink, state) = (self.scrollbar, theme.ui().text, self.preview_list.clone());
-        let view = cx.entity().downgrade();
-        div()
-            .id("file-md-preview")
-            .relative()
-            .flex_1()
-            .min_h(px(0.0))
-            .w_full()
-            .child(
-                list(self.preview_list.clone(), move |ix, _, _| {
-                    md_preview::row(&blocks, ix, &draw)
-                })
-                .size_full(),
-            )
-            // M11ae: the scrollbar over the list: its thumb (the fade read from the clock; the
-            // fade task redraws), and the 12 pt edge zone's presses, taken before the list's
-            // own (bubbling goes last-registered first); presses elsewhere reach the list.
-            .child(
-                canvas(
-                    |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
-                    move |_, hitbox, window, _| {
-                        let now = Instant::now();
-                        if bar.is_shown(now)
-                            && let Some(t) = preview_track(&state)
-                        {
-                            scrollbar::paint(
-                                window,
-                                t.area,
-                                Axis::Vertical,
-                                &t.thumb,
-                                bar.alpha_at(now),
-                                ink,
-                            );
-                        }
-                        window.on_mouse_event({
-                            let view = view.clone();
-                            move |e: &MouseDownEvent, phase, _, cx| {
-                                if phase == DispatchPhase::Bubble
-                                    && e.button == MouseButton::Left
-                                    && view
-                                        .update(cx, |this, cx| this.preview_press(e.position, cx))
-                                        .unwrap_or(false)
-                                {
-                                    cx.stop_propagation();
-                                }
-                            }
-                        });
-                        window.on_mouse_event({
-                            let view = view.clone();
-                            move |e: &MouseMoveEvent, phase, window, cx| {
-                                if phase == DispatchPhase::Bubble {
-                                    let over = hitbox.is_hovered(window);
-                                    view.update(cx, |this, cx| this.preview_move(e, over, cx))
-                                        .ok();
-                                }
-                            }
-                        });
-                        window.on_mouse_event({
-                            let view = view.clone();
-                            move |_: &MouseUpEvent, phase, _, cx| {
-                                if phase == DispatchPhase::Bubble {
-                                    view.update(cx, |this, cx| this.preview_release(cx)).ok();
-                                }
-                            }
-                        });
-                        // The pointer left the window (no last move comes): not hot.
-                        window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
-                            if phase == DispatchPhase::Bubble {
-                                view.update(cx, |this, cx| this.pointer_left(cx)).ok();
-                            }
-                        });
-                    },
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
-            )
-            .into_any_element()
-    }
-
-    /// How each Mermaid block of `blocks` (version `version`) is shown this frame (M11ac Part
-    /// 2): planned once per version and light or dark; each diagram read from the cache, or
-    /// queued to render (its code shown meanwhile; when it is ready the rows are measured again
-    /// and drawn). A file with none costs nothing past the plan.
-    fn mermaid_shown(
-        &mut self,
-        version: u64,
-        blocks: &Rc<Vec<Md>>,
-        dark: bool,
-        cx: &mut Context<Self>,
-    ) -> Rc<Vec<Option<md_preview::Shown>>> {
-        use md_preview::Shown;
-        use mermaid::Plan;
-        let plan = match &self.mermaid_plan {
-            Some((v, d, plan)) if *v == version && *d == dark => plan.clone(),
-            _ => {
-                let plan = Rc::new(mermaid::plan(blocks, dark));
-                self.mermaid_plan = Some((version, dark, plan.clone()));
-                plan
-            }
-        };
-        if plan.iter().all(Option::is_none) {
-            self.mermaid_shown = Rc::default();
-            return self.mermaid_shown.clone();
-        }
-        let view = cx.entity().downgrade();
-        let who = cx.entity_id().as_u64();
-        let shown: Vec<Option<Shown>> = plan
-            .iter()
-            .zip(blocks.iter())
-            .map(|(plan, md)| {
-                Some(match plan.as_ref()? {
-                    Plan::TooMany => Shown::Code(Some(mermaid::note(mermaid::TOO_MANY))),
-                    Plan::TooLarge => Shown::Code(Some(mermaid::note(mermaid::TOO_LARGE))),
-                    Plan::Diagram(key) => {
-                        let Md::Code { text, .. } = md else {
-                            return None;
-                        };
-                        let (tell_view, wanted_view) = (view.clone(), view.clone());
-                        let waiter = Waiter {
-                            tell: Box::new(move |cx: &mut App| {
-                                tell_view
-                                    .update(cx, |this, cx| {
-                                        this.preview_list.remeasure();
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            }),
-                            // Still wanted: the tab is open, shows its Preview, and its plan
-                            // (this file version, the theme's light or dark) has the diagram.
-                            wanted: Box::new(move |cx: &App, key: &Key| {
-                                wanted_view
-                                    .upgrade()
-                                    .is_some_and(|tab| tab.read(cx).wants_mermaid(key, cx))
-                            }),
-                        };
-                        match Mermaids::shown(*key, text, who, waiter, cx) {
-                            Asked::Ready(Drawn { image, w, h }) => Shown::Diagram { image, w, h },
-                            Asked::Failed(e) => Shown::Code(Some(mermaid::note(&e))),
-                            Asked::TooMuch => Shown::Code(Some(mermaid::note(mermaid::TOO_MUCH))),
-                            Asked::Crowded => Shown::Code(Some(mermaid::note(mermaid::CROWDED))),
-                            Asked::Waiting => Shown::Code(None),
-                        }
-                    }
-                })
-            })
-            .collect();
-        self.mermaid_shown = Rc::new(shown);
-        self.mermaid_shown.clone()
-    }
-
-    /// Whether this tab still wants diagram `key` drawn (M11ac Part 2, asked before it
-    /// renders): Preview shows, the plan for the file as read has it, and the theme is still
-    /// light or dark as the key says.
-    fn wants_mermaid(&self, key: &Key, cx: &App) -> bool {
-        let dark = cx.global::<Appearance>().theme.is_dark();
-        key.dark == dark
-            && self.preview_shown()
-            && self.mermaid_plan.as_ref().is_some_and(|(_, d, plan)| {
-                *d == dark && plan.contains(&Some(mermaid::Plan::Diagram(*key)))
-            })
-    }
-
     /// Show the file as it is, or its diff (`reveal`: a change bar's change, shown when the
     /// rows are). Each mode keeps its own scroll; the selection goes, find searches the text
     /// now shown. A mode with nothing yet for the file as read asks git at once.
@@ -6366,6 +6215,8 @@ impl FileTab {
         }
         self.selection = None;
         self.selecting = false;
+        // M11ai Task 9: the narrow outline's panel closes.
+        self.outline_panel = false;
         // M11af: a mode switch ends Follow, and the marks' tooltip does not wait for the
         // way back.
         self.live.follow = false;
@@ -7083,10 +6934,15 @@ impl FileTab {
         cx.notify();
     }
 
-    /// Esc: the find bar closes and the tab takes the keyboard. With no bar, Esc goes on.
+    /// Esc: the find bar closes and the tab takes the keyboard. With no bar, M11ai Task 9: the
+    /// narrow outline's panel closes, if open; else Esc goes on.
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.find.take().is_none() {
-            cx.propagate();
+            if self.outline_panel_open() {
+                self.close_outline_panel(cx);
+            } else {
+                cx.propagate();
+            }
             return;
         }
         self.focus.focus(window, cx);
@@ -8306,6 +8162,9 @@ impl FileTab {
     }
 }
 
+#[path = "file_tab_preview.rs"]
+mod preview;
+
 /// What the UI screenshots read of a tab, and the change list they give it.
 #[cfg(feature = "ui-shots")]
 impl FileTab {
@@ -8335,6 +8194,96 @@ impl FileTab {
 
     pub fn parsed_version(&self) -> Option<u64> {
         self.parsed.as_ref().map(|(v, _)| *v)
+    }
+
+    /// M11ai: the file as the Preview read it (blocks and plan), for the version shown.
+    pub fn reader_doc(&self) -> Option<Rc<md_preview::ReaderDoc>> {
+        self.parsed.as_ref().map(|(_, read)| read.clone())
+    }
+
+    /// M11ai: each Preview row's content as last drawn (window points), by list row; only rows
+    /// in sight.
+    pub fn reader_drawn(&self) -> std::collections::BTreeMap<usize, Bounds<Pixels>> {
+        self.reader_drawn.borrow().clone()
+    }
+
+    /// M11ai: how many code blocks are drawn coloured (the colour job's answer taken).
+    pub fn code_coloured(&self) -> usize {
+        self.code_looks.len()
+    }
+
+    /// M11ai: what shows "Copied" now.
+    pub fn copied(&self) -> Option<md_preview::Copied> {
+        self.copied
+    }
+
+    /// M11ai Task 10: the code blocks' looks (by block), the theme they are for, and how many
+    /// colour jobs were started.
+    pub fn code_looks_for_shots(&self) -> HashMap<usize, Rc<md_preview::CodeLook>> {
+        (*self.code_looks).clone()
+    }
+
+    pub fn code_theme(&self) -> Option<Theme> {
+        self.code_for.map(|(_, theme)| theme)
+    }
+
+    pub fn code_jobs(&self) -> usize {
+        self.code_jobs
+    }
+
+    /// M11ai Task 10: the syntaxes held back (no tab starts loading them, each waits) until
+    /// `release_syntaxes_for_shots` loads them (blocking) and colours the tabs waiting, as the
+    /// background load does when it is done.
+    pub fn hold_syntaxes_for_shots(cx: &mut App) {
+        cx.default_global::<Highlighters>().loading = true;
+    }
+
+    pub fn release_syntaxes_for_shots(cx: &mut App) {
+        let theme = cx.global::<Appearance>().theme;
+        syntaxes_loaded(Highlighter::load(&theme), theme, cx);
+    }
+
+    /// M11ai: each drawn code block's header (its language, its button's word and bounds), by
+    /// list row; only rows in sight.
+    pub fn code_drawn(&self) -> std::collections::BTreeMap<usize, md_preview::CodeProbe> {
+        self.code_drawn.borrow().clone()
+    }
+
+    /// M11ai: each drawn callout's title word, by list row; only rows in sight.
+    pub fn callout_drawn(&self) -> std::collections::BTreeMap<usize, &'static str> {
+        self.callout_drawn.borrow().clone()
+    }
+
+    /// M11ai: the front matter as last drawn (none: not in sight, or none drawn).
+    pub fn front_drawn(&self) -> Option<md_preview::FrontProbe> {
+        self.front_drawn.borrow().clone()
+    }
+
+    /// M11ai: each drawn badge row's pills, by (list row, pill); only rows in sight.
+    pub fn pills_drawn(&self) -> std::collections::BTreeMap<(usize, usize), md_preview::PillProbe> {
+        self.pills_drawn.borrow().clone()
+    }
+
+    /// M11ai: each drawn heading's `#` (its word and bounds), by list row; only while shown.
+    pub fn anchor_drawn(&self) -> std::collections::BTreeMap<usize, md_preview::AnchorProbe> {
+        self.anchor_drawn.borrow().clone()
+    }
+
+    /// M11ai: a frozen tab's place for git, looked up now (blocking; a frozen tab never looks
+    /// it up itself): the copied heading link is then from its repo's top folder.
+    pub fn look_up_place_for_shots(&mut self, cx: &mut Context<Self>) {
+        self.git_place = git_place(&self.path).flatten();
+        cx.notify();
+    }
+
+    /// M11ai: the last link this (frozen) tab followed, as clicked.
+    pub fn followed_link(&self) -> Option<String> {
+        self.followed.clone()
+    }
+
+    /// M11ai: row `row`'s Copy button as last drawn.
+    pub fn copy_bounds(&self, row: usize) -> Option<Bounds<Pixels>> {
+        self.code_drawn().get(&row).map(|p| p.copy)
     }
 
     /// The lines of the text shown.
@@ -9019,13 +8968,36 @@ impl Workspace {
                         this.save();
                     }
                 }
-                FileTabEvent::OpenFile(path) => {
-                    this.open_file_tab(path.clone(), FileMode::Plain, window, cx)
+                FileTabEvent::OpenFile(path, part) => {
+                    this.open_file_tab(path.clone(), FileMode::Plain, window, cx);
+                    // M11ai: a Markdown file's heading: its Preview on (saved, as by hand),
+                    // at that heading.
+                    if let Some(part) = part {
+                        this.open_at_heading(path, part.clone(), cx);
+                    }
                 }
             },
         )
         .detach();
         self.file_tabs.insert(tab, view);
+    }
+
+    /// The tab just opened on Markdown file `path` (the focused one) shows its Preview, saved
+    /// as a hand choice is, at heading `part` (M11ai).
+    fn open_at_heading(&mut self, path: &Path, part: String, cx: &mut Context<Self>) {
+        let Some(tab) = self.model.focused_tab() else {
+            return;
+        };
+        let Some(view) = self.file_tabs.get(&tab).cloned() else {
+            return;
+        };
+        if view.read(cx).path != path {
+            return;
+        }
+        if self.model.set_md_preview(tab, true) {
+            self.save();
+        }
+        view.update(cx, |view, cx| view.show_anchor(part, cx));
     }
 
     /// Tell each file tab whether it's on screen (the shown tab of a pane of the focused
