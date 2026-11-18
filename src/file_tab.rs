@@ -1655,6 +1655,16 @@ pub struct Highlighters {
 
 impl Global for Highlighters {}
 
+/// The syntaxes are in (loaded in `theme`'s colours): the tabs waiting for them are coloured.
+fn syntaxes_loaded(loaded: Highlighter, theme: Theme, cx: &mut App) {
+    let all = cx.default_global::<Highlighters>();
+    all.loading = false;
+    all.ready = Some((Arc::new(loaded), theme));
+    for tab in std::mem::take(&mut all.waiting) {
+        tab.update(cx, |tab, cx| tab.colour(cx)).ok();
+    }
+}
+
 impl Highlighters {
     /// The highlighter in `theme`'s colours, once the syntaxes are loaded.
     fn get(&mut self, theme: &Theme) -> Option<Arc<Highlighter>> {
@@ -2608,8 +2618,11 @@ fn hold_inside(p: Point<Pixels>, g: &Geom, wrap: bool) -> Point<Pixels> {
 /// A Preview of up to this many blocks measures every row at its first layout (and again after a
 /// reset, a remeasure or a width change), so its scrollbar is exact. Measured on a release build
 /// (M11ae fix round 1): a full relayout is ~3 ms for 585 blocks (20 KB) but ~160 ms for 29,115
-/// (1 MB), about 5.5 us a block; 2,000 blocks keeps it near 11 ms, under a frame.
-pub const PREVIEW_MEASURE_ALL: usize = 2_000;
+/// (1 MB), about 5.5 us a block; 2,000 blocks kept it near 11 ms, under a frame. M11ai Task 10
+/// (plan-time call 15): the reader's rows (bigger type, code headers, callouts) make a full
+/// relayout of a 2,000-block mixed file 2.76 × M11ac's (debug: 333 ms against 121 ms), so the
+/// limit drops by that ratio, rounded down to a hundred.
+pub const PREVIEW_MEASURE_ALL: usize = 700;
 
 /// A block's height as the scrollbar of a longer Preview reckons it (the mean of a mixed 1 MB
 /// file's blocks: 45 pt). GPUI's list drops its height hints at its first layout and at each
@@ -2621,8 +2634,9 @@ const PREVIEW_BLOCK_HINT: f32 = 45.0;
 /// else each row measured as it is drawn. Each of its own scrolls (the wheel) shows the
 /// scrollbar: the handler runs from the wheel's event, never from drawing, and only notes it and
 /// redraws; M11ai: "On this page"'s current entry is worked out at the start of the next frame
-/// (`track_heading`; the handler runs while the list is borrowed, so it cannot read it now).
-fn preview_list_of(count: usize, view: WeakEntity<FileTab>) -> ListState {
+/// (`track_heading`; the handler runs while the list is borrowed, so it cannot read it now),
+/// once however many wheel events came in the frame (`armed`, the tab's `track_armed`).
+fn preview_list_of(count: usize, view: WeakEntity<FileTab>, armed: Rc<Cell<bool>>) -> ListState {
     let state = ListState::new(count, ListAlignment::Top, px(PREVIEW_OVERDRAW));
     let state = if count <= PREVIEW_MEASURE_ALL {
         state.measure_all()
@@ -2635,7 +2649,7 @@ fn preview_list_of(count: usize, view: WeakEntity<FileTab>) -> ListState {
             cx.notify();
         })
         .ok();
-        preview::track_next_frame(view.clone(), window);
+        preview::track_next_frame(view.clone(), &armed, window);
     });
     state
 }
@@ -4394,6 +4408,9 @@ pub struct FileTab {
     code_for: Option<(u64, Theme)>,
     code_cache: HashMap<(String, String), Option<Rc<md_preview::CodeLook>>>,
     code_cache_theme: Option<Theme>,
+    /// M11ai Task 10: how many code-colour jobs were started (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    code_jobs: usize,
     /// M11ai: what shows "Copied", and the last press's number (its one-shot timer clears
     /// `copied` only if no press came after it).
     copied: Option<md_preview::Copied>,
@@ -4412,6 +4429,9 @@ pub struct FileTab {
     outline_current: Option<usize>,
     outline_list: ListState,
     track_due: Rc<Cell<bool>>,
+    /// M11ai Task 10: a current-entry check is pending for the next frame (`track_next_frame`:
+    /// at most one at a time; cleared when it runs).
+    track_armed: Rc<Cell<bool>>,
     /// M11ai Task 9: the narrow outline's panel is open (it shows only while the outline is
     /// narrow: `outline_panel_open`), and its button as last laid out (a press there is the
     /// button's, not one outside the panel).
@@ -4488,6 +4508,7 @@ impl FileTab {
             this.track_due.set(true);
             cx.notify();
         });
+        let track_armed: Rc<Cell<bool>> = Rc::default();
         let mut tab = Self {
             path,
             since: Instant::now(),
@@ -4550,7 +4571,7 @@ impl FileTab {
             meta_at: Rc::default(),
             age: None,
             preview: false,
-            preview_list: preview_list_of(0, cx.entity().downgrade()),
+            preview_list: preview_list_of(0, cx.entity().downgrade(), track_armed.clone()),
             parsed: None,
             #[cfg(feature = "ui-shots")]
             reader_drawn: Rc::default(),
@@ -4560,6 +4581,8 @@ impl FileTab {
             code_for: None,
             code_cache: HashMap::new(),
             code_cache_theme: None,
+            #[cfg(feature = "ui-shots")]
+            code_jobs: 0,
             copied: None,
             copy_gen: 0,
             pending_anchor: None,
@@ -4568,6 +4591,7 @@ impl FileTab {
             outline_current: None,
             outline_list: ListState::new(0, ListAlignment::Top, px(PREVIEW_OVERDRAW)),
             track_due: Rc::default(),
+            track_armed,
             outline_panel: false,
             outline_button: Rc::default(),
             #[cfg(feature = "ui-shots")]
@@ -5419,6 +5443,9 @@ impl FileTab {
                 self.follow_latest(cx);
             }
         }
+        // M11ai Task 10: a new version: a "Copied" label goes (its row may be another block now;
+        // its one-shot timer then finds nothing to clear).
+        self.copied = None;
         self.refresh_age(SystemTime::now(), cx);
         self.keep_selection();
         self.find_again(cx);
@@ -5660,28 +5687,21 @@ impl FileTab {
                     .background_executor()
                     .spawn(async move { Highlighter::load(&theme) })
                     .await;
-                cx.update(|cx| {
-                    let all = cx.default_global::<Highlighters>();
-                    all.loading = false;
-                    all.ready = Some((Arc::new(loaded), theme));
-                    for tab in std::mem::take(&mut all.waiting) {
-                        tab.update(cx, |tab, cx| tab.colour(cx)).ok();
-                    }
-                });
+                cx.update(|cx| syntaxes_loaded(loaded, theme, cx));
             })
             .detach();
         }
         None
     }
 
-    /// Colour the text and the diff's rows (off the UI thread), in the current theme; and,
-    /// while the Preview shows, its code blocks (M11ai).
+    /// Colour the text and the diff's rows (off the UI thread), in the current theme; and the
+    /// Preview's code blocks (M11ai), if the version shown was read for it. Task 10: shown or
+    /// not, so a Preview turned off while the syntaxes load is coloured when they come in
+    /// (`code_for` was set when it asked; turned on again it would not ask).
     fn colour(&mut self, cx: &mut Context<Self>) {
         self.colour_text(cx);
         self.colour_diff(cx);
-        if self.preview_shown() {
-            self.colour_code(cx);
-        }
+        self.colour_code(cx);
     }
 
     /// Colour the file's text (off the UI thread), in the current theme.
@@ -8194,6 +8214,32 @@ impl FileTab {
     /// M11ai: what shows "Copied" now.
     pub fn copied(&self) -> Option<md_preview::Copied> {
         self.copied
+    }
+
+    /// M11ai Task 10: the code blocks' looks (by block), the theme they are for, and how many
+    /// colour jobs were started.
+    pub fn code_looks_for_shots(&self) -> HashMap<usize, Rc<md_preview::CodeLook>> {
+        (*self.code_looks).clone()
+    }
+
+    pub fn code_theme(&self) -> Option<Theme> {
+        self.code_for.map(|(_, theme)| theme)
+    }
+
+    pub fn code_jobs(&self) -> usize {
+        self.code_jobs
+    }
+
+    /// M11ai Task 10: the syntaxes held back (no tab starts loading them, each waits) until
+    /// `release_syntaxes_for_shots` loads them (blocking) and colours the tabs waiting, as the
+    /// background load does when it is done.
+    pub fn hold_syntaxes_for_shots(cx: &mut App) {
+        cx.default_global::<Highlighters>().loading = true;
+    }
+
+    pub fn release_syntaxes_for_shots(cx: &mut App) {
+        let theme = cx.global::<Appearance>().theme;
+        syntaxes_loaded(Highlighter::load(&theme), theme, cx);
     }
 
     /// M11ai: each drawn code block's header (its language, its button's word and bounds), by
