@@ -143,6 +143,9 @@ pub mod reader {
     pub const OUTLINE_ROW: f32 = 26.0;
     pub const OUTLINE_INDENT: f32 = 12.0;
     pub const OUTLINE_BAR: f32 = 2.0;
+    /// An entry's text (and the caption), this far in from the column's left edge, where the
+    /// current entry's bar is (Task 8; the plan names no number).
+    pub const OUTLINE_PAD: f32 = 10.0;
     /// The reading-progress line's height.
     pub const PROGRESS: f32 = 2.0;
     /// How far under the Preview's top a jumped-to heading's text lands.

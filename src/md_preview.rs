@@ -343,6 +343,12 @@ pub struct Colours {
     pub pill_value_bg: Rgb,
     pub pill_text: Rgb,
     pub pill_dim: Rgb,
+    /// "On this page" (M11ai Task 8): the current entry's text and bar, the others' text, and a
+    /// hovered entry's fill.
+    pub outline_current: Rgb,
+    pub outline_bar: Rgb,
+    pub outline_dim: Rgb,
+    pub outline_hover: Rgb,
     /// A callout's colours (M11ai), by `Callout::ALL`'s order.
     callouts: [CalloutColours; 5],
 }
@@ -396,6 +402,19 @@ impl Colours {
             pill_value_bg,
             pill_text,
             pill_dim: ensure_contrast(ui.text_dim, pill_bg, TEXT_MIN),
+            // Held on a hovered entry's fill first, then on the page.
+            outline_current: ensure_contrast(
+                ensure_contrast(ui.accent, ui.panel_hover, TEXT_MIN),
+                bg,
+                TEXT_MIN,
+            ),
+            outline_bar: ensure_contrast(ui.accent, bg, MARK_MIN),
+            outline_dim: ensure_contrast(
+                ensure_contrast(ui.text_dim, ui.panel_hover, TEXT_MIN),
+                bg,
+                TEXT_MIN,
+            ),
+            outline_hover: ui.panel_hover,
             callouts: Callout::ALL.map(|kind| {
                 let hue = theme.palette[callout_palette(kind)];
                 let wash = mix(bg, hue, crate::ui_tokens::reader::CALLOUT_WASH);
@@ -483,6 +502,9 @@ pub struct ReaderDoc {
 pub struct ReaderDraw {
     pub doc: Rc<ReaderDoc>,
     pub measure: f32,
+    /// How much more than the side padding the reader's area keeps clear on its right (M11ai
+    /// Task 8: "On this page"'s column and the gap left of it, when the column shows; else 0).
+    pub aside: f32,
     /// Each coloured code block's look, by block (missing: drawn uncoloured).
     pub code: Rc<HashMap<usize, Rc<CodeLook>>>,
     /// What shows "Copied" now.
@@ -660,8 +682,8 @@ pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
     let (side, end) = TERMINAL_PADDING;
     let top = row_top(doc, s, row);
     let bottom = if row + 1 == rows { end } else { 0.0 };
-    // The reader's area (the outline, when it shows, will take its share of the row), its
-    // content centred along a row: the content's width is settled before its height is
+    // The reader's area (less "On this page"'s column and gap when it shows), its content
+    // centred along a row: the content's width is settled before its height is
     // measured (centred in a column, taffy measured a paragraph's height at the area's width).
     // A heading's row is its `#`'s hover group (M11ai: the `#` shows while it is hovered).
     let heading = match doc.plan.row_kind(row) {
@@ -685,7 +707,8 @@ pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
     };
     div()
         .w_full()
-        .px(px(side))
+        .pl(px(side))
+        .pr(px(side + reader.aside))
         .pt(px(top))
         .pb(px(bottom))
         .text_size(px(s.body))
@@ -1609,6 +1632,42 @@ mod tests {
             }
             // The code header is a shade off the code's fill.
             assert_ne!(c.code_header_bg, c.code_bg, "{name}");
+        }
+    }
+
+    /// Every theme (M11ai Task 8): "On this page"'s current entry (the accent) and the other
+    /// entries (dim) meet the text floor on the page and on a hovered entry's fill (the panel
+    /// hover); the current entry's bar the mark floor on the page.
+    #[test]
+    fn the_outline_s_colours_meet_their_floors_in_every_theme() {
+        use crate::ui_tokens::contrast;
+        for (name, theme) in crate::theme::every_theme() {
+            let c = Colours::of(&theme);
+            let bg = theme.background;
+            assert_eq!(
+                c.outline_hover,
+                theme.ui().panel_hover,
+                "{name}: the hover fill"
+            );
+            for (what, fg, on, min) in [
+                ("current entry", c.outline_current, bg, TEXT_MIN),
+                (
+                    "current entry hovered",
+                    c.outline_current,
+                    c.outline_hover,
+                    TEXT_MIN,
+                ),
+                ("entry", c.outline_dim, bg, TEXT_MIN),
+                ("entry hovered", c.outline_dim, c.outline_hover, TEXT_MIN),
+                ("current entry's bar", c.outline_bar, bg, MARK_MIN),
+            ] {
+                let got = contrast(fg, on);
+                assert!(got >= min - 0.01, "{name}: {what} {got}");
+            }
+            assert_ne!(
+                c.outline_current, c.outline_dim,
+                "{name}: the current one stands out"
+            );
         }
     }
 

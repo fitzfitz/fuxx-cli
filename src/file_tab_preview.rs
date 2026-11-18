@@ -3,6 +3,7 @@
 //! fields, `preview_shown` and the switch).
 
 use super::*;
+use crate::ui_tokens::size::TERMINAL_PADDING;
 
 impl FileTab {
     /// A link clicked in the Preview (M11ac, `md_preview::link_target`): a web or mail link
@@ -70,13 +71,18 @@ impl FileTab {
 
     /// Jump to list row `row` (M11ai: a heading): the row's content `JUMP_ROOM` under the
     /// Preview's top (`md_reader::jump_offset` of the space over it); a jump is a scroll, so the
-    /// scrollbar shows.
+    /// scrollbar shows. Task 8: a heading in "On this page" is its current entry at once, and
+    /// the entry is checked again once the jump is laid out.
     pub(super) fn jump_to_row(&mut self, row: usize, cx: &mut Context<Self>) {
         self.place_at_row(row, cx);
+        if let Some(entry) = self.outline_rows().iter().position(|r| *r == row) {
+            self.outline_current = Some(entry);
+        }
         cx.notify();
     }
 
-    /// `jump_to_row` without the redraw (`preview_body` jumps in the frame it draws).
+    /// `jump_to_row` without the redraw (`preview_body` jumps in the frame it draws), nor
+    /// setting the current entry (worked out after it is laid out).
     fn place_at_row(&mut self, row: usize, cx: &mut Context<Self>) {
         let Some((_, read)) = &self.parsed else {
             return;
@@ -86,7 +92,68 @@ impl FileTab {
             item_ix: row,
             offset_in_item: px(crate::md_reader::jump_offset(room)),
         });
+        self.track_due.set(true);
         self.scrolled(cx);
+    }
+
+    /// Each "On this page" entry's list row (none without an outline).
+    fn outline_rows(&self) -> Vec<usize> {
+        let Some((_, read)) = &self.parsed else {
+            return Vec::new();
+        };
+        let plan = &read.plan;
+        plan.outline
+            .iter()
+            .map(|e| plan.row_of_block(plan.headings[e.heading].block))
+            .collect()
+    }
+
+    /// Which "On this page" entry is current (M11ai Task 8, plan-time call 12), from the list
+    /// as it is: the last heading reached (above the list's top row, or its top within `REACH`
+    /// of the view's height under the view's top); scrolled to the very end, the last heading
+    /// in view (drawn, its top over the view's bottom). None until the first is reached. Run
+    /// at the start of a frame (`track_next_frame`), never while drawing; redraws only when
+    /// the entry changes.
+    pub(super) fn track_heading(&mut self, cx: &mut Context<Self>) {
+        if !self.preview_shown() {
+            return;
+        }
+        let rows = self.outline_rows();
+        let list = &self.preview_list;
+        let view = list.viewport_bounds();
+        let top_row = list.logical_scroll_top().item_ix;
+        let reach = view.top() + view.size.height * crate::ui_tokens::reader::REACH;
+        let now = crate::md_reader::current_entry(
+            &rows,
+            list.is_scrolled_to_end() == Some(true),
+            |r| r < top_row || list.bounds_for_item(r).is_some_and(|b| b.top() <= reach),
+            |r| {
+                list.bounds_for_item(r)
+                    .is_some_and(|b| b.top() < view.bottom())
+            },
+        );
+        if now != self.outline_current {
+            self.outline_current = now;
+            cx.notify();
+        }
+    }
+
+    /// Whether "On this page" shows now (M11ai Task 8): `Some(true)` as the column at the
+    /// Preview's right (wide enough, `outline_fits`), `Some(false)` not (narrower), None when
+    /// there is no outline (fewer than two entries) or no Preview.
+    pub fn outline_shown(&self) -> Option<bool> {
+        let (_, read) = self.parsed.as_ref()?;
+        if !self.preview_shown() || read.plan.outline.is_empty() {
+            return None;
+        }
+        Some(self.outline_fits.get() == Some(true))
+    }
+
+    /// An "On this page" entry clicked: a jump to its heading.
+    fn outline_jump(&mut self, entry: usize, cx: &mut Context<Self>) {
+        if let Some(row) = self.outline_rows().get(entry).copied() {
+            self.jump_to_row(row, cx);
+        }
     }
 
     /// A press at `p` in the Preview's scrollbar zone (M11ae): the thumb is grabbed, or jumps to
@@ -127,6 +194,8 @@ impl FileTab {
             self.preview_list
                 .set_offset_from_scrollbar(point(px(0.0), px(-to)));
         }
+        // M11ai: the current outline entry, once this scroll is laid out.
+        self.track_due.set(true);
         self.scrolled(cx);
         cx.notify();
     }
@@ -176,6 +245,14 @@ impl FileTab {
                 let top = self.preview_list.logical_scroll_top();
                 self.preview_list = preview_list_of(read.plan.rows(), cx.entity().downgrade());
                 self.preview_list.scroll_to(top);
+                // M11ai: "On this page"'s own list (its scroll kept while the entries are as
+                // many), and its current entry checked again once the new list is laid out.
+                let entries = read.plan.outline.len();
+                if self.outline_list.item_count() != entries {
+                    self.outline_list =
+                        ListState::new(entries, ListAlignment::Top, px(PREVIEW_OVERDRAW));
+                }
+                self.track_due.set(true);
                 self.parsed = Some((version, read.clone()));
                 // M11ai: a heading asked for before the file was read (`show_anchor`).
                 if let Some(row) = self
@@ -199,6 +276,15 @@ impl FileTab {
             Some(for_) if for_ == (version, theme) => self.code_looks.clone(),
             _ => Rc::default(),
         };
+        // M11ai Task 8: "On this page" as a column when there is an outline and the Preview was
+        // last laid out wide enough for it (`outline_fits`, decided in the canvas's prepaint).
+        let has_outline = !read.plan.outline.is_empty();
+        let column = (self.outline_shown() == Some(true))
+            .then(|| self.outline_column(&read, md_preview::Colours::of(&theme), cx));
+        #[cfg(feature = "ui-shots")]
+        if column.is_none() {
+            self.outline_drawn.borrow_mut().clear();
+        }
         let view = cx.entity().downgrade();
         let draw = md_preview::Draw {
             colours: md_preview::Colours::of(&theme),
@@ -212,6 +298,11 @@ impl FileTab {
             reader: Some(md_preview::ReaderDraw {
                 doc: read,
                 measure: crate::ui_tokens::reader::MEASURE,
+                aside: if column.is_some() {
+                    crate::ui_tokens::reader::OUTLINE_W + crate::ui_tokens::reader::OUTLINE_GAP
+                } else {
+                    0.0
+                },
                 code,
                 copied: self.copied,
                 on_copy: {
@@ -260,6 +351,47 @@ impl FileTab {
         };
         let (bar, ink, state) = (self.scrollbar, theme.ui().text, self.preview_list.clone());
         let view = cx.entity().downgrade();
+        let prepaint = {
+            let (fits, width, due) = (
+                self.outline_fits.clone(),
+                self.preview_width.clone(),
+                self.track_due.clone(),
+            );
+            let view = view.clone();
+            // M11ai Task 8 (plan-time calls 12, 13): the Preview's width as laid out decides
+            // whether the outline's column fits (a layout cache, as `fits_side`): when that
+            // changes, the tab is drawn again once (its rows measured again if the reader's
+            // area changed). A width change, or a check asked for since the last layout (a
+            // remeasure, a reload, a jump, a scrollbar drag), works out the current entry at
+            // the start of the next frame, once, from this layout.
+            move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
+                let fit = outline_fits(f32::from(bounds.size.width));
+                let was = fits.get();
+                if was != Some(fit) {
+                    fits.set(Some(fit));
+                    let reflow = has_outline && (was == Some(true)) != fit;
+                    let view = view.clone();
+                    cx.defer(move |cx| {
+                        view.update(cx, |this, cx| {
+                            if reflow {
+                                this.preview_list.remeasure();
+                                this.track_due.set(true);
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                    });
+                }
+                if width.get() != Some(bounds.size.width) {
+                    width.set(Some(bounds.size.width));
+                    due.set(true);
+                }
+                if due.take() {
+                    track_next_frame(view.clone(), window);
+                }
+                window.insert_hitbox(bounds, HitboxBehavior::Normal)
+            }
+        };
         div()
             .id("file-md-preview")
             .relative()
@@ -272,65 +404,63 @@ impl FileTab {
                 })
                 .size_full(),
             )
+            .children(column)
             // M11ae: the scrollbar over the list: its thumb (the fade read from the clock; the
             // fade task redraws), and the 12 pt edge zone's presses, taken before the list's
             // own (bubbling goes last-registered first); presses elsewhere reach the list.
             .child(
-                canvas(
-                    |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
-                    move |_, hitbox, window, _| {
-                        let now = Instant::now();
-                        if bar.is_shown(now)
-                            && let Some(t) = preview_track(&state)
-                        {
-                            scrollbar::paint(
-                                window,
-                                t.area,
-                                Axis::Vertical,
-                                &t.thumb,
-                                bar.alpha_at(now),
-                                ink,
-                            );
+                canvas(prepaint, move |_, hitbox, window, _| {
+                    let now = Instant::now();
+                    if bar.is_shown(now)
+                        && let Some(t) = preview_track(&state)
+                    {
+                        scrollbar::paint(
+                            window,
+                            t.area,
+                            Axis::Vertical,
+                            &t.thumb,
+                            bar.alpha_at(now),
+                            ink,
+                        );
+                    }
+                    window.on_mouse_event({
+                        let view = view.clone();
+                        move |e: &MouseDownEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Bubble
+                                && e.button == MouseButton::Left
+                                && view
+                                    .update(cx, |this, cx| this.preview_press(e.position, cx))
+                                    .unwrap_or(false)
+                            {
+                                cx.stop_propagation();
+                            }
                         }
-                        window.on_mouse_event({
-                            let view = view.clone();
-                            move |e: &MouseDownEvent, phase, _, cx| {
-                                if phase == DispatchPhase::Bubble
-                                    && e.button == MouseButton::Left
-                                    && view
-                                        .update(cx, |this, cx| this.preview_press(e.position, cx))
-                                        .unwrap_or(false)
-                                {
-                                    cx.stop_propagation();
-                                }
-                            }
-                        });
-                        window.on_mouse_event({
-                            let view = view.clone();
-                            move |e: &MouseMoveEvent, phase, window, cx| {
-                                if phase == DispatchPhase::Bubble {
-                                    let over = hitbox.is_hovered(window);
-                                    view.update(cx, |this, cx| this.preview_move(e, over, cx))
-                                        .ok();
-                                }
-                            }
-                        });
-                        window.on_mouse_event({
-                            let view = view.clone();
-                            move |_: &MouseUpEvent, phase, _, cx| {
-                                if phase == DispatchPhase::Bubble {
-                                    view.update(cx, |this, cx| this.preview_release(cx)).ok();
-                                }
-                            }
-                        });
-                        // The pointer left the window (no last move comes): not hot.
-                        window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
+                    });
+                    window.on_mouse_event({
+                        let view = view.clone();
+                        move |e: &MouseMoveEvent, phase, window, cx| {
                             if phase == DispatchPhase::Bubble {
-                                view.update(cx, |this, cx| this.pointer_left(cx)).ok();
+                                let over = hitbox.is_hovered(window);
+                                view.update(cx, |this, cx| this.preview_move(e, over, cx))
+                                    .ok();
                             }
-                        });
-                    },
-                )
+                        }
+                    });
+                    window.on_mouse_event({
+                        let view = view.clone();
+                        move |_: &MouseUpEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Bubble {
+                                view.update(cx, |this, cx| this.preview_release(cx)).ok();
+                            }
+                        }
+                    });
+                    // The pointer left the window (no last move comes): not hot.
+                    window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble {
+                            view.update(cx, |this, cx| this.pointer_left(cx)).ok();
+                        }
+                    });
+                })
                 .absolute()
                 .top_0()
                 .left_0()
@@ -383,6 +513,7 @@ impl FileTab {
                                 tell_view
                                     .update(cx, |this, cx| {
                                         this.preview_list.remeasure();
+                                        this.track_due.set(true);
                                         cx.notify();
                                     })
                                     .ok();
@@ -574,5 +705,159 @@ impl FileTab {
             && self.mermaid_plan.as_ref().is_some_and(|(_, d, plan)| {
                 *d == dark && plan.contains(&Some(mermaid::Plan::Diagram(*key)))
             })
+    }
+}
+
+/// Whether "On this page" shows as a column in a Preview `width` wide (M11ai Task 8, plan-time
+/// call 13): room for the prose column, the side padding each side, the gap and the column.
+pub(super) fn outline_fits(width: f32) -> bool {
+    use crate::ui_tokens::reader::{MEASURE, OUTLINE_GAP, OUTLINE_W};
+    width >= MEASURE + 2.0 * TERMINAL_PADDING.0 + OUTLINE_GAP + OUTLINE_W
+}
+
+/// "On this page"'s current entry worked out at the start of the next frame (`track_heading`):
+/// out of any borrow of the list, and after the layout drawn last.
+pub(super) fn track_next_frame(view: WeakEntity<FileTab>, window: &Window) {
+    window.on_next_frame(move |_, cx| {
+        view.update(cx, |this, cx| this.track_heading(cx)).ok();
+    });
+}
+
+impl FileTab {
+    /// "On this page" as a column (M11ai Task 8): `OUTLINE_W` wide, `TERMINAL_PADDING` from the
+    /// Preview's right and its top; a dim caption, then the entries in a list of their own
+    /// (only those in sight drawn; its own scroll, the wheel over it not reaching the text).
+    /// Each entry is an `OUTLINE_ROW` row of `OUTLINE_TEXT` text on one line (a long one ends
+    /// in "…", its full text in a tooltip), a level-3 heading's `OUTLINE_INDENT` in; the
+    /// current one in the accent with an `OUTLINE_BAR` bar on its left, the rest dim; a
+    /// hovered one on the panel hover fill. A click jumps to its heading.
+    fn outline_column(
+        &self,
+        read: &Rc<md_preview::ReaderDoc>,
+        c: md_preview::Colours,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::ui_tokens::reader::{
+            OUTLINE_BAR, OUTLINE_INDENT, OUTLINE_PAD, OUTLINE_ROW, OUTLINE_TEXT, OUTLINE_W,
+        };
+        let plan = &read.plan;
+        let entries: Rc<Vec<(SharedString, bool)>> = Rc::new(
+            plan.outline
+                .iter()
+                .map(|e| (plan.headings[e.heading].text.clone().into(), e.indent))
+                .collect(),
+        );
+        let current = self.outline_current;
+        let view = cx.entity().downgrade();
+        #[cfg(feature = "ui-shots")]
+        let probe = {
+            self.outline_drawn.borrow_mut().clear();
+            self.outline_drawn.clone()
+        };
+        let caption = div()
+            .h(px(OUTLINE_ROW))
+            .pl(px(OUTLINE_PAD))
+            .flex()
+            .items_center()
+            .text_color(hsla(c.dim))
+            .child("On this page");
+        let rows = list(self.outline_list.clone(), move |i, _, _| {
+            let Some((text, indent)) = entries.get(i).cloned() else {
+                return div().into_any_element();
+            };
+            let on = current == Some(i);
+            let view = view.clone();
+            let tip = text.clone();
+            let inset = OUTLINE_PAD - OUTLINE_BAR + if indent { OUTLINE_INDENT } else { 0.0 };
+            let entry = div()
+                .id(("md-outline", i))
+                .h(px(OUTLINE_ROW))
+                .w_full()
+                .flex()
+                .flex_row()
+                .items_center()
+                .cursor_pointer()
+                .hover(move |d| d.bg(hsla(c.outline_hover)))
+                .child(
+                    div()
+                        .w(px(OUTLINE_BAR))
+                        .h_full()
+                        .when(on, |d| d.bg(hsla(c.outline_bar))),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .pl(px(inset))
+                        .truncate()
+                        .text_color(hsla(if on { c.outline_current } else { c.outline_dim }))
+                        .child(text),
+                )
+                .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone())).into() })
+                .on_click(move |_, _, cx| {
+                    view.update(cx, |this, cx| this.outline_jump(i, cx)).ok();
+                });
+            let row = div().w_full().child(entry);
+            #[cfg(feature = "ui-shots")]
+            let row = {
+                let probe = probe.clone();
+                row.on_children_prepainted(move |bounds, _, _| {
+                    if let Some(b) = bounds.first() {
+                        probe.borrow_mut().insert(i, *b);
+                    }
+                })
+            };
+            row.into_any_element()
+        })
+        .flex_1()
+        .min_h(px(0.0))
+        .w_full();
+        div()
+            .id("md-outline")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(px(TERMINAL_PADDING.0))
+            .w(px(OUTLINE_W))
+            .pt(px(TERMINAL_PADDING.1))
+            .flex()
+            .flex_col()
+            .text_size(px(OUTLINE_TEXT))
+            .occlude()
+            .child(caption)
+            .child(rows)
+            .into_any_element()
+    }
+}
+
+/// What the scenes read of "On this page" (M11ai Task 8).
+#[cfg(feature = "ui-shots")]
+impl FileTab {
+    /// The current entry (None until the first heading is reached).
+    pub fn outline_current(&self) -> Option<usize> {
+        self.outline_current
+    }
+
+    /// Entry `entry`'s row in the column as last drawn (only those in sight; none while the
+    /// column does not show).
+    pub fn outline_entry_bounds(&self, entry: usize) -> Option<Bounds<Pixels>> {
+        self.outline_drawn.borrow().get(&entry).copied()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui_tokens::reader::{MEASURE, OUTLINE_GAP, OUTLINE_W};
+
+    /// "On this page" shows as a column (plan-time call 13) from the prose column, the side
+    /// padding each side, the gap and the outline (760 pt with today's padding).
+    #[test]
+    fn the_outline_column_shows_from_the_column_padding_gap_and_outline() {
+        let from = MEASURE + 2.0 * TERMINAL_PADDING.0 + OUTLINE_GAP + OUTLINE_W;
+        assert!(outline_fits(from));
+        assert!(outline_fits(1200.0));
+        assert!(!outline_fits(from - 1.0));
+        assert!(!outline_fits(700.0));
     }
 }
