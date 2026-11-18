@@ -390,16 +390,6 @@ impl Theme {
         ]
         .concat();
         let text = |c: Rgb| readable(c, &text_surfaces, TEXT_MIN);
-        if std::env::var("DBGT").is_ok() {
-            for (i, x) in text_surfaces.iter().enumerate() {
-                eprintln!(
-                    "DBG {i} {:?} dim {:.3} faint {:.3}",
-                    x,
-                    contrast(hex(0x5a5a6c), *x),
-                    contrast(hex(0x5a5b66), *x)
-                );
-            }
-        }
         let text_dim = text(mix(base, fg, 0.72));
         let quiet = |c: Rgb, on: &[Rgb]| readable(c, on, QUIET_LINE_MIN);
         let ink = text(fg);
