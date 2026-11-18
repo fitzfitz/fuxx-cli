@@ -1869,6 +1869,8 @@ fn browser_tab_scenes() {
         ] {
             let typed_at: Rc<std::cell::Cell<Option<gpui::Bounds<Pixels>>>> = Rc::default();
             let typed = typed_at.clone();
+            let bar_probe: Rc<std::cell::Cell<Option<(Pixels, Pixels)>>> = Rc::default();
+            let bar_seen = bar_probe.clone();
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -1911,6 +1913,11 @@ fn browser_tab_scenes() {
                     (bar_bottom + 3.0..=bar_bottom + 6.0).contains(&top),
                     "{n}: field top {top}"
                 );
+                // Its bar (M11al §9) sits in the card: the card's fill, the card's hairline under it.
+                bar_probe.set(Some((
+                    field.left() - px(2.0),
+                    px(bar_bottom + crate::browser_tab::BAR),
+                )));
                 if scene == "browser-tab-suggestions" {
                     cx.update(|cx| {
                         cx.bind_keys([KeyBinding::new("down", SuggestNext, Some("AddressField"))])
@@ -1926,6 +1933,24 @@ fn browser_tab_scenes() {
             };
             let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
             println!("ui-shots: {}", path.display());
+            if scene == "browser-tab" {
+                let shot = render_with(&theme, dims, build.clone(), act.clone());
+                let (x, bottom) = bar_seen.get().expect("the bar was probed");
+                let (x, bottom) = (f32::from(x), f32::from(bottom));
+                let ui = theme.ui();
+                let p = pixel_at(&shot, dims, x, bottom - 17.0);
+                assert!(
+                    near_by(p, ui.card, 3),
+                    "{scene}-{slug}: the bar is {p:?}, not the card {:?}",
+                    ui.card
+                );
+                let p = pixel_at(&shot, dims, x, bottom - 0.5);
+                assert!(
+                    near_by(p, ui.card_border, 3),
+                    "{scene}-{slug}: the bar's line is {p:?}, not {:?}",
+                    ui.card_border
+                );
+            }
             if scene == "browser-tab-suggestions" {
                 // What was typed is drawn in the theme's text colour (not the default black).
                 let shot = render_with(&theme, dims, build, act);
