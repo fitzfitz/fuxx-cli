@@ -1,6 +1,6 @@
 # Milestone 11ah — Code View Upgrade
 
-**Status:** 🟨 built, **merged to master 2026-11-18, not pushed**, waiting for your on-screen check. Design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). Plan: [[M11ah Plan - Code View Upgrade]] (Tasks 0–12, all built and reviewed). Anything here that does not quote you is marked **AI's call**.
+**Status:** 🟨 built, **merged to master and pushed 2026-11-18**, waiting for your on-screen check. Design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). Plan: [[M11ah Plan - Code View Upgrade]] (Tasks 0–12, all built and reviewed). Anything here that does not quote you is marked **AI's call**.
 
 **Asked for:** 2026-11-16, by you, in the file-view mockups ("everything, all layout good"), recorded in
 [[Proposal - File View Upgrades]]:
@@ -329,7 +329,7 @@ Two notes on M11af:
 
 ## What was built
 
-All 13 plan tasks, each reviewed, on `m11ah-code-view`, merged to master 2026-11-18 (not pushed).
+All 13 plan tasks, each reviewed, on `m11ah-code-view`, merged to master and pushed 2026-11-18.
 
 - **Task 0, baselines:** the numbers this branch must not exceed (tests, clippy, ui-shots).
 - **Task 1, sizes and the current line:** every size in one `code` group in `ui_tokens.rs`; rows 1.2 times the font's line height; quieter line numbers; a click makes a line current (faint band, bright number).
