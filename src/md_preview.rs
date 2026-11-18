@@ -25,13 +25,13 @@ use gpui::{
 
 use crate::agent_markdown::{Align, Md, Span};
 use crate::file_tab::expand_tabs;
-use crate::md_reader::{ReaderPlan, RowKind, fence_lang};
+use crate::md_reader::{BlockLook, Callout, ReaderPlan, RowKind, fence_lang};
 use crate::tab_bar::{Glyph, ICON, glyph};
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, mix};
 use crate::ui_tokens::reader::TABLE_COL_MIN;
 use crate::ui_tokens::size::TERMINAL_PADDING;
-use crate::ui_tokens::{QUIET_LINE_MIN, TEXT_MIN, ensure_contrast};
+use crate::ui_tokens::{MARK_MIN, QUIET_LINE_MIN, TEXT_MIN, ensure_contrast};
 
 /// A list level's indent, and the marker's column.
 const INDENT: f32 = 20.0;
@@ -293,6 +293,19 @@ pub struct Colours {
     /// A code block's header strip (M11ai): its fill, and its words (the language, Copy) on it.
     pub code_header_bg: Rgb,
     pub code_header_text: Rgb,
+    /// A callout's colours (M11ai), by `Callout::ALL`'s order.
+    callouts: [CalloutColours; 5],
+}
+
+/// One callout kind's colours (M11ai): its bar and icon (at `MARK_MIN` on the wash), the wash (the
+/// kind's palette colour over the page at `CALLOUT_WASH`), its title (at `TEXT_MIN` on the wash)
+/// and the body's text (the text colour, held to `TEXT_MIN` on the wash).
+#[derive(Clone, Copy, Debug)]
+pub struct CalloutColours {
+    pub bar: Rgb,
+    pub wash: Rgb,
+    pub title: Rgb,
+    pub body: Rgb,
 }
 
 impl Colours {
@@ -315,7 +328,46 @@ impl Colours {
             header_text: ensure_contrast(ui.text, code_bg, TEXT_MIN),
             code_header_bg,
             code_header_text: ensure_contrast(ui.text_dim, code_header_bg, TEXT_MIN),
+            callouts: Callout::ALL.map(|kind| {
+                let hue = theme.palette[callout_palette(kind)];
+                let wash = mix(bg, hue, crate::ui_tokens::reader::CALLOUT_WASH);
+                CalloutColours {
+                    bar: ensure_contrast(hue, wash, MARK_MIN),
+                    wash,
+                    title: ensure_contrast(hue, wash, TEXT_MIN),
+                    body: ensure_contrast(ui.text, wash, TEXT_MIN),
+                }
+            }),
         }
+    }
+
+    /// The colours of a `kind` callout.
+    pub fn callout(&self, kind: Callout) -> CalloutColours {
+        let at = Callout::ALL.iter().position(|k| *k == kind).unwrap_or(0);
+        self.callouts[at]
+    }
+}
+
+/// The palette index of a callout kind's colour: Note blue, Tip green, Important magenta, Warning
+/// yellow, Caution red.
+fn callout_palette(kind: Callout) -> usize {
+    match kind {
+        Callout::Note => 4,
+        Callout::Tip => 2,
+        Callout::Important => 5,
+        Callout::Warning => 3,
+        Callout::Caution => 1,
+    }
+}
+
+/// A callout's icon.
+fn callout_glyph(kind: Callout) -> Glyph {
+    match kind {
+        Callout::Note => Glyph::Info,
+        Callout::Tip => Glyph::Bulb,
+        Callout::Important => Glyph::Report,
+        Callout::Warning => Glyph::Alert,
+        Callout::Caution => Glyph::Octagon,
     }
 }
 
@@ -375,6 +427,9 @@ pub struct ReaderDraw {
     /// The scenes' probe: each drawn code block's header.
     #[cfg(feature = "ui-shots")]
     pub code_drawn: CodeDrawn,
+    /// The scenes' probe: each drawn callout's title.
+    #[cfg(feature = "ui-shots")]
+    pub callout_drawn: CalloutDrawn,
 }
 
 /// A code block coloured (M11ai, `md_reader::code_runs`): its text as shown (tabs widened) and
@@ -406,6 +461,10 @@ pub struct CodeProbe {
 /// Each drawn code block's header, by list row.
 #[cfg(feature = "ui-shots")]
 pub type CodeDrawn = Rc<std::cell::RefCell<std::collections::BTreeMap<usize, CodeProbe>>>;
+
+/// Each drawn callout's title word, by list row (the scenes read it).
+#[cfg(feature = "ui-shots")]
+pub type CalloutDrawn = Rc<std::cell::RefCell<std::collections::BTreeMap<usize, &'static str>>>;
 
 /// Each drawn row's content bounds, by list row (the scenes read it).
 #[cfg(feature = "ui-shots")]
@@ -467,7 +526,12 @@ pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
                     wide(reader.measure, scroll.into_any_element())
                 }
                 (_, Md::Code { .. }) => wide(reader.measure, reader_code(row, b, md, draw, reader)),
-                _ => prose(block(md, draw)),
+                _ => match doc.plan.looks.get(b) {
+                    Some(BlockLook::Callout(kind, body)) => {
+                        prose(reader_callout(row, *kind, body, draw, reader))
+                    }
+                    _ => prose(block(md, draw)),
+                },
             };
             (gap, content)
         }
@@ -512,6 +576,66 @@ fn wide(measure: f32, e: AnyElement) -> AnyElement {
         .max_w_full()
         .child(div().w(px(measure)).max_w_full().h(px(0.0)))
         .child(e)
+        .into_any_element()
+}
+
+/// A callout in the reader (M11ai): a `CALLOUT_BAR` bar on the left in the kind's colour, the
+/// kind's wash behind, `CALLOUT_PAD` inside, `CALLOUT_RADIUS` corners; a title line (the kind's
+/// icon and word, semibold, in its title colour), then the body's blocks in the text colour with
+/// the reader's gaps. A body-less callout is its title alone.
+fn reader_callout(
+    #[cfg_attr(not(feature = "ui-shots"), allow(unused_variables))] row: usize,
+    kind: Callout,
+    body: &[Md],
+    draw: &Draw,
+    #[cfg_attr(not(feature = "ui-shots"), allow(unused_variables))] reader: &ReaderDraw,
+) -> AnyElement {
+    use crate::ui_tokens::reader::{CALLOUT_BAR, CALLOUT_PAD, CALLOUT_RADIUS};
+    let (c, s) = (draw.colours.callout(kind), &draw.sizes);
+    let title = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(hsla(c.title))
+        .child(glyph(callout_glyph(kind), c.bar))
+        .child(kind.title());
+    #[cfg(feature = "ui-shots")]
+    let title = {
+        let probe = reader.callout_drawn.clone();
+        title.child(
+            gpui::canvas(
+                move |_, _, _| {
+                    probe.borrow_mut().insert(row, kind.title());
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_0(),
+        )
+    };
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .p(px(CALLOUT_PAD))
+        .rounded(px(CALLOUT_RADIUS))
+        .bg(hsla(c.wash))
+        .border_l(px(CALLOUT_BAR))
+        .border_color(hsla(c.bar))
+        .text_color(hsla(c.body))
+        .child(title)
+        .when(!body.is_empty(), |d| {
+            d.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .mt(px(s.item_gap))
+                    .children(blocks_of(body, draw)),
+            )
+        })
         .into_any_element()
 }
 
@@ -965,6 +1089,28 @@ mod tests {
             }
             // The code header is a shade off the code's fill.
             assert_ne!(c.code_header_bg, c.code_bg, "{name}");
+        }
+    }
+
+    /// Every kind in every theme: a callout's title and body meet the text floor on its wash, its
+    /// bar and icon the mark floor.
+    #[test]
+    fn callout_colours_meet_their_floors_in_every_theme() {
+        use crate::ui_tokens::contrast;
+        for (name, theme) in crate::theme::every_theme() {
+            let colours = Colours::of(&theme);
+            for kind in Callout::ALL {
+                let c = colours.callout(kind);
+                for (what, fg, min) in [
+                    ("title", c.title, TEXT_MIN),
+                    ("body", c.body, TEXT_MIN),
+                    ("bar", c.bar, MARK_MIN),
+                ] {
+                    let got = contrast(fg, c.wash);
+                    assert!(got >= min - 0.01, "{name}: {} {what} {got}", kind.title());
+                }
+                assert_ne!(c.wash, theme.background, "{name}: {} wash", kind.title());
+            }
         }
     }
 

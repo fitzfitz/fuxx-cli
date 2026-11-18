@@ -4394,6 +4394,9 @@ pub struct FileTab {
     /// M11ai: the code blocks' headers as last drawn (the scenes' probe).
     #[cfg(feature = "ui-shots")]
     code_drawn: md_preview::CodeDrawn,
+    /// M11ai: the callouts' titles as last drawn (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    callout_drawn: md_preview::CalloutDrawn,
     /// M11af: who changed each line since the tab opened.
     live: Live,
     /// M11af: the mark under the pointer: its tooltip's place (window points) and words.
@@ -4519,6 +4522,8 @@ impl FileTab {
             copy_gen: 0,
             #[cfg(feature = "ui-shots")]
             code_drawn: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            callout_drawn: Rc::default(),
             live: Live::default(),
             mark_tip: None,
             _appearance: appearance,
@@ -8126,6 +8131,11 @@ impl FileTab {
     /// list row; only rows in sight.
     pub fn code_drawn(&self) -> std::collections::BTreeMap<usize, md_preview::CodeProbe> {
         self.code_drawn.borrow().clone()
+    }
+
+    /// M11ai: each drawn callout's title word, by list row; only rows in sight.
+    pub fn callout_drawn(&self) -> std::collections::BTreeMap<usize, &'static str> {
+        self.callout_drawn.borrow().clone()
     }
 
     /// M11ai: row `row`'s Copy button as last drawn.
