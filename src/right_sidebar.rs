@@ -81,7 +81,7 @@ use crate::theme::{Theme, UiColors, readable};
 use crate::ui_tokens::MARK_MIN;
 use crate::ui_tokens::size::{
     CARD_INSET, CARD_RADIUS, DIVIDER_ACTIVE, HAIRLINE, RIGHT_SIDEBAR_DEFAULT_WIDTH,
-    RIGHT_SIDEBAR_MAX_WIDTH, RIGHT_SIDEBAR_MIN_WIDTH, TAB_BAR, TAB_TOP_GAP,
+    RIGHT_SIDEBAR_MAX_WIDTH, RIGHT_SIDEBAR_MIN_WIDTH, TAB_BAR,
 };
 use crate::workspace::Workspace;
 
@@ -102,7 +102,8 @@ actions!(
 /// and the shown panel (Files or Changes) refreshed.
 pub const REFRESH: Duration = Duration::from_secs(2);
 /// The panel tabs in the card's strip (M11h): the first's room from the strip's left, the
-/// room between them, each one's side padding; their top corners are the pane tabs'.
+/// room between them, each one's side padding; their height and corners are the pane tabs'
+/// (M11al; until Task 9's segmented switch replaces them).
 const PANEL_TABS_LEFT: f32 = crate::ui_tokens::size::TABS_LEFT;
 const PANEL_TAB_GAP: f32 = 2.0;
 const PANEL_TAB_PAD: f32 = 10.0;
@@ -1451,18 +1452,27 @@ impl Workspace {
             .flex_none()
             .w_full()
             .h(px(TAB_BAR))
-            .bg(hsla(ui.tab_bar))
-            // At the card's top-right corner, rounded as the inside of its edge (as a pane's
-            // tab bar); its tabs clipped to the strip's bounds (GPUI's mask is a rectangle, not
-            // the rounded corners), so a narrow panel never lets a tab spill past the strip.
-            .rounded_tr(corner)
+            // No fill of its own (M11al, as the pane tab bars): the panel's `side` shows; a
+            // 1 pt `card_border` line along its bottom, level with theirs. Its tabs clipped to
+            // the strip's bounds (GPUI's mask is a rectangle, not the rounded corners), so a
+            // narrow panel never lets a tab spill past the strip.
+            .relative()
             .overflow_hidden()
-            // The tabs float 4 pt under its top, flush with its bottom.
-            .pt(px(TAB_TOP_GAP))
+            // The tabs float in its middle.
+            .items_center()
             .pl(px(PANEL_TABS_LEFT))
             .gap(px(PANEL_TAB_GAP))
             .children(Panel::ALL.map(|p| self.render_panel_tab(p, ui, cx)))
-            .child(empty);
+            .child(empty)
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .w_full()
+                    .h(px(HAIRLINE))
+                    .bg(hsla(ui.card_border)),
+            );
         let body = match self.right_sidebar.panel {
             Panel::Files => self.render_files_panel(ui, width, cx),
             Panel::Changes => self.render_changes_panel(ui, width, cx),
@@ -1500,9 +1510,10 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// `panel`'s tab in the strip (M11h), drawn as a pane's tab: 13 pt words, 10 pt each side,
-    /// top corners rounded; the shown panel's filled with the card (merging into it) in the
-    /// text colour, the others unfilled, dim, `tab_hover` on hover. A click shows its panel.
+    /// `panel`'s tab in the strip (M11h): 13 pt words, 10 pt each side, as tall and rounded as
+    /// a pane's tab (M11al); the shown panel's on `card_lift` in the text colour, the others
+    /// unfilled, faint, `side_hover` on hover (the colours of §6.2's switch, which replaces
+    /// them in Task 9). A click shows its panel.
     fn render_panel_tab(&self, panel: Panel, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         let active = self.right_sidebar.panel == panel;
         let i = panel as usize;
@@ -1512,15 +1523,14 @@ impl Workspace {
             .flex()
             .flex_none()
             .items_center()
-            .h_full()
+            .h(px(tab_bar::TAB))
             .px(px(PANEL_TAB_PAD))
-            .rounded_t(px(tab_bar::TAB_RADIUS))
+            .rounded(px(tab_bar::TAB_RADIUS))
             .text_size(px(TAB_LABEL))
-            .text_color(hsla(if active { ui.text } else { ui.text_dim }))
-            // Merging into the panel's `side` under it.
-            .when(active, |t| t.bg(hsla(ui.side)))
+            .text_color(hsla(if active { ui.text } else { ui.text_faint }))
+            .when(active, |t| t.bg(hsla(ui.card_lift)))
             .when(!active, |t| {
-                t.cursor_pointer().hover(move |s| s.bg(hsla(ui.tab_hover)))
+                t.cursor_pointer().hover(move |s| s.bg(hsla(ui.side_hover)))
             })
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.show_right_panel(panel, window, cx)
@@ -2018,8 +2028,8 @@ impl Workspace {
             .map(|input| {
                 let empty = input.read(cx).text().is_empty();
                 let focus_box = input.clone();
-                // Part 4: a borderless field filled one step darker than the card (the tab
-                // strip's colour), a search icon, then the box (bare: the field is its edge).
+                // Part 4: a borderless field filled one step darker than the panel (`raised`,
+                // M11al §6.5), a search icon, then the box (bare: the field is its edge).
                 let field = div()
                     .flex()
                     .items_center()
@@ -2028,7 +2038,7 @@ impl Workspace {
                     .w_full()
                     .px(px(FILTER_PAD))
                     .rounded(px(FILTER_RADIUS))
-                    .bg(hsla(ui.tab_bar))
+                    .bg(hsla(ui.raised))
                     .child(tab_bar::footer_glyph(
                         Glyph::Search,
                         ui.text_faint,

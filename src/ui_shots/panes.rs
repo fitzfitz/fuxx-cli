@@ -68,6 +68,19 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "tabs-minimal",
+        run: tabs_minimal_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/tab_bar.rs",
+            "src/mark_view.rs",
+            "src/status_mark.rs",
+            "src/theme.rs",
+        ],
+    },
+    Scene {
         name: "tab-drag",
         run: tab_drag_scenes,
         themes: Themes::Both,
@@ -447,9 +460,11 @@ pub(super) fn quiet_line(
 /// - `splits-hover`: the pointer over the vertical line (the 2 px quiet line in its middle).
 /// - `splits-drag`: that line dragged left (the quiet line, the panes follow).
 ///
-/// Panics unless each shows 3 tabs, each pane's active tab is the card's colour with no line on
-/// top (the veil shows the unfocused panes, `card-split`), and the vertical line is a 1 px
-/// `card_border` hairline (never the canvas) except when hovered or dragged.
+/// Panics unless each shows 3 tabs, the focused pane's shown tab has the accent wash
+/// (`tab_active`) and the other pane's shown tab the neutral one (`card_hover`, M11al §3.3; the
+/// veil shows the unfocused panes, `card-split`), the bars have no fill above the tabs, and the
+/// vertical line is a 1 px `card_border` hairline (never the canvas) except when hovered or
+/// dragged.
 fn split_scenes() {
     use gpui::{Modifiers, MouseButton};
     use std::cell::RefCell;
@@ -471,7 +486,7 @@ fn split_scenes() {
             };
             // The card's inside, and the middle of the vertical hairline: the sides give it up
             // in proportion.
-            use crate::ui_tokens::size::{HAIRLINE, SIDEBAR_DEFAULT_WIDTH, TAB_TOP_GAP};
+            use crate::ui_tokens::size::{HAIRLINE, SIDEBAR_DEFAULT_WIDTH, TAB_BAR};
             let (area_left, area_right) = (
                 SIDEBAR_DEFAULT_WIDTH + HAIRLINE,
                 960.0 - CARD_INSET - HAIRLINE,
@@ -479,8 +494,12 @@ fn split_scenes() {
             let area = area_right - area_left;
             let at = |ratio: f32| area_left + ratio * (area - HAIRLINE) + HAIRLINE / 2.0;
             let acting = slot.clone();
+            // api's and claude's tabs' places (the left pane's and the top right one's).
+            let places: Rc<RefCell<Vec<gpui::Bounds<Pixels>>>> = Rc::default();
+            let seen = places.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
-                let tabs = cx.read(|cx| slotted(&acting).read(cx).tab_sessions().len());
+                let ws = slotted(&acting);
+                let tabs = cx.read(|cx| ws.read(cx).tab_sessions().len());
                 assert_eq!(tabs, 3, "{scene}-{slug}: a tab per pane");
                 let none = Modifiers::none();
                 let left = MouseButton::Left;
@@ -496,35 +515,47 @@ fn split_scenes() {
                     }
                     _ => {}
                 }
+                // Where the tabs are drawn now (a drag re-fits the panes on its next frame).
+                draw(cx, window);
+                let panes = shown_panes(cx, &ws);
+                *seen.borrow_mut() = panes[..2]
+                    .iter()
+                    .map(|&p| tab_bounds(cx, &ws, p, 0).expect("laid out"))
+                    .collect();
                 // Not kept past the window: a handle left over is reported as a leak.
                 acting.borrow_mut().take();
             };
             let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
             let shot = render_with(&theme, dims, build, act);
             let n = format!("{scene}-{slug}");
-            // Tab fills, away from the text: api (left), claude (top right), both their pane's
-            // active (and only) tab, 160 px into it (it is 200 wide; × sits at its end), in
-            // the bars that start inside the card's 1 pt edge, `CARD_INSET` + 1 down; the tabs
-            // `TAB_TOP_GAP` further.
+            // Tab fills, away from the text (in each tab's right padding): api (left), claude
+            // (top right), both their pane's shown (and only) tab, in the bars that start
+            // inside the card's 1 pt edge, `CARD_INSET` + 1 down; the tabs in their middle. The
+            // focused pane's has the accent wash, the other's the neutral one (claude's too,
+            // though it waits: a shown tab isn't tinted).
             let ratio = if scene == "splits-drag" { 0.4 } else { 0.5 };
-            let right_tab = at(ratio) + 160.0;
-            let (left_header, right_header) = ((400.0, 30.0), (right_tab, 30.0));
+            let bar_top = CARD_INSET + HAIRLINE;
+            let middle = bar_top + TAB_BAR / 2.0;
+            let after = 2.0 * crate::tab_bar::SEPARATOR_ROOM + crate::tab_bar::SEPARATOR.0;
             let is = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
                 p.iter()
                     .zip([c.r, c.g, c.b])
                     .all(|(a, b)| a.abs_diff(b) <= 3)
             };
             let px_at = |(x, y): (f32, f32)| pixel_at(&shot, dims, x, y);
-            assert!(is(px_at(left_header), ui.card), "{n}: active tab");
-            assert!(
-                is(px_at(right_header), ui.card),
-                "{n}: active waiting tab, the card's colour too"
-            );
-            // No line along the top of either tab (1 pt into the tabs).
-            let tab_top = CARD_INSET + HAIRLINE + TAB_TOP_GAP;
-            for (which, x) in [("left", 400.0), ("right", right_tab)] {
-                let p = px_at((x, tab_top + 1.0));
-                assert!(is(p, ui.card), "{n}: no line on the {which} tab: {p:?}");
+            for (i, place) in places.borrow().iter().enumerate() {
+                let which = ["api", "claude"][i];
+                let x = f32::from(place.right()) - after - crate::tab_bar::TAB_PAD / 2.0;
+                let want = if i == focus {
+                    ui.tab_active
+                } else {
+                    ui.card_hover
+                };
+                let p = px_at((x, middle));
+                assert!(is(p, want), "{n}: {which}'s tab {p:?}, want {want:?}");
+                // No fill above it: the bar is the card.
+                let p = px_at((f32::from(place.center().x), bar_top + 3.0));
+                assert!(is(p, ui.card), "{n}: the bar above {which}: {p:?}");
             }
             // The vertical line, a 1 px `card_border` hairline with no canvas beside it; the
             // 2 px quiet line over it only when hovered or dragged. Measured across at
@@ -646,32 +677,46 @@ fn workspace_scenes() {
     }
 }
 
-/// A bar's buttons (`tab_bar`): each 20 pt, 2 pt apart, 4 pt in from the ends; three of them
-/// (M11i: +, ⋯, the right sidebar's).
-const BAR_BUTTONS: f32 = 4.0 + 3.0 * 20.0 + 2.0 * 2.0 + 4.0;
+/// A bar's buttons (`tab_bar`, M11al §4.6): three of them (M11i: +, ⋯, the right sidebar's),
+/// `BUTTON_GAP` apart, `BUTTONS_PAD` in from the ends.
+const BAR_BUTTONS: f32 = 2.0 * crate::tab_bar::BUTTONS_PAD
+    + 3.0 * crate::tab_bar::BUTTON
+    + 2.0 * crate::tab_bar::BUTTON_GAP;
 
-/// The same for ⋯ (past the right sidebar's) and for the right sidebar's button, the last.
-const MORE_FROM_EDGE: f32 = 4.0 + 20.0 + 2.0 + 10.0;
+/// How far left of its pane's right edge ⋯'s centre is: past the right sidebar's button and a
+/// gap, then half a button.
+const MORE_FROM_EDGE: f32 = crate::tab_bar::BUTTONS_PAD
+    + crate::tab_bar::BUTTON
+    + crate::tab_bar::BUTTON_GAP
+    + crate::tab_bar::BUTTON / 2.0;
 
-/// A bar's buttons sit in its middle: 5 pt from its top (30 pt bar, 20 pt buttons).
-const BUTTON_TOP: f32 = (ui_tokens::size::TAB_BAR - 20.0) / 2.0;
+/// A bar's buttons sit in its middle.
+const BUTTON_TOP: f32 = (ui_tokens::size::TAB_BAR - crate::tab_bar::BUTTON) / 2.0;
 
-/// The left pane's bar in the 1280 pt two-pane scenes (M11al): half the inside of the one card
-/// (from the sidebar's edge to `CARD_INSET` short of the window's right, less its 1 pt edge on
-/// either side), less half the 1 pt hairline between the panes.
-const LEFT_BAR_WIDTH: f32 = (1280.0
+/// What a tab's place in a bar holds after the tab: the separator and its room (M11al §4.2).
+const AFTER: f32 = 2.0 * crate::tab_bar::SEPARATOR_ROOM + crate::tab_bar::SEPARATOR.0;
+
+/// The two-pane tab bar and tab drag scenes' window width: wide enough (M11al: 100 pt tabs,
+/// 28 pt buttons) that the left pane's four tabs fit unscrolled.
+const TAB_BARS_WIDTH: f32 = 1440.0;
+
+/// The left pane's bar in the two-pane scenes (M11al): half the inside of the one card (from
+/// the sidebar's edge to `CARD_INSET` short of the window's right, less its 1 pt edge on either
+/// side), less half the 1 pt hairline between the panes.
+const LEFT_BAR_WIDTH: f32 = (TAB_BARS_WIDTH
     - ui_tokens::size::SIDEBAR_DEFAULT_WIDTH
     - ui_tokens::size::CARD_INSET
     - 2.0 * ui_tokens::size::HAIRLINE
     - ui_tokens::size::HAIRLINE)
     / 2.0;
 
-/// Pane tab bars (M11b Task 3; M11i's cleaner bar), from real workspaces in both themes:
-/// - `tab-bars`: two panes; the left (focused) one with api (active: the card's colour, merging
-///   into the terminal below it, no line on top), claude (waiting, tinted), codex (working) and
-///   a browser tab ("New tab", globe); the right one with tests (done; active, the card's colour
-///   too). The 30 pt bars hold their tabs 4 pt under their top; the tabs shrink below 200 pt.
-/// - `tab-bars-hover`: the pointer over codex (`tab_hover`, × shown); `tab-bars-button`: over
+/// Pane tab bars (M11b Task 3; M11al's minimal tabs, §4), from real workspaces in both themes:
+/// - `tab-bars`: two panes; the left (focused) one with api (shown: the accent wash,
+///   `tab_active`), claude (waiting, tinted), codex (working, no fill) and a browser tab ("New
+///   tab", globe); the right one with tests (done; shown in an unfocused pane: `card_hover`).
+///   The `TAB_BAR` bars have no fill (the card) and a `card_border` line along their bottom;
+///   their tabs are `TAB` tall in the middle, shrunk below `TAB_MAX_WIDTH`.
+/// - `tab-bars-hover`: the pointer over codex (`card_hover`, × shown); `tab-bars-button`: over
 ///   the left bar's + (the first of its three buttons).
 /// - `tab-bars-more`: the left bar's ⋯ clicked: its menu (New Terminal Tab ⌘T, New Browser Tab,
 ///   Split Right ⌘D, Split Down ⇧⌘D) under it, right edges together, the ⋯ lit.
@@ -679,7 +724,7 @@ const LEFT_BAR_WIDTH: f32 = (1280.0
 ///   Tab…); `tab-bars-rename`: codex double-clicked (shown, its rename box open).
 /// - `tab-bars-single`: one pane, one tab (the bar still shows).
 /// - `tab-bars-narrow`: a narrow window, one pane of seven tabs, the last shown: the tabs stop at
-///   90 px and the row scrolls to the shown one.
+///   `TAB_MIN_WIDTH` and the row scrolls to the shown one.
 ///
 /// Panics unless the tabs have the geometry and fills above, the menus and rename box open
 /// where clicked; and (not shot) unless ⌃Tab / ⌃⇧Tab cycle the focused pane's tabs, a click
@@ -692,7 +737,13 @@ fn tab_bar_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let wide = size(px(1280.0), px(600.0));
+    let wide = size(px(TAB_BARS_WIDTH), px(600.0));
+    use crate::tab_bar::{BUTTON, BUTTON_GAP, CLOSE, TAB, TAB_MAX_WIDTH, TAB_MIN_WIDTH, TAB_PAD};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
+    // The bars' top, inside the card's 1 pt edge under the `CARD_INSET` strip; the tabs' top,
+    // `TAB` tall in the bar's middle.
+    let bar_top = CARD_INSET + HAIRLINE;
+    let tabs_top = bar_top + (TAB_BAR - TAB) / 2.0;
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -729,24 +780,18 @@ fn tab_bar_scenes() {
                 let tabs: Vec<_> = (0..4)
                     .map(|i| tab_bounds(cx, &ws, panes[0], i).expect("laid out"))
                     .collect();
-                // Four tabs in the left bar, equally shrunk, between the bounds; 4 pt under the
-                // 30 pt bar's top (inside the card's 1 pt edge, under the `CARD_INSET` strip),
-                // down to its bottom.
+                // Four tabs in the left bar, equally shrunk, between the bounds (each place holds
+                // its tab and the separator's room after it); `TAB` tall in the bar's middle.
                 for b in &tabs {
-                    let w = f32::from(b.size.width);
-                    assert!((90.0..200.0).contains(&w), "{n}: tab width {w}");
-                    let first = f32::from(tabs[0].size.width);
+                    let w = f32::from(b.size.width) - AFTER;
+                    assert!(
+                        (TAB_MIN_WIDTH..TAB_MAX_WIDTH).contains(&w),
+                        "{n}: tab width {w}"
+                    );
+                    let first = f32::from(tabs[0].size.width) - AFTER;
                     assert!((w - first).abs() <= 1.0, "{n}: equal widths ({w}, {first})");
-                    assert_eq!(
-                        f32::from(b.top()),
-                        CARD_INSET + 1.0 + 4.0,
-                        "{n}: tabs 4 pt down"
-                    );
-                    assert_eq!(
-                        f32::from(b.size.height),
-                        26.0,
-                        "{n}: to a 30 pt bar's bottom"
-                    );
+                    assert_eq!(f32::from(b.top()), tabs_top, "{n}: in the bar's middle");
+                    assert_eq!(f32::from(b.size.height), TAB, "{n}: `TAB` tall");
                 }
                 assert_eq!(
                     cx.read(|cx| ws.read(cx).tab_sessions().len()),
@@ -776,10 +821,9 @@ fn tab_bar_scenes() {
                             let ws = ws.read(cx);
                             ws.pane_actions.as_ref().map(|m| (m.pane, m.at))
                         });
-                        let bar_top = tabs[0].top() - px(4.0);
                         let corner = point(
-                            right - px(MORE_FROM_EDGE - 10.0),
-                            bar_top + px(BUTTON_TOP + 20.0),
+                            right - px(MORE_FROM_EDGE - BUTTON / 2.0),
+                            px(bar_top + BUTTON_TOP + BUTTON),
                         );
                         assert_eq!(menu, Some((panes[0], corner)), "{n}: under the left ⋯");
                     }
@@ -836,97 +880,94 @@ fn tab_bar_scenes() {
             let px_at = |x: f32, y: f32| pixel_at(&shot, wide, x, y);
             let tabs = geometry.borrow().clone();
             let (api, claude, codex) = (tabs[0], tabs[1], tabs[2]);
-            let (top, bottom) = (f32::from(api.top()), f32::from(api.bottom()));
-            let (bar_top, bar_right) = (
-                top - 4.0,
-                f32::from(api.left()) - crate::ui_tokens::size::TABS_LEFT + LEFT_BAR_WIDTH,
-            );
-            // Away from the text, the icon and the ×: near each tab's right end, low in the bar.
-            let fill_at = |b: gpui::Bounds<Pixels>| (f32::from(b.right()) - 26.0, bottom - 6.0);
+            let middle = f32::from(api.center().y);
+            let bar_right =
+                f32::from(api.left()) - crate::ui_tokens::size::TABS_LEFT + LEFT_BAR_WIDTH;
+            // A tab's right end (its place less the separator's room).
+            let right_of = |b: gpui::Bounds<Pixels>| f32::from(b.right()) - AFTER;
+            // Away from the text, the tile, the dot and the ×: in each tab's right padding.
+            let fill_at = |b: gpui::Bounds<Pixels>| (right_of(b) - TAB_PAD / 2.0, middle);
             // Whether something is drawn in tab `b`'s × box (on a tab filled `fill`).
             let close_drawn = |b: gpui::Bounds<Pixels>, fill| {
-                let (right, mid) = (f32::from(b.right()), f32::from(b.center().y));
-                (6..=18).any(|dx| {
-                    (-4..=4).any(|dy| gap(px_at(right - dx as f32, mid + dy as f32), fill) > 30)
+                let right = right_of(b) - TAB_PAD;
+                (2..=(CLOSE as i32 - 2)).any(|dx| {
+                    (-4..=4).any(|dy| gap(px_at(right - dx as f32, middle + dy as f32), fill) > 30)
                 })
             };
             // The corner of a bar button whose centre is `from_edge` left of the bar's right.
-            let button_corner =
-                |from_edge: f32| px_at(bar_right - from_edge - 8.0, bar_top + BUTTON_TOP + 2.0);
+            let button_corner = |from_edge: f32| {
+                px_at(
+                    bar_right - from_edge - BUTTON / 2.0 + 2.0,
+                    bar_top + BUTTON_TOP + 2.0,
+                )
+            };
             match scene {
                 "tab-bars" => {
-                    // api: the card's colour, with no line on top, merging into the terminal
-                    // under it: 1 pt above the bar's bottom is the terminal's background.
+                    // api, the focused pane's shown tab: the accent wash, standing off the bar.
                     let (x, y) = fill_at(api);
-                    assert!(is(px_at(x, y), ui.card), "{n}: api is the card's colour");
-                    let merged = px_at(x, bottom - 1.0);
-                    assert!(is(merged, theme.background), "{n}: api merges: {merged:?}");
-                    let line = px_at(x, top + 1.0);
-                    assert!(is(line, ui.card), "{n}: no line on api: {line:?}");
-                    // Above the tabs, the bar.
+                    let shown = px_at(x, y);
+                    assert!(
+                        is(shown, ui.tab_active),
+                        "{n}: api is `tab_active`: {shown:?}"
+                    );
+                    assert!(!is(shown, ui.card), "{n}: api stands off the bar");
+                    // The bar: no fill above the tabs (the card), its `card_border` line along
+                    // its bottom, the terminal right under it.
                     let above = px_at(x, bar_top + 2.0);
-                    assert!(is(above, ui.tab_bar), "{n}: the bar above api: {above:?}");
-                    // The empty strip stands apart from the active tab's card colour.
-                    let rgb = |p: [u8; 3]| alacritty_terminal::vte::ansi::Rgb {
-                        r: p[0],
-                        g: p[1],
-                        b: p[2],
-                    };
-                    let apart = contrast(rgb(above), rgb(px_at(x, y)));
-                    // (Light themes, and dark ones whose card is near black, reach less than the
-                    // minimum: see `Theme::ui`.)
-                    let floor = if theme.is_dark() && ui.tab_bar != rgb([0, 0, 0]) {
-                        ui_tokens::TAB_BAR_MIN
-                    } else {
-                        ui_tokens::TAB_BAR_LOW_MIN
-                    };
-                    assert!(apart >= floor - 0.01, "{n}: strip vs api tab {apart:.3}");
+                    assert!(is(above, ui.card), "{n}: the bar above api: {above:?}");
+                    let line = px_at(x, bar_top + TAB_BAR - 0.5);
+                    assert!(is(line, ui.card_border), "{n}: the bar's line: {line:?}");
+                    let under = px_at(x, bar_top + TAB_BAR + 1.5);
+                    assert!(is(under, theme.background), "{n}: the terminal: {under:?}");
                     let (x, y) = fill_at(claude);
                     assert!(is(px_at(x, y), ui.waiting_tint), "{n}: claude tinted");
                     // codex: no fill, no ×.
                     let (x, y) = fill_at(codex);
-                    assert!(is(px_at(x, y), ui.tab_bar), "{n}: codex on the bar");
-                    assert!(!close_drawn(codex, ui.tab_bar), "{n}: codex's × hidden");
-                    // The right pane's tests: active, the card's colour, merging too.
-                    let x = f32::from(api.left()) + 520.0 + 150.0;
-                    assert!(is(px_at(x, bottom - 6.0), ui.card), "{n}: tests");
+                    assert!(is(px_at(x, y), ui.card), "{n}: codex on the bar");
+                    assert!(!close_drawn(codex, ui.card), "{n}: codex's × hidden");
+                    // The right pane's tests: shown in the unfocused pane, the neutral wash
+                    // (M11al §3.3), in its right padding (one tab: `TAB_MAX_WIDTH` wide).
+                    let tests_left = f32::from(api.left()) + LEFT_BAR_WIDTH + HAIRLINE;
+                    let x = tests_left + TAB_MAX_WIDTH - TAB_PAD / 2.0;
+                    let p = px_at(x, middle);
+                    assert!(is(p, ui.card_hover), "{n}: tests is `card_hover`: {p:?}");
+                    let line = px_at(x, bar_top + TAB_BAR - 0.5);
                     assert!(
-                        is(px_at(x, bottom - 1.0), theme.background),
-                        "{n}: tests merge"
+                        is(line, ui.card_border),
+                        "{n}: the right bar's line: {line:?}"
                     );
-                    assert!(is(px_at(x, top + 1.0), ui.card), "{n}: no line on tests");
                 }
                 "tab-bars-hover" => {
                     let (x, y) = fill_at(codex);
                     let p = px_at(x, y);
-                    assert!(is(p, ui.tab_hover), "{n}: codex hovered: {p:?}");
-                    assert!(close_drawn(codex, ui.tab_hover), "{n}: codex's × shown");
+                    assert!(is(p, ui.card_hover), "{n}: codex hovered: {p:?}");
+                    assert!(close_drawn(codex, ui.card_hover), "{n}: codex's × shown");
                 }
                 "tab-bars-button" => {
                     let (plus, more) =
                         (button_corner(PLUS_FROM_EDGE), button_corner(MORE_FROM_EDGE));
-                    assert!(is(plus, ui.tab_hover), "{n}: + hovered: {plus:?}");
-                    assert!(is(more, ui.tab_bar), "{n}: ⋯ not: {more:?}");
+                    assert!(is(plus, ui.card_hover), "{n}: + hovered: {plus:?}");
+                    assert!(is(more, ui.card), "{n}: ⋯ not: {more:?}");
                 }
                 "tab-bars-more" => {
-                    // ⋯ lit: its fill stands off the bar in the 2 pt gap beside it (both under
-                    // the menu's shadow, so compared with each other, not the tokens).
+                    // ⋯ lit: its fill stands off the bar in the gap beside it (both under the
+                    // menu's shadow, so compared with each other, not the tokens).
                     let more = button_corner(MORE_FROM_EDGE);
                     let beside = px_at(
-                        bar_right - MORE_FROM_EDGE - 11.0,
+                        bar_right - MORE_FROM_EDGE - BUTTON / 2.0 - BUTTON_GAP / 2.0,
                         bar_top + BUTTON_TOP + 2.0,
                     );
                     let rgb = |[r, g, b]: [u8; 3]| alacritty_terminal::vte::ansi::Rgb { r, g, b };
-                    let h = ui.tab_hover;
-                    let lit = gap([h.r, h.g, h.b], ui.tab_bar);
+                    let h = ui.card_hover;
+                    let lit = gap([h.r, h.g, h.b], ui.card);
                     assert!(
                         gap(more, rgb(beside)) * 2 >= lit,
                         "{n}: ⋯ lit: {more:?} beside {beside:?}"
                     );
                     // The menu's top right at the ⋯'s bottom right.
                     let (mx, my) = (
-                        bar_right - MORE_FROM_EDGE + 10.0,
-                        bar_top + BUTTON_TOP + 20.0,
+                        bar_right - MORE_FROM_EDGE + BUTTON / 2.0,
+                        bar_top + BUTTON_TOP + BUTTON,
                     );
                     let inside = px_at(mx - 2.5, my + 30.0);
                     assert!(is(inside, ui.panel), "{n}: the menu under ⋯: {inside:?}");
@@ -989,15 +1030,17 @@ fn tab_bar_scenes() {
                     let scrolls = ws.read(cx).tab_scroll.borrow();
                     f32::from(scrolls[&panes[0]].0.offset().x)
                 });
+                let width = f32::from(first.size.width) - AFTER;
                 if many == 1 {
-                    assert_eq!(f32::from(first.size.width), 200.0, "{n}: widest");
+                    assert_eq!(width, TAB_MAX_WIDTH, "{n}: widest");
                     assert_eq!(offset, 0.0, "{n}: no scroll");
                 } else {
-                    assert_eq!(f32::from(first.size.width), 90.0, "{n}: narrowest");
+                    assert_eq!(width, TAB_MIN_WIDTH, "{n}: narrowest");
                     assert!(offset < 0.0, "{n}: scrolled to the last tab");
                     let last = tab_bounds(cx, &ws, panes[0], many - 1).expect("laid out");
                     assert!(
-                        f32::from(last.right()) <= 720.0 - CARD_INSET - 1.0 - BAR_BUTTONS + 1.0,
+                        f32::from(last.right()) - AFTER
+                            <= 720.0 - CARD_INSET - 1.0 - BAR_BUTTONS + 1.0,
                         "{n}: last in view"
                     );
                 }
@@ -1061,7 +1104,10 @@ fn tab_bar_scenes() {
             };
             // The browser tab's ×: on hover at its right end.
             let browser = tab_bounds(cx, &ws, panes[0], 3).expect("laid out");
-            let close = point(browser.right() - px(4.0 + 8.0), browser.center().y);
+            let close = point(
+                browser.right() - px(AFTER + TAB_PAD + CLOSE / 2.0),
+                browser.center().y,
+            );
             cx.simulate_mouse_move(window, close, None, none);
             cx.simulate_click(window, close, none);
             assert_eq!(count(cx), 3, "{n}: × closed the browser tab");
@@ -1172,7 +1218,7 @@ fn tab_drag_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let wide = size(px(1280.0), px(600.0));
+    let wide = size(px(TAB_BARS_WIDTH), px(600.0));
     let none = Modifiers::none();
     let left = MouseButton::Left;
     // Press on `from`, move past GPUI's drag threshold, then to `to` (still held).
@@ -1290,8 +1336,8 @@ fn tab_drag_scenes() {
             let px_at = |x: f32, y: f32| pixel_at(&shot, wide, x, y);
             let g = geometry.borrow().clone();
             let tabs = &g.tabs;
-            // The tabs' top: 4 pt into the bars, inside the cards' 1 pt edges, under the 6 pt
-            // strip (M11i).
+            // The tabs' top (`TAB` tall in the bars' middle, M11al): the probes 3 pt under it,
+            // above the tiles and the words.
             let top = f32::from(tabs[0].top());
             let width = f32::from(tabs[0].size.width);
             let (chip_x, chip_y) = (f32::from(g.chip.x), f32::from(g.chip.y));
@@ -1300,16 +1346,17 @@ fn tab_drag_scenes() {
                 for x in (f32::from(tabs[0].left()) as i32..f32::from(tabs[3].right()) as i32)
                     .map(|x| x as f32 + 0.5)
                 {
-                    assert!(!is(px_at(x, top + 13.0), ui.accent), "{n}: no line at {x}");
+                    assert!(!is(px_at(x, top + 3.0), ui.accent), "{n}: no line at {x}");
                 }
             };
-            // A place in the left bar with nothing drawn in it (a tab gone from there).
+            // A place in the left bar with nothing drawn in it (a tab gone from there): the
+            // bar, which has no fill (the card, M11al).
             let empty = |tab: gpui::Bounds<Pixels>, what: &str| {
                 let left = f32::from(tab.left());
                 for dx in [6.0, 20.0, 40.0, 60.0, 80.0] {
-                    for y in [top + 7.0, top + 13.0, top + 19.0] {
+                    for y in [top + 7.0, top + 17.0, top + 27.0] {
                         let p = px_at(left + dx, y);
-                        assert!(is(p, ui.tab_bar), "{n}: {what} empty at +{dx},{y}: {p:?}");
+                        assert!(is(p, ui.card), "{n}: {what} empty at +{dx},{y}: {p:?}");
                     }
                 }
             };
@@ -1321,19 +1368,20 @@ fn tab_drag_scenes() {
                         is(claude, ui.waiting_tint),
                         "{n}: claude slid left: {claude:?}"
                     );
+                    // (Its right end: the chip covers the rest.)
                     let gap = px_at(f32::from(tabs[1].right()) - 4.0, top + 3.0);
-                    assert!(is(gap, ui.tab_bar), "{n}: the gap: {gap:?}");
+                    assert!(is(gap, ui.card), "{n}: the gap: {gap:?}");
                     // The chip is where api was taken: its left edge at the pointer less the
-                    // grab, level with the bar (not under it).
-                    assert_eq!(chip_y, top, "{n}: the chip's top is the bar's");
-                    let inside = px_at(chip_x + 3.0, top + 3.0);
+                    // grab, level with the tabs (not under them).
+                    assert_eq!(chip_y, top, "{n}: the chip's top is the tabs'");
+                    let inside = px_at(chip_x + 3.0, top + 10.0);
                     assert!(
                         is(inside, ui.panel),
                         "{n}: the chip's left edge: {inside:?}"
                     );
-                    let outside = px_at(chip_x - 3.0, top + 3.0);
+                    let outside = px_at(chip_x - 3.0, top + 10.0);
                     assert!(!is(outside, ui.panel), "{n}: left of the chip: {outside:?}");
-                    let low = px_at(chip_x + 10.0, top + 23.0);
+                    let low = px_at(chip_x + 6.0, top + 23.0);
                     assert!(is(low, ui.panel), "{n}: the chip down the bar: {low:?}");
                     assert!(
                         (chip_x - (f32::from(tabs[1].left()) - 10.0)).abs() <= 1.0,
@@ -1349,13 +1397,13 @@ fn tab_drag_scenes() {
                         "{n}: claude slid left: {claude:?}"
                     );
                     empty(tabs[3], "the left bar's last place");
-                    // The right bar: tests (the card's colour, as its pane's shown tab) slid
-                    // right by api's width; the gap's end shows the bar.
+                    // The right bar: tests (shown in the unfocused pane: `card_hover`, M11al) slid
+                    // right by api's place; the gap's end shows the bar (the card).
                     let left = f32::from(g.right.left());
                     let tests = px_at(left + width + 6.0, top + 3.0);
-                    assert!(is(tests, ui.card), "{n}: tests slid right: {tests:?}");
+                    assert!(is(tests, ui.card_hover), "{n}: tests slid right: {tests:?}");
                     let gap = px_at(left + width - 6.0, top + 3.0);
-                    assert!(is(gap, ui.tab_bar), "{n}: the gap: {gap:?}");
+                    assert!(is(gap, ui.card), "{n}: the gap: {gap:?}");
                     no_line();
                 }
                 _ => {
@@ -2031,5 +2079,397 @@ fn browser_tab_scenes() {
         };
         render_with(&theme, dims, build, act);
         println!("ui-shots: browser-tab-act-{slug} ok");
+    }
+}
+
+/// The minimal tabs (M11al §4, style E), from real workspaces in both themes:
+/// - `tabs-minimal`: one pane of seven tabs: api (idle, shown), claude (waiting), codex
+///   (working), tests (done), a Claude agent tab (idle), a browser tab and notes.md (a preview).
+/// - `tabs-minimal-hover`: the pointer over codex.
+/// - `tabs-minimal-overflow`: a split in a narrow window, the right pane with twelve tabs.
+///
+/// Panics unless the bar has no fill (the card shows above the tabs and beside the buttons) and
+/// a `card_border` line along its bottom; the tabs are `TAB` tall in its middle; every tab has
+/// its `card_lift` tile with its glyph in its kind's colour (an agent's in its provider's, a
+/// terminal's and a browser's in the accent, a file's in `text_dim`); the status dot follows the
+/// title (the working arc, the waiting dot, Done's muted ✓ in `text_dim`, nothing when idle); a
+/// `card_border` separator stands between every two tabs; the shown tab has the `tab_active`
+/// wash, the others none (a waiting one its tint), the shown one's title in `text` and the
+/// others' in `text_faint`; notes.md is a preview; a hovered tab is `card_hover` with its ×;
+/// and, overflowing, each tab keeps at least `TAB_MIN_WIDTH`, the row scrolls, and ＋ ⋯ ▥
+/// stay inside each pane, drawn.
+fn tabs_minimal_scenes() {
+    use crate::layout_model::{FileMode, TabKind};
+    use crate::tab_bar::{
+        BUTTON, BUTTON_GAP, BUTTON_ICON, BUTTONS_PAD, CLOSE, PART_GAP, SEPARATOR, SEPARATOR_ROOM,
+        STATUS_DOT, TAB, TAB_MIN_WIDTH, TAB_PAD, TILE,
+    };
+    use crate::ui_tokens::size::{CARD_INSET, HAIRLINE, SIDEBAR_DEFAULT_WIDTH, TAB_BAR};
+    use crate::ui_tokens::{MARK_MIN, TEXT_MIN};
+    use gpui::Modifiers;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // A tab's place in the row: the tab, then the room for the separator after it.
+    let after = 2.0 * SEPARATOR_ROOM + SEPARATOR.0;
+    let buttons = 2.0 * BUTTONS_PAD + 3.0 * BUTTON + 2.0 * BUTTON_GAP;
+    let bar_top = CARD_INSET + HAIRLINE;
+    let cy = bar_top + TAB_BAR / 2.0;
+    let dir =
+        std::env::temp_dir().join(format!("fuxx-ui-shots-tabs-minimal-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("the scene's folder");
+    let notes = dir.join("notes.md");
+    std::fs::write(&notes, "# Notes\n\n- one\n- two\n").expect("notes.md");
+    let rgb = |v: u32| alacritty_terminal::vte::ansi::Rgb {
+        r: (v >> 16) as u8,
+        g: (v >> 8) as u8,
+        b: v as u8,
+    };
+    let claude_rgb = crate::workspace_agent::provider_look("claude").2;
+
+    let wide = size(px(1280.0), px(600.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for scene in ["tabs-minimal", "tabs-minimal-hover"] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let notes = notes.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = Workspace::for_shots(window, cx);
+                    ws.sidebar.hint_dismissed = true;
+                    let project = std::path::Path::new(API);
+                    let tabs = [
+                        shot("api", API, Status::Idle, 0, SHELL_TEXT),
+                        shot("claude", API, Status::Waiting, 4 * 60 + 12, CLAUDE_PROMPT),
+                        shot("codex", API, Status::Working, 32, AGENT_TEXT),
+                        shot("tests", API, Status::Done, 720, ""),
+                    ];
+                    ws.open_shot_session("api", project, SHELL_TEXT, None, window, cx);
+                    for s in &tabs[1..] {
+                        ws.open_shot_tab(s.name, project, s.text, window, cx);
+                    }
+                    for s in &tabs {
+                        let i = ws.sessions.position(|x| x.label() == s.name).expect("open");
+                        ws.set_status(i, s.status, false, cx);
+                        let session = ws.sessions.get_mut(i).expect("open");
+                        session.pop = None;
+                    }
+                    let pane = ws.model.focused_pane().expect("a pane");
+                    ws.new_agent_tab(pane, "claude", window, cx);
+                    ws.model.add_tab(pane, TabKind::Browser { url: None });
+                    ws.sync();
+                    ws.preview_file_tab(notes.clone(), FileMode::Plain, window, cx);
+                    let api = ws.sessions.position(|x| x.label() == "api").expect("api");
+                    ws.select(api, window, cx);
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let places: Rc<RefCell<Vec<gpui::Bounds<Pixels>>>> = Rc::default();
+            let seen = places.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                settle(cx, window);
+                let ws = slotted(&slot);
+                let n = format!("{scene}-{slug}");
+                let panes = shown_panes(cx, &ws);
+                assert_eq!(panes.len(), 1, "{n}: one pane");
+                let tabs: Vec<_> = (0..7)
+                    .map(|i| tab_bounds(cx, &ws, panes[0], i).expect("laid out"))
+                    .collect();
+                let preview = cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let p = ws.model.pane(panes[0]).expect("the pane");
+                    p.tabs
+                        .iter()
+                        .map(|t| ws.model.is_preview(t.id))
+                        .collect::<Vec<_>>()
+                });
+                assert_eq!(
+                    preview,
+                    [false, false, false, false, false, false, true],
+                    "{n}"
+                );
+                if scene == "tabs-minimal-hover" {
+                    cx.simulate_mouse_move(window, tabs[2].center(), None, Modifiers::none());
+                }
+                *seen.borrow_mut() = tabs;
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, wide, build, act);
+            let path = save_shot(scene, slug, &shot);
+            let n = format!("{scene}-{slug}");
+            let at = |x: f32, y: f32| pixel_at(&shot, wide, x, y);
+            let scale = shot.width as f32 / 1280.0;
+            // The pixels in the box (`x0`..`x1`, `y0`..`y1` points).
+            let in_box = |x0: f32, x1: f32, y0: f32, y1: f32| {
+                let mut all = Vec::new();
+                for dy in (y0 * scale) as usize..(y1 * scale) as usize {
+                    for dx in (x0 * scale) as usize..(x1 * scale) as usize {
+                        all.push(at(dx as f32 / scale, dy as f32 / scale));
+                    }
+                }
+                all
+            };
+            let nearest = |all: &[[u8; 3]], c| all.iter().map(|&p| gap(p, c)).min().unwrap_or(255);
+            let tabs = places.borrow().clone();
+            let pane_right = 1280.0 - CARD_INSET - HAIRLINE;
+            // The bar: no fill above the tabs and beside the buttons, and its bottom line.
+            let beside = pane_right - buttons + BUTTONS_PAD / 2.0;
+            for (what, x, y) in [
+                ("above api", f32::from(tabs[0].center().x), bar_top + 3.0),
+                ("above codex", f32::from(tabs[2].center().x), bar_top + 3.0),
+                ("beside the buttons", beside, cy),
+            ] {
+                let p = at(x, y);
+                assert!(near(p, ui.card), "{n}: the card {what}: {p:?}");
+            }
+            for x in [beside, f32::from(tabs[2].center().x)] {
+                let line = at(x, bar_top + TAB_BAR - 0.5);
+                assert!(
+                    near(line, ui.card_border),
+                    "{n}: the bar's line at {x}: {line:?}"
+                );
+                let under = at(x, bar_top + TAB_BAR + 1.5);
+                assert!(
+                    near(under, theme.background),
+                    "{n}: the terminal under it: {under:?}"
+                );
+            }
+            let (kinds, statuses) = (
+                [
+                    "api", "claude", "codex", "tests", "agent", "browser", "file",
+                ],
+                [
+                    None,
+                    Some(ui.ring_waiting),
+                    Some(ui.ring_working),
+                    Some(ui.text_dim),
+                    None,
+                    None,
+                    None,
+                ],
+            );
+            let fills = [
+                Some(ui.tab_active),
+                Some(ui.waiting_tint),
+                Some(if scene == "tabs-minimal-hover" {
+                    ui.card_hover
+                } else {
+                    ui.card
+                }),
+                Some(ui.card),
+                Some(ui.card),
+                Some(ui.card),
+                Some(ui.card),
+            ];
+            let glyphs = [
+                ui.accent,
+                ui.accent,
+                ui.accent,
+                ui.accent,
+                crate::theme::readable(rgb(claude_rgb), &[ui.card_lift], MARK_MIN),
+                ui.accent,
+                ui.text_dim,
+            ];
+            for (i, place) in tabs.iter().enumerate() {
+                let what = format!("{n}: {}", kinds[i]);
+                let (left, right) = (f32::from(place.left()), f32::from(place.right()) - after);
+                // `TAB` tall, in the bar's middle; at least the narrowest.
+                assert_eq!(
+                    f32::from(place.top()),
+                    bar_top + (TAB_BAR - TAB) / 2.0,
+                    "{what}"
+                );
+                assert_eq!(f32::from(place.size.height), TAB, "{what}");
+                assert!(
+                    right - left >= TAB_MIN_WIDTH - 0.5,
+                    "{what}: {}",
+                    right - left
+                );
+                // Its fill, away from its parts: in its right padding.
+                let fill = fills[i].expect("a fill");
+                let p = at(right - TAB_PAD / 2.0, cy);
+                assert!(near(p, fill), "{what}: its fill {p:?}, want {fill:?}");
+                // Its tile, and the glyph in it.
+                let tile = left + TAB_PAD;
+                let top_of_tile = at(tile + TILE / 2.0, cy - TILE / 2.0 + 1.5);
+                assert!(
+                    near(top_of_tile, ui.card_lift),
+                    "{what}: the tile {top_of_tile:?}"
+                );
+                let inside = in_box(tile + 3.0, tile + TILE - 3.0, cy - 6.0, cy + 6.0);
+                let ink = nearest(&inside, glyphs[i]);
+                assert!(
+                    ink <= 30,
+                    "{what}: the glyph's colour {:?} off by {ink}",
+                    glyphs[i]
+                );
+                if i == 6 {
+                    assert!(
+                        nearest(&inside, ui.accent) > 12,
+                        "{what}: no accent on a file"
+                    );
+                }
+                // The title: the shown tab's in `text`, the others' in `text_faint`.
+                let title = in_box(
+                    tile + TILE + PART_GAP,
+                    tile + TILE + PART_GAP + 24.0,
+                    cy - 6.0,
+                    cy + 6.0,
+                );
+                let words = if i == 0 { ui.text } else { ui.text_faint };
+                let off = nearest(&title, words);
+                assert!(off <= 24, "{what}: its title {words:?} off by {off}");
+                // The status dot after the title, before the ×'s room.
+                let close = right - TAB_PAD - CLOSE;
+                let dot = in_box(
+                    close - PART_GAP - STATUS_DOT - 1.0,
+                    close - PART_GAP + 1.0,
+                    cy - STATUS_DOT / 2.0 - 1.0,
+                    cy + STATUS_DOT / 2.0 + 1.0,
+                );
+                match statuses[i] {
+                    Some(mark) => {
+                        let off = nearest(&dot, mark);
+                        assert!(off <= 30, "{what}: its dot {mark:?} off by {off}");
+                        if i == 3 {
+                            let green = nearest(&dot, ui.ring_done);
+                            assert!(green > 30, "{what}: Done is muted, not {:?}", ui.ring_done);
+                        }
+                    }
+                    // Idle: no dot. (api's short title leaves the box empty; a longer idle
+                    // title runs on into it, so there only no status colour is checked.)
+                    None if i == 0 => {
+                        let off = dot.iter().map(|&p| gap(p, fill)).max().unwrap_or(0);
+                        assert!(off <= 3, "{what}: no dot, but {off} off its fill");
+                    }
+                    None => {
+                        for mark in [ui.ring_working, ui.ring_waiting] {
+                            let off = nearest(&dot, mark);
+                            assert!(off > 30, "{what}: no dot, but {mark:?} ({off} off)");
+                        }
+                    }
+                }
+                // × only on the hovered tab.
+                let x_box = in_box(close + 2.0, close + CLOSE - 2.0, cy - 5.0, cy + 5.0);
+                let drawn = x_box.iter().any(|&p| gap(p, fill) > 30);
+                let hovered = scene == "tabs-minimal-hover" && i == 2;
+                assert_eq!(drawn, hovered, "{what}: its ×");
+                // The separator after it: 1 × 16 `card_border`, `SEPARATOR_ROOM` clear; none
+                // after the last.
+                let sep = right + SEPARATOR_ROOM + SEPARATOR.0 / 2.0;
+                let p = at(sep, cy);
+                if i < 6 {
+                    assert!(
+                        near(p, ui.card_border),
+                        "{what}: the separator after it: {p:?}"
+                    );
+                    let clear = at(sep, cy - SEPARATOR.1 / 2.0 - 2.0);
+                    assert!(near(clear, ui.card), "{what}: 16 tall: {clear:?}");
+                    let room = at(right + SEPARATOR_ROOM / 2.0, cy);
+                    assert!(near(room, ui.card), "{what}: room before it: {room:?}");
+                } else {
+                    assert!(
+                        !near(p, ui.card_border),
+                        "{what}: no separator after the last"
+                    );
+                }
+            }
+            // The tile glyphs and dots read (their floors, as `drawn_pairs` checks).
+            assert!(
+                contrast(glyphs[4], ui.card_lift) >= MARK_MIN,
+                "{n}: the agent's glyph"
+            );
+            assert!(contrast(ui.text_faint, ui.waiting_tint) >= TEXT_MIN, "{n}");
+            println!("ui-shots: {}", path.display());
+        }
+
+        // Overflowing: twelve tabs in the right pane of a split, in a narrow window.
+        let narrow = size(px(960.0), px(480.0));
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                ws.sidebar.hint_dismissed = true;
+                let project = std::path::Path::new(API);
+                ws.open_shot_session("api", project, SHELL_TEXT, None, window, cx);
+                ws.open_shot_session("t1", project, SHELL_TEXT, Some(Axis::Row), window, cx);
+                for k in 2..=12 {
+                    ws.open_shot_tab(&format!("t{k}"), project, SHELL_TEXT, window, cx);
+                }
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let places: Rc<RefCell<Vec<gpui::Bounds<Pixels>>>> = Rc::default();
+        let seen = places.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            // A second frame: the first laid the tabs out, this one scrolls to the shown one.
+            cx.update_window(window, |_, window, _| window.refresh())
+                .expect("refresh");
+            cx.run_until_parked();
+            let ws = slotted(&slot);
+            let n = format!("tabs-minimal-overflow-{slug}");
+            let panes = shown_panes(cx, &ws);
+            assert_eq!(panes.len(), 2, "{n}: two panes");
+            let offset = cx.read(|cx| {
+                let scrolls = ws.read(cx).tab_scroll.borrow();
+                f32::from(scrolls[&panes[1]].0.offset().x)
+            });
+            assert!(offset < 0.0, "{n}: the row scrolled to the last tab");
+            let tabs: Vec<_> = (0..12)
+                .map(|i| tab_bounds(cx, &ws, panes[1], i).expect("laid out"))
+                .collect();
+            *seen.borrow_mut() = tabs;
+            slot.borrow_mut().take();
+        };
+        let shot = render_with(&theme, narrow, build, act);
+        let path = save_shot("tabs-minimal-overflow", slug, &shot);
+        let n = format!("tabs-minimal-overflow-{slug}");
+        let at = |x: f32, y: f32| pixel_at(&shot, narrow, x, y);
+        let scale = shot.width as f32 / 960.0;
+        let tabs = places.borrow().clone();
+        // The panes' right edges: the hairline between them halfway across the card's inside.
+        let (left, right) = (
+            SIDEBAR_DEFAULT_WIDTH + HAIRLINE,
+            960.0 - CARD_INSET - HAIRLINE,
+        );
+        let across = left + 0.5 * (right - left - HAIRLINE) + HAIRLINE / 2.0;
+        for place in &tabs {
+            let w = f32::from(place.size.width) - after;
+            assert!(w >= TAB_MIN_WIDTH - 0.5, "{n}: a tab {w} wide");
+        }
+        let last = f32::from(tabs[11].right()) - after;
+        assert!(
+            last <= right - buttons + 0.5,
+            "{n}: the shown tab {last} in view, left of the buttons"
+        );
+        for (pane, pane_right) in [("left", across - HAIRLINE / 2.0), ("right", right)] {
+            for k in 0..3 {
+                let centre =
+                    pane_right - BUTTONS_PAD - BUTTON / 2.0 - k as f32 * (BUTTON + BUTTON_GAP);
+                let half = BUTTON_ICON / 2.0;
+                let mut inked = false;
+                for dy in ((cy - half) * scale) as usize..((cy + half) * scale) as usize {
+                    for dx in ((centre - half) * scale) as usize..((centre + half) * scale) as usize
+                    {
+                        inked |= gap(at(dx as f32 / scale, dy as f32 / scale), ui.card) > 40;
+                    }
+                }
+                assert!(inked, "{n}: the {pane} pane's button {k} drawn at {centre}");
+                assert!(
+                    centre + BUTTON / 2.0 <= pane_right,
+                    "{n}: inside the {pane} pane"
+                );
+            }
+        }
+        println!("ui-shots: {}", path.display());
     }
 }

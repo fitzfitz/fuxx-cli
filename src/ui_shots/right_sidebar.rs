@@ -68,7 +68,12 @@ pub(super) const SCENES: &[Scene] = &[
     },
 ];
 
-const RIGHT_SIDEBAR_FROM_EDGE: f32 = 4.0 + 10.0;
+/// The right sidebar's button's centre, left of its pane's right edge: the buttons' room, then
+/// half a button (M11al §4.6).
+const RIGHT_SIDEBAR_FROM_EDGE: f32 = crate::tab_bar::BUTTONS_PAD + crate::tab_bar::BUTTON / 2.0;
+/// The middle of a pane tab bar at the card's top (inside its 1 pt edge).
+const BAR_MIDDLE: f32 =
+    CARD_INSET + crate::ui_tokens::size::HAIRLINE + crate::ui_tokens::size::TAB_BAR / 2.0;
 
 /// The right sidebar (M11g Task 4), over `tab_bar_workspace`'s two panes in a 1280 × 600
 /// window with the left sidebar shown (240 pt), in both themes:
@@ -242,21 +247,21 @@ fn right_sidebar_scenes() {
                 );
             }
             // Every pane's icon: lit (the hover fill beside the glyph, the glyph's filled side
-            // in the text colour) while open; else on the bar, dim.
+            // in the text colour) while open; else on the bar (the card: no fill, M11al), faint.
             for (i, right) in edges.borrow().iter().enumerate() {
                 let centre = right - RIGHT_SIDEBAR_FROM_EDGE;
                 assert!(*right > left, "{n}: pane {i}'s edge {right}");
-                // The bars run 7–37 (under the 6 pt strip and the cards' edges).
-                let (fill, glyph) = (at(centre - 8.0, 22.0), at(centre + 3.0, 22.0));
+                // Inside the button, left of its glyph; and in the glyph's filled right third.
+                let beside = centre - crate::tab_bar::BUTTON / 2.0 + 3.0;
+                let (fill, glyph) = (at(beside, BAR_MIDDLE), at(centre + 3.0, BAR_MIDDLE));
                 if width > 0.0 {
-                    assert!(near(fill, ui.tab_hover), "{n}: pane {i} lit: {fill:?}");
+                    assert!(near(fill, ui.card_hover), "{n}: pane {i} lit: {fill:?}");
                     assert!(near(glyph, ui.text), "{n}: pane {i} glyph: {glyph:?}");
                 } else {
-                    let bar = ui.tab_bar;
-                    assert!(near(fill, bar), "{n}: pane {i} unlit: {fill:?}");
+                    assert!(near(fill, ui.card), "{n}: pane {i} unlit: {fill:?}");
                     assert!(
-                        near(glyph, ui.text_dim),
-                        "{n}: pane {i} glyph dim: {glyph:?}"
+                        near(glyph, ui.text_faint),
+                        "{n}: pane {i} glyph faint: {glyph:?}"
                     );
                 }
             }
@@ -313,7 +318,7 @@ fn right_sidebar_scenes() {
                 let panes = shown_panes(cx, &ws);
                 let icon = point(
                     px(window_right - CARD_INSET - 1.0 - RIGHT_SIDEBAR_FROM_EDGE),
-                    px(22.0),
+                    px(BAR_MIDDLE),
                 );
                 cx.simulate_click(window, icon, none);
                 cx.read(|cx| {
@@ -475,7 +480,7 @@ fn files_scenes() {
     use crate::git_status::Mark;
     use crate::layout_model::{FileMode, TabKind};
     use crate::right_sidebar::{FILTER_BAND, HEADER, LIST_TOP, ROW, mark_color};
-    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR, TAB_TOP_GAP, TOP_BAND};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR, TOP_BAND};
     use gpui::{Focusable, Modifiers};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -590,21 +595,23 @@ fn files_scenes() {
             let shot = render_with(&theme, dims, build, act);
             let n = format!("{scene}-{slug}");
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
-            // The header row lines up with the pane's tab bar: same top (its tabs 4 pt under
-            // it, M11i), and its bottom edge where the bar ends.
-            let bar_top = tab_top.borrow().expect("the tab's top") - TAB_TOP_GAP;
+            // The header row lines up with the pane's tab bar: same top (its tabs in its
+            // middle, M11al), and its bottom edge where the bar ends.
+            let bar_top =
+                tab_top.borrow().expect("the tab's top") - (TAB_BAR - crate::tab_bar::TAB) / 2.0;
             assert!(
                 (bar_top - top).abs() < 0.5,
                 "{n}: the tab bar at {bar_top}, not {top}"
             );
-            // M11h: the strip holds the panel tabs on `tab_bar` (its empty part at the right),
-            // with no border under it: the panel's `side` right below (M11al §6.1).
+            // M11h: the strip holds the panel tabs; since M11al Task 5 it has no fill of its own
+            // (the panel's `side` shows in its empty part at the right) and the pane tab bars'
+            // `card_border` line along its bottom; the panel's `side` right below (§6.1, §6.2).
             let inside = at(sidebar_left + 250.0, top + TAB_BAR / 2.0);
-            assert!(near(inside, ui.tab_bar, 3), "{n}: the strip: {inside:?}");
+            assert!(near(inside, ui.side, 3), "{n}: the strip: {inside:?}");
             let edge = at(sidebar_left + 250.0, top + TAB_BAR - 0.5);
             assert!(
-                near(edge, ui.tab_bar, 3),
-                "{n}: no border under the strip: {edge:?}"
+                near(edge, ui.card_border, 3),
+                "{n}: the line under the strip: {edge:?}"
             );
             let below = at(sidebar_left + 250.0, top + TAB_BAR + 0.5);
             assert!(
@@ -1118,18 +1125,20 @@ pub(super) fn right_panel_workspace(
 
 /// The right sidebar's panel tabs (M11h Task 4) on the Files panel's fixture, in a 1100 × 560
 /// window, in both themes:
-/// - `right-panels`: Files shown: its tab filled with the panel's `side` (merging into it), the
-///   Changes tab unfilled on the strip's `tab_bar`, the hovered Activity tab `tab_hover`; the
-///   tabs 6 pt from the strip's left, 2 pt apart, 4 pt under its top and flush with its
-///   bottom, in Files · Changes · Activity order; no border under the strip; its empty part
-///   `tab_bar`. Then (not shot) the filter box focused and a click on Changes: Changes shown,
+/// - `right-panels`: Files shown: its tab filled `card_lift`, the Changes tab unfilled (the
+///   panel's `side` shows), the hovered Activity tab `side_hover` (M11al Task 5, the colours
+///   of §6.2's switch, until Task 9 replaces the tabs with it); the tabs `TABS_LEFT` from the
+///   strip's left, 2 pt apart, `TAB` tall in its middle, in Files · Changes · Activity order;
+///   the strip has no fill of its own and the pane tab bars' `card_border` line along its
+///   bottom. Then (not shot) the filter box focused and a click on Changes: Changes shown,
 ///   saved as `changes`, the terminal has the keyboard back (not the Files panel), and now the
 ///   Changes tab is the filled one.
 /// - `right-panels-narrow`: the sidebar at its narrowest (220 pt): the three tabs fit, the
 ///   Activity tab's right edge at least 6 pt inside the panel's.
 fn right_panel_scenes() {
     use crate::right_sidebar::{FILTER_BAND, HEADER, Panel};
-    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR, TAB_TOP_GAP};
+    use crate::tab_bar::TAB;
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR, TABS_LEFT};
     use gpui::{Bounds, Focusable, Modifiers};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -1140,6 +1149,8 @@ fn right_panel_scenes() {
     let card_right = right_panel_right(window_right);
     let card_top = CARD_INSET + HAIRLINE;
     let root = files_fixture();
+    // The panel tabs' top and middle: `TAB` tall in the strip's middle (M11al).
+    let (tab_top, tab_middle) = (card_top + (TAB_BAR - TAB) / 2.0, card_top + TAB_BAR / 2.0);
     type Tabs = Rc<Cell<[Option<Bounds<Pixels>>; 3]>>;
     let tabs_of = |cx: &mut VisualTestAppContext, ws: &gpui::Entity<Workspace>| {
         let all = cx.read(|cx| ws.read(cx).right_sidebar.panel_tab_bounds());
@@ -1158,9 +1169,9 @@ fn right_panel_scenes() {
                 .zip([c.r, c.g, c.b])
                 .all(|(a, b)| a.abs_diff(b) <= 3)
         };
-        assert_ne!(ui.tab_bar, ui.card, "{slug}: told apart");
-        assert_ne!(ui.tab_bar, ui.side, "{slug}: told apart");
-        assert_ne!(ui.tab_hover, ui.tab_bar, "{slug}: told apart");
+        assert_ne!(ui.card_lift, ui.side, "{slug}: told apart");
+        assert_ne!(ui.side_hover, ui.side, "{slug}: told apart");
+        assert_ne!(ui.side_hover, ui.card_lift, "{slug}: told apart");
 
         for scene in ["right-panels", "right-panels-narrow"] {
             let narrow = scene == "right-panels-narrow";
@@ -1191,14 +1202,14 @@ fn right_panel_scenes() {
                     );
                     let close = |a: f32, b: f32| (a - b).abs() < 0.5;
                     assert!(
-                        close(l(files), sidebar_left + 6.0),
-                        "{n}: Files 6 pt from the strip's left: {files:?}"
+                        close(l(files), sidebar_left + TABS_LEFT),
+                        "{n}: Files `TABS_LEFT` from the strip's left: {files:?}"
                     );
                     assert!(close(l(changes), r(files) + 2.0), "{n}: 2 pt apart");
                     assert!(close(l(activity), r(changes) + 2.0), "{n}: 2 pt apart");
                     for tab in [files, changes, activity] {
-                        assert!(close(t(tab), card_top + TAB_TOP_GAP), "{n}: 4 pt under");
-                        assert!(close(b(tab), card_top + TAB_BAR), "{n}: flush: {tab:?}");
+                        assert!(close(t(tab), tab_top), "{n}: in the middle: {tab:?}");
+                        assert!(close(b(tab), tab_top + TAB), "{n}: `TAB` tall: {tab:?}");
                     }
                     assert!(
                         r(activity) <= card_right - 6.0,
@@ -1207,7 +1218,7 @@ fn right_panel_scenes() {
                     );
                     seen.set([Some(files), Some(changes), Some(activity)]);
                     // The pointer on the Activity tab: its hover fill in the shot.
-                    let on = point(px(l(activity) + 4.0), px(card_top + TAB_BAR - 4.0));
+                    let on = point(px(l(activity) + 4.0), px(tab_middle));
                     cx.simulate_mouse_move(window, on, None, Modifiers::none());
                     frame(cx, window);
                     slot.borrow_mut().take();
@@ -1218,42 +1229,44 @@ fn right_panel_scenes() {
             let shot = render_with(&theme, dims, build, act);
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
             let [files, changes, activity] = seen.get().map(|b| b.expect("seen"));
-            // Inside each tab's left padding (no words there), low in it.
-            let pad = |b: Bounds<Pixels>| at(f32::from(b.left()) + 4.0, card_top + TAB_BAR - 6.0);
+            // Inside each tab's left padding (no words there), in its middle.
+            let pad = |b: Bounds<Pixels>| at(f32::from(b.left()) + 4.0, tab_middle);
             assert!(
-                near(pad(files), ui.side),
+                near(pad(files), ui.card_lift),
                 "{n}: Files is shown: {:?}",
                 pad(files)
             );
             assert!(
-                near(pad(changes), ui.tab_bar),
+                near(pad(changes), ui.side),
                 "{n}: Changes isn't: {:?}",
                 pad(changes)
             );
             assert!(
-                near(pad(activity), ui.tab_hover),
+                near(pad(activity), ui.side_hover),
                 "{n}: Activity hovered: {:?}",
                 pad(activity)
             );
-            // The strip: above the tabs and its empty part in `tab_bar`; no border under it
-            // (its last row `tab_bar` beside the tabs, the card right under it).
+            // The strip: above the tabs and its empty part the panel's `side` (no fill of its
+            // own); its last row the `card_border` line, beside the tabs and under them; the
+            // panel's `side` right under it.
             let empty = card_right - 10.0;
             let x_files = f32::from(files.left()) + 4.0;
             for (what, x, y) in [
                 ("above the tabs", x_files, card_top + 2.0),
-                ("its empty part", empty, card_top + TAB_BAR / 2.0),
-                ("its last row", empty, card_top + TAB_BAR - 0.5),
+                ("its empty part", empty, tab_middle),
             ] {
                 let p = at(x, y);
-                assert!(near(p, ui.tab_bar), "{n}: the strip {what}: {p:?}");
+                assert!(near(p, ui.side), "{n}: the strip {what}: {p:?}");
+            }
+            for (what, x) in [("beside the tabs", empty), ("under Files", x_files)] {
+                let p = at(x, card_top + TAB_BAR - 0.5);
+                assert!(near(p, ui.card_border), "{n}: the line {what}: {p:?}");
             }
             let p = at(empty, card_top + TAB_BAR + 0.5);
             assert!(
                 near(p, ui.side),
                 "{n}: the panel's `side` right under it: {p:?}"
             );
-            let p = at(x_files, card_top + TAB_BAR - 0.5);
-            assert!(near(p, ui.side), "{n}: Files merges into the panel: {p:?}");
         }
 
         // The filter box focused, a click on Changes (not shot).
@@ -1319,16 +1332,12 @@ fn right_panel_scenes() {
         };
         let shot = render_with(&theme, dims, build, act);
         let [files, changes, _] = seen.get().map(|b| b.expect("seen"));
-        let pad = |b: Bounds<Pixels>| {
-            pixel_at(
-                &shot,
-                dims,
-                f32::from(b.left()) + 4.0,
-                card_top + TAB_BAR - 6.0,
-            )
-        };
-        assert!(near(pad(changes), ui.side), "{n}: Changes is shown now");
-        assert!(near(pad(files), ui.tab_bar), "{n}: Files isn't");
+        let pad = |b: Bounds<Pixels>| pixel_at(&shot, dims, f32::from(b.left()) + 4.0, tab_middle);
+        assert!(
+            near(pad(changes), ui.card_lift),
+            "{n}: Changes is shown now"
+        );
+        assert!(near(pad(files), ui.side), "{n}: Files isn't");
         println!("ui-shots: {n} ok");
     }
 }

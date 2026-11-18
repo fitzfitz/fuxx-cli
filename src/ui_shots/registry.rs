@@ -128,6 +128,7 @@ pub(super) const ORDER: &[&str] = &[
     "card-slide",
     "workspaces",
     "tab-bars",
+    "tabs-minimal",
     "tab-drag",
     "browser-tab",
     "file-tab",

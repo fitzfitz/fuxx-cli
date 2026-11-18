@@ -15,17 +15,6 @@ pub const MARK_MIN: f32 = 3.0;
 /// `MARK_MIN`: the spec wants dividers "1 px and quiet", and a 3:1 hairline reads as heavy. Lines
 /// that carry meaning (the accent bar, a divider while hovered or dragged) use `MARK_MIN`.
 pub const QUIET_LINE_MIN: f32 = 1.4;
-/// The pane tab bar's empty strip against the card (the active tab's colour): enough that the
-/// two read as different surfaces. Stepped to from the canvas colour, within the floors.
-pub const TAB_BAR_MIN: f32 = 1.3;
-/// How far a light theme's tab bar may step from the canvas colour: further, and text, dim
-/// and faint text (all held to 4.5:1 on it) press together.
-pub const TAB_BAR_LIGHT_CAP: f32 = 1.15;
-/// What the strip still reaches against the card where `TAB_BAR_MIN` can't be had (a light
-/// theme at its cap, or a dark one whose bar is already black): checked by the unit test and
-/// the `tab-bars` ui-shot.
-#[cfg(any(test, feature = "ui-shots"))]
-pub const TAB_BAR_LOW_MIN: f32 = 1.15;
 
 /// Sizes in pixels, from the M11 plan's Global Constraints.
 pub mod size {
@@ -41,8 +30,9 @@ pub mod size {
     /// (2026-11-10, your call).
     pub const SIDEBAR_ROW_THREE: f32 = 68.0;
     pub const GROUP_HEADER: f32 = 28.0;
-    /// A pane's tab bar (M11b; it replaced M11's 22 px pane header; 30 since M11i).
-    pub const TAB_BAR: f32 = 30.0;
+    /// A pane's tab bar (M11b; it replaced M11's 22 px pane header; 30 since M11i; 52 since
+    /// M11al, level with the right panel's header).
+    pub const TAB_BAR: f32 = 52.0;
     /// The band at the top of the window that the traffic lights sit in (the drag area).
     pub const TOP_BAND: f32 = 38.0;
     /// Where the traffic lights go: (x, y) from the window's top left.
@@ -62,11 +52,10 @@ pub mod size {
     pub const HAIRLINE: f32 = 1.0;
     /// The status bar along the window's bottom edge (M11i).
     pub const STATUS_BAR: f32 = 26.0;
-    /// How far below the tab bar's top its tabs start (M11i).
-    pub const TAB_TOP_GAP: f32 = 4.0;
     /// How far in from its card's left edge the first tab starts, in a pane's tab bar and in
-    /// the right sidebar's panel tabs alike (2026-11-10, your call: the pane's had none).
-    pub const TABS_LEFT: f32 = 6.0;
+    /// the right sidebar's panel tabs alike (2026-11-10, your call: the pane's had none; 12
+    /// since M11al).
+    pub const TABS_LEFT: f32 = 12.0;
     pub const SIDEBAR_MIN_WIDTH: f32 = 180.0;
     pub const SIDEBAR_MAX_WIDTH: f32 = 400.0;
     pub const SIDEBAR_DEFAULT_WIDTH: f32 = 240.0;

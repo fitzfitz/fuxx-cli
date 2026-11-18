@@ -289,7 +289,7 @@ impl Render for TokenBoard {
             ("divider", ui.divider),
             ("panel_border", ui.panel_border),
             ("selection", ui.selection),
-            // M11i: cards, the quiet selection, the tab bar and the Files tree's guides.
+            // M11i: cards, the quiet selection and the Files tree's guides; M11al's shown tab.
             ("card", ui.card),
             ("card_border", ui.card_border),
             // The card's shadow, shown as it falls on the canvas.
@@ -300,8 +300,7 @@ impl Render for TokenBoard {
             ("row_selected", ui.row_selected),
             ("card_hover", ui.card_hover),
             ("card_selected", ui.card_selected),
-            ("tab_bar", ui.tab_bar),
-            ("tab_hover", ui.tab_hover),
+            ("tab_active", ui.tab_active),
             ("guide", ui.guide),
         ];
         let chips = tokens.map(|(name, color)| {
@@ -1117,25 +1116,22 @@ fn card_scenes() {
         for (dx, dy) in [(1.0, 1.0), (1.5, 1.5), (1.0, 2.0), (2.0, 1.0), (2.5, 2.5)] {
             let (x, y) = (card_left + dx, card_top + dy);
             let p = at(x, y);
-            // Nearer the canvas than the bar, where the two are told apart at all: a light theme's
-            // bar (stepped from its pre-M11al sidebar colour, until Task 5 retires it) now sits
-            // within the shadow's reach of the darker canvas, so a shadowed canvas pixel can be
-            // as near the bar as the canvas.
-            let bar = ui.tab_bar;
-            let bar_apart = gap([bar.r, bar.g, bar.b], ui.sidebar_background) > SHADOW_SLACK;
+            // The canvas (within the shadow's reach), nearer it than the card: the bar has no
+            // fill of its own since M11al Task 5, so the card's colour is what a square bar or
+            // tab corner would show here.
             assert!(
-                is_canvas(p, &ui) && (!bar_apart || gap(p, ui.sidebar_background) < gap(p, bar)),
+                is_canvas(p, &ui),
                 "{n}: canvas outside the card's top-left curve at ({x}, {y}): {p:?}"
             );
         }
-        // The first tab's own top-left corner is rounded (Task 5 review, Minor 1) and clear of
-        // the card's curve: 1.5 pt into its corner, the bar shows, not the active tab's card
-        // fill.
+        // The first tab's own top-left corner is rounded (Task 5 review, Minor 1; M11al: all
+        // its corners, `TAB_RADIUS`) and clear of the card's curve: 1.5 pt into its corner, the
+        // bar shows (the card, no fill of its own), not the shown tab's `tab_active` wash.
         let (tab_left, tab_top) = first_tab.get();
         let (x, y) = (tab_left + 1.5, tab_top + 1.5);
         let p = at(x, y);
         assert!(
-            gap(p, ui.tab_bar) < gap(p, ui.card),
+            near(p, ui.card) && gap(p, ui.card) < gap(p, ui.tab_active),
             "{n}: the bar inside the first tab's rounded corner at ({x}, {y}): {p:?}"
         );
         println!("ui-shots: {}", path.display());
@@ -1938,10 +1934,17 @@ fn one_card_split_scenes() {
                 *keep.borrow_mut() = Some(ws.clone());
                 ws.into()
             };
+            // Each pane's (one) tab's place, in layout order.
+            let places: Rc<RefCell<Vec<gpui::Bounds<Pixels>>>> = Rc::default();
+            let seen = places.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let ws = slotted(&slot);
                 let panes = shown_panes(cx, &ws);
                 assert_eq!(panes.len(), 4, "{scene}-{slug}: four panes");
+                *seen.borrow_mut() = panes
+                    .iter()
+                    .map(|&p| tab_bounds(cx, &ws, p, 0).expect("laid out"))
+                    .collect();
                 fill_blue(cx, &ws);
                 if scene == "card-split-hover" {
                     let on = point(px(across), px(middles[3].1));
@@ -1969,6 +1972,20 @@ fn one_card_split_scenes() {
                     );
                 }
             }
+            // Focus by the tabs (§3.3): the focused pane's shown tab has the accent wash, the
+            // others' a neutral one (`card_hover`); read in each tab's right padding.
+            let after = 2.0 * crate::tab_bar::SEPARATOR_ROOM + crate::tab_bar::SEPARATOR.0;
+            for (i, place) in places.borrow().iter().enumerate() {
+                let x = f32::from(place.right()) - after - crate::tab_bar::TAB_PAD / 2.0;
+                let y = f32::from(place.center().y);
+                let (want, what) = if i == 0 {
+                    (ui.tab_active, "tab_active")
+                } else {
+                    (ui.card_hover, "card_hover")
+                };
+                let p = at(x, y);
+                assert!(near(p, want), "{n}: pane {i}'s shown tab is {what}: {p:?}");
+            }
             // No focus ring: no accent on the card's edges or by the lines, along a row through
             // each pair of panes (the grids are left out: a theme's blue can be its accent).
             for (_, y) in [middles[0], middles[2]] {
@@ -1991,11 +2008,19 @@ fn one_card_split_scenes() {
                     !is_canvas(p, &ui),
                     "{n}: no canvas above the line at x {x}: {p:?}"
                 );
+                // The lower pane's bar right under the line: no fill (the card), and its own
+                // `card_border` line `TAB_BAR` further down (M11al §4.1).
                 let y = down + HAIRLINE / 2.0 + 0.5;
                 let p = at(x, y);
                 assert!(
-                    near(p, ui.tab_bar),
-                    "{n}: the bar right under the line at ({x}, {y}): {p:?}"
+                    near(p, ui.card),
+                    "{n}: the bar (the card) right under the line at ({x}, {y}): {p:?}"
+                );
+                let bar_line = down + HAIRLINE / 2.0 + bar - HAIRLINE / 2.0;
+                let p = at(x, bar_line);
+                assert!(
+                    near(p, ui.card_border),
+                    "{n}: the lower bar's bottom line at ({x}, {bar_line}): {p:?}"
                 );
             }
             // The vertical one, in the lower panes (clear of the horizontal lines).
@@ -2402,8 +2427,17 @@ fn title_area_scenes() {
                     0,
                     "{n}: nothing between the name's room and the band's buttons"
                 );
-                // The pane tab bars start under the band.
-                assert_ne!(at(width / 2.0, 50.0), bg(theme.background), "{n}: a bar");
+                // The pane tab bars start under the band: the bar (no fill since M11al, the
+                // card) ends `TAB_BAR` under the card's top edge with its `card_border` line.
+                let line = ui_tokens::size::TOP_BAND
+                    + ui_tokens::size::HAIRLINE
+                    + ui_tokens::size::TAB_BAR
+                    - 0.5;
+                let p = at(width / 2.0, line);
+                assert!(
+                    near(p, ui.card_border),
+                    "{n}: a bar's line at {line}: {p:?}"
+                );
             }
         }
     }
@@ -3052,7 +3086,13 @@ fn title_bar_scenes() {
                     // The sidebar is partly in (and partly out), as in `sidebar-button-sliding`.
                     let fill = sidebar_fill();
                     assert!(fill > 0, "{n}: no sidebar at x 30, not still partly in");
-                    assert_eq!(at(150.0, 80.0), bg(theme.background), "{n}: slid out");
+                    // At x 150, the pane's tab bar above its tab (M11al: no fill, the card,
+                    // the terminal's colour; the 52 pt bar fills this short window's card).
+                    let bar_above_tab = TOP_BAND
+                        + ui_tokens::size::HAIRLINE
+                        + (ui_tokens::size::TAB_BAR - crate::tab_bar::TAB) / 4.0;
+                    let p = at(150.0, bar_above_tab);
+                    assert_eq!(p, bg(theme.background), "{n}: slid out");
                     // The sliding sidebar still carries its own button, and nothing is drawn at
                     // the collapsed button's old place (x 80) over it.
                     let own = ink_box(&shot, dims, (0.0, BUTTON_Y, 60.0, HIT), band, dim);
@@ -3327,7 +3367,10 @@ fn title_bar_scenes() {
                 );
             })
             .expect("read the focus");
-            let on_band = point(px(width / 2.0), px(TOP_BAND / 2.0));
+            // In the band's top strip: the title band with the sidebar hidden, the drag strip
+            // above the card with it shown (M11al: the 52 pt tab bar, and its wider tabs, reach
+            // up to `CARD_INSET` there, and a press on a tab is the tab's, not a drag).
+            let on_band = point(px(width / 2.0), px(CARD_INSET / 2.0));
             cx.simulate_mouse_down(window, on_band, MouseButton::Left, none);
             assert!(pressed(cx), "{n}: after {how} the band drags (no backdrop)");
             cx.simulate_mouse_up(window, on_band, MouseButton::Left, none);
@@ -3415,9 +3458,10 @@ fn title_bar_scenes() {
         );
         cx.simulate_keystrokes(window, "cmd-\\");
         assert!(!hidden(cx), "title-bar: ⌘\\ shows it again");
-        // With the sidebar shown there are no band buttons: where the band's sidebar button would
-        // be is the pane tab bar's own control (◧, the right sidebar), which opens the right
-        // sidebar and leaves this one shown.
+        // With the sidebar shown there are no band buttons: a click where the band's sidebar
+        // button would be leaves this one shown. Beside it is the pane tab bar's own control
+        // (◧, the right sidebar; M11al: a 28 pt button in the 52 pt bar's middle, so no longer
+        // under the band's slot), which opens the right sidebar and leaves this one shown.
         let right = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).right_sidebar.hidden);
         assert!(right(cx), "title-bar: the right sidebar starts hidden");
         let slot_x = band_buttons(960.0)[2] + HIT / 2.0;
@@ -3425,6 +3469,20 @@ fn title_bar_scenes() {
         assert!(
             !hidden(cx),
             "title-bar: no band sidebar button while the sidebar is shown"
+        );
+        let toggle = point(
+            px(960.0
+                - CARD_INSET
+                - ui_tokens::size::HAIRLINE
+                - crate::tab_bar::BUTTONS_PAD
+                - crate::tab_bar::BUTTON / 2.0),
+            px(CARD_INSET + ui_tokens::size::HAIRLINE + ui_tokens::size::TAB_BAR / 2.0),
+        );
+        assert!(right(cx), "title-bar: the band's slot is not the ◧");
+        cx.simulate_click(window, toggle, none);
+        assert!(
+            !hidden(cx),
+            "title-bar: the tab bar's ◧ leaves the sidebar shown"
         );
         assert!(
             !right(cx),
