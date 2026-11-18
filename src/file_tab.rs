@@ -90,8 +90,8 @@
 //! target). In Diff mode `diff_cards::group` makes cards (3 lines of context, a title with the
 //! function and its +/− counts, unchanged stretches of 8 lines or more folded) and the exact
 //! changed words are marked (`word_marks`, `similar`'s inline mode, given up after 50 ms). A
-//! card-wide diff can also be drawn side by side (old half, new half, equal widths; off by
-//! default, kept per tab in the saved layout, needs 60 cells per half). All of it changes only in
+//! diff can also be drawn side by side (old half, new half, equal widths; off by default, kept
+//! per tab in the saved layout, needs 60 cells per half). All of it changes only in
 //! event handlers and reads, never while drawing, and nothing animates (M11p).
 
 use std::cell::{Cell, RefCell};
@@ -3028,29 +3028,42 @@ fn paint_number(
     let _ = number.paint(at, row, TextAlign::Left, None, window, cx);
 }
 
-/// What the scrollbar's marks were worked out for (M11ah): the rows (their key and height), the
-/// changes and the find's matches (the very lists: compared by identity, so a new answer, even
-/// an equal one, works them out again; no matches at all are always the same), the current
-/// match, the lane's length and the text's, and the colours (the theme).
+/// What the scrollbar's change marks were worked out for (M11ah): the rows (their key and
+/// height), the changes (the very list: compared by identity, so a new answer, even an equal
+/// one, works them out again) and the bar colours (the theme). Not the find's matches nor the
+/// lane's length: a Find keystroke, a ⌘G step or a resize never works them out again.
 #[derive(Clone)]
-struct LaneKey {
+struct ChangeKey {
     map: MapKey,
     row_h: f32,
     changes: Arc<Changes>,
-    matches: Arc<Vec<Match>>,
-    current: Option<usize>,
-    extent: (f32, f32),
-    colours: [Rgb; 5],
+    colours: [Rgb; 3],
 }
 
-/// The scrollbar's marks kept with the key they were worked out for.
-type Lane = Rc<RefCell<Option<(LaneKey, Vec<LaneMark>)>>>;
-
-impl PartialEq for LaneKey {
-    fn eq(&self, o: &LaneKey) -> bool {
+impl PartialEq for ChangeKey {
+    fn eq(&self, o: &ChangeKey) -> bool {
         self.map == o.map
             && self.row_h == o.row_h
             && Arc::ptr_eq(&self.changes, &o.changes)
+            && self.colours == o.colours
+    }
+}
+
+/// What the scrollbar's marks were worked out for: the change marks' key, the find's matches
+/// (the very list; no matches at all are always the same), the current match, the lane's
+/// length and the text's, and the match ticks' colours (the theme).
+#[derive(Clone)]
+struct LaneKey {
+    changes: ChangeKey,
+    matches: Arc<Vec<Match>>,
+    current: Option<usize>,
+    extent: (f32, f32),
+    colours: [Rgb; 2],
+}
+
+impl PartialEq for LaneKey {
+    fn eq(&self, o: &LaneKey) -> bool {
+        self.changes == o.changes
             && (Arc::ptr_eq(&self.matches, &o.matches)
                 || (self.matches.is_empty() && o.matches.is_empty()))
             && self.current == o.current
@@ -3059,81 +3072,145 @@ impl PartialEq for LaneKey {
     }
 }
 
+/// A lane item: its top and height down the text, in points, and its colour.
+type LaneItem = (f32, f32, Rgb);
+
+/// The scrollbar's lane, kept with the keys it was worked out for: the change items (by
+/// `ChangeKey`), and the marks scaled onto the lane with the find's ticks (by `LaneKey`).
+#[derive(Default)]
+struct LaneCache {
+    items: Option<(ChangeKey, Arc<Vec<LaneItem>>)>,
+    marks: Option<(LaneKey, Vec<LaneMark>)>,
+}
+
+type Lane = Rc<RefCell<LaneCache>>;
+
+impl LaneCache {
+    /// The lane's marks for `key`: kept, or scaled again from the change items (kept, or
+    /// worked out again for another `ChangeKey`) with the find's ticks.
+    fn marks(&mut self, key: LaneKey, f: &Frame, map: &RowMap, bars: &BarColours) -> Vec<LaneMark> {
+        if let Some((k, marks)) = &self.marks
+            && *k == key
+        {
+            return marks.clone();
+        }
+        let items = match &self.items {
+            Some((k, items)) if *k == key.changes => items.clone(),
+            _ => {
+                let items = Arc::new(change_items(f, map, bars));
+                self.items = Some((key.changes.clone(), items.clone()));
+                items
+            }
+        };
+        let (content, track) = (key.extent.1, key.extent.0);
+        let marks = lane_marks(f, map, &items, content, track);
+        self.marks = Some((key, marks.clone()));
+        marks
+    }
+}
+
 /// The scrollbar's marks of a file (M11ah), scaled onto a lane `track` long for a text `content`
-/// long: each change bar's run at its rows (a fold shows its hidden lines' strongest change on
-/// its line; positions follow the row map, so folds and Wrap move them), in the bar colours; then
-/// each find match a `LANE_TICK` tick in the accent at `MATCH_TINT`, the current one last, at
-/// `CURRENT_TINT`. Worked out only when the key changes, never in a timer.
+/// long: the change `items` (`change_items`), then each find match a `LANE_TICK` tick in the
+/// accent at `MATCH_TINT` on the row holding its line (a hidden one's: its fold's), the current
+/// one last, at `CURRENT_TINT`. Worked out only when the key changes, never in a timer.
 fn lane_marks(
     f: &Frame,
     map: &RowMap,
-    bars: &BarColours,
+    items: &[LaneItem],
     content: f32,
     track: f32,
 ) -> Vec<LaneMark> {
-    // M11ah: Diff mode: one mark per card (green, red, or blue for both), and the matches.
-    if f.mode == FileMode::Diff {
-        let Some(cards) = &f.cards else {
-            return Vec::new();
-        };
-        let items: Vec<(f32, f32, Rgb)> = (cards.parts.0.cards.iter().enumerate())
-            .filter_map(|(k, card)| {
-                let rows = map.card_rows(k)?;
-                let top = map.top(rows.start);
-                let colour = match card.kind {
-                    CardKind::Added => bars.added,
-                    CardKind::Removed => bars.deleted,
-                    CardKind::Both => bars.changed,
-                };
-                Some((top, map.top(rows.end) - top, colour))
-            })
-            .collect();
-        let mut marks = scrollbar::lane(&items, content, track, code::LANE_MARK_MIN);
-        marks.extend(match_ticks(f, map, content, track, |l| map.row_holding(l)));
-        return marks;
+    let mut marks = scrollbar::lane(items, content, track, code::LANE_MARK_MIN);
+    marks.extend(match_ticks(f, map, content, track, |l| map.row_holding(l)));
+    marks
+}
+
+/// The scrollbar's change items (M11ah), down the text in points. Diff mode: one per card
+/// (green, red, or blue for both). File mode: `file_change_items`.
+fn change_items(f: &Frame, map: &RowMap, bars: &BarColours) -> Vec<LaneItem> {
+    match f.mode {
+        FileMode::Diff => {
+            let Some(cards) = &f.cards else {
+                return Vec::new();
+            };
+            (cards.parts.0.cards.iter().enumerate())
+                .filter_map(|(k, card)| {
+                    let rows = map.card_rows(k)?;
+                    let top = map.top(rows.start);
+                    let colour = match card.kind {
+                        CardKind::Added => bars.added,
+                        CardKind::Removed => bars.deleted,
+                        CardKind::Both => bars.changed,
+                    };
+                    Some((top, map.top(rows.end) - top, colour))
+                })
+                .collect()
+        }
+        FileMode::Plain => file_change_items(&f.doc.changes, map, bars),
     }
-    if f.mode != FileMode::Plain {
-        return Vec::new();
+}
+
+/// A file's change items (M11ah final review), worked out from the changes and the folds, not
+/// the rows (O(changes + folds)): each change bar's run at its line's rows (Wrap: all of them), a
+/// folded line showing its hidden lines' strongest change (`folded_summary`'s rule) on its rows,
+/// in the bar colours; then each deletion edge one mark in the deletion colour at its line's
+/// first row (a hidden one's: in its fold's change), a fold holding only deletions one at its
+/// folded line's first row.
+fn file_change_items(changes: &Changes, map: &RowMap, bars: &BarColours) -> Vec<LaneItem> {
+    let mut lines: Vec<(usize, LineChange)> =
+        changes.by_line.iter().map(|(&l, &c)| (l, c)).collect();
+    lines.sort_unstable_by_key(|&(l, _)| l);
+    // Each line drawn with a change: by its first row, its own change and its fold's.
+    let mut heads: Vec<(usize, usize, LineChange)> = lines
+        .iter()
+        .filter_map(|&(line, change)| Some((map.first_row(line)?, line, change)))
+        .filter(|&(r, line, _)| map.row(r).and_then(Row::line) == Some(line))
+        .collect();
+    for (hidden, row) in map.held() {
+        let from = lines.partition_point(|&(l, _)| l < hidden.start);
+        let to = lines.partition_point(|&(l, _)| l < hidden.end);
+        let mut change = lines[from..to]
+            .iter()
+            .fold(None, |c, &(_, l)| either_change(c, Some(l)));
+        // Lines deleted between two of the fold's lines (the edge above a hidden line).
+        let at = changes.deleted.partition_point(|&e| e < hidden.start);
+        if changes.deleted.get(at).is_some_and(|e| hidden.contains(e)) {
+            change = either_change(change, Some(LineChange::DeletedAfter));
+        }
+        if let (Some(change), Some(line)) = (change, map.row(*row).and_then(Row::line)) {
+            heads.push((*row, line, change));
+        }
     }
-    // The shown lines in order (a hidden line's mark goes to the shown line before it: its fold).
-    let mut shown_lines: Vec<usize> = Vec::new();
+    heads.sort_by_key(|&(r, _, _)| r);
     let mut shown: Vec<(usize, LineChange)> = Vec::new();
-    // Deletion edges' tops: a folded line holding only deletions, and each edge on a shown row.
     let mut deletions: Vec<f32> = Vec::new();
-    for r in 0..map.len() {
-        let Some(Row::Line { line, .. }) = map.row(r) else {
-            continue;
-        };
-        if shown_lines.last() != Some(&line) {
-            shown_lines.push(line);
+    let mut k = 0;
+    while k < heads.len() {
+        let (row, line, mut change) = heads[k];
+        k += 1;
+        // A folded line's own change and its fold's: one bar.
+        while let Some(&(_, _, c)) = heads.get(k).filter(|h| h.0 == row) {
+            change = either_change(Some(change), Some(c)).unwrap_or(c);
+            k += 1;
         }
-        let own = f.doc.changes.by_line.get(&line).copied();
-        let hidden = map.hidden_after(line);
-        let folded = (!hidden.is_empty())
-            .then(|| folded_summary(hidden, &f.doc.changes, None).change)
-            .flatten();
-        match either_change(own, folded) {
-            Some(LineChange::DeletedAfter) => deletions.push(map.top(r)),
-            Some(change) => shown.push((r, change)),
-            None => {}
+        if change == LineChange::DeletedAfter {
+            deletions.push(map.top(row));
+            continue;
+        }
+        let mut r = row;
+        while map.row(r).and_then(Row::line) == Some(line) {
+            shown.push((r, change));
+            r += 1;
         }
     }
-    // The row a line is on: its own, or (hidden) its fold's.
-    let row_of = |line: usize| {
-        map.first_row(line).or_else(|| {
-            let k = shown_lines.partition_point(|&l| l < line).checked_sub(1)?;
-            map.first_row(shown_lines[k])
-        })
-    };
     deletions.extend(
-        f.doc
-            .changes
+        changes
             .deleted
             .iter()
             .filter_map(|&edge| map.first_row(edge).map(|r| map.top(r))),
     );
     deletions.sort_by(f32::total_cmp);
-    let mut items: Vec<(f32, f32, Rgb)> = bar_runs(&shown)
+    let mut items: Vec<LaneItem> = bar_runs(&shown)
         .into_iter()
         .map(|(run, change)| {
             let top = map.top(run.start);
@@ -3141,9 +3218,7 @@ fn lane_marks(
         })
         .collect();
     items.extend(deletions.into_iter().map(|top| (top, 0.0, bars.deleted)));
-    let mut marks = scrollbar::lane(&items, content, track, code::LANE_MARK_MIN);
-    marks.extend(match_ticks(f, map, content, track, row_of));
-    marks
+    items
 }
 
 /// The scrollbar's find ticks (M11ah): each match a `LANE_TICK` tick in the accent at
@@ -7065,7 +7140,7 @@ impl FileTab {
         }
         // Wrapped (M11x part 2): no sideways scroll.
         if columns.is_some() {
-            self.set_scroll(to, cx);
+            self.reveal_scroll(to, opened, cx);
             self.refresh_place(cx);
             return;
         }
@@ -7075,9 +7150,29 @@ impl FileTab {
         if x0 < to.x || x1 > to.x + room {
             to.x = (x0 + x1) / 2.0 - room / 2.0;
         }
-        self.set_scroll(to, cx);
+        self.reveal_scroll(to, opened, cx);
         // M11ah: a fold opened with no scroll needed: the place still moves.
         self.refresh_place(cx);
+    }
+
+    /// A find step's scroll to `to` (`reveal_current`): kept within the text as last drawn, as
+    /// any scroll; but after a fold or stretch `opened` the rows are longer than the last
+    /// drawing's, whose limit would cut the step short: the scroll is written as it is, and the
+    /// next drawing keeps it inside the new rows (as `jump_change` does). Either way it is your
+    /// scroll: Follow ends.
+    fn reveal_scroll(&mut self, to: Point<Pixels>, opened: bool, cx: &mut Context<Self>) {
+        if !opened {
+            self.set_scroll(to, cx);
+            return;
+        }
+        self.live.follow = false;
+        let mode = self.mode;
+        let scroll = self.mode_scroll_mut(mode);
+        if to != *scroll {
+            *scroll = to;
+            self.scrolled(cx);
+        }
+        cx.notify();
     }
 
     /// Open the file in the default text editor, or show a refused one in the Finder
@@ -8112,31 +8207,22 @@ impl FileTab {
                                 Some(t) => {
                                     let colours = BarColours::of(&laid.theme);
                                     let key = LaneKey {
-                                        map: key,
-                                        row_h: f32::from(row_h),
-                                        changes: laid.doc.changes.clone(),
+                                        changes: ChangeKey {
+                                            map: key,
+                                            row_h: f32::from(row_h),
+                                            changes: laid.doc.changes.clone(),
+                                            colours: [
+                                                colours.added,
+                                                colours.changed,
+                                                colours.deleted,
+                                            ],
+                                        },
                                         matches: laid.matches.clone(),
                                         current: laid.current,
                                         extent: (t.viewport, t.content),
-                                        colours: [
-                                            colours.added,
-                                            colours.changed,
-                                            laid.theme.ui().accent,
-                                            laid.theme.background,
-                                            colours.deleted,
-                                        ],
+                                        colours: [laid.theme.ui().accent, laid.theme.background],
                                     };
-                                    let mut kept = lane.borrow_mut();
-                                    match kept.as_ref() {
-                                        Some((k, marks)) if *k == key => marks.clone(),
-                                        _ => {
-                                            let marks = lane_marks(
-                                                &laid, &map, &colours, t.content, t.viewport,
-                                            );
-                                            *kept = Some((key, marks.clone()));
-                                            marks
-                                        }
-                                    }
+                                    lane.borrow_mut().marks(key, &laid, &map, &colours)
                                 }
                                 None => Vec::new(),
                             };
@@ -8633,6 +8719,7 @@ impl FileTab {
     pub fn lane_for_shots(&self) -> Vec<LaneMark> {
         self.lane
             .borrow()
+            .marks
             .as_ref()
             .map_or_else(Vec::new, |(_, marks)| marks.clone())
     }
@@ -10867,6 +10954,78 @@ mod tests {
         assert_eq!(fold_pill_words(24), "\u{22ef} 24 lines");
         assert_eq!(fold_pill_words(1204), "\u{22ef} 1,204 lines");
         assert_eq!(fold_pill_words(1), "\u{22ef} 1 line");
+    }
+
+    /// Final review: the scrollbar's change items, worked out from the changes and the folds
+    /// (not a walk of every row): each bar's run on its line's rows (Wrap: all of them), a
+    /// folded line's own change and its hidden lines' as one, a deletion edge one mark at its
+    /// line's first row (hidden: in its fold's change; a fold of only deletions: one mark, with
+    /// Wrap too), changes past the end ignored.
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // `hidden`: one hidden run
+    fn lane_change_items_come_from_the_changes_and_folds() {
+        use LineChange::{Added, Changed, DeletedAfter};
+        let ink = BarColours {
+            added: Rgb { r: 1, g: 0, b: 0 },
+            changed: Rgb { r: 2, g: 0, b: 0 },
+            deleted: Rgb { r: 3, g: 0, b: 0 },
+        };
+        let (a, c, d) = (ink.added, ink.changed, ink.deleted);
+        // 1-based as git counts: `bars` makes them 0-based.
+        let changes = |list: &[(usize, LineChange)]| {
+            let (by_line, deleted) = bars(list);
+            Changes { by_line, deleted }
+        };
+        // Nothing hidden, no Wrap: lines 1–2 added (one run), 4 changed, deleted above 6, and
+        // a change past the end.
+        let ch = changes(&[
+            (2, Added),
+            (3, Added),
+            (5, Changed),
+            (6, DeletedAfter),
+            (40, Added),
+        ]);
+        let map = RowMap::file(&[1; 10], None, &[], 10.0);
+        assert_eq!(
+            file_change_items(&ch, &map, &ink),
+            [(10.0, 20.0, a), (40.0, 10.0, c), (60.0, 0.0, d)]
+        );
+        // Lines 3..7 hidden under line 2 (row 2): its own added line, a hidden added line and a
+        // deletion edge above hidden line 5: changed, on the fold's row; line 8 changed on row
+        // 4; the deletion above line 9 on row 5 (the hidden edge drawn by its fold only).
+        let ch = changes(&[
+            (3, Added),
+            (5, Added),
+            (9, Changed),
+            (5, DeletedAfter),
+            (9, DeletedAfter),
+        ]);
+        let map = RowMap::file(&[1; 10], None, &[3..7], 10.0);
+        assert_eq!(
+            file_change_items(&ch, &map, &ink),
+            [(20.0, 10.0, c), (40.0, 10.0, c), (50.0, 0.0, d)]
+        );
+        // A hidden line's change on a fold whose line has none: the hidden change's colour.
+        let ch = changes(&[(5, Added)]);
+        assert_eq!(file_change_items(&ch, &map, &ink), [(20.0, 10.0, a)]);
+        // Wrap: line 1 is 3 rows (1..4); its change covers them all.
+        let ch = changes(&[(2, Changed), (5, Added)]);
+        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[], 10.0);
+        assert_eq!(
+            file_change_items(&ch, &map, &ink),
+            [(10.0, 30.0, c), (60.0, 10.0, a)]
+        );
+        // Wrap and a fold of only deletions (above hidden line 3): one mark at its folded
+        // line's first row (not one per wrapped row).
+        let ch = changes(&[(3, DeletedAfter), (5, Added)]);
+        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[2..4], 10.0);
+        assert_eq!(
+            file_change_items(&ch, &map, &ink),
+            [(40.0, 10.0, a), (10.0, 0.0, d)]
+        );
+        // No changes: nothing, whatever is folded.
+        let none = changes(&[]);
+        assert!(file_change_items(&none, &map, &ink).is_empty());
     }
 
     #[test]

@@ -30,8 +30,6 @@ pub const TAB_BAR_LOW_MIN: f32 = 1.15;
 /// M11ah (code view upgrade): every size the file tab's code view is drawn with, in points, in
 /// one place so M11al can move them together. Row = the font's line height x `ROW_SCALE`.
 pub mod code {
-    #![allow(dead_code)] // each size is drawn with by the task that builds its part
-
     pub const ROW_SCALE: f32 = 1.2;
     /// The room above the first line, and left of the numbers.
     pub const TOP_ROOM: f32 = 16.0;
