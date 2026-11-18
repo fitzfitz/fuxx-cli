@@ -1056,7 +1056,11 @@ fn sidebar_quiet_scenes() {
         shot("server", WEB, Status::Idle, 0, SHELL_TEXT),
         shot("deploy", INFRA, Status::Idle, 0, SHELL_TEXT),
     ];
-    let dims = size(px(520.0), px(460.0));
+    // 460 pt over the old 22 pt status bar: the rows keep their room over M11al's roomier one.
+    let dims = size(
+        px(520.0),
+        px(460.0 + (crate::ui_tokens::size::STATUS_BAR - 22.0)),
+    );
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
