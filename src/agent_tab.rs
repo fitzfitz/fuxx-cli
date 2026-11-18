@@ -2272,6 +2272,7 @@ impl AgentTab {
             hits: Vec::new(),
             selected: 0,
         });
+        self.slash_scroll.scroll_to_item(0);
         // The agents and skills come from the catalog: a list not read yet (or that failed) is
         // asked for again, as the `/` list does.
         if let Some(provider) = self.provider
@@ -2323,7 +2324,9 @@ impl AgentTab {
             Some(q) if q != at.query => {
                 if let Some(at) = &mut self.at {
                     at.query = q;
+                    at.selected = 0;
                 }
+                self.slash_scroll.scroll_to_item(0);
                 self.rank(cx);
             }
             Some(_) => {}
@@ -2384,26 +2387,34 @@ impl AgentTab {
     /// Put the picked row (`index` among the rows that can be picked, else the selected one) in
     /// place of `@query`: a file's path, or `@name` for an agent or a skill. Nothing is sent.
     pub(crate) fn pick_at(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
-        let Some(at) = self.at.take() else {
+        let Some(at) = &self.at else {
             return;
         };
+        // Resolve the row first: a pick that is not there leaves the list as it is.
         let pick = index.unwrap_or(at.selected);
-        let row = self
-            .at_rows_from(&at, cx)
+        let Some(row) = self
+            .at_rows_now(cx)
             .into_iter()
             .filter(|r| !matches!(r, AtRow::Heading(_)))
-            .nth(pick);
+            .nth(pick)
+        else {
+            return;
+        };
         let commands = match self.catalog_lookup(cx) {
             crate::agent_catalog::Lookup::Ready(catalog) => catalog.commands,
             _ => Vec::new(),
         };
-        let inserted = row.zip(self.files.as_ref()).and_then(|(row, files)| {
-            at_insertion(&row, &at.hits, &commands, &files.root, &self.start.cwd)
-        });
+        // Agents and skills need no file listing (the hits are empty until it is read).
+        let root = self
+            .files
+            .as_ref()
+            .map_or_else(|| self.start.cwd.clone(), |f| f.root.clone());
+        let inserted = at_insertion(&row, &at.hits, &commands, &root, &self.start.cwd);
+        let (from, end) = (at.at, at.at + 1 + at.query.len());
+        self.at = None;
         if let Some(text) = inserted {
-            let end = at.at + 1 + at.query.len();
             self.composer.update(cx, |c, cx| {
-                c.replace(at.at..end, &text, cx);
+                c.replace(from..end, &text, cx);
             });
         }
         cx.notify();

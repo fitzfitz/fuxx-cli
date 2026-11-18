@@ -3925,6 +3925,11 @@ fn at_catalog() -> Catalog {
                 CommandKind::Skill,
             ),
             item(
+                "example-rebase",
+                "A made-up skill that replays commits",
+                CommandKind::Skill,
+            ),
+            item(
                 "example-notes",
                 "A made-up skill that files the notes",
                 CommandKind::Skill,
@@ -4073,6 +4078,58 @@ pub(super) fn agent_box_at_sections() {
             press(cx, window, "enter");
             let last = names.last().cloned().unwrap_or_default();
             assert_eq!(box_text(cx, tab), format!("{last} "), "{n}: the last skill");
+            nothing_sent(n, cx, tab);
+            // A long list scrolls with ↓; a new query, or a list opened again, starts at the top
+            // with the first row selected.
+            let many: Vec<String> = (0..8).map(|i| format!("src/re{i}.ts")).collect();
+            let many: Vec<&str> = many.iter().map(String::as_str).collect();
+            open_at_list(n, cx, window, tab, &many, "re");
+            let rows = at_rows_of(cx, tab).len();
+            press(cx, window, &vec!["down"; rows].join(" "));
+            assert!(
+                cx.read(|cx| tab.read(cx).shot_list_scrolled()),
+                "{n}: the long list scrolled"
+            );
+            type_in_box(cx, window, "e");
+            assert_eq!(box_text(cx, tab), "@ree", "{n}");
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_at_selected()),
+                Some(0),
+                "{n}"
+            );
+            assert!(
+                !cx.read(|cx| tab.read(cx).shot_list_scrolled()),
+                "{n}: a new query scrolls back to the top"
+            );
+            // Scrolled again, closed, then `@` typed anew while the files are still being listed:
+            // the top, the first row selected, and Return inserts it.
+            feed(cx, tab, |t, cx| {
+                t.shot_composer()
+                    .update(cx, |c, cx| c.set_text("@re".into(), cx))
+            });
+            let _ = frame_fresh(cx, window);
+            press(cx, window, "down down down down down down");
+            press(cx, window, "escape");
+            feed(cx, tab, |t, cx| {
+                t.shot_composer()
+                    .update(cx, |c, cx| c.set_text(String::new(), cx))
+            });
+            type_in_box(cx, window, "@");
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_at_selected()),
+                Some(0),
+                "{n}"
+            );
+            assert!(
+                !cx.read(|cx| tab.read(cx).shot_list_scrolled()),
+                "{n}: opened at the top"
+            );
+            press(cx, window, "enter");
+            assert!(
+                box_text(cx, tab).starts_with("@example-researcher "),
+                "{n}: Return inserted the first row: {:?}",
+                box_text(cx, tab)
+            );
             nothing_sent(n, cx, tab);
             // Left open for the shot.
             open_at_list(n, cx, window, tab, &FILES, "re");
