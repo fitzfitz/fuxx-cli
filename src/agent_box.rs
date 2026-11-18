@@ -21,9 +21,11 @@ use crate::folder_picker::{
     picker_rows,
 };
 use crate::name_input::{NameInput, NameInputEvent};
+use crate::palette::name_cell;
+use crate::palette_match::fuzzy;
 use crate::providers::{
-    Applies, Catalog, ChangeKind, LimitState, ModeChoice, ModelChoice, Provider, RateLimit, Reset,
-    Start, UsageGroup, UsageLimit,
+    AgentCommand, Applies, Catalog, ChangeKind, CommandKind, LimitState, ModeChoice, ModelChoice,
+    Provider, RateLimit, Reset, Start, UsageGroup, UsageLimit,
 };
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
@@ -58,6 +60,9 @@ const MENU_EDGE: f32 = 8.0;
 const ROW_H: f32 = 26.0;
 const ROW_RADIUS: f32 = 6.0;
 const MENU_LIST_MAX: f32 = 320.0;
+/// The `/` list's tallest height (it scrolls) and the width its names have before their lines.
+const SLASH_MAX_H: f32 = 340.0;
+const SLASH_NAME_W: f32 = 180.0;
 /// The id of This Computer's rows, beside the picker.
 const COMPUTER_ROWS: &str = "box-computer";
 
@@ -71,6 +76,10 @@ const MODEL_HEADING: &str = "Model";
 /// The mode menu's heading (§6).
 const MODE_HEADING: &str = "Mode";
 pub const LOADING: &str = "Loading\u{2026}";
+/// The `/` list's group headings, and its notes.
+pub const SLASH_HEADINGS: [&str; 3] = ["Commands", "Skills", "Agents"];
+pub const SLASH_LIST_FAILED: &str = "Couldn't read the list";
+pub const SLASH_NONE: &str = "No command matches";
 pub const MODEL_LIST_FAILED: &str = "Couldn't read the model list";
 pub const DEFAULT_LIST: &str = "(default list)";
 pub const NEXT_CONVERSATION_NOTE: &str = "applies to a new conversation";
@@ -645,6 +654,76 @@ pub fn switched_notice(
     }
 }
 
+/// The most rows one group of the `/` list shows.
+pub const SLASH_LIMIT: usize = 8;
+
+/// What follows the `/` the text starts with, up to the caret, while the caret is still in that
+/// first word; else None (no list).
+pub fn slash_query(text: &str, cursor: usize) -> Option<&str> {
+    let rest = text.strip_prefix('/')?;
+    let word_end = 1 + rest.find(char::is_whitespace).unwrap_or(rest.len());
+    if cursor < 1 || cursor > word_end {
+        return None;
+    }
+    text.get(1..cursor)
+}
+
+/// A row of the `/` list: a group's heading, or a command (its place in the catalog's list, and
+/// the chars of its name the query matched).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SlashRow {
+    Heading(CommandKind),
+    Item { ix: usize, positions: Vec<usize> },
+}
+
+/// The `/` list for `query`: the commands, skills and sub-agents that match it (fuzzy, on the
+/// name and the aliases), best first, at most `limit` of each, each group under its heading.
+pub fn slash_rows(commands: &[AgentCommand], query: &str, limit: usize) -> Vec<SlashRow> {
+    let mut rows = Vec::new();
+    for kind in [CommandKind::Command, CommandKind::Skill, CommandKind::Agent] {
+        // (score, place, the name's matched chars) of each command of this kind that matches.
+        let mut found: Vec<(i32, usize, Vec<usize>)> = commands
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.kind == kind)
+            .filter_map(|(ix, c)| {
+                if let Some(m) = fuzzy(query, &c.name) {
+                    return Some((m.score, ix, m.positions));
+                }
+                let by_alias = c
+                    .aliases
+                    .iter()
+                    .filter_map(|a| fuzzy(query, a))
+                    .max_by_key(|m| m.score);
+                by_alias.map(|m| (m.score, ix, Vec::new()))
+            })
+            .collect();
+        // Best first; equal scores keep the agent's order.
+        found.sort_by_key(|(score, ..)| std::cmp::Reverse(*score));
+        found.truncate(limit);
+        if found.is_empty() {
+            continue;
+        }
+        rows.push(SlashRow::Heading(kind));
+        rows.extend(
+            found
+                .into_iter()
+                .map(|(_, ix, positions)| SlashRow::Item { ix, positions }),
+        );
+    }
+    rows
+}
+
+/// The line the `/` list says in place of rows: while the commands load or could not be read,
+/// or when nothing matches.
+pub fn slash_note(lookup: &Lookup<Catalog>, rows: &[SlashRow]) -> Option<&'static str> {
+    match lookup {
+        Lookup::Loading => Some(LOADING),
+        Lookup::Failed(_) => Some(SLASH_LIST_FAILED),
+        Lookup::Ready(_) => rows.is_empty().then_some(SLASH_NONE),
+    }
+}
+
 impl AgentTab {
     /// The catalog the chips read (the tab's agent and folder), once it is read.
     fn catalog<'a>(&self, cx: &'a App) -> Option<&'a Catalog> {
@@ -960,7 +1039,9 @@ impl AgentTab {
                 .children(self.attachment_chips(c, cx))
                 .child(
                     div()
-                        .when(self.at_open(), |d| d.key_context("AtPopup"))
+                        .when(self.at_open() || self.slash_has_picks(cx), |d| {
+                            d.key_context("AtPopup")
+                        })
                         .w_full()
                         .font_family(mono.clone())
                         .child(self.composer.clone()),
@@ -986,7 +1067,8 @@ impl AgentTab {
             .pb(px(AREA_BOTTOM))
             .flex()
             .flex_col()
-            .children(self.at_list(c, mono, cx))
+            .children(self.at_list(c, mono.clone(), cx))
+            .children(self.slash_list(c, mono, cx))
             .child(
                 // The folder's name lines up with the text in the box.
                 div()
@@ -1000,6 +1082,134 @@ impl AgentTab {
             )
             .child(the_box)
             .into_any_element()
+    }
+
+    /// The `/` list, over the box while it is open: the agent's commands, skills and sub-agents
+    /// that match what is typed, under their headings, each with its one-line description.
+    fn slash_list(&self, c: &Colors, mono: SharedString, cx: &mut Context<Self>) -> Option<Div> {
+        let list = self.slash.as_ref()?;
+        let lookup = self.catalog_lookup(cx);
+        let (rows, note) = match &lookup {
+            Lookup::Ready(catalog) => {
+                let rows = slash_rows(&catalog.commands, &list.query, SLASH_LIMIT);
+                let els = self.slash_row_els(&catalog.commands, &rows, list.selected, c, cx);
+                (els, slash_note(&lookup, &rows))
+            }
+            _ => (Vec::new(), slash_note(&lookup, &[])),
+        };
+        let panel = div()
+            .w_full()
+            .mb(px(8.))
+            .p(px(4.))
+            .rounded(px(7.))
+            .bg(hsla(c.panel))
+            .border_1()
+            .border_color(hsla(c.panel_border))
+            .font_family(mono)
+            .text_size(px(text::META + 0.5))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id("agent-slash")
+                    .flex()
+                    .flex_col()
+                    .max_h(px(SLASH_MAX_H))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.slash_scroll)
+                    .children(rows),
+            )
+            .when_some(note, |d, n| {
+                d.child(
+                    div()
+                        .px(px(8.))
+                        .py(px(3.))
+                        .text_color(hsla(c.panel_dim))
+                        .child(n),
+                )
+            });
+        Some(self.marked("slash", div().w_full().child(panel)))
+    }
+
+    /// The `/` list's rows as elements: a heading, or a command (its pick number is how many
+    /// commands come before it).
+    fn slash_row_els(
+        &self,
+        commands: &[AgentCommand],
+        rows: &[SlashRow],
+        selected: usize,
+        c: &Colors,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let mut pick = 0;
+        let mut els = Vec::new();
+        for row in rows {
+            match row {
+                SlashRow::Heading(kind) => {
+                    let at = match kind {
+                        CommandKind::Command => 0,
+                        CommandKind::Skill => 1,
+                        CommandKind::Agent => 2,
+                    };
+                    els.push(
+                        div()
+                            .px(px(8.))
+                            .pt(px(4.))
+                            .pb(px(1.))
+                            .text_size(px(text::META))
+                            .text_color(hsla(c.panel_dim))
+                            .child(SLASH_HEADINGS[at])
+                            .into_any_element(),
+                    );
+                }
+                SlashRow::Item { ix, positions } => {
+                    let Some(command) = commands.get(*ix) else {
+                        continue;
+                    };
+                    let this = pick;
+                    pick += 1;
+                    // The matched letters are the name's; the `/` shifts them by one.
+                    let shifted: Vec<usize> = positions.iter().map(|p| p + 1).collect();
+                    let about = command.about.lines().next().unwrap_or("").to_string();
+                    els.push(
+                        div()
+                            .id(("agent-slash-row", this))
+                            .px(px(8.))
+                            .py(px(3.))
+                            .gap(px(10.))
+                            .flex()
+                            .rounded(px(4.))
+                            .when(this == selected, |d| d.bg(hsla(c.panel_hover)))
+                            .text_color(hsla(c.panel_text))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this_tab, _, _, cx| {
+                                this_tab.pick_slash(Some(this), cx);
+                            }))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .w(px(SLASH_NAME_W))
+                                    .child(name_cell(
+                                        &format!("/{}", command.name),
+                                        &shifted,
+                                        this == selected,
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(hsla(c.panel_dim))
+                                    .child(SharedString::from(about)),
+                            )
+                            .into_any_element(),
+                    );
+                }
+            }
+        }
+        els
     }
 
     /// What goes with your next message (a dropped command block), on top inside the box until
@@ -1087,6 +1297,31 @@ impl AgentTab {
     /// The picker's search box.
     pub fn shot_search(&self) -> Option<Entity<NameInput>> {
         self.picker.as_ref().map(|p| p.search.clone())
+    }
+
+    /// The `/` list's text and its selected pick (none: it is closed).
+    pub fn shot_slash(&self) -> Option<(String, usize)> {
+        self.slash.as_ref().map(|l| (l.query.clone(), l.selected))
+    }
+
+    /// What the `/` list says in place of rows now.
+    pub fn shot_slash_note(&self, cx: &App) -> Option<&'static str> {
+        self.slash.as_ref()?;
+        Some(slash_note(
+            &self.catalog_lookup(cx),
+            &self.slash_rows_now(cx),
+        ))
+        .flatten()
+    }
+
+    /// The `/` list's rows as drawn now (headings and commands).
+    pub fn shot_slash_rows(&self, cx: &App) -> Vec<SlashRow> {
+        self.slash_rows_now(cx)
+    }
+
+    /// Where the `/` list's row number `row` (headings count) was last laid out.
+    pub fn shot_slash_row(&self, row: usize) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.slash_scroll.bounds_for_item(row)
     }
 
     /// Where the open menu's row saying `label` was last laid out.
@@ -1224,6 +1459,110 @@ mod tests {
             models,
             ..Catalog::default()
         }
+    }
+
+    fn command(name: &str, kind: CommandKind, aliases: &[&str]) -> AgentCommand {
+        AgentCommand {
+            name: name.into(),
+            about: format!("About {name}"),
+            kind,
+            aliases: aliases.iter().map(|a| a.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn slash_query_only_at_the_start() {
+        assert_eq!(slash_query("/mo", 3), Some("mo"));
+        assert_eq!(slash_query("/", 1), Some(""));
+        assert_eq!(
+            slash_query("/model", 3),
+            Some("mo"),
+            "the caret inside the word"
+        );
+        assert_eq!(slash_query("/model", 6), Some("model"));
+        assert_eq!(slash_query("a /mo", 5), None, "not at the start");
+        assert_eq!(slash_query(" /mo", 4), None, "not at the start");
+        assert_eq!(
+            slash_query("/model x", 8),
+            None,
+            "caret past the first word"
+        );
+        assert_eq!(slash_query("/model x", 9), None);
+        assert_eq!(slash_query("/model ", 7), None, "the space ends the word");
+        assert_eq!(
+            slash_query("/model x", 3),
+            Some("mo"),
+            "caret still in the word"
+        );
+        assert_eq!(slash_query("/mo", 0), None, "caret before the slash");
+        assert_eq!(slash_query("", 0), None);
+        assert_eq!(slash_query("/a\nb", 4), None);
+    }
+
+    #[test]
+    fn slash_rows_group_and_filter() {
+        use CommandKind::{Agent, Command, Skill};
+        let list = vec![
+            command("model", Command, &[]),
+            command("example-skill", Skill, &[]),
+            command("compact", Command, &["squeeze"]),
+            command("example-agent", Agent, &[]),
+            command("clear", Command, &["reset"]),
+            command("example-review", Skill, &[]),
+        ];
+        let item = |ix: usize| SlashRow::Item {
+            ix,
+            positions: Vec::new(),
+        };
+        let ix_of = |rows: &[SlashRow]| -> Vec<usize> {
+            rows.iter()
+                .filter_map(|r| match r {
+                    SlashRow::Item { ix, .. } => Some(*ix),
+                    SlashRow::Heading(_) => None,
+                })
+                .collect()
+        };
+        // No query: every group in the order Commands, Skills, Agents, each in the list's order.
+        let all = slash_rows(&list, "", 8);
+        assert_eq!(
+            all,
+            vec![
+                SlashRow::Heading(Command),
+                item(0),
+                item(2),
+                item(4),
+                SlashRow::Heading(Skill),
+                item(1),
+                item(5),
+                SlashRow::Heading(Agent),
+                item(3),
+            ]
+        );
+        // A query keeps what matches (the name's letters are marked); a group with none has
+        // no heading.
+        let c = slash_rows(&list, "cl", 8);
+        assert_eq!(
+            c,
+            vec![
+                SlashRow::Heading(Command),
+                SlashRow::Item {
+                    ix: 4,
+                    positions: vec![0, 1]
+                },
+            ]
+        );
+        // An alias matches too (nothing of the name is marked).
+        let by_alias = slash_rows(&list, "reset", 8);
+        assert_eq!(ix_of(&by_alias), [4]);
+        assert_eq!(by_alias[1], item(4));
+        // Best first: the exact name leads.
+        let best = slash_rows(&list, "exa", 8);
+        assert_eq!(ix_of(&best), [1, 5, 3]);
+        // At most `limit` of a group.
+        assert_eq!(ix_of(&slash_rows(&list, "", 2)), [0, 2, 1, 5, 3]);
+        // Nothing matches: no rows at all.
+        assert!(slash_rows(&list, "zzz", 8).is_empty());
+        assert!(slash_rows(&[], "", 8).is_empty());
     }
 
     fn start(model: Option<&str>, effort: Option<&str>) -> Start {

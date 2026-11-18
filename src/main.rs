@@ -454,9 +454,10 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
             composer::ShowCharacterPalette,
             Some("Composer"),
         ),
-        // The agent tab's `@` file list, while it is open over the composer.
+        // The agent tab's `@` file list and `/` list, while one is open over the composer.
         KeyBinding::new("up", agent_tab::AtUp, Some("AtPopup > Composer")),
         KeyBinding::new("down", agent_tab::AtDown, Some("AtPopup > Composer")),
+        KeyBinding::new("tab", composer::Complete, Some("AtPopup > Composer")),
     ];
     bindings.extend(browser_tab::page_bindings());
     bindings
@@ -1482,6 +1483,7 @@ mod tests {
         }
         assert!(runs(&keymap, "up", at_list).partial_eq(&crate::agent_tab::AtUp));
         assert!(runs(&keymap, "down", at_list).partial_eq(&crate::agent_tab::AtDown));
+        assert!(runs(&keymap, "tab", at_list).partial_eq(&composer::Complete));
         // Enter and Esc stay the composer's: the tab picks the file / closes the list.
         assert!(runs(&keymap, "enter", at_list).partial_eq(&composer::Send));
         assert!(runs(&keymap, "escape", at_list).partial_eq(&composer::Stop));

@@ -76,6 +76,14 @@ pub struct AgentCommand {
     pub aliases: Vec<String>,
 }
 
+/// A command the box answers with its own menu instead of sending it (`Provider::own_command`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoxCommand {
+    Usage,
+    Model,
+    Effort,
+}
+
 /// A short-lived process that answers part of the catalog: its command line, the lines to write
 /// to its stdin, and (when it keeps running) the stdout line that is the answer.
 #[derive(Clone, Debug)]
@@ -233,6 +241,11 @@ pub trait Provider: Sync {
     /// (`Start::model`, `Start::effort`). Default: the model's id and the effort as chosen.
     fn model_flags(&self, model: &ModelChoice, effort: Option<&str>) -> (String, Option<String>) {
         (model.id.clone(), effort.map(String::from))
+    }
+    /// The command `typed` (the box's whole text) names, when fuxx answers it with its own menu
+    /// rather than sending it. None: it is sent to the agent as text.
+    fn own_command(&self, _typed: &str) -> Option<BoxCommand> {
+        None
     }
     /// The short process that prints the agent's usage limits ($0, outside any conversation).
     /// None: the agent has no usage command.

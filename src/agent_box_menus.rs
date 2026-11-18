@@ -394,7 +394,7 @@ impl AgentTab {
 
     /// The catalog lookup the model menu reads: what is known for the agent and folder (not yet
     /// asked: still loading).
-    pub(super) fn catalog_lookup(&self, cx: &App) -> Lookup<Catalog> {
+    pub(crate) fn catalog_lookup(&self, cx: &App) -> Lookup<Catalog> {
         let found = self
             .provider
             .zip(cx.try_global::<Catalogs>())
@@ -444,6 +444,12 @@ impl AgentTab {
             self.close_menu(cx);
             return;
         }
+        self.open_model_menu(None, cx);
+    }
+
+    /// The model menu opens (with the efforts of model `efforts_of` beside it), in place of any
+    /// other. Asks for the model list again when it could not be read (or was never asked).
+    pub(crate) fn open_model_menu(&mut self, efforts_of: Option<usize>, cx: &mut Context<Self>) {
         if let Some(provider) = self.provider
             && !self.no_process
         {
@@ -451,11 +457,22 @@ impl AgentTab {
         }
         self.open_menu(
             BoxMenu::Model {
-                efforts_of: None,
+                efforts_of,
                 usage: false,
             },
             cx,
         );
+    }
+
+    /// Where the model the agent runs is in the model list, when it has efforts to choose
+    /// from (`/effort` opens them): None while the list isn't read.
+    pub(crate) fn running_model_place(&self, cx: &App) -> Option<usize> {
+        let Lookup::Ready(catalog) = self.catalog_lookup(cx) else {
+            return None;
+        };
+        let shown = self.shown_start(cx);
+        let (at, _) = choice_of(&catalog, shown.model.as_deref()?, shown.effort.as_deref())?;
+        (!catalog.models.get(at)?.efforts.is_empty()).then_some(at)
     }
 
     /// The model at `ix` of the open list chosen, with the effort it keeps or needs
@@ -793,7 +810,7 @@ impl AgentTab {
     /// `View Usage ▸`: the usage panel opens beside the model menu, and the agent's usage is
     /// read now unless a reading under a minute old is there (or on its way). Never read while
     /// drawing. A scene tab only marks it loading: it runs no process.
-    fn open_usage(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn open_usage(&mut self, cx: &mut Context<Self>) {
         self.open_menu(
             BoxMenu::Model {
                 efforts_of: None,
