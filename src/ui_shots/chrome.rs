@@ -376,7 +376,12 @@ fn on_ws(
 /// api and tests split side by side in one workspace (shown, api focused), and agent in a
 /// workspace of its own (not shown), in another group.
 fn elsewhere_window() -> (ShotApp, AnyWindowHandle, Entity<Workspace>) {
-    super::chrome_parts::chrome_window(|ws, window, cx| {
+    elsewhere_window_sized(size(px(900.0), px(500.0)))
+}
+
+/// `elsewhere_window`, `dims` big.
+fn elsewhere_window_sized(dims: Size<Pixels>) -> (ShotApp, AnyWindowHandle, Entity<Workspace>) {
+    super::chrome_parts::chrome_window_sized(dims, |ws, window, cx| {
         let api = std::path::Path::new(super::API);
         let web = std::path::Path::new(super::WEB);
         ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
@@ -1802,7 +1807,10 @@ fn claude_beside_api_and_agent() -> (
     AgentAt,
 ) {
     use crate::layout_model::TabKind;
-    let (mut cx, window, ws) = elsewhere_window();
+    // Wider than the other chrome scenes: api's row splits into three panes here, and each
+    // pane's tab must fit with its status dot beside its ＋ ⋯ ▥ (M11al's 100 pt tabs and 28 pt
+    // buttons; at 900 the shown Claude tab's dot is scrolled past the pane's edge).
+    let (mut cx, window, ws) = elsewhere_window_sized(size(px(1200.0), px(500.0)));
     let id = |cx: &VisualTestAppContext, name: &str| {
         let i = index_of(cx, &ws, name);
         cx.read(|cx| ws.read(cx).sessions.items()[i].id)

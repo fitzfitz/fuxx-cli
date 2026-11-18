@@ -2437,21 +2437,10 @@ impl Workspace {
         row_offsets(&in_run, own, self.sidebar.drop_slot, row_height(dragged))
     }
 
-    /// A session's mark on its surface's `fill` (a pane tab, or the status bar: `place` keeps
-    /// their animations and views apart); a Done one that just arrived pops (keyed by its pop,
-    /// so it plays once; after it, the mark is drawn plain, in its own view).
-    pub(crate) fn session_mark(
-        &self,
-        place: &'static str,
-        session: &Session,
-        ui: UiColors,
-        fill: Rgb,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        self.session_mark_sized(place, session, ui, fill, mark_size(session.status), cx)
-    }
-
-    /// `session_mark` in a `size` box (the status bar's is smaller, M11i).
+    /// A session's mark in a `size` box on its surface's `fill` (the status bar's, M11i;
+    /// `place` keeps its animations and views apart from the tab bars'); a Done one that just
+    /// arrived pops (keyed by its pop, so it plays once; after it, the mark is drawn plain, in
+    /// its own view).
     pub(crate) fn session_mark_sized(
         &self,
         place: &'static str,

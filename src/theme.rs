@@ -8,9 +8,7 @@
 
 use crate::settings::{Entry, parse};
 use crate::tab_color::TabColor;
-use crate::ui_tokens::{
-    MARK_MIN, QUIET_LINE_MIN, TAB_BAR_LIGHT_CAP, TAB_BAR_MIN, TEXT_MIN, contrast, ensure_contrast,
-};
+use crate::ui_tokens::{MARK_MIN, QUIET_LINE_MIN, TEXT_MIN, contrast, ensure_contrast};
 use alacritty_terminal::vte::ansi::Rgb;
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -145,9 +143,6 @@ pub struct UiColors {
     /// A hovered and a selected row on a card (the right sidebar's rows).
     pub card_hover: Rgb,
     pub card_selected: Rgb,
-    /// A pane's tab bar, halfway between the card and the canvas, and a hovered inactive tab.
-    pub tab_bar: Rgb,
-    pub tab_hover: Rgb,
     /// The Files tree's 1 px indent guides, quiet on the card.
     pub guide: Rgb,
     /// Command blocks' gutter bars (M11l), held to `MARK_MIN` on the terminal: a finished
@@ -257,7 +252,7 @@ impl Theme {
             mix(bg, fg, 0.08)
         };
         // The sidebar colour before M11al. Text and selections keep mixing from it, and the
-        // surfaces that were derived from it (rows, tints, the tab bar) are also kept as
+        // surfaces that were derived from it (rows, tints) are also kept as
         // "legacy" floors for text and marks, so the text hierarchy does not drift while the
         // canvas darkens (pinned by `dim_and_faint_text_keep_todays_values`).
         let base = if dark {
@@ -301,40 +296,19 @@ impl Theme {
         ];
         let waiting = readable(self.palette[1], &plain, MARK_MIN);
         let done = readable(self.palette[2], &plain, MARK_MIN);
-        // M11i's cards and tab bars. The card is the terminal; the tab bar sits halfway between
-        // it and the canvas (the sidebar colour) so it reads as the card's top.
+        // The card is the terminal; a hovered row on it (and, M11al, a hovered pane tab).
         let card_hover = mix(card, fg, 0.06);
         // What a sidebar colour `on` carries: a soft wash of the status colour (done is subtler:
-        // it needs you less), and the tab bar. The bar's empty strip starts at that colour and
-        // steps away from the card (dark themes toward black, light ones toward the foreground)
-        // until it stands apart from the active tab (`TAB_BAR_MIN`), stopping short of reading as
-        // a separate band (< 1.6:1 against it).
+        // it needs you less).
         let family = |on: Rgb| {
             let waiting_tint = mix(on, waiting, if dark { 0.12 } else { 0.08 });
             let done_tint = mix(on, done, if dark { 0.07 } else { 0.05 });
             let waiting_hover = mix(waiting_tint, fg, 0.06);
-            let toward = if dark { Rgb { r: 0, g: 0, b: 0 } } else { fg };
-            // Light themes keep the cap lower: a darker bar squeezes text, text_dim and
-            // text_faint (all >= 4.5:1 on it) together until they stop looking different.
-            let cap = if dark { 1.6 } else { TAB_BAR_LIGHT_CAP };
-            let mut tab_bar = on;
-            for n in 0..100 {
-                if contrast(tab_bar, card) >= TAB_BAR_MIN {
-                    break;
-                }
-                let next = mix(on, toward, 0.01 * (n + 1) as f32);
-                if contrast(next, on) >= cap {
-                    break;
-                }
-                tab_bar = next;
-            }
-            let tab_hover = mix(tab_bar, fg, 0.06);
-            [waiting_tint, done_tint, waiting_hover, tab_bar, tab_hover]
+            [waiting_tint, done_tint, waiting_hover]
         };
-        // Tints and the tab bar stay on the pre-M11al colour (the tab bar goes in Task 5, the
-        // tinted rows are redrawn on `side`): from the darker canvas they would press the text
-        // of a light theme together.
-        let [waiting_tint, done_tint, waiting_hover, tab_bar, tab_hover] = family(base);
+        // Tints stay on the pre-M11al colour (the tinted rows are redrawn on `side`): from the
+        // darker canvas they would press the text of a light theme together.
+        let [waiting_tint, done_tint, waiting_hover] = family(base);
         // Every surface something is drawn on: rows, tinted rows, overlays, pane tabs. The
         // older ones come first, in their old order: `readable` moves a colour step by step, so
         // the order keeps the text's values where they were.
@@ -348,8 +322,6 @@ impl Theme {
             waiting_tint,
             done_tint,
             waiting_hover,
-            tab_bar,
-            tab_hover,
         ];
         // The rows on the canvas, and M11al's: the canvas, the search box, the attached
         // sidebar and its hover, the lift.
@@ -445,7 +417,9 @@ impl Theme {
             if dark { 0.10 } else { 0.08 },
             &[&words[..], &tab_marks[..]].concat(),
         );
-        let drop_tab = wash(tab_bar, 0.20, &[&words[..], &tab_marks[..]].concat());
+        // The pane tab bars have no fill (M11al): a tab under a dragged block is washed over
+        // the card.
+        let drop_tab = wash(card, 0.20, &[&words[..], &tab_marks[..]].concat());
         let drop_card = wash(card, 0.08, &words);
         let tab_colors = TabColor::ALL.map(|c| mark(c.base()));
         // A gradient of the colour over the card it mostly sits on, lit at its top left; its
@@ -511,8 +485,6 @@ impl Theme {
             row_selected,
             card_hover,
             card_selected,
-            tab_bar,
-            tab_hover,
             guide: quiet(mix(card, fg, 0.12), &[card]),
             block_ok: ensure_contrast(self.palette[8], bg, MARK_MIN),
             block_failed: ensure_contrast(self.palette[1], bg, MARK_MIN),
@@ -586,27 +558,25 @@ impl Theme {
         // colours, so they are checked there too.
         let row_selected = ("row_selected", ui.row_selected);
         let side_selected = ("side_selected", ui.side_selected);
-        // Text-only here: no status mark or tab colour is drawn on these. `card_hover` and
-        // `card_selected` are the Files tree's hovered and selected rows: besides text, they
-        // carry only the tree's git marks and file-type tints, which `right_sidebar` pushes to
-        // `MARK_MIN` on them as it draws (`mark_color`, `kind_color`; its
-        // `type_tints_and_marks_read_on_every_files_row_fill` checks every theme). Tab colours
-        // must stay off them: Mocha's purple is 2.94:1 on `card_selected`.
+        // Text-only here: no status mark or tab colour is drawn on these. `card_selected` is
+        // the Files tree's selected row: besides text, it carries only the tree's git marks and
+        // file-type tints, which `right_sidebar` pushes to `MARK_MIN` on it as it draws
+        // (`mark_color`, `kind_color`; its `type_tints_and_marks_read_on_every_files_row_fill`
+        // checks every theme). Tab colours must stay off it: Mocha's purple is 2.94:1 there.
         let text_only = [
             ("card_selected", ui.card_selected),
-            ("card_hover", ui.card_hover),
-            ("card_lift", ui.card_lift),
             // An agent tab's page under a dragged command block (M11aa Task 11).
             ("drop_card", ui.drop_card),
         ];
-        // The pane tab bars: their titles, glyphs and buttons, and a busy tab's status mark
-        // (inactive on the bar, hovered on `tab_hover`); no tab colours.
-        // `drop_tab`: a tab under a dragged command block (M11aa Task 11).
+        // The pane tab bars (M11al: no fill, the card shows through): their titles, glyphs and
+        // buttons, and a busy tab's status dot, on the card ("terminal", above), a hovered tab
+        // or button (`card_hover`, also the Files tree's hovered row), the icon tile
+        // (`card_lift`), the shown tab (`tab_active`), and a tab under a dragged command block
+        // (`drop_tab`, M11aa Task 11); no tab colours.
         let tab_bars = [
-            ("tab_bar", ui.tab_bar),
-            ("tab_hover", ui.tab_hover),
+            ("card_hover", ui.card_hover),
+            ("card_lift", ui.card_lift),
             ("drop_tab", ui.drop_tab),
-            // M11al's active tab: words and the tab's marks.
             ("tab_active", ui.tab_active),
         ];
         let marked: Vec<_> = surfaces
@@ -873,7 +843,7 @@ pub(crate) fn every_theme() -> Vec<(&'static str, Theme)> {
 mod tests {
     use super::*;
     use crate::settings::Entry;
-    use crate::ui_tokens::{TAB_BAR_LOW_MIN, contrast, hue};
+    use crate::ui_tokens::{contrast, hue};
     use std::path::{Path, PathBuf};
 
     const MOCHA: &str = "palette = 1=#f38ba8\nbackground = #1e1e2e\nforeground = #cdd6f4\ncursor-color = #f5e0dc\nselection-background = #585b70\ntheme = Nested\nconfig-file = evil";
@@ -928,64 +898,6 @@ mod tests {
         let mut v = t;
         v.cursor = Some(hex(0xff0000));
         assert_eq!(v.ui(), v.ui_uncached());
-    }
-
-    #[test]
-    fn the_tab_bar_stands_apart_from_the_card() {
-        for (name, theme) in every_theme() {
-            let ui = theme.ui();
-            let c = contrast(ui.tab_bar, ui.card);
-            // A dark theme whose card is already near black can't reach the minimum: its bar
-            // then goes all the way to black, the most it can get. A light theme's bar is held
-            // to `TAB_BAR_LIGHT_CAP` against the canvas so text, dim and faint text stay
-            // distinct. Either still reaches `TAB_BAR_LOW_MIN` against the card.
-            let black = ui.tab_bar == Rgb { r: 0, g: 0, b: 0 };
-            let light = !theme.is_dark();
-            assert!(
-                c >= TAB_BAR_MIN || ((black || light) && c >= TAB_BAR_LOW_MIN),
-                "{name}: tab bar vs card {c:.3}"
-            );
-            assert!(
-                contrast(ui.tab_bar, ui.sidebar_background) < 1.6,
-                "{name}: still part of the card's top"
-            );
-            if luminance(theme.background) < 0.5 {
-                assert!(
-                    luminance(ui.tab_bar) < luminance(ui.card),
-                    "{name}: dark theme's bar is darker than the card"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn light_tab_bars_keep_the_text_hierarchy() {
-        // Text reads ahead of dim text on a light bar by at least this ratio of their
-        // contrasts; a darker bar presses both to the 4.5:1 floor and the step shrinks.
-        const STEP: f32 = 1.15;
-        let light: Vec<_> = every_theme()
-            .into_iter()
-            .filter(|(_, t)| !t.is_dark())
-            .collect();
-        assert!(!light.is_empty(), "a light built-in theme to check");
-        for (name, theme) in light {
-            let ui = theme.ui();
-            let on = |c: Rgb| contrast(c, ui.tab_bar);
-            let (text, dim, faint) = (on(ui.text), on(ui.text_dim), on(ui.text_faint));
-            let n = format!("{name}: text {text:.2}, dim {dim:.2}, faint {faint:.2}");
-            assert!(
-                text / dim >= STEP,
-                "{n}: text and dim text pressed together"
-            );
-            assert!(
-                dim >= faint && faint >= TEXT_MIN,
-                "{n}: the order or the floor"
-            );
-            assert!(
-                contrast(ui.tab_bar, ui.sidebar_background) < TAB_BAR_LIGHT_CAP + 0.01,
-                "{n}: the bar went past the light cap"
-            );
-        }
     }
 
     #[test]
@@ -1151,8 +1063,6 @@ mod tests {
                 ("row_selected", ui.row_selected),
                 ("card_selected", ui.card_selected),
                 ("card_hover", ui.card_hover),
-                ("tab_bar", ui.tab_bar),
-                ("tab_hover", ui.tab_hover),
             ];
             for (token, fg) in [("text", ui.text), ("text_dim", ui.text_dim)] {
                 for (surface, bg) in surfaces {
@@ -1329,12 +1239,43 @@ mod tests {
     }
 
     #[test]
+    fn drop_tab_reads_on_the_card() {
+        // M11al: the pane tab bars have no fill (the card shows through), so a tab under a
+        // dragged block is the accent washed over the card (20 % or less, in 2 % steps), with
+        // the words and the tab's marks at their floors on it.
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let washes: Vec<Rgb> = (0..=10)
+                .map(|n| mix(ui.card, ui.accent, (0.20 - 0.02 * n as f32).max(0.0)))
+                .collect();
+            assert!(
+                washes.contains(&ui.drop_tab),
+                "{name}: drop_tab {:?} isn't the accent over the card {:?}",
+                ui.drop_tab,
+                ui.card
+            );
+            for (what, c, min) in [
+                ("text", ui.text, TEXT_MIN),
+                ("text_dim", ui.text_dim, TEXT_MIN),
+                ("text_faint", ui.text_faint, TEXT_MIN),
+                ("ring_working", ui.ring_working, MARK_MIN),
+                ("ring_waiting", ui.ring_waiting, MARK_MIN),
+                ("ring_done", ui.ring_done, MARK_MIN),
+                ("accent", ui.accent, MARK_MIN),
+            ] {
+                let r = contrast(c, ui.drop_tab);
+                assert!(r >= min, "{name}: {what} on drop_tab is {r:.2}");
+            }
+        }
+    }
+
+    #[test]
     fn a_dragged_block_tints_its_drop_targets_in_every_theme() {
         // M11aa Task 11: the tints show (not stepped all the way back to the surface) and keep
         // their text readable (`drawn_pairs` checks the floors).
         for (name, theme) in every_theme() {
             let ui = theme.ui();
-            assert_ne!(ui.drop_tab, ui.tab_bar, "{name}: drop_tab");
+            assert_ne!(ui.drop_tab, ui.card, "{name}: drop_tab");
             assert_ne!(ui.drop_card, ui.card, "{name}: drop_card");
             assert!(contrast(ui.text_dim, ui.drop_tab) >= TEXT_MIN, "{name}");
             assert!(contrast(ui.text, ui.drop_card) >= TEXT_MIN, "{name}");

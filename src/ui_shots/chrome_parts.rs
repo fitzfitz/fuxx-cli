@@ -1031,7 +1031,7 @@ fn chrome_pixels_same() {
         shot("build", WEB, Status::Done, 40 * 60, SHELL_TEXT),
     ];
     let n = "chrome-pixels-same";
-    let (mut cx, window, ws) = chrome_window_with(|window, cx| {
+    let (mut cx, window, ws) = chrome_window_with(size(px(900.0), px(500.0)), |window, cx| {
         // codex's workspace shown: its Working mark in its tab and the status bar.
         let mut ws = sidebar_workspace(&BUSY, Some(3), 1, &[], window, cx);
         ws.sidebar.hint_dismissed = true;
@@ -1148,22 +1148,30 @@ const FRAMES_PER_TICK: u64 = 2;
 pub(super) fn chrome_window(
     build: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
 ) -> (ShotApp, AnyWindowHandle, gpui::Entity<Workspace>) {
-    chrome_window_with(|window, cx| {
+    chrome_window_sized(size(px(900.0), px(500.0)), build)
+}
+
+/// `chrome_window` `dims` big.
+pub(super) fn chrome_window_sized(
+    dims: Size<Pixels>,
+    build: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+) -> (ShotApp, AnyWindowHandle, gpui::Entity<Workspace>) {
+    chrome_window_with(dims, |window, cx| {
         let mut ws = Workspace::for_shots(window, cx);
         build(&mut ws, window, cx);
         ws
     })
 }
 
-/// `chrome_window` over the workspace `make` makes.
+/// `chrome_window` (`dims` big) over the workspace `make` makes.
 fn chrome_window_with(
+    dims: Size<Pixels>,
     make: impl FnOnce(&mut Window, &mut Context<Workspace>) -> Workspace + 'static,
 ) -> (ShotApp, AnyWindowHandle, gpui::Entity<Workspace>) {
     use std::cell::RefCell;
     use std::rc::Rc;
 
     let theme = shot_theme("Catppuccin Mocha");
-    let dims = size(px(900.0), px(500.0));
     let mut cx = ShotApp::new();
     let slot = Rc::new(RefCell::new(None));
     let window = {

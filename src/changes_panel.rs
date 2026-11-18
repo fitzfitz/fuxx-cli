@@ -641,7 +641,7 @@ pub fn count_inks(theme: &Theme) -> (Rgb, Rgb) {
 /// The branch bar's line inks (M11v): good (green), warn (yellow) and bad (red), the theme's
 /// ANSI colours pushed (hue kept) to read as text on the bar's fill.
 pub fn bar_inks(theme: &Theme) -> (Rgb, Rgb, Rgb) {
-    let fill = [theme.ui().tab_bar];
+    let fill = [theme.ui().side];
     let ink = |i: usize| readable(theme.palette[i], &fill, TEXT_MIN);
     (ink(2), ink(3), ink(1))
 }
@@ -1633,7 +1633,7 @@ impl Workspace {
             .py(px(BAR_PAD_Y))
             .border_t_1()
             .border_color(hsla(ui.divider))
-            .bg(hsla(ui.tab_bar))
+            .bg(hsla(ui.side))
             // At the card's bottom-right corner (M11al §3.4), rounded as the panel is.
             .rounded_br(px(CARD_RADIUS - HAIRLINE))
             .child(left)
@@ -2435,7 +2435,7 @@ mod tests {
             let ui = theme.ui();
             let (good, warn, bad) = bar_inks(&theme);
             for (what, ink) in [("good", good), ("warn", warn), ("bad", bad)] {
-                let ratio = contrast(ink, ui.tab_bar);
+                let ratio = contrast(ink, ui.side);
                 if ratio < TEXT_MIN {
                     failures.push(format!("{name}: {what} on the bar is {ratio:.2}"));
                 }

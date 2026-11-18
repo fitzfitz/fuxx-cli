@@ -717,9 +717,11 @@ fn shown_panes(
     })
 }
 
-/// How far left of its pane's right edge the + button's centre is: past the right sidebar's
-/// and ⋯ (each a button and a gap), then half a button.
-const PLUS_FROM_EDGE: f32 = 4.0 + 2.0 * (20.0 + 2.0) + 10.0;
+/// How far left of its pane's right edge the + button's centre is: past the buttons' room, the
+/// right sidebar's and ⋯ (each a button and a gap), then half a button (M11al §4.6).
+const PLUS_FROM_EDGE: f32 = crate::tab_bar::BUTTONS_PAD
+    + 2.0 * (crate::tab_bar::BUTTON + crate::tab_bar::BUTTON_GAP)
+    + crate::tab_bar::BUTTON / 2.0;
 /// What the browser tab scenes' page shows (no page is made off-screen: the bar is given it).
 const PAGE_URL: &str = "http://localhost:3000/dashboard";
 const PAGE_TITLE: &str = "Acme dashboard";

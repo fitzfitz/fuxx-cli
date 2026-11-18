@@ -994,7 +994,12 @@ fn sidebar_button_scenes() {
         );
         assert_eq!(at("hover", margin), bg(ui.panel_hover), "{slug}: hovered");
         // Inside: on the search button (M11r; the cards below it are the terminal's colour).
-        let (inside, beyond) = (point(30.0, 58.0), point(150.0, 80.0));
+        // Beyond it: the pane's tab bar above its tab (M11al: no fill, the card, which is the
+        // terminal's colour; the 52 pt bar fills this short window's card under the band).
+        let bar_above_tab = ui_tokens::size::TOP_BAND
+            + ui_tokens::size::HAIRLINE
+            + (ui_tokens::size::TAB_BAR - crate::tab_bar::TAB) / 4.0;
+        let (inside, beyond) = (point(30.0, 58.0), point(150.0, bar_above_tab));
         assert_eq!(
             at("sliding", beyond),
             bg(theme.background),
