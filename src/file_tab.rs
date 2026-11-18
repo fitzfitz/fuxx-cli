@@ -3530,7 +3530,7 @@ fn paint_body(
             if let Some((s, e)) = f.selection
                 && (s.line..=e.line).contains(&i)
                 && s != e
-                && half.is_none_or(|h| f.sel_half == Some(h))
+                && half.is_none_or(|h| f.sel_half.unwrap_or(Half::Old) == h)
             {
                 let from = if i == s.line { s.col } else { 0 };
                 let to = if i == e.line { e.col } else { line.len() };
@@ -4212,11 +4212,12 @@ pub struct FileTab {
     current: Option<usize>,
     diff_current: Option<usize>,
     /// M11ah: Diff mode side by side: chosen (off by default; kept per tab by the workspace),
-    /// and whether the body last drawn fits two halves (decided in the prepaint, a layout
-    /// cache: the bar reads it). The half the current row was pressed in or stepped to, and the
-    /// half the selection started in.
+    /// and the fit as last drawn in Diff mode (decided in the prepaint, a layout cache; none:
+    /// no Diff drawing yet), whose change draws the tab again once (the bar's button, a reveal
+    /// held for a first drawing). The half the current row was pressed in or stepped to, and
+    /// the half the selection started in.
     side_by_side: bool,
-    fits_side: Rc<Cell<bool>>,
+    fits_side: Rc<Cell<Option<bool>>>,
     current_half: Option<Half>,
     sel_half: Option<Half>,
     /// Where the bar's Side by side was last drawn.
@@ -4476,7 +4477,18 @@ impl FileTab {
     /// M11ah: whether the diff shows side by side now: in Diff mode, chosen, and the body last
     /// drawn fits two halves.
     fn side_on(&self) -> bool {
-        self.mode == FileMode::Diff && self.side_by_side && self.fits_side.get()
+        self.mode == FileMode::Diff && self.side_by_side && self.fits_now() == Some(true)
+    }
+
+    /// M11ah: whether the body as last drawn (in either mode: it is as wide in both) fits the
+    /// diff's two halves; none: no rows, or nothing drawn yet. (Fix round 1: not the fit last
+    /// drawn in Diff mode, which a reveal on entering Diff would read stale or unset.)
+    fn fits_now(&self) -> Option<bool> {
+        let (DiffState::Rows(d), Some(g)) = (&self.diff.state, self.geom.get()) else {
+            return None;
+        };
+        let (width, cell) = (f32::from(g.bounds.size.width), f32::from(g.cell_width));
+        Some(fits_side_by_side(width, cell, d.gutter))
     }
 
     /// M11ah: Wrap's cells per row now (none: Wrap off): a diff's from the width last drawn
@@ -4500,7 +4512,7 @@ impl FileTab {
     /// M11ah: the bar's Side by side pressed (it fits): the diff shows the other way, the line
     /// at the top kept; the selection ends; the workspace keeps the choice for the tab.
     fn toggle_side_by_side(&mut self, cx: &mut Context<Self>) {
-        if self.mode != FileMode::Diff || !self.fits_side.get() {
+        if self.mode != FileMode::Diff || self.fits_now() != Some(true) {
             return;
         }
         self.side_by_side = !self.side_by_side;
@@ -5035,12 +5047,11 @@ impl FileTab {
     /// The selected text (empty: none): a diff's without its signs or numbers.
     pub fn selected_text(&self) -> String {
         // M11ah: side by side, only the half the selection is in.
-        if let (true, Some(half), DiffState::Rows(d), Some((a, b))) = (
-            self.side_on(),
-            self.sel_half,
-            &self.diff.state,
-            self.selection,
-        ) {
+        // (A selection made unified, the fit then changing: the old half's, as drawn.)
+        if let (true, DiffState::Rows(d), Some((a, b))) =
+            (self.side_on(), &self.diff.state, self.selection)
+        {
+            let half = self.sel_half.unwrap_or(Half::Old);
             return half_text(&d.doc, &d.rows, a, b, half);
         }
         match (self.shown_doc(), self.selection) {
@@ -6503,15 +6514,19 @@ impl FileTab {
             self.set_folds(folded, cx);
             return;
         }
-        // M11ah: side by side, the selection stays in the half pressed.
+        // M11ah: side by side, the selection stays in the half pressed (a press that starts
+        // none keeps the last one's half with its selection).
+        let kept = self.sel_half;
         self.sel_half = self.geom.get().and_then(|g| g.half_at(e.position));
-        if let Some(pos) = self.pos_at(e.position, window, cx) {
-            self.selection = Some((pos, pos));
-            self.selecting = true;
-            // The last drag's pointer is not this one's (an old auto-scroll task ends).
-            self.drag_at = None;
-            cx.notify();
-        }
+        let Some(pos) = self.pos_at(e.position, window, cx) else {
+            self.sel_half = kept;
+            return;
+        };
+        self.selection = Some((pos, pos));
+        self.selecting = true;
+        // The last drag's pointer is not this one's (an old auto-scroll task ends).
+        self.drag_at = None;
+        cx.notify();
     }
 
     /// M11ah: the pinned card title's card, when window point `p` is on it (as last drawn).
@@ -7152,7 +7167,8 @@ impl FileTab {
     /// the body is too narrow, faint with no hover and no click, its tooltip saying so. Where
     /// it is drawn is kept (`side_at`).
     fn side_button(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
-        let (filled, enabled, tip) = side_button_look(self.side_by_side, self.fits_side.get());
+        let fits = self.fits_now().unwrap_or(false);
+        let (filled, enabled, tip) = side_button_look(self.side_by_side, fits);
         let ink = if enabled { ui.text } else { ui.text_faint };
         let at = self.side_at.clone();
         div()
@@ -7982,9 +7998,9 @@ impl FileTab {
                             let fits = fits_side_by_side(width, cw, gutter);
                             let side = laid.side_by_side && fits;
                             let fit_changed =
-                                laid.mode == FileMode::Diff && fits_side.get() != fits;
+                                laid.mode == FileMode::Diff && fits_side.get() != Some(fits);
                             if fit_changed {
-                                fits_side.set(fits);
+                                fits_side.set(Some(fits));
                                 let keep = keep.clone();
                                 cx.defer(move |cx| keep.update(cx, |_, cx| cx.notify()));
                             }
@@ -8518,8 +8534,14 @@ impl FileTab {
         )
     }
 
+    /// M11ah: side by side chosen, as restoring the tab sets it (no drawing, no event).
+    pub fn set_side_by_side_for_shots(&mut self, on: bool) {
+        self.side_by_side = on;
+    }
+
     pub fn side_button_for_shots(&self) -> (bool, bool, &'static str, Option<Bounds<Pixels>>) {
-        let (filled, enabled, tip) = side_button_look(self.side_by_side, self.fits_side.get());
+        let fits = self.fits_now().unwrap_or(false);
+        let (filled, enabled, tip) = side_button_look(self.side_by_side, fits);
         (filled, enabled, tip, self.side_at.get())
     }
 
@@ -8626,6 +8648,11 @@ impl FileTab {
         let DiffState::Rows(d) = &self.diff.state else {
             return;
         };
+        // M11ah fix round 1: side by side chosen and nothing drawn yet (so no fit known): held
+        // for the first drawing (its fit, new, draws the tab again).
+        if self.side_by_side && self.geom.get().is_none() {
+            return;
+        }
         let Some(reveal) = self.reveal.take() else {
             return;
         };

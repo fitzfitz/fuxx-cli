@@ -6820,6 +6820,24 @@ fn file_diff_side_scenes() {
         );
         let title = g.bounds.top() + tops[11] - g.scroll.y - px(code::CARD_TITLE / 2.0);
         near(at(mid + px(0.5), title), bg, "no hairline across the title");
+        // Fix round 1: the card's title spans both halves: its name and counts on the left,
+        // `lines a–b` at the panel's right edge, past the middle.
+        let title_ink = |x0: Pixels, x1: Pixels| {
+            let b = Bounds::from_corners(
+                gpui::point(x0, title - px(6.0)),
+                gpui::point(x1, title + px(6.0)),
+            );
+            far(ink_in(&shot, dims, b, [bg.r, bg.g, bg.b]), bg) > 120
+        };
+        let panel_right = g.bounds.right() - px(code::CARD_INSET + 4.0);
+        assert!(
+            title_ink(left + px(code::CARD_INSET + 4.0), mid - px(40.0)),
+            "{n}: the title's name on the left"
+        );
+        assert!(
+            title_ink(mid + px(40.0), panel_right),
+            "{n}: the title's lines at the right edge, across the new half"
+        );
         // Level: the removed row red on the left, its added row green on the right.
         let right_end = g.bounds.right() - px(code::CARD_INSET + 20.0);
         near(at(mid - px(20.0), y_of(14)), tint(red), "removed, left");
@@ -7119,6 +7137,99 @@ fn file_diff_side_narrow_scenes() {
             (0..6).any(|k| (0..6).all(|i| steps[i] == want[(i + k) % 6])),
             "{n}: the steps {steps:?}, not in turn {want:?}"
         );
+        println!("ui-shots: {n} ok");
+    };
+    let _ = render_with(&theme, dims, build, act);
+
+    // Fix round 1: a change bar's press opens Diff side by side with its card's title at the
+    // top, worked out for the layout drawn: (a) chosen (restored so) before any Diff drawing;
+    // (b) the pane narrowed below the fit while in File mode (unified, then).
+    let n = "file-diff-side-narrow-reveal";
+    let (text, unified) = cards_fixture();
+    let path = live_file("side-reveal.rs", &text);
+    let slot: Slot = Rc::default();
+    let build = {
+        let slot = slot.clone();
+        move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            cx.bind_keys(crate::key_bindings());
+            let tab = cx.new(|cx| {
+                let mut tab = FileTab::new(path, crate::layout_model::FileMode::Plain, window, cx);
+                tab.frozen = true;
+                tab
+            });
+            let host = cx.new(|_| SideHost {
+                tab: tab.clone(),
+                width: px(1240.0),
+            });
+            *slot.borrow_mut() = Some((tab, host.clone()));
+            host.into()
+        }
+    };
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        use crate::git_status::LineChange;
+        use crate::layout_model::FileMode;
+        let (tab, host) = slot.borrow().clone().expect("the tab");
+        live_frame(cx, window);
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.pretend_in_repo_for_shots(cx);
+                t.set_side_by_side_for_shots(true);
+                t.set_diff_for_shots(&unified, cx);
+                t.set_changes(vec![(72, LineChange::Added)], cx);
+            })
+        });
+        live_frame(cx, window);
+        // Card 1's added line 72 (0-based 71): its bar pressed in File mode.
+        let press_bar = |cx: &mut VisualTestAppContext| {
+            let top = cx
+                .read(|cx| tab.read(cx).line_top(71, cx))
+                .expect("line 72");
+            let lh = cx
+                .read(|cx| tab.read(cx).geom())
+                .expect("drawn")
+                .line_height;
+            cx.update(|cx| {
+                tab.update(cx, |t, cx| t.set_scroll(point(px(0.0), top - lh * 2.0), cx))
+            });
+            live_frame(cx, window);
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            let bar = point(
+                g.bounds.left() + g.bar_left + px(1.5),
+                g.bounds.top() + top - g.scroll.y + g.line_height / 2.0,
+            );
+            cx.simulate_click(window, bar, Modifiers::none());
+            live_frame(cx, window);
+            live_frame(cx, window);
+            assert_eq!(cx.read(|cx| tab.read(cx).mode()), FileMode::Diff, "{n}");
+            let title = cx.read(|cx| tab.read(cx).title_top(1, cx)).expect("card 1");
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            (title, g.scroll.y, g.max_scroll.y)
+        };
+        let (title, scroll, max) = press_bar(cx);
+        assert!(title < max, "{n}: card 1's title can reach the top");
+        assert!(
+            cx.read(|cx| tab.read(cx).side_by_side_for_shots().1),
+            "{n}: side by side"
+        );
+        assert_eq!(scroll, title, "{n}: (a) card 1's title at the top");
+        // (b) Back to File, the pane too narrow, the bar again: unified, at its title.
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        cx.update(|cx| {
+            host.update(cx, |h, cx| {
+                h.width = px(800.0);
+                cx.notify();
+            })
+        });
+        live_frame(cx, window);
+        live_frame(cx, window);
+        let (title, scroll, max) = press_bar(cx);
+        assert!(title < max, "{n}: card 1's title can reach the top");
+        assert!(
+            !cx.read(|cx| tab.read(cx).side_by_side_for_shots().1),
+            "{n}: unified"
+        );
+        assert_eq!(scroll, title, "{n}: (b) card 1's title at the top");
         println!("ui-shots: {n} ok");
     };
     let _ = render_with(&theme, dims, build, act);
