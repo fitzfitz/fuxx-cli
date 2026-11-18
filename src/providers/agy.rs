@@ -6,6 +6,67 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+/// An RFC 3339 time (`2026-11-22T14:59:00Z`, `…+07:00`, fractions allowed) as unix seconds.
+pub fn rfc3339_unix(text: &str) -> Option<i64> {
+    let (date, rest) = text.split_once(['T', 't'])?;
+    let mut d = date.split('-');
+    let (year, month, day): (i64, i64, i64) = (
+        d.next()?.parse().ok()?,
+        d.next()?.parse().ok()?,
+        d.next()?.parse().ok()?,
+    );
+    if d.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // The time ends at the zone: `Z`, or a sign and `HH:MM`.
+    let zone_at = rest.find(['Z', 'z', '+', '-'])?;
+    let (time, zone) = rest.split_at(zone_at);
+    let offset = match zone {
+        "Z" | "z" => 0,
+        _ => {
+            let sign = if zone.starts_with('-') { -1 } else { 1 };
+            let (h, m) = zone[1..].split_once(':')?;
+            sign * (h.parse::<i64>().ok()? * 3600 + m.parse::<i64>().ok()? * 60)
+        }
+    };
+    // Fractions of a second are dropped.
+    let mut t = time.split('.').next()?.split(':');
+    let (h, m, s): (i64, i64, i64) = (
+        t.next()?.parse().ok()?,
+        t.next()?.parse().ok()?,
+        t.next()?.parse().ok()?,
+    );
+    if t.next().is_some() || h > 23 || m > 59 || s > 60 {
+        return None;
+    }
+    // Days since 1970-01-01 (the proleptic Gregorian calendar).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3600 + m * 60 + s - offset)
+}
+
+const UNREADABLE_USAGE: &str = "Couldn't read usage";
+
+/// A bucket as a limit: with no fraction left it is only its name (never a made-up number).
+fn usage_bucket(b: &Value) -> UsageLimit {
+    let name = s(&b["name"]).unwrap_or_default();
+    match b["remaining_fraction"].as_f64() {
+        Some(f) => UsageLimit::Read {
+            name,
+            left_pct: (f * 100.0).round().clamp(0.0, 100.0) as u8,
+            resets: b["reset_time"]
+                .as_str()
+                .and_then(rfc3339_unix)
+                .map(Reset::At),
+        },
+        None => UsageLimit::Text(name),
+    }
+}
+
 pub struct Agy;
 pub static AGY: Agy = Agy;
 
@@ -16,7 +77,23 @@ static INFO: ProviderInfo = ProviderInfo {
     badge_rgb: 0x2d4f8a,
     // The recordings show no way to stop a turn on stdin.
     interrupts: false,
-    modes: &["accept-edits", "auto", "plan"],
+    modes: &[
+        ModeChoice {
+            id: "accept-edits",
+            label: "Accept edits",
+            about: "Edits files without asking; asks before anything riskier",
+        },
+        ModeChoice {
+            id: "auto",
+            label: "Auto",
+            about: "Runs without asking",
+        },
+        ModeChoice {
+            id: "plan",
+            label: "Plan",
+            about: "Plans first and asks for approval before changing anything",
+        },
+    ],
     default_mode: Some("accept-edits"),
 };
 
@@ -52,7 +129,7 @@ impl Provider for Agy {
         let mode = start
             .mode
             .as_deref()
-            .filter(|m| INFO.modes.contains(m))
+            .filter(|m| INFO.modes.iter().any(|x| x.id == *m))
             .or(INFO.default_mode)
             .unwrap_or("accept-edits");
         let mut a: Vec<String> = [
@@ -70,8 +147,114 @@ impl Provider for Agy {
         if let Some(id) = &start.resume {
             a.extend(["--conversation".to_string(), id.clone()]);
         }
-        a.extend(pass_through(&start.extra_args, OWNED_FLAGS));
+        // `--model <id as `agy models` lists it>` alone: an id with an effort plus a different
+        // `--effort` is refused (Task 0), so a chosen model drops the preset's `--effort` too,
+        // and `start.effort` (already in the id: `model_flags`) is not passed.
+        let mut owned = OWNED_FLAGS.to_vec();
+        if let Some(model) = &start.model {
+            owned.extend([("--model", true), ("--effort", true)]);
+            a.extend(["--model".to_string(), model.clone()]);
+        }
+        a.extend(pass_through(&start.extra_args, &owned));
         a
+    }
+
+    /// The commands the box answers with its own menus (a whole line, no arguments).
+    fn own_command(&self, typed: &str) -> Option<BoxCommand> {
+        match typed.trim() {
+            "/usage" => Some(BoxCommand::Usage),
+            "/model" => Some(BoxCommand::Model),
+            "/effort" => Some(BoxCommand::Effort),
+            _ => None,
+        }
+    }
+
+    /// `/usage` in print mode: about three seconds, no turn, no cost.
+    fn usage_probe(&self) -> Option<Probe> {
+        Some(Probe {
+            argv: ["agy", "-p", "/usage", "--output-format", "json"]
+                .map(String::from)
+                .to_vec(),
+            stdin: Vec::new(),
+            until: None,
+        })
+    }
+
+    /// `command.data.groups[].buckets[]`: each bucket's `remaining_fraction` is the share left.
+    fn read_usage(&self, output: &str) -> Result<Vec<UsageGroup>, String> {
+        let v: Value = serde_json::from_str(output).map_err(|_| UNREADABLE_USAGE.to_string())?;
+        let groups = v["command"]["data"]["groups"]
+            .as_array()
+            .ok_or_else(|| UNREADABLE_USAGE.to_string())?;
+        Ok(groups
+            .iter()
+            .map(|g| UsageGroup {
+                name: s(&g["name"]).unwrap_or_default(),
+                about: s(&g["description"]),
+                limits: g["buckets"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(usage_bucket)
+                    .collect(),
+            })
+            .collect())
+    }
+
+    /// `agy models` (about a second), then `/help` in print mode (about three).
+    fn catalog_probes(&self) -> Vec<Probe> {
+        let probe = |argv: &[&str]| Probe {
+            argv: argv.iter().map(|w| w.to_string()).collect(),
+            stdin: Vec::new(),
+            until: None,
+        };
+        vec![
+            probe(&["agy", "models"]),
+            probe(&["agy", "-p", "/help", "--output-format", "json"]),
+        ]
+    }
+
+    /// The models from `outputs[0]` (none is no catalog), the commands from `outputs[1]` (a
+    /// failed `/help` leaves them out rather than the models).
+    fn read_catalog(&self, outputs: &[String]) -> Result<Catalog, String> {
+        let models = read_models(outputs.first().map_or("", String::as_str));
+        let commands = outputs
+            .get(1)
+            .map(|o| read_commands(o))
+            .transpose()
+            .map(Option::unwrap_or_default);
+        if models.is_empty() {
+            return Err(commands
+                .err()
+                .unwrap_or_else(|| "agy lists no models".into()));
+        }
+        Ok(Catalog {
+            models,
+            commands: commands.unwrap_or_default(),
+            ..Catalog::default()
+        })
+    }
+
+    /// The effort's own id, alone (`--effort` is never passed: Task 0); a model with no such
+    /// effort goes by its own id.
+    fn model_flags(&self, model: &ModelChoice, effort: Option<&str>) -> (String, Option<String>) {
+        let id = effort
+            .and_then(|l| model.efforts.iter().find(|e| e.level == l))
+            .and_then(|e| e.model_id.clone())
+            .unwrap_or_else(|| model.id.clone());
+        (id, None)
+    }
+
+    /// Every change restarts agy on the same `--conversation` with the new flags (Task 0: it
+    /// carries on, and `--model` / `--mode` take); it has no live request on stdin.
+    fn applies(&self, _change: ChangeKind) -> Applies {
+        Applies::Restart
+    }
+
+    /// `--conversation <id>` from another folder carries the conversation on (Task 0,
+    /// `agy-move.jsonl`), whatever its version.
+    fn can_move(&self, _version: Option<&str>) -> bool {
+        true
     }
 
     fn classic_argv(&self, conversation: &str) -> Vec<String> {
@@ -110,6 +293,94 @@ impl Provider for Agy {
             l.contains("conversation \"") && l.ends_with("\" not found")
         })
     }
+}
+
+/// The effort levels agy builds into a model id, in the order a menu lists them.
+const EFFORT_ORDER: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// `agy models`' stdout (`id<TAB>Name (Effort)` per line) as models: the lines of one name are
+/// one model whose efforts carry their own ids. A trailing parenthesis that names no effort
+/// stays in the name; a blank or malformed line is skipped.
+fn read_models(text: &str) -> Vec<ModelChoice> {
+    let mut models: Vec<ModelChoice> = Vec::new();
+    for line in text.lines() {
+        let Some((id, name)) = line.split_once('\t') else {
+            continue;
+        };
+        let (id, name) = (id.trim(), name.trim());
+        if id.is_empty() || name.is_empty() {
+            continue;
+        }
+        let effort = name
+            .strip_suffix(')')
+            .and_then(|n| n.rsplit_once(" ("))
+            .and_then(|(base, level)| {
+                let level = level.to_lowercase();
+                EFFORT_ORDER
+                    .contains(&level.as_str())
+                    .then(|| (base.trim().to_string(), level))
+            });
+        let (label, effort) = match effort {
+            Some((base, level)) => (base, Some(level)),
+            None => (name.to_string(), None),
+        };
+        let at = match models.iter().position(|m| m.label == label) {
+            Some(at) => at,
+            None => {
+                // The id without its effort suffix names the model as a whole.
+                let base = effort
+                    .as_deref()
+                    .and_then(|l| id.strip_suffix(&format!("-{l}")))
+                    .unwrap_or(id);
+                models.push(ModelChoice {
+                    id: base.to_string(),
+                    label,
+                    resolves_to: None,
+                    efforts: Vec::new(),
+                });
+                models.len() - 1
+            }
+        };
+        if let Some(level) = effort {
+            models[at].efforts.push(EffortChoice {
+                level,
+                model_id: Some(id.to_string()),
+            });
+        }
+    }
+    for m in &mut models {
+        m.efforts.sort_by_key(|e| {
+            EFFORT_ORDER
+                .iter()
+                .position(|l| *l == e.level)
+                .unwrap_or(usize::MAX)
+        });
+    }
+    models
+}
+
+/// `agy -p /help --output-format json`'s output as commands (`command.data.commands[]`).
+fn read_commands(text: &str) -> Result<Vec<AgentCommand>, String> {
+    let v: Value = serde_json::from_str(text).map_err(|e| format!("/help is not JSON: {e}"))?;
+    let list = v["command"]["data"]["commands"]
+        .as_array()
+        .ok_or("/help lists no commands")?;
+    Ok(list
+        .iter()
+        .filter_map(|c| {
+            Some(AgentCommand {
+                name: s(&c["name"])?,
+                about: s(&c["description"]).unwrap_or_default(),
+                kind: CommandKind::Command,
+                aliases: c["aliases"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(s)
+                    .collect(),
+            })
+        })
+        .collect())
 }
 
 /// agy's events: `init` (the conversation id), `step_update` (one step of a turn, `ACTIVE`
@@ -325,13 +596,17 @@ impl Translator for AgyTranslator {
     /// process).
     fn encode(&mut self, action: &Action) -> Vec<String> {
         match action {
-            Action::Send { text } => {
+            // Its images reach it as paths in `text` (`sends_images` is false).
+            Action::Send { text, .. } => {
                 vec![json!({"event": "user", "message": {"content": text}}).to_string()]
             }
             Action::Allow { .. }
             | Action::AlwaysAllow { .. }
             | Action::Deny { .. }
-            | Action::Interrupt => Vec::new(),
+            | Action::Interrupt
+            | Action::SetModel { .. }
+            | Action::SetEffort { .. }
+            | Action::SetMode { .. } => Vec::new(),
         }
     }
 }
@@ -351,6 +626,15 @@ mod tests {
     const BAD_RESUME: &str = include_str!("fixtures/agy-bad-resume.jsonl");
     const BAD_RESUME_STDERR: &str = include_str!("fixtures/agy-bad-resume.jsonl.stderr");
 
+    #[test]
+    fn agys_image_limit_is_5_mb_of_the_file() {
+        // agy is told the image's path, so the file's own size is what counts.
+        assert_eq!(
+            AGY.image_limit(),
+            crate::providers::ImageLimit::Raw(5 * 1024 * 1024)
+        );
+    }
+
     fn decode_all(text: &str) -> Vec<Event> {
         let mut t = AGY.translator();
         text.lines().flat_map(|l| t.decode(l)).collect()
@@ -363,6 +647,8 @@ mod tests {
             new_id: None,
             mode: mode.map(String::from),
             extra_args: extra.iter().map(|s| s.to_string()).collect(),
+            model: None,
+            effort: None,
         }
     }
 
@@ -655,7 +941,10 @@ mod tests {
     fn agy_sends_user_events_and_answers_nothing() {
         let mut t = AGY.translator();
         assert!(t.hello().is_empty());
-        let sent = t.encode(&Action::Send { text: "hi".into() });
+        let sent = t.encode(&Action::Send {
+            text: "hi".into(),
+            images: Vec::new(),
+        });
         assert_eq!(sent.len(), 1);
         let v: Value = serde_json::from_str(&sent[0]).unwrap();
         assert_eq!(v, json!({"event": "user", "message": {"content": "hi"}}));
@@ -699,7 +988,10 @@ mod tests {
             ("agy", "Antigravity", "AG", 0x2d4f8a)
         );
         assert!(!i.interrupts);
-        assert_eq!(i.modes, ["accept-edits", "auto", "plan"]);
+        assert_eq!(
+            i.modes.iter().map(|m| m.id).collect::<Vec<_>>(),
+            ["accept-edits", "auto", "plan"]
+        );
         assert_eq!(i.default_mode, Some("accept-edits"));
     }
 
@@ -715,5 +1007,254 @@ mod tests {
         assert!(!AGY.argv(&s).iter().any(|w| w.contains("6a1c234d")));
         assert!(AGY.is_conversation_id("6a1c234d-7469-40ef-b093-c74ad8006c28"));
         assert!(!AGY.is_conversation_id("6a1c234d; open -a Calculator"));
+    }
+
+    const MODELS: &str = include_str!("fixtures/agy-models.txt");
+    const HELP: &str = include_str!("fixtures/agy-help.json");
+
+    #[test]
+    fn agy_models_group_by_name_with_effort_ids() {
+        let models = read_models(MODELS);
+        let opus = models
+            .iter()
+            .find(|m| m.label == "Claude Opus 5.5")
+            .expect("Claude Opus 5.5");
+        let high = opus.efforts.iter().find(|e| e.level == "high").unwrap();
+        assert_eq!(high.model_id.as_deref(), Some("claude-opus-5-5-high"));
+        let levels: Vec<&str> = opus.efforts.iter().map(|e| e.level.as_str()).collect();
+        assert_eq!(levels, ["low", "medium", "high"]);
+        assert_eq!(opus.id, "claude-opus-5-5");
+        // One model per name, however many lines.
+        assert_eq!(
+            models
+                .iter()
+                .filter(|m| m.label == "Claude Opus 5.5")
+                .count(),
+            1
+        );
+        // A parenthesis that isn't an effort stays in the name; no effort at all.
+        let orchestrator = models
+            .iter()
+            .find(|m| m.label == "Orchestrator (Argon)")
+            .unwrap();
+        assert!(orchestrator.efforts.is_empty());
+        assert_eq!(orchestrator.id, "gemini-pro-orchestrator-g1-pro");
+        let hydrogen = models
+            .iter()
+            .find(|m| m.label == "Gemini 4 Hydrogen")
+            .unwrap();
+        assert!(hydrogen.efforts.iter().any(|e| e.level == "xhigh"));
+
+        let plain = read_models("m-1\tPlain Model\n");
+        assert_eq!(plain.len(), 1);
+        assert_eq!(
+            (plain[0].id.as_str(), plain[0].label.as_str()),
+            ("m-1", "Plain Model")
+        );
+        assert!(plain[0].efforts.is_empty());
+        // Blank and malformed lines (no tab, nothing after it) are skipped.
+        assert_eq!(
+            read_models("\nno tab here\nid-only\t\n\t\nm-2\tTwo\n").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn own_commands() {
+        assert_eq!(AGY.own_command("/usage"), Some(BoxCommand::Usage));
+        assert_eq!(AGY.own_command("/model"), Some(BoxCommand::Model));
+        assert_eq!(AGY.own_command("/effort"), Some(BoxCommand::Effort));
+        assert_eq!(AGY.own_command("/help"), None);
+        assert_eq!(AGY.own_command("/usage now"), None);
+    }
+
+    #[test]
+    fn agy_help_is_its_commands() {
+        let c = AGY
+            .read_catalog(&[MODELS.to_string(), HELP.to_string()])
+            .unwrap();
+        let help: Value = serde_json::from_str(HELP).unwrap();
+        let listed = help["command"]["data"]["commands"].as_array().unwrap();
+        assert_eq!(c.commands.len(), listed.len());
+        assert!(c.commands.iter().all(|x| x.kind == CommandKind::Command));
+        let config = c.commands.iter().find(|x| x.name == "config").unwrap();
+        assert_eq!(config.aliases, ["settings"]);
+        assert_eq!(config.about, "Open settings panel");
+        assert!(!c.fallback_models);
+        assert_eq!(c.mode, None);
+        assert!(!c.models.is_empty());
+        assert!(read_commands("not json").is_err());
+        assert!(read_commands(r#"{"command":{}}"#).is_err());
+        // Its probes: the model list, then `/help` in print mode.
+        let probes = AGY.catalog_probes();
+        assert_eq!(probes[0].argv, ["agy", "models"]);
+        assert_eq!(
+            probes[1].argv,
+            ["agy", "-p", "/help", "--output-format", "json"]
+        );
+        assert!(
+            probes
+                .iter()
+                .all(|p| p.stdin.is_empty() && p.until.is_none())
+        );
+    }
+
+    #[test]
+    fn agy_argv_carries_the_chosen_model_and_mode() {
+        // Task 0: `--model <id as agy models lists it>` alone; an id with an effort plus a
+        // different `--effort` is refused, so no `--effort` is passed.
+        let mut s = start(None, Some("plan"), &["--model", "x", "--effort", "low"]);
+        // Nothing chosen: a preset's flags pass through.
+        let a = AGY.argv(&s);
+        assert!(
+            a.ends_with(&["--model", "x", "--effort", "low"].map(String::from)),
+            "{a:?}"
+        );
+        s.model = Some("claude-opus-5-5-high".into());
+        s.effort = Some("high".into());
+        let a = AGY.argv(&s);
+        assert_eq!(
+            a.windows(2)
+                .filter(|w| *w == ["--model", "claude-opus-5-5-high"])
+                .count(),
+            1,
+            "{a:?}"
+        );
+        assert!(!a.iter().any(|w| w == "--effort" || w == "x"), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["--mode", "plan"]));
+        // The choice turns into those values by the effort's own id.
+        let models = read_models(MODELS);
+        let opus = models
+            .iter()
+            .find(|m| m.label == "Claude Opus 5.5")
+            .unwrap();
+        assert_eq!(
+            AGY.model_flags(opus, Some("high")),
+            ("claude-opus-5-5-high".to_string(), None)
+        );
+        assert_eq!(
+            AGY.model_flags(opus, None),
+            ("claude-opus-5-5".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn agy_modes_keep_their_names() {
+        let ids: Vec<&str> = AGY.info().modes.iter().map(|m| m.id).collect();
+        assert_eq!(ids, ["accept-edits", "auto", "plan"]);
+        assert!(
+            AGY.info()
+                .modes
+                .iter()
+                .all(|m| !m.label.is_empty() && !m.about.is_empty())
+        );
+    }
+
+    const USAGE: &str = include_str!("fixtures/agy-usage.json");
+
+    #[test]
+    fn agy_usage_reads_groups_and_buckets() {
+        let groups = AGY.read_usage(USAGE).unwrap();
+        let v: Value = serde_json::from_str(USAGE).unwrap();
+        let listed = v["command"]["data"]["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), listed.len());
+        for (g, l) in groups.iter().zip(listed) {
+            assert_eq!(g.name, l["name"].as_str().unwrap());
+            assert_eq!(g.about.as_deref(), l["description"].as_str());
+            let buckets = l["buckets"].as_array().unwrap();
+            assert_eq!(g.limits.len(), buckets.len());
+            for (limit, b) in g.limits.iter().zip(buckets) {
+                let want = UsageLimit::Read {
+                    name: b["name"].as_str().unwrap().into(),
+                    left_pct: (b["remaining_fraction"].as_f64().unwrap() * 100.0).round() as u8,
+                    resets: Some(Reset::At(
+                        rfc3339_unix(b["reset_time"].as_str().unwrap()).unwrap(),
+                    )),
+                };
+                assert_eq!(*limit, want);
+            }
+        }
+        assert!(matches!(
+            groups[0].limits[0],
+            UsageLimit::Read { left_pct: 23, .. }
+        ));
+        // A bucket without a fraction is only its name; no number is made up.
+        let odd =
+            r#"{"command":{"data":{"groups":[{"name":"G","buckets":[{"name":"Mystery"}]}]}}}"#;
+        let g = AGY.read_usage(odd).unwrap();
+        assert_eq!(g[0].about, None);
+        assert_eq!(g[0].limits, [UsageLimit::Text("Mystery".into())]);
+        assert_eq!(
+            AGY.read_usage("not json"),
+            Err("Couldn't read usage".into())
+        );
+        assert!(AGY.read_usage(r#"{"command":{}}"#).is_err());
+    }
+
+    #[test]
+    fn agy_usage_runs_in_print_mode() {
+        let p = AGY.usage_probe().expect("agy has /usage");
+        assert_eq!(p.argv, ["agy", "-p", "/usage", "--output-format", "json"]);
+        assert!(p.stdin.is_empty() && p.until.is_none());
+    }
+
+    #[test]
+    fn rfc3339_reads_offsets_and_fractions() {
+        for t in [
+            "2026-11-22T14:59:00Z",
+            "2026-11-22T21:59:00+07:00",
+            "2026-11-22T14:59:00.123456+00:00",
+        ] {
+            assert_eq!(rfc3339_unix(t), Some(1795359540), "{t}");
+        }
+        assert_eq!(rfc3339_unix("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(rfc3339_unix("2026-11-22T09:59:00-05:00"), Some(1795359540));
+        for t in [
+            "nonsense",
+            "",
+            "2026-13-22T14:59:00Z",
+            "2026-11-22T14:59:00",
+        ] {
+            assert_eq!(rfc3339_unix(t), None, "{t}");
+        }
+    }
+
+    #[test]
+    fn agy_set_actions_write_nothing() {
+        let mut t = AGY.translator();
+        for a in [
+            Action::SetModel {
+                model: "gemini-3.8-flash-low".into(),
+            },
+            Action::SetEffort {
+                effort: "low".into(),
+            },
+            Action::SetMode {
+                mode: "plan".into(),
+            },
+        ] {
+            assert!(t.encode(&a).is_empty(), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn agy_applies_per_task_0() {
+        for kind in [
+            ChangeKind::Model,
+            ChangeKind::Effort,
+            ChangeKind::Mode,
+            ChangeKind::Folder,
+        ] {
+            assert_eq!(AGY.applies(kind), Applies::Restart, "{kind:?}");
+        }
+    }
+
+    /// Task 0: agy moves a conversation (same `--conversation` from the new folder); its
+    /// version isn't read, and it knows no folders of its own.
+    #[test]
+    fn agy_moves_a_conversation_and_knows_no_folders() {
+        assert!(AGY.can_move(None));
+        assert!(AGY.version_probe().is_none());
+        assert!(AGY.known_folders(Path::new("/nonexistent")).is_empty());
     }
 }

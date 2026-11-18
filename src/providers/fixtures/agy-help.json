@@ -1,0 +1,75 @@
+{
+  "conversation_id": "",
+  "status": "SUCCESS",
+  "response": "/agents\tList available custom agents\n/changelog\tShow release notes and changes\n/config (settings)\tOpen settings panel\n/credits\tShow remaining G1 credits and purchase link\n/effort\tSet the reasoning effort\n/help\tShow available commands and keybindings\n/hooks\tManage hook configurations for tool events\n/model\tSet a model, or run a single prompt on another model\n/permissions\tManage tool permissions\n/plugin\tManage, discover, install, uninstall, enable, and disable plugins\n/skills\tList available skills\n/usage (quota)\tView model quota usage\n",
+  "duration_seconds": 0,
+  "num_turns": 0,
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "thinking_tokens": 0,
+    "cache_read_tokens": 0,
+    "total_tokens": 0
+  },
+  "command": {
+    "name": "help",
+    "data": {
+      "commands": [
+        {
+          "name": "agents",
+          "description": "List available custom agents"
+        },
+        {
+          "name": "changelog",
+          "description": "Show release notes and changes"
+        },
+        {
+          "name": "config",
+          "aliases": [
+            "settings"
+          ],
+          "description": "Open settings panel"
+        },
+        {
+          "name": "credits",
+          "description": "Show remaining G1 credits and purchase link"
+        },
+        {
+          "name": "effort",
+          "description": "Set the reasoning effort"
+        },
+        {
+          "name": "help",
+          "description": "Show available commands and keybindings"
+        },
+        {
+          "name": "hooks",
+          "description": "Manage hook configurations for tool events"
+        },
+        {
+          "name": "model",
+          "description": "Set a model, or run a single prompt on another model"
+        },
+        {
+          "name": "permissions",
+          "description": "Manage tool permissions"
+        },
+        {
+          "name": "plugin",
+          "description": "Manage, discover, install, uninstall, enable, and disable plugins"
+        },
+        {
+          "name": "skills",
+          "description": "List available skills"
+        },
+        {
+          "name": "usage",
+          "aliases": [
+            "quota"
+          ],
+          "description": "View model quota usage"
+        }
+      ]
+    }
+  }
+}

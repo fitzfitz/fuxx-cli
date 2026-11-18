@@ -15,9 +15,122 @@ static INFO: ProviderInfo = ProviderInfo {
     badge: "CC",
     badge_rgb: 0x7a4a2a,
     interrupts: true,
-    modes: &[],
+    modes: &[
+        ModeChoice {
+            id: "default",
+            label: "Ask before edits",
+            about: "Asks before it edits files or runs commands",
+        },
+        ModeChoice {
+            id: "acceptEdits",
+            label: "Accept edits",
+            about: "Edits files without asking; asks before running commands",
+        },
+        ModeChoice {
+            id: "plan",
+            label: "Plan",
+            about: "Plans first and asks for approval before changing anything",
+        },
+        ModeChoice {
+            id: "auto",
+            label: "Auto",
+            about: "Decides for itself which actions need asking",
+        },
+    ],
     default_mode: None,
 };
+
+/// The id the start-up `initialize` request carries, and its answer's `request_id`.
+const INIT_ID: &str = "fuxx-init";
+
+/// The `initialize` request line.
+fn initialize_line() -> String {
+    json!({"type": "control_request", "request_id": INIT_ID,
+        "request": {"subtype": "initialize", "hooks": null}})
+    .to_string()
+}
+
+/// Whether `line` is the answer to `initialize`.
+fn is_initialize_answer(line: &str) -> bool {
+    serde_json::from_str::<Value>(line).is_ok_and(|v| is_init_answer(&v))
+}
+
+fn is_init_answer(v: &Value) -> bool {
+    v["type"] == "control_response"
+        && v["response"]["request_id"] == INIT_ID
+        && v["response"]["subtype"] == "success"
+}
+
+/// The aliases `--model` takes, as a menu of last resort: the order the design lists them.
+const FALLBACK_ALIASES: &[(&str, &str)] = &[
+    ("opus", "Opus"),
+    ("sonnet", "Sonnet"),
+    ("haiku", "Haiku"),
+    ("fable", "Fable"),
+];
+
+/// The effort levels Claude Code 2.1.326 lists for its current model aliases (`initialize`).
+const FALLBACK_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// The catalog an `initialize` answer's `response` holds. `models` missing or empty: the
+/// aliases stand in (`fallback_models`). `commands` come first, then the `agents`.
+fn catalog_of(response: &Value) -> Catalog {
+    let mut models: Vec<ModelChoice> = response["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let id = s(&m["value"])?;
+            Some(ModelChoice {
+                label: s(&m["displayName"]).unwrap_or_else(|| id.clone()),
+                resolves_to: s(&m["resolvedModel"]),
+                efforts: m["supportedEffortLevels"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|l| {
+                        Some(EffortChoice {
+                            level: s(l)?,
+                            model_id: None,
+                        })
+                    })
+                    .collect(),
+                id,
+            })
+        })
+        .collect();
+    let fallback_models = models.is_empty();
+    if fallback_models {
+        models = CLAUDE.fallback_models();
+    }
+    let named = |list: &Value, kind: CommandKind| -> Vec<AgentCommand> {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                Some(AgentCommand {
+                    name: s(&c["name"])?,
+                    about: s(&c["description"]).unwrap_or_default(),
+                    kind,
+                    aliases: c["aliases"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(s)
+                        .collect(),
+                })
+            })
+            .collect()
+    };
+    let mut commands = named(&response["commands"], CommandKind::Command);
+    commands.extend(named(&response["agents"], CommandKind::Agent));
+    Catalog {
+        models,
+        fallback_models,
+        commands,
+        mode: s(&response["current_permission_mode"]),
+    }
+}
 
 /// Flags fuxx sets itself, with whether each takes a value: an `extra_args` entry naming one
 /// is dropped (with its value).
@@ -65,8 +178,142 @@ impl Provider for Claude {
             (None, Some(id)) => a.extend(["--session-id".to_string(), id.clone()]),
             (None, None) => {}
         }
-        a.extend(pass_through(&start.extra_args, OWNED_FLAGS));
+        // What was chosen replaces the same flag in the preset; what wasn't, passes through.
+        let mut owned = OWNED_FLAGS.to_vec();
+        for (flag, value) in [
+            ("--model", &start.model),
+            ("--effort", &start.effort),
+            ("--permission-mode", &start.mode),
+        ] {
+            if let Some(value) = value {
+                owned.push((flag, true));
+                a.extend([flag.to_string(), value.clone()]);
+            }
+        }
+        a.extend(pass_through(&start.extra_args, &owned));
         a
+    }
+
+    /// The stream-json process without a conversation, asked `initialize`: it answers in about
+    /// half a second and leaves no transcript (Task 0).
+    fn catalog_probes(&self) -> Vec<Probe> {
+        let start = Start {
+            cwd: PathBuf::from("."),
+            resume: None,
+            new_id: None,
+            mode: None,
+            model: None,
+            effort: None,
+            extra_args: Vec::new(),
+        };
+        vec![Probe {
+            argv: self.argv(&start),
+            stdin: vec![initialize_line()],
+            until: Some(is_initialize_answer),
+        }]
+    }
+
+    /// The tab's own process answers `initialize` (its `hello`): `Event::Catalog`.
+    fn catalog_on_start(&self) -> bool {
+        true
+    }
+
+    fn read_catalog(&self, outputs: &[String]) -> Result<Catalog, String> {
+        outputs
+            .iter()
+            .flat_map(|o| o.lines())
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .find(is_init_answer)
+            .map(|v| catalog_of(&v["response"]["response"]))
+            .ok_or_else(|| "no answer to initialize".to_string())
+    }
+
+    /// The commands the box answers with its own menus (a whole line, no arguments).
+    fn own_command(&self, typed: &str) -> Option<BoxCommand> {
+        match typed.trim() {
+            "/usage" => Some(BoxCommand::Usage),
+            "/model" => Some(BoxCommand::Model),
+            "/effort" => Some(BoxCommand::Effort),
+            _ => None,
+        }
+    }
+
+    /// `/usage` in print mode ($0, no turn); `--no-session-persistence` keeps it from leaving a
+    /// transcript behind (Task 0).
+    fn usage_probe(&self) -> Option<Probe> {
+        Some(Probe {
+            argv: [
+                "claude",
+                "-p",
+                "/usage",
+                "--output-format",
+                "json",
+                "--no-session-persistence",
+            ]
+            .map(String::from)
+            .to_vec(),
+            stdin: Vec::new(),
+            until: None,
+        })
+    }
+
+    /// The result's text lines (`Current session: 13% used · resets Nov 17 at 8:10pm (UTC)`),
+    /// as one nameless group. A line that is no `name: value` (the header, "What's contributing
+    /// to your usage?" and what explains it) is no limit and is dropped; a limit line it can't
+    /// read stays as text.
+    fn read_usage(&self, output: &str) -> Result<Vec<UsageGroup>, String> {
+        let text = serde_json::from_str::<Value>(output)
+            .ok()
+            .filter(|v| !v["is_error"].as_bool().unwrap_or(false))
+            .and_then(|v| s(&v["result"]))
+            .ok_or_else(|| "Couldn't read usage".to_string())?;
+        Ok(vec![UsageGroup {
+            name: String::new(),
+            about: None,
+            limits: text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(usage_line)
+                .filter(|l| match l {
+                    UsageLimit::Text(text) => text.contains(": "),
+                    UsageLimit::Read { .. } => true,
+                })
+                .collect(),
+        }])
+    }
+
+    fn fallback_models(&self) -> Vec<ModelChoice> {
+        FALLBACK_ALIASES
+            .iter()
+            .map(|(id, label)| ModelChoice {
+                id: id.to_string(),
+                label: label.to_string(),
+                resolves_to: None,
+                // Haiku takes no effort (Claude Code lists none for it).
+                efforts: if *id == "haiku" {
+                    Vec::new()
+                } else {
+                    FALLBACK_EFFORTS
+                        .iter()
+                        .map(|l| EffortChoice {
+                            level: l.to_string(),
+                            model_id: None,
+                        })
+                        .collect()
+                },
+            })
+            .collect()
+    }
+
+    /// Model, effort and mode switch live on the running process (`set_model`,
+    /// `apply_flag_settings`, `set_permission_mode`: Task 0, before the first message and
+    /// mid-conversation); a folder is a restart (`--resume` from the new folder).
+    fn applies(&self, change: ChangeKind) -> Applies {
+        match change {
+            ChangeKind::Model | ChangeKind::Effort | ChangeKind::Mode => Applies::Live,
+            ChangeKind::Folder => Applies::Restart,
+        }
     }
 
     /// A session id is a UUID.
@@ -106,8 +353,25 @@ impl Provider for Claude {
         }
     }
 
+    /// `initialize`'s `default` entry ("Default (recommended)") stands for whichever model
+    /// Claude picks; an alias such as `opus` names the same model by its own name.
+    fn stands_for_default(&self, id: &str) -> bool {
+        id == "default"
+    }
+
     fn translator(&self) -> Box<dyn Translator> {
         Box::new(ClaudeTranslator::default())
+    }
+
+    /// Image content blocks in a user message (Task 0: `claude-image.jsonl`).
+    fn sends_images(&self) -> bool {
+        true
+    }
+
+    /// The API's per-image limit, 5 MB, is on the base64 it is sent as (Anthropic's vision
+    /// docs), so a file of 3.75 MB is the most it takes (R8).
+    fn image_limit(&self) -> ImageLimit {
+        ImageLimit::Encoded(5 * 1024 * 1024)
     }
 
     /// "No conversation found with session ID: …" (on stderr and in the `result`'s errors).
@@ -118,14 +382,83 @@ impl Provider for Claude {
     /// `--resume` doesn't replay on stdout (Task 0): the turns come from Claude's transcript of
     /// the conversation. None to resume, no home, or a missing or unreadable file: none.
     fn history(&self, start: &Start) -> Vec<Past> {
-        let (Some(id), Some(home)) = (&start.resume, std::env::var_os("HOME")) else {
-            return Vec::new();
-        };
-        let cwd = std::fs::canonicalize(&start.cwd).unwrap_or_else(|_| start.cwd.clone());
-        std::fs::read_to_string(transcript_path(Path::new(&home), &cwd, id))
-            .map(|text| transcript_events(&text))
+        match std::env::var_os("HOME") {
+            Some(home) => history_in(Path::new(&home), start),
+            None => Vec::new(),
+        }
+    }
+
+    /// `claude --version` (`2.1.326 (Claude Code)`): Move needs `MOVE_SINCE`.
+    fn version_probe(&self) -> Option<Probe> {
+        Some(Probe {
+            argv: vec![self.program().to_string(), "--version".into()],
+            stdin: Vec::new(),
+            until: None,
+        })
+    }
+
+    /// `--resume` from another folder carries a conversation on since `MOVE_SINCE` (Task 0
+    /// recorded it with 2.1.326); an older or unknown version can't.
+    fn can_move(&self, version: Option<&str>) -> bool {
+        version.is_some_and(|v| version_at_least(v, MOVE_SINCE))
+    }
+
+    /// The `projects` keys of `~/.claude.json` (only read; missing or unreadable: none).
+    fn known_folders(&self, home: &Path) -> Vec<PathBuf> {
+        std::fs::read_to_string(home.join(".claude.json"))
+            .map(|text| claude_json_projects(&text))
             .unwrap_or_default()
     }
+}
+
+/// The first Claude Code that resumes a conversation from another folder.
+const MOVE_SINCE: (u32, u32, u32) = (2, 1, 223);
+
+/// Whether `claude --version`'s text (`2.1.326 (Claude Code)`) names a version at least `min`.
+/// Anything else: false.
+pub fn version_at_least(text: &str, min: (u32, u32, u32)) -> bool {
+    let word = text.split_whitespace().next().unwrap_or("");
+    let parts: Vec<u32> = word.split('.').map_while(|n| n.parse().ok()).collect();
+    match parts[..] {
+        [a, b, c, ..] => (a, b, c) >= min,
+        _ => false,
+    }
+}
+
+/// The folders `~/.claude.json` lists as projects (its `projects` object's keys); none from
+/// anything unreadable.
+pub fn claude_json_projects(text: &str) -> Vec<PathBuf> {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| {
+            v["projects"]
+                .as_object()
+                .map(|projects| projects.keys().map(PathBuf::from).collect())
+        })
+        .unwrap_or_default()
+}
+
+/// The history of the conversation `start` resumes, from its transcript under `home`. Claude
+/// keeps a transcript under the folder the conversation started in, also after it moved (Task
+/// 0: `--resume` from another folder writes on in the first folder's entry): so when it isn't
+/// under `start`'s folder, it is looked for under every folder's entry (an id is unique). An id
+/// not of a session id's shape (a path, `..`) reads nothing.
+fn history_in(home: &Path, start: &Start) -> Vec<Past> {
+    // The id comes from the sessions file: only a session id's shape is joined into a path.
+    let Some(id) = start.resume.as_ref().filter(|id| uuid_shaped(id)) else {
+        return Vec::new();
+    };
+    let cwd = std::fs::canonicalize(&start.cwd).unwrap_or_else(|_| start.cwd.clone());
+    let here = transcript_path(home, &cwd, id);
+    let text = std::fs::read_to_string(&here).ok().or_else(|| {
+        let name = here.file_name()?;
+        std::fs::read_dir(home.join(".claude").join("projects"))
+            .ok()?
+            .flatten()
+            .find_map(|entry| std::fs::read_to_string(entry.path().join(name)).ok())
+    });
+    text.map(|text| transcript_events(&text))
+        .unwrap_or_default()
 }
 
 /// Where Claude keeps conversation `id` begun in folder `cwd` (its realpath: the caller resolves
@@ -235,6 +568,23 @@ struct ClaudeTranslator {
     pending: HashMap<String, (Value, Value)>,
     /// The model named by `system/init`, whose `modelUsage` entry sizes the context.
     model: Option<String>,
+    /// The live changes asked and not answered yet, by request id (`fuxx-set-<n>`).
+    asked: HashMap<String, Asked>,
+    /// The last `fuxx-set-<n>` written.
+    sets: u32,
+}
+
+/// A live change asked of Claude (Task 0's requests), and what was asked for.
+enum Asked {
+    /// `set_model`: answered with the resolved id.
+    Model(String),
+    /// `set_permission_mode`: answered with the mode.
+    Mode(String),
+    /// `apply_flag_settings` with `effortLevel`: answered with no body; `read_back` is the
+    /// `get_settings` asked after it.
+    Effort { read_back: String },
+    /// That `get_settings`: `applied.effort` is the effort now in use.
+    ReadEffort(String),
 }
 
 fn s(v: &Value) -> Option<String> {
@@ -396,6 +746,82 @@ fn context_pct(result: &Value, model: Option<&str>) -> Option<u8> {
     (window > 0).then(|| (used * 100 / window).min(100) as u8)
 }
 
+/// `name: N% used · resets Nov 17 at 8:09pm (UTC)` as a limit with the percent left
+/// (the `· resets …` part may be missing); any other line stays text.
+fn usage_line(line: &str) -> UsageLimit {
+    let read = || {
+        let (name, rest) = line.split_once(": ")?;
+        let (used, rest) = rest.split_once("% used")?;
+        let used: u8 = used.trim().parse().ok().filter(|u| *u <= 100)?;
+        let resets = match rest.trim().strip_prefix("· resets ") {
+            Some(when) => Some(Reset::Words(strip_zone(when.trim()).to_string())),
+            None if rest.trim().is_empty() => None,
+            None => return None,
+        };
+        Some(UsageLimit::Read {
+            name: name.to_string(),
+            left_pct: 100 - used,
+            resets,
+        })
+    };
+    read().unwrap_or_else(|| UsageLimit::Text(line.to_string()))
+}
+
+/// `Nov 17 at 8:09pm (UTC)` without its trailing zone.
+fn strip_zone(when: &str) -> &str {
+    match when.rsplit_once(" (") {
+        Some((time, zone)) if zone.ends_with(')') => time,
+        _ => when,
+    }
+}
+
+/// A `rate_limit_event`'s limit as `/usage` names it (any other type keeps its raw name).
+fn limit_name(kind: &str) -> String {
+    match kind {
+        "five_hour" => "Current session",
+        "seven_day" => "Current week (all models)",
+        other => other,
+    }
+    .to_string()
+}
+
+fn rate_limit(v: &Value) -> Vec<Event> {
+    let info = &v["rate_limit_info"];
+    let state = match info["status"].as_str() {
+        Some("allowed") => LimitState::Fine,
+        Some("allowed_warning") => LimitState::Close,
+        Some("rejected") => LimitState::Reached,
+        _ => return Vec::new(),
+    };
+    let Some(kind) = info["rateLimitType"].as_str() else {
+        return Vec::new();
+    };
+    vec![Event::RateLimit(RateLimit {
+        limit: limit_name(kind),
+        state,
+        resets_at: info["resetsAt"].as_i64(),
+    })]
+}
+
+/// A message's `content`: the text as it is, or with images a block each, then the text block
+/// (none when there is no text: the API refuses an empty one).
+fn content(text: &str, images: &[Picture]) -> Value {
+    if images.is_empty() {
+        return json!(text);
+    }
+    let mut blocks: Vec<Value> = images
+        .iter()
+        .map(|p| {
+            json!({"type": "image",
+            "source": {"type": "base64", "media_type": p.media_type, "data": &*p.data}})
+        })
+        .collect();
+    if !text.is_empty() {
+        blocks.push(json!({"type": "text", "text": text}));
+    }
+    Value::Array(blocks)
+}
+
 fn control_response(request_id: &str, response: Value) -> String {
     json!({"type": "control_response",
         "response": {"subtype": "success", "request_id": request_id, "response": response}})
@@ -403,6 +829,65 @@ fn control_response(request_id: &str, response: Value) -> String {
 }
 
 impl ClaudeTranslator {
+    /// The next request id for a live change.
+    fn set_id(&mut self) -> String {
+        self.sets += 1;
+        format!("fuxx-set-{}", self.sets)
+    }
+
+    /// A live change's request under `id`, kept as `asked` until its answer.
+    fn ask(&mut self, id: String, request: Value, asked: Asked) -> String {
+        let line =
+            json!({"type": "control_request", "request_id": id, "request": request}).to_string();
+        self.asked.insert(id, asked);
+        line
+    }
+
+    /// The answer to a live change fuxx asked (any other control response is not one).
+    fn answered(&mut self, v: &Value) -> Vec<Event> {
+        let response = &v["response"];
+        let Some(asked) = response["request_id"]
+            .as_str()
+            .and_then(|id| self.asked.remove(id))
+        else {
+            return Vec::new();
+        };
+        let kind = match &asked {
+            Asked::Model(_) => ChangeKind::Model,
+            Asked::Mode(_) => ChangeKind::Mode,
+            Asked::Effort { .. } | Asked::ReadEffort(_) => ChangeKind::Effort,
+        };
+        if response["subtype"] != "success" {
+            if let Asked::Effort { read_back } = &asked {
+                // Its read-back would only say the effort that stayed.
+                self.asked.remove(read_back);
+            }
+            let why = s(&response["error"]).unwrap_or_else(|| "Claude refused it".into());
+            return vec![Event::Applied {
+                kind,
+                value: why,
+                ok: false,
+            }];
+        }
+        let body = &response["response"];
+        let value = match asked {
+            Asked::Model(asked) => {
+                let model = s(&body["model"]).unwrap_or(asked);
+                // The context is measured against the model it now runs.
+                self.model = Some(model.clone());
+                model
+            }
+            Asked::Mode(asked) => s(&body["mode"]).unwrap_or(asked),
+            Asked::Effort { .. } => return Vec::new(),
+            Asked::ReadEffort(asked) => s(&body["applied"]["effort"]).unwrap_or(asked),
+        };
+        vec![Event::Applied {
+            kind,
+            value,
+            ok: true,
+        }]
+    }
+
     fn assistant(&self, v: &Value) -> Vec<Event> {
         let message = s(&v["message"]["id"]).unwrap_or_default();
         let parent = s(&v["parent_tool_use_id"]);
@@ -464,11 +949,22 @@ impl ClaudeTranslator {
         match v["subtype"].as_str() {
             Some("init") => {
                 self.model = s(&v["model"]);
-                vec![Event::Started {
+                let mut out = vec![Event::Started {
                     conversation: s(&v["session_id"]).unwrap_or_default(),
                     model: s(&v["model"]),
-                }]
+                }];
+                if let Some(skills) = v["skills"].as_array() {
+                    out.push(Event::Skills(skills.iter().filter_map(s).collect()));
+                }
+                out.extend(s(&v["permissionMode"]).map(Event::Mode));
+                out
             }
+            // The mode it runs in, also one it changed to itself (R9); a status without one
+            // (`requesting`, …) says nothing.
+            Some("status") => s(&v["permissionMode"])
+                .map(Event::Mode)
+                .into_iter()
+                .collect(),
             Some("permission_denied") => s(&v["message"])
                 .or_else(|| s(&v["tool_name"]).map(|t| format!("{t} was denied")))
                 .map(Event::Notice)
@@ -569,11 +1065,7 @@ impl ClaudeTranslator {
 
 impl Translator for ClaudeTranslator {
     fn hello(&mut self) -> Vec<String> {
-        vec![
-            json!({"type": "control_request", "request_id": "fuxx-init",
-            "request": {"subtype": "initialize", "hooks": null}})
-            .to_string(),
-        ]
+        vec![initialize_line()]
     }
 
     fn decode(&mut self, line: &str) -> Vec<Event> {
@@ -582,10 +1074,15 @@ impl Translator for ClaudeTranslator {
         };
         match v["type"].as_str() {
             Some("system") => self.system(&v),
+            Some("control_response") if is_init_answer(&v) => {
+                vec![Event::Catalog(catalog_of(&v["response"]["response"]))]
+            }
+            Some("control_response") => self.answered(&v),
             Some("stream_event") => self.stream_event(&v),
             Some("assistant") => self.assistant(&v),
             Some("user") => self.user(&v),
             Some("result") => self.result(&v),
+            Some("rate_limit_event") => rate_limit(&v),
             Some("control_request") if v["request"]["subtype"] == "can_use_tool" => {
                 self.permission(&v)
             }
@@ -595,9 +1092,9 @@ impl Translator for ClaudeTranslator {
 
     fn encode(&mut self, action: &Action) -> Vec<String> {
         match action {
-            Action::Send { text } => vec![
+            Action::Send { text, images } => vec![
                 json!({"type": "user",
-                "message": {"role": "user", "content": text}})
+                "message": {"role": "user", "content": content(text, images)}})
                 .to_string(),
             ],
             Action::Interrupt => vec![
@@ -614,6 +1111,34 @@ impl Translator for ClaudeTranslator {
                     response["updatedPermissions"] = suggestions;
                 }
                 vec![control_response(id, response)]
+            }
+            Action::SetModel { model } => {
+                let id = self.set_id();
+                let request = json!({"subtype": "set_model", "model": model});
+                vec![self.ask(id, request, Asked::Model(model.clone()))]
+            }
+            Action::SetMode { mode } => {
+                let id = self.set_id();
+                let request = json!({"subtype": "set_permission_mode", "mode": mode});
+                vec![self.ask(id, request, Asked::Mode(mode.clone()))]
+            }
+            // The SDK's `applyFlagSettings`; its answer has no body, so `get_settings`, asked
+            // right after it, reads the effort back (Task 0).
+            Action::SetEffort { effort } => {
+                let (apply_id, read_id) = (self.set_id(), self.set_id());
+                let apply = self.ask(
+                    apply_id,
+                    json!({"subtype": "apply_flag_settings", "settings": {"effortLevel": effort}}),
+                    Asked::Effort {
+                        read_back: read_id.clone(),
+                    },
+                );
+                let read = self.ask(
+                    read_id,
+                    json!({"subtype": "get_settings"}),
+                    Asked::ReadEffort(effort.clone()),
+                );
+                vec![apply, read]
             }
             Action::Deny { id, reason } => {
                 if self.pending.remove(id).is_none() {
@@ -639,6 +1164,18 @@ mod tests {
         text.lines().flat_map(|l| t.decode(l)).collect()
     }
 
+    #[test]
+    fn own_commands() {
+        assert_eq!(CLAUDE.own_command("/usage"), Some(BoxCommand::Usage));
+        assert_eq!(CLAUDE.own_command("/model"), Some(BoxCommand::Model));
+        assert_eq!(CLAUDE.own_command("/effort"), Some(BoxCommand::Effort));
+        assert_eq!(CLAUDE.own_command(" /usage \n"), Some(BoxCommand::Usage));
+        // Anything else (or a command with arguments) is sent as text.
+        assert_eq!(CLAUDE.own_command("/clear"), None);
+        assert_eq!(CLAUDE.own_command("/model sonnet"), None);
+        assert_eq!(CLAUDE.own_command("usage"), None);
+    }
+
     fn lines_of(text: &str) -> Vec<Value> {
         text.lines()
             .map(|l| serde_json::from_str(l).unwrap())
@@ -648,7 +1185,9 @@ mod tests {
     #[test]
     fn text_fixture_streams_then_finishes() {
         let ev = decode_all(&CLAUDE, include_str!("fixtures/claude-text.jsonl"));
-        assert!(matches!(ev.first(), Some(Event::Started { .. })));
+        // The tab's own `initialize` answer (a `Catalog`) comes first, then `Started`.
+        assert!(matches!(ev.first(), Some(Event::Catalog(_))));
+        assert!(ev.iter().any(|e| matches!(e, Event::Started { .. })));
         assert!(ev.iter().any(|e| matches!(e, Event::TextDelta { .. })));
         assert!(matches!(ev.last(), Some(Event::TurnDone { ok: true, .. })));
         // The delta and the finished message share the API message id.
@@ -683,7 +1222,7 @@ mod tests {
     fn started_carries_session_and_model() {
         let ev = decode_all(&CLAUDE, include_str!("fixtures/claude-text.jsonl"));
         assert_eq!(
-            ev.first(),
+            ev.iter().find(|e| matches!(e, Event::Started { .. })),
             Some(&Event::Started {
                 conversation: "ed50a2b7-6678-4a7c-9ed9-cfa63240ae19".into(),
                 model: Some("claude-opus-5-5".into()),
@@ -1101,13 +1640,18 @@ mod tests {
             new_id: None,
             mode: None,
             extra_args: Vec::new(),
+            model: None,
+            effort: None,
         };
-        assert!(CLAUDE.history(&start).is_empty());
+        // A made-up home (never the real one: a miss looks under every folder's entry).
+        let home = scratch_home("missing");
+        assert!(history_in(&home, &start).is_empty());
         let fresh = Start {
             resume: None,
             ..start
         };
-        assert!(CLAUDE.history(&fresh).is_empty());
+        assert!(history_in(&home, &fresh).is_empty());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// An edit's diff is one hunk `diff_view::parse_diff` reads (it needs `@@ -a +c @@`).
@@ -1134,7 +1678,10 @@ mod tests {
     #[test]
     fn send_and_interrupt_encode() {
         let mut t = CLAUDE.translator();
-        let out = t.encode(&Action::Send { text: "hi".into() });
+        let out = t.encode(&Action::Send {
+            text: "hi".into(),
+            images: Vec::new(),
+        });
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(
             v,
@@ -1144,6 +1691,93 @@ mod tests {
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(v["type"], "control_request");
         assert_eq!(v["request"]["subtype"], "interrupt");
+    }
+
+    #[test]
+    fn base64_vectors() {
+        // RFC 4648's test vectors, and the empty input.
+        for (plain, coded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(plain.as_bytes()), coded, "{plain:?}");
+        }
+        assert_eq!(base64(&[0xfb, 0xff, 0xfe]), "+//+", "the + and / digits");
+    }
+
+    #[test]
+    fn claudes_image_limit_is_5_mb_after_base64() {
+        // Anthropic's vision docs: the per-image 5 MB limit is on the base64-encoded image.
+        assert_eq!(
+            CLAUDE.image_limit(),
+            crate::providers::ImageLimit::Encoded(5 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn a_send_with_an_image_is_a_content_array() {
+        assert!(CLAUDE.sends_images());
+        let mut t = CLAUDE.translator();
+        let picture = Picture::new("image/png", b"foo".to_vec());
+        let out = t.encode(&Action::Send {
+            text: "what colour".into(),
+            images: vec![picture.clone(), picture],
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        let image = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}});
+        assert_eq!(
+            v,
+            json!({"type":"user","message":{"role":"user","content":[
+                image.clone(), image, {"type":"text","text":"what colour"}]}})
+        );
+        // An image alone has no (empty) text block: the API refuses one.
+        let out = t.encode(&Action::Send {
+            text: String::new(),
+            images: vec![Picture::new("image/png", b"foo".to_vec())],
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(v["message"]["content"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn encode_uses_the_pictures_data_as_it_is() {
+        // The base64 is made once, off the UI thread, when the picture is built; `encode`
+        // (on the UI thread) only copies it.
+        let picture = Picture {
+            media_type: "image/png",
+            bytes: Arc::from(&b"foo"[..]),
+            data: Arc::from("VERBATIM"),
+        };
+        let out = CLAUDE.translator().encode(&Action::Send {
+            text: String::new(),
+            images: vec![picture],
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(v["message"]["content"][0]["source"]["data"], "VERBATIM");
+        assert_eq!(
+            Picture::new("image/png", b"foo".to_vec()).data.as_ref(),
+            "Zm9v"
+        );
+    }
+
+    #[test]
+    fn a_send_without_images_is_as_before() {
+        let mut t = CLAUDE.translator();
+        let out = t.encode(&Action::Send {
+            text: "hi".into(),
+            images: Vec::new(),
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(v["message"]["content"], "hi", "a plain string, not blocks");
+        assert!(
+            !crate::providers::agy::AGY.sends_images(),
+            "agy gets a path"
+        );
     }
 
     #[test]
@@ -1348,6 +1982,8 @@ mod tests {
                 "--resume".into(),
                 "x".into(),
             ],
+            model: None,
+            effort: None,
         };
         let a = CLAUDE.argv(&s);
         assert!(a.ends_with(&["--model".to_string(), "sonnet".to_string()]));
@@ -1385,6 +2021,8 @@ mod tests {
             ]
             .map(String::from)
             .to_vec(),
+            model: None,
+            effort: None,
         };
         let a = CLAUDE.argv(&s);
         assert!(a.windows(2).any(|w| w == ["--resume", "abc"]));
@@ -1474,6 +2112,8 @@ mod tests {
             extra_args: ["--session-id", "mine", "--model", "sonnet"]
                 .map(String::from)
                 .to_vec(),
+            model: None,
+            effort: None,
         };
         let a = CLAUDE.argv(&fresh);
         assert!(
@@ -1507,5 +2147,697 @@ mod tests {
         assert!(!CLAUDE.is_conversation_id("abc"));
         assert!(!CLAUDE.is_conversation_id("0b3c4a5e-1f2d-4e6a-9b8c-7d6e5f4a3b2c; rm -rf ~"));
         assert!(!CLAUDE.is_conversation_id(""));
+    }
+
+    const SLASH: &str = include_str!("fixtures/claude-slash.jsonl");
+    const INITIALIZE: &str = include_str!("fixtures/claude-initialize.jsonl");
+
+    fn the_answer(text: &str) -> String {
+        text.lines()
+            .find(|l| l.contains("fuxx-init") && l.contains("control_response"))
+            .expect("the initialize answer")
+            .to_string()
+    }
+
+    #[test]
+    fn the_initialize_answer_is_the_catalog() {
+        // `claude-slash.jsonl` (its line 9) holds the tab's own answer.
+        let c = CLAUDE.read_catalog(&[the_answer(SLASH)]).unwrap();
+        let ids: Vec<&str> = c.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["default", "opus", "fable"]);
+        let labels: Vec<&str> = c.models.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(labels, ["Default (recommended)", "Opus 5.5", "Fable 5.2"]);
+        assert_eq!(c.models[0].resolves_to.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(c.models[1].resolves_to.as_deref(), Some("claude-opus-5-5"));
+        for m in &c.models {
+            let levels: Vec<&str> = m.efforts.iter().map(|e| e.level.as_str()).collect();
+            assert_eq!(levels, ["low", "medium", "high", "xhigh", "max"]);
+            assert!(m.efforts.iter().all(|e| e.model_id.is_none()));
+        }
+        // Task 0's recording of this answer has one skill and one sub-agent (the made-up ones).
+        let kinds: Vec<(&str, CommandKind)> = c
+            .commands
+            .iter()
+            .map(|x| (x.name.as_str(), x.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("example-skill", CommandKind::Command),
+                ("example-agent", CommandKind::Agent)
+            ]
+        );
+        assert_eq!(c.mode.as_deref(), Some("default"));
+        assert!(!c.fallback_models);
+
+        // The start-up probe's own recording: all 14 models, Claude's commands, then its agents.
+        let c = CLAUDE.read_catalog(&[the_answer(INITIALIZE)]).unwrap();
+        assert_eq!(c.models.len(), 14);
+        let haiku = c
+            .models
+            .iter()
+            .find(|m| m.id == "claude-haiku-4-5-20251001");
+        assert!(haiku.is_some_and(|m| m.efforts.is_empty()), "no effort");
+        assert_eq!(c.commands.len(), 9);
+        assert_eq!(c.commands[0].name, "clear");
+        assert_eq!(c.commands[0].aliases, ["reset", "new"]);
+        assert_eq!(c.commands[0].kind, CommandKind::Command);
+        assert_eq!(c.commands[6].name, "Explore");
+        assert_eq!(c.commands[6].kind, CommandKind::Agent);
+        assert!(c.commands[6].about.starts_with("Fast read-only search"));
+    }
+
+    #[test]
+    fn the_fallback_list_gives_haiku_no_efforts() {
+        let models = CLAUDE.fallback_models();
+        let efforts = |id: &str| -> Vec<String> {
+            models
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap_or_else(|| panic!("{id} is in the list"))
+                .efforts
+                .iter()
+                .map(|e| e.level.clone())
+                .collect()
+        };
+        assert!(efforts("haiku").is_empty(), "Haiku takes no effort");
+        assert_eq!(efforts("opus"), FALLBACK_EFFORTS);
+        assert_eq!(efforts("sonnet"), FALLBACK_EFFORTS);
+    }
+
+    #[test]
+    fn no_models_falls_back_to_the_aliases() {
+        let line = json!({"type": "control_response", "response": {"subtype": "success",
+            "request_id": "fuxx-init", "response": {"commands": [], "agents": []}}});
+        let c = CLAUDE.read_catalog(&[line.to_string()]).unwrap();
+        let ids: Vec<&str> = c.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["opus", "sonnet", "haiku", "fable"]);
+        assert!(c.fallback_models);
+        assert_eq!(c.models, CLAUDE.fallback_models());
+        // An output without the answer line is no catalog.
+        let other = r#"{"type":"system","subtype":"hook_started"}"#;
+        assert!(CLAUDE.read_catalog(&[other.to_string()]).is_err());
+        assert!(CLAUDE.read_catalog(&[]).is_err());
+    }
+
+    #[test]
+    fn the_tabs_own_initialize_answer_is_a_catalog_event() {
+        let ev = decode_all(&CLAUDE, SLASH);
+        let catalogs: Vec<&Catalog> = ev
+            .iter()
+            .filter_map(|e| match e {
+                Event::Catalog(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(catalogs.len(), 1);
+        assert_eq!(catalogs[0].models.len(), 3);
+        let skills = ev.iter().find_map(|e| match e {
+            Event::Skills(s) => Some(s),
+            _ => None,
+        });
+        assert_eq!(skills.map(|s| s[0].as_str()), Some("example-skill"));
+    }
+
+    #[test]
+    fn claude_catalog_comes_with_its_start() {
+        assert!(CLAUDE.catalog_on_start());
+        assert!(!crate::providers::agy::AGY.catalog_on_start());
+        // Its probe is the stream-json process without a conversation, asked `initialize`.
+        let probes = CLAUDE.catalog_probes();
+        assert_eq!(probes.len(), 1);
+        let p = &probes[0];
+        assert_eq!(p.argv[0], "claude");
+        assert!(
+            !p.argv
+                .iter()
+                .any(|w| w == "--resume" || w == "--session-id")
+        );
+        assert_eq!(p.stdin.len(), 1);
+        assert!(p.stdin[0].contains(r#""subtype":"initialize""#));
+        let until = p.until.expect("it keeps running until answered");
+        assert!(until(&the_answer(SLASH)));
+        assert!(!until(r#"{"type":"system","subtype":"init"}"#));
+    }
+
+    #[test]
+    fn claude_modes_are_its_four() {
+        let i = CLAUDE.info();
+        let ids: Vec<&str> = i.modes.iter().map(|m| m.id).collect();
+        assert_eq!(ids, ["default", "acceptEdits", "plan", "auto"]);
+        let labels: Vec<&str> = i.modes.iter().map(|m| m.label).collect();
+        assert_eq!(labels, ["Ask before edits", "Accept edits", "Plan", "Auto"]);
+        assert!(i.modes.iter().all(|m| !m.about.is_empty()));
+        assert_eq!(i.default_mode, None);
+    }
+
+    #[test]
+    fn argv_passes_model_effort_and_mode_only_when_chosen() {
+        let mut s = Start {
+            cwd: "/tmp".into(),
+            resume: None,
+            new_id: None,
+            mode: None,
+            model: None,
+            effort: None,
+            extra_args: vec!["--model".into(), "x".into()],
+        };
+        let a = CLAUDE.argv(&s);
+        for flag in ["--effort", "--permission-mode"] {
+            assert!(!a.iter().any(|w| w == flag), "{flag}: {a:?}");
+        }
+        assert!(
+            a.ends_with(&["--model".to_string(), "x".to_string()]),
+            "{a:?}"
+        );
+        s.model = Some("sonnet".into());
+        s.effort = Some("low".into());
+        s.mode = Some("plan".into());
+        let a = CLAUDE.argv(&s);
+        for pair in [
+            ["--model", "sonnet"],
+            ["--effort", "low"],
+            ["--permission-mode", "plan"],
+        ] {
+            assert_eq!(
+                a.windows(2).filter(|w| *w == pair).count(),
+                1,
+                "{pair:?}: {a:?}"
+            );
+        }
+        assert!(
+            !a.contains(&"x".to_string()),
+            "the preset's --model is dropped: {a:?}"
+        );
+    }
+
+    const USAGE: &str = include_str!("fixtures/claude-usage.json");
+
+    fn usage_json(result: &str) -> String {
+        json!({"type": "result", "result": result}).to_string()
+    }
+
+    fn read(name: &str, left_pct: u8, resets: &str) -> UsageLimit {
+        UsageLimit::Read {
+            name: name.into(),
+            left_pct,
+            resets: Some(Reset::Words(resets.into())),
+        }
+    }
+
+    #[test]
+    fn usage_lines_read_as_percent_left() {
+        let text = "Current session: 0% used · resets Nov 17 at 8:09pm (UTC)\n\
+            Current week (all models): 37% used · resets Nov 22 at 9:59pm (UTC)";
+        let groups = CLAUDE.read_usage(&usage_json(text)).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "");
+        assert_eq!(groups[0].about, None);
+        assert_eq!(
+            groups[0].limits,
+            [
+                read("Current session", 100, "Nov 17 at 8:09pm"),
+                read("Current week (all models)", 63, "Nov 22 at 9:59pm"),
+            ]
+        );
+        let fixture = CLAUDE.read_usage(USAGE).unwrap();
+        let limits = &fixture[0].limits;
+        assert!(limits.iter().any(|l| matches!(l, UsageLimit::Read { .. })));
+        assert!(limits.contains(&read("Current week (Fable)", 100, "Nov 22 at 10pm")));
+    }
+
+    #[test]
+    fn an_unreadable_usage_line_is_kept_as_text() {
+        let groups = CLAUDE
+            .read_usage(&usage_json(
+                "Extra usage: off\n\n  \nCurrent session: 5% used",
+            ))
+            .unwrap();
+        assert_eq!(
+            groups[0].limits,
+            [
+                UsageLimit::Text("Extra usage: off".into()),
+                UsageLimit::Read {
+                    name: "Current session".into(),
+                    left_pct: 95,
+                    resets: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn usage_drops_the_header_and_the_explanations_but_keeps_a_limit_it_cannot_read() {
+        let text = "You are currently using your subscription to power your Claude Code usage\n\n\
+            Current session: 13% used \u{b7} resets Nov 17 at 8:10pm (UTC)\n\
+            Extra usage: off\n\
+            Current week: unavailable\n\
+            What's contributing to your usage?\n\
+            Most of it came from long sessions with a lot of context.";
+        let limits = &CLAUDE.read_usage(&usage_json(text)).unwrap()[0].limits;
+        assert_eq!(
+            limits,
+            &[
+                read("Current session", 87, "Nov 17 at 8:10pm"),
+                UsageLimit::Text("Extra usage: off".into()),
+                UsageLimit::Text("Current week: unavailable".into()),
+            ]
+        );
+        let fixture = CLAUDE.read_usage(USAGE).unwrap();
+        assert!(
+            fixture[0]
+                .limits
+                .iter()
+                .all(|l| matches!(l, UsageLimit::Read { .. })),
+            "the fixture's header is no limit: {:?}",
+            fixture[0].limits
+        );
+    }
+
+    #[test]
+    fn garbage_usage_is_an_error() {
+        assert_eq!(
+            CLAUDE.read_usage("not json"),
+            Err("Couldn't read usage".into())
+        );
+        assert!(CLAUDE.read_usage(r#"{"type":"result"}"#).is_err());
+        assert!(CLAUDE.read_usage("").is_err());
+    }
+
+    #[test]
+    fn claude_usage_runs_without_a_conversation_or_a_transcript() {
+        let p = CLAUDE.usage_probe().expect("claude has /usage");
+        assert_eq!(
+            p.argv,
+            [
+                "claude",
+                "-p",
+                "/usage",
+                "--output-format",
+                "json",
+                "--no-session-persistence"
+            ]
+        );
+        assert!(p.stdin.is_empty() && p.until.is_none());
+    }
+
+    #[test]
+    fn rate_limit_events_become_rate_limits() {
+        let limits: Vec<RateLimit> = decode_all(&CLAUDE, SLASH)
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::RateLimit(r) => Some(r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            limits,
+            [
+                RateLimit {
+                    limit: "Current week (all models)".into(),
+                    state: LimitState::Close,
+                    resets_at: Some(1794754800)
+                },
+                RateLimit {
+                    limit: "Current session".into(),
+                    state: LimitState::Close,
+                    resets_at: Some(1794535800)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rate_limit_status_maps_to_a_state_and_unknown_types_keep_their_name() {
+        let one = |status: &str, kind: &str| {
+            let line = json!({"type": "rate_limit_event",
+                "rate_limit_info": {"status": status, "rateLimitType": kind}})
+            .to_string();
+            CLAUDE.translator().decode(&line)
+        };
+        let state = |ev: Vec<Event>| match ev.as_slice() {
+            [Event::RateLimit(r)] => (r.limit.clone(), r.state, r.resets_at),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            state(one("allowed", "five_hour")),
+            ("Current session".into(), LimitState::Fine, None)
+        );
+        assert_eq!(
+            state(one("rejected", "opus_week")),
+            ("opus_week".into(), LimitState::Reached, None)
+        );
+        assert!(one("brand_new", "five_hour").is_empty());
+    }
+
+    /// The `Applied` events among `events`.
+    fn applied(events: Vec<Event>) -> Vec<(ChangeKind, String, bool)> {
+        events
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Applied { kind, value, ok } => Some((kind, value, ok)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `text` with each recorded request id the recorder chose turned into the one fuxx writes.
+    fn renamed(text: &str, ids: &[(&str, &str)]) -> String {
+        ids.iter().fold(text.to_string(), |t, (from, to)| {
+            t.replace(&format!("\"{from}\""), &format!("\"{to}\""))
+        })
+    }
+
+    #[test]
+    fn set_requests_encode_as_recorded() {
+        let mut t = CLAUDE.translator();
+        let lines = |t: &mut Box<dyn Translator>, a: Action| -> Vec<Value> {
+            t.encode(&a)
+                .iter()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect()
+        };
+        let request = |id: &str, request: Value| json!({"type": "control_request", "request_id": id, "request": request});
+        assert_eq!(
+            lines(
+                &mut t,
+                Action::SetModel {
+                    model: "sonnet".into()
+                }
+            ),
+            [request(
+                "fuxx-set-1",
+                json!({"subtype": "set_model", "model": "sonnet"})
+            )]
+        );
+        // The effort, then `get_settings` to read it back (its answer has no body).
+        assert_eq!(
+            lines(
+                &mut t,
+                Action::SetEffort {
+                    effort: "low".into()
+                }
+            ),
+            [
+                request(
+                    "fuxx-set-2",
+                    json!({"subtype": "apply_flag_settings", "settings": {"effortLevel": "low"}})
+                ),
+                request("fuxx-set-3", json!({"subtype": "get_settings"})),
+            ]
+        );
+        assert_eq!(
+            lines(
+                &mut t,
+                Action::SetMode {
+                    mode: "plan".into()
+                }
+            ),
+            [request(
+                "fuxx-set-4",
+                json!({"subtype": "set_permission_mode", "mode": "plan"})
+            )]
+        );
+    }
+
+    #[test]
+    fn set_answers_decode_to_applied() {
+        use ChangeKind::*;
+        let mut t = CLAUDE.translator();
+        t.encode(&Action::SetModel {
+            model: "sonnet".into(),
+        });
+        t.encode(&Action::SetModel {
+            model: "opus".into(),
+        });
+        let text = include_str!("fixtures/claude-set-model.jsonl");
+        let events = text.lines().flat_map(|l| t.decode(l)).collect();
+        assert_eq!(
+            applied(events),
+            [
+                (Model, "claude-sonnet-5-5".to_string(), true),
+                (Model, "claude-opus-5-5".to_string(), true),
+            ],
+            "the resolved ids, before the first message and mid-conversation"
+        );
+
+        let mut t = CLAUDE.translator();
+        t.encode(&Action::SetEffort {
+            effort: "low".into(),
+        });
+        t.encode(&Action::SetEffort {
+            effort: "medium".into(),
+        });
+        let text = renamed(
+            include_str!("fixtures/claude-set-effort.jsonl"),
+            &[
+                ("fuxx-effort-1", "fuxx-set-1"),
+                ("fuxx-settings-2", "fuxx-set-2"),
+                ("fuxx-effort-2", "fuxx-set-3"),
+                ("fuxx-settings-4", "fuxx-set-4"),
+            ],
+        );
+        let events = text.lines().flat_map(|l| t.decode(l)).collect();
+        assert_eq!(
+            applied(events),
+            [
+                (Effort, "low".to_string(), true),
+                (Effort, "medium".to_string(), true),
+            ],
+            "read back by get_settings; the recorder's other reads are not fuxx's"
+        );
+
+        let mut t = CLAUDE.translator();
+        t.encode(&Action::SetMode {
+            mode: "plan".into(),
+        });
+        t.encode(&Action::SetMode {
+            mode: "acceptEdits".into(),
+        });
+        let text = renamed(
+            include_str!("fixtures/claude-set-mode.jsonl"),
+            &[("fuxx-mode-1", "fuxx-set-1"), ("fuxx-mode-2", "fuxx-set-2")],
+        );
+        let events = text.lines().flat_map(|l| t.decode(l)).collect();
+        assert_eq!(
+            applied(events),
+            [
+                (Mode, "plan".to_string(), true),
+                (Mode, "acceptEdits".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_mode_claude_reports_decodes_to_a_mode_event() {
+        // `system/status` and `system/init` carry the mode Claude runs in, also when it changes
+        // it itself (a plan approved leaves plan mode), R9.
+        let mut t = CLAUDE.translator();
+        let modes: Vec<String> = include_str!("fixtures/claude-set-mode.jsonl")
+            .lines()
+            .flat_map(|l| t.decode(l))
+            .filter_map(|e| match e {
+                Event::Mode(mode) => Some(mode),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(modes, ["plan", "plan", "acceptEdits", "acceptEdits"]);
+        let status = json!({"type":"system","subtype":"status","status":null,
+            "permissionMode":"default"})
+        .to_string();
+        assert_eq!(t.decode(&status), [Event::Mode("default".into())]);
+    }
+
+    #[test]
+    fn a_refused_set_decodes_to_not_applied() {
+        use ChangeKind::*;
+        let error = |id: &str, why: &str| {
+            json!({"type": "control_response",
+                "response": {"subtype": "error", "request_id": id, "error": why}})
+            .to_string()
+        };
+        let mut t = CLAUDE.translator();
+        t.encode(&Action::SetModel {
+            model: "nope".into(),
+        });
+        assert_eq!(
+            applied(t.decode(&error("fuxx-set-1", "Unknown model: nope"))),
+            [(Model, "Unknown model: nope".to_string(), false)]
+        );
+        // A refused effort: its read-back then says nothing.
+        t.encode(&Action::SetEffort {
+            effort: "max".into(),
+        });
+        assert_eq!(
+            applied(t.decode(&error("fuxx-set-2", "Not supported"))),
+            [(Effort, "Not supported".to_string(), false)]
+        );
+        let read_back = json!({"type": "control_response", "response": {"subtype": "success",
+            "request_id": "fuxx-set-3", "response": {"applied": {"effort": "high"}}}})
+        .to_string();
+        assert!(applied(t.decode(&read_back)).is_empty());
+        // An answer to nothing fuxx asked is no change.
+        assert!(applied(t.decode(&error("fuxx-set-9", "?"))).is_empty());
+        let other = json!({"type": "control_response", "response": {"subtype": "success",
+            "request_id": "fuxx-set-9", "response": {"model": "x"}}})
+        .to_string();
+        assert!(applied(t.decode(&other)).is_empty());
+    }
+
+    /// A live switch to another model: the context is measured against the new model's window.
+    #[test]
+    fn a_switched_model_sizes_the_context() {
+        let init =
+            json!({"type":"system","subtype":"init","session_id":"s","model":"big"}).to_string();
+        let result = json!({"type":"result","subtype":"success","is_error":false,"result":"ok",
+            "modelUsage":{"small":{"contextWindow":200000},"big":{"contextWindow":1000000}},
+            "usage":{"iterations":[{"input_tokens":100000}]}})
+        .to_string();
+        let mut t = CLAUDE.translator();
+        t.decode(&init);
+        t.encode(&Action::SetModel {
+            model: "small-alias".into(),
+        });
+        let answer = json!({"type": "control_response", "response": {"subtype": "success",
+            "request_id": "fuxx-set-1", "response": {"model": "small"}}})
+        .to_string();
+        t.decode(&answer);
+        let pct = t.decode(&result).into_iter().find_map(|e| match e {
+            Event::Usage { context_pct, .. } => context_pct,
+            _ => None,
+        });
+        assert_eq!(pct, Some(50), "100k of small's 200k, not big's 1M");
+    }
+
+    #[test]
+    fn claude_applies_per_task_0() {
+        assert_eq!(CLAUDE.applies(ChangeKind::Model), Applies::Live);
+        assert_eq!(CLAUDE.applies(ChangeKind::Effort), Applies::Live);
+        assert_eq!(CLAUDE.applies(ChangeKind::Mode), Applies::Live);
+        assert_eq!(CLAUDE.applies(ChangeKind::Folder), Applies::Restart);
+    }
+
+    #[test]
+    fn move_needs_2_1_223() {
+        assert!(!CLAUDE.can_move(Some("2.1.222 (Claude Code)")));
+        assert!(CLAUDE.can_move(Some("2.1.223 (Claude Code)")));
+        assert!(CLAUDE.can_move(Some(include_str!("fixtures/claude-version.txt").trim())));
+        assert!(CLAUDE.can_move(Some("3.0.0 (Claude Code)")));
+        assert!(!CLAUDE.can_move(Some("2.0.999 (Claude Code)")));
+        assert!(!CLAUDE.can_move(Some("Claude Code")), "garbage");
+        assert!(!CLAUDE.can_move(Some("2.1")), "too short");
+        assert!(!CLAUDE.can_move(Some("")));
+        assert!(!CLAUDE.can_move(None), "unknown");
+        assert!(version_at_least("2.1.223", (2, 1, 223)));
+        let probe = CLAUDE.version_probe().expect("Claude has a version");
+        assert_eq!(probe.argv, ["claude", "--version"]);
+    }
+
+    #[test]
+    fn claude_json_projects_are_its_project_keys() {
+        let text = json!({
+            "numStartups": 3,
+            "projects": {
+                "/tmp/fx/code/my-app": {"allowedTools": []},
+                "/tmp/fx/code/scratch": {}
+            }
+        })
+        .to_string();
+        let mut found = claude_json_projects(&text);
+        found.sort();
+        assert_eq!(
+            found,
+            ["/tmp/fx/code/my-app", "/tmp/fx/code/scratch"].map(PathBuf::from)
+        );
+        assert!(claude_json_projects("not json").is_empty());
+        assert!(claude_json_projects(r#"{"projects": []}"#).is_empty());
+        assert!(claude_json_projects("{}").is_empty());
+        // Read from the home given (a made-up one); a missing file is none.
+        let home = scratch_home("known");
+        std::fs::write(home.join(".claude.json"), &text).unwrap();
+        assert_eq!(CLAUDE.known_folders(&home).len(), 2);
+        std::fs::remove_file(home.join(".claude.json")).unwrap();
+        assert!(CLAUDE.known_folders(&home).is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// An empty made-up home folder for one test.
+    fn scratch_home(name: &str) -> PathBuf {
+        let home =
+            std::env::temp_dir().join(format!("fuxx-claude-home-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        home
+    }
+
+    /// Task 0 (`claude-move.jsonl`): after `--resume` from another folder, the transcript stays
+    /// under the folder the conversation started in. A tab now in the new folder still reads it.
+    #[test]
+    fn history_finds_a_moved_conversation() {
+        let home = scratch_home("moved");
+        let first = home.join("code/scratch");
+        let moved = first.join("moved");
+        std::fs::create_dir_all(&moved).unwrap();
+        let id = "6a1c234d-7469-40ef-b093-c74ad8006c28";
+        let first_real = std::fs::canonicalize(&first).unwrap();
+        let at = transcript_path(&home, &first_real, id);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(&at, include_str!("fixtures/claude-transcript.jsonl")).unwrap();
+        // The new folder's entry has only an empty `memory/` (as Task 0 found).
+        let moved_real = std::fs::canonicalize(&moved).unwrap();
+        let new_entry = transcript_path(&home, &moved_real, id);
+        std::fs::create_dir_all(new_entry.parent().unwrap().join("memory")).unwrap();
+        let start = Start {
+            cwd: moved.clone(),
+            resume: Some(id.into()),
+            new_id: None,
+            mode: None,
+            model: None,
+            effort: None,
+            extra_args: Vec::new(),
+        };
+        let past = history_in(&home, &start);
+        assert_eq!(
+            past.first(),
+            Some(&Past::You("Say hello in one word".into())),
+            "read from the first folder's entry: {past:?}"
+        );
+        assert_eq!(past.len(), 4);
+        // Another id is found nowhere.
+        let other = Start {
+            resume: Some("00000000-0000-4000-8000-000000000000".into()),
+            ..start
+        };
+        assert!(history_in(&home, &other).is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The id comes from the sessions file: one that isn't a session id (a path, `..`) is never
+    /// joined into a path, so nothing outside a transcript is read.
+    #[test]
+    fn history_reads_only_a_session_id_s_transcript() {
+        let home = scratch_home("escape");
+        let projects = home.join(".claude/projects");
+        let folder = home.join("code");
+        std::fs::create_dir_all(&folder).unwrap();
+        let entry = transcript_path(&home, &std::fs::canonicalize(&folder).unwrap(), "x");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        // Where `../escape` from the folder's entry, or from any entry, would lead.
+        let transcript = include_str!("fixtures/claude-transcript.jsonl");
+        std::fs::write(projects.join("escape.jsonl"), transcript).unwrap();
+        std::fs::write(home.join(".claude/escape.jsonl"), transcript).unwrap();
+        let start = |id: &str| Start {
+            cwd: folder.clone(),
+            resume: Some(id.into()),
+            new_id: None,
+            mode: None,
+            model: None,
+            effort: None,
+            extra_args: Vec::new(),
+        };
+        for id in ["../escape", "../../escape", "a/../../escape", ""] {
+            assert!(history_in(&home, &start(id)).is_empty(), "{id:?}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

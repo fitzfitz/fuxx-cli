@@ -56,7 +56,8 @@ actions!(
         SelectWordLeft,
         SelectWordRight,
         SelectToStart,
-        SelectToEnd
+        SelectToEnd,
+        Complete
     ]
 );
 
@@ -68,6 +69,10 @@ pub enum ComposerEvent {
     Stop,
     /// An `@` was typed at the start of a word.
     AtTyped,
+    /// Tab while a list is open over the box: complete with the selected row.
+    Complete,
+    /// Paste with an image (and no text) on the clipboard: the box makes it an attachment.
+    PasteImage(gpui::Image),
 }
 
 /// The pure editing core: text, a caret and an anchor (the selection is between them), all byte
@@ -432,6 +437,9 @@ pub struct Composer {
     last_origin: Option<Point<Pixels>>,
     last_bounds: Option<Bounds<Pixels>>,
     last_line_height: Pixels,
+    /// Drawn with no edge, fill or padding of its own: a box around it draws them (the agent
+    /// box, M11ak).
+    bare: bool,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -466,6 +474,15 @@ impl Composer {
             last_origin: None,
             last_bounds: None,
             last_line_height: px(0.),
+            bare: false,
+        }
+    }
+
+    /// Draw it `bare` (no edge, fill or padding: the box around it draws them) or framed.
+    pub fn set_bare(&mut self, bare: bool, cx: &mut Context<Self>) {
+        if self.bare != bare {
+            self.bare = bare;
+            cx.notify();
         }
     }
 
@@ -587,6 +604,10 @@ impl Composer {
         cx.emit(ComposerEvent::Stop);
     }
 
+    fn complete(&mut self, _: &Complete, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(ComposerEvent::Complete);
+    }
+
     fn copy_selection(&self, cx: &mut Context<Self>) {
         let sel = self.buf.selection();
         if !sel.is_empty() {
@@ -606,8 +627,16 @@ impl Composer {
     }
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        if let Some(text) = item.text() {
             self.insert(&text, cx);
+        } else if let Some(image) = item.into_entries().find_map(|entry| match entry {
+            gpui::ClipboardEntry::Image(image) => Some(image),
+            _ => None,
+        }) {
+            cx.emit(ComposerEvent::PasteImage(image));
         }
     }
 
@@ -821,28 +850,34 @@ impl EntityInputHandler for Composer {
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
-        let edge = if self.focus_handle.is_focused(window) {
-            ui.focus_ring
-        } else {
-            ui.text_dim
-        };
+        // Bare, the box around it draws the edge.
+        let edge = (!self.bare).then(|| {
+            if self.focus_handle.is_focused(window) {
+                ui.focus_ring
+            } else {
+                ui.text_dim
+            }
+        });
         let empty = self.buf.text().is_empty();
         let placeholder = self.placeholder.clone();
         div()
             .w_full()
             .overflow_hidden()
-            .px_2()
-            .py_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(hsla(edge))
-            .bg(hsla(ui.sidebar_background))
+            .when_some(edge, |d, edge| {
+                d.px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(hsla(edge))
+                    .bg(hsla(ui.sidebar_background))
+            })
             .text_color(hsla(ui.text))
             .key_context("Composer")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::send))
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::stop))
+            .on_action(cx.listener(Self::complete))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::clear))
             .on_action(cx.listener(Self::delete))

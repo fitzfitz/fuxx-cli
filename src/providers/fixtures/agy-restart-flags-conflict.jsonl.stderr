@@ -1,0 +1,1 @@
+error: invalid model selection (--model "gemini-3.8-flash-medium" --effort "low"): --model gemini-3.8-flash-medium conflicts with --effort=low

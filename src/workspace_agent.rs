@@ -435,6 +435,8 @@ impl Workspace {
             resume: None,
             new_id: None,
             mode: None,
+            model: None,
+            effort: None,
             extra_args: Vec::new(),
         });
         let name = name.clone();
@@ -508,6 +510,8 @@ impl Workspace {
             cwd,
             conversation,
             mode,
+            model,
+            effort,
             ..
         } = kind
         else {
@@ -525,6 +529,8 @@ impl Workspace {
             resume: conversation.clone(),
             new_id: None,
             mode: mode.clone(),
+            model: model.clone(),
+            effort: effort.clone(),
             extra_args,
         })
     }
@@ -542,9 +548,10 @@ impl Workspace {
         Some((tab, self.agents.get(&tab)?.view.clone()))
     }
 
-    /// A new agent tab of `provider` at the end of `pane`'s bar (its ⋯ menu, ⌘K), in the folder
-    /// of the terminal the pane shows (else the active one's, else your home). Its view is made
-    /// on the next frame (`ensure_agent_tabs`), and takes the keyboard there.
+    /// A new agent tab of `provider` at the end of `pane`'s bar (its ⋯ menu, ⌘K), where the
+    /// terminal the pane shows is now (else where the active terminal is, else its or the
+    /// active one's project, else your home: `new_agent_folder`). Its view is made on the next
+    /// frame (`ensure_agent_tabs`), and takes the keyboard there.
     pub(crate) fn new_agent_tab(
         &mut self,
         pane: PaneId,
@@ -553,14 +560,42 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let _ = window;
-        let project = self
-            .pane_session(pane)
-            .and_then(|s| s.project.clone())
-            .or_else(|| self.active_project());
-        let kind = self.new_agent_kind(provider, project);
-        if self.model.add_tab(pane, kind).is_none() {
+        let session = self.pane_session(pane);
+        let folder = new_agent_folder(
+            session.and_then(|s| self.folder_now(s)),
+            self.active_folder_now(),
+            session
+                .and_then(|s| s.project.clone())
+                .or_else(|| self.active_project()),
+        );
+        let kind = self.new_agent_kind(provider, folder);
+        self.add_agent_tab(pane, kind, None, cx);
+    }
+
+    /// `kind` (a new agent tab) in `pane`: after tab `after`, else at the end of its bar; its
+    /// folder is the newest of Recent.
+    fn add_agent_tab(
+        &mut self,
+        pane: PaneId,
+        kind: TabKind,
+        after: Option<TabId>,
+        cx: &mut Context<Self>,
+    ) {
+        let TabKind::Agent { cwd, .. } = &kind else {
             return;
+        };
+        let cwd = cwd.clone();
+        let Some(opened) = self.model.add_tab(pane, kind) else {
+            return;
+        };
+        let place = after.and_then(|after| {
+            let tabs = &self.model.pane(pane)?.tabs;
+            tabs.iter().position(|t| t.id == after)
+        });
+        if let Some(at) = place {
+            self.model.move_tab(opened.tab, pane, at + 1);
         }
+        self.note_recent_folder(cwd, cx);
         self.sync();
         self.save();
         cx.notify();
@@ -583,24 +618,29 @@ impl Workspace {
         else {
             return;
         };
-        let project = self
-            .sessions
-            .items()
-            .iter()
-            .find(|s| s.id == terminal)
-            .and_then(|s| s.project.clone());
-        let kind = self.new_agent_kind(provider, project);
+        let session = self.sessions.items().iter().find(|s| s.id == terminal);
+        let folder = new_agent_folder(
+            session.and_then(|s| self.folder_now(s)),
+            self.active_folder_now(),
+            session.and_then(|s| s.project.clone()),
+        );
+        let kind = self.new_agent_kind(provider, folder);
+        let TabKind::Agent { cwd, .. } = &kind else {
+            return;
+        };
+        let cwd = cwd.clone();
         if self.model.split(pane, Axis::Row, kind).is_none() {
             return;
         }
+        self.note_recent_folder(cwd, cx);
         self.sync();
         self.save();
         cx.notify();
     }
 
-    /// A fresh agent tab of `provider` in `project` (none: your home), in its default mode.
-    fn new_agent_kind(&self, provider: &'static str, project: Option<PathBuf>) -> TabKind {
-        let cwd = project
+    /// A fresh agent tab of `provider` in `folder` (none: your home), in its default mode.
+    fn new_agent_kind(&self, provider: &'static str, folder: Option<PathBuf>) -> TabKind {
+        let cwd = folder
             .or_else(|| self.places.home.clone())
             .or_else(crate::workspace::home_dir)
             .unwrap_or_else(|| PathBuf::from("/"));
@@ -613,6 +653,8 @@ impl Workspace {
             conversation: None,
             mode,
             title: None,
+            model: None,
+            effort: None,
         }
     }
 
@@ -720,6 +762,8 @@ impl Workspace {
                     conversation,
                     mode,
                     title: None,
+                    model,
+                    effort,
                 }) = self.model.tab(tab).map(|t| t.kind.clone())
                 {
                     let kind = TabKind::Agent {
@@ -728,6 +772,8 @@ impl Workspace {
                         conversation,
                         mode,
                         title: Some(title.clone()),
+                        model,
+                        effort,
                     };
                     self.model.set_kind(tab, kind);
                     self.save();
@@ -740,6 +786,8 @@ impl Workspace {
                     cwd,
                     mode,
                     title,
+                    model,
+                    effort,
                     ..
                 }) = self.model.tab(tab).map(|t| t.kind.clone())
                 {
@@ -755,10 +803,76 @@ impl Workspace {
                         conversation: Some(id.clone()),
                         mode: running.or(mode),
                         title,
+                        model,
+                        effort,
                     };
                     self.model.set_kind(tab, kind);
                     self.save();
                 }
+            }
+            AgentTabEvent::Settings {
+                model,
+                effort,
+                mode,
+            } => {
+                if let Some(TabKind::Agent {
+                    provider,
+                    cwd,
+                    conversation,
+                    title,
+                    ..
+                }) = self.model.tab(tab).map(|t| t.kind.clone())
+                {
+                    let kind = TabKind::Agent {
+                        provider,
+                        cwd,
+                        conversation,
+                        mode: mode.clone(),
+                        title,
+                        model: model.clone(),
+                        effort: effort.clone(),
+                    };
+                    self.model.set_kind(tab, kind);
+                    self.save();
+                }
+            }
+            AgentTabEvent::Folder(folder) => {
+                if let Some(TabKind::Agent {
+                    provider,
+                    conversation,
+                    mode,
+                    title,
+                    model,
+                    effort,
+                    ..
+                }) = self.model.tab(tab).map(|t| t.kind.clone())
+                {
+                    let kind = TabKind::Agent {
+                        provider,
+                        cwd: folder.clone(),
+                        conversation,
+                        mode,
+                        title,
+                        model,
+                        effort,
+                    };
+                    self.model.set_kind(tab, kind);
+                    self.note_recent_folder(folder.clone(), cx);
+                    self.save();
+                }
+            }
+            AgentTabEvent::NewConversationIn(folder) => {
+                let provider = match self.model.tab(tab).map(|t| &t.kind) {
+                    Some(TabKind::Agent { provider, .. }) => providers::by_name(provider),
+                    _ => None,
+                };
+                if let (Some(provider), Some((_, pane))) = (provider, self.model.locate(tab)) {
+                    let kind = self.new_agent_kind(provider.info().name, Some(folder.clone()));
+                    self.add_agent_tab(pane, kind, Some(tab), cx);
+                }
+            }
+            AgentTabEvent::OpenBranchSwitcher(folder) => {
+                self.open_branch_switcher_in(folder.clone(), window, cx)
             }
             AgentTabEvent::Close => self.close_agent_tab(tab, false, window, cx),
             AgentTabEvent::OpenClassic(_) => self.open_classic(tab, window, cx),
@@ -860,7 +974,9 @@ impl Workspace {
         });
         cx.spawn(async move |_, cx| {
             if let Some(text) = text.await {
-                let _ = view.update(cx, |t, cx| t.attach(text, cx));
+                let _ = view.update(cx, |t, cx| {
+                    t.attach(crate::agent_tab::Attachment::Text(text), cx)
+                });
             }
         })
         .detach();
@@ -1400,6 +1516,16 @@ impl Workspace {
     }
 }
 
+/// Where a new agent tab starts: where its terminal is now, else where the active terminal is
+/// now, else the project (None: your home).
+pub fn new_agent_folder(
+    terminal_now: Option<PathBuf>,
+    active_now: Option<PathBuf>,
+    project: Option<PathBuf>,
+) -> Option<PathBuf> {
+    terminal_now.or(active_now).or(project)
+}
+
 /// The scenes' hooks (`ui_shots`).
 #[cfg(feature = "ui-shots")]
 impl Workspace {
@@ -1613,6 +1739,23 @@ mod tests {
             conversation_holder(Some(&t), &CLAUDE, "c1", &[900], &classic),
             Holder::Held
         );
+    }
+
+    #[test]
+    fn a_new_agent_tab_starts_where_the_terminal_is_now() {
+        let p = |s: &str| Some(PathBuf::from(s));
+        assert_eq!(
+            new_agent_folder(p("/w/app/src"), p("/w/other"), p("/w/app")),
+            p("/w/app/src"),
+            "its terminal's folder now"
+        );
+        assert_eq!(
+            new_agent_folder(None, p("/w/other"), p("/w/app")),
+            p("/w/other"),
+            "else the active terminal's"
+        );
+        assert_eq!(new_agent_folder(None, None, p("/w/app")), p("/w/app"));
+        assert_eq!(new_agent_folder(None, None, None), None, "your home");
     }
 
     #[test]

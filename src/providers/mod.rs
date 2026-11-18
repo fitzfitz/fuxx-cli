@@ -2,7 +2,8 @@
 //! translators that turn one agent's wire format into it. Pure and GPUI-free, and it knows no
 //! agent by name here: each agent lives in its own file.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub mod agy;
 pub mod claude;
@@ -18,8 +19,143 @@ pub struct ProviderInfo {
     /// Whether a turn can be stopped by asking the agent (`Action::Interrupt`); if not, Stop
     /// offers Force stop (ending the process) at once.
     pub interrupts: bool,
-    pub modes: &'static [&'static str],
+    pub modes: &'static [ModeChoice],
     pub default_mode: Option<&'static str>,
+}
+
+/// One permission mode a provider offers: the id it is passed as, the name the menu shows, and
+/// a line saying what it does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModeChoice {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub about: &'static str,
+}
+
+/// What a provider can say about itself without a conversation: its models (with their effort
+/// levels), its slash commands and the mode it runs in.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Catalog {
+    pub models: Vec<ModelChoice>,
+    /// The provider's built-in list stood in (it gave none): the menu says "(default list)".
+    pub fallback_models: bool,
+    pub commands: Vec<AgentCommand>,
+    /// The mode the agent says it runs in.
+    pub mode: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelChoice {
+    /// What the provider takes as the model (`--model <id>`).
+    pub id: String,
+    pub label: String,
+    /// The full model name an alias stands for, when the provider says.
+    pub resolves_to: Option<String>,
+    pub efforts: Vec<EffortChoice>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffortChoice {
+    pub level: String,
+    /// The model id that carries this effort, when the provider builds the effort into the id.
+    pub model_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandKind {
+    Command,
+    Skill,
+    Agent,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentCommand {
+    pub name: String,
+    pub about: String,
+    pub kind: CommandKind,
+    pub aliases: Vec<String>,
+}
+
+/// A command the box answers with its own menu instead of sending it (`Provider::own_command`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoxCommand {
+    Usage,
+    Model,
+    Effort,
+}
+
+/// A short-lived process that answers part of the catalog: its command line, the lines to write
+/// to its stdin, and (when it keeps running) the stdout line that is the answer.
+#[derive(Clone, Debug)]
+pub struct Probe {
+    pub argv: Vec<String>,
+    pub stdin: Vec<String>,
+    pub until: Option<fn(&str) -> bool>,
+}
+
+/// One group of usage limits (agy names its groups; Claude's lines make one nameless group).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UsageGroup {
+    pub name: String,
+    pub about: Option<String>,
+    pub limits: Vec<UsageLimit>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum UsageLimit {
+    /// A limit fuxx could read: how much is left, and when it resets.
+    Read {
+        name: String,
+        left_pct: u8,
+        resets: Option<Reset>,
+    },
+    /// A line fuxx couldn't read, kept as the agent wrote it (never turned into a number).
+    Text(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Reset {
+    /// Unix seconds.
+    At(i64),
+    /// The agent's own words (`Nov 17 at 8:09pm`).
+    Words(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitState {
+    Fine,
+    Close,
+    Reached,
+}
+
+/// A change in a limit's state the agent announced while it ran.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateLimit {
+    /// The limit's name, as its usage listing shows it.
+    pub limit: String,
+    pub state: LimitState,
+    pub resets_at: Option<i64>,
+}
+
+/// What a change in the agent box changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChangeKind {
+    Model,
+    Effort,
+    Mode,
+    Folder,
+}
+
+/// How a provider takes a change (`Provider::applies`): in place on its running process, by
+/// starting it again on the same conversation, or only in a new conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Applies {
+    Live,
+    Restart,
+    /// No provider answers it today (Task 0: both carry a conversation on); the box's menus
+    /// then say "applies to a new conversation".
+    #[allow(dead_code)]
+    NextConversation,
 }
 
 /// How to start (or resume) a conversation.
@@ -31,6 +167,9 @@ pub struct Start {
     /// provider starts it under that id when `resume` is None.
     pub new_id: Option<String>,
     pub mode: Option<String>,
+    /// The model and effort chosen (as `Provider::model_flags` gives them); None: the agent's own.
+    pub model: Option<String>,
+    pub effort: Option<String>,
     pub extra_args: Vec<String>,
 }
 
@@ -64,16 +203,88 @@ pub trait Provider: Sync {
     fn model_label(&self, model: &str) -> String {
         model.to_string()
     }
+    /// Whether catalog model `id` stands for "the agent's own default" rather than naming a
+    /// model (the chip then names the model it stands for by another entry).
+    fn stands_for_default(&self, _id: &str) -> bool {
+        false
+    }
     /// What was said before in a resumed conversation (empty unless the provider can read it).
     /// Reads a file: call it off the UI thread.
     fn history(&self, _start: &Start) -> Vec<Past> {
         Vec::new()
     }
     fn translator(&self) -> Box<dyn Translator>;
+    /// Whether the agent takes an image in the message itself (`Action::Send`'s `images`); if
+    /// not, an image goes as its path in the text.
+    fn sends_images(&self) -> bool {
+        false
+    }
+    /// The biggest image it takes: by default 5 MB of the file (an agent told the image's path).
+    fn image_limit(&self) -> ImageLimit {
+        ImageLimit::Raw(5 * 1024 * 1024)
+    }
+    /// The short processes that answer the catalog, in the order `read_catalog` takes their
+    /// outputs. None: the provider can't be asked.
+    fn catalog_probes(&self) -> Vec<Probe> {
+        Vec::new()
+    }
+    /// Its own process's start answers the catalog (`Event::Catalog`), so no probe runs while
+    /// it runs.
+    fn catalog_on_start(&self) -> bool {
+        false
+    }
+    /// The catalog from the probes' outputs (stdout of each, in order).
+    fn read_catalog(&self, _outputs: &[String]) -> Result<Catalog, String> {
+        Err("no list".into())
+    }
+    /// The models to offer when the provider gave none.
+    fn fallback_models(&self) -> Vec<ModelChoice> {
+        Vec::new()
+    }
+    /// A model choice and an effort level to the `(model, effort)` values to start with
+    /// (`Start::model`, `Start::effort`). Default: the model's id and the effort as chosen.
+    fn model_flags(&self, model: &ModelChoice, effort: Option<&str>) -> (String, Option<String>) {
+        (model.id.clone(), effort.map(String::from))
+    }
+    /// The command `typed` (the box's whole text) names, when fuxx answers it with its own menu
+    /// rather than sending it. None: it is sent to the agent as text.
+    fn own_command(&self, _typed: &str) -> Option<BoxCommand> {
+        None
+    }
+    /// The short process that prints the agent's usage limits ($0, outside any conversation).
+    /// None: the agent has no usage command.
+    fn usage_probe(&self) -> Option<Probe> {
+        None
+    }
+    /// The usage limits from the probe's stdout; Err is the line to show.
+    fn read_usage(&self, _output: &str) -> Result<Vec<UsageGroup>, String> {
+        Err("Usage isn't available".into())
+    }
     /// Whether what a resumed run said on its way out (its stderr tail, or an error row) means
     /// the conversation to resume doesn't exist: only then does the tab start a new one.
     fn unknown_conversation(&self, _said: &str) -> bool {
         false
+    }
+    /// How a change of `change` reaches a running conversation. Default: by a restart on the
+    /// same conversation (the new flags).
+    fn applies(&self, _change: ChangeKind) -> Applies {
+        Applies::Restart
+    }
+    /// The short process that prints the agent's version (read once per app run, when the
+    /// folder picker first opens). None: its version doesn't matter.
+    fn version_probe(&self) -> Option<Probe> {
+        None
+    }
+    /// Whether a conversation can be moved to another folder (restarted there on the same
+    /// conversation), the agent's `version` as its probe printed it. Default: no (only a new
+    /// conversation in that folder).
+    fn can_move(&self, _version: Option<&str>) -> bool {
+        false
+    }
+    /// The folders the agent itself knows (its own list of projects), under your `home`.
+    /// Reads files: call it off the UI thread. Default: none.
+    fn known_folders(&self, _home: &Path) -> Vec<PathBuf> {
+        Vec::new()
     }
 }
 
@@ -144,6 +355,22 @@ pub enum Event {
     },
     Notice(String),
     Error(String),
+    /// The provider's own start answered the catalog.
+    Catalog(Catalog),
+    /// The names of the skills the agent has (the cache marks those commands `Skill`).
+    Skills(Vec<String>),
+    /// A usage limit changed state.
+    RateLimit(RateLimit),
+    /// The permission mode the agent says it runs in now, also one it changed to itself (a
+    /// plan approved leaves plan mode): the tab follows it unless a change of yours is pending.
+    Mode(String),
+    /// The agent answered a live change (`Action::SetModel` …): `ok` with the value it now
+    /// uses, else not, `value` saying why.
+    Applied {
+        kind: ChangeKind,
+        value: String,
+        ok: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -165,13 +392,118 @@ pub enum TodoState {
     Pending,
 }
 
+/// An image to send with a message: its type (`image/png`), its bytes and the same as base64
+/// (made once by `new`, which is for a background thread: encoding up to 5 MB is not for the
+/// UI thread, so a translator only copies `data`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picture {
+    pub media_type: &'static str,
+    pub bytes: Arc<[u8]>,
+    pub data: Arc<str>,
+}
+
+impl Picture {
+    pub fn new(media_type: &'static str, bytes: Vec<u8>) -> Self {
+        let data = Arc::from(base64(&bytes));
+        Picture {
+            media_type,
+            bytes: Arc::from(bytes),
+            data,
+        }
+    }
+}
+
+/// The biggest image a provider takes, in bytes: of the file itself, or of its base64 (an
+/// image sent in the message, whose limit is on the encoded size).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ImageLimit {
+    Raw(usize),
+    Encoded(usize),
+}
+
+impl ImageLimit {
+    /// The biggest file that fits: base64 is 4 digits for every 3 bytes (or part of 3).
+    pub fn raw_max(self) -> usize {
+        match self {
+            ImageLimit::Raw(max) => max,
+            ImageLimit::Encoded(max) => max / 4 * 3,
+        }
+    }
+
+    /// Whether an image of `len` bytes is taken (checked before it is encoded).
+    pub fn fits(self, len: usize) -> bool {
+        match self {
+            ImageLimit::Raw(max) => len <= max,
+            ImageLimit::Encoded(max) => len.div_ceil(3) * 4 <= max,
+        }
+    }
+
+    /// The notice for image `name` that is too big for the agent called `label`: not attached.
+    pub fn refusal(self, label: &str, name: &str) -> String {
+        match self {
+            ImageLimit::Raw(max) => format!("Image over {} MB: {name}", megabytes(max)),
+            ImageLimit::Encoded(_) => format!(
+                "Image too big for {label} ({} MB max): {name}",
+                megabytes(self.raw_max())
+            ),
+        }
+    }
+}
+
+/// `bytes` in MB (MiB), as few digits as it needs: `5`, `3.75`.
+fn megabytes(bytes: usize) -> String {
+    format!("{}", bytes as f64 / (1024.0 * 1024.0))
+}
+
+/// `bytes` as standard base64 (RFC 4648, padded).
+pub fn base64(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(DIGITS[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    Send { text: String },
-    Allow { id: String },
-    AlwaysAllow { id: String },
-    Deny { id: String, reason: Option<String> },
+    /// A message; `images` go with it only for a provider that `sends_images` (the others get
+    /// each image's path in `text`).
+    Send {
+        text: String,
+        images: Vec<Picture>,
+    },
+    Allow {
+        id: String,
+    },
+    AlwaysAllow {
+        id: String,
+    },
+    Deny {
+        id: String,
+        reason: Option<String>,
+    },
     Interrupt,
+    /// Live changes (`Applies::Live`); a provider that can't take one writes nothing.
+    SetModel {
+        model: String,
+    },
+    SetEffort {
+        effort: String,
+    },
+    SetMode {
+        mode: String,
+    },
 }
 
 /// `extra` without the flags a provider sets itself (`owned`: each flag, and whether it takes a
@@ -205,7 +537,7 @@ fn uuid_shaped(word: &str) -> bool {
 
 /// A random (version 4) UUID, lower-case, from the system's random source; None if it can't
 /// be read.
-fn new_uuid() -> Option<String> {
+pub(crate) fn new_uuid() -> Option<String> {
     use std::io::Read;
     let mut b = [0u8; 16];
     std::fs::File::open("/dev/urandom")
@@ -311,6 +643,29 @@ mod tests {
         fn translator(&self) -> Box<dyn Translator> {
             Box::new(Silent)
         }
+    }
+
+    #[test]
+    fn a_provider_takes_images_up_to_5_mb_raw_unless_it_says_otherwise() {
+        assert_eq!(Plain.image_limit(), ImageLimit::Raw(5 * 1024 * 1024));
+    }
+
+    #[test]
+    fn an_encoded_limit_is_checked_on_the_base64_size() {
+        let five = 5 * 1024 * 1024;
+        let encoded = ImageLimit::Encoded(five);
+        assert_eq!(encoded.raw_max(), 3_932_160);
+        assert_eq!(base64(&vec![0; encoded.raw_max()]).len(), five);
+        assert!(encoded.fits(3_932_160));
+        assert!(!encoded.fits(3_932_161), "4 more digits: over 5 MB");
+        assert_eq!(
+            encoded.refusal("Claude", "a.png"),
+            "Image too big for Claude (3.75 MB max): a.png"
+        );
+        let raw = ImageLimit::Raw(five);
+        assert_eq!(raw.raw_max(), five);
+        assert!(raw.fits(five) && !raw.fits(five + 1));
+        assert_eq!(raw.refusal("agy", "a.png"), "Image over 5 MB: a.png");
     }
 
     #[test]

@@ -34,6 +34,10 @@ use gpui::{
     Subscription, Task, WeakEntity, Window, actions, div, list, prelude::*, px, relative,
 };
 
+use crate::agent_box::{
+    AtRow, BoxMenu, Change, PLACEHOLDER, SLASH_LIMIT, SlashRow, Step, at_rows, slash_query,
+    slash_rows, step_for, switched_notice, usage_line,
+};
 use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
@@ -44,15 +48,18 @@ use crate::diff_view::{RowKind, parse_diff};
 use crate::file_tab::{DiffRowColours, diff_row_colours};
 use crate::md_preview::{self, LinkTarget};
 use crate::palette_items::FileHit;
-use crate::providers::{Action, Event, Past, Provider, Start, TodoState, ToolDetail, Translator};
+use crate::providers::{
+    Action, Applies, BoxCommand, ChangeKind, Event, ImageLimit, ModelChoice, Past, Picture,
+    Provider, Start, TodoState, ToolDetail, Translator,
+};
 use crate::status::Status;
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, UiColors, mix};
 use crate::ui_tokens::{TEXT_MIN, ensure_contrast, text};
 use crate::workspace_agent::Holder;
 
-// ↑ / ↓ in the `@` file list (bound in main.rs to "AtPopup > Composer", so they reach the
-// list, not the caret, only while it is open).
+// ↑ / ↓ in the `@` file list and the `/` list (bound in main.rs to "AtPopup > Composer", so they
+// reach the list, not the caret, only while it is open).
 actions!(agent_tab, [AtUp, AtDown]);
 
 /// After Stop, how long the tab waits for the turn to end before offering **Force stop**
@@ -91,6 +98,22 @@ pub enum AgentTabEvent {
     /// an id fuxx chose, when the agent reports it, and again whenever it changes (an agent's
     /// `/clear` may go on under a new id).
     Conversation(String),
+    /// The model, effort and mode it now starts with (the box's choice, once taken): saved
+    /// with the tab.
+    Settings {
+        model: Option<String>,
+        effort: Option<String>,
+        mode: Option<String>,
+    },
+    /// The folder it now runs in (the box's folder chip: chosen before the first message, or
+    /// the conversation moved): saved as the tab's folder.
+    Folder(PathBuf),
+    /// The branch chip's click: open the branch switcher on the box's folder (the agent keeps
+    /// running: a branch switch never restarts it).
+    OpenBranchSwitcher(PathBuf),
+    /// "New conversation" in that folder (the folder chip, after the first message): a new
+    /// agent tab of the same agent there, beside this one in its pane.
+    NewConversationIn(PathBuf),
     /// The error tab's Close.
     Close,
     /// "Open in classic view": the command line that resumes it in a terminal.
@@ -201,16 +224,6 @@ pub fn status_word(status: Status) -> &'static str {
     }
 }
 
-/// The model chip's text: as `provider` labels `model` (no provider: as it is).
-pub fn model_chip(provider: Option<&dyn Provider>, model: &str) -> String {
-    provider.map_or_else(|| model.to_string(), |p| p.model_label(model))
-}
-
-/// The cost chip's text.
-pub fn cost_chip(usd: f64) -> String {
-    format!("${usd:.2}")
-}
-
 /// A running tool's elapsed time: `4s`, `1m 05s`.
 pub fn elapsed_label(d: Duration) -> String {
     let s = d.as_secs();
@@ -251,6 +264,25 @@ pub fn at_query(text: &str, at: usize, cursor: usize) -> Option<&str> {
     (!query.contains(char::is_whitespace)).then_some(query)
 }
 
+/// What an `@` pick of `row` puts in the box: a file's path (see `inserted_path`), or `@name` for
+/// a sub-agent or skill, and a space. None for a heading, or a row nothing is at.
+pub fn at_insertion(
+    row: &AtRow,
+    files: &[FileHit],
+    commands: &[crate::providers::AgentCommand],
+    root: &Path,
+    cwd: &Path,
+) -> Option<String> {
+    match row {
+        AtRow::Heading(_) => None,
+        AtRow::File(i) => Some(format!(
+            "{} ",
+            inserted_path(root, cwd, &files.get(*i)?.rel)
+        )),
+        AtRow::Named { ix, .. } => Some(format!("@{} ", commands.get(*ix)?.name)),
+    }
+}
+
 /// The path an `@` pick inserts: relative to the agent's folder when the file is in it, else
 /// whole.
 pub fn inserted_path(root: &Path, cwd: &Path, rel: &str) -> String {
@@ -261,9 +293,139 @@ pub fn inserted_path(root: &Path, cwd: &Path, rel: &str) -> String {
     }
 }
 
+/// What goes with your next message, shown as a chip in the box until it is sent: a command
+/// block's text, a file's path, or an image (with the path it is at, when it has one).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Attachment {
+    Text(String),
+    File(PathBuf),
+    Image {
+        name: String,
+        picture: Picture,
+        /// Where the image is: its file, or the temp file a pasted one was written to when
+        /// the agent can't take it in the message (it is told this path instead).
+        path: Option<PathBuf>,
+    },
+}
+
+impl Attachment {
+    /// What its chip says after the glyph (and what the conversation's row for the message
+    /// lists): a file's or an image's name; a command block's whole text (rows show its first
+    /// line).
+    pub fn label(&self) -> String {
+        match self {
+            Attachment::Text(text) => text.clone(),
+            Attachment::File(path) => file_name(path),
+            Attachment::Image { name, .. } => name.clone(),
+        }
+    }
+
+    /// The glyph before its chip's words.
+    pub fn glyph(&self) -> &'static str {
+        match self {
+            Attachment::Image { .. } => "\u{1f5bc}",
+            _ => "\u{1f4ce}",
+        }
+    }
+}
+
+/// The last part of `path` (the whole of it when it has none).
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The type an image file's extension says (png, jpeg/jpg, gif, webp); None for any other file.
+pub fn media_type_for(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// `bytes` as a picture to send, or the notice saying it is too big for the agent called
+/// `label` (checked before it is encoded).
+pub fn picture(
+    name: &str,
+    media_type: &'static str,
+    bytes: Vec<u8>,
+    limit: ImageLimit,
+    label: &str,
+) -> Result<Picture, String> {
+    if !limit.fits(bytes.len()) {
+        return Err(limit.refusal(label, name));
+    }
+    Ok(Picture::new(media_type, bytes))
+}
+
+/// An image file's bytes, read no further than `limit` allows (a device, a pipe or a growing
+/// file can't be read without end): more than that is the same notice as a big picture. Reads
+/// a file: call it off the UI thread.
+pub fn read_image(
+    path: &Path,
+    name: &str,
+    limit: ImageLimit,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(limit.raw_max() as u64 + 1).read_to_end(&mut bytes))
+        .map_err(|e| format!("Couldn't read {name}: {e}"))?;
+    if !limit.fits(bytes.len()) {
+        return Err(limit.refusal(label, name));
+    }
+    Ok(bytes)
+}
+
+/// Remove the files in `dir` (pasted images written for an agent told a path) last changed
+/// more than `age` before `now`; how many went. A folder that isn't there has none. Reads and
+/// removes files: call it off the UI thread.
+pub fn clean_pasted(dir: &Path, age: Duration, now: std::time::SystemTime) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .is_some_and(|old| old > age)
+        })
+        .filter(|e| std::fs::remove_file(e.path()).is_ok())
+        .count()
+}
+
+/// At start: pasted images older than a day are removed from the temp folder.
+pub fn clean_old_pasted() {
+    let day = Duration::from_secs(24 * 60 * 60);
+    clean_pasted(
+        &std::env::temp_dir().join(PASTED_DIR),
+        day,
+        std::time::SystemTime::now(),
+    );
+}
+
+/// Write a pasted `picture` to a new file in `dir` (made if needed), for an agent that is
+/// told a path: `<dir>/<uuid>.<ext>`. Reads and writes a file: call it off the UI thread.
+pub fn write_pasted(dir: &Path, picture: &Picture, ext: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let id = crate::providers::new_uuid().ok_or_else(|| std::io::Error::other("no random id"))?;
+    let path = dir.join(format!("{id}.{ext}"));
+    std::fs::write(&path, &picture.bytes)?;
+    Ok(path)
+}
+
 /// Take attachment `i` off the list waiting for your next message (its chip's ×); false when
 /// there is none at `i` (nothing changes).
-pub fn remove_attachment(list: &mut Vec<String>, i: usize) -> bool {
+pub fn remove_attachment<T>(list: &mut Vec<T>, i: usize) -> bool {
     if i >= list.len() {
         return false;
     }
@@ -271,16 +433,52 @@ pub fn remove_attachment(list: &mut Vec<String>, i: usize) -> bool {
     true
 }
 
-/// What is sent for a message with attachments: the text, then each attachment.
-pub fn wire_text(text: &str, attachments: &[String]) -> String {
+/// The folder in the temp folder that pasted images are written to (for an agent told a path).
+const PASTED_DIR: &str = "fuxx-images";
+
+/// Where an image chip's bytes come from.
+enum ImageFrom {
+    File(PathBuf),
+    Clipboard(Vec<u8>),
+}
+
+/// What is sent as text for a message with attachments: the text, then each attachment (a
+/// command block's text, a file's path, an image's path). With `images_inline` the agent takes
+/// images in the message itself, so they are not in the text.
+pub fn wire_text(text: &str, attachments: &[Attachment], images_inline: bool) -> String {
     let mut out = text.to_string();
     for a in attachments {
+        let said = match a {
+            Attachment::Text(text) => text.clone(),
+            Attachment::File(path) => path.to_string_lossy().into_owned(),
+            Attachment::Image { path, .. } if !images_inline => match path {
+                Some(path) => path.to_string_lossy().into_owned(),
+                None => continue,
+            },
+            Attachment::Image { .. } => continue,
+        };
         if !out.is_empty() {
             out.push_str("\n\n");
         }
-        out.push_str(a);
+        out.push_str(&said);
     }
     out
+}
+
+/// What the conversation's row for a message lists of its attachments.
+fn labels(attachments: &[Attachment]) -> Vec<String> {
+    attachments.iter().map(Attachment::label).collect()
+}
+
+/// The images among `attachments`, for an agent that takes them in the message.
+fn pictures(attachments: &[Attachment]) -> Vec<Picture> {
+    attachments
+        .iter()
+        .filter_map(|a| match a {
+            Attachment::Image { picture, .. } => Some(picture.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// What an item looks like, as a number: a row is laid out again when its number changes.
@@ -379,6 +577,13 @@ pub struct Colors {
     pub code_fill: Rgb,
     pub code_text: Rgb,
     pub code_dim: Rgb,
+    /// The agent box (M11ak): its fill and edge, its quiet chips, and a hovered one.
+    pub box_fill: Rgb,
+    pub box_edge: Rgb,
+    /// The box's edge while its text has the keyboard.
+    pub box_focus: Rgb,
+    pub box_dim: Rgb,
+    pub box_hover: Rgb,
 }
 
 impl Colors {
@@ -415,6 +620,12 @@ impl Colors {
             code_fill,
             code_text: fit(ui.text, code_fill),
             code_dim: fit(ui.text_dim, code_fill),
+            // The fill the box's text field always had.
+            box_fill: ui.sidebar_background,
+            box_edge: ui.panel_border,
+            box_focus: ui.focus_ring,
+            box_dim: fit(ui.text_dim, ui.sidebar_background),
+            box_hover: ui.panel_hover,
         }
     }
 }
@@ -436,15 +647,22 @@ struct Run {
     fresh: Option<String>,
     started: bool,
     first_item: usize,
-    sends: Vec<(String, Vec<String>)>,
+    sends: Vec<(String, Vec<Attachment>)>,
 }
 
 /// The `@` file list: where the `@` is, the query after it, the ranked hits, the selected one.
-struct AtList {
+pub(crate) struct AtList {
     at: usize,
-    query: String,
-    hits: Vec<FileHit>,
-    selected: usize,
+    pub(crate) query: String,
+    pub(crate) hits: Vec<FileHit>,
+    pub(crate) selected: usize,
+}
+
+/// The `/` list: the first word's text after the `/`, and the selected command (counted among
+/// the rows that are commands, not the headings).
+pub(crate) struct SlashList {
+    pub(crate) query: String,
+    pub(crate) selected: usize,
 }
 
 /// The agent's folder's files for `@`: listed once per tab (off the UI thread), then kept.
@@ -462,12 +680,29 @@ struct Said {
     conversation: Option<String>,
 }
 
+/// Live changes asked of the running agent and not confirmed yet: the start flags each becomes
+/// once the agent says it took it (`Event::Applied`).
+#[derive(Default)]
+struct Asked {
+    model: Option<String>,
+    effort: Option<String>,
+    mode: Option<String>,
+}
+
+/// What the agent starts with, as saved with the tab: its flags and its folder.
+struct Settings {
+    model: Option<String>,
+    effort: Option<String>,
+    mode: Option<String>,
+    cwd: PathBuf,
+}
+
 pub struct AgentTab {
-    provider: Option<&'static dyn Provider>,
+    pub(crate) provider: Option<&'static dyn Provider>,
     provider_name: String,
-    start: Start,
-    composer: Entity<Composer>,
-    conversation: Conversation,
+    pub(crate) start: Start,
+    pub(crate) composer: Entity<Composer>,
+    pub(crate) conversation: Conversation,
     /// The login shell's `PATH`, read once the tab opens.
     path: Option<String>,
     translator: Option<Box<dyn Translator>>,
@@ -488,15 +723,18 @@ pub struct AgentTab {
     /// Its process was stopped for "Open in classic view" (R13): a send asks the Workspace first
     /// (`ResumeAsked`).
     paused: bool,
-    queued: Vec<(String, Vec<String>)>,
+    queued: Vec<(String, Vec<Attachment>)>,
     run: Run,
     /// The id fuxx chose for a new conversation, taken as the tab's conversation at your first
     /// message, while the agent hasn't said it started under it: a restart then starts a new
     /// conversation again (under a new id: an agent may refuse an id used before) instead of
     /// resuming one that may never have been made.
     unconfirmed: Option<String>,
-    /// Scenes: no process is ever started.
-    no_process: bool,
+    /// Scenes: no process is ever started (nor a probe, nor a file read for the picker).
+    pub(crate) no_process: bool,
+    /// This tab's own process is to answer the catalog (`Event::Catalog`): the cache says
+    /// "loading" until it does, and failed if the process ends first.
+    catalog_pending: bool,
     list: ListState,
     rows: Vec<Row>,
     /// Tool rows opened by a click (by tool id).
@@ -509,25 +747,53 @@ pub struct AgentTab {
     /// Stop was pressed: the turn hasn't ended yet. `force`: `STOP_FORCE_AFTER` has passed.
     stopping: Option<Instant>,
     force: bool,
-    attachments: Vec<String>,
+    pub(crate) attachments: Vec<Attachment>,
+    /// The box's open menu (one at a time; Esc closes it).
+    pub(crate) menu: Option<BoxMenu>,
+    /// The folder picker's search and rows, while it is open.
+    pub(crate) picker: Option<crate::agent_box::FolderPicker>,
+    /// Where the press was that last closed the folder or model menu from outside it: that
+    /// chip's click from the same press leaves it closed (not closed and opened again).
+    pub(crate) chip_closed_at: Option<gpui::Point<gpui::Pixels>>,
+    /// The branch checked out in the agent's folder (none outside a repo, or before it is read):
+    /// looked up on the background executor, never in `render` (`read_branch`).
+    pub(crate) branch: Option<String>,
     files: Option<Files>,
-    listing: bool,
-    at: Option<AtList>,
+    pub(crate) listing: bool,
+    pub(crate) at: Option<AtList>,
+    /// The `/` list, while it is open.
+    pub(crate) slash: Option<SlashList>,
+    /// Esc closed the `/` list: it stays closed until the box leaves the `/` word.
+    slash_dismissed: bool,
+    pub(crate) slash_scroll: gpui::ScrollHandle,
     rank_generation: Arc<AtomicU64>,
     ticker: Option<Task<()>>,
     end_timer: Option<Task<()>>,
     force_timer: Option<Task<()>>,
     _boot: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+    /// Box changes waiting for the turn to end (one per kind of change, the latest); while one
+    /// of them is a restart, what you send waits with them (`queued`), for the restarted agent.
+    waiting: Vec<Change>,
+    asked: Asked,
     /// The command line of the last start (scenes check a restart resumes).
     #[cfg(feature = "ui-shots")]
     last_argv: Vec<String>,
+    /// The lines a scene tab (no process) would have written to its agent.
+    #[cfg(feature = "ui-shots")]
+    written: Vec<String>,
     /// How many item rows the list built (scenes check only the rows in sight are laid out).
     #[cfg(feature = "ui-shots")]
     pub rows_built: Rc<Cell<usize>>,
     /// Where each waiting attachment's × was laid out (scenes click it).
     #[cfg(feature = "ui-shots")]
-    removes: Rc<std::cell::RefCell<Vec<Option<gpui::Bounds<gpui::Pixels>>>>>,
+    pub(crate) removes: Rc<std::cell::RefCell<Vec<Option<gpui::Bounds<gpui::Pixels>>>>>,
+    /// Where each part of the box was laid out (`shot_part`).
+    #[cfg(feature = "ui-shots")]
+    pub(crate) parts: crate::agent_box::Parts,
+    /// Where each row of the open menu was laid out, by its words (`shot_menu_row`).
+    #[cfg(feature = "ui-shots")]
+    pub(crate) menu_rows: crate::agent_box::MenuRows,
 }
 
 impl EventEmitter<AgentTabEvent> for AgentTab {}
@@ -563,6 +829,7 @@ impl AgentTab {
             }
             Some(provider) => {
                 this.booting = true;
+                this.read_branch(cx);
                 let start = this.start.clone();
                 this._boot = Some(cx.spawn(async move |this, cx| {
                     let (path, past, holder) = cx
@@ -673,10 +940,10 @@ impl AgentTab {
         self.toggle(ix, cx);
     }
 
-    /// The mode chip's click (call 6), as its click does.
+    /// The mode `id` chosen from the box's menu, as its row's click does.
     #[cfg(feature = "ui-shots")]
-    pub fn shot_next_mode(&mut self, cx: &mut Context<Self>) {
-        self.next_mode(cx);
+    pub fn shot_choose_mode(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.choose_mode(id, cx);
     }
 
     #[cfg(feature = "ui-shots")]
@@ -718,6 +985,12 @@ impl AgentTab {
         self.last_argv.clone()
     }
 
+    /// The lines written to the agent (a scene tab's, kept by `write`).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_written(&self) -> Vec<String> {
+        self.written.clone()
+    }
+
     /// The conversation the tab resumes when its process starts again.
     #[cfg(feature = "ui-shots")]
     pub fn shot_resume(&self) -> Option<String> {
@@ -742,6 +1015,49 @@ impl AgentTab {
         self.force_stop(cx);
     }
 
+    /// The catalog the box's chips and menus read, as if this tab's agent had answered it.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_catalog(
+        &mut self,
+        found: crate::agent_catalog::Lookup<crate::providers::Catalog>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(provider) = self.provider {
+            crate::agent_catalog::store_catalog(provider.info().name, &self.start.cwd, found, cx);
+        }
+        cx.notify();
+    }
+
+    /// What the box's chips and the top line say.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_box(&self, cx: &App) -> crate::agent_box::BoxTexts {
+        self.box_texts(cx)
+    }
+
+    /// Where a part of the box was last laid out: `folder`, `box`, `attachments`, `attach`,
+    /// `model`, `mode`, `send`, `menu`, `usage`.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_part(&self, part: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.parts.borrow().get(part).copied()
+    }
+
+    /// The colour the box's edge is drawn in now.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_box_edge(&self, window: &Window, cx: &App) -> Rgb {
+        self.box_edge(&Colors::of(&cx.global::<Appearance>().theme), window, cx)
+    }
+
+    /// The box's open menu.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_menu(&self) -> Option<BoxMenu> {
+        self.menu.clone()
+    }
+
+    /// Whether the `@` file list is open.
+    pub(crate) fn at_open(&self) -> bool {
+        self.at.is_some()
+    }
+
     /// Whether the `@` list has hits (scenes wait for the ranking).
     #[cfg(feature = "ui-shots")]
     pub fn at_hits(&self) -> usize {
@@ -755,14 +1071,37 @@ impl AgentTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let label = provider.map_or(provider_name.as_str(), |p| p.info().label);
-        let placeholder: SharedString = format!("Message {label}…").into();
-        let composer = cx.new(|cx| Composer::new(placeholder, window, cx));
+        let composer = cx.new(|cx| {
+            let mut composer = Composer::new(PLACEHOLDER.into(), window, cx);
+            // The box draws its edge and fill.
+            composer.set_bare(true, cx);
+            composer
+        });
         let list = ListState::new(0, ListAlignment::Top, px(200.));
         list.set_follow_mode(gpui::FollowMode::Tail);
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::on_composer),
             cx.observe(&composer, |this, _, cx| this.composer_changed(cx)),
+            // The box's menus draw from the cache: a probe finishing redraws the tab (and the
+            // folder picker's lists are made again).
+            cx.observe_global::<crate::agent_catalog::Catalogs>(|this, cx| {
+                this.refresh_picker(cx);
+                cx.notify()
+            }),
+            cx.observe_global::<crate::folder_picker::KnownFolders>(|this, cx| {
+                this.refresh_picker(cx)
+            }),
+            // Closed before its process answered the catalog: the menu mustn't load forever.
+            cx.on_release(|this, cx| {
+                if let (true, Some(provider)) = (this.catalog_pending, this.provider) {
+                    crate::agent_catalog::fail_catalog_if_loading(
+                        provider.info().name,
+                        &this.start.cwd,
+                        "its tab closed before it answered",
+                        cx,
+                    );
+                }
+            }),
         ];
         Self {
             provider,
@@ -784,6 +1123,7 @@ impl AgentTab {
             run: Run::default(),
             unconfirmed: None,
             no_process: false,
+            catalog_pending: false,
             list,
             rows: Vec::new(),
             expanded: HashSet::new(),
@@ -793,21 +1133,36 @@ impl AgentTab {
             stopping: None,
             force: false,
             attachments: Vec::new(),
+            menu: None,
+            picker: None,
+            chip_closed_at: None,
+            branch: None,
             files: None,
             listing: false,
             at: None,
+            slash: None,
+            slash_dismissed: false,
+            slash_scroll: gpui::ScrollHandle::new(),
             rank_generation: Arc::new(AtomicU64::new(0)),
             ticker: None,
             end_timer: None,
             force_timer: None,
             _boot: None,
             _subscriptions: subscriptions,
+            waiting: Vec::new(),
+            asked: Asked::default(),
             #[cfg(feature = "ui-shots")]
             last_argv: Vec::new(),
+            #[cfg(feature = "ui-shots")]
+            written: Vec::new(),
             #[cfg(feature = "ui-shots")]
             rows_built: Rc::new(Cell::new(0)),
             #[cfg(feature = "ui-shots")]
             removes: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            parts: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            menu_rows: Rc::default(),
         }
     }
 
@@ -825,7 +1180,7 @@ impl AgentTab {
         }
     }
 
-    /// The mode the agent runs in (agy's chip; none for Claude).
+    /// The mode the agent starts with: chosen, or the one it last reported (R9).
     pub fn mode(&self) -> Option<&str> {
         self.start.mode.as_deref()
     }
@@ -861,6 +1216,7 @@ impl AgentTab {
         self.force_timer = None;
         self.end_process();
         self.abandon_edits(cx);
+        self.start_with_waiting(false, cx);
         self.paused = true;
         self.unqueue(cx);
         self.conversation.paused();
@@ -1012,6 +1368,11 @@ impl AgentTab {
             let notice = crate::workspace_agent::held_notice(self.label(), &holder, None);
             self.conversation.paused_with(&notice);
             self.after_change(false, cx);
+            // No process of its own: the probe answers the catalog.
+            // (A scene tab never probes.)
+            if let Some(provider) = self.provider.filter(|_| !self.no_process) {
+                crate::agent_catalog::load_catalog(provider, self.start.cwd.clone(), cx);
+            }
             return;
         }
         self.after_change(false, cx);
@@ -1033,7 +1394,7 @@ impl AgentTab {
     /// Show what you said and send it to the running process. The first message of a new
     /// conversation started under an id fuxx chose makes that id the tab's conversation at once
     /// (told, so saved: a process left running by a crash is found holding it, R13).
-    fn say(&mut self, text: String, attachments: Vec<String>) {
+    fn say(&mut self, text: String, attachments: Vec<Attachment>) {
         if let Some(id) = self.run.fresh.clone()
             && !self.run.started
             && self.conversation.conversation() != Some(id.as_str())
@@ -1044,16 +1405,35 @@ impl AgentTab {
             });
             self.unconfirmed = Some(id);
         }
-        let wire = wire_text(&text, &attachments);
-        self.conversation.you(text.clone(), attachments.clone());
+        let inline = self.provider.is_some_and(|p| p.sends_images());
+        let wire = wire_text(&text, &attachments, inline);
+        let images = if inline {
+            pictures(&attachments)
+        } else {
+            Vec::new()
+        };
+        self.conversation.you(text.clone(), labels(&attachments));
         self.run.sends.push((text, attachments));
-        self.write(&Action::Send { text: wire });
+        self.write(&Action::Send { text: wire, images });
     }
 
     /// Start (or start again) the agent, resuming `resume`; with none, a new conversation (under
     /// an id fuxx chooses, if the provider takes one).
     fn spawn_process(&mut self, resume: Option<String>, cx: &mut Context<Self>) {
         self.end_process();
+        // Live changes the old process never answered: the new one starts with them.
+        let asked = std::mem::take(&mut self.asked);
+        let before = self.settings();
+        if asked.model.is_some() {
+            self.start.model = asked.model;
+        }
+        if asked.effort.is_some() {
+            self.start.effort = asked.effort;
+        }
+        if asked.mode.is_some() {
+            self.start.mode = asked.mode;
+        }
+        self.tell_settings(before, cx);
         // A process ended and not yet reported (Force stop within `END_WAIT`) never will be:
         // sends go to this one.
         self.ending = false;
@@ -1089,11 +1469,44 @@ impl AgentTab {
             return;
         }
         let process = self.listen(&argv, cx);
+        self.ask_catalog(provider, cx);
         let mut translator = provider.translator();
         for line in translator.hello() {
             process.send(line);
         }
         self.translator = Some(translator);
+    }
+
+    /// The catalog for the box's menus: from this tab's own process when the agent answers it at
+    /// start (marked loading until it does), else from a probe.
+    fn ask_catalog(&mut self, provider: &'static dyn Provider, cx: &mut Context<Self>) {
+        let agent = provider.info().name;
+        if provider.catalog_on_start() {
+            let cwd = self.start.cwd.clone();
+            // Still waiting on this process's answer even when the entry already says loading
+            // (a restart, or another tab asked first): if it ends unanswered, the entry fails.
+            self.catalog_pending = true;
+            cx.update_default_global(|c: &mut crate::agent_catalog::Catalogs, _| {
+                c.begin_catalog(agent, &cwd);
+            });
+        } else {
+            crate::agent_catalog::load_catalog(provider, self.start.cwd.clone(), cx);
+        }
+    }
+
+    /// The process ended without answering the catalog: say so, so the menu stops loading.
+    fn catalog_unanswered(&mut self, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.catalog_pending) {
+            return;
+        }
+        if let Some(provider) = self.provider {
+            crate::agent_catalog::fail_catalog_if_loading(
+                provider.info().name,
+                &self.start.cwd,
+                "it ended without answering",
+                cx,
+            );
+        }
     }
 
     /// Start `argv` in the agent's folder and read its events on a task (`on_process`).
@@ -1136,6 +1549,45 @@ impl AgentTab {
                 process.send(line);
             }
         }
+        // A scene tab has no process: what it would write is kept.
+        #[cfg(feature = "ui-shots")]
+        if self.no_process
+            && let Some(translator) = self.translator.as_mut()
+        {
+            self.written.extend(translator.encode(action));
+        }
+    }
+
+    /// A choice made in the box (a model and effort, a mode, a folder). Never sends a message.
+    /// The provider says how it applies (`Provider::applies`); `step_for` says when: live on
+    /// the running agent, by a restart on the same conversation, after the current turn, or at
+    /// its next start. Choosing what it already runs with changes nothing (and drops a waiting
+    /// change of that kind).
+    pub fn choose(&mut self, change: Change, cx: &mut Context<Self>) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        self.waiting
+            .retain(|w| std::mem::discriminant(w) != std::mem::discriminant(&change));
+        if self.kinds(provider, &change, cx).is_empty() {
+            cx.notify();
+            return;
+        }
+        self.apply_changes(vec![change], cx);
+    }
+
+    /// The model change waiting for the turn to end, if there is one (`choose` keeps one).
+    pub(crate) fn waiting_model(&self) -> Option<&Change> {
+        self.waiting
+            .iter()
+            .rev()
+            .find(|c| matches!(c, Change::Model { .. }))
+    }
+
+    /// The latest change waiting for the turn to end.
+    #[allow(dead_code)] // read by scenes
+    pub fn waiting_change(&self) -> Option<&Change> {
+        self.waiting.last()
     }
 
     fn on_process(&mut self, event: ProcessEvent, cx: &mut Context<Self>) {
@@ -1173,6 +1625,7 @@ impl AgentTab {
                 }
             }
             ProcessEvent::SpawnFailed(message) => {
+                self.catalog_unanswered(cx);
                 self.exited = true;
                 self.ending = false;
                 self.process = None;
@@ -1190,6 +1643,9 @@ impl AgentTab {
     /// (one notice, the process again without `--resume`, what you sent sent again); else the
     /// conversation hears it ended.
     fn finish(&mut self, code: Option<i32>, tail: String, cx: &mut Context<Self>) {
+        self.catalog_unanswered(cx);
+        // Its turn is over: what waited for it is how the next start runs.
+        self.start_with_waiting(false, cx);
         self.exited = true;
         self.ending = false;
         self.process = None;
@@ -1215,7 +1671,7 @@ impl AgentTab {
             let sends = std::mem::take(&mut self.run.sends);
             self.conversation.keep_first(self.run.first_item);
             for (text, attachments) in sends {
-                self.conversation.you(text, attachments);
+                self.conversation.you(text, labels(&attachments));
             }
             let why = said
                 .iter()
@@ -1272,6 +1728,7 @@ impl AgentTab {
     /// changed told — `Question`, `Status` (after it, so a Waiting banner has its question),
     /// `Title`, `Conversation` — and the tab redrawn.
     fn on_events(&mut self, events: Vec<Event>, cx: &mut Context<Self>) {
+        let mut turn_ended = false;
         for event in events {
             let home = crate::workspace::home_dir();
             for told in edit_events(
@@ -1300,14 +1757,47 @@ impl AgentTab {
                 Event::ToolStarted { id, .. } => {
                     self.tool_started.insert(id.clone(), Instant::now());
                 }
+                Event::Catalog(catalog) => {
+                    self.catalog_pending = false;
+                    if let Some(provider) = self.provider {
+                        crate::agent_catalog::store_catalog(
+                            provider.info().name,
+                            &self.start.cwd,
+                            crate::agent_catalog::Lookup::Ready(catalog.clone()),
+                            cx,
+                        );
+                    }
+                }
+                Event::Skills(skills) => {
+                    if let Some(provider) = self.provider {
+                        let (agent, cwd) = (provider.info().name, self.start.cwd.clone());
+                        cx.update_default_global(|c: &mut crate::agent_catalog::Catalogs, _| {
+                            c.mark_skills(agent, &cwd, skills)
+                        });
+                    }
+                }
+                Event::RateLimit(limit) => {
+                    if let Some(provider) = self.provider {
+                        let agent = provider.info().name;
+                        cx.update_default_global(|c: &mut crate::agent_catalog::Catalogs, _| {
+                            c.note_limit(agent, limit.clone())
+                        });
+                    }
+                }
                 Event::TurnDone { .. } => {
                     self.stopping = None;
                     self.force = false;
                     self.force_timer = None;
+                    turn_ended = true;
                 }
+                Event::Applied { kind, value, ok } => self.applied(*kind, value, *ok, cx),
+                Event::Mode(mode) => self.reported_mode(mode, cx),
                 _ => {}
             }
             self.conversation.apply(event);
+        }
+        if turn_ended {
+            self.settle_waiting(cx);
         }
         self.after_change(true, cx);
     }
@@ -1435,7 +1925,7 @@ impl AgentTab {
         } else if self.status() == Status::Working {
             format!("Add a note. {label} reads it after this step…").into()
         } else {
-            format!("Message {label}…").into()
+            PLACEHOLDER.into()
         };
         self.composer
             .update(cx, |c, cx| c.set_placeholder(text, cx));
@@ -1455,8 +1945,10 @@ impl AgentTab {
             cx.emit(AgentTabEvent::ResumeAsked(text));
             return;
         }
-        if self.booting || self.ending {
-            // Held, shown as waiting under the conversation, until the process is there.
+        if self.booting || self.ending || self.restart_waits(cx) {
+            // Held, shown as waiting under the conversation, until the process is there (or,
+            // with a restart waiting for the turn, until it is done: it would lose what was
+            // written to the process before it). A live change holds nothing back (R5).
             self.queued.push((text, attachments));
             cx.notify();
             return;
@@ -1470,15 +1962,107 @@ impl AgentTab {
         self.after_change(true, cx);
     }
 
-    /// Something to send with the next message (Task 11: a command's output), shown as a chip
-    /// under the composer until it is sent. Only kept: it never sends, and never restarts a
+    /// Something to send with the next message (a command's output, a file, an image), shown
+    /// as a chip in the box until it is sent. Only kept: it never sends, and never restarts a
     /// paused tab (R13); an error tab (no agent) has nothing to send it to.
-    pub fn attach(&mut self, attachment: String, cx: &mut Context<Self>) {
+    pub fn attach(&mut self, attachment: Attachment, cx: &mut Context<Self>) {
         if self.provider.is_none() {
             return;
         }
         self.attachments.push(attachment);
         cx.notify();
+    }
+
+    /// `paths` (from `File…`) as file chips: each is sent as its path, for the agent to read.
+    pub fn attach_files(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        for path in paths {
+            self.attach(Attachment::File(path), cx);
+        }
+    }
+
+    /// The image files among `paths` (from `Image…`) as image chips, read off the UI thread;
+    /// any other file is left out.
+    pub fn attach_images(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        for path in paths {
+            if let Some(media_type) = media_type_for(&path) {
+                let name = file_name(&path);
+                self.add_image(name, media_type, ImageFrom::File(path), cx);
+            }
+        }
+    }
+
+    /// Files dropped on the box: an image file becomes an image chip, any other a file chip.
+    pub fn attach_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let (images, files) = paths.into_iter().partition(|p| media_type_for(p).is_some());
+        self.attach_images(images, cx);
+        self.attach_files(files, cx);
+    }
+
+    /// An image pasted from the clipboard, as an image chip. A format the agents don't take
+    /// (not png, jpeg, gif or webp) is left out.
+    pub fn attach_pasted_image(&mut self, image: gpui::Image, cx: &mut Context<Self>) {
+        let media_type = match image.format {
+            gpui::ImageFormat::Png => "image/png",
+            gpui::ImageFormat::Jpeg => "image/jpeg",
+            gpui::ImageFormat::Gif => "image/gif",
+            gpui::ImageFormat::Webp => "image/webp",
+            _ => return,
+        };
+        let name = format!("pasted-image.{}", image.format.extension());
+        self.add_image(name, media_type, ImageFrom::Clipboard(image.bytes), cx);
+    }
+
+    /// An image chip once its bytes are in: they are read, checked against the provider's
+    /// `image_limit` and, for a pasted image with an agent that is told a path, written to the
+    /// temp folder, all off the UI thread. Too big (or unreadable): no chip, a notice says so.
+    fn add_image(
+        &mut self,
+        name: String,
+        media_type: &'static str,
+        from: ImageFrom,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        let by_path = !provider.sends_images();
+        let (limit, label) = (provider.image_limit(), provider.info().label);
+        let dir = std::env::temp_dir().join(PASTED_DIR);
+        let job = cx.background_spawn(async move {
+            let (bytes, path) = match from {
+                ImageFrom::File(path) => {
+                    let bytes = read_image(&path, &name, limit, label)?;
+                    (bytes, Some(path))
+                }
+                ImageFrom::Clipboard(bytes) => (bytes, None),
+            };
+            let picture = picture(&name, media_type, bytes, limit, label)?;
+            let path = match path {
+                Some(path) => Some(path),
+                None if by_path => {
+                    let ext = name.rsplit('.').next().unwrap_or("png");
+                    Some(
+                        write_pasted(&dir, &picture, ext)
+                            .map_err(|e| format!("Couldn't attach {name}: {e}"))?,
+                    )
+                }
+                None => None,
+            };
+            Ok(Attachment::Image {
+                name,
+                picture,
+                path,
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let done = job.await;
+            this.update(cx, |this, cx| match done {
+                Ok(image) => this.attach(image, cx),
+                Err(note) => this.notice(note, cx),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The × on a waiting attachment's chip: it goes, and is never sent (nothing else changes:
@@ -1497,7 +2081,7 @@ impl AgentTab {
 
     /// The attachments waiting for your next message.
     #[cfg(feature = "ui-shots")]
-    pub fn shot_attachments(&self) -> &[String] {
+    pub fn shot_attachments(&self) -> &[Attachment] {
         &self.attachments
     }
 
@@ -1556,7 +2140,7 @@ impl AgentTab {
     }
 
     /// The right button: Stop, or Force stop once it is offered.
-    fn stop_pressed(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn stop_pressed(&mut self, cx: &mut Context<Self>) {
         if self.force {
             self.force_stop(cx);
         } else {
@@ -1576,7 +2160,14 @@ impl AgentTab {
             ok: false,
             message: None,
         });
+        // The turn is over: what waited for it starts with the new process, and what you sent
+        // meanwhile goes to it.
+        let held = !self.waiting.is_empty();
+        self.start_with_waiting(true, cx);
         self.spawn_process(resume, cx);
+        if held {
+            self.flush_queued();
+        }
         self.after_change(true, cx);
     }
 
@@ -1595,33 +2186,86 @@ impl AgentTab {
                     self.pick_at(None, cx);
                     return;
                 }
-                let text = text.clone();
-                if self.conversation.pending_permission().is_some() {
-                    let answer = if text.trim().is_empty() {
-                        Answer::Allowed
-                    } else {
-                        Answer::Denied(Some(text.trim().to_string()))
-                    };
-                    self.answer(answer, cx).ok();
-                } else if text.trim().is_empty() && self.attachments.is_empty() {
+                // A list with a command to pick: Return picks it. With none (a complete line
+                // that names nothing listed), Return sends as ever.
+                if self.slash.is_some() && self.pick_slash(None, cx) {
                     return;
-                } else if self.paused {
-                    // The box keeps the text until it is sent (`resume_after_classic`).
-                    self.send(text, cx);
-                    return;
-                } else {
-                    self.send(text, cx);
                 }
-                composer.update(cx, |c, cx| c.set_text(String::new(), cx));
+                // A list still loading is a line in progress, not a complete one: Return does not
+                // send the half-typed `/xx`. One that could not be read sends as typed (R10).
+                if self.slash_list_pending(cx) {
+                    return;
+                }
+                self.submit(text.clone(), composer, cx);
             }
             ComposerEvent::Stop => {
-                if self.at.take().is_some() {
+                if self.menu.is_some() {
+                    self.close_menu(cx);
+                } else if self.at.take().is_some() {
+                    cx.notify();
+                } else if self.slash.take().is_some() {
+                    self.slash_dismissed = true;
                     cx.notify();
                 } else {
                     self.stop(cx);
                 }
             }
             ComposerEvent::AtTyped => self.open_at(cx),
+            ComposerEvent::Complete => self.complete_slash(cx),
+            ComposerEvent::PasteImage(image) => self.attach_pasted_image(image.clone(), cx),
+        }
+    }
+
+    /// The box's send (➤), as Enter on the box.
+    pub(crate) fn send_pressed(&mut self, cx: &mut Context<Self>) {
+        let composer = self.composer.clone();
+        let text = composer.read(cx).text().to_string();
+        self.submit(text, &composer, cx);
+    }
+
+    /// What Enter or ➤ does with the box's `text`: with a permission waiting, empty allows and
+    /// text denies with it as the reason; else it is sent. The box is cleared once it is used.
+    fn submit(&mut self, text: String, composer: &Entity<Composer>, cx: &mut Context<Self>) {
+        if self.conversation.pending_permission().is_some() {
+            let answer = if text.trim().is_empty() {
+                Answer::Allowed
+            } else {
+                Answer::Denied(Some(text.trim().to_string()))
+            };
+            self.answer(answer, cx).ok();
+        } else if let Some(command) = self.provider.and_then(|p| p.own_command(&text)) {
+            // What fuxx answers itself opens its menu: nothing is sent.
+            self.open_box_command(command, cx);
+        } else if text.trim().is_empty() && self.attachments.is_empty() {
+            return;
+        } else if self.paused {
+            // The box keeps the text until it is sent (`resume_after_classic`).
+            self.send(text, cx);
+            return;
+        } else {
+            self.send(text, cx);
+        }
+        composer.update(cx, |c, cx| c.set_text(String::new(), cx));
+    }
+
+    /// Open `menu` over its chip, in place of any other (Esc closes it).
+    pub fn open_menu(&mut self, menu: BoxMenu, cx: &mut Context<Self>) {
+        self.at = None;
+        self.slash = None;
+        self.picker = None;
+        self.menu = Some(menu);
+        #[cfg(feature = "ui-shots")]
+        self.menu_rows.borrow_mut().clear();
+        cx.notify();
+    }
+
+    /// Close the box's menu (a click outside it).
+    pub(crate) fn close_menu(&mut self, cx: &mut Context<Self>) {
+        self.picker = None;
+        #[cfg(feature = "ui-shots")]
+        self.menu_rows.borrow_mut().clear();
+        if self.menu.take().is_some() {
+            cx.notify();
         }
     }
 
@@ -1634,6 +2278,14 @@ impl AgentTab {
             hits: Vec::new(),
             selected: 0,
         });
+        self.slash_scroll.scroll_to_item(0);
+        // The agents and skills come from the catalog: a list not read yet (or that failed) is
+        // asked for again, as the `/` list does.
+        if let Some(provider) = self.provider
+            && !self.no_process
+        {
+            crate::agent_catalog::load_catalog(provider, self.start.cwd.clone(), cx);
+        }
         if self.files.is_none() && !self.listing {
             self.listing = true;
             let cwd = self.start.cwd.clone();
@@ -1664,6 +2316,7 @@ impl AgentTab {
 
     /// The composer changed: the `@` list follows its query, or closes.
     fn composer_changed(&mut self, cx: &mut Context<Self>) {
+        self.slash_follow(cx);
         let Some(at) = &self.at else {
             return;
         };
@@ -1677,7 +2330,9 @@ impl AgentTab {
             Some(q) if q != at.query => {
                 if let Some(at) = &mut self.at {
                     at.query = q;
+                    at.selected = 0;
                 }
+                self.slash_scroll.scroll_to_item(0);
                 self.rank(cx);
             }
             Some(_) => {}
@@ -1710,6 +2365,7 @@ impl AgentTab {
                 if let Some(at) = &mut this.at {
                     at.hits = hits;
                     at.selected = 0;
+                    this.slash_scroll.scroll_to_item(0);
                     cx.notify();
                 }
             })
@@ -1718,34 +2374,300 @@ impl AgentTab {
         .detach();
     }
 
-    /// Put the picked file (`index`, else the selected one) in place of `@query`.
-    fn pick_at(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
-        let Some(at) = self.at.take() else {
+    /// The rows of the open `@` list: the ranked files, and the catalog's agents and skills (none
+    /// while it isn't read).
+    pub(crate) fn at_rows_now(&self, cx: &App) -> Vec<AtRow> {
+        self.at
+            .as_ref()
+            .map_or_else(Vec::new, |at| self.at_rows_from(at, cx))
+    }
+
+    /// How many rows of the `@` list a key can pick (its files, agents and skills).
+    fn at_pick_count(&self, cx: &App) -> usize {
+        self.at_rows_now(cx)
+            .iter()
+            .filter(|r| !matches!(r, AtRow::Heading(_)))
+            .count()
+    }
+
+    /// Put the picked row (`index` among the rows that can be picked, else the selected one) in
+    /// place of `@query`: a file's path, or `@name` for an agent or a skill. Nothing is sent.
+    pub(crate) fn pick_at(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
+        let Some(at) = &self.at else {
             return;
         };
+        // Resolve the row first: a pick that is not there leaves the list as it is.
         let pick = index.unwrap_or(at.selected);
-        if let (Some(hit), Some(files)) = (at.hits.get(pick), &self.files) {
-            let path = inserted_path(&files.root, &self.start.cwd, &hit.rel);
-            let end = at.at + 1 + at.query.len();
+        let Some(row) = self
+            .at_rows_now(cx)
+            .into_iter()
+            .filter(|r| !matches!(r, AtRow::Heading(_)))
+            .nth(pick)
+        else {
+            return;
+        };
+        let commands = match self.catalog_lookup(cx) {
+            crate::agent_catalog::Lookup::Ready(catalog) => catalog.commands,
+            _ => Vec::new(),
+        };
+        // Agents and skills need no file listing (the hits are empty until it is read).
+        let root = self
+            .files
+            .as_ref()
+            .map_or_else(|| self.start.cwd.clone(), |f| f.root.clone());
+        let inserted = at_insertion(&row, &at.hits, &commands, &root, &self.start.cwd);
+        let (from, end) = (at.at, at.at + 1 + at.query.len());
+        self.at = None;
+        if let Some(text) = inserted {
             self.composer.update(cx, |c, cx| {
-                c.replace(at.at..end, &format!("{path} "), cx);
+                c.replace(from..end, &text, cx);
             });
         }
         cx.notify();
     }
 
+    /// `at_rows_now` for an `@` list that is no longer `self.at` (the one a pick has taken).
+    fn at_rows_from(&self, at: &AtList, cx: &App) -> Vec<AtRow> {
+        match self.catalog_lookup(cx) {
+            crate::agent_catalog::Lookup::Ready(catalog) => {
+                at_rows(&at.hits, &catalog.commands, &at.query)
+            }
+            _ => at_rows(&at.hits, &[], &at.query),
+        }
+    }
+
+    /// The `/` list follows the box: it opens on a `/` at its start, filters as the first word
+    /// grows or shrinks, and closes when the caret leaves that word (or the box's first word is
+    /// no longer a `/` one). Esc keeps it closed until then. It stays out of the way of an open
+    /// menu, the `@` list and a permission that waits for its answer.
+    fn slash_follow(&mut self, cx: &mut Context<Self>) {
+        let composer = self.composer.read(cx);
+        let query = slash_query(composer.text(), composer.cursor()).map(str::to_string);
+        let Some(query) = query else {
+            self.slash_dismissed = false;
+            if self.slash.take().is_some() {
+                cx.notify();
+            }
+            return;
+        };
+        let allowed = self.provider.is_some()
+            && self.menu.is_none()
+            && self.at.is_none()
+            && !self.slash_dismissed
+            && self.conversation.pending_permission().is_none();
+        if !allowed {
+            if self.slash.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
+        match &mut self.slash {
+            Some(list) if list.query == query => {}
+            Some(list) => {
+                list.query = query;
+                list.selected = 0;
+                self.slash_scroll.scroll_to_item(0);
+                cx.notify();
+            }
+            None => {
+                self.slash = Some(SlashList { query, selected: 0 });
+                self.slash_scroll.scroll_to_item(0);
+                // As the model menu: a list that could not be read is asked for again.
+                if let Some(provider) = self.provider
+                    && !self.no_process
+                {
+                    crate::agent_catalog::load_catalog(provider, self.start.cwd.clone(), cx);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// The `/` list's commands, in the order they are drawn: the places in the catalog's list.
+    pub(crate) fn slash_picks(&self, cx: &App) -> Vec<usize> {
+        self.slash_rows_now(cx)
+            .into_iter()
+            .filter_map(|row| match row {
+                SlashRow::Item { ix, .. } => Some(ix),
+                SlashRow::Heading(_) => None,
+            })
+            .collect()
+    }
+
+    /// The rows of the open `/` list: none while the catalog isn't read.
+    pub(crate) fn slash_rows_now(&self, cx: &App) -> Vec<SlashRow> {
+        let Some(list) = &self.slash else {
+            return Vec::new();
+        };
+        match self.catalog_lookup(cx) {
+            crate::agent_catalog::Lookup::Ready(catalog) => {
+                slash_rows(&catalog.commands, &list.query, SLASH_LIMIT)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether the `/` list has a command a key could pick (the keys ↑ ↓ Tab are the list's
+    /// only then).
+    pub(crate) fn slash_has_picks(&self, cx: &App) -> bool {
+        self.slash.is_some() && !self.slash_picks(cx).is_empty()
+    }
+
+    /// The command of the `/` list at pick `index` (else the selected one).
+    fn slash_command(
+        &self,
+        index: Option<usize>,
+        cx: &App,
+    ) -> Option<crate::providers::AgentCommand> {
+        let list = self.slash.as_ref()?;
+        let picks = self.slash_picks(cx);
+        let want = index.unwrap_or(list.selected.min(picks.len().saturating_sub(1)));
+        let at = *picks.get(want)?;
+        match self.catalog_lookup(cx) {
+            crate::agent_catalog::Lookup::Ready(catalog) => catalog.commands.get(at).cloned(),
+            _ => None,
+        }
+    }
+
+    /// Where the first word of the box ends (a byte offset).
+    fn first_word_end(&self, cx: &App) -> usize {
+        let text = self.composer.read(cx).text();
+        text.find(char::is_whitespace).unwrap_or(text.len())
+    }
+
+    /// Return or a click on a command of the `/` list: `/name ` goes in place of the first word
+    /// (nothing is sent). A command fuxx answers with its own menu opens that menu instead,
+    /// and the box is cleared. False: there was nothing to pick.
+    pub(crate) fn pick_slash(&mut self, index: Option<usize>, cx: &mut Context<Self>) -> bool {
+        let Some(command) = self.slash_command(index, cx) else {
+            return false;
+        };
+        let typed = format!("/{}", command.name);
+        // Its own menu opens only when the command is all the box holds: with more after it
+        // (the caret was inside the first word), the name goes in as text and the rest stays.
+        let end = self.first_word_end(cx);
+        let alone = self.composer.read(cx).text()[end..].trim().is_empty();
+        let own = self.provider.and_then(|p| p.own_command(&typed));
+        if let Some(own) = own.filter(|_| alone) {
+            self.slash = None;
+            self.composer
+                .update(cx, |c, cx| c.set_text(String::new(), cx));
+            self.open_box_command(own, cx);
+        } else {
+            self.insert_command(&typed, cx);
+        }
+        true
+    }
+
+    /// Tab: the selected command's `/name ` goes in the box, as typed (nothing opens).
+    fn complete_slash(&mut self, cx: &mut Context<Self>) {
+        if let Some(command) = self.slash_command(None, cx) {
+            self.insert_command(&format!("/{}", command.name), cx);
+        }
+    }
+
+    /// Whether the `/` list is open while its commands still load (`Loading…` in place of its
+    /// rows).
+    fn slash_list_pending(&self, cx: &App) -> bool {
+        self.slash.is_some()
+            && matches!(
+                self.catalog_lookup(cx),
+                crate::agent_catalog::Lookup::Loading
+            )
+    }
+
+    /// `typed` and a space in place of the box's first word (the space is there already when
+    /// the word had text after it); the list closes (the caret is past the word).
+    fn insert_command(&mut self, typed: &str, cx: &mut Context<Self>) {
+        let end = self.first_word_end(cx);
+        let spaced = self.composer.read(cx).text()[end..].starts_with(char::is_whitespace);
+        self.slash = None;
+        let put = if spaced {
+            typed.to_string()
+        } else {
+            format!("{typed} ")
+        };
+        self.composer
+            .update(cx, |c, cx| c.replace(0..end, &put, cx));
+        cx.notify();
+    }
+
+    /// What `command` opens: View Usage, the model menu, or the model menu with the running
+    /// model's efforts beside it.
+    fn open_box_command(&mut self, command: BoxCommand, cx: &mut Context<Self>) {
+        match command {
+            BoxCommand::Usage => self.open_usage(cx),
+            BoxCommand::Model => self.open_model_menu(None, cx),
+            BoxCommand::Effort => {
+                let efforts_of = self.running_model_place(cx);
+                self.open_model_menu(efforts_of, cx);
+            }
+        }
+    }
+
     fn at_up(&mut self, _: &AtUp, _: &mut Window, cx: &mut Context<Self>) {
+        if self.slash.is_some() {
+            if let Some(list) = &mut self.slash {
+                list.selected = list.selected.saturating_sub(1);
+                let selected = list.selected;
+                self.scroll_slash_to(selected, cx);
+            }
+            return;
+        }
         if let Some(at) = &mut self.at {
             at.selected = at.selected.saturating_sub(1);
-            cx.notify();
+            let selected = at.selected;
+            self.scroll_at_to(selected, cx);
         }
     }
 
     fn at_down(&mut self, _: &AtDown, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(at) = &mut self.at {
-            at.selected = (at.selected + 1).min(at.hits.len().saturating_sub(1));
-            cx.notify();
+        if self.slash.is_some() {
+            let last = self.slash_picks(cx).len().saturating_sub(1);
+            if let Some(list) = &mut self.slash {
+                list.selected = (list.selected + 1).min(last);
+                let selected = list.selected;
+                self.scroll_slash_to(selected, cx);
+            }
+            return;
         }
+        let last = self.at_pick_count(cx).saturating_sub(1);
+        if let Some(at) = &mut self.at {
+            at.selected = (at.selected + 1).min(last);
+            let selected = at.selected;
+            self.scroll_at_to(selected, cx);
+        }
+    }
+
+    /// Keep pick `selected` of the `@` list in view (the lists never show together, so they
+    /// share a scroll).
+    fn scroll_at_to(&mut self, selected: usize, cx: &mut Context<Self>) {
+        let row = self
+            .at_rows_now(cx)
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !matches!(r, AtRow::Heading(_)))
+            .nth(selected)
+            .map(|(i, _)| i);
+        if let Some(row) = row {
+            self.slash_scroll.scroll_to_item(row);
+        }
+        cx.notify();
+    }
+
+    /// Keep pick `selected` of the `/` list in view (and drawn as selected).
+    fn scroll_slash_to(&mut self, selected: usize, cx: &mut Context<Self>) {
+        let row = self
+            .slash_rows_now(cx)
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(r, SlashRow::Item { .. }))
+            .nth(selected)
+            .map(|(i, _)| i);
+        if let Some(row) = row {
+            self.slash_scroll.scroll_to_item(row);
+        }
+        cx.notify();
     }
 
     /// A tool row's click: open or close its detail.
@@ -1760,36 +2682,427 @@ impl AgentTab {
         cx.notify();
     }
 
+    /// The process runs (a scene tab's "runs" until it ends: it has none).
+    fn running(&self) -> bool {
+        self.process.is_some() || (self.no_process && !self.exited && !self.paused)
+    }
+
+    /// A turn hasn't ended (it works, or waits for your answer).
+    fn working(&self) -> bool {
+        matches!(self.status(), Status::Working | Status::Waiting)
+    }
+
+    /// `id` as a model choice: from the catalog the menus show, else the provider's own list,
+    /// else just the id.
+    pub(crate) fn model_choice(
+        &self,
+        provider: &'static dyn Provider,
+        id: &str,
+        cx: &App,
+    ) -> ModelChoice {
+        use crate::agent_catalog::{Catalogs, Lookup};
+        let listed = cx.try_global::<Catalogs>().and_then(|c| {
+            match c.catalog(provider.info().name, &self.start.cwd) {
+                Some(Lookup::Ready(catalog)) => catalog.models.iter().find(|m| m.id == id).cloned(),
+                _ => None,
+            }
+        });
+        listed
+            .or_else(|| provider.fallback_models().into_iter().find(|m| m.id == id))
+            .unwrap_or_else(|| ModelChoice {
+                id: id.to_string(),
+                label: id.to_string(),
+                resolves_to: None,
+                efforts: Vec::new(),
+            })
+    }
+
+    /// A model change's start flags (`Provider::model_flags`).
+    pub(crate) fn model_flags(
+        &self,
+        provider: &'static dyn Provider,
+        id: &str,
+        effort: Option<&str>,
+        cx: &App,
+    ) -> (String, Option<String>) {
+        provider.model_flags(&self.model_choice(provider, id, cx), effort)
+    }
+
+    /// What `change` changes from how the agent runs now (empty: nothing). A new model is
+    /// `Model`, a new effort `Effort` (both, for a model with a new effort).
+    fn kinds(&self, provider: &'static dyn Provider, change: &Change, cx: &App) -> Vec<ChangeKind> {
+        match change {
+            Change::Model { id, effort } => {
+                let (model, effort) = self.model_flags(provider, id, effort.as_deref(), cx);
+                let mut kinds = Vec::new();
+                if self.start.model.as_deref() != Some(model.as_str()) {
+                    kinds.push(ChangeKind::Model);
+                }
+                if effort.is_some() && self.start.effort != effort {
+                    kinds.push(ChangeKind::Effort);
+                }
+                kinds
+            }
+            Change::Mode(mode) if self.start.mode.as_deref() != Some(mode.as_str()) => {
+                vec![ChangeKind::Mode]
+            }
+            Change::Folder(folder) if *folder != self.start.cwd => vec![ChangeKind::Folder],
+            _ => Vec::new(),
+        }
+    }
+
+    /// How `kinds` reach the agent: the strictest of the provider's answers (a model and an
+    /// effort are live only if both are). A folder is never live: it is where the process runs.
+    fn applies(provider: &'static dyn Provider, kinds: &[ChangeKind]) -> Applies {
+        let rank = |a: Applies| match a {
+            Applies::Live => 0,
+            Applies::Restart => 1,
+            Applies::NextConversation => 2,
+        };
+        kinds
+            .iter()
+            .map(|&k| match provider.applies(k) {
+                Applies::Live if k == ChangeKind::Folder => Applies::Restart,
+                a => a,
+            })
+            .max_by_key(|&a| rank(a))
+            .unwrap_or(Applies::Live)
+    }
+
+    /// Carry out `changes` now, each by its step: asked live, into the start flags (with a
+    /// restart on the same conversation for those that need one), or left waiting for the turn.
+    fn apply_changes(&mut self, changes: Vec<Change>, cx: &mut Context<Self>) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        let before = self.settings();
+        let mut restart = Vec::new();
+        for change in changes {
+            let kinds = self.kinds(provider, &change, cx);
+            if kinds.is_empty() {
+                continue;
+            }
+            let applies = Self::applies(provider, &kinds);
+            match step_for(applies, self.running(), self.spoken(), self.working()) {
+                Step::Live => self.ask_live(provider, &change, &kinds, cx),
+                Step::AfterTurn => self.waiting.push(change),
+                Step::NextStart => self.set_start(provider, &change, cx),
+                Step::RestartNow => {
+                    self.set_start(provider, &change, cx);
+                    restart.push(change);
+                }
+            }
+        }
+        let moved = self.tell_settings(before, cx);
+        if !restart.is_empty() {
+            self.restart_with(provider, &restart, cx);
+        }
+        if moved {
+            self.folder_changed(cx);
+        }
+        cx.notify();
+    }
+
+    /// Ask the running agent to take `change` (its `kinds`) in place.
+    fn ask_live(
+        &mut self,
+        provider: &'static dyn Provider,
+        change: &Change,
+        kinds: &[ChangeKind],
+        cx: &App,
+    ) {
+        match change {
+            Change::Model { id, effort } => {
+                let (model, effort) = self.model_flags(provider, id, effort.as_deref(), cx);
+                if kinds.contains(&ChangeKind::Model) {
+                    self.write(&Action::SetModel {
+                        model: model.clone(),
+                    });
+                    self.asked.model = Some(model);
+                }
+                if let Some(effort) = effort.filter(|_| kinds.contains(&ChangeKind::Effort)) {
+                    self.write(&Action::SetEffort {
+                        effort: effort.clone(),
+                    });
+                    self.asked.effort = Some(effort);
+                }
+            }
+            Change::Mode(mode) => {
+                self.write(&Action::SetMode { mode: mode.clone() });
+                self.asked.mode = Some(mode.clone());
+            }
+            Change::Folder(_) => {}
+        }
+    }
+
+    /// `change` into the flags the agent starts with.
+    fn set_start(&mut self, provider: &'static dyn Provider, change: &Change, cx: &App) {
+        match change {
+            Change::Model { id, effort } => {
+                let (model, effort) = self.model_flags(provider, id, effort.as_deref(), cx);
+                self.start.model = Some(model);
+                if effort.is_some() {
+                    self.start.effort = effort;
+                }
+            }
+            Change::Mode(mode) => self.start.mode = Some(mode.clone()),
+            Change::Folder(folder) => self.start.cwd = folder.clone(),
+        }
+    }
+
+    /// Start the agent again with what `changes` set, on the same conversation once you have
+    /// spoken (one quiet row each), else as it was to start. Not running: its next start takes
+    /// them. Queued text is kept (as Force stop's restart).
+    fn restart_with(
+        &mut self,
+        provider: &'static dyn Provider,
+        changes: &[Change],
+        cx: &mut Context<Self>,
+    ) {
+        let spoken = self.spoken();
+        if spoken {
+            for change in changes {
+                let notice = self.switched(provider, change, cx);
+                self.conversation.apply(Event::Notice(notice));
+            }
+            self.after_change(true, cx);
+        }
+        if self.running() {
+            let resume = if spoken {
+                self.conversation_id()
+            } else {
+                self.start.resume.clone()
+            };
+            self.spawn_process(resume, cx);
+        }
+    }
+
+    /// The row a restart for `change` leaves.
+    fn switched(&self, provider: &'static dyn Provider, change: &Change, cx: &App) -> String {
+        let model = match change {
+            Change::Model { id, .. } => Some(self.model_choice(provider, id, cx).label),
+            _ => None,
+        };
+        let mode = match change {
+            Change::Mode(id) => provider
+                .info()
+                .modes
+                .iter()
+                .find(|m| m.id == id)
+                .map(|m| m.label),
+            _ => None,
+        };
+        let home = crate::workspace::home_dir();
+        switched_notice(change, model.as_deref(), mode, home.as_deref())
+    }
+
+    /// A change waiting for the turn will restart the agent (not a live change).
+    fn restart_waits(&self, cx: &App) -> bool {
+        let Some(provider) = self.provider else {
+            return false;
+        };
+        self.waiting.iter().any(|change| {
+            let kinds = self.kinds(provider, change, cx);
+            !kinds.is_empty() && Self::applies(provider, &kinds) != Applies::Live
+        })
+    }
+
+    /// The turn is over: what waited for it is carried out, then what you sent meanwhile goes
+    /// to the agent as it now is.
+    fn settle_waiting(&mut self, cx: &mut Context<Self>) {
+        if self.working() {
+            return;
+        }
+        if !self.waiting.is_empty() {
+            let changes = std::mem::take(&mut self.waiting);
+            self.apply_changes(changes, cx);
+        }
+        // Also when the change was dropped meanwhile (chosen back): nothing stays held.
+        if !self.booting && !self.ending && self.running() && !self.queued.is_empty() {
+            self.flush_queued();
+            self.after_change(true, cx);
+        }
+    }
+
+    /// The process is gone (ended, stopped, paused) with changes waiting: its next start takes
+    /// them. `notice`: it starts again now, so each leaves its row.
+    fn start_with_waiting(&mut self, notice: bool, cx: &mut Context<Self>) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        let before = self.settings();
+        for change in std::mem::take(&mut self.waiting) {
+            if self.kinds(provider, &change, cx).is_empty() {
+                continue;
+            }
+            self.set_start(provider, &change, cx);
+            if notice && self.spoken() {
+                let text = self.switched(provider, &change, cx);
+                self.conversation.apply(Event::Notice(text));
+            }
+        }
+        if self.tell_settings(before, cx) {
+            self.folder_changed(cx);
+        }
+    }
+
+    fn settings(&self) -> Settings {
+        Settings {
+            model: self.start.model.clone(),
+            effort: self.start.effort.clone(),
+            mode: self.start.mode.clone(),
+            cwd: self.start.cwd.clone(),
+        }
+    }
+
+    /// Tell the Workspace what the agent starts with now, if it changed since `before` (saved
+    /// with the tab): its flags, and its folder. True when the folder changed: the caller reads
+    /// the new folder's lists once its restart (if any) is under way (`read_folder_catalog`).
+    fn tell_settings(&mut self, before: Settings, cx: &mut Context<Self>) -> bool {
+        let now = self.settings();
+        if (&now.model, &now.effort, &now.mode) != (&before.model, &before.effort, &before.mode) {
+            cx.emit(AgentTabEvent::Settings {
+                model: now.model,
+                effort: now.effort,
+                mode: now.mode,
+            });
+        }
+        if now.cwd == before.cwd {
+            return false;
+        }
+        // The old folder's list, still waited for from this tab's process, never comes now.
+        if std::mem::take(&mut self.catalog_pending)
+            && let Some(provider) = self.provider
+        {
+            crate::agent_catalog::fail_catalog_if_loading(
+                provider.info().name,
+                &before.cwd,
+                "its tab moved to another folder",
+                cx,
+            );
+        }
+        cx.emit(AgentTabEvent::Folder(now.cwd));
+        true
+    }
+
+    /// The agent is in another folder now: its menus' lists and its branch are read again.
+    fn folder_changed(&mut self, cx: &mut Context<Self>) {
+        self.read_folder_catalog(cx);
+        self.branch = None;
+        self.read_branch(cx);
+    }
+
+    /// Look the folder's branch up again (`git_branch::branch_at`, on the background executor):
+    /// at boot, when the folder changes, and when the branch switcher reports a change
+    /// (`branch_changed`). An answer for a folder the agent has left is dropped. A scene tab
+    /// reads no disk (`shot_place` sets the branch).
+    fn read_branch(&mut self, cx: &mut Context<Self>) {
+        if self.no_process {
+            return;
+        }
+        let folder = self.start.cwd.clone();
+        cx.spawn(async move |this, cx| {
+            let at = folder.clone();
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    let git = crate::git_branch::find_git()?;
+                    crate::git_branch::branch_at(&git, &at)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.start.cwd == folder && this.branch != found {
+                    this.branch = found;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The branch switcher switched the repo this agent's folder is in: read its branch again.
+    /// Never restarts the agent.
+    pub(crate) fn branch_changed(&mut self, cx: &mut Context<Self>) {
+        self.read_branch(cx);
+    }
+
+    /// The folder the agent runs in.
+    pub(crate) fn folder(&self) -> &std::path::Path {
+        &self.start.cwd
+    }
+
+    /// The menus' lists for the folder the agent is in now (R4): a restart already asked its
+    /// own process (the entry says loading); else a probe reads them. A scene tab never probes:
+    /// its entry only says the list is being read.
+    fn read_folder_catalog(&mut self, cx: &mut Context<Self>) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        let cwd = self.start.cwd.clone();
+        if self.no_process {
+            cx.update_default_global(|c: &mut crate::agent_catalog::Catalogs, _| {
+                c.begin_catalog(provider.info().name, &cwd);
+            });
+        } else {
+            crate::agent_catalog::load_catalog(provider, cwd, cx);
+        }
+    }
+
+    /// The agent answered a live change: taken, it is a start flag from now on; refused, one
+    /// row says why and nothing changes.
+    fn applied(&mut self, kind: ChangeKind, value: &str, ok: bool, cx: &mut Context<Self>) {
+        let asked = match kind {
+            ChangeKind::Model => self.asked.model.take(),
+            ChangeKind::Effort => self.asked.effort.take(),
+            ChangeKind::Mode => self.asked.mode.take(),
+            ChangeKind::Folder => None,
+        };
+        if !ok {
+            self.conversation
+                .apply(Event::Notice(format!("Couldn't switch: {value}")));
+            return;
+        }
+        let before = self.settings();
+        match kind {
+            // The flag as chosen (an alias stays an alias); the agent names the model it is.
+            ChangeKind::Model => self.start.model = asked.or(self.start.model.take()),
+            ChangeKind::Effort => self.start.effort = Some(value.to_string()),
+            ChangeKind::Mode => self.start.mode = Some(value.to_string()),
+            ChangeKind::Folder => {}
+        }
+        self.tell_settings(before, cx);
+    }
+
+    /// The agent says the mode it runs in, also one it changed to itself (a plan approved
+    /// leaves plan mode, R9). With no change of yours pending (asked, or waiting for the turn)
+    /// it is the mode the tab starts with from now on (the chip, the ✓ and the saved tab follow
+    /// it); the mode the chip already shows changes nothing.
+    fn reported_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
+        let pending =
+            self.asked.mode.is_some() || self.waiting.iter().any(|c| matches!(c, Change::Mode(_)));
+        let Some(provider) = self.provider.filter(|_| !pending) else {
+            return;
+        };
+        let shown = crate::agent_box::current_mode(
+            self.start.mode.as_deref(),
+            self.catalog(cx).and_then(|c| c.mode.as_deref()),
+            provider.info().default_mode,
+        );
+        if shown == Some(mode) {
+            return;
+        }
+        let before = self.settings();
+        self.start.mode = Some(mode.to_string());
+        self.tell_settings(before, cx);
+    }
+
     /// You have sent a message in this tab.
-    fn spoken(&self) -> bool {
+    pub(crate) fn spoken(&self) -> bool {
         self.conversation
             .items()
             .iter()
             .any(|i| matches!(i, Item::You { .. }))
-    }
-
-    /// The mode chip's click (call 6): before the first message, the agent's next mode (its
-    /// process starts again in it); after it, the chip is read-only.
-    fn next_mode(&mut self, cx: &mut Context<Self>) {
-        let Some(provider) = self.provider else {
-            return;
-        };
-        let modes = provider.info().modes;
-        if modes.is_empty() || self.spoken() {
-            return;
-        }
-        let at = self
-            .start
-            .mode
-            .as_deref()
-            .and_then(|m| modes.iter().position(|x| *x == m));
-        let next = modes[at.map_or(0, |i| (i + 1) % modes.len())];
-        self.start.mode = Some(next.to_string());
-        if self.process.is_some() {
-            let resume = self.start.resume.clone();
-            self.spawn_process(resume, cx);
-        }
-        cx.notify();
     }
 
     fn open_classic(&mut self, cx: &mut Context<Self>) {
@@ -1828,7 +3141,7 @@ struct Look {
 }
 
 /// A small button: `primary` filled with the accent.
-fn button(
+pub(crate) fn button(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     primary: bool,
@@ -1853,8 +3166,8 @@ fn button(
         .child(label.into())
 }
 
-/// A chip on the composer.
-fn chip(text: impl Into<SharedString>, dim: bool, c: &Colors) -> gpui::Div {
+/// A chip with an edge (an attachment's).
+pub(crate) fn chip(text: impl Into<SharedString>, dim: bool, c: &Colors) -> gpui::Div {
     div()
         .px(px(10.))
         .py(px(2.))
@@ -2411,7 +3724,7 @@ impl AgentTab {
     }
 
     /// The right button: Stop while the turn runs, "Stopping…" until it ends, then Force stop.
-    fn stop_label(&self) -> Option<&'static str> {
+    pub(crate) fn stop_label(&self) -> Option<&'static str> {
         match (self.stopping.is_some(), self.force) {
             (true, true) => Some("Force stop"),
             (true, false) => Some("Stopping…"),
@@ -2420,11 +3733,13 @@ impl AgentTab {
         }
     }
 
+    /// The pane's top line: the status, and on the right what the conversation cost and how
+    /// full its context is (§1: no longer chips by the box).
     fn top_line(&self, c: &Colors) -> AnyElement {
-        let context = self
-            .conversation
-            .context_pct()
-            .map(|p| format!("context {p}%"));
+        let usage = usage_line(
+            self.conversation.cost_usd(),
+            self.conversation.context_pct(),
+        );
         div()
             .flex_none()
             .w_full()
@@ -2436,7 +3751,9 @@ impl AgentTab {
             .text_color(hsla(c.dim))
             .child(SharedString::from(status_word(self.status())))
             .child(div().flex_1())
-            .when_some(context, |d, t| d.child(SharedString::from(t)))
+            .when_some(usage, |d, t| {
+                d.child(self.marked("usage", div().child(SharedString::from(t))))
+            })
             .into_any_element()
     }
 
@@ -2494,192 +3811,10 @@ impl AgentTab {
             )))
             .into_any_element()
     }
-
-    fn composer_area(&self, c: &Colors, mono: SharedString, cx: &mut Context<Self>) -> AnyElement {
-        let mode = self
-            .provider
-            .filter(|p| !p.info().modes.is_empty())
-            .and(self.start.mode.clone());
-        let model = self
-            .conversation
-            .model()
-            .map(|m| model_chip(self.provider, m));
-        let cost = self.conversation.cost_usd().map(cost_chip);
-        let stop_label = self.stop_label();
-        let at = self.at.as_ref().map(|at| {
-            let rows: Vec<AnyElement> = at
-                .hits
-                .iter()
-                .enumerate()
-                .map(|(i, hit)| {
-                    div()
-                        .id(("agent-at", i))
-                        .px(px(8.))
-                        .py(px(3.))
-                        .rounded(px(4.))
-                        .when(i == at.selected, |d| d.bg(hsla(c.code_fill)))
-                        .text_color(hsla(c.panel_text))
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| this.pick_at(Some(i), cx)))
-                        .child(SharedString::from(hit.rel.clone()))
-                        .into_any_element()
-                })
-                .collect();
-            let note = if self.listing {
-                Some("Listing files…")
-            } else if at.query.is_empty() {
-                Some("Type to find a file")
-            } else if at.hits.is_empty() {
-                Some("No file matches")
-            } else {
-                None
-            };
-            div()
-                .w_full()
-                .mb(px(8.))
-                .p(px(4.))
-                .rounded(px(7.))
-                .bg(hsla(c.panel))
-                .border_1()
-                .border_color(hsla(c.panel_border))
-                .font_family(mono.clone())
-                .text_size(px(text::META + 0.5))
-                .flex()
-                .flex_col()
-                .children(rows)
-                .when_some(note, |d, n| {
-                    d.child(
-                        div()
-                            .px(px(8.))
-                            .py(px(3.))
-                            .text_color(hsla(c.panel_dim))
-                            .child(n),
-                    )
-                })
-        });
-        div()
-            .flex_none()
-            .w_full()
-            .px(px(14.))
-            .pt(px(10.))
-            .pb(px(10.))
-            .border_t_1()
-            .border_color(hsla(c.card_border))
-            .flex()
-            .flex_col()
-            .children(at)
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(6.))
-                    .mb(px(8.))
-                    .when_some(mode, |d, m| {
-                        let fixed = self.spoken();
-                        d.child(
-                            div()
-                                .id("agent-mode")
-                                .when(!fixed, |d| {
-                                    d.cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _, cx| this.next_mode(cx)))
-                                })
-                                .child(chip(m, false, c)),
-                        )
-                    })
-                    .when_some(model, |d, m| d.child(chip(m, false, c)))
-                    .when_some(cost, |d, m| d.child(chip(m, true, c))),
-            )
-            .child(
-                div()
-                    .when(self.at.is_some(), |d| d.key_context("AtPopup"))
-                    .flex()
-                    .items_end()
-                    .gap(px(8.))
-                    .font_family(mono)
-                    .child(div().flex_1().min_w(px(0.)).child(self.composer.clone()))
-                    .child(match stop_label {
-                        Some(label) => button("agent-stop", label, false, c)
-                            .text_size(px(text::META))
-                            .on_click(cx.listener(|this, _, _, cx| this.stop_pressed(cx)))
-                            .into_any_element(),
-                        None => div()
-                            .px(px(8.))
-                            .py(px(3.))
-                            .text_size(px(text::META))
-                            .text_color(hsla(c.dim))
-                            .child("⏎")
-                            .into_any_element(),
-                    }),
-            )
-            // What goes with your next message (a dropped command block, Task 11), under the
-            // box until it is sent; its × takes it off.
-            .when(!self.attachments.is_empty(), |d| {
-                d.child(div().mt(px(6.)).flex().flex_wrap().gap(px(6.)).children(
-                    self.attachments.iter().enumerate().map(|(i, a)| {
-                        let (dim, text, hover) = (c.panel_dim, c.panel_text, c.panel_hover);
-                        let remove = div()
-                            .id(("attachment-remove", i))
-                            .size(px(14.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(3.))
-                            .text_color(hsla(dim))
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(hsla(hover)).text_color(hsla(text)))
-                            .child("×")
-                            .tooltip(|_, cx| -> gpui::AnyView {
-                                cx.new(|_| crate::sidebar_toggle::Tip("Remove".into()))
-                                    .into()
-                            })
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.remove_attachment_at(i, cx)),
-                            );
-                        #[cfg(feature = "ui-shots")]
-                        let remove = {
-                            let removes = self.removes.clone();
-                            removes.borrow_mut().resize(self.attachments.len(), None);
-                            remove.child(
-                                gpui::canvas(
-                                    move |b, _, _| {
-                                        if let Some(slot) = removes.borrow_mut().get_mut(i) {
-                                            *slot = Some(b);
-                                        }
-                                    },
-                                    |_, _, _, _| {},
-                                )
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .size_full(),
-                            )
-                        };
-                        chip(format!("📎 {}", a.lines().next().unwrap_or("")), true, c)
-                            .pr(px(4.))
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .child(remove)
-                    }),
-                ))
-            })
-            .child(
-                div()
-                    .mt(px(6.))
-                    .flex()
-                    .gap(px(12.))
-                    .text_size(px(text::META))
-                    .text_color(hsla(c.dim))
-                    .child("/ commands")
-                    .child("@ files"),
-            )
-            .into_any_element()
-    }
 }
 
 impl Render for AgentTab {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let appearance = cx.global::<Appearance>();
         let theme = appearance.theme;
         let mono = appearance.font.family.clone();
@@ -2758,7 +3893,7 @@ impl Render for AgentTab {
             .children(pending)
             // An error tab (no such agent) has nothing to send to.
             .when(self.provider.is_some(), |d| {
-                d.child(self.composer_area(&c, mono, cx))
+                d.child(self.box_area(&c, mono, window, cx))
             })
     }
 }
@@ -2766,7 +3901,41 @@ impl Render for AgentTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::Picture;
     use crate::ui_tokens::contrast;
+
+    #[test]
+    fn an_agent_pick_inserts_at_name() {
+        use crate::agent_box::AtRow;
+        use crate::providers::{AgentCommand, CommandKind};
+        let file = FileHit {
+            rel: "src/a.rs".into(),
+            positions: Vec::new(),
+            score: 0,
+        };
+        let named = |name: &str, kind| AgentCommand {
+            name: name.into(),
+            about: String::new(),
+            kind,
+            aliases: Vec::new(),
+        };
+        let commands = vec![
+            named("example-skill", CommandKind::Skill),
+            named("example-agent", CommandKind::Agent),
+        ];
+        let root = Path::new("/tmp/fx");
+        let insert =
+            |row: AtRow| at_insertion(&row, std::slice::from_ref(&file), &commands, root, root);
+        assert_eq!(insert(AtRow::File(0)).as_deref(), Some("src/a.rs "));
+        let named_row = |ix| AtRow::Named {
+            ix,
+            positions: Vec::new(),
+        };
+        assert_eq!(insert(named_row(1)).as_deref(), Some("@example-agent "));
+        assert_eq!(insert(named_row(0)).as_deref(), Some("@example-skill "));
+        assert_eq!(insert(named_row(9)), None, "no such command");
+        assert_eq!(insert(AtRow::Heading("Files")), None);
+    }
 
     #[test]
     fn an_edit_tool_call_emits_edit_with_paths_joined_to_cwd() {
@@ -2864,9 +4033,6 @@ mod tests {
     fn words_and_chips() {
         assert_eq!(status_word(Status::Waiting), "needs you");
         assert_eq!(status_word(Status::Working), "working");
-        // The provider labels its models (`Provider::model_label`); without one, as it is.
-        assert_eq!(model_chip(None, "claude-opus-5-5"), "claude-opus-5-5");
-        assert_eq!(cost_chip(0.2116182), "$0.21");
         assert_eq!(elapsed_label(Duration::from_secs(4)), "4s");
         assert_eq!(elapsed_label(Duration::from_secs(65)), "1m 05s");
         assert_eq!(lines_label(1), "1 line");
@@ -2912,11 +4078,188 @@ mod tests {
         assert!(!remove_attachment(&mut list, 0));
     }
 
+    fn image(name: &str, path: Option<&str>) -> Attachment {
+        Attachment::Image {
+            name: name.into(),
+            picture: Picture::new("image/png", b"x".to_vec()),
+            path: path.map(PathBuf::from),
+        }
+    }
+
     #[test]
     fn attachments_follow_the_text() {
-        assert_eq!(wire_text("fix", &[]), "fix");
-        assert_eq!(wire_text("fix", &["out".into()]), "fix\n\nout");
-        assert_eq!(wire_text("", &["out".into()]), "out");
+        let text = |s: &str| Attachment::Text(s.into());
+        assert_eq!(wire_text("fix", &[], false), "fix");
+        assert_eq!(wire_text("fix", &[text("out")], false), "fix\n\nout");
+        assert_eq!(wire_text("", &[text("out")], false), "out");
+    }
+
+    #[test]
+    fn wire_text_puts_paths_after_the_text() {
+        let list = [
+            Attachment::File(PathBuf::from("/p/notes.txt")),
+            image("shot.png", Some("/p/shot.png")),
+            Attachment::Text("out".into()),
+        ];
+        // An agent that takes no image in the message gets its path, as a file's.
+        assert_eq!(
+            wire_text("look", &list, false),
+            "look\n\n/p/notes.txt\n\n/p/shot.png\n\nout"
+        );
+        // One that does gets the image apart (`Action::Send`'s images): not in the text.
+        assert_eq!(
+            wire_text("look", &list, true),
+            "look\n\n/p/notes.txt\n\nout"
+        );
+        assert_eq!(wire_text("", &[image("a.png", Some("/p/a.png"))], true), "");
+        // Without a path (nothing wrote one) there is nothing to say.
+        assert_eq!(wire_text("hi", &[image("a.png", None)], false), "hi");
+    }
+
+    #[test]
+    fn labels_and_glyphs() {
+        assert_eq!(
+            Attachment::File(PathBuf::from("/p/notes.txt")).label(),
+            "notes.txt"
+        );
+        assert_eq!(image("shot.png", None).label(), "shot.png");
+        assert_eq!(Attachment::Text("a\nb".into()).label(), "a\nb");
+        assert_eq!(image("shot.png", None).glyph(), "\u{1f5bc}");
+        assert_eq!(Attachment::File(PathBuf::from("/p/a")).glyph(), "\u{1f4ce}");
+    }
+
+    #[test]
+    fn media_types_by_extension() {
+        for (name, want) in [
+            ("a.png", Some("image/png")),
+            ("a.PNG", Some("image/png")),
+            ("a.jpg", Some("image/jpeg")),
+            ("a.jpeg", Some("image/jpeg")),
+            ("a.gif", Some("image/gif")),
+            ("a.webp", Some("image/webp")),
+            ("a.svg", None),
+            ("a.txt", None),
+            ("png", None),
+            ("a.png.bak", None),
+        ] {
+            assert_eq!(media_type_for(Path::new(name)), want, "{name}");
+        }
+    }
+
+    /// 5 MB (MiB): agy's raw limit, and Claude's after base64 (the API's per-image limit).
+    const FIVE_MB: usize = 5 * 1024 * 1024;
+
+    #[test]
+    fn an_image_told_as_a_path_is_refused_over_5_mb_raw() {
+        let raw = ImageLimit::Raw(FIVE_MB);
+        let ok = picture("big.png", "image/png", vec![0; FIVE_MB], raw, "agy")
+            .expect("exactly 5 MB is taken");
+        assert_eq!(ok.bytes.len(), FIVE_MB);
+        assert_eq!(
+            picture("big.png", "image/png", vec![0; FIVE_MB + 1], raw, "agy"),
+            Err("Image over 5 MB: big.png".to_string())
+        );
+    }
+
+    #[test]
+    fn an_image_sent_inline_is_refused_when_its_base64_is_over_5_mb() {
+        let encoded = ImageLimit::Encoded(FIVE_MB);
+        // 3,932,160 bytes are exactly 5 MB as base64; one more byte is 4 more digits.
+        let ok = picture(
+            "big.png",
+            "image/png",
+            vec![0; 3_932_160],
+            encoded,
+            "Claude",
+        )
+        .expect("exactly 5 MB once encoded is taken");
+        assert_eq!(ok.data.len(), FIVE_MB);
+        assert_eq!(
+            picture(
+                "big.png",
+                "image/png",
+                vec![0; 3_932_161],
+                encoded,
+                "Claude"
+            ),
+            Err("Image too big for Claude (3.75 MB max): big.png".to_string())
+        );
+    }
+
+    #[test]
+    fn an_image_file_is_read_up_to_the_limit_only() {
+        let dir = std::env::temp_dir().join(format!("fuxx-test-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, len: usize| {
+            let path = dir.join(name);
+            std::fs::File::create(&path)
+                .unwrap()
+                .set_len(len as u64)
+                .unwrap();
+            path
+        };
+        let raw = ImageLimit::Raw(FIVE_MB);
+        let exact = read_image(&make("a.png", FIVE_MB), "a.png", raw, "agy").expect("exactly 5 MB");
+        assert_eq!(exact.len(), FIVE_MB);
+        assert_eq!(
+            read_image(&make("b.png", FIVE_MB + 1), "b.png", raw, "agy"),
+            Err("Image over 5 MB: b.png".to_string())
+        );
+        let encoded = ImageLimit::Encoded(FIVE_MB);
+        let exact = read_image(&make("c.png", 3_932_160), "c.png", encoded, "Claude")
+            .expect("exactly 5 MB once encoded");
+        assert_eq!(exact.len(), 3_932_160);
+        assert_eq!(
+            read_image(&make("d.png", 3_932_161), "d.png", encoded, "Claude"),
+            Err("Image too big for Claude (3.75 MB max): d.png".to_string())
+        );
+        assert!(read_image(&dir.join("none.png"), "none.png", raw, "agy").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_pasted_images_are_removed_and_new_ones_kept() {
+        let dir = std::env::temp_dir().join(format!("fuxx-test-clean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("old.png");
+        let new = dir.join("new.png");
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&new, b"x").unwrap();
+        let day = Duration::from_secs(24 * 60 * 60);
+        let now = std::time::SystemTime::now();
+        // Judged at a time 25 h on: both are old; at 1 h on: neither is.
+        assert_eq!(
+            clean_pasted(&dir, day, now + Duration::from_secs(60 * 60)),
+            0
+        );
+        assert!(old.exists() && new.exists());
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(now - Duration::from_secs(25 * 60 * 60))
+            .unwrap();
+        assert_eq!(clean_pasted(&dir, day, now), 1);
+        assert!(!old.exists() && new.exists());
+        // A folder that isn't there is nothing to clean.
+        assert_eq!(clean_pasted(&dir.join("none"), day, now), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pasted_image_goes_to_a_new_file_in_the_temp_folder() {
+        let dir = std::env::temp_dir().join(format!("fuxx-test-paste-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let picture = Picture::new("image/png", b"png bytes".to_vec());
+        let a = write_pasted(&dir, &picture, "png").expect("written");
+        let b = write_pasted(&dir, &picture, "png").expect("written");
+        assert_ne!(a, b, "each paste its own file");
+        assert!(a.starts_with(&dir) && a.is_absolute());
+        assert_eq!(a.extension().and_then(|e| e.to_str()), Some("png"));
+        assert_eq!(std::fs::read(&a).unwrap(), b"png bytes");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2959,6 +4302,7 @@ mod tests {
                 ("code", c.code_text, c.code_fill),
                 ("code dim", c.code_dim, c.code_fill),
                 ("todo active", c.todo_active, c.panel),
+                ("box dim", c.box_dim, c.box_fill),
             ] {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got:.2}");

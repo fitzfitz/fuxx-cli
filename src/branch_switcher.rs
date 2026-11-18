@@ -1618,6 +1618,21 @@ impl Workspace {
         let Some(folder) = self.switchable_folder(terminal) else {
             return;
         };
+        self.open_branch_switcher_in(folder, window, cx);
+    }
+
+    /// Open the branch switcher on the repo `folder` is in (a terminal's, as the sidebar finds
+    /// it; or an agent tab's, from its box's branch chip). Nothing opens with no git on this
+    /// Mac, nor while the open one is busy; the switcher itself says when `folder` is no repo.
+    pub(crate) fn open_branch_switcher_in(
+        &mut self,
+        folder: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.branch_switcher_busy(cx) {
+            return;
+        }
         let Some(git) = self.places.git() else {
             return;
         };
@@ -1737,24 +1752,38 @@ impl Workspace {
                 folders.push(folder.to_path_buf());
             }
         }
-        if folders.is_empty() {
+        // The agent tabs whose box shows a branch chip (their folders are local too).
+        let views: Vec<_> = self.agents.values().map(|slot| slot.view.clone()).collect();
+        let agent_folders: Vec<PathBuf> = views
+            .iter()
+            .map(|view| view.read(cx).folder().to_path_buf())
+            .collect();
+        if folders.is_empty() && views.is_empty() {
             return;
         }
         cx.spawn(async move |this, cx| {
-            let found: Vec<(PathBuf, Option<String>)> = cx
+            let (found, inside): (Vec<(PathBuf, Option<String>)>, Vec<bool>) = cx
                 .background_executor()
                 .spawn(async move {
-                    folders
+                    let found = folders
                         .into_iter()
                         .filter(|folder| in_repo(folder, &root))
                         .map(|folder| {
                             let branch = branch_at(&git, &folder);
                             (folder, branch)
                         })
-                        .collect()
+                        .collect();
+                    let inside = agent_folders
+                        .iter()
+                        .map(|folder| in_repo(folder, &root))
+                        .collect();
+                    (found, inside)
                 })
                 .await;
             this.update(cx, |this, cx| {
+                for (view, _) in views.iter().zip(&inside).filter(|(_, inside)| **inside) {
+                    view.update(cx, |tab, cx| tab.branch_changed(cx));
+                }
                 let mut changed = false;
                 for (folder, branch) in found {
                     changed |= this.places.set_branch(&folder, branch);
