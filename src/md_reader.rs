@@ -58,9 +58,10 @@ fn unquote(v: &str) -> &str {
     v
 }
 
-/// A line's key, if it is a top-level `key: value` (colon then space or end): (key, value).
+/// A line's key, if it is a top-level `key: value` (colon then space or end): (key, value). A
+/// list item (`- name: x`, a list of maps under a key) is not one.
 fn key_line(line: &str) -> Option<(&str, &str)> {
-    if line.starts_with(char::is_whitespace) {
+    if line.starts_with(char::is_whitespace) || line.starts_with("- ") || line == "-" {
         return None;
     }
     let mut from = 0;
@@ -331,6 +332,9 @@ pub struct ReaderPlan {
     pub looks: Vec<BlockLook>,
     pub headings: Vec<Heading>,
     pub outline: Vec<Entry>,
+    /// Each outline entry's list row, in order (worked out once, with the plan: the current
+    /// entry is checked against them on scroll frames).
+    pub outline_rows: Vec<usize>,
 }
 
 impl ReaderPlan {
@@ -382,12 +386,19 @@ impl ReaderPlan {
         if outline.len() < 2 {
             outline.clear();
         }
-        ReaderPlan {
+        let mut plan = ReaderPlan {
             front,
             looks,
             headings,
             outline,
-        }
+            outline_rows: Vec::new(),
+        };
+        plan.outline_rows = plan
+            .outline
+            .iter()
+            .map(|e| plan.row_of_block(plan.headings[e.heading].block))
+            .collect();
+        plan
     }
 
     /// List rows: the blocks, plus one for the front matter when there is some to draw.
@@ -458,17 +469,42 @@ pub fn read(text: &str) -> (Vec<Md>, ReaderPlan) {
     (blocks, plan)
 }
 
-/// Which outline entry is current (plan-time call 12): `rows[i]` is entry i's list row.
+/// Which outline entry is current (plan-time call 12): `rows[i]` is entry i's list row, in
+/// order. The last entry reached (None until the first is); scrolled to the very end
+/// (`at_end`), the last in view, if any is.
+///
+/// Binary searches (spec approach 2A), so a scroll frame asks about log2 of the entries. They
+/// give what a scan from the end would, for predicates shaped as the Preview's are
+/// (`FileTab::track_heading`, from GPUI's `ListState::bounds_for_item`):
+/// - `reached` is true on a prefix of `rows`: every row above the list's top row, then rows
+///   whose top is at or over the reach line. A row's top there is the list's top plus the
+///   heights of the rows before it, never negative, so tops only grow down the list; a row
+///   not measured has no bounds (false), and the last layout measured every row from the top
+///   row to past the view's bottom, so any row it left unmeasured comes after all the true
+///   ones (a remeasure unmeasures every row: then only the rows above the top are true).
+/// - `in_view` (a measured row's top over the view's bottom; a row above the top row has no
+///   bounds) is true on one run: over the rows not reached (all at or below the top row) on a
+///   prefix, by the same growing tops; over the reached rows on a suffix (those above the top
+///   row are not in view, those at or below it are: their tops are over the reach line, which
+///   is over the bottom).
 pub fn current_entry(
     rows: &[usize],
     at_end: bool,
     reached: impl Fn(usize) -> bool,
     in_view: impl Fn(usize) -> bool,
 ) -> Option<usize> {
-    if at_end && let Some(i) = rows.iter().rposition(|r| in_view(*r)) {
-        return Some(i);
+    let reached_n = rows.partition_point(|r| reached(*r));
+    if at_end {
+        let below = rows[reached_n..].partition_point(|r| in_view(*r));
+        if below > 0 {
+            return Some(reached_n + below - 1);
+        }
+        // None below the reached rows in view: the last reached one, if it is.
+        if reached_n > 0 && in_view(rows[reached_n - 1]) {
+            return Some(reached_n - 1);
+        }
     }
-    rows.iter().rposition(|r| reached(*r))
+    reached_n.checked_sub(1)
 }
 
 /// How far into a heading's row a jump scrolls, so its text is `JUMP_ROOM` under the top.
@@ -585,6 +621,20 @@ mod tests {
         assert_eq!(front, table(vec![pair("tags", "item, item")], 0));
         let (front, _) = front_matter("---\ntags:\n- a\n- b\n---\nA");
         assert_eq!(front, table(vec![pair("tags", "a, b")], 0));
+        // A list of maps under a key: its items, not new keys `- name`.
+        let (front, _) = front_matter(
+            "---\nowners:\n- name: Ann\n  role: lead\n- name: Bo\nstatus: draft\n---\nA",
+        );
+        assert_eq!(
+            front,
+            table(
+                vec![
+                    pair("owners", "name: Ann, role: lead, name: Bo"),
+                    pair("status", "draft")
+                ],
+                0
+            )
+        );
         let (front, _) = front_matter("---\ntitle: \"Quoted\"\n---\nA");
         assert_eq!(front, table(vec![pair("title", "Quoted")], 0));
         let (front, body) = front_matter("---\ntitle: x\n...\nA");
@@ -752,6 +802,7 @@ mod tests {
         assert_eq!(plan.outline.len(), 3);
         assert_eq!(plan.outline[0].heading, 1);
         assert!(plan.outline[1].indent && !plan.outline[0].indent);
+        assert_eq!(plan.outline_rows, [2, 3, 4]);
         assert_eq!(plan.anchor_row("A-1"), Some(plan.row_of_block(3)));
         assert_eq!(plan.anchor_row("a-1"), Some(plan.row_of_block(3)));
         assert_eq!(plan.anchor_row("nope"), None);
@@ -783,6 +834,46 @@ mod tests {
             Some(2)
         );
         assert_eq!(current_entry(&[], false, |_| true, |_| true), None);
+    }
+
+    /// A few thousand entries: the same answers, found by binary search (a scroll frame asks
+    /// each predicate about log2 of the entries, not one per entry), as the Preview's
+    /// predicates are shaped: rows above the view's top reached and not in view; in view from
+    /// the top row down to the view's bottom; reached down to the reach line.
+    #[test]
+    fn the_current_entry_of_thousands_is_a_binary_search() {
+        use std::cell::Cell;
+        let rows: Vec<usize> = (0..4000).map(|i| i * 3 + 1).collect();
+        let (top, reach, bottom) = (6000, 6030, 6120);
+        let asked = Cell::new(0);
+        let reached = |r: usize| {
+            asked.set(asked.get() + 1);
+            r < top || r <= reach
+        };
+        let in_view = |r: usize| {
+            asked.set(asked.get() + 1);
+            (top..bottom).contains(&r)
+        };
+        // Row 6028 (entry 2009) is the last at or above the reach line; 6118 (entry 2039)
+        // the last over the bottom.
+        assert_eq!(current_entry(&rows, false, reached, in_view), Some(2009));
+        assert!(asked.get() <= 30, "asked {} times", asked.get());
+        asked.set(0);
+        assert_eq!(current_entry(&rows, true, reached, in_view), Some(2039));
+        assert!(asked.get() <= 30, "asked {} times", asked.get());
+        // Nothing reached yet: none; at the end with nothing below the reached rows in view,
+        // the last reached row in view.
+        assert_eq!(current_entry(&rows, false, |_| false, |_| false), None);
+        assert_eq!(
+            current_entry(&rows, true, |r| r <= reach, |r| (top..=reach).contains(&r)),
+            Some(2009)
+        );
+        assert_eq!(
+            current_entry(&rows, true, |r| r < top, |_| false),
+            Some(1999)
+        );
+        // Every entry reached and in view (a short page scrolled to its end): the last.
+        assert_eq!(current_entry(&rows, true, |_| true, |_| true), Some(3999));
     }
 
     #[test]

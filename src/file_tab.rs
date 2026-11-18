@@ -2619,9 +2619,9 @@ fn hold_inside(p: Point<Pixels>, g: &Geom, wrap: bool) -> Point<Pixels> {
 /// reset, a remeasure or a width change), so its scrollbar is exact. Measured on a release build
 /// (M11ae fix round 1): a full relayout is ~3 ms for 585 blocks (20 KB) but ~160 ms for 29,115
 /// (1 MB), about 5.5 us a block; 2,000 blocks kept it near 11 ms, under a frame. M11ai Task 10
-/// (plan-time call 15): the reader's rows (bigger type, code headers, callouts) make a full
-/// relayout of a 2,000-block mixed file 2.76 × M11ac's (debug: 333 ms against 121 ms), so the
-/// limit drops by that ratio, rounded down to a hundred.
+/// (plan-time call 15): a full relayout of a 2,000-block mixed file measured 2.76x M11ac's
+/// (333 ms against 121 ms) in a debug ui-shots build (test probes included); cause not
+/// profiled. The limit drops by that ratio, rounded down to a hundred.
 pub const PREVIEW_MEASURE_ALL: usize = 700;
 
 /// A block's height as the scrollbar of a longer Preview reckons it (the mean of a mixed 1 MB
@@ -4498,8 +4498,9 @@ impl FileTab {
             let theme = cx.global::<Appearance>().theme;
             if this.coloured_with.is_some_and(|t| t != theme) {
                 this.colour(cx);
-            } else if this.preview_shown() && this.code_for.is_some_and(|(_, t)| t != theme) {
-                // M11ai: the Preview's code blocks in the new theme's colours.
+            } else if this.code_for.is_some_and(|(_, t)| t != theme) {
+                // M11ai: the Preview's code blocks in the new theme's colours (with Preview off
+                // too, so they are ready when it shows).
                 this.colour_code(cx);
             }
             // The Preview's rows may change height (another font or size); the current outline

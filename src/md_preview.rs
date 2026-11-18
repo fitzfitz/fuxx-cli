@@ -392,13 +392,15 @@ pub struct OutlineLook {
 
 /// One callout kind's colours (M11ai): its bar and icon (at `MARK_MIN` on the wash), the wash (the
 /// kind's palette colour over the page at `CALLOUT_WASH`), its title (at `TEXT_MIN` on the wash)
-/// and the body's text (the text colour, held to `TEXT_MIN` on the wash).
+/// and the body's text, links and dim text (the page's, held to `TEXT_MIN` on the wash).
 #[derive(Clone, Copy, Debug)]
 pub struct CalloutColours {
     pub bar: Rgb,
     pub wash: Rgb,
     pub title: Rgb,
     pub body: Rgb,
+    pub link: Rgb,
+    pub dim: Rgb,
 }
 
 impl Colours {
@@ -476,6 +478,8 @@ impl Colours {
                     wash,
                     title: ensure_contrast(hue, wash, TEXT_MIN),
                     body: ensure_contrast(ui.text, wash, TEXT_MIN),
+                    link: ensure_contrast(link, wash, TEXT_MIN),
+                    dim: ensure_contrast(dim, wash, TEXT_MIN),
                 }
             }),
         }
@@ -544,6 +548,19 @@ pub struct Draw {
     pub reader: Option<ReaderDraw>,
 }
 
+impl Draw {
+    /// The colours to draw with now: the page's, or, inside a callout's body (the reader's),
+    /// its link and dim colours held on its wash. Chat's are always the page's.
+    fn ink(&self) -> Colours {
+        let mut c = self.colours;
+        if let Some((link, dim)) = self.reader.as_ref().and_then(|r| r.on_wash.get()) {
+            c.link = link;
+            c.dim = dim;
+        }
+        c
+    }
+}
+
 /// A Markdown file as the Preview reads it (M11ai), once per version: its blocks and its plan
 /// (front matter, looks, headings, outline).
 pub struct ReaderDoc {
@@ -566,6 +583,8 @@ pub struct ReaderDraw {
     pub on_copy: OnCopy,
     /// A heading's `#` pressed (given the heading's row).
     pub on_anchor_copy: OnCopy,
+    /// While a callout's body is built: its link and dim colours, held on its wash (`ink`).
+    pub on_wash: Cell<Option<(Rgb, Rgb)>>,
     /// The scenes' probe: each drawn heading's `#`, while it shows.
     #[cfg(feature = "ui-shots")]
     pub anchor_drawn: AnchorDrawn,
@@ -766,7 +785,7 @@ pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
         .pb(px(bottom))
         .text_size(px(s.body))
         .line_height(relative(s.line))
-        .text_color(hsla(draw.colours.text))
+        .text_color(hsla(draw.ink().text))
         .child(area.child(content))
         .into_any_element()
 }
@@ -798,7 +817,7 @@ const ANCHOR_GROUP: &str = "md-anchor";
 /// outside the heading's text, so its click is not the text's.
 fn reader_heading(row: usize, level: u8, md: &Md, draw: &Draw, reader: &ReaderDraw) -> AnyElement {
     use crate::ui_tokens::reader::{ANCHOR_GAP, ANCHOR_TEXT, COPY_GAP};
-    let (c, s) = (draw.colours, &draw.sizes);
+    let (c, s) = (draw.ink(), &draw.sizes);
     let size = heading_size(s, level);
     let copied = reader.copied == Some(Copied::Anchor(row));
     let (label, inner) = if copied {
@@ -891,13 +910,14 @@ fn wide(measure: f32, e: AnyElement) -> AnyElement {
 /// A callout in the reader (M11ai): a `CALLOUT_BAR` bar on the left in the kind's colour, the
 /// kind's wash behind, `CALLOUT_PAD` inside, `CALLOUT_RADIUS` corners; a title line (the kind's
 /// icon and word, semibold, in its title colour), then the body's blocks in the text colour with
-/// the reader's gaps. A body-less callout is its title alone.
+/// the reader's gaps, its links and dim text in the callout's (held on its wash). A body-less
+/// callout is its title alone.
 fn reader_callout(
     #[cfg_attr(not(feature = "ui-shots"), allow(unused_variables))] row: usize,
     kind: Callout,
     body: &[Md],
     draw: &Draw,
-    #[cfg_attr(not(feature = "ui-shots"), allow(unused_variables))] reader: &ReaderDraw,
+    reader: &ReaderDraw,
 ) -> AnyElement {
     use crate::ui_tokens::reader::{CALLOUT_BAR, CALLOUT_GAP, CALLOUT_PAD, CALLOUT_RADIUS};
     let (c, s) = (draw.colours.callout(kind), &draw.sizes);
@@ -936,13 +956,18 @@ fn reader_callout(
         .text_color(hsla(c.body))
         .child(title)
         .when(!body.is_empty(), |d| {
+            // The body's links and dim text in the callout's colours, held on its wash; the
+            // page's again once its elements are built.
+            let was = reader.on_wash.replace(Some((c.link, c.dim)));
+            let blocks = blocks_of(body, draw);
+            reader.on_wash.set(was);
             d.child(
                 div()
                     .w_full()
                     .flex()
                     .flex_col()
                     .mt(px(s.item_gap))
-                    .children(blocks_of(body, draw)),
+                    .children(blocks),
             )
         })
         .into_any_element()
@@ -958,7 +983,7 @@ fn reader_code(row: usize, b: usize, md: &Md, draw: &Draw, reader: &ReaderDraw) 
     let Md::Code { lang, text: code } = md else {
         return block(md, draw);
     };
-    let c = draw.colours;
+    let c = draw.ink();
     let lang = fence_lang(lang.as_deref()).map(str::to_string);
     let copied = reader.copied == Some(Copied::Code(row));
     let (word, kind) = if copied {
@@ -1056,7 +1081,7 @@ fn code_frame(
     draw: &Draw,
 ) -> AnyElement {
     use crate::ui_tokens::reader::{CODE_BORDER, CODE_HEADER, CODE_HEADER_TEXT};
-    let (c, s) = (draw.colours, &draw.sizes);
+    let (c, s) = (draw.ink(), &draw.sizes);
     let header = div()
         .flex()
         .flex_row()
@@ -1110,7 +1135,7 @@ fn front_table(
     #[cfg_attr(not(feature = "ui-shots"), allow(unused_variables))] reader: &ReaderDraw,
 ) -> AnyElement {
     use crate::ui_tokens::reader::{FRONT_GRID, FRONT_TEXT, TABLE_CELL, TABLE_RADIUS};
-    let c = draw.colours;
+    let c = draw.ink();
     let (key_cols, cols) = FRONT_GRID;
     let more = (t.more > 0).then(|| more_label(t.more));
     let cell = |top: bool| {
@@ -1253,7 +1278,7 @@ fn pill_of(
     #[cfg_attr(not(feature = "ui-shots"), allow(unused_variables))] reader: &ReaderDraw,
 ) -> AnyElement {
     use crate::ui_tokens::reader::{PILL_H, PILL_PAD, PILL_TEXT};
-    let c = draw.colours;
+    let c = draw.ink();
     let round = px(PILL_H / 2.0);
     let two = badge.value.is_some();
     let part = |words: String, fill: Rgb, colour: Rgb| {
@@ -1373,7 +1398,7 @@ fn mermaid_block(shown: &Shown, draw: &Draw, code: impl FnOnce() -> AnyElement) 
                         .mt(px(NOTE_GAP))
                         .text_size(px(NOTE_TEXT))
                         .line_height(relative(NOTE_LINE))
-                        .text_color(hsla(draw.colours.dim))
+                        .text_color(hsla(draw.ink().dim))
                         .child(note),
                 )
             })
@@ -1398,7 +1423,7 @@ fn blocks_of(blocks: &[Md], draw: &Draw) -> Vec<AnyElement> {
 }
 
 fn block(md: &Md, draw: &Draw) -> AnyElement {
-    let (c, s) = (draw.colours, &draw.sizes);
+    let (c, s) = (draw.ink(), &draw.sizes);
     match md {
         Md::Para(spans) => text(spans, draw),
         Md::Heading(level, spans) => {
@@ -1477,7 +1502,7 @@ fn item(md: &Md, depth: u8, draw: &Draw) -> AnyElement {
                 .flex_none()
                 .min_w(px(s.indent))
                 .pr(px(if numbered { s.marker_gap } else { 0.0 }))
-                .text_color(hsla(draw.colours.dim))
+                .text_color(hsla(draw.ink().dim))
                 .children(marker(md, depth)),
         )
         .child(div().flex_1().min_w(px(0.0)).child(text(spans, draw)))
@@ -1504,7 +1529,7 @@ fn table(
     draw: &Draw,
 ) -> AnyElement {
     use crate::ui_tokens::reader::TABLE_RADIUS;
-    let c = draw.colours;
+    let c = draw.ink();
     let n = head.len().max(1);
     // The reader's tables (M11ai): more room in a cell, every 2nd body row striped; chat's as
     // M11ac drew them.
@@ -1566,7 +1591,7 @@ fn text(spans: &[Span], draw: &Draw) -> AnyElement {
 /// `text`, on a striped table row (`on_stripe`, the reader's): links and images' alt text in
 /// their colours held to the text floor on the stripe.
 fn text_on(spans: &[Span], draw: &Draw, on_stripe: bool) -> AnyElement {
-    let c = draw.colours;
+    let c = draw.ink();
     let (link, dim) = if on_stripe {
         (c.stripe_link, c.stripe_dim)
     } else {
@@ -1846,6 +1871,8 @@ mod tests {
                 for (what, fg, min) in [
                     ("title", c.title, TEXT_MIN),
                     ("body", c.body, TEXT_MIN),
+                    ("link", c.link, TEXT_MIN),
+                    ("dim", c.dim, TEXT_MIN),
                     ("bar", c.bar, MARK_MIN),
                 ] {
                     let got = contrast(fg, c.wash);
