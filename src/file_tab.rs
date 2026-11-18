@@ -4397,6 +4397,14 @@ pub struct FileTab {
     /// M11ai: the callouts' titles as last drawn (the scenes' probe).
     #[cfg(feature = "ui-shots")]
     callout_drawn: md_preview::CalloutDrawn,
+    /// M11ai: the front matter and the badge rows' pills as last drawn (the scenes' probe), and
+    /// the last link a frozen tab followed (scenes record it instead of opening the browser).
+    #[cfg(feature = "ui-shots")]
+    front_drawn: md_preview::FrontDrawn,
+    #[cfg(feature = "ui-shots")]
+    pills_drawn: md_preview::PillsDrawn,
+    #[cfg(feature = "ui-shots")]
+    followed: Option<String>,
     /// M11af: who changed each line since the tab opened.
     live: Live,
     /// M11af: the mark under the pointer: its tooltip's place (window points) and words.
@@ -4524,6 +4532,12 @@ impl FileTab {
             code_drawn: Rc::default(),
             #[cfg(feature = "ui-shots")]
             callout_drawn: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            front_drawn: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            pills_drawn: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            followed: None,
             live: Live::default(),
             mark_tip: None,
             _appearance: appearance,
@@ -8136,6 +8150,21 @@ impl FileTab {
     /// M11ai: each drawn callout's title word, by list row; only rows in sight.
     pub fn callout_drawn(&self) -> std::collections::BTreeMap<usize, &'static str> {
         self.callout_drawn.borrow().clone()
+    }
+
+    /// M11ai: the front matter as last drawn (none: not in sight, or none drawn).
+    pub fn front_drawn(&self) -> Option<md_preview::FrontProbe> {
+        self.front_drawn.borrow().clone()
+    }
+
+    /// M11ai: each drawn badge row's pills, by (list row, pill); only rows in sight.
+    pub fn pills_drawn(&self) -> std::collections::BTreeMap<(usize, usize), md_preview::PillProbe> {
+        self.pills_drawn.borrow().clone()
+    }
+
+    /// M11ai: the last link this (frozen) tab followed, as clicked.
+    pub fn followed_link(&self) -> Option<String> {
+        self.followed.clone()
     }
 
     /// M11ai: row `row`'s Copy button as last drawn.

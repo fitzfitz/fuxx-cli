@@ -25,7 +25,9 @@ use gpui::{
 
 use crate::agent_markdown::{Align, Md, Span};
 use crate::file_tab::expand_tabs;
-use crate::md_reader::{BlockLook, Callout, ReaderPlan, RowKind, fence_lang};
+use crate::md_reader::{
+    Badge, BlockLook, Callout, Front, ReaderPlan, RowKind, fence_lang, is_badge_src,
+};
 use crate::tab_bar::{Glyph, ICON, glyph};
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, mix};
@@ -170,6 +172,8 @@ pub enum Look {
     Link(usize),
     /// An image's alt text, in brackets.
     Image,
+    /// A badge in a sentence (the reader's, M11ai): its alt text on the pill fill.
+    Badge,
 }
 
 /// A paragraph's spans as one string: each styled piece's range and look, and each link's
@@ -181,8 +185,16 @@ pub struct Inline {
     pub links: Vec<(Range<usize>, String)>,
 }
 
-/// `spans` laid end to end (`Inline`).
+/// `spans` laid end to end (`Inline`), as chat draws them (the tests and scenes read it; the
+/// drawing calls `inline_with`).
+#[cfg(any(test, feature = "ui-shots"))]
 pub fn inline(spans: &[Span]) -> Inline {
+    inline_with(spans, false)
+}
+
+/// `spans` laid end to end; with `badges` (the reader's, M11ai), an image whose source is a
+/// badge's is its alt text (`badge` when it has none) with `Look::Badge`, linked when it is.
+pub fn inline_with(spans: &[Span], badges: bool) -> Inline {
     let mut out = Inline::default();
     for span in spans {
         let start = out.text.len();
@@ -208,6 +220,15 @@ pub fn inline(spans: &[Span]) -> Inline {
                 out.links.push((start..out.text.len(), url.clone()));
                 Some(Look::Link(out.links.len() - 1))
             }
+            Span::Image { alt, url } if badges && is_badge_src(url) => {
+                out.text.push_str(badge_alt(alt));
+                Some(Look::Badge)
+            }
+            Span::LinkedImage { alt, src, url } if badges && is_badge_src(src) => {
+                out.text.push_str(badge_alt(alt));
+                out.links.push((start..out.text.len(), url.clone()));
+                Some(Look::Badge)
+            }
             Span::Image { alt, .. } => {
                 out.text.push('[');
                 out.text.push_str(alt);
@@ -229,6 +250,14 @@ pub fn inline(spans: &[Span]) -> Inline {
     // A line break inside a paragraph is a space (one byte for one: the ranges hold).
     out.text = out.text.replace('\n', " ");
     out
+}
+
+/// A badge's alt text as a sentence shows it: trimmed, `badge` when empty.
+fn badge_alt(alt: &str) -> &str {
+    match alt.trim() {
+        "" => "badge",
+        alt => alt,
+    }
 }
 
 /// A list item's marker: a bullet by depth (• ◦ ▪), `n.`, or a task's ☐ / ☑.
@@ -293,6 +322,14 @@ pub struct Colours {
     /// A code block's header strip (M11ai): its fill, and its words (the language, Copy) on it.
     pub code_header_bg: Rgb,
     pub code_header_text: Rgb,
+    /// A striped table row's fill (M11ai): the text at `STRIPE` over the page.
+    pub stripe: Rgb,
+    /// A badge's pill (M11ai): its fill, its value half's (a step stronger), its text (on both)
+    /// and an empty badge's dim word.
+    pub pill_bg: Rgb,
+    pub pill_value_bg: Rgb,
+    pub pill_text: Rgb,
+    pub pill_dim: Rgb,
     /// A callout's colours (M11ai), by `Callout::ALL`'s order.
     callouts: [CalloutColours; 5],
 }
@@ -317,6 +354,14 @@ impl Colours {
         let code_bg = mix(bg, ui.text, 0.07);
         // A shade darker than the code's fill, in a dark theme too (spec A).
         let code_header_bg = mix(code_bg, BLACK, crate::ui_tokens::reader::CODE_HEADER_SHADE);
+        let pill_bg = mix(bg, ui.text, crate::ui_tokens::reader::PILL_FILL);
+        let pill_value_bg = mix(bg, ui.text, crate::ui_tokens::reader::PILL_VALUE_FILL);
+        // Held on the stronger fill first, then on the softer one.
+        let pill_text = ensure_contrast(
+            ensure_contrast(ui.text, pill_value_bg, TEXT_MIN),
+            pill_bg,
+            TEXT_MIN,
+        );
         Colours {
             text: ensure_contrast(ui.text, bg, TEXT_MIN),
             dim: ensure_contrast(ui.text_dim, bg, TEXT_MIN),
@@ -328,6 +373,11 @@ impl Colours {
             header_text: ensure_contrast(ui.text, code_bg, TEXT_MIN),
             code_header_bg,
             code_header_text: ensure_contrast(ui.text_dim, code_header_bg, TEXT_MIN),
+            stripe: mix(bg, ui.text, crate::ui_tokens::reader::STRIPE),
+            pill_bg,
+            pill_value_bg,
+            pill_text,
+            pill_dim: ensure_contrast(ui.text_dim, pill_bg, TEXT_MIN),
             callouts: Callout::ALL.map(|kind| {
                 let hue = theme.palette[callout_palette(kind)];
                 let wash = mix(bg, hue, crate::ui_tokens::reader::CALLOUT_WASH);
@@ -430,6 +480,11 @@ pub struct ReaderDraw {
     /// The scenes' probe: each drawn callout's title.
     #[cfg(feature = "ui-shots")]
     pub callout_drawn: CalloutDrawn,
+    /// The scenes' probe: the front matter as drawn, and each drawn badge row's pills.
+    #[cfg(feature = "ui-shots")]
+    pub front_drawn: FrontDrawn,
+    #[cfg(feature = "ui-shots")]
+    pub pills_drawn: PillsDrawn,
 }
 
 /// A code block coloured (M11ai, `md_reader::code_runs`): its text as shown (tabs widened) and
@@ -466,6 +521,35 @@ pub type CodeDrawn = Rc<std::cell::RefCell<std::collections::BTreeMap<usize, Cod
 #[cfg(feature = "ui-shots")]
 pub type CalloutDrawn = Rc<std::cell::RefCell<std::collections::BTreeMap<usize, &'static str>>>;
 
+/// The front matter as last drawn (the scenes' probe): its key/value rows and its `+ N more`
+/// row as shown, or a raw block's header word; and its bounds (window points).
+#[cfg(feature = "ui-shots")]
+#[derive(Clone, Debug)]
+pub struct FrontProbe {
+    pub rows: Vec<(String, String)>,
+    pub more: Option<String>,
+    pub raw: Option<&'static str>,
+    pub bounds: gpui::Bounds<gpui::Pixels>,
+}
+
+#[cfg(feature = "ui-shots")]
+pub type FrontDrawn = Rc<std::cell::RefCell<Option<FrontProbe>>>;
+
+/// A badge row's pill as last drawn (the scenes' probe): its words, whether it is the dim
+/// `badge`, and its bounds (window points).
+#[cfg(feature = "ui-shots")]
+#[derive(Clone, Debug)]
+pub struct PillProbe {
+    pub label: String,
+    pub value: Option<String>,
+    pub dim: bool,
+    pub bounds: gpui::Bounds<gpui::Pixels>,
+}
+
+/// Each drawn badge row's pills, by (list row, pill).
+#[cfg(feature = "ui-shots")]
+pub type PillsDrawn = Rc<std::cell::RefCell<std::collections::BTreeMap<(usize, usize), PillProbe>>>;
+
 /// Each drawn row's content bounds, by list row (the scenes read it).
 #[cfg(feature = "ui-shots")]
 pub type Drawn =
@@ -496,8 +580,14 @@ pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
             .into_any_element()
     };
     let (gap, content) = match doc.plan.row_kind(row) {
-        // Task 6 draws the front matter.
-        RowKind::Front => (0.0, div().into_any_element()),
+        RowKind::Front => {
+            let content = match &doc.plan.front {
+                Some(Front::Table(t)) => prose(front_table(t, draw, reader)),
+                Some(Front::Raw(text)) => wide(reader.measure, front_raw(text, draw, reader)),
+                None => div().into_any_element(),
+            };
+            (0.0, content)
+        }
         RowKind::Block(b) => {
             let Some(md) = doc.blocks.get(b) else {
                 return div().into_any_element();
@@ -529,6 +619,9 @@ pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
                 _ => match doc.plan.looks.get(b) {
                     Some(BlockLook::Callout(kind, body)) => {
                         prose(reader_callout(row, *kind, body, draw, reader))
+                    }
+                    Some(BlockLook::Badges(badges)) => {
+                        prose(reader_badges(row, badges, draw, reader))
                     }
                     _ => prose(block(md, draw)),
                 },
@@ -645,11 +738,11 @@ fn reader_callout(
 /// so), then its code: coloured once the colour job's answer for block `b` is in, else in the
 /// code colour. The button's element id is from `row`.
 fn reader_code(row: usize, b: usize, md: &Md, draw: &Draw, reader: &ReaderDraw) -> AnyElement {
-    use crate::ui_tokens::reader::{CODE_HEADER, CODE_HEADER_TEXT, COPY_GAP};
+    use crate::ui_tokens::reader::COPY_GAP;
     let Md::Code { lang, text: code } = md else {
         return block(md, draw);
     };
-    let (c, s) = (draw.colours, &draw.sizes);
+    let c = draw.colours;
     let lang = fence_lang(lang.as_deref()).map(str::to_string);
     let copied = reader.copied == Some(Copied::Code(row));
     let (word, kind) = if copied {
@@ -716,20 +809,6 @@ fn reader_code(row: usize, b: usize, md: &Md, draw: &Draw, reader: &ReaderDraw) 
             .size_full(),
         )
     };
-    let header = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .h(px(CODE_HEADER))
-        .px(px(s.code_pad.0))
-        // Inside the block's 1 pt border: its corners 1 pt less round.
-        .rounded_t(px((s.code_radius - 1.0).max(0.0)))
-        .bg(hsla(c.code_header_bg))
-        .text_size(px(CODE_HEADER_TEXT))
-        .text_color(hsla(dim))
-        .child(div().children(lang))
-        .child(button);
     let text: AnyElement = match reader.code.get(&b) {
         Some(look) => {
             let runs = look.runs.iter().map(|(range, rgb)| {
@@ -748,6 +827,34 @@ fn reader_code(row: usize, b: usize, md: &Md, draw: &Draw, reader: &ReaderDraw) 
             SharedString::from(shown.join("\n")).into_any_element()
         }
     };
+    code_frame(lang, Some(button.into_any_element()), text, draw)
+}
+
+/// A reader's code block round `text` (M11ai): the header strip on its top edge (a shade off
+/// the code's fill; `label` on the left, dim, nothing when `None`; `button` on the right, if
+/// any), then the text in the code's font, padding and colour.
+fn code_frame(
+    label: Option<String>,
+    button: Option<AnyElement>,
+    text: AnyElement,
+    draw: &Draw,
+) -> AnyElement {
+    use crate::ui_tokens::reader::{CODE_HEADER, CODE_HEADER_TEXT};
+    let (c, s) = (draw.colours, &draw.sizes);
+    let header = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .h(px(CODE_HEADER))
+        .px(px(s.code_pad.0))
+        // Inside the block's 1 pt border: its corners 1 pt less round.
+        .rounded_t(px((s.code_radius - 1.0).max(0.0)))
+        .bg(hsla(c.code_header_bg))
+        .text_size(px(CODE_HEADER_TEXT))
+        .text_color(hsla(c.code_header_text))
+        .child(div().children(label))
+        .children(button);
     div()
         .w_full()
         .flex()
@@ -773,6 +880,239 @@ fn reader_code(row: usize, b: usize, md: &Md, draw: &Draw, reader: &ReaderDraw) 
 
 /// The Copy buttons' hover group (one per button: the nearest is the one hovered).
 const COPY_GROUP: &str = "md-copy";
+
+/// The words over a front matter that does not read as `key: value` lines (M11ai).
+const FRONT_RAW: &str = "front matter";
+
+/// The front matter as a small table (M11ai spec C): a row per key, the key dim and the value
+/// (wrapping) in `FRONT_TEXT`, the table's lines and corners, no stripes; the key in
+/// `FRONT_GRID.0` of `FRONT_GRID.1` equal columns, its value in the rest; then `+ N more`
+/// (dim, the full width) for the keys past `FRONT_ROWS`.
+fn front_table(
+    t: &crate::md_reader::FrontTable,
+    draw: &Draw,
+    #[cfg_attr(not(feature = "ui-shots"), allow(unused_variables))] reader: &ReaderDraw,
+) -> AnyElement {
+    use crate::ui_tokens::reader::{FRONT_GRID, FRONT_TEXT, TABLE_CELL, TABLE_RADIUS};
+    let c = draw.colours;
+    let (key_cols, cols) = FRONT_GRID;
+    let more = (t.more > 0).then(|| more_label(t.more));
+    let cell = |top: bool| {
+        div()
+            .min_w(px(0.0))
+            .px(px(TABLE_CELL.0))
+            .py(px(TABLE_CELL.1))
+            .when(!top, |d| d.border_t_1())
+            .border_color(hsla(c.line))
+    };
+    let mut cells: Vec<AnyElement> = Vec::new();
+    for (i, (key, value)) in t.rows.iter().enumerate() {
+        cells.push(
+            cell(i == 0)
+                .col_span(key_cols)
+                .border_r_1()
+                .text_color(hsla(c.dim))
+                .child(key.clone())
+                .into_any_element(),
+        );
+        cells.push(
+            cell(i == 0)
+                .col_span(cols - key_cols)
+                .child(value.clone())
+                .into_any_element(),
+        );
+    }
+    if let Some(more) = &more {
+        cells.push(
+            cell(t.rows.is_empty())
+                .col_span_full()
+                .text_color(hsla(c.dim))
+                .child(more.clone())
+                .into_any_element(),
+        );
+    }
+    let grid = div()
+        .w_full()
+        .grid()
+        .grid_cols(cols)
+        .border_1()
+        .border_color(hsla(c.line))
+        .rounded(px(TABLE_RADIUS))
+        .overflow_hidden()
+        .text_size(px(FRONT_TEXT))
+        .children(cells);
+    #[cfg(feature = "ui-shots")]
+    let grid = {
+        let (probe, rows) = (reader.front_drawn.clone(), t.rows.clone());
+        div().relative().w_full().child(grid).child(
+            gpui::canvas(
+                move |bounds, _, _| {
+                    *probe.borrow_mut() = Some(FrontProbe {
+                        rows,
+                        more,
+                        raw: None,
+                        bounds,
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
+    };
+    grid.into_any_element()
+}
+
+/// Front matter that does not read as `key: value` lines (M11ai): a code block headed
+/// `front matter`, no Copy.
+fn front_raw(
+    text: &str,
+    draw: &Draw,
+    #[cfg_attr(not(feature = "ui-shots"), allow(unused_variables))] reader: &ReaderDraw,
+) -> AnyElement {
+    let shown: Vec<String> = text.lines().map(expand_tabs).collect();
+    let block = code_frame(
+        Some(FRONT_RAW.to_string()),
+        None,
+        SharedString::from(shown.join("\n")).into_any_element(),
+        draw,
+    );
+    #[cfg(feature = "ui-shots")]
+    let block = {
+        let probe = reader.front_drawn.clone();
+        div()
+            .relative()
+            .w_full()
+            .child(block)
+            .child(
+                gpui::canvas(
+                    move |bounds, _, _| {
+                        *probe.borrow_mut() = Some(FrontProbe {
+                            rows: Vec::new(),
+                            more: None,
+                            raw: Some(FRONT_RAW),
+                            bounds,
+                        });
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+            .into_any_element()
+    };
+    block
+}
+
+/// A badge row (M11ai spec C): its pills in a wrapping row, `PILL_GAP` apart.
+fn reader_badges(row: usize, badges: &[Badge], draw: &Draw, reader: &ReaderDraw) -> AnyElement {
+    use crate::ui_tokens::reader::PILL_GAP;
+    div()
+        .w_full()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap(px(PILL_GAP))
+        .children(
+            badges
+                .iter()
+                .enumerate()
+                .map(|(i, badge)| pill_of(row, i, badge, draw, reader)),
+        )
+        .into_any_element()
+}
+
+/// A badge's pill (M11ai): `PILL_H` high, fully rounded, `PILL_TEXT` on one line, `PILL_PAD` at
+/// its sides; its label on `pill_bg` (dim when the alt text was empty), its value, if any, on
+/// `pill_value_bg`. A linked pill follows its link through `on_link` (its image never opened).
+fn pill_of(
+    #[cfg_attr(not(feature = "ui-shots"), allow(unused_variables))] row: usize,
+    #[cfg_attr(not(feature = "ui-shots"), allow(unused_variables))] i: usize,
+    badge: &Badge,
+    draw: &Draw,
+    #[cfg_attr(not(feature = "ui-shots"), allow(unused_variables))] reader: &ReaderDraw,
+) -> AnyElement {
+    use crate::ui_tokens::reader::{PILL_H, PILL_PAD, PILL_TEXT};
+    let c = draw.colours;
+    let round = px(PILL_H / 2.0);
+    let two = badge.value.is_some();
+    let part = |words: String, fill: Rgb, colour: Rgb| {
+        div()
+            .h_full()
+            .flex()
+            .items_center()
+            .px(px(PILL_PAD))
+            .bg(hsla(fill))
+            .text_color(hsla(colour))
+            .child(words)
+    };
+    let label = part(
+        badge.label.clone(),
+        c.pill_bg,
+        if badge.empty { c.pill_dim } else { c.pill_text },
+    );
+    let label = if two {
+        label.rounded_l(round)
+    } else {
+        label.rounded(round)
+    };
+    let value = badge
+        .value
+        .clone()
+        .map(|v| part(v, c.pill_value_bg, c.pill_text).rounded_r(round));
+    let n = draw.links.get();
+    draw.links.set(n + 1);
+    let pill = div()
+        .id(("md-pill", n))
+        .relative()
+        .flex_none()
+        .flex()
+        .flex_row()
+        .h(px(PILL_H))
+        .text_size(px(PILL_TEXT))
+        .line_height(px(PILL_H))
+        .whitespace_nowrap()
+        .child(label)
+        .children(value);
+    let pill = match badge.url.clone() {
+        Some(url) => {
+            let on_link = draw.on_link.clone();
+            pill.cursor_pointer()
+                .on_click(move |_, window, cx| on_link(url.clone(), window, cx))
+        }
+        None => pill,
+    };
+    #[cfg(feature = "ui-shots")]
+    let pill = {
+        let probe = reader.pills_drawn.clone();
+        let (label, value, dim) = (badge.label.clone(), badge.value.clone(), badge.empty);
+        pill.child(
+            gpui::canvas(
+                move |bounds, _, _| {
+                    probe.borrow_mut().insert(
+                        (row, i),
+                        PillProbe {
+                            label,
+                            value,
+                            dim,
+                            bounds,
+                        },
+                    );
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
+    };
+    pill.into_any_element()
+}
 
 /// `blocks` as one column with no page padding (M11aa: an agent's message in a chat row): the
 /// reader's blocks (`blocks_of`) one under another. Its links' element ids start from
@@ -926,6 +1266,16 @@ fn item(md: &Md, depth: u8, draw: &Draw) -> AnyElement {
         .into_any_element()
 }
 
+/// Whether body row `r` (from 0) of a reader's table is striped: the 2nd, 4th, …
+fn striped(r: usize) -> bool {
+    r % 2 == 1
+}
+
+/// The front matter's last row, for the `n` keys it does not show.
+fn more_label(n: usize) -> String {
+    format!("+ {n} more")
+}
+
 /// A table: a grid of equal columns, the header filled and bold, lines between the cells; at
 /// least `min` wide (the reader's: its columns at least `TABLE_COL_MIN` each).
 fn table(
@@ -935,13 +1285,18 @@ fn table(
     min: Option<f32>,
     draw: &Draw,
 ) -> AnyElement {
+    use crate::ui_tokens::reader::{TABLE_CELL, TABLE_RADIUS};
     let c = draw.colours;
     let n = head.len().max(1);
+    // The reader's tables (M11ai): more room in a cell, every 2nd body row striped; chat's as
+    // M11ac drew them.
+    let reader = draw.reader.is_some();
+    let (pad_x, pad_y) = if reader { TABLE_CELL } else { (10.0, 5.0) };
     let cell = |spans: &[Span], col: usize, row: usize, header: bool| {
         let d = div()
             .min_w(px(0.0))
-            .px(px(10.0))
-            .py(px(5.0))
+            .px(px(pad_x))
+            .py(px(pad_y))
             .when(col + 1 < n, |d| d.border_r_1())
             .when(row > 0, |d| d.border_t_1())
             .border_color(hsla(c.line))
@@ -949,6 +1304,9 @@ fn table(
                 d.bg(hsla(c.header_bg))
                     .text_color(hsla(c.header_text))
                     .font_weight(FontWeight::SEMIBOLD)
+            })
+            .when(reader && !header && striped(row - 1), |d| {
+                d.bg(hsla(c.stripe))
             });
         let d = match align.get(col) {
             Some(Align::Center) => d.text_center(),
@@ -976,7 +1334,7 @@ fn table(
         .when_some(min, |d, min| d.min_w(px(min)))
         .border_1()
         .border_color(hsla(c.line))
-        .rounded(px(4.0))
+        .rounded(px(TABLE_RADIUS))
         .overflow_hidden()
         .children(cells)
         .into_any_element()
@@ -986,7 +1344,8 @@ fn table(
 /// fill, links in the link colour, underlined and clickable, images' alt text dim.
 fn text(spans: &[Span], draw: &Draw) -> AnyElement {
     let c = draw.colours;
-    let laid = inline(spans);
+    // A badge in a sentence has its look in the reader only (chat's stays an image's).
+    let laid = inline_with(spans, draw.reader.is_some());
     let highlights = laid.looks.iter().map(|(range, look)| {
         let style = match look {
             Look::Bold => HighlightStyle {
@@ -1014,6 +1373,11 @@ fn text(spans: &[Span], draw: &Draw) -> AnyElement {
             Look::Image => HighlightStyle {
                 color: Some(hsla(c.dim)),
                 font_style: Some(FontStyle::Italic),
+                ..Default::default()
+            },
+            Look::Badge => HighlightStyle {
+                color: Some(hsla(c.pill_text)),
+                background_color: Some(hsla(c.pill_bg)),
                 ..Default::default()
             },
         };
@@ -1083,6 +1447,10 @@ mod tests {
                 ("code", c.code_text, c.code_bg),
                 ("table header", c.header_text, c.header_bg),
                 ("code header", c.code_header_text, c.code_header_bg),
+                ("table text on a stripe", c.text, c.stripe),
+                ("pill", c.pill_text, c.pill_bg),
+                ("pill value", c.pill_text, c.pill_value_bg),
+                ("empty pill", c.pill_dim, c.pill_bg),
             ] {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got}");
@@ -1090,6 +1458,82 @@ mod tests {
             // The code header is a shade off the code's fill.
             assert_ne!(c.code_header_bg, c.code_bg, "{name}");
         }
+    }
+
+    /// Every theme (spec C): a stripe is the text at `STRIPE` over the page; the pills' fills
+    /// show and the value's is a step stronger than the label's (further from the page, toward
+    /// the text).
+    #[test]
+    fn stripes_and_pills_are_tints_of_the_text() {
+        use crate::ui_tokens::contrast;
+        use crate::ui_tokens::reader::STRIPE;
+        for (name, theme) in crate::theme::every_theme() {
+            let c = Colours::of(&theme);
+            let bg = theme.background;
+            assert_eq!(c.stripe, mix(bg, theme.ui().text, STRIPE), "{name}");
+            assert_ne!(c.stripe, bg, "{name}: the stripe shows");
+            let (label, value) = (contrast(c.pill_bg, bg), contrast(c.pill_value_bg, bg));
+            assert!(label > 1.0, "{name}: the pill's fill shows ({label})");
+            assert!(
+                value > label,
+                "{name}: the value's fill {value} not over {label}"
+            );
+        }
+    }
+
+    /// Body rows 2, 4, … (1, 3, … from 0) are striped; the 1st is not.
+    #[test]
+    fn every_second_body_row_is_striped() {
+        let got: Vec<bool> = (0..5).map(striped).collect();
+        assert_eq!(got, [false, true, false, true, false]);
+    }
+
+    #[test]
+    fn the_front_matter_s_rest_reads_plus_n_more() {
+        assert_eq!(more_label(5), "+ 5 more");
+        assert_eq!(more_label(1), "+ 1 more");
+    }
+
+    /// In the reader, an image whose source is a badge's shows as its alt text (no brackets)
+    /// with the badge look, still linked when it is; any other image keeps today's look, and
+    /// chat keeps today's look for every image (`inline`).
+    #[test]
+    fn a_badge_in_a_sentence_has_the_badge_look_in_the_reader_only() {
+        let spans = vec![
+            t("CI "),
+            Span::LinkedImage {
+                alt: "build: passing".into(),
+                src: "https://img.shields.io/badge/build-passing-green".into(),
+                url: "https://example.com/ci".into(),
+            },
+            t(" and "),
+            Span::Image {
+                alt: "".into(),
+                url: "https://example.com/docs/badge.svg".into(),
+            },
+            t(" "),
+            Span::Image {
+                alt: "logo".into(),
+                url: "logo.png".into(),
+            },
+        ];
+        let got = inline_with(&spans, true);
+        assert_eq!(got.text, "CI build: passing and badge [logo]");
+        assert_eq!(
+            got.looks,
+            vec![
+                (3..17, Look::Badge),
+                (22..27, Look::Badge),
+                (28..34, Look::Image)
+            ]
+        );
+        assert_eq!(
+            got.links,
+            vec![(3..17, "https://example.com/ci".to_string())]
+        );
+        let chat = inline(&spans);
+        assert_eq!(chat.text, "CI [build: passing] and [] [logo]");
+        assert!(chat.looks.iter().all(|(_, l)| *l != Look::Badge));
     }
 
     /// Every kind in every theme: a callout's title and body meet the text floor on its wash, its

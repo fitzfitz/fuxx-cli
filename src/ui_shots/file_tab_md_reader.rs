@@ -58,6 +58,21 @@ pub(super) const SCENES: &[Scene] = &[
             "src/ui_tokens.rs",
         ],
     },
+    Scene {
+        name: "file-tab-md-reader-github",
+        run: file_tab_md_reader_github_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/file_tab_preview.rs",
+            "src/md_preview.rs",
+            "src/md_reader.rs",
+            "src/agent_markdown.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
 ];
 
 /// A made-up "Setup guide": front matter, two badge rows, a title, sections and a subsection,
@@ -908,6 +923,413 @@ fn file_tab_md_reader_callout_scenes() {
             &theme,
             dims,
             build,
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// M11ai Task 6's GitHub looks, 1,200 × 700, in both themes:
+/// - `file-tab-md-reader-github` (`READER_FIXTURE`): the front matter row draws its keys and
+///   values (`title` / `Setup guide` first), no `+ N more`; it sits at the top padding (its top
+///   at the list's top plus `TERMINAL_PADDING.1`) and the block after it is the reader's gap
+///   under it; no rule and no heading come before `# Setup guide`. Each badge row draws one
+///   pill per badge, each `PILL_H` high, in order, with its words; the `license | MIT` pill has
+///   two fills (`pill_bg` at its left end, `pill_value_bg` at its right), the one-part `docs`
+///   pill one. A click on the linked `build` pill follows `https://example.com/ci` (recorded by
+///   the frozen tab, no browser).
+/// - `file-tab-md-reader-github-table`: scrolled to the Options table: down its first column's
+///   padding the fills are the header's, the page (1st body row), the stripe (2nd), the page
+///   (3rd).
+/// - `file-tab-md-reader-github-more`: 25 front-matter keys: 20 rows, then `+ 5 more`; a badge in
+///   a sentence shows the pill fill inside its paragraph; a badge with no alt text is a dim
+///   `badge` pill.
+/// - `file-tab-md-reader-github-raw`: front matter that is not `key: value` lines: a code block
+///   with a `front matter` header and no Copy.
+fn file_tab_md_reader_github_scenes() {
+    use crate::agent_markdown::Md;
+    use crate::file_tab::FileTab;
+    use crate::layout_model::FileMode;
+    use crate::md_preview::Colours;
+    use crate::md_reader::{BlockLook, heading_text};
+    use crate::ui_tokens::reader::{BLOCK_GAP, FRONT_ROWS, HEADING_ABOVE, PILL_H};
+    use crate::ui_tokens::size::TERMINAL_PADDING;
+    use gpui::{ListOffset, Modifiers};
+    use std::cell::RefCell;
+    use std::fmt::Write as _;
+    use std::rc::Rc;
+
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-github");
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let guide = dir.join("SETUP.md");
+    std::fs::write(&guide, READER_FIXTURE).expect("SETUP.md");
+    let mut many = String::from("---\n");
+    for i in 1..=FRONT_ROWS + 5 {
+        writeln!(many, "key{i}: value {i}").expect("a line");
+    }
+    many.push_str(
+        "---\n\nThe build is ![build: passing](https://img.shields.io/badge/build-passing-green) \
+         on the main branch.\n\n![](https://img.shields.io/badge/coverage-90-green) \
+         ![docs](https://example.com/docs/badge.svg)\n",
+    );
+    let more = dir.join("MANY.md");
+    std::fs::write(&more, many).expect("MANY.md");
+    let raw = dir.join("RAW.md");
+    std::fs::write(
+        &raw,
+        "---\nThis is a note, not a list of settings.\n---\n\n# Notes\n\nSome text.\n",
+    )
+    .expect("RAW.md");
+
+    type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
+    let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
+    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+    };
+    let preview = move |cx: &mut VisualTestAppContext, window, tab: &gpui::Entity<FileTab>| {
+        frame(cx, window);
+        let button = cx
+            .read(|cx| tab.read(cx).preview_bounds())
+            .expect("Preview is drawn");
+        cx.simulate_click(window, button.center(), Modifiers::none());
+        frame(cx, window);
+    };
+    let show = move |cx: &mut VisualTestAppContext,
+                     window: AnyWindowHandle,
+                     tab: &gpui::Entity<FileTab>,
+                     row: usize| {
+        cx.read(|cx| tab.read(cx).preview_list())
+            .scroll_to(ListOffset {
+                item_ix: row,
+                offset_in_item: px(0.0),
+            });
+        frame(cx, window);
+    };
+
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let colours = Colours::of(&theme);
+        let dims = size(px(1200.0), px(700.0));
+        let build_for = |slot: TabSlot, path: std::path::PathBuf| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path.clone(), FileMode::Plain, window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+
+        // The fixture's top: the front matter and the badge rows.
+        let n = format!("file-tab-md-reader-github-{slug}");
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                preview(cx, window, &tab);
+                let doc = cx
+                    .read(|cx| tab.read(cx).reader_doc())
+                    .expect("the reader's document");
+                assert_eq!(doc.plan.front_rows(), 1, "{n}: the front matter's row");
+                let front = cx
+                    .read(|cx| tab.read(cx).front_drawn())
+                    .unwrap_or_else(|| panic!("{n}: the front matter is drawn"));
+                println!("ui-shots: {n}: front matter {front:?}");
+                assert_eq!(
+                    front.rows.first().map(|(k, v)| (k.as_str(), v.as_str())),
+                    Some(("title", "Setup guide")),
+                    "{n}: the first key and value"
+                );
+                assert_eq!(front.rows.len(), 4, "{n}: four keys");
+                assert_eq!(front.more, None, "{n}: no + N more");
+                assert_eq!(front.raw, None, "{n}: a table");
+                // At the top padding; the next block the reader's gap under it.
+                let view = cx.read(|cx| tab.read(cx).preview_list()).viewport_bounds();
+                let drawn = cx.read(|cx| tab.read(cx).reader_drawn());
+                let (first, next) = (drawn[&0], drawn[&1]);
+                let top = f32::from(first.top()) - f32::from(view.top());
+                assert!(
+                    (top - TERMINAL_PADDING.1).abs() <= 0.5,
+                    "{n}: the front matter's top is {top} under the list's, not {}",
+                    TERMINAL_PADDING.1
+                );
+                assert!(
+                    (f32::from(front.bounds.top()) - f32::from(first.top())).abs() <= 0.5
+                        && front.bounds.size.height > px(30.0),
+                    "{n}: the row is the table ({:?}, row {first:?})",
+                    front.bounds
+                );
+                let want = match doc.blocks.first() {
+                    Some(Md::Heading(..)) => HEADING_ABOVE,
+                    _ => BLOCK_GAP,
+                };
+                let between = f32::from(next.top()) - f32::from(first.bottom());
+                assert!(
+                    (between - want).abs() <= 0.5,
+                    "{n}: {between} between the front matter and the next block, not {want}"
+                );
+                // No rule or heading before `# Setup guide` (the front matter is not text).
+                let h1 = doc
+                    .blocks
+                    .iter()
+                    .position(|b| matches!(b, Md::Heading(..)))
+                    .expect("a heading");
+                assert!(
+                    matches!(&doc.blocks[h1], Md::Heading(1, s) if heading_text(s) == "Setup guide"),
+                    "{n}: the first heading is the title"
+                );
+                assert!(
+                    !doc.blocks[..h1].iter().any(|b| matches!(b, Md::Rule)),
+                    "{n}: no rule above the title"
+                );
+
+                // The badge rows: a pill per badge, PILL_H high, with its words.
+                let pills = cx.read(|cx| tab.read(cx).pills_drawn());
+                let shot = frame_now(cx, window);
+                let mut rows = 0;
+                for (b, look) in doc.plan.looks.iter().enumerate() {
+                    let BlockLook::Badges(badges) = look else {
+                        continue;
+                    };
+                    rows += 1;
+                    let row = doc.plan.row_of_block(b);
+                    let got: Vec<_> = pills
+                        .range((row, 0)..(row + 1, 0))
+                        .map(|(_, p)| p)
+                        .collect();
+                    assert_eq!(got.len(), badges.len(), "{n}: row {row}'s pills");
+                    for (badge, pill) in badges.iter().zip(&got) {
+                        assert_eq!(
+                            (&pill.label, &pill.value),
+                            (&badge.label, &badge.value),
+                            "{n}: row {row}'s pill"
+                        );
+                        let h = f32::from(pill.bounds.size.height);
+                        assert!((h - PILL_H).abs() <= 0.5, "{n}: {} is {h} high", pill.label);
+                        let y = f32::from(pill.bounds.center().y);
+                        let left = pixel_at(&shot, dims, f32::from(pill.bounds.left()) + 3.0, y);
+                        let right = pixel_at(&shot, dims, f32::from(pill.bounds.right()) - 3.0, y);
+                        let value = if pill.value.is_some() {
+                            colours.pill_value_bg
+                        } else {
+                            colours.pill_bg
+                        };
+                        assert!(
+                            gap(left, colours.pill_bg) <= 3 && gap(right, value) <= 3,
+                            "{n}: {}'s fills {left:?} / {right:?}, not {:?} / {value:?}",
+                            pill.label,
+                            colours.pill_bg
+                        );
+                    }
+                }
+                assert_eq!(rows, 2, "{n}: two badge rows");
+                assert!(
+                    pills
+                        .values()
+                        .any(|p| p.label == "license" && p.value.as_deref() == Some("MIT")),
+                    "{n}: the license | MIT pill"
+                );
+                // A click on the linked `build` pill follows its link (recorded, no browser).
+                let build = pills
+                    .values()
+                    .find(|p| p.label == "build")
+                    .expect("the build pill")
+                    .bounds;
+                cx.simulate_click(window, build.center(), Modifiers::none());
+                frame(cx, window);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).followed_link()).as_deref(),
+                    Some("https://example.com/ci"),
+                    "{n}: the build pill's link"
+                );
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-github",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), guide.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+
+        // The Options table, striped.
+        let n = format!("file-tab-md-reader-github-table-{slug}");
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                preview(cx, window, &tab);
+                let doc = cx
+                    .read(|cx| tab.read(cx).reader_doc())
+                    .expect("the reader's document");
+                let at = doc
+                    .blocks
+                    .iter()
+                    .position(|b| matches!(b, Md::Table { .. }))
+                    .expect("the table");
+                let row = doc.plan.row_of_block(at);
+                show(cx, window, &tab, row.saturating_sub(1));
+                let table = *cx
+                    .read(|cx| tab.read(cx).reader_drawn())
+                    .get(&row)
+                    .unwrap_or_else(|| panic!("{n}: the table is drawn"));
+                let shot = frame_now(cx, window);
+                // Down the first column's side padding: each pixel the nearest of the fills
+                // (lines skipped), runs of 3 or more kept.
+                let fills = [
+                    ("header", colours.header_bg),
+                    ("page", theme.background),
+                    ("stripe", colours.stripe),
+                    ("line", colours.line),
+                ];
+                let x = f32::from(table.left()) + 4.0;
+                let (mut runs, mut y): (Vec<(&str, usize)>, f32) =
+                    (Vec::new(), f32::from(table.top()) + 2.0);
+                while y < f32::from(table.bottom()) - 2.0 {
+                    let p = pixel_at(&shot, dims, x, y);
+                    let (what, _) = fills
+                        .iter()
+                        .min_by_key(|(_, c)| gap(p, *c))
+                        .copied()
+                        .expect("a fill");
+                    match runs.last_mut() {
+                        Some((last, k)) if *last == what => *k += 1,
+                        _ => runs.push((what, 1)),
+                    }
+                    y += 1.0;
+                }
+                let seen: Vec<&str> = runs
+                    .iter()
+                    .filter(|(what, k)| *what != "line" && *k >= 3)
+                    .map(|(what, _)| *what)
+                    .fold(Vec::new(), |mut v, w| {
+                        if v.last() != Some(&w) {
+                            v.push(w);
+                        }
+                        v
+                    });
+                println!("ui-shots: {n}: down the first column {runs:?}");
+                assert_eq!(
+                    seen,
+                    ["header", "page", "stripe", "page"],
+                    "{n}: the header, then every 2nd body row striped"
+                );
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-github-table",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), guide.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+
+        // 25 keys: 20 rows and `+ 5 more`; a badge in a sentence.
+        let n = format!("file-tab-md-reader-github-more-{slug}");
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                preview(cx, window, &tab);
+                let front = cx
+                    .read(|cx| tab.read(cx).front_drawn())
+                    .unwrap_or_else(|| panic!("{n}: the front matter is drawn"));
+                assert_eq!(front.rows.len(), FRONT_ROWS, "{n}: {FRONT_ROWS} rows");
+                assert_eq!(front.more.as_deref(), Some("+ 5 more"), "{n}");
+                // The sentence with a badge: the pill fill inside its paragraph.
+                show(cx, window, &tab, 1);
+                let para = *cx
+                    .read(|cx| tab.read(cx).reader_drawn())
+                    .get(&1)
+                    .unwrap_or_else(|| panic!("{n}: the paragraph is drawn"));
+                let shot = frame_now(cx, window);
+                let y = f32::from(para.center().y);
+                let mut x = f32::from(para.left());
+                let mut hits = 0;
+                while x < f32::from(para.right()) {
+                    if gap(pixel_at(&shot, dims, x, y), colours.pill_bg) <= 2 {
+                        hits += 1;
+                    }
+                    x += 1.0;
+                }
+                println!("ui-shots: {n}: {hits} pill-fill pixels across the sentence");
+                assert!(
+                    hits >= 20,
+                    "{n}: the badge in the sentence has the pill fill ({hits})"
+                );
+                // An empty alt text: the word `badge`, dim.
+                show(cx, window, &tab, 2);
+                let pills = cx.read(|cx| tab.read(cx).pills_drawn());
+                let words: Vec<(&str, bool)> = pills
+                    .range((2, 0)..(3, 0))
+                    .map(|(_, p)| (p.label.as_str(), p.dim))
+                    .collect();
+                assert_eq!(
+                    words,
+                    [("badge", true), ("docs", false)],
+                    "{n}: the empty badge"
+                );
+                // Shot with the table's end, `+ 5 more`, and the rows under it in view.
+                cx.read(|cx| tab.read(cx).preview_list())
+                    .scroll_to(ListOffset {
+                        item_ix: 0,
+                        offset_in_item: front.bounds.size.height - px(160.0),
+                    });
+                frame(cx, window);
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-github-more",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), more.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+
+        // Not `key: value` lines: a code block headed `front matter`, no Copy.
+        let n = format!("file-tab-md-reader-github-raw-{slug}");
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                preview(cx, window, &tab);
+                let front = cx
+                    .read(|cx| tab.read(cx).front_drawn())
+                    .unwrap_or_else(|| panic!("{n}: the front matter is drawn"));
+                assert_eq!(front.raw, Some("front matter"), "{n}: the header");
+                assert!(front.rows.is_empty(), "{n}: no table");
+                assert!(
+                    !cx.read(|cx| tab.read(cx).code_drawn()).contains_key(&0),
+                    "{n}: no Copy on the front matter"
+                );
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-github-raw",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), raw.clone()),
             act,
         );
         println!("ui-shots: {}", path.display());
