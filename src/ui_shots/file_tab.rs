@@ -255,6 +255,25 @@ fn file_tab_scenes() {
             (-6..=6).any(|dy| near(pixel_at(&shot, dims, x0 + dx as f32, y + dy as f32)))
         });
         assert!(glyph, "file-tab-{slug}: the file glyph is drawn");
+        // Its outer bar (M11al §9) sits in the card: the card's fill, the card's hairline under
+        // it, nothing drawn in the first 16 pt (the title starts there). `FILE_TOOLBAR` is 42.
+        {
+            use crate::ui_tokens::size::{HAIRLINE, SIDEBAR_DEFAULT_WIDTH, TAB_BAR};
+            let pane_left = CARD_INSET + HAIRLINE + SIDEBAR_DEFAULT_WIDTH;
+            let bar_top = CARD_INSET + HAIRLINE + TAB_BAR;
+            let p = pixel_at(&shot, dims, pane_left + 8.0, bar_top + 21.0);
+            assert!(
+                near_by(p, ui.card, 3),
+                "file-tab-{slug}: the file bar is {p:?}, not the card {:?}",
+                ui.card
+            );
+            let p = pixel_at(&shot, dims, pane_left + 8.0, bar_top + 41.5);
+            assert!(
+                near_by(p, ui.card_border, 3),
+                "file-tab-{slug}: the file bar's line is {p:?}, not {:?}",
+                ui.card_border
+            );
+        }
         // Closing it (not shot).
         let (build, act) = scene(true);
         render_with(&theme, dims, build, act);
