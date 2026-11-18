@@ -69,6 +69,7 @@ mod live_lines;
 mod mark_view;
 mod mcp;
 mod md_preview;
+mod md_reader;
 mod mermaid;
 mod mermaid_render;
 mod mouse;

@@ -59,6 +59,12 @@ pub enum Span {
         alt: String,
         url: String,
     },
+    /// M11ai: `[![alt](src)](url)`, a badge: an image that is also a link.
+    LinkedImage {
+        alt: String,
+        src: String,
+        url: String,
+    },
 }
 
 /// The deepest quotes nest (review fix): a deeper `>` is text, so parsing (and drawing) a
@@ -387,7 +393,7 @@ fn spans(text: &str) -> Vec<Span> {
         } else if c == '*' || c == '_' {
             italic(rest, text.len() - rest.len(), c, prev, &closers)
         } else if c == '[' {
-            link(rest)
+            linked_image(rest).or_else(|| link(rest))
         } else if c == '!' && next == Some('[') {
             link(&rest[1..]).map(|(span, used)| match span {
                 Span::Link { text, url } => (Span::Image { alt: text, url }, used + 1),
@@ -536,9 +542,70 @@ fn link(rest: &str) -> Option<(Span, usize)> {
     ))
 }
 
+/// `[![alt](src)](url)` at the start of `rest`. The image part is scanned as `link` scans
+/// (it stops at a `[` or a line break), and the closing `](url)` the same way as a link's `)`,
+/// so it stays linear over a paragraph.
+fn linked_image(rest: &str) -> Option<(Span, usize)> {
+    let inner = rest.strip_prefix("[!")?;
+    let (
+        Span::Link {
+            text: alt,
+            url: src,
+        },
+        used,
+    ) = link(inner)?
+    else {
+        return None;
+    };
+    let after = inner[used..].strip_prefix("](")?;
+    let end = after.find(|c: char| c == ')' || c == '[' || c.is_whitespace())?;
+    if end == 0 || !after[end..].starts_with(')') {
+        return None;
+    }
+    Some((
+        Span::LinkedImage {
+            alt,
+            src,
+            url: after[..end].to_string(),
+        },
+        2 + used + 2 + end + 1,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_linked_image_is_one_span() {
+        let img = |a: &str, u: &str| Span::Image {
+            alt: a.into(),
+            url: u.into(),
+        };
+        assert_eq!(
+            spans(
+                "[![build: passing](https://img.shields.io/b.svg)](https://example.com/ci) after"
+            ),
+            vec![
+                Span::LinkedImage {
+                    alt: "build: passing".into(),
+                    src: "https://img.shields.io/b.svg".into(),
+                    url: "https://example.com/ci".into()
+                },
+                t(" after")
+            ]
+        );
+        assert_eq!(spans("[![a](s)]"), vec![t("["), img("a", "s"), t("]")]);
+        assert_eq!(spans("[![a](s)]("), vec![t("["), img("a", "s"), t("](")]);
+        assert_eq!(
+            spans("[x](y)"),
+            vec![Span::Link {
+                text: "x".into(),
+                url: "y".into()
+            }]
+        );
+        assert_eq!(spans("![x](y)"), vec![img("x", "y")]);
+    }
 
     fn t(s: &str) -> Span {
         Span::Text(s.into())
