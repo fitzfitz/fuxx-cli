@@ -447,6 +447,10 @@ All 12 plan tasks (0–11) on `m11ai-md-reader`; Tasks 0–10 each reviewed (4, 
 **The outline**
 - **The end of a big document** (over 700 blocks): at the very bottom the last short section is not marked. The
   current entry is the last heading you scrolled past, because the "at the end" rule needs every row measured.
+- **A long jump in a big document** (over 700 blocks): one wheel step longer than about 400 pt can leave the wrong
+  entry marked until your next scroll (the check reads the rows measured before that step).
+- **A table inside a callout:** its striped rows' links and dim text are held to the floor on the page's stripe, not
+  on the stripe over the callout's tint.
 - **Near-end entries:** clicking an outline entry near the end can light it for one frame, then the "at the end"
   rule marks the last heading instead.
 - **The narrow panel** does not scroll to the current entry when it opens. With more than 12 entries, the current one
@@ -514,8 +518,8 @@ Idle CPU and the feel of scrolling need a real window. They are items 14 and 15 
 - clippy: 14 (bin) / 27 (test) by default, and 16 / 29 with `ui-shots`. These equal the baselines.
 - `cargo fmt --check`: clean.
 - `scripts/ui-shots.sh --changed master` (Task 11's gate): 226 passed, 0 failed, 150.2 s (every scene is selected, since shared sources changed); after the final review's fixes: 226 passed, 0 failed, 146.0 s. The reference fingerprints are stale on this Mac (339 "look different"); they are reported, not failures, and were not updated.
-- `scripts/ui-shots.sh` (full): 226 passed, 0 failed, 151.3 s before the final review's fixes.
-  (after the fixes: filled by the controller)
+- `scripts/ui-shots.sh` (full): 226 passed, 0 failed, 151.3 s before the final review's fixes; 226 passed, 0 failed,
+  151.4 s after them.
 
 ## On-screen check (yours, after the build)
 
