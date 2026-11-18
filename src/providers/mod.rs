@@ -15,6 +15,8 @@ pub struct ProviderInfo {
     pub label: &'static str,
     /// The two-letter tab badge.
     pub badge: &'static str,
+    /// How a sidebar row's line two names it, glyph then name ("✳ Claude", M11al §2.4).
+    pub who: (&'static str, &'static str),
     pub badge_rgb: u32,
     /// Whether a turn can be stopped by asking the agent (`Action::Interrupt`); if not, Stop
     /// offers Force stop (ending the process) at once.
@@ -611,6 +613,7 @@ mod tests {
         name: "plain",
         label: "Plain",
         badge: "PL",
+        who: ("P", "plain"),
         badge_rgb: 0,
         interrupts: false,
         modes: &[],

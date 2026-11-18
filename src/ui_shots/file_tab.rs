@@ -426,6 +426,25 @@ fn file_tab_scenes() {
             (-6..=6).any(|dy| near(pixel_at(&shot, dims, x0 + dx as f32, y + dy as f32)))
         });
         assert!(glyph, "file-tab-{slug}: the file glyph is drawn");
+        // Its outer bar (M11al §9) sits in the card: the card's fill, the card's hairline under
+        // it, nothing drawn in the first 16 pt (the title starts there). `FILE_TOOLBAR` is 42.
+        {
+            use crate::ui_tokens::size::{HAIRLINE, SIDEBAR_DEFAULT_WIDTH, TAB_BAR};
+            let pane_left = CARD_INSET + HAIRLINE + SIDEBAR_DEFAULT_WIDTH;
+            let bar_top = CARD_INSET + HAIRLINE + TAB_BAR;
+            let p = pixel_at(&shot, dims, pane_left + 8.0, bar_top + 21.0);
+            assert!(
+                near_by(p, ui.card, 3),
+                "file-tab-{slug}: the file bar is {p:?}, not the card {:?}",
+                ui.card
+            );
+            let p = pixel_at(&shot, dims, pane_left + 8.0, bar_top + 41.5);
+            assert!(
+                near_by(p, ui.card_border, 3),
+                "file-tab-{slug}: the file bar's line is {p:?}, not {:?}",
+                ui.card_border
+            );
+        }
         // Closing it (not shot).
         let (build, act) = scene(true);
         render_with(&theme, dims, build, act);
@@ -2148,7 +2167,7 @@ fn file_diff_scenes() {
     use crate::git_status::LineChange;
     use crate::layout_model::{FileMode, TabKind};
     use crate::right_sidebar::{FILTER_BAND, HEADER, LIST_TOP, ROW};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use crate::ui_tokens::{MARK_MIN, ensure_contrast};
     use alacritty_terminal::vte::ansi::Rgb;
     use gpui::{Focusable, Modifiers, MouseButton};
@@ -2530,8 +2549,8 @@ fn file_diff_scenes() {
 
         // The toggle, in a workspace with the Files panel (as the files scenes lay it out).
         let window_dims = size(px(1100.0), px(560.0));
-        let sidebar_left = 1100.0 - GAP - 300.0 + FOCUS_RING;
-        let list_top = GAP + FOCUS_RING + TAB_BAR + HEADER + FILTER_BAND + LIST_TOP;
+        let sidebar_left = right_panel_left(1100.0, 300.0);
+        let list_top = CARD_INSET + HAIRLINE + TAB_BAR + HEADER + FILTER_BAND + LIST_TOP;
         let build_ws = |slot: Slot| {
             let dir = dir.clone();
             move |window: &mut Window, cx: &mut App| -> AnyView {

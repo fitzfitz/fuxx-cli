@@ -108,15 +108,15 @@ fn changes_graph_scenes() {
     use crate::git_graph::{Commit, Details, Ref};
     use crate::git_status::ChangeList;
     use crate::right_sidebar::{Panel, ROW};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
     use std::rc::Rc;
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
-    let list_top = GAP + FOCUS_RING + TAB_BAR + crate::changes_panel::HEADER;
+    let sidebar_left = right_panel_left(window_right, 300.0);
+    let list_top = CARD_INSET + HAIRLINE + TAB_BAR + crate::changes_panel::HEADER;
     let root = files_fixture();
     let commit = |hash: &str, parents: &[&str], subject: &str, refs: Vec<Ref>, head: bool| Commit {
         hash: hash.to_string(),
@@ -278,15 +278,15 @@ fn changes_sticky_scenes() {
     use crate::git_graph::Commit;
     use crate::git_status::ChangeList;
     use crate::right_sidebar::{Panel, ROW};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
     use std::rc::Rc;
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
-    let list_top = GAP + FOCUS_RING + TAB_BAR + crate::changes_panel::HEADER;
+    let sidebar_left = right_panel_left(window_right, 300.0);
+    let list_top = CARD_INSET + HAIRLINE + TAB_BAR + crate::changes_panel::HEADER;
     let root = files_fixture();
     let commits: Vec<Commit> = (0..60)
         .map(|i| Commit {
@@ -396,8 +396,10 @@ fn changes_sticky_scenes() {
 /// - `changes-staging-all`: everything staged: the header's circle filled, no CHANGES divider.
 fn changes_staging_scenes() {
     use crate::git_status::{Change, ChangeList, Counts, Mark};
-    use crate::right_sidebar::{Panel, ROW};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::right_sidebar::{
+        Panel, REPO_BOTTOM, REPO_PAD_X, REPO_PAD_Y, REPO_SIDE, REPO_TOP, ROW,
+    };
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use gpui::Modifiers;
     use std::cell::RefCell;
@@ -405,9 +407,9 @@ fn changes_staging_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
-    let sidebar_right = window_right - GAP - FOCUS_RING;
-    let header_top = GAP + FOCUS_RING + TAB_BAR;
+    let sidebar_left = right_panel_left(window_right, 300.0);
+    let sidebar_right = right_panel_right(window_right);
+    let header_top = CARD_INSET + HAIRLINE + TAB_BAR;
     let list_top = header_top + crate::changes_panel::HEADER;
     let root = files_fixture();
     let lines = |added, removed| Counts::Lines { added, removed };
@@ -561,17 +563,15 @@ fn changes_staging_scenes() {
                     for r in 4..8 {
                         assert!(!circle_green(r), "{n}: row {r}'s circle is empty");
                     }
-                    // The bar's green third, then its track.
-                    let bar_y = header_top + crate::changes_panel::HEADER / 2.0 + 9.0;
+                    // The bar's green third, then its track: inside the repo card (M11al §6.3),
+                    // its line (20), a 5 pt gap and the bar (3) centred in it.
+                    let card_mid = header_top
+                        + REPO_TOP
+                        + (crate::changes_panel::HEADER - REPO_TOP - REPO_BOTTOM) / 2.0;
+                    let bar_y = card_mid + 12.5;
+                    let inner = sidebar_left + REPO_SIDE + REPO_PAD_X;
                     assert!(
-                        has(
-                            sidebar_left + 14.0,
-                            sidebar_left + 60.0,
-                            bar_y - 3.0,
-                            bar_y + 3.0,
-                            green,
-                            16
-                        ),
+                        has(inner, inner + 46.0, bar_y - 3.0, bar_y + 3.0, green, 16),
                         "{n}: the progress bar's green share"
                     );
                     // The hovered row's ↺ replaced its `+7`.
@@ -624,12 +624,13 @@ fn changes_staging_scenes() {
                 }
                 _ => {
                     // All staged: the header's circle is filled.
+                    let inner = sidebar_left + REPO_SIDE + REPO_PAD_X;
                     assert!(
                         has(
-                            sidebar_left + 8.0,
-                            sidebar_left + 26.0,
-                            header_top + 4.0,
-                            header_top + 28.0,
+                            inner,
+                            inner + 16.0,
+                            header_top + REPO_TOP + REPO_PAD_Y,
+                            header_top + REPO_TOP + REPO_PAD_Y + 20.0,
                             green,
                             16
                         ),
@@ -653,7 +654,6 @@ fn changes_bar_scenes() {
     use crate::branch_sync::{Action, Sync, Upstream};
     use crate::git_status::{Change, ChangeList, Counts, Mark};
     use crate::right_sidebar::Panel;
-    use crate::ui_tokens::size::FOCUS_RING;
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -661,8 +661,8 @@ fn changes_bar_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
-    let sidebar_right = window_right - GAP - FOCUS_RING;
+    let sidebar_left = right_panel_left(window_right, 300.0);
+    let sidebar_right = right_panel_right(window_right);
     let root = files_fixture();
     let list = ChangeList {
         entries: vec![Change {
@@ -688,7 +688,7 @@ fn changes_bar_scenes() {
     };
     let branch = || Head::Branch("fix/hdw-approval-flow".into());
     let track = |ahead, behind| Upstream::Track { ahead, behind };
-    // (slug, sync, busy, error, tooltip shown, accent button expected)
+    // (slug, sync, busy, error, tooltip shown, an action button beside Fetch expected)
     let states: Vec<(&str, Sync, Option<Action>, Option<String>, bool, bool)> = vec![
         (
             "even",
@@ -812,23 +812,73 @@ fn changes_bar_scenes() {
                     })
                 })
             };
-            // The bar is the card's last 56 pt (476 to 532 in a 560 pt window); its buttons in
-            // its right 80 pt; the tooltip hangs just above them, where no row is.
-            let (bar_top, bar_bottom) = (476.0, 532.0);
-            let accented = has(
-                sidebar_right - 80.0,
-                sidebar_right,
-                bar_top,
-                bar_bottom,
-                ui.accent,
-                10,
+            // The bar is the card's last stretch (to 532 in a 560 pt window): its top is the
+            // `card_border` line found by scanning up the panel's left edge (M11al Task 10: the
+            // bar is `BAR_PAD_Y` + its two lines or the 34 pt buttons + `BAR_PAD_Y`, taller than 56);
+            // its buttons in its right 80 pt; the tooltip hangs just above them, where no row is.
+            let probe = |y: f32| {
+                near(
+                    pixel_at(&shot, dims, sidebar_left + 4.0, y),
+                    ui.card_border,
+                    3,
+                )
+            };
+            let bar_bottom = (0..40)
+                .map(|i| 540.0 - i as f32 * 0.5)
+                .find(|&y| probe(y))
+                .expect("the card's bottom edge");
+            let bar_top = (0..460)
+                .map(|i| bar_bottom - 2.0 - i as f32 * 0.5)
+                .find(|&y| probe(y))
+                .expect("the bar's top line");
+            assert!(
+                bar_bottom - bar_top >= 63.0 - 1.0,
+                "{n}: the bar is at least 2 x 14 + 34 pt tall plus its line: {bar_top}"
             );
-            if busy.is_some() {
-                // Dimmed: not the full accent.
-                assert!(!accented, "{n}: the accent dims while it works");
-            } else {
-                assert_eq!(accented, accent, "{n}: the accent button");
+            // M11al §6.6: the buttons are 34 pt squares in a `card_border` edge, the icons
+            // `text_dim` (no accent fill any more); the one action's button is the second.
+            // Count the edges along the bar's middle: two a button. (Dimmed while it works:
+            // the edge blends with the fill, so it isn't counted then.)
+            let mid = (bar_top + bar_bottom) / 2.0;
+            let mut starts = vec![];
+            let mut inside = false;
+            for i in 0..200 {
+                let x = sidebar_right - 100.0 + i as f32 * 0.5;
+                let on = near(pixel_at(&shot, dims, x, mid), ui.card_border, 3);
+                if on && !inside {
+                    starts.push(x);
+                }
+                inside = on;
             }
+            let runs = starts.len();
+            if busy.is_none() {
+                // Each button's two edges are `BAR_BUTTON` apart (34, less the line's own width).
+                for pair in starts.chunks(2) {
+                    let w = pair[1] - pair[0];
+                    assert!(
+                        (w - 33.0).abs() <= 1.0,
+                        "{n}: a button is 34 pt wide: {w} ({starts:?})"
+                    );
+                }
+            }
+            if busy.is_none() {
+                assert_eq!(
+                    runs,
+                    if accent { 4 } else { 2 },
+                    "{n}: the buttons' edges (two a button)"
+                );
+            }
+            assert!(
+                !has(
+                    sidebar_right - 100.0,
+                    sidebar_right,
+                    bar_top + 4.0,
+                    bar_bottom - 4.0,
+                    ui.accent,
+                    10
+                ),
+                "{n}: no accent fill on the buttons"
+            );
             let tip_shown = has(
                 sidebar_right - 200.0,
                 sidebar_right,
@@ -861,19 +911,19 @@ fn changes_bar_scenes() {
 ///   (M, +2 −2) and a long name (A, not counted), then `… 3 more`. The header reads the repo's
 ///   name, `9 files` and the totals (+18 −14); each letter in its mark's colour (M blue, A
 ///   green, D red); `+12` in the added ink and `−3` in the removed one, a binary or uncounted
-///   row in neither; the hovered row (the fifth) `card_hover`, the others the card.
+///   row in neither; the hovered row (the fifth) `side_hover`, the others `side`.
 /// - `changes-empty-clean`: an empty list in a repo: the header (name only), then
 ///   "No changes since the last commit."; `changes-empty-norepo`: not a repo: "Not a git
 ///   repository." and no header; `changes-empty-ssh`: an SSH terminal followed: "Changes
 ///   aren't shown for SSH terminals.", no header.
 /// - `changes-click`: a click on the M row opens src/main.rs in the focused pane in Diff mode
-///   (the model's tab), and that row is drawn `card_selected`.
+///   (the model's tab), and that row is drawn `side_selected`.
 fn changes_scenes() {
     use crate::changes_panel::{HEADER, NO_CHANGES, NO_REPO, SSH_NOTE, totals};
     use crate::git_status::{Change, ChangeList, Counts, Mark};
     use crate::layout_model::{FileMode, TabKind};
-    use crate::right_sidebar::{Panel, ROW, mark_color};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::right_sidebar::{PILL_INSET, PILL_PAD, Panel, ROW, mark_color};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use gpui::{Focusable, Modifiers};
     use std::cell::RefCell;
@@ -881,9 +931,9 @@ fn changes_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
-    let sidebar_right = window_right - GAP - FOCUS_RING;
-    let card_top = GAP + FOCUS_RING;
+    let sidebar_left = right_panel_left(window_right, 300.0);
+    let sidebar_right = right_panel_right(window_right);
+    let card_top = CARD_INSET + HAIRLINE;
     let header_top = card_top + TAB_BAR;
     let list_top = header_top + HEADER;
     // M11v part 2: the CHANGES divider takes the first row; the entries start under it.
@@ -997,8 +1047,11 @@ fn changes_scenes() {
         // the right (faint), and under them the progress bar's track.
         assert_eq!(totals(&six), (18, 14), "{n}: the totals");
         assert_eq!(crate::git_stage::staged_summary(&six), (0, 9));
-        let line_top = header_top + (HEADER - 28.0) / 2.0;
-        let (left, right) = (sidebar_left + 10.0, sidebar_right - 6.0);
+        // Inside the repo card (M11al §6.3): the line (20), a 5 pt gap and the bar (3) centred.
+        use crate::right_sidebar::{REPO_BOTTOM, REPO_PAD_X, REPO_SIDE, REPO_TOP};
+        let line_top = header_top + REPO_TOP + (HEADER - REPO_TOP - REPO_BOTTOM - 28.0) / 2.0;
+        let inset = REPO_SIDE + REPO_PAD_X;
+        let (left, right) = (sidebar_left + inset - 20.0, sidebar_right - inset);
         assert!(
             has(
                 left + 20.0,
@@ -1025,16 +1078,18 @@ fn changes_scenes() {
             has(
                 left + 40.0,
                 right - 40.0,
-                line_top + 24.0,
-                line_top + 29.0,
-                ui.divider,
+                line_top + 25.0,
+                line_top + 28.0,
+                ui.progress_track,
                 6
             ),
             "{n}: the progress bar's track"
         );
         // Each row's letter in its mark's colour, and in no other mark's.
-        // Part 2: after the row's circle (14 pt and a 6 pt gap).
-        let letter = |i: usize, c: Rgb| in_row(i, sidebar_left + 28.0, sidebar_left + 40.0, c);
+        // Part 2: after the row's circle (16 pt and a 6 pt gap) from its content edge
+        // (`PILL_INSET` + `PILL_PAD`, M11al §6.5).
+        let content = sidebar_left + PILL_INSET + PILL_PAD;
+        let letter = |i: usize, c: Rgb| in_row(i, content + 22.0, content + 34.0, c);
         for (i, mark) in [(0, m), (1, a), (2, d), (3, a), (4, m), (5, a)] {
             assert!(letter(i, mark), "{n}: row {i}'s letter in {mark:?}");
             for other in [m, a, d].into_iter().filter(|o| *o != mark) {
@@ -1062,22 +1117,22 @@ fn changes_scenes() {
         assert!(counts(3, ui.text_faint), "{n}: `binary`, faint");
         // `… 3 more`, faint, under the names; then the GRAPH's header (M11w; no commits here:
         // the fixture isn't a git repo), and nothing after it.
-        let more = |i: usize, c: Rgb| in_row(i, sidebar_left + 26.0, sidebar_left + 120.0, c);
+        let more = |i: usize, c: Rgb| in_row(i, content + 50.0, content + 140.0, c);
         assert!(more(6, ui.text_faint), "{n}: the more row");
         assert!(more(7, ui.text_faint), "{n}: the GRAPH header after it");
         assert!(
             !more(8, ui.text_faint),
             "{n}: nothing after the GRAPH header"
         );
-        // The hovered row filled `card_hover`, the one above it the card (part 4: a pill 6 pt
-        // in from the side, so read 4 pt inside it).
-        let fill = |i: usize| at(sidebar_left + 10.0, row_mid(i));
+        // The hovered row filled `side_hover`, the one above it the panel's `side` (part 4: a
+        // pill `PILL_INSET` in from the side, so read 4 pt inside it; M11al §6.5).
+        let fill = |i: usize| at(sidebar_left + PILL_INSET + 4.0, row_mid(i));
         assert!(
-            near(fill(4), ui.card_hover, 3),
+            near(fill(4), ui.side_hover, 3),
             "{n}: hovered {:?}",
             fill(4)
         );
-        assert!(near(fill(3), ui.card, 3), "{n}: not hovered {:?}", fill(3));
+        assert!(near(fill(3), ui.side, 3), "{n}: not hovered {:?}", fill(3));
 
         // The empty states.
         for (case, list, in_repo, ssh, note) in [
@@ -1195,15 +1250,22 @@ fn changes_scenes() {
         );
         println!("ui-shots: {}", path.display());
         let shot = render_with(&theme, dims, build, act);
-        // Part 4: the selection is a pill 6 pt in from the side: read 4 pt inside it.
-        let fill = |i: usize| pixel_at(&shot, dims, sidebar_left + 10.0, row_mid(i));
+        // Part 4: the selection is a pill `PILL_INSET` in from the side: read 4 pt inside it.
+        let fill = |i: usize| {
+            pixel_at(
+                &shot,
+                dims,
+                sidebar_left + crate::right_sidebar::PILL_INSET + 4.0,
+                row_mid(i),
+            )
+        };
         assert!(
-            near(fill(0), ui.card_selected, 3),
+            near(fill(0), ui.side_selected, 3),
             "{n}: the M row is selected: {:?}",
             fill(0)
         );
         assert!(
-            near(fill(1), ui.card, 3),
+            near(fill(1), ui.side, 3),
             "{n}: the next isn't: {:?}",
             fill(1)
         );
@@ -1266,7 +1328,7 @@ fn activity_scenes() {
     use crate::activity::Kind;
     use crate::activity_panel::{NO_ACTIVITY, NO_TERMINAL, RowMark};
     use crate::right_sidebar::{HEADER, ROW};
-    use crate::ui_tokens::size::{FOCUS_RING, TAB_BAR};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1274,9 +1336,9 @@ fn activity_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
-    let sidebar_left = window_right - GAP - 300.0 + FOCUS_RING;
-    let sidebar_right = window_right - GAP - FOCUS_RING;
-    let card_top = GAP + FOCUS_RING;
+    let sidebar_left = right_panel_left(window_right, 300.0);
+    let sidebar_right = right_panel_right(window_right);
+    let card_top = CARD_INSET + HAIRLINE;
     let header_top = card_top + TAB_BAR;
     let list_top = header_top + HEADER;
     let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {

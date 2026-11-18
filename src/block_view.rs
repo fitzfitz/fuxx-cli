@@ -154,12 +154,17 @@ pub struct ChipText {
     pub button: f32,
 }
 
-/// `text::META` (11 pt) on the row's inside; in a row too short for it (a terminal font under
+/// The chip's text: 11 pt, `text::META` until M11al made that 12.5 for the sidebar; the chip
+/// sits in a terminal row, sized by the terminal's font, so it keeps its 11 (as the status bar
+/// keeps its own 12, plan-time call 8).
+const CHIP_TEXT: f32 = 11.0;
+
+/// `CHIP_TEXT` (11 pt) on the row's inside; in a row too short for it (a terminal font under
 /// about 11 pt), smaller, so the glyphs stay inside the row. The hover fill is the row less 2 pt
 /// a side, and never shorter than the text (nor taller than the inside).
 pub fn chip_text(height: f32) -> ChipText {
     let line = (height - 2.0).max(0.0);
-    let size = crate::ui_tokens::text::META.min(line * 0.75);
+    let size = CHIP_TEXT.min(line * 0.75);
     let button = (height - 4.0).max(size + 2.0).min(line);
     ChipText { size, line, button }
 }

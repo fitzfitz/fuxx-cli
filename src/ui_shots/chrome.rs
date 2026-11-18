@@ -376,7 +376,12 @@ fn on_ws(
 /// api and tests split side by side in one workspace (shown, api focused), and agent in a
 /// workspace of its own (not shown), in another group.
 fn elsewhere_window() -> (ShotApp, AnyWindowHandle, Entity<Workspace>) {
-    super::chrome_parts::chrome_window(|ws, window, cx| {
+    elsewhere_window_sized(size(px(900.0), px(500.0)))
+}
+
+/// `elsewhere_window`, `dims` big.
+fn elsewhere_window_sized(dims: Size<Pixels>) -> (ShotApp, AnyWindowHandle, Entity<Workspace>) {
+    super::chrome_parts::chrome_window_sized(dims, |ws, window, cx| {
         let api = std::path::Path::new(super::API);
         let web = std::path::Path::new(super::WEB);
         ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
@@ -1025,7 +1030,10 @@ pub(super) fn chrome_resize_title() {
 /// Workspace A: api, tests and build as tabs of one pane, web split right of it; B (docs) and
 /// C (notes) below it in the same group. api focused.
 fn drag_window() -> (ShotApp, AnyWindowHandle, Entity<Workspace>) {
-    super::chrome_parts::chrome_window(|ws, window, cx| {
+    // The usual 900 x 500, taller by the sidebar chrome's growth (M11al Task 7): the rows
+    // the drag goes over (row 3's place) must lie inside the list, not under the hint.
+    let dims = size(px(900.0), px(500.0 + super::SIDEBAR_CHROME_GROWTH));
+    super::chrome_parts::chrome_window_sized(dims, |ws, window, cx| {
         let api = std::path::Path::new(super::API);
         ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
         ws.open_shot_tab("tests", api, super::SHELL_TEXT, window, cx);
@@ -1113,7 +1121,27 @@ pub(super) fn chrome_drag_cancel() {
         window,
         "Esc (the row drag goes on)",
         Seen::Maybe,
-        |cx| cx.simulate_keystrokes(window, "escape"),
+        |cx| {
+            cx.simulate_keystrokes(window, "escape");
+            // The focused api terminal runs a real `cat` in a pty: its tty echoes `^[` on the
+            // reader thread, at a time the harness does not choose. Wait (with a deadline) for
+            // the echo to be on the screen, so it cannot land between the capture and the
+            // fresh frame.
+            let view = cx.read(|cx| ws.read(cx).sessions.active().expect("api").view.clone());
+            let started = Instant::now();
+            while !cx.read(|cx| {
+                view.read(cx)
+                    .text(crate::grid::TextScope::Screen)
+                    .contains("^[")
+            }) {
+                assert!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "{n}: the tty's echo of Esc never reached the screen"
+                );
+                crate::ui_shots::prof::sleep(Duration::from_millis(16));
+                cx.run_until_parked();
+            }
+        },
     );
     let terminal = over_terminal(&mut cx, ws);
     steps.step(
@@ -1268,7 +1296,16 @@ pub(super) fn chrome_agent_tabs() {
     use crate::layout_model::TabKind;
     use crate::pane_actions::PaneAction;
     let n = "chrome-agent-tabs";
-    let (mut cx, window, ws) = elsewhere_window();
+    // 900 pt over the old 240 pt sidebar, wider by what the default sidebar grew: its three
+    // panes (api, tests, the agent tab) keep their width. At 900 the agent tab's pane is about
+    // 150 pt: its tab shows only a sliver, so the rename box has no room to show the typed text
+    // (it was right, "dates", but not on screen) and the "typed into" step passed only by
+    // chance (M11al Task 7 review: 5 of 6 runs failed).
+    let dims = size(
+        px(900.0 + (crate::ui_tokens::size::SIDEBAR_DEFAULT_WIDTH - 240.0)),
+        px(500.0),
+    );
+    let (mut cx, window, ws) = elsewhere_window_sized(dims);
     let ws = &ws;
     cx.update(|cx| {
         cx.bind_keys([gpui::KeyBinding::new(
@@ -1802,7 +1839,10 @@ fn claude_beside_api_and_agent() -> (
     AgentAt,
 ) {
     use crate::layout_model::TabKind;
-    let (mut cx, window, ws) = elsewhere_window();
+    // Wider than the other chrome scenes: api's row splits into three panes here, and each
+    // pane's tab must fit with its status dot beside its ＋ ⋯ ▥ (M11al's 100 pt tabs and 28 pt
+    // buttons; at 900 the shown Claude tab's dot is scrolled past the pane's edge).
+    let (mut cx, window, ws) = elsewhere_window_sized(size(px(1200.0), px(500.0)));
     let id = |cx: &VisualTestAppContext, name: &str| {
         let i = index_of(cx, &ws, name);
         cx.read(|cx| ws.read(cx).sessions.items()[i].id)
@@ -2900,7 +2940,7 @@ pub(super) fn chrome_sidebar_header_mark() {
 
 /// A row's other sources: a waiting terminal's question (read off its screen by `set_status`;
 /// without the banner, which would be a real one), the terminal a row is named after and reads
-/// its branch from (`named_terminal` / `branch_terminal`: the workspace's focused pane's,
+/// its place from (`named_terminal` / `branch_terminal`: the workspace's focused pane's,
 /// changed by Focus Pane Right), an SSH session's host, and a terminal's project
 /// (its folder and group).
 ///
@@ -2958,7 +2998,7 @@ pub(super) fn chrome_row_sources() {
     );
     // Its age turns every second from here; date it minutes back so no turn lands in a check.
     minutes_old(&mut cx, ws, "agent");
-    // api's workspace: named after, and its branch read from, its focused pane's terminal.
+    // api's workspace: named after, and its folder read from, its focused pane's terminal.
     let row = |cx: &mut VisualTestAppContext| {
         cx.read(|cx| {
             let ws = ws.read(cx);
@@ -2967,16 +3007,16 @@ pub(super) fn chrome_row_sources() {
             let named = ws
                 .named_terminal(w)
                 .map(|id| ws.terminal_label(id).to_string());
-            let branch = ws
+            let place = ws
                 .rows_in_view(Instant::now())
                 .into_iter()
                 .find_map(|r| match r {
                     crate::sidebar::SidebarRow::Workspace(r) if r.workspace == w => {
-                        Some((r.label.to_string(), r.branch.clone()))
+                        Some((r.label.to_string(), r.folder.clone()))
                     }
                     _ => None,
                 });
-            (named, branch)
+            (named, place)
         })
     };
     let before = row(&mut cx);
@@ -2984,17 +3024,20 @@ pub(super) fn chrome_row_sources() {
     steps.step(
         &mut cx,
         window,
-        "the right pane focused: the row's name and branch follow",
+        "the right pane focused: the row's name and folder follow",
         Seen::Changes,
         |cx| cx.dispatch_action(window, FocusPaneRight),
     );
     let after = row(&mut cx);
     println!("ui-shots: {n}: api's row {before:?} -> {after:?}");
     assert_eq!(after.0.as_deref(), Some("tests"), "{n}: named after tests");
-    assert_eq!(
-        after.1.as_ref().and_then(|(_, b)| b.as_deref()),
-        Some("feature"),
-        "{n}: tests's branch"
+    assert!(
+        after
+            .1
+            .as_ref()
+            .and_then(|(_, f)| f.as_deref())
+            .is_some_and(|f| f.ends_with("code/web")),
+        "{n}: tests's folder: {after:?}"
     );
     let open = |cx: &mut VisualTestAppContext, saved: SavedSession| {
         on_ws(cx, window, ws, |ws, window, cx| {

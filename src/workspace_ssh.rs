@@ -387,6 +387,7 @@ impl Workspace {
             activity: std::mem::take(&mut session.activity),
             lost: false,
             ssh: saved.ssh,
+            launched: None,
             disconnected: None,
             retries: session.retries,
             opened_at: Instant::now(),
