@@ -73,6 +73,21 @@ pub(super) const SCENES: &[Scene] = &[
             "src/ui_tokens.rs",
         ],
     },
+    Scene {
+        name: "file-tab-md-reader-anchors",
+        run: file_tab_md_reader_anchor_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/file_tab.rs",
+            "src/file_tab_preview.rs",
+            "src/md_preview.rs",
+            "src/md_reader.rs",
+            "src/agent_markdown.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
 ];
 
 /// A made-up "Setup guide": front matter, two badge rows, a title, sections and a subsection,
@@ -1330,6 +1345,389 @@ fn file_tab_md_reader_github_scenes() {
             &theme,
             dims,
             build_for(slot.clone(), raw.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// The anchor scenes' links, each a paragraph of its own (put under "Read it once from the top."
+/// in `READER_FIXTURE`): a heading of this file, one that is not here, and a heading of another
+/// file beside it.
+const ANCHOR_LINKS: &str = "Read it once from the top.\n\n[see Configure](#configure)\n\n\
+                            [a part that is not here](#nope)\n\n[the other guide](other.md#middle)\n";
+
+/// M11ai Task 7's heading anchors (state, one theme, 1,200 × 700), in a fixture folder made a
+/// git repo (`git init`; nothing committed), the guide at `docs/SETUP.md`:
+/// - `file-tab-md-reader-anchors`: a click on `[see Configure](#configure)` puts the Configure
+///   heading's row at the list's top, `jump_offset` into it (its text `JUMP_ROOM` under the
+///   list's top), and the scrollbar shows; `#nope` changes nothing. Hovering the heading shows
+///   its `#` (drawn only then), `ANCHOR_GAP` left of the text; a click on it puts
+///   `docs/SETUP.md#configure` on the clipboard (without git: only the `#configure` end is
+///   checked) and `copied()` is `Anchor(row)`, the `#` reading `Copied` until `reader::COPIED`
+///   has passed. A click on `[the other guide](other.md#middle)` asks the workspace to open
+///   `docs/other.md` at `middle`.
+/// - `file-tab-md-reader-anchors-other`: a fresh tab on `docs/other.md` given that anchor
+///   (`show_anchor`, before its file is read) shows its Preview with `## Middle` `JUMP_ROOM`
+///   under the top once parked.
+fn file_tab_md_reader_anchor_scenes() {
+    use crate::agent_markdown::Md;
+    use crate::file_tab::{FileTab, FileTabEvent};
+    use crate::layout_model::FileMode;
+    use crate::md_preview::Copied;
+    use crate::md_reader::{heading_text, jump_offset};
+    use crate::ui_tokens::reader::{ANCHOR_GAP, COPIED, HEADING_ABOVE, JUMP_ROOM};
+    use gpui::{ListOffset, Modifiers};
+    use std::cell::RefCell;
+    use std::fmt::Write as _;
+    use std::path::PathBuf;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-anchors");
+    let _ = std::fs::remove_dir_all(&dir);
+    let docs = dir.join("docs");
+    std::fs::create_dir_all(&docs).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let docs = dir.join("docs");
+    let guide = docs.join("SETUP.md");
+    let fixture = READER_FIXTURE.replacen("Read it once from the top.\n", ANCHOR_LINKS, 1);
+    assert_ne!(fixture, READER_FIXTURE, "the links are in");
+    std::fs::write(&guide, fixture).expect("SETUP.md");
+    let mut other = String::from("# Other guide\n\n");
+    for i in 1..=30 {
+        writeln!(
+            other,
+            "Paragraph {i} before the middle of the other guide.\n"
+        )
+        .expect("a line");
+    }
+    other.push_str("## Middle\n\nThe middle of the other guide.\n\n");
+    for i in 1..=30 {
+        writeln!(
+            other,
+            "Paragraph {i} after the middle of the other guide.\n"
+        )
+        .expect("a line");
+    }
+    let other_md = docs.join("other.md");
+    std::fs::write(&other_md, other).expect("other.md");
+    // A repo, so the copied link is from its top folder (nothing is committed in it).
+    let in_repo = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&dir)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !in_repo {
+        println!(
+            "ui-shots: file-tab-md-reader-anchors: no git; the copied link's path is not checked"
+        );
+    }
+
+    type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
+    type Opened = Rc<RefCell<Option<(PathBuf, Option<String>)>>>;
+    let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
+    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+    };
+    let show = move |cx: &mut VisualTestAppContext,
+                     window: AnyWindowHandle,
+                     tab: &gpui::Entity<FileTab>,
+                     row: usize| {
+        cx.read(|cx| tab.read(cx).preview_list())
+            .scroll_to(ListOffset {
+                item_ix: row,
+                offset_in_item: px(0.0),
+            });
+        frame(cx, window);
+    };
+    // The row of the paragraph that is only the link `words`.
+    let link_row = |cx: &mut VisualTestAppContext, tab: &gpui::Entity<FileTab>, words: &str| {
+        let doc = cx
+            .read(|cx| tab.read(cx).reader_doc())
+            .expect("the reader's document");
+        let b = doc
+            .blocks
+            .iter()
+            .position(|b| matches!(b, Md::Para(s) if crate::md_preview::inline(s).text == words))
+            .unwrap_or_else(|| panic!("the link {words}"));
+        doc.plan.row_of_block(b)
+    };
+    // A click on the start of the link paragraph `words` (scrolled into sight first).
+    let click_link = move |cx: &mut VisualTestAppContext,
+                           window: AnyWindowHandle,
+                           tab: &gpui::Entity<FileTab>,
+                           words: &str| {
+        let row = link_row(cx, tab, words);
+        show(cx, window, tab, row.saturating_sub(1));
+        let at = *cx
+            .read(|cx| tab.read(cx).reader_drawn())
+            .get(&row)
+            .unwrap_or_else(|| panic!("the link {words} is drawn"));
+        cx.simulate_click(
+            window,
+            point(at.left() + px(6.0), at.center().y),
+            Modifiers::none(),
+        );
+        frame(cx, window);
+    };
+    let heading_row = |cx: &mut VisualTestAppContext, tab: &gpui::Entity<FileTab>, words: &str| {
+        let doc = cx
+            .read(|cx| tab.read(cx).reader_doc())
+            .expect("the reader's document");
+        let b = doc
+            .blocks
+            .iter()
+            .position(|b| matches!(b, Md::Heading(_, s) if heading_text(s) == words))
+            .unwrap_or_else(|| panic!("the heading {words}"));
+        doc.plan.row_of_block(b)
+    };
+    // The heading on `row` jumped to: the row `jump_offset` in at the list's top, its text
+    // `JUMP_ROOM` under the list's top.
+    let at_top =
+        move |cx: &mut VisualTestAppContext, tab: &gpui::Entity<FileTab>, row: usize, n: &str| {
+            let list = cx.read(|cx| tab.read(cx).preview_list());
+            let top = list.logical_scroll_top();
+            let want = jump_offset(HEADING_ABOVE);
+            assert_eq!(
+                (top.item_ix, f32::from(top.offset_in_item)),
+                (row, want),
+                "{n}: the heading's row, {want} in, at the top"
+            );
+            let drawn = *cx
+                .read(|cx| tab.read(cx).reader_drawn())
+                .get(&row)
+                .unwrap_or_else(|| panic!("{n}: the heading is drawn"));
+            let under = f32::from(drawn.top()) - f32::from(list.viewport_bounds().top());
+            println!("ui-shots: {n}: row {row} at the top, its text {under} under it");
+            assert!(
+                (under - JUMP_ROOM).abs() <= 0.5,
+                "{n}: the heading's text is {under} under the top, not {JUMP_ROOM}"
+            );
+        };
+
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let dims = size(px(1200.0), px(700.0));
+        let build_for = |slot: TabSlot, opened: Opened, path: PathBuf| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path.clone(), FileMode::Plain, window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                cx.subscribe(&tab, move |_, e: &FileTabEvent, _| {
+                    if let FileTabEvent::OpenFile(path, part) = e {
+                        *opened.borrow_mut() = Some((path.clone(), part.clone()));
+                    }
+                })
+                .detach();
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+
+        let n = format!("file-tab-md-reader-anchors-{slug}");
+        let (slot, opened): (TabSlot, Opened) = (Rc::default(), Rc::default());
+        let act = {
+            let (n, slot, opened) = (n.clone(), slot.clone(), opened.clone());
+            let other_md = other_md.clone();
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                // The frozen tab's place for git, looked up now (a frozen tab does not).
+                cx.update(|cx| tab.update(cx, |tab, cx| tab.look_up_place_for_shots(cx)));
+                frame(cx, window);
+                cx.update_window(window, |_, window, cx| {
+                    tab.update(cx, |tab, cx| tab.choose_preview_for_shots(true, window, cx))
+                })
+                .expect("Preview on");
+                frame(cx, window);
+                let configure = heading_row(cx, &tab, "Configure");
+
+                // `#configure`: a jump.
+                click_link(cx, window, &tab, "see Configure");
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).followed_link()).as_deref(),
+                    Some("#configure"),
+                    "{n}: the link clicked"
+                );
+                at_top(cx, &tab, configure, &n);
+                assert!(
+                    cx.read(|cx| tab.read(cx).scrollbar_shown()),
+                    "{n}: a jump shows the scrollbar"
+                );
+
+                // `#nope`: nothing.
+                click_link(cx, window, &tab, "a part that is not here");
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).followed_link()).as_deref(),
+                    Some("#nope"),
+                    "{n}: the link clicked"
+                );
+                let list = cx.read(|cx| tab.read(cx).preview_list());
+                let before = list.logical_scroll_top();
+                cx.simulate_click(window, point(px(5.0), px(5.0)), Modifiers::none());
+                let nope = link_row(cx, &tab, "a part that is not here");
+                let at = *cx
+                    .read(|cx| tab.read(cx).reader_drawn())
+                    .get(&nope)
+                    .expect("the #nope link is drawn");
+                cx.simulate_click(
+                    window,
+                    point(at.left() + px(6.0), at.center().y),
+                    Modifiers::none(),
+                );
+                frame(cx, window);
+                let after = list.logical_scroll_top();
+                assert_eq!(
+                    (after.item_ix, after.offset_in_item),
+                    (before.item_ix, before.offset_in_item),
+                    "{n}: #nope does not scroll"
+                );
+
+                // Another file's heading: the workspace is asked to open it there.
+                click_link(cx, window, &tab, "the other guide");
+                assert_eq!(
+                    opened.borrow().clone(),
+                    Some((other_md.clone(), Some("middle".to_string()))),
+                    "{n}: other.md#middle asked for"
+                );
+
+                // The heading's `#`: drawn only while the heading is hovered.
+                click_link(cx, window, &tab, "see Configure");
+                at_top(cx, &tab, configure, &n);
+                let heading = *cx
+                    .read(|cx| tab.read(cx).reader_drawn())
+                    .get(&configure)
+                    .expect("the heading is drawn");
+                let para = *cx
+                    .read(|cx| tab.read(cx).reader_drawn())
+                    .get(&(configure + 1))
+                    .expect("the paragraph under it is drawn");
+                cx.simulate_mouse_move(window, para.center(), None, Modifiers::none());
+                frame(cx, window);
+                assert!(
+                    !cx.read(|cx| tab.read(cx).anchor_drawn())
+                        .contains_key(&configure),
+                    "{n}: no # while the heading is not hovered"
+                );
+                cx.simulate_mouse_move(
+                    window,
+                    point(heading.left() + px(20.0), heading.top() + px(10.0)),
+                    None,
+                    Modifiers::none(),
+                );
+                frame(cx, window);
+                let probe = cx
+                    .read(|cx| tab.read(cx).anchor_drawn())
+                    .get(&configure)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("{n}: the heading's # is drawn on hover"));
+                println!("ui-shots: {n}: the # {probe:?}, the heading {heading:?}");
+                assert_eq!(probe.label, "#", "{n}: the #");
+                let gap = f32::from(heading.left()) - f32::from(probe.bounds.right());
+                assert!(
+                    (gap - ANCHOR_GAP).abs() <= 1.0,
+                    "{n}: the # is {gap} left of the heading, not {ANCHOR_GAP}"
+                );
+                assert!(
+                    probe.bounds.top() >= heading.top()
+                        && probe.bounds.bottom() <= heading.bottom(),
+                    "{n}: the # is on the heading's line"
+                );
+
+                // A click on it: the link to the heading copied, the `#` reads Copied.
+                cx.simulate_mouse_move(window, probe.bounds.center(), None, Modifiers::none());
+                frame(cx, window);
+                cx.simulate_click(window, probe.bounds.center(), Modifiers::none());
+                frame(cx, window);
+                let clip = cx.read_from_clipboard().and_then(|c| c.text());
+                println!("ui-shots: {n}: copied {clip:?}");
+                if in_repo {
+                    assert_eq!(
+                        clip.as_deref(),
+                        Some("docs/SETUP.md#configure"),
+                        "{n}: the link from the repo's top"
+                    );
+                } else {
+                    assert!(
+                        clip.as_deref()
+                            .is_some_and(|c| c.ends_with("SETUP.md#configure")),
+                        "{n}: the link to the heading ({clip:?})"
+                    );
+                }
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).copied()),
+                    Some(Copied::Anchor(configure)),
+                    "{n}: Copied"
+                );
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).anchor_drawn())
+                        .get(&configure)
+                        .map(|p| p.label),
+                    Some("Copied"),
+                    "{n}: the # reads Copied"
+                );
+                at_top(cx, &tab, configure, &n);
+                cx.advance_clock(COPIED + Duration::from_millis(100));
+                frame(cx, window);
+                assert_eq!(cx.read(|cx| tab.read(cx).copied()), None, "{n}: # again");
+                // Shot with Copied showing.
+                cx.simulate_click(window, probe.bounds.center(), Modifiers::none());
+                frame(cx, window);
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-anchors",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), opened.clone(), guide.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+
+        // The other file, opened at `middle` as the workspace does: before it is read.
+        let n = format!("file-tab-md-reader-anchors-other-{slug}");
+        let (slot, opened): (TabSlot, Opened) = (Rc::default(), Rc::default());
+        let build = {
+            let (inner, slot) = (
+                build_for(slot.clone(), opened, other_md.clone()),
+                slot.clone(),
+            );
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                let view = inner(window, cx);
+                if let Some(tab) = slot.borrow().clone() {
+                    tab.update(cx, |tab, cx| tab.show_anchor("middle".to_string(), cx));
+                }
+                view
+            }
+        };
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                frame(cx, window);
+                frame(cx, window);
+                assert!(
+                    cx.read(|cx| tab.read(cx).preview_shown()),
+                    "{n}: in Preview"
+                );
+                let middle = heading_row(cx, &tab, "Middle");
+                at_top(cx, &tab, middle, &n);
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-anchors-other",
+            slug,
+            &theme,
+            dims,
+            build,
             act,
         );
         println!("ui-shots: {}", path.display());

@@ -4130,8 +4130,9 @@ pub enum FileTabEvent {
     Preview(bool),
     /// M11ah: the bar's Side by side turned on or off: the workspace keeps it per tab.
     SideBySide(bool),
-    /// A link in the Preview to a file (M11ac): the workspace opens it in a tab.
-    OpenFile(PathBuf),
+    /// A link in the Preview to a file (M11ac): the workspace opens it in a tab; M11ai: with a
+    /// `#part`, a Markdown file opens in Preview at that heading.
+    OpenFile(PathBuf, Option<String>),
 }
 
 /// The find bar: its box and what it found.
@@ -4391,6 +4392,12 @@ pub struct FileTab {
     /// `copied` only if no press came after it).
     copied: Option<md_preview::Copied>,
     copy_gen: u64,
+    /// M11ai: the heading to jump to once the Preview has read the file (a link to it from
+    /// another file, `show_anchor`).
+    pending_anchor: Option<String>,
+    /// M11ai: the headings' `#` as last drawn (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    anchor_drawn: md_preview::AnchorDrawn,
     /// M11ai: the code blocks' headers as last drawn (the scenes' probe).
     #[cfg(feature = "ui-shots")]
     code_drawn: md_preview::CodeDrawn,
@@ -4528,6 +4535,9 @@ impl FileTab {
             code_cache_theme: None,
             copied: None,
             copy_gen: 0,
+            pending_anchor: None,
+            #[cfg(feature = "ui-shots")]
+            anchor_drawn: Rc::default(),
             #[cfg(feature = "ui-shots")]
             code_drawn: Rc::default(),
             #[cfg(feature = "ui-shots")]
@@ -8162,6 +8172,18 @@ impl FileTab {
         self.pills_drawn.borrow().clone()
     }
 
+    /// M11ai: each drawn heading's `#` (its word and bounds), by list row; only while shown.
+    pub fn anchor_drawn(&self) -> std::collections::BTreeMap<usize, md_preview::AnchorProbe> {
+        self.anchor_drawn.borrow().clone()
+    }
+
+    /// M11ai: a frozen tab's place for git, looked up now (blocking; a frozen tab never looks
+    /// it up itself): the copied heading link is then from its repo's top folder.
+    pub fn look_up_place_for_shots(&mut self, cx: &mut Context<Self>) {
+        self.git_place = git_place(&self.path).flatten();
+        cx.notify();
+    }
+
     /// M11ai: the last link this (frozen) tab followed, as clicked.
     pub fn followed_link(&self) -> Option<String> {
         self.followed.clone()
@@ -8854,13 +8876,36 @@ impl Workspace {
                         this.save();
                     }
                 }
-                FileTabEvent::OpenFile(path) => {
-                    this.open_file_tab(path.clone(), FileMode::Plain, window, cx)
+                FileTabEvent::OpenFile(path, part) => {
+                    this.open_file_tab(path.clone(), FileMode::Plain, window, cx);
+                    // M11ai: a Markdown file's heading: its Preview on (saved, as by hand),
+                    // at that heading.
+                    if let Some(part) = part {
+                        this.open_at_heading(path, part.clone(), cx);
+                    }
                 }
             },
         )
         .detach();
         self.file_tabs.insert(tab, view);
+    }
+
+    /// The tab just opened on Markdown file `path` (the focused one) shows its Preview, saved
+    /// as a hand choice is, at heading `part` (M11ai).
+    fn open_at_heading(&mut self, path: &Path, part: String, cx: &mut Context<Self>) {
+        let Some(tab) = self.model.focused_tab() else {
+            return;
+        };
+        let Some(view) = self.file_tabs.get(&tab).cloned() else {
+            return;
+        };
+        if view.read(cx).path != path {
+            return;
+        }
+        if self.model.set_md_preview(tab, true) {
+            self.save();
+        }
+        view.update(cx, |view, cx| view.show_anchor(part, cx));
     }
 
     /// Tell each file tab whether it's on screen (the shown tab of a pane of the focused

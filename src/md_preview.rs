@@ -111,9 +111,11 @@ pub fn is_markdown(path: &Path) -> bool {
 pub enum LinkTarget {
     /// `http://`, `https://` or `mailto:`: the default browser (or mail app).
     Web(String),
-    /// A path, from the file's own folder unless absolute (its `#part` dropped).
-    File(PathBuf),
-    /// A `#part` of this file, another scheme, or nothing: not followed.
+    /// A path, from the file's own folder unless absolute, and its `#part` (none when empty).
+    File(PathBuf, Option<String>),
+    /// A `#part` of this file (M11ai: its heading; not percent-decoded here).
+    Here(String),
+    /// Another scheme, a bare `#`, or nothing: not followed.
     Nowhere,
 }
 
@@ -132,10 +134,18 @@ pub fn link_target(base: &Path, url: &str) -> LinkTarget {
         return LinkTarget::Nowhere;
     }
     let path = url.split(['#', '?']).next().unwrap_or("");
-    if path.is_empty() {
-        return LinkTarget::Nowhere;
+    // The part after `#` (M11ai): a heading's anchor; an empty one is none.
+    let part = url
+        .split_once('#')
+        .map(|(_, part)| part)
+        .filter(|part| !part.is_empty());
+    match (path.is_empty(), part) {
+        (true, Some(part)) => LinkTarget::Here(part.to_string()),
+        (true, None) => LinkTarget::Nowhere,
+        (false, part) => {
+            LinkTarget::File(base.join(percent_decoded(path)), part.map(str::to_string))
+        }
     }
-    LinkTarget::File(base.join(percent_decoded(path)))
 }
 
 /// `%XX` escapes turned back into their bytes (a bad one stays as it is).
@@ -479,6 +489,11 @@ pub struct ReaderDraw {
     pub copied: Option<Copied>,
     /// A code block's Copy pressed (given its row).
     pub on_copy: OnCopy,
+    /// A heading's `#` pressed (given the heading's row).
+    pub on_anchor_copy: OnCopy,
+    /// The scenes' probe: each drawn heading's `#`, while it shows.
+    #[cfg(feature = "ui-shots")]
+    pub anchor_drawn: AnchorDrawn,
     /// The scenes' probe: each drawn row's content, as last prepainted (window points).
     #[cfg(feature = "ui-shots")]
     pub drawn: Drawn,
@@ -507,7 +522,6 @@ pub struct CodeLook {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Copied {
     Code(usize),
-    #[allow(dead_code)] // Task 7 copies a heading's link
     Anchor(usize),
 }
 
@@ -558,6 +572,19 @@ pub struct PillProbe {
 #[cfg(feature = "ui-shots")]
 pub type PillsDrawn = Rc<std::cell::RefCell<std::collections::BTreeMap<(usize, usize), PillProbe>>>;
 
+/// A heading's `#` as last drawn (the scenes' probe; only while it shows): its word (`#`, or
+/// `Copied`) and its bounds (window points).
+#[cfg(feature = "ui-shots")]
+#[derive(Clone, Debug)]
+pub struct AnchorProbe {
+    pub label: &'static str,
+    pub bounds: gpui::Bounds<gpui::Pixels>,
+}
+
+/// Each drawn heading's `#`, by list row.
+#[cfg(feature = "ui-shots")]
+pub type AnchorDrawn = Rc<std::cell::RefCell<std::collections::BTreeMap<usize, AnchorProbe>>>;
+
 /// Each drawn row's content bounds, by list row (the scenes read it).
 #[cfg(feature = "ui-shots")]
 pub type Drawn =
@@ -587,24 +614,17 @@ pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
             .child(e)
             .into_any_element()
     };
-    let (gap, content) = match doc.plan.row_kind(row) {
-        RowKind::Front => {
-            let content = match &doc.plan.front {
-                Some(Front::Table(t)) => prose(front_table(t, draw, reader)),
-                Some(Front::Raw(text)) => wide(reader.measure, front_raw(text, draw, reader)),
-                None => div().into_any_element(),
-            };
-            (0.0, content)
-        }
+    let content = match doc.plan.row_kind(row) {
+        RowKind::Front => match &doc.plan.front {
+            Some(Front::Table(t)) => prose(front_table(t, draw, reader)),
+            Some(Front::Raw(text)) => wide(reader.measure, front_raw(text, draw, reader)),
+            None => div().into_any_element(),
+        },
         RowKind::Block(b) => {
             let Some(md) = doc.blocks.get(b) else {
                 return div().into_any_element();
             };
-            let gap = match b.checked_sub(1) {
-                Some(prev) => gap_between(s, doc.blocks.get(prev), md),
-                None => gap_after(s, None, md),
-            };
-            let content = match (draw.mermaid.get(b), md) {
+            match (draw.mermaid.get(b), md) {
                 (Some(Some(shown @ Shown::Diagram { .. })), _) => {
                     prose(mermaid_block(shown, draw, || div().into_any_element()))
                 }
@@ -624,6 +644,7 @@ pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
                     wide(reader.measure, scroll.into_any_element())
                 }
                 (_, Md::Code { .. }) => wide(reader.measure, reader_code(row, b, md, draw, reader)),
+                (_, Md::Heading(level, _)) => prose(reader_heading(row, *level, md, draw, reader)),
                 _ => match doc.plan.looks.get(b) {
                     Some(BlockLook::Callout(kind, body)) => {
                         prose(reader_callout(row, *kind, body, draw, reader))
@@ -633,17 +654,26 @@ pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
                     }
                     _ => prose(block(md, draw)),
                 },
-            };
-            (gap, content)
+            }
         }
     };
     let (side, end) = TERMINAL_PADDING;
-    let top = if row == 0 { end } else { gap };
+    let top = row_top(doc, s, row);
     let bottom = if row + 1 == rows { end } else { 0.0 };
     // The reader's area (the outline, when it shows, will take its share of the row), its
     // content centred along a row: the content's width is settled before its height is
     // measured (centred in a column, taffy measured a paragraph's height at the area's width).
-    let area = div().w_full().flex().flex_row().justify_center();
+    // A heading's row is its `#`'s hover group (M11ai: the `#` shows while it is hovered).
+    let heading = match doc.plan.row_kind(row) {
+        RowKind::Block(b) => matches!(doc.blocks.get(b), Some(Md::Heading(..))),
+        RowKind::Front => false,
+    };
+    let area = div()
+        .w_full()
+        .flex()
+        .flex_row()
+        .justify_center()
+        .when(heading, |d| d.group(ANCHOR_GROUP));
     #[cfg(feature = "ui-shots")]
     let area = {
         let drawn = reader.drawn.clone();
@@ -663,6 +693,108 @@ pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
         .text_color(hsla(draw.colours.text))
         .child(area.child(content))
         .into_any_element()
+}
+
+/// The space over row `row`'s content in the reader, in points: `TERMINAL_PADDING.1` over the
+/// first row, else the gap above its block (`gap_between`; after the front matter, as after no
+/// block of its list). A jump to a heading's row goes `md_reader::jump_offset` of this into it.
+pub fn row_top(doc: &ReaderDoc, s: &Sizes, row: usize) -> f32 {
+    if row == 0 {
+        return TERMINAL_PADDING.1;
+    }
+    match doc.plan.row_kind(row) {
+        RowKind::Front => 0.0,
+        RowKind::Block(b) => match (doc.blocks.get(b), b.checked_sub(1)) {
+            (Some(md), Some(prev)) => gap_between(s, doc.blocks.get(prev), md),
+            (Some(md), None) => gap_after(s, None, md),
+            (None, _) => 0.0,
+        },
+    }
+}
+
+/// The hover group of a heading's row (its `#` shows while it is hovered).
+const ANCHOR_GROUP: &str = "md-anchor";
+
+/// A heading in the reader (M11ai): the heading, and in the margin `ANCHOR_GAP` left of its
+/// first line a dim `#`, shown while its row (or the `#` itself) is under the pointer; a click
+/// on it copies the link to the heading (`on_anchor_copy`), and it reads `Copied` with a tick
+/// while `copied` says so (shown then without a hover). Its element id is from `row`; it sits
+/// outside the heading's text, so its click is not the text's.
+fn reader_heading(row: usize, level: u8, md: &Md, draw: &Draw, reader: &ReaderDraw) -> AnyElement {
+    use crate::ui_tokens::reader::{ANCHOR_GAP, ANCHOR_TEXT, COPY_GAP};
+    let (c, s) = (draw.colours, &draw.sizes);
+    let size = heading_size(s, level);
+    let copied = reader.copied == Some(Copied::Anchor(row));
+    let (label, inner) = if copied {
+        let word = "Copied";
+        let inner = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(COPY_GAP))
+            .text_size(px(ANCHOR_TEXT))
+            .child(glyph(Glyph::Check, c.dim))
+            .child(word);
+        (word, inner)
+    } else {
+        ("#", div().child("#"))
+    };
+    #[cfg(feature = "ui-shots")]
+    let inner = {
+        let probe = reader.anchor_drawn.clone();
+        // Recorded as painted: a hidden `#` paints nothing.
+        inner.relative().child(
+            gpui::canvas(
+                |bounds, _, _| bounds,
+                move |_, bounds, _, _| {
+                    probe
+                        .borrow_mut()
+                        .insert(row, AnchorProbe { label, bounds });
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
+    };
+    #[cfg(not(feature = "ui-shots"))]
+    let _ = label;
+    let on_copy = reader.on_anchor_copy.clone();
+    let mark = div()
+        .id(("md-anchor", row))
+        .absolute()
+        .top_0()
+        .right_full()
+        // The gap is the `#`'s own, so the pointer goes from the heading onto it unbroken.
+        .pr(px(ANCHOR_GAP))
+        .h(px(size * s.heading_line))
+        .flex()
+        .flex_row()
+        .items_center()
+        .font_weight(FontWeight::NORMAL)
+        .text_color(hsla(c.dim))
+        .cursor_pointer()
+        .when(!copied, |d| {
+            d.invisible()
+                .group_hover(ANCHOR_GROUP, |s| s.visible())
+                .hover(|s| s.visible())
+        })
+        .on_click(move |_, window, cx| on_copy(row, window, cx))
+        .child(inner);
+    div()
+        .relative()
+        .w_full()
+        .text_size(px(size))
+        .line_height(relative(s.heading_line))
+        .child(block(md, draw))
+        .child(mark)
+        .into_any_element()
+}
+
+/// A heading's text size at `level` (1 to 6).
+fn heading_size(s: &Sizes, level: u8) -> f32 {
+    s.headings[(level as usize).clamp(1, 6) - 1]
 }
 
 /// A code block or table in the reader (plan-time call 7): as wide as its content, but at
@@ -1193,7 +1325,7 @@ fn block(md: &Md, draw: &Draw) -> AnyElement {
     match md {
         Md::Para(spans) => text(spans, draw),
         Md::Heading(level, spans) => {
-            let size = s.headings[(*level as usize).clamp(1, 6) - 1];
+            let size = heading_size(s, *level);
             div()
                 .w_full()
                 .text_size(px(size))
@@ -1639,30 +1771,47 @@ mod tests {
     }
 
     #[test]
-    fn links_go_to_the_web_a_file_beside_it_or_nowhere() {
+    fn links_go_to_the_web_a_file_beside_it_a_heading_or_nowhere() {
         let base = Path::new("/w/docs");
         let web = |u: &str| LinkTarget::Web(u.into());
         assert_eq!(link_target(base, "https://e.x/a"), web("https://e.x/a"));
         assert_eq!(link_target(base, "http://e.x"), web("http://e.x"));
         assert_eq!(link_target(base, "mailto:a@e.x"), web("mailto:a@e.x"));
-        let file = |p: &str| LinkTarget::File(PathBuf::from(p));
-        assert_eq!(link_target(base, "guide.md"), file("/w/docs/guide.md"));
+        let file = |p: &str, part: Option<&str>| {
+            LinkTarget::File(PathBuf::from(p), part.map(str::to_string))
+        };
+        assert_eq!(
+            link_target(base, "guide.md"),
+            file("/w/docs/guide.md", None)
+        );
+        assert_eq!(
+            link_target(base, "guide.md#install"),
+            file("/w/docs/guide.md", Some("install"))
+        );
         assert_eq!(
             link_target(base, "../src/main.rs#L3"),
-            file("/w/docs/../src/main.rs")
+            file("/w/docs/../src/main.rs", Some("L3"))
         );
-        assert_eq!(link_target(base, "/etc/hosts"), file("/etc/hosts"));
+        // An empty part is no part.
+        assert_eq!(
+            link_target(base, "guide.md#"),
+            file("/w/docs/guide.md", None)
+        );
+        assert_eq!(link_target(base, "/etc/hosts"), file("/etc/hosts", None));
         assert_eq!(
             link_target(base, "my%20notes.md"),
-            file("/w/docs/my notes.md")
+            file("/w/docs/my notes.md", None)
         );
-        for nowhere in [
-            "#install",
-            "",
-            "javascript:alert(1)",
-            "ftp://e.x/f",
-            "file:///etc",
-        ] {
+        assert_eq!(
+            link_target(base, "#install"),
+            LinkTarget::Here("install".into())
+        );
+        assert_eq!(
+            link_target(base, " #caf%C3%A9 "),
+            LinkTarget::Here("caf%C3%A9".into())
+        );
+        // A bare `#` (an empty part) goes nowhere.
+        for nowhere in ["#", "", "javascript:alert(1)", "ftp://e.x/f", "file:///etc"] {
             assert_eq!(link_target(base, nowhere), LinkTarget::Nowhere, "{nowhere}");
         }
     }

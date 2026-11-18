@@ -153,6 +153,8 @@ pub mod reader {
     pub const COPIED: std::time::Duration = std::time::Duration::from_millis(1_500);
     /// The `#` left of a hovered heading, this far from its text.
     pub const ANCHOR_GAP: f32 = 6.0;
+    /// "Copied" beside a heading, once its `#` is clicked.
+    pub const ANCHOR_TEXT: f32 = 12.0;
 }
 
 /// Sizes in pixels, from the M11 plan's Global Constraints.
