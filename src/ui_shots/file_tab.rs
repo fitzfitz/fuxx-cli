@@ -270,6 +270,29 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "file-diff-side",
+        run: file_diff_side_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/diff_cards.rs",
+            "src/diff_view.rs",
+            "src/row_map.rs",
+            "src/tab_bar.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-diff-side-narrow",
+        run: file_diff_side_narrow_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &["src/file_tab.rs", "src/diff_cards.rs", "src/row_map.rs"],
+    },
+    Scene {
         name: "file-code-breadcrumb",
         run: file_code_breadcrumb_scenes,
         themes: Themes::Both,
@@ -6641,4 +6664,462 @@ fn file_diff_cards_fold_scenes() {
     });
     keep_shot(n, &shot);
     println!("ui-shots: {n} ok");
+}
+
+/// The side-by-side scenes' diff: 12 unchanged lines, `fn refresh`, two lines replaced by three,
+/// two more, 12 unchanged: one card between two folded stretches. Its rows: 0 the comment,
+/// 1–12, 13 `fn refresh`, 14–15 removed, 16–18 added, 19 `self.keep(token);`, 20 `}`, 21–32.
+fn side_fixture() -> (String, String) {
+    let mut before: Vec<String> = vec!["// Sessions, for the side-by-side shots.".into()];
+    before.extend((1..=12).map(|k| format!("    let a{k} = {k};")));
+    before.push("fn refresh(&mut self) {".into());
+    let old = ["    let token = old();", "    let count = old_count();"];
+    let new = [
+        "    let token = fresh(count);",
+        "    let count = fresh_count();",
+        "    self.count += 1;",
+    ];
+    let mut after: Vec<String> = vec!["    self.keep(token);".into(), "}".into()];
+    after.extend((1..=12).map(|k| format!("    let b{k} = {k};")));
+    let mut u = format!(
+        "diff --git a/side.rs b/side.rs\n--- a/side.rs\n+++ b/side.rs\n@@ -1,{} +1,{} @@\n",
+        before.len() + old.len() + after.len(),
+        before.len() + new.len() + after.len()
+    );
+    let mut text = String::new();
+    for l in &before {
+        u.push_str(&format!(" {l}\n"));
+        text.push_str(&format!("{l}\n"));
+    }
+    for l in old {
+        u.push_str(&format!("-{l}\n"));
+    }
+    for l in new {
+        u.push_str(&format!("+{l}\n"));
+        text.push_str(&format!("{l}\n"));
+    }
+    for l in &after {
+        u.push_str(&format!(" {l}\n"));
+        text.push_str(&format!("{l}\n"));
+    }
+    (text, u)
+}
+
+/// `file-diff-side` (both themes; M11ah Task 11): side by side on, the old file on the left
+/// with its numbers and the new on the right with its, a 1 pt `divider` hairline between them
+/// on the lines' rows (not across a title); the removed row level with its added one (red tint
+/// left, green right); the extra added row facing a faintly shaded empty left half; an unchanged
+/// row plain on both; each changed word marked on its half; the `⋯` row's words centred across
+/// both halves; a find match on an unchanged line on both halves; the button filled.
+fn file_diff_side_scenes() {
+    use crate::row_map::Row;
+    use crate::theme::mix;
+    use crate::ui_tokens::code;
+    use crate::ui_tokens::{MARK_MIN, ensure_contrast};
+    use gpui::{Bounds, Focusable};
+
+    let (text, unified) = side_fixture();
+    let path = live_file("side.rs", &text);
+    let dims = size(px(1240.0), px(620.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let (bg, ui) = (theme.background, theme.ui());
+        let fit = |c: alacritty_terminal::vte::ansi::Rgb| ensure_contrast(c, bg, MARK_MIN);
+        let (green, red) = (fit(theme.palette[2]), fit(theme.palette[1]));
+        let tint = |c| mix(bg, c, 0.12);
+        let word = |c| mix(tint(c), c, code::WORD_ALPHA);
+        let n = format!("file-diff-side-{slug}");
+        type Seen = (
+            Vec<Pixels>,
+            (usize, usize),
+            (usize, usize),
+            Option<Bounds<Pixels>>,
+        );
+        let seen: std::rc::Rc<std::cell::RefCell<Option<Seen>>> = std::rc::Rc::default();
+        let keep = seen.clone();
+        let (shot, g) = code_shot(&theme, &path, dims, |cx, window, tab| {
+            cards_setup(cx, window, tab, &unified);
+            // On, as the bar's button turns it.
+            let (_, _, _, button) = cx.read(|cx| tab.read(cx).side_button_for_shots());
+            let button = button.expect("the button drawn in Diff mode");
+            cx.simulate_click(window, button.center(), gpui::Modifiers::none());
+            live_frame(cx, window);
+            // A find match on an unchanged line.
+            cx.update_window(window, |_, window, cx| {
+                tab.read(cx).focus_handle(cx).focus(window, cx)
+            })
+            .expect("focus");
+            cx.simulate_keystrokes(window, "cmd-f");
+            cx.simulate_input(window, "keep");
+            live_frame(cx, window);
+            live_frame(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                let (chosen, on, _, _) = t.side_by_side_for_shots();
+                assert!(chosen && on, "side by side on");
+                assert_eq!(t.find_label(), "1 of 1");
+                let d = t.diff_doc().expect("its rows");
+                let w = d.words.as_ref().expect("in time");
+                let (old, new) = (w[&14][0].clone(), w[&16][0].clone());
+                let tops = (0..=21).map(|l| t.line_top(l, cx).unwrap_or_default());
+                let (_, _, _, button) = t.side_button_for_shots();
+                *keep.borrow_mut() = Some((
+                    tops.collect(),
+                    (old.start, old.end),
+                    (new.start, new.end),
+                    button,
+                ));
+                // The extra added row faces an empty old half.
+                let map_row = (0..40).find(|&r| {
+                    matches!(
+                        t.row_for_shots(r),
+                        Some(Row::Pair {
+                            new: Some((18, 0)),
+                            ..
+                        })
+                    )
+                });
+                let row = map_row.and_then(|r| t.row_for_shots(r));
+                assert_eq!(
+                    row,
+                    Some(Row::Pair {
+                        old: None,
+                        new: Some((18, 0))
+                    }),
+                    "line 18 faces an empty half"
+                );
+            });
+        });
+        keep_shot(&n, &shot);
+        let (tops, old_word, new_word, button) = seen.borrow().clone().expect("read");
+        let shift = g.side.unwrap_or_else(|| panic!("{n}: drawn side by side"));
+        let at = |x: Pixels, y: Pixels| pixel_at(&shot, dims, f32::from(x), f32::from(y));
+        let left = g.bounds.left();
+        let mid = left + px(code::CARD_INSET) + shift;
+        let lh = g.line_height;
+        let y_of = |line: usize| g.bounds.top() + tops[line] - g.scroll.y + lh / 2.0;
+        let far = |a: [u8; 3], b: alacritty_terminal::vte::ansi::Rgb| {
+            a.iter()
+                .zip([b.r, b.g, b.b])
+                .map(|(a, b)| u32::from(a.abs_diff(b)))
+                .sum::<u32>()
+        };
+        let near = |p: [u8; 3], c, what: &str| {
+            assert!(live_near(p, c, 5), "{n}: {what}: {p:?}, not {c:?}");
+        };
+        // The hairline, on an unchanged line's row and on a changed one's; not on the title.
+        near(
+            at(mid + px(0.5), y_of(19)),
+            ui.divider,
+            "the hairline (line 19)",
+        );
+        near(
+            at(mid + px(0.5), y_of(14)),
+            ui.divider,
+            "the hairline (line 14)",
+        );
+        let title = g.bounds.top() + tops[11] - g.scroll.y - px(code::CARD_TITLE / 2.0);
+        near(at(mid + px(0.5), title), bg, "no hairline across the title");
+        // Level: the removed row red on the left, its added row green on the right.
+        let right_end = g.bounds.right() - px(code::CARD_INSET + 20.0);
+        near(at(mid - px(20.0), y_of(14)), tint(red), "removed, left");
+        near(at(right_end, y_of(14)), tint(green), "added, right");
+        // The extra added row: a faintly shaded empty left half.
+        let empty = mix(bg, ui.text, code::SIDE_EMPTY_ALPHA);
+        let shade = at(mid - px(20.0), y_of(18));
+        near(shade, empty, "the empty half");
+        assert!(
+            far(shade, bg) >= 3,
+            "{n}: the empty half is shaded: {shade:?}"
+        );
+        near(at(right_end, y_of(18)), tint(green), "the extra added row");
+        // An unchanged row: plain on both.
+        near(at(mid - px(20.0), y_of(19)), bg, "unchanged, left");
+        near(at(right_end, y_of(19)), bg, "unchanged, right");
+        // Numbers: the old on the left, the new on the right.
+        let numbers = |dx: Pixels, line: usize, base: alacritty_terminal::vte::ansi::Rgb| {
+            let x0 = left + px(code::CARD_INSET + code::GUTTER_LEFT) + dx;
+            let b = Bounds::from_corners(
+                gpui::point(x0, y_of(line) - lh / 2.0 + px(2.0)),
+                gpui::point(left + g.numbers_right + dx, y_of(line) + lh / 2.0 - px(2.0)),
+            );
+            far(ink_in(&shot, dims, b, [base.r, base.g, base.b]), base) > 120
+        };
+        assert!(
+            numbers(px(0.0), 14, tint(red)),
+            "{n}: line 14's old number on the left"
+        );
+        assert!(
+            numbers(shift, 14, tint(green)),
+            "{n}: line 16's new number level with it on the right"
+        );
+        assert!(
+            numbers(shift, 18, tint(green)),
+            "{n}: line 18's new number on the right"
+        );
+        assert!(
+            !numbers(px(0.0), 18, empty),
+            "{n}: no number on the empty half"
+        );
+        // The changed words, each on its own half.
+        let cw = g.cell_width;
+        let word_x = |dx: Pixels, (a, b): (usize, usize)| {
+            left + g.text_left + dx + cw * ((a + b) as f32 / 2.0)
+        };
+        // Above the glyphs: a row's top + 1.5.
+        let edge = |line: usize| y_of(line) - lh / 2.0 + px(1.5);
+        near(
+            at(word_x(px(0.0), old_word), edge(14)),
+            word(red),
+            "the old word",
+        );
+        near(
+            at(word_x(shift, new_word), edge(16)),
+            word(green),
+            "the new word",
+        );
+        // The `⋯` row's words centred across both halves (the first row).
+        let row0 = g.bounds.top() - g.scroll.y;
+        let centre = Bounds::from_corners(
+            gpui::point(mid - px(40.0), row0 + px(2.0)),
+            gpui::point(mid + px(40.0), row0 + lh - px(2.0)),
+        );
+        assert!(
+            far(ink_in(&shot, dims, centre, [bg.r, bg.g, bg.b]), bg) > 120,
+            "{n}: the ⋯ row's words across the middle"
+        );
+        // The match on line 19, on both halves alike.
+        // `keep` at cells 9–13 of `    self.keep(token);`.
+        let x = |dx: Pixels| left + g.text_left + dx + cw * 11.0;
+        let (l, r) = (at(x(px(0.0)), edge(19)), at(x(shift), edge(19)));
+        assert!(far(l, bg) > 30, "{n}: the match on the left: {l:?}");
+        assert!(
+            live_near(r, as_rgb(l), 4),
+            "{n}: the match on the right {r:?} as the left {l:?}"
+        );
+        // The button filled.
+        let b = button.expect("drawn");
+        near(
+            at(b.left() + px(3.0), b.top() + px(12.0)),
+            ui.card_selected,
+            "the button filled",
+        );
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `file-diff-side-narrow` (M11ah Task 11): off by default; the button turns side by side on
+/// (`FileTabEvent::SideBySide` for the workspace to keep per tab); below 60 cells a half the
+/// view is unified, the button faint and deaf with the tooltip `Too narrow for side by side`;
+/// wide again, side by side comes back. A drag stays in the half it started in and Copy gives
+/// that half; the current row is on the half pressed (an empty half: that side's nearest
+/// line); find steps row by row, left before right.
+fn file_diff_side_narrow_scenes() {
+    use crate::file_tab::{FileTab, FileTabEvent, TIP_SIDE_BY_SIDE, TIP_SIDE_TOO_NARROW};
+    use crate::row_map::{Half, Row};
+    use gpui::{Entity, Focusable, Modifiers, MouseButton};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// The tab in a pane `width` wide (the window stays as it is).
+    struct SideHost {
+        tab: Entity<FileTab>,
+        width: Pixels,
+    }
+    impl Render for SideHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_row()
+                .child(div().h_full().w(self.width).flex().child(self.tab.clone()))
+        }
+    }
+
+    let (text, unified) = side_fixture();
+    let path = live_file("side-narrow.rs", &text);
+    let dims = size(px(1240.0), px(620.0));
+    let n = "file-diff-side-narrow";
+    let theme = shot_theme(shot_themes()[0].1);
+    type Slot = Rc<RefCell<Option<(Entity<FileTab>, Entity<SideHost>)>>>;
+    let slot: Slot = Rc::default();
+    let events: Rc<RefCell<Vec<bool>>> = Rc::default();
+    let build = {
+        let (slot, events) = (slot.clone(), events.clone());
+        move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            cx.bind_keys(crate::key_bindings());
+            let tab = cx.new(|cx| {
+                let mut tab = FileTab::new(path, crate::layout_model::FileMode::Plain, window, cx);
+                tab.frozen = true;
+                tab
+            });
+            cx.subscribe(&tab, move |_, e: &FileTabEvent, _| {
+                if let FileTabEvent::SideBySide(on) = e {
+                    events.borrow_mut().push(*on);
+                }
+            })
+            .detach();
+            let host = cx.new(|_| SideHost {
+                tab: tab.clone(),
+                width: px(1240.0),
+            });
+            *slot.borrow_mut() = Some((tab, host.clone()));
+            host.into()
+        }
+    };
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let (tab, host) = slot.borrow().clone().expect("the tab");
+        live_frame(cx, window);
+        cards_setup(cx, window, &tab, &unified);
+        let look =
+            |cx: &mut VisualTestAppContext| cx.read(|cx| tab.read(cx).side_by_side_for_shots());
+        let button =
+            |cx: &mut VisualTestAppContext| cx.read(|cx| tab.read(cx).side_button_for_shots());
+        let width = |cx: &mut VisualTestAppContext, w: f32| {
+            cx.update(|cx| {
+                host.update(cx, |h, cx| {
+                    h.width = px(w);
+                    cx.notify();
+                })
+            });
+            live_frame(cx, window);
+            live_frame(cx, window);
+        };
+        // Off by default; the button takes a click.
+        assert!(!look(cx).0, "{n}: off by default");
+        let (filled, enabled, tip, at) = button(cx);
+        assert_eq!(
+            (filled, enabled, tip),
+            (false, true, TIP_SIDE_BY_SIDE),
+            "{n}"
+        );
+        cx.simulate_click(window, at.expect("drawn").center(), Modifiers::none());
+        live_frame(cx, window);
+        assert_eq!((look(cx).0, look(cx).1), (true, true), "{n}: on");
+        assert_eq!(*events.borrow(), [true], "{n}: the workspace told");
+        let pair = |cx: &mut VisualTestAppContext| {
+            matches!(
+                cx.read(|cx| tab.read(cx).row_for_shots(2)),
+                Some(Row::Pair { .. })
+            )
+        };
+        assert!(pair(cx), "{n}: paired rows");
+        assert!(button(cx).0, "{n}: filled");
+        // Too narrow: unified, the button faint and deaf.
+        width(cx, 800.0);
+        assert_eq!(
+            (look(cx).0, look(cx).1),
+            (true, false),
+            "{n}: unified when narrow"
+        );
+        assert!(!pair(cx), "{n}: the rows unified");
+        let (filled, enabled, tip, at) = button(cx);
+        assert_eq!(
+            (filled, enabled, tip),
+            (false, false, TIP_SIDE_TOO_NARROW),
+            "{n}"
+        );
+        cx.simulate_click(window, at.expect("drawn").center(), Modifiers::none());
+        live_frame(cx, window);
+        assert!(look(cx).0, "{n}: a press on the faint button does nothing");
+        assert_eq!(events.borrow().len(), 1, "{n}: nothing told");
+        // Wide again: back.
+        width(cx, 1240.0);
+        assert_eq!(
+            (look(cx).0, look(cx).1),
+            (true, true),
+            "{n}: back when wide"
+        );
+        assert!(pair(cx), "{n}: paired again");
+        // A drag in the right half, from line 13 to past line 19's end: Copy gives the new half.
+        let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+        let shift = g.side.expect("side by side");
+        let top = |cx: &mut VisualTestAppContext, line: usize| {
+            cx.read(|cx| tab.read(cx).line_top(line, cx))
+                .expect("shown")
+        };
+        let at = |cx: &mut VisualTestAppContext, line: usize, dx: Pixels, cells: f32| {
+            let g = cx.read(|cx| tab.read(cx).geom()).expect("drawn");
+            point(
+                g.bounds.left() + g.text_left + dx + g.cell_width * cells,
+                g.bounds.top() + top(cx, line) - g.scroll.y + g.line_height / 2.0,
+            )
+        };
+        let (from, to) = (at(cx, 13, shift, 0.1), at(cx, 19, shift, 40.0));
+        cx.simulate_mouse_down(window, from, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(window, to, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(window, to, MouseButton::Left, Modifiers::none());
+        live_frame(cx, window);
+        cx.simulate_keystrokes(window, "cmd-c");
+        let copied = cx.read_from_clipboard().and_then(|c| c.text());
+        assert_eq!(
+            copied.as_deref(),
+            Some(
+                "fn refresh(&mut self) {\n    let token = fresh(count);\n    let count = \
+                 fresh_count();\n    self.count += 1;\n    self.keep(token);"
+            ),
+            "{n}: the new half copied"
+        );
+        let current = |cx: &mut VisualTestAppContext| {
+            cx.read(|cx| {
+                (
+                    tab.read(cx).diff_current(),
+                    tab.read(cx).side_by_side_for_shots().2,
+                )
+            })
+        };
+        assert_eq!(
+            current(cx),
+            (Some(19), Some(Half::New)),
+            "{n}: current, right"
+        );
+        // A press on the left: line 13 current, on the left.
+        let p = at(cx, 13, px(0.0), 2.0);
+        cx.simulate_click(window, p, Modifiers::none());
+        live_frame(cx, window);
+        assert_eq!(
+            current(cx),
+            (Some(13), Some(Half::Old)),
+            "{n}: current, left"
+        );
+        // A press on the empty left half facing line 18: the old side's line above it.
+        let p = at(cx, 18, px(0.0), 2.0);
+        cx.simulate_click(window, p, Modifiers::none());
+        live_frame(cx, window);
+        assert_eq!(
+            current(cx),
+            (Some(15), Some(Half::Old)),
+            "{n}: the empty half's"
+        );
+        // Find: row by row, left before right (16 is level with 14, 15 with 17).
+        cx.update_window(window, |_, window, cx| {
+            tab.read(cx).focus_handle(cx).focus(window, cx)
+        })
+        .expect("focus");
+        cx.simulate_keystrokes(window, "cmd-f");
+        cx.simulate_input(window, "count");
+        live_frame(cx, window);
+        live_frame(cx, window);
+        let mut steps = Vec::new();
+        for _ in 0..6 {
+            cx.simulate_keystrokes(window, "cmd-g");
+            live_frame(cx, window);
+            steps.push(current(cx));
+        }
+        let want = [
+            (Some(16), Some(Half::New)),
+            (Some(15), Some(Half::Old)),
+            (Some(15), Some(Half::Old)),
+            (Some(17), Some(Half::New)),
+            (Some(17), Some(Half::New)),
+            (Some(18), Some(Half::New)),
+        ];
+        assert!(
+            (0..6).any(|k| (0..6).all(|i| steps[i] == want[(i + k) % 6])),
+            "{n}: the steps {steps:?}, not in turn {want:?}"
+        );
+        println!("ui-shots: {n} ok");
+    };
+    let _ = render_with(&theme, dims, build, act);
 }

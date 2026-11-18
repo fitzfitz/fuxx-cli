@@ -30,14 +30,12 @@ pub enum Row {
 }
 
 /// M11ah: a side-by-side half: the old file on the left, the new one on the right.
-#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Half {
     Old,
     New,
 }
 
-#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
 impl Row {
     /// The doc line a row shows (a pair's first: the old side's when both have one); none: a
     /// title's or a folded stretch's row.
@@ -452,6 +450,26 @@ impl RowMap {
         held.get(k)
             .filter(|(_, row)| *row == r)
             .map(|(l, _)| l.clone())
+    }
+
+    /// Side by side: the line of `half` nearest row `r` (a press on an empty half takes it):
+    /// the nearest above (true: at its end), else the nearest below (false: at its start),
+    /// looking only through the paired rows around `r` (never past a title or a `⋯` row).
+    pub fn nearest_on(&self, r: usize, half: Half) -> Option<(usize, bool)> {
+        let on = |k: usize| match self.row(k)? {
+            row @ Row::Pair { .. } => Some(row.half(half)),
+            _ => None,
+        };
+        on(r)?;
+        let above = (0..=r)
+            .rev()
+            .map_while(on)
+            .find_map(|h| h.map(|(line, _)| (line, true)));
+        above.or_else(|| {
+            (r + 1..self.len())
+                .map_while(on)
+                .find_map(|h| h.map(|(line, _)| (line, false)))
+        })
     }
 
     /// Diff: card `card`'s title row.
@@ -1006,5 +1024,56 @@ mod tests {
             Some(both(0)),
             "a shown stretch's line, both halves"
         );
+    }
+
+    /// M11ah Task 11: a press on an empty half takes that side's nearest line: above (at its
+    /// end), else below (at its start), never past a title.
+    #[test]
+    fn an_empty_half_takes_the_nearest_line_of_its_side() {
+        use crate::diff_view::{DiffRow, RowKind};
+        let row = |kind, old, new| DiffRow { kind, old, new };
+        let rows = vec![
+            row(RowKind::Same, Some(1), Some(1)),
+            row(RowKind::Same, Some(2), Some(2)),
+            row(RowKind::Removed, Some(3), None),
+            row(RowKind::Added, None, Some(3)),
+            row(RowKind::Added, None, Some(4)),
+            row(RowKind::Same, Some(4), Some(5)),
+        ];
+        let g = crate::diff_cards::group(&rows);
+        let pairs: Vec<CardPairs> = (g.cards.iter())
+            .map(|c| crate::diff_cards::pair(&rows, c.rows.clone()))
+            .collect();
+        let layout = DiffLayout {
+            grouped: &g,
+            shown: &[],
+            closed: &[false],
+            pairs: Some(&pairs),
+        };
+        let widths = [1, 1, 9, 2, 5, 1];
+        // Title | s0 | s1 | 2·3 | 2·_ | 2·_ | _·4 | _·4 | s5
+        let map = RowMap::diff(&widths, Some(4), &layout, 10.0);
+        assert_eq!(map.nearest_on(4, Half::New), Some((3, true)));
+        assert_eq!(map.nearest_on(6, Half::Old), Some((2, true)));
+        assert_eq!(map.nearest_on(3, Half::Old), Some((2, true)), "its own");
+        // A card starting with an added line: no old line above it (the title), the one below.
+        let rows = vec![
+            row(RowKind::Added, None, Some(1)),
+            row(RowKind::Same, Some(1), Some(2)),
+        ];
+        let g = crate::diff_cards::group(&rows);
+        let pairs: Vec<CardPairs> = (g.cards.iter())
+            .map(|c| crate::diff_cards::pair(&rows, c.rows.clone()))
+            .collect();
+        let layout = DiffLayout {
+            grouped: &g,
+            shown: &[],
+            closed: &[false],
+            pairs: Some(&pairs),
+        };
+        let map = RowMap::diff(&[1, 1], None, &layout, 10.0);
+        assert_eq!(map.row(0), Some(Row::Title { card: 0 }));
+        assert_eq!(map.nearest_on(1, Half::Old), Some((1, false)));
+        assert_eq!(map.nearest_on(0, Half::Old), None, "a title has no half");
     }
 }
