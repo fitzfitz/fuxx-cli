@@ -1865,7 +1865,8 @@ impl Workspace {
             .flex_none()
             .w(px(self.sidebar.width))
             .h_full()
-            // On the canvas, no line at its right (M11i): the gap to the cards does that job.
+            // On the canvas, no line at its right (M11i): the floating card's own edge, flush
+            // against it since M11al, does that job.
             .bg(hsla(ui.sidebar_background))
             // A click in the sidebar gives focus back to the terminal, which cancels a rename
             // (the rename box keeps its own clicks).
@@ -2410,7 +2411,7 @@ impl Workspace {
             return vec![0.0; rows.len()];
         };
         // An unpinned row: everything between its place and where it lands slides, headers too.
-        // The dragged row itself (unseen) and its card go to the gap (`gap_offset`).
+        // The dragged row itself (unseen) goes to the gap (`gap_offset`).
         if let Some((at, _, _)) = &self.sidebar.drop_at {
             let size = row_height(dragged) + ROW_GAP;
             let mut offsets = cross_offsets(rows.len(), own, *at, size);

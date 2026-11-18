@@ -1,7 +1,9 @@
 # Milestone 11al — UI Uplift 3: one floating card, roomier sections
 
-**Status:** 📝 design written 2026-11-18 on branch `m11al-ui-uplift`; the user said 'go ahead with M11al' — direction
-approved in mockups; planned 2026-11-18: [[M11al Plan - UI Uplift 3]] (13 tasks, subagent-driven); building.
+**Status:** 🟨 built on branch m11al-ui-uplift, waiting for your on-screen check; not merged. All 13 plan tasks
+(0–12) built 2026-11-18, each reviewed ([[M11al Plan - UI Uplift 3]]); the whole-branch review and its fix wave are
+pending, then the full ui-shots run again. Design written 2026-11-18 on your "go ahead with M11al" (direction approved
+in mockups).
 
 **Asked for:** 2026-11-17, by you: "let's brainstorm on the UI/UX uplift … What do you think we need to improve on the
 layout part?" Then, after four structure options and their comfortable versions: "I don't like them all. I love the
@@ -457,7 +459,7 @@ the numbers.
 
 **Your on-screen check** (GUI can't be claimed without it): Catppuccin Mocha and Latte at least; one pane; a 2 × 2
 split; sidebar hidden; right panel hidden; both hidden; full screen; a narrow window; an agent tab with the box; a
-file tab; a waiting and a working tab.
+file tab; a waiting and a working tab. The full list is under "On-screen check" below.
 
 Run the shots and the app by the built binary's path, never by the bare name `fuxx` (on this Mac that is the real
 app).
@@ -482,6 +484,218 @@ app).
   terminal padding → sidebar → right panel → status bar → agent box → file / browser outer bar last (M11ah) → scenes
   and docs.
 - If GPUI's API for something here is new to the repo (shadow spread, per-corner radius), check Context7 first.
+
+## What was built
+
+All thirteen plan tasks (0–12), on branch `m11al-ui-uplift`; each task reviewed (several clean after one fix round).
+No new crate, no new setting, no new timer. Every colour is a `UiColors` token from the theme.
+
+0. **Baselines** on `cc3b2b8`: 1,944 tests, clippy 14 / 27 and 16 / 29, full ui-shots 191 passed.
+1. **Tokens and colours** (`theme.rs`, `ui_tokens.rs`): the canvas is the darkest colour; new `raised`, `side`,
+   `side_hover`, `side_selected` and `tab_active`, all in the contrast lists; the card's shadow 0.45 dark / 0.12 light;
+   `CARD_INSET` 8, `HAIRLINE` 1, `text::UI` 13.5, `KEYS` 11.5. `text_dim` and `text_faint` keep today's values in
+   Mocha and Latte (pinned by a test).
+2. **One floating card** (`panes.rs`, `workspace.rs`): every pane sits in one rounded card (radius 14, soft shadow,
+   8 px from the window's top, right and bottom, flush against the sidebar). Splits are 1 px hairlines; the focus
+   ring is gone and unfocused panes are veiled. The grab strip stays 6 px, centred on the hairline.
+3. **The right panel inside the card** (`right_sidebar.rs`): it sits right of a hairline, filled `side`, rounding the
+   card's right corners; it slides in from the card's edge, clipped by the card. `CARD_GAP` is gone.
+4. **Status bar** (`status_bar.rs`): 26 px tall, no fill of its own (the card's shadow falls over it), 16 px sides,
+   12 px text.
+5. **Minimal tabs (E)** (`tab_bar.rs`): a 52 px bar with no fill and a bottom line; 34 px tabs with an icon tile, the
+   title and a status dot after it; thin separators; the shown tab has the accent wash. ＋ ⋯ ▥ are 28 px buttons. In a
+   pane too narrow for one tab, the shown tab shrinks so its tile, dot and × stay whole. `tab_bar` / `tab_hover` and
+   their floors are retired.
+6. **Terminal padding and the agent box** (`ui_tokens.rs`, `agent_box.rs`, `agent_tab.rs`): the grid is 28 px from
+   the sides and 22 from the top (20 / 14 in a split); the agent box and its conversation line up at 28.
+7. **The sidebar's band, search and footer** (`sidebar.rs`, `title_area.rs`): the band is 52 px, the traffic lights
+   moved to match, the default sidebar width is 290; a 38 px search box; a 62 px footer with a roomy "＋ New Fuxxpace
+   ⌘N" button, 🔔 and ⚙.
+8. **Sidebar rows and headings** (`sidebar.rs`, `providers/`): 56 px rows on the canvas; 14 px names; line two says
+   who and where ("✳ Claude · api", "› npm · api", "›_ zsh · my-app"); a status badge on each avatar; an accent bar
+   on the selected row's edge; group headings are quiet capitals, not cards. The branch left the rows.
+   **8b.** On your word, "who" follows the workspace's active tab (see Calls).
+9. **Right panel, top** (`right_sidebar.rs`, `changes_panel.rs`, `graph_panel.rs`, `activity_panel.rs`): Files /
+   Changes / Activity as one segmented switch; a repo card on Files and Changes ("N of M staged" and the progress bar
+   on Changes); STAGED / CHANGES headings in quiet capitals with a count pill. New `progress_track` token so the bar's
+   track reads on the card.
+10. **Right panel, rows and footer**: 32 px rows on `side_hover` / `side_selected`, 13.5 px names; a 34 px filter
+    field; the branch footer with 34 px outlined buttons. The Graph rows moved to the same fills.
+11. **The file and browser tabs' outer bars** (`file_tab.rs`, outer bar lines only; `browser_tab.rs`): the card's
+    fill and a `card_border` line; the file bar's sides 16.
+12. **Clean-up, docs and hand-off**: stale comments fixed (`theme.rs`, `sidebar.rs`, `right_sidebar.rs`); this note,
+    the plan, the roadmap and the Progress Log.
+
+## Calls made while building
+
+Each is the AI's unless it says **yours**.
+
+**Yours**
+
+- **The row's "who" follows the workspace's active tab.** A Claude tab in front says "✳ Claude"; a terminal running
+  `npm run dev` in front says "› npm". It replaced the builder's first order (any agent tab in the workspace won).
+- **The branch leaves the sidebar rows, and its click goes with it** (you confirmed the AI's ruling). The branch
+  switcher still opens from the Changes bar, the status bar and ⌘K.
+- **The full ui-shots run happens only before the final review and after its fix wave.** Each task ran the gate
+  (tests, both clippy runs, fmt) and `scripts/ui-shots.sh --changed master`.
+
+**From the plan and the tasks**
+
+- A waiting row keeps "Needs input" or its question (§2.4) over the "needs you" wording in the open-questions calls.
+- The status bar's text is a local 12 px (§7's number), not `text::META` 12.5.
+- Task 0's baselines were run before the plan's commit; the idle-CPU measurement needs a real window, so it is your
+  check (item 14).
+- Menus and popovers clipped at the card's edge: no new risk. Each pane's content was already clipped by its own card
+  before; menus and popovers draw at the window's root.
+- The right panel's width keeps the plan's formula over the brief's example: a 520 px window with a 290 px sidebar
+  draws a 21 px sliver of panel (as today's rule allows), and nothing below about 500.
+- The old text-colour floors could stay as local values if removing them moved `text_dim` / `text_faint`. Task 5
+  removed the tab-bar ones; Task 8 kept three (`legacy_hover`, `legacy_active`, `legacy_selected`), because without
+  them Mocha's faint text moves by one level.
+- In a pane narrower than one tab, the shown tab shrinks below the 100 px minimum to fit: its title gives way, its
+  tile, status dot and × stay whole. The other tabs keep 100 and scroll.
+- The docs for every task land in Task 12, once.
+- The collapsed title band keeps its 8 px right margin; only the open sidebar's button moved (19 px) to centre on the
+  footer's gear. So the collapsed band, its popover and the title's thresholds are as before.
+- With a browser or file tab in front, the row's "who" names the workspace's terminal (its program or shell): those
+  tabs have no "who" of their own.
+- The Files repo card shows no "N files": the tree loads folders one at a time, so any count would be wrong.
+- GRAPH and Activity headings have no count pill: there is no honest count (commits are paged).
+- The branch footer's icons are all `text_dim`, as §6.6 says; the primary action loses its accent colour.
+- The Graph rows' hover fix was folded into Task 10 (same panel, same kind of change).
+- Activity's events are a timeline (rail and dots, no hover or selection), not list rows: §6.5's 32 px rows and pills
+  don't apply, so it is unchanged.
+- The browser bar changes its fill and line only (§9); its padding stays 6.
+- The File / Diff switch inside the file tab keeps its `panel` segment: that is inside the file tab, M11ah's area.
+
+## Rewritten scenes
+
+No scene was deleted or loosened in what it guards; each rewritten check reads the tokens (`CARD_INSET`, `HAIRLINE`,
+`TAB_BAR`, `STATUS_BAR`, `TOP_BAND`, `SIDEBAR_DEFAULT_WIDTH`, …) instead of fixed numbers. Eleven scenes are new:
+`card`, `card-split`, `card-sidebar-hidden`, `card-right-hidden`, `card-narrow`, `card-slide`, `tabs-minimal`,
+`agent-box-card`, `sidebar-band`, `sidebar-comfortable`, `right-panel-comfortable`.
+
+| Scene | Task | Why |
+|---|---|---|
+| shared `SHADOW_SLACK` 12 → 18 | 1 | the shadow is 1.5× stronger, so a shadowed gap pixel sits further from the canvas |
+| `title-bar-popover` | 1 | the darker canvas widened the lit bell slot's difference; still fails on an unlit slot |
+| `window`, `window-split`, `window-no-sidebar` | 2 | insets from `CARD_INSET`; the radius-14 curve takes the padding's bottom corner |
+| `cards`, `cards-narrow`, `cards-corners` | 2, 3, 5 | one card instead of a card per pane: canvas outside the curve, flush against the sidebar, hairline to the right panel, the first tab clear of the curve |
+| `cards-split` (`-hover`, `-refocus`) | 2 | panes are split by a 1 px hairline; the veil (not a ring) shows focus |
+| `card-split` | 5 | the lower bar is the card with its own line; the focused pane's tab is `tab_active` |
+| `splits` (`-waiting`, `-hover`, `-drag`) | 2, 5 | hairline geometry; the quiet line over the hairline; shown tabs `tab_active` / `card_hover` |
+| `tab-bars` (and variants), `tab-drag` | 2, 5, 8 | 52 px bar, 100 px tabs (window 1440 so four tabs still fit), buttons from the tokens; the row's accent ring after the card inset went |
+| `tabs`, `workspaces` | 7, 8 | 290 px sidebar; 56 px rows; × at the new avatar |
+| `browser-tab` | 2, 11 | the field's top from the bar; the bar's fill and line added |
+| `welcome`, `welcome-narrow` | 2, 7 | the card sits 8 px down; the band is 52 |
+| `status-bar` (four), `status-bar-ports`, `status-bar-narrow` | 2, 4 | the bar has no fill, so ink is found against its neighbour pixel under the shadow; chips found near their bottom |
+| `status-bar-hidden` | 7 | longer words so the faint text still runs past the 290 px sidebar |
+| `title-area` (`title-hidden`), `title-bar`, `sidebar-button-sliding` | 2, 5, 7 | the shadow reaches into the band; the bar's line instead of its fill; probes moved off the bigger tabs and buttons |
+| `right-sidebar` (`-open`, `-closed`, `-resize`) | 2, 3, 5 | the panel is inside the card behind a hairline; resize starts on the hairline; ▥ from the button tokens |
+| `right-panels` (`-narrow`, `-click`) | 3, 5, 9 | panel tabs became the segmented switch |
+| `files` (`-filter`, `-bare`, `-keys`), `files-header` (`-collapsed`) | 2, 3, 5, 9, 10 | the panel's `side` fill; level header; the repo card; 32 px rows |
+| `changes*`, `changes-staging`, `changes-bar` | 2, 3, 9, 10 | `side` fills; the repo card and its bar; 34 px outlined footer buttons, no accent fill |
+| `file-tab` | 2, 3, 11 | the panel's left edge from the helpers; the bar's fill and line added |
+| `sidebar`, `sidebar-rows`, `sidebar-quiet`, `sidebar-selection` (`-waiting`) | 4, 7, 8 | 56 px rows, no group cards, the accent bar, who · where; windows grown for the taller chrome |
+| `agent-sidebar-waiting`, `branch-switcher` | 8 | the row's who; line two has no branch |
+| `cached-panes`, `chrome-pane-churn` | 7 | back to their old sizes after a harness fix (the frame the sidebar asks for is now delivered) |
+| `chrome-drag-cancel`, `chrome-agent-tabs` | 7 | room for the taller chrome; the agent tab's pane was too narrow for its rename box |
+| `chrome-agent-status`, `chrome-agent-age` | 5 | a 1200 px window so the shown Claude tab's dot fits its pane |
+| `command-blocks-narrow` | 6 | the pane keeps its 200 px grid with the new split padding |
+| `agent-box-model-menu` | 8 | 12.5 px text widened the folder chip; the click lands on its visible part |
+| tokens board | 5 | `tab_bar` / `tab_hover` chips became `tab_active` |
+
+One test note: `title-bar`'s "the band drags" press moved from the band's middle to the strip above the card
+(`CARD_INSET / 2`), because the band's middle now lands on a tab. It still proves a press there drags with no
+backdrop, but no longer at the band's middle; the header drag of the right panel has no scene either (item 10).
+
+## Idle CPU (the M11p anti-goal): code-level evidence
+
+`git diff master...HEAD` adds no `timer(`, `request_animation_frame` or `spawn(` in the code (the only hits are rule
+text in the docs). The right panel's slide uses the existing frame request; the tabs' and badges' marks use the shared
+ticker. The four added `window.refresh()` calls are in ui-shots scenes only. "Who" is read from facts the sidebar
+already gets; a tab switch redraws the cached sidebar through the existing notify. Measuring it needs a real window:
+your check, item 14.
+
+## Limits (small things you might notice)
+
+- **The branch is gone from sidebar rows, removed on the user's word,** and its click with it. The branch switcher is
+  in the Changes bar, the status bar and ⌘K.
+- Group headings are capitals without the mockup's letter-spacing: the pinned GPUI has none.
+- The Changes headings sit about 8 px under the row above, not 16: the list's rows are all one height.
+- The Files repo card has no "N files"; GRAPH and Activity have no count pill.
+- The branch footer's primary icon is grey like the others (no accent).
+- Narrow panes: under about 235 px a pane's shown tab shrinks (title first); with seven tabs in a 1280 px window,
+  titles show about four letters.
+- A 180 px sidebar: a closed group with "N waiting" cuts its name to "…", and the New button's words are cut.
+- During the right panel's 160 ms slide the card's right corners lose their faint shadow (GPUI clips to a rectangle,
+  so the corners are capped in canvas colour while it moves).
+- The File / Diff switch's inactive segment in the file tab keeps the `panel` fill, a slightly different pill on the
+  card-coloured bar.
+- The browser bar keeps 6 px padding; the file bar has 16.
+- Done no longer pops in tabs: the muted ✓ is drawn still (the status bar's mark still pops).
+- In Latte, port chips in the status bar look flatter right under the card, where its shadow falls.
+- Activity's header is 54 px with no card, so it has some empty room.
+- Text sizes changed with the tokens (names 14, meta 12.5), so the palette, menus and the agent box's chips grew a
+  little.
+- The right panel's resize strip takes the leftmost 2.5 px of its header's drag area.
+- In a Graph row under the pointer, a lane dot's knockout disk shows as a small patch.
+
+## Final numbers (this Mac, debug build, 2026-11-18)
+
+| Check | Before (Task 0, `cc3b2b8`) | Now (`m11al-ui-uplift`) |
+| --- | --- | --- |
+| `cargo test --bin fuxx` | 1,944 passed (1 ignored) | **1,959 passed** (1 ignored) |
+| `cargo clippy --all-targets` | 14 (bin) / 27 (test) | 14 / 27 (no new warnings) |
+| `cargo clippy --all-targets --features ui-shots` | 16 / 29 | 16 / 29 (no new warnings) |
+| `cargo fmt --check` | clean | clean |
+| Full `scripts/ui-shots.sh` | 191 passed, 0 failed, 144.1 s | **201 passed, 1 failed**, 126.3 s (202 scenes: 11 new) |
+| New `timer(` / `request_animation_frame` / `spawn(` in code | n/a | none |
+| Idle CPU, nothing open | n/a | not measured by the builder: your check, item 14 |
+
+The one failure was `chrome-drag-cancel` in the eight-at-once run: "Esc (the row drag goes on): 1731 bytes differ
+from a full redraw (stale)". Alone it passed ("7 steps, each current"). It failed once in Task 10's run too and passed
+alone; it is flagged for the final review. The reference fingerprints are report only and stale on this Mac (0 same,
+351 look different, 40 differ in size, 116 without a reference); `--update-refs` was never used.
+
+## On-screen check (yours, after the build)
+
+Run `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run` from the repo (debug only: **do not add `--release`**, it writes
+your real `sessions.json`). Do items 1–12 in Catppuccin Mocha, then again in Catppuccin Latte (Preferences → theme).
+
+**The card**
+
+1. **One pane:** the sidebar sits on the darkest colour, attached to the left edge. The card starts right at it, 8 px
+   from the top, right and bottom, rounded with a soft shadow. Nothing square pokes past a corner.
+2. **A 2 × 2 split:** the panes are split by thin lines, no gaps; unfocused panes are veiled; only the focused pane's
+   shown tab has the accent wash. Drag a line: it lights and resizes as before.
+3. **Sidebar hidden** (`⌘\`): the card moves 8 px from the left edge too, under the 52 px band.
+4. **Right panel hidden** (`⌥⌘\`): the terminal owns the card's right corners. Open it again: it slides in from the
+   card's edge, cut by the card (watch the right corners while it moves).
+5. **Both hidden:** the card sits under the band and 8 px from the left, right and bottom edges.
+6. **Full screen:** the band and the card still line up; nothing is cut at the top.
+7. **A narrow window** (drag it as narrow as it goes): the right panel gives way first; the shown tab shrinks but keeps its
+   tile, dot and ×.
+
+**Tabs and tabs' contents**
+
+8. **An agent tab with the box:** the box and the conversation line up 28 px in; the page's bottom corners are round.
+9. **A file tab:** its top bar is the card's colour with a line under it, 16 px sides; the File / Diff switch works.
+10. **A waiting and a working tab:** the waiting tab (not shown) is tinted with its dot; the working tab's dot turns.
+    Hover a tab: its × shows. Drag a tab to another pane. Press on the empty part of the right panel's header: the
+    window drags (not in full screen).
+
+**The sidebar and the right panel**
+
+11. **Who · where follows the active tab:** in one workspace, open a Claude tab and a terminal running `npm run dev`.
+    With Claude's tab in front the row says "✳ Claude · <folder>"; click the terminal: "› npm · <folder>". The row
+    has no branch.
+12. **The right panel:** the Files / Changes / Activity switch; the repo card ("N of M staged" and its bar on
+    Changes); 32 px rows; the branch footer's ⟳ and ⇡ buttons and their tooltips.
+13. **The shadow over the status bar:** the status bar has no fill; the card's shadow falls softly over its top under
+    the card.
+14. **Idle CPU:** with nothing open (one idle terminal), compare fuxx's CPU in Activity Monitor on this branch with
+    master: the same window, 60 s each. They should match within noise.
 
 ## Related
 
