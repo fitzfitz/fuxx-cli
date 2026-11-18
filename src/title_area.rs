@@ -37,7 +37,7 @@ use gpui::{
 use crate::notification_list::Entry;
 use crate::overlay_panel;
 use crate::preferences;
-use crate::sidebar::{FOOTER, MARK_SLOT, ROW_INSET, mark_size, mark_slot, tabular};
+use crate::sidebar::{FOOTER, MARK_SLOT, mark_size, mark_slot, tabular};
 use crate::sidebar_toggle::{self, BAND_EDGE, HIT, Tip, band_button};
 use crate::status::{self, Status};
 use crate::status_bar::status_bar_room;
@@ -51,8 +51,11 @@ use crate::ui_tokens::text;
 use crate::workspace::{Overlay, Workspace};
 
 /// The footer's buttons (the +, the 🔔, the gear): each one's side, and the space between them.
-pub(crate) const FOOTER_BUTTON: f32 = 28.0;
-pub(crate) const FOOTER_GAP: f32 = 4.0;
+pub(crate) const FOOTER_BUTTON: f32 = 34.0;
+pub(crate) const FOOTER_GAP: f32 = 12.0;
+/// The footer's inset from the sidebar's sides (and its New button's height, below).
+pub(crate) const FOOTER_SIDE: f32 = 14.0;
+pub(crate) const FOOTER_NEW: f32 = 38.0;
 /// The space between the workspace's name and what is beside it in the collapsed band (the
 /// lights, the band's buttons), and the least room the name is drawn in (less would show little
 /// more than an ellipsis).
@@ -105,7 +108,7 @@ const SCRIPT_DOT: f32 = 6.0;
 /// the +, the 🔔 and the gear).
 pub(crate) const BELL_GROUP: &str = "notifications-button";
 pub(crate) const PREFERENCES_GROUP: &str = "sidebar-preferences";
-const ICON: f32 = 16.0;
+const ICON: f32 = 15.0;
 const STROKE: f32 = 1.5;
 
 /// The popover's height around its list: its edge, padding, header and the gap under it.
@@ -115,14 +118,14 @@ const PANEL_CHROME: f32 = 2.0 + 2.0 * PADDING + HEADER + PADDING;
 /// left inset, the gear at the right (the same distance from the sidebar's edge, which has no
 /// border since M11i), the 🔔 beside it.
 pub(crate) fn footer_buttons(width: f32) -> [f32; 3] {
-    let gear = width - ROW_INSET - FOOTER_BUTTON;
-    [ROW_INSET, gear - FOOTER_GAP - FOOTER_BUTTON, gear]
+    let gear = width - FOOTER_SIDE - FOOTER_BUTTON;
+    [FOOTER_SIDE, gear - FOOTER_GAP - FOOTER_BUTTON, gear]
 }
 
 /// The popover's width over a sidebar `sidebar_width` wide: the footer's, inside its insets,
 /// from `POPOVER_MIN` to `POPOVER_WIDTH`.
 pub(crate) fn popover_width(sidebar_width: f32) -> f32 {
-    (sidebar_width - 2.0 * ROW_INSET).clamp(POPOVER_MIN, POPOVER_WIDTH)
+    (sidebar_width - 2.0 * FOOTER_SIDE).clamp(POPOVER_MIN, POPOVER_WIDTH)
 }
 
 /// The popover's bottom left corner in the window, just above the footer. It hangs from the
@@ -132,7 +135,7 @@ pub(crate) fn popover_width(sidebar_width: f32) -> f32 {
 /// `bar`: the status bar's height (0 while Settings turns it off, M11v part 3).
 pub(crate) fn popover_anchor(sidebar_width: f32, viewport_height: f32, bar: f32) -> (f32, f32) {
     let right = footer_buttons(sidebar_width)[2] + FOOTER_BUTTON;
-    let left = (right - popover_width(sidebar_width)).max(ROW_INSET);
+    let left = (right - popover_width(sidebar_width)).max(FOOTER_SIDE);
     (left, viewport_height - bar - FOOTER - POPOVER_DROP)
 }
 
@@ -154,9 +157,10 @@ pub(crate) fn entry_top(i: usize, count: usize, sidebar_width: f32, viewport_hei
 }
 
 /// The popover's width from the collapsed band's 🔔 in a window `window_width` wide: inside the
-/// window's margins, from `POPOVER_MIN` to `POPOVER_WIDTH`.
+/// window's margins (its right edge is `BAND_EDGE` in, `band_popover_anchor`), from
+/// `POPOVER_MIN` to `POPOVER_WIDTH`.
 pub(crate) fn band_popover_width(window_width: f32) -> f32 {
-    (window_width - 2.0 * EDGE_MARGIN).clamp(POPOVER_MIN, POPOVER_WIDTH)
+    (window_width - BAND_EDGE - EDGE_MARGIN).clamp(POPOVER_MIN, POPOVER_WIDTH)
 }
 
 /// The popover's top right corner from the collapsed band's 🔔: just under the band, its right
@@ -674,7 +678,7 @@ pub(crate) fn unseen_dot(ui: UiColors) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sidebar::{FOOTER, ROW_INSET};
+    use crate::sidebar::FOOTER;
     use crate::sidebar_toggle::{lights_clear, open_button_x};
     use crate::ui_tokens::size::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 
@@ -682,9 +686,9 @@ mod tests {
     fn the_footers_three_buttons_fit_the_narrowest_sidebar_and_keep_apart() {
         for width in [SIDEBAR_MIN_WIDTH, 240.0, 260.0, 340.0, SIDEBAR_MAX_WIDTH] {
             let [plus, bell, gear] = footer_buttons(width);
-            assert_eq!(plus, ROW_INSET, "the + at the footer's left inset");
+            assert_eq!(plus, FOOTER_SIDE, "the + at the footer's left inset");
             assert_eq!(
-                gear + FOOTER_BUTTON + ROW_INSET,
+                gear + FOOTER_BUTTON + FOOTER_SIDE,
                 width,
                 "the gear at the footer's right inset (the sidebar has no edge since M11i)"
             );
@@ -703,8 +707,8 @@ mod tests {
                 "width {width}: no overlap"
             );
         }
-        assert_eq!(FOOTER_BUTTON, 28.0);
-        assert_eq!(FOOTER_GAP, 4.0);
+        assert_eq!(FOOTER_BUTTON, 34.0);
+        assert_eq!(FOOTER_GAP, 12.0);
     }
 
     #[test]
@@ -727,23 +731,23 @@ mod tests {
                 x <= bell && bell + FOOTER_BUTTON <= right,
                 "width {width}: over the bell"
             );
-            if width - 2.0 * ROW_INSET >= POPOVER_MIN {
+            if width - 2.0 * FOOTER_SIDE >= POPOVER_MIN {
                 // Its right edge is the gear's, and it stays over the sidebar.
                 assert_eq!(
                     right,
                     gear + FOOTER_BUTTON,
                     "width {width}: the gear's edge"
                 );
-                assert!(x >= ROW_INSET, "width {width}: inside the sidebar");
+                assert!(x >= FOOTER_SIDE, "width {width}: inside the sidebar");
             } else {
                 // Narrower than the panel's least: from the footer's left inset, as the + menu.
-                assert_eq!((x, w), (ROW_INSET, POPOVER_MIN), "width {width}");
+                assert_eq!((x, w), (FOOTER_SIDE, POPOVER_MIN), "width {width}");
             }
         }
         // At the default width it fills the sidebar inside the footer's insets.
         assert_eq!(
             popover_width(SIDEBAR_DEFAULT_WIDTH),
-            SIDEBAR_DEFAULT_WIDTH - 2.0 * ROW_INSET
+            SIDEBAR_DEFAULT_WIDTH - 2.0 * FOOTER_SIDE
         );
     }
 
@@ -783,7 +787,10 @@ mod tests {
     #[test]
     fn the_band_buttons_line_up_bell_gear_sidebar_at_the_windows_right() {
         use crate::sidebar_toggle::BAND_EDGE;
-        assert_eq!(band_buttons(960.0), [872.0, 900.0, 928.0]);
+        // Derived from the tokens: the sidebar button `BAND_EDGE` in, the others `BAND_GAP` apart.
+        let sidebar = 960.0 - BAND_EDGE - HIT;
+        let gear = sidebar - BAND_GAP - HIT;
+        assert_eq!(band_buttons(960.0), [gear - BAND_GAP - HIT, gear, sidebar]);
         for w in [240.0, 360.0, 760.0, 1600.0] {
             let b = band_buttons(w);
             assert_eq!(
@@ -801,14 +808,14 @@ mod tests {
         }
         // The same distance from the window's edge as the open button keeps from the
         // sidebar's, which lines it up over the footer gear.
-        assert_eq!(BAND_EDGE + HIT / 2.0, ROW_INSET + FOOTER_BUTTON / 2.0);
-        assert_eq!(BAND_GROUP, 88.0);
+        assert_eq!(BAND_EDGE + HIT / 2.0, FOOTER_SIDE + FOOTER_BUTTON / 2.0);
+        assert_eq!(BAND_GROUP, 99.0);
     }
 
     #[test]
     fn the_band_popover_drops_from_the_band_inside_the_window() {
         use crate::sidebar_toggle::BAND_EDGE;
-        // 300 pt: the window's margins bind the width (284 pt, under `POPOVER_WIDTH`).
+        // 300 pt: the window's margins bind the width (273 pt, under `POPOVER_WIDTH`).
         for w in [300.0, 360.0, 760.0, 960.0, 1600.0] {
             let (r, t) = band_popover_anchor(w);
             assert_eq!(r, w - BAND_EDGE, "width {w}: its right edge the band's");
@@ -827,7 +834,7 @@ mod tests {
             );
         }
         assert_eq!(band_popover_width(1600.0), POPOVER_WIDTH);
-        assert_eq!(band_popover_width(300.0), 300.0 - 2.0 * EDGE_MARGIN);
+        assert_eq!(band_popover_width(300.0), 300.0 - BAND_EDGE - EDGE_MARGIN);
     }
 
     /// M11v part 3: with the status bar off, the footer sits on the window's bottom and the
@@ -870,8 +877,9 @@ mod tests {
 
     #[test]
     fn the_name_keeps_clear_of_the_lights_and_the_band_buttons() {
-        assert_eq!(name_inset(false), 100.0);
-        assert_eq!(name_inset(true), 100.0);
+        // The band buttons' group is wider than the lights' room (99 vs 80): it sets the inset.
+        assert_eq!(name_inset(false), BAND_GROUP + NAME_GAP);
+        assert_eq!(name_inset(true), BAND_GROUP + NAME_GAP);
         for fs in [false, true] {
             assert!(
                 name_inset(fs) >= lights_clear(fs) + NAME_GAP,
@@ -934,10 +942,11 @@ mod tests {
     fn in_a_window_narrower_than_the_sidebar_the_title_keeps_clear_of_the_button() {
         use crate::sidebar_toggle::open_button_at;
         use crate::ui_tokens::size::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
-        // 240 pt sidebar, 200 pt window: the button comes in to 168, the title (88..152, 8 short
-        // of it) still fits; at 180 pt the button (148) would meet it, so it goes.
-        assert!(shows_title(240.0, 200.0, false));
-        assert!(!shows_title(240.0, 180.0, false));
+        // 240 pt sidebar: the title spans 88..152, and the button comes in to `BAND_EDGE + HIT`
+        // from the window's right edge: the title fits while it stays `TITLE_GAP` short of it.
+        let least = 152.0 + TITLE_GAP + HIT + BAND_EDGE;
+        assert!(shows_title(240.0, least, false));
+        assert!(!shows_title(240.0, least - 0.5, false));
         for fs in [false, true] {
             let mut s = SIDEBAR_MIN_WIDTH;
             while s <= SIDEBAR_MAX_WIDTH {
@@ -968,8 +977,15 @@ mod tests {
     #[test]
     fn a_window_too_narrow_for_the_name_leaves_it_out() {
         for fs in [false, true] {
-            assert!(shows_name(260.0, fs), "full screen {fs}: 260 pt shows it");
-            assert!(!shows_name(259.5, fs), "full screen {fs}: 259.5 pt doesn't");
+            let least = 2.0 * name_inset(fs) + NAME_MIN;
+            assert!(
+                shows_name(least, fs),
+                "full screen {fs}: {least} pt shows it"
+            );
+            assert!(
+                !shows_name(least - 0.5, fs),
+                "full screen {fs}: just under doesn't"
+            );
         }
     }
 }

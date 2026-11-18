@@ -1030,7 +1030,10 @@ pub(super) fn chrome_resize_title() {
 /// Workspace A: api, tests and build as tabs of one pane, web split right of it; B (docs) and
 /// C (notes) below it in the same group. api focused.
 fn drag_window() -> (ShotApp, AnyWindowHandle, Entity<Workspace>) {
-    super::chrome_parts::chrome_window(|ws, window, cx| {
+    // The usual 900 x 500, taller by the sidebar chrome's growth (M11al Task 7), so the list
+    // still shows the rows the drag goes over.
+    let dims = size(px(900.0), px(500.0 + super::SIDEBAR_CHROME_GROWTH));
+    super::chrome_parts::chrome_window_sized(dims, |ws, window, cx| {
         let api = std::path::Path::new(super::API);
         ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
         ws.open_shot_tab("tests", api, super::SHELL_TEXT, window, cx);
@@ -1273,7 +1276,13 @@ pub(super) fn chrome_agent_tabs() {
     use crate::layout_model::TabKind;
     use crate::pane_actions::PaneAction;
     let n = "chrome-agent-tabs";
-    let (mut cx, window, ws) = elsewhere_window();
+    // 900 pt over the old 240 pt sidebar, wider by what the default sidebar grew: its three
+    // panes (api, tests, the agent tab) keep their width, and the agent tab's rename box its room.
+    let dims = size(
+        px(900.0 + (crate::ui_tokens::size::SIDEBAR_DEFAULT_WIDTH - 240.0)),
+        px(500.0),
+    );
+    let (mut cx, window, ws) = elsewhere_window_sized(dims);
     let ws = &ws;
     cx.update(|cx| {
         cx.bind_keys([gpui::KeyBinding::new(
