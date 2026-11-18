@@ -370,6 +370,15 @@ impl RowMap {
         })
     }
 
+    /// Diff: the lines a folded row `r` holds (a `⋯` row's stretch, a closed card's title's).
+    pub fn lines_held_at(&self, r: usize) -> Option<Range<usize>> {
+        let held = &self.diff_rows()?.held;
+        let k = held.partition_point(|(_, row)| *row < r);
+        held.get(k)
+            .filter(|(_, row)| *row == r)
+            .map(|(l, _)| l.clone())
+    }
+
     /// Diff: card `card`'s title row.
     pub fn title_row(&self, card: usize) -> Option<usize> {
         self.card_rows(card).map(|r| r.start)
@@ -758,6 +767,9 @@ mod tests {
         assert_eq!(rows.len(), 1 + 1 + 8 + 1 + 7 + 1);
         assert_eq!(map.first_row(9), None, "inside the closed card");
         assert_eq!(map.row_holding(9), Some(1), "its title's row");
+        assert_eq!(map.lines_held_at(1), Some(8..15), "the closed card's lines");
+        assert_eq!(map.lines_held_at(0), Some(0..8), "the stretch's lines");
+        assert_eq!(map.lines_held_at(2), None, "a line's row");
         assert_eq!(map.card_rows(0), Some(1..2));
         // With Wrap, a line takes its rows inside a card.
         let mut wide = widths.clone();

@@ -1653,7 +1653,13 @@ pub fn rescroll_row(top: usize, from: Option<&RowMap>, to: &RowMap) -> usize {
                 .title_row(card)
                 .unwrap_or_else(|| top.min(to.len().saturating_sub(1)));
         }
-        // Not a line's row (a folded stretch): the row kept.
+        // A folded stretch (fix round 1): the row its first line is drawn on now.
+        Some(Row::Unchanged { .. }) => {
+            return from
+                .and_then(|m| m.lines_held_at(top))
+                .and_then(|lines| to.row_holding(lines.start))
+                .unwrap_or_else(|| top.min(to.len().saturating_sub(1)));
+        }
         Some(_) => return top.min(to.len().saturating_sub(1)),
         None => top,
     };
@@ -1910,11 +1916,12 @@ enum Sticky {
 }
 
 /// M11ah: the card whose title is pinned with the view's top `y` points down a diff's rows: the
-/// card the top is inside, its title scrolled above it.
+/// card the top is inside, its title scrolled above it, while at least a title's height of it is
+/// still below the top (the title never hangs past the card's end over what follows it).
 fn sticky_title_at(map: &RowMap, y: f32) -> Option<usize> {
     let card = map.card_at(map.row_at(y))?;
     let rows = map.card_rows(card)?;
-    (map.top(rows.start) < y && map.top(rows.end) > y).then_some(card)
+    (map.top(rows.start) < y && map.top(rows.end) - y >= CARD_TITLE).then_some(card)
 }
 
 /// M11ah: where a diff scrolls to show row `row`: `REVEAL_ABOVE` rows above it at the top, a
@@ -3057,11 +3064,32 @@ fn paint_body(
     } else {
         px(0.0)
     };
-    let band_at = |y: Pixels| {
-        Bounds::new(
+    // A band across row `r` at `y` in `colour`: a card's last row's stops above the card's
+    // bottom border, its corners rounded inside the card's (fix round 1).
+    let band_at = |y: Pixels, r: usize, colour: gpui::Hsla| {
+        let last = f.cards.is_some()
+            && map
+                .card_at(r)
+                .and_then(|k| map.card_rows(k))
+                .is_some_and(|card| card.end == r + 1);
+        let (h, round) = if last {
+            (
+                lh - px(code::CARD_BORDER),
+                px(CARD_RADIUS - code::CARD_BORDER),
+            )
+        } else {
+            (lh, px(0.0))
+        };
+        let band = Bounds::new(
             point(bounds.left() + inside, y),
-            size(bounds.size.width - inside * 2.0, lh),
-        )
+            size(bounds.size.width - inside * 2.0, h),
+        );
+        fill(band, colour).corner_radii(gpui::Corners {
+            top_left: px(0.0),
+            top_right: px(0.0),
+            bottom_right: round,
+            bottom_left: round,
+        })
     };
     let mask = ContentMask {
         bounds: Bounds::from_corners(
@@ -3194,8 +3222,7 @@ fn paint_body(
         };
         // The current line's band, first: under the tints, the glow, the selection and matches.
         if f.current_line == Some(i) {
-            let band = band_at(y);
-            window.paint_quad(fill(band, hsla(ui.text).opacity(code::CURRENT_ALPHA)));
+            window.paint_quad(band_at(y, r, hsla(ui.text).opacity(code::CURRENT_ALPHA)));
         }
         let tint = match (row.map(|r| r.kind), change) {
             (Some(RowKind::Removed), _) => Some(bars.deleted),
@@ -3204,8 +3231,7 @@ fn paint_body(
             _ => None,
         };
         if let Some(tint) = tint {
-            let band = band_at(y);
-            window.paint_quad(fill(band, hsla(tint).opacity(TINT)));
+            window.paint_quad(band_at(y, r, hsla(tint).opacity(TINT)));
         }
         // M11af: a line changed on disk in the last minute glows, under the selection and find.
         let run = f.live.as_ref().and_then(|l| l.run_of(i));
@@ -3214,8 +3240,7 @@ fn paint_body(
         let level = run.map(|w| w.level).max(fold.and_then(|(_, s)| s.glow));
         let glow = level.and_then(|l| l.checked_sub(1).and_then(|k| GLOW.get(usize::from(k))));
         if let Some(level) = glow {
-            let band = band_at(y);
-            window.paint_quad(fill(band, hsla(WARM_RGB).opacity(*level)));
+            window.paint_quad(band_at(y, r, hsla(WARM_RGB).opacity(*level)));
         }
         let line_spans = spans.and_then(|s| s.get(i)).map(Vec::as_slice);
         // An unchanged diff row: its colours mixed toward the background, still readable.
@@ -4157,9 +4182,20 @@ impl FileTab {
         Some(diff_parts(d, &self.shown_stretches, &self.closed_cards))
     }
 
-    /// M11ah: the cards' or stretches' shown state changed: the rows are made again.
+    /// M11ah: the cards' or stretches' shown state changed: the rows are made again, the line
+    /// at the top kept where it is (fix round 1: rows shown or hidden above it don't move it).
     fn diff_layout_changed(&mut self, cx: &mut Context<Self>) {
+        let before = self.rows.borrow().as_ref().map(|(_, map)| map.clone());
         self.layout_gen += 1;
+        if let (Some(before), Some(map)) = (before, self.fresh_map(cx)) {
+            let y = f32::from(self.diff_scroll.y);
+            let top = before.row_at(y);
+            let row = rescroll_row(top, Some(&before), &map);
+            // As far into the top row as before (it is the same row, or the first of the
+            // stretch's lines it showed).
+            let into = (y - before.top(top)).clamp(0.0, map.top(row + 1) - map.top(row));
+            self.diff_scroll.y = px(map.top(row) + into);
+        }
         self.refresh_place(cx);
         cx.notify();
     }
@@ -5434,6 +5470,9 @@ impl FileTab {
             self.keep_selection();
             self.drop_find_without_text();
             self.find_again(cx);
+            // M11ah fix round 1: a pinned title is a card of the rows before: worked out again
+            // on the new cards.
+            self.refresh_place(cx);
         }
         cx.notify();
     }
@@ -8133,6 +8172,9 @@ impl FileTab {
         // `set_scroll`: the rows aren't drawn yet, so the last drawing's limits are another
         // text's.
         self.scrolled(cx);
+        // M11ah fix round 1: the place for the new scroll (a title at the top is not pinned),
+        // before this frame's body reads it.
+        self.place = self.place_now(cx);
     }
 }
 
@@ -9062,6 +9104,38 @@ mod tests {
         assert_eq!(by_line.len(), 2);
         // Deleted after (1-based) line 5: the edge above 0-based line 5; after 0: the top.
         assert_eq!(deleted, [0, 5]);
+    }
+
+    /// Fix round 1: a folded stretch at the top stays at the top when the rows are made again
+    /// (Wrap switched): its row in the new map, not the old row's index.
+    #[test]
+    fn rescroll_keeps_a_folded_stretch_at_the_top() {
+        let mut u = String::from("@@ -1,40 +1,41 @@\n");
+        for k in 0..41 {
+            u.push_str(&if k == 20 {
+                "+new\n".to_string()
+            } else {
+                format!(" line {k}\n")
+            });
+        }
+        let rows = crate::diff_view::parse_diff(&u).rows;
+        let grouped = diff_cards::group(&rows);
+        assert_eq!(grouped.stretches.len(), 2);
+        let parts: DiffParts = (Arc::new(grouped), vec![false, false], vec![false]);
+        let layout = DiffLayout {
+            grouped: &parts.0,
+            shown: &parts.1,
+            closed: &parts.2,
+            pairs: None,
+        };
+        let widths = vec![9; 41];
+        let from = RowMap::diff(&widths, None, &layout, 10.0);
+        let to = RowMap::diff(&widths, Some(4), &layout, 10.0);
+        let top = (0..from.len())
+            .find(|&r| from.row(r) == Some(Row::Unchanged { stretch: 1 }))
+            .expect("the second stretch's row");
+        let row = rescroll_row(top, Some(&from), &to);
+        assert_eq!(to.row(row), Some(Row::Unchanged { stretch: 1 }));
     }
 
     #[test]

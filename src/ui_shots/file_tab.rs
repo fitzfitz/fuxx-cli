@@ -5793,6 +5793,13 @@ fn file_diff_cards_scenes() {
             .map(|l| format!("+{l}\n"))
             .collect::<String>()
     );
+    let gone_path = live_file("cards-gone.rs", "");
+    let gone_diff = format!(
+        "diff --git a/cards-gone.rs b/cards-gone.rs\n@@ -1,60 +0,0 @@\n{}",
+        (1..=60)
+            .map(|k| format!("-let g{k} = {k};\n"))
+            .collect::<String>()
+    );
     let dims = size(px(760.0), px(560.0));
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
@@ -5993,7 +6000,34 @@ fn file_diff_cards_scenes() {
         };
         assert!(lane_has(title0, blue), "{n}: card 0's mark in blue");
         assert!(lane_has(title1, green), "{n}: card 1's mark in green");
-        let _ = red;
+        println!("ui-shots: {n} ok");
+
+        // A deleted file (taller than the view): one card, its lane mark red.
+        let n = format!("file-diff-cards-deleted-{slug}");
+        let gone_diff = gone_diff.clone();
+        let (shot, g) = code_shot(&theme, &gone_path, dims, |cx, window, tab| {
+            cards_setup(cx, window, tab, &gone_diff);
+            cx.read(|cx| {
+                let d = tab.read(cx).diff_doc().expect("its rows");
+                assert_eq!(d.grouped.cards.len(), 1, "one card");
+                assert_eq!(d.grouped.cards[0].kind, CardKind::Removed);
+            });
+        });
+        keep_shot(&n, &shot);
+        let lane_x = f32::from(g.bounds.right()) - 2.0;
+        assert!(
+            (0..8).any(|k| live_near(
+                pixel_at(
+                    &shot,
+                    dims,
+                    lane_x,
+                    f32::from(g.bounds.top()) + 0.25 + k as f32 * 0.3
+                ),
+                red,
+                12
+            )),
+            "{n}: its lane mark in red"
+        );
         println!("ui-shots: {n} ok");
 
         // Scrolled into card 1 (taller than the view): its title pinned at the top, on the
@@ -6060,6 +6094,13 @@ fn file_diff_cards_scenes() {
         });
         keep_shot(&n, &shot);
         let left = g.bounds.left() + px(code::CARD_INSET);
+        // Fix round 1: the last row's tint keeps inside the card's rounded bottom corners.
+        let bottom = g.bounds.top() + px(code::CARD_TITLE) + g.line_height * 12.0 - g.scroll.y;
+        let corner = pixel_at(&shot, dims, f32::from(left) + 1.5, f32::from(bottom) - 1.5);
+        assert!(
+            live_near(corner, bg, 4),
+            "{n}: outside the bottom-left corner's arc {corner:?}, not {bg:?}"
+        );
         let y = g.bounds.top() + px(code::CARD_TITLE) + g.line_height * 2.5 - g.scroll.y;
         assert!(
             live_near(
@@ -6208,6 +6249,14 @@ fn file_diff_cards_fold_scenes() {
             None,
             "{n}: scrolled away"
         );
+        // Fix round 1: the card's bottom less than a title's height below the top: not pinned
+        // (the title would hang over what follows the card).
+        scroll_to(cx, end + lh - px(code::CARD_TITLE / 2.0));
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            None,
+            "{n}: not pinned past its card's end"
+        );
         // A press on the pinned title closes the card, its title at the top.
         scroll_to(cx, title1 + lh * 10.0);
         let top = geom(cx).scroll.y;
@@ -6300,6 +6349,100 @@ fn file_diff_cards_fold_scenes() {
         let title1 = cx.read(|cx| tab.read(cx).title_top(1, cx)).expect("card 1");
         let g = geom(cx);
         assert_eq!(g.scroll.y, title1.min(g.max_scroll.y), "{n}: at its card");
+
+        // Fix round 1: pinned inside card 1, then card 0's bar in File mode: Diff at card 0,
+        // nothing pinned.
+        cx.update(|cx| tab.update(cx, |t, cx| t.show_stretch_for_shots(2, cx)));
+        live_frame(cx, window);
+        let title1 = cx.read(|cx| tab.read(cx).title_top(1, cx)).expect("card 1");
+        scroll_to(cx, title1 + lh * 10.0);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            Some(1),
+            "{n}: pinned"
+        );
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        cx.update(|cx| {
+            tab.update(cx, |t, cx| {
+                t.set_changes(vec![(20, LineChange::Changed)], cx);
+            })
+        });
+        live_frame(cx, window);
+        let line19 = cx
+            .read(|cx| tab.read(cx).line_top(19, cx))
+            .expect("line 20");
+        scroll_to(cx, line19 - lh * 2.0);
+        let g = geom(cx);
+        let bar = point(
+            g.bounds.left() + g.bar_left + px(1.5),
+            g.bounds.top() + line19 - g.scroll.y + lh / 2.0,
+        );
+        cx.simulate_click(window, bar, Modifiers::none());
+        live_frame(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).mode()),
+            FileMode::Diff,
+            "{n}: card 0's bar"
+        );
+        let title0 = cx.read(|cx| tab.read(cx).title_top(0, cx)).expect("card 0");
+        assert_eq!(geom(cx).scroll.y, title0, "{n}: card 0's bar: at card 0");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            None,
+            "{n}: nothing pinned at card 0's title"
+        );
+        // Pinned deep in `fn refresh`'s card, a new diff adds a card above it: the pin names
+        // the card under the top, `fn refresh`'s.
+        cx.update(|cx| tab.update(cx, |t, cx| t.show_stretch_for_shots(2, cx)));
+        live_frame(cx, window);
+        let title1 = cx.read(|cx| tab.read(cx).title_top(1, cx)).expect("card 1");
+        scroll_to(cx, title1 + lh * 20.0);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).sticky_title()),
+            Some(1),
+            "{n}: pinned"
+        );
+        let more = unified.replacen(
+            "\n     let a40 = 40;\n",
+            "\n-    let a40 = 40;\n+    let a40 = 4000;\n",
+            1,
+        );
+        assert_ne!(more, unified, "{n}: the second change");
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_diff_for_shots(&more, cx)));
+        live_frame(cx, window);
+        let pinned = cx.read(|cx| {
+            let t = tab.read(cx);
+            let titles = &t.diff_doc().expect("rows").titles;
+            assert_eq!(titles.len(), 3, "{n}: a third card");
+            t.sticky_title().map(|k| titles[k].name.clone())
+        });
+        assert_eq!(
+            pinned.as_deref(),
+            Some("fn refresh(&mut self)"),
+            "{n}: the pin follows its card"
+        );
+
+        // Fix round 1: Show All Unchanged Lines keeps the line at the top where it is.
+        cx.update(|cx| tab.update(cx, |t, cx| t.set_diff_for_shots(&unified, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Diff, cx)));
+        live_frame(cx, window);
+        let line80 = cx
+            .read(|cx| tab.read(cx).line_top(80, cx))
+            .expect("line 81");
+        scroll_to(cx, line80);
+        assert_eq!(geom(cx).scroll.y, line80, "{n}: line 81 at the top");
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_action(Box::new(ShowAllUnchanged), cx);
+        })
+        .expect("the action");
+        live_frame(cx, window);
+        assert_eq!(folds(cx).0, vec![1, 24, 104], "{n}: every stretch shown");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).line_top(80, cx)),
+            Some(geom(cx).scroll.y),
+            "{n}: Show All keeps the line at the top"
+        );
     });
     keep_shot(n, &shot);
     println!("ui-shots: {n} ok");
