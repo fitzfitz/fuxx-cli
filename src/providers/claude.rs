@@ -13,6 +13,7 @@ static INFO: ProviderInfo = ProviderInfo {
     name: "claude",
     label: "Claude",
     badge: "CC",
+    who: ("\u{2733}", "Claude"),
     badge_rgb: 0x7a4a2a,
     interrupts: true,
     modes: &[

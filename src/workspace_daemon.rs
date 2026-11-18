@@ -433,6 +433,7 @@ impl Workspace {
             activity: Default::default(),
             lost: false,
             ssh: saved.ssh,
+            launched: None,
             disconnected: None,
             retries: 0,
             opened_at: Instant::now(),

@@ -1,9 +1,12 @@
-//! Pane tab bars (M11b): a 30 pt bar on top of every pane (even a lone one, as cmux does), in
-//! place of M11's pane headers. Each tab shows an icon (a terminal's `>_`, a browser's globe, a
-//! file's page), its title, and for a terminal whose agent is Working, Waiting or Done its status mark in the
-//! icon's place; × closes it (shown on hover). The tabs float in the bar (M11i): 4 pt from its
-//! top, rounded on top; the active one is the card's colour, so it merges into the pane below
-//! it; a waiting one is tinted. Too many tabs shrink to a minimum width, then the row scrolls
+//! Pane tab bars (M11b): a bar on top of every pane (even a lone one, as cmux does), in place of
+//! M11's pane headers. Since M11al (style E, "minimal") the bar is `TAB_BAR` (52 pt) with no
+//! fill of its own (the card shows through) and a 1 pt `card_border` line along its bottom. Its
+//! tabs float in its middle, `TAB` tall and rounded: each shows an icon tile (a terminal's `>_`,
+//! a browser's globe, a file's page, an agent's provider letters), its title, and after it a
+//! small status dot while its terminal or agent is Working, Waiting or Done; × closes it (shown
+//! on hover). Thin separators stand between the tabs. The shown tab has the accent wash
+//! (`tab_active`; in an unfocused split pane a neutral one, `card_hover`); a waiting one that
+//! isn't shown is tinted. Too many tabs shrink to a minimum width, then the row scrolls
 //! sideways. On the right, pinned: + (a new terminal tab), ⋯ (the pane's actions,
 //! `pane_actions`) and the right sidebar's (M11g; lit while it's open).
 //!
@@ -23,8 +26,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, AnyView, App, Bounds, ClickEvent, Context, CursorStyle, Div, DragMoveEvent,
-    Focusable, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, ScrollHandle, SharedString,
-    Window, canvas, div, point, prelude::*, px,
+    Focusable, FontWeight, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, ScrollHandle,
+    SharedString, Window, canvas, div, point, prelude::*, px, relative,
 };
 
 use crate::appearance::Appearance;
@@ -32,35 +35,35 @@ use crate::block_view::BlockDrag;
 use crate::drag_gap::{self, Slid};
 use crate::layout_model::{Pane, PaneId, TabDrop, TabId, TabKind};
 use crate::restore::{Launch, SavedSession};
-use crate::sidebar::{AGENT_MARK, mark_size, mark_slot};
+use crate::sidebar::AGENT_MARK;
 use crate::sidebar_toggle::Tip;
 use crate::split_tree::Axis;
 use crate::status::{self, Status};
 use crate::status_mark;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
-use crate::ui_tokens::size::{CARD_RADIUS, FOCUS_RING, TAB_BAR, TAB_TOP_GAP, TABS_LEFT};
+use crate::ui_tokens::MARK_MIN;
+use crate::ui_tokens::size::{HAIRLINE, TAB_BAR, TABS_LEFT};
 use crate::ui_tokens::text;
 use crate::workspace::{At, Renaming, Workspace};
 use crate::workspace_ssh::Place;
 
 /// A tab's width: it shrinks from the most toward the least as tabs are added, then the row
 /// scrolls.
-pub const TAB_MIN_WIDTH: f32 = 90.0;
-pub const TAB_MAX_WIDTH: f32 = 200.0;
+pub const TAB_MIN_WIDTH: f32 = 100.0;
+pub const TAB_MAX_WIDTH: f32 = 220.0;
 /// A browser tab's title until it shows a page.
 pub const BROWSER_TITLE: &str = "New tab";
 
-/// What a tab shows left of its title.
+/// What a tab's icon tile shows, left of its title (M11al: whatever its status; the status dot
+/// follows the title).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabIcon {
     Terminal,
     Globe,
     /// A file tab's (M11g): a page with a folded corner.
     File,
-    /// A terminal's status mark, while it is anything but Idle.
-    Mark(Status),
-    /// An agent tab's (M11aa): its provider's badge, two letters on its colour.
+    /// An agent tab's (M11aa): its provider's badge, two letters in its colour.
     Agent {
         badge: &'static str,
         rgb: u32,
@@ -104,8 +107,8 @@ pub struct BarTab {
     pub preview: bool,
 }
 
-/// The icon for a tab of `kind` whose terminal (if any) is `status`.
-pub fn icon(kind: &TabKind, status: Status) -> TabIcon {
+/// The icon for a tab of `kind`.
+pub fn icon(kind: &TabKind) -> TabIcon {
     match kind {
         TabKind::Browser { .. } => TabIcon::Globe,
         TabKind::File { .. } => TabIcon::File,
@@ -113,8 +116,7 @@ pub fn icon(kind: &TabKind, status: Status) -> TabIcon {
             let (_, badge, rgb) = crate::workspace_agent::provider_look(provider);
             TabIcon::Agent { badge, rgb }
         }
-        TabKind::Terminal(_) if status == Status::Idle => TabIcon::Terminal,
-        TabKind::Terminal(_) => TabIcon::Mark(status),
+        TabKind::Terminal(_) => TabIcon::Terminal,
     }
 }
 
@@ -179,7 +181,7 @@ pub fn bar_tabs(
                     badge: f.badge,
                     rgb: f.rgb,
                 },
-                _ => icon(&t.kind, status),
+                _ => icon(&t.kind),
             };
             BarTab {
                 tab: t.id,
@@ -240,29 +242,75 @@ pub fn gap_for_slot(slot: usize, own: Option<usize>) -> usize {
 /// How a tab is drawn.
 #[derive(Debug, PartialEq)]
 pub struct Look {
-    /// Its fill; none: the bar's own.
+    /// Its fill; none: the card shows through.
     pub fill: Option<Rgb>,
     /// Its fill under the pointer; none: no change.
     pub hover: Option<Rgb>,
     pub text: Rgb,
 }
 
-/// The look of a tab with `status`, `active` in its pane or not, in the focused pane or not (the
-/// same either way since M11i: the focus ring shows the focused pane). The active tab is the
-/// card's colour, so it merges into the pane below it, with full text; the others have no fill,
-/// dim text and the bar's hover shade. A waiting tab that isn't shown is tinted.
-pub fn look(ui: &UiColors, status: Status, active: bool, _pane_focused: bool) -> Look {
+/// The look of a tab with `status`, `active` in its pane or not, in the focused pane or not
+/// (M11al §3.3, §4.2). The shown tab has full text and a wash: the accent's (`tab_active`) in
+/// the focused pane, a neutral one (`card_hover`) in another (no per-pane ring shows the focus
+/// now). The others have no fill (the card shows through), faint text and the card's hover
+/// shade; a waiting one keeps its tint.
+pub fn look(ui: &UiColors, status: Status, active: bool, pane_focused: bool) -> Look {
     let waiting = status == Status::Waiting;
     let (fill, hover) = match (active, waiting) {
-        (true, _) => (Some(ui.card), None),
-        (false, false) => (None, Some(ui.tab_hover)),
+        (true, _) if pane_focused => (Some(ui.tab_active), None),
+        (true, _) => (Some(ui.card_hover), None),
+        (false, false) => (None, Some(ui.card_hover)),
         (false, true) => (Some(ui.waiting_tint), Some(ui.waiting_hover)),
     };
     Look {
         fill,
         hover,
-        text: if active { ui.text } else { ui.text_dim },
+        text: if active { ui.text } else { ui.text_faint },
     }
+}
+
+/// The colour of the glyph in a tab's icon tile (M11al §4.3): a terminal's and a browser's the
+/// accent, a file's `text_dim`, an agent's its provider's colour, held to `MARK_MIN` on the tile.
+pub fn tile_ink(ui: &UiColors, icon: TabIcon) -> Rgb {
+    match icon {
+        TabIcon::Terminal | TabIcon::Globe => ui.accent,
+        TabIcon::File => ui.text_dim,
+        TabIcon::Agent { rgb, .. } => {
+            let provider = Rgb {
+                r: (rgb >> 16) as u8,
+                g: (rgb >> 8) as u8,
+                b: rgb as u8,
+            };
+            crate::theme::readable(provider, &[ui.card_lift], MARK_MIN)
+        }
+    }
+}
+
+/// A tab's icon tile (M11al §4.3): `TILE` square, `TILE_RADIUS` corners, `card_lift`, its glyph
+/// (`TILE_GLYPH`; an agent's provider letters) in the middle in `tile_ink`.
+fn tile(icon: TabIcon, ui: &UiColors) -> Div {
+    let ink = tile_ink(ui, icon);
+    let line = |kind| footer_glyph(kind, ink, TILE_GLYPH, STROKE).into_any_element();
+    let inside = match icon {
+        TabIcon::Terminal => line(Glyph::Terminal),
+        TabIcon::Globe => line(Glyph::Globe),
+        TabIcon::File => line(Glyph::File),
+        TabIcon::Agent { badge, .. } => div()
+            .text_size(px(TILE_GLYPH))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(hsla(ink))
+            .child(badge)
+            .into_any_element(),
+    };
+    div()
+        .flex_none()
+        .size(px(TILE))
+        .rounded(px(TILE_RADIUS))
+        .bg(hsla(ui.card_lift))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(inside)
 }
 
 /// The bar's buttons, left to right after the tabs.
@@ -311,8 +359,9 @@ pub(crate) struct TabGrab {
     pub width: f32,
 }
 
-/// The tab that follows the pointer during a drag: a chip as big as the tab, with its icon (or
-/// mark) and title, drawn where the tab was grabbed (the pointer stays on the spot it took).
+/// The tab that follows the pointer during a drag (M11al §4.7): a chip as big as the tab
+/// (`TAB` tall, `TAB_RADIUS` corners), with its tile and title on `panel`, edged and shadowed,
+/// drawn where the tab was grabbed (the pointer stays on the spot it took).
 struct TabChip {
     title: SharedString,
     icon: TabIcon,
@@ -322,36 +371,24 @@ struct TabChip {
 impl Render for TabChip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
-        let icon: AnyElement = match self.icon {
-            TabIcon::Mark(status) => {
-                status_mark::mark_on(status, &ui, 0.0, None, px(mark_size(status)), ui.panel)
-                    .into_any_element()
-            }
-            TabIcon::Globe => glyph(Glyph::Globe, ui.text).into_any_element(),
-            TabIcon::File => glyph(Glyph::File, ui.text).into_any_element(),
-            TabIcon::Terminal => glyph(Glyph::Terminal, ui.text).into_any_element(),
-            TabIcon::Agent { badge, rgb } => {
-                crate::workspace_agent::agent_badge(badge, rgb, AGENT_BADGE).into_any_element()
-            }
-        };
         div()
             .flex()
             .flex_row()
             .items_center()
             .w(px(self.width))
-            .h(px(TAB_BAR - TAB_TOP_GAP))
-            .pl(px(TAB_PAD_LEFT))
-            .pr(px(TAB_PAD_RIGHT + CLOSE))
-            .gap(px(TAB_GAP))
-            .rounded(px(4.0))
+            .h(px(TAB))
+            .pl(px(TAB_PAD))
+            .pr(px(TAB_PAD + CLOSE))
+            .gap(px(PART_GAP))
+            .rounded(px(TAB_RADIUS))
             .opacity(0.95)
             .shadow_md()
             .bg(hsla(ui.panel))
             .border_1()
             .border_color(hsla(ui.panel_border))
-            .text_size(px(text::NAME))
+            .text_size(px(text::UI))
             .text_color(hsla(ui.text))
-            .child(mark_slot(icon))
+            .child(tile(self.icon, &ui))
             .child(
                 div()
                     .flex_1()
@@ -362,20 +399,32 @@ impl Render for TabChip {
     }
 }
 
-/// A tab's side padding and the gap between its parts; the × button's side; its top corners.
-const TAB_PAD_LEFT: f32 = 8.0;
-const TAB_PAD_RIGHT: f32 = 4.0;
-const TAB_GAP: f32 = 6.0;
-const CLOSE: f32 = 16.0;
-/// An agent tab's badge (M11aa).
-const AGENT_BADGE: f32 = 16.0;
-pub(crate) const TAB_RADIUS: f32 = 6.0;
-/// A button, its icon box, and the gap between buttons and around them.
-pub(crate) const BUTTON: f32 = 20.0;
+/// M11al's minimal tabs (E, §4): a tab's height, corners, side padding and the gap between its
+/// parts; the separator after each tab but the last (1 × 16 `card_border`, `SEPARATOR_ROOM`
+/// clear on each side), which its place in the row holds (`AFTER`); the icon tile, its corners
+/// and its glyph; the status dot after the title; the ×.
+pub(crate) const TAB: f32 = 34.0;
+pub(crate) const TAB_RADIUS: f32 = 8.0;
+pub(crate) const TAB_PAD: f32 = 12.0;
+pub(crate) const PART_GAP: f32 = 8.0;
+pub(crate) const SEPARATOR: (f32, f32) = (1.0, 16.0);
+pub(crate) const SEPARATOR_ROOM: f32 = 4.0;
+const AFTER: f32 = 2.0 * SEPARATOR_ROOM + SEPARATOR.0;
+pub(crate) const TILE: f32 = 20.0;
+const TILE_RADIUS: f32 = 6.0;
+const TILE_GLYPH: f32 = 11.5;
+pub(crate) const STATUS_DOT: f32 = 8.0;
+pub(crate) const CLOSE: f32 = 16.0;
+/// A bar button, its glyph (drawn with the title area's line width) and the gap between
+/// buttons and around them.
+pub(crate) const BUTTON: f32 = 28.0;
+pub(crate) const BUTTON_ICON: f32 = 16.0;
+const BUTTON_STROKE: f32 = 1.5;
+pub(crate) const BUTTON_GAP: f32 = 4.0;
+pub(crate) const BUTTONS_PAD: f32 = 10.0;
+/// The line icons' drawing box (12 units, scaled to the box they are drawn in) and their line
+/// width in it.
 pub(crate) const ICON: f32 = 12.0;
-const BUTTON_GAP: f32 = 2.0;
-const BUTTONS_PAD: f32 = 4.0;
-/// The icons' line width.
 const STROKE: f32 = 1.25;
 
 impl Workspace {
@@ -448,16 +497,17 @@ impl Workspace {
             None => vec![0.0; tabs.len()],
         };
         let animate = !cx.reduce_motion();
+        let count = tabs.len();
         let row = div()
             .id(("pane-tabs", pane.0 as usize))
             .flex()
             .flex_row()
+            .items_center()
             .flex_1()
             .min_w(px(0.0))
             .h_full()
-            // The tabs float 4 pt under the bar's top, flush with its bottom (M11i); the first
-            // starts `TABS_LEFT` in from the card's edge, as the right sidebar's panel tabs.
-            .pt(px(TAB_TOP_GAP))
+            // The tabs float in the bar's middle (M11al); the first starts `TABS_LEFT` in from
+            // the card's edge, as the right sidebar's panel tabs.
             .pl(px(TABS_LEFT))
             .overflow_x_scroll()
             .track_scroll(&scroll)
@@ -469,14 +519,15 @@ impl Workspace {
                         // As last laid out, for its drag chip.
                         let width = scroll
                             .bounds_for_item(i)
-                            .map_or(TAB_MAX_WIDTH, |b| f32::from(b.size.width));
+                            .map_or(TAB_MAX_WIDTH + AFTER, |b| f32::from(b.size.width));
                         let offset = self.drag_slides.borrow_mut().offset(
                             Slid::Tab(tab.tab),
                             target,
                             now,
                             animate,
                         );
-                        self.render_tab(tab, ui, focused, offset, width, cx)
+                        let last = i + 1 == count;
+                        self.render_tab(tab, ui, focused, offset, width, last, cx)
                     }),
             )
             // What the tabs leave empty; it takes no space once they fill the row.
@@ -516,9 +567,9 @@ impl Workspace {
                 .flex_none()
                 .w_full()
                 .h(px(TAB_BAR))
-                .bg(hsla(ui.tab_bar))
-                // The top of its pane's card (M11i): rounded as the inside of the card's edge.
-                .rounded_t(px(CARD_RADIUS - FOCUS_RING))
+                // No fill (M11al §4.1): the card shows through, so the bar needs no rounding at
+                // the card's corner either.
+                .relative()
                 // A press on the bar's empty part focuses its pane (a tab's own press selects it;
                 // one in a rename box stays there).
                 .on_mouse_down(
@@ -547,6 +598,17 @@ impl Workspace {
                 }))
                 .child(row)
                 .child(buttons)
+                // Its 1 pt `card_border` line along its bottom, over the bar's last row of
+                // pixels (out of the layout, so the tabs stay in the bar's middle).
+                .child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .w_full()
+                        .h(px(HAIRLINE))
+                        .bg(hsla(ui.card_border)),
+                )
                 .into_any_element(),
         )
     }
@@ -571,11 +633,13 @@ impl Workspace {
         scroll.clone()
     }
 
-    /// One tab: its icon (or mark), its title (or the rename box), × on hover; rounded on top
-    /// (so the first sits inside its card's rounded corner). It can be dragged (a press and a
-    /// move of a few pixels; a click stays a click): its chip, `width` wide, is it meanwhile,
-    /// and its place shows empty. It is drawn `offset` px right of its place (out of a dragged tab's way;
-    /// its place in the row, which the drop rules measure, stays where it is).
+    /// One tab (M11al §4.2): its icon tile, its title (or the rename box), its status dot, × on
+    /// hover; `TAB` tall, rounded, floating in the bar's middle; after it (unless `last`) a
+    /// separator. It can be dragged (a press and a move of a few pixels; a click stays a click):
+    /// its chip is it meanwhile, and its place shows empty. Its place is `width` wide (the tab and
+    /// the separator's room, `AFTER`). It is drawn `offset` px right of its place (out of a
+    /// dragged tab's way; its place in the row, which the drop rules measure, stays where it is).
+    #[allow(clippy::too_many_arguments)]
     fn render_tab(
         &self,
         tab: BarTab,
@@ -583,53 +647,44 @@ impl Workspace {
         pane_focused: bool,
         offset: f32,
         width: f32,
+        last: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let look = look(&ui, tab.status, tab.active, pane_focused);
-        let surface = look.fill.unwrap_or(ui.tab_bar);
+        let shown = tab.active;
+        let surface = look.fill.unwrap_or(ui.card);
         let id = tab.tab;
         let group: SharedString = format!("pane-tab-{}", id.0).into();
         let session = tab
             .terminal
             .and_then(|t| self.sessions.items().iter().find(|s| s.id == t));
-        let icon: AnyElement = match (tab.icon, session) {
-            (TabIcon::Mark(_), Some(session)) => self.session_mark("tab", session, ui, surface, cx),
-            (TabIcon::Mark(status), None) => status_mark::mark_on(
-                status,
-                &ui,
-                self.phase(cx),
-                None,
-                px(mark_size(status)),
-                surface,
-            )
-            .into_any_element(),
-            (TabIcon::Globe, _) => glyph(Glyph::Globe, look.text).into_any_element(),
-            (TabIcon::File, _) => glyph(Glyph::File, look.text).into_any_element(),
-            (TabIcon::Terminal, _) => glyph(Glyph::Terminal, look.text).into_any_element(),
-            (TabIcon::Agent { badge, rgb }, _) => {
-                crate::workspace_agent::agent_badge(badge, rgb, AGENT_BADGE).into_any_element()
-            }
+        // Its status dot after its title (M11al §4.4), unless Idle: a terminal's (its `sN`) or
+        // an agent tab's (R2: `AGENT_MARK`, its `aN`). Working's turning arc and Waiting's
+        // breathing dot are their own views, which the marks' clock turns (M11p); Done is the
+        // muted ✓ in `text_dim` (drawn still, as the sidebar's).
+        let marked = match (session, self.agents.get(&tab.tab)) {
+            (Some(s), _) => Some(("tab", s.id, s.status)),
+            (None, Some(slot)) => Some((AGENT_MARK, slot.id, slot.status)),
+            (None, None) => None,
         };
-        // An agent tab's status mark, after its title (its badge is its icon), unless Idle: its
-        // own view (R2: `AGENT_MARK`, its `aN`), which the marks' ticker turns.
-        let agent_mark = self
-            .agents
-            .get(&tab.tab)
-            .filter(|slot| slot.status != Status::Idle)
-            .map(|slot| {
-                let size = mark_size(slot.status);
-                let mark = self.status_mark(
-                    AGENT_MARK,
-                    slot.id,
-                    slot.status,
-                    slot.pop,
-                    ui,
-                    surface,
-                    size,
-                    cx,
-                );
-                mark_slot(mark)
-            });
+        let dot = marked.and_then(|(place, key, status)| {
+            let mark = match status {
+                Status::Idle => return None,
+                Status::Done => {
+                    status_mark::done_check(ui.text_dim, px(STATUS_DOT)).into_any_element()
+                }
+                _ => self.mark_view(place, key, status, px(STATUS_DOT), surface, cx),
+            };
+            Some(
+                div()
+                    .flex_none()
+                    .size(px(STATUS_DOT))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(mark),
+            )
+        });
         let rename_box = self
             .renaming
             .as_ref()
@@ -681,30 +736,40 @@ impl Workspace {
         let (source, rows) = (self.tab_drag.clone(), self.sidebar.drag_source.clone());
         let (chip_title, chip_icon) = (tab.title.clone(), tab.icon);
         let attachable = self.agents.get(&id).is_some_and(|slot| slot.attachable);
+        let tile = tile(tab.icon, &ui);
+        // The gap between two parts: `PART_GAP`, giving way (down to none) only once the title
+        // is gone, so a shown tab squeezed into a narrow pane keeps its tile, dot and × whole.
+        let part_gap = || {
+            div()
+                .flex_basis(px(PART_GAP))
+                .flex_shrink_1()
+                .min_w(px(0.0))
+        };
         let tab = div()
             .id(("pane-tab", id.0 as usize))
             .group(group)
-            .absolute()
-            .top_0()
-            .left(px(offset))
-            .size_full()
+            .flex_1()
+            .min_w(px(0.0))
+            .h_full()
             .flex()
             .flex_row()
             .items_center()
-            .pl(px(TAB_PAD_LEFT))
-            .pr(px(TAB_PAD_RIGHT))
-            .gap(px(TAB_GAP))
-            .rounded_t(px(TAB_RADIUS))
-            .text_size(px(text::NAME))
+            .px(px(TAB_PAD))
+            .rounded(px(TAB_RADIUS))
+            .text_size(px(text::UI))
             .text_color(hsla(look.text))
             .when_some(look.fill, |t, fill| t.bg(hsla(fill)))
             .when_some(look.hover, |t, hover| t.hover(move |s| s.bg(hsla(hover))))
-            .child(mark_slot(icon))
+            .child(tile)
+            .child(part_gap())
             .child(title)
-            .children(agent_mark)
+            .children(
+                dot.map(|dot| [part_gap().into_any_element(), dot.into_any_element()])
+                    .into_iter()
+                    .flatten(),
+            )
+            .child(part_gap())
             .child(close)
-            // Its chip is it while it's dragged: its place shows empty.
-            .when(lifted, |t| t.opacity(0.0))
             .on_drag(DraggedTab { tab: id }, move |dragged, at, window, cx| {
                 source.set(Some(TabGrab {
                     tab: dragged.tab,
@@ -716,7 +781,7 @@ impl Workspace {
                 cx.new(|_| TabChip {
                     title: chip_title.clone(),
                     icon: chip_icon,
-                    width,
+                    width: width - AFTER,
                 })
             })
             // Its press is its own (not the bar's, which only focuses the pane).
@@ -763,15 +828,56 @@ impl Workspace {
                     .unwrap_or_else(|| tip.clone());
                 cx.new(|_| Tip(now.into())).into()
             });
-        // Its place in the row: the size the row gives it, where the tab is drawn from.
-        div()
-            .relative()
-            .flex_basis(px(TAB_MAX_WIDTH))
-            .flex_shrink_1()
-            .min_w(px(TAB_MIN_WIDTH))
-            .max_w(px(TAB_MAX_WIDTH))
+        // The separator after it (M11al §4.2): 1 × 16 `card_border` in the middle of its room.
+        let separator = div()
+            .flex_none()
+            .w(px(AFTER))
             .h_full()
-            .child(tab)
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(!last, |room| {
+                room.child(
+                    div()
+                        .w(px(SEPARATOR.0))
+                        .h(px(SEPARATOR.1))
+                        .bg(hsla(ui.card_border)),
+                )
+            });
+        // Its place in the row: the size the row gives it (the tab and the separator's room),
+        // `TAB` tall in the bar's middle; the tab and its separator are drawn from it, slid by
+        // `offset`. Its chip is it while it's dragged: its place shows empty. At least
+        // `TAB_MIN_WIDTH` (then the row scrolls); but the shown tab, in a row narrower than that,
+        // fits the row (its title gives way): its minimum is its content's (a strut that wide),
+        // held to the row's width by its `max_w` (taffy's automatic minimum size of a flex item,
+        // css-flexbox-1 §4.5, clamps the content size by the max size).
+        let place = div()
+            .relative()
+            .flex_basis(px(TAB_MAX_WIDTH + AFTER))
+            .flex_shrink_1()
+            .h(px(TAB));
+        let place = if shown {
+            place
+                .max_w(relative(1.0))
+                .child(div().w(px(TAB_MIN_WIDTH + AFTER)).h(px(0.0)))
+        } else {
+            place
+                .min_w(px(TAB_MIN_WIDTH + AFTER))
+                .max_w(px(TAB_MAX_WIDTH + AFTER))
+        };
+        place
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left(px(offset))
+                    .size_full()
+                    .flex()
+                    .flex_row()
+                    .when(lifted, |t| t.opacity(0.0))
+                    .child(tab)
+                    .child(separator),
+            )
             .into_any_element()
     }
 
@@ -997,9 +1103,10 @@ pub(crate) fn hold_closed_hand(window: &Window, cx: &mut App) {
     });
 }
 
-/// One of a bar's buttons: its icon, dim until hovered; a disabled one stays faint and only
-/// says why. A `lit` one (the right sidebar's while it's open, ⋯ while its menu is) is drawn as
-/// hovered all the time: its icon in the text colour on the bar's hover shade. ⋯ opens its menu
+/// One of a bar's buttons (M11al §4.6: `BUTTON` square, its `BUTTON_ICON` glyph): its icon
+/// faint until hovered; a disabled one stays faint and only says why. A `lit` one (the right
+/// sidebar's while it's open, ⋯ while its menu is) is drawn as hovered all the time: its icon
+/// in the text colour on the card's hover shade. ⋯ opens its menu
 /// under itself, right edges together (it knows where it is from its last paint).
 fn render_button(
     pane: PaneId,
@@ -1012,7 +1119,7 @@ fn render_button(
     let group: SharedString = format!("tab-bar-button-{}-{}", pane.0, button as usize).into();
     let (dim, lit) = match (on, lit_up) {
         (true, true) => (ui.text, ui.text),
-        (true, false) => (ui.text_dim, ui.text),
+        (true, false) => (ui.text_faint, ui.text),
         (false, _) => (ui.text_faint, ui.text_faint),
     };
     let kind = match button {
@@ -1026,14 +1133,14 @@ fn render_button(
     let place = placed.clone();
     let icon = div()
         .relative()
-        .size(px(ICON))
+        .size(px(BUTTON_ICON))
         .child(
-            glyph(kind, dim)
+            footer_glyph(kind, dim, BUTTON_ICON, BUTTON_STROKE)
                 .absolute()
                 .group_hover(group.clone(), |s| s.invisible()),
         )
         .child(
-            glyph(kind, lit)
+            footer_glyph(kind, lit, BUTTON_ICON, BUTTON_STROKE)
                 .absolute()
                 .invisible()
                 .group_hover(group.clone(), |s| s.visible()),
@@ -1048,10 +1155,10 @@ fn render_button(
             .relative()
             .size(px(BUTTON))
             .rounded(px(4.0))
-            .when(on && lit_up, |b| b.bg(hsla(ui.tab_hover)))
+            .when(on && lit_up, |b| b.bg(hsla(ui.card_hover)))
             .when(on, |b| {
                 b.cursor_pointer()
-                    .hover(move |s| s.bg(hsla(ui.tab_hover)))
+                    .hover(move |s| s.bg(hsla(ui.card_hover)))
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, window, cx| match button {
                             BarButton::NewTerminal => this.new_terminal_tab(pane, true, window, cx),
@@ -1751,15 +1858,12 @@ mod tests {
     }
 
     #[test]
-    fn a_busy_terminal_shows_its_mark_an_idle_one_its_icon_a_browser_a_globe() {
-        let t = TabKind::Terminal(1);
-        assert_eq!(icon(&t, Status::Idle), TabIcon::Terminal);
-        for s in [Status::Working, Status::Waiting, Status::Done] {
-            assert_eq!(icon(&t, s), TabIcon::Mark(s));
-        }
-        let b = TabKind::Browser { url: None };
-        assert_eq!(icon(&b, Status::Idle), TabIcon::Globe);
-        assert_eq!(icon(&b, Status::Waiting), TabIcon::Globe);
+    fn a_terminal_keeps_its_icon_whatever_its_status_a_browser_a_globe() {
+        // M11al: the status mark no longer takes the icon's place (it follows the title), so
+        // the icon depends on the kind only (and a busy terminal's tab keeps `>_`, see
+        // `bar_tabs_follow_the_pane_in_order_with_titles_icons_and_the_active_one`).
+        assert_eq!(icon(&TabKind::Terminal(1)), TabIcon::Terminal);
+        assert_eq!(icon(&TabKind::Browser { url: None }), TabIcon::Globe);
     }
 
     #[test]
@@ -1848,7 +1952,7 @@ mod tests {
             [
                 TabIcon::Terminal,
                 TabIcon::Globe,
-                TabIcon::Mark(Status::Waiting),
+                TabIcon::Terminal,
                 TabIcon::Terminal
             ]
         );
@@ -1885,47 +1989,105 @@ mod tests {
     }
 
     #[test]
-    fn the_active_tab_takes_the_card_colour_and_has_no_top_line() {
-        let ui = ui();
-        // In the focused pane or not, the same: it merges into the card below it (the focus
-        // ring, not the tab, shows the focused pane).
-        for focused in [true, false] {
-            let active = look(&ui, Status::Idle, true, focused);
-            assert_eq!(
-                active,
-                Look {
-                    fill: Some(ui.card),
-                    hover: None,
-                    text: ui.text,
-                }
+    fn tile_glyphs_take_their_kind_s_colour() {
+        // M11al §4.3: a terminal's and a browser's glyph in the accent, a file's in `text_dim`,
+        // an agent's in its provider's colour, held to the marks' floor on the tile.
+        for (name, theme) in crate::theme::every_theme() {
+            let ui = theme.ui();
+            assert_eq!(tile_ink(&ui, TabIcon::Terminal), ui.accent, "{name}");
+            assert_eq!(tile_ink(&ui, TabIcon::Globe), ui.accent, "{name}");
+            assert_eq!(tile_ink(&ui, TabIcon::File), ui.text_dim, "{name}");
+            let agent = TabIcon::Agent {
+                badge: "CC",
+                rgb: 0x7a4a2a,
+            };
+            let ink = tile_ink(&ui, agent);
+            let floor = crate::ui_tokens::MARK_MIN;
+            assert!(
+                crate::ui_tokens::contrast(ink, ui.card_lift) >= floor,
+                "{name}: {ink:?} on the tile"
             );
-        }
-        // An inactive tab: no fill (the bar's), dim text, the bar's hover shade.
-        for focused in [true, false] {
-            let other = look(&ui, Status::Working, false, focused);
+            let brown = Rgb {
+                r: 0x7a,
+                g: 0x4a,
+                b: 0x2a,
+            };
             assert_eq!(
-                other,
-                Look {
-                    fill: None,
-                    hover: Some(ui.tab_hover),
-                    text: ui.text_dim,
-                }
+                ink,
+                crate::theme::readable(brown, &[ui.card_lift], floor),
+                "{name}"
             );
         }
     }
 
     #[test]
-    fn a_waiting_tab_is_tinted_active_or_not() {
+    fn look_active_focused_is_tab_active() {
         let ui = ui();
-        let other = look(&ui, Status::Waiting, false, true);
-        assert_eq!(other.fill, Some(ui.waiting_tint));
-        assert_eq!(other.hover, Some(ui.waiting_hover));
-        assert_eq!(other.text, ui.text_dim);
-        // The active one merges into its card like any active tab.
-        let active = look(&ui, Status::Waiting, true, true);
-        assert_eq!(active.fill, Some(ui.card));
-        assert_eq!(active.hover, None);
-        assert_eq!(active.text, ui.text);
+        // M11al: the focused pane's shown tab has the accent wash, full text, no hover change.
+        for status in [Status::Idle, Status::Working, Status::Waiting, Status::Done] {
+            assert_eq!(
+                look(&ui, status, true, true),
+                Look {
+                    fill: Some(ui.tab_active),
+                    hover: None,
+                    text: ui.text,
+                },
+                "{status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn look_active_unfocused_is_card_hover() {
+        let ui = ui();
+        // An unfocused split pane's shown tab: a neutral wash (no per-pane ring, M11al §3.3).
+        for status in [Status::Idle, Status::Waiting] {
+            assert_eq!(
+                look(&ui, status, true, false),
+                Look {
+                    fill: Some(ui.card_hover),
+                    hover: None,
+                    text: ui.text,
+                },
+                "{status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn look_inactive_has_no_fill_and_faint_text() {
+        let ui = ui();
+        // No fill (the card shows through), faint text, the card's hover shade; in the focused
+        // pane or not.
+        for focused in [true, false] {
+            for status in [Status::Idle, Status::Working, Status::Done] {
+                assert_eq!(
+                    look(&ui, status, false, focused),
+                    Look {
+                        fill: None,
+                        hover: Some(ui.card_hover),
+                        text: ui.text_faint,
+                    },
+                    "{status:?}, focused {focused}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn look_waiting_inactive_keeps_its_tint() {
+        let ui = ui();
+        for focused in [true, false] {
+            assert_eq!(
+                look(&ui, Status::Waiting, false, focused),
+                Look {
+                    fill: Some(ui.waiting_tint),
+                    hover: Some(ui.waiting_hover),
+                    text: ui.text_faint,
+                },
+                "focused {focused}"
+            );
+        }
     }
 
     #[test]
@@ -2043,8 +2205,7 @@ mod tests {
             path: "/w/api/src/main.rs".into(),
             mode: crate::layout_model::FileMode::Plain,
         };
-        assert_eq!(icon(&file, Status::Idle), TabIcon::File);
-        assert_eq!(icon(&file, Status::Waiting), TabIcon::File);
+        assert_eq!(icon(&file), TabIcon::File);
         let pane = Pane {
             id: crate::layout_model::PaneId(1),
             tabs: vec![

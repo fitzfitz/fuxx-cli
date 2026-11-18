@@ -851,7 +851,7 @@ mod tests {
     use crate::ui_tokens::reader::{MEASURE, OUTLINE_GAP, OUTLINE_W};
 
     /// "On this page" shows as a column (plan-time call 13) from the prose column, the side
-    /// padding each side, the gap and the outline (760 pt with today's padding).
+    /// padding each side, the gap and the outline (784 pt with M11al's 28 pt padding).
     #[test]
     fn the_outline_column_shows_from_the_column_padding_gap_and_outline() {
         let from = MEASURE + 2.0 * TERMINAL_PADDING.0 + OUTLINE_GAP + OUTLINE_W;

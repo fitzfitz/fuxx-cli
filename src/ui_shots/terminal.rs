@@ -1444,8 +1444,11 @@ fn command_blocks_alt_screen_scene() {
 /// the chip's buttons short (`Cmd`, `Output`, `Rerun`), the chip one row tall and inside the
 /// pane.
 fn command_blocks_narrow_scene() {
-    // 12 pt of split padding each side: a 200 pt grid area.
-    let dims = size(px(224.0), px(240.0));
+    // The split's padding each side (a token): a 200 pt grid area.
+    let dims = size(
+        px(200.0 + 2.0 * crate::ui_tokens::size::SPLIT_TERMINAL_PADDING.0),
+        px(240.0),
+    );
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();

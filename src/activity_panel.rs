@@ -30,7 +30,7 @@ use crate::activity::{
 use crate::cli;
 use crate::layout_model::TabId;
 use crate::procs::ProgramState;
-use crate::right_sidebar::{EDGE, Panel, SMALL, TEXT, TITLE, header_row, note};
+use crate::right_sidebar::{EDGE, Panel, SECTION_SIDE, SMALL, TEXT, TITLE, header_row, note};
 use crate::sidebar::tabular;
 use crate::sidebar_toggle::Tip;
 use crate::status::Status;
@@ -41,6 +41,9 @@ use crate::ui_tokens::TEXT_MIN;
 use crate::workspace::{Session, Workspace};
 use crate::workspace_agent::AgentSlot;
 
+/// The Activity header's height (part 4): the name and its status pill, a hairline under it. It
+/// has no repo card, so it is not the Files panel's `right_sidebar::HEADER` (54), as before M11al.
+pub(crate) const HEADER: f32 = 42.0;
 pub(crate) const NO_ACTIVITY: &str = "No activity yet.";
 pub(crate) const NO_TERMINAL: &str = "No terminal to follow.";
 /// An event (part 4): the rail's width and the room after it, the dot and its room above,
@@ -63,8 +66,8 @@ const QUESTION_PAD_Y: f32 = 8.0;
 const QUESTION_CORNER: f32 = 8.0;
 const QUESTION_TEXT: f32 = 13.0;
 /// A day's heading: its room above and below.
-const DAY_TOP: f32 = 10.0;
-const DAY_BELOW: f32 = 4.0;
+const DAY_TOP: f32 = 16.0;
+const DAY_BELOW: f32 = crate::right_sidebar::SECTION_BELOW;
 /// The header's pill: its padding and how much of its colour tints its fill.
 const PILL_PAD_X: f32 = 8.0;
 const PILL_PAD_Y: f32 = 2.0;
@@ -200,7 +203,7 @@ fn dot_ink(mark: RowMark, ui: &UiColors) -> Rgb {
 fn day_row(words: &str, ui: &UiColors) -> AnyElement {
     div()
         .w_full()
-        .px(px(EDGE))
+        .px(px(SECTION_SIDE))
         .pt(px(DAY_TOP))
         .pb(px(DAY_BELOW))
         .text_size(px(SMALL))
@@ -320,7 +323,7 @@ fn activity_header_element(
     ui: &UiColors,
 ) -> AnyElement {
     let (fill, ink) = pill_inks(status, ui);
-    let row = header_row()
+    let row = header_row(HEADER)
         .child(
             div()
                 .flex_1()
@@ -529,6 +532,13 @@ mod tests {
     use super::*;
     use crate::ui_tokens::{MARK_MIN, contrast};
     use std::time::Duration;
+
+    /// The header has no repo card: it keeps its own 42, not the Files panel's 54.
+    #[test]
+    fn the_header_is_42_not_the_repo_cards() {
+        assert_eq!(HEADER, 42.0);
+        assert_ne!(HEADER, crate::right_sidebar::HEADER);
+    }
 
     #[test]
     fn only_the_rows_asked_for_are_built() {

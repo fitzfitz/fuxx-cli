@@ -38,6 +38,19 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "sidebar-band",
+        run: sidebar_band_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/sidebar.rs",
+            "src/title_area.rs",
+            "src/sidebar_toggle.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
         name: "sidebar-quiet",
         run: sidebar_quiet_scenes,
         themes: Themes::Both,
@@ -57,6 +70,20 @@ pub(super) const SCENES: &[Scene] = &[
         serial: false,
         kind: Kind::Visual,
         sources: &["src/sidebar.rs", "src/groups.rs", "src/git_branch.rs"],
+    },
+    Scene {
+        name: "sidebar-comfortable",
+        run: sidebar_comfortable_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/sidebar.rs",
+            "src/ui_tokens.rs",
+            "src/groups.rs",
+            "src/providers/mod.rs",
+            "src/providers/claude.rs",
+        ],
     },
     Scene {
         name: "sidebar-selection",
@@ -182,7 +209,7 @@ pub(super) fn row_point(
 /// - `sidebar-scroll`: 24 sessions, the last one active, so the list scrolls to it.
 ///
 /// Panics unless the question was read off the boxed prompt, a waiting row and a plain one are
-/// both 32 pt (M11i: two lines), the active row is scrolled into view and
+/// both `SIDEBAR_ROW_TWO` (two lines, 56 pt since M11al), the active row is scrolled into view and
 /// rows scrolled away don't count as on screen, and the dragged row's run slid as described.
 fn sidebar_scenes() {
     use gpui::{Modifiers, MouseButton};
@@ -193,7 +220,7 @@ fn sidebar_scenes() {
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         for (scene, width, dims) in [
-            ("sidebar", 240.0, dims),
+            ("sidebar", ui_tokens::size::SIDEBAR_DEFAULT_WIDTH, dims),
             ("sidebar-narrow", 180.0, size(px(720.0), px(600.0))),
             ("sidebar-wide", 400.0, dims),
         ] {
@@ -222,9 +249,10 @@ fn sidebar_scenes() {
                         let b = ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
                         f32::from(b.size.height)
                     };
-                    // Every row has one line under its name (M11r): two lines, 52 pt.
-                    assert_eq!(height(1), 52.0, "{scene}-{slug}: waiting row");
-                    assert_eq!(height(3), 52.0, "{scene}-{slug}: the split workspace's row");
+                    // Every row has one line under its name (M11r): two lines, 56 pt (M11al).
+                    let two = ui_tokens::size::SIDEBAR_ROW_TWO;
+                    assert_eq!(height(1), two, "{scene}-{slug}: waiting row");
+                    assert_eq!(height(3), two, "{scene}-{slug}: the split workspace's row");
                     assert_eq!(ws.sidebar.scroll.children_count(), 6, "{scene}-{slug}");
                     // The split workspace is on screen: two panes, each with its tab.
                     assert_eq!(ws.tab_sessions().len(), 2, "{scene}-{slug}: tabs");
@@ -277,7 +305,7 @@ fn sidebar_scenes() {
                         assert!(cx.read(|cx| ws.read(cx).sidebar.new_menu), "menu opens");
                     }
                     "sidebar-drag" => {
-                        // codex (row 2, three lines tall) down past tests and shell: its copy right
+                        // codex (row 2, two lines tall) down past tests and shell: its copy right
                         // over the gap between shell and the long one, as it opens with codex
                         // taken out (the rows after it moved up by its room: its height and the
                         // gap); the gap ends where shell did.
@@ -428,11 +456,13 @@ fn sidebar_scenes() {
                 let rows = rows.borrow().clone();
                 let (claude, codex) = (rows[0], rows[1]);
                 let slid = claude.center().y + (codex.top() - claude.top());
+                // Between its avatar and its name (M11r; M11al's roomier avatar).
+                use crate::sidebar::{AVATAR, AVATAR_GAP, ROW_PAD};
+                let between = ROW_PAD + AVATAR + AVATAR_GAP / 2.0;
                 let p = pixel_at(
                     &shot,
                     dims,
-                    // Between its avatar and its name (M11r).
-                    f32::from(claude.left()) + 42.0,
+                    f32::from(claude.left()) + between,
                     f32::from(slid),
                 );
                 assert!(
@@ -457,13 +487,12 @@ fn sidebar_scenes() {
             let room = f32::from(tests.top() - codex.top());
             let x = f32::from(shell.left()) + 10.0;
             let px_at = |y: Pixels| pixel_at(&shot, dims, x, f32::from(y));
-            // shell (selected: the card's selection, in api's card) slid up by codex's room; the
-            // gap below it,
-            // down to where shell ended, is filled by codex's copy (as tall as codex's row), top
-            // to bottom: no empty band, no line.
+            // shell (selected) slid up by codex's room; the gap below it, down to where shell
+            // ended, is filled by codex's copy (as tall as codex's row), top to bottom: no empty
+            // band, no line.
             let up = px_at(shell.top() - px(room) + px(3.0));
-            // (Selected: the card's neutral lift, M11r.)
-            assert!(is(up, ui.card_lift), "{n}: shell slid up: {up:?}");
+            // (Selected: the accent's soft tint on the canvas, M11al; no group card.)
+            assert!(is(up, ui.row_selected), "{n}: shell slid up: {up:?}");
             // The copy where the pointer holds it, over the gap (as far as it reaches into it).
             let centre = shell.center().y + px(DRAG_PAST);
             let gap_top = shell.bottom() - codex.size.height;
@@ -475,7 +504,7 @@ fn sidebar_scenes() {
             ] {
                 let p = px_at(y);
                 assert!(
-                    !is(p, ui.card) && !is(p, ui.card_selected),
+                    !is(p, ui.sidebar_background) && !is(p, ui.row_selected),
                     "{n}: the copy in the gap at {y:?}: {p:?}"
                 );
             }
@@ -565,18 +594,17 @@ const ROWS: [ShotSession; 6] = [
     shot("notes", SCRATCH, Status::Idle, 0, SHELL_TEXT),
 ];
 
-/// The sidebar rows (M11b; compact in M11i), from real workspaces in both themes, at 240 pt
-/// (`sidebar-rows`) and 180 pt (`sidebar-rows-narrow`): deploy and claude pinned (📌, above
-/// every group header), claude waiting with "Needs input · question" under its name ("Needs
-/// input" alone at 180 pt); notes in no group, a gap under the pinned rows; each row in a repo
-/// with its branch on one line and its `~/folder` under it (2026-11-10); payments selected (the
-/// selection's tint and the accent bar, its text in `text`), its long branch cut at its end, its
-/// long folder at its start (keeping `payments`); the long name cut; notes in /tmp (no `~`, not
-/// in a repo: no branch line).
+/// The sidebar rows (M11b; compact in M11i; 56 pt in M11al), from real workspaces in both
+/// themes, at 290 pt (`sidebar-rows`) and 180 pt (`sidebar-rows-narrow`): deploy and claude
+/// pinned (📌, above every group heading), claude waiting with its question under its name
+/// ("Needs input" alone at 180 pt); notes in no group, a gap under the pinned rows; payments
+/// selected (the selection's tint and the accent bar at the sidebar's edge, its text in
+/// `text`); the long name cut; notes in /tmp (no `~`).
 ///
-/// Panics unless the pinned rows lead, the rows carry their branch and folder, the rows in a
-/// repo are 68 pt (three lines) and claude (waiting) and notes 52 pt (two), and the selected row
-/// is tinted to its left edge (no accent bar since 2026-11-10) with its name in `text`.
+/// Panics unless the pinned rows lead, the rows still know their folder (the row shows it as
+/// the last part only: line two says who and where, M11al §2.4), every row is `SIDEBAR_ROW_TWO`
+/// and every heading `GROUP_HEADER` tall, and the selected row is tinted to its left edge with the
+/// accent bar beside it and its name in `text` (`check_selected`).
 fn sidebar_row_scenes() {
     use std::cell::{Cell, RefCell};
     use std::path::Path;
@@ -588,7 +616,10 @@ fn sidebar_row_scenes() {
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
-        for (scene, width) in [("sidebar-rows", 240.0), ("sidebar-rows-narrow", 180.0)] {
+        for (scene, width) in [
+            ("sidebar-rows", ui_tokens::size::SIDEBAR_DEFAULT_WIDTH),
+            ("sidebar-rows-narrow", 180.0),
+        ] {
             let dims = size(px(width + 300.0), px(720.0));
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
@@ -632,40 +663,32 @@ fn sidebar_row_scenes() {
                     let ws = ws.read(cx);
                     let n = format!("{scene}-{slug}");
                     let rows = ws.rows_in_view(Instant::now());
-                    let shape: Vec<(String, bool, Option<String>, Option<String>)> = rows
+                    let shape: Vec<(String, bool, Option<String>)> = rows
                         .iter()
                         .map(|r| match r {
-                            SidebarRow::Header(h) => (format!("[{}]", h.label), false, None, None),
-                            SidebarRow::Workspace(w) => (
-                                w.label.clone(),
-                                w.pinned,
-                                w.branch.clone(),
-                                w.folder.clone(),
-                            ),
+                            SidebarRow::Header(h) => (format!("[{}]", h.label), false, None),
+                            SidebarRow::Workspace(w) => {
+                                (w.label.clone(), w.pinned, w.folder.clone())
+                            }
                         })
                         .collect();
-                    let row = |label: &str, pinned, branch: Option<&str>, folder: Option<&str>| {
-                        (
-                            label.to_string(),
-                            pinned,
-                            branch.map(String::from),
-                            folder.map(String::from),
-                        )
+                    let row = |label: &str, pinned, folder: Option<&str>| {
+                        (label.to_string(), pinned, folder.map(String::from))
                     };
-                    let header = |label: &str| row(label, false, None, None);
+                    let header = |label: &str| row(label, false, None);
                     let long_folder = "~/code/a-very-long-project-folder/services/payments";
                     assert_eq!(
                         shape,
                         [
-                            row("deploy", true, Some("main"), Some("~/code/infra")),
-                            row("claude", true, Some("feature/rows"), Some("~/code/api")),
-                            row("notes", false, None, Some("/tmp/scratch")),
+                            row("deploy", true, Some("~/code/infra")),
+                            row("claude", true, Some("~/code/api")),
+                            row("notes", false, Some("/tmp/scratch")),
                             header("[api]"),
-                            row("codex", false, Some("feature/rows"), Some("~/code/api")),
+                            row("codex", false, Some("~/code/api")),
                             header("[payments]"),
-                            row("payments", false, Some(LONG_BRANCH), Some(long_folder)),
+                            row("payments", false, Some(long_folder)),
                             header("[web]"),
-                            row(ROWS[4].name, false, Some("main"), Some("~/code/web")),
+                            row(ROWS[4].name, false, Some("~/code/web")),
                         ],
                         "{n}"
                     );
@@ -682,19 +705,37 @@ fn sidebar_row_scenes() {
                     let list_top = f32::from(ws.sidebar.scroll.bounds().top());
                     let first_top = f32::from(bounds(0).top());
                     assert_eq!(first_top - list_top, 10.0, "{n}: the gap under the title");
-                    // Every row has one line under its name (M11r): out of a group the branch and
-                    // the folder share it; 52 pt each.
-                    for (i, h) in [
-                        (0, 52.0),
-                        (1, 52.0),
-                        (2, 52.0),
-                        (4, 52.0),
-                        (6, 52.0),
-                        (8, 52.0),
-                    ] {
+                    // Every row has one line under its name (M11r): who and where (M11al, no
+                    // branch), `SIDEBAR_ROW_TWO` (56) each; headings `GROUP_HEADER`.
+                    let two = ui_tokens::size::SIDEBAR_ROW_TWO;
+                    for i in [0, 1, 2, 4, 6, 8] {
                         let seen = f32::from(bounds(i).size.height);
-                        assert_eq!(seen, h, "{n}: row {i}'s height");
+                        assert_eq!(seen, two, "{n}: row {i}'s height");
                     }
+                    for i in [3, 5, 7] {
+                        let seen = f32::from(bounds(i).size.height);
+                        let want = ui_tokens::size::GROUP_HEADER;
+                        assert_eq!(seen, want, "{n}: heading {i}'s height");
+                    }
+                    // Line two says who and where: the folder's last part (an SSH-less row in a
+                    // repo leaves its branch out).
+                    let said: Vec<String> = rows
+                        .iter()
+                        .filter_map(|r| match r {
+                            SidebarRow::Workspace(w) => crate::sidebar::place_lines(w).pop(),
+                            SidebarRow::Header(_) => None,
+                        })
+                        .collect();
+                    let local = crate::sidebar::local_shell();
+                    let shell = |place: &str| format!("\u{203a}_ {local} \u{b7} {place}");
+                    assert_eq!(said[0], shell("infra"), "{n}: deploy");
+                    assert_eq!(said[1], CLAUDE_QUESTION, "{n}: claude waits");
+                    assert_eq!(said[2], shell("scratch"), "{n}: notes");
+                    assert_eq!(said[4], shell("payments"), "{n}: payments");
+                    assert!(
+                        said.iter().all(|line| !line.contains("feature/")),
+                        "{n}: no branch on a row: {said:?}"
+                    );
                     let b = ws.sidebar.scroll.bounds_for_item(active).expect("laid out");
                     found.set(Some((
                         f32::from(b.left()),
@@ -719,35 +760,23 @@ fn sidebar_row_scenes() {
 /// A sidebar row as laid out: (left, right, top, height), in points.
 type RowBox = (f32, f32, f32, f32);
 
-/// A sidebar row's line 1 (18 pt) and the lines under it (16 pt each), centred in the row
-/// (M11i; a third line in a repo, and roomier, since 2026-11-10).
-const ROW_LINE_ONE: f32 = 18.0;
-
-const ROW_LINE_TWO: f32 = 16.0;
-
-const ROW_NAME_GAP: f32 = 4.0;
-
-/// The middle of line 1 and of line 2 of a sidebar row `height` tall whose top is at `top`.
+/// The middle of line 1 (the name, `NAME_LINE`) and of line 2 (`SUB_LINE`, `NAME_GAP` under
+/// it) of a sidebar row `height` tall whose top is at `top`: every row has its line two (M11r),
+/// the two centred in the row.
 fn row_lines(top: f32, height: f32) -> (f32, f32) {
-    use crate::ui_tokens::size::{SIDEBAR_ROW, SIDEBAR_ROW_THREE};
-    let under = match height {
-        h if h >= SIDEBAR_ROW_THREE => 2.0,
-        h if h > SIDEBAR_ROW => 1.0,
-        _ => 0.0,
-    };
-    // The name, 4 pt, then the lines under it (2026-11-10).
-    let gap = if under > 0.0 { ROW_NAME_GAP } else { 0.0 };
-    let content = ROW_LINE_ONE + gap + under * ROW_LINE_TWO;
+    use crate::sidebar::{NAME_GAP, NAME_LINE, SUB_LINE};
+    let content = NAME_LINE + NAME_GAP + SUB_LINE;
     let first = top + (height - content) / 2.0;
     (
-        first + ROW_LINE_ONE / 2.0,
-        first + ROW_LINE_ONE + gap + ROW_LINE_TWO / 2.0,
+        first + NAME_LINE / 2.0,
+        first + NAME_LINE + NAME_GAP + SUB_LINE / 2.0,
     )
 }
 
-/// The selected row (M11i) at `(left, right, top, height)`: the selection's tint right to its
-/// left edge (the accent bar there was removed 2026-11-10, your call), and its name in `text`,
-/// never `on_accent`.
+/// The selected row (M11i; M11al §2.3) at `(left, right, top, height)`: the canvas between
+/// the sidebar's edge and the row, a `SELECTED_BAR` accent bar at the sidebar's very left edge
+/// (stopping `SELECTED_BAR_INSET` short of the row's top), `row_selected` from the row's own left
+/// edge to its right, and its name in `text`, never `on_accent`.
 fn check_selected(
     shot: &Shot,
     dims: Size<Pixels>,
@@ -755,26 +784,34 @@ fn check_selected(
     n: &str,
     (left, right, top, height): RowBox,
 ) {
+    use crate::sidebar::{ROW_INSET, SELECTED_BAR, SELECTED_BAR_INSET};
     let middle = top + height / 2.0;
-    // In its group's card (2026-11-10): the card's colour in the card's 4 pt room at the row's
-    // left, then the card's selection from the row's own left edge (where the bar was), in the
-    // padding left of the mark, and in the right padding (a row in a repo has text across its
-    // middle: the branch line).
-    let edge = pixel_at(shot, dims, left + 2.0, middle);
-    assert!(
-        near(edge, ui.card),
-        "{n}: the card beside the row: {edge:?}"
+    let edge = left - ROW_INSET;
+    let bar = pixel_at(shot, dims, edge + SELECTED_BAR / 2.0, middle);
+    assert!(near(bar, ui.accent), "{n}: the accent bar: {bar:?}");
+    let above = pixel_at(
+        shot,
+        dims,
+        edge + SELECTED_BAR / 2.0,
+        top + SELECTED_BAR_INSET - 3.0,
     );
-    let (left, right) = (left + 4.0, right - 4.0);
+    assert!(
+        near(above, ui.sidebar_background),
+        "{n}: the bar stops short of the row's top: {above:?}"
+    );
+    let beside = pixel_at(shot, dims, (edge + SELECTED_BAR + left) / 2.0 + 1.0, middle);
+    assert!(
+        near(beside, ui.sidebar_background),
+        "{n}: the canvas between the bar and the row: {beside:?}"
+    );
     for (what, x) in [
         ("left edge", left + 1.0),
         ("padding", left + 5.0),
         ("right padding", right - 4.0),
     ] {
         let tint = pixel_at(shot, dims, x, middle);
-        // The card's neutral lift (M11r, as the mockup), not the accent's tint.
         assert!(
-            near(tint, ui.card_lift),
+            near(tint, ui.row_selected),
             "{n}: tint at its {what}: {tint:?}"
         );
     }
@@ -785,6 +822,327 @@ fn check_selected(
         let ink = count_along(shot, dims, ui.on_accent, line_one, left, right);
         assert_eq!(ink, 0, "{n}: nothing on the selected row in on_accent");
     }
+}
+
+/// The roomier rows (M11al Task 8, spec §2.3–2.5), from real workspaces in both themes, at the
+/// default width (`sidebar-comfortable`) and at 180 (`sidebar-comfortable-narrow`): in api,
+/// `api` working with Claude in front (selected), `server` idle running npm (hovered), `shell`
+/// at its prompt; in payments a long name running a long program; web closed with one waiting.
+///
+/// Panics unless every row is `SIDEBAR_ROW_TWO` (56) tall and every heading `GROUP_HEADER`; line
+/// two says who and where ("✳ Claude · api", "› npm · api", "›_ <shell> · api"); each badge's
+/// ring takes its row's fill (the canvas, `row_hover` hovered, `row_selected` selected); the
+/// selected row has its accent bar at the sidebar's left edge (`check_selected`); the age shows
+/// top right at the default width and not at 180; the headings are text on the canvas (no card)
+/// in `text_faint`, the closed one showing "1 waiting" and no avatars; and at 180 the long row's
+/// name and line two stop inside its right padding (cut, nothing past it).
+fn sidebar_comfortable_scenes() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Instant;
+
+    use gpui::Modifiers;
+
+    use crate::sidebar::{
+        AVATAR, BADGE, BADGE_OUT, BADGE_RING, HEADING_ABOVE, ROW_PAD, SidebarRow, place_lines,
+    };
+    use crate::ui_tokens::size::{GROUP_HEADER, SIDEBAR_ROW_TWO};
+
+    const LONG: &str = "a-really-long-workspace-name-for-a-narrow-sidebar";
+    const LONG_PROGRAM: &str = "a-very-long-program-name-that-runs";
+    const COMFORTABLE: [ShotSession; 5] = [
+        shot("api", API, Status::Working, 2 * 60, AGENT_TEXT),
+        shot("server", API, Status::Idle, 0, SHELL_TEXT),
+        shot("shell", API, Status::Idle, 0, SHELL_TEXT),
+        shot(LONG, PAYMENTS, Status::Idle, 0, SHELL_TEXT),
+        shot("fix", WEB, Status::Waiting, 3 * 3600, SHELL_TEXT),
+    ];
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        for (scene, width) in [
+            (
+                "sidebar-comfortable",
+                ui_tokens::size::SIDEBAR_DEFAULT_WIDTH,
+            ),
+            (
+                "sidebar-comfortable-narrow",
+                ui_tokens::size::SIDEBAR_MIN_WIDTH,
+            ),
+        ] {
+            let n = format!("{scene}-{slug}");
+            let dims = size(px(width + 400.0), px(640.0));
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let named = n.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let ws = cx.new(|cx| {
+                    let mut ws = sidebar_workspace(&COMFORTABLE, None, 0, &[WEB], window, cx);
+                    ws.sidebar.width = width;
+                    ws.sidebar.hint_dismissed = true;
+                    let id = |i: usize| ws.sessions.items()[i].id;
+                    let (api, server, shell, long) = (id(0), id(1), id(2), id(3));
+                    // Claude in front in api's terminal (its preset by name: an agent fuxx has
+                    // a provider for); npm in server's; the prompt in shell's.
+                    ws.programs
+                        .set_for_shots(api, ProgramState::Running("claude".into()));
+                    ws.programs
+                        .set_for_shots(server, ProgramState::Running("npm".into()));
+                    ws.programs.set_for_shots(shell, ProgramState::Prompt);
+                    ws.programs
+                        .set_for_shots(long, ProgramState::Running(LONG_PROGRAM.into()));
+                    assert!(ws.note_agents(cx), "{named}: claude runs in api");
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            // Each item's bounds, and what each row's line two says.
+            type Laid = Vec<(Option<String>, gpui::Bounds<Pixels>)>;
+            let laid: Rc<RefCell<Laid>> = Rc::default();
+            let seen = laid.clone();
+            let acting = slot.clone();
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let ws = slotted(&acting);
+                let items: Laid = cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let rows = ws.rows_in_view(Instant::now());
+                    rows.iter()
+                        .enumerate()
+                        .map(|(i, row)| {
+                            let line = match row {
+                                SidebarRow::Workspace(w) => place_lines(w).pop(),
+                                SidebarRow::Header(_) => None,
+                            };
+                            let b = ws.sidebar.scroll.bounds_for_item(i).expect("laid out");
+                            (line, b)
+                        })
+                        .collect()
+                });
+                // The pointer over server's row (item 2: api's heading is item 0).
+                let at = row_point(cx, &ws, 2, 0.0);
+                cx.simulate_mouse_move(window, at, None, Modifiers::none());
+                *seen.borrow_mut() = items;
+                acting.borrow_mut().take();
+            };
+            let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
+            println!("ui-shots: {}", path.display());
+            let shot = render_with(&theme, dims, build, act);
+            let items = laid.borrow().clone();
+            // [api] api server shell [payments] long [web]
+            assert_eq!(items.len(), 7, "{n}: {items:?}");
+            let lines: Vec<Option<&str>> = items.iter().map(|(l, _)| l.as_deref()).collect();
+            let local = crate::sidebar::local_shell();
+            let shell = format!("\u{203a}_ {local} \u{b7} api");
+            let long = format!("\u{203a} {LONG_PROGRAM} \u{b7} payments");
+            assert_eq!(
+                lines,
+                [
+                    None,
+                    Some("\u{2733} Claude \u{b7} api"),
+                    Some("\u{203a} npm \u{b7} api"),
+                    Some(shell.as_str()),
+                    None,
+                    Some(long.as_str()),
+                    None,
+                ],
+                "{n}: who and where"
+            );
+            let span = |i: usize| {
+                let b = items[i].1;
+                (
+                    f32::from(b.left()),
+                    f32::from(b.right()),
+                    f32::from(b.top()),
+                    f32::from(b.size.height),
+                )
+            };
+            for i in [1, 2, 3, 5] {
+                assert_eq!(span(i).3, SIDEBAR_ROW_TWO, "{n}: row {i} is 56");
+            }
+            for i in [0, 4, 6] {
+                assert_eq!(span(i).3, GROUP_HEADER, "{n}: heading {i}");
+            }
+            // The selected row: its tint, the accent bar at the sidebar's edge, its name.
+            check_selected(&shot, dims, &ui, &n, span(1));
+            // Each badge's ring is its row's fill where it lies over the avatar: above and left
+            // of the mark, halfway through the ring.
+            let ring = |(left, _, top, height): RowBox| {
+                let half = BADGE / 2.0 + BADGE_RING;
+                let (cx, cy) = (
+                    left + ROW_PAD + AVATAR + BADGE_OUT - half,
+                    top + (height + AVATAR) / 2.0 + BADGE_OUT - half,
+                );
+                let mid = BADGE / 2.0 + BADGE_RING / 2.0;
+                [
+                    pixel_at(&shot, dims, cx, cy - mid),
+                    pixel_at(&shot, dims, cx - mid, cy),
+                ]
+            };
+            for (i, fill, what) in [
+                (1, ui.row_selected, "selected"),
+                (2, ui.row_hover, "hovered"),
+                (3, ui.sidebar_background, "plain"),
+            ] {
+                for p in ring(span(i)) {
+                    assert!(near(p, fill), "{n}: the {what} row's ring: {p:?}");
+                }
+            }
+            // The hovered ring took the hover's fill: it is not the canvas (a ring that kept
+            // the plain row's fill would pass a loose check, `row_hover` being close to it).
+            for p in ring(span(2)) {
+                assert!(
+                    !near(p, ui.sidebar_background),
+                    "{n}: the hovered row's ring is still the canvas: {p:?}"
+                );
+            }
+            // The age (api's "2m"), top right, at the default width only: right of the name's
+            // short words, before the right padding.
+            let (_, right, top, height) = span(1);
+            let line_one = row_lines(top, height).0;
+            let aged = (right as usize - ROW_PAD as usize - 24..right as usize - ROW_PAD as usize)
+                .filter(|&x| gap(pixel_at(&shot, dims, x as f32, line_one), ui.row_selected) > 48)
+                .count();
+            if width >= ui_tokens::size::SIDEBAR_DEFAULT_WIDTH {
+                assert!(aged > 0, "{n}: api's age shows top right");
+            } else {
+                assert_eq!(aged, 0, "{n}: no age at 180");
+            }
+            // The headings: text on the canvas, no card: the room above the words is the canvas
+            // across the sidebar; the words in `text_faint`.
+            for i in [0, 4] {
+                let (left, right, top, _) = span(i);
+                let above = top + HEADING_ABOVE / 2.0;
+                let carded = ((left + 2.0) as usize..(right - 2.0) as usize)
+                    .step_by(6)
+                    .filter(|&x| {
+                        !near(
+                            pixel_at(&shot, dims, x as f32, above),
+                            ui.sidebar_background,
+                        )
+                    })
+                    .count();
+                assert_eq!(carded, 0, "{n}: heading {i} has no card");
+                let words = count_box(
+                    &shot,
+                    dims,
+                    ui.text_faint,
+                    20,
+                    (left, right),
+                    (top + HEADING_ABOVE, top + GROUP_HEADER),
+                );
+                assert!(words > 0, "{n}: heading {i}'s words in text_faint");
+            }
+            // web, closed: its status ("1 waiting" on the waiting tint), no avatars.
+            let (left, right, top, height) = span(6);
+            let (x, y) = ((left, right), (top + HEADING_ABOVE - 4.0, top + height));
+            let pill = count_box(&shot, dims, ui.waiting_tint, 3, x, y);
+            assert!(pill > 0, "{n}: web shows how many wait");
+            // (A square of an avatar's colour, not a stray pixel of the pill's anti-aliased
+            // words that happens to match one.)
+            for (fill, _, _) in ui.avatars {
+                let faces = solid_count(&shot, dims, fill, x, y);
+                assert_eq!(faces, 0, "{n}: no avatars on web's heading");
+            }
+            // The long row: its name and line two stop inside its right padding.
+            let (left, right, top, height) = span(5);
+            let (one, two) = row_lines(top, height);
+            for y in [one, two] {
+                let past = ((right - ROW_PAD + 2.0) as usize..(right - 2.0) as usize)
+                    .filter(|&x| !near(pixel_at(&shot, dims, x as f32, y), ui.sidebar_background))
+                    .count();
+                assert_eq!(
+                    past, 0,
+                    "{n}: the long row's text stops in its padding at {y}"
+                );
+            }
+            // And starts after the badge: nothing between the badge's ring and the text.
+            let after = left + ROW_PAD + AVATAR + BADGE_OUT + 1.0;
+            let gap_x = left + ROW_PAD + AVATAR + crate::sidebar::AVATAR_GAP - 1.0;
+            let mid = top + height / 2.0;
+            for x in [after, gap_x] {
+                let p = pixel_at(&shot, dims, x, mid);
+                assert!(
+                    near(p, ui.sidebar_background),
+                    "{n}: nothing between the badge and the text at {x}: {p:?}"
+                );
+            }
+        }
+    }
+    who_follows_the_active_tab();
+}
+
+/// Task 8b (the user's ruling): a row's who follows its workspace's active tab, with the chrome
+/// cached (M11p). One workspace: a terminal running npm and Claude's tab split beside it (as a
+/// provider preset launches it), Claude's tab focused. Each step (focus the terminal, then the
+/// Claude tab) must change what's shown and leave the window as a full redraw would draw it
+/// (`Steps`: the cached sidebar was drawn again), and the row's line two must follow.
+fn who_follows_the_active_tab() {
+    use crate::layout_model::TabId;
+    use crate::sidebar::{SidebarRow, place_lines};
+
+    let n = "sidebar-comfortable";
+    let (mut cx, window, ws) = super::chrome_parts::chrome_window(|ws, window, cx| {
+        ws.sidebar.hint_dismissed = true;
+        let api = std::path::Path::new(API);
+        ws.open_shot_session("dev", api, SHELL_TEXT, None, window, cx);
+        let id = ws.sessions.items()[0].id;
+        ws.programs
+            .set_for_shots(id, ProgramState::Running("npm".into()));
+        ws.agent_beside(id, "claude", window, cx);
+    });
+    let ws = &ws;
+    let said = |cx: &mut VisualTestAppContext| {
+        cx.read(|cx| {
+            let rows = ws.read(cx).rows(std::time::Instant::now());
+            rows.iter()
+                .find_map(|r| match r {
+                    SidebarRow::Workspace(w) => place_lines(w).pop(),
+                    SidebarRow::Header(_) => None,
+                })
+                .expect("dev's row")
+        })
+    };
+    let (terminal, agent): (TabId, TabId) = cx.read(|cx| {
+        let ws = ws.read(cx);
+        let id = ws.sessions.items()[0].id;
+        let w = ws.model.focused_workspace().expect("a workspace");
+        let agent = ws.model.agent_tabs(w)[0];
+        (ws.model.terminal_tab(id).expect("its tab"), agent)
+    });
+    let claude = "\u{2733} Claude \u{b7} api";
+    assert_eq!(said(&mut cx), claude, "{n}: Claude's tab is active");
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    let select = |tab: TabId| {
+        move |cx: &mut VisualTestAppContext| {
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.select_tab(tab, window, cx))
+            })
+            .expect("select the tab");
+        }
+    };
+    steps.step(
+        &mut cx,
+        window,
+        "the terminal running npm focused",
+        Seen::Changes,
+        select(terminal),
+    );
+    assert_eq!(
+        said(&mut cx),
+        "\u{203a} npm \u{b7} api",
+        "{n}: npm's terminal is active"
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "Claude's tab focused again",
+        Seen::Changes,
+        select(agent),
+    );
+    assert_eq!(said(&mut cx), claude, "{n}: Claude's tab is active again");
+    steps.done();
 }
 
 /// The compact rows' selection and marks (M11i), from real workspaces in both themes, all in
@@ -810,7 +1168,11 @@ fn sidebar_selection_scenes() {
         shot("claude", API, Status::Waiting, 4 * 60, CLAUDE_PROMPT),
         shot("docs", API, Status::Idle, 0, SHELL_TEXT),
     ];
-    let dims = size(px(540.0), px(440.0));
+    // 440 pt over the old sidebar chrome and rows: all five rows keep their room.
+    let dims = size(
+        px(540.0),
+        px(440.0 + SIDEBAR_CHROME_GROWTH + sidebar_list_growth(5.0, 1.0)),
+    );
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -864,14 +1226,17 @@ fn sidebar_selection_scenes() {
             let n = format!("{scene}-{slug}");
             let rows = rows.get();
             check_selected(&shot, dims, &ui, &n, rows[active]);
-            // The status badge (M11r): over the avatar's bottom-right corner (the avatar 28 pt,
-            // 12 pt in from the row's left, centred in it; the badge 14 pt, 3 pt past it).
+            // The status badge (M11r; M11al §2.3): over the avatar's bottom-right corner (the
+            // avatar `ROW_PAD` in from the row's left, centred in it; the badge's ring
+            // `BADGE_OUT` past it).
             let badge_at = |(left, _, top, height): RowBox| {
+                use crate::sidebar::{AVATAR, BADGE, BADGE_OUT, BADGE_RING, ROW_PAD};
+                let half = BADGE / 2.0 + BADGE_RING;
                 let (x, y) = (
-                    left + 40.0 + 3.0 - 7.0,
-                    top + (height + 28.0) / 2.0 + 3.0 - 7.0,
+                    left + ROW_PAD + AVATAR + BADGE_OUT - half,
+                    top + (height + AVATAR) / 2.0 + BADGE_OUT - half,
                 );
-                (x - 7.0, x + 7.0, x, y)
+                (x - half, x + half, x, y)
             };
             if active == 3 {
                 // Selected and waiting: its mark and "Needs input" keep the waiting colour.
@@ -893,12 +1258,12 @@ fn sidebar_selection_scenes() {
                     .count()
             };
             let (left, _, top, height) = rows[4];
-            // In api's card: the card's hover, 4 pt in (2026-11-10).
-            let hover = pixel_at(&shot, dims, left + 8.0, top + height / 2.0);
-            assert!(near(hover, ui.card_hover), "{n}: docs hovered: {hover:?}");
-            let shows = right_end(rows[4], ui.card_hover);
+            // On the canvas (M11al: no group card): `row_hover`, in its padding.
+            let hover = pixel_at(&shot, dims, left + 6.0, top + height / 2.0);
+            assert!(near(hover, ui.row_hover), "{n}: docs hovered: {hover:?}");
+            let shows = right_end(rows[4], ui.row_hover);
             assert!(shows > 0, "{n}: docs shows its shortcut");
-            let hides = right_end(rows[2], ui.card);
+            let hides = right_end(rows[2], ui.sidebar_background);
             assert_eq!(hides, 0, "{n}: shell hides its shortcut");
             // Idle badges (M11r): server's program runs (a text_dim dot); shell is at its prompt
             // (a fainter, text_faint one).
@@ -994,7 +1359,12 @@ fn sidebar_button_scenes() {
         );
         assert_eq!(at("hover", margin), bg(ui.panel_hover), "{slug}: hovered");
         // Inside: on the search button (M11r; the cards below it are the terminal's colour).
-        let (inside, beyond) = (point(30.0, 58.0), point(150.0, 80.0));
+        // Beyond it: the pane's tab bar above its tab (M11al: no fill, the card, which is the
+        // terminal's colour; the 52 pt bar fills this short window's card under the band).
+        let bar_above_tab = ui_tokens::size::TOP_BAND
+            + ui_tokens::size::HAIRLINE
+            + (ui_tokens::size::TAB_BAR - crate::tab_bar::TAB) / 4.0;
+        let (inside, beyond) = (point(30.0, 58.0), point(150.0, bar_above_tab));
         assert_eq!(
             at("sliding", beyond),
             bg(theme.background),
@@ -1006,6 +1376,30 @@ fn sidebar_button_scenes() {
             "{slug}: still partly in"
         );
     }
+}
+
+/// How many 3 × 3 pt squares (at pixel steps) in the box (`x0..x1`, `y0..y1`, points) are all
+/// within 3 of `c`: a filled shape of that colour, not anti-aliased text that touches it.
+fn solid_count(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    c: alacritty_terminal::vte::ansi::Rgb,
+    (x0, x1): (f32, f32),
+    (y0, y1): (f32, f32),
+) -> usize {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let side = (3.0 * scale) as usize;
+    let at = |x: usize, y: usize| {
+        let i = (y * shot.width as usize + x) * 4;
+        near_by([shot.rgba[i], shot.rgba[i + 1], shot.rgba[i + 2]], c, 3)
+    };
+    let (xs, ys) = (
+        (x0 * scale) as usize..(x1 * scale) as usize - side,
+        (y0 * scale) as usize..(y1 * scale) as usize - side,
+    );
+    ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
+        .filter(|&(x, y)| (0..side).all(|dy| (0..side).all(|dx| at(x + dx, y + dy))))
+        .count()
 }
 
 /// How many pixels in the box (`x0..x1`, `y0..y1`, points) are within `tol` of `c`.
@@ -1056,7 +1450,15 @@ fn sidebar_quiet_scenes() {
         shot("server", WEB, Status::Idle, 0, SHELL_TEXT),
         shot("deploy", INFRA, Status::Idle, 0, SHELL_TEXT),
     ];
-    let dims = size(px(520.0), px(460.0));
+    // 460 pt over the old 22 pt status bar and the old sidebar chrome: the rows keep their room
+    // over M11al's roomier ones.
+    let dims = size(
+        px(520.0),
+        px(460.0
+            + (crate::ui_tokens::size::STATUS_BAR - 22.0)
+            + SIDEBAR_CHROME_GROWTH
+            + sidebar_list_growth(5.0, 3.0)),
+    );
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -1166,9 +1568,14 @@ fn sidebar_quiet_scenes() {
                 (f32::from(b.top()), f32::from(b.bottom())),
             )
         };
-        // tests' avatar and its badge: the row's first 50 pt (its name starts after them).
+        // tests' avatar and its badge: the row's padding, avatar and the badge past it (its name
+        // starts after them).
         let ((left, _), (top, bottom)) = span(tests);
-        let face = ((left, left + 50.0), (top, bottom));
+        use crate::sidebar::{AVATAR, BADGE_OUT, ROW_PAD};
+        let face = (
+            (left, left + ROW_PAD + AVATAR + BADGE_OUT + 1.0),
+            (top, bottom),
+        );
         let green = count_box(&shot, dims, ui.ring_done, 3, face.0, face.1);
         assert_eq!(green, 0, "{n}: no green dot on the done row");
         // The check's stroke is anti-aliased: near `text_dim`.
@@ -1197,5 +1604,131 @@ fn sidebar_quiet_scenes() {
             tick, 0,
             "{n}: infra (all idle) shows nothing after its name"
         );
+    }
+}
+
+/// The sidebar's search box and footer (M11al Task 7, spec 2.2 and 2.6), in both themes, in a
+/// new window (the default width): the search box `SEARCH` tall under the band at 4 / 14 / 10
+/// margins, `raised` fill, a 1 px `card_border` edge; the footer `FOOTER` tall with its 1 px
+/// top line, the "New Fuxxpace" button 38 tall (a `card_border` edge, no fill) reaching the
+/// bell's box a gap away; no line down the sidebar's right edge.
+///
+/// Panics unless a new window's sidebar is `SIDEBAR_DEFAULT_WIDTH` wide, the list starts 10 pt
+/// under the search box, and those edges and fills are read off the pixels.
+fn sidebar_band_scenes() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use crate::sidebar::{FOOTER, SEARCH, SEARCH_BOTTOM, SEARCH_SIDE, SEARCH_TOP};
+    use crate::title_area::{FOOTER_BUTTON, FOOTER_GAP, FOOTER_SIDE, footer_buttons};
+    use ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, STATUS_BAR, TOP_BAND};
+
+    let dims = size(px(960.0), px(600.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let n = format!("sidebar-band-{slug}");
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = sidebar_workspace(&EIGHT, Some(3), 3, &[WEB], window, cx);
+                ws.sidebar.hint_dismissed = true;
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let list_top = Rc::new(std::cell::Cell::new(0.0_f32));
+        let width = Rc::new(std::cell::Cell::new(0.0_f32));
+        let (found_top, found_width) = (list_top.clone(), width.clone());
+        let act = move |cx: &mut VisualTestAppContext, _: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                found_top.set(f32::from(ws.sidebar.scroll.bounds().top()));
+                found_width.set(ws.sidebar.width);
+            });
+            slot.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
+        let w = SIDEBAR_DEFAULT_WIDTH;
+        assert_eq!(w, 290.0, "{n}: the default width");
+        assert_eq!(width.get(), w, "{n}: a new window's sidebar width");
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        let (edge, fill, side) = (ui.card_border, ui.raised, ui.sidebar_background);
+
+        // The search box: SEARCH tall, SEARCH_TOP under the band, SEARCH_SIDE from the sides.
+        let top = TOP_BAND + SEARCH_TOP;
+        let mid = top + SEARCH / 2.0;
+        assert_eq!(SEARCH, 38.0, "{n}: the search box's height");
+        assert_eq!(
+            list_top.get(),
+            top + SEARCH + SEARCH_BOTTOM,
+            "{n}: the list starts under the box's bottom margin"
+        );
+        assert!(near(at(SEARCH_SIDE + 0.5, mid), edge), "{n}: left edge");
+        assert!(
+            near(at(w - SEARCH_SIDE - 0.5, mid), edge),
+            "{n}: right edge"
+        );
+        assert!(near(at(w / 2.0, top + 0.5), edge), "{n}: top edge");
+        assert!(
+            near(at(w / 2.0, top + SEARCH - 0.5), edge),
+            "{n}: bottom edge"
+        );
+        assert!(near(at(SEARCH_SIDE + 6.0, mid), fill), "{n}: raised fill");
+        assert!(near(at(SEARCH_SIDE - 2.0, mid), side), "{n}: margin, left");
+        assert!(near(at(w / 2.0, top - 2.0), side), "{n}: margin, above");
+        assert!(
+            near(at(w / 2.0, top + SEARCH + 2.0), side),
+            "{n}: margin, below"
+        );
+
+        // The footer: FOOTER tall above the status bar, its line on top, the button 38 tall
+        // with 12 above and below, from FOOTER_SIDE to a FOOTER_GAP short of the bell's box.
+        let foot = dims.height.as_f32() - STATUS_BAR - FOOTER;
+        assert_eq!(FOOTER, 62.0, "{n}: the footer's height");
+        assert!(
+            near(at(w / 2.0, foot + 0.5), edge),
+            "{n}: the footer's top line"
+        );
+        assert!(near(at(5.0, foot + 3.0), side), "{n}: under the line");
+        let [_, bell, _] = footer_buttons(w);
+        assert_eq!(FOOTER_BUTTON, 34.0, "{n}: the bell's box");
+        let right = bell - FOOTER_GAP;
+        let (button_top, button_mid) = (foot + 12.0, foot + FOOTER / 2.0);
+        assert!(
+            near(at(FOOTER_SIDE + 0.5, button_mid), edge),
+            "{n}: button, left"
+        );
+        assert!(
+            near(at(right - 0.5, button_mid), edge),
+            "{n}: button, right"
+        );
+        assert!(
+            near(at(right + 2.0, button_mid), side),
+            "{n}: gap to the bell"
+        );
+        assert!(near(at(60.0, button_top + 0.5), edge), "{n}: button, top");
+        assert!(
+            near(at(60.0, button_top + 37.5), edge),
+            "{n}: button, bottom"
+        );
+        assert!(
+            near(at(60.0, button_top - 1.5), side),
+            "{n}: 12 above the button"
+        );
+        assert!(
+            near(at(60.0, button_top + 39.5), side),
+            "{n}: 12 below the button"
+        );
+        // No edge line down the sidebar's right: the card's edge and shadow separate them.
+        assert!(
+            !near(at(w - 0.5, TOP_BAND + 200.0), edge),
+            "{n}: no line on the sidebar's right edge"
+        );
+        println!("ui-shots: {}", keep_shot(&n, &shot).display());
     }
 }

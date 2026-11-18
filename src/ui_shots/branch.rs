@@ -468,7 +468,7 @@ fn branch_switcher_open_scene() {
         .expect("point the terminals at the repo");
         settle(cx, window);
 
-        // The rows: a branch on claude's and shell's, none on an SSH row.
+        // The rows: an SSH row has its host (no row shows a branch any more).
         let rows = cx.read(|cx| ws.read(cx).rows_in_view(Instant::now()));
         let at = rows
             .iter()
@@ -478,11 +478,6 @@ fn branch_switcher_open_scene() {
             let SidebarRow::Workspace(w) = r else {
                 continue;
             };
-            let want = match w.label.as_str() {
-                "claude" | "tests" | "shell" => Some("main"),
-                _ => None,
-            };
-            assert_eq!(w.branch.as_deref(), want, "{n}: {}'s branch", w.label);
             if matches!(w.label.as_str(), "deploy" | "logs") {
                 assert!(w.folder.is_some() && i > 0, "{n}: an SSH row has its host");
             }
@@ -501,15 +496,15 @@ fn branch_switcher_open_scene() {
 
         // The switcher for shell's terminal, as the Changes bar's branch opens it (M11v: the
         // sidebar's group header no longer has a branch); the selection (shell) stays. The rows
-        // in a folder's group still leave their place to the header.
+        // say who and where, never the branch (M11al §2.4: it left the rows).
         let selected = cx.read(|cx| ws.read(cx).model.focused_workspace());
         if let SidebarRow::Workspace(w) = &rows[at] {
             assert!(
-                !matches!(
+                matches!(
                     crate::sidebar::line_two(w),
-                    Some(crate::sidebar::LineTwo::Place)
+                    Some(crate::sidebar::LineTwo::WhoWhere { .. })
                 ),
-                "{n}: tests' row leaves its place to the header"
+                "{n}: tests' row says who and where, no branch"
             );
         }
         cx.update_window(window, |_, window, cx| {

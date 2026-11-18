@@ -75,7 +75,7 @@ use crate::status_mark;
 use crate::tab_bar::TabGrab;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
-use crate::ui_tokens::size::{CARD_GAP, TOP_BAND};
+use crate::ui_tokens::size::{CARD_INSET, TOP_BAND};
 use crate::welcome::Welcome;
 use crate::welcome_items::Origin;
 use crate::workspace_agent::AgentSlot;
@@ -532,6 +532,9 @@ pub struct Session {
     pub lost: bool,
     /// The host an SSH session connects to (M10b); none for a local one.
     pub ssh: Option<SshTarget>,
+    /// The file name of the program it was started with (`sidebar::launch_name`); none for the
+    /// default shell. A row's *who* names it when no program is in front.
+    pub launched: Option<String>,
     /// SSH: the connection failed and the pane is held for a reconnect.
     pub(crate) disconnected: Option<Disconnected>,
     /// SSH: automatic reconnects in a row so far (each waits longer).
@@ -1570,6 +1573,7 @@ impl Workspace {
         } else {
             (program, cwd, startup)
         };
+        let launched = crate::sidebar::launch_name(program.as_deref());
         let session_id = self.next_id;
         self.next_id += 1;
         let env = session_env(
@@ -1589,8 +1593,18 @@ impl Workspace {
             }
         };
         // Not placed (a reconnect whose pane closed meanwhile): dropping the view ends it.
-        self.insert_session(session_id, view, saved, at, window, cx)
-            .then_some(session_id)
+        let placed = self.insert_session(session_id, view, saved, at, window, cx);
+        placed.then(|| self.set_launched(session_id, launched))?;
+        Some(session_id)
+    }
+
+    /// Note the program session `id` was started with (`Session::launched`).
+    fn set_launched(&mut self, id: u64, launched: Option<String>) {
+        if let Some(s) =
+            (self.sessions.position(|s| s.id == id)).and_then(|i| self.sessions.get_mut(i))
+        {
+            s.launched = launched;
+        }
     }
 
     /// A session the background service runs: created there off the UI thread, then shown.
@@ -1605,6 +1619,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let ssh = launch.saved.ssh.is_some();
+        let launched = crate::sidebar::launch_name(program.as_deref());
         let create = self.create_for(&launch, program, cx);
         let pending = client.create_in_background(create);
         cx.spawn_in(window, async move |this, cx| {
@@ -1617,6 +1632,9 @@ impl Workspace {
                 }
                 let id = id
                     .and_then(|id| this.attach_session(&client, id, launch.saved, at, window, cx));
+                if let Some(id) = id {
+                    this.set_launched(id, launched);
+                }
                 if let Some(then) = then {
                     then(this, id, window, cx);
                 }
@@ -1743,6 +1761,7 @@ impl Workspace {
                 activity: Default::default(),
                 lost: false,
                 ssh: saved.ssh,
+                launched: None,
                 disconnected: None,
                 retries: 0,
                 opened_at: Instant::now(),
@@ -3464,15 +3483,15 @@ impl Workspace {
         Some(band.into_any_element())
     }
 
-    /// The 6 pt canvas strip above the cards (M11i): pressing it and moving drags the window,
-    /// as the top band does (not in full screen, where it is only a gap).
+    /// The `CARD_INSET` canvas strip above the card (M11i, M11al §3.7): pressing it and moving
+    /// drags the window, as the top band does (not in full screen, where it is only a gap).
     pub(crate) fn render_drag_strip(
         &self,
         id: &'static str,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let strip = div().id(id).flex_none().w_full().h(px(CARD_GAP));
+        let strip = div().id(id).flex_none().w_full().h(px(CARD_INSET));
         if window.is_fullscreen() {
             strip.into_any_element()
         } else {
@@ -3735,15 +3754,16 @@ impl Render for Workspace {
         self.refresh_palette(cx);
         // Last, once every overlay of this frame is known: which pages show.
         self.update_pages(window, cx);
-        // Above the cards: with the sidebar hidden, the window's top band (the name over it is
-        // drawn at the root); else the 6 pt canvas strip, which drags the window too (M11i).
+        // Above the card: with the sidebar hidden, the window's top band (the name over it is
+        // drawn at the root); else the `CARD_INSET` canvas strip, which drags the window too
+        // (M11i, M11al §3.7).
         let pane_band = if self.sidebar.hidden {
             self.render_top_band("pane-band", None, window, cx)
         } else {
             Some(self.render_drag_strip("pane-strip", window, cx))
         };
         let panes = self.render_panes(colors, ui, window, cx);
-        // M11v part 3: Settings → General → Status Bar off leaves it out; the cards take its
+        // M11v part 3: Settings → General → Status Bar off leaves it out; the card takes its
         // room.
         let status_bar = cx.global::<Appearance>().status_bar.then(|| {
             match self.chrome.status_bar.clone().filter(|_| cached) {
@@ -3769,8 +3789,12 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .size_full()
-            // The canvas the cards float on (M11i): the left sidebar's colour.
+            // The canvas the card floats on (M11i): the left sidebar's colour.
             .bg(hsla(ui.sidebar_background))
+            // Clipped at the window's edge (M11al plan-time call 4), not round the pane column:
+            // the card's shadow falls into the inset under it (and, once the status bar has no
+            // fill, over it) and nothing pokes past the window.
+            .overflow_hidden()
             .key_context("Workspace")
             // Esc during a tab drag cancels it, before the terminal (or a box) takes the key.
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -3902,7 +3926,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &LaunchPreset7, w, cx| this.launch_preset(6, w, cx)))
             .on_action(cx.listener(|this, _: &LaunchPreset8, w, cx| this.launch_preset(7, w, cx)))
             .on_action(cx.listener(|this, _: &LaunchPreset9, w, cx| this.launch_preset(8, w, cx)))
-            // The sidebars and the cards in a row, the status bar under them (M11i).
+            // The sidebars and the card in a row, the status bar under them (M11i, M11al).
             .child(
                 div()
                     .relative()
@@ -3922,38 +3946,50 @@ impl Render for Workspace {
                             // Not wider than its share: a pane's tab row scrolls rather than widen it.
                             .min_w(px(0.0))
                             .h_full()
-                            // Clipped here, not round the cards, so their shadows show in the gaps.
-                            .overflow_hidden()
                             .when(slide.is_some() && !self.sidebar.hidden, |column| {
                                 column.ml(px(sidebar_width))
                             })
-                            // The right sidebar's card and the gap at its right (M11i).
-                            .when(right_sliding_in, |column| {
-                                column.mr(px(right_width + CARD_GAP))
-                            })
                             .children(pane_band)
-                            // The cards, 6 pt from the sidebar (or the window's left edge), from the
-                            // right sidebar's card (or the window's right edge) and from the bottom.
+                            // The one floating card (M11al §3.1): flush against the sidebar
+                            // (with it hidden, `CARD_INSET` from the window's left),
+                            // `CARD_INSET` from the window's right edge and from the bottom.
+                            // Inside it, one row (§3.2): the panes, then the right sidebar (its
+                            // hairline and panel), or that sliding in or out over the card's
+                            // inside from its right edge, clipped by the card (§6.7).
                             .child(
                                 div()
                                     .flex_1()
                                     .min_h(px(0.0))
                                     .w_full()
-                                    .pl(px(CARD_GAP))
-                                    .pr(px(CARD_GAP))
-                                    .pb(px(CARD_GAP))
+                                    .when(self.sidebar.hidden, |d| d.pl(px(CARD_INSET)))
+                                    .pr(px(CARD_INSET))
+                                    .pb(px(CARD_INSET))
                                     .child(
-                                        div()
+                                        panes::card(&colors)
                                             .relative()
+                                            .flex()
+                                            .flex_row()
                                             .size_full()
-                                            .child(self.render_pane_area(cx))
-                                            .children(panes),
+                                            .child(
+                                                div()
+                                                    .relative()
+                                                    .flex_1()
+                                                    .min_w(px(0.0))
+                                                    .h_full()
+                                                    // Sliding in: the panes take their final
+                                                    // width at once.
+                                                    .when(right_sliding_in, |panes| {
+                                                        panes.mr(px(right_width))
+                                                    })
+                                                    .child(self.render_pane_area(cx))
+                                                    .children(panes),
+                                            )
+                                            .children(right_sidebar)
+                                            .children(sliding_right_sidebar),
                                     ),
                             ),
                     )
-                    .children(right_sidebar)
-                    .children(sliding_sidebar)
-                    .children(sliding_right_sidebar),
+                    .children(sliding_sidebar),
             )
             .children(status_bar)
             // The collapsed title bar's name and buttons, over the bands (below the overlays, so
