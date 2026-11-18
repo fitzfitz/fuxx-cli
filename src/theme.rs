@@ -104,8 +104,8 @@ pub struct UiColors {
     pub on_accent: Rgb,
     /// Meta text (numbers, times, the waiting question): quieter than `text_dim`, still readable.
     pub text_faint: Rgb,
-    /// A plain 1 px line between panes (until M11i, whose cards have a 6 pt gap of canvas
-    /// between them instead; still shown on the tokens board).
+    /// A plain 1 px line inside panels and settings (it split panes until M11i; since M11al
+    /// panes in the one card are split by a `card_border` hairline).
     pub divider: Rgb,
     /// A waiting row's fill; `done_tint` is the same, subtler, for a finished one.
     pub waiting_tint: Rgb,
@@ -133,8 +133,9 @@ pub struct UiColors {
     pub card_shadow_alpha: f32,
     /// M11al: the sidebar search box's fill, halfway from the canvas to the card.
     pub raised: Rgb,
-    /// The attached sidebar's surface (between the canvas and the card), its hovered tint and
-    /// its selected tint (the `row_selected` formula on it).
+    /// The right panel's surface inside the card (between the canvas and the card), its hovered
+    /// tint and its selected tint (the `row_selected` formula on it): the Files, Changes and
+    /// Graph rows' fills since M11al.
     pub side: Rgb,
     pub side_hover: Rgb,
     pub side_selected: Rgb,
@@ -142,7 +143,8 @@ pub struct UiColors {
     pub tab_active: Rgb,
     /// The selected sidebar row's soft tint of the accent (its text keeps its own colours).
     pub row_selected: Rgb,
-    /// A hovered and a selected row on a card (the right sidebar's rows).
+    /// A hovered and a selected fill on the card (tab hover, buttons, the repo card; the file
+    /// tab's Wrap button and view switch).
     pub card_hover: Rgb,
     pub card_selected: Rgb,
     /// The Files tree's 1 px indent guides, quiet on `side` and its hover and selection.
@@ -563,11 +565,9 @@ impl Theme {
         // colours, so they are checked there too.
         let row_selected = ("row_selected", ui.row_selected);
         let side_selected = ("side_selected", ui.side_selected);
-        // Text-only here: no status mark or tab colour is drawn on these. `card_selected` is
-        // the Files tree's selected row: besides text, it carries only the tree's git marks and
-        // file-type tints, which `right_sidebar` pushes to `MARK_MIN` on it as it draws
-        // (`mark_color`, `kind_color`; its `type_tints_and_marks_read_on_every_files_row_fill`
-        // checks every theme). Tab colours must stay off it: Mocha's purple is 2.94:1 there.
+        // Text-only here: no status mark or tab colour is drawn on these. `card_selected` is the
+        // file tab's Wrap button and view switch (the Files tree's selected row moved to
+        // `side_selected` in M11al). Tab colours must stay off it: Mocha's purple is 2.94:1 there.
         let text_only = [
             ("card_selected", ui.card_selected),
             // An agent tab's page under a dragged command block (M11aa Task 11).
@@ -575,7 +575,7 @@ impl Theme {
         ];
         // The pane tab bars (M11al: no fill, the card shows through): their titles, glyphs and
         // buttons, and a busy tab's status dot, on the card ("terminal", above), a hovered tab
-        // or button (`card_hover`, also the Files tree's hovered row), the icon tile
+        // or button (`card_hover`), the icon tile
         // (`card_lift`), the shown tab (`tab_active`), and a tab under a dragged command block
         // (`drop_tab`, M11aa Task 11); no tab colours.
         let tab_bars = [

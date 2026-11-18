@@ -18,8 +18,8 @@
 //! reported). The lookup runs off the UI thread, on a focus change and every 2 s while the
 //! sidebar can be seen (`tick_right_sidebar`, which stops once it can't).
 //!
-//! M11h: the card's top strip, level with the pane tab bars and drawn like them, holds the
-//! panel tabs, Files · Changes · Activity (`Panel`; the last one shown is saved). Only the shown
+//! M11h: the panel's top strip, level with the pane tab bars, holds Files · Changes · Activity
+//! (`Panel`; the last one shown is saved), since M11al one segmented switch. Only the shown
 //! panel does any work: Files lists and marks, Changes (`changes_panel`) asks git, Activity
 //! asks nothing; switching brings the new one up to date at once, and leaving Files while it has
 //! the keyboard gives the keyboard to the focused tab (`show_right_panel`).

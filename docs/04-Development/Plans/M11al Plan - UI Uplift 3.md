@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11al
-status: planned
+status: built
 updated: 2026-11-18
 ---
 
@@ -12,11 +12,11 @@ updated: 2026-11-18
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[84 - Milestone 11al - UI Uplift 3]] |
-| **Status** | 📝 planned 2026-11-18 on branch `m11al-ui-uplift` (from `cc3b2b8`); building, subagent-driven |
-| **Tasks done** | 1 / 13 (Task 0, baselines) |
+| **Status** | 🟨 built on branch m11al-ui-uplift, waiting for your on-screen check; not merged (planned 2026-11-18 from `cc3b2b8`, built subagent-driven). The whole-branch review and its fix wave are pending |
+| **Tasks done** | 13 / 13 (plus Task 8b, your who-order ruling) |
 | **Baselines** | Task 0, on `cc3b2b8`: `cargo test --bin fuxx` 1,944 passed, 1 ignored; clippy default 14 (bin) / 27 (test), `ui-shots` 16 / 29; `cargo fmt --check` clean; full `scripts/ui-shots.sh` 191 passed, 0 failed, 144.1 s |
-| **▶ Pick up here** | Task 1 |
-| **Decisions used** | Yours: option 1 (one card), tab style E, "looks right, do it right after M11ak", "go ahead with M11al". The design's AI's calls and "Calls on the drafter's open questions". Plan-time calls below (AI's). |
+| **▶ Pick up here** | The whole-branch review and its fix wave, then the full `scripts/ui-shots.sh` again; then your on-screen check (note 84, 14 items) |
+| **Decisions used** | Yours: option 1 (one card), tab style E, "looks right, do it right after M11ak", "go ahead with M11al"; while building: who follows the active tab, the branch leaves the rows, the full ui-shots run only before the final review and after its fix wave. The design's AI's calls and "Calls on the drafter's open questions". Plan-time calls below (AI's). |
 | **Needs your eyes** | 👀 the on-screen check in note 84, after Task 12 |
 
 **Goal:** Every pane and the right panel sit in one floating card beside an attached sidebar on the darkest
@@ -74,7 +74,8 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   task; no merge, no push in this milestone's build.
 - **Gate per task:** `cargo test --bin fuxx && cargo clippy --all-targets && cargo clippy --all-targets --features
   ui-shots && cargo fmt --check` (no new warnings over Task 0's baselines), then `scripts/ui-shots.sh --changed
-  master`, and the full `scripts/ui-shots.sh` before the commit of any task that touches drawing. Re-run a failing
+  master`, and the full `scripts/ui-shots.sh` before the commit of any task that touches drawing (changed on your
+  word during Task 7: the full run happens only before the final review and after its fix wave). Re-run a failing
   scene alone once before treating it as real. Reference fingerprints are stale on this Mac ("looks different" is
   reported, never a failure) — **never `--update-refs`**.
 - **Existing scenes whose expected pixels/positions change are rewritten deliberately**, with the reason in the
@@ -137,7 +138,7 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   `CARD_SHADOW_BLUR = 28.0`, `HAIRLINE = 1.0`. `CARD_RADIUS` stays 8 until Task 2. (`ui_tokens::text`): `UI = 13.5`,
   `KEYS = 11.5` added; `NAME`, `META`, `GROUP_HEADER` change in Task 8 with the rows that draw them.
 
-- [ ] **Step 1: Write the failing tests** in `theme.rs` (every built-in theme and the default):
+- [x] **Step 1: Write the failing tests** in `theme.rs` (every built-in theme and the default):
   `the_canvas_is_darkest_and_side_between` (luminance: `sidebar_background` < `side` < `card`, light and dark);
   `card_border_is_quiet_on_canvas_card_and_side` (≥ `QUIET_LINE_MIN`); `text_reads_on_the_new_surfaces`
   (`text`, `text_dim`, `text_faint` ≥ `TEXT_MIN` on `raised`, `side`, `side_hover`, `side_selected`, `tab_active`);
@@ -145,14 +146,14 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   `tab_active`, `side`, `card_lift`); `tab_active_keeps_the_accent_hue` (as `row_selected`'s test);
   `dim_and_faint_text_keep_todays_values` (Mocha and Latte, the hex read from master); the shadow alpha test moves
   to 0.45 / 0.12.
-- [ ] **Step 2: Run** `cargo test --bin fuxx theme::` — FAIL (fields missing).
-- [ ] **Step 3: Implement** (§1, §11): canvas `mix(bg, black, 0.42)` dark / `mix(bg, fg, 0.08)` light; a local
+- [x] **Step 2: Run** `cargo test --bin fuxx theme::` — FAIL (fields missing).
+- [x] **Step 3: Implement** (§1, §11): canvas `mix(bg, black, 0.42)` dark / `mix(bg, fg, 0.08)` light; a local
   `base` = today's formula for `text_dim` / `text_faint` / `selection`; the formulas of plan-time call 3; add the new
   surfaces to `surfaces` / `text_surfaces` and to `drawn_pairs`. If a light theme's canvas step breaks a floor, take
   the largest step ≤ 0.08 that passes and say so.
-- [ ] **Step 4: Run** — PASS; the gate; `scripts/ui-shots.sh --changed master`; full `scripts/ui-shots.sh` (the
+- [x] **Step 4: Run** — PASS; the gate; `scripts/ui-shots.sh --changed master`; full `scripts/ui-shots.sh` (the
   canvas got darker: rewrite any check that hard-codes a canvas step, report which).
-- [ ] **Step 5: Commit** `M11al Task 1: tokens and colours`.
+- [x] **Step 5: Commit** `M11al Task 1: tokens and colours`.
 
 ### Task 2: The floating card and splits as hairlines
 
@@ -171,10 +172,10 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   `HAIRLINE` `card_border` line. `PaneColors` loses `focus`.
 - Consumes: Task 1's `CARD_INSET`, `CARD_SHADOW_Y`, `CARD_SHADOW_BLUR`, `HAIRLINE`, `card_shadow_alpha`.
 
-- [ ] **Step 1: Write the failing tests** (`panes.rs`): `the_grab_strip_is_centred_on_the_hairline_at_any_ratio`
+- [x] **Step 1: Write the failing tests** (`panes.rs`): `the_grab_strip_is_centred_on_the_hairline_at_any_ratio`
   (for `w` in {400, 961}, ratio in {0.1, 0.5, 0.9}: the line sits at `ratio * (w - 1)`; the strip
   `[ratio * w + grab_shift(..), + 6]` has its middle at the line's middle ± 0.01); `the_accent_line_is_centred_in_the_strip`.
-- [ ] **Step 2: Write the failing scenes** (`window.rs`, after `cards-corners` in `ORDER`):
+- [x] **Step 2: Write the failing scenes** (`window.rs`, after `cards-corners` in `ORDER`):
   `card` — one pane, sidebar shown: the card's left edge at the sidebar's right (no canvas between), its top at
   `CARD_INSET`, right at window − `CARD_INSET`, bottom at status bar − `CARD_INSET`; canvas 2 px outside each
   rounded corner diagonally; a pixel 4 px under the card's bottom middle darker than the canvas (the shadow);
@@ -183,14 +184,14 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   starts 8 px from the window's left, under the `TOP_BAND`.
   Rewrite `cards`, `cards-split`, `cards-corners` to the one-card rules (keep: nothing square past a corner, the
   first tab clear of the curve, the grid blue up to the rounded corner).
-- [ ] **Step 3: Run** `scripts/ui-shots.sh card` — FAIL.
-- [ ] **Step 4: Implement** §3.1–3.5, §3.7: the wrapper card at `CARD_INSET` (flush left against the sidebar; 8 px
+- [x] **Step 3: Run** `scripts/ui-shots.sh card` — FAIL.
+- [x] **Step 4: Implement** §3.1–3.5, §3.7: the wrapper card at `CARD_INSET` (flush left against the sidebar; 8 px
   from the window's left with it hidden), the column clip moved (plan-time call 4), the strip above it
   `CARD_INSET` tall, focus ring gone, veil kept. The right panel stays outside the card for now (Task 3), 8 px right
   of it. Check the agent / file / browser tab bodies' bottom corners at radius 14 (§3.4).
-- [ ] **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite every scene broken by the new insets,
+- [x] **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite every scene broken by the new insets,
   radius or ring (`splits`, `window`, `panels`, …), listing each with its reason.
-- [ ] **Step 6: Commit** `M11al Task 2: one floating card, splits as hairlines`.
+- [x] **Step 6: Commit** `M11al Task 2: one floating card, splits as hairlines`.
 
 ### Task 3: The right panel inside the card
 
@@ -207,17 +208,17 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   The right panel fills with `side`, rounds its top-right and bottom-right corners at `CARD_RADIUS - HAIRLINE`.
 - Consumes: Task 1's `side`; Task 2's card wrapper.
 
-- [ ] **Step 1: Write the failing tests:** `width_for_edge_puts_the_hairline_under_the_pointer` (the drawn hairline's
+- [x] **Step 1: Write the failing tests:** `width_for_edge_puts_the_hairline_under_the_pointer` (the drawn hairline's
   x for the returned width equals `x` ± 0.5, sidebar 0 and 290); `drawn_width_keeps_the_panes_their_minimum`
   (window 800, left 290 → panes ≥ 200; window 520 → 0).
-- [ ] **Step 2: Write the failing scenes:** `card` gains the hairline between the panes and the right panel and the
+- [x] **Step 2: Write the failing scenes:** `card` gains the hairline between the panes and the right panel and the
   panel's `side` fill; `card-right-hidden` (the terminal owns the card's right corners: canvas outside, card inside);
   `card-narrow` (a window where `drawn_width` is 0: no panel, no hairline); `card-slide` (mid-slide: the panel cut at
   the card's right edge, nothing of it past the card or on the canvas).
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement** §3.2, §6.1, §6.7 (header height unchanged until Task 5/9).
-- [ ] **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `right-sidebar`, `files`,
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement** §3.2, §6.1, §6.7 (header height unchanged until Task 5/9).
+- [x] **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `right-sidebar`, `files`,
   `right-panels`, `changes*`, `activity`, `branch*` position checks (derive from tokens), listing each.
-- [ ] **Step 6: Commit** `M11al Task 3: the right panel inside the card`.
+- [x] **Step 6: Commit** `M11al Task 3: the right panel inside the card`.
 
 ### Task 4: Status bar
 
@@ -225,12 +226,12 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
 - Modify: `src/status_bar.rs` (`PAD` 16, text `text::META`-sized 12, `MARK` 10, no fill), `src/ui_tokens.rs`
   (`STATUS_BAR` 26), `src/ui_shots/status_bar.rs`
 
-- [ ] **Step 1: Write the failing scene check** in `status-bar`: the bar's middle pixel equals the canvas (no fill),
+- [x] **Step 1: Write the failing scene check** in `status-bar`: the bar's middle pixel equals the canvas (no fill),
   height `STATUS_BAR`; a pixel just under the card in the bar is darker than the canvas (the shadow falls over it).
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** §7 (contents and fitting order unchanged; text 12 px as a local
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement** §7 (contents and fitting order unchanged; text 12 px as a local
   constant, plan-time call 8).
-- [ ] **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `status-bar*`, `update-button`.
-- [ ] **Step 5: Commit** `M11al Task 4: the status bar on the canvas`.
+- [x] **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `status-bar*`, `update-button`.
+- [x] **Step 5: Commit** `M11al Task 4: the status bar on the canvas`.
 
 ### Task 5: Minimal tabs (E)
 
@@ -249,22 +250,22 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   side, `TAB_MIN_WIDTH` 100, `TAB_MAX_WIDTH` 220, `TILE` 20 / radius 6 / glyph 11.5, `STATUS_DOT` 8, `CLOSE` 16,
   `BUTTON` 28, `ICON` 16, `BUTTON_GAP` 4, `BUTTONS_PAD` 10.
 
-- [ ] **Step 1: Write the failing tests:** `look_active_focused_is_tab_active`, `look_active_unfocused_is_card_hover`,
+- [x] **Step 1: Write the failing tests:** `look_active_focused_is_tab_active`, `look_active_unfocused_is_card_hover`,
   `look_inactive_has_no_fill_and_faint_text`, `look_waiting_inactive_keeps_its_tint`; `drop_tab_reads_on_the_card`
   (theme: text and tab marks at their floors on `drop_tab`).
-- [ ] **Step 2: Write the failing scenes:** `tabs-minimal` (after `tab-bars` in `ORDER`): tile on every tab with its
+- [x] **Step 2: Write the failing scenes:** `tabs-minimal` (after `tab-bars` in `ORDER`): tile on every tab with its
   glyph colour (agent: provider colour; terminal / browser: `accent`; file: `text_dim`); the status dot after the
   title (working arc, waiting dot, done ✓ in `text_dim`, idle none); separators; the active tab's `tab_active`
   wash; the preview tab italic; × on hover; an inactive waiting tab's tint; the bar's bottom `card_border` line; the
   bar has no fill (card colour between tabs); **overflow:** 12 tabs in a narrow split pane — each ≥ 100 wide, the
   row scrolls, `＋ ⋯ ▥` inside the pane and visible. `card-split` gains: `tab_active` only on the focused pane's
   active tab, `card_hover` on the others' active tabs.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement** §4.1–4.7 (Done in tabs is the muted ✓; the right panel's header
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement** §4.1–4.7 (Done in tabs is the muted ✓; the right panel's header
   height follows `TAB_BAR` already, so it stays level).
-- [ ] **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `tab-bars*`, `tab-drag`, `tabs`,
+- [x] **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `tab-bars*`, `tab-drag`, `tabs`,
   `splits`, `workspaces`, `browser-tab`, `chrome-bars-and-edges` and any agent-tab scene reading the bar, listing
   each.
-- [ ] **Step 6: Commit** `M11al Task 5: minimal tabs`.
+- [x] **Step 6: Commit** `M11al Task 5: minimal tabs`.
 
 ### Task 6: Terminal padding and the agent box
 
@@ -273,16 +274,16 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   (the §8 table), `src/agent_tab.rs` (the conversation's side room = `AREA_X` 28, if it is a local number),
   `src/ui_shots/terminal.rs`, `src/ui_shots/agent.rs`, `src/ui_shots/agent_box.rs`
 
-- [ ] **Step 1: Write the failing scene** `agent-box-card` (after the other `agent-box-*` in `ORDER`): the box's left
+- [x] **Step 1: Write the failing scene** `agent-box-card` (after the other `agent-box-*` in `ORDER`): the box's left
   and right edges 28 px in from the card's inner edges; the conversation's text column starts at the same x as the
   box's.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** §5, §8 (`AREA_X` 28, `AREA_TOP`/`AREA_BOTTOM` 8/20,
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement** §5, §8 (`AREA_X` 28, `AREA_TOP`/`AREA_BOTTOM` 8/20,
   `PLACE_GAP` 8, `BOX_RADIUS` 14, `BOX_X`/`BOX_Y`/`BOX_GAP` 14/12/10, `CHIP_H`/`CHIP_X`/`CHIP_RADIUS`/`CHIP_GAP`
   28/10/8/6, `BUTTON` 28, `MENU_WIDTH` 260, `ROW_H`/`ROW_RADIUS` 32/8). Command blocks' gutter keeps its offset
   from the grid.
-- [ ] **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `cursor`, `command-blocks*`,
+- [x] **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `cursor`, `command-blocks*`,
   `agent-tab-*`, `agent-box-*` position checks, listing each.
-- [ ] **Step 5: Commit** `M11al Task 6: terminal padding and the agent box`.
+- [x] **Step 5: Commit** `M11al Task 6: terminal padding and the agent box`.
 
 ### Task 7: The sidebar's band, search and footer
 
@@ -293,15 +294,15 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   `FOOTER_BUTTON` 34, gap 12), `src/sidebar_toggle.rs` if it reads the band, `src/ui_shots/window.rs`,
   `src/ui_shots/sidebar.rs`, `src/ui_shots/welcome.rs`, `src/ui_shots/overlays.rs`
 
-- [ ] **Step 1: Write the failing scene checks** in `sidebar` (or a new `sidebar-band` scene beside it): the
+- [x] **Step 1: Write the failing scene checks** in `sidebar` (or a new `sidebar-band` scene beside it): the
   search box 38 tall at 4 / 14 / 10 margins, `raised` fill, `card_border` edge; the footer 62 tall with its top
   line, the "New Fuxxpace ⌘N" button 38 tall reaching the 🔔; a new window's sidebar 290 wide.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** §2 (no edge line on the sidebar's right), §2.1, §2.2, §2.6,
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement** §2 (no edge line on the sidebar's right), §2.1, §2.2, §2.6,
   §2.7.
-- [ ] **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `window`, `title-area`, `title-bar`,
+- [x] **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `window`, `title-area`, `title-bar`,
   `sidebar-button`, `welcome*`, `overlays`, `panels` (band 52, anchors) and every check hard-coding 240, listing
   each.
-- [ ] **Step 5: Commit** `M11al Task 7: the sidebar's band, search and footer`.
+- [x] **Step 5: Commit** `M11al Task 7: the sidebar's band, search and footer`.
 
 ### Task 8: Sidebar rows, headings and line two
 
@@ -321,21 +322,21 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   past the corner, `AGE_MIN_ROW` 240, accent bar 3 px inset 12, heading 16 above / 8 below / 20 sides; `TILE`,
   `CARD_PAD`, the group `CARD_RADIUS` go.
 
-- [ ] **Step 1: Write the failing tests:** `line_two_says_who_and_where` (agent → `"✳ Claude · api"`; program →
+- [x] **Step 1: Write the failing tests:** `line_two_says_who_and_where` (agent → `"✳ Claude · api"`; program →
   `"› npm · my-app"`; shell → `"›_ zsh · my-app"`; no folder → `"›_ zsh"`; SSH → host as where; in and out of a
   folder group); `line_two_keeps_not_live_waiting_note_and_title_first` (the old precedence test, updated);
   `every_row_is_56`; `place_lines_follow_who_where`. Update the existing `LineTwo::Place` / `Here` / `State` tests
   to the new rule (each listed in the report).
-- [ ] **Step 2: Write the failing scene** `sidebar-comfortable` (after `sidebar-rows` in `ORDER`): 56 px rows; the
+- [x] **Step 2: Write the failing scene** `sidebar-comfortable` (after `sidebar-rows` in `ORDER`): 56 px rows; the
   badge ring in the row's fill (plain, hover, selected); ages top-right; the 3 px accent bar at the left edge;
   quiet uppercase headings without a card; a closed group's status only; who · where lines; **narrow variant**
   (sidebar 180, a long name / program / folder): ellipsized, no age, nothing overlapping.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement** §2.3–2.5 (the hover dot, ⌘ hint, × and Open stay, sized to the
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement** §2.3–2.5 (the hover dot, ⌘ hint, × and Open stay, sized to the
   row; Chore 2 meanings unchanged).
-- [ ] **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `sidebar`, `sidebar-rows`,
+- [x] **Step 5: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `sidebar`, `sidebar-rows`,
   `sidebar-quiet`, `sidebar-selection`, `sidebar-marks`, `agent-sidebar-waiting`, `chrome-sidebar-scroll`, listing
   each.
-- [ ] **Step 6: Commit** `M11al Task 8: sidebar rows, headings and who · where`.
+- [x] **Step 6: Commit** `M11al Task 8: sidebar rows, headings and who · where`.
 
 ### Task 9: Right panel — switch, repo card, section headings
 
@@ -345,15 +346,15 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   the repo card; STAGED / CHANGES headings with count pills), `src/graph_panel.rs`, `src/activity_panel.rs` (their
   headings), `src/ui_shots/right_sidebar.rs`, `src/ui_shots/changes.rs`, `src/ui_shots/branch.rs`
 
-- [ ] **Step 1: Write the failing scene** `right-panel-comfortable` (after `right-panels` in `ORDER`), first half:
+- [x] **Step 1: Write the failing scene** `right-panel-comfortable` (after `right-panels` in `ORDER`), first half:
   the header `TAB_BAR` tall with its bottom `card_border` line at the same y as the pane tab bar's line (one line
   across the card); the track's `canvas` fill and the active segment's `card_lift`; the repo card 4 / 14 / 6 margin,
   `card_hover` fill, name and meta; a section heading uppercase with its `card_lift` count pill.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** §6.2–6.4 (same content, clicks, open/closed behaviour; the header
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement** §6.2–6.4 (same content, clicks, open/closed behaviour; the header
   padding outside the track drags the window when at the top, not in full screen).
-- [ ] **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite the affected `right-sidebar`, `files*`,
+- [x] **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite the affected `right-sidebar`, `files*`,
   `changes*`, `activity`, `graph*` checks, listing each.
-- [ ] **Step 5: Commit** `M11al Task 9: right panel switch, repo card and headings`.
+- [x] **Step 5: Commit** `M11al Task 9: right panel switch, repo card and headings`.
 
 ### Task 10: Right panel — rows, filter, branch footer
 
@@ -364,13 +365,13 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   "↑1 ahead of origin" 12.5 `text_faint`), `src/activity_panel.rs` (rows), row hover / selected on `side_hover` /
   `side_selected`, `src/ui_shots/right_sidebar.rs`, `src/ui_shots/changes.rs`, `src/ui_shots/branch.rs`
 
-- [ ] **Step 1: Write the failing checks** in `right-panel-comfortable`, second half: 32 px rows; a hovered row's
+- [x] **Step 1: Write the failing checks** in `right-panel-comfortable`, second half: 32 px rows; a hovered row's
   `side_hover`, a selected row's `side_selected`; the filter field 34 tall; the footer's 34 px ⟳ ⇡ buttons with
   their `card_border` edges; the indent guides still drawn on `side`.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** §6.5, §6.6 (same actions, tooltips, error line).
-- [ ] **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `files-follow`, `changes*`,
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement** §6.5, §6.6 (same actions, tooltips, error line).
+- [x] **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `files-follow`, `changes*`,
   `branch*`, listing each.
-- [ ] **Step 5: Commit** `M11al Task 10: right panel rows, filter and footer`.
+- [x] **Step 5: Commit** `M11al Task 10: right panel rows, filter and footer`.
 
 ### Task 11: The file tab's and browser tab's outer bar (last: M11ah overlap)
 
@@ -379,13 +380,13 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   `card_border`, side padding → 16; height stays `FILE_TOOLBAR` 42), `src/browser_tab.rs` (`BAR`'s fill and line,
   the same), `src/ui_shots/file_tab.rs`, `src/ui_shots/chrome_parts.rs`
 
-- [ ] **Step 1: Write the failing checks** in `file-tab` and `browser-tab`: the bar's fill equals the card, its
+- [x] **Step 1: Write the failing checks** in `file-tab` and `browser-tab`: the bar's fill equals the card, its
   bottom line `card_border`, the title starts 16 px in.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** §9 (find bar unchanged). Keep the `file_tab.rs` diff to these
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement** §9 (find bar unchanged). Keep the `file_tab.rs` diff to these
   lines (`git diff --stat` in the report).
-- [ ] **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `file-tab*`, `file-live-*`,
+- [x] **Step 4: Run** — PASS; the gate; full `scripts/ui-shots.sh`; rewrite `file-tab*`, `file-live-*`,
   `file-follow-*`, `chrome-file-tab-toolbar`, listing each.
-- [ ] **Step 5: Commit** `M11al Task 11: file and browser tab outer bars`.
+- [x] **Step 5: Commit** `M11al Task 11: file and browser tab outer bars`.
 
 ### Task 12: Clean-up, docs and hand-off
 
@@ -396,14 +397,14 @@ Mockups (git-ignored, for the look only): `.superpowers/brainstorm/34352-1794905
   this plan's table and status, `docs/04-Development/40 - Roadmap.md`, `docs/06-Progress-Log/60 - Progress Log.md`,
   module docs of `panes.rs`, `tab_bar.rs`, `right_sidebar.rs`, `sidebar.rs` (the old "6 pt gap" / "cards" words)
 
-- [ ] **Step 1: M11p grep:** `git diff master...HEAD` for added `timer(`, `request_animation_frame`, `spawn(` —
+- [x] **Step 1: M11p grep:** `git diff master...HEAD` for added `timer(`, `request_animation_frame`, `spawn(` —
   none outside the existing slides (list what's found).
-- [ ] **Step 2: Write note 84's on-screen check** (~12 items, run with `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo
+- [x] **Step 2: Write note 84's on-screen check** (~12 items, run with `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo
   run`, debug only): Mocha and Latte; one pane; a 2 × 2 split; sidebar hidden; right panel hidden; both hidden; full
   screen; a narrow window; an agent tab with the box; a file tab; a waiting and a working tab; idle CPU (Activity
   Monitor, 60 s, branch vs master, nothing open).
-- [ ] **Step 3: Full gate** and full `scripts/ui-shots.sh`; numbers into note 84 and the Progress Log; grep the
+- [x] **Step 3: Full gate** and full `scripts/ui-shots.sh`; numbers into note 84 and the Progress Log; grep the
   branch's added lines for `/Users/` and private names.
-- [ ] **Step 4:** Status everywhere: "🟨 built on branch m11al-ui-uplift, waiting for your on-screen check; not
+- [x] **Step 4:** Status everywhere: "🟨 built on branch m11al-ui-uplift, waiting for your on-screen check; not
   merged".
-- [ ] **Step 5: Commit** `M11al Task 12: docs and hand-off`.
+- [x] **Step 5: Commit** `M11al Task 12: docs and hand-off`.
