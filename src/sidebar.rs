@@ -137,9 +137,9 @@ pub fn who_where(who: &Who, place: Option<&str>) -> String {
 }
 
 /// Who is in front (plan-time call 6): the first of `agents` (provider names, most telling
-/// first: the row's agent tab, the agent running in its terminal, the workspace's agent tabs)
-/// that fuxx has a provider for, else `program` (what runs in front of the shell, if anything),
-/// else the `shell`.
+/// first: `who_of` passes the active agent tab, then the agent running in the terminal) that
+/// fuxx has a provider for, else `program` (what runs in front of the shell, if anything), else
+/// the `shell`.
 pub fn who_in_front<'a>(
     agents: impl IntoIterator<Item = Option<&'a str>>,
     program: Option<&str>,
@@ -157,6 +157,26 @@ pub fn who_in_front<'a>(
         Some(program) => Who::Program(program.to_string()),
         None => Who::Shell(shell.to_string()),
     }
+}
+
+/// What a workspace's row says who about (M11al Task 8b): its active tab and its terminal.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WhoFacts<'a> {
+    /// The workspace's active tab (its focused pane's) is an agent tab: its provider's name.
+    pub active_agent: Option<&'a str>,
+    /// Its terminal (the active tab's, else its first): the agent fuxx saw running in it
+    /// (`agents_now`), the program in front, and its shell.
+    pub terminal_agent: Option<&'a str>,
+    pub program: Option<&'a str>,
+    pub shell: &'a str,
+}
+
+/// Who a row names (M11al Task 8b, the user's ruling): whatever its workspace's active tab is.
+/// An agent tab: its provider ("✳ Claude"). Else its terminal: the agent running in it, else the
+/// program in front ("› npm"), else its shell ("›_ zsh"). Other agent tabs of the workspace
+/// don't count.
+pub fn who_of(f: &WhoFacts) -> Who {
+    who_in_front([f.active_agent, f.terminal_agent], f.program, f.shell)
 }
 
 /// A local shell's name: the file name of `shell` (`$SHELL`, a login shell's `-` dropped),
@@ -1422,7 +1442,7 @@ impl Workspace {
                         || (self.model.agent_tabs(ws).iter())
                             .filter_map(|tab| self.agents.get(tab))
                             .any(|a| a.status == Status::Working),
-                    who: self.row_who(ws, agent),
+                    who: self.row_who(ws),
                     ssh_host: (self.branch_terminal(ws))
                         .and_then(|id| items.iter().find(|s| s.id == id))
                         .and_then(|s| s.ssh.as_ref())
@@ -1439,33 +1459,36 @@ impl Workspace {
         )
     }
 
-    /// Who is in front in workspace `ws` (plan-time call 6, from what is already known: no
-    /// lookup of its own): the provider of the agent tab its row is about (`agent`), else of
-    /// the agent running in its named terminal, else of its first agent tab; else the program
-    /// in front in that terminal; else its shell (`ssh` for an SSH one, `$SHELL`'s name).
-    fn row_who(&self, ws: WorkspaceId, agent: Option<TabId>) -> Who {
+    /// Who is in front in workspace `ws` (`who_of`, Task 8b: its active tab, from what is
+    /// already known: no lookup of its own): its focused pane's active tab when that is an agent
+    /// tab; else its named terminal (the active tab's, else its first) with the agent seen in it,
+    /// the program in front and its shell (`ssh` for an SSH one, `$SHELL`'s name). A change of
+    /// active tab notifies the workspace, which rebuilds the rows (`rows_generation`).
+    fn row_who(&self, ws: WorkspaceId) -> Who {
         let items = self.sessions.items();
-        let terminal = (self.named_terminal(ws)).and_then(|id| items.iter().find(|s| s.id == id));
-        let provider = |tab: TabId| match self.model.tab(tab).map(|t| &t.kind) {
+        let active = (self.model.workspace(ws))
+            .and_then(|w| self.model.pane(w.focused))
+            .and_then(|p| self.model.tab(p.active));
+        let active_agent = match active.map(|t| &t.kind) {
             Some(TabKind::Agent { provider, .. }) => Some(provider.as_str()),
             _ => None,
         };
-        let in_terminal = terminal
-            .and_then(|s| self.agents_now.get(&s.id))
-            .map(String::as_str);
-        let tabs = self.model.agent_tabs(ws).into_iter().map(provider);
-        let agents = [agent.and_then(provider), in_terminal]
-            .into_iter()
-            .chain(tabs);
+        let terminal = (self.named_terminal(ws)).and_then(|id| items.iter().find(|s| s.id == id));
         let program = terminal.and_then(|s| match self.programs.state(s.id) {
             ProgramState::Running(name) => Some(name),
             _ => None,
         });
-        let shell = match terminal {
-            Some(s) if s.ssh.is_some() => "ssh",
-            _ => local_shell(),
-        };
-        who_in_front(agents, program.as_deref(), shell)
+        who_of(&WhoFacts {
+            active_agent,
+            terminal_agent: terminal
+                .and_then(|s| self.agents_now.get(&s.id))
+                .map(String::as_str),
+            program: program.as_deref(),
+            shell: match terminal {
+                Some(s) if s.ssh.is_some() => "ssh",
+                _ => local_shell(),
+            },
+        })
     }
 
     /// The sidebar's rows as they are now (`sidebar_rows`), built once per change: kept until
@@ -3955,6 +3978,58 @@ mod tests {
         assert_eq!(shell_name(Some("-bash".as_ref())), "bash");
         assert_eq!(shell_name(Some("".as_ref())), "shell");
         assert_eq!(shell_name(None), "shell");
+    }
+
+    /// Task 8b (the user's ruling): who follows the workspace's active tab. Its Claude tab
+    /// active: Claude, though its terminal runs npm.
+    #[test]
+    fn who_follows_the_active_agent_tab() {
+        let f = WhoFacts {
+            active_agent: Some("claude"),
+            program: Some("npm"),
+            shell: "zsh",
+            ..WhoFacts::default()
+        };
+        let claude = Who::Agent {
+            glyph: "\u{2733}",
+            name: "Claude",
+        };
+        assert_eq!(who_of(&f), claude);
+    }
+
+    /// Its terminal running npm active: npm, though the workspace has a Claude tab.
+    #[test]
+    fn who_follows_the_active_terminal_program() {
+        let f = WhoFacts {
+            active_agent: None,
+            program: Some("npm"),
+            shell: "zsh",
+            ..WhoFacts::default()
+        };
+        assert_eq!(who_of(&f), Who::Program("npm".into()));
+        // Claude itself running in the active terminal is still Claude.
+        let running = WhoFacts {
+            terminal_agent: Some("claude"),
+            program: Some("claude"),
+            ..f
+        };
+        let claude = Who::Agent {
+            glyph: "\u{2733}",
+            name: "Claude",
+        };
+        assert_eq!(who_of(&running), claude);
+    }
+
+    /// Its terminal at its prompt active: its shell, though the workspace has a Claude tab.
+    #[test]
+    fn who_is_the_shell_when_the_active_terminal_is_at_its_prompt() {
+        let f = WhoFacts {
+            active_agent: None,
+            program: None,
+            shell: "zsh",
+            ..WhoFacts::default()
+        };
+        assert_eq!(who_of(&f), Who::Shell("zsh".into()));
     }
 
     /// A dragged row's copy shows its line two's words (`place_lines`), who · where included.

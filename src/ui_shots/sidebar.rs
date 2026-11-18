@@ -1078,6 +1078,79 @@ fn sidebar_comfortable_scenes() {
             }
         }
     }
+    who_follows_the_active_tab();
+}
+
+/// Task 8b (the user's ruling): a row's who follows its workspace's active tab, with the chrome
+/// cached (M11p). One workspace: a terminal running npm and Claude's tab split beside it (as a
+/// provider preset launches it), Claude's tab focused. Each step (focus the terminal, then the
+/// Claude tab) must change what's shown and leave the window as a full redraw would draw it
+/// (`Steps`: the cached sidebar was drawn again), and the row's line two must follow.
+fn who_follows_the_active_tab() {
+    use crate::layout_model::TabId;
+    use crate::sidebar::{SidebarRow, place_lines};
+
+    let n = "sidebar-comfortable";
+    let (mut cx, window, ws) = super::chrome_parts::chrome_window(|ws, window, cx| {
+        ws.sidebar.hint_dismissed = true;
+        let api = std::path::Path::new(API);
+        ws.open_shot_session("dev", api, SHELL_TEXT, None, window, cx);
+        let id = ws.sessions.items()[0].id;
+        ws.programs
+            .set_for_shots(id, ProgramState::Running("npm".into()));
+        ws.agent_beside(id, "claude", window, cx);
+    });
+    let ws = &ws;
+    let said = |cx: &mut VisualTestAppContext| {
+        cx.read(|cx| {
+            let rows = ws.read(cx).rows(std::time::Instant::now());
+            rows.iter()
+                .find_map(|r| match r {
+                    SidebarRow::Workspace(w) => place_lines(w).pop(),
+                    SidebarRow::Header(_) => None,
+                })
+                .expect("dev's row")
+        })
+    };
+    let (terminal, agent): (TabId, TabId) = cx.read(|cx| {
+        let ws = ws.read(cx);
+        let id = ws.sessions.items()[0].id;
+        let w = ws.model.focused_workspace().expect("a workspace");
+        let agent = ws.model.agent_tabs(w)[0];
+        (ws.model.terminal_tab(id).expect("its tab"), agent)
+    });
+    let claude = "\u{2733} Claude \u{b7} api";
+    assert_eq!(said(&mut cx), claude, "{n}: Claude's tab is active");
+    let mut steps = Steps::new(n, &mut cx, window, ws);
+    let select = |tab: TabId| {
+        move |cx: &mut VisualTestAppContext| {
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.select_tab(tab, window, cx))
+            })
+            .expect("select the tab");
+        }
+    };
+    steps.step(
+        &mut cx,
+        window,
+        "the terminal running npm focused",
+        Seen::Changes,
+        select(terminal),
+    );
+    assert_eq!(
+        said(&mut cx),
+        "\u{203a} npm \u{b7} api",
+        "{n}: npm's terminal is active"
+    );
+    steps.step(
+        &mut cx,
+        window,
+        "Claude's tab focused again",
+        Seen::Changes,
+        select(agent),
+    );
+    assert_eq!(said(&mut cx), claude, "{n}: Claude's tab is active again");
+    steps.done();
 }
 
 /// The compact rows' selection and marks (M11i), from real workspaces in both themes, all in
