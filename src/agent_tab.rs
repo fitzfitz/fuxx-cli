@@ -35,8 +35,8 @@ use gpui::{
 };
 
 use crate::agent_box::{
-    BoxMenu, Change, PLACEHOLDER, SLASH_LIMIT, SlashRow, Step, slash_query, slash_rows, step_for,
-    switched_notice, usage_line,
+    AtRow, BoxMenu, Change, PLACEHOLDER, SLASH_LIMIT, SlashRow, Step, at_rows, slash_query,
+    slash_rows, step_for, switched_notice, usage_line,
 };
 use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, parse};
@@ -262,6 +262,25 @@ pub fn at_query(text: &str, at: usize, cursor: usize) -> Option<&str> {
     }
     let query = text.get(at + 1..cursor)?;
     (!query.contains(char::is_whitespace)).then_some(query)
+}
+
+/// What an `@` pick of `row` puts in the box: a file's path (see `inserted_path`), or `@name` for
+/// a sub-agent or skill, and a space. None for a heading, or a row nothing is at.
+pub fn at_insertion(
+    row: &AtRow,
+    files: &[FileHit],
+    commands: &[crate::providers::AgentCommand],
+    root: &Path,
+    cwd: &Path,
+) -> Option<String> {
+    match row {
+        AtRow::Heading(_) => None,
+        AtRow::File(i) => Some(format!(
+            "{} ",
+            inserted_path(root, cwd, &files.get(*i)?.rel)
+        )),
+        AtRow::Named { ix, .. } => Some(format!("@{} ", commands.get(*ix)?.name)),
+    }
 }
 
 /// The path an `@` pick inserts: relative to the agent's folder when the file is in it, else
@@ -628,11 +647,11 @@ struct Run {
 }
 
 /// The `@` file list: where the `@` is, the query after it, the ranked hits, the selected one.
-struct AtList {
+pub(crate) struct AtList {
     at: usize,
-    query: String,
-    hits: Vec<FileHit>,
-    selected: usize,
+    pub(crate) query: String,
+    pub(crate) hits: Vec<FileHit>,
+    pub(crate) selected: usize,
 }
 
 /// The `/` list: the first word's text after the `/`, and the selected command (counted among
@@ -736,8 +755,8 @@ pub struct AgentTab {
     /// looked up on the background executor, never in `render` (`read_branch`).
     pub(crate) branch: Option<String>,
     files: Option<Files>,
-    listing: bool,
-    at: Option<AtList>,
+    pub(crate) listing: bool,
+    pub(crate) at: Option<AtList>,
     /// The `/` list, while it is open.
     pub(crate) slash: Option<SlashList>,
     /// Esc closed the `/` list: it stays closed until the box leaves the `/` word.
@@ -2166,6 +2185,11 @@ impl AgentTab {
                 if self.slash.is_some() && self.pick_slash(None, cx) {
                     return;
                 }
+                // A list still loading (or that could not be read) is a line in progress, not a
+                // complete one: Return does not send the half-typed `/xx`.
+                if self.slash_list_pending(cx) {
+                    return;
+                }
                 self.submit(text.clone(), composer, cx);
             }
             ComposerEvent::Stop => {
@@ -2248,6 +2272,13 @@ impl AgentTab {
             hits: Vec::new(),
             selected: 0,
         });
+        // The agents and skills come from the catalog: a list not read yet (or that failed) is
+        // asked for again, as the `/` list does.
+        if let Some(provider) = self.provider
+            && !self.no_process
+        {
+            crate::agent_catalog::load_catalog(provider, self.start.cwd.clone(), cx);
+        }
         if self.files.is_none() && !self.listing {
             self.listing = true;
             let cwd = self.start.cwd.clone();
@@ -2325,6 +2356,7 @@ impl AgentTab {
                 if let Some(at) = &mut this.at {
                     at.hits = hits;
                     at.selected = 0;
+                    this.slash_scroll.scroll_to_item(0);
                     cx.notify();
                 }
             })
@@ -2333,20 +2365,58 @@ impl AgentTab {
         .detach();
     }
 
-    /// Put the picked file (`index`, else the selected one) in place of `@query`.
-    fn pick_at(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
+    /// The rows of the open `@` list: the ranked files, and the catalog's agents and skills (none
+    /// while it isn't read).
+    pub(crate) fn at_rows_now(&self, cx: &App) -> Vec<AtRow> {
+        self.at
+            .as_ref()
+            .map_or_else(Vec::new, |at| self.at_rows_from(at, cx))
+    }
+
+    /// How many rows of the `@` list a key can pick (its files, agents and skills).
+    fn at_pick_count(&self, cx: &App) -> usize {
+        self.at_rows_now(cx)
+            .iter()
+            .filter(|r| !matches!(r, AtRow::Heading(_)))
+            .count()
+    }
+
+    /// Put the picked row (`index` among the rows that can be picked, else the selected one) in
+    /// place of `@query`: a file's path, or `@name` for an agent or a skill. Nothing is sent.
+    pub(crate) fn pick_at(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
         let Some(at) = self.at.take() else {
             return;
         };
         let pick = index.unwrap_or(at.selected);
-        if let (Some(hit), Some(files)) = (at.hits.get(pick), &self.files) {
-            let path = inserted_path(&files.root, &self.start.cwd, &hit.rel);
+        let row = self
+            .at_rows_from(&at, cx)
+            .into_iter()
+            .filter(|r| !matches!(r, AtRow::Heading(_)))
+            .nth(pick);
+        let commands = match self.catalog_lookup(cx) {
+            crate::agent_catalog::Lookup::Ready(catalog) => catalog.commands,
+            _ => Vec::new(),
+        };
+        let inserted = row.zip(self.files.as_ref()).and_then(|(row, files)| {
+            at_insertion(&row, &at.hits, &commands, &files.root, &self.start.cwd)
+        });
+        if let Some(text) = inserted {
             let end = at.at + 1 + at.query.len();
             self.composer.update(cx, |c, cx| {
-                c.replace(at.at..end, &format!("{path} "), cx);
+                c.replace(at.at..end, &text, cx);
             });
         }
         cx.notify();
+    }
+
+    /// `at_rows_now` for an `@` list that is no longer `self.at` (the one a pick has taken).
+    fn at_rows_from(&self, at: &AtList, cx: &App) -> Vec<AtRow> {
+        match self.catalog_lookup(cx) {
+            crate::agent_catalog::Lookup::Ready(catalog) => {
+                at_rows(&at.hits, &catalog.commands, &at.query)
+            }
+            _ => at_rows(&at.hits, &[], &at.query),
+        }
     }
 
     /// The `/` list follows the box: it opens on a `/` at its start, filters as the first word
@@ -2456,7 +2526,12 @@ impl AgentTab {
             return false;
         };
         let typed = format!("/{}", command.name);
-        if let Some(own) = self.provider.and_then(|p| p.own_command(&typed)) {
+        // Its own menu opens only when the command is all the box holds: with more after it
+        // (the caret was inside the first word), the name goes in as text and the rest stays.
+        let end = self.first_word_end(cx);
+        let alone = self.composer.read(cx).text()[end..].trim().is_empty();
+        let own = self.provider.and_then(|p| p.own_command(&typed));
+        if let Some(own) = own.filter(|_| alone) {
             self.slash = None;
             self.composer
                 .update(cx, |c, cx| c.set_text(String::new(), cx));
@@ -2474,13 +2549,29 @@ impl AgentTab {
         }
     }
 
-    /// `typed` and a space in place of the box's first word; the list closes (the caret is past
-    /// the word).
+    /// Whether the `/` list is open with a note in place of its rows: the commands still load, or
+    /// could not be read.
+    fn slash_list_pending(&self, cx: &App) -> bool {
+        self.slash.is_some()
+            && matches!(
+                self.catalog_lookup(cx),
+                crate::agent_catalog::Lookup::Loading | crate::agent_catalog::Lookup::Failed(_)
+            )
+    }
+
+    /// `typed` and a space in place of the box's first word (the space is there already when
+    /// the word had text after it); the list closes (the caret is past the word).
     fn insert_command(&mut self, typed: &str, cx: &mut Context<Self>) {
         let end = self.first_word_end(cx);
+        let spaced = self.composer.read(cx).text()[end..].starts_with(char::is_whitespace);
         self.slash = None;
+        let put = if spaced {
+            typed.to_string()
+        } else {
+            format!("{typed} ")
+        };
         self.composer
-            .update(cx, |c, cx| c.replace(0..end, &format!("{typed} "), cx));
+            .update(cx, |c, cx| c.replace(0..end, &put, cx));
         cx.notify();
     }
 
@@ -2508,7 +2599,8 @@ impl AgentTab {
         }
         if let Some(at) = &mut self.at {
             at.selected = at.selected.saturating_sub(1);
-            cx.notify();
+            let selected = at.selected;
+            self.scroll_at_to(selected, cx);
         }
     }
 
@@ -2522,10 +2614,28 @@ impl AgentTab {
             }
             return;
         }
+        let last = self.at_pick_count(cx).saturating_sub(1);
         if let Some(at) = &mut self.at {
-            at.selected = (at.selected + 1).min(at.hits.len().saturating_sub(1));
-            cx.notify();
+            at.selected = (at.selected + 1).min(last);
+            let selected = at.selected;
+            self.scroll_at_to(selected, cx);
         }
+    }
+
+    /// Keep pick `selected` of the `@` list in view (the lists never show together, so they
+    /// share a scroll).
+    fn scroll_at_to(&mut self, selected: usize, cx: &mut Context<Self>) {
+        let row = self
+            .at_rows_now(cx)
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !matches!(r, AtRow::Heading(_)))
+            .nth(selected)
+            .map(|(i, _)| i);
+        if let Some(row) = row {
+            self.slash_scroll.scroll_to_item(row);
+        }
+        cx.notify();
     }
 
     /// Keep pick `selected` of the `/` list in view (and drawn as selected).
@@ -3661,66 +3771,6 @@ impl AgentTab {
             )))
             .into_any_element()
     }
-
-    /// The `@` file list, over the box while it is open.
-    pub(crate) fn at_list(
-        &self,
-        c: &Colors,
-        mono: SharedString,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::Div> {
-        self.at.as_ref().map(|at| {
-            let rows: Vec<AnyElement> = at
-                .hits
-                .iter()
-                .enumerate()
-                .map(|(i, hit)| {
-                    div()
-                        .id(("agent-at", i))
-                        .px(px(8.))
-                        .py(px(3.))
-                        .rounded(px(4.))
-                        .when(i == at.selected, |d| d.bg(hsla(c.code_fill)))
-                        .text_color(hsla(c.panel_text))
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| this.pick_at(Some(i), cx)))
-                        .child(SharedString::from(hit.rel.clone()))
-                        .into_any_element()
-                })
-                .collect();
-            let note = if self.listing {
-                Some("Listing files…")
-            } else if at.query.is_empty() {
-                Some("Type to find a file")
-            } else if at.hits.is_empty() {
-                Some("No file matches")
-            } else {
-                None
-            };
-            div()
-                .w_full()
-                .mb(px(8.))
-                .p(px(4.))
-                .rounded(px(7.))
-                .bg(hsla(c.panel))
-                .border_1()
-                .border_color(hsla(c.panel_border))
-                .font_family(mono.clone())
-                .text_size(px(text::META + 0.5))
-                .flex()
-                .flex_col()
-                .children(rows)
-                .when_some(note, |d, n| {
-                    d.child(
-                        div()
-                            .px(px(8.))
-                            .py(px(3.))
-                            .text_color(hsla(c.panel_dim))
-                            .child(n),
-                    )
-                })
-        })
-    }
 }
 
 impl Render for AgentTab {
@@ -3813,6 +3863,39 @@ mod tests {
     use super::*;
     use crate::providers::Picture;
     use crate::ui_tokens::contrast;
+
+    #[test]
+    fn an_agent_pick_inserts_at_name() {
+        use crate::agent_box::AtRow;
+        use crate::providers::{AgentCommand, CommandKind};
+        let file = FileHit {
+            rel: "src/a.rs".into(),
+            positions: Vec::new(),
+            score: 0,
+        };
+        let named = |name: &str, kind| AgentCommand {
+            name: name.into(),
+            about: String::new(),
+            kind,
+            aliases: Vec::new(),
+        };
+        let commands = vec![
+            named("example-skill", CommandKind::Skill),
+            named("example-agent", CommandKind::Agent),
+        ];
+        let root = Path::new("/tmp/fx");
+        let insert =
+            |row: AtRow| at_insertion(&row, std::slice::from_ref(&file), &commands, root, root);
+        assert_eq!(insert(AtRow::File(0)).as_deref(), Some("src/a.rs "));
+        let named_row = |ix| AtRow::Named {
+            ix,
+            positions: Vec::new(),
+        };
+        assert_eq!(insert(named_row(1)).as_deref(), Some("@example-agent "));
+        assert_eq!(insert(named_row(0)).as_deref(), Some("@example-skill "));
+        assert_eq!(insert(named_row(9)), None, "no such command");
+        assert_eq!(insert(AtRow::Heading("Files")), None);
+    }
 
     #[test]
     fn an_edit_tool_call_emits_edit_with_paths_joined_to_cwd() {

@@ -16,7 +16,7 @@ use super::{
     shot_themes,
 };
 use crate::agent_box::{
-    BoxMenu, CHECKING, Change, MOVE_HERE, ModeRow, ModelRow, NEW_CONVERSATION, PLACEHOLDER,
+    AtRow, BoxMenu, CHECKING, Change, MOVE_HERE, ModeRow, ModelRow, NEW_CONVERSATION, PLACEHOLDER,
     SlashRow, UsageRow,
 };
 use crate::agent_catalog::{Catalogs, Lookup};
@@ -405,6 +405,14 @@ pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "agent-box-slash-usage-opens-menu",
         run: agent_box_slash_usage_opens_menu,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: SLASH,
+    },
+    Scene {
+        name: "agent-box-at-sections",
+        run: agent_box_at_sections,
         themes: Themes::Both,
         serial: false,
         kind: Kind::Visual,
@@ -3598,6 +3606,10 @@ pub(super) fn agent_box_slash() {
                 Some("Loading\u{2026}"),
                 "{n}"
             );
+            // Return does not send the half-typed `/` while the list is a note.
+            press(cx, window, "enter");
+            assert_eq!(box_text(cx, tab), "/", "{n}: kept");
+            nothing_sent(n, cx, tab);
             feed(cx, tab, |t, cx| {
                 t.shot_catalog(Lookup::Failed("it ended".into()), cx)
             });
@@ -3607,6 +3619,9 @@ pub(super) fn agent_box_slash() {
                 Some("Couldn't read the list"),
                 "{n}"
             );
+            press(cx, window, "enter");
+            assert_eq!(box_text(cx, tab), "/", "{n}: kept when it failed too");
+            nothing_sent(n, cx, tab);
             assert_eq!(slash_rows_of(cx, tab), [], "{n}: and no made-up list");
             feed(cx, tab, |t, cx| {
                 t.shot_catalog(Lookup::Ready(slash_catalog()), cx)
@@ -3855,10 +3870,212 @@ pub(super) fn agent_box_slash_usage_opens_menu() {
             Some("/usage now"),
             "{n}"
         );
+        // Picked with the caret inside the first word of a longer line: the name goes in as
+        // text, the rest stays, and no menu opens.
+        press(cx, window, "escape");
+        type_in_box(cx, window, "/model x");
+        press(cx, window, "left left left left left");
+        assert_eq!(
+            slash_state(cx, tab).map(|(q, _)| q),
+            Some("mo".into()),
+            "{n}: the list follows the caret"
+        );
+        press(cx, window, "enter");
+        assert_eq!(menu(cx, tab), None, "{n}: no menu for a longer line");
+        assert_eq!(box_text(cx, tab), "/model x", "{n}: the rest stays");
+        press(cx, window, "cmd-a backspace");
         // Left for the shot: View Usage, from the list.
         type_in_box(cx, window, "/usage");
         press(cx, window, "enter");
         assert_eq!(menu(cx, tab), model(None, true), "{n}");
         assert_eq!(box_text(cx, tab), "", "{n}");
     });
+}
+
+/// A made-up list for the `@` menu: the commands, two sub-agents and three skills.
+fn at_catalog() -> Catalog {
+    use crate::providers::{AgentCommand, CommandKind};
+    let item = |name: &str, about: &str, kind: CommandKind| AgentCommand {
+        name: name.into(),
+        about: about.into(),
+        kind,
+        aliases: Vec::new(),
+    };
+    Catalog {
+        commands: vec![
+            item("clear", "Start over", CommandKind::Command),
+            item(
+                "example-researcher",
+                "A made-up sub-agent that looks things up",
+                CommandKind::Agent,
+            ),
+            item(
+                "example-reviewer",
+                "A made-up sub-agent that reads a change",
+                CommandKind::Agent,
+            ),
+            item(
+                "example-release",
+                "A made-up skill that cuts a release",
+                CommandKind::Skill,
+            ),
+            item(
+                "example-refactor",
+                "A made-up skill that tidies a module",
+                CommandKind::Skill,
+            ),
+            item(
+                "example-notes",
+                "A made-up skill that files the notes",
+                CommandKind::Skill,
+            ),
+        ],
+        ..example_catalog()
+    }
+}
+
+fn at_rows_of(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<AtRow> {
+    cx.read(|cx| tab.read(cx).shot_at_rows(cx))
+}
+
+/// The `@` list's rows as `Heading`, a file's path or `@name`, in order.
+fn at_names(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<String> {
+    let commands = at_catalog().commands;
+    let hits = cx.read(|cx| tab.read(cx).shot_at_paths());
+    at_rows_of(cx, tab)
+        .iter()
+        .map(|row| match row {
+            AtRow::Heading(h) => h.to_string(),
+            AtRow::File(i) => hits[*i].clone(),
+            AtRow::Named { ix, .. } => format!("@{}", commands[*ix].name),
+        })
+        .collect()
+}
+
+/// Open the `@` list over `paths` for `query`, and wait for the files to be ranked.
+fn open_at_list(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+    paths: &[&str],
+    query: &str,
+) {
+    let paths: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+    let query = query.to_string();
+    feed(cx, tab, |t, cx| {
+        t.shot_at(example_start().cwd, paths, &query, cx)
+    });
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while cx.read(|cx| tab.read(cx).at_hits()) == 0 {
+        assert!(
+            std::time::Instant::now() < until,
+            "{n}: the files were never ranked"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        cx.run_until_parked();
+    }
+    let _ = frame_fresh(cx, window);
+}
+
+/// §10: `@` opens the file picker with sections: Files (as before), Agents (the sub-agents) and
+/// Skills; a section with nothing is left out. A file inserts its path; an agent or skill inserts
+/// `@name `; nothing is sent. While the agent's list loads (or could not be read) the files work
+/// and the agents and skills say so: none is made up.
+pub(super) fn agent_box_at_sections() {
+    const FILES: [&str; 5] = [
+        "README.md",
+        "src/rsvp.ts",
+        "src/rsvp_dates.ts",
+        "test/rsvp.test.ts",
+        "package.json",
+    ];
+    box_scene(
+        "agent-box-at-sections",
+        &CLAUDE,
+        example_start(),
+        Lookup::Loading,
+        |n, cx, window, tab| {
+            // Loading: the files are there, the agents and skills say Loading.
+            open_at_list(n, cx, window, tab, &FILES, "rsvp");
+            assert_eq!(
+                at_names(cx, tab),
+                [
+                    "Files",
+                    "src/rsvp.ts",
+                    "src/rsvp_dates.ts",
+                    "test/rsvp.test.ts"
+                ],
+                "{n}: files only, no made-up list"
+            );
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_at_note(cx)),
+                Some("Loading\u{2026}"),
+                "{n}"
+            );
+            feed(cx, tab, |t, cx| {
+                t.shot_catalog(Lookup::Failed("it ended".into()), cx)
+            });
+            let _ = frame_fresh(cx, window);
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_at_note(cx)),
+                Some("Couldn't read the list"),
+                "{n}"
+            );
+            assert_eq!(at_names(cx, tab).len(), 4, "{n}: files still work");
+            // Ready: the sections, in order.
+            feed(cx, tab, |t, cx| {
+                t.shot_catalog(Lookup::Ready(at_catalog()), cx)
+            });
+            open_at_list(n, cx, window, tab, &FILES, "re");
+            assert_eq!(cx.read(|cx| tab.read(cx).shot_at_note(cx)), None, "{n}");
+            let names = at_names(cx, tab);
+            assert_eq!(names.first().map(String::as_str), Some("Files"), "{n}");
+            let at_agents = names.iter().position(|r| r == "Agents").expect("Agents");
+            let at_skills = names.iter().position(|r| r == "Skills").expect("Skills");
+            assert!(at_agents > 1 && at_skills > at_agents, "{n}: {names:?}");
+            assert!(
+                names[at_agents + 1..at_skills]
+                    .iter()
+                    .all(|r| r.starts_with("@example-re")),
+                "{n}: {names:?}"
+            );
+            // Drawn: the panel is above the box, its rows top to bottom.
+            let list = part(cx, tab, n, "at");
+            let folder = part(cx, tab, n, "folder");
+            assert!(list.bottom() <= folder.top(), "{n}: above the box {list:?}");
+            // Picking a file inserts its path.
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_at_selected()),
+                Some(0),
+                "{n}"
+            );
+            let second = format!("{} ", names[2]);
+            press(cx, window, "down enter");
+            assert_eq!(box_text(cx, tab), second, "{n}: the second file's path");
+            nothing_sent(n, cx, tab);
+            // Picking an agent inserts `@name `: down past the files, to the first agent.
+            open_at_list(n, cx, window, tab, &FILES, "re");
+            let files = names[1..at_agents].len();
+            let keys = vec!["down"; files].join(" ");
+            press(cx, window, &keys);
+            press(cx, window, "enter");
+            assert!(
+                box_text(cx, tab).starts_with("@example-re") && box_text(cx, tab).ends_with(' '),
+                "{n}: {:?}",
+                box_text(cx, tab)
+            );
+            assert_eq!(cx.read(|cx| tab.read(cx).at_hits()), 0, "{n}: closed");
+            nothing_sent(n, cx, tab);
+            // A skill: ↓ stops at the last row, which is a skill.
+            open_at_list(n, cx, window, tab, &FILES, "re");
+            press(cx, window, &vec!["down"; names.len()].join(" "));
+            press(cx, window, "enter");
+            let last = names.last().cloned().unwrap_or_default();
+            assert_eq!(box_text(cx, tab), format!("{last} "), "{n}: the last skill");
+            nothing_sent(n, cx, tab);
+            // Left open for the shot.
+            open_at_list(n, cx, window, tab, &FILES, "re");
+        },
+    );
 }
