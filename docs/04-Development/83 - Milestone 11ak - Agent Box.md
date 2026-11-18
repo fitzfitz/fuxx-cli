@@ -1,6 +1,6 @@
 # Milestone 11ak — Agent Box
 
-**Status:** 🟨 built on branch `m11ak-agent-box`, waiting for your on-screen check; not merged. All 15 plan tasks (0–14) built 2026-11-17/18, each reviewed ([[M11ak Plan - Agent Box]]); the whole-branch review's findings fixed 2026-11-18 ("Final review" below); design approved 2026-11-17 ("approved").
+**Status:** 🟨 built, **merged to master 2026-11-18 (`cd2218b`), not pushed**; waiting for your on-screen check. All 15 plan tasks (0–14) built 2026-11-17/18, each reviewed ([[M11ak Plan - Agent Box]]); the whole-branch review's findings fixed 2026-11-18 ("Final review" below); design approved 2026-11-17 ("approved").
 
 **Asked for:** 2026-11-17, by you, while scoping M11ag ("Ask the agent from the code"). You showed three screenshots of
 another app's message box — a folder and branch chip above the box; a folder picker (Search, Recent, This Computer ▸,
