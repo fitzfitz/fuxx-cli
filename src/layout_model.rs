@@ -537,7 +537,6 @@ impl Model {
 
     /// M11ah: turn file tab `tab`'s side by side on or off. False when `tab` is unknown, not a
     /// file tab, or already so.
-    #[allow(dead_code)] // the file tab's button (M11ah Task 11, part 2) sets it
     pub fn set_side_by_side(&mut self, tab: TabId, on: bool) -> bool {
         let is_file = self
             .tab(tab)

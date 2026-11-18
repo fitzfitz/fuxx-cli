@@ -1139,6 +1139,8 @@ pub(crate) enum Glyph {
     /// a head with no line.
     ChangeUp,
     ChangeDown,
+    /// The file bar's Side by side (M11ah): a box split in two columns.
+    SideBySide,
 }
 
 /// `kind` in `color`, in a 12 px box.
@@ -1550,6 +1552,19 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         head.line_to(p(6.5, 10.0));
                         head.line_to(p(8.3, 11.8));
                         paths.push(head);
+                    }
+                    Glyph::SideBySide => {
+                        let mut frame = stroke();
+                        frame.move_to(p(1.5, 2.0));
+                        frame.line_to(p(10.5, 2.0));
+                        frame.line_to(p(10.5, 10.0));
+                        frame.line_to(p(1.5, 10.0));
+                        frame.line_to(p(1.5, 2.0));
+                        paths.push(frame);
+                        let mut middle = stroke();
+                        middle.move_to(p(6.0, 2.0));
+                        middle.line_to(p(6.0, 10.0));
+                        paths.push(middle);
                     }
                     Glyph::OpenExternal => {
                         // The box, open at its top right corner.

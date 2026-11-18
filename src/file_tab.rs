@@ -119,7 +119,9 @@ use crate::mermaid_render::{Drawn, Mermaids, Waiter};
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
-use crate::row_map::{DiffLayout, Half, MapKey, Row, RowMap, change_starts, step_change};
+use crate::row_map::{
+    CardPairs, DiffLayout, Half, MapKey, Row, RowMap, change_starts, step_change,
+};
 use crate::scrollbar::{self, Axis, Bar, LaneMark, Thumb};
 use crate::sidebar_toggle::{Tip, tip_box};
 use crate::tab_bar::{Glyph, glyph_with};
@@ -165,6 +167,9 @@ const TOGGLE_DIFF: &str = "Diff";
 const TIP_PREV_CHANGE: &str = "Previous change (\u{2325}\u{2191})";
 const TIP_NEXT_CHANGE: &str = "Next change (\u{2325}\u{2193})";
 const TIP_WRAP: &str = "Wrap long lines at the tab\u{2019}s width";
+/// M11ah: the bar's Side by side, and its tooltip while the body is too narrow for two halves.
+pub const TIP_SIDE_BY_SIDE: &str = "Side by side";
+pub const TIP_SIDE_TOO_NARROW: &str = "Too narrow for side by side";
 const PREVIEW: &str = "Preview";
 const TIP_PREVIEW: &str = "Show the Markdown rendered";
 const TIP_PREVIEW_TOO_LARGE: &str = "Too large to preview";
@@ -979,6 +984,9 @@ pub struct DiffDoc {
     /// from both sides' outlines once the colours name their lines).
     pub grouped: Arc<Grouped>,
     pub titles: Arc<Vec<CardTitle>>,
+    /// M11ah: each card's rows paired for side by side (removed and added in order, as git
+    /// lists them).
+    pub pairs: Arc<Vec<CardPairs>>,
     /// M11ah: the changed words of each paired removed / added row (none: gave up past 50 ms).
     pub words: Option<Arc<WordMarks>>,
     /// M11ah: the old and the new side's outlines (none: gave up past the limit).
@@ -1159,6 +1167,10 @@ fn diff_state(
                 (old_o.as_ref(), new_o.as_ref()),
                 markdown,
             );
+            // M11ah: each card's rows paired, for side by side.
+            let pairs = (grouped.cards.iter())
+                .map(|c| diff_cards::pair(&parsed.rows, c.rows.clone()))
+                .collect();
             // M11ah: the changed words of the paired rows (given up after 50 ms: none).
             let words = diff_cards::word_marks(
                 &parsed.rows,
@@ -1176,6 +1188,7 @@ fn diff_state(
                 new,
                 grouped: Arc::new(grouped),
                 titles: Arc::new(titles),
+                pairs: Arc::new(pairs),
                 words,
                 old_outline: old_o.map(Arc::new),
                 new_outline: new_o.map(Arc::new),
@@ -1661,7 +1674,8 @@ pub fn row_hit(doc: &Doc, i: usize, row: (usize, usize, usize), last: bool, x_ce
 /// the shown line above it).
 pub fn rescroll_row(top: usize, from: Option<&RowMap>, to: &RowMap) -> usize {
     let line = match from.and_then(|m| m.row(top)) {
-        Some(Row::Line { line, .. }) => line,
+        // M11ah: a side-by-side pair's line (the old side's when both).
+        Some(row @ (Row::Line { .. } | Row::Pair { .. })) => row.line().unwrap_or(0),
         // A Diff card's title: that card's title.
         Some(Row::Title { card }) => {
             return to
@@ -1675,7 +1689,6 @@ pub fn rescroll_row(top: usize, from: Option<&RowMap>, to: &RowMap) -> usize {
                 .and_then(|lines| to.row_holding(lines.start))
                 .unwrap_or_else(|| top.min(to.len().saturating_sub(1)));
         }
-        Some(_) => return top.min(to.len().saturating_sub(1)),
         None => top,
     };
     (0..=line).rev().find_map(|l| to.first_row(l)).unwrap_or(0)
@@ -1733,13 +1746,11 @@ pub fn bar_at_rows(y: f32, map: &RowMap, changes: &Changes) -> Option<(usize, Li
 }
 
 /// M11ah: side by side needs this many text cells in each half.
-#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
 pub const SIDE_MIN_CELLS: usize = 60;
 
 /// M11ah: a half's gutter side by side, from its own left edge: `GUTTER_LEFT`, its numbers (the
 /// wider of the diff's two columns, so both halves are alike), `NUMBER_GAP`, the sign (a cell),
 /// `TEXT_GAP`: the text's left edge.
-#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
 fn side_text_left(cell: f32, gutter: Gutter) -> f32 {
     let digits = match gutter {
         Gutter::Diff {
@@ -1753,7 +1764,6 @@ fn side_text_left(cell: f32, gutter: Gutter) -> f32 {
 
 /// M11ah: a half's text cells side by side in a body `width` points wide (the halves split the
 /// room inside the cards' insets; each keeps `RIGHT_PAD` after its text).
-#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
 pub fn side_cells(width: f32, cell: f32, gutter: Gutter) -> usize {
     let cell = cell.max(1.0);
     let half = (width - 2.0 * code::CARD_INSET) / 2.0;
@@ -1763,14 +1773,12 @@ pub fn side_cells(width: f32, cell: f32, gutter: Gutter) -> usize {
 
 /// Whether a body `width` points wide fits two halves of `SIDE_MIN_CELLS` cells with their
 /// gutters (a diff's only).
-#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
 pub fn fits_side_by_side(width: f32, cell: f32, gutter: Gutter) -> bool {
     matches!(gutter, Gutter::Diff { .. }) && side_cells(width, cell, gutter) >= SIDE_MIN_CELLS
 }
 
 /// The selected text of one half: only rows on that side (Old: Same + Removed; New: Same +
 /// Added), the first and last in part, `\n` between them.
-#[allow(dead_code)] // the side-by-side view (M11ah Task 11, part 2: the drawing) uses it
 pub fn half_text(doc: &Doc, rows: &[DiffRow], a: Pos, b: Pos, half: Half) -> String {
     let (s, e) = if a <= b { (a, b) } else { (b, a) };
     let Some(last) = doc.lines.len().checked_sub(1) else {
@@ -1796,6 +1804,52 @@ pub fn half_text(doc: &Doc, rows: &[DiffRow], a: Pos, b: Pos, half: Half) -> Str
         parts.push(&l[from..to.max(from)]);
     }
     parts.join("\n")
+}
+
+/// M11ah: the bar's Side by side as it looks: filled (chosen and fitting), whether it takes a
+/// click (it fits), and its tooltip.
+pub fn side_button_look(chosen: bool, fits: bool) -> (bool, bool, &'static str) {
+    if fits {
+        (chosen, true, TIP_SIDE_BY_SIDE)
+    } else {
+        (false, false, TIP_SIDE_TOO_NARROW)
+    }
+}
+
+/// M11ah: the half a diff row's line is drawn on side by side: an added line's on the right,
+/// a removed or unchanged line's on the left (where a step or a jump to it lands).
+fn half_of(rows: &[DiffRow], line: usize) -> Half {
+    match rows.get(line).map(|r| r.kind) {
+        Some(RowKind::Added) => Half::New,
+        _ => Half::Old,
+    }
+}
+
+/// M11ah: side by side, the matches' indices in the order a find step visits them: row by row
+/// (`row_of`: the screen row a match is drawn on), on each row left before right, then along
+/// the line. (An unchanged line's matches show on both halves; a step stops on the left one.)
+pub fn side_order(
+    matches: &[Match],
+    rows: &[DiffRow],
+    row_of: impl Fn(&Match) -> Option<usize>,
+) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..matches.len()).collect();
+    order.sort_by_key(|&k| {
+        let m = &matches[k];
+        (row_of(m), half_of(rows, m.line) == Half::New, m.cols.start)
+    });
+    order
+}
+
+/// M11ah: Wrap's cells per row in a body `width` points wide: a diff's inside its cards (side
+/// by side: a half's, `side_cells`), a file's from its gutter; at least one.
+pub fn wrap_cells(width: f32, cell: f32, gutter: Gutter, side: bool) -> usize {
+    let cell = cell.max(1.0);
+    if side {
+        return side_cells(width, cell, gutter).max(1);
+    }
+    let room = width - columns(cell, gutter).text_left - RIGHT_PAD - right_inset(gutter);
+    (room / cell).floor().max(1.0) as usize
 }
 
 /// The gutter's number columns: the file's line numbers, or a diff's old and new numbers (each
@@ -2192,8 +2246,8 @@ pub fn columns(cell: f32, gutter: Gutter) -> Columns {
 }
 
 /// M11ah: Diff mode's cards: the grouping, and per stretch whether it is shown, per card
-/// whether it is closed.
-type DiffParts = (Arc<Grouped>, Vec<bool>, Vec<bool>);
+/// whether it is closed; each card's rows paired (side by side).
+type DiffParts = (Arc<Grouped>, Vec<bool>, Vec<bool>, Arc<Vec<CardPairs>>);
 
 /// M11ah: what a card is known by over a reload: the new-file line of its first row that has
 /// one (a deleted file's one card: 0).
@@ -2216,7 +2270,7 @@ fn diff_parts(d: &DiffDoc, shown: &BTreeSet<usize>, closed: &BTreeSet<usize>) ->
         .iter()
         .map(|c| closed.contains(&card_key(c, &d.rows)))
         .collect();
-    (g.clone(), shown, closed)
+    (g.clone(), shown, closed, d.pairs.clone())
 }
 
 /// M11ah: the room a diff's cards leave at the body's right edge (a file's: none): the text
@@ -2305,24 +2359,44 @@ pub struct Geom {
     /// The scroll drawn (kept within `max_scroll`).
     pub scroll: Point<Pixels>,
     pub max_scroll: Point<Pixels>,
+    /// M11ah: side by side, how far right the new half is drawn from the old (each half's
+    /// parts as the old half's above, moved by it); none: unified.
+    pub side: Option<Pixels>,
 }
 
 impl Geom {
+    /// `(gutter, side)`: the gutter's columns, and (M11ah) whether drawn side by side.
     fn of(
         bounds: Bounds<Pixels>,
         m: &CellMetrics,
         row: Pixels,
         height: Pixels,
-        gutter: Gutter,
+        (gutter, side): (Gutter, bool),
         widest: usize,
         scroll: Point<Pixels>,
     ) -> Geom {
-        let c = columns(f32::from(m.cell_width), gutter);
+        let cw = f32::from(m.cell_width);
+        let mut c = columns(cw, gutter);
+        // M11ah: side by side, the old half's gutter (one number column) inside the cards; its
+        // text ends at the middle.
+        let shift = side.then(|| (f32::from(bounds.size.width) - 2.0 * code::CARD_INSET) / 2.0);
+        let mut right_edge = bounds.size.width - px(right_inset(gutter));
+        if let Some(shift) = shift {
+            let text_left = code::CARD_INSET + side_text_left(cw, gutter);
+            let bar_left = text_left - TEXT_GAP - cw;
+            c = Columns {
+                old_right: None,
+                fold_left: None,
+                marks_left: None,
+                new_right: bar_left - NUMBER_GAP,
+                bar_left,
+                text_left,
+            };
+            right_edge = px(code::CARD_INSET + shift);
+        }
         let text_left = px(c.text_left);
         let max_scroll = point(
-            (text_left + m.cell_width * widest as f32 + px(RIGHT_PAD + right_inset(gutter))
-                - bounds.size.width)
-                .max(px(0.0)),
+            (text_left + m.cell_width * widest as f32 + px(RIGHT_PAD) - right_edge).max(px(0.0)),
             (height - bounds.size.height).max(px(0.0)),
         );
         Geom {
@@ -2337,7 +2411,29 @@ impl Geom {
             text_left,
             scroll: Geom::clamp(scroll, max_scroll),
             max_scroll,
+            side: shift.map(px),
         }
+    }
+
+    /// M11ah: side by side, the middle (the hairline), from the body's left edge.
+    pub fn middle(&self) -> Option<Pixels> {
+        self.side.map(|s| px(code::CARD_INSET) + s)
+    }
+
+    /// The text's room across (a half's side by side), right of `text_left`, less `RIGHT_PAD`.
+    fn text_room(&self) -> Pixels {
+        let right = self.middle().unwrap_or(self.bounds.size.width);
+        right - self.text_left - px(RIGHT_PAD)
+    }
+
+    /// M11ah: the half window point `p` is over, side by side (none: unified).
+    fn half_at(&self, p: Point<Pixels>) -> Option<Half> {
+        let middle = self.middle()?;
+        Some(if p.x < self.bounds.left() + middle {
+            Half::Old
+        } else {
+            Half::New
+        })
     }
 
     fn clamp(p: Point<Pixels>, max: Point<Pixels>) -> Point<Pixels> {
@@ -2782,6 +2878,11 @@ struct Frame {
     cards: Option<CardsFrame>,
     layout_gen: u64,
     sticky_title: Option<usize>,
+    /// M11ah: side by side chosen (drawn so where the body fits two halves), the half the
+    /// current row is on, and the half the selection is in.
+    side_by_side: bool,
+    current_half: Option<Half>,
+    sel_half: Option<Half>,
 }
 
 /// What the text body draws of Diff mode's cards (M11ah).
@@ -3146,15 +3247,26 @@ fn paint_body(
     } else {
         px(0.0)
     };
-    // A band across row `r` at `y` in `colour`: a card's last row's stops above the card's
-    // bottom border, its corners rounded inside the card's (fix round 1).
-    let band_at = |y: Pixels, r: usize, colour: gpui::Hsla| {
-        let last = f.cards.is_some()
+    // M11ah: side by side, the middle (the hairline) in window points; the new half is drawn
+    // `g.side` right of where the old one is.
+    let middle = g.middle().map(|m| bounds.left() + m);
+    let shift = |half: Option<Half>| match half {
+        Some(Half::New) => g.side.unwrap_or_default(),
+        _ => px(0.0),
+    };
+    // A row's height drawn inside its card: a card's last row's stops above the card's bottom
+    // border (fix round 1).
+    let card_last = |r: usize| {
+        f.cards.is_some()
             && map
                 .card_at(r)
                 .and_then(|k| map.card_rows(k))
-                .is_some_and(|card| card.end == r + 1);
-        let (h, round) = if last {
+                .is_some_and(|card| card.end == r + 1)
+    };
+    // A band across row `r` at `y` in `colour` (side by side: across `half`), its outer bottom
+    // corners rounded inside the card's on a card's last row.
+    let band_at = |y: Pixels, r: usize, half: Option<Half>, colour: gpui::Hsla| {
+        let (h, round) = if card_last(r) {
             (
                 lh - px(code::CARD_BORDER),
                 px(CARD_RADIUS - code::CARD_BORDER),
@@ -3162,27 +3274,37 @@ fn paint_body(
         } else {
             (lh, px(0.0))
         };
-        let band = Bounds::new(
-            point(bounds.left() + inside, y),
-            size(bounds.size.width - inside * 2.0, h),
-        );
+        let (mut x0, mut x1) = (bounds.left() + inside, bounds.right() - inside);
+        let (mut left_round, mut right_round) = (round, round);
+        match (half, middle) {
+            (Some(Half::Old), Some(m)) => (x1, right_round) = (m, px(0.0)),
+            (Some(Half::New), Some(m)) => (x0, left_round) = (m, px(0.0)),
+            _ => {}
+        }
+        let band = Bounds::from_corners(point(x0, y), point(x1, y + h));
         fill(band, colour).corner_radii(gpui::Corners {
             top_left: px(0.0),
             top_right: px(0.0),
-            bottom_right: round,
-            bottom_left: round,
+            bottom_right: right_round,
+            bottom_left: left_round,
         })
     };
-    let mask = ContentMask {
-        bounds: Bounds::from_corners(
-            point(
-                bounds.left() + g.text_left - px(TEXT_GAP - 1.0),
-                bounds.top(),
+    // The text's clip (side by side: its half's, the old one's ending at the middle).
+    let mask_of = |half: Option<Half>| {
+        let right = match (half, middle) {
+            (Some(Half::Old), Some(m)) => m,
+            _ => bounds.right() - inside,
+        };
+        ContentMask {
+            bounds: Bounds::from_corners(
+                point(
+                    bounds.left() + g.text_left + shift(half) - px(TEXT_GAP - 1.0),
+                    bounds.top(),
+                ),
+                point(right, bounds.bottom()),
             ),
-            point(bounds.right() - inside, bounds.bottom()),
-        ),
+        }
     };
-    let (seen_left, seen_right) = (mask.bounds.left(), mask.bounds.right());
     let spans = f.doc.spans.as_deref().filter(|_| f.coloured);
     let accent = hsla(ui.accent);
     let bg = f.theme.background;
@@ -3195,13 +3317,6 @@ fn paint_body(
         )
     };
     let (quiet, bright) = (number_ink(&ui, bg, false), number_ink(&ui, bg, true));
-    let ink_for = |i: usize| {
-        if f.current_line == Some(i) {
-            bright
-        } else {
-            quiet
-        }
-    };
     let (removed_ink, added_ink) = sign_inks(&bars, bg);
     // M11af: the age words in the warm accent, readable on the background.
     let age_ink = ensure_contrast(WARM_RGB, bg, TEXT_MIN);
@@ -3270,41 +3385,59 @@ fn paint_body(
             ));
         }
     }
-    for r in rows.clone() {
-        let y = bounds.top() + px(map.top(r)) - g.scroll.y;
-        let (i, cell0) = match map.row(r) {
-            Some(Row::Line { line, cell0 }) => (line, cell0),
-            Some(Row::Title { card }) => {
-                paint_card_title(f, g, card, y, false, window, cx);
-                continue;
-            }
-            Some(Row::Unchanged { stretch }) => {
-                paint_unchanged(f, g, stretch, y, window, cx);
-                continue;
-            }
-            _ => continue,
-        };
+    // Line `i`'s row `r` at `y` (from its cell `cell0`): unified (`half` none), or side by side
+    // on `half`, its parts moved right by the half's shift.
+    let paint_line = |r: usize,
+                      y: Pixels,
+                      (i, cell0): (usize, usize),
+                      half: Option<Half>,
+                      window: &mut Window,
+                      cx: &mut App| {
+        let dx = shift(half);
+        let mask = mask_of(half);
+        let (seen_left, seen_right) = (mask.bounds.left(), mask.bounds.right());
         let line = f.doc.line(i);
         // A wrapped row: its line's part, drawn from the text's left edge; the line's first row
         // has its number, bar and sign, its last row the selection's line end.
         let first_row = cell0 == 0;
         let part = map.columns().map(|columns| {
             let (from, to, start) = wrapped_row(&f.doc, i, cell0, columns);
-            let last = !matches!(map.row(r + 1), Some(Row::Line { line, .. }) if line == i);
+            // The next row on this half (a line's row: the line's) is this line's: not its last.
+            let next = map
+                .row(r + 1)
+                .and_then(|n| n.half(half.unwrap_or(Half::Old)));
+            let last = !matches!(next, Some((line, _)) if line == i);
             (from, to, start, last)
         });
         let text_x = match part {
-            Some((_, _, start, _)) => bounds.left() + g.text_left - g.cell_width * start as f32,
-            None => bounds.left() + g.text_left - g.scroll.x,
+            Some((_, _, start, _)) => {
+                bounds.left() + g.text_left + dx - g.cell_width * start as f32
+            }
+            None => bounds.left() + g.text_left + dx - g.scroll.x,
         };
         let row = f.diff.as_ref().and_then(|d| d.get(i)).copied();
         let change = match f.mode {
             FileMode::Plain => f.doc.changes.by_line.get(&i).copied(),
             FileMode::Diff => None,
         };
+        // M11ah: side by side, an unchanged current row is on the half pressed only.
+        let current = f.current_line == Some(i)
+            && half.is_none_or(|h| {
+                let own = match row.map(|r| r.kind) {
+                    Some(RowKind::Added) => Half::New,
+                    _ => Half::Old,
+                };
+                f.current_half.unwrap_or(own) == h
+            });
+        let ink = if current { bright } else { quiet };
         // The current line's band, first: under the tints, the glow, the selection and matches.
-        if f.current_line == Some(i) {
-            window.paint_quad(band_at(y, r, hsla(ui.text).opacity(code::CURRENT_ALPHA)));
+        if current {
+            window.paint_quad(band_at(
+                y,
+                r,
+                half,
+                hsla(ui.text).opacity(code::CURRENT_ALPHA),
+            ));
         }
         let tint = match (row.map(|r| r.kind), change) {
             (Some(RowKind::Removed), _) => Some(bars.deleted),
@@ -3313,7 +3446,7 @@ fn paint_body(
             _ => None,
         };
         if let Some(tint) = tint {
-            window.paint_quad(band_at(y, r, hsla(tint).opacity(TINT)));
+            window.paint_quad(band_at(y, r, half, hsla(tint).opacity(TINT)));
         }
         // M11af: a line changed on disk in the last minute glows, under the selection and find.
         let run = f.live.as_ref().and_then(|l| l.run_of(i));
@@ -3322,7 +3455,7 @@ fn paint_body(
         let level = run.map(|w| w.level).max(fold.and_then(|(_, s)| s.glow));
         let glow = level.and_then(|l| l.checked_sub(1).and_then(|k| GLOW.get(usize::from(k))));
         if let Some(level) = glow {
-            window.paint_quad(band_at(y, r, hsla(WARM_RGB).opacity(*level)));
+            window.paint_quad(band_at(y, r, half, hsla(WARM_RGB).opacity(*level)));
         }
         let line_spans = spans.and_then(|s| s.get(i)).map(Vec::as_slice);
         // An unchanged diff row: its colours mixed toward the background, still readable.
@@ -3393,9 +3526,11 @@ fn paint_body(
                     }
                 }
             }
+            // M11ah: side by side, only in the half the selection is in.
             if let Some((s, e)) = f.selection
                 && (s.line..=e.line).contains(&i)
                 && s != e
+                && half.is_none_or(|h| f.sel_half == Some(h))
             {
                 let from = if i == s.line { s.col } else { 0 };
                 let to = if i == e.line { e.col } else { line.len() };
@@ -3481,12 +3616,12 @@ fn paint_body(
             }
         });
         if !first_row {
-            continue;
+            return;
         }
         match row {
             None => {
                 let right = point(bounds.left() + g.numbers_right, y);
-                paint_number(i + 1, right, m, lh, ink_for(i), window, cx);
+                paint_number(i + 1, right, m, lh, ink, window, cx);
                 // M11ah: ▸ on a folded line, always; ▾ on an open block's while the pointer is
                 // over the gutter.
                 if let (Some(o), Some(left)) = (fold_outline, g.fold_left)
@@ -3515,13 +3650,24 @@ fn paint_body(
                 }
             }
             Some(row) => {
-                if let (Some(n), Some(right)) = (row.old, g.old_numbers_right) {
+                // Side by side: the old half's old number, the new half's new number, each in
+                // its half's one column.
+                let (old, new) = match half {
+                    None => (row.old, row.new),
+                    Some(Half::Old) => (row.old, None),
+                    Some(Half::New) => (None, row.new),
+                };
+                let old_right = match half {
+                    None => g.old_numbers_right,
+                    Some(_) => Some(g.numbers_right),
+                };
+                if let (Some(n), Some(right)) = (old, old_right) {
                     let right = point(bounds.left() + right, y);
-                    paint_number(n, right, m, lh, ink_for(i), window, cx);
+                    paint_number(n, right, m, lh, ink, window, cx);
                 }
-                if let Some(n) = row.new {
-                    let right = point(bounds.left() + g.numbers_right, y);
-                    paint_number(n, right, m, lh, ink_for(i), window, cx);
+                if let Some(n) = new {
+                    let right = point(bounds.left() + g.numbers_right + dx, y);
+                    paint_number(n, right, m, lh, ink, window, cx);
                 }
                 let sign = match row.kind {
                     RowKind::Removed => Some(&removed_sign),
@@ -3530,10 +3676,41 @@ fn paint_body(
                 };
                 if let Some(sign) = sign {
                     // Centred in its one-cell column.
-                    let x = bounds.left() + g.bar_left + (g.cell_width - sign.width()) / 2.0;
+                    let x = bounds.left() + g.bar_left + dx + (g.cell_width - sign.width()) / 2.0;
                     let _ = sign.paint(point(x, y), lh, TextAlign::Left, None, window, cx);
                 }
             }
+        }
+    };
+    for r in rows.clone() {
+        let y = bounds.top() + px(map.top(r)) - g.scroll.y;
+        match map.row(r) {
+            Some(Row::Line { line, cell0 }) => paint_line(r, y, (line, cell0), None, window, cx),
+            // M11ah: side by side, each half's line, an empty half faintly shaded; the hairline
+            // between them.
+            Some(Row::Pair { old, new }) => {
+                for (half, shown) in [(Half::Old, old), (Half::New, new)] {
+                    match shown {
+                        Some(at) => paint_line(r, y, at, Some(half), window, cx),
+                        None => {
+                            let shade = hsla(ui.text).opacity(code::SIDE_EMPTY_ALPHA);
+                            window.paint_quad(band_at(y, r, Some(half), shade));
+                        }
+                    }
+                }
+                if let Some(m) = middle {
+                    let h = if card_last(r) {
+                        lh - px(code::CARD_BORDER)
+                    } else {
+                        lh
+                    };
+                    let rule = Bounds::new(point(m, y), size(px(code::SIDE_HAIRLINE), h));
+                    window.paint_quad(fill(rule, hsla(ui.divider)));
+                }
+            }
+            Some(Row::Title { card }) => paint_card_title(f, g, card, y, false, window, cx),
+            Some(Row::Unchanged { stretch }) => paint_unchanged(f, g, stretch, y, window, cx),
+            None => {}
         }
     }
     if f.mode == FileMode::Diff {
@@ -3859,6 +4036,8 @@ pub enum FileTabEvent {
     Mode(FileMode),
     /// The toolbar's Preview turned on or off (M11ac): the workspace saves it.
     Preview(bool),
+    /// M11ah: the bar's Side by side turned on or off: the workspace keeps it per tab.
+    SideBySide(bool),
     /// A link in the Preview to a file (M11ac): the workspace opens it in a tab.
     OpenFile(PathBuf),
 }
@@ -4032,6 +4211,16 @@ pub struct FileTab {
     /// tab opens; Esc does not clear it.
     current: Option<usize>,
     diff_current: Option<usize>,
+    /// M11ah: Diff mode side by side: chosen (off by default; kept per tab by the workspace),
+    /// and whether the body last drawn fits two halves (decided in the prepaint, a layout
+    /// cache: the bar reads it). The half the current row was pressed in or stepped to, and the
+    /// half the selection started in.
+    side_by_side: bool,
+    fits_side: Rc<Cell<bool>>,
+    current_half: Option<Half>,
+    sel_half: Option<Half>,
+    /// Where the bar's Side by side was last drawn.
+    side_at: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// M11ah: the folded blocks (File mode), by their first line, and how many times they
     /// changed (the row map's key); whether the pointer is over the gutter (the open blocks'
     /// ▾ show). Not kept over a restart.
@@ -4170,6 +4359,11 @@ impl FileTab {
             selecting: false,
             current: None,
             diff_current: None,
+            side_by_side: false,
+            fits_side: Rc::default(),
+            current_half: None,
+            sel_half: None,
+            side_at: Rc::default(),
             folded: BTreeSet::new(),
             folds_gen: 0,
             gutter_hover: false,
@@ -4234,8 +4428,9 @@ impl FileTab {
     }
 
     /// M11ah: the screen rows of `doc` shown in `mode`, cut at `columns` (Wrap) with rows
-    /// `row_h` tall and (File mode) the `folded` blocks' lines hidden, (Diff mode) in `cards`. The one place a map is
-    /// made (the canvas, Follow, a diff's reveal, a fold), so they never disagree.
+    /// `row_h` tall and (File mode) the `folded` blocks' lines hidden, (Diff mode) in `cards`,
+    /// paired when `side` (side by side). The one place a map is made (the canvas, Follow, a
+    /// diff's reveal, a fold), so they never disagree.
     fn row_map_of(
         doc: &Doc,
         mode: FileMode,
@@ -4243,13 +4438,14 @@ impl FileTab {
         row_h: f32,
         folded: &BTreeSet<usize>,
         cards: Option<&DiffParts>,
+        side: bool,
     ) -> RowMap {
-        if let (FileMode::Diff, Some((grouped, shown, closed))) = (mode, cards) {
+        if let (FileMode::Diff, Some((grouped, shown, closed, pairs))) = (mode, cards) {
             let layout = DiffLayout {
                 grouped,
                 shown,
                 closed,
-                pairs: None,
+                pairs: side.then_some(&pairs[..]),
             };
             return RowMap::diff(&doc.widths, columns, &layout, row_h);
         }
@@ -4266,17 +4462,53 @@ impl FileTab {
     /// made fresh: a fold or a reload changed them since the last drawing. None before it.
     fn fresh_map(&self, cx: &App) -> Option<RowMap> {
         let (g, doc) = (self.geom.get()?, self.shown_doc()?);
-        let columns = self
-            .wrap_columns()
-            .filter(|_| cx.global::<Appearance>().file_wrap);
         Some(Self::row_map_of(
             doc,
             self.mode,
-            columns,
+            self.columns_now(cx),
             f32::from(g.line_height),
             &self.folded,
             self.diff_parts().as_ref(),
+            self.side_on(),
         ))
+    }
+
+    /// M11ah: whether the diff shows side by side now: in Diff mode, chosen, and the body last
+    /// drawn fits two halves.
+    fn side_on(&self) -> bool {
+        self.mode == FileMode::Diff && self.side_by_side && self.fits_side.get()
+    }
+
+    /// M11ah: Wrap's cells per row now (none: Wrap off): a diff's from the width last drawn
+    /// and its layout (side by side: a half's, as the next drawing cuts them); a file's as last
+    /// drawn (none before the first drawing).
+    fn columns_now(&self, cx: &App) -> Option<usize> {
+        if !cx.global::<Appearance>().file_wrap {
+            return None;
+        }
+        match (self.mode, &self.diff.state, self.geom.get()) {
+            (FileMode::Diff, DiffState::Rows(d), Some(g)) => Some(wrap_cells(
+                f32::from(g.bounds.size.width),
+                f32::from(g.cell_width),
+                d.gutter,
+                self.side_on(),
+            )),
+            _ => self.wrap_columns(),
+        }
+    }
+
+    /// M11ah: the bar's Side by side pressed (it fits): the diff shows the other way, the line
+    /// at the top kept; the selection ends; the workspace keeps the choice for the tab.
+    fn toggle_side_by_side(&mut self, cx: &mut Context<Self>) {
+        if self.mode != FileMode::Diff || !self.fits_side.get() {
+            return;
+        }
+        self.side_by_side = !self.side_by_side;
+        self.selection = None;
+        self.selecting = false;
+        self.sel_half = None;
+        cx.emit(FileTabEvent::SideBySide(self.side_by_side));
+        self.diff_layout_changed(cx);
     }
 
     /// M11ah: Diff mode's cards as they stand: the grouping, which stretches are shown, which
@@ -4613,7 +4845,7 @@ impl FileTab {
             return 0;
         };
         match map.row(map.row_at(f32::from(g.scroll.y))) {
-            Some(Row::Line { line, .. }) => line,
+            Some(row @ (Row::Line { .. } | Row::Pair { .. })) => row.line().unwrap_or(0),
             Some(Row::Title { card }) => d.grouped.cards.get(card).map_or(0, |c| c.rows.start),
             Some(Row::Unchanged { stretch }) => {
                 d.grouped.stretches.get(stretch).map_or(0, |s| s.rows.start)
@@ -4654,6 +4886,7 @@ impl FileTab {
             && key.folds == self.folds_gen
             && key.layout == self.layout_gen
             && key.columns.is_some() == wrap
+            && key.side == self.side_on()
         {
             return Some(map.clone());
         }
@@ -4801,6 +5034,15 @@ impl FileTab {
 
     /// The selected text (empty: none): a diff's without its signs or numbers.
     pub fn selected_text(&self) -> String {
+        // M11ah: side by side, only the half the selection is in.
+        if let (true, Some(half), DiffState::Rows(d), Some((a, b))) = (
+            self.side_on(),
+            self.sel_half,
+            &self.diff.state,
+            self.selection,
+        ) {
+            return half_text(&d.doc, &d.rows, a, b, half);
+        }
         match (self.shown_doc(), self.selection) {
             (Some(doc), Some((a, b))) => selection_text(&doc.text, &doc.lines, a, b),
             _ => String::new(),
@@ -6130,10 +6372,8 @@ impl FileTab {
         let g = self.geom.get()?;
         let rows = self.rows.borrow();
         let (_, map) = rows.as_ref()?;
-        match map.row(map.row_at(f32::from(g.scroll.y)))? {
-            Row::Line { line, .. } => Some(line),
-            _ => None,
-        }
+        // M11ah: side by side, a pair's line.
+        map.row(map.row_at(f32::from(g.scroll.y)))?.line()
     }
 
     /// The place under window point `p` (the nearest character edge; above or below the text,
@@ -6144,21 +6384,44 @@ impl FileTab {
         let (_, map) = self.rows.borrow().clone()?;
         // The row drawn there (M11ah: by the row map; above or below the text, the first or last).
         let row = map.row_at(f32::from(p.y - g.bounds.top() + g.scroll.y));
-        let Some(Row::Line { line, cell0 }) = map.row(row) else {
-            return None;
+        let last_line = doc.lines.len().saturating_sub(1);
+        // M11ah: side by side, the half the selection is in (`mouse_down` sets it: the half
+        // pressed), and that half's line on the row.
+        let half = g.side.map(|_| self.sel_half.unwrap_or(Half::Old));
+        let (line, cell0, dx) = match (map.row(row), half) {
+            (Some(Row::Line { line, cell0 }), _) => (line, cell0, px(0.0)),
+            (Some(pair @ Row::Pair { .. }), Some(h)) => {
+                let dx = match h {
+                    Half::Old => px(0.0),
+                    Half::New => g.side.unwrap_or_default(),
+                };
+                match pair.half(h) {
+                    Some((line, cell0)) => (line, cell0, dx),
+                    // An empty half: that side's nearest line, at its end (above) or start.
+                    None => {
+                        let (line, above) = map.nearest_on(row, h)?;
+                        let line = line.min(last_line);
+                        let col = if above { doc.line(line).len() } else { 0 };
+                        return Some(Pos { line, col });
+                    }
+                }
+            }
+            _ => return None,
         };
         // A map a version behind (a reload not drawn yet) may know more lines than the text.
-        let line = line.min(doc.lines.len().saturating_sub(1));
+        let line = line.min(last_line);
         // Wrapped (M11x part 2): in cells from the row's start, kept in the row (as it's drawn).
         if let Some(columns) = map.columns() {
             let span = wrapped_row(doc, line, cell0, columns);
-            let last =
-                !matches!(map.row(row + 1), Some(Row::Line { line: next, .. }) if next == line);
-            let x = p.x - g.bounds.left() - g.text_left;
+            let next = map
+                .row(row + 1)
+                .and_then(|n| n.half(half.unwrap_or(Half::Old)));
+            let last = !matches!(next, Some((next, _)) if next == line);
+            let x = p.x - g.bounds.left() - g.text_left - dx;
             let col = row_hit(doc, line, span, last, x / g.cell_width.max(px(1.0)));
             return Some(Pos { line, col });
         }
-        let x = p.x - g.bounds.left() - g.text_left + g.scroll.x;
+        let x = p.x - g.bounds.left() - g.text_left - dx + g.scroll.x;
         if x <= px(0.0) {
             return Some(Pos { line, col: 0 });
         }
@@ -6240,6 +6503,8 @@ impl FileTab {
             self.set_folds(folded, cx);
             return;
         }
+        // M11ah: side by side, the selection stays in the half pressed.
+        self.sel_half = self.geom.get().and_then(|g| g.half_at(e.position));
         if let Some(pos) = self.pos_at(e.position, window, cx) {
             self.selection = Some((pos, pos));
             self.selecting = true;
@@ -6403,6 +6668,11 @@ impl FileTab {
         if self.selecting {
             let line = self.selection.map(|(_, head)| head.line);
             self.set_current(line, cx);
+            // M11ah: side by side, the current row is on the half pressed.
+            if self.sel_half.is_some() && self.current_half != self.sel_half {
+                self.current_half = self.sel_half;
+                cx.notify();
+            }
         }
         self.selecting = false;
         // No old auto-scroll task resumes on a quick press again.
@@ -6418,12 +6688,24 @@ impl FileTab {
     /// M11ah: the current line of the mode shown (a file's line, a diff's row) set to `line`;
     /// drawn again only when it changed.
     fn set_current(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
+        // M11ah: Diff mode's row's half side by side, by its kind (a press sets the half
+        // pressed after this: `mouse_up`).
+        let half = match (&self.diff.state, line) {
+            (DiffState::Rows(d), Some(l)) if self.mode == FileMode::Diff => {
+                Some(half_of(&d.rows, l))
+            }
+            _ => None,
+        };
         let slot = match self.mode {
             FileMode::Plain => &mut self.current,
             FileMode::Diff => &mut self.diff_current,
         };
         if *slot != line {
             *slot = line;
+            cx.notify();
+        }
+        if self.mode == FileMode::Diff && self.current_half != half {
+            self.current_half = half;
             cx.notify();
         }
     }
@@ -6661,7 +6943,29 @@ impl FileTab {
             return;
         };
         let finds = &mut find.finds;
-        finds.current = step(finds.current, finds.matches.len(), forward);
+        // M11ah: side by side, row by row, left before right.
+        let side = match (&self.diff.state, self.rows.borrow().as_ref()) {
+            (DiffState::Rows(d), Some((key, map))) if key.side && self.mode == FileMode::Diff => {
+                Some(side_order(&finds.matches, &d.rows, |m| {
+                    let cell = map
+                        .columns()
+                        .map_or(0, |c| d.doc.cell_of(m.line, m.cols.start) / c);
+                    map.first_row(m.line)
+                        .map(|r| r + cell)
+                        .or_else(|| map.row_holding(m.line))
+                }))
+            }
+            _ => None,
+        };
+        finds.current = match side {
+            Some(order) => {
+                let at = finds
+                    .current
+                    .and_then(|c| order.iter().position(|&k| k == c));
+                step(at, order.len(), forward).map(|k| order[k])
+            }
+            None => step(finds.current, finds.matches.len(), forward),
+        };
         let kept = match self.mode {
             FileMode::Plain => self.current,
             FileMode::Diff => self.diff_current,
@@ -6707,7 +7011,7 @@ impl FileTab {
         let (Some(g), Some(doc), Some(map)) = (self.geom.get(), self.shown_doc(), map) else {
             return;
         };
-        let (h, w) = (g.bounds.size.height, g.bounds.size.width);
+        let h = g.bounds.size.height;
         let Some(first) = map.first_row(hit.line) else {
             return;
         };
@@ -6735,7 +7039,7 @@ impl FileTab {
         }
         let x = |col: usize| g.cell_width * doc.cell_of(hit.line, col) as f32;
         let (x0, x1) = (x(hit.cols.start), x(hit.cols.end));
-        let room = w - g.text_left - px(RIGHT_PAD);
+        let room = g.text_room();
         if x0 < to.x || x1 > to.x + room {
             to.x = (x0 + x1) / 2.0 - room / 2.0;
         }
@@ -6839,6 +7143,42 @@ impl FileTab {
                 .top_0()
                 .left_0()
                 .size_full(),
+            )
+            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
+            .into_any_element()
+    }
+
+    /// M11ah: the bar's Side by side (Diff mode): filled when on and fitting, like Wrap; while
+    /// the body is too narrow, faint with no hover and no click, its tooltip saying so. Where
+    /// it is drawn is kept (`side_at`).
+    fn side_button(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+        let (filled, enabled, tip) = side_button_look(self.side_by_side, self.fits_side.get());
+        let ink = if enabled { ui.text } else { ui.text_faint };
+        let at = self.side_at.clone();
+        div()
+            .id("file-side-by-side")
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(px(BUTTON))
+            .rounded(px(5.0))
+            .when(filled, |b| b.bg(hsla(ui.card_selected)))
+            .when(enabled, |b| {
+                b.cursor_pointer()
+                    .when(!filled, |b| b.hover(move |s| s.bg(hsla(ui.panel_hover))))
+                    .on_click(
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_side_by_side(cx)),
+                    )
+            })
+            .child(glyph_with(Glyph::SideBySide, ink, BUTTON_STROKE))
+            .child(
+                canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
             )
             .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
             .into_any_element()
@@ -7105,6 +7445,10 @@ impl FileTab {
                 cx,
             )
         });
+        // M11ah: side by side, in Diff mode (with rows), after Wrap.
+        self.side_at.set(None);
+        let side = (self.mode == FileMode::Diff && matches!(self.diff.state, DiffState::Rows(_)))
+            .then(|| self.side_button(ui, cx));
         // M11ah: the jumps between changes, left of the view switch, when the file has a change.
         self.nav_at.set([None; 2]);
         let jumps = self.change_nav().map(|(prev, next)| {
@@ -7250,6 +7594,7 @@ impl FileTab {
                     .children(jumps.into_iter().flatten())
                     .children(switch)
                     .children(wrap)
+                    .children(side)
                     .children(open)
                     // Where they are (the scenes check they stay in the pane).
                     .child(
@@ -7574,9 +7919,13 @@ impl FileTab {
                 Some(Sticky::Title(card)) if self.mode == FileMode::Diff => Some(card),
                 _ => None,
             },
+            side_by_side: self.mode == FileMode::Diff && self.side_by_side,
+            current_half: self.current_half,
+            sel_half: self.sel_half,
         });
         let geom = self.geom.clone();
         let row_map = self.rows.clone();
+        let fits_side = self.fits_side.clone();
         let drawn = self.drawn.clone();
         let lane = self.lane.clone();
         let bar = self.scrollbar;
@@ -7625,18 +7974,27 @@ impl FileTab {
                             let gutter = laid.gutter.unwrap_or_else(|| {
                                 Gutter::plain(count, laid.live.is_some(), folds)
                             });
-                            // Wrap on (M11x part 2): rows cut at the text's width; no sideways
+                            // M11ah: side by side where chosen and the body fits two halves
+                            // (a diff's); the fit kept for the bar, which is drawn again once
+                            // when it changes.
+                            let (width, cw) =
+                                (f32::from(bounds.size.width), f32::from(m.cell_width));
+                            let fits = fits_side_by_side(width, cw, gutter);
+                            let side = laid.side_by_side && fits;
+                            let fit_changed =
+                                laid.mode == FileMode::Diff && fits_side.get() != fits;
+                            if fit_changed {
+                                fits_side.set(fits);
+                                let keep = keep.clone();
+                                cx.defer(move |cx| keep.update(cx, |_, cx| cx.notify()));
+                            }
+                            // Wrap on (M11x part 2): rows cut at the text's width (M11ah: a
+                            // diff's inside its cards; side by side, a half's); no sideways
                             // scroll.
-                            let wrap = cx.global::<Appearance>().file_wrap.then(|| {
-                                let cw = f32::from(m.cell_width).max(1.0);
-                                let left = columns(cw, gutter).text_left;
-                                // M11ah: a diff's measured inside its cards.
-                                let room = f32::from(bounds.size.width)
-                                    - left
-                                    - RIGHT_PAD
-                                    - right_inset(gutter);
-                                (room / cw).floor().max(1.0) as usize
-                            });
+                            let wrap = cx
+                                .global::<Appearance>()
+                                .file_wrap
+                                .then(|| wrap_cells(width, cw, gutter, side));
                             // M11ah: the row map, a layout cache made again only for another
                             // key (mode, version, width...) or row height.
                             let row_h = row_height(m.line_height);
@@ -7646,7 +8004,7 @@ impl FileTab {
                                 columns: wrap,
                                 folds: laid.folds_gen,
                                 layout: laid.layout_gen,
-                                side: false,
+                                side,
                             };
                             let before = row_map.borrow().clone();
                             let map = match &before {
@@ -7660,6 +8018,7 @@ impl FileTab {
                                     f32::from(row_h),
                                     &laid.folded,
                                     laid.cards.as_ref().map(|c| &c.parts),
+                                    side,
                                 ),
                             };
                             // The rows reflowed (Wrap switched, review fix; M11ah fix round 1:
@@ -7670,9 +8029,15 @@ impl FileTab {
                             let wrap_switched =
                                 before.as_ref().and_then(|(_, b)| b.columns()).is_some()
                                     != wrap.is_some();
+                            // M11ah: side by side on or off by the fit changing, too (pressed,
+                            // its handler kept the line at the top already).
                             let reflowed = before.as_ref().is_some_and(|(k, b)| {
                                 k.mode == laid.mode
-                                    && (b.columns() != wrap || b.row_h() != f32::from(row_h))
+                                    && if k.side != side {
+                                        fit_changed
+                                    } else {
+                                        b.columns() != wrap || b.row_h() != f32::from(row_h)
+                                    }
                             });
                             let before = before.map(|(_, map)| map);
                             let mut scroll = laid.scroll;
@@ -7695,7 +8060,7 @@ impl FileTab {
                                 &m,
                                 row_h,
                                 px(map.height()),
-                                gutter,
+                                (gutter, side),
                                 widest,
                                 scroll,
                             );
@@ -8117,10 +8482,7 @@ impl FileTab {
     }
 
     pub fn line_at_row(&self, row: usize) -> Option<usize> {
-        match self.rows.borrow().as_ref()?.1.row(row)? {
-            Row::Line { line, .. } => Some(line),
-            _ => None,
-        }
+        self.rows.borrow().as_ref()?.1.row(row)?.line()
     }
 
     /// M11ah: the line pinned as the sticky line (none: nothing pinned), the breadcrumb's
@@ -8143,6 +8505,27 @@ impl FileTab {
 
     pub fn diff_current(&self) -> Option<usize> {
         self.diff_current
+    }
+
+    /// M11ah: side by side: chosen, drawn now, the half the current row and the selection are
+    /// on, the bar's button as it looks (filled, takes a click, tooltip) and where it was drawn.
+    pub fn side_by_side_for_shots(&self) -> (bool, bool, Option<Half>, Option<Half>) {
+        (
+            self.side_by_side,
+            self.side_on(),
+            self.current_half,
+            self.sel_half,
+        )
+    }
+
+    pub fn side_button_for_shots(&self) -> (bool, bool, &'static str, Option<Bounds<Pixels>>) {
+        let (filled, enabled, tip) = side_button_look(self.side_by_side, self.fits_side.get());
+        (filled, enabled, tip, self.side_at.get())
+    }
+
+    /// M11ah: the drawn row `row`'s kind (a pair's halves too).
+    pub fn row_for_shots(&self, row: usize) -> Option<Row> {
+        self.rows.borrow().as_ref()?.1.row(row)
     }
 
     pub fn diff_folds_for_shots(&self) -> (Vec<usize>, Vec<usize>) {
@@ -8255,9 +8638,7 @@ impl FileTab {
         // By the row map (M11ah): the title of the change's card at the top; Wrap on (M11x
         // part 2): the diff wrapped at the width last drawn (its own gutter may move it a
         // column; the next frame wraps it exactly).
-        let columns = self
-            .wrap_columns()
-            .filter(|_| cx.global::<Appearance>().file_wrap);
+        let columns = self.columns_now(cx);
         let parts = diff_parts(d, &self.shown_stretches, &self.closed_cards);
         let map = Self::row_map_of(
             &d.doc,
@@ -8266,6 +8647,7 @@ impl FileTab {
             f32::from(row_height(m.line_height)),
             &self.folded,
             Some(&parts),
+            self.side_on(),
         );
         let card = d.grouped.cards.iter().position(|c| c.rows.contains(&row));
         let top = match card.and_then(|k| map.title_row(k)) {
@@ -8470,10 +8852,12 @@ impl Workspace {
     ) {
         let frozen = self.places.frozen;
         let preview = self.model.md_preview(tab);
+        let side_by_side = self.model.side_by_side(tab);
         let view = cx.new(|cx| {
             let mut view = FileTab::new(path, mode, window, cx);
             view.frozen = frozen;
             view.preview = preview;
+            view.side_by_side = side_by_side;
             view
         });
         // A missing file's Close button closes its tab; a new mode is the model's, saved.
@@ -8494,6 +8878,13 @@ impl Workspace {
                 FileTabEvent::Preview(on) => {
                     this.pin_tab(tab, cx);
                     if this.model.set_md_preview(tab, *on) {
+                        this.save();
+                    }
+                }
+                // M11ah: side by side turned on or off: kept per tab, and saved.
+                FileTabEvent::SideBySide(on) => {
+                    this.pin_tab(tab, cx);
+                    if this.model.set_side_by_side(tab, *on) {
                         this.save();
                     }
                 }
@@ -9228,7 +9619,12 @@ mod tests {
         let rows = crate::diff_view::parse_diff(&u).rows;
         let grouped = diff_cards::group(&rows);
         assert_eq!(grouped.stretches.len(), 2);
-        let parts: DiffParts = (Arc::new(grouped), vec![false, false], vec![false]);
+        let parts: DiffParts = (
+            Arc::new(grouped),
+            vec![false, false],
+            vec![false],
+            Arc::default(),
+        );
         let layout = DiffLayout {
             grouped: &parts.0,
             shown: &parts.1,
@@ -9270,6 +9666,108 @@ mod tests {
             folds: false,
         };
         assert!(!fits_side_by_side(4000.0, 8.0, plain));
+    }
+
+    /// M11ah Task 11: side by side, a find step goes row by row, left before right: a removed
+    /// line, then the added line level with it, then the next pair.
+    #[test]
+    fn side_steps_go_row_by_row_left_before_right() {
+        use crate::diff_view::{DiffRow, RowKind};
+        use crate::row_map::CardPairs;
+        let row = |kind, old, new| DiffRow { kind, old, new };
+        let rows = vec![
+            row(RowKind::Same, Some(1), Some(1)),
+            row(RowKind::Removed, Some(2), None),
+            row(RowKind::Removed, Some(3), None),
+            row(RowKind::Added, None, Some(2)),
+            row(RowKind::Added, None, Some(3)),
+            row(RowKind::Same, Some(4), Some(4)),
+        ];
+        let g = diff_cards::group(&rows);
+        let pairs: Vec<CardPairs> = (g.cards.iter())
+            .map(|c| diff_cards::pair(&rows, c.rows.clone()))
+            .collect();
+        let layout = DiffLayout {
+            grouped: &g,
+            shown: &[],
+            closed: &[false],
+            pairs: Some(&pairs),
+        };
+        let map = RowMap::diff(&[6; 6], None, &layout, 10.0);
+        let hit = |line, at: usize| Match {
+            line,
+            cols: at..at + 1,
+        };
+        let matches = [
+            hit(0, 0),
+            hit(1, 0),
+            hit(2, 0),
+            hit(3, 0),
+            hit(3, 4),
+            hit(4, 0),
+        ];
+        let order = side_order(&matches, &rows, |m| map.first_row(m.line));
+        assert_eq!(order, [0, 1, 3, 4, 2, 5]);
+        assert_eq!(half_of(&rows, 3), Half::New);
+        assert_eq!(half_of(&rows, 1), Half::Old);
+        assert_eq!(half_of(&rows, 0), Half::Old);
+    }
+
+    /// M11ah Task 11: switching side by side (or the fit changing) keeps the line at the top:
+    /// a pair's row maps to its line's row unified, and back.
+    #[test]
+    fn rescroll_keeps_the_line_between_unified_and_side_by_side() {
+        use crate::diff_view::{DiffRow, RowKind};
+        use crate::row_map::CardPairs;
+        let row = |kind, old, new| DiffRow { kind, old, new };
+        let rows = vec![
+            row(RowKind::Same, Some(1), Some(1)),
+            row(RowKind::Same, Some(2), Some(2)),
+            row(RowKind::Removed, Some(3), None),
+            row(RowKind::Added, None, Some(3)),
+            row(RowKind::Added, None, Some(4)),
+            row(RowKind::Same, Some(4), Some(5)),
+        ];
+        let g = diff_cards::group(&rows);
+        let pairs: Vec<CardPairs> = (g.cards.iter())
+            .map(|c| diff_cards::pair(&rows, c.rows.clone()))
+            .collect();
+        let widths = [1, 1, 9, 2, 5, 1];
+        let layout = |pairs| DiffLayout {
+            grouped: &g,
+            shown: &[],
+            closed: &[false],
+            pairs,
+        };
+        let side = RowMap::diff(&widths, Some(4), &layout(Some(&pairs)), 10.0);
+        let unified = RowMap::diff(&widths, Some(4), &layout(None), 10.0);
+        // Side: title | 0 | 1 | 2·3 | 2·_ | 2·_ | _·4 | _·4 | 5. Unified: title | 0 | 1 | 2 2 2
+        // | 3 | 4 4 | 5.
+        assert_eq!(rescroll_row(6, Some(&side), &unified), 7, "line 4");
+        assert_eq!(rescroll_row(4, Some(&side), &unified), 3, "line 2");
+        assert_eq!(rescroll_row(7, Some(&unified), &side), 6, "back");
+        assert_eq!(rescroll_row(0, Some(&unified), &side), 0, "a title");
+    }
+
+    /// M11ah Task 11: Wrap's cells: a diff's inside its cards; side by side a half's.
+    #[test]
+    fn wrap_cells_side_by_side_are_a_halfs() {
+        let gutter = Gutter::Diff {
+            old_digits: 2,
+            new_digits: 2,
+        };
+        let unified =
+            (1160.0 - columns(8.0, gutter).text_left - RIGHT_PAD - code::CARD_INSET) / 8.0;
+        assert_eq!(wrap_cells(1160.0, 8.0, gutter, false), unified as usize);
+        assert_eq!(wrap_cells(1160.0, 8.0, gutter, true), SIDE_MIN_CELLS);
+        assert_eq!(wrap_cells(10.0, 8.0, gutter, true), 1, "at least one");
+        let plain = Gutter::Plain {
+            digits: 2,
+            marks: false,
+            folds: false,
+        };
+        let room = 400.0 - columns(8.0, plain).text_left - RIGHT_PAD;
+        assert_eq!(wrap_cells(400.0, 8.0, plain, false), (room / 8.0) as usize);
     }
 
     #[test]
@@ -10406,16 +10904,17 @@ mod tests {
         let slices: Vec<&str> = lines.clone();
         doc.outline = code_outline::outline(&slices, false, LIMIT).map(Arc::new);
         let folded: BTreeSet<usize> = [11].into();
-        let map = FileTab::row_map_of(&doc, FileMode::Plain, None, 10.0, &folded, None);
+        let map = FileTab::row_map_of(&doc, FileMode::Plain, None, 10.0, &folded, None, false);
         assert_eq!(map.row(11), Some(Row::Line { line: 11, cell0: 0 }));
         assert_eq!(map.row(12), Some(Row::Line { line: 36, cell0: 0 }));
         assert_eq!(map.hidden_after(11).len(), 24, "the pill's 24 lines");
         assert_eq!(map.len(), 40 - 24);
         // Wrap on: the same lines hidden.
-        let wrapped = FileTab::row_map_of(&doc, FileMode::Plain, Some(80), 10.0, &folded, None);
+        let wrapped =
+            FileTab::row_map_of(&doc, FileMode::Plain, Some(80), 10.0, &folded, None, false);
         assert_eq!(wrapped.row(12), Some(Row::Line { line: 36, cell0: 0 }));
         // Not in Diff mode.
-        let diff = FileTab::row_map_of(&doc, FileMode::Diff, None, 10.0, &folded, None);
+        let diff = FileTab::row_map_of(&doc, FileMode::Diff, None, 10.0, &folded, None, false);
         assert_eq!(diff.row(12), Some(Row::Line { line: 12, cell0: 0 }));
     }
 
