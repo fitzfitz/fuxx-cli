@@ -322,8 +322,11 @@ pub struct Colours {
     /// A code block's header strip (M11ai): its fill, and its words (the language, Copy) on it.
     pub code_header_bg: Rgb,
     pub code_header_text: Rgb,
-    /// A striped table row's fill (M11ai): the text at `STRIPE` over the page.
+    /// A striped table row's fill (M11ai): the text at `STRIPE` over the page; a link and dim
+    /// text (an image's alt) in it, held to `TEXT_MIN` on it.
     pub stripe: Rgb,
+    pub stripe_link: Rgb,
+    pub stripe_dim: Rgb,
     /// A badge's pill (M11ai): its fill, its value half's (a step stronger), its text (on both)
     /// and an empty badge's dim word.
     pub pill_bg: Rgb,
@@ -354,6 +357,9 @@ impl Colours {
         let code_bg = mix(bg, ui.text, 0.07);
         // A shade darker than the code's fill, in a dark theme too (spec A).
         let code_header_bg = mix(code_bg, BLACK, crate::ui_tokens::reader::CODE_HEADER_SHADE);
+        let stripe = mix(bg, ui.text, crate::ui_tokens::reader::STRIPE);
+        let link = ensure_contrast(ui.accent, bg, TEXT_MIN);
+        let dim = ensure_contrast(ui.text_dim, bg, TEXT_MIN);
         let pill_bg = mix(bg, ui.text, crate::ui_tokens::reader::PILL_FILL);
         let pill_value_bg = mix(bg, ui.text, crate::ui_tokens::reader::PILL_VALUE_FILL);
         // Held on the stronger fill first, then on the softer one.
@@ -364,8 +370,8 @@ impl Colours {
         );
         Colours {
             text: ensure_contrast(ui.text, bg, TEXT_MIN),
-            dim: ensure_contrast(ui.text_dim, bg, TEXT_MIN),
-            link: ensure_contrast(ui.accent, bg, TEXT_MIN),
+            dim,
+            link,
             code_bg,
             code_text: ensure_contrast(ui.text, code_bg, TEXT_MIN),
             line: ensure_contrast(ui.panel_border, bg, QUIET_LINE_MIN),
@@ -373,7 +379,9 @@ impl Colours {
             header_text: ensure_contrast(ui.text, code_bg, TEXT_MIN),
             code_header_bg,
             code_header_text: ensure_contrast(ui.text_dim, code_header_bg, TEXT_MIN),
-            stripe: mix(bg, ui.text, crate::ui_tokens::reader::STRIPE),
+            stripe,
+            stripe_link: ensure_contrast(link, stripe, TEXT_MIN),
+            stripe_dim: ensure_contrast(dim, stripe, TEXT_MIN),
             pill_bg,
             pill_value_bg,
             pill_text,
@@ -1304,16 +1312,15 @@ fn table(
                 d.bg(hsla(c.header_bg))
                     .text_color(hsla(c.header_text))
                     .font_weight(FontWeight::SEMIBOLD)
-            })
-            .when(reader && !header && striped(row - 1), |d| {
-                d.bg(hsla(c.stripe))
             });
+        let on_stripe = reader && !header && striped(row - 1);
+        let d = d.when(on_stripe, |d| d.bg(hsla(c.stripe)));
         let d = match align.get(col) {
             Some(Align::Center) => d.text_center(),
             Some(Align::Right) => d.text_right(),
             _ => d,
         };
-        d.child(text(spans, draw)).into_any_element()
+        d.child(text_on(spans, draw, on_stripe)).into_any_element()
     };
     let mut cells: Vec<AnyElement> = head
         .iter()
@@ -1343,7 +1350,18 @@ fn table(
 /// A paragraph's spans as one wrapping text: bold, italic, code in the terminal's font on its
 /// fill, links in the link colour, underlined and clickable, images' alt text dim.
 fn text(spans: &[Span], draw: &Draw) -> AnyElement {
+    text_on(spans, draw, false)
+}
+
+/// `text`, on a striped table row (`on_stripe`, the reader's): links and images' alt text in
+/// their colours held to the text floor on the stripe.
+fn text_on(spans: &[Span], draw: &Draw, on_stripe: bool) -> AnyElement {
     let c = draw.colours;
+    let (link, dim) = if on_stripe {
+        (c.stripe_link, c.stripe_dim)
+    } else {
+        (c.link, c.dim)
+    };
     // A badge in a sentence has its look in the reader only (chat's stays an image's).
     let laid = inline_with(spans, draw.reader.is_some());
     let highlights = laid.looks.iter().map(|(range, look)| {
@@ -1362,16 +1380,16 @@ fn text(spans: &[Span], draw: &Draw) -> AnyElement {
                 ..Default::default()
             },
             Look::Link(_) => HighlightStyle {
-                color: Some(hsla(c.link)),
+                color: Some(hsla(link)),
                 underline: Some(UnderlineStyle {
                     thickness: px(1.0),
-                    color: Some(hsla(c.link)),
+                    color: Some(hsla(link)),
                     wavy: false,
                 }),
                 ..Default::default()
             },
             Look::Image => HighlightStyle {
-                color: Some(hsla(c.dim)),
+                color: Some(hsla(dim)),
                 font_style: Some(FontStyle::Italic),
                 ..Default::default()
             },
@@ -1448,6 +1466,8 @@ mod tests {
                 ("table header", c.header_text, c.header_bg),
                 ("code header", c.code_header_text, c.code_header_bg),
                 ("table text on a stripe", c.text, c.stripe),
+                ("link on a stripe", c.stripe_link, c.stripe),
+                ("dim on a stripe", c.stripe_dim, c.stripe),
                 ("pill", c.pill_text, c.pill_bg),
                 ("pill value", c.pill_text, c.pill_value_bg),
                 ("empty pill", c.pill_dim, c.pill_bg),

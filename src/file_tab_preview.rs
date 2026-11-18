@@ -8,14 +8,15 @@ impl FileTab {
     /// A link clicked in the Preview (M11ac, `md_preview::link_target`): a web or mail link
     /// opens in the default browser, a file opens in a tab (if it is one); nothing else.
     fn follow_link(&mut self, url: &str, cx: &mut Context<Self>) {
-        // The scenes' frozen tabs record the link instead (no browser opens in a scene).
+        // The scenes' frozen tabs record every link followed, and open no browser.
         #[cfg(feature = "ui-shots")]
         if self.frozen {
             self.followed = Some(url.to_string());
-            return;
         }
         let base = self.path.parent().unwrap_or(Path::new("/"));
         match link_target(base, url) {
+            #[cfg(feature = "ui-shots")]
+            LinkTarget::Web(_) if self.frozen => {}
             LinkTarget::Web(url) => cx.open_url(&url),
             LinkTarget::File(path) if path.is_file() => cx.emit(FileTabEvent::OpenFile(path)),
             LinkTarget::File(_) | LinkTarget::Nowhere => {}
