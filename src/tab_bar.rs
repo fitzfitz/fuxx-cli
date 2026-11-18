@@ -372,7 +372,7 @@ const AGENT_BADGE: f32 = 16.0;
 pub(crate) const TAB_RADIUS: f32 = 6.0;
 /// A button, its icon box, and the gap between buttons and around them.
 pub(crate) const BUTTON: f32 = 20.0;
-const ICON: f32 = 12.0;
+pub(crate) const ICON: f32 = 12.0;
 const BUTTON_GAP: f32 = 2.0;
 const BUTTONS_PAD: f32 = 4.0;
 /// The icons' line width.
@@ -1141,6 +1141,10 @@ pub(crate) enum Glyph {
     ChangeDown,
     /// The file bar's Side by side (M11ah): a box split in two columns.
     SideBySide,
+    /// A code block's Copy in the Markdown reader (M11ai): two sheets, the front one whole, the
+    /// back one showing at its top right; and Copied's tick.
+    Copy,
+    Check,
 }
 
 /// `kind` in `color`, in a 12 px box.
@@ -1552,6 +1556,29 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         head.line_to(p(6.5, 10.0));
                         head.line_to(p(8.3, 11.8));
                         paths.push(head);
+                    }
+                    Glyph::Copy => {
+                        let mut front = stroke();
+                        front.add_polygon(
+                            &[p(1.5, 4.0), p(8.0, 4.0), p(8.0, 10.5), p(1.5, 10.5)],
+                            true,
+                        );
+                        paths.push(front);
+                        // The back sheet: its edges not behind the front one.
+                        let mut back = stroke();
+                        back.move_to(p(4.0, 4.0));
+                        back.line_to(p(4.0, 1.5));
+                        back.line_to(p(10.5, 1.5));
+                        back.line_to(p(10.5, 8.0));
+                        back.line_to(p(8.0, 8.0));
+                        paths.push(back);
+                    }
+                    Glyph::Check => {
+                        let mut tick = stroke();
+                        tick.move_to(p(1.5, 6.5));
+                        tick.line_to(p(4.5, 9.5));
+                        tick.line_to(p(10.5, 2.5));
+                        paths.push(tick);
                     }
                     Glyph::SideBySide => {
                         let mut frame = stroke();

@@ -4379,6 +4379,21 @@ pub struct FileTab {
     /// last frame.
     mermaid_plan: Option<(u64, bool, MermaidPlan)>,
     mermaid_shown: Rc<Vec<Option<md_preview::Shown>>>,
+    /// M11ai: the Preview's code colours: each coloured block's look (by block) for the version
+    /// and theme in `code_for`; and the cache they come from, by (language, code text), in
+    /// `code_cache_theme`'s colours, holding only the parsed version's blocks (`None`: no
+    /// syntax by that name).
+    code_looks: Rc<HashMap<usize, Rc<md_preview::CodeLook>>>,
+    code_for: Option<(u64, Theme)>,
+    code_cache: HashMap<(String, String), Option<Rc<md_preview::CodeLook>>>,
+    code_cache_theme: Option<Theme>,
+    /// M11ai: what shows "Copied", and the last press's number (its one-shot timer clears
+    /// `copied` only if no press came after it).
+    copied: Option<md_preview::Copied>,
+    copy_gen: u64,
+    /// M11ai: the code blocks' headers as last drawn (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    code_drawn: md_preview::CodeDrawn,
     /// M11af: who changed each line since the tab opened.
     live: Live,
     /// M11af: the mark under the pointer: its tooltip's place (window points) and words.
@@ -4420,6 +4435,9 @@ impl FileTab {
             let theme = cx.global::<Appearance>().theme;
             if this.coloured_with.is_some_and(|t| t != theme) {
                 this.colour(cx);
+            } else if this.preview_shown() && this.code_for.is_some_and(|(_, t)| t != theme) {
+                // M11ai: the Preview's code blocks in the new theme's colours.
+                this.colour_code(cx);
             }
             // The Preview's rows may change height (another font or size).
             this.preview_list.remeasure();
@@ -4493,6 +4511,14 @@ impl FileTab {
             reader_drawn: Rc::default(),
             mermaid_plan: None,
             mermaid_shown: Rc::default(),
+            code_looks: Rc::default(),
+            code_for: None,
+            code_cache: HashMap::new(),
+            code_cache_theme: None,
+            copied: None,
+            copy_gen: 0,
+            #[cfg(feature = "ui-shots")]
+            code_drawn: Rc::default(),
             live: Live::default(),
             mark_tip: None,
             _appearance: appearance,
@@ -5583,10 +5609,14 @@ impl FileTab {
         None
     }
 
-    /// Colour the text and the diff's rows (off the UI thread), in the current theme.
+    /// Colour the text and the diff's rows (off the UI thread), in the current theme; and,
+    /// while the Preview shows, its code blocks (M11ai).
     fn colour(&mut self, cx: &mut Context<Self>) {
         self.colour_text(cx);
         self.colour_diff(cx);
+        if self.preview_shown() {
+            self.colour_code(cx);
+        }
     }
 
     /// Colour the file's text (off the UI thread), in the current theme.
@@ -8080,6 +8110,27 @@ impl FileTab {
     /// in sight.
     pub fn reader_drawn(&self) -> std::collections::BTreeMap<usize, Bounds<Pixels>> {
         self.reader_drawn.borrow().clone()
+    }
+
+    /// M11ai: how many code blocks are drawn coloured (the colour job's answer taken).
+    pub fn code_coloured(&self) -> usize {
+        self.code_looks.len()
+    }
+
+    /// M11ai: what shows "Copied" now.
+    pub fn copied(&self) -> Option<md_preview::Copied> {
+        self.copied
+    }
+
+    /// M11ai: each drawn code block's header (its language, its button's word and bounds), by
+    /// list row; only rows in sight.
+    pub fn code_drawn(&self) -> std::collections::BTreeMap<usize, md_preview::CodeProbe> {
+        self.code_drawn.borrow().clone()
+    }
+
+    /// M11ai: row `row`'s Copy button as last drawn.
+    pub fn copy_bounds(&self, row: usize) -> Option<Bounds<Pixels>> {
+        self.code_drawn().get(&row).map(|p| p.copy)
     }
 
     /// The lines of the text shown.

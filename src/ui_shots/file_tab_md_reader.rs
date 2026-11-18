@@ -8,22 +8,41 @@ use super::*;
 pub(super) const FILE: &str = file!();
 
 /// This area's scenes (`registry.rs` runs them in its `ORDER`).
-pub(super) const SCENES: &[Scene] = &[Scene {
-    name: "file-tab-md-reader-column",
-    run: file_tab_md_reader_column_scenes,
-    themes: Themes::Both,
-    serial: false,
-    kind: Kind::Visual,
-    sources: &[
-        "src/file_tab.rs",
-        "src/file_tab_preview.rs",
-        "src/md_preview.rs",
-        "src/md_reader.rs",
-        "src/agent_markdown.rs",
-        "src/highlight.rs",
-        "src/ui_tokens.rs",
-    ],
-}];
+pub(super) const SCENES: &[Scene] = &[
+    Scene {
+        name: "file-tab-md-reader-column",
+        run: file_tab_md_reader_column_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/file_tab_preview.rs",
+            "src/md_preview.rs",
+            "src/md_reader.rs",
+            "src/agent_markdown.rs",
+            "src/highlight.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-tab-md-reader-code",
+        run: file_tab_md_reader_code_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/file_tab.rs",
+            "src/file_tab_preview.rs",
+            "src/md_preview.rs",
+            "src/md_reader.rs",
+            "src/agent_markdown.rs",
+            "src/highlight.rs",
+            "src/tab_bar.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+];
 
 /// A made-up "Setup guide": front matter, two badge rows, a title, sections and a subsection,
 /// every callout kind, code in `sh` (one line indented with a tab), `ts`, `rust` and none, a
@@ -435,6 +454,264 @@ fn file_tab_md_reader_column_scenes() {
         };
         let path = shoot_with(
             "file-tab-md-reader-column-narrow",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// M11ai Task 4's code blocks on `READER_FIXTURE` (SETUP.md), 1,200 × 700, in both themes:
+/// - `file-tab-md-reader-code`: once parked, the `sh`, `ts` and `rust` blocks are coloured
+///   (`code_coloured`); each code block's header names its fence's language exactly (none for
+///   the block without one), its button reads `Copy`; the Mermaid block, shown as code (no
+///   WebKit here), has a `mermaid` header. Inside the `rust` block's bounds some pixels are the
+///   theme's keyword colour (magenta at 3:1 on the page, then at the text floor on the code's
+///   fill). Copy on the `sh` block: the clipboard holds its text with its tab, the button reads
+///   `Copied` until `reader::COPIED` has passed since the last press (a second press 1 s after
+///   the first keeps it 1.5 s from then), then `Copy`. Shot scrolled to the `rust` block.
+/// - `file-tab-md-reader-code-copied`: Copy pressed on the `sh` block; shot showing `Copied`.
+fn file_tab_md_reader_code_scenes() {
+    use super::branch::settle_until;
+    use crate::agent_markdown::Md;
+    use crate::file_tab::FileTab;
+    use crate::layout_model::FileMode;
+    use crate::md_preview::{Colours, Copied};
+    use crate::md_reader::fence_lang;
+    use crate::ui_tokens::reader::COPIED;
+    use crate::ui_tokens::{MARK_MIN, TEXT_MIN, ensure_contrast};
+    use gpui::{ListOffset, Modifiers};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-code");
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let guide = dir.join("SETUP.md");
+    std::fs::write(&guide, READER_FIXTURE).expect("SETUP.md");
+
+    type TabSlot = Rc<RefCell<Option<gpui::Entity<FileTab>>>>;
+    let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
+    let frame = |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+    };
+    // Preview on, then frames until the colour job's answer is in (the syntaxes load and the
+    // blocks colour on the background executor).
+    let preview = move |cx: &mut VisualTestAppContext,
+                        window: AnyWindowHandle,
+                        tab: &gpui::Entity<FileTab>,
+                        n: &str| {
+        frame(cx, window);
+        let button = cx
+            .read(|cx| tab.read(cx).preview_bounds())
+            .expect("Preview is drawn");
+        cx.simulate_click(window, button.center(), Modifiers::none());
+        frame(cx, window);
+        // The fixture's coloured blocks: `sh`, `ts` and `rust`.
+        let coloured = settle_until(cx, window, 20, |cx| {
+            cx.read(|cx| tab.read(cx).code_coloured()) == 3
+        });
+        let got = cx.read(|cx| tab.read(cx).code_coloured());
+        assert!(coloured, "{n}: 3 code blocks coloured, not {got}");
+    };
+    // The list scrolled to `row`'s top, drawn.
+    let show = move |cx: &mut VisualTestAppContext,
+                     window: AnyWindowHandle,
+                     tab: &gpui::Entity<FileTab>,
+                     row: usize| {
+        let list = cx.read(|cx| tab.read(cx).preview_list());
+        list.scroll_to(ListOffset {
+            item_ix: row,
+            offset_in_item: px(0.0),
+        });
+        frame(cx, window);
+    };
+    // Each code block: its row and fence language.
+    let code_rows = |tab: &gpui::Entity<FileTab>, cx: &mut VisualTestAppContext| {
+        let doc = cx
+            .read(|cx| tab.read(cx).reader_doc())
+            .expect("the reader's document");
+        doc.blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(b, md)| match md {
+                Md::Code { lang, text } => Some((
+                    doc.plan.row_of_block(b),
+                    fence_lang(lang.as_deref()).map(str::to_string),
+                    text.clone(),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // A press on row `row`'s Copy.
+    let press_copy = move |cx: &mut VisualTestAppContext,
+                           window: AnyWindowHandle,
+                           tab: &gpui::Entity<FileTab>,
+                           row: usize,
+                           n: &str| {
+        let button = cx
+            .read(|cx| tab.read(cx).copy_bounds(row))
+            .unwrap_or_else(|| panic!("{n}: row {row}'s Copy is drawn"));
+        cx.simulate_click(window, button.center(), Modifiers::none());
+        frame(cx, window);
+    };
+    let label = |cx: &mut VisualTestAppContext, tab: &gpui::Entity<FileTab>, row: usize| {
+        cx.read(|cx| tab.read(cx).code_drawn())
+            .get(&row)
+            .map(|p| p.label)
+    };
+
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let build_for = |slot: TabSlot| {
+            let path = guide.clone();
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path.clone(), FileMode::Plain, window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+        let dims = size(px(1200.0), px(700.0));
+
+        let n = format!("file-tab-md-reader-code-{slug}");
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                preview(cx, window, &tab, &n);
+                let rows = code_rows(&tab, cx);
+                let langs: Vec<Option<&str>> = rows.iter().map(|(_, l, _)| l.as_deref()).collect();
+                assert_eq!(
+                    langs,
+                    [Some("sh"), Some("ts"), Some("rust"), Some("mermaid"), None],
+                    "{n}: the fixture's code blocks"
+                );
+                // Each header names its fence's language as written (none: no words), and
+                // offers Copy.
+                for (row, lang, _) in &rows {
+                    show(cx, window, &tab, *row);
+                    let drawn = cx.read(|cx| tab.read(cx).code_drawn());
+                    let probe = drawn
+                        .get(row)
+                        .unwrap_or_else(|| panic!("{n}: row {row}'s header is drawn"));
+                    assert_eq!(&probe.lang, lang, "{n}: row {row}'s header");
+                    assert_eq!(probe.label, "Copy", "{n}: row {row}'s button");
+                }
+                // The Mermaid block is shown as code (no WebKit in a plain scene).
+                let (diagrams, _) = cx.read(|cx| tab.read(cx).mermaid_drawn());
+                assert_eq!(diagrams, 0, "{n}: no diagram drawn here");
+
+                // Copy on the `sh` block (its third line starts with a tab).
+                let (sh_row, _, sh_text) = rows[0].clone();
+                assert!(sh_text.contains('\t'), "{n}: the fixture's tab");
+                show(cx, window, &tab, sh_row);
+                press_copy(cx, window, &tab, sh_row, &n);
+                let clip = cx.read_from_clipboard().and_then(|c| c.text());
+                assert_eq!(
+                    clip.as_deref(),
+                    Some(sh_text.as_str()),
+                    "{n}: the code copied"
+                );
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).copied()),
+                    Some(Copied::Code(sh_row))
+                );
+                assert_eq!(label(cx, &tab, sh_row), Some("Copied"), "{n}");
+                // Pressed again 1 s on: "Copied" lasts `COPIED` from the second press.
+                cx.advance_clock(Duration::from_millis(1_000));
+                frame(cx, window);
+                press_copy(cx, window, &tab, sh_row, &n);
+                cx.advance_clock(COPIED - Duration::from_millis(500));
+                frame(cx, window);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).copied()),
+                    Some(Copied::Code(sh_row)),
+                    "{n}: still Copied 1 s after the second press"
+                );
+                cx.advance_clock(Duration::from_millis(600));
+                frame(cx, window);
+                assert_eq!(cx.read(|cx| tab.read(cx).copied()), None, "{n}: Copy again");
+                assert_eq!(label(cx, &tab, sh_row), Some("Copy"), "{n}");
+
+                // The `rust` block's keyword colour, inside its bounds.
+                let (rust_row, _, _) = rows[2].clone();
+                show(cx, window, &tab, rust_row);
+                let bounds = *cx
+                    .read(|cx| tab.read(cx).reader_drawn())
+                    .get(&rust_row)
+                    .expect("the rust block is drawn");
+                let fill = Colours::of(&theme).code_bg;
+                let keyword = ensure_contrast(
+                    ensure_contrast(theme.palette[5], theme.background, MARK_MIN),
+                    fill,
+                    TEXT_MIN,
+                );
+                assert_ne!(keyword, Colours::of(&theme).code_text, "{n}");
+                let shot = frame_now(cx, window);
+                let (mut hits, mut y) = (0, f32::from(bounds.top()));
+                while y < f32::from(bounds.bottom()).min(700.0) {
+                    let mut x = f32::from(bounds.left());
+                    while x < f32::from(bounds.right()) {
+                        if gap(pixel_at(&shot, dims, x, y), keyword) <= 6 {
+                            hits += 1;
+                        }
+                        x += 0.5;
+                    }
+                    y += 0.5;
+                }
+                println!("ui-shots: {n}: {hits} keyword pixels in the rust block");
+                assert!(
+                    hits >= 4,
+                    "{n}: the rust block shows its keyword colour ({hits})"
+                );
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-code",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone()),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+
+        let n = format!("file-tab-md-reader-code-copied-{slug}");
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                preview(cx, window, &tab, &n);
+                let (sh_row, _, _) = code_rows(&tab, cx)[0].clone();
+                show(cx, window, &tab, sh_row.saturating_sub(1));
+                press_copy(cx, window, &tab, sh_row, &n);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).copied()),
+                    Some(Copied::Code(sh_row))
+                );
+                let drawn = cx.read(|cx| tab.read(cx).code_drawn());
+                let probe = drawn.get(&sh_row).expect("the sh block's header");
+                assert_eq!(probe.label, "Copied", "{n}: the button reads Copied");
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-code-copied",
             slug,
             &theme,
             dims,

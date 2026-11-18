@@ -11,6 +11,7 @@
 //! `is_markdown`, `link_target`, `inline`, `marker` and `gap_between` are pure and tested.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -24,7 +25,8 @@ use gpui::{
 
 use crate::agent_markdown::{Align, Md, Span};
 use crate::file_tab::expand_tabs;
-use crate::md_reader::{ReaderPlan, RowKind};
+use crate::md_reader::{ReaderPlan, RowKind, fence_lang};
+use crate::tab_bar::{Glyph, ICON, glyph};
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, mix};
 use crate::ui_tokens::reader::TABLE_COL_MIN;
@@ -51,6 +53,9 @@ pub struct Sizes {
     pub heading_below: f32,
     /// H1 / H2's underline, this far under the text.
     pub rule_below: f32,
+    /// A code block's padding (sides, top and bottom) and corners.
+    pub code_pad: (f32, f32),
+    pub code_radius: f32,
 }
 
 impl Sizes {
@@ -67,6 +72,8 @@ impl Sizes {
         heading_above: 12.0,
         heading_below: 12.0,
         rule_below: 6.0,
+        code_pad: (12.0, 10.0),
+        code_radius: 6.0,
     };
 
     /// The Preview's reader (M11ai spec A): bigger type, more room.
@@ -84,6 +91,8 @@ impl Sizes {
             heading_above: r::HEADING_ABOVE,
             heading_below: r::HEADING_BELOW,
             rule_below: r::RULE_BELOW,
+            code_pad: r::CODE_PAD,
+            code_radius: r::CODE_RADIUS,
         }
     }
 }
@@ -265,6 +274,10 @@ fn gap_after(sizes: &Sizes, prev: Option<&Md>, cur: &Md) -> f32 {
     }
 }
 
+/// A code block's header strip (M11ai): its fill is the code's, this much further toward the
+/// text (a shade off it in either theme).
+const HEADER_SHADE: f32 = 0.05;
+
 /// The reader's colours, from the theme (on its background, as the tab's).
 #[derive(Clone, Copy, Debug)]
 pub struct Colours {
@@ -279,6 +292,9 @@ pub struct Colours {
     /// A table header's fill, and its text on it.
     pub header_bg: Rgb,
     pub header_text: Rgb,
+    /// A code block's header strip (M11ai): its fill, and its words (the language, Copy) on it.
+    pub code_header_bg: Rgb,
+    pub code_header_text: Rgb,
 }
 
 impl Colours {
@@ -288,6 +304,7 @@ impl Colours {
         // A tint of the text over the page: it shows in a light theme too (the panel colour
         // is all but the page there).
         let code_bg = mix(bg, ui.text, 0.07);
+        let code_header_bg = mix(code_bg, ui.text, HEADER_SHADE);
         Colours {
             text: ensure_contrast(ui.text, bg, TEXT_MIN),
             dim: ensure_contrast(ui.text_dim, bg, TEXT_MIN),
@@ -297,12 +314,17 @@ impl Colours {
             line: ensure_contrast(ui.panel_border, bg, QUIET_LINE_MIN),
             header_bg: code_bg,
             header_text: ensure_contrast(ui.text, code_bg, TEXT_MIN),
+            code_header_bg,
+            code_header_text: ensure_contrast(ui.text_dim, code_header_bg, TEXT_MIN),
         }
     }
 }
 
 /// What a link click does, given its address.
 pub type OnLink = Rc<dyn Fn(String, &mut Window, &mut App)>;
+
+/// What a code block's Copy does (M11ai), given the block's list row.
+pub type OnCopy = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
 /// How a Mermaid block is drawn (M11ac Part 2): its diagram, at its natural size in points
 /// (scaled down to fit, never up), or its code with a line under it saying why not (none while
@@ -342,10 +364,49 @@ pub struct ReaderDoc {
 pub struct ReaderDraw {
     pub doc: Rc<ReaderDoc>,
     pub measure: f32,
+    /// Each coloured code block's look, by block (missing: drawn uncoloured).
+    pub code: Rc<HashMap<usize, Rc<CodeLook>>>,
+    /// What shows "Copied" now.
+    pub copied: Option<Copied>,
+    /// A code block's Copy pressed (given its row).
+    pub on_copy: OnCopy,
     /// The scenes' probe: each drawn row's content, as last prepainted (window points).
     #[cfg(feature = "ui-shots")]
     pub drawn: Drawn,
+    /// The scenes' probe: each drawn code block's header.
+    #[cfg(feature = "ui-shots")]
+    pub code_drawn: CodeDrawn,
 }
+
+/// A code block coloured (M11ai, `md_reader::code_runs`): its text as shown (tabs widened) and
+/// its colour runs on that text.
+pub struct CodeLook {
+    pub shown: SharedString,
+    pub runs: Vec<(Range<usize>, Rgb)>,
+}
+
+/// What was copied last, shown as "Copied" for `reader::COPIED` (M11ai): a code block's Copy, or
+/// a heading's link (Task 7), by list row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Copied {
+    Code(usize),
+    #[allow(dead_code)] // Task 7 copies a heading's link
+    Anchor(usize),
+}
+
+/// A code block's header as last drawn (the scenes' probe): the language it names, the Copy
+/// button's word, and the button's bounds (window points).
+#[cfg(feature = "ui-shots")]
+#[derive(Clone, Debug)]
+pub struct CodeProbe {
+    pub lang: Option<String>,
+    pub label: &'static str,
+    pub copy: gpui::Bounds<gpui::Pixels>,
+}
+
+/// Each drawn code block's header, by list row.
+#[cfg(feature = "ui-shots")]
+pub type CodeDrawn = Rc<std::cell::RefCell<std::collections::BTreeMap<usize, CodeProbe>>>;
 
 /// Each drawn row's content bounds, by list row (the scenes read it).
 #[cfg(feature = "ui-shots")]
@@ -389,9 +450,12 @@ pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
             };
             let content = match (draw.mermaid.get(b), md) {
                 (Some(Some(shown @ Shown::Diagram { .. })), _) => {
-                    prose(mermaid_block(md, shown, draw))
+                    prose(mermaid_block(shown, draw, || div().into_any_element()))
                 }
-                (Some(Some(shown)), _) => wide(reader.measure, mermaid_block(md, shown, draw)),
+                (Some(Some(shown)), _) => wide(
+                    reader.measure,
+                    mermaid_block(shown, draw, || reader_code(row, b, md, draw, reader)),
+                ),
                 (_, Md::Table { align, head, rows }) => {
                     let min = head.len().max(1) as f32 * TABLE_COL_MIN;
                     let mut scroll = div()
@@ -403,7 +467,7 @@ pub fn reader_row(row: usize, draw: &Draw) -> AnyElement {
                     scroll.style().restrict_scroll_to_axis = Some(true);
                     wide(reader.measure, scroll.into_any_element())
                 }
-                (_, Md::Code { .. }) => wide(reader.measure, block(md, draw)),
+                (_, Md::Code { .. }) => wide(reader.measure, reader_code(row, b, md, draw, reader)),
                 _ => prose(block(md, draw)),
             };
             (gap, content)
@@ -452,6 +516,141 @@ fn wide(measure: f32, e: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
+/// A code block in the reader (M11ai): a header strip on its top edge (a shade off the code's
+/// fill: the fence's language on the left, as the fence names it, nothing when it names none;
+/// Copy on the right, dim, brighter under the pointer; "Copied" with a tick while `copied` says
+/// so), then its code: coloured once the colour job's answer for block `b` is in, else in the
+/// code colour. The button's element id is from `row`.
+fn reader_code(row: usize, b: usize, md: &Md, draw: &Draw, reader: &ReaderDraw) -> AnyElement {
+    use crate::ui_tokens::reader::{CODE_HEADER, CODE_HEADER_TEXT, COPY_GAP};
+    let Md::Code { lang, text: code } = md else {
+        return block(md, draw);
+    };
+    let (c, s) = (draw.colours, &draw.sizes);
+    let lang = fence_lang(lang.as_deref()).map(str::to_string);
+    let copied = reader.copied == Some(Copied::Code(row));
+    let (word, kind) = if copied {
+        ("Copied", Glyph::Check)
+    } else {
+        ("Copy", Glyph::Copy)
+    };
+    let (dim, bright) = (
+        c.code_header_text,
+        ensure_contrast(c.text, c.code_header_bg, TEXT_MIN),
+    );
+    let on_copy = reader.on_copy.clone();
+    // One `group_hover` per element (GPUI keeps the last): the dim icon hides, the bright one
+    // shows.
+    let icon = div()
+        .relative()
+        .flex_none()
+        .size(px(ICON))
+        .child(
+            glyph(kind, dim)
+                .absolute()
+                .group_hover(COPY_GROUP, |s| s.invisible()),
+        )
+        .child(
+            glyph(kind, bright)
+                .absolute()
+                .invisible()
+                .group_hover(COPY_GROUP, |s| s.visible()),
+        );
+    let button = div()
+        .id(("md-copy", row))
+        .group(COPY_GROUP)
+        .relative()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(COPY_GAP))
+        .cursor_pointer()
+        .text_color(hsla(dim))
+        .hover(move |s| s.text_color(hsla(bright)))
+        .on_click(move |_, window, cx| on_copy(row, window, cx))
+        .child(icon)
+        .child(word);
+    #[cfg(feature = "ui-shots")]
+    let button = {
+        let (probe, lang) = (reader.code_drawn.clone(), lang.clone());
+        button.child(
+            gpui::canvas(
+                move |bounds, _, _| {
+                    probe.borrow_mut().insert(
+                        row,
+                        CodeProbe {
+                            lang,
+                            label: word,
+                            copy: bounds,
+                        },
+                    );
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
+    };
+    let header = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .h(px(CODE_HEADER))
+        .px(px(s.code_pad.0))
+        // Inside the block's 1 pt border: its corners 1 pt less round.
+        .rounded_t(px((s.code_radius - 1.0).max(0.0)))
+        .bg(hsla(c.code_header_bg))
+        .text_size(px(CODE_HEADER_TEXT))
+        .text_color(hsla(dim))
+        .child(div().children(lang))
+        .child(button);
+    let text: AnyElement = match reader.code.get(&b) {
+        Some(look) => {
+            let runs = look.runs.iter().map(|(range, rgb)| {
+                let style = HighlightStyle {
+                    color: Some(hsla(*rgb)),
+                    ..Default::default()
+                };
+                (range.clone(), style)
+            });
+            StyledText::new(look.shown.clone())
+                .with_highlights(runs.collect::<Vec<_>>())
+                .into_any_element()
+        }
+        None => {
+            let shown: Vec<String> = code.lines().map(expand_tabs).collect();
+            SharedString::from(shown.join("\n")).into_any_element()
+        }
+    };
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .rounded(px(s.code_radius))
+        .bg(hsla(c.code_bg))
+        .border_1()
+        .border_color(hsla(c.line))
+        .child(header)
+        .child(
+            div()
+                .w_full()
+                .px(px(s.code_pad.0))
+                .py(px(s.code_pad.1))
+                .font_family(draw.code_font.clone())
+                .text_size(px(s.code))
+                .line_height(relative(s.code_line))
+                .text_color(hsla(c.code_text))
+                .child(text),
+        )
+        .into_any_element()
+}
+
+/// The Copy buttons' hover group (one per button: the nearest is the one hovered).
+const COPY_GROUP: &str = "md-copy";
+
 /// `blocks` as one column with no page padding (M11aa: an agent's message in a chat row): the
 /// reader's blocks (`blocks_of`) one under another. Its links' element ids start from
 /// `base << 20` (a chat passes its item's index), so they stay the same from frame to frame.
@@ -467,8 +666,9 @@ pub fn column(blocks: &[Md], base: usize, draw: &Draw) -> AnyElement {
 }
 
 /// A Mermaid block (M11ac Part 2): its diagram centred, at its natural width or the column's,
-/// whichever is less, its height kept in proportion; or its code, with the reason under it.
-fn mermaid_block(md: &Md, shown: &Shown, draw: &Draw) -> AnyElement {
+/// whichever is less, its height kept in proportion; or its code (`code`: the reader's, with
+/// its header), with the reason under it.
+fn mermaid_block(shown: &Shown, draw: &Draw, code: impl FnOnce() -> AnyElement) -> AnyElement {
     match shown {
         Shown::Diagram { image, w, h } => div()
             .w_full()
@@ -486,7 +686,7 @@ fn mermaid_block(md: &Md, shown: &Shown, draw: &Draw) -> AnyElement {
             .w_full()
             .flex()
             .flex_col()
-            .child(block(md, draw))
+            .child(code())
             .when_some(note.clone(), |d, note| {
                 d.child(
                     div()
@@ -546,9 +746,9 @@ fn block(md: &Md, draw: &Draw) -> AnyElement {
             let shown: Vec<String> = code.lines().map(expand_tabs).collect();
             div()
                 .w_full()
-                .px(px(12.0))
-                .py(px(10.0))
-                .rounded(px(6.0))
+                .px(px(s.code_pad.0))
+                .py(px(s.code_pad.1))
+                .rounded(px(s.code_radius))
                 .bg(hsla(c.code_bg))
                 .border_1()
                 .border_color(hsla(c.line))
@@ -759,10 +959,13 @@ mod tests {
                 ("link", c.link, bg),
                 ("code", c.code_text, c.code_bg),
                 ("table header", c.header_text, c.header_bg),
+                ("code header", c.code_header_text, c.code_header_bg),
             ] {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got}");
             }
+            // The code header is a shade off the code's fill.
+            assert_ne!(c.code_header_bg, c.code_bg, "{name}");
         }
     }
 
@@ -900,6 +1103,8 @@ mod tests {
                 heading_above: 12.0,
                 heading_below: 12.0,
                 rule_below: 6.0,
+                code_pad: (12.0, 10.0),
+                code_radius: 6.0,
             }
         );
         let chat = &Sizes::CHAT;
@@ -937,5 +1142,6 @@ mod tests {
         assert_eq!(r.line, 1.65);
         assert_eq!(r.headings, [30.0, 24.0, 20.0, 17.0, 16.0, 15.0]);
         assert_eq!((r.code, r.code_line, r.rule_below), (14.0, 1.5, 8.0));
+        assert_eq!((r.code_pad, r.code_radius), ((12.0, 10.0), 6.0));
     }
 }

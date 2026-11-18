@@ -105,6 +105,8 @@ pub mod reader {
     pub const CODE_HEADER_TEXT: f32 = 12.0;
     pub const CODE_PAD: (f32, f32) = (12.0, 10.0);
     pub const CODE_RADIUS: f32 = 6.0;
+    /// Between the Copy button's icon and its word.
+    pub const COPY_GAP: f32 = 4.0;
     /// A callout's bar, padding, corners, and its wash (the kind's colour at this alpha).
     pub const CALLOUT_BAR: f32 = 3.0;
     pub const CALLOUT_PAD: f32 = 12.0;
