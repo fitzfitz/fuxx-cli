@@ -435,6 +435,8 @@ mod tests {
             conversation: conversation.map(Into::into),
             mode: None,
             title: None,
+            model: None,
+            effort: None,
         };
         let p = pane(&[agent(Some("c1")), agent(None), TabKind::Terminal(1)]);
         assert!(enabled(Rename, &p, TabId(1)));

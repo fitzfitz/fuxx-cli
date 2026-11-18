@@ -4,6 +4,8 @@
 mod activity;
 mod activity_panel;
 mod adopt;
+mod agent_box;
+mod agent_catalog;
 mod agent_conversation;
 mod agent_detect;
 mod agent_markdown;
@@ -44,6 +46,7 @@ mod drag_gap;
 mod edit_ledger;
 mod file_tab;
 mod file_tree;
+mod folder_picker;
 mod fonts;
 mod git_branch;
 mod git_graph;
@@ -460,9 +463,10 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
             composer::ShowCharacterPalette,
             Some("Composer"),
         ),
-        // The agent tab's `@` file list, while it is open over the composer.
+        // The agent tab's `@` file list and `/` list, while one is open over the composer.
         KeyBinding::new("up", agent_tab::AtUp, Some("AtPopup > Composer")),
         KeyBinding::new("down", agent_tab::AtDown, Some("AtPopup > Composer")),
+        KeyBinding::new("tab", composer::Complete, Some("AtPopup > Composer")),
     ];
     bindings.extend(browser_tab::page_bindings());
     bindings
@@ -926,6 +930,8 @@ fn main() {
             cx.set_global(appearance::load(cx));
             // The edit ledger (M11af): agents' file edits and working spans.
             cx.set_global(edit_ledger::Ledger::default());
+            // What each agent can say about itself (M11ak): its models, commands and usage.
+            cx.set_global(agent_catalog::Catalogs::default());
             // The key sounds (M11s): loaded now, and again whenever the settings change.
             sounds::sync(cx);
             cx.observe_global::<appearance::Appearance>(sounds::sync)
@@ -1098,6 +1104,8 @@ fn main() {
             {
                 std::thread::spawn(move || updater::clean_previous(&app));
             }
+            // Pasted images written for agy (a day old or more) go, off the UI thread.
+            std::thread::spawn(agent_tab::clean_old_pasted);
             cx.activate(true);
         });
 }
@@ -1484,6 +1492,7 @@ mod tests {
         }
         assert!(runs(&keymap, "up", at_list).partial_eq(&crate::agent_tab::AtUp));
         assert!(runs(&keymap, "down", at_list).partial_eq(&crate::agent_tab::AtDown));
+        assert!(runs(&keymap, "tab", at_list).partial_eq(&composer::Complete));
         // Enter and Esc stay the composer's: the tab picks the file / closes the list.
         assert!(runs(&keymap, "enter", at_list).partial_eq(&composer::Send));
         assert!(runs(&keymap, "escape", at_list).partial_eq(&composer::Stop));

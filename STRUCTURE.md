@@ -128,6 +128,10 @@ src/
 ├── welcome.rs            M11k · the Welcome card: folder, agents, three shortcuts; opening it on a first run or from Help; the pick
 ├── welcome_items.rs      M11k · the card's rules: rows, the default row, what a pick opens and closes, the copy (pure)
 ├── agent_detect.rs       M11k · is a preset's program on your login shell's PATH? (pure core; one capped background read)
+├── agent_catalog.rs      M11ak · what an agent says about itself (models, commands, usage), read by short probe processes per agent and folder; no timer
+├── agent_box.rs          M11ak · the agent tab's box: the pure rules (a choice, when it applies, chip texts, usage and list rows) and the box's drawing
+├── agent_box_menus.rs    M11ak · the box's menus: the folder picker and its panels, model, effort, usage, mode, attach (a submodule of agent_box.rs)
+├── folder_picker.rs      M11ak · the folder picker's pure part: Recent (up to 8), the folders fuxx knows, the rows for a search, which folders are there (checked off the UI thread)
 ├── shell_marks.rs        M11l · OSC 133 mark scanner over raw bytes (A, B, C with the command, D with the exit code; pure)
 ├── blocks.rs             M11l · command tags kept as hidden hyperlinks on the grid; `advance` splits at each mark; list, visible, output text, prompt_ready
 ├── shell_integration.rs  M11l · installs the zsh scripts, `ZDOTDIR` env for a login zsh, the `command-blocks` switch
