@@ -35,7 +35,7 @@ use gpui::{
 };
 
 use crate::agent_box::{
-    AtRow, BoxMenu, Change, PLACEHOLDER, SLASH_LIMIT, SlashRow, Step, at_rows, slash_query,
+    AREA_X, AtRow, BoxMenu, Change, PLACEHOLDER, SLASH_LIMIT, SlashRow, Step, at_rows, slash_query,
     slash_rows, step_for, switched_notice, usage_line,
 };
 use crate::agent_conversation::{Answer, Conversation, Item};
@@ -3223,7 +3223,7 @@ impl AgentTab {
         let body = self.item_body(ix, item, 0, look);
         let row = div()
             .w_full()
-            .px(px(16.))
+            .px(px(AREA_X))
             .pt(px(top))
             .when(last, |d| d.pb(px(14.)))
             .text_size(px(BODY))
@@ -3252,7 +3252,7 @@ impl AgentTab {
             row.flex()
                 .flex_row()
                 .gap(px(AVATAR_GAP))
-                .child(gutter)
+                .child(self.marked("column", gutter))
                 .child(div().flex_1().min_w(px(0.)).child(body))
         } else {
             row.child(body)
@@ -3744,7 +3744,7 @@ impl AgentTab {
             .flex_none()
             .w_full()
             .h(px(26.))
-            .px(px(16.))
+            .px(px(AREA_X))
             .flex()
             .items_center()
             .text_size(px(text::META))
@@ -3766,7 +3766,7 @@ impl AgentTab {
             div()
                 .flex_none()
                 .w_full()
-                .px(px(16.))
+                .px(px(AREA_X))
                 .pb(px(10.))
                 .flex()
                 .flex_col()
