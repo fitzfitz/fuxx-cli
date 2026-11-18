@@ -6,7 +6,9 @@ use super::*;
 
 impl FileTab {
     /// A link clicked in the Preview (M11ac, `md_preview::link_target`): a web or mail link
-    /// opens in the default browser, a file opens in a tab (if it is one); nothing else.
+    /// opens in the default browser, a file opens in a tab (if it is one); M11ai: a `#part` of
+    /// this file jumps to its heading (an unknown one does nothing), and a Markdown file's part
+    /// goes with it (the workspace opens it in Preview there; another file's is dropped).
     fn follow_link(&mut self, url: &str, cx: &mut Context<Self>) {
         // The scenes' frozen tabs record every link followed, and open no browser.
         #[cfg(feature = "ui-shots")]
@@ -18,9 +20,73 @@ impl FileTab {
             #[cfg(feature = "ui-shots")]
             LinkTarget::Web(_) if self.frozen => {}
             LinkTarget::Web(url) => cx.open_url(&url),
-            LinkTarget::File(path) if path.is_file() => cx.emit(FileTabEvent::OpenFile(path)),
-            LinkTarget::File(_) | LinkTarget::Nowhere => {}
+            LinkTarget::File(path, part) if path.is_file() => {
+                let part = part.filter(|_| is_markdown(&path));
+                cx.emit(FileTabEvent::OpenFile(path, part))
+            }
+            LinkTarget::Here(anchor) => {
+                let row = self
+                    .parsed
+                    .as_ref()
+                    .and_then(|(_, read)| read.plan.anchor_row(&anchor));
+                if let Some(row) = row {
+                    self.jump_to_row(row, cx);
+                }
+            }
+            LinkTarget::File(..) | LinkTarget::Nowhere => {}
         }
+    }
+
+    /// Preview on, at heading `anchor` (M11ai: a link to it from another file; the workspace
+    /// saves the Preview): the jump is made now if the file as it is has been read, else where
+    /// it is read (`preview_body`, plan-time call 5). An unknown heading: the top.
+    pub fn show_anchor(&mut self, anchor: String, cx: &mut Context<Self>) {
+        if !self.preview {
+            self.preview = true;
+            // As Preview on by hand: Follow ends, the find bar and the selection go.
+            self.live.follow = false;
+            self.mark_tip = None;
+            self.find = None;
+            self.selection = None;
+            self.selecting = false;
+            self.refresh_place(cx);
+        }
+        let version = self.doc().map(|d| d.version);
+        let read = match &self.parsed {
+            Some((v, read)) if Some(*v) == version => Some(read.clone()),
+            _ => None,
+        };
+        match read {
+            Some(read) => {
+                self.pending_anchor = None;
+                if let Some(row) = read.plan.anchor_row(&anchor) {
+                    self.jump_to_row(row, cx);
+                }
+            }
+            None => self.pending_anchor = Some(anchor),
+        }
+        cx.notify();
+    }
+
+    /// Jump to list row `row` (M11ai: a heading): the row's content `JUMP_ROOM` under the
+    /// Preview's top (`md_reader::jump_offset` of the space over it); a jump is a scroll, so the
+    /// scrollbar shows.
+    pub(super) fn jump_to_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.place_at_row(row, cx);
+        cx.notify();
+    }
+
+    /// `jump_to_row` without the redraw (`preview_body` jumps in the frame it draws).
+    fn place_at_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some((_, read)) = &self.parsed else {
+            return;
+        };
+        let room = md_preview::row_top(read, &md_preview::Sizes::reader(), row);
+        self.preview_list.scroll_to(ListOffset {
+            item_ix: row,
+            offset_in_item: px(crate::md_reader::jump_offset(room)),
+        });
+        self.scrolled(cx);
     }
 
     /// A press at `p` in the Preview's scrollbar zone (M11ae): the thumb is grabbed, or jumps to
@@ -111,6 +177,14 @@ impl FileTab {
                 self.preview_list = preview_list_of(read.plan.rows(), cx.entity().downgrade());
                 self.preview_list.scroll_to(top);
                 self.parsed = Some((version, read.clone()));
+                // M11ai: a heading asked for before the file was read (`show_anchor`).
+                if let Some(row) = self
+                    .pending_anchor
+                    .take()
+                    .and_then(|anchor| read.plan.anchor_row(&anchor))
+                {
+                    self.place_at_row(row, cx);
+                }
                 read
             }
         };
@@ -145,6 +219,17 @@ impl FileTab {
                     Rc::new(move |row, _, cx| {
                         view.update(cx, |this, cx| this.copy_code(row, cx)).ok();
                     })
+                },
+                on_anchor_copy: {
+                    let view = cx.entity().downgrade();
+                    Rc::new(move |row, _, cx| {
+                        view.update(cx, |this, cx| this.copy_anchor(row, cx)).ok();
+                    })
+                },
+                #[cfg(feature = "ui-shots")]
+                anchor_drawn: {
+                    self.anchor_drawn.borrow_mut().clear();
+                    self.anchor_drawn.clone()
                 },
                 #[cfg(feature = "ui-shots")]
                 drawn: {
@@ -432,9 +517,37 @@ impl FileTab {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        self.show_copied(md_preview::Copied::Code(row), cx);
+    }
+
+    /// A heading's `#` pressed (M11ai), on list row `row`: the link to it on the clipboard
+    /// (`md_reader::heading_link`: from its repo's top folder, else from home, plan-time call
+    /// 10), and the `#` reads "Copied" as a code block's Copy does.
+    fn copy_anchor(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some((_, read)) = &self.parsed else {
+            return;
+        };
+        let Some(heading) = read
+            .plan
+            .headings
+            .iter()
+            .find(|h| read.plan.row_of_block(h.block) == row)
+        else {
+            return;
+        };
+        let rel = self.git_place.as_ref().map(|p| p.rel.as_path());
+        let home = crate::workspace::home_dir();
+        let link = crate::md_reader::heading_link(rel, &self.path, home.as_deref(), &heading.slug);
+        cx.write_to_clipboard(ClipboardItem::new_string(link));
+        self.show_copied(md_preview::Copied::Anchor(row), cx);
+    }
+
+    /// `what` reads "Copied" for `reader::COPIED` (a one-shot timer, which leaves it if another
+    /// press came since).
+    fn show_copied(&mut self, what: md_preview::Copied, cx: &mut Context<Self>) {
         self.copy_gen += 1;
         let press = self.copy_gen;
-        self.copied = Some(md_preview::Copied::Code(row));
+        self.copied = Some(what);
         cx.notify();
         cx.spawn(async move |this, cx| {
             cx.background_executor()
