@@ -157,6 +157,13 @@ pub fn inline(spans: &[Span]) -> Inline {
                 out.text.push(']');
                 Some(Look::Image)
             }
+            Span::LinkedImage { alt, url, .. } => {
+                out.text.push('[');
+                out.text.push_str(alt);
+                out.text.push(']');
+                out.links.push((start..out.text.len(), url.clone()));
+                Some(Look::Link(out.links.len() - 1))
+            }
         };
         if let Some(look) = look.filter(|_| out.text.len() > start) {
             out.looks.push((start..out.text.len(), look));
@@ -560,6 +567,18 @@ fn text(spans: &[Span], draw: &Draw) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_linked_image_reads_as_its_alt_linked() {
+        let i = inline(&[Span::LinkedImage {
+            alt: "ci".into(),
+            src: "s".into(),
+            url: "u".into(),
+        }]);
+        assert_eq!(i.text, "[ci]");
+        assert_eq!(i.looks, vec![(0..4, Look::Link(0))]);
+        assert_eq!(i.links, vec![(0..4, "u".to_string())]);
+    }
 
     fn t(s: &str) -> Span {
         Span::Text(s.into())
