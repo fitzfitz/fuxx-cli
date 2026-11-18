@@ -1375,7 +1375,7 @@ impl Workspace {
                 .h(px(PROGRESS))
                 .w_full()
                 .rounded(px(PROGRESS))
-                .bg(hsla(ui.divider))
+                .bg(hsla(ui.progress_track))
                 .child(
                     div()
                         .h_full()
