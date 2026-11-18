@@ -935,8 +935,9 @@ impl Steps {
         }
     }
 
-    /// What has an age now (not idle), by name, and since when: each terminal, and each agent
-    /// tab (M11aa Task 9: its row's or its tab's age label turns as a terminal's does).
+    /// What has an age now (not idle), by name, and since when: each terminal, each agent tab
+    /// (M11aa Task 9: its row's or its tab's age label turns as a terminal's does), and each
+    /// entry of the 🔔 popover while it's open (its "0s" turns every second at first).
     fn busy_sinces(&self, cx: &VisualTestAppContext) -> Vec<(String, Instant)> {
         cx.read(|cx| {
             let ws = self.ws.read(cx);
@@ -948,7 +949,13 @@ impl Steps {
                 .map(|a| (format!("a{}", a.id), a.since))
                 .collect();
             agents.sort();
-            terminals.chain(agents).collect()
+            let notifications = ws
+                .notifications_popover
+                .iter()
+                .flat_map(|_| ws.notifications.shown(|_| true))
+                .enumerate()
+                .map(|(i, (entry, _))| (format!("🔔{i}"), entry.at));
+            terminals.chain(agents).chain(notifications).collect()
         })
     }
 

@@ -4,6 +4,8 @@
 mod activity;
 mod activity_panel;
 mod adopt;
+mod agent_box;
+mod agent_catalog;
 mod agent_conversation;
 mod agent_detect;
 mod agent_markdown;
@@ -30,6 +32,7 @@ mod browser_url;
 mod changes_panel;
 mod chrome_cache;
 mod cli;
+mod code_outline;
 mod colors;
 mod composer;
 mod cursor_look;
@@ -37,11 +40,13 @@ mod daemon;
 mod daemon_client;
 mod daemon_session;
 mod detector;
+mod diff_cards;
 mod diff_view;
 mod drag_gap;
 mod edit_ledger;
 mod file_tab;
 mod file_tree;
+mod folder_picker;
 mod fonts;
 mod git_branch;
 mod git_graph;
@@ -100,6 +105,7 @@ mod pty;
 mod reduce_motion;
 mod restore;
 mod right_sidebar;
+mod row_map;
 mod scrollbar;
 mod session_list;
 mod settings;
@@ -311,6 +317,12 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-g", file_tab::FindNext, Some("FileTab")),
         KeyBinding::new("cmd-shift-g", file_tab::FindPrev, Some("FileTab")),
         KeyBinding::new("escape", file_tab::CloseFind, Some("FileTab")),
+        // M11ah: fold and unfold the block the current line is in.
+        KeyBinding::new("alt-cmd-[", file_tab::FoldHere, Some("FileTab")),
+        KeyBinding::new("alt-cmd-]", file_tab::UnfoldHere, Some("FileTab")),
+        // M11ah: ⌥↑ / ⌥↓ jump to the previous / next change (a terminal keeps ⌥↑ / ⌥↓).
+        KeyBinding::new("alt-up", file_tab::PrevChange, Some("FileTab")),
+        KeyBinding::new("alt-down", file_tab::NextChange, Some("FileTab")),
         KeyBinding::new("cmd-c", Copy, Some("FileTab")),
         KeyBinding::new("ctrl-tab", NextTab, Some("FileTab")),
         KeyBinding::new("ctrl-shift-tab", PrevTab, Some("FileTab")),
@@ -451,9 +463,10 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
             composer::ShowCharacterPalette,
             Some("Composer"),
         ),
-        // The agent tab's `@` file list, while it is open over the composer.
+        // The agent tab's `@` file list and `/` list, while one is open over the composer.
         KeyBinding::new("up", agent_tab::AtUp, Some("AtPopup > Composer")),
         KeyBinding::new("down", agent_tab::AtDown, Some("AtPopup > Composer")),
+        KeyBinding::new("tab", composer::Complete, Some("AtPopup > Composer")),
     ];
     bindings.extend(browser_tab::page_bindings());
     bindings
@@ -917,6 +930,8 @@ fn main() {
             cx.set_global(appearance::load(cx));
             // The edit ledger (M11af): agents' file edits and working spans.
             cx.set_global(edit_ledger::Ledger::default());
+            // What each agent can say about itself (M11ak): its models, commands and usage.
+            cx.set_global(agent_catalog::Catalogs::default());
             // The key sounds (M11s): loaded now, and again whenever the settings change.
             sounds::sync(cx);
             cx.observe_global::<appearance::Appearance>(sounds::sync)
@@ -1089,6 +1104,8 @@ fn main() {
             {
                 std::thread::spawn(move || updater::clean_previous(&app));
             }
+            // Pasted images written for agy (a day old or more) go, off the UI thread.
+            std::thread::spawn(agent_tab::clean_old_pasted);
             cx.activate(true);
         });
 }
@@ -1475,6 +1492,7 @@ mod tests {
         }
         assert!(runs(&keymap, "up", at_list).partial_eq(&crate::agent_tab::AtUp));
         assert!(runs(&keymap, "down", at_list).partial_eq(&crate::agent_tab::AtDown));
+        assert!(runs(&keymap, "tab", at_list).partial_eq(&composer::Complete));
         // Enter and Esc stay the composer's: the tab picks the file / closes the list.
         assert!(runs(&keymap, "enter", at_list).partial_eq(&composer::Send));
         assert!(runs(&keymap, "escape", at_list).partial_eq(&composer::Stop));
@@ -1626,6 +1644,53 @@ mod tests {
         for key in ["cmd-f", "cmd-g", "cmd-shift-g"] {
             assert!(!bound(key, TERMINAL), "{key} in a terminal");
             assert!(!bound(key, PAGE), "{key} in a browser tab");
+        }
+    }
+
+    #[test]
+    fn the_fold_keys_work_in_the_file_tab() {
+        use crate::file_tab::{FoldHere, UnfoldHere};
+        let keymap = keymap();
+        let tab: &[&str] = &["Workspace", "FileTab"];
+        assert!(runs(&keymap, "alt-cmd-[", tab).partial_eq(&FoldHere));
+        assert!(runs(&keymap, "alt-cmd-]", tab).partial_eq(&UnfoldHere));
+        let bound = |key: &str, stack: &[&str]| {
+            let contexts: Vec<KeyContext> = stack
+                .iter()
+                .map(|c| KeyContext::parse(c).unwrap())
+                .collect();
+            let (found, _) =
+                keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], &contexts);
+            found
+                .iter()
+                .any(|b| b.action().partial_eq(&FoldHere) || b.action().partial_eq(&UnfoldHere))
+        };
+        for key in ["alt-cmd-[", "alt-cmd-]"] {
+            assert!(!bound(key, TERMINAL), "{key} folds nothing in a terminal");
+        }
+    }
+
+    #[test]
+    fn the_change_keys_work_in_the_file_tab_only() {
+        use crate::file_tab::{NextChange, PrevChange};
+        let keymap = keymap();
+        let tab: &[&str] = &["Workspace", "FileTab"];
+        assert!(runs(&keymap, "alt-up", tab).partial_eq(&PrevChange));
+        assert!(runs(&keymap, "alt-down", tab).partial_eq(&NextChange));
+        for key in ["alt-up", "alt-down"] {
+            let contexts: Vec<KeyContext> = TERMINAL
+                .iter()
+                .map(|c| KeyContext::parse(c).unwrap())
+                .collect();
+            let (found, _) =
+                keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], &contexts);
+            assert!(
+                !found
+                    .iter()
+                    .any(|b| b.action().partial_eq(&PrevChange)
+                        || b.action().partial_eq(&NextChange)),
+                "{key} steps no change in a terminal"
+            );
         }
     }
 
