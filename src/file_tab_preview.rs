@@ -263,9 +263,22 @@ impl FileTab {
             _ => {
                 let (blocks, plan) = crate::md_reader::read(&doc.text);
                 let read = Rc::new(md_preview::ReaderDoc { blocks, plan });
-                // A new list (its measuring is by the row count), at the place kept.
-                let top = self.preview_list.logical_scroll_top();
-                self.preview_list = preview_list_of(read.plan.rows(), cx.entity().downgrade());
+                // A new list (its measuring is by the row count), at the place kept by row,
+                // shifted by the change in front-matter rows (plan-time call 4: adding front
+                // matter does not move you a block).
+                let top = match &self.parsed {
+                    Some((_, old)) => shifted_top(
+                        self.preview_list.logical_scroll_top(),
+                        old.plan.front_rows(),
+                        read.plan.front_rows(),
+                    ),
+                    None => self.preview_list.logical_scroll_top(),
+                };
+                self.preview_list = preview_list_of(
+                    read.plan.rows(),
+                    cx.entity().downgrade(),
+                    self.track_armed.clone(),
+                );
                 self.preview_list.scroll_to(top);
                 // M11ai: "On this page"'s own list (its scroll kept while the entries are as
                 // many), and its current entry checked again once the new list is laid out.
@@ -275,6 +288,15 @@ impl FileTab {
                         ListState::new(entries, ListAlignment::Top, px(PREVIEW_OVERDRAW));
                 }
                 self.track_due.set(true);
+                // Task 10: no outline in this version (under two entries): the narrow panel is
+                // closed for good, so a later version with one does not reopen it unasked. It is
+                // already hidden now (`outline_panel_open`); the flag is cleared out of drawing.
+                if entries == 0 && self.outline_panel {
+                    let view = cx.entity().downgrade();
+                    cx.defer(move |cx| {
+                        view.update(cx, |this, _| this.outline_panel = false).ok();
+                    });
+                }
                 self.parsed = Some((version, read.clone()));
                 // M11ai: a heading asked for before the file was read (`show_anchor`).
                 if let Some(row) = self
@@ -379,10 +401,11 @@ impl FileTab {
         let progress = md_preview::Colours::of(&theme).progress;
         let view = cx.entity().downgrade();
         let prepaint = {
-            let (fits, width, due) = (
+            let (fits, width, due, armed) = (
                 self.outline_fits.clone(),
                 self.preview_width.clone(),
                 self.track_due.clone(),
+                self.track_armed.clone(),
             );
             let view = view.clone();
             // M11ai Task 8 (plan-time calls 12, 13): the Preview's width as laid out decides
@@ -418,7 +441,7 @@ impl FileTab {
                     due.set(true);
                 }
                 if due.take() {
-                    track_next_frame(view.clone(), window);
+                    track_next_frame(view.clone(), &armed, window);
                 }
                 window.insert_hitbox(bounds, HitboxBehavior::Normal)
             }
@@ -634,6 +657,10 @@ impl FileTab {
             return;
         };
         let fill = md_preview::Colours::of(&theme).code_bg;
+        #[cfg(feature = "ui-shots")]
+        {
+            self.code_jobs += 1;
+        }
         cx.spawn(async move |this, cx| {
             let done = cx
                 .background_executor()
@@ -763,10 +790,28 @@ pub(super) fn progress_of(track: Option<Track>) -> Option<f32> {
     (room > 0.0).then(|| (t.offset / room).clamp(0.0, 1.0))
 }
 
+/// The list's top after a reload (M11ai Task 10, plan-time call 4): the same row, shifted by the
+/// change in front-matter rows (`was` → `now`), not above row 0. The offset into it is kept,
+/// unless the row it was in (the front matter) is gone.
+pub(super) fn shifted_top(top: ListOffset, was: usize, now: usize) -> ListOffset {
+    let item_ix = (top.item_ix + now).saturating_sub(was);
+    let gone = top.item_ix + now < was;
+    ListOffset {
+        item_ix,
+        offset_in_item: if gone { px(0.0) } else { top.offset_in_item },
+    }
+}
+
 /// "On this page"'s current entry worked out at the start of the next frame (`track_heading`):
-/// out of any borrow of the list, and after the layout drawn last.
-pub(super) fn track_next_frame(view: WeakEntity<FileTab>, window: &Window) {
+/// out of any borrow of the list, and after the layout drawn last. At most one is pending
+/// (`armed`, shared by the tab's asks: several wheel events in a frame ask once).
+pub(super) fn track_next_frame(view: WeakEntity<FileTab>, armed: &Rc<Cell<bool>>, window: &Window) {
+    if armed.replace(true) {
+        return;
+    }
+    let armed = armed.clone();
     window.on_next_frame(move |_, cx| {
+        armed.set(false);
         view.update(cx, |this, cx| this.track_heading(cx)).ok();
     });
 }
@@ -1039,6 +1084,35 @@ mod tests {
         assert!(outline_fits(1200.0));
         assert!(!outline_fits(from - 1.0));
         assert!(!outline_fits(700.0));
+    }
+
+    /// A reload keeps the place by row, shifted by the change in front-matter rows (plan-time
+    /// call 4): front matter added is row + 1, removed row − 1 (not above 0), the offset kept
+    /// unless the row it was in (the front matter itself) is gone.
+    #[test]
+    fn a_reload_shifts_the_top_row_by_the_front_matter_change() {
+        let at = |item_ix: usize, offset: f32| ListOffset {
+            item_ix,
+            offset_in_item: px(offset),
+        };
+        let got = |top: ListOffset, was, now| {
+            let t = shifted_top(top, was, now);
+            (t.item_ix, f32::from(t.offset_in_item))
+        };
+        assert_eq!(got(at(31, 5.0), 0, 1), (32, 5.0), "added");
+        assert_eq!(got(at(32, 5.0), 1, 0), (31, 5.0), "removed");
+        assert_eq!(got(at(7, 5.0), 1, 1), (7, 5.0), "kept");
+        assert_eq!(got(at(0, 5.0), 0, 0), (0, 5.0), "none");
+        assert_eq!(
+            got(at(0, 40.0), 1, 0),
+            (0, 0.0),
+            "in the front matter, now gone"
+        );
+        assert_eq!(
+            got(at(0, 40.0), 0, 1),
+            (1, 40.0),
+            "the first block, front matter added"
+        );
     }
 
     /// The reading-progress line's share (M11ai Task 9): the scroll offset over the room to

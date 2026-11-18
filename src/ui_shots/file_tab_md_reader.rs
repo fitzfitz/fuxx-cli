@@ -136,6 +136,37 @@ pub(super) const SCENES: &[Scene] = &[
             "src/ui_tokens.rs",
         ],
     },
+    Scene {
+        name: "file-tab-md-reader-reload",
+        run: file_tab_md_reader_reload_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/file_tab.rs",
+            "src/file_tab_preview.rs",
+            "src/md_preview.rs",
+            "src/md_reader.rs",
+            "src/agent_markdown.rs",
+            "src/highlight.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
+    Scene {
+        name: "file-tab-md-reader-big",
+        run: file_tab_md_reader_big_scenes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/file_tab.rs",
+            "src/file_tab_preview.rs",
+            "src/md_preview.rs",
+            "src/md_reader.rs",
+            "src/agent_markdown.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
 ];
 
 /// A made-up "Setup guide": front matter, two badge rows, a title, sections and a subsection,
@@ -2767,6 +2798,473 @@ fn file_tab_md_reader_progress_scenes() {
             build_for(slot.clone(), one.clone()),
             act,
         );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// Task 10's reload fixture: `outline_fixture()` with a `rust` block at the top of section 1 and
+/// an `sh` block at the top of section 6, after front matter when `front` is true.
+fn reload_fixture(front: bool) -> String {
+    let body = outline_fixture()
+        .replacen(
+            "## Section 1\n\n",
+            "## Section 1\n\n```rust\nfn main() {\n    my_app::serve();\n}\n```\n\n",
+            1,
+        )
+        .replacen(
+            "## Section 6\n\n",
+            "## Section 6\n\n```sh\n./install.sh --prefix ~/.local\n```\n\n",
+            1,
+        );
+    if front {
+        format!("---\ntitle: Field guide\nowner: docs-team\n---\n\n{body}")
+    } else {
+        body
+    }
+}
+
+/// M11ai Task 10's live reload (Review Focus 4), on `reload_fixture` (GUIDE.md), one theme:
+/// - `file-tab-md-reader-reload` (700 × 600, the outline narrow): section 6's heading at the
+///   top, Copy pressed on its `sh` block ("Copied"), the narrow panel open. The file rewritten
+///   with front matter at the top: in the first frame after it is read, the same heading at the
+///   top (its row + 1, the offset kept), no "Copied", both code blocks coloured from the cache
+///   (no new colour job); settled, the panel still open with the new entries (section 6's at
+///   its new row) and section 6 current. The front matter removed: the row − 1 again. The file
+///   cut to a single section (no outline): the panel closes; the guide back: it stays closed
+///   (not reopened unasked). The other theme (light ↔ dark): the code colours worked out again
+///   for it (other runs' colours than before).
+/// - `file-tab-md-reader-reload-syntaxes`: Preview on while the syntaxes are still loading
+///   (held), off, the syntaxes in, on again: the code blocks are coloured (the Task 4 race).
+fn file_tab_md_reader_reload_scenes() {
+    use super::branch::settle_until;
+    use crate::file_tab::FileTab;
+    use crate::layout_model::FileMode;
+    use crate::md_preview::Copied;
+    use gpui::{Entity, ListOffset, Modifiers};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-reload");
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    type TabSlot = Rc<RefCell<Option<Entity<FileTab>>>>;
+    let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
+    // The file rewritten, the tab told to look again, and one frame drawn (the new version is
+    // read in it).
+    let rewrite = |cx: &mut VisualTestAppContext,
+                   window: AnyWindowHandle,
+                   tab: &Entity<FileTab>,
+                   path: &std::path::Path,
+                   text: &str,
+                   n: &str| {
+        let before = cx.read(|cx| tab.read(cx).parsed_version());
+        std::fs::write(path, text).expect("rewrite");
+        cx.update(|cx| tab.update(cx, |t, cx| t.check_disk(cx)));
+        cx.run_until_parked();
+        reader_frame(cx, window);
+        let after = cx.read(|cx| tab.read(cx).parsed_version());
+        assert!(after > before, "{n}: read again ({before:?} → {after:?})");
+    };
+    let coloured = |cx: &mut VisualTestAppContext, tab: &Entity<FileTab>| {
+        cx.read(|cx| tab.read(cx).code_coloured())
+    };
+
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let dims = size(px(700.0), px(600.0));
+        let build_for = |slot: TabSlot, path: std::path::PathBuf, hold: bool| {
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                cx.bind_keys(crate::key_bindings());
+                if hold {
+                    FileTab::hold_syntaxes_for_shots(cx);
+                }
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path.clone(), FileMode::Plain, window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+
+        let n = format!("file-tab-md-reader-reload-{slug}");
+        let guide = dir.join("GUIDE.md");
+        std::fs::write(&guide, reload_fixture(false)).expect("GUIDE.md");
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot, path) = (n.clone(), slot.clone(), guide.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                reader_preview_on(cx, window, &tab);
+                let done = settle_until(cx, window, 20, |cx| coloured(cx, &tab) == 2);
+                assert!(
+                    done,
+                    "{n}: both code blocks coloured, not {}",
+                    coloured(cx, &tab)
+                );
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_shown()),
+                    Some(false),
+                    "{n}: the outline is narrow"
+                );
+                let list = cx.read(|cx| tab.read(cx).preview_list());
+                let six = reader_entry_of(cx, &tab, "Section 6");
+                let row = reader_entry_rows(cx, &tab)[six];
+                list.scroll_to(ListOffset {
+                    item_ix: row,
+                    offset_in_item: px(0.0),
+                });
+                reader_settle(cx, window);
+
+                // Copy on section 6's `sh` block (the row under its heading), then the panel.
+                let sh = row + 1;
+                let copy = cx
+                    .read(|cx| tab.read(cx).copy_bounds(sh))
+                    .unwrap_or_else(|| panic!("{n}: the sh block's Copy is drawn"));
+                cx.simulate_click(window, copy.center(), Modifiers::none());
+                reader_frame(cx, window);
+                let b = cx
+                    .read(|cx| tab.read(cx).outline_button_bounds())
+                    .unwrap_or_else(|| panic!("{n}: the outline's button is drawn"));
+                cx.simulate_mouse_move(window, b.center(), None, Modifiers::none());
+                cx.simulate_click(window, b.center(), Modifiers::none());
+                reader_frame(cx, window);
+                assert!(
+                    cx.read(|cx| tab.read(cx).outline_panel_open()),
+                    "{n}: the panel is open"
+                );
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).copied()),
+                    Some(Copied::Code(sh)),
+                    "{n}: Copied shows before the reload"
+                );
+                let looks = cx.read(|cx| tab.read(cx).code_looks_for_shots());
+                let jobs = cx.read(|cx| tab.read(cx).code_jobs());
+
+                // Front matter added at the top.
+                rewrite(cx, window, &tab, &path, &reload_fixture(true), &n);
+                // A new version has a new list.
+                let top = cx
+                    .read(|cx| tab.read(cx).preview_list())
+                    .logical_scroll_top();
+                assert_eq!(
+                    (top.item_ix, f32::from(top.offset_in_item)),
+                    (row + 1, 0.0),
+                    "{n}: front matter added: section 6's heading at the top (row + 1)"
+                );
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).copied()),
+                    None,
+                    "{n}: Copied goes"
+                );
+                assert_eq!(coloured(cx, &tab), 2, "{n}: the colours kept at once");
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).code_jobs()),
+                    jobs,
+                    "{n}: the colours come from the cache (no job)"
+                );
+                reader_settle(cx, window);
+                assert!(
+                    cx.read(|cx| tab.read(cx).outline_panel_open()),
+                    "{n}: the panel stays open"
+                );
+                assert_eq!(
+                    reader_entry_rows(cx, &tab)[six],
+                    row + 1,
+                    "{n}: the panel's entries are the new version's"
+                );
+                assert!(
+                    cx.read(|cx| tab.read(cx).outline_entry_bounds(six))
+                        .is_some(),
+                    "{n}: section 6's entry is drawn in the panel"
+                );
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_current()),
+                    Some(six),
+                    "{n}: section 6 is current"
+                );
+
+                // The front matter removed.
+                rewrite(cx, window, &tab, &path, &reload_fixture(false), &n);
+                let top = cx
+                    .read(|cx| tab.read(cx).preview_list())
+                    .logical_scroll_top();
+                assert_eq!(
+                    (top.item_ix, f32::from(top.offset_in_item)),
+                    (row, 0.0),
+                    "{n}: front matter removed: section 6's heading at the top (row − 1)"
+                );
+                assert_eq!(coloured(cx, &tab), 2, "{n}: the colours kept at once");
+                reader_settle(cx, window);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_current()),
+                    Some(six),
+                    "{n}: section 6 is still current"
+                );
+                assert!(
+                    cx.read(|cx| tab.read(cx).outline_panel_open()),
+                    "{n}: the panel stays open"
+                );
+
+                // No outline: the panel closes; the outline back: it stays closed.
+                let one =
+                    "# One section\n\nA short note.\n\n## The only section\n\nNothing else.\n";
+                rewrite(cx, window, &tab, &path, one, &n);
+                reader_settle(cx, window);
+                assert!(
+                    !cx.read(|cx| tab.read(cx).outline_panel_open()),
+                    "{n}: no outline: the panel is closed"
+                );
+                rewrite(cx, window, &tab, &path, &reload_fixture(false), &n);
+                reader_settle(cx, window);
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).outline_shown()),
+                    Some(false),
+                    "{n}: the outline is back"
+                );
+                assert!(
+                    !cx.read(|cx| tab.read(cx).outline_panel_open()),
+                    "{n}: the panel does not reopen unasked"
+                );
+
+                // The other theme: the colours worked out again for it.
+                let other = shot_theme(if slug == "mocha" {
+                    "Catppuccin Latte"
+                } else {
+                    "Catppuccin Mocha"
+                });
+                cx.update(|cx| cx.set_global(shot_appearance(other, cx)));
+                let done = settle_until(cx, window, 20, |cx| {
+                    cx.read(|cx| tab.read(cx).code_theme()) == Some(other)
+                        && coloured(cx, &tab) == 2
+                });
+                assert!(done, "{n}: the colours for the other theme");
+                let now = cx.read(|cx| tab.read(cx).code_looks_for_shots());
+                for (b, look) in &looks {
+                    let then: Vec<_> = look.runs.iter().map(|(_, c)| *c).collect();
+                    let again: Vec<_> = now[b].runs.iter().map(|(_, c)| *c).collect();
+                    assert_ne!(
+                        then, again,
+                        "{n}: block {b}'s colours are the other theme's"
+                    );
+                }
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-reload",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), guide.clone(), false),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+
+        // The Task 4 race: Preview on while the syntaxes load, off, on again once they are in.
+        let n = format!("file-tab-md-reader-reload-syntaxes-{slug}");
+        let guide = dir.join("RACE.md");
+        std::fs::write(&guide, reload_fixture(false)).expect("RACE.md");
+        let slot: TabSlot = Rc::default();
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                reader_preview_on(cx, window, &tab);
+                assert_eq!(coloured(cx, &tab), 0, "{n}: the syntaxes are not in yet");
+                let preview = |cx: &mut VisualTestAppContext, on: bool| {
+                    cx.update_window(window, |_, window, cx| {
+                        tab.update(cx, |t, cx| t.choose_preview_for_shots(on, window, cx))
+                    })
+                    .expect("the switch");
+                    reader_settle(cx, window);
+                };
+                preview(cx, false);
+                cx.update(FileTab::release_syntaxes_for_shots);
+                reader_settle(cx, window);
+                preview(cx, true);
+                let done = settle_until(cx, window, 10, |cx| coloured(cx, &tab) == 2);
+                assert!(
+                    done,
+                    "{n}: both code blocks coloured, not {}",
+                    coloured(cx, &tab)
+                );
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with(
+            "file-tab-md-reader-reload-syntaxes",
+            slug,
+            &theme,
+            dims,
+            build_for(slot.clone(), guide.clone(), true),
+            act,
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// Task 10's big document: a title, then 300 parts (`## Part N` and 9 one-line paragraphs):
+/// 3,001 blocks, over `PREVIEW_MEASURE_ALL`.
+fn big_fixture() -> String {
+    use std::fmt::Write as _;
+    let mut doc = String::from("# Big guide\n\n");
+    for i in 0..300 {
+        writeln!(doc, "## Part {i}\n").expect("a heading");
+        for j in 1..=9 {
+            writeln!(doc, "Line {j} of part {i}.\n").expect("a line");
+        }
+    }
+    doc
+}
+
+/// M11ai Task 10's big document (`big_fixture`, BIG.md), one theme:
+/// - `file-tab-md-reader-big` (1,200 × 700): Preview on, more rows than `PREVIEW_MEASURE_ALL`.
+///   Five wheel events before a frame ask for one current-entry check at its start (not
+///   five). Wheel steps down: after each, the current entry is the last part whose heading's
+///   row is at or above the list's top block, or the next one when it is within the part
+///   under it (reached in the view's top quarter); the entries only go forward; the progress
+///   share grows. Scrolled to the end, the last part reached (by block index) is current and
+///   the share is 1. Nothing panics.
+fn file_tab_md_reader_big_scenes() {
+    use crate::file_tab::{FileTab, PREVIEW_MEASURE_ALL};
+    use crate::layout_model::FileMode;
+    use gpui::{Entity, Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-big");
+    std::fs::create_dir_all(&dir).expect("the fixture folder");
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let big = dir.join("BIG.md");
+    std::fs::write(&big, big_fixture()).expect("BIG.md");
+    type TabSlot = Rc<RefCell<Option<Entity<FileTab>>>>;
+    let tab_of = |slot: &TabSlot| slot.borrow().clone().expect("the file tab");
+
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let dims = size(px(1200.0), px(700.0));
+        let n = format!("file-tab-md-reader-big-{slug}");
+        let slot: TabSlot = Rc::default();
+        let build = {
+            let (slot, path) = (slot.clone(), big.clone());
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(shot_appearance(theme, cx));
+                let tab = cx.new(|cx| {
+                    let mut tab = FileTab::new(path, FileMode::Plain, window, cx);
+                    tab.frozen = true;
+                    tab
+                });
+                *slot.borrow_mut() = Some(tab.clone());
+                tab.into()
+            }
+        };
+        let act = {
+            let (n, slot) = (n.clone(), slot.clone());
+            move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                let tab = tab_of(&slot);
+                reader_preview_on(cx, window, &tab);
+                let list = cx.read(|cx| tab.read(cx).preview_list());
+                assert!(
+                    list.item_count() > PREVIEW_MEASURE_ALL,
+                    "{n}: {} rows, over {PREVIEW_MEASURE_ALL}",
+                    list.item_count()
+                );
+                let rows = reader_entry_rows(cx, &tab);
+                assert_eq!(rows.len(), 300, "{n}: an entry per part");
+                let view = list.viewport_bounds();
+                let at = point(view.left() + px(120.0), view.center().y);
+
+                // Five wheel events before the next frame: one check at its start.
+                for _ in 0..5 {
+                    cx.simulate_event(
+                        window,
+                        ScrollWheelEvent {
+                            position: at,
+                            delta: ScrollDelta::Lines(point(0.0, -1.0)),
+                            modifiers: Modifiers::none(),
+                            touch_phase: TouchPhase::Moved,
+                        },
+                    );
+                }
+                let ran = cx
+                    .update_window(window, |_, window, cx| window.simulate_next_frame(cx))
+                    .expect("the next frame");
+                assert_eq!(ran, 1, "{n}: one current-entry check for five wheel events");
+                reader_settle(cx, window);
+
+                // Wheel steps: the current entry follows by block index.
+                let mut last: Option<usize> = None;
+                let mut share = cx.read(|cx| tab.read(cx).progress_share()).unwrap_or(0.0);
+                let first = share;
+                for step in 0..40 {
+                    reader_wheel(cx, window, at, 12.0);
+                    let top = list.logical_scroll_top().item_ix;
+                    let reached = rows.iter().rposition(|r| *r <= top);
+                    let next = reached.map_or(0, |e| e + 1);
+                    let now = cx.read(|cx| tab.read(cx).outline_current());
+                    let ok = now == reached
+                        || (now == Some(next) && rows.get(next).is_some_and(|r| *r <= top + 10));
+                    assert!(
+                        ok,
+                        "{n}: step {step}: top block {top}: current {now:?}, not {reached:?}"
+                    );
+                    assert!(now >= last, "{n}: step {step}: {now:?} after {last:?}");
+                    last = now;
+                    let s = cx.read(|cx| tab.read(cx).progress_share()).unwrap_or(0.0);
+                    assert!(s >= share, "{n}: step {step}: the share {s} after {share}");
+                    share = s;
+                }
+                println!(
+                    "ui-shots: {n}: after 40 steps: top {:?}, current {last:?}, share {share}",
+                    list.logical_scroll_top()
+                );
+                assert!(
+                    last.is_some_and(|e| e >= 3),
+                    "{n}: the entries moved on ({last:?})"
+                );
+                assert!(share > first, "{n}: the share moved ({first} → {share})");
+
+                // The end.
+                // A jump near the end (as a thumb drag lands), then wheel steps to it.
+                list.scroll_to(gpui::ListOffset {
+                    item_ix: list.item_count() - 40,
+                    offset_in_item: px(0.0),
+                });
+                reader_settle(cx, window);
+                for _ in 0..50 {
+                    let place = |l: &gpui::ListState| {
+                        let t = l.logical_scroll_top();
+                        (t.item_ix, t.offset_in_item)
+                    };
+                    let was = place(&list);
+                    reader_wheel(cx, window, at, 100.0);
+                    if place(&list) == was {
+                        break;
+                    }
+                }
+                // (A list with unmeasured rows never says it is at the end: the last part
+                // current is the one reached, by block index.)
+                let top = list.logical_scroll_top().item_ix;
+                assert!(
+                    top + 20 >= list.item_count(),
+                    "{n}: at the end (top block {top})"
+                );
+                let now = cx.read(|cx| tab.read(cx).outline_current());
+                let reached = rows.iter().rposition(|r| *r <= top);
+                println!("ui-shots: {n}: at the end: top block {top}, current {now:?}");
+                assert!(
+                    now >= reached && now >= Some(298),
+                    "{n}: at the end: current {now:?}, reached {reached:?}"
+                );
+                let s = cx.read(|cx| tab.read(cx).progress_share()).unwrap_or(0.0);
+                assert!(s >= 0.99, "{n}: at the end the share is {s}");
+                slot.borrow_mut().take();
+            }
+        };
+        let path = shoot_with("file-tab-md-reader-big", slug, &theme, dims, build, act);
         println!("ui-shots: {}", path.display());
     }
 }
