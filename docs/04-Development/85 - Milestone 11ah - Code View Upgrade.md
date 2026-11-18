@@ -305,8 +305,9 @@ Two notes on M11af:
 
 ## Calls on the open questions (AI's, on your go-ahead — for you to check)
 
-1. **Jumping between changes is ⌥↑ / ⌥↓** (plus the two bar buttons); plain ↑ / ↓ keep scrolling line by line.
-   Reason: taking the arrow keys away would make the file tab feel broken for reading.
+1. **Jumping between changes is ⌥↑ / ⌥↓** (plus the two bar buttons); plain ↑ / ↓ stay as they are (unbound in a
+   file tab: they do nothing there). Reason: the jumps get keys of their own, so no key you already press changes
+   meaning, and plain arrows stay free for later.
 2. **Side by side is off until you switch it on, and kept per tab** (no global setting yet). Reason: most panes are
    too narrow for two columns; turning it on is one click.
 3. **The breadcrumb gets its own strip above the code**, shown for files with structure — the path bar keeps its
@@ -343,6 +344,7 @@ All 13 plan tasks, each reviewed, on `m11ah-code-view` (not merged, not pushed).
 - **Task 10, changed words:** the exact changed words tinted inside a changed line (`similar`'s `inline` feature on, no new crate).
 - **Task 11, side by side:** a button (off by default, kept per tab, saved in the layout) that draws a diff as two equal halves; needs 60 cells per half, otherwise the button says "Too narrow for side by side".
 - **Task 12, this hand-off:** the docs, the headless outline timing, the dead-code allowance removed from `code_outline.rs`.
+- **Final review fixes:** a Find step that opens a fold or a folded stretch now lands the match on screen (it was held to the shorter rows' scroll limit); the scrollbar's change marks are worked out from the changes and the folds, not every row, and only when the rows or the changes change (a Find keystroke, ⌘G or a resize only rescales them and redraws the ticks); the outline ignores indent jumps wider than 64 cells when it picks the step (no memory that grows with a line's indent); the last dead-code allowance (`ui_tokens::code`) removed.
 
 ### Calls made while building (AI's, for you to check)
 
@@ -363,6 +365,10 @@ All 13 plan tasks, each reviewed, on `m11ah-code-view` (not merged, not pushed).
 - Changed words use `similar`'s character mode, each changed range grown to the whole word it touches (its word mode splits on spaces only and would mark `old();` whole).
 - Both side-by-side halves use the wider of the two line-number columns, so they are equal width and wrap at the same column.
 - A change in whether side by side fits notifies once through one deferred notify (no timer, no frame task); entering Diff from File uses the last measured fit.
+- A deletion edge just before a hidden line draws its mark, and is hit, on the fold's row (its ▸ line).
+- Diff's current row is cleared when a new diff arrives (it is not carried over).
+- The lane's change marks look as before; with Wrap on, a fold holding only deletions now gets one mark at its line's first row instead of one per wrapped row.
+- When the outline picks the indent step, a jump of more than 64 cells is not counted (a generated or broken line).
 
 ### Known small gaps (things you might notice)
 
@@ -375,6 +381,8 @@ All 13 plan tasks, each reviewed, on `m11ah-code-view` (not merged, not pushed).
 - A diff of a file emptied entirely reads "Deleted file".
 - Pressing a pinned card title or a fold's top half can prefer a hidden change over a deletion edge above it.
 - Folds are not kept over a restart (as designed).
+- A big file whose outline takes close to the 50 ms limit can gain or lose its structure (breadcrumb strip, fold column, folds) from one reload to the next.
+- A press on the sticky line or a breadcrumb part whose row above is outside the target's block lands the target one row below the top, with no sticky line over it.
 
 ## Measured headlessly (outline time)
 
@@ -390,9 +398,9 @@ So the outline adds at most about 50 ms to a read and a file that is too slow si
 
 ## Final numbers (this Mac, debug build, 2026-11-18)
 
-- `cargo test --bin fuxx`: 1,917 passed, 0 failed, 1 ignored (baseline 1,840).
+- `cargo test --bin fuxx`: 1,920 passed, 0 failed, 1 ignored (baseline 1,840), after the final review's fixes.
 - clippy: 14 (bin) / 27 (test) default, 16 / 29 with `ui-shots` (baselines 14 / 27 and 16 / 29; unchanged); `cargo fmt --check` clean.
-- `scripts/ui-shots.sh` (full): 160 passed, 0 failed, 119.3 s. The reference fingerprints are stale on this Mac (they say "look different" and never fail); not updated.
+- `scripts/ui-shots.sh` (full, after the final review's fixes): 159 passed, 1 failed, 140.4 s: the failure is the known clock-dependent `chrome-agent-status`, which passed when run alone. The reference fingerprints are stale on this Mac (they say "look different" and never fail); not updated.
 
 ## On-screen check (yours, after the build)
 
@@ -406,13 +414,13 @@ Run `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run` (debug only: **do not add 
 6. **Scrollbar marks:** a thin lane at the right edge with your changes; open Find: match ticks join it.
 7. **Diff cards:** switch to Diff: one card per change with `fn refresh · +12 −3 · lines 40–58`, 3 lines of context, a long unchanged stretch as "⋯ 36 unchanged lines — click to show"; click it to open it; scroll a tall card: its title pins; fold a card by its title.
 8. **Changed words:** in a changed line only the words that changed are tinted more strongly (try an accent such as `café` and a tab-indented line).
-9. **Side by side:** the button in the bar: two equal halves, old left and new right, with the wide pane; in a narrow pane the button is greyed ("Too narrow for side by side").
+9. **Side by side:** the button in the bar: two equal halves, old left and new right, when the pane is wide enough (60 cells per half); in a narrow pane the button is greyed ("Too narrow for side by side").
 10. **Follow with folds:** fold a function, turn Follow on, have an agent change a line inside it: the fold opens and the change shows below the sticky line.
 11. **Wrap:** turn Wrap on and repeat a click below a fold and below a card title: it lands on the line drawn there.
 12. **Palette:** Fold All, Unfold All and Show All Unchanged Lines each do what they say.
 13. **Idle CPU (the M11p anti-goal), by hand:** with the 900-line Rust file shown and nothing warm, run `top -l 6 -s 5 -pid <fuxx pid>` in another terminal and take the median CPU of the samples; do the same with `master` built the same way (debug, `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`). They should match within noise.
 14. **Open time, by hand:** open a 15 MB generated text file and a 1.9 MB source file, branch and `master`: the first text should appear as fast as before (the outline adds up to 50 ms, see the headless table above).
-15. **Side by side survives a restart:** switch it on in a diff, quit and start fuxx again: the tab is still side by side (its save-and-restore path is not covered by a test).
+15. **Side by side survives a restart:** switch it on in a diff, quit and start fuxx again: the tab is still side by side (the saved layout's round trip is tested; the wiring from the button to the saved file is not covered by a test).
 
 ## Related
 
