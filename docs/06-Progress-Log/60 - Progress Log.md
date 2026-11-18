@@ -25,6 +25,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-18 — M11ai planned: Markdown reader upgrade
+
+- **What:** the plan for M11ai, [[M11ai Plan - Markdown Reader Upgrade]] (Tasks 0–11), from the approved design
+  [[86 - Milestone 11ai - Markdown Reader Upgrade]], fitted to the file tab as M11ah left it. Plan-time calls (AI's)
+  are listed in the plan: chat keeps today's sizes, tokens in `ui_tokens::reader`, the Preview's code moves to
+  `src/file_tab_preview.rs`, front matter is list row 0, the outline is tracked on scroll (never while drawing).
+- **Where:** branch `m11ai-md-reader` (its own worktree). Next: Task 0 (baselines), then the build, task by task.
+
 ### 2026-11-18 — M11ah built and merged: code view upgrade (merged to master, not pushed)
 - **Did:** all 13 plan tasks on `m11ah-code-view`, each reviewed clean: current line, quieter numbers, indent guides, rounded bars; sticky line, breadcrumb, folding, scrollbar marks, ⌥↑ / ⌥↓ between changes; Diff cards with titles and counts, folded unchanged stretches, changed words, side by side (per tab, saved). Task 12 also removed the blanket dead-code allowance from `src/code_outline.rs` (clippy unchanged) and wrote the module docs and STRUCTURE.md entries.
 - **Final review fixes:** a Find step that opens a fold or folded stretch now lands the match on screen (it was held to the shorter rows' scroll limit); the scrollbar's change marks are built from the changes and folds instead of every row, and a Find keystroke, ⌘G or a resize only rescales them (with Wrap, a fold of only deletions gets one mark, not one per wrapped row); the outline ignores indent jumps over 64 cells when picking the step; the last dead-code allowance (`ui_tokens::code`) removed. Each code fix test first (RED seen, then GREEN).

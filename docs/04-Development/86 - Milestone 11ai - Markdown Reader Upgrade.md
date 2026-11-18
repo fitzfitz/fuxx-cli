@@ -1,6 +1,6 @@
 # Milestone 11ai — Markdown Reader Upgrade
 
-**Status:** 📝 design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). Plan next. Built **after M11ah** (code view
+**Status:** 📝 design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). **Planned 2026-11-18:** [[M11ai Plan - Markdown Reader Upgrade]] (Tasks 0–11), building on branch `m11ai-md-reader`. Built **after M11ah** (code view
 upgrade), in sequence: both live in the file tab.
 
 **Asked for:** 2026-11-16, by you, in the file-view mockups ("everything" → "your order is fine, go ahead"). Direction:
