@@ -1,6 +1,6 @@
 # Milestone 11ai — Markdown Reader Upgrade
 
-**Status:** 🟨 built and **merged to master 2026-11-18** (not pushed), waiting for your on-screen check. All 12 plan tasks (0–11) built 2026-11-18, Tasks 0–10 reviewed ([[M11ai Plan - Markdown Reader Upgrade]]); the full ui-shots run and the whole-branch review done, **the final review's fixes are in**. Design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). Built **after M11ah** (code view upgrade), in sequence: both live in the file tab. Anything here that does not quote you is marked **AI's call**.
+**Status:** 🟨 built and **merged to master and pushed 2026-11-18** (`f7707e9`), waiting for your on-screen check. All 12 plan tasks (0–11) built 2026-11-18, Tasks 0–10 reviewed ([[M11ai Plan - Markdown Reader Upgrade]]); the full ui-shots run and the whole-branch review done, **the final review's fixes are in**. Design approved 2026-11-17 on your go-ahead ("we already design it, layout is also built before. just go ahead"); its three open questions settled as AI's calls (below). Built **after M11ah** (code view upgrade), in sequence: both live in the file tab. Anything here that does not quote you is marked **AI's call**.
 
 **Asked for:** 2026-11-16, by you, in the file-view mockups ("everything" → "your order is fine, go ahead"). Direction:
 [[Proposal - File View Upgrades]], section "M11ai — Markdown reader upgrade (directions A + B + C, merged)":

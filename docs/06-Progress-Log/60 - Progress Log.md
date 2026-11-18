@@ -14,7 +14,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone (2026-11-18, latest):** **M11ai — Markdown reader upgrade** 🟨 built (12 tasks, each reviewed; final-review fixes in), **merged to master 2026-11-18**, not pushed; waiting for your on-screen check (note 86, 15 items). M11ag is next.
+- **Current milestone (2026-11-18, latest):** **M11ai — Markdown reader upgrade** 🟨 built (12 tasks, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`f7707e9`); waiting for your on-screen check (note 86, 15 items). M11ag is next.
 - **Current milestone (2026-11-18, M11al):** **M11al — UI Uplift 3** 🟨 built (13 tasks + 8b, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`6dabcf9`); waiting for your on-screen check (note 84, 14 items). M11ai (Markdown reader) resumes next, then M11ag.
 - **Current milestone (2026-11-18, M11ah lane):** **M11ah — Code view upgrade** 🟨 built (all 13 tasks, each reviewed), **merged to master and pushed 2026-11-18**; waiting for your on-screen check (note 85, 15 items).
 - **Current milestone (2026-11-18, earlier):** **M11ak — Agent box** 🟨 built (15 tasks, reviewed; final-review fixes in), **merged to master and pushed**, waiting for your on-screen check (note 83).
@@ -28,7 +28,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ## Entries
 
 ### 2026-11-18 — M11ai merged into master
-- **Status:** 🟨 merged into master 2026-11-18 on your standing word (not pushed); the merge re-ran the gate (below). Waiting for your on-screen check (note 86). M11ag is next.
+- **Status:** 🟨 merged into master 2026-11-18 on your standing word, pushed on your word (`f7707e9`); the merge re-ran the gate (below). Waiting for your on-screen check (note 86). M11ag is next.
 
 ### 2026-11-18 — M11ai: the final review's fixes
 - **Status:** 🟨 built on branch `m11ai-md-reader`, the final review's fixes are in; still waiting for your on-screen
