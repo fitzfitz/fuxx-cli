@@ -7,7 +7,13 @@
 use crate::agent_markdown::{self, Md, Span};
 use crate::ui_tokens::reader::{FRONT_ROWS, JUMP_ROOM};
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::Path;
+
+use alacritty_terminal::vte::ansi::Rgb;
+
+use crate::file_tab::{TAB_WIDTH, expand_tabs};
+use crate::highlight::Span as HlSpan;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrontTable {
@@ -483,6 +489,40 @@ pub fn fence_lang(lang: Option<&str>) -> Option<&str> {
     (!word.is_empty()).then_some(word)
 }
 
+/// A code block as drawn (M11ai): its text with tabs widened (`file_tab::expand_tabs`, lines
+/// joined with `\n` as `str::lines` splits them), and its colour runs (`lines`: the
+/// highlighter's spans, one `Vec` per line of `text`) moved onto that text, each colour passed
+/// through `fit`.
+pub fn code_runs(
+    text: &str,
+    lines: &[Vec<HlSpan>],
+    fit: impl Fn(Rgb) -> Rgb,
+) -> (String, Vec<(Range<usize>, Rgb)>) {
+    let (mut shown, mut runs) = (String::new(), Vec::new());
+    for (i, line) in text.split_inclusive('\n').enumerate() {
+        if i > 0 {
+            shown.push('\n');
+        }
+        let body = line.strip_suffix('\n').unwrap_or(line);
+        let body = body.strip_suffix('\r').unwrap_or(body);
+        let tabs: Vec<usize> = body.match_indices('\t').map(|(at, _)| at).collect();
+        // Byte `b` of the line, in `shown`: each tab before it is `TAB_WIDTH` bytes there.
+        let base = shown.len();
+        let at = |b: usize| {
+            let b = b.min(body.len());
+            base + b + tabs.partition_point(|&t| t < b) * (TAB_WIDTH - 1)
+        };
+        for (r, c) in lines.get(i).into_iter().flatten() {
+            let (from, to) = (at(r.start), at(r.end));
+            if from < to {
+                runs.push((from..to, fit(*c)));
+            }
+        }
+        shown.push_str(&expand_tabs(body));
+    }
+    (shown, runs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -798,5 +838,27 @@ mod tests {
         );
         assert_eq!(plan.rows(), blocks.len() + 1);
         assert!(planned.as_secs_f64() <= parse.as_secs_f64() * 1.5);
+    }
+
+    #[test]
+    fn code_runs_widen_tabs_and_keep_colours() {
+        let (red, blue) = (Rgb { r: 200, g: 0, b: 0 }, Rgb { r: 0, g: 0, b: 200 });
+        let fitted = Rgb { r: 1, g: 2, b: 3 };
+        // `let` (bytes 1..4 after the tab), the rest of the line, and `foo`.
+        let lines = vec![
+            vec![(0..1, blue), (1..4, red), (4..8, blue)],
+            vec![(0..3, blue)],
+        ];
+        let fit = |c: Rgb| if c == red { fitted } else { c };
+        let (shown, runs) = code_runs("\tlet x;\nfoo", &lines, fit);
+        assert_eq!(shown, "    let x;\nfoo");
+        assert_eq!(
+            runs,
+            vec![(0..4, blue), (4..7, fitted), (7..10, blue), (11..14, blue)]
+        );
+        assert_eq!(&shown[4..7], "let");
+        // A trailing `\r\n` is dropped as `lines` drops it; no spans: no runs.
+        let (shown, runs) = code_runs("a\r\nb", &[], |c| c);
+        assert_eq!((shown.as_str(), runs), ("a\nb", vec![]));
     }
 }

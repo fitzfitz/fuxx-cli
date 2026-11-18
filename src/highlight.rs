@@ -105,6 +105,14 @@ impl Highlighter {
             .map_or_else(|| "Plain Text".to_string(), |s| s.name.clone())
     }
 
+    /// M11ai: `text` (a fenced code block's) coloured as the syntax `lang` names (its
+    /// extension or its name, any case: `find_syntax_by_token`), one `Vec` of spans per line;
+    /// `None` when no syntax has that name.
+    pub fn highlight_lang(&self, lang: &str, text: &str) -> Option<Vec<Vec<Span>>> {
+        let syntax = self.syntaxes.find_syntax_by_token(lang)?;
+        Some(self.colour_with(syntax, text).spans)
+    }
+
     /// One `Vec` of spans per line (a line keeps its `\n`, so the ranges cover every byte), and
     /// the lines that name something: after each scope pushed, the stack is matched against
     /// `NAMED_SCOPES`. The syntax is found by file extension, then by the first line; otherwise
@@ -126,6 +134,11 @@ impl Highlighter {
                 named: Vec::new(),
             };
         };
+        self.colour_with(syntax, text)
+    }
+
+    /// `text` coloured line by line as `syntax` (`colour`'s and `highlight_lang`'s loop).
+    fn colour_with(&self, syntax: &SyntaxReference, text: &str) -> Coloured {
         let highlighter = syntect::highlighting::Highlighter::new(&self.theme);
         let mut colours = HighlightState::new(&highlighter, ScopeStack::new());
         let mut parse = ParseState::new(syntax);
@@ -391,6 +404,37 @@ mod tests {
             }
         }
         assert!(colours.len() >= 2, "{colours:?}");
+    }
+
+    /// M11ai: a fence's language picks the syntax (`find_syntax_by_token`: an extension or a
+    /// name, any case).
+    #[test]
+    fn the_fence_s_first_word_is_the_language() {
+        let theme = named("Catppuccin Mocha");
+        let h = Highlighter::load(&theme);
+        let keyword = ensure_contrast(theme.palette[5], theme.background, MARK_MIN);
+        for lang in ["rust", "RUST", "rs"] {
+            let lines = h.highlight_lang(lang, "fn main() {}").expect(lang);
+            assert_eq!(lines.len(), 1, "{lang}");
+            let fn_colour = lines[0].iter().find(|(r, _)| r.contains(&0)).unwrap().1;
+            assert_eq!(fn_colour, keyword, "{lang}: `fn` in the keyword colour");
+        }
+        for (lang, text) in [
+            ("ts", "export const port = 8080;\n"),
+            ("sh", "cd ~/code/my-app && ./install.sh --prefix ~/.local\n"),
+        ] {
+            let lines = h.highlight_lang(lang, text).expect(lang);
+            assert!(
+                lines.iter().flatten().any(|(_, c)| *c != theme.foreground),
+                "{lang}: some colour besides the text's: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_language_is_plain() {
+        let h = Highlighter::load(&named("Catppuccin Mocha"));
+        assert!(h.highlight_lang("foo", "fn main() {}").is_none());
     }
 
     #[test]

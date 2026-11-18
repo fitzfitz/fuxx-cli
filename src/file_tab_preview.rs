@@ -108,6 +108,16 @@ impl FileTab {
             }
         };
         let mermaid = self.mermaid_shown(version, &read.blocks, theme.is_dark(), cx);
+        // M11ai: the code blocks' colours for this version and theme: what the cache has at
+        // once, the rest asked of the background (plan-time call 5: started where the parse
+        // is, as the Mermaid queue is; the answer comes with a notify).
+        if self.code_for != Some((version, theme)) {
+            self.colour_code(cx);
+        }
+        let code = match self.code_for {
+            Some(for_) if for_ == (version, theme) => self.code_looks.clone(),
+            _ => Rc::default(),
+        };
         let view = cx.entity().downgrade();
         let draw = md_preview::Draw {
             colours: md_preview::Colours::of(&theme),
@@ -121,10 +131,23 @@ impl FileTab {
             reader: Some(md_preview::ReaderDraw {
                 doc: read,
                 measure: crate::ui_tokens::reader::MEASURE,
+                code,
+                copied: self.copied,
+                on_copy: {
+                    let view = cx.entity().downgrade();
+                    Rc::new(move |row, _, cx| {
+                        view.update(cx, |this, cx| this.copy_code(row, cx)).ok();
+                    })
+                },
                 #[cfg(feature = "ui-shots")]
                 drawn: {
                     self.reader_drawn.borrow_mut().clear();
                     self.reader_drawn.clone()
+                },
+                #[cfg(feature = "ui-shots")]
+                code_drawn: {
+                    self.code_drawn.borrow_mut().clear();
+                    self.code_drawn.clone()
                 },
             }),
         };
@@ -278,6 +301,132 @@ impl FileTab {
             .collect();
         self.mermaid_shown = Rc::new(shown);
         self.mermaid_shown.clone()
+    }
+
+    /// The Preview's code blocks coloured (M11ai) for the version parsed (if it is the one
+    /// read) in the current theme: every block with a language that is not a diagram to draw
+    /// takes its look from the cache (by language and code text, in this theme) at once; the
+    /// rest are coloured on the background executor with the shared highlighter, and the answer
+    /// is taken only if the version parsed and the theme are still the ones asked for (else a
+    /// newer job has been started). The cache keeps only this version's blocks.
+    pub(super) fn colour_code(&mut self, cx: &mut Context<Self>) {
+        use crate::md_reader::{code_runs, fence_lang};
+        let Some((version, read)) = self.parsed.clone() else {
+            return;
+        };
+        if self.doc().map(|d| d.version) != Some(version) {
+            // A new version, not parsed yet: its parse starts the job.
+            return;
+        }
+        let theme = cx.global::<Appearance>().theme;
+        if self.code_cache_theme != Some(theme) {
+            self.code_cache.clear();
+            self.code_cache_theme = Some(theme);
+        }
+        let diagrams = mermaid::plan(&read.blocks, theme.is_dark());
+        let (mut looks, mut todo, mut keep) = (HashMap::new(), Vec::new(), BTreeSet::new());
+        for (b, md) in read.blocks.iter().enumerate() {
+            let Md::Code { lang, text } = md else {
+                continue;
+            };
+            let Some(lang) = fence_lang(lang.as_deref()) else {
+                continue;
+            };
+            if matches!(diagrams.get(b), Some(Some(mermaid::Plan::Diagram(_)))) {
+                continue;
+            }
+            let key = (lang.to_string(), text.clone());
+            match self.code_cache.get(&key) {
+                Some(Some(look)) => {
+                    looks.insert(b, look.clone());
+                }
+                Some(None) => {}
+                None => todo.push((b, key.clone())),
+            }
+            keep.insert(key);
+        }
+        self.code_cache.retain(|key, _| keep.contains(key));
+        self.code_looks = Rc::new(looks);
+        self.code_for = Some((version, theme));
+        if todo.is_empty() {
+            return;
+        }
+        // Not loaded yet: `colour` runs this again once they are.
+        let Some(h) = self.shared_highlighter(cx) else {
+            return;
+        };
+        let fill = md_preview::Colours::of(&theme).code_bg;
+        cx.spawn(async move |this, cx| {
+            let done = cx
+                .background_executor()
+                .spawn(async move {
+                    todo.into_iter()
+                        .map(|(b, (lang, text))| {
+                            let look = h.highlight_lang(&lang, &text).map(|lines| {
+                                code_runs(&text, &lines, |c| ensure_contrast(c, fill, TEXT_MIN))
+                            });
+                            (b, (lang, text), look)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let now = cx.global::<Appearance>().theme;
+                if now != theme || this.code_for != Some((version, theme)) {
+                    return;
+                }
+                let mut looks = (*this.code_looks).clone();
+                for (b, key, look) in done {
+                    let look = look.map(|(shown, runs)| {
+                        Rc::new(md_preview::CodeLook {
+                            shown: shown.into(),
+                            runs,
+                        })
+                    });
+                    if let Some(look) = &look {
+                        looks.insert(b, look.clone());
+                    }
+                    this.code_cache.insert(key, look);
+                }
+                this.code_looks = Rc::new(looks);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// A code block's Copy pressed (M11ai), on list row `row`: its code, as written in the file
+    /// (tabs kept), on the clipboard, and its button reads "Copied" for `reader::COPIED` (a
+    /// one-shot timer, which leaves it if another press came since).
+    fn copy_code(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some((_, read)) = &self.parsed else {
+            return;
+        };
+        let crate::md_reader::RowKind::Block(b) = read.plan.row_kind(row) else {
+            return;
+        };
+        let Some(Md::Code { text, .. }) = read.blocks.get(b) else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        self.copy_gen += 1;
+        let press = self.copy_gen;
+        self.copied = Some(md_preview::Copied::Code(row));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::ui_tokens::reader::COPIED)
+                .await;
+            this.update(cx, |this, cx| {
+                if this.copy_gen == press {
+                    this.copied = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Whether this tab still wants diagram `key` drawn (M11ac Part 2, asked before it
