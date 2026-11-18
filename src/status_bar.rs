@@ -1,4 +1,4 @@
-//! The status bar (M11i): a 22 pt bar along the window's bottom edge, on the canvas, about the
+//! The status bar (M11i): a `STATUS_BAR` bar along the window's bottom edge, on the canvas, about the
 //! followed terminal (`right_sidebar.followed`: the focused one, or the last one shown).
 //!
 //! Left: its mark and a word (`Working · 4m`, `Needs input · 2m`, `Done · 1m`, `Running`,
@@ -36,7 +36,6 @@ use crate::tab_bar::{Glyph, glyph};
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::ui_tokens::size::{STATUS_BAR, STATUS_MARK};
-use crate::ui_tokens::text;
 use crate::updater;
 use crate::workspace::Workspace;
 
@@ -52,8 +51,10 @@ pub const PORTS_ASKING: Duration = Duration::from_secs(1);
 pub const SEPARATOR: &str = " · ";
 
 /// The space at each end of the bar, and between its items.
-pub const PAD: f32 = 10.0;
+pub const PAD: f32 = 16.0;
 pub const ITEM_GAP: f32 = 14.0;
+/// The bar's text size (M11al §7; not `text::META`, plan-time call 8).
+pub const TEXT: f32 = 12.0;
 /// The status mark's box, and the space between it and the word.
 pub const MARK: f32 = 10.0;
 pub const MARK_GAP: f32 = 6.0;
@@ -455,7 +456,7 @@ pub(crate) fn text_width(
     };
     let line = window.text_system().shape_line(
         SharedString::from(text.to_string()),
-        px(text::META),
+        px(TEXT),
         &[run],
         None,
     );
@@ -824,8 +825,7 @@ impl Workspace {
             .h(px(STATUS_BAR))
             .px(px(PAD))
             .overflow_hidden()
-            .bg(hsla(ui.sidebar_background))
-            .text_size(px(text::META))
+            .text_size(px(TEXT))
             .children(left)
             // At least `ITEM_GAP` between the sides (`fit_status_bar` keeps it).
             .child(div().flex_1().min_w(px(ITEM_GAP)))

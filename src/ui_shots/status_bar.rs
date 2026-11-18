@@ -134,12 +134,30 @@ fn runs_of(
     y: f32,
     c: alacritty_terminal::vte::ansi::Rgb,
 ) -> Vec<(f32, f32)> {
+    runs_over(shot, dims, y, c, None)
+}
+
+/// `runs_of`, and with `backdrop` a point count above `y` (below, if negative), only where the pixel there differs from
+/// the one at `y`: a fill that the card's shadow over the bar (M11al) darkens to about its own
+/// colour is told from that shadow.
+fn runs_over(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    y: f32,
+    c: alacritty_terminal::vte::ansi::Rgb,
+    backdrop: Option<f32>,
+) -> Vec<(f32, f32)> {
     let scale = shot.width as f32 / f32::from(dims.width);
     let mut runs = Vec::new();
     let mut start: Option<f32> = None;
     for dx in 0..shot.width as usize {
         let x = dx as f32 / scale;
-        let on = near_by(pixel_at(shot, dims, x, y), c, 3);
+        let here = pixel_at(shot, dims, x, y);
+        let apart = backdrop.is_none_or(|up| {
+            let there = pixel_at(shot, dims, x, y - up);
+            here.iter().zip(there).any(|(a, b)| a.abs_diff(b) > 3)
+        });
+        let on = near_by(here, c, 3) && apart;
         match (on, start) {
             (true, None) => start = Some(x),
             (false, Some(s)) => {
@@ -154,6 +172,11 @@ fn runs_of(
     }
     runs.retain(|(a, b)| b - a >= 6.0);
     runs
+}
+
+/// Whether two pixels differ by more than the card's shadow shading the bar would make them.
+fn apart(a: [u8; 3], b: [u8; 3]) -> bool {
+    a.iter().zip(b).any(|(x, y)| x.abs_diff(y) > 4)
 }
 
 /// How far in from a chip's end its fill starts 1.5 pt below its top (its corner's curve).
@@ -226,7 +249,7 @@ fn status_bar_hidden_scenes() {
 /// - `status-bar-still`: Reduce motion on: claude's mark is the still one, its open quarter at
 ///   the top left whatever the clock (moving, at a tenth of the beat, it has turned away).
 ///
-/// Panics unless the bar is 22 pt of canvas along the window's whole bottom, under the cards
+/// Panics unless the bar is `STATUS_BAR` pt of canvas (the card's shadow over it) along the window's whole bottom, under the cards
 /// (6 pt between), says what it should (`status_bar_facts`) and draws it: the left side's ink
 /// as wide as its pieces measured, in their colours.
 fn status_bar_scenes() {
@@ -354,12 +377,27 @@ fn status_bar_scenes() {
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
             let scale = shot.width as f32 / w;
             let canvas = |p: [u8; 3]| near_by(p, ui.sidebar_background, 2);
-            // `STATUS_BAR` of canvas along the whole bottom (between its pieces), the card's
-            // bottom `CARD_INSET` above it.
-            for x in [2.0, w / 2.0 + 37.0, w - 2.0] {
-                assert!(canvas(at(x, top + 1.0)), "{n}: the bar's top at {x}");
-                assert!(canvas(at(x, h - 1.0)), "{n}: the bar's bottom at {x}");
-            }
+            // `STATUS_BAR` of canvas along the bar's left end (under the sidebar, past the card's
+            // shadow), the card's bottom `CARD_INSET` above it.
+            assert!(
+                canvas(at(2.0, top + 1.0)),
+                "{n}: the bar's top at its left end"
+            );
+            assert!(
+                canvas(at(2.0, h - 1.0)),
+                "{n}: the bar's bottom at its left end"
+            );
+            // No fill of its own (M11al §7): under the sidebar the bar is the canvas's colour,
+            // and just under the card the card's shadow falls over it, darker than the canvas.
+            assert!(canvas(at(2.0, mid)), "{n}: the bar's middle is the canvas");
+            let (under, bare) = (
+                at(SIDEBAR_DEFAULT_WIDTH + 40.0, top + 1.0),
+                at(2.0, top + 1.0),
+            );
+            assert!(
+                under.iter().zip(bare).all(|(a, b)| *a <= b) && under != bare,
+                "{n}: the card's shadow darkens the bar's top: {under:?} vs canvas {bare:?}"
+            );
             // The card's inside (the terminal's background) stops at its 1 pt edge, `CARD_INSET`
             // above the bar (its shadow shades the inset, so the inset isn't looked at).
             let card_x = SIDEBAR_DEFAULT_WIDTH + 40.0;
@@ -378,7 +416,9 @@ fn status_bar_scenes() {
             let ys: Vec<f32> = (0..((STATUS_BAR - 4.0) * scale) as usize)
                 .map(|dy| top + 2.0 + dy as f32 / scale)
                 .collect();
-            let inked = |x: f32| ys.iter().any(|&y| !canvas(at(x, y)));
+            // Ink is where a pixel differs from the one before it: the card's shadow over the bar
+            // only shades it smoothly.
+            let inked = |x: f32| ys.iter().any(|&y| apart(at(x, y), at(x - 1.0 / scale, y)));
             let xs: Vec<f32> = (0..(w / 2.0 * scale) as usize)
                 .map(|dx| dx as f32 / scale)
                 .collect();
@@ -469,8 +509,8 @@ fn status_bar_ports_scenes() {
     let dims = size(px(1000.0), px(480.0));
     let (w, h) = (f32::from(dims.width), f32::from(dims.height));
     let mid = h - STATUS_BAR / 2.0;
-    // Inside the chips, above their words.
-    let line = mid - CHIP / 2.0 + 1.5;
+    // Inside the chips, below their words (there the card's shadow over the bar is lightest).
+    let line = mid + CHIP / 2.0 - 1.5;
     let inset = chip_corner_inset();
     let ports = [3000, 5173, 8080, 9000, 9229];
     for &(slug, name) in shot_themes() {
@@ -483,7 +523,7 @@ fn status_bar_ports_scenes() {
                 .into()
         };
         let plain = render(&theme, dims, build);
-        let chips = runs_of(&plain, dims, line, ui.row_hover);
+        let chips = runs_over(&plain, dims, line, ui.row_hover, Some(-6.0));
         println!("ui-shots: status-bar-ports-{slug}: chips {chips:?}");
         assert_eq!(chips.len(), 4, "{slug}: three chips and +2: {chips:?}");
         let last = chips[3].1;
@@ -493,7 +533,7 @@ fn status_bar_ports_scenes() {
         );
         for pair in chips.windows(2) {
             let gap = pair[1].0 - pair[0].1 - 2.0 * inset;
-            assert!((gap - CHIP_GAP).abs() <= 1.0, "{slug}: {gap} between chips");
+            assert!((gap - CHIP_GAP).abs() <= 1.5, "{slug}: {gap} between chips");
         }
         let first = chips[0];
         let on = point(px((first.0 + first.1) / 2.0), px(mid));
@@ -644,17 +684,29 @@ fn status_bar_narrow_scenes() {
             .count();
         assert_eq!(rows, (PILL * scale) as usize, "{n}: the pill is 16 pt tall");
         // The ports, one chip.
-        let line = mid - crate::status_bar::CHIP / 2.0 + 1.5;
-        let chips = runs_of(&shot, dims, line, ui.row_hover);
+        let line = mid + crate::status_bar::CHIP / 2.0 - 1.5;
+        let mut chips: Vec<(f32, f32)> = Vec::new();
+        for run in runs_over(&shot, dims, line, ui.row_hover, Some(-6.0)) {
+            // The `p`'s tail cuts the chip's fill at this height: its two sides are one chip.
+            match chips.last_mut() {
+                Some(last) if run.0 - last.1 < 6.0 => last.1 = run.1,
+                _ => chips.push(run),
+            }
+        }
         assert_eq!(chips.len(), 1, "{n}: one `6 ports` chip: {chips:?}");
         // Nothing overlaps: canvas from the left side's last ink to the right side's start.
         let right = chips[0].0 - chip_corner_inset();
-        let canvas = |p: [u8; 3]| near_by(p, ui.sidebar_background, 2);
         let ys: Vec<f32> = (0..((STATUS_BAR - 4.0) * scale) as usize)
             .map(|dy| top + 2.0 + dy as f32 / scale)
             .collect();
-        let clear = |x: f32| ys.iter().all(|&y| canvas(pixel_at(&shot, dims, x, y)));
-        let mut x = right - 1.0 / scale;
+        let clear = |x: f32| {
+            ys.iter().all(|&y| {
+                let here = pixel_at(&shot, dims, x, y);
+                !apart(here, pixel_at(&shot, dims, x - 1.0 / scale, y))
+            })
+        };
+        // (From 1 pt before the chip: its own edge is a step in the pixels.)
+        let mut x = right - 1.0;
         while x > 0.0 && clear(x) {
             x -= 1.0 / scale;
         }

@@ -61,7 +61,7 @@ pub mod size {
     pub const CARD_SHADOW_BLUR: f32 = 28.0;
     pub const HAIRLINE: f32 = 1.0;
     /// The status bar along the window's bottom edge (M11i).
-    pub const STATUS_BAR: f32 = 22.0;
+    pub const STATUS_BAR: f32 = 26.0;
     /// How far below the tab bar's top its tabs start (M11i).
     pub const TAB_TOP_GAP: f32 = 4.0;
     /// How far in from its card's left edge the first tab starts, in a pane's tab bar and in
