@@ -75,7 +75,7 @@ use crate::status_mark;
 use crate::tab_bar::TabGrab;
 use crate::terminal_view::{TerminalEvent, TerminalView, hsla};
 use crate::theme::UiColors;
-use crate::ui_tokens::size::{CARD_GAP, CARD_INSET, TOP_BAND};
+use crate::ui_tokens::size::{CARD_INSET, TOP_BAND};
 use crate::welcome::Welcome;
 use crate::welcome_items::Origin;
 use crate::workspace_agent::AgentSlot;
@@ -3930,15 +3930,13 @@ impl Render for Workspace {
                             .when(slide.is_some() && !self.sidebar.hidden, |column| {
                                 column.ml(px(sidebar_width))
                             })
-                            // The right sidebar's card and the gap at its right (M11i).
-                            .when(right_sliding_in, |column| {
-                                column.mr(px(right_width + CARD_GAP))
-                            })
                             .children(pane_band)
                             // The one floating card (M11al §3.1): flush against the sidebar
                             // (with it hidden, `CARD_INSET` from the window's left),
-                            // `CARD_INSET` from the right sidebar's card (or the window's right
-                            // edge) and from the bottom. The panes inside it.
+                            // `CARD_INSET` from the window's right edge and from the bottom.
+                            // Inside it, one row (§3.2): the panes, then the right sidebar (its
+                            // hairline and panel), or that sliding in or out over the card's
+                            // inside from its right edge, clipped by the card (§6.7).
                             .child(
                                 div()
                                     .flex_1()
@@ -3950,15 +3948,29 @@ impl Render for Workspace {
                                     .child(
                                         panes::card(&colors)
                                             .relative()
+                                            .flex()
+                                            .flex_row()
                                             .size_full()
-                                            .child(self.render_pane_area(cx))
-                                            .children(panes),
+                                            .child(
+                                                div()
+                                                    .relative()
+                                                    .flex_1()
+                                                    .min_w(px(0.0))
+                                                    .h_full()
+                                                    // Sliding in: the panes take their final
+                                                    // width at once.
+                                                    .when(right_sliding_in, |panes| {
+                                                        panes.mr(px(right_width))
+                                                    })
+                                                    .child(self.render_pane_area(cx))
+                                                    .children(panes),
+                                            )
+                                            .children(right_sidebar)
+                                            .children(sliding_right_sidebar),
                                     ),
                             ),
                     )
-                    .children(right_sidebar)
-                    .children(sliding_sidebar)
-                    .children(sliding_right_sidebar),
+                    .children(sliding_sidebar),
             )
             .children(status_bar)
             // The collapsed title bar's name and buttons, over the bands (below the overlays, so

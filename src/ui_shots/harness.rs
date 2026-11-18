@@ -1210,23 +1210,11 @@ pub(super) fn count_along(
 /// (0.30 dark, 0.08 light); 18 since M11al raised them to 0.45 / 0.12 (the same 1.5 times).
 pub(super) const SHADOW_SLACK: u8 = 18;
 
-/// Whether pixel `p` shows the canvas (`sidebar_background`) between cards: within the
+/// Whether pixel `p` shows the canvas (`sidebar_background`) round the card: within the
 /// shadow's reach of it, and nearer it than the card's fill.
 pub(super) fn is_canvas(p: [u8; 3], ui: &UiColors) -> bool {
     let canvas = gap(p, ui.sidebar_background);
     canvas <= SHADOW_SLACK && canvas < gap(p, ui.card)
-}
-
-/// Whether pixel `p` shows the canvas in the inset between two cards (M11al Task 2: the panes'
-/// card and the right sidebar's, until Task 3 puts both in one): both shadows fall there, so it
-/// may be darker than one card's shadow leaves it (up to twice `SHADOW_SLACK`), but never
-/// lighter than the canvas, and nearer it than the card's fill.
-pub(super) fn is_canvas_between_cards(p: [u8; 3], ui: &UiColors) -> bool {
-    let canvas = ui.sidebar_background;
-    let sum = |c: [u8; 3]| c.iter().map(|&v| u32::from(v)).sum::<u32>();
-    gap(p, canvas) <= 2 * SHADOW_SLACK
-        && gap(p, canvas) < gap(p, ui.card)
-        && sum(p) <= sum([canvas.r, canvas.g, canvas.b])
 }
 
 /// Frames, so focus changes (and the boxes' blur events) and scrolls run.

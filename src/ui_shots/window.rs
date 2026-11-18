@@ -137,6 +137,41 @@ pub(super) const SCENES: &[Scene] = &[
         kind: Kind::Visual,
         sources: &["src/workspace.rs", "src/panes.rs", "src/title_area.rs"],
     },
+    Scene {
+        name: "card-right-hidden",
+        run: one_card_right_hidden_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/workspace.rs",
+            "src/panes.rs",
+            "src/terminal_view.rs",
+            "src/right_sidebar.rs",
+        ],
+    },
+    Scene {
+        name: "card-narrow",
+        run: one_card_narrow_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/workspace.rs", "src/panes.rs", "src/right_sidebar.rs"],
+    },
+    Scene {
+        name: "card-slide",
+        run: one_card_slide_scene,
+        themes: Themes::Both,
+        // Serial: a shot mid-slide, the slide set 20 ms back by the real clock.
+        serial: true,
+        kind: Kind::Visual,
+        sources: &[
+            "src/workspace.rs",
+            "src/panes.rs",
+            "src/right_sidebar.rs",
+            "src/sidebar_toggle.rs",
+        ],
+    },
 ];
 
 /// A themed panel standing in for a real scene: proves the harness end to end.
@@ -961,21 +996,22 @@ fn card_workspace(
 
 /// M11i floating panels, M11al's one card, from a real `Workspace` in both themes (1280 × 600,
 /// the sidebar at its default width):
-/// - `cards`: one pane and the right sidebar open (300 wide): the panes' card flush against the
-///   sidebar, the right sidebar's card beside it (outside it until M11al Task 3).
-/// - `cards-narrow`: the same in a 440 pt window, too narrow for the right sidebar's card.
+/// - `cards`: one pane and the right sidebar open (300 wide): the card flush against the
+///   sidebar, the right sidebar in it behind a hairline (M11al §3.2).
+/// - `cards-narrow`: the same in a 440 pt window, too narrow for the right sidebar.
 ///
-/// Panics unless the panes' card's left edge is the sidebar's right (no canvas between); the
-/// insets (between the panes' card and the right sidebar's, the right card and the window's
-/// right edge, above and below the cards) show the canvas; 20 pt into each card shows its fill;
-/// the left sidebar has no right border line; just outside the panes' card's top-left curve is
-/// the canvas (no square tab corner pokes out); and the first tab's own top-left corner is
-/// rounded inside the bar's. In `cards-narrow`, unless the right card isn't drawn and the panes'
-/// card ends `CARD_INSET` from the window's right edge.
+/// Panics unless the card's left edge is the sidebar's right (no canvas between); the insets
+/// (the card to the window's right edge, above and below it) show the canvas; between the
+/// panes and the right sidebar lies a 1 px `card_border` hairline, no canvas; 20 pt in, the
+/// panes show the card's fill and the right sidebar its `side`; the left sidebar has no right
+/// border line; just outside the card's top-left curve is the canvas (no square tab corner
+/// pokes out); and the first tab's own top-left corner is rounded inside the bar's. In
+/// `cards-narrow`, unless the right sidebar isn't drawn and the card ends `CARD_INSET` from the
+/// window's right edge.
 fn card_scenes() {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
+    use ui_tokens::size::{HAIRLINE, SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
 
     let dims = size(px(1280.0), px(600.0));
     let (left, right) = (SIDEBAR_DEFAULT_WIDTH, 1280.0_f32);
@@ -1011,29 +1047,34 @@ fn card_scenes() {
         let path = save_shot("cards", slug, &shot);
         let n = format!("cards-{slug}");
         let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
-        // The right card: `RIGHT_CARD_GAP` from the window's edge, 300 wide; the panes' card
-        // `CARD_INSET` left of it.
-        let right_card = right - RIGHT_CARD_GAP - 300.0;
-        let pane_card_right = right_card - CARD_INSET;
+        // The card ends `CARD_INSET` from the window's edge; the right sidebar is its last 300,
+        // the 1 px hairline just left of it (M11al §3.2).
+        let card_right = right - CARD_INSET;
+        let panel_left = card_right - 300.0;
+        let line = panel_left - HAIRLINE;
         let below = 600.0 - STATUS_BAR - CARD_INSET / 2.0;
-        // Between the two cards both shadows fall (until M11al Task 3 puts the right panel in
-        // the one card): the canvas there, darker than the canvas, never a card's fill.
-        let (x, y) = (pane_card_right + CARD_INSET / 2.0, 400.0);
-        let p = at(x, y);
-        assert!(
-            is_canvas_between_cards(p, &ui),
-            "{n}: the shadowed canvas between the cards at ({x}, {y}): {p:?}"
-        );
+        // Between the panes and the right sidebar: the hairline, no canvas either side.
+        for y in [200.0, 400.0] {
+            let p = at(line + 0.5, y);
+            assert!(
+                near(p, ui.card_border),
+                "{n}: the hairline at ({}, {y}): {p:?}",
+                line + 0.5
+            );
+            for x in [line - 0.5, panel_left + 0.5] {
+                let p = at(x, y);
+                assert!(
+                    !is_canvas(p, &ui),
+                    "{n}: no canvas beside the line at ({x}, {y}): {p:?}"
+                );
+            }
+        }
         for (what, x, y) in [
-            (
-                "right card → window edge",
-                right - RIGHT_CARD_GAP / 2.0,
-                400.0,
-            ),
-            ("above the pane card", 600.0, CARD_INSET / 2.0),
-            ("above the right card", 1100.0, CARD_INSET / 2.0),
-            ("below the pane card", 600.0, below),
-            ("below the right card", 1100.0, below),
+            ("card → window edge", right - CARD_INSET / 2.0, 400.0),
+            ("above the panes", 600.0, CARD_INSET / 2.0),
+            ("above the right sidebar", 1100.0, CARD_INSET / 2.0),
+            ("below the panes", 600.0, below),
+            ("below the right sidebar", 1100.0, below),
         ] {
             let p = at(x, y);
             assert!(is_canvas(p, &ui), "{n}: canvas {what} at ({x}, {y}): {p:?}");
@@ -1046,18 +1087,22 @@ fn card_scenes() {
                 "{n}: the pane card's edge against the sidebar at y {y}: {p:?}"
             );
         }
-        for (what, x, y) in [
-            ("pane card", left + 20.0, 100.0),
-            ("pane card, right end", pane_card_right - 20.0, 400.0),
-            ("right card", right_card + 20.0, 400.0),
+        for (what, x, y, fill) in [
+            ("panes", left + 20.0, 100.0, ui.card),
+            ("panes, right end", line - 20.0, 400.0, ui.card),
+            ("right sidebar", panel_left + 20.0, 400.0, ui.side),
             (
-                "right card, right end",
-                right - RIGHT_CARD_GAP - 20.0,
+                "right sidebar, right end",
+                card_right - 20.0,
                 400.0,
+                ui.side,
             ),
         ] {
             let p = at(x, y);
-            assert!(near(p, ui.card), "{n}: {what} at ({x}, {y}): {p:?}");
+            assert!(
+                near(p, fill),
+                "{n}: {what} at ({x}, {y}): {p:?}, want {fill:?}"
+            );
         }
         // No line down the sidebar's right edge: its last column is its own colour.
         let p = at(left - 0.5, 300.0);
@@ -1399,7 +1444,8 @@ fn count_down(
 }
 
 /// Panics unless the one card (M11al §3.1) spans `left`–`right` and `top`–`bottom` (its outer
-/// edges, in points): each edge `card_border` half a point in and the card's fill 20 pt in, the
+/// edges, in points): each edge `card_border` half a point in and the card's fill 20 pt in
+/// (`right_fill` inside its right edge: the card's, or the right panel's `side`, §6.1), the
 /// canvas 2 pt in from each corner of its box diagonally (outside the `CARD_RADIUS` curve), and
 /// 4 pt under its bottom middle darker than the canvas (its shadow).
 fn check_one_card(
@@ -1407,6 +1453,7 @@ fn check_one_card(
     dims: Size<Pixels>,
     ui: &UiColors,
     (left, top, right, bottom): (f32, f32, f32, f32),
+    right_fill: alacritty_terminal::vte::ansi::Rgb,
     n: &str,
 ) {
     let at = |x: f32, y: f32| pixel_at(shot, dims, x, y);
@@ -1423,15 +1470,15 @@ fn check_one_card(
             "{n}: the card's {which} edge at ({x}, {y}): {p:?}"
         );
     }
-    for (which, x, y) in [
-        ("left", left + 20.0, mid_y),
-        ("right", right - 20.0, mid_y),
-        ("bottom", mid_x, bottom - 4.0),
+    for (which, x, y, fill) in [
+        ("left", left + 20.0, mid_y, ui.card),
+        ("right", right - 20.0, mid_y, right_fill),
+        ("bottom", mid_x, bottom - 4.0, ui.card),
     ] {
         let p = at(x, y);
         assert!(
-            near(p, ui.card),
-            "{n}: the card's fill inside its {which} edge at ({x}, {y}): {p:?}"
+            near(p, fill),
+            "{n}: the fill inside the card's {which} edge at ({x}, {y}): {p:?}, want {fill:?}"
         );
     }
     for (which, x, y) in [
@@ -1455,34 +1502,65 @@ fn check_one_card(
     );
 }
 
-/// M11al §3.1, in both themes (960 × 600, the sidebar shown at its default width): `card`, one
-/// pane in the one floating card. Panics unless the card's left edge is the sidebar's right
-/// edge (no canvas between), its top `CARD_INSET` under the window's top (the drag strip), its
-/// right `CARD_INSET` from the window's right and its bottom `CARD_INSET` above the status bar
-/// (`check_one_card`: edges, corners, shadow); the canvas shows above and right of it.
-fn one_card_scene() {
+/// The one card's outer bounds (left, top, right, bottom) in a window `w` × `h` with the left
+/// sidebar shown at its default width (M11al §3.1): flush against the sidebar, `CARD_INSET`
+/// under the window's top (the drag strip), from its right and above the status bar.
+fn one_card_bounds(w: f32, h: f32) -> (f32, f32, f32, f32) {
     use ui_tokens::size::{CARD_INSET, SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
-
-    let dims = size(px(960.0), px(600.0));
-    let (w, h) = (960.0_f32, 600.0_f32);
-    let bounds = (
+    (
         SIDEBAR_DEFAULT_WIDTH,
         CARD_INSET,
         w - CARD_INSET,
         h - STATUS_BAR - CARD_INSET,
-    );
+    )
+}
+
+/// M11al §3.1, §3.2, §6.1, in both themes (960 × 600, the sidebar shown at its default width):
+/// `card`, one pane and the right panel (300 wide) in the one floating card. Panics unless the
+/// card's left edge is the sidebar's right edge (no canvas between), its top `CARD_INSET` under
+/// the window's top (the drag strip), its right `CARD_INSET` from the window's right and its
+/// bottom `CARD_INSET` above the status bar (`check_one_card`: edges, corners, shadow; the
+/// panel's `side` inside the right edge, its rounded corners outside); the canvas shows above
+/// and right of it; and a 1 px `card_border` hairline runs the card's full height (beside the
+/// panel's header and its body) between the panes (the card's fill, left of it) and the panel
+/// (`side`, right of it), 300 from the card's outer right, with the panel's fill just inside
+/// its rounded bottom-right corner.
+fn one_card_scene() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use ui_tokens::size::{CARD_INSET, HAIRLINE, SIDEBAR_DEFAULT_WIDTH, TAB_BAR};
+
+    let dims = size(px(960.0), px(600.0));
+    let (w, h) = (960.0_f32, 600.0_f32);
+    let bounds = one_card_bounds(w, h);
+    let (_, top, right, bottom) = bounds;
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
         let build = move |window: &mut Window, cx: &mut App| -> AnyView {
             cx.set_global(shot_appearance(theme, cx));
-            cx.new(|cx| card_workspace(1, "", window, cx)).into()
+            let ws = cx.new(|cx| {
+                let mut ws = card_workspace(1, "", window, cx);
+                ws.right_sidebar.hidden = false;
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
         };
-        let shot = render_with(&theme, dims, build, |_, _| ());
+        let acting = slot.clone();
+        let act = move |cx: &mut VisualTestAppContext, _: AnyWindowHandle| {
+            let ws = slotted(&acting);
+            let width = cx.read(|cx| ws.read(cx).right_sidebar.width);
+            assert_eq!(width, 300.0, "card-{slug}: the right panel is 300 wide");
+            acting.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
         let path = save_shot("card", slug, &shot);
         let n = format!("card-{slug}");
         let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
-        check_one_card(&shot, dims, &ui, bounds, &n);
+        check_one_card(&shot, dims, &ui, bounds, ui.side, &n);
         // Flush against the sidebar: its last column is its own colour, the next the card's
         // edge (above), so no canvas lies between.
         let p = at(SIDEBAR_DEFAULT_WIDTH - 0.5, 300.0);
@@ -1494,7 +1572,252 @@ fn one_card_scene() {
             let p = at(x, y);
             assert!(is_canvas(p, &ui), "{n}: canvas {what} at ({x}, {y}): {p:?}");
         }
+        // The hairline: the panel runs to the card's outer right, 300 wide, the line just
+        // left of it, from the card's top edge to its bottom edge (beside the header too).
+        let line = right - 300.0 - HAIRLINE;
+        for y in [
+            top + HAIRLINE + TAB_BAR / 2.0,
+            top + TAB_BAR + 40.0,
+            300.0,
+            bottom - 20.0,
+        ] {
+            let p = at(line + 0.5, y);
+            assert!(
+                near(p, ui.card_border),
+                "{n}: the hairline at ({}, {y}): {p:?}",
+                line + 0.5
+            );
+            // Exactly 1 px: not the line's colour either side of it.
+            for x in [line - 0.5, line + HAIRLINE + 0.5] {
+                let p = at(x, y);
+                assert!(
+                    !near(p, ui.card_border) || near(p, ui.card) || near(p, ui.side),
+                    "{n}: the hairline is 1 px: ({x}, {y}) {p:?}"
+                );
+            }
+        }
+        for y in [300.0, bottom - 20.0] {
+            let p = at(line - 0.5, y);
+            assert!(
+                near(p, ui.card),
+                "{n}: the panes left of the line at y {y}: {p:?}"
+            );
+            let p = at(line + HAIRLINE + 0.5, y);
+            assert!(
+                near(p, ui.side),
+                "{n}: the panel's side right of it at y {y}: {p:?}"
+            );
+        }
+        // Inside the panel's rounded bottom-right corner (radius `CARD_RADIUS` − 1 inside the
+        // card's edge): its fill, not the card's.
+        let (x, y) = (right - 6.0, bottom - 6.0);
+        let p = at(x, y);
+        assert!(
+            near(p, ui.side),
+            "{n}: the panel's fill in its bottom-right corner at ({x}, {y}): {p:?}"
+        );
         println!("ui-shots: {}", path.display());
+    }
+}
+
+/// M11al §6.7, §10 "Right panel hidden", in both themes (960 × 600, the sidebar shown):
+/// `card-right-hidden`, one pane, the right panel closed. Panics unless the card keeps its
+/// bounds and insets (`check_one_card`, the card's fill inside its right edge: the canvas
+/// outside its right corners' curves), the terminal owns its right corners (the card's fill
+/// just inside the bottom-right curve and down its right edge under the tab bar), and there's
+/// no hairline or `side` where the panel's would be.
+fn one_card_right_hidden_scene() {
+    use ui_tokens::size::{HAIRLINE, TAB_BAR};
+
+    let dims = size(px(960.0), px(600.0));
+    let (w, h) = (960.0_f32, 600.0_f32);
+    let bounds = one_card_bounds(w, h);
+    let (_, top, right, bottom) = bounds;
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            cx.new(|cx| {
+                let mut ws = card_workspace(1, "", window, cx);
+                ws.right_sidebar.hidden = true;
+                ws
+            })
+            .into()
+        };
+        let shot = render_with(&theme, dims, build, |_, _| ());
+        let path = save_shot("card-right-hidden", slug, &shot);
+        let n = format!("card-right-hidden-{slug}");
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        check_one_card(&shot, dims, &ui, bounds, ui.card, &n);
+        let line = right - 300.0 - HAIRLINE;
+        for (what, x, y) in [
+            ("inside the bottom-right curve", right - 6.0, bottom - 6.0),
+            ("down the right edge", right - 3.0, top + TAB_BAR + 20.0),
+            ("down the right edge, low", right - 3.0, bottom - 20.0),
+            ("where the hairline would be", line + 0.5, 300.0),
+            ("where the panel would be", right - 150.0, 300.0),
+        ] {
+            let p = at(x, y);
+            assert!(
+                near(p, ui.card),
+                "{n}: the terminal {what} at ({x}, {y}): {p:?}"
+            );
+        }
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// M11al §10 "Narrow window", in both themes (440 × 300, the sidebar shown at its default
+/// width, the right panel open): `card-narrow`, a window where `drawn_width` is 0. Panics
+/// unless the card keeps its bounds (`check_one_card`, the card's fill inside its right edge)
+/// and, across its middle row from its left edge to its right, there is no hairline and no
+/// panel: the card's fill only.
+fn one_card_narrow_scene() {
+    use crate::right_sidebar::drawn_width;
+    use ui_tokens::size::{HAIRLINE, SIDEBAR_DEFAULT_WIDTH};
+
+    let dims = size(px(440.0), px(300.0));
+    let (w, h) = (440.0_f32, 300.0_f32);
+    assert_eq!(
+        drawn_width(300.0, w, SIDEBAR_DEFAULT_WIDTH),
+        0.0,
+        "card-narrow: a window too narrow for the panel"
+    );
+    let bounds = one_card_bounds(w, h);
+    let (left, top, right, bottom) = bounds;
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            cx.new(|cx| {
+                let mut ws = card_workspace(1, "", window, cx);
+                ws.right_sidebar.hidden = false;
+                ws
+            })
+            .into()
+        };
+        let shot = render_with(&theme, dims, build, |_, _| ());
+        let path = save_shot("card-narrow", slug, &shot);
+        let n = format!("card-narrow-{slug}");
+        check_one_card(&shot, dims, &ui, bounds, ui.card, &n);
+        let y = (top + bottom) / 2.0 + 20.0;
+        let mut x = left + HAIRLINE + 2.0;
+        while x < right - HAIRLINE - 2.0 {
+            let p = pixel_at(&shot, dims, x, y);
+            assert!(
+                near(p, ui.card),
+                "{n}: the card's fill only at ({x}, {y}): {p:?}"
+            );
+            x += 1.0;
+        }
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// M11al §6.7, in both themes (960 × 600, the sidebar shown): `card-slide`, the right panel
+/// part-way through sliding in (its slide set 20 ms back: about a third shown). Panics unless
+/// the panes keep their final width at once (the card's fill from their final right edge to
+/// the sliding hairline); the hairline (1 px `card_border`) lies between there and the card's
+/// right edge; the panel's `side` shows right of it up to the card's right edge, which is
+/// still `card_border`; and nothing of the panel shows past the card (the canvas right of it)
+/// or on the canvas outside the card's rounded right corners (the canvas there, nearer it than
+/// the panel's fill).
+fn one_card_slide_scene() {
+    use crate::sidebar_toggle::Slide;
+    use std::time::{Duration, Instant};
+    use ui_tokens::size::{CARD_INSET, HAIRLINE};
+
+    let dims = size(px(960.0), px(600.0));
+    let (w, h) = (960.0_f32, 600.0_f32);
+    let bounds = one_card_bounds(w, h);
+    let (_, top, right, bottom) = bounds;
+    // Where the panes end (the final hairline's left), as soon as the slide starts.
+    let panes_right = right - 300.0 - HAIRLINE;
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            cx.new(|cx| {
+                let mut ws = card_workspace(1, "", window, cx);
+                ws.right_sidebar.hidden = false;
+                // Real time (`Instant`): of the 160 ms `SLIDE`, 20 ms in is about a third
+                // shown; the checks hold anywhere from a few points to most of it shown.
+                ws.right_sidebar.slide = Some(Slide {
+                    showing: true,
+                    since: Instant::now() - Duration::from_millis(20),
+                    from: 0.0,
+                });
+                ws
+            })
+            .into()
+        };
+        let shot = render_with(&theme, dims, build, |_, _| ());
+        let path = keep_shot(&format!("card-slide-{slug}"), &shot);
+        println!("ui-shots: {}", path.display());
+        let n = format!("card-slide-{slug}");
+        let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
+        let y = 300.0;
+        // The sliding hairline: the first `card_border` column right of the panes' final edge.
+        let line = (0..300)
+            .map(|i| panes_right + 0.5 + i as f32)
+            .find(|&x| near(at(x, y), ui.card_border))
+            .unwrap_or_else(|| panic!("{n}: no hairline between {panes_right} and {right}"));
+        println!("ui-shots: {n}: the hairline at {line}");
+        assert!(
+            line > panes_right + 2.0 && line < right - 24.0,
+            "{n}: the panel part-way in (hairline at {line}, {panes_right} when in)"
+        );
+        // The panes took their final width at once: the card's fill from their edge to the
+        // line, none of it the panel's.
+        let mut x = panes_right - 20.0;
+        while x < line - 1.0 {
+            let p = at(x, y);
+            assert!(
+                near(p, ui.card),
+                "{n}: the card's fill at ({x}, {y}): {p:?}"
+            );
+            x += 1.0;
+        }
+        // The panel: its fill right of the line, cut at the card's right edge.
+        for (what, x, y) in [
+            ("beside the line", line + 1.5, y),
+            ("at the card's right edge", right - 20.0, y),
+            ("low, at the card's right edge", right - 20.0, bottom - 20.0),
+        ] {
+            let p = at(x, y);
+            assert!(
+                near(p, ui.side),
+                "{n}: the panel's fill {what} at ({x}, {y}): {p:?}"
+            );
+        }
+        let p = at(right - 0.5, y);
+        assert!(near(p, ui.card_border), "{n}: the card's right edge: {p:?}");
+        // Nothing of it past the card, or outside the card's rounded right corners.
+        for (what, x, y) in [
+            ("right of the card", right + CARD_INSET / 2.0, y),
+            ("right of the card, low", right + 2.0, bottom - 20.0),
+            ("outside the top-right curve", right - 2.0, top + 2.0),
+            (
+                "outside the top-right curve, nearer",
+                right - 1.5,
+                top + 1.5,
+            ),
+            ("outside the bottom-right curve", right - 2.0, bottom - 2.0),
+            (
+                "outside the bottom-right curve, nearer",
+                right - 1.5,
+                bottom - 1.5,
+            ),
+        ] {
+            let p = at(x, y);
+            assert!(
+                is_canvas(p, &ui) && gap(p, ui.sidebar_background) < gap(p, ui.side),
+                "{n}: canvas {what} at ({x}, {y}): {p:?}"
+            );
+        }
     }
 }
 
@@ -1529,7 +1852,7 @@ fn one_card_sidebar_hidden_scene() {
         let path = save_shot("card-sidebar-hidden", slug, &shot);
         let n = format!("card-sidebar-hidden-{slug}");
         let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
-        check_one_card(&shot, dims, &ui, bounds, &n);
+        check_one_card(&shot, dims, &ui, bounds, ui.card, &n);
         // Left of the card, and the band above it (away from the name centred in it and the
         // buttons at its right).
         for (what, x, y) in [
