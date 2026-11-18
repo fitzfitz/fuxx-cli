@@ -126,7 +126,7 @@ Who it's for: you, reading and reviewing what an agent wrote, in a read-only fil
 
 **The current line**
 - The current line is the line of your last click in the text (a press without a drag; for a drag, where it ends).
-  A ↑ / ↓ jump, a Find step and a breadcrumb or sticky-line click also make their line current (AI's call), so you
+  A ⌥↑ / ⌥↓ jump, a Find step and a breadcrumb or sticky-line click also make their line current (AI's call), so you
   always see where you landed.
 - It gets a full-width band behind the text: `text` at 5 % over the background (AI's call; under the selection, find
   matches, the M11af glow and change tints, which all stay readable on it). Its line number is drawn in `text`.
@@ -218,7 +218,7 @@ Who it's for: you, reading and reviewing what an agent wrote, in a read-only fil
 - In Diff mode, one mark per card (green, red, or blue for both). M11af's glow is not on the lane (AI's call: the
   proposal names changes and matches).
 
-**↑ / ↓ between changes**
+**⌥↑ / ⌥↓ between changes**
 - **↑** goes to the previous change, **↓** to the next, from the current line (none: from the top of the view). A
   change is a run of changed lines (File mode, git's change bars) or a card (Diff mode).
 - The change lands 3 lines below the top (as a diff opens, `REVEAL_ABOVE`), below the sticky line, and its first line
@@ -226,7 +226,7 @@ Who it's for: you, reading and reviewing what an agent wrote, in a read-only fil
 - Two 24 pt icon buttons, ↑ and ↓, in the bar left of the view switch, shown when the file has a change; tooltips
   "Previous change (↑)" and "Next change (↓)". At the first or last change the button is faint and the key does
   nothing (AI's call: no wrap-around).
-- The arrows act only when the tab has the keyboard (not the find box). Today ↑ / ↓ do nothing in a file tab.
+- The arrows act only when the tab has the keyboard (not the find box). Plain ↑ / ↓ do nothing in a file tab today, and stay unbound (call 1 below).
 - A jump turns Follow off (it is you moving the view, as in note 82).
 
 ### C · Review-first diffs
@@ -284,7 +284,7 @@ Who it's for: you, reading and reviewing what an agent wrote, in a read-only fil
 | **Breadcrumb** | — | — | rechecked | — | needs the outline | File only |
 | **Folding** | a folded line is one row | counts hidden matches; a step into a fold opens it | folds follow their first line | folded line shows the warmest glow and a mark; Follow opens a fold the agent changed | needs the outline | File (blocks); Diff (unchanged stretches, cards) |
 | **Scrollbar marks** | placed by screen row | ticks for matches (up to the 10,000 cap) | moved when changes come | — | as git's bars allow | File and Diff; Preview keeps a plain thumb |
-| **↑ / ↓** | — | — | the list of changes is the new one | turns Follow off | as git's bars allow | File: change runs; Diff: cards |
+| **⌥↑ / ⌥↓** | — | — | the list of changes is the new one | turns Follow off | as git's bars allow | File: change runs; Diff: cards |
 | **Cards, folded stretches** | rows wrap inside cards | counts hidden; a step opens it | rebuilt with each new diff | Diff shows no glow (as today) | cards at any size git's diff is accepted; word marks only within the 50 ms limit | Diff only |
 | **Side by side** | each half wraps at its own width; the shorter side padded | both halves | rebuilt | — | as unified | Diff only |
 
@@ -295,7 +295,7 @@ Two notes on M11af:
 
 ## AI's calls you may most want to overrule
 
-- Plain **↑ / ↓** jump between changes (the proposal's words), so they will never scroll line by line here.
+- ~~Plain ↑ / ↓ jump between changes~~ — superseded: jumps are **⌥↑ / ⌥↓**; plain ↑ / ↓ stay unbound (call 1).
 - The breadcrumb is **its own 26 pt strip**, always shown for a file with structure.
 - Side by side is **off by default, per tab**.
 - **One** sticky line (the innermost), not a stack.
