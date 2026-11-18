@@ -187,7 +187,7 @@ const HEAD: usize = 8 * 1024;
 const COLOUR_LINE_MAX: usize = 20_000;
 /// A line wider than this (cells) is shaped only where it is in sight, and found from its
 /// checkpoints (one every `CHECKPOINT` cells), never scanned from its start each frame.
-const LONG_LINE: usize = 1_000;
+pub(crate) const LONG_LINE: usize = 1_000;
 const CHECKPOINT: usize = 256;
 
 // The view's geometry, in points.
@@ -979,10 +979,15 @@ pub struct DiffDoc {
     /// from both sides' outlines once the colours name their lines).
     pub grouped: Arc<Grouped>,
     pub titles: Arc<Vec<CardTitle>>,
+    /// M11ah: the changed words of each paired removed / added row (none: gave up past 50 ms).
+    pub words: Option<Arc<WordMarks>>,
     /// M11ah: the old and the new side's outlines (none: gave up past the limit).
     pub old_outline: Option<Arc<Outline>>,
     pub new_outline: Option<Arc<Outline>>,
 }
+
+/// M11ah: a diff row's changed words, as byte ranges of its line.
+pub type WordMarks = HashMap<usize, Vec<Range<usize>>>;
 
 /// M11ah: a diff's two sides' outlines (from their texts, `sides`), named with each side's
 /// named lines when the colours gave them.
@@ -1154,6 +1159,15 @@ fn diff_state(
                 (old_o.as_ref(), new_o.as_ref()),
                 markdown,
             );
+            // M11ah: the changed words of the paired rows (given up after 50 ms: none).
+            let words = diff_cards::word_marks(
+                &parsed.rows,
+                &line_slices(&doc.text, &doc.lines),
+                &doc.widths,
+                &grouped.cards,
+                diff_cards::WORD_LIMIT,
+            )
+            .map(Arc::new);
             DiffState::Rows(Box::new(DiffDoc {
                 doc,
                 gutter: Gutter::diff(&parsed.rows),
@@ -1162,6 +1176,7 @@ fn diff_state(
                 new,
                 grouped: Arc::new(grouped),
                 titles: Arc::new(titles),
+                words,
                 old_outline: old_o.map(Arc::new),
                 new_outline: new_o.map(Arc::new),
             }))
@@ -2707,6 +2722,7 @@ struct Frame {
 struct CardsFrame {
     parts: DiffParts,
     titles: Arc<Vec<CardTitle>>,
+    words: Option<Arc<WordMarks>>,
 }
 
 /// What the text body draws of the live changes (M11af): the marks, and the runs glowing as
@@ -3285,6 +3301,30 @@ fn paint_body(
                     let x = origin + g.cell_width * (k * o.step) as f32;
                     let line = Bounds::new(point(x, y), size(px(code::GUIDE), lh));
                     window.paint_quad(fill(line, if on { guide_active } else { guide }));
+                }
+            }
+            // M11ah: the row's changed words, over its tint, under the selection and the matches.
+            if let Some(words) = f
+                .cards
+                .as_ref()
+                .and_then(|c| c.words.as_deref())
+                .and_then(|w| w.get(&i))
+            {
+                let word = match row.map(|r| r.kind) {
+                    Some(RowKind::Removed) => Some(bars.deleted),
+                    Some(RowKind::Added) => Some(bars.added),
+                    _ => None,
+                };
+                if let Some(word) = word {
+                    let ink = hsla(word).opacity(code::WORD_ALPHA);
+                    for range in words {
+                        let (x0, x1) = (x_of(range.start), x_of(range.end));
+                        if x1 <= x0 || x1 < seen_left || x0 > seen_right {
+                            continue;
+                        }
+                        let b = Bounds::from_corners(point(x0, y), point(x1, y + lh));
+                        window.paint_quad(fill(b, ink).corner_radii(px(code::WORD_RADIUS)));
+                    }
                 }
             }
             if let Some((s, e)) = f.selection
@@ -7459,6 +7499,7 @@ impl FileTab {
                 (FileMode::Diff, DiffState::Rows(d)) => Some(CardsFrame {
                     parts: diff_parts(d, &self.shown_stretches, &self.closed_cards),
                     titles: d.titles.clone(),
+                    words: d.words.clone(),
                 }),
                 _ => None,
             },
