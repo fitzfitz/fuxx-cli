@@ -15,7 +15,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ## Current status snapshot
 
 - **Current milestone (2026-11-18, latest):** **M11al — UI Uplift 3** 🟨 built (13 tasks + 8b, each reviewed; final-review fixes in), **merged to master 2026-11-18**, not pushed; waiting for your on-screen check (note 84, 14 items). M11ai (Markdown reader) resumes next, then M11ag.
-- **Current milestone (2026-11-18, M11ai lane):** **M11ai — Markdown reader upgrade** 🟨 built on branch `m11ai-md-reader` (all 12 tasks; Tasks 0–10 reviewed; master with M11al merged into the branch), **not merged**; the whole-branch review and the full ui-shots run next, then your on-screen check (note 86, 15 items).
+- **Current milestone (2026-11-18, M11ai lane):** **M11ai — Markdown reader upgrade** 🟨 built on branch `m11ai-md-reader` (all 12 tasks; Tasks 0–10 reviewed; master with M11al merged into the branch), **not merged**; the full ui-shots run and the whole-branch review done, **the final review's fixes are in**; waiting for your on-screen check (note 86, 15 items).
 - **Current milestone (2026-11-18, M11ah lane):** **M11ah — Code view upgrade** 🟨 built (all 13 tasks, each reviewed), **merged to master and pushed 2026-11-18**; waiting for your on-screen check (note 85, 15 items).
 - **Current milestone (2026-11-18, earlier):** **M11ak — Agent box** 🟨 built (15 tasks, reviewed; final-review fixes in), **merged to master and pushed**, waiting for your on-screen check (note 83).
 - **Previous snapshot (2026-11-17):** **M11af — Live changes** 🟨 built (8 tasks, reviewed, final-review fixes in), **merged to master and pushed (`d327d15`)**, waiting for your on-screen check (note 82). M11ae, M11aj and M11aa are built, merged and **pushed** (master `250faeb`). Your first look at M11aa: the agent tab's layout and flow are not what was discussed; revisit later. Your on-screen checks for notes 79, 80 and 81 are still open. Older history follows.
@@ -26,6 +26,21 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-18 — M11ai: the final review's fixes (not merged)
+- **Status:** 🟨 built on branch `m11ai-md-reader`, the final review's fixes are in; still waiting for your on-screen
+  check; **not merged, not pushed**. The full ui-shots run before the review: 226 passed, 0 failed, 151.3 s.
+- **Fixed (one wave):**
+  - "On this page"'s current entry is a binary search over the outline's rows, worked out once per version (was a
+    scan, and a new list, on every scroll frame).
+  - Links and dim text inside a callout are held to the text floor on its wash (agent chat unchanged).
+  - Front matter: a list of maps under a key (`- name: x`) reads as that key's items, not as new keys.
+  - A theme change recolours the Preview's code blocks while Preview is off too.
+  - Docs: four rulings, two known gaps, the 2.76× measurement's caveat (debug ui-shots builds with test probes) and a
+    decision for you in note 86: keep the 1 MB parse on the UI thread, or move parse and plan to the background later.
+- **Numbers:** 2,076 tests pass (1 ignored); clippy 14/27 and 16/29 (baseline); fmt clean;
+  `scripts/ui-shots.sh --changed master` 226 passed, 0 failed (146.0 s). The full ui-shots after the fixes: run by
+  the controller.
 
 ### 2026-11-18 — M11ai built: Markdown reader upgrade (not merged)
 - **Status:** 🟨 built on branch `m11ai-md-reader`, waiting for your on-screen check; **not merged, not pushed**. All
