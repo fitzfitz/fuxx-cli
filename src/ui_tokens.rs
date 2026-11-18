@@ -40,8 +40,8 @@ pub mod size {
     /// Terminal padding: (sides, top and bottom); smaller in splits. Enough that nothing the
     /// grid paints reaches into the card's rounded corner (M11i): the grid's corner cell starts
     /// inside the `CARD_RADIUS` curve.
-    pub const TERMINAL_PADDING: (f32, f32) = (16.0, 12.0);
-    pub const SPLIT_TERMINAL_PADDING: (f32, f32) = (12.0, 10.0);
+    pub const TERMINAL_PADDING: (f32, f32) = (28.0, 22.0);
+    pub const SPLIT_TERMINAL_PADDING: (f32, f32) = (20.0, 14.0);
     /// The floating card's corner radius (M11al §3.1; M11i's cards' was 8).
     pub const CARD_RADIUS: f32 = 14.0;
     /// M11al's one floating card: the canvas inset around it, its shadow's drop and blur, and

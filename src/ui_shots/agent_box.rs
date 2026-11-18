@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    AnyWindowHandle, AppContext, Bounds, Context, Entity, Focusable, Modifiers, Pixels,
-    VisualTestAppContext, px, size,
+    AnyWindowHandle, AppContext, Bounds, Context, Entity, Focusable, IntoElement, Modifiers,
+    Pixels, VisualTestAppContext, div, prelude::*, px, size,
 };
 
 use super::{
@@ -425,6 +425,14 @@ pub(super) const SCENES: &[Scene] = &[
         serial: false,
         kind: Kind::Visual,
         sources: SLASH,
+    },
+    Scene {
+        name: "agent-box-card",
+        run: agent_box_card,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: LAYOUT,
     },
     Scene {
         name: "agent-box-model-waiting-no-efforts",
@@ -1004,6 +1012,28 @@ fn box_scene(
     lookup: Lookup<Catalog>,
     act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + Clone + 'static,
 ) {
+    box_scene_on(name, provider, start, lookup, false, act)
+}
+
+/// A tab on a red ground (`box_scene_on`).
+struct Ground(Entity<AgentTab>);
+
+impl gpui::Render for Ground {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().bg(gpui::red()).child(self.0.clone())
+    }
+}
+
+/// `box_scene`; with `backdrop` the tab sits on a red ground, so what lies outside its rounded
+/// corners shows (the window's own clear colour is the page's).
+fn box_scene_on(
+    name: &str,
+    provider: &'static dyn Provider,
+    start: Start,
+    lookup: Lookup<Catalog>,
+    backdrop: bool,
+    act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + Clone + 'static,
+) {
     for &(slug, theme_name) in shot_themes() {
         let theme = shot_theme(theme_name);
         let slot: Slot = Rc::default();
@@ -1023,7 +1053,11 @@ fn box_scene(
                 let focus = tab.read(cx).focus_handle(cx);
                 focus.focus(window, cx);
                 *keep.borrow_mut() = Some(tab.clone());
-                tab.into()
+                if backdrop {
+                    cx.new(|_| Ground(tab)).into()
+                } else {
+                    tab.into()
+                }
             },
             move |cx, window| {
                 let tab = slot.borrow().clone().expect("the agent tab");
@@ -1206,6 +1240,65 @@ pub(super) fn agent_box_empty() {
         assert_eq!(back_px, focused_px, "{n}");
         assert!(written(cx, tab).is_empty(), "{n}: the click sent nothing");
     });
+}
+
+/// M11al §8: the box sits `AREA_X` (28) in from the page's sides, where the terminal's text
+/// column starts; the conversation's column starts at that same x; and the page is rounded at
+/// its bottom corners as the card is (a pixel just outside the curve is not the page's fill).
+pub(super) fn agent_box_card() {
+    box_scene_on(
+        "agent-box-card",
+        &CLAUDE,
+        example_start(),
+        Lookup::Ready(example_catalog()),
+        true,
+        |n, cx, window, tab| {
+            feed(cx, tab, |t, cx| t.shot_feed(agy_text(), cx));
+            let shot = frame_fresh(cx, window);
+            let the_box = part(cx, tab, n, "box");
+            let column = part(cx, tab, n, "column");
+            // The box's part is inside its 1 px edge.
+            let (side, edge) = (px(28.0), px(1.0));
+            assert!(
+                (the_box.left() - edge - side).abs() < px(0.5),
+                "{n}: the box is 28 in from the left: {the_box:?}"
+            );
+            assert!(
+                (px(DIMS.0) - the_box.right() - edge - side).abs() < px(0.5),
+                "{n}: and 28 in from the right: {the_box:?}"
+            );
+            assert!(
+                (column.left() - (the_box.left() - edge)).abs() < px(0.5),
+                "{n}: the conversation's column starts at the box's x: {column:?} {the_box:?}"
+            );
+            // The page's bottom corners: inside the curve is the page, just outside it is not.
+            let page = cx.read(|cx| {
+                crate::agent_tab::Colors::of(&cx.global::<crate::appearance::Appearance>().theme)
+                    .page
+            });
+            let page = [page.r, page.g, page.b];
+            let dims = size(px(DIMS.0), px(DIMS.1));
+            let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 4);
+            let r = crate::ui_tokens::size::CARD_RADIUS;
+            let (w, h) = (DIMS.0, DIMS.1);
+            for (x, y) in [(0.5, h - 0.5), (w - 0.5, h - 0.5)] {
+                let p = super::pixel_at(&shot, dims, x, y);
+                assert!(
+                    near(p, [255, 0, 0]) && !near(p, page),
+                    "{n}: ({x}, {y}) is outside the rounded corner (the ground), not the page: {p:?}"
+                );
+            }
+            for (x, y) in [
+                (r + 2.0, h - 0.5),
+                (w - r - 2.0, h - 0.5),
+                (0.5, h - r - 2.0),
+                (w / 2.0, h - 0.5),
+            ] {
+                let p = super::pixel_at(&shot, dims, x, y);
+                assert!(near(p, page), "{n}: ({x}, {y}) is the page: {p:?}");
+            }
+        },
+    );
 }
 
 /// Working: Stop in send's place; the top line says what the conversation cost and how full
