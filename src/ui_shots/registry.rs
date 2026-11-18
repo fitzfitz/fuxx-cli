@@ -145,6 +145,8 @@ pub(super) const ORDER: &[&str] = &[
     "file-tab-md-reader-github",
     "file-tab-md-reader-anchors",
     "file-tab-md-reader-outline",
+    "file-tab-md-reader-narrow",
+    "file-tab-md-reader-progress",
     "file-tab-scrollbar",
     "file-live-glow",
     "file-live-marks",

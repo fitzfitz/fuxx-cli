@@ -349,8 +349,23 @@ pub struct Colours {
     pub outline_bar: Rgb,
     pub outline_dim: Rgb,
     pub outline_hover: Rgb,
+    /// The narrow outline's floating panel (M11ai Task 9): the same, on the overlay panel's
+    /// fill.
+    pub outline_panel: OutlineLook,
+    /// The reading-progress line (M11ai Task 9): the accent at `MARK_MIN` on the page.
+    pub progress: Rgb,
     /// A callout's colours (M11ai), by `Callout::ALL`'s order.
     callouts: [CalloutColours; 5],
+}
+
+/// "On this page"'s entries on a fill (M11ai Task 9: the narrow panel's): the current entry's
+/// text and bar, the others' text, and a hovered entry's fill.
+#[derive(Clone, Copy, Debug)]
+pub struct OutlineLook {
+    pub current: Rgb,
+    pub dim: Rgb,
+    pub bar: Rgb,
+    pub hover: Rgb,
 }
 
 /// One callout kind's colours (M11ai): its bar and icon (at `MARK_MIN` on the wash), the wash (the
@@ -415,6 +430,22 @@ impl Colours {
                 TEXT_MIN,
             ),
             outline_hover: ui.panel_hover,
+            // As the column's, held on a hovered entry's fill first, then on the panel.
+            outline_panel: OutlineLook {
+                current: ensure_contrast(
+                    ensure_contrast(ui.accent, ui.panel_hover, TEXT_MIN),
+                    ui.panel,
+                    TEXT_MIN,
+                ),
+                dim: ensure_contrast(
+                    ensure_contrast(ui.text_dim, ui.panel_hover, TEXT_MIN),
+                    ui.panel,
+                    TEXT_MIN,
+                ),
+                bar: ensure_contrast(ui.accent, ui.panel, MARK_MIN),
+                hover: ui.panel_hover,
+            },
+            progress: ensure_contrast(ui.accent, bg, MARK_MIN),
             callouts: Callout::ALL.map(|kind| {
                 let hue = theme.palette[callout_palette(kind)];
                 let wash = mix(bg, hue, crate::ui_tokens::reader::CALLOUT_WASH);
@@ -1668,6 +1699,38 @@ mod tests {
                 c.outline_current, c.outline_dim,
                 "{name}: the current one stands out"
             );
+        }
+    }
+
+    /// Every theme (M11ai Task 9): the narrow outline's panel (the overlay panel's fill) holds
+    /// its current entry and the others to the text floor on the panel and on a hovered entry,
+    /// the current entry's bar to the mark floor on the panel; the reading-progress line is the
+    /// accent at the mark floor on the page.
+    #[test]
+    fn the_outline_panel_s_and_the_progress_line_s_colours_meet_their_floors() {
+        use crate::ui_tokens::contrast;
+        for (name, theme) in crate::theme::every_theme() {
+            let c = Colours::of(&theme);
+            let ui = theme.ui();
+            let p = c.outline_panel;
+            for (what, fg, on, min) in [
+                ("panel entry current", p.current, ui.panel, TEXT_MIN),
+                ("panel entry current hovered", p.current, p.hover, TEXT_MIN),
+                ("panel entry", p.dim, ui.panel, TEXT_MIN),
+                ("panel entry hovered", p.dim, p.hover, TEXT_MIN),
+                ("panel bar", p.bar, ui.panel, MARK_MIN),
+                ("progress line", c.progress, theme.background, MARK_MIN),
+            ] {
+                let got = contrast(fg, on);
+                assert!(got >= min - 0.01, "{name}: {what} {got}");
+            }
+            assert_eq!(p.hover, ui.panel_hover, "{name}: the hover fill");
+            assert_eq!(
+                c.progress,
+                ensure_contrast(ui.accent, theme.background, MARK_MIN),
+                "{name}: the progress line is the accent"
+            );
+            assert_ne!(p.current, p.dim, "{name}: the current one stands out");
         }
     }
 

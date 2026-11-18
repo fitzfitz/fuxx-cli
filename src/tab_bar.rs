@@ -1252,6 +1252,9 @@ pub(crate) enum Glyph {
     /// back one showing at its top right; and Copied's tick.
     Copy,
     Check,
+    /// The narrow "On this page" button (M11ai Task 9): three lines, the middle one indented
+    /// (an outline's subheading).
+    Outline,
     /// The Markdown reader's callouts (M11ai): a circle with an i (Note), a bulb (Tip), a speech
     /// box with a ! (Important), a triangle with a ! (Warning) and an octagon with a ! (Caution;
     /// `Stop` is a plain cross).
@@ -1714,6 +1717,11 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         back.line_to(p(10.5, 8.0));
                         back.line_to(p(8.0, 8.0));
                         paths.push(back);
+                    }
+                    Glyph::Outline => {
+                        for (y, left) in [(2.5, 1.5), (6.0, 4.0), (9.5, 1.5)] {
+                            paths.push(bar((left, y), (10.5, y)));
+                        }
                     }
                     Glyph::Check => {
                         let mut tick = stroke();
