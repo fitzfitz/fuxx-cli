@@ -18,7 +18,9 @@ use crate::activity::{civil_date, local_day};
 use crate::git_branch::run_git;
 use crate::git_graph::{self, Commit, Details, Ref, Scope};
 use crate::graph_layout::{self, Row};
-use crate::right_sidebar::{EDGE, PILL_INSET, PILL_PAD, PILL_RADIUS, ROW, SMALL, TEXT};
+use crate::right_sidebar::{
+    PILL_INSET, PILL_PAD, PILL_RADIUS, ROW, SECTION_BELOW, SECTION_SIDE, SMALL, TEXT,
+};
 use crate::status::age_label;
 use crate::tab_bar::{Glyph, glyph};
 use crate::terminal_view::hsla;
@@ -334,7 +336,7 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .gap(px(4.0))
-                .h(px(22.0))
+                .h(px(20.0))
                 .px(px(5.0))
                 .rounded(px(5.0))
                 .cursor_pointer()
@@ -352,9 +354,9 @@ impl Workspace {
             .gap(px(6.0))
             .h(px(ROW))
             .w_full()
-            .pl(px(EDGE))
-            .pr(px(EDGE - 4.0))
-            .pb(px(2.0))
+            .pl(px(SECTION_SIDE))
+            .pr(px(SECTION_SIDE - 4.0))
+            .pb(px(SECTION_BELOW))
             .cursor_pointer()
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 let graph = &mut this.right_sidebar.changes.graph;
@@ -385,7 +387,7 @@ impl Workspace {
                     .text_color(hsla(ui.text_faint))
                     .child("GRAPH"),
             )
-            .child(div().flex_1().h(px(1.0)).mb(px(9.0)).bg(hsla(ui.divider)))
+            .child(div().flex_1())
             .when(open, |d| {
                 d.child(
                     button("graph-scope")

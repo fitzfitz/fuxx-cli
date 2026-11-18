@@ -38,8 +38,9 @@ use crate::git_stage::{self, FileWork};
 use crate::git_status::{self, Change, ChangeList, Counts, Mark};
 use crate::layout_model::{FileMode, TabKind};
 use crate::right_sidebar::{
-    EDGE, HEADER_PAD_RIGHT, NO_FOLDER, PILL_INSET, PILL_PAD, PILL_RADIUS, Panel, REFRESH, ROW,
-    SMALL, TEXT, TITLE, back_off, due, find_root, mark_ink, note,
+    COUNT_PAD_X, COUNT_PAD_Y, COUNT_RADIUS, EDGE, NO_FOLDER, PILL_INSET, PILL_PAD, PILL_RADIUS,
+    Panel, REFRESH, ROW, SECTION_BELOW, SECTION_SIDE, SMALL, TEXT, TITLE, back_off, due, find_root,
+    mark_ink, note,
 };
 use crate::sidebar::tabular;
 use crate::sidebar_toggle::{Tip, tip_box};
@@ -62,14 +63,12 @@ const ROW_GAP: f32 = 6.0;
 const COUNTS_GAP: f32 = 4.0;
 /// The header (M11v part 2: the circle, the name and `N of M staged`, the progress bar; part
 /// 4: the panels' 42 pt) and its line.
-pub(crate) const HEADER: f32 = crate::right_sidebar::HEADER;
+pub(crate) const HEADER: f32 = crate::right_sidebar::HEADER + 8.0;
 const HEADER_LINE: f32 = 20.0;
 /// Part 2: the header's progress bar, the check circles, the dialog's widest.
 const PROGRESS: f32 = 3.0;
 const CIRCLE: f32 = 16.0;
 const CONFIRM_WIDTH: f32 = 280.0;
-/// A group header's room under its words (part 6: the words at the row's foot).
-const DIVIDER_FOOT: f32 = 3.0;
 /// The branch bar (M11v): its padding, its buttons' size and corner, the gap between them,
 /// the tooltip's gap above its button and how long the pointer rests before it shows.
 const BAR_PAD_X: f32 = 12.0;
@@ -718,13 +717,21 @@ fn circle(state: Circle, green: Rgb, ui: &UiColors) -> Div {
     }
 }
 
-/// A group's header row (parts 2 and 6): a thin chevron (› closed, ⌄ open), `STAGED` /
-/// `CHANGES` in small caps and a hairline; a click opens or closes the group. Its words sit at
-/// the row's foot, which leaves room above it, between the groups (part 6: "more gap"; the
-/// list's rows are one height). CHANGES' shows ↺ "Revert all…" on hover (`revert_all`).
+/// How many of `list`'s entries are in the staged (`staged`) or the unstaged group.
+fn group_count(list: &ChangeList, staged: bool) -> usize {
+    list.entries.iter().filter(|c| c.staged == staged).count()
+}
+
+/// A group's header row (parts 2 and 6, M11al §6.4): a thin chevron (› closed, ⌄ open),
+/// `STAGED` / `CHANGES` in capitals (12 pt semibold, faint) and, at the right, the group's
+/// `count` in a `card_lift` pill; a click opens or closes the group. Its words sit at the row's
+/// foot, which leaves room above it, between the groups (the list's rows are one height, so
+/// the 16 pt above them is what `ROW` leaves). CHANGES' shows ↺ "Revert all…" on hover
+/// (`revert_all`), over the pill.
 fn divider_row(
     staged: bool,
     open: bool,
+    count: usize,
     revert_all: bool,
     ui: &UiColors,
     cx: &mut Context<Workspace>,
@@ -738,9 +745,8 @@ fn divider_row(
         .gap(px(6.0))
         .h(px(ROW))
         .w_full()
-        .pl(px(EDGE))
-        .pr(px(EDGE))
-        .pb(px(DIVIDER_FOOT))
+        .px(px(SECTION_SIDE))
+        .pb(px(SECTION_BELOW))
         .cursor_pointer()
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
             this.right_sidebar.changes.toggle_group(staged);
@@ -762,13 +768,14 @@ fn divider_row(
                 .text_color(hsla(ui.text_faint))
                 .child(if staged { "STAGED" } else { "CHANGES" }),
         )
-        .child(div().flex_1().h(px(1.0)).mb(px(7.0)).bg(hsla(ui.divider)))
+        .child(div().flex_1())
+        .child(count_pill(count, "change-divider", revert_all, &ui))
         .when(revert_all, |d| {
             d.relative().child(
                 div()
                     .absolute()
-                    .right(px(EDGE - 4.0))
-                    .bottom(px(DIVIDER_FOOT - 2.0))
+                    .right(px(SECTION_SIDE - 4.0))
+                    .bottom(px(SECTION_BELOW - 6.0))
                     .child(
                         revert_button(
                             "changes-revert-all",
@@ -787,6 +794,23 @@ fn divider_row(
             )
         })
         .into_any_element()
+}
+
+/// A heading's count (§6.4): `card_lift`-filled, `text_dim`, 1 × 8 pt of padding, rounded.
+/// `hide` while `group` is hovered (the ↺ button takes its place).
+fn count_pill(count: usize, group: &'static str, hide: bool, ui: &UiColors) -> Div {
+    let ui = *ui;
+    div()
+        .flex_none()
+        .px(px(COUNT_PAD_X))
+        .py(px(COUNT_PAD_Y))
+        .rounded(px(COUNT_RADIUS))
+        .bg(hsla(ui.card_lift))
+        .text_size(px(SMALL))
+        .line_height(px(SMALL + 4.0))
+        .text_color(hsla(ui.text_dim))
+        .when(hide, |p| p.group_hover(group, |s| s.invisible()))
+        .child(count.to_string())
 }
 
 /// The ↺ button (part 2): shown while `group` (its row, or the divider) is hovered.
@@ -1335,7 +1359,7 @@ impl Workspace {
                 div()
                     .flex_none()
                     .flex()
-                    .text_size(px(SMALL))
+                    .text_size(px(crate::ui_tokens::text::META))
                     .text_color(hsla(ui.text_faint))
                     .child(div().text_color(hsla(green)).child(staged.to_string()))
                     .child(format!("\u{a0}of {total} staged"))
@@ -1360,17 +1384,18 @@ impl Workspace {
                         .bg(hsla(green)),
                 )
         });
-        div()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .justify_center()
-            .h(px(HEADER))
-            .w_full()
-            .pl(px(EDGE))
-            .pr(px(HEADER_PAD_RIGHT))
-            .child(line)
-            .children(progress)
+        // The repo card (M11al §6.3), the bar inside it under the line; `HEADER` is the card with
+        // its margin, 8 pt more than Files' for the bar.
+        let (outer, card) = crate::right_sidebar::repo_card(HEADER, ui);
+        outer
+            .child(
+                card.flex_col()
+                    .items_stretch()
+                    .justify_center()
+                    .gap(px(0.0))
+                    .child(line)
+                    .children(progress),
+            )
             .into_any_element()
     }
 
@@ -1787,6 +1812,7 @@ impl Workspace {
                                 RowItem::Divider(staged) => Some(divider_row(
                                     staged,
                                     groups.open(staged),
+                                    group_count(&list, staged),
                                     !staged && revert_all,
                                     &inks.ui,
                                     cx,
@@ -1830,7 +1856,15 @@ impl Workspace {
                 let sticky = pinned.map(|header| {
                     let row = match header {
                         RowItem::Divider(staged) => {
-                            divider_row(staged, groups.open(staged), !staged && revert_all, &ui, cx)
+                            let count = changes.list.as_ref().map_or(0, |l| group_count(l, staged));
+                            divider_row(
+                                staged,
+                                groups.open(staged),
+                                count,
+                                !staged && revert_all,
+                                &ui,
+                                cx,
+                            )
                         }
                         _ => self.graph_header_row(&ui, cx),
                     };

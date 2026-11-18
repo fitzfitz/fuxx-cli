@@ -396,7 +396,9 @@ fn changes_sticky_scenes() {
 /// - `changes-staging-all`: everything staged: the header's circle filled, no CHANGES divider.
 fn changes_staging_scenes() {
     use crate::git_status::{Change, ChangeList, Counts, Mark};
-    use crate::right_sidebar::{Panel, ROW};
+    use crate::right_sidebar::{
+        Panel, REPO_BOTTOM, REPO_PAD_X, REPO_PAD_Y, REPO_SIDE, REPO_TOP, ROW,
+    };
     use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use gpui::Modifiers;
@@ -561,17 +563,15 @@ fn changes_staging_scenes() {
                     for r in 4..8 {
                         assert!(!circle_green(r), "{n}: row {r}'s circle is empty");
                     }
-                    // The bar's green third, then its track.
-                    let bar_y = header_top + crate::changes_panel::HEADER / 2.0 + 9.0;
+                    // The bar's green third, then its track: inside the repo card (M11al §6.3),
+                    // its line (20), a 5 pt gap and the bar (3) centred in it.
+                    let card_mid = header_top
+                        + REPO_TOP
+                        + (crate::changes_panel::HEADER - REPO_TOP - REPO_BOTTOM) / 2.0;
+                    let bar_y = card_mid + 12.5;
+                    let inner = sidebar_left + REPO_SIDE + REPO_PAD_X;
                     assert!(
-                        has(
-                            sidebar_left + 14.0,
-                            sidebar_left + 60.0,
-                            bar_y - 3.0,
-                            bar_y + 3.0,
-                            green,
-                            16
-                        ),
+                        has(inner, inner + 46.0, bar_y - 3.0, bar_y + 3.0, green, 16),
                         "{n}: the progress bar's green share"
                     );
                     // The hovered row's ↺ replaced its `+7`.
@@ -624,12 +624,13 @@ fn changes_staging_scenes() {
                 }
                 _ => {
                     // All staged: the header's circle is filled.
+                    let inner = sidebar_left + REPO_SIDE + REPO_PAD_X;
                     assert!(
                         has(
-                            sidebar_left + 8.0,
-                            sidebar_left + 26.0,
-                            header_top + 4.0,
-                            header_top + 28.0,
+                            inner,
+                            inner + 16.0,
+                            header_top + REPO_TOP + REPO_PAD_Y,
+                            header_top + REPO_TOP + REPO_PAD_Y + 20.0,
                             green,
                             16
                         ),
