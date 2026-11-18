@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11ah
-status: planned
+status: built
 updated: 2026-11-17
 ---
 
@@ -12,10 +12,10 @@ updated: 2026-11-17
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[85 - Milestone 11ah - Code View Upgrade]] (incl. its "Calls on the open questions") |
-| **Status** | 📝 Plan written 2026-11-17, waiting for build |
-| **Tasks done** | 0 / 13 (Task 0 – Task 12) |
+| **Status** | 🟨 built on branch m11ah-code-view, waiting for your on-screen check; not merged |
+| **Tasks done** | 13 / 13 (Task 0 – Task 12) |
 | **Baselines** | 1,840 tests (1 ignored); clippy 14 (bin) / 27 (test) default, 16 / 29 with `ui-shots`; fmt clean; full `scripts/ui-shots.sh` 143 passed, 3 failed (`chrome-agent-status` known; `agent-tab-cached-current` and `chrome-drag-cancel` flaked under load and pass alone) |
-| **▶ Pick up here** | Task 0 |
+| **▶ Pick up here** | your on-screen check in note 85 |
 | **Decisions used** | Yours: directions A + B + C ("everything, all layout good"), go-ahead on the design. The open questions settled as AI's calls in note 85: jumps are **⌥↑ / ⌥↓** (plain ↑ / ↓ untouched), side by side **off by default, per tab**, breadcrumb **its own 26 pt strip**. Every number below is note 85's (AI's calls, approved with the design). |
 | **Needs your eyes** | 👀 the on-screen check in note 85, after Task 12 |
 

@@ -3,7 +3,6 @@
 //! Guides, folds, the sticky line, the breadcrumb and the Diff cards' titles all read it. Pure:
 //! no GPUI, no I/O. The lines the colouring pass names (`highlight::Coloured::named`) arrive
 //! later (`Outline::name`); until then, and for plain text, the innermost block is the fallback.
-#![allow(dead_code)] // each lookup is used by the task that builds its part
 
 use std::collections::BTreeSet;
 use std::ops::Range;

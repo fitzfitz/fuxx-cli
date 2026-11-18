@@ -76,6 +76,23 @@
 //! scroll, a read, the colours landing, a fold or a mode change), never while drawing; a press on
 //! either puts its line at the top, current, and ends Follow. Find, Follow and the change jumps
 //! land `REVEAL_ABOVE` rows from the top, one more under a sticky line (`reveal_top`).
+//!
+//! **Code view (M11ah).** Every read also works out an outline of the file's blocks
+//! (`code_outline`: from indentation, or a Markdown file's headings; off the UI thread, given up
+//! after 50 ms) and the colouring pass names the lines that open functions, types and headings.
+//! Guides, folds, the sticky line, the breadcrumb and the Diff cards' titles read it. What is on
+//! screen is one `RowMap` (`row_map`), a cache of layout keyed by mode, version, columns, folds,
+//! layout and side: it replaces the old wrap cache and is the only place that knows which line
+//! sits at which y (hidden lines, card titles, folded stretches and side-by-side pairs included).
+//! The clicked line is the current line (a faint band, a bright number); change bars are rounded
+//! runs; a lane on the scrollbar marks changes and find matches (`scrollbar::lane`); ⌥↓ / ⌥↑ or
+//! the bar's two buttons step between changes (`step_change`, which opens a fold around the
+//! target). In Diff mode `diff_cards::group` makes cards (3 lines of context, a title with the
+//! function and its +/− counts, unchanged stretches of 8 lines or more folded) and the exact
+//! changed words are marked (`word_marks`, `similar`'s inline mode, given up after 50 ms). A
+//! card-wide diff can also be drawn side by side (old half, new half, equal widths; off by
+//! default, kept per tab in the saved layout, needs 60 cells per half). All of it changes only in
+//! event handlers and reads, never while drawing, and nothing animates (M11p).
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};

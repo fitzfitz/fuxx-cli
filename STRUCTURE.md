@@ -183,6 +183,9 @@ src/
 ├── activity_panel.rs     M11h · the right sidebar's Activity panel: header, the waiting question, the timeline
 ├── file_tab.rs           M11g · read-only file tabs: colours, line numbers, change bars, live reload, find, selection, Open in Editor
 ├── live_lines.rs        M11af · compare two texts, the per-line record (who changed it, exact or guessed, when) that follows its lines, glow steps, age words (pure)
+├── code_outline.rs      M11ah · the outline of a file's blocks (indentation, Markdown headings, named lines): guides, folds, sticky line, breadcrumb, card titles (pure)
+├── row_map.rs           M11ah · the one map of screen rows (hidden lines, card titles, folded stretches, side-by-side pairs, Wrap): y ↔ line, next change (pure)
+├── diff_cards.rs        M11ah · Diff mode's cards: grouping with context, titles and counts, folded unchanged stretches, changed-word marks, side-by-side pairing (pure)
 ├── edit_ledger.rs       M11af · the app-wide record of agents' file edits and working spans, and the rule that decides who made a change (pure)
 ├── mermaid.rs            M11ac · Mermaid in the Markdown Preview: which blocks, limits, cache key (SHA-256) and LRU, the page and render script (pure)
 ├── mermaid_render.rs     M11ac · the hidden WKWebView that renders Mermaid offline and snapshots it to PNG; the `Mermaids` cache global
