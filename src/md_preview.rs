@@ -274,9 +274,7 @@ fn gap_after(sizes: &Sizes, prev: Option<&Md>, cur: &Md) -> f32 {
     }
 }
 
-/// A code block's header strip (M11ai): its fill is the code's, this much further toward the
-/// text (a shade off it in either theme).
-const HEADER_SHADE: f32 = 0.05;
+const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
 
 /// The reader's colours, from the theme (on its background, as the tab's).
 #[derive(Clone, Copy, Debug)]
@@ -304,7 +302,8 @@ impl Colours {
         // A tint of the text over the page: it shows in a light theme too (the panel colour
         // is all but the page there).
         let code_bg = mix(bg, ui.text, 0.07);
-        let code_header_bg = mix(code_bg, ui.text, HEADER_SHADE);
+        // A shade darker than the code's fill, in a dark theme too (spec A).
+        let code_header_bg = mix(code_bg, BLACK, crate::ui_tokens::reader::CODE_HEADER_SHADE);
         Colours {
             text: ensure_contrast(ui.text, bg, TEXT_MIN),
             dim: ensure_contrast(ui.text_dim, bg, TEXT_MIN),
@@ -966,6 +965,24 @@ mod tests {
             }
             // The code header is a shade off the code's fill.
             assert_ne!(c.code_header_bg, c.code_bg, "{name}");
+        }
+    }
+
+    /// The code header strip is a shade darker than the code's fill in every theme (spec A,
+    /// "Code blocks"), dark ones too.
+    #[test]
+    fn the_code_header_is_darker_than_the_code_in_every_theme() {
+        use crate::ui_tokens::relative_luminance;
+        for (name, theme) in crate::theme::every_theme() {
+            let c = Colours::of(&theme);
+            let (header, code) = (
+                relative_luminance(c.code_header_bg),
+                relative_luminance(c.code_bg),
+            );
+            assert!(
+                header < code,
+                "{name}: header {header} not below code {code}"
+            );
         }
     }
 
