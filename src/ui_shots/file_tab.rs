@@ -4589,6 +4589,31 @@ fn file_code_fold_keys_scenes() {
                 !cx.read(|cx| tab.read(cx).follow_on()),
                 "{n}: folding ends Follow"
             );
+            // Final review: Fold All leaves rows that fit the view (no scroll at all); a find
+            // step into `fn refresh` opens its fold and the match lands on screen, not cut
+            // short by the shorter rows' limit.
+            cx.update_window(window, |_, window, cx| {
+                window.dispatch_action(Box::new(FoldAll), cx)
+            })
+            .expect("dispatch");
+            let (_, _, g) = look(cx);
+            assert_eq!(g.max_scroll.y, px(0.0), "{n}: folded, it fits");
+            cx.simulate_keystrokes(window, "cmd-f");
+            cx.simulate_input(window, "v30 ");
+            live_frame(cx, window);
+            assert_eq!(cx.read(|cx| tab.read(cx).find_label()), "1 of 1", "{n}");
+            let (folded, _, g) = look(cx);
+            assert!(!folded.contains(&11), "{n}: the find opened the fold");
+            let top = cx
+                .read(|cx| tab.read(cx).line_top(30, cx))
+                .expect("the match's line drawn");
+            assert!(
+                top >= g.scroll.y && top + g.line_height <= g.scroll.y + g.bounds.size.height,
+                "{n}: the match on screen: its top {top:?}, the scroll {:?}, the view {:?}",
+                g.scroll.y,
+                g.bounds.size.height
+            );
+            cx.simulate_keystrokes(window, "escape");
         });
         // A file with no blocks: no fold column.
         let (_, g) = code_shot(&theme, &flat, dims, |_, _, _| {});
@@ -6661,6 +6686,39 @@ fn file_diff_cards_fold_scenes() {
             Some(geom(cx).scroll.y),
             "{n}: Show All keeps the line at the top"
         );
+
+        // Final review: a find step deep into the last folded stretch opens it and the match
+        // lands on screen, not cut short by the shorter rows' limit.
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Plain, cx)));
+        cx.update(|cx| tab.update(cx, |t, cx| t.choose_mode_for_shots(FileMode::Diff, cx)));
+        live_frame(cx, window);
+        scroll_to(cx, px(0.0));
+        assert_eq!(folds(cx), (vec![], vec![]), "{n}: all folded");
+        cx.simulate_keystrokes(window, "cmd-f");
+        cx.simulate_input(window, "b90 ");
+        live_frame(cx, window);
+        assert_eq!(cx.read(|cx| tab.read(cx).find_label()), "1 of 1", "{n}");
+        assert!(
+            folds(cx).0.contains(&104),
+            "{n}: the find opened its stretch"
+        );
+        let row = cx.read(|cx| {
+            let doc = &tab.read(cx).diff_doc().expect("rows").doc;
+            (0..doc.lines.len())
+                .find(|&r| doc.line(r).contains("b90 "))
+                .expect("the match's row")
+        });
+        let top = cx
+            .read(|cx| tab.read(cx).line_top(row, cx))
+            .expect("the match's row drawn");
+        let g = geom(cx);
+        assert!(
+            top >= g.scroll.y && top + lh <= g.scroll.y + g.bounds.size.height,
+            "{n}: the match on screen: its top {top:?}, the scroll {:?}, the view {:?}",
+            g.scroll.y,
+            g.bounds.size.height
+        );
+        cx.simulate_keystrokes(window, "escape");
     });
     keep_shot(n, &shot);
     println!("ui-shots: {n} ok");

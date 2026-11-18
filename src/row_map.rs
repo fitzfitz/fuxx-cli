@@ -96,19 +96,20 @@ enum Rows {
         tops: Arc<[f32]>,
         /// Each line's first row (none: hidden).
         first: Arc<[Option<usize>]>,
-        /// Diff mode's cards and folded rows (none: a file's).
+        /// Each run of hidden lines and the row drawn for it, in order: a file's fold (its
+        /// folded line's first row), a Diff's folded stretch or closed card (its `⋯` row, its
+        /// title).
+        held: Arc<[(Range<usize>, usize)]>,
+        /// Diff mode's cards (none: a file's).
         diff: Option<Arc<DiffRows>>,
     },
 }
 
-/// Where a Diff map's cards and folds sit.
+/// Where a Diff map's cards sit.
 #[derive(Clone, Debug, Default)]
 struct DiffRows {
     /// Each card's rows: its title's, to one past its last.
     cards: Vec<Range<usize>>,
-    /// Each run of hidden lines (a folded stretch, a closed card) and the row drawn for it, in
-    /// order.
-    held: Vec<(Range<usize>, usize)>,
 }
 
 /// Each row's top for rows `heights` tall, then the height: summed in f64 (exact for any real
@@ -185,11 +186,19 @@ impl RowMap {
         }
         let mut rows = Vec::with_capacity(lines);
         let mut first = vec![None; lines];
+        // Each run of hidden lines, held by the shown line before it (its fold's line).
+        let mut held: Vec<(Range<usize>, usize)> = Vec::new();
+        let mut last_shown = None;
         for (line, &width) in widths.iter().enumerate() {
             if !shown[line] {
+                match held.last_mut() {
+                    Some((run, _)) if run.end == line => run.end = line + 1,
+                    _ => held.extend(last_shown.map(|r| (line..line + 1, r))),
+                }
                 continue;
             }
             first[line] = Some(rows.len());
+            last_shown = Some(rows.len());
             rows.extend(line_rows(line, width, columns));
         }
         let tops = tops_of(std::iter::repeat_n(row_h, rows.len()));
@@ -198,6 +207,7 @@ impl RowMap {
                 rows: rows.into(),
                 tops,
                 first: first.into(),
+                held: held.into(),
                 diff: None,
             },
             columns,
@@ -341,6 +351,7 @@ impl RowMap {
         let mut heights: Vec<f32> = Vec::with_capacity(lines + g.cards.len());
         let mut first = vec![None; lines];
         let mut diff = DiffRows::default();
+        let mut held: Vec<(Range<usize>, usize)> = Vec::new();
         let (mut card, mut stretch) = (0, 0);
         let mut line = 0;
         let push = |rows: &mut Vec<Row>, heights: &mut Vec<f32>, row: Row, h: f32| {
@@ -359,7 +370,7 @@ impl RowMap {
                 push(&mut rows, &mut heights, Row::Title { card }, CARD_TITLE);
                 let end = c.rows.end.min(lines);
                 if layout.closed.get(card).copied().unwrap_or(false) {
-                    diff.held.push((line..end, title));
+                    held.push((line..end, title));
                 } else if let Some(pairs) = layout.pairs.and_then(|p| p.get(card)) {
                     // Side by side: the card's rows paired.
                     for &(o, n) in pairs {
@@ -386,7 +397,7 @@ impl RowMap {
                 stretch += 1;
                 if !layout.shown.get(stretch - 1).copied().unwrap_or(false) {
                     let end = s.rows.end.min(lines);
-                    diff.held.push((line..end, rows.len()));
+                    held.push((line..end, rows.len()));
                     push(
                         &mut rows,
                         &mut heights,
@@ -417,6 +428,7 @@ impl RowMap {
                 rows: rows.into(),
                 tops: tops_of(heights.into_iter()),
                 first: first.into(),
+                held: held.into(),
                 diff: Some(Arc::new(diff)),
             },
             columns,
@@ -431,11 +443,19 @@ impl RowMap {
         }
     }
 
-    /// The row line `line` is drawn on: its first, or (hidden in a Diff) its fold's: the `⋯`
-    /// row of its stretch, the title of its closed card. None: hidden in a file's fold.
+    /// Each run of hidden lines and the row drawn for it, in order (none: nothing hidden).
+    pub fn held(&self) -> &[(Range<usize>, usize)] {
+        match &self.rows {
+            Rows::Listed { held, .. } => held,
+            Rows::Identity { .. } => &[],
+        }
+    }
+
+    /// The row line `line` is drawn on: its first, or (hidden) its fold's: a file's folded line,
+    /// a Diff's `⋯` row of its stretch or the title of its closed card.
     pub fn row_holding(&self, line: usize) -> Option<usize> {
         self.first_row(line).or_else(|| {
-            let held = &self.diff_rows()?.held;
+            let held = self.held();
             let k = held.partition_point(|(lines, _)| lines.end <= line);
             held.get(k)
                 .filter(|(l, _)| l.contains(&line))
@@ -443,9 +463,10 @@ impl RowMap {
         })
     }
 
-    /// Diff: the lines a folded row `r` holds (a `⋯` row's stretch, a closed card's title's).
+    /// The lines a folded row `r` holds (a `⋯` row's stretch, a closed card's title's; a file's
+    /// folded line's hidden lines).
     pub fn lines_held_at(&self, r: usize) -> Option<Range<usize>> {
-        let held = &self.diff_rows()?.held;
+        let held = self.held();
         let k = held.partition_point(|(_, row)| *row < r);
         held.get(k)
             .filter(|(_, row)| *row == r)
@@ -621,6 +642,27 @@ mod tests {
         let odd = RowMap::file(&[1; 50], Some(4), &[], 18.000_002);
         assert_eq!(odd.top(37), 18.000_002 * 37.0);
         assert_eq!(odd.height(), 18.000_002 * 50.0);
+    }
+
+    /// Final review: a file's hidden runs are held by the folded line before them (its first
+    /// row with Wrap), touching runs as one; a hidden line's row is its fold's.
+    #[test]
+    fn a_files_hidden_lines_are_held_by_their_fold() {
+        let map = RowMap::file(
+            &[1, 9, 1, 1, 1, 1, 1, 1],
+            Some(4),
+            &[2..4, 4..5, 6..8],
+            10.0,
+        );
+        // Rows: line 0, line 1 (3 rows: 1..4), line 5 (row 4).
+        assert_eq!(map.held(), [(2..5, 1), (6..8, 4)]);
+        assert_eq!(map.row_holding(3), Some(1), "hidden: its fold's first row");
+        assert_eq!(map.row_holding(7), Some(4));
+        assert_eq!(map.row_holding(5), Some(4), "shown: its own");
+        assert_eq!(map.lines_held_at(1), Some(2..5));
+        assert_eq!(map.lines_held_at(2), None);
+        assert!(RowMap::file(&[1; 4], None, &[], 10.0).held().is_empty());
+        assert!(RowMap::file(&[1; 4], Some(4), &[], 10.0).held().is_empty());
     }
 
     #[test]

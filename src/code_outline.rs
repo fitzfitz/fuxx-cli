@@ -16,6 +16,8 @@ pub const PART_MAX: usize = 32;
 const DEFAULT_STEP: usize = 4;
 /// How many lines are worked out between looks at the clock.
 const CLOCK_EVERY: usize = 256;
+/// The widest indent jump counted as a step, in cells.
+const STEP_MAX: usize = 64;
 
 /// A run of lines: the opener, what is nested under it, and (for braces and the like) its closer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -123,11 +125,7 @@ pub fn outline(lines: &[&str], markdown: bool, limit: Duration) -> Option<Outlin
         if let Some((_, before)) = last
             && indent > before
         {
-            let d = indent - before;
-            if steps.len() <= d {
-                steps.resize(d + 1, 0);
-            }
-            steps[d] += 1;
+            count_step(&mut steps, indent - before);
         }
         // Blocks this line is no longer nested under end before it, or with it (a closer at
         // the opener's indent that opens nothing itself).
@@ -172,6 +170,19 @@ pub fn outline(lines: &[&str], markdown: bool, limit: Duration) -> Option<Outlin
         .map_or(DEFAULT_STEP, |(d, _)| d);
     out.levels_from(&indents);
     Some(out)
+}
+
+/// One more line `d` cells deeper than the non-blank one before it, counted in `steps` (by `d`).
+/// A jump over `STEP_MAX` cells is no step (a generated or broken line), and not counted: the
+/// list never grows with the content.
+fn count_step(steps: &mut Vec<usize>, d: usize) {
+    if d > STEP_MAX {
+        return;
+    }
+    if steps.len() <= d {
+        steps.resize(d + 1, 0);
+    }
+    steps[d] += 1;
 }
 
 /// Markdown: a heading's block runs to the line before the next heading of the same or a higher
@@ -502,6 +513,19 @@ mod tests {
         assert_eq!(indent_cells("   "), None);
         let tabbed = make(&["a", "\tb", "\t\tc"]);
         assert_eq!((tabbed.step, tabbed.levels(1), tabbed.levels(2)), (4, 1, 2));
+    }
+
+    /// Final review: the step count's memory doesn't grow with the content: a jump wider than
+    /// any real step is not counted (no list as long as the jump), and the step is unaffected.
+    #[test]
+    fn a_huge_indent_jump_is_not_counted() {
+        let mut steps = Vec::new();
+        count_step(&mut steps, 2);
+        count_step(&mut steps, usize::MAX / 2);
+        assert!(steps.len() <= 65, "no list as long as the jump");
+        let deep = format!("{}x", " ".repeat(1_000_000));
+        let o = make(&["a", "  b", "    c", &deep, "  d", "    e"]);
+        assert_eq!(o.step, 2, "the jump leaves the step alone");
     }
 
     #[test]
