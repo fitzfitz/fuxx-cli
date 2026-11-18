@@ -186,8 +186,8 @@ pub(crate) fn band_entry_top(i: usize) -> f32 {
 }
 
 /// The left edges, in a window `window_width` wide, of the collapsed band's buttons (🔔, ⚙,
-/// sidebar): the sidebar button `BAND_EDGE` from the window's right edge (as the open one is
-/// from the sidebar's), the others `BAND_GAP` apart to its left.
+/// sidebar): the sidebar button `BAND_EDGE` from the window's right edge (the open one keeps
+/// `OPEN_EDGE` from its sidebar's), the others `BAND_GAP` apart to its left.
 pub fn band_buttons(window_width: f32) -> [f32; 3] {
     let sidebar = window_width - BAND_EDGE - HIT;
     let gear = sidebar - BAND_GAP - HIT;

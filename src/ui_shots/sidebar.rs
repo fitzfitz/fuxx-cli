@@ -601,9 +601,9 @@ const ROWS: [ShotSession; 6] = [
 /// selected (the selection's tint and the accent bar at the sidebar's edge, its text in
 /// `text`); the long name cut; notes in /tmp (no `~`).
 ///
-/// Panics unless the pinned rows lead, the rows still know their branch and folder (the row
-/// shows neither: line two says who and where, M11al §2.4), every row is `SIDEBAR_ROW_TWO` and
-/// every heading `GROUP_HEADER` tall, and the selected row is tinted to its left edge with the
+/// Panics unless the pinned rows lead, the rows still know their folder (the row shows it as
+/// the last part only: line two says who and where, M11al §2.4), every row is `SIDEBAR_ROW_TWO`
+/// and every heading `GROUP_HEADER` tall, and the selected row is tinted to its left edge with the
 /// accent bar beside it and its name in `text` (`check_selected`).
 fn sidebar_row_scenes() {
     use std::cell::{Cell, RefCell};
@@ -663,40 +663,32 @@ fn sidebar_row_scenes() {
                     let ws = ws.read(cx);
                     let n = format!("{scene}-{slug}");
                     let rows = ws.rows_in_view(Instant::now());
-                    let shape: Vec<(String, bool, Option<String>, Option<String>)> = rows
+                    let shape: Vec<(String, bool, Option<String>)> = rows
                         .iter()
                         .map(|r| match r {
-                            SidebarRow::Header(h) => (format!("[{}]", h.label), false, None, None),
-                            SidebarRow::Workspace(w) => (
-                                w.label.clone(),
-                                w.pinned,
-                                w.branch.clone(),
-                                w.folder.clone(),
-                            ),
+                            SidebarRow::Header(h) => (format!("[{}]", h.label), false, None),
+                            SidebarRow::Workspace(w) => {
+                                (w.label.clone(), w.pinned, w.folder.clone())
+                            }
                         })
                         .collect();
-                    let row = |label: &str, pinned, branch: Option<&str>, folder: Option<&str>| {
-                        (
-                            label.to_string(),
-                            pinned,
-                            branch.map(String::from),
-                            folder.map(String::from),
-                        )
+                    let row = |label: &str, pinned, folder: Option<&str>| {
+                        (label.to_string(), pinned, folder.map(String::from))
                     };
-                    let header = |label: &str| row(label, false, None, None);
+                    let header = |label: &str| row(label, false, None);
                     let long_folder = "~/code/a-very-long-project-folder/services/payments";
                     assert_eq!(
                         shape,
                         [
-                            row("deploy", true, Some("main"), Some("~/code/infra")),
-                            row("claude", true, Some("feature/rows"), Some("~/code/api")),
-                            row("notes", false, None, Some("/tmp/scratch")),
+                            row("deploy", true, Some("~/code/infra")),
+                            row("claude", true, Some("~/code/api")),
+                            row("notes", false, Some("/tmp/scratch")),
                             header("[api]"),
-                            row("codex", false, Some("feature/rows"), Some("~/code/api")),
+                            row("codex", false, Some("~/code/api")),
                             header("[payments]"),
-                            row("payments", false, Some(LONG_BRANCH), Some(long_folder)),
+                            row("payments", false, Some(long_folder)),
                             header("[web]"),
-                            row(ROWS[4].name, false, Some("main"), Some("~/code/web")),
+                            row(ROWS[4].name, false, Some("~/code/web")),
                         ],
                         "{n}"
                     );

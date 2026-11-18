@@ -85,8 +85,6 @@ pub struct WorkspaceFacts<'a> {
     pub color: Option<TabColor>,
     /// Pinned to the top of the sidebar (out of its group).
     pub pinned: bool,
-    /// The git branch checked out where its first terminal is (only inside a repo).
-    pub branch: Option<&'a str>,
     /// Where its first terminal is, as shown (`home_relative`; an SSH one's host).
     pub folder: Option<String>,
     /// A program other than the shell runs in `subject` (M11i: an idle row's filled dot).
@@ -193,6 +191,15 @@ pub fn shell_name(shell: Option<&std::ffi::OsStr>) -> String {
     }
 }
 
+/// The name a terminal's launch program gives its shell: the file name of the program's first
+/// word (a login shell's `-` dropped). None for the default shell, or a word with no name.
+pub fn launch_name(program: Option<&[String]>) -> Option<String> {
+    let first = program?.first()?;
+    let name = Path::new(first).file_name()?.to_string_lossy();
+    let name = name.trim_start_matches('-');
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// The local shell's name (`shell_name` of `$SHELL`), read once.
 pub(crate) fn local_shell() -> &'static str {
     static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -257,9 +264,8 @@ pub struct WorkspaceRow {
     pub color: Option<TabColor>,
     /// Pinned: at the top, out of its group, with a 📌.
     pub pinned: bool,
-    /// Where it is: the branch (only inside a git repo) and the folder, each on its own line
-    /// under the name (2026-11-10; it was one `branch • folder` line).
-    pub branch: Option<String>,
+    /// Where it is: the folder (the branch no longer shows in a row; it is on the Changes
+    /// tab's bar and the status bar).
     pub folder: Option<String>,
     /// A program other than the shell runs in its subject: idle, its mark is a filled dot, not
     /// a ring (M11i).
@@ -346,7 +352,6 @@ pub fn rows(
                     progress: s.progress.map(|(p, _)| *p),
                     color: s.color,
                     pinned: s.pinned,
-                    branch: s.branch.map(String::from),
                     folder: s.folder.clone(),
                     running: s.running,
                     title: groups::extra_title(s.label, s.title).map(String::from),
@@ -1323,9 +1328,8 @@ fn chevron(angle: f32, color: Rgb) -> impl IntoElement {
 }
 
 impl Workspace {
-    /// The terminal a row's (and a header's) branch is read from: the workspace's focused
-    /// terminal, else its first (as `sidebar_rows` reads it), so the branch switcher opens for
-    /// the one whose branch was clicked.
+    /// The terminal a row's (and a header's) place and shell are read from: the workspace's
+    /// focused terminal, else its first (as `sidebar_rows` reads it).
     pub(crate) fn branch_terminal(&self, ws: WorkspaceId) -> Option<u64> {
         self.named_terminal(ws)
     }
@@ -1358,26 +1362,26 @@ impl Workspace {
             .map(|(ws, _, _)| self.workspace_label(*ws))
             .collect();
         // Where each is: its first terminal's folder (as last looked up, else the one it started
-        // in) and the branch there; an SSH one's host.
+        // in); an SSH one's host.
         let mut heres: Vec<Option<String>> = Vec::with_capacity(subjects.len());
-        let places: Vec<(Option<&str>, Option<String>)> = subjects
+        let places: Vec<Option<String>> = subjects
             .iter()
             .map(|&(ws, _, _)| {
-                // Its focused terminal's (2026-11-10, your report: the branch didn't follow the
+                // Its focused terminal's (2026-11-10, your report: the place didn't follow the
                 // terminal you were in), as `branch_terminal`.
                 let first = self.branch_terminal(ws);
                 let Some(s) = first.and_then(|id| items.iter().find(|s| s.id == id)) else {
                     heres.push(None);
-                    return (None, None);
+                    return None;
                 };
                 let found = self.places.folder(s.id);
                 if let Some(ssh) = &s.ssh {
                     heres.push(None);
-                    return (None, Some(remote_place(&ssh.host, found)));
+                    return Some(remote_place(&ssh.host, found));
                 }
                 let Some(folder) = found.or(s.project.as_deref()) else {
                     heres.push(None);
-                    return (None, None);
+                    return None;
                 };
                 let home = self.places.home.as_deref();
                 heres.push(match self.workspace_group(ws) {
@@ -1386,8 +1390,7 @@ impl Workspace {
                     Some(GroupKey::Folder(_)) => Some(home_relative(folder, home)),
                     _ => None,
                 });
-                let shown = home_relative(folder, home);
-                (self.places.branch(folder), Some(shown))
+                Some(home_relative(folder, home))
             })
             .collect();
         let facts: Vec<WorkspaceFacts> = subjects
@@ -1395,7 +1398,7 @@ impl Workspace {
             .zip(&labels)
             .zip(places)
             .enumerate()
-            .map(|(i, ((&(ws, subject, agent), label), (branch, folder)))| {
+            .map(|(i, ((&(ws, subject, agent), label), folder))| {
                 let s = subject.map(|i| &items[i]);
                 // The row's mark, age and question: its agent tab's when it wins (R3), else its
                 // terminal rollup's.
@@ -1426,7 +1429,6 @@ impl Workspace {
                     lost: s.is_some_and(|s| s.lost),
                     color: self.model.workspace(ws).and_then(|w| w.color),
                     pinned: self.model.workspace(ws).is_some_and(|w| w.pinned),
-                    branch,
                     folder,
                     running: row_running(status, s.map(|s| s.id), self.named_terminal(ws), |id| {
                         matches!(self.programs.state(id), ProgramState::Running(_))
@@ -1462,7 +1464,8 @@ impl Workspace {
     /// Who is in front in workspace `ws` (`who_of`, Task 8b: its active tab, from what is
     /// already known: no lookup of its own): its focused pane's active tab when that is an agent
     /// tab; else its named terminal (the active tab's, else its first) with the agent seen in it,
-    /// the program in front and its shell (`ssh` for an SSH one, `$SHELL`'s name). A change of
+    /// the program in front and its shell (`ssh` for an SSH one, else the file name of the program
+    /// it was started with, else `$SHELL`'s name). A change of
     /// active tab notifies the workspace, which rebuilds the rows (`rows_generation`).
     fn row_who(&self, ws: WorkspaceId) -> Who {
         let items = self.sessions.items();
@@ -1486,7 +1489,8 @@ impl Workspace {
             program: program.as_deref(),
             shell: match terminal {
                 Some(s) if s.ssh.is_some() => "ssh",
-                _ => local_shell(),
+                Some(s) => s.launched.as_deref().unwrap_or(local_shell()),
+                None => local_shell(),
             },
         })
     }
@@ -3162,7 +3166,6 @@ mod tests {
             lost: false,
             color: None,
             pinned: false,
-            branch: None,
             folder: None,
             running: false,
             title: None,
@@ -3731,29 +3734,20 @@ mod tests {
     fn a_row_says_where_its_workspace_is() {
         let now = Instant::now();
         let mut api = facts("api", Status::Idle, now, Some(folder("/w/api")));
-        api.branch = Some("main");
         api.folder = Some("~/w/api".into());
-        // Not in a repo: the folder alone.
         let mut notes = facts("notes", Status::Idle, now, None);
         notes.folder = Some("~/notes".into());
         // Nowhere known (a browser-only workspace).
         let bare = facts("Browser", Status::Idle, now, None);
         let rows = rows(&numbered(vec![notes, bare, api]), &[], None, &[], now);
-        let picked: Vec<(Option<&str>, Option<&str>)> = rows
+        let picked: Vec<Option<&str>> = rows
             .iter()
             .filter_map(|r| match r {
-                SidebarRow::Workspace(w) => Some((w.branch.as_deref(), w.folder.as_deref())),
+                SidebarRow::Workspace(w) => Some(w.folder.as_deref()),
                 SidebarRow::Header(_) => None,
             })
             .collect();
-        assert_eq!(
-            picked,
-            [
-                (None, Some("~/notes")),
-                (None, None),
-                (Some("main"), Some("~/w/api"))
-            ]
-        );
+        assert_eq!(picked, [Some("~/notes"), None, Some("~/w/api")]);
     }
 
     #[test]
@@ -3843,7 +3837,6 @@ mod tests {
         let zsh = Who::Shell("zsh".into());
         let mut both = facts("api", Status::Idle, now, None);
         both.folder = Some("~/api".into());
-        both.branch = Some("main");
         let api = Some("api".to_string());
         let here = LineTwo::WhoWhere {
             who: zsh.clone(),
@@ -3896,7 +3889,6 @@ mod tests {
             let mut f = facts("x", Status::Working, now, None);
             f.who = who.clone();
             f.folder = folder.map(String::from);
-            f.branch = Some("main");
             f
         };
         assert_eq!(
@@ -3981,6 +3973,22 @@ mod tests {
         assert_eq!(shell_name(None), "shell");
     }
 
+    /// Plan call 6: the shell's name is the file name of the program the terminal was started
+    /// with; none for the default shell (its name is `$SHELL`'s).
+    #[test]
+    fn a_launch_program_names_the_shell() {
+        let argv = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            launch_name(Some(&argv(&["/usr/bin/fish", "-l"]))),
+            Some("fish".into())
+        );
+        assert_eq!(launch_name(Some(&argv(&["-bash"]))), Some("bash".into()));
+        assert_eq!(launch_name(Some(&argv(&["htop"]))), Some("htop".into()));
+        assert_eq!(launch_name(Some(&argv(&[]))), None);
+        assert_eq!(launch_name(Some(&argv(&[""]))), None);
+        assert_eq!(launch_name(None), None, "the default shell: `$SHELL`'s");
+    }
+
     /// Task 8b (the user's ruling): who follows the workspace's active tab. Its Claude tab
     /// active: Claude, though its terminal runs npm.
     #[test]
@@ -4043,7 +4051,6 @@ mod tests {
         };
         let mut both = facts("api", Status::Idle, now, None);
         both.folder = Some("~/api".into());
-        both.branch = Some("main");
         assert_eq!(lines(both), ["\u{203a}_ zsh \u{b7} api"]);
         let mut npm = facts("api", Status::Idle, now, None);
         npm.who = Who::Program("npm".into());
@@ -4094,7 +4101,6 @@ mod tests {
         assert_eq!(height(placed), 56.0);
         let mut waiting = facts("claude", Status::Waiting, now, None);
         waiting.folder = Some("~/api".into());
-        waiting.branch = Some("main");
         waiting.question = Some("Proceed? (y/n)");
         assert_eq!(height(waiting), 56.0);
         let mut lost = facts("api", Status::Idle, now, None);
@@ -4147,7 +4153,6 @@ mod tests {
         let base = |status| {
             let mut f = facts("api", status, now, None);
             f.folder = Some("~/api".into());
-            f.branch = Some("main");
             f.note = Some("3 of 7");
             f.question = Some("Proceed? (y/n)");
             f.title = Some("vim");
@@ -4403,7 +4408,6 @@ mod tests {
         let placed = |group| {
             let mut f = facts("api", Status::Idle, now, group);
             f.folder = Some("~/api".into());
-            f.branch = Some("main");
             f
         };
         let api = LineTwo::WhoWhere {
@@ -4431,7 +4435,6 @@ mod tests {
     fn a_header_knows_who_waits_inside() {
         let now = Instant::now();
         let mut a = facts("a", Status::Waiting, now, Some(folder("/api")));
-        a.branch = Some("dev");
         a.color = Some(TabColor::Teal);
         let b = facts("b", Status::Waiting, now, Some(folder("/api")));
         let c = facts("c", Status::Idle, now, Some(folder("/api")));

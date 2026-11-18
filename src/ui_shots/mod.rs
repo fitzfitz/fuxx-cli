@@ -563,9 +563,6 @@ const fn shot(
 const API: &str = "/Users/me/code/api";
 const WEB: &str = "/Users/me/code/web";
 
-/// A workspace showing `sessions` (each over a silent `cat`), statuses set the way the app
-/// sets them (so the waiting question is read off its screen). Session `split` is split from
-/// the one before it; `active` is focused; the `collapsed` folders are closed.
 /// How much taller the sidebar's chrome (band, search box with its bottom margin, footer) is
 /// since M11al Task 7 than it was (38 + 30 + 0 + 36 before; `TOP_BAND`, `SEARCH` and its bottom
 /// margin, `FOOTER` now): a scene whose window was sized for the old room adds this to its
@@ -585,6 +582,9 @@ pub(super) const fn sidebar_list_growth(rows: f32, headers: f32) -> f32 {
         + headers * (ui_tokens::size::GROUP_HEADER - 28.0)
 }
 
+/// A workspace showing `sessions` (each over a silent `cat`), statuses set the way the app
+/// sets them (so the waiting question is read off its screen). Session `split` is split from
+/// the one before it; `active` is focused; the `collapsed` folders are closed.
 fn sidebar_workspace(
     sessions: &[ShotSession],
     split: Option<usize>,

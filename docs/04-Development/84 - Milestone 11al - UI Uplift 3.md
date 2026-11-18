@@ -526,6 +526,12 @@ No new crate, no new setting, no new timer. Every colour is a `UiColors` token f
 12. **Clean-up, docs and hand-off**: stale comments fixed (`theme.rs`, `sidebar.rs`, `right_sidebar.rs`); this note,
     the plan, the roadmap and the Progress Log.
 
+13. **The review fix wave** (`M11al: final review fixes`): the CHANGES count pill includes the rows past the 1,000 cap;
+    the chrome-drag-cancel scene waits for the tty's Esc echo; the row's dead `branch` data is gone (field, lookup and
+    the scene checks that read it: nothing but tests used it); a row's shell is the file name of the program its terminal
+    was started with (else `$SHELL`'s); the right panel's width model counts the card's 1 px edges (the panes keep 200,
+    not 199); Activity's header is its own 42 px again; stale comments fixed.
+
 ## Calls made while building
 
 Each is the AI's unless it says **yours**.
@@ -635,7 +641,6 @@ your check, item 14.
 - The browser bar keeps 6 px padding; the file bar has 16.
 - Done no longer pops in tabs: the muted ✓ is drawn still (the status bar's mark still pops).
 - In Latte, port chips in the status bar look flatter right under the card, where its shadow falls.
-- Activity's header is 54 px with no card, so it has some empty room.
 - Text sizes changed with the tokens (names 14, meta 12.5), so the palette, menus and the agent box's chips grew a
   little.
 - The right panel's resize strip takes the leftmost 2.5 px of its header's drag area.
@@ -645,17 +650,21 @@ your check, item 14.
 
 | Check | Before (Task 0, `cc3b2b8`) | Now (`m11al-ui-uplift`) |
 | --- | --- | --- |
-| `cargo test --bin fuxx` | 1,944 passed (1 ignored) | **1,959 passed** (1 ignored) |
+| `cargo test --bin fuxx` | 1,944 passed (1 ignored) | **1,962 passed** (1 ignored) |
 | `cargo clippy --all-targets` | 14 (bin) / 27 (test) | 14 / 27 (no new warnings) |
 | `cargo clippy --all-targets --features ui-shots` | 16 / 29 | 16 / 29 (no new warnings) |
 | `cargo fmt --check` | clean | clean |
-| Full `scripts/ui-shots.sh` | 191 passed, 0 failed, 144.1 s | **201 passed, 1 failed**, 126.3 s (202 scenes: 11 new) |
+| Full `scripts/ui-shots.sh` | 191 passed, 0 failed, 144.1 s | **202 passed, 0 failed**, 131.9 s (after the review fix wave; 11 new scenes) |
 | New `timer(` / `request_animation_frame` / `spawn(` in code | n/a | none |
 | Idle CPU, nothing open | n/a | not measured by the builder: your check, item 14 |
 
-The one failure was `chrome-drag-cancel` in the eight-at-once run: "Esc (the row drag goes on): 1731 bytes differ
-from a full redraw (stale)". Alone it passed ("7 steps, each current"). It failed once in Task 10's run too and passed
-alone; it is flagged for the final review. The reference fingerprints are report only and stale on this Mac (0 same,
+The one failure in the pre-review run was `chrome-drag-cancel` ("Esc (the row drag goes on): 1731 bytes differ from
+a full redraw (stale)"). It was a harness timing race, not a stale cached chrome part. Esc during a row drag goes to
+the focused api terminal, a real `/bin/cat` in a pty; the tty echoes `^[`, and the echo lands on the pty reader thread
+between the harness's last `run_until_parked` and `frame_fresh`. The 1,731 differing bytes are exactly the step's own
+whole change, and they are in the terminal pane, so M11p's rule (cached chrome = fresh) holds. The review fix wave
+hardened the scene: after Esc it waits, with a 5 s deadline, until the api terminal's screen shows the `^[` echo, then
+settles and captures. It passed 6 of 6 runs alone and passed in the full run (202 passed, 0 failed). The reference fingerprints are report only and stale on this Mac (0 same,
 351 look different, 40 differ in size, 116 without a reference); `--update-refs` was never used.
 
 ## On-screen check (yours, after the build)

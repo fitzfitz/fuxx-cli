@@ -1121,7 +1121,27 @@ pub(super) fn chrome_drag_cancel() {
         window,
         "Esc (the row drag goes on)",
         Seen::Maybe,
-        |cx| cx.simulate_keystrokes(window, "escape"),
+        |cx| {
+            cx.simulate_keystrokes(window, "escape");
+            // The focused api terminal runs a real `cat` in a pty: its tty echoes `^[` on the
+            // reader thread, at a time the harness does not choose. Wait (with a deadline) for
+            // the echo to be on the screen, so it cannot land between the capture and the
+            // fresh frame.
+            let view = cx.read(|cx| ws.read(cx).sessions.active().expect("api").view.clone());
+            let started = Instant::now();
+            while !cx.read(|cx| {
+                view.read(cx)
+                    .text(crate::grid::TextScope::Screen)
+                    .contains("^[")
+            }) {
+                assert!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "{n}: the tty's echo of Esc never reached the screen"
+                );
+                crate::ui_shots::prof::sleep(Duration::from_millis(16));
+                cx.run_until_parked();
+            }
+        },
     );
     let terminal = over_terminal(&mut cx, ws);
     steps.step(
@@ -2920,7 +2940,7 @@ pub(super) fn chrome_sidebar_header_mark() {
 
 /// A row's other sources: a waiting terminal's question (read off its screen by `set_status`;
 /// without the banner, which would be a real one), the terminal a row is named after and reads
-/// its branch from (`named_terminal` / `branch_terminal`: the workspace's focused pane's,
+/// its place from (`named_terminal` / `branch_terminal`: the workspace's focused pane's,
 /// changed by Focus Pane Right), an SSH session's host, and a terminal's project
 /// (its folder and group).
 ///
@@ -2978,7 +2998,7 @@ pub(super) fn chrome_row_sources() {
     );
     // Its age turns every second from here; date it minutes back so no turn lands in a check.
     minutes_old(&mut cx, ws, "agent");
-    // api's workspace: named after, and its branch read from, its focused pane's terminal.
+    // api's workspace: named after, and its folder read from, its focused pane's terminal.
     let row = |cx: &mut VisualTestAppContext| {
         cx.read(|cx| {
             let ws = ws.read(cx);
@@ -2987,16 +3007,16 @@ pub(super) fn chrome_row_sources() {
             let named = ws
                 .named_terminal(w)
                 .map(|id| ws.terminal_label(id).to_string());
-            let branch = ws
+            let place = ws
                 .rows_in_view(Instant::now())
                 .into_iter()
                 .find_map(|r| match r {
                     crate::sidebar::SidebarRow::Workspace(r) if r.workspace == w => {
-                        Some((r.label.to_string(), r.branch.clone()))
+                        Some((r.label.to_string(), r.folder.clone()))
                     }
                     _ => None,
                 });
-            (named, branch)
+            (named, place)
         })
     };
     let before = row(&mut cx);
@@ -3004,17 +3024,20 @@ pub(super) fn chrome_row_sources() {
     steps.step(
         &mut cx,
         window,
-        "the right pane focused: the row's name and branch follow",
+        "the right pane focused: the row's name and folder follow",
         Seen::Changes,
         |cx| cx.dispatch_action(window, FocusPaneRight),
     );
     let after = row(&mut cx);
     println!("ui-shots: {n}: api's row {before:?} -> {after:?}");
     assert_eq!(after.0.as_deref(), Some("tests"), "{n}: named after tests");
-    assert_eq!(
-        after.1.as_ref().and_then(|(_, b)| b.as_deref()),
-        Some("feature"),
-        "{n}: tests's branch"
+    assert!(
+        after
+            .1
+            .as_ref()
+            .and_then(|(_, f)| f.as_deref())
+            .is_some_and(|f| f.ends_with("code/web")),
+        "{n}: tests's folder: {after:?}"
     );
     let open = |cx: &mut VisualTestAppContext, saved: SavedSession| {
         on_ws(cx, window, ws, |ws, window, cx| {
