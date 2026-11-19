@@ -15,8 +15,8 @@
 
 use super::{
     Scene, agent, agent_box, ask, branch, changes, chrome, chrome_parts, file_tab, file_tab_md,
-    file_tab_md_reader, naming, overlays, palette, panes, right_sidebar, sidebar, status_bar,
-    terminal, welcome, window,
+    file_tab_md_reader, naming, notes, overlays, palette, panes, right_sidebar, sidebar,
+    status_bar, terminal, welcome, window,
 };
 
 /// Files that run or declare the suite but change no scene's picture: an edit to one of these
@@ -52,6 +52,7 @@ pub(super) const AREAS: &[(&str, &[Scene])] = &[
     (agent::FILE, agent::SCENES),
     (agent_box::FILE, agent_box::SCENES),
     (ask::FILE, ask::SCENES),
+    (notes::FILE, notes::SCENES),
 ];
 
 /// The scenes with their own area file added to `sources`, as `--changed` reads them, so an edit
@@ -169,6 +170,9 @@ pub(super) const ORDER: &[&str] = &[
     "ask-bar-ssh",
     "ask-bar-too-long",
     "ask-diff",
+    "notes-follow-edit",
+    "notes-light",
+    "notes-late",
     "file-code-nav",
     "file-code-calm",
     "file-code-guides",

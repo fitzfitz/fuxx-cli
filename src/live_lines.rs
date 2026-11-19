@@ -61,6 +61,32 @@ pub fn compare(old: &[&str], new: &[&str], limit: Duration) -> Option<Compared> 
     Some(Compared { blocks, new_of_old })
 }
 
+/// Where `c` removed old lines with nothing new in their place: the new text's line each gap
+/// is before (the text's length for a gap at its end), in order; a gap at or touching a
+/// changed block (a replace) is not one.
+pub fn deleted_edges(c: &Compared) -> Vec<usize> {
+    let mut edges: Vec<usize> = Vec::new();
+    // The new line after the last old line kept so far: where a gap opening now is.
+    let mut next = 0;
+    let mut in_gap = false;
+    for to in &c.new_of_old {
+        match to {
+            Some(new) => {
+                next = new + 1;
+                in_gap = false;
+            }
+            None if !in_gap => {
+                in_gap = true;
+                edges.push(next);
+            }
+            None => {}
+        }
+    }
+    edges.retain(|&e| !c.blocks.iter().any(|b| b.start <= e && e <= b.end));
+    edges.dedup();
+    edges
+}
+
 /// Who changed a line.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Who {
@@ -406,6 +432,32 @@ mod tests {
         };
         r.apply(&c2, 3, mark(Who::You, secs(5)));
         assert_eq!(r.warm_blocks(secs(10)), vec![(0..2, 3), (2..3, 3)]);
+    }
+
+    #[test]
+    fn deleted_edges_of_a_pure_deletion() {
+        let edges = |old: &[&str], new: &[&str]| deleted_edges(&compare(old, new, LIMIT).unwrap());
+        assert_eq!(edges(&["a", "b", "c", "d"], &["a", "d"]), vec![1]);
+        assert_eq!(edges(&["a", "b", "c"], &["c"]), vec![0]);
+        assert_eq!(edges(&["a", "b"], &["a"]), vec![1]);
+        assert_eq!(
+            edges(&["a", "b", "c", "d", "e"], &["a", "c", "e"]),
+            vec![1, 2]
+        );
+        // A deletion beside an insertion elsewhere is still one.
+        assert_eq!(
+            edges(&["a", "b", "c", "d", "e"], &["a", "c", "d", "e", "N"]),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn deleted_edges_none_for_a_replace() {
+        let edges = |old: &[&str], new: &[&str]| deleted_edges(&compare(old, new, LIMIT).unwrap());
+        assert!(edges(&["a", "b", "c"], &["a", "X", "c"]).is_empty());
+        assert!(edges(&["a", "b", "c", "d"], &["a", "X", "d"]).is_empty());
+        assert!(edges(&["a", "b"], &["a", "b", "c"]).is_empty());
+        assert!(edges(&["a", "b"], &["a", "b"]).is_empty());
     }
 
     #[test]
