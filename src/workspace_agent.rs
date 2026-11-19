@@ -17,18 +17,20 @@
 //! `launch_plan_for`, `agent_row_label`, `after_classic` and `row_winner` are pure and tested.
 
 use std::path::PathBuf;
-use std::time::{Instant, SystemTime};
+use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     App, Context, Div, Entity, FontWeight, PromptLevel, SharedString, Window, div, prelude::*, px,
 };
 
-use crate::activity::ActivityLog;
+use crate::activity::{ActivityLog, clock_hm};
 use crate::agent_tab::{AgentTab, AgentTabEvent, Attachment, attachable};
 use crate::api_events::Event;
 use crate::block_view::{self, BlockDrag};
 use crate::code_ask::{AskTo, CodeRef};
 use crate::edit_ledger::{self, agent_mark_for};
+use crate::edit_notes::{self, EditNote, Light, Note, anchor_in};
 use crate::groups;
 use crate::layout_model::{PaneId, TabId, TabKind, WorkspaceId};
 use crate::live_lines::AgentMark;
@@ -36,7 +38,7 @@ use crate::notification_list;
 use crate::notifier;
 use crate::presets::{self, Preset};
 use crate::procs::{self, Foreground, Proc};
-use crate::providers::{self, Provider, Start};
+use crate::providers::{self, EditText, Provider, Start};
 use crate::restore::{Launch, SavedSession};
 use crate::split_tree::Axis;
 use crate::status::Status;
@@ -935,8 +937,9 @@ impl Workspace {
                     edit_ledger::update(cx, |l, now| l.edit_started(&call, mark, paths, now));
                 }
             }
-            // The note is drawn by Task 8.
-            AgentTabEvent::EditNoted { .. } => {}
+            AgentTabEvent::EditNoted { paths, note } => {
+                self.store_notes(tab, paths.clone(), note.clone(), cx)
+            }
             AgentTabEvent::EditDone { call, ok } => {
                 if let Some((id, _)) = self.agent_ledger_who(tab) {
                     let call = format!("a{id}:{call}");
@@ -945,6 +948,87 @@ impl Workspace {
                 }
             }
         }
+    }
+
+    /// Files the agent's reason for an edit that finished OK (M11ag): each path is read off the
+    /// UI thread (not over `REFUSE_ABOVE`), each new text's anchor becomes a `Note` stamped with
+    /// the agent and the clock as it is now (made once, so nothing ticks). A path with no text
+    /// to find (an agent that gives none) or only removed text gets a `Light` reason to wait
+    /// for the file tab that sees the change; a text that is not found gives nothing.
+    pub(crate) fn store_notes(
+        &mut self,
+        tab: TabId,
+        paths: Vec<PathBuf>,
+        note: EditNote,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((slot, agent)) = self.agent_ledger_who(tab) else {
+            return;
+        };
+        let now = SystemTime::now();
+        let ms = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        let clock: Arc<str> =
+            clock_hm((ms / 1000) as i64, crate::cli::local_utc_offset(ms as u64)).into();
+        let reason_key: Arc<str> = format!("a{slot}:{}", note.reason_id).into();
+        let EditNote { reason, texts, .. } = note;
+        let found = cx.background_spawn(async move {
+            paths
+                .into_iter()
+                .map(|path| {
+                    let anchors = if texts.is_empty() {
+                        Vec::new()
+                    } else {
+                        read_for_notes(&path).map_or_else(Vec::new, |text| {
+                            texts.iter().filter_map(|t| anchor_in(&text, t)).collect()
+                        })
+                    };
+                    let light = texts.is_empty()
+                        || (anchors.is_empty() && texts.contains(&EditText::Removed));
+                    (path, anchors, light)
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |_, cx| {
+            let found = found.await;
+            cx.update(|cx| {
+                edit_notes::update(cx, |store| {
+                    for (path, anchors, light) in found {
+                        let mut seen: Vec<(Vec<String>, usize)> = Vec::new();
+                        for (anchor, hint) in anchors {
+                            if seen.contains(&(anchor.clone(), hint)) {
+                                continue;
+                            }
+                            seen.push((anchor.clone(), hint));
+                            store.add(
+                                path.clone(),
+                                Note {
+                                    id: 0,
+                                    agent: agent.clone(),
+                                    clock: clock.clone(),
+                                    reason: reason.clone(),
+                                    reason_key: reason_key.clone(),
+                                    anchor: Arc::new(anchor),
+                                    hint,
+                                },
+                            );
+                        }
+                        if light {
+                            store.expect_light(
+                                path,
+                                Light {
+                                    agent: agent.clone(),
+                                    clock: clock.clone(),
+                                    reason: reason.clone(),
+                                    reason_key: reason_key.clone(),
+                                    at: Instant::now(),
+                                },
+                            );
+                        }
+                    }
+                });
+            });
+        })
+        .detach();
     }
 
     /// Tells the edit ledger of agent slots that left without `close_agent_tab` (`sync` noted
@@ -1690,6 +1774,22 @@ impl Workspace {
             cx.notify();
         }
     }
+}
+
+/// The file as text for `anchor_in`, read through a bound: None when it can't be read, is over
+/// `REFUSE_ABOVE` bytes or isn't text.
+fn read_for_notes(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(crate::highlight::REFUSE_ABOVE + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > crate::highlight::REFUSE_ABOVE {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 #[cfg(test)]

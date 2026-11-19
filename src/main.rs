@@ -939,6 +939,8 @@ fn main() {
             cx.set_global(appearance::load(cx));
             // The edit ledger (M11af): agents' file edits and working spans.
             cx.set_global(edit_ledger::Ledger::default());
+            // The agents' reasons under changed lines (M11ag): filed as edits finish.
+            cx.set_global(edit_notes::NoteStore::default());
             // What each agent can say about itself (M11ak): its models, commands and usage.
             cx.set_global(agent_catalog::Catalogs::default());
             // The key sounds (M11s): loaded now, and again whenever the settings change.
