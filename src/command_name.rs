@@ -285,7 +285,6 @@ impl CommandRun {
     }
 
     /// The running command's short form, if it has one.
-    #[allow(dead_code)] // until M11q Task 10 (the service's `DaemonSession::command`)
     pub fn running(&self) -> Option<&str> {
         self.running.as_ref()?.0.as_deref()
     }

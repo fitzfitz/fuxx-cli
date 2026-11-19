@@ -32,6 +32,7 @@ use portable_pty::CommandBuilder;
 
 use crate::blocks::{self, Tagger};
 use crate::colors;
+use crate::command_name::{Change, CommandMark, CommandRun, Finished};
 use crate::detector::OscDetector;
 use crate::grid::{self, TextScope};
 use crate::mux_proto::{self, Dims, Frame, MAX_FRAME, SessionInfo, SetMeta, Snapshot};
@@ -450,6 +451,11 @@ struct State {
     seq: u64,
     subscribers: Vec<Subscriber>,
     tracker: StatusTracker,
+    /// The command running at the shell prompt (short form only), from the OSC 133 marks.
+    run: CommandRun,
+    /// How the last command ended, while the status it settled is still Done: taken once for the
+    /// banner. Any other status clears it.
+    ended: Option<Finished>,
     status: Status,
     title: Option<String>,
     theme: Theme,
@@ -483,7 +489,7 @@ impl State {
         if !self.alive {
             return; // closed: what the dying child still wrote goes nowhere
         }
-        let _ = blocks::advance(
+        let marks = blocks::advance(
             &mut self.processor,
             &mut self.term,
             &mut self.tagger,
@@ -499,7 +505,29 @@ impl State {
             bytes: bytes.to_vec(),
         });
         self.handle_events(now);
+        for mark in marks {
+            self.on_mark(mark, now);
+        }
         if let Some(status) = self.tracker.on_output(now, notifications) {
+            self.set_status(status);
+        }
+    }
+
+    /// A shell mark: what runs now, and the status it settles. An end mark that settles Done
+    /// keeps how the command ended, for the banner.
+    fn on_mark(&mut self, mark: CommandMark, now: Instant) {
+        let status = match self.run.on_mark(mark, now) {
+            Some(Change::Started(_)) => self.tracker.on_command_start(now),
+            Some(Change::Ended(fin)) => {
+                let status = self.tracker.on_command_end(now, fin.ran);
+                if status == Some(Status::Done) {
+                    self.ended = Some(fin);
+                }
+                status
+            }
+            Some(Change::Cleared) | None => None,
+        };
+        if let Some(status) = status {
             self.set_status(status);
         }
     }
@@ -542,6 +570,9 @@ impl State {
 
     fn set_status(&mut self, status: Status) -> Frame {
         self.status = status;
+        if status != Status::Done {
+            self.ended = None;
+        }
         let frame = Frame::Status {
             id: self.id,
             status: status.as_str().into(),
@@ -638,6 +669,8 @@ impl DaemonSession {
             seq: 0,
             subscribers: Vec::new(),
             tracker: StatusTracker::new(),
+            run: CommandRun::default(),
+            ended: None,
             status: Status::Idle,
             title: None,
             theme: Theme::default(),
@@ -830,6 +863,16 @@ impl DaemonSession {
             .map(|status| s.set_status(status))
             .into_iter()
             .collect()
+    }
+
+    /// The short form of the command running at the shell prompt now, if there is one.
+    pub fn command(&self) -> Option<String> {
+        self.state.lock().run.running().map(str::to_owned)
+    }
+
+    /// How the command that settled the status ended, once (for the service's banner).
+    pub fn take_ended(&self) -> Option<Finished> {
+        self.state.lock().ended.take()
     }
 
     /// The session's entry for `List`. `name` is empty until one is set.
@@ -1645,6 +1688,100 @@ mod tests {
         assert_eq!(s.tick(later), vec![done.clone()]);
         recv_until(&rx, |f| *f == done);
         assert_eq!(s.info().status, "done");
+    }
+
+    /// The status frames among `frames`.
+    fn statuses(frames: &[Frame]) -> Vec<&str> {
+        frames
+            .iter()
+            .filter_map(|f| match f {
+                Frame::Status { status, .. } => Some(status.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_end_mark_settles_the_service_s_status_at_once() {
+        // A typed line starts it; `sh` prints each part well past the echo window, as the real
+        // shell's output comes. The first command: C, text, D. The second has no keystroke
+        // before it (pasted lines, or marks a program printed): it names nothing and re-arms
+        // nothing. `END` closes the run.
+        let s = spawn(
+            r"stty -echo; read go; sleep 0.3; printf '\033]133;C;cmdline_url=sleep%%205\007'; sleep 0.3; printf 'text\r\n'; sleep 0.3; printf '\033]133;D;0\007'; printf 'prompt\r\n'; sleep 0.4; printf '\033]133;C;cmdline_url=sleep%%206\007'; sleep 0.4; printf 'more\r\n'; sleep 0.4; printf '\033]133;D;0\007'; sleep 0.4; printf 'END'; sleep 30",
+        );
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        s.attach(sub);
+        let started = Instant::now();
+        s.input(b"\r");
+        let done = Frame::Status {
+            id: ID,
+            status: "done".into(),
+        };
+        let frames = recv_until(&rx, |f| *f == done);
+        assert!(
+            started.elapsed() < crate::status::IDLE_AFTER,
+            "the end mark settled it, not the silence guess"
+        );
+        // The bytes first: an Output frame holding the D comes before the Done.
+        let end_mark = frames.iter().position(|f| {
+            matches!(f, Frame::Output { bytes, .. } if bytes.windows(7).any(|w| w == b"133;D;0"))
+        });
+        assert!(
+            end_mark.is_some(),
+            "no Output with the end mark: {frames:?}"
+        );
+        assert_eq!(statuses(&frames), ["working", "done"], "{frames:?}");
+        assert_eq!(s.info().status, "done");
+        assert_eq!(
+            s.take_ended().map(|f| f.name().to_string()).as_deref(),
+            Some("sleep 5")
+        );
+        // The prompt printed after the mark, and a second command with no keystroke before it,
+        // make no Working and no second Done (and nothing is left to settle later).
+        let rest = recv_until(
+            &rx,
+            |f| matches!(f, Frame::Output { bytes, .. } if bytes.ends_with(b"END")),
+        );
+        assert!(statuses(&rest).is_empty(), "a second status: {rest:?}");
+        assert_eq!(s.info().status, "done");
+        assert!(
+            s.tick(Instant::now() + 10 * crate::status::IDLE_AFTER)
+                .is_empty(),
+            "a later tick settled again"
+        );
+        assert_eq!(s.take_ended(), None, "nothing new ended");
+    }
+
+    #[test]
+    fn the_service_knows_the_running_command() {
+        let s = spawn(
+            r"stty -echo; read a; printf '\033]133;C;cmdline_url=sleep%%205\007'; sleep 0.4; printf 'text\r\n'; read b; printf '\033]133;D;0\007'; read c; sleep 30",
+        );
+        let (sub, rx) = subscriber(1, QUEUE_CAPACITY);
+        s.attach(sub);
+        assert_eq!(s.command(), None);
+        s.input(b"\r");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while s.command().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(s.command().as_deref(), Some("sleep 5"));
+        assert_eq!(s.take_ended(), None, "nothing has ended");
+        // It works (the text came past the echo window), so its end settles Done.
+        recv_until(
+            &rx,
+            |f| matches!(f, Frame::Status { status, .. } if status == "working"),
+        );
+        s.input(b"\r");
+        while s.command().is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(s.command(), None);
+        let fin = s.take_ended().expect("the ending is kept");
+        assert_eq!(fin.name(), "sleep 5");
+        assert_eq!(fin.ending, crate::command_name::Ending::Done);
+        assert_eq!(s.take_ended(), None, "given once");
     }
 
     #[test]
