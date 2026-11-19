@@ -658,21 +658,30 @@ fn tool_writes(name: &str, input: &Value) -> Vec<String> {
 }
 
 /// The new text each edit puts in its file, for the rest of fuxx to find the edit's lines
-/// (M11ag). `replace_all` changes nothing: the first match is where the note goes.
+/// (M11ag). `replace_all` changes nothing: the first match is where the note goes. A call that
+/// writes a file and has no text to find a note by (a `NotebookEdit`; an `Edit` or `MultiEdit`
+/// with no `new_string`) says so with `NoNote`: no texts at all would read as an agent that
+/// gives none.
 fn tool_texts(name: &str, input: &Value) -> Vec<EditText> {
     let one = |v: &Value| match v["new_string"].as_str() {
         Some("") => Some(EditText::Removed),
         Some(t) => Some(EditText::Inserted(t.to_string())),
         None => None,
     };
-    match name {
+    let texts: Vec<EditText> = match name {
         "Edit" => one(input).into_iter().collect(),
         "MultiEdit" => input["edits"]
             .as_array()
             .map(|a| a.iter().filter_map(one).collect())
             .unwrap_or_default(),
-        "Write" => vec![EditText::WholeFile],
-        _ => Vec::new(),
+        "Write" => return vec![EditText::WholeFile],
+        "NotebookEdit" => Vec::new(),
+        _ => return Vec::new(),
+    };
+    if texts.is_empty() {
+        vec![EditText::NoNote]
+    } else {
+        texts
     }
 }
 
@@ -1364,7 +1373,22 @@ mod tests {
             tool_texts("Write", &json!({"content": "x"})),
             vec![EditText::WholeFile]
         );
-        assert!(tool_texts("NotebookEdit", &json!({"new_source": "x"})).is_empty());
+        // A notebook edit, and an edit with no new text given, write their file with no note:
+        // said so, not left as "no texts" (an agent that gives none gets the light way).
+        assert_eq!(
+            tool_texts("NotebookEdit", &json!({"new_source": "x"})),
+            vec![EditText::NoNote]
+        );
+        assert_eq!(
+            tool_texts("Edit", &json!({"old_string": "a"})),
+            vec![EditText::NoNote]
+        );
+        assert_eq!(tool_texts("Edit", &json!({})), vec![EditText::NoNote]);
+        assert_eq!(
+            tool_texts("MultiEdit", &json!({"edits": [{"old_string": "a"}]})),
+            vec![EditText::NoNote]
+        );
+        assert_eq!(tool_texts("MultiEdit", &json!({})), vec![EditText::NoNote]);
         assert!(tool_texts("Bash", &json!({"command": "ls"})).is_empty());
     }
 

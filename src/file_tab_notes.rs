@@ -522,15 +522,9 @@ impl FileTab {
         }
     }
 
-    /// A click on the pill: the next note below the view (`next_note`; wrapping to the first)
-    /// has its under-line scrolled to the top as Find's reveal does (`reveal_top`). A note under
-    /// a fold has no row and is passed over; hidden notes are found by their lines. It is your
-    /// scroll: Follow ends.
-    pub(super) fn next_note_click(&mut self, cx: &mut Context<Self>) {
-        let (Some(g), Some(map)) = (self.geom.get(), self.map_now(cx)) else {
-            return;
-        };
-        // Each note's top (as drawn; hidden, just under its line) and its line's row, by top.
+    /// Each shown note's top (as drawn; hidden by the eye, just under its line) and its line's
+    /// row in `map`, by top. A note under a fold has no row and is left out.
+    fn note_tops(&self, map: &RowMap) -> Vec<(f32, usize)> {
         let mut notes: Vec<(f32, usize)> = (self.note_unders().into_iter())
             .filter_map(|(i, under)| {
                 let row = map.first_row(under)?;
@@ -540,6 +534,31 @@ impl FileTab {
             })
             .collect();
         notes.sort_by(|a, b| a.0.total_cmp(&b.0));
+        notes
+    }
+
+    /// A click on the pill: the next note below the view (`next_note`; wrapping to the first)
+    /// has its under-line scrolled to the top as Find's reveal does (`reveal_top`). A note under
+    /// a fold has no row and is passed over; when every note is under one (File mode), the
+    /// first note's folds open, as a find step's do, and the click goes there. Hidden notes are
+    /// found by their lines. It is your scroll: Follow ends.
+    pub(super) fn next_note_click(&mut self, cx: &mut Context<Self>) {
+        let (Some(g), Some(mut map)) = (self.geom.get(), self.map_now(cx)) else {
+            return;
+        };
+        let mut notes = self.note_tops(&map);
+        if notes.is_empty()
+            && self.mode == FileMode::Plain
+            && let Some(line) = self.notes.first().map(|p| p.under)
+            && self.open_folds_at(line)
+        {
+            cx.notify();
+            let Some(fresh) = self.fresh_map(cx) else {
+                return;
+            };
+            map = fresh;
+            notes = self.note_tops(&map);
+        }
         let tops: Vec<f32> = notes.iter().map(|n| n.0).collect();
         let bottom = f32::from(g.scroll.y + g.bounds.size.height);
         let Some(k) = next_note(&tops, bottom) else {

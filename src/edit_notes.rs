@@ -69,10 +69,20 @@ pub struct Note {
     pub hint: usize,
 }
 
+/// Why a reason waits the light way, which says what change it may be filed under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LightKind {
+    /// The agent gives no edit text: the reason is about its next change, whatever it is.
+    NoText,
+    /// The edit only removed text: the reason is about a change that only removed lines.
+    Removed,
+}
+
 /// A reason waiting for a file tab to say which lines it is about (the light way: a pure
 /// deletion, or an agent that gives no text).
 #[derive(Clone, Debug)]
 pub struct Light {
+    pub kind: LightKind,
     pub agent: AgentMark,
     pub clock: Arc<str>,
     pub reason: Arc<str>,
@@ -148,13 +158,21 @@ impl NoteStore {
         pending.push(light);
     }
 
-    /// The newest pending reason of `agent` for `path` not older than `KEEP` at `now`; every
-    /// pending one of that path and agent is gone with it.
-    pub fn take_light(&mut self, path: &Path, agent: &str, now: Instant) -> Option<Light> {
+    /// The newest pending reason of `agent` for `path` not older than `KEEP` at `now` that a
+    /// change may take: any `NoText` one, and a `Removed` one only when the change removed
+    /// lines alone (`removal_only`). Every pending one of that path and agent it could have
+    /// taken is gone with it; a `Removed` one not taken stays, to expire.
+    pub fn take_light(
+        &mut self,
+        path: &Path,
+        agent: &str,
+        removal_only: bool,
+        now: Instant,
+    ) -> Option<Light> {
         let pending = self.lights.get_mut(path)?;
         let mut taken: Option<Light> = None;
         pending.retain(|l| {
-            if &*l.agent.name != agent {
+            if &*l.agent.name != agent || (l.kind == LightKind::Removed && !removal_only) {
                 return true;
             }
             if fresh(l, now) && taken.as_ref().is_none_or(|t| l.at >= t.at) {
@@ -182,13 +200,35 @@ pub fn update(cx: &mut gpui::App, f: impl FnOnce(&mut NoteStore)) {
     cx.update_global::<NoteStore, _>(|store, _| f(store));
 }
 
+/// Whether any of `texts` is looked for in the file (so the file is read at the finish): a pure
+/// removal, a call with no note and an agent that gives no text need no read.
+pub fn needs_read(texts: &[EditText]) -> bool {
+    texts
+        .iter()
+        .any(|t| matches!(t, EditText::Inserted(_) | EditText::WholeFile))
+}
+
+/// The light reason an edit leaves for a path, from its `texts` and whether one of them was
+/// found there (`anchored`): an agent that gives no text leaves a `NoText` one; an edit whose
+/// texts found no lines and that removed text leaves a `Removed` one; any other leaves none (a
+/// text found is a note already; one not found, or a call with no note, gives nothing).
+pub fn light_kind(texts: &[EditText], anchored: bool) -> Option<LightKind> {
+    if texts.is_empty() {
+        Some(LightKind::NoText)
+    } else if !anchored && texts.contains(&EditText::Removed) {
+        Some(LightKind::Removed)
+    } else {
+        None
+    }
+}
+
 /// Where `edit`'s new text is in `text` (the file as read at the finish): `Inserted` gives the
 /// whole lines its first occurrence spans (without `\r`) and the first one's 0-based line;
 /// `WholeFile` the first line and 0 (None for an empty file); `Removed`, and a text that is not
 /// found, None.
 pub fn anchor_in(text: &str, edit: &EditText) -> Option<(Vec<String>, usize)> {
     let (first, last) = match edit {
-        EditText::Removed => return None,
+        EditText::Removed | EditText::NoNote => return None,
         EditText::WholeFile => {
             let line = text.lines().next()?;
             return Some((vec![line.trim_end_matches('\r').to_string()], 0));
@@ -425,6 +465,7 @@ mod tests {
 
     fn light(agent: &str, reason: &str, at: Instant) -> Light {
         Light {
+            kind: LightKind::NoText,
             agent: mark(agent),
             clock: "10:42".into(),
             reason: reason.into(),
@@ -442,17 +483,95 @@ mod tests {
         store.expect_light(path.clone(), light("claude", "old", t0));
         store.expect_light(path.clone(), light("claude", "new", later));
         store.expect_light(path.clone(), light("agy", "other", later));
-        let got = store.take_light(&path, "claude", later).expect("pending");
+        let got = store
+            .take_light(&path, "claude", false, later)
+            .expect("pending");
         assert_eq!(&*got.reason, "new");
-        assert!(store.take_light(&path, "claude", later).is_none());
+        assert!(store.take_light(&path, "claude", false, later).is_none());
         // Another agent's is untouched.
-        assert!(store.take_light(&path, "agy", later).is_some());
+        assert!(store.take_light(&path, "agy", false, later).is_some());
 
         // One older than KEEP is not taken.
         store.expect_light(path.clone(), light("claude", "stale", t0));
         let past = t0 + KEEP + std::time::Duration::from_secs(1);
-        assert!(store.take_light(&path, "claude", past).is_none());
-        assert!(store.take_light(&path, "claude", t0).is_none());
+        assert!(store.take_light(&path, "claude", false, past).is_none());
+        assert!(store.take_light(&path, "claude", false, t0).is_none());
+    }
+
+    #[test]
+    fn a_removed_light_is_taken_only_by_a_removal_only_change() {
+        let path = PathBuf::from("src/one.rs");
+        let t0 = Instant::now();
+        let removed = |reason: &str| Light {
+            kind: LightKind::Removed,
+            ..light("claude", reason, t0)
+        };
+        let mut store = NoteStore::default();
+        store.expect_light(path.clone(), removed("drop the dead lines"));
+        // A change with new lines is not what it is about: it stays, to be taken or to expire.
+        assert!(store.take_light(&path, "claude", false, t0).is_none());
+        let got = store.take_light(&path, "claude", true, t0).expect("kept");
+        assert_eq!(&*got.reason, "drop the dead lines");
+        assert_eq!(got.kind, LightKind::Removed);
+        assert!(store.take_light(&path, "claude", true, t0).is_none());
+
+        // A no-text reason is about any change; a removed one beside it is left by a change
+        // with new lines, and the newest of both goes to one that only removed lines.
+        let later = t0 + std::time::Duration::from_secs(5);
+        store.expect_light(path.clone(), light("agy", "tidy the loop", t0));
+        store.expect_light(
+            path.clone(),
+            Light {
+                agent: mark("agy"),
+                at: later,
+                ..removed("cut the old loop")
+            },
+        );
+        let got = store.take_light(&path, "agy", false, later).expect("any");
+        assert_eq!(&*got.reason, "tidy the loop");
+        let got = store.take_light(&path, "agy", true, later).expect("left");
+        assert_eq!(&*got.reason, "cut the old loop");
+        store.expect_light(path.clone(), light("agy", "older", t0));
+        store.expect_light(
+            path.clone(),
+            Light {
+                agent: mark("agy"),
+                at: later,
+                ..removed("newer")
+            },
+        );
+        let got = store.take_light(&path, "agy", true, later).expect("both");
+        assert_eq!(&*got.reason, "newer");
+        assert!(store.take_light(&path, "agy", true, later).is_none());
+    }
+
+    #[test]
+    fn the_light_an_edit_leaves_is_decided_by_its_texts() {
+        // An agent that gives no text: its reason waits for its next change, with no read.
+        assert_eq!(light_kind(&[], false), Some(LightKind::NoText));
+        assert!(!needs_read(&[]));
+        // A pure removal: a reason about a removal-only change, with no read.
+        let removed = [EditText::Removed];
+        assert_eq!(light_kind(&removed, false), Some(LightKind::Removed));
+        assert!(!needs_read(&removed));
+        assert!(!needs_read(&[EditText::Removed, EditText::Removed]));
+        // The provider says "no note": nothing waits, nothing is read.
+        let none = [EditText::NoNote];
+        assert_eq!(light_kind(&none, false), None);
+        assert!(!needs_read(&none));
+        assert_eq!(
+            light_kind(&[EditText::NoNote, EditText::Removed], false),
+            Some(LightKind::Removed)
+        );
+        // A text to find is read for; found, it is the note; not found beside a removal, the
+        // removal's light; not found alone, nothing.
+        let both = [ins("b"), EditText::Removed];
+        assert!(needs_read(&both));
+        assert_eq!(light_kind(&both, true), None);
+        assert_eq!(light_kind(&both, false), Some(LightKind::Removed));
+        assert_eq!(light_kind(&[ins("b")], false), None);
+        assert!(needs_read(&[EditText::WholeFile]));
+        assert_eq!(light_kind(&[EditText::WholeFile], false), None);
     }
 
     fn lines_with(at: &[usize], block: &[&str], len: usize) -> Vec<String> {
