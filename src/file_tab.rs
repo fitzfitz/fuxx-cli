@@ -116,7 +116,7 @@ use gpui::{
 
 use crate::agent_markdown::Md;
 use crate::appearance::Appearance;
-use crate::code_ask::AskTo;
+use crate::code_ask::{AskTo, CodeRef};
 use crate::code_outline::{self, Outline};
 use crate::diff_cards::{self, CardKind, CardTitle, Grouped};
 use crate::diff_view::{
@@ -168,7 +168,8 @@ gpui::actions!(
         UnfoldAll,
         PrevChange,
         NextChange,
-        ShowAllUnchanged
+        ShowAllUnchanged,
+        AskAgent
     ]
 );
 
@@ -4154,6 +4155,8 @@ pub enum FileTabEvent {
     /// A link in the Preview to a file (M11ac): the workspace opens it in a tab; M11ai: with a
     /// `#part`, a Markdown file opens in Preview at that heading.
     OpenFile(PathBuf, Option<String>),
+    /// M11ag: Ask (the selection bar's button, ⌘↵): the selection's code, for an agent tab's box.
+    Ask(CodeRef),
 }
 
 /// The find bar: its box and what it found.
@@ -4320,6 +4323,9 @@ pub struct FileTab {
     /// M11ag: where Ask goes from this tab (the agent it names, or copy only): told by the
     /// Workspace (`tell_ask_targets`).
     ask_to: AskTo,
+    /// M11ag: where the selection bar and its buttons were drawn this frame (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    bar_at: Rc<Cell<ask::BarAt>>,
     /// The selection: where the mouse went down, and where it is.
     selection: Option<(Pos, Pos)>,
     selecting: bool,
@@ -4551,6 +4557,8 @@ impl FileTab {
             rows: Rc::default(),
             lane: Rc::default(),
             ask_to: AskTo::default(),
+            #[cfg(feature = "ui-shots")]
+            bar_at: Rc::default(),
             selection: None,
             selecting: false,
             current: None,
@@ -6646,7 +6654,10 @@ impl FileTab {
                 cx.notify();
             }
         }
-        self.selecting = false;
+        // M11ag: a finished selection shows its bar.
+        if std::mem::take(&mut self.selecting) {
+            cx.notify();
+        }
         // No old auto-scroll task resumes on a quick press again.
         self.drag_at = None;
         if self.scrollbar.end_drag(Instant::now()) {
@@ -6949,11 +6960,14 @@ impl FileTab {
     }
 
     /// Esc: the find bar closes and the tab takes the keyboard. With no bar, M11ai Task 9: the
-    /// narrow outline's panel closes, if open; else Esc goes on.
+    /// narrow outline's panel closes, if open; M11ag: else a selection clears; else Esc goes on.
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.find.take().is_none() {
             if self.outline_panel_open() {
                 self.close_outline_panel(cx);
+            } else if self.esc_takes_selection() {
+                // M11ag: a selection clears (and its bar goes); with none, Esc goes on.
+                self.clear_selection(cx);
             } else {
                 cx.propagate();
             }
@@ -7184,7 +7198,7 @@ impl FileTab {
 
     fn text_button(
         id: &'static str,
-        label: &'static str,
+        label: impl Into<SharedString>,
         ui: UiColors,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
@@ -7208,7 +7222,7 @@ impl FileTab {
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, window, cx| on_click(this, window, cx)),
             )
-            .child(label)
+            .child(label.into())
     }
 
     /// One of the view switch's segments (M11ae): the current one `card_selected` in `text`,
@@ -7937,6 +7951,10 @@ impl FileTab {
         // M11af: the hovered mark's tooltip, under it (as the Changes bar's, drawn in place).
         let tip = self.mark_tip.clone().filter(|_| frame.live.is_some());
         let ui = theme.ui();
+        // M11ag: the selection bar, an overlay (the code doesn't move).
+        let ask_bar = self.ask_bar(ui, cx);
+        // Whether a bar is up: its place follows a reflow or a resize (checked in the prepaint).
+        let bar_up = ask_bar.is_some();
         div()
             .flex_1()
             .min_h(px(0.0))
@@ -7951,6 +7969,7 @@ impl FileTab {
                         .child(tip_box(words, &ui)),
                 ))
             })
+            .children(ask_bar)
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, cx| this.wheel(e, cx)))
             .on_mouse_down(
                 MouseButton::Left,
@@ -8005,6 +8024,8 @@ impl FileTab {
                                 side,
                             };
                             let before = row_map.borrow().clone();
+                            let rebuilt = !matches!(&before, Some((k, map))
+                                if *k == key && map.row_h() == f32::from(row_h));
                             let map = match &before {
                                 Some((k, map)) if *k == key && map.row_h() == f32::from(row_h) => {
                                     map.clone()
@@ -8062,6 +8083,16 @@ impl FileTab {
                                 widest,
                                 scroll,
                             );
+                            // M11ag: a bar up follows its selection's rows: drawn again once
+                            // when the rows or the text's place changed under it (its place is
+                            // read from this drawing's results, in the next frame's render).
+                            let moved = geom.get().is_none_or(|o| {
+                                o.bounds != g.bounds || o.line_height != g.line_height
+                            });
+                            if bar_up && (rebuilt || moved) {
+                                let keep = keep.clone();
+                                cx.defer(move |cx| keep.update(cx, |_, cx| cx.notify()));
+                            }
                             geom.set(Some(g));
                             // A new version (or mode) drawn: the scroll as kept in it is the
                             // scroll (after a shrink, the view doesn't jump back down when the
@@ -8178,6 +8209,9 @@ impl FileTab {
 
 #[path = "file_tab_preview.rs"]
 mod preview;
+
+#[path = "file_tab_ask.rs"]
+mod ask;
 
 /// What the UI screenshots read of a tab, and the change list they give it.
 #[cfg(feature = "ui-shots")]
@@ -8820,6 +8854,7 @@ impl Render for FileTab {
                 }
             }))
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
+            .on_action(cx.listener(|this, _: &AskAgent, _, cx| this.ask(cx)))
             .child(toolbar)
             .children(find_bar)
             .children(crumbs)
@@ -8988,6 +9023,8 @@ impl Workspace {
                         this.save();
                     }
                 }
+                // M11ag: the selection's code, a chip in an agent tab's box.
+                FileTabEvent::Ask(code) => this.ask_code(tab, code.clone(), window, cx),
                 FileTabEvent::OpenFile(path, part) => {
                     this.open_file_tab(path.clone(), FileMode::Plain, window, cx);
                     // M11ai: a Markdown file's heading: its Preview on (saved, as by hand),

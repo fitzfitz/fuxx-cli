@@ -1571,7 +1571,6 @@ impl Workspace {
     /// Ask the agent about `code` from file tab `file_tab` (M11ag): a code chip in the box of
     /// the agent tab Ask picks (a new one in the file tab's pane when the workspace has none),
     /// that tab shown with the keyboard in its box. Never sends. Nothing on another host.
-    #[allow(dead_code)] // the selection bar calls it in Task 4; scenes do now
     pub(crate) fn ask_code(
         &mut self,
         file_tab: TabId,

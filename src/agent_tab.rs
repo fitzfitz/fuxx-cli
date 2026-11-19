@@ -301,7 +301,6 @@ pub enum Attachment {
     Text(String),
     File(PathBuf),
     /// Code asked about from a file tab (M11ag): sent as its path and lines, then the code.
-    #[allow(dead_code)] // made by Ask (`ask_code`), which the selection bar calls in Task 4
     Code(CodeRef),
     Image {
         name: String,
