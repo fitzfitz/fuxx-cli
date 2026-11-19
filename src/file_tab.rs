@@ -1744,11 +1744,35 @@ pub fn row_hit(doc: &Doc, i: usize, row: (usize, usize, usize), last: bool, x_ce
     b.clamp(from, end.max(from))
 }
 
+/// M11ag: a press (or a drag) on note row `r` of `map` (none: not a note row): at the end of
+/// the line it is under; side by side (`half`), at the end of that half's nearest line above
+/// (the note's own line on its half), else the start of the one below.
+fn note_press(map: &RowMap, r: usize, half: Option<Half>, doc: &Doc) -> Option<Pos> {
+    let Row::Note { .. } = map.row(r)? else {
+        return None;
+    };
+    let (line, end) = match half {
+        Some(h) => map.nearest_on(r, h)?,
+        None => (map.line_of(r)?, true),
+    };
+    // A map a version behind (a reload not drawn yet) may know more lines than the text.
+    let line = line.min(doc.lines.len().saturating_sub(1));
+    let col = if end { doc.line(line).len() } else { 0 };
+    Some(Pos { line, col })
+}
+
 /// The top row after the rows are made again (`from` → `to`; Wrap switched; `from` none: a row
 /// a line): the row of the same line, so the line at the top stays at the top (a hidden line:
-/// the shown line above it).
+/// the shown line above it). M11ag: a note's row, the same row of that note (its last when it
+/// has fewer now), else its line's.
 pub fn rescroll_row(top: usize, from: Option<&RowMap>, to: &RowMap) -> usize {
     let line = match from.and_then(|m| m.row(top)) {
+        Some(Row::Note { note, k }) => {
+            if let Some(rows) = to.note_rows(note) {
+                return (rows.start + k).min(rows.end - 1);
+            }
+            from.and_then(|m| m.line_of(top)).unwrap_or(0)
+        }
         // M11ah: a side-by-side pair's line (the old side's when both).
         Some(row @ (Row::Line { .. } | Row::Pair { .. })) => row.line().unwrap_or(0),
         // A Diff card's title: that card's title.
@@ -3870,7 +3894,8 @@ fn paint_body(
             }
             Some(Row::Title { card }) => paint_card_title(f, g, card, y, false, window, cx),
             Some(Row::Unchanged { stretch }) => paint_unchanged(f, g, stretch, y, window, cx),
-            None => {}
+            // M11ag: a note's rows (drawn with the notes, Task 11).
+            Some(Row::Note { .. }) | None => {}
         }
     }
     if f.mode == FileMode::Diff {
@@ -4752,7 +4777,7 @@ impl FileTab {
                 closed,
                 pairs: side.then_some(&pairs[..]),
             };
-            return RowMap::diff(&doc.widths, columns, &layout, row_h);
+            return RowMap::diff(&doc.widths, columns, &layout, &[], row_h);
         }
         let hidden = match (mode, &doc.outline) {
             (FileMode::Plain, Some(outline)) if !folded.is_empty() => {
@@ -4760,7 +4785,7 @@ impl FileTab {
             }
             _ => Vec::new(),
         };
-        RowMap::file(&doc.widths, columns, &hidden, row_h)
+        RowMap::file(&doc.widths, columns, &hidden, &[], row_h)
     }
 
     /// The rows of the text shown now (its folds, the Wrap width and row height last drawn),
@@ -4969,6 +4994,8 @@ impl FileTab {
                 Some(Row::Line { line, .. }) if map.first_row(line) == Some(row) => {
                     y - before.top(before.first_row(line).unwrap_or(top))
                 }
+                // M11ag: the same note row.
+                note @ Some(Row::Note { .. }) if map.row(row) == note => y - before.top(top),
                 _ => 0.0,
             };
             self.scroll.y = px(map.top(row) + into.max(0.0));
@@ -5160,8 +5187,12 @@ impl FileTab {
         let Some((_, map)) = rows.as_ref() else {
             return 0;
         };
-        match map.row(map.row_at(f32::from(g.scroll.y))) {
-            Some(row @ (Row::Line { .. } | Row::Pair { .. })) => row.line().unwrap_or(0),
+        let r = map.row_at(f32::from(g.scroll.y));
+        match map.row(r) {
+            // M11ag: a note's row: the line it is under.
+            Some(Row::Line { .. } | Row::Pair { .. } | Row::Note { .. }) => {
+                map.line_of(r).unwrap_or(0)
+            }
             Some(Row::Title { card }) => d.grouped.cards.get(card).map_or(0, |c| c.rows.start),
             Some(Row::Unchanged { stretch }) => {
                 d.grouped.stretches.get(stretch).map_or(0, |s| s.rows.start)
@@ -5239,10 +5270,8 @@ impl FileTab {
                 // As the next drawing keeps the scroll (`Geom::clamp`).
                 let max = (map.height() - f32::from(g.bounds.size.height)).max(0.0);
                 let y = f32::from(self.scroll.y).clamp(0.0, max);
-                let line_at = |y: f32| match map.row(map.row_at(y)) {
-                    Some(Row::Line { line, .. }) => line,
-                    _ => 0,
-                };
+                // M11ag: a note's row: the line it is under.
+                let line_at = |y: f32| map.line_of(map.row_at(y)).unwrap_or(0);
                 (line_at(y), line_at(y + map.row_h() - 1.0))
             }
             _ => (0, 0),
@@ -5314,8 +5343,9 @@ impl FileTab {
             return false;
         }
         let outline = self.doc().and_then(|d| d.outline.as_deref());
-        match (outline, map.row(r)) {
-            (Some(o), Some(Row::Line { line, .. })) => o.sticky(line).is_some(),
+        // M11ag: a note's row: the line it is under (as `place_now`).
+        match (outline, map.line_of(r)) {
+            (Some(o), Some(line)) => o.sticky(line).is_some(),
             _ => false,
         }
     }
@@ -6523,8 +6553,8 @@ impl FileTab {
         let g = self.geom.get()?;
         let rows = self.rows.borrow();
         let (_, map) = rows.as_ref()?;
-        // M11ah: side by side, a pair's line.
-        map.row(map.row_at(f32::from(g.scroll.y)))?.line()
+        // M11ah: side by side, a pair's line; M11ag: a note's row, the line it is under.
+        map.line_of(map.row_at(f32::from(g.scroll.y)))
     }
 
     /// The place under window point `p` (the nearest character edge; above or below the text,
@@ -6539,6 +6569,10 @@ impl FileTab {
         // M11ah: side by side, the half the selection is in (`mouse_down` sets it: the half
         // pressed), and that half's line on the row.
         let half = g.side.map(|_| self.sel_half.unwrap_or(Half::Old));
+        // M11ag: a note's row: the end of its line.
+        if let Some(Row::Note { .. }) = map.row(row) {
+            return note_press(&map, row, half, doc);
+        }
         let (line, cell0, dx) = match (map.row(row), half) {
             (Some(Row::Line { line, cell0 }), _) => (line, cell0, px(0.0)),
             (Some(pair @ Row::Pair { .. }), Some(h)) => {
@@ -9370,8 +9404,8 @@ mod tests {
     #[allow(clippy::single_range_in_vec_init)] // `hidden`: one hidden run
     fn switching_wrap_keeps_the_top_line() {
         let doc = Doc::new("a\nbbbbbbbbbb\nc".to_string(), 0);
-        let w = RowMap::file(&doc.widths, Some(4), &[], 10.0);
-        let plain = RowMap::file(&doc.widths, None, &[], 10.0);
+        let w = RowMap::file(&doc.widths, Some(4), &[], &[], 10.0);
+        let plain = RowMap::file(&doc.widths, None, &[], &[], 10.0);
         // Rows: a | bbbb bbbb bb | c.
         assert_eq!(rescroll_row(4, Some(&w), &plain), 2);
         assert_eq!(rescroll_row(2, Some(&plain), &w), 4);
@@ -9380,9 +9414,119 @@ mod tests {
         assert_eq!(rescroll_row(2, Some(&w), &plain), 1);
         assert_eq!(rescroll_row(1, None, &w), 1);
         // M11ah: a line hidden in the rows made: the shown line above it.
-        let hidden = RowMap::file(&doc.widths, Some(4), &[1..2], 10.0);
+        let hidden = RowMap::file(&doc.widths, Some(4), &[1..2], &[], 10.0);
         assert_eq!(rescroll_row(1, Some(&plain), &hidden), 0);
         assert_eq!(rescroll_row(2, Some(&plain), &hidden), 1);
+    }
+
+    /// M11ag: a note row at the top when the rows are made again: the same row of that note
+    /// (as far down it as it has rows), else (no rows for it now) its line's row.
+    #[test]
+    fn rescroll_keeps_the_line_when_a_note_row_was_on_top() {
+        use crate::row_map::NoteSpan;
+        let widths = [1, 9, 1, 1, 1, 1];
+        let span = |rows| NoteSpan {
+            under: 3,
+            rows,
+            note: 0,
+        };
+        // 0 | 1 | 2 | 3 | note | note | 4 | 5.
+        let from = RowMap::file(&widths, None, &[], &[span(2)], 10.0);
+        assert_eq!(from.row(5), Some(Row::Note { note: 0, k: 1 }));
+        // Wrapped: 0 | 1 1 1 | 2 | 3 | note | note | 4 | 5.
+        let wrapped = RowMap::file(&widths, Some(4), &[], &[span(2)], 10.0);
+        assert_eq!(rescroll_row(5, Some(&from), &wrapped), 7);
+        assert_eq!(rescroll_row(4, Some(&from), &wrapped), 6);
+        // Fewer rows for it now: its last.
+        let shorter = RowMap::file(&widths, Some(4), &[], &[span(1)], 10.0);
+        assert_eq!(rescroll_row(5, Some(&from), &shorter), 6);
+        // Not there now: its line's row.
+        let none = RowMap::file(&widths, Some(4), &[], &[], 10.0);
+        assert_eq!(rescroll_row(5, Some(&from), &none), 5);
+    }
+
+    /// M11ag: a press (or a drag) on a note row is at the end of its line; side by side, at
+    /// the end of the pressed half's nearest line above (its own line on the new half).
+    #[test]
+    fn a_press_on_a_note_row_is_its_line_s_end() {
+        use crate::diff_view::{DiffRow, RowKind};
+        use crate::row_map::{CardPairs, NoteSpan};
+        let span = |under| NoteSpan {
+            under,
+            rows: 2,
+            note: 0,
+        };
+        let doc = Doc::new("ab\ncdef\ng".to_string(), 0);
+        // 0 | 1 | note | note | 2.
+        let map = RowMap::file(&doc.widths, None, &[], &[span(1)], 10.0);
+        for r in [2, 3] {
+            assert_eq!(
+                note_press(&map, r, None, &doc),
+                Some(Pos { line: 1, col: 4 })
+            );
+        }
+        assert_eq!(note_press(&map, 1, None, &doc), None, "a line's row");
+        assert_eq!(note_press(&map, 4, None, &doc), None);
+        // Side by side: s s - + + s, the note under the first added line.
+        let row = |kind, old, new| DiffRow { kind, old, new };
+        let rows = vec![
+            row(RowKind::Same, Some(1), Some(1)),
+            row(RowKind::Same, Some(2), Some(2)),
+            row(RowKind::Removed, Some(3), None),
+            row(RowKind::Added, None, Some(3)),
+            row(RowKind::Added, None, Some(4)),
+            row(RowKind::Same, Some(4), Some(5)),
+        ];
+        let g = diff_cards::group(&rows);
+        let pairs: Vec<CardPairs> = (g.cards.iter())
+            .map(|c| diff_cards::pair(&rows, c.rows.clone()))
+            .collect();
+        let layout = DiffLayout {
+            grouped: &g,
+            shown: &[],
+            closed: &[false],
+            pairs: Some(&pairs),
+        };
+        let doc = Doc::new("s0\ns1\nremoved!!\nad\nadded\ns5".to_string(), 0);
+        // title | 0 | 1 | 2·3 | 2·_ | 2·_ | note | note | _·4 | _·4 | 5.
+        let map = RowMap::diff(&doc.widths, Some(4), &layout, &[span(3)], 10.0);
+        assert_eq!(map.note_rows(0), Some(6..8));
+        let new = note_press(&map, 7, Some(Half::New), &doc);
+        assert_eq!(new, Some(Pos { line: 3, col: 2 }));
+        let old = note_press(&map, 6, Some(Half::Old), &doc);
+        assert_eq!(old, Some(Pos { line: 2, col: 9 }));
+    }
+
+    /// M11ag: change bars give note rows nothing: a bar's run stops at its line's rows, a
+    /// press on a note row's upper half finds no bar.
+    #[test]
+    fn change_bars_give_note_rows_nothing() {
+        use crate::row_map::NoteSpan;
+        let ink = BarColours {
+            added: Rgb { r: 1, g: 0, b: 0 },
+            changed: Rgb { r: 2, g: 0, b: 0 },
+            deleted: Rgb { r: 3, g: 0, b: 0 },
+        };
+        let mut changes = Changes::default();
+        changes.by_line.insert(1, LineChange::Added);
+        changes.by_line.insert(2, LineChange::Added);
+        let note = NoteSpan {
+            under: 1,
+            rows: 2,
+            note: 0,
+        };
+        // 0 | 1 | note | note | 2 | 3.
+        let map = RowMap::file(&[1; 4], None, &[], &[note], 10.0);
+        assert_eq!(
+            file_change_items(&changes, &map, &ink),
+            [(10.0, 10.0, ink.added), (40.0, 10.0, ink.added)]
+        );
+        assert_eq!(bar_at_rows(22.0, &map, &changes), None);
+        assert_eq!(bar_at_rows(32.0, &map, &changes), None);
+        assert_eq!(
+            bar_at_rows(42.0, &map, &changes),
+            Some((3, LineChange::Added))
+        );
     }
 
     /// Review fix (M11x part 2): with Wrap on, a press finds a change bar by its rows, and a
@@ -9390,7 +9534,7 @@ mod tests {
     #[test]
     fn bars_are_hit_by_their_rows_when_wrapped() {
         let doc = Doc::new("a\nbbbbbbbbbb\nc".to_string(), 0);
-        let w = RowMap::file(&doc.widths, Some(4), &[], 10.0);
+        let w = RowMap::file(&doc.widths, Some(4), &[], &[], 10.0);
         let mut changes = Changes::default();
         changes.by_line.insert(1, LineChange::Changed);
         // Any of line 1's three rows (rows 1-3): line 2 (1-based), changed.
@@ -9995,8 +10139,8 @@ mod tests {
             pairs: None,
         };
         let widths = vec![9; 41];
-        let from = RowMap::diff(&widths, None, &layout, 10.0);
-        let to = RowMap::diff(&widths, Some(4), &layout, 10.0);
+        let from = RowMap::diff(&widths, None, &layout, &[], 10.0);
+        let to = RowMap::diff(&widths, Some(4), &layout, &[], 10.0);
         let top = (0..from.len())
             .find(|&r| from.row(r) == Some(Row::Unchanged { stretch: 1 }))
             .expect("the second stretch's row");
@@ -10056,7 +10200,7 @@ mod tests {
             closed: &[false],
             pairs: Some(&pairs),
         };
-        let map = RowMap::diff(&[6; 6], None, &layout, 10.0);
+        let map = RowMap::diff(&[6; 6], None, &layout, &[], 10.0);
         let hit = |line, at: usize| Match {
             line,
             cols: at..at + 1,
@@ -10102,8 +10246,8 @@ mod tests {
             closed: &[false],
             pairs,
         };
-        let side = RowMap::diff(&widths, Some(4), &layout(Some(&pairs)), 10.0);
-        let unified = RowMap::diff(&widths, Some(4), &layout(None), 10.0);
+        let side = RowMap::diff(&widths, Some(4), &layout(Some(&pairs)), &[], 10.0);
+        let unified = RowMap::diff(&widths, Some(4), &layout(None), &[], 10.0);
         // Side: title | 0 | 1 | 2·3 | 2·_ | 2·_ | _·4 | _·4 | 5. Unified: title | 0 | 1 | 2 2 2
         // | 3 | 4 4 | 5.
         assert_eq!(rescroll_row(6, Some(&side), &unified), 7, "line 4");
@@ -10203,7 +10347,7 @@ mod tests {
         let (by_line, deleted) = bars(&[(3, LineChange::Changed), (6, LineChange::DeletedAfter)]);
         let changes = Changes { by_line, deleted };
         // A row a line (the identity map), 10 pt each.
-        let map = RowMap::file(&[1; 10], None, &[], 10.0);
+        let map = RowMap::file(&[1; 10], None, &[], &[], 10.0);
         // 0-based line 2 is (1-based) line 3.
         assert_eq!(
             bar_at_rows(25.0, &map, &changes),
@@ -11262,7 +11406,7 @@ mod tests {
             (6, DeletedAfter),
             (40, Added),
         ]);
-        let map = RowMap::file(&[1; 10], None, &[], 10.0);
+        let map = RowMap::file(&[1; 10], None, &[], &[], 10.0);
         assert_eq!(
             file_change_items(&ch, &map, &ink),
             [(10.0, 20.0, a), (40.0, 10.0, c), (60.0, 0.0, d)]
@@ -11277,7 +11421,7 @@ mod tests {
             (5, DeletedAfter),
             (9, DeletedAfter),
         ]);
-        let map = RowMap::file(&[1; 10], None, &[3..7], 10.0);
+        let map = RowMap::file(&[1; 10], None, &[3..7], &[], 10.0);
         assert_eq!(
             file_change_items(&ch, &map, &ink),
             [(20.0, 10.0, c), (40.0, 10.0, c), (50.0, 0.0, d)]
@@ -11287,7 +11431,7 @@ mod tests {
         assert_eq!(file_change_items(&ch, &map, &ink), [(20.0, 10.0, a)]);
         // Wrap: line 1 is 3 rows (1..4); its change covers them all.
         let ch = changes(&[(2, Changed), (5, Added)]);
-        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[], 10.0);
+        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[], &[], 10.0);
         assert_eq!(
             file_change_items(&ch, &map, &ink),
             [(10.0, 30.0, c), (60.0, 10.0, a)]
@@ -11295,7 +11439,7 @@ mod tests {
         // Wrap and a fold of only deletions (above hidden line 3): one mark at its folded
         // line's first row (not one per wrapped row).
         let ch = changes(&[(3, DeletedAfter), (5, Added)]);
-        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[2..4], 10.0);
+        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[2..4], &[], 10.0);
         assert_eq!(
             file_change_items(&ch, &map, &ink),
             [(40.0, 10.0, a), (10.0, 0.0, d)]
@@ -11427,7 +11571,7 @@ mod tests {
     #[allow(clippy::single_range_in_vec_init)] // one fold
     fn a_press_on_a_folded_line_s_bar_finds_its_hidden_change() {
         // Line 2 folded, hiding 3..7: rows 0 1 2 | 7 8 9.
-        let map = RowMap::file(&[1; 10], None, &[3..7], 10.0);
+        let map = RowMap::file(&[1; 10], None, &[3..7], &[], 10.0);
         let deleted_only = Changes {
             by_line: HashMap::new(),
             deleted: vec![5],
