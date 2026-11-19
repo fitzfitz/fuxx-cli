@@ -66,17 +66,50 @@ pub(super) struct BarAt {
 }
 
 impl FileTab {
-    /// The selection as code to ask about or copy (File mode; Diff mode's comes with its own
-    /// task); None with no selection.
+    /// The selection as code to ask about or copy (File mode: its lines; Diff mode: its rows,
+    /// side by side only the half pressed); None with no selection or in Preview.
     pub(super) fn code_ref(&self) -> Option<CodeRef> {
-        if self.mode != FileMode::Plain || self.preview_shown() {
+        if self.preview_shown() {
             return None;
         }
         let (a, b) = self.selection?;
+        if a == b {
+            return None;
+        }
         let real = std::fs::canonicalize(&self.path)
             .ok()
             .filter(|real| *real != self.path);
+        if self.mode == FileMode::Diff {
+            let DiffState::Rows(d) = &self.diff.state else {
+                return None;
+            };
+            let (held, half) = self.diff_held_and_half();
+            return code_ask::diff_ref(
+                &self.path,
+                real.as_deref(),
+                &d.doc,
+                &d.rows,
+                &held,
+                half,
+                a,
+                b,
+            );
+        }
         code_ask::file_ref(&self.path, real.as_deref(), self.shown_doc()?, a, b)
+    }
+
+    /// Diff mode: the lines the drawn map holds folded (a `⋯` stretch, a closed card), and the
+    /// half a side-by-side selection is in (none: unified).
+    fn diff_held_and_half(&self) -> (Vec<std::ops::Range<usize>>, Option<Half>) {
+        let held = self
+            .rows
+            .borrow()
+            .as_ref()
+            .map_or_else(Vec::new, |(_, map)| {
+                map.held().iter().map(|(lines, _)| lines.clone()).collect()
+            });
+        let half = self.side_on().then(|| self.sel_half.unwrap_or(Half::Old));
+        (held, half)
     }
 
     /// Whether the bar is up: a finished (not dragging), non-empty selection in the text, not the
@@ -94,19 +127,31 @@ impl FileTab {
         let (Some(doc), Some((a, b))) = (self.shown_doc(), self.selection) else {
             return false;
         };
-        if self.mode != FileMode::Plain {
-            return false;
-        }
-        let (first, last) = code_ask::whole_lines(a, b, doc.lines.len().saturating_sub(1));
-        let lines = last - first + 1;
-        let mut bytes = lines - 1;
-        for i in first..=last {
-            if code_ask::too_long_for(lines, bytes) {
+        let (lines, extra): (Vec<usize>, usize) = match (self.mode, &self.diff.state) {
+            (FileMode::Plain, _) => {
+                let (first, last) = code_ask::whole_lines(a, b, doc.lines.len().saturating_sub(1));
+                ((first..=last).collect(), 0)
+            }
+            // Each row also carries its marker.
+            (FileMode::Diff, DiffState::Rows(d)) => {
+                let (held, half) = self.diff_held_and_half();
+                let (first, last) = code_ask::whole_lines(a, b, d.rows.len().saturating_sub(1));
+                (
+                    code_ask::diff_rows_kept(&d.rows, &held, half, first, last).collect(),
+                    1,
+                )
+            }
+            (FileMode::Diff, _) => return false,
+        };
+        let count = lines.len();
+        let mut bytes = count.saturating_sub(1);
+        for i in lines {
+            if code_ask::too_long_for(count, bytes) {
                 break;
             }
-            bytes += doc.line(i).len();
+            bytes += extra + doc.line(i).len();
         }
-        code_ask::too_long_for(lines, bytes)
+        code_ask::too_long_for(count, bytes)
     }
 
     /// The window point of the bar's top-right corner, from the last drawing (geometry and row
@@ -173,7 +218,7 @@ impl FileTab {
     /// Esc with no find bar and no outline panel to close takes a selection (so the bar goes);
     /// with none it goes on.
     pub(super) fn esc_takes_selection(&self) -> bool {
-        self.selection.is_some_and(|(a, b)| a != b) && !self.preview_shown()
+        self.selection.is_some_and(|(a, b)| a != b) && !self.selecting && !self.preview_shown()
     }
 
     pub(super) fn clear_selection(&mut self, cx: &mut Context<Self>) {
@@ -193,21 +238,7 @@ impl FileTab {
         let ask = ask_words(self.ask_to).map(|words| {
             let button = if long {
                 // The same button, faint: its click does nothing.
-                div()
-                    .id("file-ask")
-                    .relative()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .h(px(BUTTON))
-                    .px(px(10.0))
-                    .rounded(px(5.0))
-                    .border_1()
-                    .border_color(hsla(ui.panel_border))
-                    .bg(hsla(ui.panel))
-                    .text_size(px(text::NAME))
-                    .text_color(hsla(ui.text_dim))
-                    .child(TOO_LONG)
+                Self::text_button_off("file-ask", TOO_LONG, ui)
             } else {
                 Self::text_button("file-ask", words, ui, |this, _, cx| this.ask(cx), cx)
             };
@@ -304,6 +335,11 @@ impl FileTab {
         self.selection = Some((pos(from), pos(to)));
         self.selecting = false;
         cx.notify();
+    }
+
+    /// Side by side: the half the selection counts as in (as a press on it sets).
+    pub fn set_sel_half_for_shots(&mut self, half: Option<Half>) {
+        self.sel_half = half;
     }
 
     /// Whether Esc would take the selection now (else it goes on).

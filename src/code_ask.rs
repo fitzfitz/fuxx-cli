@@ -1,10 +1,13 @@
 //! Code references for "Ask the agent" (M11ag): what a file-tab selection becomes as a chip
 //! label and as the text the agent (or the clipboard) gets. Pure: no GPUI, no I/O.
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use crate::diff_view::{DiffRow, RowKind};
 use crate::file_tab::{Doc, Pos};
 use crate::md_reader;
+use crate::row_map::Half;
 
 /// A reference is too long to ask past this many lines ...
 pub const ASK_MAX_LINES: usize = 500;
@@ -19,15 +22,8 @@ pub fn too_long_for(lines: usize, bytes: usize) -> bool {
 /// Which lines a reference names (1-based, inclusive). `Removed` names lines of the old text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CodeLines {
-    Lines {
-        first: usize,
-        last: usize,
-    },
-    #[allow(dead_code)] // Diff mode's removed-only selection (M11ag Task 5)
-    Removed {
-        first: usize,
-        last: usize,
-    },
+    Lines { first: usize, last: usize },
+    Removed { first: usize, last: usize },
 }
 
 /// Where Ask goes: the agent named on the bar, or nowhere (copy only).
@@ -135,6 +131,71 @@ pub fn file_ref(path: &Path, real: Option<&Path>, doc: &Doc, a: Pos, b: Pos) -> 
             last: last + 1,
         },
         fence: fence_lang(doc.syntax.as_deref(), path),
+        body,
+    })
+}
+
+/// The diff rows a selection over rows `first..=last` takes: those on `half`'s side (side by
+/// side; both sides unified), not a Gap, not in a held (folded or closed) stretch.
+pub fn diff_rows_kept<'a>(
+    rows: &'a [DiffRow],
+    held: &'a [Range<usize>],
+    half: Option<Half>,
+    first: usize,
+    last: usize,
+) -> impl Iterator<Item = usize> + 'a {
+    let on = move |r: &DiffRow| match r.kind {
+        RowKind::Same => true,
+        RowKind::Removed => half != Some(Half::New),
+        RowKind::Added => half != Some(Half::Old),
+        RowKind::Gap => false,
+    };
+    let last = last.min(rows.len().saturating_sub(1));
+    (first..=last)
+        .filter(move |&i| rows.get(i).is_some_and(on) && !held.iter().any(|h| h.contains(&i)))
+}
+
+/// The reference for a selection in Diff mode (unified, or one `half` side by side); None when
+/// no row is kept.
+#[allow(clippy::too_many_arguments)]
+pub fn diff_ref(
+    path: &Path,
+    real: Option<&Path>,
+    doc: &Doc,
+    rows: &[DiffRow],
+    held: &[Range<usize>],
+    half: Option<Half>,
+    a: Pos,
+    b: Pos,
+) -> Option<CodeRef> {
+    let (first, last) = whole_lines(a, b, rows.len().saturating_sub(1));
+    let kept: Vec<usize> = diff_rows_kept(rows, held, half, first, last).collect();
+    let marker = |kind| match kind {
+        RowKind::Added => '+',
+        RowKind::Removed => '-',
+        _ => ' ',
+    };
+    let body = kept
+        .iter()
+        .map(|&i| format!("{}{}", marker(rows[i].kind), doc.line(i)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let span = |side: fn(&DiffRow) -> Option<usize>| {
+        let mut nums = kept.iter().filter_map(|&i| side(&rows[i]));
+        let first = nums.next()?;
+        let (lo, hi) = nums.fold((first, first), |(lo, hi), n| (lo.min(n), hi.max(n)));
+        Some((lo, hi))
+    };
+    let lines = match (span(|r| r.new), span(|r| r.old)) {
+        (Some((first, last)), _) => CodeLines::Lines { first, last },
+        (None, Some((first, last))) => CodeLines::Removed { first, last },
+        (None, None) => return None,
+    };
+    Some(CodeRef {
+        path: path.to_path_buf(),
+        real: real.map(Path::to_path_buf),
+        lines,
+        fence: Some("diff".into()),
         body,
     })
 }
@@ -350,5 +411,167 @@ mod tests {
         let mut c = code(1, 2);
         c.path = PathBuf::from("/p/fuxx-cli/src/file_tab.rs");
         assert!(!a.same_place(&c));
+    }
+
+    fn drow(kind: RowKind, old: Option<usize>, new: Option<usize>) -> DiffRow {
+        DiffRow { kind, old, new }
+    }
+
+    fn diff_doc(texts: &[&str]) -> Doc {
+        Doc::new(texts.join("\n"), 0)
+    }
+
+    fn sample() -> (Doc, Vec<DiffRow>) {
+        (
+            diff_doc(&["a", "b", "c", "d"]),
+            vec![
+                drow(RowKind::Same, Some(41), Some(43)),
+                drow(RowKind::Removed, Some(42), None),
+                drow(RowKind::Added, None, Some(44)),
+                drow(RowKind::Same, Some(43), Some(45)),
+            ],
+        )
+    }
+
+    #[test]
+    fn diff_ref_names_the_current_lines() {
+        let (d, rows) = sample();
+        let c = diff_ref(
+            Path::new("a.rs"),
+            None,
+            &d,
+            &rows,
+            &[],
+            None,
+            p(0, 0),
+            p(3, 1),
+        )
+        .unwrap();
+        assert_eq!(
+            c.lines,
+            CodeLines::Lines {
+                first: 43,
+                last: 45
+            }
+        );
+        assert_eq!(c.body, " a\n-b\n+c\n d");
+        assert_eq!(c.fence.as_deref(), Some("diff"));
+    }
+
+    #[test]
+    fn removed_only_is_named_after_the_old_lines() {
+        let d = diff_doc(&["x", "y", "z"]);
+        let rows = vec![
+            drow(RowKind::Removed, Some(12), None),
+            drow(RowKind::Removed, Some(13), None),
+            drow(RowKind::Removed, Some(14), None),
+        ];
+        let path = Path::new("/p/fuxx-cli/src/workspace.rs");
+        let c = diff_ref(path, None, &d, &rows, &[], None, p(0, 0), p(2, 1)).unwrap();
+        assert_eq!(
+            c.lines,
+            CodeLines::Removed {
+                first: 12,
+                last: 14
+            }
+        );
+        assert_eq!(c.label(), "workspace.rs (removed, was 12\u{2013}14)");
+        assert_eq!(c.body, "-x\n-y\n-z");
+    }
+
+    #[test]
+    fn held_and_gap_rows_are_left_out() {
+        let d = diff_doc(&["a", "", "h1", "h2", "b"]);
+        let rows = vec![
+            drow(RowKind::Same, Some(1), Some(1)),
+            drow(RowKind::Gap, None, None),
+            drow(RowKind::Same, Some(2), Some(2)),
+            drow(RowKind::Same, Some(3), Some(3)),
+            drow(RowKind::Added, None, Some(4)),
+        ];
+        let held: Vec<Range<usize>> = std::iter::once(2..4).collect();
+        let c = diff_ref(
+            Path::new("a.rs"),
+            None,
+            &d,
+            &rows,
+            &held,
+            None,
+            p(0, 0),
+            p(4, 1),
+        )
+        .unwrap();
+        assert_eq!(c.body, " a\n+b");
+        assert_eq!(c.lines, CodeLines::Lines { first: 1, last: 4 });
+        // Only a Gap and held lines: nothing to ask about.
+        assert!(
+            diff_ref(
+                Path::new("a.rs"),
+                None,
+                &d,
+                &rows,
+                &held,
+                None,
+                p(1, 0),
+                p(3, 1)
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn side_by_side_takes_only_its_half() {
+        let (d, rows) = sample();
+        let path = Path::new("a.rs");
+        let old = diff_ref(
+            path,
+            None,
+            &d,
+            &rows,
+            &[],
+            Some(Half::Old),
+            p(0, 0),
+            p(3, 1),
+        )
+        .unwrap();
+        assert_eq!(old.body, " a\n-b\n d");
+        assert_eq!(
+            old.lines,
+            CodeLines::Lines {
+                first: 43,
+                last: 45
+            }
+        );
+        let new = diff_ref(
+            path,
+            None,
+            &d,
+            &rows,
+            &[],
+            Some(Half::New),
+            p(0, 0),
+            p(3, 1),
+        )
+        .unwrap();
+        assert_eq!(new.body, " a\n+c\n d");
+        // The old half's removed line alone: named after the old lines.
+        let gone = diff_ref(
+            path,
+            None,
+            &d,
+            &rows,
+            &[],
+            Some(Half::Old),
+            p(1, 0),
+            p(2, 1),
+        )
+        .unwrap();
+        assert_eq!(
+            gone.lines,
+            CodeLines::Removed {
+                first: 42,
+                last: 42
+            }
+        );
     }
 }
