@@ -237,7 +237,7 @@ You reviewed the summary of this design on 2026-11-19 and said "go ahead". Since
 
 **Plan-time calls (AI's, 2026-11-19; the full text is in the plan):**
 
-1. The banner keeps today's shape (title `<workspace> — <short form>`, subtitle `#n`), not the design's 2026-11-10 layout.
+1. The banner keeps today's shape (title `<workspace> — <short form>`, subtitle `#n`, plus the folder group when it differs from the workspace's name), not the design's 2026-11-10 layout.
 2. No minimum length for an end-mark banner; the silence guess keeps its 3 s and the banner minimum its 10 s. "One banner per ending" is kept by two per-session flags.
 3. The Workspace settles at the end mark for both backends by the same pure rule the trackers use; the window and the service time the command with their own clocks.
 4. After an end mark, output is prompt noise until the next keystroke.
@@ -280,7 +280,7 @@ You reviewed the summary of this design on 2026-11-19 and said "go ahead". Since
 - The whole-branch review found no Critical issue and called the branch ready with fixes: two Important (the order of a batch's command marks before its output was not pinned by a test; this note's on-screen check had items that would read as failures though the code is right), and minors.
 - Fixed in the wave: I-1 (two ordering tests, local and background-service replica), I-2 (this note's on-screen items), and M-1 to M-10: the service takes an ending only for a Done; an unnamed workspace's silence banner reads `pnpm dev — Finished`; an ending's subtitle names no program; `chrome-notifications` re-runs when the ending code changes; a scene step for forged marks after a told ending; a few moved or stale comments, `outputs <= 1`, more pinned wording rows, and a fuxx-cli-own example string.
 - Stays deferred (the review's triage): the typed-ahead start that swallows an ending in the service (needs a queue of endings instead of a polled status; only with no window attached); the short-form shapes that fail safe (escaped quote, `&& "ls"`, `sleep 5&`, bidi); a notification in the same batch as an end mark; scene strength notes other than M-8; real-`sh` timing in the service's tests (300 ms gaps; revisit only if it flakes); small trivia (a `_now`, closures, a shadow, `feed_marks`, a `debug_assert`).
-- Ruling E1 was re-checked by the controller with a full run on untouched `ab18273`. E1 re-check: (controller fills in)
+- Ruling E1 was re-checked by the controller with a full run on untouched `ab18273`. E1 re-check (2026-11-20): the full suite on untouched `ab18273`, exported to a scratch copy with its own build folder, gave 239 passed and 8 failed: the same 8 scenes, failing at the same checks as on this branch (`chrome-pixels-same` differs by 358 in both; `tab-bars` reads 818 against 818.5). So the 8 are the display's, not the branch's. The re-review of the fix wave then found doc wording still wrong (plan-time call 1's subtitle, on-screen items 16 and 18, two Limits lines, counts in the Roadmap and the Progress Log); those were corrected in the same docs commit that filled these numbers, by the controller, and that commit had no review of its own. One comment in the `command-banner` scene still says "three terminals" (there are four).
 
 ## M11p check (the chrome rule)
 
@@ -304,14 +304,16 @@ Greps over `git diff master...HEAD` (2026-11-19, Task 11):
 - A wrapper option's value reads as the program: `sudo -u deploy make` shows `deploy make` (the design's rule).
 - One plain word after the program is shown whatever it is (`echo <word>`).
 - Several pasted lines get one banner (plan-time call 5), the first line's; the later lines run with the pane reading
-  Done and end silently (Activity still logs them). A bracketed paste is one command, so this is the unbracketed case.
+  Done and end silently (Activity still logs those that ran 3 s or more, or failed). A bracketed paste is one command, so this is the unbracketed case.
 - Two commands typed ahead while one runs: the second is not re-armed (no Working for it).
 - With no window attached, an ending after a silence-guess "Finished" banner is not told at all (the service has no list).
 - `echo <word>` shows the word even when it is a secret (`echo hunter2 | sudo -S …` reads `echo hunter2 …`): the
   design's rule, kept on purpose; it is the one route by which the rule can put a password in Notification Center.
 - `cd web && pnpm dev` names the pane `cd web …` for the whole run.
-- There is no minimum length for an ending's banner, and that covers script-driven panes too: a script sending quick
-  printing commands into a background pane gets a banner and a sound for each one (master posted none under 10 s).
+- There is no minimum length for an ending's banner, and that covers script-driven panes too: a script sending short
+  commands into a background pane gets a banner and a sound for each one that prints 150 ms or more after it starts
+  (output sooner counts as the echo of what was typed, and then a command under 3 s tells nothing); master posted
+  none under 10 s.
 - An interactive program run for 3 s or more (vim, less, man, a REPL) leaves its row Done, with the pop, when you quit it.
 - After an end mark, output is noise until a keystroke, so a backgrounded job (`pnpm dev &`) never shows Working or
   Done (master's silence guess did).
@@ -346,7 +348,7 @@ Measured 2026-11-19 by the Task 11 hand-off on branch `m11q-command-finished` at
 - Baselines at the plan commit: 2154 tests passed, 1 ignored; clippy 14 / 27 default, 16 / 29 `ui-shots`.
 - **The 8 failing scenes are held to be environmental** (ruling E1 above): the same 8 fail on untouched Task 3 code and
   the same code had 0 failures before the pause. **A full run on your usual display is still owed before merging.**
-- After the final review's fix wave: (to be filled)
+- After the final review's fix wave (2026-11-20, at `1eaeb50`): `cargo test --bin fuxx` 2208 passed, 0 failed, 1 ignored (two ordering tests added); clippy 14 / 27 and 16 / 29, unchanged; `cargo fmt --check` clean (the fix wave's own gate). Full `scripts/ui-shots.sh` again, stand-in first on PATH: **244 passed, 8 failed, 137.9 s**: the same 8 scenes, at the same checks as the untouched plan commit (see the E1 re-check above); no banner was posted.
 
 ## On-screen check
 
@@ -373,9 +375,10 @@ subtitle `#n`, plus the folder group when it differs from the workspace's name; 
 14. Idle CPU with a command running is as on master: `top -l 6 -s 5 -pid <pid>` while `sleep 120` runs, against the same on master.
 15. Quit the window with "Keep running after quit" on while `sleep 20; true` runs: one banner, `fuxx — sleep 20 …` ·
     `Done in 20s`, from the service.
-16. An unnamed plain zsh pane running an agent, or a long silent-then-chatty command, in the background: the silence
+16. An unnamed plain zsh pane running a program that sets no title of its own (one that sets a title reads as in
+    item 9), or a long silent-then-chatty command, in the background: the silence
     banner's title reads `… — Finished` (or `… — Needs your input`), not the command twice; say if you want it changed.
 17. The failed dot in Activity against the waiting ring's colour: are they distinct enough to you?
-18. A script loop sending quick printing commands into a background pane (for example `fuxx send` of `echo hi` a few
-    times): expect a banner and a sound per command (plan-time call 2 in action). Say if that is too noisy.
+18. A script loop sending quick printing commands into a background pane (for example `fuxx send` of `sleep 1; echo hi` a few
+    times; a bare `echo hi` prints too soon to count as work and tells nothing): expect a banner and a sound per command (plan-time call 2 in action). Say if that is too noisy.
 19. Run `sleep 5 && echo hi &` in a pane: expect no Working and no Done for the background job (plan-time call 4).

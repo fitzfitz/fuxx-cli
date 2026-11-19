@@ -13,9 +13,9 @@ updated: 2026-11-19
 |---|---|
 | **Design (the spec)** | [[68 - Milestone 11q - Which Command Finished]] |
 | **Status** | 🟨 built on branch m11q-command-finished, waiting for your on-screen check; not merged |
-| **Tasks done** | 12 / 12 (Tasks 0–11 done; the whole-branch review and its fix wave are next) |
+| **Tasks done** | 12 / 12 (Tasks 0–11 done; the whole-branch review, its fix wave and the second full ui-shots run are done) |
 | **Baselines** | `cargo test --bin fuxx`: 2154 passed, 0 failed, 1 ignored. `cargo clippy --all-targets`: 14 warnings (bin) / 27 (test). `cargo clippy --all-targets --features ui-shots`: 16 (bin) / 29 (test). `cargo fmt --check`: clean. ui-shots: M11ag's last full run, 247 passed, 0 failed (not re-run here). |
-| **▶ Pick up here** | The whole-branch review, its fix wave, then the second full ui-shots run (numbers in note 68, "Final numbers"); then your on-screen check |
+| **▶ Pick up here** | Your on-screen check (note 68, 19 items); then a full ui-shots run on your usual display before merging |
 | **Decisions used** | Yours: the pane is named after the running command; the notification says which command; after M11p; "go ahead" (2026-11-19, incl. the row's who `› <short form>`); the full ui-shots run only before the final review and after its fix wave. The design's AI's calls §1–§6. Plan-time calls below (AI's). |
 | **Needs your eyes** | 👀 the plan-time calls 1, 2, 5 and 6 (they rule on things the design left open); then the on-screen check in note 68, after Task 11 |
 
@@ -581,7 +581,7 @@ protocol change.
 - [x] **Step 2: Leak and public-repo greps** of the branch's added lines: no event or struct field holding a whole
   command line outside `blocks.rs` / `shell_marks.rs`; no `/Users/`, personal names, emails or time-zone names.
 - [x] **Step 3: The full `scripts/ui-shots.sh`** (before the final review); numbers into note 68. After the final
-  review's fix wave, the full run again. (First run done; the second, after the fix wave, is the controller's.)
+  review's fix wave, the full run again. (First run done; the second, after the fix wave, done 2026-11-20: numbers in note 68.)
 - [x] **Step 4: Write note 68's sections.** Limits to state at least: a wrapper option's value reads as the program
   (`sudo -u deploy make`); one plain word after the program is shown whatever it is (`echo <word>`); several pasted
   lines get one banner (plan-time call 5); the 3 s edge between the window's and the service's clocks (call 3);
