@@ -3987,6 +3987,7 @@ mod tests {
             parent: None,
             detail: None,
             writes: vec!["hello.txt".into(), String::new()],
+            texts: Vec::new(),
         };
         assert_eq!(
             edit_events(&started, cwd, None, &mut open),
@@ -4024,6 +4025,7 @@ mod tests {
             parent: None,
             detail: None,
             writes: vec![],
+            texts: Vec::new(),
         };
         assert!(edit_events(&read, cwd, None, &mut open).is_empty());
     }

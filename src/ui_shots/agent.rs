@@ -1002,6 +1002,7 @@ pub(super) fn agent_tab_long() {
                     parent: None,
                     detail: None,
                     writes: Vec::new(),
+                    texts: Vec::new(),
                 },
                 Event::ToolFinished {
                     id: id.clone(),
@@ -1024,6 +1025,7 @@ pub(super) fn agent_tab_long() {
                     parent: None,
                     detail: Some(crate::providers::ToolDetail::Command("seq 100000".into())),
                     writes: Vec::new(),
+                    texts: Vec::new(),
                 });
                 events.push(Event::ToolFinished {
                     id: "toolu_big".into(),
@@ -1167,6 +1169,7 @@ pub(super) fn agent_tab_cached_current() {
                         parent: None,
                         detail: Some(crate::providers::ToolDetail::Command("npm test".into())),
                         writes: Vec::new(),
+                        texts: Vec::new(),
                     },
                 ],
                 cx,
@@ -1768,6 +1771,7 @@ pub(super) fn agent_tab_review() {
                                 .into(),
                         }),
                         writes: Vec::new(),
+                        texts: Vec::new(),
                     },
                     Event::ToolFinished {
                         id: "e1".into(),

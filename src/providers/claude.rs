@@ -657,6 +657,25 @@ fn tool_writes(name: &str, input: &Value) -> Vec<String> {
     s(&input[field]).into_iter().collect()
 }
 
+/// The new text each edit puts in its file, for the rest of fuxx to find the edit's lines
+/// (M11ag). `replace_all` changes nothing: the first match is where the note goes.
+fn tool_texts(name: &str, input: &Value) -> Vec<EditText> {
+    let one = |v: &Value| match v["new_string"].as_str() {
+        Some("") => Some(EditText::Removed),
+        Some(t) => Some(EditText::Inserted(t.to_string())),
+        None => None,
+    };
+    match name {
+        "Edit" => one(input).into_iter().collect(),
+        "MultiEdit" => input["edits"]
+            .as_array()
+            .map(|a| a.iter().filter_map(one).collect())
+            .unwrap_or_default(),
+        "Write" => vec![EditText::WholeFile],
+        _ => Vec::new(),
+    }
+}
+
 fn todos(input: &Value) -> Vec<TodoItem> {
     input["todos"]
         .as_array()
@@ -916,6 +935,7 @@ impl ClaudeTranslator {
                             summary: tool_summary(&name, input),
                             detail: tool_detail(&name, input),
                             writes: tool_writes(&name, input),
+                            texts: tool_texts(&name, input),
                             parent: parent.clone(),
                             name,
                         });
@@ -1317,6 +1337,54 @@ mod tests {
     }
 
     #[test]
+    fn tool_texts_of_edit_multiedit_write_and_notebook() {
+        let ins = |t: &str| EditText::Inserted(t.to_string());
+        assert_eq!(
+            tool_texts("Edit", &json!({"old_string": "a", "new_string": "b"})),
+            vec![ins("b")]
+        );
+        assert_eq!(
+            tool_texts(
+                "Edit",
+                &json!({"old_string": "a", "new_string": "", "replace_all": true})
+            ),
+            vec![EditText::Removed]
+        );
+        assert_eq!(
+            tool_texts(
+                "MultiEdit",
+                &json!({"edits": [
+                    {"old_string": "a", "new_string": "b"},
+                    {"old_string": "c", "new_string": ""},
+                ]})
+            ),
+            vec![ins("b"), EditText::Removed]
+        );
+        assert_eq!(
+            tool_texts("Write", &json!({"content": "x"})),
+            vec![EditText::WholeFile]
+        );
+        assert!(tool_texts("NotebookEdit", &json!({"new_source": "x"})).is_empty());
+        assert!(tool_texts("Bash", &json!({"command": "ls"})).is_empty());
+    }
+
+    #[test]
+    fn claude_tools_fixture_edits_carry_their_new_text() {
+        let tools = decode_all(&CLAUDE, include_str!("fixtures/claude-tools.jsonl"));
+        let texts: Vec<Vec<EditText>> = tools
+            .iter()
+            .filter_map(|e| match e {
+                Event::ToolStarted { name, texts, .. } if name == "Edit" => Some(texts.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.contains(&vec![EditText::Inserted("beta".to_string())]),
+            "{texts:?}"
+        );
+    }
+
+    #[test]
     fn edit_tools_name_the_files_they_write() {
         let writes_of = |ev: &[Event], tool: &str| -> Vec<Vec<String>> {
             ev.iter()
@@ -1410,6 +1478,7 @@ mod tests {
                 parent: Some("toolu_parent".into()),
                 detail: None,
                 writes: Vec::new(),
+                texts: Vec::new(),
             }]
         );
     }
