@@ -1263,6 +1263,9 @@ pub(crate) enum Glyph {
     Report,
     Alert,
     Octagon,
+    /// The notes pill's eye (M11ag): an eye, and the same crossed out.
+    Eye,
+    EyeOff,
 }
 
 /// `kind` in `color`, in a 12 px box.
@@ -1769,6 +1772,18 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         paths.push(tri);
                         paths.push(bar((6.0, 4.6), (6.0, 7.0)));
                         paths.push(dot((6.0, 8.7)));
+                    }
+                    Glyph::Eye | Glyph::EyeOff => {
+                        // The lids (an almond) round a pupil; off: a slash across.
+                        let mut lids = stroke();
+                        lids.move_to(p(0.8, 6.0));
+                        lids.curve_to(p(11.2, 6.0), p(6.0, 0.0));
+                        lids.curve_to(p(0.8, 6.0), p(6.0, 12.0));
+                        paths.push(lids);
+                        paths.push(ring((6.0, 6.0), 1.6));
+                        if matches!(kind, Glyph::EyeOff) {
+                            paths.push(bar((1.5, 10.5), (10.5, 1.5)));
+                        }
                     }
                     Glyph::Octagon => {
                         let mut oct = stroke();

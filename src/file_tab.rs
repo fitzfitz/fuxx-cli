@@ -4560,6 +4560,10 @@ pub struct FileTab {
     notes_open: HashSet<u64>,
     note_rows_gen: u64,
     note_shapes: Rc<RefCell<Option<Rc<notes::NoteShapes>>>>,
+    /// M11ag: the eye's switch: no note rows in this tab (not saved; a new tab shows them), and
+    /// the notes pill and its eye as drawn this frame (none: not drawn).
+    notes_hidden: bool,
+    notes_at: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>,
     _appearance: Subscription,
     /// M11ag: a note filed for any file: this file's are placed again if its changed.
     _notes_seen: Subscription,
@@ -4740,6 +4744,8 @@ impl FileTab {
             notes_open: HashSet::new(),
             note_rows_gen: 0,
             note_shapes: Rc::default(),
+            notes_hidden: false,
+            notes_at: Rc::default(),
             _appearance: appearance,
             _notes_seen: notes_seen,
         };
@@ -7739,6 +7745,7 @@ impl FileTab {
             )
         });
         let follow = self.follow_pill(ui, cx);
+        let notes = self.notes_pill(ui, cx);
         let (name, chip) = self.title_words();
         let mut meta = self.meta_parts().into_iter();
         let place = meta.next().unwrap_or_default();
@@ -7855,6 +7862,7 @@ impl FileTab {
                     .flex_row()
                     .items_center()
                     .gap(px(8.0))
+                    .children(notes)
                     .children(follow)
                     .children(jumps.into_iter().flatten())
                     .children(switch)
@@ -8187,7 +8195,12 @@ impl FileTab {
             side_by_side: self.mode == FileMode::Diff && self.side_by_side,
             current_half: self.current_half,
             sel_half: self.sel_half,
-            notes: self.notes.clone(),
+            // M11ag: the eye: hidden, no note has rows (the map is made again for the key).
+            notes: if self.notes_hidden {
+                Rc::default()
+            } else {
+                self.notes.clone()
+            },
             notes_gen: self.notes_gen,
             notes_open: self.notes_open.clone(),
             note_rows_gen: self.note_rows_gen,

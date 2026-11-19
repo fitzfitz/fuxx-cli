@@ -3,7 +3,8 @@
 //! have the file tab read it again, and read where the tab placed each note (`placed_notes`).
 //! The `notes-row`, `notes-open`, `notes-under-fold` and `notes-diff` scenes (M11ag Task 11) read
 //! the note rows drawn (`note_rows_drawn`), where their parts were drawn and their pixels;
-//! `notes-follow-scroll` reads where Follow scrolled to.
+//! `notes-follow-scroll` reads where Follow scrolled to. `notes-pill` and `notes-hidden` (Task
+//! 12) read the pill beside Follow, where its clicks scroll to, and the eye that hides the rows.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -97,6 +98,22 @@ pub(super) const SCENES: &[Scene] = &[
         themes: Themes::One,
         serial: false,
         kind: Kind::State,
+        sources: SOURCES,
+    },
+    Scene {
+        name: "notes-pill",
+        run: notes_pill,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: SOURCES,
+    },
+    Scene {
+        name: "notes-hidden",
+        run: notes_hidden,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
         sources: SOURCES,
     },
 ];
@@ -1104,7 +1121,6 @@ fn notes_diff() {
 /// 3 rows from the top counting the rows as drawn (the note above it included), so a line, not
 /// a note row, is at the top.
 fn notes_follow_scroll() {
-    use crate::live_lines::{Compared, LineRecord, Mark, Sure, Who};
     let n = "notes-follow-scroll";
     let path = scratch(n);
     let other = ["    let a = 1;", "        let b = 2;", "    let c = 3;"];
@@ -1126,24 +1142,7 @@ fn notes_follow_scroll() {
     with_tab(n, path.clone(), setup, |cx, window, tab| {
         let done = settle_until(cx, window, 10, |cx| rows_drawn(cx, tab).len() == 2);
         assert!(done, "{n}: two notes drawn: {:?}", rows_drawn(cx, tab));
-        let now = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000);
-        let mut record = LineRecord::baseline(600);
-        let c = Compared {
-            new_of_old: (0..600)
-                .map(|i| (!(400..403).contains(&i)).then_some(i))
-                .collect(),
-            blocks: std::iter::once(400..403).collect(),
-        };
-        let who = Who::Agent(edit_ledger::agent_mark_for("claude"));
-        record.apply(
-            &c,
-            600,
-            Mark {
-                who,
-                sure: Sure::Exact,
-                when: now,
-            },
-        );
+        let (record, now) = claude_change(600, 400..403);
         cx.update(|cx| tab.update(cx, |t, _| t.set_live_for_shot(record, now, Some(true))));
         settle(cx, window);
         cx.update(|cx| tab.update(cx, |t, cx| t.follow_for_shots(cx)));
@@ -1175,4 +1174,369 @@ fn notes_follow_scroll() {
     });
     std::fs::remove_file(&path).ok();
     println!("ui-shots: {n} ok");
+}
+
+/// A third block, for a file with three notes.
+const THIRD: [&str; 3] = [
+    "    let tab = pane.open(&path);",
+    "    pane.focus(tab);",
+    "    tab",
+];
+
+/// A live record with a change by claude at `changed` of `total` lines, and the time it is
+/// worked out at.
+fn claude_change(
+    total: usize,
+    changed: std::ops::Range<usize>,
+) -> (crate::live_lines::LineRecord, std::time::SystemTime) {
+    use crate::live_lines::{Compared, LineRecord, Mark, Sure, Who};
+    let now = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000);
+    let mut record = LineRecord::baseline(total);
+    let c = Compared {
+        new_of_old: (0..total)
+            .map(|i| (!changed.contains(&i)).then_some(i))
+            .collect(),
+        blocks: std::iter::once(changed).collect(),
+    };
+    let who = Who::Agent(edit_ledger::agent_mark_for("claude"));
+    let mark = Mark {
+        who,
+        sure: Sure::Exact,
+        when: now,
+    };
+    record.apply(&c, total, mark);
+    (record, now)
+}
+
+/// The eye's tooltip as it opens: the pointer moved off, then onto it.
+fn eye_tip(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<FileTab>,
+) -> Option<String> {
+    use gpui::Modifiers;
+    let eye = cx.read(|cx| tab.read(cx).notes_eye_bounds())?;
+    if let Ok(mut tip) = crate::sidebar_toggle::SHOWN_TIP.lock() {
+        *tip = None;
+    }
+    cx.simulate_mouse_move(window, point(px(2.0), px(2.0)), None, Modifiers::none());
+    cx.simulate_mouse_move(window, eye.center(), None, Modifiers::none());
+    cx.advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    draw(cx, window);
+    crate::sidebar_toggle::SHOWN_TIP
+        .lock()
+        .ok()
+        .and_then(|t| t.clone())
+}
+
+fn pill_state(cx: &mut VisualTestAppContext, tab: &Entity<FileTab>) -> Option<(String, bool)> {
+    cx.read(|cx| tab.read(cx).notes_pill_for_shots())
+}
+
+/// `notes-pill` (both themes): three notes at lines 5, 105 and 205 of 300, the first in view:
+/// the pill beside Follow reads "3 notes from claude" and is dim on the bar, with the eye after
+/// it; a click scrolls the first note below the view (line 105) to three rows from the top, the
+/// next click the third (205), the next wraps to the first (line 5, three rows down); no notes: no
+/// pill; Preview: no pill; Diff mode: the pill is there.
+fn notes_pill() {
+    use gpui::Modifiers;
+    for &(slug, name) in shot_themes() {
+        let n = format!("notes-pill-{slug}");
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let path = scratch("notes-pill");
+        let mut lines: Vec<String> = text_of(300, 0, &[], &BLOCK)
+            .lines()
+            .map(String::from)
+            .collect();
+        for (at, block) in [(2, &BLOCK), (102, &CHANGED), (202, &THIRD)] {
+            for (k, l) in block.iter().enumerate() {
+                lines[at + k] = l.to_string();
+            }
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").expect("the file");
+        let filed = path.clone();
+        let setup = move |cx: &mut App| {
+            edit_notes::update(cx, |store| {
+                store.add(filed.clone(), note("claude", "one", &BLOCK, 2));
+                store.add(filed.clone(), note("claude", "two", &CHANGED, 102));
+                store.add(filed, note("claude", "three", &THIRD, 202));
+            });
+        };
+        let look = Look {
+            theme: name,
+            dims: size(px(760.0), px(360.0)),
+            mode: FileMode::Plain,
+        };
+        let n_in = n.clone();
+        with_tab_in(&n, path.clone(), look, setup, move |cx, window, tab| {
+            let n = n_in;
+            let done = settle_until(cx, window, 10, |cx| rows_drawn(cx, tab).len() == 3);
+            assert!(done, "{n}: three notes drawn: {:?}", rows_drawn(cx, tab));
+            assert_eq!(
+                pill_state(cx, tab),
+                Some(("3 notes from claude".to_string(), false)),
+                "{n}: the pill"
+            );
+            let g = geom(cx, tab);
+            let pill = cx
+                .read(|cx| tab.read(cx).notes_pill_bounds())
+                .expect("the pill");
+            let eye = cx
+                .read(|cx| tab.read(cx).notes_eye_bounds())
+                .expect("the eye");
+            assert!(
+                pill.bottom() <= g.bounds.top() && pill.right() <= eye.left() + px(1.0),
+                "{n}: in the bar, the eye after it: {pill:?} {eye:?}"
+            );
+            // Beside Follow: an agent's change makes its pill, which comes after.
+            let (record, now) = claude_change(300, 10..12);
+            cx.update(|cx| tab.update(cx, |t, _| t.set_live_for_shot(record, now, Some(false))));
+            settle(cx, window);
+            let follow = cx
+                .read(|cx| tab.read(cx).follow_pill_bounds())
+                .expect("the Follow pill");
+            let pill = cx
+                .read(|cx| tab.read(cx).notes_pill_bounds())
+                .expect("the pill");
+            let eye = cx
+                .read(|cx| tab.read(cx).notes_eye_bounds())
+                .expect("the eye");
+            assert!(
+                eye.right() <= follow.left() && follow.left() - eye.right() < px(24.0),
+                "{n}: beside Follow {eye:?} {follow:?}"
+            );
+            // Dim on the bar: the eye's strokes and the words.
+            let shot = shown(cx, window);
+            keep_shot(&n, &shot);
+            let dims = size(px(760.0), px(360.0));
+            let dim =
+                crate::ui_tokens::ensure_contrast(ui.text_dim, ui.card, crate::ui_tokens::TEXT_MIN);
+            for (what, b) in [("words", pill), ("eye", eye)] {
+                let ink = strongest(
+                    &shot,
+                    dims,
+                    ui.card,
+                    b,
+                    f32::from(b.left()),
+                    f32::from(b.right()),
+                )
+                .unwrap_or_else(|| panic!("{n}: the {what} is drawn"));
+                assert!(
+                    gap(ink, ui.card) > 40 && gap(ink, dim) < gap(ink, ui.text),
+                    "{n}: the {what} is dim {ink:?}"
+                );
+            }
+            // Where each click goes: three rows under the top is where the line sits.
+            let lh = f32::from(g.line_height);
+            let click = |cx: &mut VisualTestAppContext| {
+                let at = cx
+                    .read(|cx| tab.read(cx).notes_pill_bounds())
+                    .expect("the pill")
+                    .center();
+                cx.simulate_click(window, at, Modifiers::none());
+                settle(cx, window);
+            };
+            let from_top = |cx: &mut VisualTestAppContext, line: usize| {
+                let g = geom(cx, tab);
+                (line_top(cx, tab, line) - f32::from(g.scroll.y)) / lh
+            };
+            for (k, line) in [(1, 104), (2, 204), (3, 4)] {
+                click(cx);
+                let rows = from_top(cx, line);
+                assert!(
+                    (rows - 3.0).abs() < 0.01,
+                    "{n}: click {k}: line {} three rows from the top, not {rows}",
+                    line + 1
+                );
+            }
+            // Your scroll: Follow is off.
+            assert!(!cx.read(|cx| tab.read(cx).follow_on()), "{n}: Follow off");
+        });
+        std::fs::remove_file(&path).ok();
+
+        // No notes: no pill.
+        let none = scratch("notes-pill-none");
+        std::fs::write(&none, text(0, &[], &BLOCK)).expect("the file");
+        let n_in = n.clone();
+        with_tab(
+            &n,
+            none.clone(),
+            |_| {},
+            move |cx, window, tab| {
+                settle(cx, window);
+                assert_eq!(pill_state(cx, tab), None, "{n_in}: no notes, no pill");
+                assert!(cx.read(|cx| tab.read(cx).notes_pill_bounds()).is_none());
+            },
+        );
+        std::fs::remove_file(&none).ok();
+
+        // Preview: none; File again: the pill.
+        let md = scratch("notes-pill-md").with_file_name("NOTES.md");
+        std::fs::write(&md, text(0, &[42], &BLOCK)).expect("the file");
+        let filed = md.clone();
+        let setup = move |cx: &mut App| {
+            edit_notes::update(cx, |store| {
+                store.add(filed, note("claude", "why", &BLOCK, 42))
+            });
+        };
+        let n_in = n.clone();
+        with_tab(&n, md.clone(), setup, move |cx, window, tab| {
+            let n = n_in;
+            let done = settle_until(cx, window, 10, |cx| pill_state(cx, tab).is_some());
+            assert!(done, "{n}: the pill in the source view");
+            cx.update_window(window, |_, window, cx| {
+                tab.update(cx, |t, cx| t.choose_preview_for_shots(true, window, cx))
+            })
+            .expect("Preview");
+            settle(cx, window);
+            assert!(cx.read(|cx| tab.read(cx).preview_shown()), "{n}: Preview");
+            assert_eq!(pill_state(cx, tab), None, "{n}: no pill in Preview");
+            assert!(cx.read(|cx| tab.read(cx).notes_pill_bounds()).is_none());
+            cx.update_window(window, |_, window, cx| {
+                tab.update(cx, |t, cx| t.choose_preview_for_shots(false, window, cx))
+            })
+            .expect("File");
+            settle(cx, window);
+            assert_eq!(
+                pill_state(cx, tab),
+                Some(("1 note from claude".to_string(), false)),
+                "{n}: back in File"
+            );
+        });
+        std::fs::remove_file(&md).ok();
+
+        // Diff mode: the pill, and its eye hides the rows there too.
+        let (path, setup) = noted("notes-pill-diff");
+        let look = Look {
+            theme: name,
+            dims: size(px(900.0), px(600.0)),
+            mode: FileMode::Diff,
+        };
+        let n_in = n.clone();
+        with_tab_in(&n, path.clone(), look, setup, move |cx, window, tab| {
+            let n = n_in;
+            cx.update(|cx| tab.update(cx, |t, cx| t.set_diff_for_shots(&noted_diff(), cx)));
+            drawn_rows(cx, window, tab, &n);
+            assert_eq!(
+                pill_state(cx, tab),
+                Some(("1 note from claude".to_string(), false)),
+                "{n}: the pill in Diff mode"
+            );
+            let eye = cx
+                .read(|cx| tab.read(cx).notes_eye_bounds())
+                .expect("the eye");
+            cx.simulate_click(window, eye.center(), Modifiers::none());
+            settle(cx, window);
+            assert!(rows_drawn(cx, tab).is_empty(), "{n}: hidden in Diff mode");
+        });
+        std::fs::remove_file(&path).ok();
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// `notes-hidden` (both themes): the eye hides every note row (the code rows back in place: line
+/// 46 where it was before the note), the pill stays with its tooltip "Show notes"; again, they
+/// are back ("Hide notes"); another tab on the same file shows them.
+fn notes_hidden() {
+    use gpui::Modifiers;
+    for &(slug, name) in shot_themes() {
+        let n = format!("notes-hidden-{slug}");
+        let theme = shot_theme(name);
+        let (path, setup) = noted("notes-hidden");
+        let look = Look {
+            theme: name,
+            dims: size(px(760.0), px(360.0)),
+            mode: FileMode::Plain,
+        };
+        let n_in = n.clone();
+        let again = path.clone();
+        with_tab_in(&n, path.clone(), look, setup, move |cx, window, tab| {
+            let n = n_in;
+            let (_, rows) = drawn_rows(cx, window, tab, &n);
+            assert_eq!(rows, 45..47, "{n}: shown at first");
+            let lh = f32::from(geom(cx, tab).line_height);
+            assert_eq!(
+                line_top(cx, tab, 45),
+                47.0 * lh,
+                "{n}: line 46 two rows down"
+            );
+            let words = "1 note from claude".to_string();
+            assert_eq!(
+                pill_state(cx, tab),
+                Some((words.clone(), false)),
+                "{n}: pill"
+            );
+            assert_eq!(
+                eye_tip(cx, window, tab).as_deref(),
+                Some("Hide notes"),
+                "{n}"
+            );
+            let eye = cx
+                .read(|cx| tab.read(cx).notes_eye_bounds())
+                .expect("the eye");
+            cx.simulate_click(window, eye.center(), Modifiers::none());
+            settle(cx, window);
+            assert!(rows_drawn(cx, tab).is_empty(), "{n}: no note rows");
+            assert_eq!(
+                line_top(cx, tab, 45),
+                45.0 * lh,
+                "{n}: line 46 back in place"
+            );
+            assert_eq!(
+                pill_state(cx, tab),
+                Some((words.clone(), true)),
+                "{n}: pill stays"
+            );
+            assert!(cx.read(|cx| tab.read(cx).notes_pill_bounds()).is_some());
+            assert_eq!(
+                eye_tip(cx, window, tab).as_deref(),
+                Some("Show notes"),
+                "{n}"
+            );
+            // Another tab on the same file shows its notes.
+            let other = cx
+                .update_window(window, |_, window, cx| {
+                    cx.new(|cx| {
+                        let mut t = FileTab::new(again.clone(), FileMode::Plain, window, cx);
+                        t.frozen = true;
+                        t
+                    })
+                })
+                .expect("another tab");
+            let read = settle_until(cx, window, 10, |cx| version(cx, &other) == Some(1));
+            assert!(read, "{n}: the other tab reads the file");
+            let placed_ok = settle_until(cx, window, 10, |cx| !placed(cx, &other).is_empty());
+            assert!(placed_ok, "{n}: the other tab places the note");
+            assert_eq!(
+                pill_state(cx, &other),
+                Some((words.clone(), false)),
+                "{n}: shown"
+            );
+            // Again: back.
+            let eye = cx
+                .read(|cx| tab.read(cx).notes_eye_bounds())
+                .expect("the eye");
+            cx.simulate_click(window, eye.center(), Modifiers::none());
+            settle(cx, window);
+            let (_, rows) = drawn_rows(cx, window, tab, &n);
+            assert_eq!(rows, 45..47, "{n}: the rows are back");
+            assert_eq!(pill_state(cx, tab), Some((words, false)), "{n}: pill");
+            assert_eq!(
+                eye_tip(cx, window, tab).as_deref(),
+                Some("Hide notes"),
+                "{n}"
+            );
+            assert_eq!(
+                line_top(cx, tab, 45),
+                47.0 * lh,
+                "{n}: line 46 under it again"
+            );
+            keep_shot(&n, &shown(cx, window));
+        });
+        std::fs::remove_file(&path).ok();
+        let _ = theme;
+        println!("ui-shots: {n} ok");
+    }
 }
