@@ -5,7 +5,7 @@ status: built-on-branch
 
 # 68 - Milestone 11q - Which Command Finished
 
-**Status:: 🟨 built on branch m11q-command-finished, waiting for your on-screen check; not merged.** Designed 2026-11-10 and approved by you the same day; re-read with you 2026-11-19 ("go ahead"; see "Update 2026-11-19"); planned and built 2026-11-19 in 12 tasks (0–11), plan [[M11q Plan - Which Command Finished]]. Comes **after M11p** (your call,
+**Status:: 🟨 built, **merged to master 2026-11-20** (not pushed), waiting for your on-screen check.** Designed 2026-11-10 and approved by you the same day; re-read with you 2026-11-19 ("go ahead"; see "Update 2026-11-19"); planned and built 2026-11-19 in 12 tasks (0–11), plan [[M11q Plan - Which Command Finished]]. Comes **after M11p** (your call,
 2026-11-10: "ok, brainstorm it, after M11p"). You skipped the design questions ("you go ahead"), so every decision
 below except the three in "Decided by you" is **the AI's call**: check those while reading. The whole-branch review is done and its fix wave applied (see "Calls made while building"); a second full ui-shots run and a full run on your usual display are still owed before merging (see "Final numbers").
 **Phase 4: an M11 extension (the chores round after v0.5.0).** Note 67 is left for M11p's design.
