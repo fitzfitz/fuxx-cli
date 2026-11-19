@@ -1914,12 +1914,12 @@ mod tests {
             "fuxx — command"
         );
         assert_eq!(
-            daemon_banner(&info, Some("claude"), None, "Finished"),
-            ("fuxx — claude".to_string(), "Finished".to_string())
+            daemon_banner(&info, Some("cargo test"), None, "Finished"),
+            ("fuxx — cargo test".to_string(), "Finished".to_string())
         );
         assert_eq!(
             daemon_banner(&info, None, None, "Finished"),
-            (notification_summary(&info, None), "Finished".to_string())
+            ("fuxx — claude".to_string(), "Finished".to_string())
         );
     }
 
