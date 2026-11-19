@@ -1,9 +1,10 @@
 //! What leaves the terminal of a command line: its short form, and nothing more.
 //!
-//! A command line may hold secrets (`API_KEY=… npm run deploy --token …`), so only the program, at
-//! most one plain word after it and an ellipsis when another command follows may be shown
-//! anywhere: a pane's name, a banner, the 🔔 list, Activity. Mark text is untrusted, so the
-//! result is cleaned and capped here.
+//! A command line may hold secrets (`API_KEY=… npm run deploy --token …`, `echo sk-…`), so only the
+//! program, a plain subcommand after it when the program is one known to take subcommands
+//! (`SUBCOMMANDS`), and an ellipsis when another command follows may be shown anywhere: a pane's
+//! name, a banner, the 🔔 list, Activity. Mark text is untrusted, so the result is cleaned and
+//! capped here.
 
 use std::time::{Duration, Instant};
 
@@ -18,20 +19,61 @@ pub const NO_SHORT: &str = "command";
 
 /// Programs that run the next command: they and their options are skipped.
 const WRAPPERS: [&str; 6] = ["sudo", "env", "time", "nohup", "command", "exec"];
+/// Programs whose next plain word is a subcommand (`git push`, `pnpm dev`), so it may be shown.
+/// Any other program shows its name alone: its next word may be a value, even a secret
+/// (`echo sk-…`, `./deploy.sh prod`). The user's call, 2026-11-20.
+const SUBCOMMANDS: [&str; 34] = [
+    "npm",
+    "npx",
+    "pnpm",
+    "pnpx",
+    "yarn",
+    "bun",
+    "bunx",
+    "deno",
+    "cargo",
+    "rustup",
+    "git",
+    "gh",
+    "go",
+    "make",
+    "just",
+    "docker",
+    "podman",
+    "kubectl",
+    "helm",
+    "terraform",
+    "brew",
+    "pip",
+    "pip3",
+    "uv",
+    "poetry",
+    "mix",
+    "dotnet",
+    "mvn",
+    "gradle",
+    "gradlew",
+    "flutter",
+    "dart",
+    "swift",
+    "bundle",
+];
 /// Words after which one more word is the thing run (`npm run build`).
 const RUNNERS: [&str; 4] = ["run", "exec", "x", "dlx"];
 
-/// The first command's raw words (quotes kept) and whether another command follows it. `None`
+/// The first command's raw words (quotes kept), whether another command follows it, and where
+/// the next command starts when the first ends at `&&`, `;` or a new line (not a pipe). `None`
 /// for an unclosed quote anywhere in the line.
-fn first_command(line: &str) -> Option<(Vec<String>, bool)> {
+fn first_command(line: &str) -> Option<(Vec<String>, bool, Option<usize>)> {
     let mut words: Vec<String> = Vec::new();
     let mut word = String::new();
     let mut quote: Option<char> = None;
     let mut stopped = false;
     let mut quiet = false; // stopped by a lone `&`: what follows is not "another command"
     let mut more = false;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
+    let mut rest = None;
+    let mut chars = line.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
         if let Some(q) = quote {
             if c == q {
                 quote = None;
@@ -42,7 +84,7 @@ fn first_command(line: &str) -> Option<(Vec<String>, bool)> {
         if c == '\\' || c == '\'' || c == '"' {
             word.push(c);
             if c == '\\' {
-                word.extend(chars.next());
+                word.extend(chars.next().map(|(_, c)| c));
             } else {
                 quote = Some(c);
             }
@@ -53,7 +95,8 @@ fn first_command(line: &str) -> Option<(Vec<String>, bool)> {
             more |= !c.is_whitespace();
             continue;
         }
-        let stops = matches!(c, ';' | '|' | '\n') || (c == '&' && chars.peek() == Some(&'&'));
+        let stops =
+            matches!(c, ';' | '|' | '\n') || (c == '&' && chars.peek().map(|p| p.1) == Some('&'));
         if !(stops || c.is_whitespace()) {
             word.push(c);
             continue;
@@ -66,9 +109,11 @@ fn first_command(line: &str) -> Option<(Vec<String>, bool)> {
         }
         if stops {
             stopped = true;
-            if c == '&' {
-                chars.next();
-            }
+            rest = match c {
+                '&' => chars.next().map(|(i, _)| i + 1),
+                '|' => None,
+                _ => Some(at + 1),
+            };
         }
     }
     if quote.is_some() {
@@ -77,7 +122,7 @@ fn first_command(line: &str) -> Option<(Vec<String>, bool)> {
     if !stopped && !word.is_empty() && word != "&" {
         words.push(word);
     }
-    Some((words, more && !quiet))
+    Some((words, more && !quiet, rest))
 }
 
 /// A word of ASCII letters, digits and `-_.:`, 1 to `WORD_CAP` characters, not starting with `-`.
@@ -89,11 +134,18 @@ fn plain(word: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
 }
 
-/// The short form of a command line: the program, a plain word after it (and after `run`, `exec`,
-/// `x` or `dlx` one more), and ` …` when another command follows. `None` when no program can be
-/// named.
+/// The short form of a command line: the program, a plain subcommand after it when the program is
+/// in `SUBCOMMANDS` (and after `run`, `exec`, `x` or `dlx` one more), and ` …` when another command
+/// follows. A leading `cd <folder> &&` (or `;`) is skipped: the command after it is named. `None`
+/// when no program can be named.
 pub fn short_form(line: &str) -> Option<String> {
-    let (words, more) = first_command(line)?;
+    let (words, more, rest) = first_command(line)?;
+    if words.first().is_some_and(|w| unquote(w) == "cd")
+        && words.len() <= 2
+        && let Some(after) = rest.and_then(|at| short_form(&line[at..]))
+    {
+        return Some(after);
+    }
     let mut i = 0;
     while words.get(i).is_some_and(|w| is_assignment(w)) {
         i += 1;
@@ -131,8 +183,9 @@ pub fn short_form(line: &str) -> Option<String> {
     if name.is_empty() {
         return None;
     }
+    let takes_subcommand = SUBCOMMANDS.contains(&name.as_str());
     let mut out = name;
-    if let Some(w) = words.get(i).filter(|w| plain(w)) {
+    if let Some(w) = words.get(i).filter(|w| takes_subcommand && plain(w)) {
         out.push(' ');
         out.push_str(w);
         if RUNNERS.contains(&w.as_str())
@@ -305,7 +358,7 @@ mod tests {
                 "API_KEY=sk-123 npm run deploy --token abc",
                 Some("npm run deploy"),
             ),
-            ("sudo -E ./scripts/build.sh prod", Some("build.sh prod")),
+            ("sudo -E ./scripts/build.sh prod", Some("build.sh")),
             ("cargo build && cargo test", Some("cargo build …")),
             (
                 "curl -H \"Authorization: Bearer x\" https://…",
@@ -318,10 +371,10 @@ mod tests {
     #[test]
     fn the_on_screen_checks_commands() {
         check(&[
-            ("sleep 5", Some("sleep 5")),
-            ("sleep 8; true", Some("sleep 8 …")),
+            ("sleep 5", Some("sleep")),
+            ("sleep 8; true", Some("sleep …")),
             ("sh -c 'sleep 4; exit 3'", Some("sh")),
-            ("FOO=secret sleep 6 --x", Some("sleep 6")),
+            ("FOO=secret sleep 6 --x", Some("sleep")),
             ("npm run build", Some("npm run build")),
             ("vim", Some("vim")),
             ("claude", Some("claude")),
@@ -371,7 +424,37 @@ mod tests {
             ("ls 2>&1 | less", Some("ls …")),
             ("make\nls", Some("make …")),
             ("cargo build &&", Some("cargo build")),
-            ("sleep 5 &", Some("sleep 5")),
+            ("sleep 5 &", Some("sleep")),
+        ]);
+    }
+
+    #[test]
+    fn only_programs_that_take_subcommands_keep_a_second_word() {
+        check(&[
+            ("echo sk-live-123", Some("echo")),
+            ("printf hunter2", Some("printf")),
+            ("mytool s3cret", Some("mytool")),
+            ("./deploy.sh prod", Some("deploy.sh")),
+            ("ssh admin.example", Some("ssh")),
+            ("git push", Some("git push")),
+            ("yarn build", Some("yarn build")),
+            ("go test", Some("go test")),
+            ("docker compose", Some("docker compose")),
+            ("kubectl apply", Some("kubectl apply")),
+            ("just lint", Some("just lint")),
+        ]);
+    }
+
+    #[test]
+    fn a_leading_cd_is_skipped() {
+        check(&[
+            ("cd web && pnpm dev", Some("pnpm dev")),
+            ("cd web; pnpm dev", Some("pnpm dev")),
+            ("cd \"my app\" && cargo test", Some("cargo test")),
+            ("cd a && cd b && make test && make", Some("make test …")),
+            ("cd web", Some("cd")),
+            ("cd web &&", Some("cd")),
+            ("cd web | less", Some("cd …")),
         ]);
     }
 

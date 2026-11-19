@@ -1591,7 +1591,7 @@ mod tests {
             match e {
                 TermEvent::Output { .. } => outputs += 1,
                 TermEvent::Command(CommandMark::Started { short }) => {
-                    started = short.as_deref() == Some("sleep 5");
+                    started = short.as_deref() == Some("sleep"); // `sleep` takes no subcommand
                 }
                 TermEvent::Command(CommandMark::Ended { exit: Some(0) }) => ended = true,
                 _ => {}
