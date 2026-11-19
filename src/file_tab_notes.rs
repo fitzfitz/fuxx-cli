@@ -23,17 +23,41 @@ pub fn note_prefix(note: &Note) -> String {
     format!("{} \u{b7} {} \u{2014} ", note.agent.name, note.clock)
 }
 
-/// A note's rows: `n` wrapped lines, at most `FOLDED_ROWS` unless `open`.
-pub fn note_rows(n: usize, open: bool) -> usize {
-    if open { n } else { n.min(FOLDED_ROWS) }
+/// A note as shaped: its wrapped lines, and its rows when open (`open_rows`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shaped {
+    pub lines: usize,
+    pub open: usize,
+}
+
+/// An open note's rows (fix round 1): its `lines`, and one more when its last line, ending
+/// `last_end` points into the note's `room`, runs into the box "less" (`label` wide, with
+/// `code::NOTE_MORE_GAP` before it) takes at the end of the last row: "less" then sits alone on
+/// that extra row, so it never covers a word. A note of `FOLDED_ROWS` lines or fewer has no
+/// "less".
+pub fn open_rows(lines: usize, last_end: f32, room: f32, label: f32) -> usize {
+    if lines > FOLDED_ROWS && last_end > room - label - code::NOTE_MORE_GAP {
+        lines + 1
+    } else {
+        lines
+    }
+}
+
+/// A note's rows: at most `FOLDED_ROWS` of its lines, or its rows when `open`.
+pub fn note_rows(s: Shaped, open: bool) -> usize {
+    if open {
+        s.open
+    } else {
+        s.lines.min(FOLDED_ROWS)
+    }
 }
 
 /// Each placed note's span in the rows (sorted by the row it is under): `shaped[i]` is note
-/// `i`'s wrapped line count, its rows folded or `open` (by note id); `under_row` gives the doc
-/// line a note's file line is drawn under (none: the note isn't shown).
+/// `i` as shaped, its rows folded or `open` (by note id); `under_row` gives the doc line a
+/// note's file line is drawn under (none: the note isn't shown).
 pub fn note_spans(
     placed: &[Placed],
-    shaped: &[usize],
+    shaped: &[Shaped],
     open: &HashSet<u64>,
     under_row: impl Fn(usize) -> Option<usize>,
 ) -> Vec<NoteSpan> {
@@ -69,7 +93,7 @@ pub fn under_rows(rows: &[DiffRow], placed: &[Placed]) -> HashMap<usize, usize> 
 /// diff with no rows: none.
 pub(super) fn spans_for(
     placed: &[Placed],
-    counts: &[usize],
+    counts: &[Shaped],
     open: &HashSet<u64>,
     mode: FileMode,
     rows: Option<&[DiffRow]>,
@@ -127,6 +151,8 @@ pub(super) struct NoteShapes {
     pub key: ShapeKey,
     /// Note `i`'s prefix and reason, wrapped at the key's width (none: it didn't shape).
     pub lines: Vec<Option<WrappedLine>>,
+    /// Note `i`'s rows when open (`open_rows`; 0: it didn't shape).
+    pub opens: Vec<usize>,
     pub more: ShapedLine,
     pub less: ShapedLine,
 }
@@ -140,11 +166,13 @@ pub(super) struct ShapeKey {
 }
 
 impl NoteShapes {
-    /// Each note's wrapped line count (0: it didn't shape).
-    pub fn counts(&self) -> Vec<usize> {
-        self.lines
-            .iter()
-            .map(|l| l.as_ref().map_or(0, lines_of))
+    /// Each note's wrapped lines and its rows open (0: it didn't shape).
+    pub fn counts(&self) -> Vec<Shaped> {
+        (self.lines.iter().zip(&self.opens))
+            .map(|(l, &open)| Shaped {
+                lines: l.as_ref().map_or(0, lines_of),
+                open,
+            })
             .collect()
     }
 
@@ -156,6 +184,16 @@ impl NoteShapes {
 
 fn lines_of(line: &WrappedLine) -> usize {
     line.wrap_boundaries().len() + 1
+}
+
+/// Where a wrapped text's last line ends, from its start: the text's width less where its last
+/// wrap boundary's glyph (the last line's first) sits in the unwrapped line.
+fn last_end(line: &WrappedLine) -> f32 {
+    let layout = &line.unwrapped_layout;
+    let start = (line.wrap_boundaries().last())
+        .and_then(|b| layout.runs.get(b.run_ix)?.glyphs.get(b.glyph_ix))
+        .map_or(px(0.0), |g| g.position.x);
+    f32::from(layout.width - start)
 }
 
 /// The notes shaped for `key` (the cache's when it was made for it): each note's prefix in the
@@ -182,7 +220,7 @@ pub(super) fn shapes_for(
         strikethrough: None,
     };
     let size = px(text::UI);
-    let lines = (placed.iter())
+    let lines: Vec<Option<WrappedLine>> = (placed.iter())
         .map(|p| {
             let prefix = note_prefix(&p.note);
             let runs = [run(prefix.len(), dim), run(p.note.reason.len(), ui.text)];
@@ -200,11 +238,21 @@ pub(super) fn shapes_for(
             .text_system()
             .shape_line(SharedString::from(w), size, &[run], None)
     };
+    let (more, less) = (word(MORE, window), word(LESS, window));
+    let label = f32::from(less.width());
+    let opens = (lines.iter())
+        .map(|l: &Option<WrappedLine>| {
+            l.as_ref().map_or(0, |l| {
+                open_rows(lines_of(l), last_end(l), key.width as f32, label)
+            })
+        })
+        .collect();
     let shapes = Rc::new(NoteShapes {
         key,
         lines,
-        more: word(MORE, window),
-        less: word(LESS, window),
+        opens,
+        more,
+        less,
     });
     *cache.borrow_mut() = Some(shapes.clone());
     shapes
@@ -233,7 +281,8 @@ pub(super) fn more_box(g: &Geom, y: Pixels, w: Pixels, room: u32) -> Bounds<Pixe
 /// Paint note `i`'s rows (in `map`, as `f` and `g` lay them out): its bar, then its text from
 /// the code's text column, one wrapped line a row (the row height as line height), cut at its
 /// last row shown; past two lines, "more" (folded) or "less" (open) at the end of that row, on
-/// the background so no word runs under it.
+/// the background so no word runs under it (open, a last line running into it gave "less" a row
+/// of its own: `open_rows`).
 pub(super) fn paint_note(
     f: &Frame,
     g: &Geom,
@@ -384,6 +433,16 @@ impl FileTab {
         Some((line.text.to_string(), lines_of(line)))
     }
 
+    /// Note `id`'s last line as shaped: the note's line count, where its last line ends from
+    /// the text column, and the room it wraps in (points).
+    pub fn note_last_line(&self, id: u64) -> Option<(usize, f32, f32)> {
+        let i = self.note_index(id)?;
+        let shapes = self.note_shapes.borrow();
+        let s = shapes.as_ref().filter(|s| s.key.notes == self.notes_gen)?;
+        let line = s.lines.get(i)?.as_ref()?;
+        Some((lines_of(line), last_end(line), s.key.width as f32))
+    }
+
     /// Every fold opened (as Unfold All does).
     pub fn unfold_all_for_shots(&mut self, cx: &mut Context<Self>) {
         self.set_folds(BTreeSet::new(), cx);
@@ -414,30 +473,47 @@ mod tests {
         NoteSpan { under, rows, note }
     }
 
+    /// `lines` wrapped lines whose last one stays clear of "less" (open: as many rows).
+    fn n(lines: usize) -> Shaped {
+        Shaped { lines, open: lines }
+    }
+
     #[test]
     fn note_spans_fold_to_two_rows_and_open_to_all() {
         let notes = [placed(7, 4), placed(9, 10)];
         let none = HashSet::new();
         // Five lines folded: two rows; one line: one row (no "more").
-        let spans = note_spans(&notes, &[5, 1], &none, Some);
+        let spans = note_spans(&notes, &[n(5), n(1)], &none, Some);
         assert_eq!(spans, [span(4, 2, 0), span(10, 1, 1)]);
         // Opened (by id): all five.
         let open = HashSet::from([7]);
-        let spans = note_spans(&notes, &[5, 1], &open, Some);
+        let spans = note_spans(&notes, &[n(5), n(1)], &open, Some);
         assert_eq!(spans, [span(4, 5, 0), span(10, 1, 1)]);
         // A note opened that has one line: still one.
         let open = HashSet::from([7, 9]);
-        assert_eq!(note_spans(&notes, &[5, 1], &open, Some)[1], span(10, 1, 1));
         assert_eq!(
-            (note_rows(5, false), note_rows(5, true), note_rows(1, false)),
+            note_spans(&notes, &[n(5), n(1)], &open, Some)[1],
+            span(10, 1, 1)
+        );
+        assert_eq!(
+            (
+                note_rows(n(5), false),
+                note_rows(n(5), true),
+                note_rows(n(1), false)
+            ),
             (2, 5, 1)
         );
-        assert_eq!((note_rows(2, false), note_rows(0, true)), (2, 0));
+        assert_eq!((note_rows(n(2), false), note_rows(n(0), true)), (2, 0));
+        // Fix round 1: its last line under "less": open, one row more; folded, still two.
+        let under_less = Shaped { lines: 5, open: 6 };
+        let spans = note_spans(&notes, &[under_less, n(1)], &HashSet::from([7]), Some);
+        assert_eq!(spans[0], span(4, 6, 0));
+        assert_eq!(note_rows(under_less, false), 2);
         // A note not shaped yet: no span.
-        assert_eq!(note_spans(&notes, &[3], &none, Some), [span(4, 2, 0)]);
+        assert_eq!(note_spans(&notes, &[n(3)], &none, Some), [span(4, 2, 0)]);
         // Sorted by the row they are under, whatever order they came in.
         let swapped = [placed(9, 10), placed(7, 4)];
-        let spans = note_spans(&swapped, &[1, 5], &none, Some);
+        let spans = note_spans(&swapped, &[n(1), n(5)], &none, Some);
         assert_eq!(spans, [span(4, 2, 1), span(10, 1, 0)]);
     }
 
@@ -458,11 +534,30 @@ mod tests {
         assert_eq!(at.get(&43), Some(&3));
         assert_eq!(at.get(&44), Some(&4));
         assert_eq!(at.get(&90), None, "a line the diff doesn't show");
-        let spans = note_spans(&notes, &[1, 3, 1], &HashSet::new(), |u| at.get(&u).copied());
+        let shaped = [n(1), n(3), n(1)];
+        let spans = note_spans(&notes, &shaped, &HashSet::new(), |u| at.get(&u).copied());
         assert_eq!(spans, [span(3, 1, 0), span(4, 2, 1)], "none: no span");
         // A removed-only neighbourhood: the old line's row has no new number.
         let removed = [row(RowKind::Removed, Some(44), None)];
         assert!(under_rows(&removed, &[placed(1, 43)]).is_empty());
+    }
+
+    /// Fix round 1: "less" sits at the end of an open note's last row, `NOTE_MORE_GAP` plus its
+    /// width; a last line that runs into that box gets a row of its own for "less".
+    #[test]
+    fn less_takes_a_row_of_its_own_when_the_last_line_runs_under_it() {
+        let gap = code::NOTE_MORE_GAP;
+        let (room, label) = (600.0, 26.0);
+        let edge = room - label - gap;
+        // Clear of the box: as many rows as lines.
+        assert_eq!(open_rows(5, edge - 1.0, room, label), 5);
+        assert_eq!(open_rows(5, edge, room, label), 5, "touching is clear");
+        // Into the box, or a full last line: one row more.
+        assert_eq!(open_rows(5, edge + 0.5, room, label), 6);
+        assert_eq!(open_rows(3, room, room, label), 4);
+        // Two lines or fewer have no "less": never more rows.
+        assert_eq!(open_rows(2, room, room, label), 2);
+        assert_eq!(open_rows(1, room, room, label), 1);
     }
 
     #[test]

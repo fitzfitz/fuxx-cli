@@ -679,7 +679,9 @@ fn notes_row() {
 
 /// `notes-open` (both themes): line 40 at the top; the note's "more" opens it (all its rows
 /// drawn), its "less" folds it to two; line 40 stays at the top. "more" is drawn dim at the end
-/// of the note's last row shown.
+/// of the note's last row shown. Fix round 1: a reason whose last line runs into the box "less"
+/// takes (found by lengthening the reason a word at a time), opened, takes one row more: "less"
+/// alone on it, the last line's words drawn where "less" would have been.
 fn notes_open() {
     for &(slug, name) in shot_themes() {
         let n = format!("notes-open-{slug}");
@@ -693,6 +695,7 @@ fn notes_open() {
             mode: FileMode::Plain,
         };
         let n_in = n.clone();
+        let filed = path.clone();
         with_tab_in(&n, path.clone(), look, setup, move |cx, window, tab| {
             let n = n_in;
             let (id, rows) = drawn_rows(cx, window, tab, &n);
@@ -757,10 +760,104 @@ fn notes_open() {
                     .is_none_or(|(a, b)| a == b),
                 "{n}: no selection"
             );
+            under_less(cx, window, tab, &filed, less.size.width, &n);
         });
         std::fs::remove_file(&path).ok();
         println!("ui-shots: {n} ok");
     }
+}
+
+/// `notes-open`'s second part: newer notes about the same lines (each hides the last) with the
+/// reason a word longer each time, until its last line ends inside the box "less" (`label`
+/// wide, `NOTE_MORE_GAP` before it) takes at the room's end; opened, it has a row more than its
+/// lines, "less" sits on that row with no word before it, and the last line's words reach into
+/// the box's place.
+fn under_less(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<FileTab>,
+    path: &Path,
+    label: Pixels,
+    n: &str,
+) {
+    use crate::ui_tokens::code::NOTE_MORE_GAP;
+    let mut found = None;
+    for k in 1..=80 {
+        let reason = format!("{LONG_WHY}{}", " ab".repeat(k));
+        let key = path.to_path_buf();
+        let why = reason.clone();
+        cx.update(|cx| {
+            edit_notes::update(cx, |store| store.add(key, note("claude", &why, &BLOCK, 42)))
+        });
+        let mut seen = None;
+        let done = settle_until(cx, window, 10, |cx| {
+            let t = tab.read_with(cx, |t, _| {
+                let rows = t.note_rows_drawn();
+                let id = rows.first()?.0;
+                let (words, _) = t.note_shaped(id)?;
+                words.ends_with(&reason).then(|| (id, t.note_last_line(id)))
+            });
+            seen = t;
+            seen.is_some()
+        });
+        assert!(done, "{n}: the longer note is drawn");
+        let (id, last) = seen.expect("seen");
+        let (lines, end, room) = last.expect("its last line");
+        if lines > 2 && end > room - f32::from(label) - NOTE_MORE_GAP {
+            found = Some((id, lines));
+            break;
+        }
+    }
+    let (id, lines) = found.expect("a reason whose last line runs under less");
+    let rows = rows_drawn(cx, tab);
+    assert_eq!(rows, [(id, 45..47)], "{n}: folded, two rows as before");
+    let more = cx
+        .read(|cx| tab.read(cx).note_more_bounds(id))
+        .expect("more");
+    cx.simulate_click(window, more.center(), gpui::Modifiers::none());
+    settle(cx, window);
+    assert_eq!(
+        rows_drawn(cx, tab),
+        [(id, 45..46 + lines)],
+        "{n}: opened, a row more than its {lines} lines"
+    );
+    let less = cx
+        .read(|cx| tab.read(cx).note_more_bounds(id))
+        .expect("less");
+    let g = geom(cx, tab);
+    let row_y = |r: usize| g.bounds.top() + g.line_height * r as f32 - g.scroll.y;
+    let extra = row_y(45 + lines);
+    assert!(
+        (less.top() - extra).abs() < px(0.6),
+        "{n}: less on the row of its own {less:?}"
+    );
+    let shot = shown(cx, window);
+    keep_shot(&format!("{n}-under-less"), &shot);
+    let theme = cx.read(|cx| cx.global::<crate::appearance::Appearance>().theme);
+    let (bg, ink) = (theme.background, theme.ui().text);
+    let (bg, ink) = ([bg.r, bg.g, bg.b], [ink.r, ink.g, ink.b]);
+    let dims = size(px(760.0), px(360.0));
+    let lh = f32::from(g.line_height);
+    // The last line's words reach into where "less" would have been drawn over them.
+    let last = f32::from(row_y(44 + lines));
+    let x0 = f32::from(less.left()) - NOTE_MORE_GAP;
+    let reach = (x0, last + 2.0, f32::from(less.right()) - x0, lh - 4.0);
+    assert!(
+        ink_box(&shot, dims, reach, bg, ink).is_some(),
+        "{n}: the last line's words are drawn under less's place"
+    );
+    // "less"'s own row has no word before it.
+    let text_left = f32::from(g.bounds.left() + g.text_left);
+    let before = (
+        text_left,
+        f32::from(extra) + 2.0,
+        f32::from(less.left()) - 2.0 - text_left,
+        lh - 4.0,
+    );
+    assert!(
+        ink_box(&shot, dims, before, bg, ink).is_none(),
+        "{n}: nothing before less on its row"
+    );
 }
 
 /// `notes-under-fold` (both themes): folding the block that holds line 45 (lines 43–45) hides
