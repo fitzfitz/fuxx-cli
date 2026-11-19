@@ -2,6 +2,8 @@
 //! marks the view turned into `Change`s, and a command's end mark settles the session's status
 //! and says which command ended and how, once.
 
+use std::time::SystemTime;
+
 use gpui::Context;
 
 use crate::command_name::{Change, Finished};
@@ -42,6 +44,7 @@ impl Workspace {
     /// - It settles the status on Done at once (`status::settles_on_end`, the rule its tracker
     ///   goes by, so that one's own Done, which the view sends after the command's event,
     ///   arrives as no change), and that change is told in the ending's words.
+    /// - Whatever it did, the ending goes to the terminal's Activity log (after the status entry).
     /// - Already Done (the silence guess was first; a background service's tracker, the only
     ///   one for its sessions, may also say Done before the mark is heard): the ending goes to
     ///   the 🔔 list and to scripts once, with a banner only if this Done had none.
@@ -69,6 +72,15 @@ impl Workspace {
                 session.end_told = true;
                 session.done_bannered |= tells.banner;
             }
+        }
+        // Activity keeps every ending of a session not held, looked at or not, after any status
+        // entry above (`ActivityLog::command` leaves out a quick, clean one).
+        if let Some(session) = self
+            .sessions
+            .get_mut(index)
+            .filter(|s| s.disconnected.is_none())
+        {
+            session.activity.command(fin, SystemTime::now());
         }
     }
 }

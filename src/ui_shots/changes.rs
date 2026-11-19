@@ -95,6 +95,8 @@ pub(super) const SCENES: &[Scene] = &[
             "src/activity_panel.rs",
             "src/right_sidebar.rs",
             "src/status.rs",
+            "src/command_name.rs",
+            "src/workspace_command.rs",
             "src/reduce_motion.rs",
         ],
     },
@@ -1326,7 +1328,9 @@ fn activity_workspace(
 ///   the same in the panel (nothing in it moves).
 fn activity_scenes() {
     use crate::activity::Kind;
+    use crate::activity_panel::{DOT, EVENT_BELOW, RAIL, TITLE_LINE};
     use crate::activity_panel::{NO_ACTIVITY, NO_TERMINAL, RowMark};
+    use crate::command_name::{Change, Ending, Finished};
     use crate::right_sidebar::{HEADER, ROW};
     use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
@@ -1395,6 +1399,26 @@ fn activity_scenes() {
                     s.status_since = ago(4 * 60 + 5);
                     s.pop = None;
                 });
+                // M11q: three endings on api's terminal, as its view's end marks make them: a
+                // failed run, a stopped one and a quick `ls` (no entry).
+                let api_view = cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let i = ws.sessions.position(|s| s.label() == "api").expect("api");
+                    ws.sessions.items()[i].view.clone()
+                });
+                for (short, exit, ran) in
+                    [("cargo test", 101, 40), ("pnpm dev", 130, 30), ("ls", 0, 1)]
+                {
+                    let finished = Finished {
+                        short: Some(short.into()),
+                        ending: Ending::of(Some(exit)),
+                        ran: Duration::from_secs(ran),
+                    };
+                    let ended =
+                        crate::terminal_view::TerminalEvent::Command(Change::Ended(finished));
+                    cx.update(|cx| api_view.update(cx, |_, cx| cx.emit(ended)));
+                    cx.run_until_parked();
+                }
                 frame(cx, window);
                 cx.read(|cx| {
                     let ws = ws.read(cx);
@@ -1404,16 +1428,28 @@ fn activity_scenes() {
                     assert_eq!(count(|k| matches!(k, Kind::Status { .. })), 2, "{n}");
                     assert_eq!(count(|k| matches!(k, Kind::Note(_))), 1, "{n}");
                     assert_eq!(count(|k| matches!(k, Kind::Progress(..))), 1, "{n}");
+                    assert_eq!(
+                        count(|k| matches!(k, Kind::Command { .. })),
+                        2,
+                        "{n}: not ls"
+                    );
                     let rows = ws.activity_rows();
                     let words: Vec<_> = rows.iter().map(|r| r.text.as_str()).collect();
                     assert_eq!(
                         words,
-                        ["Progress 20%", "a", "Done", "Cultivating"],
+                        [
+                            "pnpm dev \u{2014} Stopped after 30s",
+                            "cargo test \u{2014} Failed (exit 101) after 40s",
+                            "Progress 20%",
+                            "a",
+                            "Done",
+                            "Cultivating"
+                        ],
                         "{n}: newest first"
                     );
                     // Part 4 (timeline): how long it worked moves to Done's second line.
                     assert_eq!(
-                        rows[2].detail.as_deref(),
+                        rows[4].detail.as_deref(),
                         Some("Worked 11 min"),
                         "{n}: Done says how long it worked"
                     );
@@ -1421,6 +1457,8 @@ fn activity_scenes() {
                     assert_eq!(
                         marks,
                         [
+                            RowMark::Command(Ending::Stopped),
+                            RowMark::Command(Ending::Failed(101)),
                             RowMark::Progress,
                             RowMark::Note,
                             RowMark::Status(Status::Done),
@@ -1457,6 +1495,31 @@ fn activity_scenes() {
                 16,
             )
         };
+        // M11q: the stopped run is the top event (faint dot), the failed run the next: its dot
+        // (the failure colour) is found on the rail, and the stopped one's lies one event's
+        // height (title line and room under) above it.
+        let rail_x = (
+            sidebar_left + 12.0 + RAIL / 2.0 - 2.0,
+            sidebar_left + 12.0 + RAIL / 2.0 + 2.0,
+        );
+        let failed_y = (0..240)
+            .map(|i| list_top + i as f32 * 0.5)
+            .find(|&y| has(&shot, rail_x.0, rail_x.1, y, y + 0.5, ui.block_failed, 16))
+            .unwrap_or_else(|| panic!("{n}: the failed run's dot, in the failure colour"));
+        let stopped_y = failed_y - (TITLE_LINE + EVENT_BELOW);
+        assert!(stopped_y >= list_top, "{n}: the stopped run's row is above");
+        let mid = |y: f32| (y + DOT / 2.0 - 1.0, y + DOT / 2.0 + 1.0);
+        let (s0, s1) = mid(stopped_y);
+        assert!(
+            has(&shot, rail_x.0, rail_x.1, s0, s1, ui.text_faint, 16)
+                && !has(&shot, rail_x.0, rail_x.1, s0, s1, ui.block_failed, 16),
+            "{n}: the stopped run's dot is the faint one"
+        );
+        let (f0, f1) = mid(failed_y);
+        assert!(
+            !has(&shot, rail_x.0, rail_x.1, f0, f1, ui.text_faint, 16),
+            "{n}: the failed run's dot is not the faint one"
+        );
         for (what, c) in [
             ("progress", ui.accent),
             ("a note", ui.text_faint),
@@ -1465,7 +1528,29 @@ fn activity_scenes() {
         ] {
             assert!(rail(c), "{n}: {what}'s dot on the rail");
         }
-        assert!(!rail(ui.ring_waiting), "{n}: no waiting dot");
+        // No waiting dot: the failure colour is a red too, so the failed run's own dot is left
+        // out of the look (the rail above it and below it).
+        let (rail_l, rail_r) = (sidebar_left + 12.0, sidebar_left + 26.0);
+        assert!(
+            !has(
+                &shot,
+                rail_l,
+                rail_r,
+                list.0,
+                failed_y - 1.0,
+                ui.ring_waiting,
+                16
+            ) && !has(
+                &shot,
+                rail_l,
+                rail_r,
+                failed_y + DOT + 1.0,
+                list.1,
+                ui.ring_waiting,
+                16
+            ),
+            "{n}: no waiting dot"
+        );
         assert!(
             has(
                 &shot,
