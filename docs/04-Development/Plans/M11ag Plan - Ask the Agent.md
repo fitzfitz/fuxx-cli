@@ -12,10 +12,10 @@ updated: 2026-11-19
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[87 - Milestone 11ag - Ask the Agent]] |
-| **Status** | 🟨 built on branch m11ag-ask-agent, waiting for your on-screen check; not merged (all tasks built; the whole-branch review and its fix wave follow) |
+| **Status** | 🟨 built on branch m11ag-ask-agent, waiting for your on-screen check; not merged (all tasks built; the whole-branch review's fix wave is in and re-reviewed clean; 2,154 tests passed, 1 ignored; full ui-shots 247 passed, 0 failed, 158.3 s) |
 | **Tasks done** | 13 / 13 (plus Task 0); Tasks 0–12 reviewed |
 | **Baselines** | On `m11ag-ask-agent` at `687264d`, 2026-11-19: `cargo test --bin fuxx` 2,076 passed, 1 ignored, 0 failed; clippy default 14 (bin) / 27 (test); clippy `ui-shots` 16 (bin) / 29 (test); `cargo fmt --check` clean. Full `scripts/ui-shots.sh` not run in Task 0 (ruling R1; the user's decision): the ui-shots baseline is M11ai's last full run, 226 passed, 0 failed, 151.4 s |
-| **▶ Pick up here** | The whole-branch review, then its fix wave and the second full `scripts/ui-shots.sh` (numbers into note 87) |
+| **▶ Pick up here** | Your on-screen check in [[87 - Milestone 11ag - Ask the Agent]] (15 items); then the merge on your word |
 | **Decisions used** | Yours: "lets go" to the 11 points and **B** (no agent tab: open one), "go with A" (note rows in the code), "go ahead" (lines from the edit itself, 7b/7c/10), the full ui-shots run only before the final review and after its fix wave. The design's "Calls made" (AI's). Plan-time calls below (AI's). |
 | **Needs your eyes** | 👀 the on-screen check in note 87, after Task 13 |
 
