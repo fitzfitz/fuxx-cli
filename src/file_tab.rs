@@ -7196,12 +7196,12 @@ impl FileTab {
             .into_any_element()
     }
 
-    fn text_button(
+    /// The text button's look (M11al): `text` colour on `panel`.
+    fn text_button_look(
         id: &'static str,
         label: impl Into<SharedString>,
+        text_color: alacritty_terminal::vte::ansi::Rgb,
         ui: UiColors,
-        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-        cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
@@ -7216,13 +7216,32 @@ impl FileTab {
             .border_color(hsla(ui.panel_border))
             .bg(hsla(ui.panel))
             .text_size(px(text::NAME))
-            .text_color(hsla(ui.text))
+            .text_color(hsla(text_color))
+            .child(label.into())
+    }
+
+    fn text_button(
+        id: &'static str,
+        label: impl Into<SharedString>,
+        ui: UiColors,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        Self::text_button_look(id, label, ui.text, ui)
             .cursor_pointer()
             .hover(move |s| s.bg(hsla(ui.panel_hover)))
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, window, cx| on_click(this, window, cx)),
             )
-            .child(label.into())
+    }
+
+    /// The text button disabled: dim text, no hover, no click.
+    fn text_button_off(
+        id: &'static str,
+        label: impl Into<SharedString>,
+        ui: UiColors,
+    ) -> gpui::Stateful<gpui::Div> {
+        Self::text_button_look(id, label, ui.text_dim, ui)
     }
 
     /// One of the view switch's segments (M11ae): the current one `card_selected` in `text`,

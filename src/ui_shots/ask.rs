@@ -94,6 +94,14 @@ pub(super) const SCENES: &[Scene] = &[
         kind: Kind::Visual,
         sources: SOURCES,
     },
+    Scene {
+        name: "ask-diff",
+        run: ask_diff,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: SOURCES,
+    },
 ];
 
 /// A made-up `src/workspace.rs` under a scratch folder named `fuxx-cli`.
@@ -146,6 +154,16 @@ fn drive_in(
     setup: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
     act: impl FnOnce(&mut VisualTestAppContext, AnyWindowHandle, Entity<Workspace>),
 ) {
+    drive_sized(dims(), theme_name, setup, act);
+}
+
+/// `drive_in` in a window of `window_size` (side by side needs a wide one).
+fn drive_sized(
+    window_size: Size<Pixels>,
+    theme_name: &str,
+    setup: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+    act: impl FnOnce(&mut VisualTestAppContext, AnyWindowHandle, Entity<Workspace>),
+) {
     let theme = shot_theme(theme_name);
     let slot: Slot = Default::default();
     let keep = slot.clone();
@@ -166,7 +184,7 @@ fn drive_in(
         settle_frames(cx, window);
         act(cx, window, ws);
     };
-    render_with(&theme, size(px(1100.0), px(600.0)), build, run);
+    render_with(&theme, window_size, build, run);
 }
 
 /// Ask from file tab `file` with `code`, as the bar's button will.
@@ -718,6 +736,10 @@ fn ask_bar_hides() {
             "{n}: selecting"
         );
         assert!(bar_of(cx, &tab).is_none(), "{n}: no bar while dragging");
+        assert!(
+            !cx.read(|cx| tab.read(cx).esc_takes_selection_for_shots()),
+            "{n}: Esc doesn't take a selection still being dragged"
+        );
         let g = geom_of(cx, &tab);
         cx.simulate_mouse_up(
             window,
@@ -977,6 +999,173 @@ fn ask_bar_too_long() {
                 lines[502]
             );
         });
+        println!("ui-shots: {n} ok");
+    }
+}
+
+/// A whole-file diff of 41 current lines: line 5 and line 30 changed (a removed and an added row
+/// each), two lines removed after line 38. Rows (0-based): line `L` of 1-4 is row `L - 1`; row 4
+/// is the removed old line 5, row 5 the added one; lines 6-29 are rows 6-29; row 30 the removed
+/// old line 30, row 31 the added one; lines 31-38 are rows 32-39; rows 40 and 41 the two removed
+/// lines (old 39, 40); lines 39-41 rows 42-44. Card 1 is rows 1-8, rows 9-26 a folded stretch,
+/// card 2 rows 27-44.
+fn ask_diff_text() -> String {
+    let mut u = String::from("--- a/src/workspace.rs\n+++ b/src/workspace.rs\n@@ -1,43 +1,41 @@\n");
+    for n in 1..=41usize {
+        match n {
+            5 => u.push_str("-    let line_5 = 0;\n"),
+            30 => u.push_str("-    let line_30 = 3;\n"),
+            _ => {}
+        }
+        u.push_str(&format!(
+            "{}    let line_{n} = {n};\n",
+            if matches!(n, 5 | 30) { '+' } else { ' ' }
+        ));
+        if n == 38 {
+            u.push_str("-    let gone_a = 1;\n-    let gone_b = 2;\n");
+        }
+    }
+    u
+}
+
+/// A made-up diff (two cards and a folded stretch) in Diff mode, unified then side by side:
+/// - a selection from card 1's last rows across the `⋯` row and card 2's title into card 2 shows
+///   the bar; Copy with path gives a ```diff fence of just the four rows on either side of the
+///   fold (no stretch lines, no title, no "unchanged" words), the header naming the current
+///   lines 7-28; ⌘↵ makes the chip `workspace.rs:7–28`, nothing written;
+/// - the two removed rows alone: `(removed, was 39-40)`, their `-` lines;
+/// - side by side, a selection over a changed pair: the left half takes Same + Removed, the right
+///   half Same + Added. Both themes: the shot is kept.
+fn ask_diff() {
+    let (root, doc) = scratch_doc();
+    let line = |n: usize| format!("    let line_{n} = {n};");
+    for &(slug, name) in shot_themes() {
+        let n = format!("ask-diff-{slug}");
+        let setup = {
+            let (root, doc) = (root.clone(), doc.clone());
+            move |ws: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>| {
+                ws.open_shot_session("shell", &root, "", None, window, cx);
+                let pane = ws.model.focused_pane().expect("a pane");
+                ws.new_agent_tab(pane, "claude", window, cx);
+                ws.open_file_tab(doc.clone(), FileMode::Diff, window, cx);
+            }
+        };
+        let n_in = n.clone();
+        drive_sized(
+            size(px(1900.0), px(600.0)),
+            name,
+            setup,
+            move |cx, window, ws| {
+                let n = n_in;
+                let (file, agents) = tabs_of(cx, &ws);
+                let claude = agents[0].1;
+                let tab = file_view(cx, &ws, file);
+                cx.update(|cx| {
+                    tab.update(cx, |t, cx| {
+                        t.pretend_rel_for_shots("src/workspace.rs", cx);
+                        t.set_diff_for_shots(&ask_diff_text(), cx);
+                    })
+                });
+                settle_frames(cx, window);
+                let (rows, folds) = cx.read(|cx| {
+                    let t = tab.read(cx);
+                    (t.diff_doc().map(|d| d.rows.len()), t.diff_folds_for_shots())
+                });
+                assert_eq!(rows, Some(45), "{n}: the diff's rows");
+                assert!(folds.0.is_empty(), "{n}: the stretch is folded");
+                let copied = |cx: &mut VisualTestAppContext| {
+                    let copy = cx
+                        .read(|cx| tab.read(cx).copy_button_bounds())
+                        .expect("Copy's place");
+                    click(cx, window, copy);
+                    cx.read_from_clipboard()
+                        .and_then(|c| c.text())
+                        .expect("a clipboard text")
+                };
+                let select =
+                    |cx: &mut VisualTestAppContext, a: (usize, usize), b: (usize, usize)| {
+                        cx.update(|cx| tab.update(cx, |t, cx| t.select_for_shots(a, b, cx)));
+                        settle_frames(cx, window);
+                    };
+
+                // Across the fold: card 1's rows 7-8, the stretch, card 2's rows 27-28.
+                select(cx, (7, 2), (28, 3));
+                assert!(bar_of(cx, &tab).is_some(), "{n}: the bar in Diff mode");
+                keep_shot(&n, &shown(cx, window));
+                let clip = copied(cx);
+                let want = format!(
+                    "src/workspace.rs:7-28\n```diff\n {}\n {}\n {}\n {}\n```",
+                    line(7),
+                    line(8),
+                    line(27),
+                    line(28)
+                );
+                assert_eq!(clip, want, "{n}: the copied text");
+                assert!(
+                    !clip.contains("line_9 ") && !clip.contains("line_20 "),
+                    "{n}: no stretch line"
+                );
+                assert!(
+                    !clip.contains("nchanged") && !clip.contains("Top level"),
+                    "{n}: no title, no unchanged row"
+                );
+                assert!(
+                    chips(cx, &ws, claude).is_empty(),
+                    "{n}: copying asks nobody"
+                );
+                select_tab(cx, window, &ws, file);
+                select(cx, (7, 2), (28, 3));
+                press(cx, window, "cmd-enter");
+                assert_eq!(
+                    chips(cx, &ws, claude),
+                    ["workspace.rs:7\u{2013}28"],
+                    "{n}: the chip names the new lines spanned"
+                );
+                assert_eq!(written(cx, &ws, claude), 0, "{n}: nothing was sent");
+
+                // Removed rows alone.
+                select_tab(cx, window, &ws, file);
+                // (Rows 40-41 are below the first screen: the bar hangs on rows in sight.)
+                scroll_to(cx, window, &tab, 100_000.0);
+                select(cx, (40, 0), (41, 3));
+                assert!(bar_of(cx, &tab).is_some(), "{n}: the bar");
+                assert_eq!(
+                    copied(cx),
+                    "src/workspace.rs (removed, was 39-40)\n```diff\n-    let gone_a = 1;\n-    let gone_b = 2;\n```",
+                    "{n}: removed only"
+                );
+
+                // Side by side: rows 3-6 are Same, Removed, Added, Same.
+                cx.update(|cx| {
+                    tab.update(cx, |t, cx| {
+                        t.set_side_by_side_for_shots(true);
+                        cx.notify();
+                    })
+                });
+                scroll_to(cx, window, &tab, 0.0);
+                assert!(
+                    cx.read(|cx| tab.read(cx).side_by_side_for_shots().1),
+                    "{n}: side by side is on"
+                );
+                for (half, middle) in [
+                    (crate::row_map::Half::Old, "-    let line_5 = 0;"),
+                    (crate::row_map::Half::New, "+    let line_5 = 5;"),
+                ] {
+                    cx.update(|cx| tab.update(cx, |t, _| t.set_sel_half_for_shots(Some(half))));
+                    select(cx, (3, 0), (6, 3));
+                    assert!(bar_of(cx, &tab).is_some(), "{n}: the bar, {half:?}");
+                    assert_eq!(
+                        copied(cx),
+                        format!(
+                            "src/workspace.rs:4-6\n```diff\n {}\n{middle}\n {}\n```",
+                            line(4),
+                            line(6)
+                        ),
+                        "{n}: the {half:?} half"
+                    );
+                }
+            },
+        );
         println!("ui-shots: {n} ok");
     }
 }

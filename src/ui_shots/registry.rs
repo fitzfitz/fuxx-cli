@@ -168,6 +168,7 @@ pub(super) const ORDER: &[&str] = &[
     "ask-bar-agy",
     "ask-bar-ssh",
     "ask-bar-too-long",
+    "ask-diff",
     "file-code-nav",
     "file-code-calm",
     "file-code-guides",
