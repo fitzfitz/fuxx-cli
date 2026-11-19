@@ -1228,16 +1228,8 @@ impl Workspace {
         if !notifier::worth_a_banner(new, worked) {
             return;
         }
-        #[cfg(feature = "ui-shots")]
-        if let Some(kept) = &mut self.shot_banners {
-            kept.push((summary, subtitle, body));
-            return;
-        }
         let about = self.banner_about(None);
-        // M11x: the banner's sound, with the banner (never for the 🔔 list alone).
-        crate::sounds::banner(cx);
-        cx.background_spawn(async move { notifier::fire(&summary, &subtitle, &body, about) })
-            .detach();
+        self.post_banner(summary, subtitle, body, about, cx);
     }
 
     /// The agent tabs of the shown panes, in layout then bar order: each tab, its `aN` and its

@@ -22,7 +22,6 @@ use crate::daemon_client::DaemonClient;
 use crate::grid::TextScope;
 use crate::layout_model::{TabId, TabKind};
 use crate::notification_list::Entry;
-use crate::notifier;
 use crate::presets::Preset;
 use crate::restore::{Launch, SavedSession};
 use crate::split_tree::Axis;
@@ -417,9 +416,7 @@ impl Workspace {
                 cx.notify();
                 let about = self.banner_about(terminal);
                 // M11x: a script's banner is a banner too: its sound plays.
-                crate::sounds::banner(cx);
-                cx.background_spawn(async move { notifier::fire(&title, "", &body, about) })
-                    .detach();
+                self.post_banner(title, String::new(), body, about, cx);
                 Ok(json!({}))
             }
             // session.wait and events.subscribe are answered in `reply_to`.
@@ -740,7 +737,9 @@ impl Workspace {
     /// Send an event about session `index` (or none) to every subscriber; those that are gone
     /// or can't take it are dropped. Nothing while restoring.
     pub(crate) fn emit(&mut self, event: &Event, index: Option<usize>) {
-        if self.subscribers.is_empty() || self.restoring {
+        // The scenes read the lines with no script listening (`shot_events`).
+        let heard = !self.subscribers.is_empty() || cfg!(feature = "ui-shots");
+        if !heard || self.restoring {
             return;
         }
         let session = index.and_then(|i| self.sessions.items().get(i).map(|s| (i, s)));
@@ -753,6 +752,8 @@ impl Workspace {
                 name,
             });
         let line = event_json(event, about.as_ref(), now_ms()).to_string();
+        #[cfg(feature = "ui-shots")]
+        self.shot_events.push(line.clone());
         self.send_event(&line);
     }
 

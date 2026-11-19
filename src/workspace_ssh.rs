@@ -389,6 +389,8 @@ impl Workspace {
             ssh: saved.ssh,
             launched: None,
             command: None,
+            done_bannered: false,
+            end_told: false,
             disconnected: None,
             retries: session.retries,
             opened_at: Instant::now(),

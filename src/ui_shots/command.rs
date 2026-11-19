@@ -1,5 +1,5 @@
 //! Which command runs at a shell prompt (M11q): the marks the parser applied reach the
-//! workspace as `Session::command`.
+//! workspace as `Session::command`, name its pane, settle its status and word its banner.
 
 use super::*;
 use crate::terminal_view::TerminalEvent;
@@ -57,6 +57,24 @@ pub(super) const SCENES: &[Scene] = &[
             "src/sidebar.rs",
             "src/tab_bar.rs",
             "src/switcher.rs",
+        ],
+    },
+    Scene {
+        name: "command-banner",
+        run: command_banner,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/notifier.rs",
+            "src/command_name.rs",
+            "src/status.rs",
+            "src/terminal_view.rs",
+            "src/workspace.rs",
+            "src/workspace_command.rs",
+            "src/workspace_api.rs",
+            "src/api_events.rs",
+            "src/notification_list.rs",
         ],
     },
 ];
@@ -203,6 +221,29 @@ fn command_reaches_workspace() {
     println!("{}", path.display());
 }
 
+/// `view`'s program prints `line` (and its terminal echoes it) until `seen` holds; panics, naming
+/// `what`, when it hasn't after 20 s.
+fn prints(
+    cx: &mut VisualTestAppContext,
+    view: &gpui::Entity<crate::terminal_view::TerminalView>,
+    line: &[u8],
+    what: &str,
+    seen: &dyn Fn(&VisualTestAppContext) -> bool,
+) {
+    use std::time::{Duration, Instant};
+
+    let started = Instant::now();
+    while !seen(cx) {
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "{what} never came"
+        );
+        crate::ui_shots::prof::sleep(Duration::from_millis(50));
+        cx.read(|cx| view.read(cx).write_to_program(line));
+        cx.run_until_parked();
+    }
+}
+
 /// A command's end mark settles its terminal's status at once (M11q Task 5), on `api`, which is
 /// not the active terminal (so a Done there is news). Its `cat` echoes what it is sent: that is
 /// the command's output, by the app's own path (the pty, `TermEvent::Output`, the tracker).
@@ -214,14 +255,14 @@ fn command_reaches_workspace() {
 /// - typed into again (Idle), then a start and an end mark with no output in between and under
 ///   3 s: Idle, and no new entry.
 ///
-/// The Working stretch is far under `notifier::QUIET_UNDER`, so the Done is in the 🔔 list and
-/// posts no banner. Panics unless all of that holds.
+/// The end mark's Done is told with a banner however short the run (Task 7): kept in
+/// `shot_banners`, never posted (`Workspace::post_banner`). Panics unless all of that holds.
 fn command_settles() {
     use crate::grid::TextScope;
     use crate::sidebar::SidebarRow;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     let theme = shot_theme("Catppuccin Mocha");
     let slot: Slot = Rc::new(RefCell::new(None));
@@ -253,21 +294,11 @@ fn command_settles() {
         let entries = |cx: &VisualTestAppContext| {
             cx.read(|cx| ws.read(cx).notifications.newest_first().count())
         };
-        // The program prints `line` (and its terminal echoes it), until `seen` holds.
         let prints = |cx: &mut VisualTestAppContext,
                       line: &[u8],
                       what: &str,
                       seen: &dyn Fn(&VisualTestAppContext) -> bool| {
-            let started = Instant::now();
-            while !seen(cx) {
-                assert!(
-                    started.elapsed() < Duration::from_secs(20),
-                    "{n}: {what} never came"
-                );
-                crate::ui_shots::prof::sleep(Duration::from_millis(50));
-                cx.read(|cx| view.read(cx).write_to_program(line));
-                cx.run_until_parked();
-            }
+            prints(cx, &view, line, &format!("{n}: {what}"), seen)
         };
 
         assert_ne!(
@@ -653,4 +684,478 @@ fn command_name() {
         );
         println!("{}", path.display());
     }
+}
+
+/// What a step told: the banners it would have posted (kept, never posted:
+/// `Workspace::post_banner`) as title, subtitle and body, its new 🔔 entries (title, message)
+/// and its `notification` events (title, body), each oldest first.
+#[derive(Debug, Default, PartialEq)]
+struct Told {
+    banners: Vec<(String, String, String)>,
+    listed: Vec<(String, String)>,
+    notified: Vec<(String, String)>,
+}
+
+impl Told {
+    /// One notification about workspace `name` (its banner's subtitle `sub`): the title's
+    /// `message`, the `body`, the 🔔 entry's words, and whether a banner went with it.
+    fn one(name: &str, sub: &str, message: &str, body: &str, listed: &str, banner: bool) -> Told {
+        let title = crate::notifier::banner_title(name, message);
+        Told {
+            banners: Vec::from_iter(banner.then(|| (title.clone(), sub.into(), body.into()))),
+            listed: vec![(name.into(), listed.into())],
+            notified: vec![(title, body.into())],
+        }
+    }
+
+    /// Every word told.
+    fn words(&self) -> Vec<&String> {
+        let banners = self.banners.iter().flat_map(|(a, b, c)| [a, b, c]);
+        let pairs = self.listed.iter().chain(&self.notified);
+        banners.chain(pairs.flat_map(|(a, b)| [a, b])).collect()
+    }
+}
+
+/// What was told since the last call (`listed`: how many 🔔 entries were counted by then).
+fn told(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+    listed: &std::cell::Cell<usize>,
+) -> Told {
+    cx.run_until_parked();
+    let (banners, events) = cx.update(|cx| {
+        ws.update(cx, |ws, _| {
+            (
+                std::mem::take(&mut ws.shot_banners),
+                std::mem::take(&mut ws.shot_events),
+            )
+        })
+    });
+    let notified = events
+        .iter()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("an event line"))
+        .filter(|event| event["event"] == "notification")
+        .map(|event| {
+            let text = |key: &str| event[key].as_str().expect("its text").to_string();
+            (text("title"), text("body"))
+        })
+        .collect();
+    let all: Vec<(String, String)> = cx.read(|cx| {
+        (ws.read(cx).notifications.newest_first())
+            .map(|e| (e.title.clone(), e.message.clone()))
+            .collect()
+    });
+    let new = all.len() - listed.replace(all.len());
+    let mut fresh: Vec<_> = all.into_iter().take(new).collect();
+    fresh.reverse();
+    Told {
+        banners,
+        listed: fresh,
+        notified,
+    }
+}
+
+/// The banner, the 🔔 entry and the `notification` event say which command ended and how, once
+/// per ending (M11q Task 7), in a window you are at, with three terminals in workspaces of their
+/// own: `front` (the one you look at), `fuxx-cli` and `tests` (in the background). A command
+/// starts by its start mark (the parser's short form); it ends by the view's own `Command`
+/// event with a chosen `ran` (the clock can't be turned), or by a real end mark where the
+/// length doesn't matter. Nothing is posted: the banners are read from `shot_banners`.
+/// - `sleep 8; true` ends with exit 0 after 8 s: one banner `fuxx-cli — sleep 8 …`, `#2`,
+///   `Done in 8s`; one entry `sleep 8 … · Done in 8s`; one event with the banner's title and
+///   body; its tracker's own Done after it tells nothing;
+/// - exit 3 after 4 s: `Failed (exit 3) after 4s`; exit 130 on `front`: Done, and nothing told;
+/// - a command that asks (Waiting: its banner names it), then ends: one more banner, the ending;
+/// - `API_KEY=sk-123 npm run deploy --token abc`, a real end mark: one banner, and nothing told
+///   holds `sk-123`, `API_KEY`, `--token` or `abc`;
+/// - `claude` works 4 min and goes quiet (the silence guess's Done): one banner
+///   `fuxx-cli — claude`, `Worked for 4m`; its end mark then: no second banner, one more entry
+///   and event; a second end mark, and another start and end with no keystroke: nothing more;
+/// - the same having worked 5 s (under `QUIET_UNDER`): the silence Done is listed with no
+///   banner, the end mark posts the one banner;
+/// - output, a Done by silence (a banner), more output (Working again), the end mark: one
+///   banner for the ending; its tracker's Done after it, and a background service's Working and
+///   Done again after the prompt: no banner more;
+/// - no marks at all (bash): Done after 20 s of work is today's banner, `fuxx-cli — Finished`;
+/// - on `tests`, by the app's own path (typed into, a start mark, output until it works, typed
+///   ahead, the end mark, the next start mark), the view tells its owner in this order: the
+///   command started, Working, the command ended, Done, Idle, the next command started; and
+///   that ending posts one banner.
+///
+/// Panics unless all of that holds.
+fn command_banner() {
+    use crate::command_name::{Change, Ending, Finished};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    const BACK: &str = "fuxx-cli";
+    const SUB: &str = "#2";
+
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let keep = slot.clone();
+    let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_global(shot_appearance(theme, cx));
+        let ws = cx.new(|cx| {
+            let mut ws = Workspace::for_shots(window, cx);
+            ws.sidebar.hint_dismissed = true;
+            let folder = std::path::Path::new(super::naming::FUXX_CLI);
+            for name in ["front", BACK, "tests"] {
+                ws.open_shot_session(name, folder, SHELL_TEXT, None, window, cx);
+            }
+            let front = ws.sessions.position(|s| s.label() == "front");
+            ws.select(front.expect("front"), window, cx);
+            // You are at the window (an off-screen one is never active): its active terminal
+            // is the one you look at, the others are in the background.
+            ws.window_active = true;
+            ws
+        });
+        *keep.borrow_mut() = Some(ws.clone());
+        ws.into()
+    };
+    let acting = slot.clone();
+    let act = move |cx: &mut VisualTestAppContext, _: AnyWindowHandle| {
+        let n = "command-banner";
+        let ws = slotted(&acting);
+        let index = |cx: &VisualTestAppContext, name: &str| {
+            cx.read(|cx| {
+                ws.read(cx)
+                    .sessions
+                    .position(|s| s.name.as_deref() == Some(name))
+            })
+            .unwrap_or_else(|| panic!("{n}: a session named {name}"))
+        };
+        let view_of = |cx: &VisualTestAppContext, name: &str| {
+            let i = index(cx, name);
+            cx.read(|cx| ws.read(cx).sessions.items()[i].view.clone())
+        };
+        let status = |cx: &VisualTestAppContext, name: &str| {
+            let i = index(cx, name);
+            cx.read(|cx| ws.read(cx).sessions.items()[i].status)
+        };
+        let output = |cx: &mut VisualTestAppContext, name: &str, text: &str| {
+            let view = view_of(cx, name);
+            cx.update(|cx| view.update(cx, |view, cx| view.shot_output(text, cx)));
+        };
+        // The status its tracker (or the background service) found.
+        let reports = |cx: &mut VisualTestAppContext, name: &str, status: Status| {
+            let view = view_of(cx, name);
+            cx.update(|cx| view.update(cx, |view, cx| view.shot_status(status, cx)));
+        };
+        // Typed into (what it showed is seen: Idle), then `line` starts, if any.
+        let starts = |cx: &mut VisualTestAppContext, name: &str, line: Option<&str>| {
+            reports(cx, name, Status::Idle);
+            if let Some(line) = line {
+                output(cx, name, &started(Some(line)));
+            }
+        };
+        // Its output made it work, `secs` ago, and then it went quiet: the silence guess's Done.
+        let worked_then_quiet = |cx: &mut VisualTestAppContext, name: &str, secs: u64| {
+            reports(cx, name, Status::Working);
+            let (i, view) = (index(cx, name), view_of(cx, name));
+            cx.update(|cx| {
+                ws.update(cx, |ws, _| {
+                    let s = ws.sessions.get_mut(i).expect("open");
+                    s.status_since = Instant::now() - Duration::from_secs(secs);
+                });
+                view.update(cx, |view, cx| view.shot_status(Status::Done, cx));
+            });
+        };
+        // The running command ends after `ran` seconds: the view's event, as its end mark makes
+        // it, with the short form the parser gave.
+        let ends = |cx: &mut VisualTestAppContext, name: &str, exit: Option<i32>, ran: u64| {
+            let (i, view) = (index(cx, name), view_of(cx, name));
+            let short = cx.read(|cx| ws.read(cx).sessions.items()[i].command.clone());
+            let finished = Finished {
+                short: short.map(|s| s.to_string()),
+                ending: Ending::of(exit),
+                ran: Duration::from_secs(ran),
+            };
+            let ended = TerminalEvent::Command(Change::Ended(finished));
+            cx.update(|cx| view.update(cx, |_, cx| cx.emit(ended)));
+        };
+        let listed = Cell::new(0);
+        let told = |cx: &mut VisualTestAppContext| told(cx, &ws, &listed);
+        let nothing = Told::default();
+
+        let (front, back) = (index(cx, "front"), index(cx, BACK));
+        cx.read(|cx| {
+            let ws = ws.read(cx);
+            assert_eq!(ws.sessions.active_index(), Some(front), "{n}: front is it");
+            assert!(ws.window_active, "{n}: you are at the window");
+            let number = ws.workspace_of(back).and_then(|w| ws.workspace_number(w));
+            assert_eq!(number, Some(2), "{n}: {BACK} is #2");
+        });
+
+        // `sleep 8 …`: silent, so Idle until its end mark.
+        starts(cx, BACK, Some("sleep 8; true"));
+        assert_eq!(told(cx), nothing, "{n}: a start tells nothing");
+        ends(cx, BACK, Some(0), 8);
+        assert_eq!(
+            told(cx),
+            Told::one(
+                BACK,
+                SUB,
+                "sleep 8 \u{2026}",
+                "Done in 8s",
+                "sleep 8 \u{2026} \u{b7} Done in 8s",
+                true
+            ),
+            "{n}: one banner, one entry, one event for the ending"
+        );
+        assert_eq!(status(cx, BACK), Status::Done, "{n}: and it is Done");
+        reports(cx, BACK, Status::Done);
+        assert_eq!(told(cx), nothing, "{n}: its tracker's own Done is no news");
+
+        // A failure; and a stop on the terminal you look at.
+        starts(cx, BACK, Some("cargo test --release"));
+        ends(cx, BACK, Some(3), 4);
+        let failed = "Failed (exit 3) after 4s";
+        assert_eq!(
+            told(cx),
+            Told::one(
+                BACK,
+                SUB,
+                "cargo test",
+                failed,
+                &format!("cargo test \u{b7} {failed}"),
+                true
+            ),
+            "{n}: a failed command"
+        );
+        starts(cx, "front", Some("pnpm dev"));
+        ends(cx, "front", Some(130), 3840);
+        assert_eq!(status(cx, "front"), Status::Done, "{n}: front settled");
+        assert_eq!(told(cx), nothing, "{n}: nothing about what you look at");
+
+        // A command that asks, then ends: Waiting settles too (no Working stretch ends there).
+        starts(cx, BACK, Some("cargo publish"));
+        reports(cx, BACK, Status::Waiting);
+        let asked = told(cx);
+        assert_eq!(asked.banners.len(), 1, "{n}: the question's banner");
+        assert_eq!(
+            asked.banners[0].0, "fuxx-cli \u{2014} cargo publish",
+            "{n}: the question's banner names the command"
+        );
+        ends(cx, BACK, Some(0), 12);
+        assert_eq!(
+            told(cx),
+            Told::one(
+                BACK,
+                SUB,
+                "cargo publish",
+                "Done in 12s",
+                "cargo publish \u{b7} Done in 12s",
+                true
+            ),
+            "{n}: a waiting command's end"
+        );
+
+        // The token line, by a real end mark: only its short form is told.
+        starts(cx, BACK, Some("API_KEY=sk-123 npm run deploy --token abc"));
+        reports(cx, BACK, Status::Working);
+        output(cx, BACK, ENDED);
+        let deployed = told(cx);
+        assert_eq!(deployed.banners.len(), 1, "{n}: {deployed:?}");
+        assert_eq!(
+            deployed.banners[0].0, "fuxx-cli \u{2014} npm run deploy",
+            "{n}: the short form is the banner's message"
+        );
+        assert!(
+            deployed.banners[0].2.starts_with("Done in "),
+            "{n}: {deployed:?}"
+        );
+        assert_eq!(
+            (deployed.listed.len(), deployed.notified.len()),
+            (1, 1),
+            "{n}: {deployed:?}"
+        );
+        for secret in ["sk-123", "API_KEY", "--token", "abc"] {
+            let leaks: Vec<_> = (deployed.words().into_iter())
+                .filter(|w| w.contains(secret))
+                .collect();
+            assert!(leaks.is_empty(), "{n}: {secret} told in {leaks:?}");
+        }
+
+        // An agent started at the prompt: the silence guess's Done has the banner, the end mark
+        // after it only the list.
+        starts(cx, BACK, Some("claude"));
+        worked_then_quiet(cx, BACK, 4 * 60 + 10);
+        assert_eq!(
+            told(cx),
+            Told::one(BACK, SUB, "claude", "Worked for 4m", "Worked for 4m", true),
+            "{n}: the silence guess names the running command"
+        );
+        ends(cx, BACK, Some(0), 5 * 60);
+        assert_eq!(
+            told(cx),
+            Told::one(
+                BACK,
+                SUB,
+                "claude",
+                "Done in 5m",
+                "claude \u{b7} Done in 5m",
+                false
+            ),
+            "{n}: this Done had its banner: the ending is listed, not bannered again"
+        );
+        // The view still holds the command (its end above was the event alone): a real end mark.
+        output(cx, BACK, END_MARK);
+        assert_eq!(told(cx), nothing, "{n}: a second end mark");
+        output(cx, BACK, &started(Some("claude")));
+        ends(cx, BACK, Some(0), 60);
+        assert_eq!(told(cx), nothing, "{n}: marks alone, no keystroke");
+
+        // The same under QUIET_UNDER: the silence Done has no banner, so the end mark's goes out.
+        starts(cx, BACK, Some("claude"));
+        worked_then_quiet(cx, BACK, 5);
+        assert_eq!(
+            told(cx),
+            Told::one(BACK, SUB, "claude", "Worked for 5s", "Worked for 5s", false),
+            "{n}: a short run is listed without a banner"
+        );
+        ends(cx, BACK, Some(0), 6);
+        assert_eq!(
+            told(cx),
+            Told::one(
+                BACK,
+                SUB,
+                "claude",
+                "Done in 6s",
+                "claude \u{b7} Done in 6s",
+                true
+            ),
+            "{n}: the ending's banner, this Done having had none"
+        );
+        output(cx, BACK, &started(Some("claude")));
+        ends(cx, BACK, Some(0), 60);
+        assert_eq!(told(cx), nothing, "{n}: and no more after it");
+
+        // Quiet, then output again, then the end.
+        starts(cx, BACK, Some("pnpm build"));
+        worked_then_quiet(cx, BACK, 20);
+        assert_eq!(
+            told(cx),
+            Told::one(
+                BACK,
+                SUB,
+                "pnpm build",
+                "Worked for 20s",
+                "Worked for 20s",
+                true
+            ),
+            "{n}: quiet for a while"
+        );
+        reports(cx, BACK, Status::Working);
+        ends(cx, BACK, Some(0), 40);
+        assert_eq!(
+            told(cx),
+            Told::one(
+                BACK,
+                SUB,
+                "pnpm build",
+                "Done in 40s",
+                "pnpm build \u{b7} Done in 40s",
+                true
+            ),
+            "{n}: it worked again, so its end is news with a banner"
+        );
+        reports(cx, BACK, Status::Done);
+        assert_eq!(told(cx), nothing, "{n}: its tracker's Done after the mark");
+        // A background service that doesn't know the mark yet: the prompt is work to it.
+        reports(cx, BACK, Status::Working);
+        reports(cx, BACK, Status::Done);
+        let prompt = told(cx);
+        assert!(prompt.banners.is_empty(), "{n}: no banner for the prompt");
+
+        // No marks at all: today's words.
+        starts(cx, BACK, None);
+        worked_then_quiet(cx, BACK, 20);
+        assert_eq!(
+            told(cx),
+            Told::one(
+                BACK,
+                SUB,
+                "Finished",
+                "Worked for 20s",
+                "Worked for 20s",
+                true
+            ),
+            "{n}: a terminal with no marks"
+        );
+
+        // The order the view tells its owner in, by the app's own path.
+        let view = view_of(cx, "tests");
+        let heard: Rc<RefCell<Vec<String>>> = Rc::default();
+        let hears = heard.clone();
+        let _heard = cx.update(|cx| {
+            cx.subscribe(&view, move |_, event: &TerminalEvent, _| {
+                let said = match event {
+                    TerminalEvent::StatusChanged(status) => format!("status {}", status.as_str()),
+                    TerminalEvent::Command(Change::Started(short)) => {
+                        format!("started {}", short.as_deref().unwrap_or("-"))
+                    }
+                    TerminalEvent::Command(Change::Ended(fin)) => format!("ended {}", fin.name()),
+                    TerminalEvent::Command(Change::Cleared) => "cleared".to_string(),
+                    _ => return,
+                };
+                hears.borrow_mut().push(said);
+            })
+        });
+        cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                view.type_bytes(b"x", cx);
+                view.shot_output(&started(Some("pnpm build")), cx);
+            })
+        });
+        prints(cx, &view, b"building\n", &format!("{n}: Working"), &|cx| {
+            status(cx, "tests") == Status::Working
+        });
+        // Typed ahead while it runs, its end mark, and the next command's start mark.
+        cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                view.type_bytes(b"y", cx);
+                view.shot_output(ENDED, cx);
+            })
+        });
+        cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                view.shot_output(&started(Some("cargo test")), cx)
+            })
+        });
+        assert_eq!(
+            *heard.borrow(),
+            [
+                "started pnpm build",
+                "status working",
+                "ended pnpm build",
+                "status done",
+                "status idle",
+                "started cargo test",
+            ],
+            "{n}: an end's command comes before its Done, a start's status before its command"
+        );
+        let ended = told(cx);
+        assert_eq!(ended.banners.len(), 1, "{n}: one banner: {ended:?}");
+        assert_eq!(ended.banners[0].0, "tests \u{2014} pnpm build", "{n}");
+        assert!(ended.banners[0].2.starts_with("Done in "), "{n}: {ended:?}");
+        assert_eq!(
+            (ended.listed.len(), ended.notified.len()),
+            (1, 1),
+            "{n}: {ended:?}"
+        );
+
+        drop(ws);
+        acting.borrow_mut().take();
+    };
+    let path = shoot_with(
+        "command-banner",
+        "mocha",
+        &theme,
+        size(px(960.0), px(360.0)),
+        build,
+        act,
+    );
+    println!("{}", path.display());
 }
