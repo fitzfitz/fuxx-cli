@@ -15,7 +15,7 @@ use gpui::{Bounds, Entity};
 use super::branch::settle_until;
 use super::*;
 use crate::edit_ledger::{self, agent_mark_for};
-use crate::edit_notes::{self, Light, Note};
+use crate::edit_notes::{self, Light, LightKind, Note};
 use crate::file_tab::FileTab;
 use crate::layout_model::FileMode;
 use crate::row_map::Row;
@@ -182,9 +182,10 @@ fn note(agent: &str, reason: &str, anchor: &[&str], hint: usize) -> Note {
     }
 }
 
-/// A light reason by `agent`, left now.
-fn light(agent: &str, reason: &str) -> Light {
+/// A light reason of `kind` by `agent`, left now.
+fn light(kind: LightKind, agent: &str, reason: &str) -> Light {
     Light {
+        kind,
         agent: agent_mark_for(agent),
         clock: "10:42".into(),
         reason: reason.into(),
@@ -342,7 +343,9 @@ fn notes_follow_edit() {
 /// `notes-light`: an agy edit to the file finished ok (agy gives no text, so the store waits
 /// for a light reason); the file changes on disk, two lines replaced: after the read the note
 /// sits under the replaced block's last line with agy's reason. Then a pure deletion by Claude
-/// (its edit's text `Removed`): the note sits under the line above the gap.
+/// (its edit's text `Removed`): the note sits under the line above the gap. A second deletion's
+/// reason, read in one change with an ordinary edit, is not filed under that edit's block; the
+/// next change that only removes lines takes it.
 fn notes_light() {
     let n = "notes-light";
     let path = scratch(n);
@@ -357,7 +360,7 @@ fn notes_light() {
             let key = path.clone();
             cx.update(|cx| {
                 edit_notes::update(cx, |store| {
-                    store.expect_light(key, light("agy", "tidy the loop"))
+                    store.expect_light(key, light(LightKind::NoText, "agy", "tidy the loop"))
                 })
             });
             let mut lines: Vec<&str> = base.lines().collect();
@@ -371,7 +374,10 @@ fn notes_light() {
             let key = path.clone();
             cx.update(|cx| {
                 edit_notes::update(cx, |store| {
-                    store.expect_light(key, light("claude", "drop the dead lines"))
+                    store.expect_light(
+                        key,
+                        light(LightKind::Removed, "claude", "drop the dead lines"),
+                    )
                 })
             });
             // 0-based lines 50–52 go: the gap is before new line 50, the line above it is 49.
@@ -379,12 +385,48 @@ fn notes_light() {
             lines.drain(50..53);
             let removed = lines.join("\n") + "\n";
             rewrite(cx, window, tab, &path, &removed, n);
+            let both = [(21, "tidy the loop"), (49, "drop the dead lines")];
+            expect(cx, window, tab, n, &both);
+
+            // Final fixes (F1): another pure deletion by Claude, read in one change with an
+            // ordinary edit of its (line 11 changed, lines 71-72 gone): the deletion's reason is
+            // not filed under the edited block (it is about no line there); it waits.
+            edited(cx, "a2:e2", "claude", &path);
+            let key = path.clone();
+            cx.update(|cx| {
+                edit_notes::update(cx, |store| {
+                    store.expect_light(key, light(LightKind::Removed, "claude", "cut two more"))
+                })
+            });
+            let mut lines: Vec<&str> = removed.lines().collect();
+            lines[10] = "    let eleven = 11;";
+            lines.drain(70..72);
+            let mixed = lines.join("\n") + "\n";
+            rewrite(cx, window, tab, &path, &mixed, n);
+            let filed = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| cx.global::<edit_notes::NoteStore>().notes(&path).len())
+            };
+            assert_eq!(
+                filed(cx),
+                2,
+                "{n}: a deletion's reason is not put on an edit"
+            );
+            expect(cx, window, tab, n, &both);
+            // The next change that only removes lines takes it, above its gap (line 80 goes).
+            edited(cx, "a2:e3", "claude", &path);
+            lines.remove(80);
+            rewrite(cx, window, tab, &path, &(lines.join("\n") + "\n"), n);
+            assert_eq!(filed(cx), 3, "{n}: taken by a removal-only change");
             expect(
                 cx,
                 window,
                 tab,
                 n,
-                &[(21, "tidy the loop"), (49, "drop the dead lines")],
+                &[
+                    (21, "tidy the loop"),
+                    (49, "drop the dead lines"),
+                    (79, "cut two more"),
+                ],
             );
         },
     );
@@ -777,6 +819,28 @@ fn notes_open() {
                     .is_none_or(|(a, b)| a == b),
                 "{n}: no selection"
             );
+            // Final fixes (F5): the view part-way down a row stays there when the note's rows
+            // change (opened, folded again): not moved up to the row's top.
+            scroll_rows(cx, window, tab, 39.4);
+            let part = geom(cx, tab).scroll.y;
+            assert!(
+                (part - geom(cx, tab).line_height * 39.4).abs() < px(0.01),
+                "{n}: 0.4 of a row into line 40 {part:?}"
+            );
+            for (word, want) in [("more", 45..45 + lines), ("less", 45..47)] {
+                let at = cx
+                    .read(|cx| tab.read(cx).note_more_bounds(id))
+                    .expect("more or less");
+                cx.simulate_click(window, at.center(), gpui::Modifiers::none());
+                settle(cx, window);
+                assert_eq!(rows_drawn(cx, tab), [(id, want)], "{n}: after {word}");
+                let now = geom(cx, tab).scroll.y;
+                assert!(
+                    (now - part).abs() < px(0.01),
+                    "{n}: after {word} the view stays part-way down its row: {now:?}, was {part:?}"
+                );
+            }
+            scroll_rows(cx, window, tab, 39.0);
             under_less(cx, window, tab, &filed, less.size.width, &n);
         });
         std::fs::remove_file(&path).ok();
@@ -878,7 +942,8 @@ fn under_less(
 }
 
 /// `notes-under-fold` (both themes): folding the block that holds line 45 (lines 43–45) hides
-/// the note's rows with it (line 46 right under line 43); unfolding brings them back.
+/// the note's rows with it (line 46 right under line 43); unfolding brings them back. Folded
+/// again with the view at the top, a click on the pill opens the fold and scrolls to the note.
 fn notes_under_fold() {
     for &(slug, name) in shot_themes() {
         let n = format!("notes-under-fold-{slug}");
@@ -915,6 +980,31 @@ fn notes_under_fold() {
             cx.update(|cx| tab.update(cx, |t, cx| t.unfold_all_for_shots(cx)));
             settle(cx, window);
             assert_eq!(rows_drawn(cx, tab), [(id, 45..47)], "{n}: back");
+            // Final fixes (F7): with every note under a fold the pill's click opens the fold
+            // (as a find step does) and goes to the note.
+            scroll_rows(cx, window, tab, 0.0);
+            cx.update(|cx| tab.update(cx, |t, cx| t.fold_for_shots(&[42], cx)));
+            settle(cx, window);
+            assert!(rows_drawn(cx, tab).is_empty(), "{n}: folded again");
+            let pill = cx
+                .read(|cx| tab.read(cx).notes_pill_bounds())
+                .expect("the pill counts a note under a fold");
+            cx.simulate_click(window, pill.center(), gpui::Modifiers::none());
+            settle(cx, window);
+            assert!(
+                cx.read(|cx| tab.read(cx).folded_lines()).is_empty(),
+                "{n}: the pill's click opened the fold"
+            );
+            assert_eq!(rows_drawn(cx, tab), [(id, 45..47)], "{n}: the note is back");
+            let g = geom(cx, tab);
+            let under = px(line_top(cx, tab, 44));
+            assert!(
+                under >= g.scroll.y
+                    && under + g.line_height * 3.0 <= g.scroll.y + g.bounds.size.height,
+                "{n}: the note's line and rows are in view: line at {under:?}, scroll {:?}",
+                g.scroll.y
+            );
+            assert!(g.scroll.y > px(0.0), "{n}: the click scrolled to it");
         });
         std::fs::remove_file(&path).ok();
         println!("ui-shots: {n} ok");

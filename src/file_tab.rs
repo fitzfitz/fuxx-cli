@@ -1586,6 +1586,53 @@ impl Live {
     }
 }
 
+/// M11ag (the light way, plan-time call 13): when `live`'s latest change is an agent's, exact,
+/// a reason that agent left for `path` is taken from `store` and filed as a note about that
+/// change: under its first block for a reason of an agent that gives no text; for a change
+/// that only removed lines, on the line above the gap. A reason left by a pure deletion is
+/// taken only by a change that only removed lines (it is about no other; left, it expires).
+/// True when a note was filed.
+fn claim_light(live: &Live, doc: &Doc, path: &Path, store: &mut NoteStore, now: Instant) -> bool {
+    let Some((Who::Agent(agent), Sure::Exact, lines)) = live.latest_change() else {
+        return false;
+    };
+    if lines.end > doc.lines.len() {
+        return false;
+    }
+    let removal_only = live.record.last_blocks().is_empty();
+    let Some(light) = store.take_light(path, &agent.name, removal_only, now) else {
+        return false;
+    };
+    let anchor: Vec<String> = lines
+        .clone()
+        .map(|l| doc.line(l).trim_end_matches(['\r', '\n']).to_string())
+        .collect();
+    let note = Note {
+        id: 0,
+        agent: light.agent,
+        clock: light.clock,
+        reason: light.reason,
+        reason_key: light.reason_key,
+        anchor: Arc::new(anchor),
+        hint: lines.start,
+    };
+    store.add(path.to_path_buf(), note);
+    true
+}
+
+/// M11ag: a placement's answer for the text and notes it was asked for: the notes to show; or,
+/// given up (`None`, out of time), nothing to change: the notes shown stay, and `asked` is
+/// cleared so the next read or store change asks again.
+fn placement_answer(
+    placed: Option<Vec<Placed>>,
+    asked: &mut Option<(u64, u64)>,
+) -> Option<Vec<Placed>> {
+    if placed.is_none() {
+        *asked = None;
+    }
+    placed
+}
+
 /// A run of neighbouring changed lines glowing at one level (`LineRecord::warm_blocks`), and
 /// the words said at its first line's end (`age_words`, from that line's change).
 #[derive(Clone, Debug, PartialEq)]
@@ -1803,6 +1850,18 @@ pub fn rescroll_row(top: usize, from: Option<&RowMap>, to: &RowMap) -> usize {
         None => top,
     };
     (0..=line).rev().find_map(|l| to.first_row(l)).unwrap_or(0)
+}
+
+/// M11ag: how far below row `row` of `to` the view's top stays when the rows were made again
+/// for the notes alone (one placed, opened or folded; the same lines, Wrap and row height): as
+/// far as it was into row `top` of `from` when `row` is that same row (the same part of the
+/// same line, the same row of the same note), so nothing moves under the eye; else 0 (the row's
+/// top).
+pub fn rescroll_into(y: f32, top: usize, from: &RowMap, to: &RowMap, row: usize) -> f32 {
+    match from.row(top) {
+        Some(was) if to.row(row) == Some(was) => (y - from.top(top)).clamp(0.0, to.row_h()),
+        _ => 0.0,
+    }
 }
 
 /// The change under a press `y` points down the text (scroll included) in the bar column, by
@@ -5817,8 +5876,11 @@ impl FileTab {
                 let generation = cx
                     .try_global::<NoteStore>()
                     .map_or(0, |store| store.generation(this.note_path()));
-                if version == Some(asked.0) && generation == asked.1 {
-                    this.set_notes(placed.unwrap_or_default(), cx);
+                if version == Some(asked.0)
+                    && generation == asked.1
+                    && let Some(placed) = placement_answer(placed, &mut this.notes_asked)
+                {
+                    this.set_notes(placed, cx);
                 }
             })
             .ok();
@@ -5836,39 +5898,21 @@ impl FileTab {
         }
     }
 
-    /// M11ag (the light way, plan-time call 13): when the latest change is an agent's, exact, a
-    /// reason that agent left for this file is taken and filed as a note about that change's
-    /// first block (for a change that only removed lines: the line above the gap). Run after a
+    /// M11ag (the light way, plan-time call 13): `claim_light` for this tab's file, run after a
     /// read and after the revision check (a late finish may make the change the agent's).
     fn claim_light_note(&mut self, cx: &mut Context<Self>) {
-        let Some((Who::Agent(agent), Sure::Exact, lines)) = self.live.latest_change() else {
+        if !matches!(
+            self.live.latest_change(),
+            Some((Who::Agent(_), Sure::Exact, _))
+        ) {
             return;
-        };
+        }
         let Some(doc) = self.doc() else {
             return;
         };
-        if lines.end > doc.lines.len() {
-            return;
-        }
-        let anchor: Vec<String> = lines
-            .clone()
-            .map(|l| doc.line(l).trim_end_matches(['\r', '\n']).to_string())
-            .collect();
-        let (name, hint) = (agent.name.clone(), lines.start);
-        let path = self.note_path().to_path_buf();
+        let (live, path) = (&self.live, self.note_path());
         edit_notes::update(cx, |store| {
-            if let Some(light) = store.take_light(&path, &name, Instant::now()) {
-                let note = Note {
-                    id: 0,
-                    agent: light.agent,
-                    clock: light.clock,
-                    reason: light.reason,
-                    reason_key: light.reason_key,
-                    anchor: Arc::new(anchor),
-                    hint,
-                };
-                store.add(path, note);
-            }
+            claim_light(live, doc, path, store, Instant::now());
         });
     }
 
@@ -8374,6 +8418,15 @@ impl FileTab {
                                                 != (key.notes, key.note_width)
                                     }
                             });
+                            // M11ag (final fixes): the notes' rows alone changed (the same
+                            // mode, layout, Wrap and row height).
+                            let notes_only = !wrap_switched
+                                && before.as_ref().is_some_and(|(k, b)| {
+                                    k.mode == laid.mode
+                                        && k.side == side
+                                        && b.columns() == wrap
+                                        && b.row_h() == f32::from(row_h)
+                                });
                             let before = before.map(|(_, map)| map);
                             let mut scroll = laid.scroll;
                             if wrap_switched || reflowed {
@@ -8383,8 +8436,15 @@ impl FileTab {
                                     |b| b.row_at(y),
                                 );
                                 let row = rescroll_row(top, before.as_ref(), &map);
+                                // M11ag (final fixes): made again for the notes alone, the
+                                // view stays as far into its top row as it was (no jump up
+                                // to the row's top when a note lands or is opened).
+                                let into = match before.as_ref() {
+                                    Some(b) if notes_only => rescroll_into(y, top, b, &map, row),
+                                    _ => 0.0,
+                                };
                                 let x = if wrap.is_some() { px(0.0) } else { scroll.x };
-                                scroll = point(x, px(map.top(row)));
+                                scroll = point(x, px(map.top(row) + into));
                                 let mode = laid.mode;
                                 keep.update(cx, |this, _| *this.mode_scroll_mut(mode) = scroll);
                             }
@@ -9422,6 +9482,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edit_notes::{Light, LightKind};
 
     /// M11ae: the view switch offers File always, Diff in a repo (or in Diff mode), Preview for
     /// Markdown (in either mode); it shows with two segments or more.
@@ -9535,6 +9596,35 @@ mod tests {
         // Not there now: its line's row.
         let none = RowMap::file(&widths, Some(4), &[], &[], 10.0);
         assert_eq!(rescroll_row(5, Some(&from), &none), 5);
+    }
+
+    /// M11ag (final fixes, F5): rows made again for the notes alone keep the view as far into
+    /// its top row as it was when that row is the same one; a row that is another now (a note
+    /// with fewer rows, a note gone) is shown from its top.
+    #[test]
+    fn a_notes_reflow_keeps_the_offset_into_the_top_row() {
+        use crate::row_map::NoteSpan;
+        let widths = [1, 1, 1, 1, 1, 1];
+        let span = |under, rows, note| NoteSpan { under, rows, note };
+        // 0 | 1 | 2 | 3 | 4 | 5, then a note placed under line 1 (two rows).
+        let from = RowMap::file(&widths, None, &[], &[], 10.0);
+        let to = RowMap::file(&widths, None, &[], &[span(1, 2, 0)], 10.0);
+        // The view's top 4 pt into line 3 (row 3, now row 5): still 4 pt into it.
+        let row = rescroll_row(3, Some(&from), &to);
+        assert_eq!(row, 5);
+        assert_eq!(rescroll_into(34.0, 3, &from, &to, row), 4.0);
+        // A note opened (2 rows to 4) with the top 7 pt into its second row: the same row.
+        let open = RowMap::file(&widths, None, &[], &[span(1, 4, 0)], 10.0);
+        let row = rescroll_row(3, Some(&to), &open);
+        assert_eq!(open.row(row), Some(Row::Note { note: 0, k: 1 }));
+        assert_eq!(rescroll_into(37.0, 3, &to, &open, row), 7.0);
+        // Folded again with the top in its fourth row: its last row now, from its top.
+        let row = rescroll_row(5, Some(&open), &to);
+        assert_eq!(to.row(row), Some(Row::Note { note: 0, k: 1 }));
+        assert_eq!(rescroll_into(57.0, 5, &open, &to, row), 0.0);
+        // The note gone: its line's row, from its top.
+        let row = rescroll_row(3, Some(&to), &from);
+        assert_eq!(rescroll_into(37.0, 3, &to, &from, row), 0.0);
     }
 
     /// M11ag: a press (or a drag) on a note row is at the end of its line; side by side, at
@@ -11091,6 +11181,177 @@ mod tests {
             unreachable!("nothing to decide")
         });
         assert_eq!(live.latest_change(), None);
+    }
+
+    fn light_of(kind: LightKind, name: &str, reason: &str, at: Instant) -> Light {
+        let Who::Agent(agent) = agent(name) else {
+            unreachable!()
+        };
+        Light {
+            kind,
+            agent,
+            clock: "10:42".into(),
+            reason: reason.into(),
+            reason_key: format!("a1:{reason}").into(),
+            at,
+        }
+    }
+
+    /// The notes filed for `path` as (anchor lines, hint, reason).
+    fn filed(store: &NoteStore, path: &Path) -> Vec<(Vec<String>, usize, String)> {
+        (store.notes(path).iter())
+            .map(|n| ((*n.anchor).clone(), n.hint, n.reason.to_string()))
+            .collect()
+    }
+
+    /// M11ag (final fixes, F1): a reason left by a pure deletion is not filed under a change
+    /// that has new lines (a hidden tab shown again reads an ordinary edit and the deletion as
+    /// one change): it would sit on an unrelated block and hide that block's own note. It
+    /// stays, and a change that only removed lines takes it, on the line above the gap.
+    #[test]
+    fn a_deletions_reason_is_claimed_only_by_a_removal_only_change() {
+        let (t0, path) = (Instant::now(), Path::new("src/workspace.rs"));
+        let mut store = NoteStore::default();
+        let mut live = Live::default();
+        let one = doc("a\nb\nc\nd\ne\nf\n");
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        // One read sees an edit of line b and the removal of d and e, both the agent's.
+        store.expect_light(
+            path.to_path_buf(),
+            light_of(LightKind::Removed, "claude", "drop the dead lines", t0),
+        );
+        let mixed = doc("a\nB\nc\nf\n");
+        live.saw(text_read(&live, &mixed, T0), t0, |_| {
+            (agent("claude"), Sure::Exact, false)
+        });
+        assert_eq!(
+            live.latest_change(),
+            Some((&agent("claude"), Sure::Exact, 1..2))
+        );
+        assert!(!claim_light(&live, &mixed, path, &mut store, t0));
+        assert!(filed(&store, path).is_empty(), "not on the edited block");
+        // The deletion read alone: the reason on the line above the gap (c, 0-based 2).
+        let mut live = Live::default();
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let gone = doc("a\nb\nc\nf\n");
+        live.saw(text_read(&live, &gone, T0), t0, |_| {
+            (agent("claude"), Sure::Exact, false)
+        });
+        assert!(claim_light(&live, &gone, path, &mut store, t0));
+        assert_eq!(
+            filed(&store, path),
+            vec![(vec!["c".to_string()], 2, "drop the dead lines".to_string())]
+        );
+        assert!(!claim_light(&live, &gone, path, &mut store, t0), "taken");
+    }
+
+    /// M11ag: the reason of an agent that gives no text goes under the first block of its
+    /// change (spec 7b), and on the line above the gap when that change only removed lines.
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // one block
+    fn a_no_text_reason_is_claimed_by_any_change_of_its_agent() {
+        let (t0, path) = (Instant::now(), Path::new("src/workspace.rs"));
+        let mut store = NoteStore::default();
+        let mut live = Live::default();
+        let one = doc("a\nb\nc\nd\ne\nf\n");
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let no_text = |reason| light_of(LightKind::NoText, "agy", reason, t0);
+        store.expect_light(path.to_path_buf(), no_text("tidy the loop"));
+        let two = doc("a\nB\nB2\nc\nd\ne\nF\n");
+        live.saw(text_read(&live, &two, T0), t0, |_| {
+            (agent("agy"), Sure::Exact, false)
+        });
+        assert_eq!(live.record.last_blocks(), &[1..3, 6..7]);
+        // A reason is its file's: none is waiting for another path.
+        assert!(!claim_light(
+            &live,
+            &two,
+            Path::new("src/other.rs"),
+            &mut store,
+            t0
+        ));
+        assert!(claim_light(&live, &two, path, &mut store, t0));
+        store.expect_light(path.to_path_buf(), no_text("cut the old lines"));
+        let three = doc("a\nB\nB2\nc\nF\n");
+        live.saw(text_read(&live, &three, T0), t0, |_| {
+            (agent("agy"), Sure::Exact, false)
+        });
+        assert!(claim_light(&live, &three, path, &mut store, t0));
+        let lines = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            filed(&store, path),
+            vec![
+                (lines(&["B", "B2"]), 1, "tidy the loop".to_string()),
+                (lines(&["c"]), 3, "cut the old lines".to_string()),
+            ]
+        );
+        // Past KEEP a reason is no one's.
+        store.expect_light(path.to_path_buf(), no_text("stale"));
+        let late = t0 + crate::edit_ledger::KEEP + Duration::from_secs(1);
+        assert!(!claim_light(&live, &three, path, &mut store, late));
+    }
+
+    /// M11ag: a change read while the agent's edit was still open and decided a guess (or
+    /// yours) claims nothing; settled the agent's, exact (the revision check), the claim made
+    /// then files the reason. A deletion's reason: only when the settled change removed lines
+    /// alone.
+    #[test]
+    fn a_light_reason_is_claimed_once_the_change_is_settled() {
+        let (t0, path) = (Instant::now(), Path::new("src/workspace.rs"));
+        let Who::Agent(claude) = agent("claude") else {
+            unreachable!()
+        };
+        let mut store = NoteStore::default();
+        let mut live = Live::default();
+        let one = doc("a\nb\nc\nd\n");
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let gone = doc("a\nd\n");
+        let revise = live.saw(text_read(&live, &gone, T0), t0, |_| {
+            (agent("claude"), Sure::Guess, true)
+        });
+        assert!(revise, "decided while the edit was open");
+        // The edit finishes after the read: its reason is left then.
+        store.expect_light(
+            path.to_path_buf(),
+            light_of(LightKind::Removed, "claude", "drop the dead lines", t0),
+        );
+        assert!(!claim_light(&live, &gone, path, &mut store, t0), "a guess");
+        live.settle((Who::Agent(claude.clone()), Sure::Exact));
+        assert!(claim_light(&live, &gone, path, &mut store, t0));
+        assert_eq!(
+            filed(&store, path),
+            vec![(vec!["a".to_string()], 0, "drop the dead lines".to_string())]
+        );
+
+        // The same with a change that has new lines: settled, a deletion's reason stays.
+        let mut live = Live::default();
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let mixed = doc("a\nB\nd\n");
+        live.saw(text_read(&live, &mixed, T0), t0, |_| {
+            (Who::You, Sure::Exact, true)
+        });
+        store.expect_light(
+            path.to_path_buf(),
+            light_of(LightKind::Removed, "claude", "another", t0),
+        );
+        assert!(live.revise(Some(claude)));
+        assert!(!claim_light(&live, &mixed, path, &mut store, t0));
+        assert_eq!(filed(&store, path).len(), 1);
+    }
+
+    /// M11ag (final fixes, F6): a placement that gave up (out of time) changes nothing shown
+    /// and is asked again by the next read or store change; an answer in time is shown.
+    #[test]
+    fn a_placement_given_up_keeps_the_notes_and_asks_again() {
+        let mut asked = Some((3, 7));
+        assert_eq!(placement_answer(None, &mut asked), None);
+        assert_eq!(asked, None, "asked again next time");
+        let mut asked = Some((3, 7));
+        assert_eq!(
+            placement_answer(Some(Vec::new()), &mut asked),
+            Some(Vec::new())
+        );
+        assert_eq!(asked, Some((3, 7)));
     }
 
     /// A change is dated when fuxx saw it, unless the file's time is earlier (it changed while

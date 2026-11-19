@@ -315,6 +315,10 @@ pub enum EditText {
     WholeFile,
     /// The edit only removed text (its new text is empty).
     Removed,
+    /// The call writes its file, and the provider says there is no note for it (a notebook
+    /// edit, an edit with no new text given). Not the same as no texts at all: that is an agent
+    /// that gives none, whose edits get their notes the light way.
+    NoNote,
 }
 
 #[derive(Clone, Debug, PartialEq)]

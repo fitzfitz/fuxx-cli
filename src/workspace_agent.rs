@@ -30,7 +30,7 @@ use crate::api_events::Event;
 use crate::block_view::{self, BlockDrag};
 use crate::code_ask::{AskTo, CodeRef};
 use crate::edit_ledger::{self, agent_mark_for};
-use crate::edit_notes::{self, EditNote, Light, Note, anchor_in};
+use crate::edit_notes::{self, EditNote, Light, LightKind, Note, anchor_in};
 use crate::groups;
 use crate::layout_model::{PaneId, TabId, TabKind, WorkspaceId};
 use crate::live_lines::AgentMark;
@@ -38,7 +38,7 @@ use crate::notification_list;
 use crate::notifier;
 use crate::presets::{self, Preset};
 use crate::procs::{self, Foreground, Proc};
-use crate::providers::{self, EditText, Provider, Start};
+use crate::providers::{self, Provider, Start};
 use crate::restore::{Launch, SavedSession};
 use crate::split_tree::Axis;
 use crate::status::Status;
@@ -954,7 +954,12 @@ impl Workspace {
     /// UI thread (not over `REFUSE_ABOVE`), each new text's anchor becomes a `Note` stamped with
     /// the agent and the clock as it is now (made once, so nothing ticks). A path with no text
     /// to find (an agent that gives none) or only removed text gets a `Light` reason to wait
-    /// for the file tab that sees the change; a text that is not found gives nothing.
+    /// for the file tab that sees the change (`edit_notes::light_kind`); a text that is not
+    /// found, and a call the provider gives no note, give nothing.
+    ///
+    /// Texts with nothing to look for in the file (`edit_notes::needs_read`) are settled here,
+    /// in the turn the agent tab reported the finish in: the light is in the store before any
+    /// file tab can read the change, so none misses it.
     pub(crate) fn store_notes(
         &mut self,
         tab: TabId,
@@ -971,19 +976,36 @@ impl Workspace {
             clock_hm((ms / 1000) as i64, crate::cli::local_utc_offset(ms as u64)).into();
         let reason_key: Arc<str> = format!("a{slot}:{}", note.reason_id).into();
         let EditNote { reason, texts, .. } = note;
+        let light = {
+            let (agent, clock) = (agent.clone(), clock.clone());
+            let (reason, reason_key) = (reason.clone(), reason_key.clone());
+            move |kind: LightKind| Light {
+                kind,
+                agent: agent.clone(),
+                clock: clock.clone(),
+                reason: reason.clone(),
+                reason_key: reason_key.clone(),
+                at: Instant::now(),
+            }
+        };
+        if !edit_notes::needs_read(&texts) {
+            if let Some(kind) = edit_notes::light_kind(&texts, false) {
+                edit_notes::update(cx, |store| {
+                    for path in paths {
+                        store.expect_light(path, light(kind));
+                    }
+                });
+            }
+            return;
+        }
         let found = cx.background_spawn(async move {
             paths
                 .into_iter()
                 .map(|path| {
-                    let anchors = if texts.is_empty() {
-                        Vec::new()
-                    } else {
-                        read_for_notes(&path).map_or_else(Vec::new, |text| {
-                            texts.iter().filter_map(|t| anchor_in(&text, t)).collect()
-                        })
-                    };
-                    let light = texts.is_empty()
-                        || (anchors.is_empty() && texts.contains(&EditText::Removed));
+                    let anchors = read_for_notes(&path).map_or_else(Vec::new, |text| {
+                        texts.iter().filter_map(|t| anchor_in(&text, t)).collect()
+                    });
+                    let light = edit_notes::light_kind(&texts, !anchors.is_empty());
                     (path, anchors, light)
                 })
                 .collect::<Vec<_>>()
@@ -992,7 +1014,7 @@ impl Workspace {
             let found = found.await;
             cx.update(|cx| {
                 edit_notes::update(cx, |store| {
-                    for (path, anchors, light) in found {
+                    for (path, anchors, kind) in found {
                         let mut seen: Vec<(Vec<String>, usize)> = Vec::new();
                         for (anchor, hint) in anchors {
                             if seen.contains(&(anchor.clone(), hint)) {
@@ -1012,17 +1034,8 @@ impl Workspace {
                                 },
                             );
                         }
-                        if light {
-                            store.expect_light(
-                                path,
-                                Light {
-                                    agent: agent.clone(),
-                                    clock: clock.clone(),
-                                    reason: reason.clone(),
-                                    reason_key: reason_key.clone(),
-                                    at: Instant::now(),
-                                },
-                            );
+                        if let Some(kind) = kind {
+                            store.expect_light(path, light(kind));
                         }
                     }
                 });
