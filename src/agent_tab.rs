@@ -16,8 +16,8 @@
 //! `ProcessEnd`, `resume_failed` and the small text helpers are pure and tested.
 
 use std::cell::Cell;
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -131,9 +131,25 @@ pub enum AgentTabEvent {
     Edit { call: String, paths: Vec<PathBuf> },
     /// That tool call finished.
     EditDone { call: String, ok: bool },
+    /// An edit finished OK and the agent had said why (live events only, M11ag): the files it
+    /// wrote and its note. After the `EditDone`.
+    EditNoted {
+        paths: Vec<PathBuf>,
+        note: crate::edit_notes::EditNote,
+    },
     /// A command block dropped on the tab's body (Task 11): the Workspace reads its output and
     /// attaches it (`attach_block`), as for a drop on the tab in a bar.
     BlockDropped(BlockDrag),
+}
+
+/// What the tab remembers to tell why an edit was made: the turn's last text per speaker
+/// (`None` is the main agent, `Some(call)` the sub-agent of that tool call), and the notes of
+/// edits started and not finished, by call id.
+#[derive(Default)]
+pub(crate) struct Reasons {
+    texts: HashMap<Option<String>, (u64, Arc<str>)>,
+    next_id: u64,
+    started: HashMap<String, (Vec<PathBuf>, crate::edit_notes::EditNote)>,
 }
 
 /// What an agent event tells the edit ledger: a tool call that writes files (`writes`, resolved
@@ -144,9 +160,29 @@ fn edit_events(
     cwd: &Path,
     home: Option<&Path>,
     open: &mut HashSet<String>,
+    reasons: &mut Reasons,
 ) -> Vec<AgentTabEvent> {
     match event {
-        Event::ToolStarted { id, writes, .. } => {
+        Event::MessageDone { text, parent, .. } => {
+            if let Some(reason) = crate::edit_notes::reason_text(text) {
+                reasons.next_id += 1;
+                reasons
+                    .texts
+                    .insert(parent.clone(), (reasons.next_id, reason));
+            }
+            Vec::new()
+        }
+        Event::TurnDone { .. } => {
+            reasons.texts.clear();
+            Vec::new()
+        }
+        Event::ToolStarted {
+            id,
+            writes,
+            texts,
+            parent,
+            ..
+        } => {
             let paths: Vec<PathBuf> = writes
                 .iter()
                 .filter_map(|w| crate::edit_ledger::resolve_write(w, cwd, home))
@@ -155,15 +191,31 @@ fn edit_events(
                 return Vec::new();
             }
             open.insert(id.clone());
+            if let Some((reason_id, reason)) = reasons.texts.get(parent) {
+                let note = crate::edit_notes::EditNote {
+                    reason: reason.clone(),
+                    reason_id: *reason_id,
+                    texts: texts.clone(),
+                };
+                reasons.started.insert(id.clone(), (paths.clone(), note));
+            }
             vec![AgentTabEvent::Edit {
                 call: id.clone(),
                 paths,
             }]
         }
-        Event::ToolFinished { id, ok, .. } if open.remove(id) => vec![AgentTabEvent::EditDone {
-            call: id.clone(),
-            ok: *ok,
-        }],
+        Event::ToolFinished { id, ok, .. } if open.remove(id) => {
+            let mut told = vec![AgentTabEvent::EditDone {
+                call: id.clone(),
+                ok: *ok,
+            }];
+            if let Some((paths, note)) = reasons.started.remove(id)
+                && *ok
+            {
+                told.push(AgentTabEvent::EditNoted { paths, note });
+            }
+            told
+        }
         _ => Vec::new(),
     }
 }
@@ -773,6 +825,8 @@ pub struct AgentTab {
     tool_started: std::collections::HashMap<String, Instant>,
     /// Tool calls that write files and haven't finished (reported to the edit ledger).
     open_edits: HashSet<String>,
+    /// Why the edits were made (M11ag): see `Reasons`.
+    reasons: Reasons,
     said: Said,
     /// Stop was pressed: the turn hasn't ended yet. `force`: `STOP_FORCE_AFTER` has passed.
     stopping: Option<Instant>,
@@ -1159,6 +1213,7 @@ impl AgentTab {
             expanded: HashSet::new(),
             tool_started: std::collections::HashMap::new(),
             open_edits: HashSet::new(),
+            reasons: Reasons::default(),
             said: Said::default(),
             stopping: None,
             force: false,
@@ -1229,6 +1284,7 @@ impl AgentTab {
     /// The run ended (or was stopped): its open edits end as not ok, so one that never finished
     /// can't claim later changes.
     fn abandon_edits(&mut self, cx: &mut Context<Self>) {
+        self.reasons.started.clear();
         for call in std::mem::take(&mut self.open_edits) {
             cx.emit(AgentTabEvent::EditDone { call, ok: false });
         }
@@ -1766,6 +1822,7 @@ impl AgentTab {
                 &self.start.cwd,
                 home.as_deref(),
                 &mut self.open_edits,
+                &mut self.reasons,
             ) {
                 cx.emit(told);
             }
@@ -3990,7 +4047,7 @@ mod tests {
             texts: Vec::new(),
         };
         assert_eq!(
-            edit_events(&started, cwd, None, &mut open),
+            edit_events(&started, cwd, None, &mut open, &mut Reasons::default()),
             vec![AgentTabEvent::Edit {
                 call: "t1".into(),
                 paths: vec![PathBuf::from("/tmp/fx/hello.txt")],
@@ -4002,7 +4059,7 @@ mod tests {
             summary: String::new(),
             output: None,
         };
-        assert!(edit_events(&other, cwd, None, &mut open).is_empty());
+        assert!(edit_events(&other, cwd, None, &mut open, &mut Reasons::default()).is_empty());
         let finished = Event::ToolFinished {
             id: "t1".into(),
             ok: true,
@@ -4010,7 +4067,7 @@ mod tests {
             output: None,
         };
         assert_eq!(
-            edit_events(&finished, cwd, None, &mut open),
+            edit_events(&finished, cwd, None, &mut open, &mut Reasons::default()),
             vec![AgentTabEvent::EditDone {
                 call: "t1".into(),
                 ok: true
@@ -4027,7 +4084,148 @@ mod tests {
             writes: vec![],
             texts: Vec::new(),
         };
-        assert!(edit_events(&read, cwd, None, &mut open).is_empty());
+        assert!(edit_events(&read, cwd, None, &mut open, &mut Reasons::default()).is_empty());
+    }
+
+    fn said(text: &str, parent: Option<&str>) -> Event {
+        Event::MessageDone {
+            message: "m".into(),
+            text: text.into(),
+            parent: parent.map(String::from),
+        }
+    }
+
+    fn edit_call(id: &str, parent: Option<&str>) -> Event {
+        Event::ToolStarted {
+            id: id.into(),
+            name: "Edit".into(),
+            summary: "a.rs".into(),
+            parent: parent.map(String::from),
+            detail: None,
+            writes: vec!["a.rs".into()],
+            texts: vec![crate::providers::EditText::Inserted("x".into())],
+        }
+    }
+
+    fn finish(id: &str, ok: bool) -> Event {
+        Event::ToolFinished {
+            id: id.into(),
+            ok,
+            summary: String::new(),
+            output: None,
+        }
+    }
+
+    /// Feeds events through `edit_events` as the tab does; what it told, in order.
+    fn told_by(events: &[Event]) -> Vec<AgentTabEvent> {
+        let (mut open, mut reasons) = (HashSet::new(), Reasons::default());
+        let cwd = Path::new("/tmp/fx");
+        events
+            .iter()
+            .flat_map(|e| edit_events(e, cwd, None, &mut open, &mut reasons))
+            .collect()
+    }
+
+    fn noted(told: &[AgentTabEvent]) -> Vec<&crate::edit_notes::EditNote> {
+        told.iter()
+            .filter_map(|t| match t {
+                AgentTabEvent::EditNoted { note, .. } => Some(note),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_reason_is_the_last_text_before_the_edit() {
+        let told = told_by(&[
+            said("reuse an open tab", None),
+            edit_call("t1", None),
+            finish("t1", true),
+        ]);
+        let notes = noted(&told);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(&*notes[0].reason, "reuse an open tab");
+        assert_eq!(
+            notes[0].texts,
+            vec![crate::providers::EditText::Inserted("x".into())]
+        );
+        assert!(matches!(
+            told[told.len() - 2],
+            AgentTabEvent::EditDone { .. }
+        ));
+    }
+
+    #[test]
+    fn an_earlier_text_in_the_turn_counts() {
+        let bash = Event::ToolStarted {
+            id: "b1".into(),
+            name: "Bash".into(),
+            summary: "ls".into(),
+            parent: None,
+            detail: None,
+            writes: vec![],
+            texts: vec![],
+        };
+        let told = told_by(&[
+            said("first look around", None),
+            bash,
+            finish("b1", true),
+            edit_call("t1", None),
+            finish("t1", true),
+        ]);
+        let notes = noted(&told);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(&*notes[0].reason, "first look around");
+    }
+
+    #[test]
+    fn an_edit_with_no_text_before_it_in_the_turn_gets_no_note() {
+        let done = Event::TurnDone {
+            ok: true,
+            message: None,
+        };
+        let told = told_by(&[
+            said("last turn's words", None),
+            done,
+            edit_call("t1", None),
+            finish("t1", true),
+        ]);
+        assert!(noted(&told).is_empty());
+        assert!(
+            told.iter()
+                .any(|t| matches!(t, AgentTabEvent::EditDone { ok: true, .. }))
+        );
+    }
+
+    #[test]
+    fn a_sub_agent_edit_takes_its_own_text() {
+        let told = told_by(&[
+            said("main words", None),
+            said("sub words", Some("t0")),
+            edit_call("t1", Some("t0")),
+            finish("t1", true),
+            edit_call("t2", None),
+            finish("t2", true),
+        ]);
+        let notes = noted(&told);
+        assert_eq!(notes.len(), 2);
+        assert_eq!(&*notes[0].reason, "sub words");
+        assert_eq!(&*notes[1].reason, "main words");
+        assert_ne!(notes[0].reason_id, notes[1].reason_id);
+    }
+
+    #[test]
+    fn a_failed_edit_gives_no_note() {
+        let told = told_by(&[
+            said("why", None),
+            edit_call("t1", None),
+            finish("t1", false),
+        ]);
+        assert!(noted(&told).is_empty());
+        assert!(
+            told.iter()
+                .any(|t| matches!(t, AgentTabEvent::EditDone { ok: false, .. }))
+        );
     }
 
     #[test]

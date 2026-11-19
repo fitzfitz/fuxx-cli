@@ -388,6 +388,19 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "agent-edit-reason-live-only",
+        run: agent_edit_reason_live_only,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/agent_tab.rs",
+            "src/edit_notes.rs",
+            "src/providers/mod.rs",
+            "src/providers/claude.rs",
+        ],
+    },
+    Scene {
         name: "agent-tab-agy",
         run: agent_tab_agy,
         themes: Themes::Both,
@@ -2486,6 +2499,86 @@ pub(super) fn agent_tab_attachment() {
         });
         println!("ui-shots: {n}-{slug}: dropped on the body and the tab, removed, sent, paused");
     }
+}
+
+/// Checks only (M11ag Task 7): the agent's reason for an edit is caught from live events only. A
+/// tab fed a text and an `Edit` (then its finish) tells one `EditNoted` carrying that text and the
+/// call's new text; a tab given the same as history (a restored conversation) tells none.
+pub(super) fn agent_edit_reason_live_only() {
+    use crate::agent_tab::AgentTabEvent;
+    use crate::edit_notes::EditNote;
+    use crate::providers::EditText;
+    let n = "agent-edit-reason-live-only";
+    let theme = shot_theme("Catppuccin Mocha");
+    let heard: Rc<RefCell<Vec<EditNote>>> = Rc::default();
+    let (live_slot, past_slot): (Slot, Slot) = (Rc::default(), Rc::default());
+    let events = || {
+        vec![
+            Event::MessageDone {
+                message: "m1".into(),
+                text: "reuse an open tab".into(),
+                parent: None,
+            },
+            Event::ToolStarted {
+                id: "t1".into(),
+                name: "Edit".into(),
+                summary: "src/a.rs".into(),
+                parent: None,
+                detail: None,
+                writes: vec!["src/a.rs".into()],
+                texts: vec![EditText::Inserted("let x = 1;".into())],
+            },
+            Event::ToolFinished {
+                id: "t1".into(),
+                ok: true,
+                summary: String::new(),
+                output: None,
+            },
+        ]
+    };
+    let (make_heard, keep_live, keep_past) = (heard.clone(), live_slot.clone(), past_slot.clone());
+    render_with(
+        &theme,
+        size(px(DIMS.0), px(DIMS.1)),
+        move |window, cx| {
+            cx.set_global(shot_appearance(theme, cx));
+            let mut tabs = Vec::new();
+            for keep in [&keep_live, &keep_past] {
+                let tab = cx.new(|cx| AgentTab::for_shots(&CLAUDE, start(), window, cx));
+                let heard = make_heard.clone();
+                cx.subscribe(&tab, move |_, e: &AgentTabEvent, _| {
+                    if let AgentTabEvent::EditNoted { note, .. } = e {
+                        heard.borrow_mut().push(note.clone());
+                    }
+                })
+                .detach();
+                *keep.borrow_mut() = Some(tab.clone());
+                tabs.push(tab);
+            }
+            tabs.remove(0).into()
+        },
+        move |cx, _| {
+            let live = tab_of(&live_slot);
+            let past = tab_of(&past_slot);
+            feed(cx, &past, |t, cx| {
+                t.shot_history(events().into_iter().map(Past::Event).collect(), cx)
+            });
+            assert!(heard.borrow().is_empty(), "{n}: history gives no note");
+            feed(cx, &live, |t, cx| t.shot_history(Vec::new(), cx));
+            feed(cx, &live, |t, cx| t.shot_feed(events(), cx));
+            let notes = heard.borrow();
+            assert_eq!(notes.len(), 1, "{n}: the live edit gives one note");
+            assert_eq!(&*notes[0].reason, "reuse an open tab", "{n}");
+            assert_eq!(
+                notes[0].texts,
+                vec![EditText::Inserted("let x = 1;".into())],
+                "{n}"
+            );
+            live_slot.borrow_mut().take();
+            past_slot.borrow_mut().take();
+        },
+    );
+    println!("ui-shots: {n}: live edit noted once, history not");
 }
 
 /// The ids a tab told the Workspace (`AgentTabEvent::Conversation`), in order.

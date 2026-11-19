@@ -935,6 +935,8 @@ impl Workspace {
                     edit_ledger::update(cx, |l, now| l.edit_started(&call, mark, paths, now));
                 }
             }
+            // The note is drawn by Task 8.
+            AgentTabEvent::EditNoted { .. } => {}
             AgentTabEvent::EditDone { call, ok } => {
                 if let Some((id, _)) = self.agent_ledger_who(tab) {
                     let call = format!("a{id}:{call}");

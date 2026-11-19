@@ -45,6 +45,7 @@ mod diff_cards;
 mod diff_view;
 mod drag_gap;
 mod edit_ledger;
+mod edit_notes;
 mod file_tab;
 mod file_tree;
 mod folder_picker;

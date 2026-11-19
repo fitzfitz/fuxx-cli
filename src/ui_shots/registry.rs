@@ -260,6 +260,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-tab-held",
     "agent-tab-runs",
     "agent-tab-agy",
+    "agent-edit-reason-live-only",
     "agent-workspace-split",
     "agent-preset-menu",
     "agent-pane-menu",
