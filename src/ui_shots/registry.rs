@@ -14,9 +14,9 @@
 //! `--changed` follows.
 
 use super::{
-    Scene, agent, agent_box, ask, branch, changes, chrome, chrome_parts, file_tab, file_tab_md,
-    file_tab_md_reader, naming, notes, overlays, palette, panes, right_sidebar, sidebar,
-    status_bar, terminal, welcome, window,
+    Scene, agent, agent_box, ask, branch, changes, chrome, chrome_parts, command, file_tab,
+    file_tab_md, file_tab_md_reader, naming, notes, overlays, palette, panes, right_sidebar,
+    sidebar, status_bar, terminal, welcome, window,
 };
 
 /// Files that run or declare the suite but change no scene's picture: an edit to one of these
@@ -49,6 +49,7 @@ pub(super) const AREAS: &[(&str, &[Scene])] = &[
     (overlays::FILE, overlays::SCENES),
     (status_bar::FILE, status_bar::SCENES),
     (terminal::FILE, terminal::SCENES),
+    (command::FILE, command::SCENES),
     (agent::FILE, agent::SCENES),
     (agent_box::FILE, agent_box::SCENES),
     (ask::FILE, ask::SCENES),
@@ -255,6 +256,11 @@ pub(super) const ORDER: &[&str] = &[
     "command-blocks-jump",
     "command-blocks-copy",
     "command-blocks-rerun",
+    "command-reaches-workspace",
+    "command-settles",
+    "command-name",
+    "command-banner",
+    "command-bell-failed",
     "agent-tab-empty",
     "agent-tab-working",
     "agent-tab-permission",

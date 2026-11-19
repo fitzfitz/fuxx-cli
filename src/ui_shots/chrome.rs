@@ -20,6 +20,7 @@ use gpui::{
 };
 
 use super::*;
+use crate::command_name::{Change, Ending, Finished};
 use crate::split_tree::Axis;
 use crate::status::Status;
 use crate::terminal_view::TerminalEvent;
@@ -71,6 +72,8 @@ pub(super) const SCENES: &[Scene] = &[
             "src/notification_list.rs",
             "src/title_area.rs",
             "src/sidebar.rs",
+            "src/workspace_command.rs",
+            "src/notifier.rs",
         ],
     },
     Scene {
@@ -395,8 +398,9 @@ fn elsewhere_window_sized(dims: Size<Pixels>) -> (ShotApp, AnyWindowHandle, Enti
 /// Review Focus 2: a terminal's status changing where you aren't looking reaches the sidebar
 /// (its row's mark, ring, age and the line under its name) and, for a pane of the shown
 /// workspace, its tab's mark; each by the status's own path (`on_terminal_event`), no other
-/// redraw. The marks' ticker turns a working mark on its own. A Waiting status (which would post a real banner from there) by `set_status` without
-/// the notification, as an SSH hold does; it is the same function.
+/// redraw. The marks' ticker turns a working mark on its own. A Waiting status (which a window
+/// with a list would banner and ring) by `set_status` without the notification, as an SSH hold
+/// does; it is the same function.
 ///
 /// Panics unless after each the window shows what a full redraw does, and it changed.
 pub(super) fn chrome_status_elsewhere() {
@@ -571,9 +575,10 @@ pub(super) fn chrome_model_edits() {
 }
 
 /// Notifications reach the footer's 🔔 and, with the sidebar hidden, the title band's: a
-/// terminal elsewhere is done after a short run (listed, unseen, no banner), the 🔔 clicked
+/// terminal elsewhere is done (listed, unseen; its banner is kept, not posted), the 🔔 clicked
 /// open (all seen), its entry's age turning with nothing notified (its timer redraws it), the
-/// popover closed; then hidden, another one.
+/// popover closed; the command that ran there ends (M11q: listed, unseen, no second banner);
+/// then hidden, another one.
 ///
 /// Panics unless after each the window shows what a full redraw does, and it changed.
 pub(super) fn chrome_notifications() {
@@ -648,6 +653,35 @@ pub(super) fn chrome_notifications() {
             ws.dismiss_notifications(window, cx)
         })
     });
+    // M11q: the command agent ran ends after its Done was told (with a banner, above): the
+    // ending is listed with no status change, so the 🔔 changes by a source of its own
+    // (`Workspace::end_command`), and no second banner goes out.
+    let banners = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).shot_banners.len());
+    let bannered = banners(&mut cx);
+    steps.step(
+        &mut cx,
+        window,
+        "agent's command ends: listed, unseen",
+        Seen::Changes,
+        |cx| {
+            let i = index_of(cx, ws, "agent");
+            let view = cx.read(|cx| ws.read(cx).sessions.items()[i].view.clone());
+            let ended = Change::Ended(Finished {
+                short: Some("pnpm build".into()),
+                ending: Ending::of(Some(0)),
+                ran: Duration::from_secs(6 * 60),
+            });
+            cx.update(|cx| view.update(cx, |_, cx| cx.emit(TerminalEvent::Command(ended))));
+        },
+    );
+    assert_eq!(unseen(&mut cx), 1, "{n}: the ending is unseen");
+    assert_eq!(banners(&mut cx), bannered, "{n}: and has no second banner");
+    // Seen, as the popover opened would make it (not a step: the band's 🔔 below starts clear).
+    on_ws(&mut cx, window, ws, |ws, _, cx| {
+        ws.notifications.mark_seen();
+        cx.notify();
+    });
+    settle_frames(&mut cx, window);
     // The sidebar hidden: the title band's 🔔.
     on_ws(&mut cx, window, ws, |ws, window, cx| {
         ws.toggle_sidebar(window, cx)
@@ -2116,7 +2150,7 @@ pub(super) fn chrome_agent_status() {
         "{n}: its row's tooltip has the whole question: {tip:?}"
     );
     assert_eq!(unseen(&cx), before + 1, "{n}: a 🔔 entry for it");
-    let banners = cx.read(|cx| ws.read(cx).shot_banners.clone().unwrap_or_default());
+    let banners = cx.read(|cx| ws.read(cx).shot_banners.clone());
     match banners.as_slice() {
         [(_, subtitle, body)] => {
             assert_eq!(body, "Claude wants to run: ls", "{n}: the banner's body");
@@ -2169,7 +2203,7 @@ pub(super) fn chrome_agent_status() {
         assert_eq!(slot.activity.len(), 2, "{n}: its Activity: Working, Done");
     });
     assert_eq!(unseen(&cx), before + 1, "{n}: a 🔔 entry for it");
-    let banners = cx.read(|cx| ws.read(cx).shot_banners.clone().unwrap_or_default());
+    let banners = cx.read(|cx| ws.read(cx).shot_banners.clone());
     assert_eq!(banners.len(), 1, "{n}: a short run makes no banner");
     let key = GroupKey::Folder(super::API.into());
     agent_status_step(
@@ -2540,6 +2574,92 @@ pub(super) fn chrome_session_facts() {
             })
         });
     });
+    // The command running at the unnamed terminal's prompt (M11q): its name is on its tab, in
+    // `workspace_label` and the window title (its workspace shown first, for the title).
+    steps.step(
+        &mut cx,
+        window,
+        "the unnamed terminal shown",
+        Seen::Changes,
+        |cx| {
+            let i = cx
+                .read(|cx| ws.read(cx).index_of(unnamed))
+                .expect("its session");
+            on_ws(cx, window, ws, |ws, window, cx| ws.select(i, window, cx));
+        },
+    );
+    // Its tab's title, its workspace's label and the window title last set.
+    let names = |cx: &VisualTestAppContext| -> (String, String, Option<String>) {
+        cx.read(|cx| {
+            let ws = ws.read(cx);
+            let i = ws.index_of(unnamed).expect("its session");
+            let w = ws.workspace_of(i).expect("its workspace");
+            let pane = ws.model.workspace(w).expect("it").focused;
+            let tab = ws
+                .pane_bar_tabs(ws.model.pane(pane).expect("its pane"), Instant::now())
+                .into_iter()
+                .find(|t| t.terminal == Some(unnamed))
+                .expect("its tab");
+            (
+                tab.title.to_string(),
+                ws.workspace_label(w).to_string(),
+                ws.shot_window_title().map(String::from),
+            )
+        })
+    };
+    let command = |cx: &mut VisualTestAppContext, change: Change| {
+        let i = cx
+            .read(|cx| ws.read(cx).index_of(unnamed))
+            .expect("its session");
+        let view = cx.read(|cx| ws.read(cx).sessions.items()[i].view.clone());
+        cx.update(|cx| view.update(cx, |_, cx| cx.emit(TerminalEvent::Command(change))));
+    };
+    let ended = || {
+        Change::Ended(Finished {
+            short: Some("pnpm dev".into()),
+            ending: Ending::of(Some(0)),
+            ran: Duration::from_secs(1),
+        })
+    };
+    let before = names(&cx);
+    steps.step(
+        &mut cx,
+        window,
+        "a command starts (OSC 133 C)",
+        Seen::Changes,
+        |cx| command(cx, Change::Started(Some("pnpm dev".into()))),
+    );
+    let (tab, label, title) = names(&cx);
+    assert_eq!(tab, "pnpm dev", "{n}: the tab");
+    assert_eq!(label, "pnpm dev", "{n}: the workspace's label");
+    assert!(
+        title.as_deref().is_some_and(|t| t.ends_with("pnpm dev")),
+        "{n}: the window title {title:?}"
+    );
+    steps.step(&mut cx, window, "the command ends", Seen::Changes, |cx| {
+        command(cx, ended())
+    });
+    assert_eq!(names(&cx), before, "{n}: the names are back after the end");
+    steps.step(
+        &mut cx,
+        window,
+        "a second command starts",
+        Seen::Changes,
+        |cx| command(cx, Change::Started(Some("pnpm dev".into()))),
+    );
+    assert_eq!(names(&cx).0, "pnpm dev", "{n}: named again");
+    steps.step(
+        &mut cx,
+        window,
+        "the command is cleared",
+        Seen::Changes,
+        |cx| command(cx, Change::Cleared),
+    );
+    assert_eq!(
+        names(&cx),
+        before,
+        "{n}: the names are back after the clear"
+    );
     steps.step(
         &mut cx,
         window,

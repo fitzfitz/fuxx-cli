@@ -166,15 +166,22 @@ pub struct WhoFacts<'a> {
     /// (`agents_now`), the program in front, and its shell.
     pub terminal_agent: Option<&'a str>,
     pub program: Option<&'a str>,
+    /// The command running at its shell prompt (M11q), as its short form.
+    pub command: Option<&'a str>,
     pub shell: &'a str,
 }
 
 /// Who a row names (M11al Task 8b, the user's ruling): whatever its workspace's active tab is.
 /// An agent tab: its provider ("✳ Claude"). Else its terminal: the agent running in it, else the
-/// program in front ("› npm"), else its shell ("›_ zsh"). Other agent tabs of the workspace
+/// command running at its prompt as its short form ("› pnpm dev"), else the program in front
+/// ("› npm"), else its shell ("›_ zsh"). Other agent tabs of the workspace
 /// don't count.
 pub fn who_of(f: &WhoFacts) -> Who {
-    who_in_front([f.active_agent, f.terminal_agent], f.program, f.shell)
+    who_in_front(
+        [f.active_agent, f.terminal_agent],
+        f.command.or(f.program),
+        f.shell,
+    )
 }
 
 /// A local shell's name: the file name of `shell` (`$SHELL`, a login shell's `-` dropped),
@@ -1464,7 +1471,7 @@ impl Workspace {
     /// Who is in front in workspace `ws` (`who_of`, Task 8b: its active tab, from what is
     /// already known: no lookup of its own): its focused pane's active tab when that is an agent
     /// tab; else its named terminal (the active tab's, else its first) with the agent seen in it,
-    /// the program in front and its shell (`ssh` for an SSH one, else the file name of the program
+    /// the command running at its prompt, the program in front and its shell (`ssh` for an SSH one, else the file name of the program
     /// it was started with, else `$SHELL`'s name). A change of
     /// active tab notifies the workspace, which rebuilds the rows (`rows_generation`).
     fn row_who(&self, ws: WorkspaceId) -> Who {
@@ -1487,6 +1494,7 @@ impl Workspace {
                 .and_then(|s| self.agents_now.get(&s.id))
                 .map(String::as_str),
             program: program.as_deref(),
+            command: terminal.and_then(|s| s.command.as_deref()),
             shell: match terminal {
                 Some(s) if s.ssh.is_some() => "ssh",
                 Some(s) => s.launched.as_deref().unwrap_or(local_shell()),
@@ -4027,6 +4035,58 @@ mod tests {
             name: "Claude",
         };
         assert_eq!(who_of(&running), claude);
+    }
+
+    /// M11q Task 6: a command running at the prompt is who: its short form, `› pnpm dev`, not
+    /// just the program in front.
+    #[test]
+    fn who_reads_the_running_commands_short_form() {
+        let f = WhoFacts {
+            command: Some("pnpm dev"),
+            program: Some("pnpm"),
+            shell: "zsh",
+            ..WhoFacts::default()
+        };
+        let who = who_of(&f);
+        assert_eq!(who, Who::Program("pnpm dev".into()));
+        assert_eq!(who.label(), "› pnpm dev");
+        // No program seen yet (the lookup is late): the command still says it.
+        let early = WhoFacts { program: None, ..f };
+        assert_eq!(who_of(&early), Who::Program("pnpm dev".into()));
+    }
+
+    /// An agent seen in the terminal wins over the command (the agent's own name, not its line).
+    #[test]
+    fn an_agent_in_the_terminal_wins_over_the_command() {
+        let f = WhoFacts {
+            terminal_agent: Some("claude"),
+            command: Some("claude"),
+            program: Some("claude"),
+            shell: "zsh",
+            ..WhoFacts::default()
+        };
+        let claude = Who::Agent {
+            glyph: "\u{2733}",
+            name: "Claude",
+        };
+        assert_eq!(who_of(&f), claude);
+    }
+
+    /// An active agent tab wins over the command too.
+    #[test]
+    fn an_active_agent_tab_wins_over_the_command() {
+        let f = WhoFacts {
+            active_agent: Some("claude"),
+            command: Some("pnpm dev"),
+            program: Some("pnpm"),
+            shell: "zsh",
+            ..WhoFacts::default()
+        };
+        let claude = Who::Agent {
+            glyph: "\u{2733}",
+            name: "Claude",
+        };
+        assert_eq!(who_of(&f), claude);
     }
 
     /// Its terminal at its prompt active: its shell, though the workspace has a Claude tab.

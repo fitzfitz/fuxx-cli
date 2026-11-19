@@ -35,6 +35,7 @@ use crate::api_server::{self, Conn};
 use crate::appearance::Appearance;
 use crate::branch_switcher::BranchSwitcher;
 use crate::browser_tab::BrowserTab;
+use crate::command_name::Finished;
 use crate::daemon_client::{self, DaemonClient};
 use crate::drag_gap::Slides;
 use crate::file_tab::FileTab;
@@ -530,6 +531,15 @@ pub struct Session {
     /// The background service's connection was lost: the view shows the last screen it had
     /// and nothing reaches the session.
     pub lost: bool,
+    /// The short form of the command running at its shell prompt (M11q); none when nothing
+    /// runs or the command has none.
+    pub command: Option<SharedString>,
+    /// A banner went out for the Done it is in (M11q): a command's end mark after it posts no
+    /// second one. Cleared whenever the status changes.
+    pub(crate) done_bannered: bool,
+    /// A command's ending was told (the 🔔 list) in the status it is in: another end mark
+    /// before the status changes tells nothing. Cleared whenever the status changes.
+    pub(crate) end_told: bool,
     /// The host an SSH session connects to (M10b); none for a local one.
     pub ssh: Option<SshTarget>,
     /// The file name of the program it was started with (`sidebar::launch_name`); none for the
@@ -616,11 +626,13 @@ impl Session {
         )
     }
 
-    /// Your name, else the program's own title, else the preset's name, else ╭∩╮.
+    /// Your name, else the program's own title, else the command running at its prompt (its
+    /// short form), else the preset's name, else ╭∩╮.
     pub fn label(&self) -> SharedString {
         groups::auto_name(
             self.name.as_deref(),
             self.title.as_deref(),
+            self.command.as_deref(),
             self.preset.as_ref().map(|p| p.name.as_str()),
         )
         .into()
@@ -722,10 +734,14 @@ pub struct Workspace {
     /// a login shell typing a preset.
     #[cfg(feature = "ui-shots")]
     pub(crate) quiet_opens: bool,
-    /// The scenes' banners about agent tabs (summary, subtitle, body), kept here instead of
-    /// posted (a scene must not post a real one); `None`: posted.
+    /// Every banner (summary, subtitle, body), kept here instead of posted: nothing built with
+    /// `ui-shots` posts a real one or plays its sound from the window (`post_banner`; the
+    /// background service's own post is outside it).
     #[cfg(feature = "ui-shots")]
-    pub(crate) shot_banners: Option<Vec<(String, String, String)>>,
+    pub(crate) shot_banners: Vec<(String, String, String)>,
+    /// Every event line `emit` made, whether or not a script listens (the scenes read them).
+    #[cfg(feature = "ui-shots")]
+    pub(crate) shot_events: Vec<String>,
     /// Each browser tab's title as its page last said (for the tab bar and a workspace's name).
     pub(crate) browser_titles: HashMap<TabId, String>,
     /// Browser tabs just closed whose pages still have to leave the window.
@@ -986,7 +1002,9 @@ impl Workspace {
             #[cfg(feature = "ui-shots")]
             quiet_opens: false,
             #[cfg(feature = "ui-shots")]
-            shot_banners: None,
+            shot_banners: Vec::new(),
+            #[cfg(feature = "ui-shots")]
+            shot_events: Vec::new(),
             browser_titles: HashMap::new(),
             closed_browser_tabs: Vec::new(),
             browser_clock: 0,
@@ -1317,6 +1335,30 @@ impl Workspace {
     pub(crate) fn banner_about(&self, terminal: Option<u64>) -> Option<Terminal> {
         let run = self.numbering_run()?;
         terminal.map(|id| Terminal { run, id })
+    }
+
+    /// Post a banner, `about` a terminal if any (`banner_about`), with its sound (M11x: with
+    /// the banner, never for the 🔔 list alone). Every banner of the window goes through here.
+    /// `notifier::fire` blocks, so it runs off the UI thread. Built with `ui-shots` nothing is
+    /// posted or played: the banner is kept in `shot_banners` (a scene must never post one).
+    pub(crate) fn post_banner(
+        &mut self,
+        summary: String,
+        subtitle: String,
+        body: String,
+        about: Option<Terminal>,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(feature = "ui-shots")]
+        self.shot_banners
+            .push((summary.clone(), subtitle.clone(), body.clone()));
+        // `cfg!`, so that what follows is compiled (and used) in either build.
+        if cfg!(feature = "ui-shots") {
+            return;
+        }
+        crate::sounds::banner(cx);
+        cx.background_spawn(async move { notifier::fire(&summary, &subtitle, &body, about) })
+            .detach();
     }
 
     /// Whether the background service runs the sessions (their ids are its).
@@ -1773,6 +1815,9 @@ impl Workspace {
                 lost: false,
                 ssh: saved.ssh,
                 launched: None,
+                command: None,
+                done_bannered: false,
+                end_told: false,
                 disconnected: None,
                 retries: 0,
                 opened_at: Instant::now(),
@@ -2026,7 +2071,8 @@ impl Workspace {
     }
 
     /// Terminal `id`'s name as fuxx shows it: its `Session::label` (yours, else the program's
-    /// own title, else its preset's name, else ╭∩╮), as the scripting API names it.
+    /// own title, else the running command's short form, else its preset's name, else ╭∩╮), as
+    /// the scripting API names it.
     pub(crate) fn terminal_label(&self, id: u64) -> SharedString {
         self.sessions
             .items()
@@ -2365,6 +2411,7 @@ impl Workspace {
             }
             TerminalEvent::Reconnect => self.reconnect_ssh(index, false, window, cx),
             TerminalEvent::DaemonLost => self.daemon_lost(index, window, cx),
+            TerminalEvent::Command(change) => self.command_changed(index, change, cx),
         }
     }
 
@@ -2401,6 +2448,20 @@ impl Workspace {
         notify: bool,
         cx: &mut Context<Self>,
     ) {
+        self.set_status_told(index, new, notify, None, cx);
+    }
+
+    /// `set_status`, its notification worded by `notifier::words`: about the command that
+    /// `ended` here (its end mark settled the status; told whatever the length of the run),
+    /// else under the name of the command still running there, if one is.
+    pub(crate) fn set_status_told(
+        &mut self,
+        index: usize,
+        new: Status,
+        notify: bool,
+        ended: Option<&Finished>,
+        cx: &mut Context<Self>,
+    ) {
         let is_active = self.sessions.active_index() == Some(index);
         let window_active = self.window_active;
         let pops = !self.restoring && self.row_on_screen(index);
@@ -2417,6 +2478,9 @@ impl Workspace {
         let lasted = session.status_since.elapsed();
         if old != new {
             session.status_since = Instant::now();
+            // What was told was about the status it leaves.
+            session.done_bannered = false;
+            session.end_told = false;
         }
         // Done pops once, as it arrives, if you can see it.
         if new != Status::Done {
@@ -2444,64 +2508,98 @@ impl Workspace {
                 .activity
                 .status(new, lasted, question.clone(), SystemTime::now());
         }
-        let terminal = Some(id);
-        let label = self.terminal_label(id);
         if old != new {
             let change = Event::StatusChanged { from: old, to: new };
             self.emit(&change, Some(index));
         }
         if notify && notifier::should_notify(old, new, is_active, window_active) {
-            // Part 5: what the agent was doing (its terminal's title) and who it is.
-            let doing = self.sessions.items()[index].title.clone();
-            let agent = match self.programs.state(id) {
-                ProgramState::Running(name) if !name.is_empty() => Some(name),
-                _ => None,
-            };
-            if let Some((message, body)) = notifier::message(new).zip(notifier::body(
+            // Part 5: what the agent was doing (its terminal's title); M11q: the command that
+            // runs there.
+            let session = &self.sessions.items()[index];
+            let (doing, running) = (session.title.clone(), session.command.clone());
+            // Not when it is what the workspace is called already (an unnamed, untitled one):
+            // `pnpm dev — Finished`, not `pnpm dev — pnpm dev`.
+            let label = self.notice_name(index);
+            let running = running.filter(|r| **r != *label);
+            if let Some(words) = notifier::words(
                 new,
                 question.as_deref(),
                 worked,
                 doing.as_deref(),
-            )) {
-                // The workspace's name, as the sidebar and the 🔔 list say it (part 5); where
-                // and who in the subtitle: its number (what ⌘1–⌘9 take you to), its group, the
-                // agent.
-                let ws = self.workspace_of(index);
-                let name = ws.map_or_else(
-                    || label.to_string(),
-                    |ws| self.workspace_label(ws).to_string(),
-                );
-                let group = ws.and_then(|ws| self.group_label(ws));
-                let number = ws.and_then(|ws| self.workspace_number(ws)).unwrap_or(0);
-                let summary = notifier::banner_title(&name, message);
-                let subtitle =
-                    notifier::banner_subtitle(number, group.as_deref(), &name, agent.as_deref());
-                let posted = Event::Notification {
-                    title: &summary,
-                    body: &body,
-                };
-                self.emit(&posted, Some(index));
-                self.note_notification(notification_list::Entry {
-                    terminal: Some(self.sessions.items()[index].id),
-                    title: name,
-                    message: body.clone(),
-                    status: Some(new),
-                    at: Instant::now(),
-                });
-                // A short run (an agent's pause) is in the 🔔 list but makes no banner.
-                if notifier::worth_a_banner(new, worked) {
-                    let about = self.banner_about(terminal);
-                    // M11x: the banner's sound, with the banner (never for the 🔔 list alone).
-                    crate::sounds::banner(cx);
-                    cx.background_spawn(async move {
-                        notifier::fire(&summary, &subtitle, &body, about)
-                    })
-                    .detach();
+                running.as_deref(),
+                ended,
+            ) {
+                // A short run (an agent's pause) is in the 🔔 list but makes no banner; a
+                // command's ending always does.
+                let banner = words.always || notifier::worth_a_banner(new, worked);
+                self.notify_terminal(index, new, &words, banner, cx);
+                if let Some(session) = self.sessions.get_mut(index) {
+                    session.done_bannered = banner && new == Status::Done;
+                    session.end_told = ended.is_some();
                 }
             }
         }
         self.check_waits(&[], cx);
         cx.notify();
+    }
+
+    /// The name a notification about session `index` goes under: its workspace's label, as the
+    /// sidebar and the 🔔 list say it, else the terminal's own.
+    fn notice_name(&self, index: usize) -> String {
+        match self.workspace_of(index) {
+            Some(ws) => self.workspace_label(ws).to_string(),
+            None => self
+                .sessions
+                .items()
+                .get(index)
+                .map_or_else(String::new, |s| s.label().to_string()),
+        }
+    }
+
+    /// Session `index`'s notification, in `words`, about its being in `status`: the
+    /// `notification` event for scripts, its 🔔 entry and, with `banner`, the banner.
+    pub(crate) fn notify_terminal(
+        &mut self,
+        index: usize,
+        status: Status,
+        words: &notifier::Words,
+        banner: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.sessions.items().get(index).map(|s| s.id) else {
+            return;
+        };
+        // Who it is: the program seen running there. Not at a command's ending: it has exited
+        // by then, and what `ps` last saw may be a child of it.
+        let agent = match self.programs.state(id) {
+            ProgramState::Running(name) if !name.is_empty() && !words.always => Some(name),
+            _ => None,
+        };
+        // The workspace's name, as the sidebar and the 🔔 list say it (part 5); where and who
+        // in the subtitle: its number (what ⌘1–⌘9 take you to), its group, the agent.
+        let ws = self.workspace_of(index);
+        let name = self.notice_name(index);
+        let group = ws.and_then(|ws| self.group_label(ws));
+        let number = ws.and_then(|ws| self.workspace_number(ws)).unwrap_or(0);
+        let summary = notifier::banner_title(&name, &words.message);
+        let subtitle = notifier::banner_subtitle(number, group.as_deref(), &name, agent.as_deref());
+        let posted = Event::Notification {
+            title: &summary,
+            body: &words.body,
+        };
+        self.emit(&posted, Some(index));
+        self.note_notification(notification_list::Entry {
+            terminal: Some(id),
+            title: name,
+            message: words.listed.clone(),
+            status: Some(status),
+            failed: words.failed,
+            at: Instant::now(),
+        });
+        if banner {
+            let about = self.banner_about(Some(id));
+            self.post_banner(summary, subtitle, words.body.clone(), about, cx);
+        }
     }
 
     /// A script set (or cleared) session `index`'s note: keep it, log it, tell the background
@@ -4170,7 +4268,6 @@ impl Workspace {
         this.agents_frozen = true;
         this.agents_offline = true;
         this.quiet_opens = true;
-        this.shot_banners = Some(Vec::new());
         // Nothing holds a conversation unless a scene says so (no `ps` of this Mac).
         this.shot_ps = Some(Some(Vec::new()));
         this
@@ -4192,6 +4289,11 @@ impl Workspace {
             _ => At::New,
         };
         self.open_shot_at(Some(name), Some(project), text, at, window, cx);
+    }
+
+    /// The window title as last set (UI screenshots).
+    pub(crate) fn shot_window_title(&self) -> Option<&str> {
+        self.last_title.as_deref()
     }
 
     /// `open_shot_session` for a terminal with no name of yours (a new one), in a workspace of

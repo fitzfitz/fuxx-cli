@@ -5,7 +5,7 @@
 //! and the status bar's words for it as a coloured pill (`Done · 4m`: green done, red waiting,
 //! yellow cultivating, grey otherwise; `pill_inks`), a hairline under it; then the events,
 //! newest first, on a thin rail, grouped under a day heading (`TODAY`, else the date): an 8 pt
-//! dot coloured by kind (the status colours; progress the accent; a note grey), the event's
+//! dot coloured by kind (the status colours; progress the accent; a note grey; a command's ending: red failed, grey stopped, green else), the event's
 //! words, a faint second line (`Worked 11 min`, `Note`), the time at the right; progress has a
 //! 3 pt bar, and a waiting question shows whole in a tinted box. Events differ in height, so the
 //! timeline is a GPUI `list` (only the events in sight are built). A title that is cut is whole
@@ -28,6 +28,7 @@ use crate::activity::{
     ActivityLog, Kind, clock_hm, day_heading, event_detail, event_title, local_day,
 };
 use crate::cli;
+use crate::command_name::Ending;
 use crate::layout_model::TabId;
 use crate::procs::ProgramState;
 use crate::right_sidebar::{EDGE, Panel, SECTION_SIDE, SMALL, TEXT, TITLE, header_row, note};
@@ -49,14 +50,14 @@ pub(crate) const NO_TERMINAL: &str = "No terminal to follow.";
 /// An event (part 4): the rail's width and the room after it, the dot and its room above,
 /// the stem's room under the dot, the title's and the second line's line heights, the room
 /// under an event, the progress bar's height and its room above.
-const RAIL: f32 = 14.0;
+pub(crate) const RAIL: f32 = 14.0;
 const RAIL_GAP: f32 = 10.0;
-const DOT: f32 = 8.0;
+pub(crate) const DOT: f32 = 8.0;
 const DOT_TOP: f32 = 6.0;
 const STEM_GAP: f32 = 3.0;
-const TITLE_LINE: f32 = 20.0;
+pub(crate) const TITLE_LINE: f32 = 20.0;
 const DETAIL_LINE: f32 = 16.0;
-const EVENT_BELOW: f32 = 12.0;
+pub(crate) const EVENT_BELOW: f32 = 12.0;
 const BAR: f32 = 3.0;
 const BAR_TOP: f32 = 5.0;
 /// The question's box: its room above, padding, corners and text.
@@ -81,6 +82,8 @@ pub enum RowMark {
     Status(Status),
     Progress,
     Note,
+    /// A command that ended, by how.
+    Command(Ending),
 }
 
 /// An event as drawn: its local time, dot, words, second line, progress, question and
@@ -141,6 +144,9 @@ pub fn rows_in(
                 ),
                 Kind::Note(_) => (RowMark::Note, Some(text.clone()), None, None),
                 Kind::Progress(p, _) => (RowMark::Progress, Some(text.clone()), Some(*p), None),
+                Kind::Command { ending, .. } => {
+                    (RowMark::Command(*ending), Some(text.clone()), None, None)
+                }
             };
             ActivityRow {
                 time: clock_hm(secs_of(entry.at), offset(entry.at)),
@@ -196,6 +202,9 @@ fn dot_ink(mark: RowMark, ui: &UiColors) -> Rgb {
         RowMark::Status(status) => status_ink(status, ui),
         RowMark::Progress => ui.accent,
         RowMark::Note => ui.text_faint,
+        RowMark::Command(Ending::Failed(_)) => ui.block_failed,
+        RowMark::Command(Ending::Stopped) => ui.text_faint,
+        RowMark::Command(Ending::Done | Ending::Finished) => ui.block_ok,
     }
 }
 
@@ -530,6 +539,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command_name::Ending;
     use crate::ui_tokens::{MARK_MIN, contrast};
     use std::time::Duration;
 
@@ -640,6 +650,49 @@ mod tests {
         assert!(rows(&ActivityLog::default(), |_| 0).is_empty());
     }
 
+    #[test]
+    fn a_command_row_is_marked_by_its_ending() {
+        use crate::command_name::Finished;
+        let t = |s: u64| UNIX_EPOCH + Duration::from_secs(s);
+        let mut log = ActivityLog::default();
+        let mut ran = |ending, secs, at| {
+            let fin = Finished {
+                short: Some("cargo test".into()),
+                ending,
+                ran: Duration::from_secs(secs),
+            };
+            log.command(&fin, t(at));
+        };
+        ran(Ending::Failed(101), 40, 0);
+        ran(Ending::Stopped, 30, 1);
+        ran(Ending::Done, 192, 2);
+        ran(Ending::Finished, 5, 3);
+        let got: Vec<_> = rows(&log, |_| 0)
+            .into_iter()
+            .map(|r| (r.mark, r.text, r.detail, r.tip))
+            .collect();
+        let row = |ending, text: &str| {
+            (
+                RowMark::Command(ending),
+                text.to_string(),
+                None,
+                Some(text.to_string()),
+            )
+        };
+        assert_eq!(
+            got,
+            vec![
+                row(Ending::Finished, "cargo test \u{2014} Finished after 5s"),
+                row(Ending::Done, "cargo test \u{2014} Done in 3m 12s"),
+                row(Ending::Stopped, "cargo test \u{2014} Stopped after 30s"),
+                row(
+                    Ending::Failed(101),
+                    "cargo test \u{2014} Failed (exit 101) after 40s"
+                ),
+            ]
+        );
+    }
+
     /// Part 4: a day's heading before each day's events, newest first; the day is the local one
     /// at each event's time.
     #[test]
@@ -711,6 +764,9 @@ mod tests {
                 RowMark::Status(Status::Idle),
                 RowMark::Progress,
                 RowMark::Note,
+                RowMark::Command(Ending::Failed(1)),
+                RowMark::Command(Ending::Stopped),
+                RowMark::Command(Ending::Done),
             ] {
                 check(
                     &format!("{mark:?}'s dot on the card"),

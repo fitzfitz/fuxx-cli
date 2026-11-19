@@ -1,14 +1,13 @@
 ---
 tags: [development, milestone, design]
-status: designed
+status: built-on-branch
 ---
 
-# 68 - Milestone 11q - Which Command Finished (design)
+# 68 - Milestone 11q - Which Command Finished
 
-**Status:: 📝 Designed 2026-11-10, approved by you the same day ("cool update this to the plan docs so we can work on
-it later"). Plan not written yet (paused for the sidebar redesign; see "Notes for the plan"). Not built.** Comes **after M11p** (your call,
+**Status:: 🟨 built on branch m11q-command-finished, waiting for your on-screen check; not merged.** Designed 2026-11-10 and approved by you the same day; re-read with you 2026-11-19 ("go ahead"; see "Update 2026-11-19"); planned and built 2026-11-19 in 12 tasks (0–11), plan [[M11q Plan - Which Command Finished]]. Comes **after M11p** (your call,
 2026-11-10: "ok, brainstorm it, after M11p"). You skipped the design questions ("you go ahead"), so every decision
-below except the three in "Decided by you" is **the AI's call**: check those while reading.
+below except the three in "Decided by you" is **the AI's call**: check those while reading. The whole-branch review is done and its fix wave applied (see "Calls made while building"); a second full ui-shots run and a full run on your usual display are still owed before merging (see "Final numbers").
 **Phase 4: an M11 extension (the chores round after v0.5.0).** Note 67 is left for M11p's design.
 
 ## Goal
@@ -86,7 +85,11 @@ built from the start of the line:
 1. Skip leading `NAME=value` words, and the wrappers `sudo`, `env`, `time`, `nohup`, `command`, `exec` with their
    own options (words starting with `-`) and `NAME=value` words.
 2. The program: its last path part (`./scripts/build.sh` → `build.sh`).
-3. Then **one plain word** (letters, digits, `-_.:`, at most 24 characters, not starting with `-`), the subcommand.
+3. Then **one plain word** (letters, digits, `-_.:`, at most 24 characters, not starting with `-`), the subcommand —
+   **only when the program is one known to take subcommands** (`git`, `npm`, `pnpm`, `yarn`, `cargo`, `go`, `make`,
+   `docker`, `kubectl`, … — `SUBCOMMANDS` in `src/command_name.rs`). Any other program shows its name alone, because
+   its next word may be a value, even a secret (`echo sk-…`). A leading `cd <folder> &&` (or `;`) is skipped and the
+   command after it is named. (Your call, 2026-11-20: "go with 1, fix the cd one too".)
 4. If that word is `run`, `exec`, `x` or `dlx`, **one more plain word** (the script's name: `npm run deploy`).
 5. If the line goes on to another command (`&&`, `||`, `;`, `|`), add ` …`.
 6. A line that can't be read this way (starts with `$(`, `(`, a backtick or an unclosed quote) has no short form:
@@ -97,7 +100,9 @@ built from the start of the line:
 | `pnpm dev` | `pnpm dev` |
 | `cargo test --release -- --nocapture` | `cargo test` |
 | `API_KEY=sk-123 npm run deploy --token abc` | `npm run deploy` |
-| `sudo -E ./scripts/build.sh prod` | `build.sh prod` |
+| `sudo -E ./scripts/build.sh prod` | `build.sh` |
+| `echo sk-live-123` | `echo` |
+| `cd web && pnpm dev` | `pnpm dev` |
 | `cargo build && cargo test` | `cargo build …` |
 | `curl -H "Authorization: Bearer x" https://…` | `curl` |
 | `$(which node) server.js` | (none) |
@@ -185,23 +190,201 @@ plan was paused when you turned to the sidebar redesign. What the code reading f
   `ui_shots.rs`) gets a command-finished kind.
 - Reusable: `agent_detect::program` (leading `NAME=value` words), `status::age_label` (duration style).
 
+## Update 2026-11-19 (before the plan)
+
+You reviewed the summary of this design on 2026-11-19 and said "go ahead". Since the design was written:
+
+- **M11p is on master** (merged; its branch is gone), so this builds on it as planned.
+- **The sidebar row now says who · where** (M11al, Task 8b: who follows the workspace's active tab). The row no
+  longer shows the pane's name, so §1's "the sidebar row" means the row's **who** (AI's call):
+  - When the active tab is a terminal with a running command that has a short form, who reads `› <short form>`
+    (`› pnpm dev`) instead of the bare program (`› pnpm`).
+  - An agent fuxx detects in that terminal still wins (`✳ Claude`), as does an agent tab.
+  - A name you gave, or a program's own title, changes the tab and the window title as in §1; the row's who is not
+    a name, so those don't apply to it.
+- The tab, the window title and ⌘K follow §1 unchanged.
+- The line numbers in "Notes for the plan" are from 2026-11-10; the plan re-finds them.
+- The Activity panel keeps its timeline look (M11al); the "command finished" entry is one more event on it.
+
 ## Left to the builder
 
 - How the marks reach the workspace (a new `TerminalEvent`, for the local and the background-service backends).
 - The exact colours (from the existing failure and muted tokens).
 - How the duration is worded past an hour (reuse `age_label`'s style).
 
-## On-screen check (when built)
+## What was built (2026-11-19, branch `m11q-command-finished`)
 
-1. In a plain zsh pane, run `sleep 5`: the row, tab and window title read `sleep 5` while it runs, then go back.
+- **The pane is named after the command running at its shell prompt.** The order is yours → the program's own title →
+  the running command's short form → the preset's name → `╭∩╮`. It shows in the tab, the window title and ⌘K; the
+  sidebar row's **who** reads `› <short form>` (an agent fuxx detects still wins). The name starts at the `C` mark and
+  ends at the `D` mark, a prompt mark, a reattach snapshot, an SSH hold or a lost service connection. (Tasks 3, 4, 6.)
+- **The short form** (`src/command_name.rs`, Task 1) is the program, plus the subcommand when the program takes subcommands (`SUBCOMMANDS`) and the next word is a plain
+  word (a leading `cd <folder> &&` skipped, 2026-11-20), plus ` …` when more follows; env assignments, flags, paths and quoted text never appear. Nothing but the
+  short form leaves the terminal: `blocks::advance` returns the marks it applied as `CommandMark`s already reduced to
+  it, so no event or struct field holds a whole command line (the full line stays in the grid's tag and
+  `shell_marks.rs`).
+- **The end mark settles the status at once** (Task 5): Working or Waiting → Done; Idle → Done only after a run of 3 s
+  or more; Done stays. The prompt that follows does not re-arm Working. A start mark re-arms Working only after a
+  keystroke since the previous start (typed ahead works, pasted lines do not add banners).
+- **The banner says which command and how** (Task 7): title `<workspace> — <short form>`, subtitle `#n` (plus the folder group when it differs from the workspace's name), body `Done in
+  3m 12s` / `Stopped after 30s` / `Failed (exit 101) after 40s` / `Finished after …`. One banner per ending, decided by
+  the pure `notifier::end_tells`; the silence guess (3 s, `IDLE_AFTER`) is unchanged, so is the banner minimum (10 s, `QUIET_UNDER`), and an agent's banners name the command too.
+  Every banner goes through one `Workspace::post_banner`, which under `ui-shots` records the strings instead of posting.
+- **The 🔔 list** (Task 8) shows `<name> · <words>`; a failed entry is drawn in `ui.block_failed`.
+- **Activity** (Task 9) logs `<name> — <words>` for a command that ran 3 s or more or failed; a failure is red.
+- **The background service** (Task 10) settles at the end mark with its own tracker and, with no window attached, posts
+  its own banner `fuxx — <short form>` · the ending words. No protocol change (`SessionInfo` is unchanged); its command
+  state is read from the session, not sent.
+- **Commits** (from plan commit `ab18273`): `1ced124` Task 0 baselines · `37e48ae` Task 1 · `1959e65` Task 2 ·
+  `2f3eb68` Task 3 · `57584ef` + `bb95ee5` Task 4 (+ fix) · `3e7f728` Task 5 · `7d07a01` Task 6 · `1309729` Task 7 ·
+  `bfd03bd` Task 8 · `b58cda1` Task 9 · `2dc33fb` + `3dd6fed` Task 10 (+ fix) · Task 11 this hand-off.
+
+## Calls made while building
+
+**Plan-time calls (AI's, 2026-11-19; the full text is in the plan):**
+
+1. The banner keeps today's shape (title `<workspace> — <short form>`, subtitle `#n`, plus the folder group when it differs from the workspace's name), not the design's 2026-11-10 layout.
+2. No minimum length for an end-mark banner; the silence guess keeps its 3 s and the banner minimum its 10 s. "One banner per ending" is kept by two per-session flags.
+3. The Workspace settles at the end mark for both backends by the same pure rule the trackers use; the window and the service time the command with their own clocks.
+4. After an end mark, output is prompt noise until the next keystroke.
+5. A start mark re-arms Working only after a keystroke since the previous start (several pasted lines get one banner).
+6. Short-form details the design left open (the word right after the program; ASCII letters and digits; a 32-character cap; no short form for `$`, `(`, a backtick or an unclosed quote; `&&`, `||`, `;`, `|` and newlines count outside quotes only).
+7. Durations use the two largest units (`40s`, `3m 12s`, `1h 4m`, `1d 2h`).
+8. An unnamed workspace's row follows `Session::label`, so it reads the short form too.
+9. The name ends at the end mark, a prompt mark, a snapshot, an SSH hold and a lost service connection; a snapshot never starts one.
+10. The service's own banner and how it reads its command state (no protocol change).
+11. Tests post nothing: one `Workspace::post_banner`, recording under `ui-shots`.
+12. The exact copy (`Done in {d}`, `Stopped after {d}`, `Failed (exit {n}) after {d}`, `Finished after {d}`, `command`).
+
+**Made in the build (AI's):**
+
+- **P1:** an item whose first non-test caller came in a later task carried a temporary `#[allow(dead_code)] // until M11q
+  Task N`; all were removed by Task 10 (a grep finds none).
+- **P2:** banners use call 1's shape, not the design table's 2026-11-10 layout.
+- **E1 (8 scenes fail on this machine's display):** after the build was paused and resumed, 8 pixel/layout scenes fail
+  on the machine's display of that moment (one external non-Retina screen; half-pixel checks such as "818 vs 818.5"):
+  card-split, chrome-pixels-same, file-code-bars, file-tab, file-tab-md-reader-column, right-panel-comfortable,
+  tab-bars, title-area. They fail identically on untouched Task 3 code built from `git archive`, and the same code had
+  0 failures before the pause, so they are held to be environmental, not this branch's. Every reference fingerprint
+  also reads "looks different" there.
+- **F4a:** Task 4's scene went through `hold` and posted a real banner ("api — Finished"); fixed in the scene
+  (`bb95ee5`); the guard for every path is Task 7's `post_banner`.
+- **N1:** from Task 5 on every test and ui-shots run had a recording stand-in `osascript` first on PATH. It showed that
+  the scene `chrome-notifications` (already on master) posted two real banners per ui-shots run ("agent — Finished",
+  "api — Finished"); since Task 7 nothing posts.
+- The view handles a mark in one helper, `TerminalView::command_marked`; for an end it emits the `Command` event first
+  and the tracker's status change after (pinned by scene `command-banner`).
+- `shot_banners` became one plain `Vec` behind `post_banner`; a `ui-shots` build run as the app posts no banners. A
+  ui-shots-only probe `Workspace::shot_events` records `emit`'s lines for scenes.
+- `Workspace::hold` clears the running command for any session, before its ssh check.
+- The `activity` scene's "no waiting dot" probe was narrowed: the failed dot's colour (`block_failed`) is within the
+  probe's tolerance of the waiting ring's colour.
+- Service: `ended` is kept only when the end mark itself gave Done and is cleared by any other status.
+
+**The final review and its fix wave (2026-11-20):**
+
+- The whole-branch review found no Critical issue and called the branch ready with fixes: two Important (the order of a batch's command marks before its output was not pinned by a test; this note's on-screen check had items that would read as failures though the code is right), and minors.
+- Fixed in the wave: I-1 (two ordering tests, local and background-service replica), I-2 (this note's on-screen items), and M-1 to M-10: the service takes an ending only for a Done; an unnamed workspace's silence banner reads `pnpm dev — Finished`; an ending's subtitle names no program; `chrome-notifications` re-runs when the ending code changes; a scene step for forged marks after a told ending; a few moved or stale comments, `outputs <= 1`, more pinned wording rows, and a fuxx-cli-own example string.
+- Stays deferred (the review's triage): the typed-ahead start that swallows an ending in the service (needs a queue of endings instead of a polled status; only with no window attached); the short-form shapes that fail safe (escaped quote, `&& "ls"`, `sleep 5&`, bidi); a notification in the same batch as an end mark; scene strength notes other than M-8; real-`sh` timing in the service's tests (300 ms gaps; revisit only if it flakes); small trivia (a `_now`, closures, a shadow, `feed_marks`, a `debug_assert`).
+- Ruling E1 was re-checked by the controller with a full run on untouched `ab18273`. E1 re-check (2026-11-20): the full suite on untouched `ab18273`, exported to a scratch copy with its own build folder, gave 239 passed and 8 failed: the same 8 scenes, failing at the same checks as on this branch (`chrome-pixels-same` differs by 358 in both; `tab-bars` reads 818 against 818.5). So the 8 are the display's, not the branch's. The re-review of the fix wave then found doc wording still wrong (plan-time call 1's subtitle, on-screen items 16 and 18, two Limits lines, counts in the Roadmap and the Progress Log); those were corrected in the same docs commit that filled these numbers, by the controller, and that commit had no review of its own. One comment in the `command-banner` scene still says "three terminals" (there are four).
+
+## M11p check (the chrome rule)
+
+Greps over `git diff master...HEAD` (2026-11-19, Task 11):
+
+- No `timer(` and no `request_animation_frame` added.
+- Added `spawn(`: three are test code, two in `daemon_session.rs` tests (the helper that runs a `sh -c` script as a
+  session, in `an_end_mark_settles_the_service_s_status_at_once` and `the_service_knows_the_running_command`) and
+  `TerminalCore::spawn` in a `terminal.rs` test; they start a shell or thread for the length of one test. One
+  production hit: `cx.background_spawn(... notifier::fire ...)` inside `Workspace::post_banner`, which is the old
+  one-shot banner post moved into one place: it runs once per banner and has no loop.
+- No struct field or event holds a whole command line outside `src/blocks.rs` and `src/shell_marks.rs` (the added
+  `line` hits are `&[u8]` parameters of a scene helper).
+- No home-directory paths except the existing generic fixture path (`me/code/fuxx-cli`), whose visibility changed; no
+  personal names, emails or time-zone names.
+- The running command's start, end and clearing each have a test (the three steps of scene `chrome-session-facts`,
+  Task 6).
+
+## Limits
+
+- A wrapper option's value reads as the program: `sudo -u deploy make` shows `deploy make` (the design's rule).
+- A program not in `SUBCOMMANDS` loses its subcommand too (`./build.sh prod` → `build.sh`, `sleep 5` → `sleep`); add a
+  program to the list to show its subcommands.
+- Several pasted lines get one banner (plan-time call 5), the first line's; the later lines run with the pane reading
+  Done and end silently (Activity still logs those that ran 3 s or more, or failed). A bracketed paste is one command, so this is the unbracketed case.
+- Two commands typed ahead while one runs: the second is not re-armed (no Working for it).
+- With no window attached, an ending after a silence-guess "Finished" banner is not told at all (the service has no list).
+- There is no minimum length for an ending's banner, and that covers script-driven panes too: a script sending short
+  commands into a background pane gets a banner and a sound for each one that prints 150 ms or more after it starts
+  (output sooner counts as the echo of what was typed, and then a command under 3 s tells nothing); master posted
+  none under 10 s.
+- An interactive program run for 3 s or more (vim, less, man, a REPL) leaves its row Done, with the pop, when you quit it.
+- After an end mark, output is noise until a keystroke, so a backgrounded job (`pnpm dev &`) never shows Working or
+  Done (master's silence guess did).
+- Exits 146 and 148 (⌃Z) and 143 read "Failed", in red.
+- An old background service left running across an upgrade gives one extra 🔔 entry per silent command, and no extra banner.
+- The window and the service time a command with their own clocks, so a command within a few ms of 3 s from Idle can
+  settle in one and not the other (a `Finished` banner, or a Done the next status frame corrects): the 3 s edge.
+- After a restart or a reattach the running command is unknown until its next mark.
+- powerlevel10k's own marks carry no command text, so such a pane keeps its usual name and the banner says `command`.
+- No marks, no change: bash, fish and `command-blocks = off` behave as before (no name, the old banner).
+- Short form: a backslash-escaped quote inside double quotes (`git commit -m "fix \"x\""`) reads as an unclosed
+  quote, so no short form (`command`); `sleep 5&` (glued `&`) gives `sleep`; a remainder made only of a quoted word
+  (`make && "ls"`) gets no ` …`; only control characters are dropped from a program's name, not bidi or format characters.
+- A notification (OSC 9 / BEL) that arrives in the same output batch as the end mark can raise attention again after
+  the ending's Done (Waiting if the tail looks like a question).
+- Service with no window attached: a typed-ahead command's start can clear the previous ending before the 50 ms tick
+  sees it, so that ending gets no banner.
+- The real posting path (sound, `notifier::fire`, native and osascript) and the service's own banner are compiled out
+  of, or not reached by, tests: they are on-screen check items.
+- **Deferred minors** (the final review's triage; the full per-task list is in the build ledger): a few scene steps
+  assert weaker than they could (`assert_ne!` where equality is known; a hold step that does not reach the workspace
+  filter); the Task-7 scene lacks steps for a looked-at Done followed by an end after looking away, and a background
+  exit 130; `command-bell-failed` copies the popover's private layout constants; `shot_output` does not end with
+  `cx.notify()`.
+
+## Final numbers
+
+Measured 2026-11-19 by the Task 11 hand-off on branch `m11q-command-finished` at `3dd6fed` (plus docs):
+
+- `cargo test --bin fuxx`: 2206 passed, 0 failed, 1 ignored (baseline 2154). `cargo clippy --all-targets`: 14 (bin) / 27 (test) warnings; with `--features ui-shots`: 16 / 29 (all unchanged from the baselines). `cargo fmt --check`: clean.
+- Full `scripts/ui-shots.sh` (no filter, recording stand-in `osascript` first on PATH): **244 passed, 8 failed, 115.3 s** in the script's own count (about 123 s wall including the build check). The 8 that failed are exactly ruling E1's: card-split, chrome-pixels-same, file-code-bars, file-tab, file-tab-md-reader-column, right-panel-comfortable, tab-bars, title-area; no other scene failed. The recording stand-in's `posted.log` stayed 597 bytes (no test or scene tried to post a banner).
+- Baselines at the plan commit: 2154 tests passed, 1 ignored; clippy 14 / 27 default, 16 / 29 `ui-shots`.
+- **The 8 failing scenes are held to be environmental** (ruling E1 above): the same 8 fail on untouched Task 3 code and
+  the same code had 0 failures before the pause. **A full run on your usual display is still owed before merging.**
+- After the final review's fix wave (2026-11-20, at `1eaeb50`): `cargo test --bin fuxx` 2208 passed, 0 failed, 1 ignored (two ordering tests added); clippy 14 / 27 and 16 / 29, unchanged; `cargo fmt --check` clean (the fix wave's own gate). Full `scripts/ui-shots.sh` again, stand-in first on PATH: **244 passed, 8 failed, 137.9 s**: the same 8 scenes, at the same checks as the untouched plan commit (see the E1 re-check above); no banner was posted.
+
+## On-screen check
+
+Run the app only as `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run` (debug, not `--release`). Items 4–7 once with
+"Keep running after quit" on and once with it off. The banner's shape is the plan's: title `<workspace> — <short form>`,
+subtitle `#n`, plus the folder group when it differs from the workspace's name; body the ending words.
+
+1. In a plain zsh pane, run `sleep 5`: the tab and window title read `sleep` while it runs (the row's who reads
+   `› sleep`), then go back. Run `git status` the same way: `git status`.
 2. Name the pane yourself, run `sleep 5`: your name stays.
-3. Run `vim`: the pane shows vim's own title, not `vim`.
-4. Start `sleep 8; true` in one pane, switch to another: a banner `#n <folder> — sleep 8 …` · `Done in 8s`.
+3. Run a program that sets its own title (stock vim sets none unless `:set title`, so it would read `vim`): the pane keeps the program's title.
+4. Start `sleep 8; true` in one pane, switch to another: a banner titled `<workspace> — sleep …`, subtitle `#n` (plus the folder group when it differs from the workspace's name),
+   body `Done in 8s`.
 5. Run `sh -c 'sleep 4; exit 3'`, switch away: `Failed (exit 3) after 4s`; Activity shows it red.
-6. Run `sleep 30`, press ⌃C: no banner (you were looking); Activity shows `Stopped`.
-7. Run `FOO=secret sleep 6 --x` in the background: banner and row read `sleep 6`, never `FOO`, `secret` or `--x`.
+6. Run `sleep 30`, press ⌃C after 3 s or more: no banner (you were looking); Activity shows `Stopped` (it logs a stop only from 3 s).
+7. Run `FOO=secret sleep 6 --x` in the background: banner and row read `sleep`, never `FOO`, `secret`, `6` or `--x`.
 8. Run `npm run <script>` (any project): the name is `npm run <script>`.
 9. Start `claude` from the prompt, let it work and finish in the background: the ring works as before; the banner
-   reads `— claude` · `Worked for …`, once.
+   reads `<workspace> — claude`, once; its body is `Worked for …`, or `<the agent's title> · worked 4m` when the agent sets a title (an unnamed workspace's title part is then that title too).
 10. A command that prints, pauses 5 s, then ends: no more than one banner after it ends.
 11. In bash (`exec bash`), run a command: everything as before (no name, the old banner).
+12. The 🔔 list's failed entry (from item 5) is drawn in red.
+13. A command typed ahead while another runs gets its own banner when it ends.
+14. Idle CPU with a command running is as on master: `top -l 6 -s 5 -pid <pid>` while `sleep 120` runs, against the same on master.
+15. Quit the window with "Keep running after quit" on while `sleep 20; true` runs: one banner, `fuxx — sleep …` ·
+    `Done in 20s`, from the service.
+16. An unnamed plain zsh pane running a program that sets no title of its own (one that sets a title reads as in
+    item 9), or a long silent-then-chatty command, in the background: the silence
+    banner's title reads `… — Finished` (or `… — Needs your input`), not the command twice; say if you want it changed.
+17. The failed dot in Activity against the waiting ring's colour: are they distinct enough to you?
+18. A script loop sending quick printing commands into a background pane (for example `fuxx send` of `sleep 1; echo hi` a few
+    times; a bare `echo hi` prints too soon to count as work and tells nothing): expect a banner and a sound per command (plan-time call 2 in action). Say if that is too noisy.
+19. Run `sleep 5 && echo hi &` in a pane: expect no Working and no Done for the background job (plan-time call 4).
+20. Run `echo sk-test-123` in a background pane: the tab, row and any banner read `echo`, never the word after it.
+21. Run `cd src && sleep 4` in a background pane: the pane reads `sleep`, not `cd src …`, and its banner names `sleep`.

@@ -2078,6 +2078,7 @@ pub(super) fn shot_notifications(ws: &mut Workspace) {
             title: ws.workspace_label(workspace).to_string(),
             message: message.into(),
             status: Some(status),
+            failed: false,
             at: now - Duration::from_secs(secs),
         }
     };
@@ -2095,6 +2096,7 @@ pub(super) fn shot_notifications(ws: &mut Workspace) {
             title: "migrate".into(),
             message: "Worked for 18m".into(),
             status: Some(Status::Done),
+            failed: false,
             at: now - Duration::from_secs(25 * 60),
         },
         raised(ws, "tests", Status::Done, "Worked for 12m", 12 * 60),

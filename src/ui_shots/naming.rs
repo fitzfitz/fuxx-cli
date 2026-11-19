@@ -215,7 +215,7 @@ fn default_name() {
 }
 
 /// The folders of `names`'s terminals.
-const FUXX_CLI: &str = "/Users/me/code/fuxx-cli";
+pub(super) const FUXX_CLI: &str = "/Users/me/code/fuxx-cli";
 
 const INVITEE: &str = "/Users/me/w/invitee";
 

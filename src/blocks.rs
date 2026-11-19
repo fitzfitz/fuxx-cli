@@ -13,6 +13,11 @@
 //! 133 mark (`shell_marks`), so the screen is exactly where the mark was sent when it is
 //! applied. Nothing is written on the alternate screen or while a synchronized update is
 //! being buffered.
+//!
+//! `advance` also returns the marks it applied (none of those it dropped), in order, as
+//! `command_name::CommandMark`s: a prompt, a command's start and its end. A start carries only
+//! the command's **short form**, never the full line, so the line stays in the tag and no mark,
+//! and no event made from one, can hold more of it.
 
 use std::collections::hash_map::RandomState;
 use std::fmt::Write as _;
@@ -26,6 +31,7 @@ use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 
+use crate::command_name::{CommandMark, short_form};
 use crate::grid::BlockView;
 use crate::shell_marks::{Mark, MarkScanner, percent_decode};
 
@@ -427,14 +433,16 @@ impl Tagger {
 
 /// Feeds a terminal's raw output to its `Term`, writing the tags its OSC 133 marks call for:
 /// the processor is advanced exactly to the end of each mark before the mark is applied
-/// (`vte` carries its state across calls, so the screen is the same as unsplit).
+/// (`vte` carries its state across calls, so the screen is the same as unsplit). Returns the
+/// marks it applied, in order, as `CommandMark`s (see the module doc).
 pub fn advance<L: EventListener>(
     processor: &mut Processor<StdSyncHandler>,
     term: &mut Term<L>,
     tagger: &mut Tagger,
     scanner: &mut MarkScanner,
     bytes: &[u8],
-) {
+) -> Vec<CommandMark> {
+    let mut applied = Vec::new();
     let mut from = 0;
     for (end, mark) in scanner.feed(bytes) {
         let part = &bytes[from..end];
@@ -443,13 +451,23 @@ pub fn advance<L: EventListener>(
         // On the alternate screen, or inside a synchronized update (the cursor isn't where
         // the bytes say yet), the mark is dropped.
         if !term.mode().contains(TermMode::ALT_SCREEN) && processor.sync_bytes_count() == 0 {
+            let command = match &mark {
+                Mark::PromptStart => Some(CommandMark::Prompt),
+                Mark::CommandStart => None,
+                Mark::OutputStart { cmd, .. } => Some(CommandMark::Started {
+                    short: cmd.as_deref().and_then(short_form),
+                }),
+                Mark::Done { exit } => Some(CommandMark::Ended { exit: *exit }),
+            };
             tagger.apply(term, mark);
+            applied.extend(command);
         }
         from = end;
     }
     let rest = &bytes[from..];
     processor.advance(term, rest);
     tagger.saw(rest);
+    applied
 }
 
 /// What Rerun needs to know of a terminal, read under one lock (M11l §4).
@@ -923,6 +941,17 @@ mod tests {
             self
         }
 
+        /// Like `feed`, keeping the marks `advance` returns.
+        fn feed_marks(&mut self, bytes: &[u8]) -> Vec<CommandMark> {
+            advance(
+                &mut self.processor,
+                &mut self.term,
+                &mut self.tagger,
+                &mut self.scanner,
+                bytes,
+            )
+        }
+
         fn prompt(&mut self) -> &mut Self {
             self.feed(A).feed(b"$ ").feed(B)
         }
@@ -1382,6 +1411,77 @@ mod tests {
         assert_eq!(b.output, None);
         assert_eq!(b.prompt_top, sh.term.grid().topmost_line());
         assert_eq!(output_text(&sh.term, &b.id).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn advance_returns_the_command_marks() {
+        let mut sh = Shell::new();
+        let mut got = Vec::new();
+        got.extend(sh.feed_marks(A));
+        got.extend(sh.feed_marks(b"$ "));
+        got.extend(sh.feed_marks(B));
+        got.extend(sh.feed_marks(b"npm\r\n"));
+        got.extend(sh.feed_marks(&c(Some("API_KEY=sk-123 npm run deploy --token abc"))));
+        got.extend(sh.feed_marks(b"out\r\n"));
+        got.extend(sh.feed_marks(&d(Some(0))));
+        assert_eq!(
+            got,
+            vec![
+                CommandMark::Prompt,
+                CommandMark::Started {
+                    short: Some("npm run deploy".to_string())
+                },
+                CommandMark::Ended { exit: Some(0) },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_mark_split_over_two_reads_is_returned_once() {
+        let mut sh = Shell::new();
+        let bytes = c(Some("cargo test"));
+        let (a, b) = bytes.split_at(9);
+        let mut got = sh.feed_marks(a);
+        assert!(got.is_empty(), "{got:?}");
+        got.extend(sh.feed_marks(b));
+        assert_eq!(
+            got,
+            vec![CommandMark::Started {
+                short: Some("cargo test".to_string())
+            }]
+        );
+    }
+
+    #[test]
+    fn marks_on_the_alt_screen_return_nothing() {
+        let mut sh = Shell::new();
+        assert!(sh.feed_marks(b"\x1b[?1049h").is_empty());
+        assert!(sh.feed_marks(A).is_empty());
+        assert!(sh.feed_marks(&c(Some("x"))).is_empty());
+        assert!(sh.feed_marks(&d(Some(0))).is_empty());
+        assert!(sh.term.mode().contains(TermMode::ALT_SCREEN));
+    }
+
+    #[test]
+    fn marks_inside_a_sync_update_return_nothing() {
+        let mut sh = Shell::new();
+        assert!(sh.feed_marks(b"\x1b[?2026h").is_empty());
+        assert!(sh.feed_marks(A).is_empty());
+        assert!(sh.feed_marks(&c(Some("x"))).is_empty());
+        assert!(sh.processor.sync_bytes_count() > 0);
+        // Once the update ends, marks count again.
+        assert!(sh.feed_marks(b"\x1b[?2026l").is_empty());
+        assert_eq!(sh.feed_marks(A), vec![CommandMark::Prompt]);
+    }
+
+    #[test]
+    fn an_overlong_command_starts_with_no_short_form() {
+        let mut sh = Shell::new();
+        let long = "x".repeat(CMD_CAP + 1);
+        assert_eq!(
+            sh.feed_marks(&c(Some(&long))),
+            vec![CommandMark::Started { short: None }]
+        );
     }
 
     #[test]

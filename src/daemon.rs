@@ -38,6 +38,7 @@ use alacritty_terminal::vte::ansi::Rgb;
 use objc2_foundation::{NSDate, NSRunLoop};
 use serde_json::{Map, Value, json};
 
+use crate::command_name::Finished;
 use crate::daemon_session::{self, CreateSpec, DaemonSession, FrameReceiver, QUEUE_CAPACITY};
 use crate::grid::TextScope;
 use crate::groups;
@@ -733,14 +734,30 @@ fn daemon_should_notify(ui_attached: bool, old: Status, new: Status) -> Option<&
     notifier::message(new)
 }
 
-/// "fuxx — <name>": the name the GUI shows (user name, then title, then preset).
-fn notification_summary(info: &SessionInfo) -> String {
+/// "fuxx — <name>": the name the GUI shows (user name, then title, then the running command, then preset).
+fn notification_summary(info: &SessionInfo, command: Option<&str>) -> String {
     let name = groups::auto_name(
         Some(&info.name),
         info.title.as_deref(),
+        command,
         info.preset.as_deref(),
     );
     format!("fuxx — {name}")
+}
+
+/// The banner's summary and body. A command that ended: `fuxx — <its short form>` (else
+/// `command`) and how it ended; otherwise the session's name (with the running command) and
+/// `message`.
+fn daemon_banner(
+    info: &SessionInfo,
+    running: Option<&str>,
+    ended: Option<&Finished>,
+    message: &str,
+) -> (String, String) {
+    match ended {
+        Some(fin) => (format!("fuxx — {}", fin.name()), fin.words()),
+        None => (notification_summary(info, running), message.to_owned()),
+    }
 }
 
 /// Every `TICK` until asked to quit or idle: tick the sessions, forget the ones that ended.
@@ -767,7 +784,13 @@ fn tick_loop(shared: &Shared, guard: SocketGuard, idle_exit: Duration, reap: boo
             };
             let ui_attached = shared.ui_clients.load(Ordering::Acquire) > 0;
             if let Some(body) = daemon_should_notify(ui_attached, old, new) {
-                let summary = notification_summary(&info);
+                // Only a Done takes the ending: a Waiting banner (the status sampled before an
+                // end mark landed) leaves it for the Done tick after it.
+                let ended = (new == Status::Done)
+                    .then(|| session.take_ended())
+                    .flatten();
+                let (summary, body) =
+                    daemon_banner(&info, session.command().as_deref(), ended.as_ref(), body);
                 // Numbered by this run of the service.
                 let about = Terminal {
                     run: shared.instance,
@@ -775,7 +798,7 @@ fn tick_loop(shared: &Shared, guard: SocketGuard, idle_exit: Duration, reap: boo
                 };
                 // `osascript` blocks ~100 ms: never on the tick thread.
                 std::thread::spawn(move || {
-                    notifier::fire(&summary, "", body, Some(about));
+                    notifier::fire(&summary, "", &body, Some(about));
                     // M11x: the banner's sound, after quit too (no window plays it: the service
                     // posts only while none is attached).
                     crate::sounds::play_banner_detached();
@@ -1838,26 +1861,67 @@ mod tests {
     }
 
     #[test]
-    fn the_summary_names_the_session_by_name_then_title_then_preset() {
+    fn the_summary_puts_the_command_after_the_title() {
         let info = |name: &str, title: Option<&str>, preset: Option<&str>| SessionInfo {
             name: name.into(),
             title: title.map(Into::into),
             preset: preset.map(Into::into),
             ..sample_info()
         };
+        let summary = |i: &SessionInfo, command| notification_summary(i, command);
         assert_eq!(
-            notification_summary(&info("api", Some("vim"), Some("claude"))),
+            summary(
+                &info("api", Some("vim"), Some("claude")),
+                Some("cargo test")
+            ),
             "fuxx — api"
         );
         assert_eq!(
-            notification_summary(&info("", Some("vim"), Some("claude"))),
+            summary(&info("", Some("vim"), Some("claude")), Some("cargo test")),
             "fuxx — vim"
         );
         assert_eq!(
-            notification_summary(&info("", None, Some("claude"))),
+            summary(&info("", None, Some("claude")), Some("cargo test")),
+            "fuxx — cargo test"
+        );
+        assert_eq!(
+            summary(&info("", None, Some("claude")), None),
             "fuxx — claude"
         );
-        assert_eq!(notification_summary(&info("", None, None)), "fuxx — ╭∩╮");
+        assert_eq!(summary(&info("", None, None), None), "fuxx — ╭∩╮");
+    }
+
+    #[test]
+    fn the_service_s_banner_names_the_ended_command() {
+        use crate::command_name::{Ending, Finished};
+        let info = SessionInfo {
+            preset: Some("claude".into()),
+            ..sample_info()
+        };
+        let fin = |short: Option<&str>| Finished {
+            short: short.map(Into::into),
+            ending: Ending::Failed(101),
+            ran: Duration::from_secs(40),
+        };
+        assert_eq!(
+            daemon_banner(&info, None, Some(&fin(Some("cargo test"))), "Finished"),
+            (
+                "fuxx — cargo test".to_string(),
+                "Failed (exit 101) after 40s".to_string()
+            )
+        );
+        assert_eq!(
+            daemon_banner(&info, None, Some(&fin(None)), "Finished").0,
+            "fuxx — command"
+        );
+        assert_eq!(
+            daemon_banner(&info, Some("cargo test"), None, "Finished"),
+            ("fuxx — cargo test".to_string(), "Finished".to_string())
+        );
+        assert_eq!(
+            daemon_banner(&info, None, None, "Finished"),
+            ("fuxx — claude".to_string(), "Finished".to_string())
+        );
     }
 
     fn sample_info() -> SessionInfo {
