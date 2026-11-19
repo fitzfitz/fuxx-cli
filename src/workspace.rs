@@ -2577,6 +2577,7 @@ impl Workspace {
             title: name,
             message: words.listed.clone(),
             status: Some(status),
+            failed: words.failed,
             at: Instant::now(),
         });
         if banner {

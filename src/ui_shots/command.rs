@@ -77,6 +77,21 @@ pub(super) const SCENES: &[Scene] = &[
             "src/notification_list.rs",
         ],
     },
+    Scene {
+        name: "command-bell-failed",
+        run: command_bell_failed,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/title_area.rs",
+            "src/notification_list.rs",
+            "src/notifier.rs",
+            "src/workspace.rs",
+            "src/workspace_command.rs",
+            "src/ui_tokens.rs",
+        ],
+    },
 ];
 
 const PROMPT: &str = "\x1b]133;A\x07$ \x1b]133;B\x07";
@@ -1158,4 +1173,170 @@ fn command_banner() {
         act,
     );
     println!("{}", path.display());
+}
+
+/// The 🔔 list shows a failed command in the failure colour (M11q Task 8). Two commands end in
+/// the background (nothing is posted: `post_banner` records), `cargo test` failed (exit 101, 40 s)
+/// and `pnpm build` done (3 min 12 s), and the open popover lists, newest first, `pnpm build ·
+/// Done in 3m 12s` and `cargo test · Failed (exit 101) after 40s`, each under its workspace's name:
+/// - the entries carry `failed` (the second only), and the list holds nothing else;
+/// - a pixel of the failed message's text is nearer the failure ink than the usual one, the
+///   other's the reverse, both read in the popover's own pixels.
+///
+/// Panics unless all of that holds.
+fn command_bell_failed() {
+    use crate::command_name::{Change, Ending, Finished};
+    use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    const BACK: &str = "fuxx-cli";
+    const FAILED: &str = "cargo test \u{b7} Failed (exit 101) after 40s";
+    const DONE: &str = "pnpm build \u{b7} Done in 3m 12s";
+    // The popover's entries: their height pieces (title_area's `ENTRY_PAD`, `LINE`, `SUB`).
+    const PAD: f32 = 5.0;
+    const LINE: f32 = 18.0;
+    const SUB: f32 = 15.0;
+
+    for &(slug, theme_name) in shot_themes() {
+        let theme = shot_theme(theme_name);
+        let ui = theme.ui();
+        let dims = size(px(960.0), px(480.0));
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(shot_appearance(theme, cx));
+            let ws = cx.new(|cx| {
+                let mut ws = Workspace::for_shots(window, cx);
+                ws.sidebar.hint_dismissed = true;
+                ws.sidebar.width = SIDEBAR_DEFAULT_WIDTH;
+                let folder = std::path::Path::new(super::naming::FUXX_CLI);
+                for name in ["front", BACK, "tests"] {
+                    ws.open_shot_session(name, folder, SHELL_TEXT, None, window, cx);
+                }
+                let front = ws.sessions.position(|s| s.label() == "front");
+                ws.select(front.expect("front"), window, cx);
+                ws.window_active = true;
+                ws
+            });
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let acting = slot.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let n = format!("command-bell-failed-{slug}");
+            let ws = slotted(&acting);
+            let view_of = |cx: &VisualTestAppContext, name: &str| {
+                cx.read(|cx| {
+                    let ws = ws.read(cx);
+                    let i = ws
+                        .sessions
+                        .position(|s| s.name.as_deref() == Some(name))
+                        .unwrap_or_else(|| panic!("{n}: a session named {name}"));
+                    ws.sessions.items()[i].view.clone()
+                })
+            };
+            // A command starts (typed into, a start mark) and ends after `ran` seconds: the
+            // view's own event, as its end mark makes it.
+            let runs =
+                |cx: &mut VisualTestAppContext, name: &str, line: &str, exit: i32, ran: u64| {
+                    let view = view_of(cx, name);
+                    cx.update(|cx| {
+                        view.update(cx, |view, cx| {
+                            view.shot_status(Status::Idle, cx);
+                            view.shot_output(&started(Some(line)), cx);
+                        })
+                    });
+                    cx.run_until_parked();
+                    let short = line
+                        .split_whitespace()
+                        .take(2)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let finished = Finished {
+                        short: Some(short),
+                        ending: Ending::of(Some(exit)),
+                        ran: Duration::from_secs(ran),
+                    };
+                    let ended = TerminalEvent::Command(Change::Ended(finished));
+                    cx.update(|cx| view.update(cx, |_, cx| cx.emit(ended)));
+                    cx.run_until_parked();
+                };
+            runs(cx, BACK, "cargo test", 101, 40);
+            runs(cx, "tests", "pnpm build", 0, 192);
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.open_notifications(window, cx))
+            })
+            .expect("open the popover");
+            cx.run_until_parked();
+
+            // The entries, newest first: the build, then the failed test run.
+            let listed: Vec<(String, String, bool)> = cx.read(|cx| {
+                (ws.read(cx).notifications.newest_first())
+                    .map(|e| (e.title.clone(), e.message.clone(), e.failed))
+                    .collect()
+            });
+            assert_eq!(
+                listed,
+                [
+                    ("tests".to_string(), DONE.to_string(), false),
+                    (BACK.to_string(), FAILED.to_string(), true),
+                ],
+                "{n}: the list"
+            );
+            let banners = cx.read(|cx| ws.read(cx).shot_banners.len());
+            assert_eq!(banners, 2, "{n}: two recorded banners, none posted");
+            drop(ws);
+            acting.borrow_mut().take();
+        };
+        let shot = render_with(&theme, dims, build, act);
+        let path = keep_shot(&format!("command-bell-failed-{slug}"), &shot);
+        println!("{}", path.display());
+
+        // The pixels: each entry's message line, its ink nearest the failure colour or the usual.
+        let n = format!("command-bell-failed-{slug}");
+        let failed_ink = crate::ui_tokens::ensure_contrast(
+            ui.block_failed,
+            ui.panel,
+            crate::ui_tokens::TEXT_MIN,
+        );
+        let (left, _) = crate::title_area::popover_anchor(SIDEBAR_DEFAULT_WIDTH, 480.0, STATUS_BAR);
+        let width = crate::title_area::popover_width(SIDEBAR_DEFAULT_WIDTH);
+        // The most inked pixel of entry `i`'s message line (the furthest from the popover's fill).
+        let message_ink = |i: usize| -> [u8; 3] {
+            let top = crate::title_area::entry_top(i, 2, SIDEBAR_DEFAULT_WIDTH, 480.0) + PAD + LINE;
+            let mut best = pixel_at(&shot, dims, left + 40.0, top + 2.0);
+            let mut y = top + 1.0;
+            while y < top + SUB - 1.0 {
+                let mut x = left + 34.0;
+                while x < left + width - 12.0 {
+                    let p = pixel_at(&shot, dims, x, y);
+                    if gap(p, ui.panel) > gap(best, ui.panel) {
+                        best = p;
+                    }
+                    x += 0.5;
+                }
+                y += 0.5;
+            }
+            best
+        };
+        let (first, second) = (message_ink(0), message_ink(1));
+        assert!(
+            gap(second, ui.panel) > 40,
+            "{n}: the failed message is drawn ({second:?})"
+        );
+        assert!(
+            gap(first, ui.panel) > 40,
+            "{n}: the done message is drawn ({first:?})"
+        );
+        assert!(
+            gap(second, failed_ink) < gap(second, ui.text_dim),
+            "{n}: the failed message is in the failure ink ({second:?})"
+        );
+        assert!(
+            gap(first, ui.text_dim) < gap(first, failed_ink),
+            "{n}: the done message is in the usual ink ({first:?})"
+        );
+    }
 }

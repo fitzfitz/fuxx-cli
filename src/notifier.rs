@@ -132,7 +132,6 @@ pub struct Words {
     /// The 🔔 entry's words.
     pub listed: String,
     /// A command that failed.
-    #[allow(dead_code)] // until M11q Task 8
     pub failed: bool,
     /// Its banner goes out whatever the length of the run (no `QUIET_UNDER`).
     pub always: bool,

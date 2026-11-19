@@ -29,6 +29,9 @@ pub struct Entry {
     pub message: String,
     /// Done or Waiting; none for a script's notification.
     pub status: Option<Status>,
+    /// A command that failed (M11q): its message is drawn in the failure colour. Never a
+    /// script's or an agent's notification, nor a command stopped with ⌃C.
+    pub failed: bool,
     pub at: Instant,
 }
 
@@ -47,6 +50,7 @@ impl Entry {
             title: title.into(),
             message: body.into(),
             status: None,
+            failed: false,
             at,
         }
     }
@@ -109,6 +113,7 @@ mod tests {
             } else {
                 Status::Waiting
             }),
+            failed: false,
             at: start + Duration::from_secs(n),
         }
     }
@@ -188,6 +193,13 @@ mod tests {
         );
     }
 
+    /// M11q Task 8: only a command that failed is a failure; a script's never is.
+    #[test]
+    fn a_scripts_notification_is_never_failed() {
+        let at = Instant::now();
+        assert!(!Entry::scripted("fuxx", "Failed (exit 1) after 4s", None, |_| true, at).failed);
+    }
+
     #[test]
     fn a_scripts_notification_goes_to_the_terminal_it_ran_in() {
         let at = Instant::now();
@@ -200,6 +212,7 @@ mod tests {
                 title: "Build".into(),
                 message: "Tests passed".into(),
                 status: None,
+                failed: false,
                 at,
             }
         );

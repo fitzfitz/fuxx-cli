@@ -29,6 +29,7 @@
 
 use std::time::Instant;
 
+use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     Anchor, AnyElement, AnyView, ClickEvent, Context, Div, FontWeight, MouseButton, MouseDownEvent,
     Window, anchored, div, point, prelude::*, px,
@@ -47,7 +48,7 @@ use crate::tab_menu::Dismiss;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::ui_tokens::size::{STATUS_BAR, TOP_BAND};
-use crate::ui_tokens::text;
+use crate::ui_tokens::{TEXT_MIN, ensure_contrast, text};
 use crate::workspace::{Overlay, Workspace};
 
 /// The footer's buttons (the +, the 🔔, the gear): each one's side, and the space between them.
@@ -456,7 +457,7 @@ impl Workspace {
             .min_w(px(0.0))
             .truncate()
             .text_size(px(text::META))
-            .text_color(hsla(if closed { ui.text_faint } else { ui.text_dim }))
+            .text_color(hsla(message_ink(entry.failed, closed, &ui)))
             .child(entry.message.clone());
         let hover = ui.panel_hover;
         div()
@@ -636,6 +637,19 @@ impl Workspace {
     }
 }
 
+/// The colour of an entry's message line (M11q): faint for a closed terminal's, a failed
+/// command's in the failure colour held to text contrast on the popover's fill, else `text_dim`.
+/// Chosen from the entry's data when the popover's content is built.
+pub(crate) fn message_ink(failed: bool, closed: bool, ui: &UiColors) -> Rgb {
+    if closed {
+        ui.text_faint
+    } else if failed {
+        ensure_contrast(ui.block_failed, ui.panel, TEXT_MIN)
+    } else {
+        ui.text_dim
+    }
+}
+
 /// `status`'s mark, still, on the popover.
 fn status_mark(status: Status, ui: UiColors) -> AnyElement {
     status_mark::mark_on(status, &ui, 0.0, None, px(mark_size(status)), ui.panel).into_any_element()
@@ -681,7 +695,36 @@ mod tests {
     use super::*;
     use crate::sidebar::FOOTER;
     use crate::sidebar_toggle::{lights_clear, open_button_x};
+    use crate::ui_tokens::contrast;
     use crate::ui_tokens::size::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
+
+    /// M11q Task 8: a failed command's message is in the failure colour, held to the text floor
+    /// on the popover's fill, in every theme; a closed entry's faint ink wins.
+    #[test]
+    fn a_failed_entry_uses_the_failure_colour() {
+        for (name, theme) in crate::theme::every_theme() {
+            let ui = theme.ui();
+            let usual = message_ink(false, false, &ui);
+            let failed = message_ink(true, false, &ui);
+            assert_eq!(usual, ui.text_dim, "{name}: the usual ink");
+            assert_ne!(failed, usual, "{name}: a failure reads differently");
+            let got = contrast(failed, ui.panel);
+            assert!(
+                got >= TEXT_MIN - 0.01,
+                "{name}: failed on the popover {got:.2}"
+            );
+            assert_eq!(
+                message_ink(true, true, &ui),
+                ui.text_faint,
+                "{name}: closed"
+            );
+            assert_eq!(
+                message_ink(false, true, &ui),
+                ui.text_faint,
+                "{name}: closed"
+            );
+        }
+    }
 
     #[test]
     fn the_footers_three_buttons_fit_the_narrowest_sidebar_and_keep_apart() {
