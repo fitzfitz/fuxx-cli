@@ -776,8 +776,8 @@ fn told(
 /// starts by its start mark (the parser's short form); it ends by the view's own `Command`
 /// event with a chosen `ran` (the clock can't be turned), or by a real end mark where the
 /// length doesn't matter. Nothing is posted: the banners are read from `shot_banners`.
-/// - `sleep 8; true` ends with exit 0 after 8 s: one banner `fuxx-cli — sleep 8 …`, `#2`,
-///   `Done in 8s`; one entry `sleep 8 … · Done in 8s`; one event with the banner's title and
+/// - `sleep 8; true` ends with exit 0 after 8 s: one banner `fuxx-cli — sleep …`, `#2`,
+///   `Done in 8s`; one entry `sleep … · Done in 8s`; one event with the banner's title and
 ///   body; its tracker's own Done after it tells nothing;
 /// - exit 3 after 4 s: `Failed (exit 3) after 4s`; exit 130 on `front`: Done, and nothing told;
 /// - a command that asks (Waiting: its banner names it), then ends: one more banner, the ending;
@@ -918,7 +918,7 @@ fn command_banner() {
             assert_eq!(number, Some(2), "{n}: {BACK} is #2");
         });
 
-        // `sleep 8 …`: silent, so Idle until its end mark.
+        // `sleep …` (`sleep` takes no subcommand): silent, so Idle until its end mark.
         starts(cx, BACK, Some("sleep 8; true"));
         assert_eq!(told(cx), nothing, "{n}: a start tells nothing");
         // A child `ps` saw last: an ending's subtitle names no program (it has exited).
@@ -929,9 +929,9 @@ fn command_banner() {
             Told::one(
                 BACK,
                 SUB,
-                "sleep 8 \u{2026}",
+                "sleep \u{2026}",
                 "Done in 8s",
-                "sleep 8 \u{2026} \u{b7} Done in 8s",
+                "sleep \u{2026} \u{b7} Done in 8s",
                 true
             ),
             "{n}: one banner, one entry, one event for the ending"
