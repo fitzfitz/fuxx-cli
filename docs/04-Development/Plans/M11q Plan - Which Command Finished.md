@@ -581,7 +581,7 @@ protocol change.
 - [x] **Step 2: Leak and public-repo greps** of the branch's added lines: no event or struct field holding a whole
   command line outside `blocks.rs` / `shell_marks.rs`; no `/Users/`, personal names, emails or time-zone names.
 - [x] **Step 3: The full `scripts/ui-shots.sh`** (before the final review); numbers into note 68. After the final
-  review's fix wave, the full run again.
+  review's fix wave, the full run again. (First run done; the second, after the fix wave, is the controller's.)
 - [x] **Step 4: Write note 68's sections.** Limits to state at least: a wrapper option's value reads as the program
   (`sudo -u deploy make`); one plain word after the program is shown whatever it is (`echo <word>`); several pasted
   lines get one banner (plan-time call 5); the 3 s edge between the window's and the service's clocks (call 3);
