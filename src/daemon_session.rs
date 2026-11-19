@@ -1735,7 +1735,7 @@ mod tests {
         assert_eq!(s.info().status, "done");
         assert_eq!(
             s.take_ended().map(|f| f.name().to_string()).as_deref(),
-            Some("sleep 5")
+            Some("sleep") // `sleep` takes no subcommand: its argument isn't shown
         );
         // The prompt printed after the mark, and a second command with no keystroke before it,
         // make no Working and no second Done (and nothing is left to settle later).
@@ -1766,7 +1766,7 @@ mod tests {
         while s.command().is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(s.command().as_deref(), Some("sleep 5"));
+        assert_eq!(s.command().as_deref(), Some("sleep"));
         assert_eq!(s.take_ended(), None, "nothing has ended");
         // It works (the text came past the echo window), so its end settles Done.
         recv_until(
@@ -1779,7 +1779,7 @@ mod tests {
         }
         assert_eq!(s.command(), None);
         let fin = s.take_ended().expect("the ending is kept");
-        assert_eq!(fin.name(), "sleep 5");
+        assert_eq!(fin.name(), "sleep");
         assert_eq!(fin.ending, crate::command_name::Ending::Done);
         assert_eq!(s.take_ended(), None, "given once");
     }

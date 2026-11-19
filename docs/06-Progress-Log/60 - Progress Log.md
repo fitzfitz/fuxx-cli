@@ -29,6 +29,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-20 — M11q: the short form no longer shows a value after the program
+- **Did:** on your call ("go with 1, fix the cd one too"), the short form keeps a second word only for programs known
+  to take subcommands (`SUBCOMMANDS` in `src/command_name.rs`: git, npm, pnpm, yarn, bun, cargo, go, make, docker,
+  kubectl, …). Any other program shows its name alone, so `echo sk-live-123` reads `echo`. A leading `cd <folder> &&`
+  (or `;`) is skipped: `cd web && pnpm dev` reads `pnpm dev`. Test first (RED seen on `echo sk-live-123` and
+  `cd web && pnpm dev`), then the fix; three tests that ran a real `sleep 5` now expect `sleep`.
+- **Numbers:** 2,210 tests pass (1 ignored); clippy 14/27 and 16/29 (unchanged); fmt clean.
+- **Note 68:** the rule (§3 step 3), the table, What was built, Limits and the on-screen check (now 21 items) updated.
+
 ### 2026-11-19 — M11q: built on its branch (not merged)
 - **Status:** 🟨 built on branch m11q-command-finished, waiting for your on-screen check; not merged. All 12 plan tasks (0–11) built; Tasks 0–11 each reviewed (4 and 10 after one fix round); the whole-branch review, its fix wave and the second full ui-shots run are done. Next: your on-screen check.
 - **Built:** a pane is named after the command running at its shell prompt (tab, window title, ⌘K, the row's who reads `› pnpm dev`); the end mark settles the status at once; the banner (title `<workspace> — <short form>`, subtitle `#n`, body `Done in 3m 12s` / `Failed (exit 101) after 40s` / `Stopped after …`), the 🔔 list (a failure in red) and Activity say which command and how it ended; the background service settles and posts its own banner the same way. Only a short form of the command line ever leaves the terminal. No protocol change.
@@ -37,7 +46,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Public-repo grep:** clean.
 - **Found on the way:** the existing scene `chrome-notifications` posted two real banners per ui-shots run; fixed by routing every banner through `Workspace::post_banner` (nothing posts under `ui-shots`).
 - **Limits (full list in note 68):** `sudo -u deploy make` reads as `deploy make`; several pasted lines get one banner; the 3 s edge between the window's and the service's clocks; after a restart the running command is unknown until its next mark; powerlevel10k's own marks carry no command (`command`); no marks (bash, fish, `command-blocks = off`), no change.
-- **Needs your eyes:** note 68's on-screen check (19 items after the fix wave; run only as `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`); plan-time calls 1, 2, 5 and 6.
+- **Needs your eyes:** note 68's on-screen check (21 items after the fix wave; run only as `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`); plan-time calls 1, 2, 5 and 6.
 - **Final review and fix wave (2026-11-20):** the whole-branch review found no Critical issue and called the branch ready with fixes. Fixed in one wave: two tests that pin a batch's command marks before its output (local and background-service replica); note 68's on-screen items (⌃C after 3 s, both body forms, the subtitle's folder group, the 3 s guess against the 10 s banner minimum, a program that sets its own title); the service takes an ending only for a Done; an unnamed workspace's silence banner now reads `pnpm dev — Finished` and an ending's subtitle names no program (so those two Limits lines are gone); a scene step for forged marks after a told ending; more pinned wording rows; stale comments; and the Limits the review asked to state (first pasted line's banner, typed-ahead, no window after a silence banner, and the choices you should see: `echo <word>`, `cd web …`, script-driven panes, quit-vim Done, backgrounded jobs, ⌃Z exits, an old service). Two items added to the on-screen check (19 in all). The second full ui-shots run is done (2208 tests; 244 scenes passed, the same 8 display-dependent ones failing, as they do on the untouched plan commit); a full run on your usual display is still owed; nothing here was seen working on screen.
 - **Next:** the second full ui-shots run; then your on-screen check; then merge on your word.
 

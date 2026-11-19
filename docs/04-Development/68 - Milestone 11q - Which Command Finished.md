@@ -85,7 +85,11 @@ built from the start of the line:
 1. Skip leading `NAME=value` words, and the wrappers `sudo`, `env`, `time`, `nohup`, `command`, `exec` with their
    own options (words starting with `-`) and `NAME=value` words.
 2. The program: its last path part (`./scripts/build.sh` → `build.sh`).
-3. Then **one plain word** (letters, digits, `-_.:`, at most 24 characters, not starting with `-`), the subcommand.
+3. Then **one plain word** (letters, digits, `-_.:`, at most 24 characters, not starting with `-`), the subcommand —
+   **only when the program is one known to take subcommands** (`git`, `npm`, `pnpm`, `yarn`, `cargo`, `go`, `make`,
+   `docker`, `kubectl`, … — `SUBCOMMANDS` in `src/command_name.rs`). Any other program shows its name alone, because
+   its next word may be a value, even a secret (`echo sk-…`). A leading `cd <folder> &&` (or `;`) is skipped and the
+   command after it is named. (Your call, 2026-11-20: "go with 1, fix the cd one too".)
 4. If that word is `run`, `exec`, `x` or `dlx`, **one more plain word** (the script's name: `npm run deploy`).
 5. If the line goes on to another command (`&&`, `||`, `;`, `|`), add ` …`.
 6. A line that can't be read this way (starts with `$(`, `(`, a backtick or an unclosed quote) has no short form:
@@ -96,7 +100,9 @@ built from the start of the line:
 | `pnpm dev` | `pnpm dev` |
 | `cargo test --release -- --nocapture` | `cargo test` |
 | `API_KEY=sk-123 npm run deploy --token abc` | `npm run deploy` |
-| `sudo -E ./scripts/build.sh prod` | `build.sh prod` |
+| `sudo -E ./scripts/build.sh prod` | `build.sh` |
+| `echo sk-live-123` | `echo` |
+| `cd web && pnpm dev` | `pnpm dev` |
 | `cargo build && cargo test` | `cargo build …` |
 | `curl -H "Authorization: Bearer x" https://…` | `curl` |
 | `$(which node) server.js` | (none) |
@@ -212,8 +218,8 @@ You reviewed the summary of this design on 2026-11-19 and said "go ahead". Since
   the running command's short form → the preset's name → `╭∩╮`. It shows in the tab, the window title and ⌘K; the
   sidebar row's **who** reads `› <short form>` (an agent fuxx detects still wins). The name starts at the `C` mark and
   ends at the `D` mark, a prompt mark, a reattach snapshot, an SSH hold or a lost service connection. (Tasks 3, 4, 6.)
-- **The short form** (`src/command_name.rs`, Task 1) is the program, plus the subcommand when the next word is a plain
-  word, plus ` …` when more follows; env assignments, flags, paths and quoted text never appear. Nothing but the
+- **The short form** (`src/command_name.rs`, Task 1) is the program, plus the subcommand when the program takes subcommands (`SUBCOMMANDS`) and the next word is a plain
+  word (a leading `cd <folder> &&` skipped, 2026-11-20), plus ` …` when more follows; env assignments, flags, paths and quoted text never appear. Nothing but the
   short form leaves the terminal: `blocks::advance` returns the marks it applied as `CommandMark`s already reduced to
   it, so no event or struct field holds a whole command line (the full line stays in the grid's tag and
   `shell_marks.rs`).
@@ -302,14 +308,12 @@ Greps over `git diff master...HEAD` (2026-11-19, Task 11):
 ## Limits
 
 - A wrapper option's value reads as the program: `sudo -u deploy make` shows `deploy make` (the design's rule).
-- One plain word after the program is shown whatever it is (`echo <word>`).
+- A program not in `SUBCOMMANDS` loses its subcommand too (`./build.sh prod` → `build.sh`, `sleep 5` → `sleep`); add a
+  program to the list to show its subcommands.
 - Several pasted lines get one banner (plan-time call 5), the first line's; the later lines run with the pane reading
   Done and end silently (Activity still logs those that ran 3 s or more, or failed). A bracketed paste is one command, so this is the unbracketed case.
 - Two commands typed ahead while one runs: the second is not re-armed (no Working for it).
 - With no window attached, an ending after a silence-guess "Finished" banner is not told at all (the service has no list).
-- `echo <word>` shows the word even when it is a secret (`echo hunter2 | sudo -S …` reads `echo hunter2 …`): the
-  design's rule, kept on purpose; it is the one route by which the rule can put a password in Notification Center.
-- `cd web && pnpm dev` names the pane `cd web …` for the whole run.
 - There is no minimum length for an ending's banner, and that covers script-driven panes too: a script sending short
   commands into a background pane gets a banner and a sound for each one that prints 150 ms or more after it starts
   (output sooner counts as the echo of what was typed, and then a command under 3 s tells nothing); master posted
@@ -356,15 +360,15 @@ Run the app only as `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run` (debug, no
 "Keep running after quit" on and once with it off. The banner's shape is the plan's: title `<workspace> — <short form>`,
 subtitle `#n`, plus the folder group when it differs from the workspace's name; body the ending words.
 
-1. In a plain zsh pane, run `sleep 5`: the tab and window title read `sleep 5` while it runs (the row's who reads
-   `› sleep 5`), then go back.
+1. In a plain zsh pane, run `sleep 5`: the tab and window title read `sleep` while it runs (the row's who reads
+   `› sleep`), then go back. Run `git status` the same way: `git status`.
 2. Name the pane yourself, run `sleep 5`: your name stays.
 3. Run a program that sets its own title (stock vim sets none unless `:set title`, so it would read `vim`): the pane keeps the program's title.
-4. Start `sleep 8; true` in one pane, switch to another: a banner titled `<workspace> — sleep 8 …`, subtitle `#n` (plus the folder group when it differs from the workspace's name),
+4. Start `sleep 8; true` in one pane, switch to another: a banner titled `<workspace> — sleep …`, subtitle `#n` (plus the folder group when it differs from the workspace's name),
    body `Done in 8s`.
 5. Run `sh -c 'sleep 4; exit 3'`, switch away: `Failed (exit 3) after 4s`; Activity shows it red.
 6. Run `sleep 30`, press ⌃C after 3 s or more: no banner (you were looking); Activity shows `Stopped` (it logs a stop only from 3 s).
-7. Run `FOO=secret sleep 6 --x` in the background: banner and row read `sleep 6`, never `FOO`, `secret` or `--x`.
+7. Run `FOO=secret sleep 6 --x` in the background: banner and row read `sleep`, never `FOO`, `secret`, `6` or `--x`.
 8. Run `npm run <script>` (any project): the name is `npm run <script>`.
 9. Start `claude` from the prompt, let it work and finish in the background: the ring works as before; the banner
    reads `<workspace> — claude`, once; its body is `Worked for …`, or `<the agent's title> · worked 4m` when the agent sets a title (an unnamed workspace's title part is then that title too).
@@ -373,7 +377,7 @@ subtitle `#n`, plus the folder group when it differs from the workspace's name; 
 12. The 🔔 list's failed entry (from item 5) is drawn in red.
 13. A command typed ahead while another runs gets its own banner when it ends.
 14. Idle CPU with a command running is as on master: `top -l 6 -s 5 -pid <pid>` while `sleep 120` runs, against the same on master.
-15. Quit the window with "Keep running after quit" on while `sleep 20; true` runs: one banner, `fuxx — sleep 20 …` ·
+15. Quit the window with "Keep running after quit" on while `sleep 20; true` runs: one banner, `fuxx — sleep …` ·
     `Done in 20s`, from the service.
 16. An unnamed plain zsh pane running a program that sets no title of its own (one that sets a title reads as in
     item 9), or a long silent-then-chatty command, in the background: the silence
@@ -382,3 +386,5 @@ subtitle `#n`, plus the folder group when it differs from the workspace's name; 
 18. A script loop sending quick printing commands into a background pane (for example `fuxx send` of `sleep 1; echo hi` a few
     times; a bare `echo hi` prints too soon to count as work and tells nothing): expect a banner and a sound per command (plan-time call 2 in action). Say if that is too noisy.
 19. Run `sleep 5 && echo hi &` in a pane: expect no Working and no Done for the background job (plan-time call 4).
+20. Run `echo sk-test-123` in a background pane: the tab, row and any banner read `echo`, never the word after it.
+21. Run `cd src && sleep 4` in a background pane: the pane reads `sleep`, not `cd src …`, and its banner names `sleep`.
