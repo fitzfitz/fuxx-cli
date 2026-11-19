@@ -1222,6 +1222,7 @@ impl Workspace {
             title: name,
             message: body.clone(),
             status: Some(new),
+            failed: false,
             at: Instant::now(),
         });
         // A short run (an agent's pause) is in the 🔔 list but makes no banner.
