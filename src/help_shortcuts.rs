@@ -143,7 +143,10 @@ pub fn describe(action: &str) -> Describe {
         | "help_panel::ScrollUp"
         | "help_panel::ScrollDown"
         // A file tab's Esc (it closes the find bar).
-        | "file_tab::CloseFind" => Unlisted,
+        | "file_tab::CloseFind"
+        // M11ag: a file tab's ⌘↵ (Ask), named on its selection bar's button; no help row or
+        // palette command is in the plan.
+        | "file_tab::AskAgent" => Unlisted,
         other if other.starts_with("name_input::") => Unlisted,
         other if other.starts_with("composer::") => Unlisted,
         // The agent tab's `@` file list's arrows (while it is open only).

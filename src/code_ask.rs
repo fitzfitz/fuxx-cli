@@ -1,8 +1,6 @@
 //! Code references for "Ask the agent" (M11ag): what a file-tab selection becomes as a chip
 //! label and as the text the agent (or the clipboard) gets. Pure: no GPUI, no I/O.
 
-#![allow(dead_code)] // wired in by the later M11ag tasks
-
 use std::path::{Path, PathBuf};
 
 use crate::file_tab::{Doc, Pos};
@@ -13,11 +11,23 @@ pub const ASK_MAX_LINES: usize = 500;
 /// ... or this many bytes.
 pub const ASK_MAX_BYTES: usize = 64 * 1024;
 
+/// Whether a body of `lines` lines and `bytes` bytes is past the cap.
+pub fn too_long_for(lines: usize, bytes: usize) -> bool {
+    lines > ASK_MAX_LINES || bytes > ASK_MAX_BYTES
+}
+
 /// Which lines a reference names (1-based, inclusive). `Removed` names lines of the old text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CodeLines {
-    Lines { first: usize, last: usize },
-    Removed { first: usize, last: usize },
+    Lines {
+        first: usize,
+        last: usize,
+    },
+    #[allow(dead_code)] // Diff mode's removed-only selection (M11ag Task 5)
+    Removed {
+        first: usize,
+        last: usize,
+    },
 }
 
 /// Where Ask goes: the agent named on the bar, or nowhere (copy only).
@@ -89,7 +99,8 @@ impl CodeRef {
 
     /// Past the cap: more than `ASK_MAX_LINES` lines or `ASK_MAX_BYTES` bytes.
     pub fn too_long(&self) -> bool {
-        self.body.lines().count() > ASK_MAX_LINES || self.body.len() > ASK_MAX_BYTES
+        // `split`, not `lines()`: a blank last line is a line.
+        too_long_for(self.body.split('\n').count(), self.body.len())
     }
 
     /// The same file and lines (what makes two chips one).
@@ -277,6 +288,15 @@ mod tests {
         c.body = vec!["x"; 501].join("\n");
         assert!(c.too_long());
         c.body = vec!["y".repeat(300); 300].join("\n");
+        assert!(c.too_long());
+    }
+
+    #[test]
+    fn a_body_ending_in_a_blank_line_counts_it() {
+        // 500 lines and a blank 501st: `lines()` would say 500.
+        let mut c = code(1, 501);
+        c.body = format!("{}\n", vec!["x"; 500].join("\n"));
+        assert_eq!(c.body.split('\n').count(), 501);
         assert!(c.too_long());
     }
 
