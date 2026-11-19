@@ -259,6 +259,7 @@ pub(super) const ORDER: &[&str] = &[
     "command-reaches-workspace",
     "command-settles",
     "command-name",
+    "command-banner",
     "agent-tab-empty",
     "agent-tab-working",
     "agent-tab-permission",

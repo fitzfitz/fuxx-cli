@@ -169,7 +169,6 @@ impl Ending {
         }
     }
 
-    #[allow(dead_code)] // until M11q Task 7
     pub fn failed(self) -> bool {
         matches!(self, Ending::Failed(_))
     }
@@ -214,18 +213,15 @@ pub struct Finished {
 }
 
 impl Finished {
-    #[allow(dead_code)] // until M11q Task 7
     pub fn name(&self) -> &str {
         self.short.as_deref().unwrap_or(NO_SHORT)
     }
 
-    #[allow(dead_code)] // until M11q Task 7
     pub fn words(&self) -> String {
         ending_words(self.ending, self.ran)
     }
 
     /// The 🔔 list's line.
-    #[allow(dead_code)] // until M11q Task 7
     pub fn listed(&self) -> String {
         format!("{} · {}", self.name(), self.words())
     }

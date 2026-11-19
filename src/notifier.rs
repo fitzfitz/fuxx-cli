@@ -1,8 +1,9 @@
 use std::process::Command;
 use std::time::Duration;
 
+use crate::command_name::Finished;
 use crate::native_notify::{self, Permission, PostError, Terminal};
-use crate::status::{Status, age_label};
+use crate::status::{self, Status, age_label};
 
 /// Which way a banner goes out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +122,89 @@ pub fn body(
     Some(shown)
 }
 
+/// A notification's words (M11q).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Words {
+    /// What follows `—` in the banner's title (`banner_title`).
+    pub message: String,
+    /// The banner's text under its title.
+    pub body: String,
+    /// The 🔔 entry's words.
+    pub listed: String,
+    /// A command that failed.
+    #[allow(dead_code)] // until M11q Task 8
+    pub failed: bool,
+    /// Its banner goes out whatever the length of the run (no `QUIET_UNDER`).
+    pub always: bool,
+}
+
+/// The words of a terminal's notification, if `status` is worth one. A command that `ended`
+/// (its end mark) is told by its short form and how it ended, always. Else the status's own
+/// words (`body`: `question`, `worked`, `doing`), under the short form of the command `running`
+/// there when there is one (an agent started at the prompt that went quiet or asks), else
+/// under `message`.
+pub fn words(
+    status: Status,
+    question: Option<&str>,
+    worked: Option<Duration>,
+    doing: Option<&str>,
+    running: Option<&str>,
+    ended: Option<&Finished>,
+) -> Option<Words> {
+    if let Some(fin) = ended {
+        return Some(Words {
+            message: fin.name().to_string(),
+            body: fin.words(),
+            listed: fin.listed(),
+            failed: fin.ending.failed(),
+            always: true,
+        });
+    }
+    let body = body(status, question, worked, doing)?;
+    Some(Words {
+        message: running.or(message(status))?.to_string(),
+        listed: body.clone(),
+        body,
+        failed: false,
+        always: false,
+    })
+}
+
+/// What a command's end mark tells (plan-time call 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EndTell {
+    /// The status settles on Done (`status::settles_on_end`), and that change is told by the
+    /// M4 rules, with the ending's words.
+    pub settle: bool,
+    /// The ending goes to the 🔔 list (and to scripts).
+    pub list: bool,
+    /// A banner goes out for it.
+    pub banner: bool,
+}
+
+/// What the end mark of a command that ran for `ran` tells about a terminal in `status`, so
+/// that each ending has at most one banner. Nothing is told while you are `looking` at it (the
+/// active terminal of the focused window); it settles all the same. A terminal that settles
+/// here is told with a banner, however short the run. One already Done (the silence guess was
+/// first) has the ending listed once (`end_told`: this Done's ending was), with a banner only
+/// if this Done had none (`done_bannered`: its run was under `QUIET_UNDER`, or you were
+/// looking then).
+pub fn end_tells(
+    status: Status,
+    ran: Duration,
+    looking: bool,
+    done_bannered: bool,
+    end_told: bool,
+) -> EndTell {
+    let settle = status::settles_on_end(status, ran);
+    let list = !looking && (settle || (status == Status::Done && !end_told));
+    EndTell {
+        settle,
+        list,
+        banner: list && (settle || !done_bannered),
+    }
+}
+
 /// A banner's title (M11v part 5): the workspace's name, as the sidebar and the 🔔 list say it,
 /// and what happened: `Chores list — Finished`.
 pub fn banner_title(workspace: &str, message: &str) -> String {
@@ -153,6 +237,7 @@ pub const QUIET_UNDER: Duration = Duration::from_secs(10);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command_name::Ending;
 
     /// Part 5: the banner names the workspace as fuxx does, says where and who in its subtitle,
     /// and what the agent was doing in its body.
@@ -201,6 +286,211 @@ mod tests {
             Some("Proceed? (y/n)"),
             "a question wins"
         );
+    }
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    /// A command that ended with `exit` after `ran` seconds.
+    fn ended(short: Option<&str>, exit: Option<i32>, ran: u64) -> Finished {
+        Finished {
+            short: short.map(String::from),
+            ending: Ending::of(exit),
+            ran: secs(ran),
+        }
+    }
+
+    /// The words of a command's end (its status is Done by then).
+    fn end_words(fin: &Finished) -> Words {
+        words(Status::Done, None, None, None, None, Some(fin)).expect("an ending has words")
+    }
+
+    /// M11q: the spec's four rows, in today's shape (plan-time call 1): the short form is the
+    /// title's message, the ending its body.
+    #[test]
+    fn the_banner_table() {
+        let rows = [
+            ("pnpm build", Some(0), 192, "Done in 3m 12s", false),
+            ("pnpm dev", Some(130), 3840, "Stopped after 1h 4m", false),
+            (
+                "cargo test",
+                Some(101),
+                40,
+                "Failed (exit 101) after 40s",
+                true,
+            ),
+            ("make", None, 120, "Finished after 2m", false),
+        ];
+        for (short, exit, ran, body, failed) in rows {
+            let w = end_words(&ended(Some(short), exit, ran));
+            assert_eq!(
+                banner_title("fuxx-cli", &w.message),
+                format!("fuxx-cli \u{2014} {short}")
+            );
+            assert_eq!(w.body, body, "{short}");
+            assert_eq!(w.listed, format!("{short} \u{b7} {body}"), "{short}");
+            assert_eq!(w.failed, failed, "{short}");
+            assert!(w.always, "{short}: an ending is told whatever its length");
+        }
+        assert_eq!(banner_subtitle(2, None, "fuxx-cli", None), "#2");
+        // What the terminal was doing, or what still runs there, says nothing about an ending.
+        let fin = ended(Some("pnpm build"), Some(0), 192);
+        let busy = words(
+            Status::Done,
+            Some("Proceed? (y/n)"),
+            Some(secs(5)),
+            Some("\u{2733} a title"),
+            Some("cargo test"),
+            Some(&fin),
+        );
+        assert_eq!(busy, Some(end_words(&fin)));
+    }
+
+    #[test]
+    fn a_command_with_no_short_form_banners_command() {
+        let w = end_words(&ended(None, Some(0), 5));
+        assert_eq!(
+            banner_title("fuxx-cli", &w.message),
+            "fuxx-cli \u{2014} command"
+        );
+        assert_eq!(w.body, "Done in 5s");
+        assert_eq!(w.listed, "command \u{b7} Done in 5s");
+    }
+
+    /// A command still running when its terminal goes quiet or asks (an agent started at the
+    /// prompt): the silence guess's notification names it, and keeps its own rules.
+    #[test]
+    fn an_agent_started_from_the_prompt_is_named() {
+        let done = words(
+            Status::Done,
+            None,
+            Some(secs(240)),
+            None,
+            Some("claude"),
+            None,
+        )
+        .expect("Done has words");
+        assert_eq!(done.message, "claude");
+        assert_eq!(done.body, "Worked for 4m");
+        assert_eq!(done.listed, done.body);
+        assert!(!done.always, "the silence guess keeps QUIET_UNDER");
+        assert!(!done.failed);
+        let asks = words(
+            Status::Waiting,
+            Some("Proceed? (y/n)"),
+            None,
+            None,
+            Some("claude"),
+            None,
+        )
+        .expect("Waiting has words");
+        assert_eq!(asks.message, "claude");
+        assert_eq!(asks.body, "Proceed? (y/n)");
+        assert!(!asks.always && !asks.failed);
+    }
+
+    #[test]
+    fn without_a_command_the_words_are_todays() {
+        let title = Some("\u{2733} Breadcrumb tiket");
+        let done = words(Status::Done, None, Some(secs(34)), title, None, None).expect("Done");
+        assert_eq!(done.message, "Finished");
+        assert_eq!(
+            Some(&done.body),
+            body(Status::Done, None, Some(secs(34)), title).as_ref()
+        );
+        assert_eq!(done.listed, done.body);
+        assert!(!done.always && !done.failed);
+        let asks = words(Status::Waiting, None, None, None, None, None).expect("Waiting");
+        assert_eq!(asks.message, "Needs your input");
+        assert_eq!(asks.body, "Needs your input");
+        for quiet in [Status::Idle, Status::Working] {
+            assert_eq!(words(quiet, None, None, None, None, None), None);
+            assert_eq!(
+                words(quiet, None, None, None, Some("claude"), None),
+                None,
+                "a running command alone is no news"
+            );
+        }
+    }
+
+    /// Plan-time call 2: what an end mark tells, by the status it finds.
+    #[test]
+    fn end_tells_table() {
+        let tell = |settle, list, banner| EndTell {
+            settle,
+            list,
+            banner,
+        };
+        let all = tell(true, true, true);
+        let nothing = tell(false, false, false);
+        for (bannered, told) in [(false, false), (true, false), (false, true), (true, true)] {
+            for busy in [Status::Working, Status::Waiting] {
+                assert_eq!(
+                    end_tells(busy, secs(1), false, bannered, told),
+                    all,
+                    "{busy:?}: it settles, and that is news"
+                );
+                assert_eq!(
+                    end_tells(busy, secs(1), true, bannered, told),
+                    tell(true, false, false),
+                    "{busy:?}: not while you look at it"
+                );
+            }
+            for looking in [false, true] {
+                assert_eq!(
+                    end_tells(Status::Idle, secs(2), looking, bannered, told),
+                    nothing,
+                    "a quick silent command"
+                );
+                assert_eq!(
+                    end_tells(Status::Done, secs(60), looking, bannered, true),
+                    nothing,
+                    "this Done's ending was told"
+                );
+            }
+            assert_eq!(
+                end_tells(Status::Done, secs(60), true, bannered, told),
+                nothing,
+                "Done, and you look at it"
+            );
+        }
+        assert_eq!(end_tells(Status::Idle, secs(3), false, false, false), all);
+        assert_eq!(
+            end_tells(Status::Idle, secs(3), true, false, false),
+            tell(true, false, false)
+        );
+        assert_eq!(
+            end_tells(Status::Done, secs(60), false, false, false),
+            tell(false, true, true),
+            "this Done had no banner (a short run, or you were looking)"
+        );
+        assert_eq!(
+            end_tells(Status::Done, secs(60), false, true, false),
+            tell(false, true, false),
+            "this Done had its banner: the ending is only listed"
+        );
+    }
+
+    /// Review Focus 2: mark text is untrusted. Whatever a short form holds, its title is safe
+    /// inside the AppleScript string `fire_script` builds.
+    #[test]
+    fn a_command_name_is_escaped_like_a_title() {
+        let w = end_words(&ended(Some("e\"vil\\ \u{7}\n\"; beep"), Some(0), 1));
+        let escaped = applescript_escape(&banner_title("fuxx-cli", &w.message));
+        assert!(!escaped.chars().any(char::is_control), "{escaped:?}");
+        let mut chars = escaped.chars();
+        while let Some(c) = chars.next() {
+            assert_ne!(c, '"', "a bare quote ends the string: {escaped:?}");
+            if c == '\\' {
+                let next = chars.next();
+                assert!(
+                    matches!(next, Some('\\' | '"')),
+                    "a backslash escapes only a quote or itself: {escaped:?}"
+                );
+            }
+        }
+        assert_eq!(escaped, "fuxx-cli \u{2014} e\\\"vil\\\\ \\\"; beep");
     }
 
     #[test]

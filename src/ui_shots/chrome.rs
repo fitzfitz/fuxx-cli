@@ -572,9 +572,10 @@ pub(super) fn chrome_model_edits() {
 }
 
 /// Notifications reach the footer's 🔔 and, with the sidebar hidden, the title band's: a
-/// terminal elsewhere is done after a short run (listed, unseen, no banner), the 🔔 clicked
+/// terminal elsewhere is done (listed, unseen; its banner is kept, not posted), the 🔔 clicked
 /// open (all seen), its entry's age turning with nothing notified (its timer redraws it), the
-/// popover closed; then hidden, another one.
+/// popover closed; the command that ran there ends (M11q: listed, unseen, no second banner);
+/// then hidden, another one.
 ///
 /// Panics unless after each the window shows what a full redraw does, and it changed.
 pub(super) fn chrome_notifications() {
@@ -649,6 +650,35 @@ pub(super) fn chrome_notifications() {
             ws.dismiss_notifications(window, cx)
         })
     });
+    // M11q: the command agent ran ends after its Done was told (with a banner, above): the
+    // ending is listed with no status change, so the 🔔 changes by a source of its own
+    // (`Workspace::end_command`), and no second banner goes out.
+    let banners = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).shot_banners.len());
+    let bannered = banners(&mut cx);
+    steps.step(
+        &mut cx,
+        window,
+        "agent's command ends: listed, unseen",
+        Seen::Changes,
+        |cx| {
+            let i = index_of(cx, ws, "agent");
+            let view = cx.read(|cx| ws.read(cx).sessions.items()[i].view.clone());
+            let ended = Change::Ended(Finished {
+                short: Some("pnpm build".into()),
+                ending: Ending::of(Some(0)),
+                ran: Duration::from_secs(6 * 60),
+            });
+            cx.update(|cx| view.update(cx, |_, cx| cx.emit(TerminalEvent::Command(ended))));
+        },
+    );
+    assert_eq!(unseen(&mut cx), 1, "{n}: the ending is unseen");
+    assert_eq!(banners(&mut cx), bannered, "{n}: and has no second banner");
+    // Seen, as the popover opened would make it (not a step: the band's 🔔 below starts clear).
+    on_ws(&mut cx, window, ws, |ws, _, cx| {
+        ws.notifications.mark_seen();
+        cx.notify();
+    });
+    settle_frames(&mut cx, window);
     // The sidebar hidden: the title band's 🔔.
     on_ws(&mut cx, window, ws, |ws, window, cx| {
         ws.toggle_sidebar(window, cx)
@@ -2117,7 +2147,7 @@ pub(super) fn chrome_agent_status() {
         "{n}: its row's tooltip has the whole question: {tip:?}"
     );
     assert_eq!(unseen(&cx), before + 1, "{n}: a 🔔 entry for it");
-    let banners = cx.read(|cx| ws.read(cx).shot_banners.clone().unwrap_or_default());
+    let banners = cx.read(|cx| ws.read(cx).shot_banners.clone());
     match banners.as_slice() {
         [(_, subtitle, body)] => {
             assert_eq!(body, "Claude wants to run: ls", "{n}: the banner's body");
@@ -2170,7 +2200,7 @@ pub(super) fn chrome_agent_status() {
         assert_eq!(slot.activity.len(), 2, "{n}: its Activity: Working, Done");
     });
     assert_eq!(unseen(&cx), before + 1, "{n}: a 🔔 entry for it");
-    let banners = cx.read(|cx| ws.read(cx).shot_banners.clone().unwrap_or_default());
+    let banners = cx.read(|cx| ws.read(cx).shot_banners.clone());
     assert_eq!(banners.len(), 1, "{n}: a short run makes no banner");
     let key = GroupKey::Folder(super::API.into());
     agent_status_step(
