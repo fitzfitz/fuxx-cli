@@ -735,7 +735,8 @@ pub struct Workspace {
     #[cfg(feature = "ui-shots")]
     pub(crate) quiet_opens: bool,
     /// Every banner (summary, subtitle, body), kept here instead of posted: nothing built with
-    /// `ui-shots` posts a real one or plays its sound (`post_banner`).
+    /// `ui-shots` posts a real one or plays its sound from the window (`post_banner`; the
+    /// background service's own post is outside it).
     #[cfg(feature = "ui-shots")]
     pub(crate) shot_banners: Vec<(String, String, String)>,
     /// Every event line `emit` made, whether or not a script listens (the scenes read them).

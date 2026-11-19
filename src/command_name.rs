@@ -64,7 +64,6 @@ fn first_command(line: &str) -> Option<(Vec<String>, bool)> {
         } else if !word.is_empty() {
             words.push(std::mem::take(&mut word));
         }
-        word.clear();
         if stops {
             stopped = true;
             if c == '&' {
@@ -237,12 +236,9 @@ impl Finished {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandMark {
     /// A command started; `short` is its short form, if it had a command line to make one from.
-    Started {
-        short: Option<String>,
-    },
-    Ended {
-        exit: Option<i32>,
-    },
+    Started { short: Option<String> },
+    /// The command ended; `exit` is its status when the shell reported one.
+    Ended { exit: Option<i32> },
     /// A new prompt: nothing runs.
     Prompt,
     /// What runs is not known any more (a reattach snapshot); never made by `blocks::advance`.
@@ -417,6 +413,8 @@ mod tests {
             (Some(130), 3840, "Stopped after 1h 4m"),
             (Some(101), 40, "Failed (exit 101) after 40s"),
             (None, 120, "Finished after 2m"),
+            (Some(-1), 5, "Failed (exit -1) after 5s"),
+            (Some(256), 5, "Failed (exit 256) after 5s"),
         ];
         for (exit, s, want) in rows {
             assert_eq!(ending_words(Ending::of(exit), secs(s)), want);
@@ -450,6 +448,8 @@ mod tests {
             (3840, "1h 4m"),
             (86_400, "1d"),
             (93_600, "1d 2h"),
+            (90_300, "1d 1h"),
+            (691_200, "8d"),
         ];
         for (s, want) in rows {
             assert_eq!(ran_label(secs(s)), want, "{s} s");

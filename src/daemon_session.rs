@@ -1705,7 +1705,7 @@ mod tests {
     fn an_end_mark_settles_the_service_s_status_at_once() {
         // A typed line starts it; `sh` prints each part well past the echo window, as the real
         // shell's output comes. The first command: C, text, D. The second has no keystroke
-        // before it (pasted lines, or marks a program printed): it names nothing and re-arms
+        // before it (pasted lines, or marks a program printed): it is named and re-arms
         // nothing. `END` closes the run.
         let s = spawn(
             r"stty -echo; read go; sleep 0.3; printf '\033]133;C;cmdline_url=sleep%%205\007'; sleep 0.3; printf 'text\r\n'; sleep 0.3; printf '\033]133;D;0\007'; printf 'prompt\r\n'; sleep 0.4; printf '\033]133;C;cmdline_url=sleep%%206\007'; sleep 0.4; printf 'more\r\n'; sleep 0.4; printf '\033]133;D;0\007'; sleep 0.4; printf 'END'; sleep 30",

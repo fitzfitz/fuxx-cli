@@ -72,6 +72,8 @@ pub(super) const SCENES: &[Scene] = &[
             "src/notification_list.rs",
             "src/title_area.rs",
             "src/sidebar.rs",
+            "src/workspace_command.rs",
+            "src/notifier.rs",
         ],
     },
     Scene {
@@ -396,8 +398,9 @@ fn elsewhere_window_sized(dims: Size<Pixels>) -> (ShotApp, AnyWindowHandle, Enti
 /// Review Focus 2: a terminal's status changing where you aren't looking reaches the sidebar
 /// (its row's mark, ring, age and the line under its name) and, for a pane of the shown
 /// workspace, its tab's mark; each by the status's own path (`on_terminal_event`), no other
-/// redraw. The marks' ticker turns a working mark on its own. A Waiting status (which would post a real banner from there) by `set_status` without
-/// the notification, as an SSH hold does; it is the same function.
+/// redraw. The marks' ticker turns a working mark on its own. A Waiting status (which a window
+/// with a list would banner and ring) by `set_status` without the notification, as an SSH hold
+/// does; it is the same function.
 ///
 /// Panics unless after each the window shows what a full redraw does, and it changed.
 pub(super) fn chrome_status_elsewhere() {

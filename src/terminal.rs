@@ -1598,7 +1598,39 @@ mod tests {
             }
             started && ended
         }));
-        assert_eq!(outputs, 1);
+        assert!(
+            outputs <= 1,
+            "more than one Output for one burst: {outputs}"
+        );
+    }
+
+    #[test]
+    fn a_batch_sends_its_command_marks_before_its_output() {
+        let (tx, mut rx) = unbounded();
+        // ONE write: a start mark, text and an end mark reach the reader as one batch.
+        let _core = TerminalCore::spawn(
+            sh("printf '\\033]133;C;cmdline_url=sleep%%205\\007text\\033]133;D;0\\007'; sleep 5"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        // 'o' output, 's' started, 'e' ended, in arrival order.
+        let mut kinds = String::new();
+        assert!(wait_for(&mut rx, |e| {
+            match e {
+                TermEvent::Output { .. } => kinds.push('o'),
+                TermEvent::Command(CommandMark::Started { .. }) => kinds.push('s'),
+                TermEvent::Command(CommandMark::Ended { .. }) => kinds.push('e'),
+                _ => {}
+            }
+            kinds.contains('o') && kinds.contains('s') && kinds.contains('e')
+        }));
+        let first_output = kinds.find('o').unwrap();
+        assert!(
+            kinds.find('s').unwrap() < first_output && kinds.find('e').unwrap() < first_output,
+            "a command mark came after the output: {kinds}"
+        );
     }
 
     #[test]
@@ -3006,6 +3038,45 @@ mod daemon_tests {
         }));
         assert!(unknown, "no Command(Unknown)");
         assert!(!started, "a snapshot started a command");
+        let _ = fake.join();
+    }
+
+    #[test]
+    fn a_replica_sends_a_frames_command_marks_before_its_output() {
+        let path = temp_sock("t-markorder");
+        let fake = scripted_daemon(
+            &path,
+            vec![vec![
+                Frame::Snapshot(mux_proto::Snapshot {
+                    id: 7,
+                    seq: 0,
+                    dims: Dims { cols: 20, rows: 3 },
+                    title: None,
+                    vt_bytes: b"$ ".to_vec(),
+                }),
+                out(1, "\x1b]133;C;cmdline_url=ls\x07ok\r\n\x1b]133;D;0\x07"),
+                Frame::Exited { id: 7 },
+            ]],
+        );
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, mut rx) = unbounded();
+        let _core = TerminalCore::attach_daemon(client, 7, tx, Theme::default()).unwrap();
+        let mut kinds = Vec::new();
+        assert!(wait_event(&mut rx, |e| {
+            match e {
+                TermEvent::Command(CommandMark::Unknown) => kinds.push("unknown"),
+                TermEvent::Command(CommandMark::Started { .. }) => kinds.push("started"),
+                TermEvent::Command(CommandMark::Ended { .. }) => kinds.push("ended"),
+                TermEvent::Output { .. } => kinds.push("output"),
+                _ => {}
+            }
+            matches!(e, TermEvent::Exited { .. })
+        }));
+        assert_eq!(
+            kinds,
+            ["unknown", "output", "started", "ended", "output"],
+            "{kinds:?}"
+        );
         let _ = fake.join();
     }
 

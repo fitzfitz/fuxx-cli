@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn without_a_command_the_words_are_todays() {
-        let title = Some("\u{2733} Breadcrumb tiket");
+        let title = Some("\u{2733} a title");
         let done = words(Status::Done, None, Some(secs(34)), title, None, None).expect("Done");
         assert_eq!(done.message, "Finished");
         assert_eq!(
