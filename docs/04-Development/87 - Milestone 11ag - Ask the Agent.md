@@ -1,6 +1,6 @@
 # Milestone 11ag — Ask the Agent from the Code
 
-**Status:** 🟨 built on branch m11ag-ask-agent, waiting for your on-screen check; not merged. Designed and approved 2026-11-19 ("approved"); all 14 plan tasks (0–13) built 2026-11-19 ([[M11ag Plan - Ask the Agent]]), Tasks 0–12 each reviewed; the whole-branch review and its fix wave still follow (the numbers below are from before it).
+**Status:** 🟨 built on branch m11ag-ask-agent, waiting for your on-screen check; not merged. Designed and approved 2026-11-19 ("approved"); all 14 plan tasks (0–13) built 2026-11-19 ([[M11ag Plan - Ask the Agent]]), Tasks 0–12 each reviewed; the whole-branch review and its fix wave are done, and the wave was re-reviewed clean ("Final numbers" has the numbers from before and after it).
 
 **Asked for:** 2026-11-16, by you, in the file-view mockups (near-future idea 3, [[Proposal - File View Upgrades]]):
 
@@ -269,7 +269,7 @@ anchor's last line.
 ## What was built
 
 All 14 plan tasks (0–13) on `m11ag-ask-agent`; Tasks 0–12 each reviewed (7, 8 and 11 after one fix round). Task 13 (this
-hand-off) goes to the whole-branch review next. Not merged.
+hand-off) went to the whole-branch review; its fix wave is in and was re-reviewed clean. Not merged.
 
 **Part 1 — Ask the agent about code**
 
