@@ -152,6 +152,14 @@ pub(crate) struct Reasons {
     started: HashMap<String, (Vec<PathBuf>, crate::edit_notes::EditNote)>,
 }
 
+impl Reasons {
+    /// The turn is over, however it ended: its texts are no one's reason. `next_id` goes on, so
+    /// ids stay unique.
+    fn end_turn(&mut self) {
+        self.texts.clear();
+    }
+}
+
 /// What an agent event tells the edit ledger: a tool call that writes files (`writes`, resolved
 /// against the agent's `cwd`) starts an edit; the finish of one that did ends it. `open` holds
 /// the calls started and not finished.
@@ -173,7 +181,7 @@ fn edit_events(
             Vec::new()
         }
         Event::TurnDone { .. } => {
-            reasons.texts.clear();
+            reasons.end_turn();
             Vec::new()
         }
         Event::ToolStarted {
@@ -1285,6 +1293,7 @@ impl AgentTab {
     /// can't claim later changes.
     fn abandon_edits(&mut self, cx: &mut Context<Self>) {
         self.reasons.started.clear();
+        self.reasons.end_turn();
         for call in std::mem::take(&mut self.open_edits) {
             cx.emit(AgentTabEvent::EditDone { call, ok: false });
         }
@@ -2245,6 +2254,7 @@ impl AgentTab {
         self.force_timer = None;
         let resume = self.conversation_id();
         self.end_process();
+        self.reasons.end_turn();
         self.conversation.apply(Event::Notice("Stopped".into()));
         self.conversation.apply(Event::TurnDone {
             ok: false,
@@ -4212,6 +4222,21 @@ mod tests {
         assert_eq!(&*notes[0].reason, "sub words");
         assert_eq!(&*notes[1].reason, "main words");
         assert_ne!(notes[0].reason_id, notes[1].reason_id);
+    }
+
+    #[test]
+    fn a_turn_ended_without_turn_done_leaves_no_reason() {
+        // A force stop or a crash ends the turn with no `TurnDone` event: `end_turn` is what
+        // they call.
+        let (mut open, mut reasons) = (HashSet::new(), Reasons::default());
+        let cwd = Path::new("/tmp/fx");
+        edit_events(&said("old turn", None), cwd, None, &mut open, &mut reasons);
+        reasons.end_turn();
+        let told: Vec<_> = [edit_call("t1", None), finish("t1", true)]
+            .iter()
+            .flat_map(|e| edit_events(e, cwd, None, &mut open, &mut reasons))
+            .collect();
+        assert!(noted(&told).is_empty());
     }
 
     #[test]
