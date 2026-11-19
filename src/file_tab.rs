@@ -95,7 +95,7 @@
 //! event handlers and reads, never while drawing, and nothing animates (M11p).
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::Read;
 use std::ops::Range;
@@ -140,7 +140,7 @@ use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
 use crate::row_map::{
-    CardPairs, DiffLayout, Half, MapKey, Row, RowMap, change_starts, step_change,
+    CardPairs, DiffLayout, Half, MapKey, NoteSpan, Row, RowMap, change_starts, step_change,
 };
 use crate::scrollbar::{self, Axis, Bar, LaneMark, Thumb};
 use crate::sidebar_toggle::{Tip, tip_box};
@@ -2992,6 +2992,12 @@ struct Frame {
     side_by_side: bool,
     current_half: Option<Half>,
     sel_half: Option<Half>,
+    /// M11ag: the notes placed and their generation (the shapes' key), the ones opened, and
+    /// their rows' generation (the row map's key).
+    notes: Rc<Vec<Placed>>,
+    notes_gen: u64,
+    notes_open: HashSet<u64>,
+    note_rows_gen: u64,
 }
 
 /// What the text body draws of Diff mode's cards (M11ah).
@@ -3024,18 +3030,11 @@ impl LiveFrame {
 fn mark_look(m: &Mark, your_letter: char, ui: &UiColors, bg: Rgb) -> (Rgb, bool, char) {
     match &m.who {
         Who::You => (ui.tab(TabColor::Teal), true, your_letter),
-        Who::Agent(a) => match a.rgb {
-            Some(c) => {
-                let c = Rgb {
-                    r: (c >> 16) as u8,
-                    g: (c >> 8) as u8,
-                    b: c as u8,
-                };
-                let c = ensure_contrast(c, bg, MARK_MIN);
-                (c, m.sure == Sure::Exact, a.letter)
-            }
-            None => (ui.tab(TabColor::Grey), false, a.letter),
-        },
+        Who::Agent(a) => (
+            notes::agent_ink(a, ui, bg),
+            a.rgb.is_some() && m.sure == Sure::Exact,
+            a.letter,
+        ),
     }
 }
 
@@ -3415,6 +3414,7 @@ fn paint_body(
     g: &Geom,
     m: &CellMetrics,
     map: &RowMap,
+    shapes: Option<&notes::NoteShapes>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -3894,8 +3894,15 @@ fn paint_body(
             }
             Some(Row::Title { card }) => paint_card_title(f, g, card, y, false, window, cx),
             Some(Row::Unchanged { stretch }) => paint_unchanged(f, g, stretch, y, window, cx),
-            // M11ag: a note's rows (drawn with the notes, Task 11).
-            Some(Row::Note { .. }) | None => {}
+            // M11ag: a note's rows, drawn whole from the first of them in sight.
+            Some(Row::Note { note, k }) => {
+                if let Some(shapes) = shapes
+                    && (k == 0 || r == rows.start)
+                {
+                    notes::paint_note(f, g, map, shapes, note, window, cx);
+                }
+            }
+            None => {}
         }
     }
     if f.mode == FileMode::Diff {
@@ -4545,9 +4552,14 @@ pub struct FileTab {
     /// M11ag: the file's notes placed in the text shown (`place_notes`), and how many times
     /// they changed; the text version and the store's generation last placed for.
     notes: Rc<Vec<Placed>>,
-    #[allow(dead_code)] // read when note rows are drawn (M11ag Task 11)
     notes_gen: u64,
     notes_asked: Option<(u64, u64)>,
+    /// M11ag: the notes opened past their two rows (by id); the rows' generation (the row
+    /// map's key: it moves when the notes or an opened one change); each note's text as last
+    /// shaped (a layout cache, made in the prepaint).
+    notes_open: HashSet<u64>,
+    note_rows_gen: u64,
+    note_shapes: Rc<RefCell<Option<Rc<notes::NoteShapes>>>>,
     _appearance: Subscription,
     /// M11ag: a note filed for any file: this file's are placed again if its changed.
     _notes_seen: Subscription,
@@ -4725,6 +4737,9 @@ impl FileTab {
             notes: Rc::default(),
             notes_gen: 0,
             notes_asked: None,
+            notes_open: HashSet::new(),
+            note_rows_gen: 0,
+            note_shapes: Rc::default(),
             _appearance: appearance,
             _notes_seen: notes_seen,
         };
@@ -4759,8 +4774,9 @@ impl FileTab {
 
     /// M11ah: the screen rows of `doc` shown in `mode`, cut at `columns` (Wrap) with rows
     /// `row_h` tall and (File mode) the `folded` blocks' lines hidden, (Diff mode) in `cards`,
-    /// paired when `side` (side by side). The one place a map is made (the canvas, Follow, a
-    /// diff's reveal, a fold), so they never disagree.
+    /// paired when `side` (side by side), (M11ag) with the `notes`' rows. The one place a map is
+    /// made (the canvas, Follow, a diff's reveal, a fold), so they never disagree.
+    #[allow(clippy::too_many_arguments)]
     fn row_map_of(
         doc: &Doc,
         mode: FileMode,
@@ -4769,6 +4785,7 @@ impl FileTab {
         folded: &BTreeSet<usize>,
         cards: Option<&DiffParts>,
         side: bool,
+        notes: &[NoteSpan],
     ) -> RowMap {
         if let (FileMode::Diff, Some((grouped, shown, closed, pairs))) = (mode, cards) {
             let layout = DiffLayout {
@@ -4777,7 +4794,7 @@ impl FileTab {
                 closed,
                 pairs: side.then_some(&pairs[..]),
             };
-            return RowMap::diff(&doc.widths, columns, &layout, &[], row_h);
+            return RowMap::diff(&doc.widths, columns, &layout, notes, row_h);
         }
         let hidden = match (mode, &doc.outline) {
             (FileMode::Plain, Some(outline)) if !folded.is_empty() => {
@@ -4785,7 +4802,7 @@ impl FileTab {
             }
             _ => Vec::new(),
         };
-        RowMap::file(&doc.widths, columns, &hidden, &[], row_h)
+        RowMap::file(&doc.widths, columns, &hidden, notes, row_h)
     }
 
     /// The rows of the text shown now (its folds, the Wrap width and row height last drawn),
@@ -4800,6 +4817,7 @@ impl FileTab {
             &self.folded,
             self.diff_parts().as_ref(),
             self.side_on(),
+            &self.note_spans_now(),
         ))
     }
 
@@ -5234,6 +5252,7 @@ impl FileTab {
             && key.layout == self.layout_gen
             && key.columns.is_some() == wrap
             && key.side == self.side_on()
+            && key.notes == self.note_rows_gen
         {
             return Some(map.clone());
         }
@@ -5794,6 +5813,7 @@ impl FileTab {
         if *self.notes != placed {
             self.notes = Rc::new(placed);
             self.notes_gen += 1;
+            self.note_rows_gen += 1;
             cx.notify();
         }
     }
@@ -6686,6 +6706,11 @@ impl FileTab {
                 folded.insert(start);
             }
             self.set_folds(folded, cx);
+            return;
+        }
+        // M11ag: a note's "more" / "less" opens or folds it.
+        if let Some(note) = self.note_toggle_under(e.position) {
+            self.toggle_note(note, cx);
             return;
         }
         // M11ah: side by side, the selection stays in the half pressed (a press that starts
@@ -8162,9 +8187,14 @@ impl FileTab {
             side_by_side: self.mode == FileMode::Diff && self.side_by_side,
             current_half: self.current_half,
             sel_half: self.sel_half,
+            notes: self.notes.clone(),
+            notes_gen: self.notes_gen,
+            notes_open: self.notes_open.clone(),
+            note_rows_gen: self.note_rows_gen,
         });
         let geom = self.geom.clone();
         let row_map = self.rows.clone();
+        let note_shapes = self.note_shapes.clone();
         let fits_side = self.fits_side.clone();
         let drawn = self.drawn.clone();
         let lane = self.lane.clone();
@@ -8240,6 +8270,23 @@ impl FileTab {
                                 .global::<Appearance>()
                                 .file_wrap
                                 .then(|| wrap_cells(width, cw, gutter, side));
+                            // M11ag: the notes' text shaped at the width a note wraps to (a
+                            // layout cache: shaped again only for other notes, another width or
+                            // theme).
+                            let note_left = notes::note_left(cw, gutter, side);
+                            let note_width = (!laid.notes.is_empty()).then(|| {
+                                notes::note_room(width, note_left, laid.mode)
+                                    .floor()
+                                    .max(1.0) as u32
+                            });
+                            let shapes = note_width.map(|width| {
+                                let key = notes::ShapeKey {
+                                    notes: laid.notes_gen,
+                                    width,
+                                    theme: laid.theme,
+                                };
+                                notes::shapes_for(&note_shapes, key, &laid.notes, window)
+                            });
                             // M11ah: the row map, a layout cache made again only for another
                             // key (mode, version, width...) or row height.
                             let row_h = row_height(m.line_height);
@@ -8250,6 +8297,8 @@ impl FileTab {
                                 folds: laid.folds_gen,
                                 layout: laid.layout_gen,
                                 side,
+                                notes: laid.note_rows_gen,
+                                note_width,
                             };
                             let before = row_map.borrow().clone();
                             let rebuilt = !matches!(&before, Some((k, map))
@@ -8266,6 +8315,15 @@ impl FileTab {
                                     &laid.folded,
                                     laid.cards.as_ref().map(|c| &c.parts),
                                     side,
+                                    &shapes.as_ref().map_or_else(Vec::new, |s| {
+                                        notes::spans_for(
+                                            &laid.notes,
+                                            &s.counts(),
+                                            &laid.notes_open,
+                                            laid.mode,
+                                            laid.diff.as_deref().map(Vec::as_slice),
+                                        )
+                                    }),
                                 ),
                             };
                             // The rows reflowed (Wrap switched, review fix; M11ah fix round 1:
@@ -8283,7 +8341,12 @@ impl FileTab {
                                     && if k.side != side {
                                         fit_changed
                                     } else {
-                                        b.columns() != wrap || b.row_h() != f32::from(row_h)
+                                        // M11ag: or the notes' rows changed (a note placed,
+                                        // opened or folded; another width for them).
+                                        b.columns() != wrap
+                                            || b.row_h() != f32::from(row_h)
+                                            || (k.notes, k.note_width)
+                                                != (key.notes, key.note_width)
                                     }
                             });
                             let before = before.map(|(_, map)| map);
@@ -8367,11 +8430,11 @@ impl FileTab {
                                 let row = Bounds::new(bounds.origin, size(bounds.size.width, h));
                                 window.insert_hitbox(row, HitboxBehavior::Normal)
                             });
-                            (m, g, hitbox, map, sticky, marks)
+                            (m, g, hitbox, map, sticky, marks, shapes)
                         },
-                        move |_, (m, g, hitbox, map, sticky, marks), window, cx| {
+                        move |_, (m, g, hitbox, map, sticky, marks, shapes), window, cx| {
                             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
-                            paint_body(&frame, &g, &m, &map, window, cx);
+                            paint_body(&frame, &g, &m, &map, shapes.as_deref(), window, cx);
                             if let (Some(line), Some(row)) = (frame.sticky, &sticky) {
                                 window.set_cursor_style(CursorStyle::PointingHand, row);
                                 paint_sticky(&frame, &g, &m, &map, line, window, cx);
@@ -8440,6 +8503,9 @@ mod preview;
 
 #[path = "file_tab_ask.rs"]
 mod ask;
+
+#[path = "file_tab_notes.rs"]
+mod notes;
 
 /// What the UI screenshots read of a tab, and the change list they give it.
 #[cfg(feature = "ui-shots")]
@@ -9018,6 +9084,7 @@ impl FileTab {
             &self.folded,
             Some(&parts),
             self.side_on(),
+            &self.note_spans_now(),
         );
         let card = d.grouped.cards.iter().position(|c| c.rows.contains(&row));
         let top = match card.and_then(|k| map.title_row(k)) {
@@ -11528,17 +11595,25 @@ mod tests {
         let slices: Vec<&str> = lines.clone();
         doc.outline = code_outline::outline(&slices, false, LIMIT).map(Arc::new);
         let folded: BTreeSet<usize> = [11].into();
-        let map = FileTab::row_map_of(&doc, FileMode::Plain, None, 10.0, &folded, None, false);
+        let map = FileTab::row_map_of(&doc, FileMode::Plain, None, 10.0, &folded, None, false, &[]);
         assert_eq!(map.row(11), Some(Row::Line { line: 11, cell0: 0 }));
         assert_eq!(map.row(12), Some(Row::Line { line: 36, cell0: 0 }));
         assert_eq!(map.hidden_after(11).len(), 24, "the pill's 24 lines");
         assert_eq!(map.len(), 40 - 24);
         // Wrap on: the same lines hidden.
-        let wrapped =
-            FileTab::row_map_of(&doc, FileMode::Plain, Some(80), 10.0, &folded, None, false);
+        let wrapped = FileTab::row_map_of(
+            &doc,
+            FileMode::Plain,
+            Some(80),
+            10.0,
+            &folded,
+            None,
+            false,
+            &[],
+        );
         assert_eq!(wrapped.row(12), Some(Row::Line { line: 36, cell0: 0 }));
         // Not in Diff mode.
-        let diff = FileTab::row_map_of(&doc, FileMode::Diff, None, 10.0, &folded, None, false);
+        let diff = FileTab::row_map_of(&doc, FileMode::Diff, None, 10.0, &folded, None, false, &[]);
         assert_eq!(diff.row(12), Some(Row::Line { line: 12, cell0: 0 }));
     }
 
