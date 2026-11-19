@@ -368,6 +368,12 @@ Calls made in the build (the controller's rulings, each with the reason in the b
   lands on the next turn's edit (Task 7's fix).
 - **Notes are looked for in a file's text with the byte-safe cut** (Task 8's fix: a new text ending in a multi-byte
   character crashed the first version).
+- **One text anchors, another is a pure removal, in one edit:** no deletion note; one note per reason per file (spec 8)
+  already shows that reason.
+- **In an SSH workspace the bar's label is correct whenever the bar shows** (Task 4 covers it with a scene); Ask
+  re-checks when pressed.
+- **An edit's texts are a set,** not index-aligned with its edits or writes; a `Write` with no readable file gives
+  nothing.
 - **A removal-only change is decided by the ledger** (who), not "you", so an agent's deletion is stamped to it.
 - **"A note under a folded line hides with the fold":** a note whose line is inside a fold is hidden; a note under the
   fold's shown header stays.
@@ -388,8 +394,14 @@ Calls made in the build (the controller's rulings, each with the reason in the b
   the store holding it; it then waits for that agent's next exact change.
 - A note under a fold counts in the pill but the pill's click skips it: with every note folded the click does nothing
   while the pill says "1 note".
-- Note rows when the code is wrapped or the window is resized can snap the scroll to the top of a row (up to one row's
-  jump).
+- With Wrap off, a note landing far below the view, or a window resize, can snap the scroll to the top of a row (up to one
+  row's jump).
+- A folded note's "more" can cut a word part-way at the end of its second row.
+- Right after a switch from File to Diff mode, a note's reveal (the pill's step) can be off by a row.
+- When one edit has one text that anchors and another that is a pure removal, no deletion note is placed; the one note
+  per reason per file shows instead.
+- A deletion that empties the file drops the light claim, so no note.
+- A `Write` with no readable file gives no note.
 - A turn you stop (Stop) clears the pending reasons, so an interrupted turn that keeps editing gets no note.
 - No notes for notebooks, and none in Preview; in Diff mode none where only removed lines surround.
 - Ask works from a mouse selection that is scrolled off screen too (the bar is hidden then, ⌘↵ still asks).
