@@ -43,6 +43,7 @@ use crate::agent_markdown::{Md, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
 use crate::appearance::Appearance;
 use crate::block_view::BlockDrag;
+use crate::code_ask::{CodeRef, agent_path};
 use crate::composer::{Composer, ComposerEvent};
 use crate::diff_view::{RowKind, parse_diff};
 use crate::file_tab::{DiffRowColours, diff_row_colours};
@@ -299,6 +300,9 @@ pub fn inserted_path(root: &Path, cwd: &Path, rel: &str) -> String {
 pub enum Attachment {
     Text(String),
     File(PathBuf),
+    /// Code asked about from a file tab (M11ag): sent as its path and lines, then the code.
+    #[allow(dead_code)] // made by Ask, wired in by a later M11ag task
+    Code(CodeRef),
     Image {
         name: String,
         picture: Picture,
@@ -316,7 +320,16 @@ impl Attachment {
         match self {
             Attachment::Text(text) => text.clone(),
             Attachment::File(path) => file_name(path),
+            Attachment::Code(code) => code.label(),
             Attachment::Image { name, .. } => name.clone(),
+        }
+    }
+
+    /// What hovering its chip says: a code chip's full path.
+    pub fn tip(&self) -> Option<String> {
+        match self {
+            Attachment::Code(code) => Some(code.path.display().to_string()),
+            _ => None,
         }
     }
 
@@ -324,6 +337,7 @@ impl Attachment {
     pub fn glyph(&self) -> &'static str {
         match self {
             Attachment::Image { .. } => "\u{1f5bc}",
+            Attachment::Code(_) => "</>",
             _ => "\u{1f4ce}",
         }
     }
@@ -444,13 +458,20 @@ enum ImageFrom {
 
 /// What is sent as text for a message with attachments: the text, then each attachment (a
 /// command block's text, a file's path, an image's path). With `images_inline` the agent takes
-/// images in the message itself, so they are not in the text.
-pub fn wire_text(text: &str, attachments: &[Attachment], images_inline: bool) -> String {
+/// images in the message itself, so they are not in the text. A code chip says its path from
+/// the agent's folder `cwd` (else whole), its lines, and the code.
+pub fn wire_text(
+    text: &str,
+    attachments: &[Attachment],
+    images_inline: bool,
+    cwd: &Path,
+) -> String {
     let mut out = text.to_string();
     for a in attachments {
         let said = match a {
             Attachment::Text(text) => text.clone(),
             Attachment::File(path) => path.to_string_lossy().into_owned(),
+            Attachment::Code(code) => code.text(&agent_path(&code.path, code.real.as_deref(), cwd)),
             Attachment::Image { path, .. } if !images_inline => match path {
                 Some(path) => path.to_string_lossy().into_owned(),
                 None => continue,
@@ -463,6 +484,16 @@ pub fn wire_text(text: &str, attachments: &[Attachment], images_inline: bool) ->
         out.push_str(&said);
     }
     out
+}
+
+/// Whether `new` may join the waiting `list`: the same code (file and lines) twice is one chip.
+fn attachable(list: &[Attachment], new: &Attachment) -> bool {
+    let Attachment::Code(code) = new else {
+        return true;
+    };
+    !list
+        .iter()
+        .any(|a| matches!(a, Attachment::Code(c) if c.same_place(code)))
 }
 
 /// What the conversation's row for a message lists of its attachments.
@@ -1406,7 +1437,7 @@ impl AgentTab {
             self.unconfirmed = Some(id);
         }
         let inline = self.provider.is_some_and(|p| p.sends_images());
-        let wire = wire_text(&text, &attachments, inline);
+        let wire = wire_text(&text, &attachments, inline, &self.start.cwd);
         let images = if inline {
             pictures(&attachments)
         } else {
@@ -1967,6 +1998,9 @@ impl AgentTab {
     /// paused tab (R13); an error tab (no agent) has nothing to send it to.
     pub fn attach(&mut self, attachment: Attachment, cx: &mut Context<Self>) {
         if self.provider.is_none() {
+            return;
+        }
+        if !attachable(&self.attachments, &attachment) {
             return;
         }
         self.attachments.push(attachment);
@@ -3906,6 +3940,7 @@ impl Render for AgentTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::code_ask::CodeLines;
     use crate::providers::Picture;
     use crate::ui_tokens::contrast;
 
@@ -4083,6 +4118,59 @@ mod tests {
         assert!(!remove_attachment(&mut list, 0));
     }
 
+    static CWD_STR: &str = "/p/fuxx-cli";
+
+    fn code(first: usize, last: usize) -> CodeRef {
+        CodeRef {
+            path: PathBuf::from("/p/fuxx-cli/src/workspace.rs"),
+            real: None,
+            lines: CodeLines::Lines { first, last },
+            fence: Some("rust".into()),
+            body: "if let Some(tab) = pane.find(&path) {\n    return self.show(tab);\n}".into(),
+        }
+    }
+
+    #[test]
+    fn wire_text_gives_code_with_its_path_from_the_agent_folder() {
+        let list = [Attachment::Code(code(43, 45))];
+        assert_eq!(
+            wire_text("why?", &list, false, Path::new(CWD_STR)),
+            "why?\n\nsrc/workspace.rs:43-45\n```rust\nif let Some(tab) = pane.find(&path) {\n    return self.show(tab);\n}\n```"
+        );
+        // A folder that doesn't hold the file gets the whole path.
+        assert!(
+            wire_text("", &list, false, Path::new("/q"))
+                .starts_with("/p/fuxx-cli/src/workspace.rs:43-45\n")
+        );
+    }
+
+    #[test]
+    fn the_same_code_twice_is_one_chip() {
+        let a = Attachment::Code(code(43, 45));
+        assert!(attachable(&[], &a));
+        assert!(!attachable(
+            std::slice::from_ref(&a),
+            &Attachment::Code(code(43, 45))
+        ));
+        assert!(attachable(
+            std::slice::from_ref(&a),
+            &Attachment::Code(code(43, 46))
+        ));
+        assert!(attachable(
+            std::slice::from_ref(&a),
+            &Attachment::File(PathBuf::from("/p/fuxx-cli/src/workspace.rs"))
+        ));
+    }
+
+    #[test]
+    fn the_code_chip_says_its_lines_and_tips_its_path() {
+        let a = Attachment::Code(code(43, 45));
+        assert_eq!(a.label(), "workspace.rs:43\u{2013}45");
+        assert_eq!(a.glyph(), "</>");
+        assert_eq!(a.tip().as_deref(), Some("/p/fuxx-cli/src/workspace.rs"));
+        assert_eq!(Attachment::Text("x".into()).tip(), None);
+    }
+
     fn image(name: &str, path: Option<&str>) -> Attachment {
         Attachment::Image {
             name: name.into(),
@@ -4094,9 +4182,15 @@ mod tests {
     #[test]
     fn attachments_follow_the_text() {
         let text = |s: &str| Attachment::Text(s.into());
-        assert_eq!(wire_text("fix", &[], false), "fix");
-        assert_eq!(wire_text("fix", &[text("out")], false), "fix\n\nout");
-        assert_eq!(wire_text("", &[text("out")], false), "out");
+        assert_eq!(wire_text("fix", &[], false, Path::new(CWD_STR)), "fix");
+        assert_eq!(
+            wire_text("fix", &[text("out")], false, Path::new(CWD_STR)),
+            "fix\n\nout"
+        );
+        assert_eq!(
+            wire_text("", &[text("out")], false, Path::new(CWD_STR)),
+            "out"
+        );
     }
 
     #[test]
@@ -4108,17 +4202,28 @@ mod tests {
         ];
         // An agent that takes no image in the message gets its path, as a file's.
         assert_eq!(
-            wire_text("look", &list, false),
+            wire_text("look", &list, false, Path::new(CWD_STR)),
             "look\n\n/p/notes.txt\n\n/p/shot.png\n\nout"
         );
         // One that does gets the image apart (`Action::Send`'s images): not in the text.
         assert_eq!(
-            wire_text("look", &list, true),
+            wire_text("look", &list, true, Path::new(CWD_STR)),
             "look\n\n/p/notes.txt\n\nout"
         );
-        assert_eq!(wire_text("", &[image("a.png", Some("/p/a.png"))], true), "");
+        assert_eq!(
+            wire_text(
+                "",
+                &[image("a.png", Some("/p/a.png"))],
+                true,
+                Path::new(CWD_STR)
+            ),
+            ""
+        );
         // Without a path (nothing wrote one) there is nothing to say.
-        assert_eq!(wire_text("hi", &[image("a.png", None)], false), "hi");
+        assert_eq!(
+            wire_text("hi", &[image("a.png", None)], false, Path::new(CWD_STR)),
+            "hi"
+        );
     }
 
     #[test]
