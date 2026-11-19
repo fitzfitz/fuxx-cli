@@ -2,12 +2,16 @@
 //! updates, newest last, in memory only, the last `MAX`. Pure: the caller passes the time in.
 //! The Activity panel draws it.
 
+use crate::command_name::{Ending, Finished};
 use crate::status::Status;
 use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};
 
 /// Entries kept per terminal; older ones fall off.
 pub const MAX: usize = 200;
+
+/// A command that ran this long is logged when it ends (M11q); a shorter one only when it failed.
+pub const COMMAND_MIN: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
@@ -19,6 +23,13 @@ pub enum Kind {
     },
     Note(String),
     Progress(u8, Option<String>),
+    /// A command at the shell prompt ended (M11q): its short form (or `command`), how, and how
+    /// long it ran.
+    Command {
+        name: String,
+        ending: Ending,
+        ran: Duration,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +67,20 @@ impl ActivityLog {
                 question,
             },
         );
+    }
+
+    /// A command that ended: an entry only when it ran `COMMAND_MIN` or failed.
+    pub fn command(&mut self, fin: &Finished, at: SystemTime) {
+        if fin.ran >= COMMAND_MIN || fin.ending.failed() {
+            self.push(
+                at,
+                Kind::Command {
+                    name: fin.name().to_string(),
+                    ending: fin.ending,
+                    ran: fin.ran,
+                },
+            );
+        }
     }
 
     /// A note: blank, cleared or the same as the last note entry is nothing.
@@ -130,7 +155,7 @@ pub fn lasted_label(d: Duration) -> String {
 }
 
 /// An event's words (M11v part 4): a status's word (`Done`, its time on the second line), a
-/// note's text, `Progress 42% · build`.
+/// note's text, `Progress 42% · build`, a command's `pnpm build — Done in 3m 12s`.
 pub fn event_title(kind: &Kind) -> String {
     match kind {
         Kind::Status { status, .. } => match status {
@@ -142,6 +167,12 @@ pub fn event_title(kind: &Kind) -> String {
         Kind::Note(n) => n.clone(),
         Kind::Progress(p, Some(l)) => format!("Progress {p}% \u{b7} {l}"),
         Kind::Progress(p, None) => format!("Progress {p}%"),
+        Kind::Command { name, ending, ran } => Finished {
+            short: Some(name.clone()),
+            ending: *ending,
+            ran: *ran,
+        }
+        .logged(),
     }
 }
 
@@ -200,6 +231,7 @@ pub fn day_heading(day: i64, today: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command_name::{Ending, Finished};
     use std::time::UNIX_EPOCH;
 
     fn t(s: u64) -> SystemTime {
@@ -321,6 +353,57 @@ mod tests {
         log.progress(Some((5, None)), t(1));
         log.progress(None, t(2));
         assert_eq!(log.len(), 1);
+    }
+
+    fn fin(ending: Ending, ms: u64) -> Finished {
+        Finished {
+            short: Some("pnpm build".into()),
+            ending,
+            ran: Duration::from_millis(ms),
+        }
+    }
+
+    #[test]
+    fn a_command_is_logged_when_it_ran_three_seconds_or_failed() {
+        let mut log = ActivityLog::default();
+        log.command(&fin(Ending::Done, 2_999), t(0));
+        assert!(log.is_empty(), "2999 ms done");
+        log.command(&fin(Ending::Done, 3_000), t(1));
+        assert_eq!(log.len(), 1, "3 s done");
+        log.command(&fin(Ending::Failed(1), 0), t(2));
+        assert_eq!(log.len(), 2, "0 s failed");
+        log.command(&fin(Ending::Stopped, 1_000), t(3));
+        assert_eq!(log.len(), 2, "1 s stopped");
+        log.command(&fin(Ending::Stopped, 30_000), t(4));
+        assert_eq!(log.len(), 3, "30 s stopped");
+        assert_eq!(
+            log.newest_first().next().unwrap().kind,
+            Kind::Command {
+                name: "pnpm build".into(),
+                ending: Ending::Stopped,
+                ran: Duration::from_secs(30)
+            }
+        );
+    }
+
+    #[test]
+    fn a_commands_words() {
+        let mut log = ActivityLog::default();
+        log.command(&fin(Ending::Done, 192_000), t(0));
+        let kind = &log.newest_first().next().unwrap().kind;
+        assert_eq!(event_title(kind), "pnpm build \u{2014} Done in 3m 12s");
+        assert_eq!(event_detail(kind), None);
+        let none = Finished {
+            short: None,
+            ending: Ending::Failed(2),
+            ran: Duration::from_secs(5),
+        };
+        log.command(&none, t(1));
+        let kind = &log.newest_first().next().unwrap().kind;
+        assert_eq!(
+            event_title(kind),
+            "command \u{2014} Failed (exit 2) after 5s"
+        );
     }
 
     #[test]

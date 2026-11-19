@@ -227,7 +227,6 @@ impl Finished {
     }
 
     /// Activity's line.
-    #[allow(dead_code)] // until M11q Task 9
     pub fn logged(&self) -> String {
         format!("{} — {}", self.name(), self.words())
     }
