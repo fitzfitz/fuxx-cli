@@ -806,6 +806,8 @@ fn command_banner() {
 
     const BACK: &str = "fuxx-cli";
     const SUB: &str = "#2";
+    // The session with no name of yours (`index` finds it by this).
+    const UNNAMED: &str = "";
 
     let theme = shot_theme("Catppuccin Mocha");
     let slot: Slot = Rc::new(RefCell::new(None));
@@ -819,6 +821,7 @@ fn command_banner() {
             for name in ["front", BACK, "tests"] {
                 ws.open_shot_session(name, folder, SHELL_TEXT, None, window, cx);
             }
+            ws.open_unnamed_shot_session(Some(folder), SHELL_TEXT, window, cx);
             let front = ws.sessions.position(|s| s.label() == "front");
             ws.select(front.expect("front"), window, cx);
             // You are at the window (an off-screen one is never active): its active terminal
@@ -835,9 +838,10 @@ fn command_banner() {
         let ws = slotted(&acting);
         let index = |cx: &VisualTestAppContext, name: &str| {
             cx.read(|cx| {
-                ws.read(cx)
-                    .sessions
-                    .position(|s| s.name.as_deref() == Some(name))
+                ws.read(cx).sessions.position(|s| match name {
+                    UNNAMED => s.name.is_none(),
+                    _ => s.name.as_deref() == Some(name),
+                })
             })
             .unwrap_or_else(|| panic!("{n}: a session named {name}"))
         };
@@ -845,6 +849,17 @@ fn command_banner() {
             let i = index(cx, name);
             cx.read(|cx| ws.read(cx).sessions.items()[i].view.clone())
         };
+        // What `ps` last saw running in it (frozen in the scenes).
+        let program =
+            |cx: &mut VisualTestAppContext, name: &str, state: crate::procs::ProgramState| {
+                let i = index(cx, name);
+                cx.update(|cx| {
+                    ws.update(cx, |ws, _| {
+                        let id = ws.sessions.items()[i].id;
+                        ws.programs.set_for_shots(id, state);
+                    })
+                });
+            };
         let status = |cx: &VisualTestAppContext, name: &str| {
             let i = index(cx, name);
             cx.read(|cx| ws.read(cx).sessions.items()[i].status)
@@ -906,6 +921,8 @@ fn command_banner() {
         // `sleep 8 …`: silent, so Idle until its end mark.
         starts(cx, BACK, Some("sleep 8; true"));
         assert_eq!(told(cx), nothing, "{n}: a start tells nothing");
+        // A child `ps` saw last: an ending's subtitle names no program (it has exited).
+        program(cx, BACK, crate::procs::ProgramState::Running("node".into()));
         ends(cx, BACK, Some(0), 8);
         assert_eq!(
             told(cx),
@@ -920,6 +937,7 @@ fn command_banner() {
             "{n}: one banner, one entry, one event for the ending"
         );
         assert_eq!(status(cx, BACK), Status::Done, "{n}: and it is Done");
+        program(cx, BACK, crate::procs::ProgramState::Prompt);
         reports(cx, BACK, Status::Done);
         assert_eq!(told(cx), nothing, "{n}: its tracker's own Done is no news");
         // Marks again with no keystroke (forged, or a program's): this Done had its ending told.
@@ -1102,6 +1120,23 @@ fn command_banner() {
                 true
             ),
             "{n}: a terminal with no marks"
+        );
+
+        // A workspace with no name of yours, its terminal untitled, is called by its command: the
+        // silence guess's title doesn't say it twice.
+        starts(cx, UNNAMED, Some("pnpm dev"));
+        worked_then_quiet(cx, UNNAMED, 20);
+        assert_eq!(
+            told(cx),
+            Told::one(
+                "pnpm dev",
+                "#4 \u{b7} fuxx-cli",
+                "Finished",
+                "Worked for 20s",
+                "Worked for 20s",
+                true
+            ),
+            "{n}: an unnamed workspace: `pnpm dev \u{2014} Finished`"
         );
 
         // The order the view tells its owner in, by the app's own path.

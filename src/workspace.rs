@@ -2517,6 +2517,10 @@ impl Workspace {
             // runs there.
             let session = &self.sessions.items()[index];
             let (doing, running) = (session.title.clone(), session.command.clone());
+            // Not when it is what the workspace is called already (an unnamed, untitled one):
+            // `pnpm dev — Finished`, not `pnpm dev — pnpm dev`.
+            let label = self.notice_name(index);
+            let running = running.filter(|r| **r != *label);
             if let Some(words) = notifier::words(
                 new,
                 question.as_deref(),
@@ -2539,6 +2543,19 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The name a notification about session `index` goes under: its workspace's label, as the
+    /// sidebar and the 🔔 list say it, else the terminal's own.
+    fn notice_name(&self, index: usize) -> String {
+        match self.workspace_of(index) {
+            Some(ws) => self.workspace_label(ws).to_string(),
+            None => self
+                .sessions
+                .items()
+                .get(index)
+                .map_or_else(String::new, |s| s.label().to_string()),
+        }
+    }
+
     /// Session `index`'s notification, in `words`, about its being in `status`: the
     /// `notification` event for scripts, its 🔔 entry and, with `banner`, the banner.
     pub(crate) fn notify_terminal(
@@ -2552,18 +2569,16 @@ impl Workspace {
         let Some(id) = self.sessions.items().get(index).map(|s| s.id) else {
             return;
         };
-        // Who it is: the program seen running there.
+        // Who it is: the program seen running there. Not at a command's ending: it has exited
+        // by then, and what `ps` last saw may be a child of it.
         let agent = match self.programs.state(id) {
-            ProgramState::Running(name) if !name.is_empty() => Some(name),
+            ProgramState::Running(name) if !name.is_empty() && !words.always => Some(name),
             _ => None,
         };
         // The workspace's name, as the sidebar and the 🔔 list say it (part 5); where and who
         // in the subtitle: its number (what ⌘1–⌘9 take you to), its group, the agent.
         let ws = self.workspace_of(index);
-        let name = ws.map_or_else(
-            || self.terminal_label(id).to_string(),
-            |ws| self.workspace_label(ws).to_string(),
-        );
+        let name = self.notice_name(index);
         let group = ws.and_then(|ws| self.group_label(ws));
         let number = ws.and_then(|ws| self.workspace_number(ws)).unwrap_or(0);
         let summary = notifier::banner_title(&name, &words.message);
