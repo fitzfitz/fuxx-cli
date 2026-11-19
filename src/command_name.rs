@@ -5,6 +5,8 @@
 //! anywhere: a pane's name, a banner, the 🔔 list, Activity. Mark text is untrusted, so the
 //! result is cleaned and capped here.
 
+use std::time::Duration;
+
 use crate::agent_detect::{is_assignment, unquote};
 
 /// The longest program name kept, in characters.
@@ -149,6 +151,95 @@ pub fn short_form(line: &str) -> Option<String> {
     Some(out)
 }
 
+/// How a command ended, from the exit code its end mark carried (if any).
+#[allow(dead_code)] // until M11q Task 3 (Ending, Finished and their methods)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ending {
+    Done,
+    Stopped,
+    Failed(i32),
+    Finished,
+}
+
+#[allow(dead_code)] // until M11q Task 3
+impl Ending {
+    /// 0 is done, 130 (⌃C) stopped, any other code failed; no code just finished.
+    pub fn of(exit: Option<i32>) -> Ending {
+        match exit {
+            Some(0) => Ending::Done,
+            Some(130) => Ending::Stopped,
+            Some(n) => Ending::Failed(n),
+            None => Ending::Finished,
+        }
+    }
+
+    pub fn failed(self) -> bool {
+        matches!(self, Ending::Failed(_))
+    }
+}
+
+/// A run's length in its two largest units, the smaller left out when zero: `40s`, `3m 12s`,
+/// `2m`, `1h 4m`, `1d 2h`.
+#[allow(dead_code)] // until M11q Task 3
+pub fn ran_label(d: Duration) -> String {
+    let s = d.as_secs();
+    let units = [(86_400, 'd'), (3600, 'h'), (60, 'm'), (1, 's')];
+    let Some(i) = units.iter().position(|&(n, _)| s >= n) else {
+        return "0s".to_string();
+    };
+    let (big, big_c) = units[i];
+    let mut out = format!("{}{big_c}", s / big);
+    if let Some(&(small, small_c)) = units.get(i + 1) {
+        let rest = (s % big) / small;
+        if rest > 0 {
+            out.push_str(&format!(" {rest}{small_c}"));
+        }
+    }
+    out
+}
+
+/// The banner's body for an ending.
+#[allow(dead_code)] // until M11q Task 3
+pub fn ending_words(ending: Ending, ran: Duration) -> String {
+    let d = ran_label(ran);
+    match ending {
+        Ending::Done => format!("Done in {d}"),
+        Ending::Stopped => format!("Stopped after {d}"),
+        Ending::Failed(n) => format!("Failed (exit {n}) after {d}"),
+        Ending::Finished => format!("Finished after {d}"),
+    }
+}
+
+/// A command that ended: its short form (if it had one), how, and how long it ran.
+#[allow(dead_code)] // until M11q Task 3
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Finished {
+    pub short: Option<String>,
+    pub ending: Ending,
+    pub ran: Duration,
+}
+
+#[allow(dead_code)] // until M11q Task 3
+impl Finished {
+    pub fn name(&self) -> &str {
+        self.short.as_deref().unwrap_or(NO_SHORT)
+    }
+
+    pub fn words(&self) -> String {
+        ending_words(self.ending, self.ran)
+    }
+
+    /// The 🔔 list's line.
+    pub fn listed(&self) -> String {
+        format!("{} · {}", self.name(), self.words())
+    }
+
+    /// Activity's line.
+    pub fn logged(&self) -> String {
+        format!("{} — {}", self.name(), self.words())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +354,73 @@ mod tests {
             let got = short_form(line).unwrap();
             assert!(!got.chars().any(|c| c.is_control()), "{got:?}");
         }
+    }
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    #[test]
+    fn the_banner_tables_bodies() {
+        let rows = [
+            (Some(0), 192, "Done in 3m 12s"),
+            (Some(130), 3840, "Stopped after 1h 4m"),
+            (Some(101), 40, "Failed (exit 101) after 40s"),
+            (None, 120, "Finished after 2m"),
+        ];
+        for (exit, s, want) in rows {
+            assert_eq!(ending_words(Ending::of(exit), secs(s)), want);
+        }
+    }
+
+    #[test]
+    fn endings_from_the_exit_code() {
+        assert_eq!(Ending::of(Some(0)), Ending::Done);
+        assert_eq!(Ending::of(Some(130)), Ending::Stopped);
+        assert!(!Ending::Stopped.failed());
+        assert!(!Ending::Done.failed());
+        assert!(!Ending::Finished.failed());
+        for n in [1, 101, 143, 255, 256, -1] {
+            assert_eq!(Ending::of(Some(n)), Ending::Failed(n));
+            assert!(Ending::of(Some(n)).failed());
+        }
+        assert_eq!(Ending::of(None), Ending::Finished);
+    }
+
+    #[test]
+    fn durations_use_two_units() {
+        let rows = [
+            (0, "0s"),
+            (8, "8s"),
+            (59, "59s"),
+            (60, "1m"),
+            (192, "3m 12s"),
+            (3600, "1h"),
+            (3661, "1h 1m"),
+            (3840, "1h 4m"),
+            (86_400, "1d"),
+            (93_600, "1d 2h"),
+        ];
+        for (s, want) in rows {
+            assert_eq!(ran_label(secs(s)), want, "{s} s");
+        }
+    }
+
+    #[test]
+    fn a_finished_command_in_the_list_and_in_activity() {
+        let f = Finished {
+            short: Some("pnpm build".to_string()),
+            ending: Ending::Failed(101),
+            ran: secs(40),
+        };
+        assert_eq!(f.listed(), "pnpm build · Failed (exit 101) after 40s");
+        assert_eq!(f.logged(), "pnpm build — Failed (exit 101) after 40s");
+        let none = Finished {
+            short: None,
+            ending: Ending::Done,
+            ran: secs(3),
+        };
+        assert_eq!(none.name(), "command");
+        assert_eq!(none.listed(), "command · Done in 3s");
     }
 }
