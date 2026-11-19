@@ -83,10 +83,18 @@ impl CodeRef {
         }
     }
 
-    /// What the agent receives: the header, then the code in a fence.
+    /// What the agent receives: the header, then the code in a fence: one backtick longer than
+    /// the longest run of backticks in the code, and never under three, so code with a fence
+    /// of its own (Markdown) does not close it early.
     pub fn text(&self, shown: &str) -> String {
+        let (mut longest, mut run) = (0, 0);
+        for c in self.body.chars() {
+            run = if c == '`' { run + 1 } else { 0 };
+            longest = longest.max(run);
+        }
+        let fence = "`".repeat((longest + 1).max(3));
         format!(
-            "{}\n```{}\n{}\n```",
+            "{}\n{fence}{}\n{}\n{fence}",
             self.header(shown),
             self.fence.as_deref().unwrap_or(""),
             self.body
@@ -296,6 +304,28 @@ mod tests {
             c.text("src/workspace.rs"),
             "src/workspace.rs:43-45\n```rust\nif let Some(tab) = pane.find(&path) {\n    return self.show(tab);\n}\n```"
         );
+    }
+
+    /// Final fixes, F4: the fence is one backtick longer than the longest run of backticks in
+    /// the code (never under three), so a fence inside the code does not close it early.
+    #[test]
+    fn the_fence_is_longer_than_any_backtick_run_in_the_code() {
+        let mut c = code(1, 5);
+        c.fence = Some("markdown".into());
+        c.body = "Run it:\n```sh\ncargo test --bin fuxx\n```\nDone.".into();
+        assert_eq!(
+            c.text("docs/README.md"),
+            "docs/README.md:1-5\n````markdown\nRun it:\n```sh\ncargo test --bin fuxx\n```\nDone.\n````"
+        );
+        // A longer run inside a line counts too; one or two backticks leave the fence at three.
+        c.body = "a ````` b".into();
+        assert!(
+            c.text("x.md")
+                .ends_with("\n``````markdown\na ````` b\n``````")
+        );
+        c.body = "let s = `x`; ``y``".into();
+        c.fence = None;
+        assert_eq!(c.text("x.md"), "x.md:1-5\n```\nlet s = `x`; ``y``\n```");
     }
 
     #[test]
