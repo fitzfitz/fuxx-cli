@@ -14,7 +14,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone (2026-11-19, latest):** **M11q — Which command finished** 🟨 built, **merged to master 2026-11-20** (not pushed), waiting for your on-screen check (all 12 tasks, 0–11; note 68, 19 on-screen items). The whole-branch review is done, its fix wave applied and the second full ui-shots run done (244 passed, the same 8 display-dependent scenes failing); next is your on-screen check. M11ag's check is still open.
+- **Current milestone (2026-11-19, latest):** **M11q — Which command finished** 🟨 built, **merged to master and pushed 2026-11-20** (`f93654b`), waiting for your on-screen check (all 12 tasks, 0–11; note 68, 21 on-screen items). The whole-branch review is done, its fix wave applied and the second full ui-shots run done (244 passed, the same 8 display-dependent scenes failing); next is your on-screen check. M11ag's check is still open.
 - **Current milestone (2026-11-19, previous):** **M11ag — Ask the agent from the code** 🟨 built, **merged to master 2026-11-19** on your standing word and pushed on your word (`abe581d`), waiting for your on-screen check (all 14 tasks, each of 0–12 reviewed; the whole-branch review's fix wave in, re-reviewed clean; note 87, 15 on-screen items). M11ai's check is still open.
 - **Current milestone (2026-11-18, previous):** **M11ai — Markdown reader upgrade** 🟨 built (12 tasks, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`f7707e9`); waiting for your on-screen check (note 86, 15 items). M11ag is next.
 - **Current milestone (2026-11-18, M11al):** **M11al — UI Uplift 3** 🟨 built (13 tasks + 8b, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`6dabcf9`); waiting for your on-screen check (note 84, 14 items). M11ai (Markdown reader) resumes next, then M11ag.
@@ -28,6 +28,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-20 — M11q: pushed
+
+- **What:** master pushed to origin (`fca01ce..f93654b`, 25 commits: M11q and its short-form fix), on your word ("scrub then push").
+- **Scrub:** the outgoing diff and commit messages were grepped for the private-name list; the only hit was a context line in `src/ui_shots/naming.rs` (`/Users/me/w/invitee`), which is already on origin and not changed by this push.
+- **Next:** your on-screen check of note 68 (21 items); then M11ad (Background agents), design first, built the new way.
 
 ### 2026-11-20 — M11q: the short form no longer shows a value after the program
 - **Did:** on your call ("go with 1, fix the cd one too"), the short form keeps a second word only for programs known
