@@ -60,6 +60,10 @@ pub mod code {
     pub const WORD_RADIUS: f32 = 2.0;
     pub const SIDE_HAIRLINE: f32 = 1.0;
     pub const SIDE_EMPTY_ALPHA: f32 = 0.03;
+    /// M11ag: a note row's bar (in the agent's colour), and the room kept clear before its
+    /// "more" / "less".
+    pub const NOTE_BAR: f32 = 2.0;
+    pub const NOTE_MORE_GAP: f32 = 8.0;
 }
 
 /// M11ai (Markdown reader): every size the file tab's Markdown Preview is drawn with, in points,

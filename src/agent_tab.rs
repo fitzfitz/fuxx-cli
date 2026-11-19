@@ -16,8 +16,8 @@
 //! `ProcessEnd`, `resume_failed` and the small text helpers are pure and tested.
 
 use std::cell::Cell;
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -43,6 +43,7 @@ use crate::agent_markdown::{Md, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
 use crate::appearance::Appearance;
 use crate::block_view::BlockDrag;
+use crate::code_ask::{CodeRef, agent_path};
 use crate::composer::{Composer, ComposerEvent};
 use crate::diff_view::{RowKind, parse_diff};
 use crate::file_tab::{DiffRowColours, diff_row_colours};
@@ -130,9 +131,33 @@ pub enum AgentTabEvent {
     Edit { call: String, paths: Vec<PathBuf> },
     /// That tool call finished.
     EditDone { call: String, ok: bool },
+    /// An edit finished OK and the agent had said why (live events only, M11ag): the files it
+    /// wrote and its note. After the `EditDone`.
+    EditNoted {
+        paths: Vec<PathBuf>,
+        note: crate::edit_notes::EditNote,
+    },
     /// A command block dropped on the tab's body (Task 11): the Workspace reads its output and
     /// attaches it (`attach_block`), as for a drop on the tab in a bar.
     BlockDropped(BlockDrag),
+}
+
+/// What the tab remembers to tell why an edit was made: the turn's last text per speaker
+/// (`None` is the main agent, `Some(call)` the sub-agent of that tool call), and the notes of
+/// edits started and not finished, by call id.
+#[derive(Default)]
+pub(crate) struct Reasons {
+    texts: HashMap<Option<String>, (u64, Arc<str>)>,
+    next_id: u64,
+    started: HashMap<String, (Vec<PathBuf>, crate::edit_notes::EditNote)>,
+}
+
+impl Reasons {
+    /// The turn is over, however it ended: its texts are no one's reason. `next_id` goes on, so
+    /// ids stay unique.
+    fn end_turn(&mut self) {
+        self.texts.clear();
+    }
 }
 
 /// What an agent event tells the edit ledger: a tool call that writes files (`writes`, resolved
@@ -143,9 +168,29 @@ fn edit_events(
     cwd: &Path,
     home: Option<&Path>,
     open: &mut HashSet<String>,
+    reasons: &mut Reasons,
 ) -> Vec<AgentTabEvent> {
     match event {
-        Event::ToolStarted { id, writes, .. } => {
+        Event::MessageDone { text, parent, .. } => {
+            if let Some(reason) = crate::edit_notes::reason_text(text) {
+                reasons.next_id += 1;
+                reasons
+                    .texts
+                    .insert(parent.clone(), (reasons.next_id, reason));
+            }
+            Vec::new()
+        }
+        Event::TurnDone { .. } => {
+            reasons.end_turn();
+            Vec::new()
+        }
+        Event::ToolStarted {
+            id,
+            writes,
+            texts,
+            parent,
+            ..
+        } => {
             let paths: Vec<PathBuf> = writes
                 .iter()
                 .filter_map(|w| crate::edit_ledger::resolve_write(w, cwd, home))
@@ -154,15 +199,31 @@ fn edit_events(
                 return Vec::new();
             }
             open.insert(id.clone());
+            if let Some((reason_id, reason)) = reasons.texts.get(parent) {
+                let note = crate::edit_notes::EditNote {
+                    reason: reason.clone(),
+                    reason_id: *reason_id,
+                    texts: texts.clone(),
+                };
+                reasons.started.insert(id.clone(), (paths.clone(), note));
+            }
             vec![AgentTabEvent::Edit {
                 call: id.clone(),
                 paths,
             }]
         }
-        Event::ToolFinished { id, ok, .. } if open.remove(id) => vec![AgentTabEvent::EditDone {
-            call: id.clone(),
-            ok: *ok,
-        }],
+        Event::ToolFinished { id, ok, .. } if open.remove(id) => {
+            let mut told = vec![AgentTabEvent::EditDone {
+                call: id.clone(),
+                ok: *ok,
+            }];
+            if let Some((paths, note)) = reasons.started.remove(id)
+                && *ok
+            {
+                told.push(AgentTabEvent::EditNoted { paths, note });
+            }
+            told
+        }
         _ => Vec::new(),
     }
 }
@@ -299,6 +360,8 @@ pub fn inserted_path(root: &Path, cwd: &Path, rel: &str) -> String {
 pub enum Attachment {
     Text(String),
     File(PathBuf),
+    /// Code asked about from a file tab (M11ag): sent as its path and lines, then the code.
+    Code(CodeRef),
     Image {
         name: String,
         picture: Picture,
@@ -316,7 +379,16 @@ impl Attachment {
         match self {
             Attachment::Text(text) => text.clone(),
             Attachment::File(path) => file_name(path),
+            Attachment::Code(code) => code.label(),
             Attachment::Image { name, .. } => name.clone(),
+        }
+    }
+
+    /// What hovering its chip says: a code chip's full path.
+    pub fn tip(&self) -> Option<String> {
+        match self {
+            Attachment::Code(code) => Some(code.path.display().to_string()),
+            _ => None,
         }
     }
 
@@ -324,6 +396,7 @@ impl Attachment {
     pub fn glyph(&self) -> &'static str {
         match self {
             Attachment::Image { .. } => "\u{1f5bc}",
+            Attachment::Code(_) => "</>",
             _ => "\u{1f4ce}",
         }
     }
@@ -444,13 +517,20 @@ enum ImageFrom {
 
 /// What is sent as text for a message with attachments: the text, then each attachment (a
 /// command block's text, a file's path, an image's path). With `images_inline` the agent takes
-/// images in the message itself, so they are not in the text.
-pub fn wire_text(text: &str, attachments: &[Attachment], images_inline: bool) -> String {
+/// images in the message itself, so they are not in the text. A code chip says its path from
+/// the agent's folder `cwd` (else whole), its lines, and the code.
+pub fn wire_text(
+    text: &str,
+    attachments: &[Attachment],
+    images_inline: bool,
+    cwd: &Path,
+) -> String {
     let mut out = text.to_string();
     for a in attachments {
         let said = match a {
             Attachment::Text(text) => text.clone(),
             Attachment::File(path) => path.to_string_lossy().into_owned(),
+            Attachment::Code(code) => code.text(&agent_path(&code.path, code.real.as_deref(), cwd)),
             Attachment::Image { path, .. } if !images_inline => match path {
                 Some(path) => path.to_string_lossy().into_owned(),
                 None => continue,
@@ -463,6 +543,16 @@ pub fn wire_text(text: &str, attachments: &[Attachment], images_inline: bool) ->
         out.push_str(&said);
     }
     out
+}
+
+/// Whether `new` may join the waiting `list`: the same code (file and lines) twice is one chip.
+pub(crate) fn attachable(list: &[Attachment], new: &Attachment) -> bool {
+    let Attachment::Code(code) = new else {
+        return true;
+    };
+    !list
+        .iter()
+        .any(|a| matches!(a, Attachment::Code(c) if c.same_place(code)))
 }
 
 /// What the conversation's row for a message lists of its attachments.
@@ -743,6 +833,8 @@ pub struct AgentTab {
     tool_started: std::collections::HashMap<String, Instant>,
     /// Tool calls that write files and haven't finished (reported to the edit ledger).
     open_edits: HashSet<String>,
+    /// Why the edits were made (M11ag): see `Reasons`.
+    reasons: Reasons,
     said: Said,
     /// Stop was pressed: the turn hasn't ended yet. `force`: `STOP_FORCE_AFTER` has passed.
     stopping: Option<Instant>,
@@ -1129,6 +1221,7 @@ impl AgentTab {
             expanded: HashSet::new(),
             tool_started: std::collections::HashMap::new(),
             open_edits: HashSet::new(),
+            reasons: Reasons::default(),
             said: Said::default(),
             stopping: None,
             force: false,
@@ -1199,6 +1292,8 @@ impl AgentTab {
     /// The run ended (or was stopped): its open edits end as not ok, so one that never finished
     /// can't claim later changes.
     fn abandon_edits(&mut self, cx: &mut Context<Self>) {
+        self.reasons.started.clear();
+        self.reasons.end_turn();
         for call in std::mem::take(&mut self.open_edits) {
             cx.emit(AgentTabEvent::EditDone { call, ok: false });
         }
@@ -1406,7 +1501,7 @@ impl AgentTab {
             self.unconfirmed = Some(id);
         }
         let inline = self.provider.is_some_and(|p| p.sends_images());
-        let wire = wire_text(&text, &attachments, inline);
+        let wire = wire_text(&text, &attachments, inline, &self.start.cwd);
         let images = if inline {
             pictures(&attachments)
         } else {
@@ -1736,6 +1831,7 @@ impl AgentTab {
                 &self.start.cwd,
                 home.as_deref(),
                 &mut self.open_edits,
+                &mut self.reasons,
             ) {
                 cx.emit(told);
             }
@@ -1969,6 +2065,9 @@ impl AgentTab {
         if self.provider.is_none() {
             return;
         }
+        if !attachable(&self.attachments, &attachment) {
+            return;
+        }
         self.attachments.push(attachment);
         cx.notify();
     }
@@ -2155,6 +2254,7 @@ impl AgentTab {
         self.force_timer = None;
         let resume = self.conversation_id();
         self.end_process();
+        self.reasons.end_turn();
         self.conversation.apply(Event::Notice("Stopped".into()));
         self.conversation.apply(Event::TurnDone {
             ok: false,
@@ -3906,6 +4006,7 @@ impl Render for AgentTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::code_ask::CodeLines;
     use crate::providers::Picture;
     use crate::ui_tokens::contrast;
 
@@ -3953,9 +4054,10 @@ mod tests {
             parent: None,
             detail: None,
             writes: vec!["hello.txt".into(), String::new()],
+            texts: Vec::new(),
         };
         assert_eq!(
-            edit_events(&started, cwd, None, &mut open),
+            edit_events(&started, cwd, None, &mut open, &mut Reasons::default()),
             vec![AgentTabEvent::Edit {
                 call: "t1".into(),
                 paths: vec![PathBuf::from("/tmp/fx/hello.txt")],
@@ -3967,7 +4069,7 @@ mod tests {
             summary: String::new(),
             output: None,
         };
-        assert!(edit_events(&other, cwd, None, &mut open).is_empty());
+        assert!(edit_events(&other, cwd, None, &mut open, &mut Reasons::default()).is_empty());
         let finished = Event::ToolFinished {
             id: "t1".into(),
             ok: true,
@@ -3975,7 +4077,7 @@ mod tests {
             output: None,
         };
         assert_eq!(
-            edit_events(&finished, cwd, None, &mut open),
+            edit_events(&finished, cwd, None, &mut open, &mut Reasons::default()),
             vec![AgentTabEvent::EditDone {
                 call: "t1".into(),
                 ok: true
@@ -3990,8 +4092,165 @@ mod tests {
             parent: None,
             detail: None,
             writes: vec![],
+            texts: Vec::new(),
         };
-        assert!(edit_events(&read, cwd, None, &mut open).is_empty());
+        assert!(edit_events(&read, cwd, None, &mut open, &mut Reasons::default()).is_empty());
+    }
+
+    fn said(text: &str, parent: Option<&str>) -> Event {
+        Event::MessageDone {
+            message: "m".into(),
+            text: text.into(),
+            parent: parent.map(String::from),
+        }
+    }
+
+    fn edit_call(id: &str, parent: Option<&str>) -> Event {
+        Event::ToolStarted {
+            id: id.into(),
+            name: "Edit".into(),
+            summary: "a.rs".into(),
+            parent: parent.map(String::from),
+            detail: None,
+            writes: vec!["a.rs".into()],
+            texts: vec![crate::providers::EditText::Inserted("x".into())],
+        }
+    }
+
+    fn finish(id: &str, ok: bool) -> Event {
+        Event::ToolFinished {
+            id: id.into(),
+            ok,
+            summary: String::new(),
+            output: None,
+        }
+    }
+
+    /// Feeds events through `edit_events` as the tab does; what it told, in order.
+    fn told_by(events: &[Event]) -> Vec<AgentTabEvent> {
+        let (mut open, mut reasons) = (HashSet::new(), Reasons::default());
+        let cwd = Path::new("/tmp/fx");
+        events
+            .iter()
+            .flat_map(|e| edit_events(e, cwd, None, &mut open, &mut reasons))
+            .collect()
+    }
+
+    fn noted(told: &[AgentTabEvent]) -> Vec<&crate::edit_notes::EditNote> {
+        told.iter()
+            .filter_map(|t| match t {
+                AgentTabEvent::EditNoted { note, .. } => Some(note),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_reason_is_the_last_text_before_the_edit() {
+        let told = told_by(&[
+            said("reuse an open tab", None),
+            edit_call("t1", None),
+            finish("t1", true),
+        ]);
+        let notes = noted(&told);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(&*notes[0].reason, "reuse an open tab");
+        assert_eq!(
+            notes[0].texts,
+            vec![crate::providers::EditText::Inserted("x".into())]
+        );
+        assert!(matches!(
+            told[told.len() - 2],
+            AgentTabEvent::EditDone { .. }
+        ));
+    }
+
+    #[test]
+    fn an_earlier_text_in_the_turn_counts() {
+        let bash = Event::ToolStarted {
+            id: "b1".into(),
+            name: "Bash".into(),
+            summary: "ls".into(),
+            parent: None,
+            detail: None,
+            writes: vec![],
+            texts: vec![],
+        };
+        let told = told_by(&[
+            said("first look around", None),
+            bash,
+            finish("b1", true),
+            edit_call("t1", None),
+            finish("t1", true),
+        ]);
+        let notes = noted(&told);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(&*notes[0].reason, "first look around");
+    }
+
+    #[test]
+    fn an_edit_with_no_text_before_it_in_the_turn_gets_no_note() {
+        let done = Event::TurnDone {
+            ok: true,
+            message: None,
+        };
+        let told = told_by(&[
+            said("last turn's words", None),
+            done,
+            edit_call("t1", None),
+            finish("t1", true),
+        ]);
+        assert!(noted(&told).is_empty());
+        assert!(
+            told.iter()
+                .any(|t| matches!(t, AgentTabEvent::EditDone { ok: true, .. }))
+        );
+    }
+
+    #[test]
+    fn a_sub_agent_edit_takes_its_own_text() {
+        let told = told_by(&[
+            said("main words", None),
+            said("sub words", Some("t0")),
+            edit_call("t1", Some("t0")),
+            finish("t1", true),
+            edit_call("t2", None),
+            finish("t2", true),
+        ]);
+        let notes = noted(&told);
+        assert_eq!(notes.len(), 2);
+        assert_eq!(&*notes[0].reason, "sub words");
+        assert_eq!(&*notes[1].reason, "main words");
+        assert_ne!(notes[0].reason_id, notes[1].reason_id);
+    }
+
+    #[test]
+    fn a_turn_ended_without_turn_done_leaves_no_reason() {
+        // A force stop or a crash ends the turn with no `TurnDone` event: `end_turn` is what
+        // they call.
+        let (mut open, mut reasons) = (HashSet::new(), Reasons::default());
+        let cwd = Path::new("/tmp/fx");
+        edit_events(&said("old turn", None), cwd, None, &mut open, &mut reasons);
+        reasons.end_turn();
+        let told: Vec<_> = [edit_call("t1", None), finish("t1", true)]
+            .iter()
+            .flat_map(|e| edit_events(e, cwd, None, &mut open, &mut reasons))
+            .collect();
+        assert!(noted(&told).is_empty());
+    }
+
+    #[test]
+    fn a_failed_edit_gives_no_note() {
+        let told = told_by(&[
+            said("why", None),
+            edit_call("t1", None),
+            finish("t1", false),
+        ]);
+        assert!(noted(&told).is_empty());
+        assert!(
+            told.iter()
+                .any(|t| matches!(t, AgentTabEvent::EditDone { ok: false, .. }))
+        );
     }
 
     #[test]
@@ -4083,6 +4342,59 @@ mod tests {
         assert!(!remove_attachment(&mut list, 0));
     }
 
+    static CWD_STR: &str = "/p/fuxx-cli";
+
+    fn code(first: usize, last: usize) -> CodeRef {
+        CodeRef {
+            path: PathBuf::from("/p/fuxx-cli/src/workspace.rs"),
+            real: None,
+            lines: CodeLines::Lines { first, last },
+            fence: Some("rust".into()),
+            body: "if let Some(tab) = pane.find(&path) {\n    return self.show(tab);\n}".into(),
+        }
+    }
+
+    #[test]
+    fn wire_text_gives_code_with_its_path_from_the_agent_folder() {
+        let list = [Attachment::Code(code(43, 45))];
+        assert_eq!(
+            wire_text("why?", &list, false, Path::new(CWD_STR)),
+            "why?\n\nsrc/workspace.rs:43-45\n```rust\nif let Some(tab) = pane.find(&path) {\n    return self.show(tab);\n}\n```"
+        );
+        // A folder that doesn't hold the file gets the whole path.
+        assert!(
+            wire_text("", &list, false, Path::new("/q"))
+                .starts_with("/p/fuxx-cli/src/workspace.rs:43-45\n")
+        );
+    }
+
+    #[test]
+    fn the_same_code_twice_is_one_chip() {
+        let a = Attachment::Code(code(43, 45));
+        assert!(attachable(&[], &a));
+        assert!(!attachable(
+            std::slice::from_ref(&a),
+            &Attachment::Code(code(43, 45))
+        ));
+        assert!(attachable(
+            std::slice::from_ref(&a),
+            &Attachment::Code(code(43, 46))
+        ));
+        assert!(attachable(
+            std::slice::from_ref(&a),
+            &Attachment::File(PathBuf::from("/p/fuxx-cli/src/workspace.rs"))
+        ));
+    }
+
+    #[test]
+    fn the_code_chip_says_its_lines_and_tips_its_path() {
+        let a = Attachment::Code(code(43, 45));
+        assert_eq!(a.label(), "workspace.rs:43\u{2013}45");
+        assert_eq!(a.glyph(), "</>");
+        assert_eq!(a.tip().as_deref(), Some("/p/fuxx-cli/src/workspace.rs"));
+        assert_eq!(Attachment::Text("x".into()).tip(), None);
+    }
+
     fn image(name: &str, path: Option<&str>) -> Attachment {
         Attachment::Image {
             name: name.into(),
@@ -4094,9 +4406,15 @@ mod tests {
     #[test]
     fn attachments_follow_the_text() {
         let text = |s: &str| Attachment::Text(s.into());
-        assert_eq!(wire_text("fix", &[], false), "fix");
-        assert_eq!(wire_text("fix", &[text("out")], false), "fix\n\nout");
-        assert_eq!(wire_text("", &[text("out")], false), "out");
+        assert_eq!(wire_text("fix", &[], false, Path::new(CWD_STR)), "fix");
+        assert_eq!(
+            wire_text("fix", &[text("out")], false, Path::new(CWD_STR)),
+            "fix\n\nout"
+        );
+        assert_eq!(
+            wire_text("", &[text("out")], false, Path::new(CWD_STR)),
+            "out"
+        );
     }
 
     #[test]
@@ -4108,17 +4426,28 @@ mod tests {
         ];
         // An agent that takes no image in the message gets its path, as a file's.
         assert_eq!(
-            wire_text("look", &list, false),
+            wire_text("look", &list, false, Path::new(CWD_STR)),
             "look\n\n/p/notes.txt\n\n/p/shot.png\n\nout"
         );
         // One that does gets the image apart (`Action::Send`'s images): not in the text.
         assert_eq!(
-            wire_text("look", &list, true),
+            wire_text("look", &list, true, Path::new(CWD_STR)),
             "look\n\n/p/notes.txt\n\nout"
         );
-        assert_eq!(wire_text("", &[image("a.png", Some("/p/a.png"))], true), "");
+        assert_eq!(
+            wire_text(
+                "",
+                &[image("a.png", Some("/p/a.png"))],
+                true,
+                Path::new(CWD_STR)
+            ),
+            ""
+        );
         // Without a path (nothing wrote one) there is nothing to say.
-        assert_eq!(wire_text("hi", &[image("a.png", None)], false), "hi");
+        assert_eq!(
+            wire_text("hi", &[image("a.png", None)], false, Path::new(CWD_STR)),
+            "hi"
+        );
     }
 
     #[test]

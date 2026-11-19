@@ -512,14 +512,19 @@ pub fn jump_offset(gap_above: f32) -> f32 {
     (gap_above - JUMP_ROOM).max(0.0)
 }
 
-/// The copied heading link (plan-time call 10). Outside a repo and outside home: the full path.
-pub fn heading_link(rel: Option<&Path>, path: &Path, home: Option<&Path>, slug: &str) -> String {
-    let shown = match (rel, home.and_then(|h| path.strip_prefix(h).ok())) {
+/// A file's path as shown in text for an agent or the clipboard: repo-relative when `rel` is
+/// known, else `~/` under home, else the full path.
+pub fn shown_path(rel: Option<&Path>, path: &Path, home: Option<&Path>) -> String {
+    match (rel, home.and_then(|h| path.strip_prefix(h).ok())) {
         (Some(rel), _) => rel.display().to_string(),
         (None, Some(under)) => format!("~/{}", under.display()),
         (None, None) => path.display().to_string(),
-    };
-    format!("{shown}#{slug}")
+    }
+}
+
+/// The copied heading link (plan-time call 10). Outside a repo and outside home: the full path.
+pub fn heading_link(rel: Option<&Path>, path: &Path, home: Option<&Path>, slug: &str) -> String {
+    format!("{}#{slug}", shown_path(rel, path, home))
 }
 
 /// The fence's language (plan-time call 8): its first word.

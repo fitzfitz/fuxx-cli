@@ -32,6 +32,7 @@ mod browser_url;
 mod changes_panel;
 mod chrome_cache;
 mod cli;
+mod code_ask;
 mod code_outline;
 mod colors;
 mod composer;
@@ -44,6 +45,7 @@ mod diff_cards;
 mod diff_view;
 mod drag_gap;
 mod edit_ledger;
+mod edit_notes;
 mod file_tab;
 mod file_tree;
 mod folder_picker;
@@ -325,6 +327,12 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("alt-up", file_tab::PrevChange, Some("FileTab")),
         KeyBinding::new("alt-down", file_tab::NextChange, Some("FileTab")),
         KeyBinding::new("cmd-c", Copy, Some("FileTab")),
+        // M11ag: ⌘↵ asks the agent about the selected code (not in the find box).
+        KeyBinding::new(
+            "cmd-enter",
+            file_tab::AskAgent,
+            Some("FileTab && !NameInput"),
+        ),
         KeyBinding::new("ctrl-tab", NextTab, Some("FileTab")),
         KeyBinding::new("ctrl-shift-tab", PrevTab, Some("FileTab")),
         KeyBinding::new("up", browser_tab::SuggestPrev, Some("AddressField")),
@@ -931,6 +939,8 @@ fn main() {
             cx.set_global(appearance::load(cx));
             // The edit ledger (M11af): agents' file edits and working spans.
             cx.set_global(edit_ledger::Ledger::default());
+            // The agents' reasons under changed lines (M11ag): filed as edits finish.
+            cx.set_global(edit_notes::NoteStore::default());
             // What each agent can say about itself (M11ak): its models, commands and usage.
             cx.set_global(agent_catalog::Catalogs::default());
             // The key sounds (M11s): loaded now, and again whenever the settings change.
@@ -1668,6 +1678,27 @@ mod tests {
         };
         for key in ["alt-cmd-[", "alt-cmd-]"] {
             assert!(!bound(key, TERMINAL), "{key} folds nothing in a terminal");
+        }
+    }
+
+    #[test]
+    fn cmd_enter_asks_in_the_file_tab_only() {
+        use crate::file_tab::AskAgent;
+        let keymap = keymap();
+        let tab: &[&str] = &["Workspace", "FileTab"];
+        assert!(runs(&keymap, "cmd-enter", tab).partial_eq(&AskAgent));
+        let find_box: &[&str] = &["Workspace", "FileTab", "NameInput"];
+        for stack in [TERMINAL, PAGE, find_box] {
+            let contexts: Vec<KeyContext> = stack
+                .iter()
+                .map(|c| KeyContext::parse(c).unwrap())
+                .collect();
+            let (found, _) =
+                keymap.bindings_for_input(&[Keystroke::parse("cmd-enter").unwrap()], &contexts);
+            assert!(
+                !found.iter().any(|b| b.action().partial_eq(&AskAgent)),
+                "cmd-enter asks nothing in {stack:?}"
+            );
         }
     }
 

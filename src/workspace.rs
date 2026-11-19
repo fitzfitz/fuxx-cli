@@ -687,6 +687,14 @@ pub struct Workspace {
     /// (`workspace_agent::AgentSlot`, R1), made by `ensure_agent_tabs`. `sync` drops those whose
     /// tab has gone (dropping the view ends its process); closing a tab ends it first.
     pub(crate) agents: HashMap<TabId, AgentSlot>,
+    /// The agent tab that last had the focus in each workspace (M11ag: Ask goes there first);
+    /// never saved.
+    pub(crate) last_agent: HashMap<WorkspaceId, TabId>,
+    /// The provider of the agent tab that last had the focus anywhere (the bar's name for an
+    /// agent when a workspace has no agent tab); never saved.
+    pub(crate) last_agent_provider: Option<&'static str>,
+    /// Code chips waiting for a new agent tab's view (made on the next frame), by tab.
+    pub(crate) pending_chips: HashMap<TabId, Vec<crate::agent_tab::Attachment>>,
     /// The number the next agent tab gets (`aN`, from 1); never reused.
     pub(crate) next_agent_id: u64,
     /// The `aN` of agent tabs `sync` dropped since the last `check_waits`, which passes them as
@@ -962,6 +970,9 @@ impl Workspace {
             browser_tabs: HashMap::new(),
             file_tabs: HashMap::new(),
             agents: HashMap::new(),
+            last_agent: HashMap::new(),
+            last_agent_provider: None,
+            pending_chips: HashMap::new(),
             next_agent_id: 1,
             agents_closed: Vec::new(),
             agents_ended: Vec::new(),
@@ -1910,6 +1921,9 @@ impl Workspace {
         self.classic_of.retain(|tab, _| is_agent(tab));
         self.classic_opening.retain(is_agent);
         self.resume_checks.retain(is_agent);
+        // Chips waiting for the view of a tab that went: dropped with it.
+        self.pending_chips.retain(|tab, _| is_agent(tab));
+        self.last_agent.retain(|_, tab| is_agent(tab));
         let agents: Vec<u64> = self.agents.values().map(|slot| slot.id).collect();
         self.marks
             .get_mut()
@@ -2838,6 +2852,10 @@ impl Workspace {
         // M11ac: the Files panel follows the focused file tab (outside any frame).
         self.follow_active_file(cx);
         self.sidebar.reveal_active = true;
+        // M11ag: the agent tab that now has the focus is the one Ask goes to next; the file
+        // tabs' bars name the agent they would ask.
+        self.note_last_agent();
+        self.tell_ask_targets(cx);
         if let Some(key) = self
             .model
             .focused_workspace()

@@ -14,7 +14,8 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone (2026-11-18, latest):** **M11ai — Markdown reader upgrade** 🟨 built (12 tasks, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`f7707e9`); waiting for your on-screen check (note 86, 15 items). M11ag is next.
+- **Current milestone (2026-11-19, latest):** **M11ag — Ask the agent from the code** 🟨 built, **merged to master 2026-11-19** on your standing word (not pushed), waiting for your on-screen check (all 14 tasks, each of 0–12 reviewed; the whole-branch review's fix wave in, re-reviewed clean; note 87, 15 on-screen items). M11ai's check is still open.
+- **Current milestone (2026-11-18, previous):** **M11ai — Markdown reader upgrade** 🟨 built (12 tasks, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`f7707e9`); waiting for your on-screen check (note 86, 15 items). M11ag is next.
 - **Current milestone (2026-11-18, M11al):** **M11al — UI Uplift 3** 🟨 built (13 tasks + 8b, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`6dabcf9`); waiting for your on-screen check (note 84, 14 items). M11ai (Markdown reader) resumes next, then M11ag.
 - **Current milestone (2026-11-18, M11ah lane):** **M11ah — Code view upgrade** 🟨 built (all 13 tasks, each reviewed), **merged to master and pushed 2026-11-18**; waiting for your on-screen check (note 85, 15 items).
 - **Current milestone (2026-11-18, earlier):** **M11ak — Agent box** 🟨 built (15 tasks, reviewed; final-review fixes in), **merged to master and pushed**, waiting for your on-screen check (note 83).
@@ -26,6 +27,27 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-19 — M11ag: built, whole-branch review and its fix wave done
+- **Status:** 🟨 built, **merged to master 2026-11-19** on your standing word (not pushed), waiting for your on-screen check. All 14 plan tasks (0–13) built; Tasks 0–12 each reviewed (7, 8 and 11 after one fix round).
+  The final whole-branch review found one Important issue (a deletion's reason could land on an unrelated block); it
+  was fixed in the fix wave with seven smaller fixes, and the wave was re-reviewed clean. The numbers below are from
+  after the fix wave.
+- **Built:** Part 1, select lines in a file tab (File or Diff mode) and a bar offers "Ask claude ⌘↵" (a code chip in the
+  agent tab's box, focus there, nothing sent; no agent tab: a new one with the chip waiting) and "Copy with path" (Copy
+  only in an SSH workspace). Part 2, the agent's reason for an edit (the turn's last text before it) shows as a note
+  under the changed lines: a bar in the agent's colour, `claude · 10:42 — reason`, two rows folded with "more" / "less",
+  a pill ("2 notes from claude") that steps to the next note and an eye that hides them; notes follow later edits.
+- **Numbers:** 2,154 tests passed, 0 failed, 1 ignored; clippy 14 / 27 default and 16 / 29 `ui-shots` (the baselines);
+  `cargo fmt --check` clean; the full ui-shots run 247 passed, 0 failed, 158.3 s (before the review: 2,146 tests and
+  247 / 0 / 158.9 s; M11ai's was 226 / 0 / 151.4 s).
+- **M11p:** no new always-on timer; the four `spawn(`s are two one-shot background jobs with their swap-in.
+- **Public-repo grep:** clean.
+- **Limits (full list in note 87):** an `Edit`'s repeated text anchors to the first copy; agy and pure deletions get
+  notes only through a file tab that reads the change; notes are gone after a restart; the bar follows the mouse only (no keyboard selection).
+- **Needs your eyes:** note 87's on-screen check (15 items). ⌘↵ is not in the help list (a help row needs a palette
+  command the plan does not include; say so if you want one).
+- **Next:** your on-screen check (note 87); then merge on your word.
 
 ### 2026-11-18 — M11ai merged into master
 - **Status:** 🟨 merged into master 2026-11-18 on your standing word, pushed on your word (`f7707e9`); the merge re-ran the gate (below). Waiting for your on-screen check (note 86). M11ag is next.
