@@ -2974,13 +2974,18 @@ mod daemon_tests {
     #[test]
     fn a_snapshot_reports_the_command_unknown() {
         let path = temp_sock("t-snapcmd");
+        // Raw bytes: a start mark is in them, as `advance` reads them.
+        let vt_bytes = format!("{A}$ {B}ls\r\n\x1b]133;C;cmdline_url=ls\x07ok\r\n").into_bytes();
         let fake = scripted_daemon(
             &path,
             vec![vec![
-                tagged_snap(
-                    0,
-                    format!("{A}$ {B}ls\r\n\x1b]133;C;cmdline_url=ls\x07ok\r\n").as_bytes(),
-                ),
+                Frame::Snapshot(mux_proto::Snapshot {
+                    id: 7,
+                    seq: 0,
+                    dims: Dims { cols: 20, rows: 3 },
+                    title: None,
+                    vt_bytes,
+                }),
                 Frame::Exited { id: 7 },
             ]],
         );

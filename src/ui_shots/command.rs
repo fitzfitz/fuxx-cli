@@ -75,6 +75,8 @@ fn command_reaches_workspace() {
             ws.open_shot_session("api", api, SHELL_TEXT, None, window, cx);
             ws.open_shot_session("web", api, SHELL_TEXT, None, window, cx);
             let i = ws.sessions.position(|s| s.label() == "api").expect("api");
+            // A reconnect's drop is not news: the hold posts no banner and no sound.
+            ws.sessions.get_mut(i).expect("opened").reconnected = true;
             ws.sessions.get_mut(i).expect("opened").ssh = Some(crate::ssh_target::SshTarget {
                 host: "devbox".into(),
                 tmux: false,
