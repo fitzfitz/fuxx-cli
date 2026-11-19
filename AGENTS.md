@@ -34,7 +34,13 @@ truth** for the current project; this file enforces it. When they disagree, the 
 
 Announce "Using [skill] to [purpose]" and follow the skill exactly.
 - **Creative / feature / design work** → `superpowers:brainstorming` **first**, before code.
-- **Executing a milestone** → `superpowers:writing-plans` / `superpowers:subagent-driven-development`.
+- **Executing a milestone** → `superpowers:writing-plans` (about 4–7 bigger tasks), then
+  `superpowers:executing-plans`: the session builds every task itself (test first, per-task gate =
+  `cargo test --bin fuxx`, both `cargo clippy` runs, `cargo fmt --check`; **no screenshot scenes per task**),
+  then the full `scripts/ui-shots.sh`, **one whole-branch review** on the most capable model, one fix
+  wave, the full screenshot run again. The user's call, 2026-11-19; details in
+  [`docs/05-Agentic-Workflow/50 - Agentic Workflow.md`] "How a milestone is built". Use
+  `superpowers:subagent-driven-development` only if the user asks for it.
 - **Any feature or fix** → `superpowers:test-driven-development` where it applies. (Note: GPU/GUI
   behavior often can't be unit-tested — verify those manually, and say so, like v1's `vim`/banner checks.)
 - **Any bug/surprise** → `superpowers:systematic-debugging` before proposing a fix.

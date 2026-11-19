@@ -33,18 +33,35 @@ fuxx draws its views off screen and checks them in the screenshot scenes
 (`scripts/ui-shots.sh`). Each scene lists the app files it covers, so a task only needs the
 scenes its change touches.
 
-- **Per task:** `scripts/ui-shots.sh --changed <task base>`, where the base is the commit the
-  task started from. It runs the scenes that cover a changed file (a scene's own file under
-  `src/ui_shots/` counts as covered by its scenes), says which and why, and runs nothing if no
-  `src/` file, `assets/` file or `Cargo.*` file changed. Add `--png` when you want to look at the
-  pictures (`target/ui-shots/`). A shared file (e.g. the theme, the tokens, the workspace,
-  `main.rs`, the harness, `Cargo.toml`) or a `src/` file no scene covers runs everything, and the
-  file is named.
-- **Once per milestone:** the full `scripts/ui-shots.sh --all-themes`, before the milestone is
-  called done.
+- **Per task: no screenshot scenes** (your call, 2026-11-19). Each task runs `cargo test --bin fuxx`,
+  `cargo clippy --all-targets`, `cargo clippy --all-targets --features ui-shots` and `cargo fmt --check`.
+  `scripts/ui-shots.sh --changed <base>` stays available for looking at one scene while working on it
+  (`--png` writes the pictures to `target/ui-shots/`), but it is not part of the task's gate.
+- **Once per milestone, twice:** the full `scripts/ui-shots.sh` right before the whole-branch review, and
+  again after its fix wave, before the milestone is called done.
 - **The rule:** logic that doesn't need a real window (what a view would show, positions from
   geometry, labels, state transitions) goes in plain functions tested by `cargo test`. A scene
   is for what needs a window: layout, pixels, real mouse and key events, focus.
+
+## How a milestone is built (your call, 2026-11-19)
+
+Chosen to cut the wall-clock time per milestone ("I'd go with your 3 suggestions… do this 3 suggestions in
+the next milestone"). Applies from the milestone after M11q.
+
+1. **Fewer, bigger tasks.** A plan has about 4–7 tasks, each a whole piece a person would notice or a
+   reviewer could reject on its own. Setup, scaffolding, small helpers and docs fold into the task that
+   needs them; no task exists only for baselines or only for docs (baselines go in the first task, docs
+   and the hand-off in the last).
+2. **Built in the session, not by subagents.** After the plan is approved, the assistant in the session
+   builds every task itself with `superpowers:executing-plans`: test first (`superpowers:test-driven-development`),
+   the per-task gate above, a commit per task. No implementer or per-task reviewer subagents.
+3. **One review at the end.** When every task is in, the full screenshot run, then one fresh reviewer on
+   the most capable model available reads the whole branch against the design and the plan; one fix wave;
+   a short re-check of the fixes; the full screenshot run again. Then the milestone note, the Roadmap and
+   the Progress Log, and the merge.
+
+The trade: no independent review until the end, and a broken look is found at the end rather than at the
+task that broke it.
 
 ## Why the log matters most
 
