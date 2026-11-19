@@ -178,6 +178,8 @@ pub(super) const ORDER: &[&str] = &[
     "notes-under-fold",
     "notes-diff",
     "notes-follow-scroll",
+    "notes-pill",
+    "notes-hidden",
     "file-code-nav",
     "file-code-calm",
     "file-code-guides",

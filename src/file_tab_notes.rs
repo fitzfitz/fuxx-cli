@@ -23,6 +23,27 @@ pub fn note_prefix(note: &Note) -> String {
     format!("{} \u{b7} {} \u{2014} ", note.agent.name, note.clock)
 }
 
+/// The pill's words for the notes placed, one name per note (`[]`: no pill): "1 note from
+/// claude", "2 notes from claude", and "2 notes" when both agents have some.
+pub fn notes_pill_words(names: &[&str]) -> Option<String> {
+    let first = names.first()?;
+    let n = names.len();
+    let s = if n == 1 { "" } else { "s" };
+    Some(if names.iter().all(|name| name == first) {
+        format!("{n} note{s} from {first}")
+    } else {
+        format!("{n} notes")
+    })
+}
+
+/// Plan-time call 17: the note "next" goes to: the first whose first row starts at or below the
+/// view's bottom edge (`note_tops`: each note's top, in document order), else the first. None
+/// with no notes.
+pub fn next_note(note_tops: &[f32], view_bottom: f32) -> Option<usize> {
+    let below = note_tops.iter().position(|&top| top >= view_bottom);
+    below.or(if note_tops.is_empty() { None } else { Some(0) })
+}
+
 /// A note as shaped: its wrapped lines, and its rows when open (`open_rows`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shaped {
@@ -331,7 +352,10 @@ impl FileTab {
     /// shaped for these notes yet: none; the next drawing shapes them and makes the rows).
     pub(super) fn note_spans_now(&self) -> Vec<NoteSpan> {
         let shapes = self.note_shapes.borrow();
-        let Some(s) = shapes.as_ref().filter(|s| s.key.notes == self.notes_gen) else {
+        let Some(s) = (shapes.as_ref())
+            .filter(|s| s.key.notes == self.notes_gen)
+            .filter(|_| !self.notes_hidden)
+        else {
             return Vec::new();
         };
         let rows = match &self.diff.state {
@@ -383,6 +407,152 @@ impl FileTab {
         }
         self.note_rows_gen += 1;
         cx.notify();
+    }
+}
+
+/// The eye's tooltip: what a click does.
+pub(super) fn eye_tip(hidden: bool) -> &'static str {
+    if hidden { "Show notes" } else { "Hide notes" }
+}
+
+impl FileTab {
+    /// The pill's words and whether the eye has the notes hidden (none: no pill): shown in File
+    /// and Diff modes, not in Preview, for the notes placed in the text, shown or hidden.
+    fn notes_pill_state(&self) -> Option<(String, bool)> {
+        if self.preview_shown() {
+            return None;
+        }
+        let names: Vec<&str> = self
+            .notes
+            .iter()
+            .map(|p| p.note.agent.name.as_ref())
+            .collect();
+        Some((notes_pill_words(&names)?, self.notes_hidden))
+    }
+
+    /// The notes pill beside Follow (M11ag Part 2): "2 notes from claude", a click scrolls to
+    /// the next note below the view; and the eye after it, hiding or showing every note row in
+    /// this tab.
+    pub(super) fn notes_pill(&self, ui: UiColors, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.notes_at.set([None; 2]);
+        let (words, hidden) = self.notes_pill_state()?;
+        let (pill_at, eye_at) = (self.notes_at.clone(), self.notes_at.clone());
+        let tip = eye_tip(hidden);
+        let kind = if hidden { Glyph::EyeOff } else { Glyph::Eye };
+        let ink = ensure_contrast(ui.text_dim, ui.card, TEXT_MIN);
+        let part = |id: &'static str| {
+            div()
+                .id(id)
+                .relative()
+                .flex()
+                .flex_none()
+                .items_center()
+                .py(px(2.0))
+                .rounded(px(999.0))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hsla(ui.panel_hover)))
+        };
+        let place = |at: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>, k: usize| {
+            canvas(
+                move |b, _, _| {
+                    let mut both = at.get();
+                    both[k] = Some(b);
+                    at.set(both);
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+        };
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .flex_row()
+                .items_center()
+                .text_size(px(text::META))
+                .text_color(hsla(ink))
+                .child(
+                    part("file-notes")
+                        .px(px(8.0))
+                        .whitespace_nowrap()
+                        .child(SharedString::from(words))
+                        .child(place(pill_at, 0))
+                        .on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.next_note_click(cx)),
+                        ),
+                )
+                .child(
+                    part("file-notes-eye")
+                        .px(px(5.0))
+                        .child(glyph_with(kind, ink, BUTTON_STROKE))
+                        .child(place(eye_at, 1))
+                        .on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_notes_hidden(cx)),
+                        )
+                        .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() }),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The eye: every note row of this tab hidden or shown again (the rows are made again).
+    pub(super) fn toggle_notes_hidden(&mut self, cx: &mut Context<Self>) {
+        self.notes_hidden = !self.notes_hidden;
+        self.note_rows_gen += 1;
+        cx.notify();
+    }
+
+    /// Each note's index and the row it is under (a file's: its line; a diff's: the row of its
+    /// new line; a note under a line the diff doesn't show has none).
+    fn note_unders(&self) -> Vec<(usize, usize)> {
+        match (self.mode, &self.diff.state) {
+            (FileMode::Plain, _) => (self.notes.iter().enumerate())
+                .map(|(i, p)| (i, p.under))
+                .collect(),
+            (FileMode::Diff, DiffState::Rows(d)) => {
+                let at = under_rows(&d.rows, &self.notes);
+                (self.notes.iter().enumerate())
+                    .filter_map(|(i, p)| Some((i, *at.get(&p.under)?)))
+                    .collect()
+            }
+            (FileMode::Diff, _) => Vec::new(),
+        }
+    }
+
+    /// A click on the pill: the next note below the view (`next_note`; wrapping to the first)
+    /// has its under-line scrolled to the top as Find's reveal does (`reveal_top`). A note under
+    /// a fold has no row and is passed over; hidden notes are found by their lines. It is your
+    /// scroll: Follow ends.
+    pub(super) fn next_note_click(&mut self, cx: &mut Context<Self>) {
+        let (Some(g), Some(map)) = (self.geom.get(), self.map_now(cx)) else {
+            return;
+        };
+        // Each note's top (as drawn; hidden, just under its line) and its line's row, by top.
+        let mut notes: Vec<(f32, usize)> = (self.note_unders().into_iter())
+            .filter_map(|(i, under)| {
+                let row = map.first_row(under)?;
+                let top =
+                    (map.note_rows(i)).map_or(map.top(row) + map.row_h(), |r| map.top(r.start));
+                Some((top, row))
+            })
+            .collect();
+        notes.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let tops: Vec<f32> = notes.iter().map(|n| n.0).collect();
+        let bottom = f32::from(g.scroll.y + g.bounds.size.height);
+        let Some(k) = next_note(&tops, bottom) else {
+            return;
+        };
+        let row = notes[k].1;
+        let mode = self.mode;
+        let y = match mode {
+            FileMode::Diff => diff_reveal_y(&map, row),
+            FileMode::Plain => map.top(reveal_top(row, |r| self.sticky_at_row(&map, r))),
+        };
+        let x = self.mode_scroll_mut(mode).x;
+        self.set_scroll(point(x, px(y)), cx);
     }
 }
 
@@ -441,6 +611,21 @@ impl FileTab {
         let s = shapes.as_ref().filter(|s| s.key.notes == self.notes_gen)?;
         let line = s.lines.get(i)?.as_ref()?;
         Some((lines_of(line), last_end(line), s.key.width as f32))
+    }
+
+    /// The notes pill as it stands: its words and whether the eye has the notes hidden (none: no
+    /// pill).
+    pub fn notes_pill_for_shots(&self) -> Option<(String, bool)> {
+        self.notes_pill_state()
+    }
+
+    /// Where the notes pill and its eye were drawn (none: not drawn).
+    pub fn notes_pill_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.notes_at.get()[0]
+    }
+
+    pub fn notes_eye_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.notes_at.get()[1]
     }
 
     /// Every fold opened (as Unfold All does).
@@ -558,6 +743,38 @@ mod tests {
         // Two lines or fewer have no "less": never more rows.
         assert_eq!(open_rows(2, room, room, label), 2);
         assert_eq!(open_rows(1, room, room, label), 1);
+    }
+
+    #[test]
+    fn notes_pill_words_one_two_both() {
+        assert_eq!(notes_pill_words(&[]), None);
+        assert_eq!(
+            notes_pill_words(&["claude"]).as_deref(),
+            Some("1 note from claude")
+        );
+        assert_eq!(
+            notes_pill_words(&["claude", "claude"]).as_deref(),
+            Some("2 notes from claude")
+        );
+        assert_eq!(
+            notes_pill_words(&["agy", "agy", "agy"]).as_deref(),
+            Some("3 notes from agy")
+        );
+        assert_eq!(
+            notes_pill_words(&["claude", "agy"]).as_deref(),
+            Some("2 notes")
+        );
+    }
+
+    #[test]
+    fn next_note_below_the_view_else_the_first() {
+        assert_eq!(next_note(&[], 100.0), None);
+        // The first note whose top is at or below the view's bottom.
+        assert_eq!(next_note(&[10.0, 90.0, 150.0, 400.0], 100.0), Some(2));
+        assert_eq!(next_note(&[10.0, 100.0, 150.0], 100.0), Some(1));
+        // None below: wrap to the first.
+        assert_eq!(next_note(&[10.0, 90.0], 100.0), Some(0));
+        assert_eq!(next_note(&[50.0], 100.0), Some(0));
     }
 
     #[test]
