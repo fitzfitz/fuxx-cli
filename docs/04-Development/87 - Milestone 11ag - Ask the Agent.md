@@ -409,7 +409,7 @@ Before the final review (Task 13, 2026-11-19):
 
 After the final review's fix wave: to be filled in by the controller (the full run again, then the same numbers).
 
-## On-screen check (for you; about 14 items)
+## On-screen check (for you; 15 items)
 
 Run it as `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run` (debug only, never `--release`), on fuxx-cli's own files such
 as `src/workspace.rs`, with a Claude agent tab open in the same workspace.
