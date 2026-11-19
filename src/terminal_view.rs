@@ -904,10 +904,32 @@ impl TerminalView {
         }
     }
 
-    /// A mark changed what runs: tell the owner, and redraw (the chrome shows the name).
+    /// A mark changed what runs: tell the status tracker and the owner, and redraw (the chrome
+    /// shows the name). The order the owner hears them in matters: a start's status change (a
+    /// Done seen, as on a keystroke) comes before the command; an end's `Command` comes before
+    /// its Done, so the owner settles the status knowing which command ended, and the tracker's
+    /// own Done then changes nothing.
     fn command_marked(&mut self, mark: CommandMark, cx: &mut Context<Self>) {
-        if let Some(change) = self.run.on_mark(mark, Instant::now()) {
-            cx.emit(TerminalEvent::Command(change));
+        let now = Instant::now();
+        let tracks = self.tracks_status();
+        match self.run.on_mark(mark, now) {
+            Some(change @ Change::Started(_)) => {
+                if tracks && let Some(status) = self.tracker.on_command_start(now) {
+                    self.status_changed(status, cx);
+                }
+                cx.emit(TerminalEvent::Command(change));
+            }
+            Some(Change::Ended(finished)) => {
+                let settled = tracks
+                    .then(|| self.tracker.on_command_end(now, finished.ran))
+                    .flatten();
+                cx.emit(TerminalEvent::Command(Change::Ended(finished)));
+                if let Some(status) = settled {
+                    self.status_changed(status, cx);
+                }
+            }
+            Some(change @ Change::Cleared) => cx.emit(TerminalEvent::Command(change)),
+            None => {}
         }
         cx.notify();
     }
