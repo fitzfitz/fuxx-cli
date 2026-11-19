@@ -5,7 +5,7 @@ status: designed
 
 # 68 - Milestone 11q - Which Command Finished (design)
 
-**Status:: 📝 Designed 2026-11-10, approved by you the same day ("cool update this to the plan docs so we can work on
+**Status:: 📝 Designed 2026-11-10, approved by you the same day; re-read with you 2026-11-19 ("go ahead"; see "Update 2026-11-19"), plan next. Earlier: ("cool update this to the plan docs so we can work on
 it later"). Plan not written yet (paused for the sidebar redesign; see "Notes for the plan"). Not built.** Comes **after M11p** (your call,
 2026-11-10: "ok, brainstorm it, after M11p"). You skipped the design questions ("you go ahead"), so every decision
 below except the three in "Decided by you" is **the AI's call**: check those while reading.
@@ -184,6 +184,22 @@ plan was paused when you turned to the sidebar redesign. What the code reading f
 - **Activity:** `activity::Kind` (+ `activity_panel.rs` `RowMark`, and the matches in `workspace_ssh.rs:698`,
   `ui_shots.rs`) gets a command-finished kind.
 - Reusable: `agent_detect::program` (leading `NAME=value` words), `status::age_label` (duration style).
+
+## Update 2026-11-19 (before the plan)
+
+You reviewed the summary of this design on 2026-11-19 and said "go ahead". Since the design was written:
+
+- **M11p is on master** (merged; its branch is gone), so this builds on it as planned.
+- **The sidebar row now says who · where** (M11al, Task 8b: who follows the workspace's active tab). The row no
+  longer shows the pane's name, so §1's "the sidebar row" means the row's **who** (AI's call):
+  - When the active tab is a terminal with a running command that has a short form, who reads `› <short form>`
+    (`› pnpm dev`) instead of the bare program (`› pnpm`).
+  - An agent fuxx detects in that terminal still wins (`✳ Claude`), as does an agent tab.
+  - A name you gave, or a program's own title, changes the tab and the window title as in §1; the row's who is not
+    a name, so those don't apply to it.
+- The tab, the window title and ⌘K follow §1 unchanged.
+- The line numbers in "Notes for the plan" are from 2026-11-10; the plan re-finds them.
+- The Activity panel keeps its timeline look (M11al); the "command finished" entry is one more event on it.
 
 ## Left to the builder
 
