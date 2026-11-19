@@ -1,6 +1,6 @@
 # Milestone 11ag — Ask the Agent from the Code
 
-**Status:** 📝 designed and **approved 2026-11-19** ("approved"); plan next. Not built.
+**Status:** 🟨 built on branch m11ag-ask-agent, waiting for your on-screen check; not merged. Designed and approved 2026-11-19 ("approved"); all 14 plan tasks (0–13) built 2026-11-19 ([[M11ag Plan - Ask the Agent]]), Tasks 0–12 each reviewed; the whole-branch review and its fix wave still follow (the numbers below are from before it).
 
 **Asked for:** 2026-11-16, by you, in the file-view mockups (near-future idea 3, [[Proposal - File View Upgrades]]):
 
@@ -265,6 +265,179 @@ anchor's last line.
    builder check found that, as first written, notes would rarely appear in the Ask → chat → go back flow. Options: keep
    it light (only edits a shown tab sees), or work out each edit's lines from the edit itself. You: "go ahead" to the
    second (7b, 7c, 10).
+
+## What was built
+
+All 14 plan tasks (0–13) on `m11ag-ask-agent`; Tasks 0–12 each reviewed (7, 8 and 11 after one fix round). Task 13 (this
+hand-off) goes to the whole-branch review next. Not merged.
+
+**Part 1 — Ask the agent about code**
+
+- **Task 1, code references:** a pure `src/code_ask.rs` turns a selection into a `CodeRef` (path, whole lines, fence
+  language, body) for File and (Task 5) Diff mode; text made as plan-time call 5 says. `md_reader::shown_path` gives
+  Copy its M11ai path form.
+- **Task 2, the code chip:** `Attachment::Code` in the agent box (a `</>` chip, the file name and lines, a hover
+  tooltip with the path), one chip for the same lines, an × to remove it; the agent's text is made at send time
+  (`wire_text(.., cwd)`), the path relative to the agent's folder.
+- **Task 3, Ask finds its agent tab:** `pick_agent_tab` (last used, else reading order, a failed tab skipped, a new tab
+  still waiting for its view counts); none: a new tab of the agent you used last (else Claude) with the chip waiting;
+  the box is focused, nothing sent. The bar's label is pushed by `tell_ask_targets` / `set_ask`.
+- **Task 4, the selection bar:** under a finished selection (above it when there is no room below, inside the text when
+  neither fits): "Ask claude ⌘↵" and "Copy with path", `AskAgent` (⌘↵), Esc clears the selection, "Too long to ask"
+  over 500 lines / 64 KB (Copy has no cap), Copy only in an SSH workspace.
+- **Task 5, Ask from Diff mode:** the current-file lines only; held `⋯` stretches, closed cards and Gap rows left out.
+
+**Part 2 — The agent's reason, under its edit**
+
+- **Task 6, edits carry their new text:** `EditText` on `Event::ToolStarted` for Claude's `Edit`, `MultiEdit`, `Write`
+  and notebook edits (provider code stays in `src/providers/claude.rs`; agy carries none).
+- **Task 7, the reason:** the agent tab keeps the turn's last text before an edit as its reason (same turn, live,
+  at most 2,000 characters, whitespace collapsed); cleared when a turn ends any way (force stop, exit).
+- **Task 8, the note store:** `src/edit_notes.rs`, app-wide, 200 notes per file, 2,000 files, oldest out first; at an
+  edit's finish the workspace reads the file off the UI thread, finds where the new text sits and files the note (a
+  `Light` reason when it cannot).
+- **Task 9, notes find their lines:** each file tab places its file's notes in the text it shows, off the UI thread
+  after each read; nearest the hint wins when the text appears twice; moved with later edits; a note whose text is
+  gone stays hidden and comes back with it; the light way claims the newest `Light` by an exact agent stamp.
+- **Task 10, note rows in the row map:** `Row::Note` rows in File and both Diff layouts; every consumer of `Row`
+  steps around them (sticky line, breadcrumb, scrollbar marks, selection).
+- **Task 11, note rows drawn:** a bar in the agent's colour, `claude · 10:42 — ` in dim text, the reason as raw
+  characters, wrapped at the code's visible width, two rows folded and all open, "more" / "less" when over two; an
+  opened note whose last words would run under "less" gets one more row for it (fix round).
+- **Task 12, the pill and the eye:** "1 note from claude" / "2 notes from claude" / "2 notes" in the bar, a click
+  steps to the next note, the eye hides or shows them (per tab, not saved).
+
+**M11p check (Task 13 Step 1).** The branch adds no `timer(` and no `request_animation_frame`. Its four `spawn(`s are
+two one-shot background jobs, each followed by one `cx.spawn` that swaps the answer in: the placing of a file's notes
+after a read (`file_tab.rs`) and the read of an edited file at an edit's finish (`workspace_agent.rs`). Nothing loops,
+nothing ticks (note times are clock strings).
+
+## Calls made while building (AI's, for you to check)
+
+Plan-time calls (made reading the code; the plan holds them in full):
+
+1. agy carries no edit text (all three recordings checked at plan time and again in Task 0), so an agy edit gets a note
+   the light way.
+2. There is no keyboard selection in the file tab, so the bar shows when a mouse selection ends and is not empty.
+3. Esc did not clear a selection; now, with no find bar or outline panel open, it does (with no selection it still
+   goes on).
+4. The chip keeps the absolute path; the agent's text is made at send time, so a folder changed between Ask and send is
+   honoured. The lines are taken at Ask.
+5. The agent's text: a header line (`path:43-45`, `path:43`, `path (removed, was 12-14)`) then a fence; the chip label
+   uses the file name and an en dash; diff bodies use ASCII `+` / `-`; `\r` dropped, tabs kept.
+6. The fence language is the colouring's syntax name lowercased when one plain word, else the file's extension, else
+   none.
+7. File mode takes the hidden lines of a fold inside the selection (as ⌘C does); Diff mode leaves out folded stretches,
+   closed cards and Gap rows.
+8. A new agent tab still waiting for its view is a target, so two quick Asks fill one new tab.
+9. The bar's label is pushed from the workspace on every focus change, not polled.
+10. The last agent tab is remembered per workspace, its provider app-wide; not saved.
+11. An edit's new text is looked for as its first copy in the file read at the finish; the note anchors to the whole
+    lines it spans; not found, no note.
+12. One note per reason per file, shown under the topmost placed block.
+13. The light way (pure deletions, agy): a pending `Light` reason lasts 600 s and is taken by a file tab whose live
+    record stamps a change exactly to that agent; a deletion's note goes on the line above the first deleted edge.
+14. Notes are placed for any text that is not `plain`; placement gives up after 50 ms (no notes for that read).
+15. A note's rows: two folded, all open, from the wrapped line count of `claude · 10:42 — reason` in the UI font at the
+    code's visible width; "more" / "less" only over two lines.
+16. In Diff mode a note shows under the diff row for its line; none when the neighbourhood has only removed lines.
+17. The pill counts the notes placed (shown or hidden by the eye), in File and Diff modes, not Preview; "next note"
+    is the first below the view, else the first.
+18. The exact words: `Ask claude ⌘↵`, `Too long to ask`, `Copy with path`, `more`, `less`, `1 note from claude`,
+    `2 notes from claude`, `2 notes`, `Hide notes`, `Show notes`, the chip glyph `</>`, the note prefix `claude · 10:42 — `.
+19. The clock is made once when the note is filed and kept as a string.
+
+Calls made in the build (the controller's rulings, each with the reason in the build ledger):
+
+- **Task 0 skipped the full ui-shots run:** your rule is the full run only before the final review and after its
+  fix wave, so Task 0's baseline for scenes is M11ai's last full run (226 passed, 0 failed, 151.4 s).
+- **Plan ticks wait for Task 13:** the plan's status table, ticks and "Pick up here" are updated here, not per task.
+- **Names:** the file tab's target is `ask_to` (probe `ask_to()`), the action is `ask`; `BAR_GAP` (6 pt) is the gap
+  between the selection and the bar, the bar's height is M11al's text-button token. Between Tasks 4 and 5 the bar could
+  show in Diff mode with Ask / Copy doing nothing; Task 5 filled it in.
+- **No reference fingerprints for the new scenes:** a new Visual scene needs none (ui-shots only reports "without a
+  reference"); `--update-refs` was never run and nothing was added under `tests/ui-shots-ref/`.
+- **Every `#[allow(dead_code)]`** added for a task is removed by the task that wires it.
+- **The 500-line cap counts lines by `split('\n')`,** so a 501-line body that ends blank is over the cap (Task 4).
+- **⌘↵ is Unlisted in the help list:** a help row needs a palette command, which the plan does not include
+  ([[12 - Scope]], rule 3). Say so if you want one.
+- **The bar's look** (flush right with the code's edge, 24 pt) is left to your on-screen check.
+- **A disabled "Too long to ask"** is a variant of the shared text button; Esc during a held drag does not clear the
+  selection (Task 5).
+- **A reason is cleared when any turn ends** (TurnDone, a force stop, an exit, a failed start), so an old reason never
+  lands on the next turn's edit (Task 7's fix).
+- **Notes are looked for in a file's text with the byte-safe cut** (Task 8's fix: a new text ending in a multi-byte
+  character crashed the first version).
+- **A removal-only change is decided by the ledger** (who), not "you", so an agent's deletion is stamped to it.
+- **"A note under a folded line hides with the fold":** a note whose line is inside a fold is hidden; a note under the
+  fold's shown header stays.
+- **Notes wrap at the visible width, Wrap on or off** (call 15 and the spec); a narrower window gives more note lines.
+- **An opened note whose last line would run under "less" gets its own row for it** (Task 11's fix); otherwise it takes
+  exactly its wrapped lines.
+
+## Limits (what it does not do)
+
+- An `Edit` whose new text also appears earlier in the file anchors its note to the first copy.
+- agy edits and pure deletions get notes only through a file tab that is showing the file when the edit lands (the
+  light way); an edit read by no shown tab gets no note for those.
+- Notes are gone after a restart (the store is in memory).
+- There is no keyboard selection in the file tab, so the bar follows the mouse only.
+- Two edits by one agent to one file within about 2 s, while the first is still read open: the second's reason can
+  land on the first's block (the light way takes the newest).
+- A light reason can be missed when the tab reads the change in the few milliseconds between the ledger finishing and
+  the store holding it; it then waits for that agent's next exact change.
+- A note under a fold counts in the pill but the pill's click skips it: with every note folded the click does nothing
+  while the pill says "1 note".
+- Note rows when the code is wrapped or the window is resized can snap the scroll to the top of a row (up to one row's
+  jump).
+- A turn you stop (Stop) clears the pending reasons, so an interrupted turn that keeps editing gets no note.
+- No notes for notebooks, and none in Preview; in Diff mode none where only removed lines surround.
+- Ask works from a mouse selection that is scrolled off screen too (the bar is hidden then, ⌘↵ still asks).
+
+## Final numbers
+
+Before the final review (Task 13, 2026-11-19):
+
+- `cargo test --bin fuxx`: **2,146 passed, 0 failed, 1 ignored**.
+- Clippy: default **14 / 27** warnings (bin / test), `ui-shots` **16 / 29** — the baselines, no new warnings.
+  `cargo fmt --check`: clean.
+- Full `scripts/ui-shots.sh`: **247 passed, 0 failed, 158.9 s** (Task 0's baseline was M11ai's 226 / 0 / 151.4 s; the
+  21 more are this milestone's scenes). Fingerprints: `0 same, 339 look different, 52 differ in size, 226 without a
+  reference` (the known stale-reference state of this Mac, not a branch effect; reported, never a failure).
+- Public-repo grep of the branch's added lines: no personal paths, names, emails or time zones in code, scenes or docs
+  (the only matches are the rule's own wording in the plan and its context).
+
+After the final review's fix wave: to be filled in by the controller (the full run again, then the same numbers).
+
+## On-screen check (for you; about 14 items)
+
+Run it as `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run` (debug only, never `--release`), on fuxx-cli's own files such
+as `src/workspace.rs`, with a Claude agent tab open in the same workspace.
+
+1. **The bar, below and above:** drag over a few lines in `src/workspace.rs`; the bar sits under the selection; select
+   the last visible line (or scroll so it is) and it moves above or inside. Its look: flush at the code's right edge,
+   buttons like the app's other text buttons.
+2. **Ask into the last-used tab:** with ⌘↵ and again with the button: the agent tab's box takes focus with a `</>`
+   chip, nothing is sent; a second Ask of the same lines makes no second chip; × removes the chip.
+3. **A chip's hover tooltip** shows the file path and lines.
+4. **Ask with no agent tab:** close every agent tab, Ask: a new tab opens with the chip waiting in its box.
+5. **Copy with path:** press it and paste into a text editor: the path (repo-relative), the lines, no more.
+6. **Too long:** select over 500 lines: the bar says "Too long to ask" (disabled); Copy with path still works.
+7. **Diff mode**, unified and side by side: select lines; the bar shows; Ask or Copy takes the current file's lines
+   (removed lines come with `-`, added with `+`).
+8. **An SSH workspace:** the bar offers only Copy with path.
+9. **Help list:** ⌘↵ is not in it (Unlisted, by design); Esc clears the selection and hides the bar.
+10. **A note:** ask Claude to edit `src/workspace.rs` (a small change) and read the note under the change: `claude ·
+    10:42 — its reason`, folded to two rows with "more", "less" when opened; an opened note whose last line would run
+    under "less" gets its own row for it.
+11. **The selection band across note rows:** drag a selection over a note: the band runs unbroken across its rows
+    and Copy does not take the note's words.
+12. **The note after a later edit:** have the agent edit above the note; the note follows its block.
+13. **The pill and the eye:** with notes below the view, the pill reads "2 notes from claude" (or as many) and steps to the
+    next; the eye hides them and shows them again; the pill stays while hidden.
+14. **A fold over a note:** fold the block above a note; the note goes with the fold and comes back when unfolded.
+15. **Idle CPU** with a file tab showing notes: `top -l 6 -s 5 -pid <pid>` for the branch build and again for master;
+    the two should match (note rows are built only when the notes or the lines change).
 
 ## Related
 

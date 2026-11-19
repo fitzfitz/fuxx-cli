@@ -58,6 +58,18 @@
 //! never turns itself on) scrolls the agent's newest change into view, 3 lines from the top as a
 //! diff opens; scrolling, a mode switch (Preview on or off too) or cleared marks turn it off.
 //!
+//! **Ask the agent and notes (M11ag).** Part 1: a finished mouse selection (File or Diff mode)
+//! shows a bar beside it (`file_tab_ask.rs`): "Ask {agent} ⌘↵" and "Copy with path". Both take
+//! the selection as whole lines (`code_ask::CodeRef`; in Diff mode the current lines only). Ask
+//! raises `FileTabEvent::Ask`, the workspace puts a code chip in an agent tab's box and sends
+//! nothing; Copy puts the lines and their path on the clipboard. The bar's label is pushed in
+//! by the workspace (`set_ask`), never polled. Esc clears a selection when no find bar or
+//! outline panel is open. Part 2: the agent's reason for an edit, as note rows under its lines
+//! (`file_tab_notes.rs`, `Row::Note` in the row map). After each read the tab places its file's
+//! notes in the new text on the background executor (given up after 50 ms: no notes for that
+//! read); a pill in the bar counts them and steps to the next, and an eye hides them (per tab,
+//! not saved).
+//!
 //! **Folding (M11ah).** In File mode a file with blocks (`code_outline`) has a fold column between
 //! the numbers and the marks: ▸ on a folded line, ▾ on an open block's first line while the
 //! pointer is over the gutter. A fold hides the block's lines after its first (`hidden_ranges`;

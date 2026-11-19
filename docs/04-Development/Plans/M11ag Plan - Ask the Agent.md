@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11ag
-status: planned
+status: built
 updated: 2026-11-19
 ---
 
@@ -12,10 +12,10 @@ updated: 2026-11-19
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[87 - Milestone 11ag - Ask the Agent]] |
-| **Status** | 📝 planned 2026-11-19 on branch `m11ag-ask-agent` (from `5564087`); not built |
-| **Tasks done** | 0 / 13 (plus Task 0) |
+| **Status** | 🟨 built on branch m11ag-ask-agent, waiting for your on-screen check; not merged (all tasks built; the whole-branch review and its fix wave follow) |
+| **Tasks done** | 13 / 13 (plus Task 0); Tasks 0–12 reviewed |
 | **Baselines** | On `m11ag-ask-agent` at `687264d`, 2026-11-19: `cargo test --bin fuxx` 2,076 passed, 1 ignored, 0 failed; clippy default 14 (bin) / 27 (test); clippy `ui-shots` 16 (bin) / 29 (test); `cargo fmt --check` clean. Full `scripts/ui-shots.sh` not run in Task 0 (ruling R1; the user's decision): the ui-shots baseline is M11ai's last full run, 226 passed, 0 failed, 151.4 s |
-| **▶ Pick up here** | Task 0 |
+| **▶ Pick up here** | The whole-branch review, then its fix wave and the second full `scripts/ui-shots.sh` (numbers into note 87) |
 | **Decisions used** | Yours: "lets go" to the 11 points and **B** (no agent tab: open one), "go with A" (note rows in the code), "go ahead" (lines from the edit itself, 7b/7c/10), the full ui-shots run only before the final review and after its fix wave. The design's "Calls made" (AI's). Plan-time calls below (AI's). |
 | **Needs your eyes** | 👀 the on-screen check in note 87, after Task 13 |
 
@@ -161,13 +161,13 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
 
 ### Task 0: Baselines and the agy check
 
-- [ ] **Step 1:** On `m11ag-ask-agent` at the plan commit: `cargo test --bin fuxx` (count passed / ignored), both
+- [x] **Step 1:** On `m11ag-ask-agent` at the plan commit: `cargo test --bin fuxx` (count passed / ignored), both
   clippies (warning counts), `cargo fmt --check`, and the full `scripts/ui-shots.sh` (passed / failed / seconds).
   Write the numbers into this plan's "Baselines" row.
-- [ ] **Step 2:** Re-check agy: `grep -l 'edit_file' src/providers/fixtures/agy-*.jsonl`, and for each line with
+- [x] **Step 2:** Re-check agy: `grep -l 'edit_file' src/providers/fixtures/agy-*.jsonl`, and for each line with
   `edit_file` or `write_file` list the keys of `tool_info.parameters`. Record in "Plan-time calls" 1 whether any
   key besides `Path` carries the new text (expected: none). No new recording is made (it would mean running agy).
-- [ ] **Step 3:** Commit `M11ag Task 0: baselines` (this plan only).
+- [x] **Step 3:** Commit `M11ag Task 0: baselines` (this plan only).
 
 ### Task 1: Code references (pure)
 
@@ -200,7 +200,7 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
   `heading_link` becomes `format!("{}#{slug}", shown_path(..))` (its test unchanged).
 - Consumes: `file_tab::{Pos, Doc}` (`Doc::new(text, 0)` builds test docs).
 
-- [ ] **Step 1: Write the failing tests** (in `code_ask.rs`), with a `src/workspace.rs`-named made-up doc:
+- [x] **Step 1: Write the failing tests** (in `code_ask.rs`), with a `src/workspace.rs`-named made-up doc:
   - `labels_and_headers`: lines 43–45 → label `"workspace.rs:43–45"`, `header("src/workspace.rs")` ==
     `"src/workspace.rs:43-45"`; one line → `"workspace.rs:43"` / `":43"`; `Removed{12,14}` → `"workspace.rs
     (removed, was 12–14)"` / `"src/workspace.rs (removed, was 12-14)"`.
@@ -219,10 +219,10 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
   - `copy_text_uses_the_repo_relative_path`: rel `src/workspace.rs` → header `src/workspace.rs:43-45`; no rel, under
     home → `~/…`; neither → absolute.
   - `same_place_is_path_and_lines`.
-- [ ] **Step 2: Run** `cargo test --bin fuxx code_ask` — FAIL (module missing).
-- [ ] **Step 3: Implement** `code_ask.rs` and `md_reader::shown_path` (plan-time calls 5, 6, 7).
-- [ ] **Step 4: Run** — PASS; the gate.
-- [ ] **Step 5: Commit** `M11ag Task 1: code references`.
+- [x] **Step 2: Run** `cargo test --bin fuxx code_ask` — FAIL (module missing).
+- [x] **Step 3: Implement** `code_ask.rs` and `md_reader::shown_path` (plan-time calls 5, 6, 7).
+- [x] **Step 4: Run** — PASS; the gate.
+- [x] **Step 5: Commit** `M11ag Task 1: code references`.
 
 ### Task 2: The code chip in the agent box
 
@@ -237,17 +237,17 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
   chip says `code.text(&agent_path(&code.path, code.real.as_deref(), cwd))`); `AgentTab::attach` ignores a
   `Code` whose `same_place` a waiting one's.
 
-- [ ] **Step 1: Write the failing tests** (`agent_tab.rs`): `wire_text_gives_code_with_its_path_from_the_agent_folder`
+- [x] **Step 1: Write the failing tests** (`agent_tab.rs`): `wire_text_gives_code_with_its_path_from_the_agent_folder`
   (`"why?"` + a code chip, cwd `/p/fuxx-cli` → `"why?\n\nsrc/workspace.rs:43-45\n```rust\n…\n```"`);
   `the_same_code_twice_is_one_chip` (pure: a helper `fn attachable(list: &[Attachment], new: &Attachment) -> bool`
   used by `attach`); the old `wire_text_*` tests pass `cwd` and keep their expectations.
-- [ ] **Step 2: Write the failing scene** `agent-box-code-chip` (after `agent-box-file-chip` in `ORDER`, `Both`,
+- [x] **Step 2: Write the failing scene** `agent-box-code-chip` (after `agent-box-file-chip` in `ORDER`, `Both`,
   Visual): a scene tab gets two Asks' worth of chips (one repeated): one chip, label `"workspace.rs:43–45"` with
   `</>`; hovering it shows a tooltip with the full path; × removes it; with a chip, send `"why?"` → the scene tab's
   `written` holds the wire text above; before the send nothing is written.
-- [ ] **Step 3: Run** `cargo test --bin fuxx agent_tab` and `scripts/ui-shots.sh agent-box-code-chip` — FAIL.
-- [ ] **Step 4: Implement.** **Step 5: Run** — PASS; the gate.
-- [ ] **Step 6: Commit** `M11ag Task 2: the code chip`.
+- [x] **Step 3: Run** `cargo test --bin fuxx agent_tab` and `scripts/ui-shots.sh agent-box-code-chip` — FAIL.
+- [x] **Step 4: Implement.** **Step 5: Run** — PASS; the gate.
+- [x] **Step 6: Commit** `M11ag Task 2: the code chip`.
 
 ### Task 3: Which agent tab, and Ask into it
 
@@ -277,9 +277,9 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
   - `new_agent_tab(..) -> Option<TabId>`, `add_agent_tab(..) -> Option<TabId>` (callers ignore it as before).
   - `pending_chips` entries of tabs no longer in the model are dropped in `sync`.
 
-- [ ] **Step 1: Write the failing tests** (`workspace_agent.rs`): `pick_takes_the_last_used_then_reading_order`;
+- [x] **Step 1: Write the failing tests** (`workspace_agent.rs`): `pick_takes_the_last_used_then_reading_order`;
   `pick_skips_tabs_that_failed`; `a_waiting_new_tab_is_a_target`; `ask_agent_falls_back_to_last_anywhere_then_claude`.
-- [ ] **Step 2: Write the failing scenes** (`src/ui_shots/ask.rs`, State; drive `ask_code` directly, with a made-up
+- [x] **Step 2: Write the failing scenes** (`src/ui_shots/ask.rs`, State; drive `ask_code` directly, with a made-up
   `src/workspace.rs` doc under a scratch `fuxx-cli` folder):
   - `ask-existing-tab`: a workspace with a file tab and two agent tabs (claude, agy), the agy tab focused last →
     after `ask_code` the agy tab holds the chip, is its pane's active tab and focused (its composer has the
@@ -290,9 +290,9 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
     second `ask_code` before that frame → still one new tab, two chips (different lines) or one (same lines); a
     third run closes the new tab before its view exists → no chip kept, no panic. With no record anywhere → a
     claude tab.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement** (plan-time calls 8, 9, 10).
-- [ ] **Step 5: Run** — PASS; the gate; `scripts/ui-shots.sh --changed master`.
-- [ ] **Step 6: Commit** `M11ag Task 3: Ask finds its agent tab`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement** (plan-time calls 8, 9, 10).
+- [x] **Step 5: Run** — PASS; the gate; `scripts/ui-shots.sh --changed master`.
+- [x] **Step 6: Commit** `M11ag Task 3: Ask finds its agent tab`.
 
 ### Task 4: The selection bar, ⌘↵ and Copy with path (File mode)
 
@@ -318,11 +318,11 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
   - ui-shots probes: `sel_bar_bounds() -> Option<Bounds<Pixels>>`, `ask_button() -> Option<(String, bool)>`
     (words, enabled), `copy_button_bounds()`.
 
-- [ ] **Step 1: Write the failing tests:** `sel_bar_y_below_above_inside_and_hidden` (view 400, bar 28, gap 6: last
+- [x] **Step 1: Write the failing tests:** `sel_bar_y_below_above_inside_and_hidden` (view 400, bar 28, gap 6: last
   bottom 100 → 106; last bottom 390, first top 200 → 166; first top 10, last bottom 395 → 366; last bottom 420 →
   None; last bottom ≤ 0 → None); in `main.rs` `cmd_enter_asks_in_the_file_tab_only` (bound in
   `["Workspace","FileTab"]`, not in a terminal, page or the find box `["Workspace","FileTab","NameInput"]`).
-- [ ] **Step 2: Write the failing scenes** (`ask.rs`, `Both`, Visual unless said):
+- [x] **Step 2: Write the failing scenes** (`ask.rs`, `Both`, Visual unless said):
   - `ask-bar`: a 60-line file in a workspace with one claude agent tab, drag 43:7 → 45:2 and release → the bar's
     top-right is at the code's right edge, its
     top 6 pt (the gap) under row 45's bottom; buttons `"Ask claude ⌘↵"` and `"Copy with path"`; no code row moved
@@ -337,12 +337,12 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
     nothing (no tab opened).
   - `ask-bar-too-long`: a 501-line selection → `ask_button() == Some(("Too long to ask", false))`, click does
     nothing, ⌘↵ does nothing; Copy with path copies all 501 lines.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement** (plan-time calls 2, 3, 18). Draw the bar as M11af's `mark_tip`
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement** (plan-time calls 2, 3, 18). Draw the bar as M11af's `mark_tip`
   is drawn (`deferred(anchored().position(at).anchor(Corner::TopRight))` in `body`); the position is read in
   render from state only (no writes). When the prepaint rebuilds the map while a bar is shown, defer one
   `cx.notify()` (as `fits_side` does) so the bar follows a reflow.
-- [ ] **Step 5: Run** — PASS; the gate; `--changed master`.
-- [ ] **Step 6: Commit** `M11ag Task 4: the selection bar`.
+- [x] **Step 5: Run** — PASS; the gate; `--changed master`.
+- [x] **Step 6: Commit** `M11ag Task 4: the selection bar`.
 
 ### Task 5: Ask and Copy from Diff mode
 
@@ -358,17 +358,17 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
   Added); body lines `"+"`/`"-"`/`" "` + text; fence `"diff"`; lines = `Lines{min new, max new}` over kept rows with
   a `new`, else `Removed{min old, max old}`; None when no row is kept.
 
-- [ ] **Step 1: Write the failing tests:** `diff_ref_names_the_current_lines` (rows Same 41/43, Removed 42/–, Added
+- [x] **Step 1: Write the failing tests:** `diff_ref_names_the_current_lines` (rows Same 41/43, Removed 42/–, Added
   –/44, Same 43/45 → `Lines{43,45}`, body `" a\n-b\n+c\n d"`); `removed_only_is_named_after_the_old_lines`
   (`Removed{12,14}`, label `"workspace.rs (removed, was 12–14)"`); `held_and_gap_rows_are_left_out`;
   `side_by_side_takes_only_its_half`.
-- [ ] **Step 2: Write the failing scene** `ask-diff` (`Both`): a made-up diff (`set_diff_for_shots`) with two cards
+- [x] **Step 2: Write the failing scene** `ask-diff` (`Both`): a made-up diff (`set_diff_for_shots`) with two cards
   and a folded stretch; a selection from card 1's last rows across the `⋯` row and card 2's title into card 2 →
   the bar shows; Copy with path gives a ```` ```diff ```` fence without the stretch's lines or a title; the label
   names the new lines spanned; a removed-only selection → `(removed, was …)`; side by side, a selection on the left
   half → only Same + Removed rows; ⌘↵ attaches it.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
-- [ ] **Step 6: Commit** `M11ag Task 5: Ask from Diff mode`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
+- [x] **Step 6: Commit** `M11ag Task 5: Ask from Diff mode`.
 
 ### Task 6: Providers hand over the edit's new text
 
@@ -384,16 +384,16 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
   `Inserted(new_string)` (`replace_all` changes nothing: first match); `MultiEdit` → one per `edits[]` item, same
   rule; `Write` → `[WholeFile]`; `NotebookEdit` and every other tool → empty.
 
-- [ ] **Step 1: Write the failing tests** (`claude.rs`): `tool_texts_of_edit_multiedit_write_and_notebook`;
+- [x] **Step 1: Write the failing tests** (`claude.rs`): `tool_texts_of_edit_multiedit_write_and_notebook`;
   `claude_tools_fixture_edits_carry_their_new_text` (`claude-tools.jsonl`: its `Edit` decodes with `texts ==
   [Inserted("beta")]`); (`agy.rs`) `agy_edits_carry_no_text` (`agy-tools.jsonl`: the `edit_file` step's
   `ToolStarted` has `writes` and empty `texts`).
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS; the gate.
-- [ ] **Step 4b (only if Task 0 found the new text in an agy recording):** agy gets its own `tool_texts` from those
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS; the gate.
+- [x] **Step 4b (only if Task 0 found the new text in an agy recording):** agy gets its own `tool_texts` from those
   fields, `agy_edits_carry_no_text` becomes `agy_edits_carry_their_new_text`, and Task 8's light way then serves only
   `Removed`.
-- [ ] **Step 5: Commit** `M11ag Task 6: edits carry their new text`.
+- [x] **Step 5: Commit** `M11ag Task 6: edits carry their new text`.
 
 ### Task 7: The reason, caught in the agent tab
 
@@ -416,17 +416,17 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
 - Live only: `on_events` is the only caller; history goes through `booted` (it applies `Past` straight to the
   conversation), so a restored conversation gives no notes.
 
-- [ ] **Step 1: Write the failing tests** (`agent_tab.rs` / `edit_notes.rs`): `a_reason_is_the_last_text_before_the_edit`
+- [x] **Step 1: Write the failing tests** (`agent_tab.rs` / `edit_notes.rs`): `a_reason_is_the_last_text_before_the_edit`
   (Claude order: `MessageDone "reuse an open tab"`, `ToolStarted Edit`, `ToolFinished ok` → one `EditNoted` with
   that reason); `an_earlier_text_in_the_turn_counts` (text, a Bash tool, then the edit); `an_edit_with_no_text_before_it_in_the_turn_gets_no_note`
   (text, `TurnDone`, edit); `a_sub_agent_edit_takes_its_own_text` (`parent: Some("t1")`); `a_failed_edit_gives_no_note`;
   `reason_text_collapses_whitespace_and_caps_on_a_char_boundary` (3,000 × `é` → 2,000 chars; `"a \n\n  b"` →
   `"a b"`; `"   "` → None); the existing `edit_events` tests keep passing.
-- [ ] **Step 2: Write the failing scene** `agent-edit-reason-live-only` (agent.rs area, State): a scene tab fed
+- [x] **Step 2: Write the failing scene** `agent-edit-reason-live-only` (agent.rs area, State): a scene tab fed
   (`shot_feed`) a text and an `Edit` → one `EditNoted` heard; another fed the same as history (`shot_history`) →
   none.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
-- [ ] **Step 6: Commit** `M11ag Task 7: the agent's reason for an edit`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
+- [x] **Step 6: Commit** `M11ag Task 7: the agent's reason for an edit`.
 
 ### Task 8: The note store, filled by the Workspace
 
@@ -458,15 +458,15 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
     are `Removed`, or that has no texts at all (agy), gets `expect_light`; an `Inserted` text not found gives
     nothing.
 
-- [ ] **Step 1: Write the failing tests** (`edit_notes.rs`): `store_caps_per_file_and_files_oldest_first` (201st
+- [x] **Step 1: Write the failing tests** (`edit_notes.rs`): `store_caps_per_file_and_files_oldest_first` (201st
   note drops the first; the 2,001st file drops the least recently added); `generation_counts_adds_per_path`;
   `anchor_of_an_edit_is_its_whole_lines` (new text `"self.show(tab);\n    }"` inside lines 44–45 → those two whole
   lines, hint 43); `anchor_of_a_write_is_line_one`; `replace_all_and_repeats_anchor_the_first_match`;
   `removed_has_no_anchor`; `light_reasons_latest_wins_and_expire_after_keep` (two pending, the newer taken, both
   gone; one older than 600 s → None; another agent's untouched).
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS; the gate.
-- [ ] **Step 5: Commit** `M11ag Task 8: the note store`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS; the gate.
+- [x] **Step 5: Commit** `M11ag Task 8: the note store`.
 
 ### Task 9: Notes find their lines in the file tab
 
@@ -495,12 +495,12 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
     above the first `deleted_edges` edge); ui-shots `placed_notes() -> Vec<(usize, String)>` (under, reason).
 - Keyed by the canonical path (`Live.real`), as the ledger is.
 
-- [ ] **Step 1: Write the failing tests** (`edit_notes.rs`, `live_lines.rs`): `the_anchor_nearest_the_hint_wins`
+- [x] **Step 1: Write the failing tests** (`edit_notes.rs`, `live_lines.rs`): `the_anchor_nearest_the_hint_wins`
   (anchor at 10 and 50, hint 47 → 50; hint 30 → 10, tie at 30 for 10 and 50 → 10); `a_gone_anchor_is_skipped_and_comes_back`
   (place without the text → none; with it again → placed); `a_newer_overlapping_note_hides_the_older`;
   `one_note_per_reason_under_the_topmost_block`; `place_gives_up_past_the_deadline`; `deleted_edges_of_a_pure_deletion`
   (and none for a replace).
-- [ ] **Step 2: Write the failing scenes** (`notes.rs`, State):
+- [x] **Step 2: Write the failing scenes** (`notes.rs`, State):
   - `notes-follow-edit` ("a note following a later edit"): a file tab on a made-up `src/workspace.rs`, a note in the
     store under lines 43–45 → `placed_notes()` has it under 44 (0-based); the file rewritten with 3 lines inserted
     at the top → under 47; the anchor's text changed → no note; changed back (an undo) → under 47 again; a second
@@ -511,9 +511,9 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
     under the line above the gap.
   - `notes-late`: the file tab reads the edit's change before the note is filed; filing it afterwards (the store's
     generation moves) places it without another read.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement** (plan-time calls 12, 13, 14).
-- [ ] **Step 5: Run** — PASS; the gate; `--changed master`.
-- [ ] **Step 6: Commit** `M11ag Task 9: notes find their lines`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement** (plan-time calls 12, 13, 14).
+- [x] **Step 5: Run** — PASS; the gate; `--changed master`.
+- [x] **Step 6: Commit** `M11ag Task 9: notes find their lines`.
 
 ### Task 10: Note rows in the row map (pure, and every consumer)
 
@@ -538,16 +538,16 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
 - In `file_tab.rs`: a press or drag on a note row acts as the end of its `under` line; the sticky line and the
   breadcrumb take `line_of`; change bars and the scrollbar lane give note rows nothing; a note row is never a title.
 
-- [ ] **Step 1: Write the failing tests** (`row_map.rs`): `note_rows_follow_their_line` (lines 0–9, a 2-row note
+- [x] **Step 1: Write the failing tests** (`row_map.rs`): `note_rows_follow_their_line` (lines 0–9, a 2-row note
   under 4 → rows 5, 6 are `Note{0,0}`, `Note{0,1}`, line 5 at row 7; `top(7) == 7 * row_h`);
   `a_note_under_a_hidden_line_has_no_rows`; `a_note_under_a_fold_line_follows_it_and_hidden_after_skips_it`;
   `note_rows_follow_a_wrapped_line`; `diff_note_rows_follow_the_row_and_the_pair` (unified and side by side);
   `row_at_and_rows_in_count_note_rows`; `first_row_is_unchanged_by_notes` (Follow);
   (`file_tab.rs`) `rescroll_keeps_the_line_when_a_note_row_was_on_top`; `a_press_on_a_note_row_is_its_line_s_end`
   (via `pos_at`'s pure part, or a helper it calls).
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** Every existing test passes unchanged (notes empty).
-- [ ] **Step 4: Run** — PASS; the gate; `--changed master` (no scene may change: no notes are passed yet).
-- [ ] **Step 5: Commit** `M11ag Task 10: note rows in the row map`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** Every existing test passes unchanged (notes empty).
+- [x] **Step 4: Run** — PASS; the gate; `--changed master` (no scene may change: no notes are passed yet).
+- [x] **Step 5: Commit** `M11ag Task 10: note rows in the row map`.
 
 ### Task 11: Drawing note rows (File and Diff)
 
@@ -570,10 +570,10 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
   height, clipped to the note's rows; "more" / "less" in `text_dim` at the right end of its last shown row.
   Side by side: full width under the pair. Wrap on: the same width rule.
 
-- [ ] **Step 1: Write the failing tests:** `note_spans_fold_to_two_rows_and_open_to_all` (n = 5 → 2, open → 5; n = 1
+- [x] **Step 1: Write the failing tests:** `note_spans_fold_to_two_rows_and_open_to_all` (n = 5 → 2, open → 5; n = 1
   → 1, no "more"); `note_spans_in_diff_follow_the_new_line` (`under` 43 → the row with `new == Some(44)`; none →
   no span); `note_prefix_is_agent_clock_dash`.
-- [ ] **Step 2: Write the failing scenes** (`notes.rs`, `Both`, Visual):
+- [x] **Step 2: Write the failing scenes** (`notes.rs`, `Both`, Visual):
   - `notes-row`: a note (reason ~3 lines long at the tab's width, with a raw `**bold**`) under line 45 → two rows
     after row 45 (line 46's top moved down by two rows); no number in the gutter on them; the bar's pixel in the
     claude colour; the prefix's pixels dim; a selection dragged from 44 to 47 copies lines 44–47 only (no note
@@ -584,9 +584,9 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
     Wrap on → the note wraps at the visible width (more rows than with Wrap off at a narrow width).
   - `notes-follow-scroll` (State): Follow on, an agent change above a note → the view scrolls to the change's line,
     the note row not at the top.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.**
-- [ ] **Step 5: Run** — PASS; the gate; `--changed master`.
-- [ ] **Step 6: Commit** `M11ag Task 11: note rows drawn`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.**
+- [x] **Step 5: Run** — PASS; the gate; `--changed master`.
+- [x] **Step 6: Commit** `M11ag Task 11: note rows drawn`.
 
 ### Task 12: The notes pill and the eye
 
@@ -603,14 +603,14 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
 - The eye hides or shows every note row of this tab (the map is rebuilt: the notes generation moves); a new tab
   shows notes.
 
-- [ ] **Step 1: Write the failing tests:** `notes_pill_words_one_two_both`; `next_note_below_the_view_else_the_first`.
-- [ ] **Step 2: Write the failing scenes** (`notes.rs`, `Both`): `notes-pill` (three notes, two below the view: the
+- [x] **Step 1: Write the failing tests:** `notes_pill_words_one_two_both`; `next_note_below_the_view_else_the_first`.
+- [x] **Step 2: Write the failing scenes** (`notes.rs`, `Both`): `notes-pill` (three notes, two below the view: the
   pill reads `"3 notes from claude"` beside Follow; a click scrolls the first note below the view to the top
   (`reveal_top`); clicks walk on and wrap to the first; no notes → no pill; in Preview → no pill);
   `notes-hidden` (the eye → no note rows, the code rows back in place, the pill still shown and its tooltip
   `"Show notes"`; again → back; another tab on the same file still shows them).
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
-- [ ] **Step 6: Commit** `M11ag Task 12: the notes pill`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
+- [x] **Step 6: Commit** `M11ag Task 12: the notes pill`.
 
 ### Task 13: Hand-off — docs, the full run and the on-screen check
 
@@ -621,13 +621,13 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
   line), `docs/06-Progress-Log/60 - Progress Log.md` (a new entry), module docs of `row_map.rs` (note rows) and
   `file_tab.rs` (the bar and notes)
 
-- [ ] **Step 1: M11p grep:** `git diff master...HEAD` for added `timer(`, `request_animation_frame`, `spawn(` —
+- [x] **Step 1: M11p grep:** `git diff master...HEAD` for added `timer(`, `request_animation_frame`, `spawn(` —
   each found is a one-shot or a background job, listed in note 87.
-- [ ] **Step 2: Public-repo grep** of the branch's added lines for `/Users/`, personal names and time-zone names:
+- [x] **Step 2: Public-repo grep** of the branch's added lines for `/Users/`, personal names and time-zone names:
   none.
-- [ ] **Step 3: The full `scripts/ui-shots.sh`** (before the final review); numbers into note 87. After the final
+- [x] **Step 3: The full `scripts/ui-shots.sh`** (before the final review); numbers into note 87. After the final
   review's fix wave, the full run again.
-- [ ] **Step 4: Write note 87's sections.** Limits to state at least: an `Edit` whose new text also appears earlier
+- [x] **Step 4: Write note 87's sections.** Limits to state at least: an `Edit` whose new text also appears earlier
   in the file anchors to the first copy; agy and pure deletions get notes only through a shown tab; notes are gone
   after a restart; no keyboard selection, so the bar follows the mouse only. **On-screen check** (~12 items, run
   with `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`, debug only, on fuxx-cli's own files such as
@@ -636,9 +636,9 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
   unified and side by side; an SSH workspace (Copy only); ask Claude to edit a file and read the note under the
   change (folded, more / less); the note after a later edit; the pill and the eye; a fold over a note; idle CPU with
   a file tab showing notes (`top -l 6 -s 5 -pid <pid>`, branch vs master).
-- [ ] **Step 5:** Status everywhere: "🟨 built on branch m11ag-ask-agent, waiting for your on-screen check; not
+- [x] **Step 5:** Status everywhere: "🟨 built on branch m11ag-ask-agent, waiting for your on-screen check; not
   merged". The gate passes.
-- [ ] **Step 6: Commit** `M11ag Task 13: docs and hand-off` (explicit paths).
+- [x] **Step 6: Commit** `M11ag Task 13: docs and hand-off` (explicit paths).
 
 ## Self-review (done at plan time)
 
