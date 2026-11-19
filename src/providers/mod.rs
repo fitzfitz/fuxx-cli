@@ -306,6 +306,21 @@ pub enum Past {
     Event(Event),
 }
 
+/// The new text of one edit, as the provider read it from the call (M11ag).
+#[derive(Clone, Debug, PartialEq)]
+pub enum EditText {
+    /// Text the edit put in the file.
+    Inserted(String),
+    /// The call replaced the whole file.
+    WholeFile,
+    /// The edit only removed text (its new text is empty).
+    Removed,
+    /// The call writes its file, and the provider says there is no note for it (a notebook
+    /// edit, an edit with no new text given). Not the same as no texts at all: that is an agent
+    /// that gives none, whose edits get their notes the light way.
+    NoNote,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     Started {
@@ -332,6 +347,9 @@ pub enum Event {
         /// The files the call writes, as the provider read them (absolute, or relative to the
         /// agent's cwd); empty for a call that writes none.
         writes: Vec<String>,
+        /// What the call put in those files, for finding its lines (M11ag); empty for a call
+        /// with no text to hand over.
+        texts: Vec<EditText>,
     },
     ToolFinished {
         id: String,

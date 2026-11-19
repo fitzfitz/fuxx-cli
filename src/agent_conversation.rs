@@ -147,6 +147,7 @@ impl Conversation {
                 parent,
                 detail,
                 writes: _,
+                texts: _,
             } => self.items.push(Item::Tool {
                 id,
                 name,
@@ -505,6 +506,7 @@ mod tests {
             parent: None,
             detail: None,
             writes: Vec::new(),
+            texts: Vec::new(),
         }
     }
 

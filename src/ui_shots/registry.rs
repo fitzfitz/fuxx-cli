@@ -14,9 +14,9 @@
 //! `--changed` follows.
 
 use super::{
-    Scene, agent, agent_box, branch, changes, chrome, chrome_parts, file_tab, file_tab_md,
-    file_tab_md_reader, naming, overlays, palette, panes, right_sidebar, sidebar, status_bar,
-    terminal, welcome, window,
+    Scene, agent, agent_box, ask, branch, changes, chrome, chrome_parts, file_tab, file_tab_md,
+    file_tab_md_reader, naming, notes, overlays, palette, panes, right_sidebar, sidebar,
+    status_bar, terminal, welcome, window,
 };
 
 /// Files that run or declare the suite but change no scene's picture: an edit to one of these
@@ -51,6 +51,8 @@ pub(super) const AREAS: &[(&str, &[Scene])] = &[
     (terminal::FILE, terminal::SCENES),
     (agent::FILE, agent::SCENES),
     (agent_box::FILE, agent_box::SCENES),
+    (ask::FILE, ask::SCENES),
+    (notes::FILE, notes::SCENES),
 ];
 
 /// The scenes with their own area file added to `sources`, as `--changed` reads them, so an edit
@@ -159,6 +161,25 @@ pub(super) const ORDER: &[&str] = &[
     "file-follow-scrolls",
     "file-follow-wheel-stops",
     "file-follow-mode",
+    "ask-existing-tab",
+    "ask-new-tab",
+    "ask-bar",
+    "ask-bar-above",
+    "ask-bar-hides",
+    "ask-bar-agy",
+    "ask-bar-ssh",
+    "ask-bar-too-long",
+    "ask-diff",
+    "notes-follow-edit",
+    "notes-light",
+    "notes-late",
+    "notes-row",
+    "notes-open",
+    "notes-under-fold",
+    "notes-diff",
+    "notes-follow-scroll",
+    "notes-pill",
+    "notes-hidden",
     "file-code-nav",
     "file-code-calm",
     "file-code-guides",
@@ -250,6 +271,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-tab-held",
     "agent-tab-runs",
     "agent-tab-agy",
+    "agent-edit-reason-live-only",
     "agent-workspace-split",
     "agent-preset-menu",
     "agent-pane-menu",
@@ -264,6 +286,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-box-attachment",
     "agent-box-attach-menu",
     "agent-box-file-chip",
+    "agent-box-code-chip",
     "agent-box-image-chip",
     "agent-box-image-agy",
     "agent-box-image-too-big",

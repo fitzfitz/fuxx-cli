@@ -17,17 +17,20 @@
 //! `launch_plan_for`, `agent_row_label`, `after_classic` and `row_winner` are pure and tested.
 
 use std::path::PathBuf;
-use std::time::{Instant, SystemTime};
+use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     App, Context, Div, Entity, FontWeight, PromptLevel, SharedString, Window, div, prelude::*, px,
 };
 
-use crate::activity::ActivityLog;
-use crate::agent_tab::{AgentTab, AgentTabEvent};
+use crate::activity::{ActivityLog, clock_hm};
+use crate::agent_tab::{AgentTab, AgentTabEvent, Attachment, attachable};
 use crate::api_events::Event;
 use crate::block_view::{self, BlockDrag};
+use crate::code_ask::{AskTo, CodeRef};
 use crate::edit_ledger::{self, agent_mark_for};
+use crate::edit_notes::{self, EditNote, Light, LightKind, Note, anchor_in};
 use crate::groups;
 use crate::layout_model::{PaneId, TabId, TabKind, WorkspaceId};
 use crate::live_lines::AgentMark;
@@ -392,6 +395,25 @@ pub(crate) fn provider_look(name: &str) -> (SharedString, &'static str, u32) {
     }
 }
 
+/// The agent tab Ask goes to (M11ag): `last` (the one last used in the workspace) if it is listed
+/// and attachable, else the first attachable one in reading order. `tabs` are the workspace's
+/// agent tabs in `Model::agent_tabs` order; the flag is false for a tab that failed to start (a
+/// tab still waiting for its view counts as attachable, so two quick Asks fill one new tab).
+pub(crate) fn pick_agent_tab(tabs: &[(TabId, bool)], last: Option<TabId>) -> Option<TabId> {
+    let ok = |tab: TabId| tabs.iter().any(|&(t, ok)| t == tab && ok);
+    last.filter(|&tab| ok(tab))
+        .or_else(|| tabs.iter().find(|&&(_, ok)| ok).map(|&(tab, _)| tab))
+}
+
+/// The agent the bar names and a new tab opens: the picked tab's provider, else the last agent
+/// tab used anywhere, else Claude.
+pub(crate) fn ask_agent(
+    picked: Option<&'static str>,
+    last_anywhere: Option<&'static str>,
+) -> &'static str {
+    picked.or(last_anywhere).unwrap_or("claude")
+}
+
 impl Workspace {
     /// Every agent tab of the model has its view and slot (a restored one, one just split in).
     /// A new view for the focused tab takes the keyboard. Render-safe (as `ensure_file_tabs`):
@@ -414,6 +436,8 @@ impl Workspace {
             focus_it |= Some(tab) == focused;
         }
         if focus_it {
+            self.note_last_agent();
+            self.tell_ask_targets(cx);
             self.focus_active(window, cx);
         }
     }
@@ -481,6 +505,14 @@ impl Workspace {
             this.on_agent_event(tab, event, window, cx)
         })
         .detach();
+        // Code chips Ask left while the view was not made yet (`attach` keeps one chip per place).
+        if let Some(chips) = self.pending_chips.remove(&tab) {
+            view.update(cx, |view, cx| {
+                for chip in chips {
+                    view.attach(chip, cx);
+                }
+            });
+        }
         let (label, badge, badge_rgb) = provider_look(&name);
         let id = self.next_agent_id;
         self.next_agent_id += 1;
@@ -558,7 +590,7 @@ impl Workspace {
         provider: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<TabId> {
         let _ = window;
         let session = self.pane_session(pane);
         let folder = new_agent_folder(
@@ -569,7 +601,7 @@ impl Workspace {
                 .or_else(|| self.active_project()),
         );
         let kind = self.new_agent_kind(provider, folder);
-        self.add_agent_tab(pane, kind, None, cx);
+        self.add_agent_tab(pane, kind, None, cx)
     }
 
     /// `kind` (a new agent tab) in `pane`: after tab `after`, else at the end of its bar; its
@@ -580,14 +612,12 @@ impl Workspace {
         kind: TabKind,
         after: Option<TabId>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<TabId> {
         let TabKind::Agent { cwd, .. } = &kind else {
-            return;
+            return None;
         };
         let cwd = cwd.clone();
-        let Some(opened) = self.model.add_tab(pane, kind) else {
-            return;
-        };
+        let opened = self.model.add_tab(pane, kind)?;
         let place = after.and_then(|after| {
             let tabs = &self.model.pane(pane)?.tabs;
             tabs.iter().position(|t| t.id == after)
@@ -599,6 +629,7 @@ impl Workspace {
         self.sync();
         self.save();
         cx.notify();
+        Some(opened.tab)
     }
 
     /// The agent tab beside terminal `sN` (`terminal`), split to its right (a provider preset's
@@ -906,6 +937,9 @@ impl Workspace {
                     edit_ledger::update(cx, |l, now| l.edit_started(&call, mark, paths, now));
                 }
             }
+            AgentTabEvent::EditNoted { paths, note } => {
+                self.store_notes(tab, paths.clone(), note.clone(), cx)
+            }
             AgentTabEvent::EditDone { call, ok } => {
                 if let Some((id, _)) = self.agent_ledger_who(tab) {
                     let call = format!("a{id}:{call}");
@@ -914,6 +948,100 @@ impl Workspace {
                 }
             }
         }
+    }
+
+    /// Files the agent's reason for an edit that finished OK (M11ag): each path is read off the
+    /// UI thread (not over `REFUSE_ABOVE`), each new text's anchor becomes a `Note` stamped with
+    /// the agent and the clock as it is now (made once, so nothing ticks). A path with no text
+    /// to find (an agent that gives none) or only removed text gets a `Light` reason to wait
+    /// for the file tab that sees the change (`edit_notes::light_kind`); a text that is not
+    /// found, and a call the provider gives no note, give nothing.
+    ///
+    /// Texts with nothing to look for in the file (`edit_notes::needs_read`) are settled here,
+    /// in the turn the agent tab reported the finish in: the light is in the store before any
+    /// file tab can read the change, so none misses it.
+    pub(crate) fn store_notes(
+        &mut self,
+        tab: TabId,
+        paths: Vec<PathBuf>,
+        note: EditNote,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((slot, agent)) = self.agent_ledger_who(tab) else {
+            return;
+        };
+        let now = SystemTime::now();
+        let ms = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        let clock: Arc<str> =
+            clock_hm((ms / 1000) as i64, crate::cli::local_utc_offset(ms as u64)).into();
+        let reason_key: Arc<str> = format!("a{slot}:{}", note.reason_id).into();
+        let EditNote { reason, texts, .. } = note;
+        let light = {
+            let (agent, clock) = (agent.clone(), clock.clone());
+            let (reason, reason_key) = (reason.clone(), reason_key.clone());
+            move |kind: LightKind| Light {
+                kind,
+                agent: agent.clone(),
+                clock: clock.clone(),
+                reason: reason.clone(),
+                reason_key: reason_key.clone(),
+                at: Instant::now(),
+            }
+        };
+        if !edit_notes::needs_read(&texts) {
+            if let Some(kind) = edit_notes::light_kind(&texts, false) {
+                edit_notes::update(cx, |store| {
+                    for path in paths {
+                        store.expect_light(path, light(kind));
+                    }
+                });
+            }
+            return;
+        }
+        let found = cx.background_spawn(async move {
+            paths
+                .into_iter()
+                .map(|path| {
+                    let anchors = read_for_notes(&path).map_or_else(Vec::new, |text| {
+                        texts.iter().filter_map(|t| anchor_in(&text, t)).collect()
+                    });
+                    let light = edit_notes::light_kind(&texts, !anchors.is_empty());
+                    (path, anchors, light)
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |_, cx| {
+            let found = found.await;
+            cx.update(|cx| {
+                edit_notes::update(cx, |store| {
+                    for (path, anchors, kind) in found {
+                        let mut seen: Vec<(Vec<String>, usize)> = Vec::new();
+                        for (anchor, hint) in anchors {
+                            if seen.contains(&(anchor.clone(), hint)) {
+                                continue;
+                            }
+                            seen.push((anchor.clone(), hint));
+                            store.add(
+                                path.clone(),
+                                Note {
+                                    id: 0,
+                                    agent: agent.clone(),
+                                    clock: clock.clone(),
+                                    reason: reason.clone(),
+                                    reason_key: reason_key.clone(),
+                                    anchor: Arc::new(anchor),
+                                    hint,
+                                },
+                            );
+                        }
+                        if let Some(kind) = kind {
+                            store.expect_light(path, light(kind));
+                        }
+                    }
+                });
+            });
+        })
+        .detach();
     }
 
     /// Tells the edit ledger of agent slots that left without `close_agent_tab` (`sync` noted
@@ -1472,6 +1600,122 @@ impl Workspace {
         }
     }
 
+    /// The provider of agent tab `tab`, when fuxx knows it.
+    fn agent_provider(&self, tab: TabId) -> Option<&'static str> {
+        match &self.model.tab(tab)?.kind {
+            TabKind::Agent { provider, .. } => providers::by_name(provider).map(|p| p.info().name),
+            _ => None,
+        }
+    }
+
+    /// Workspace `ws`'s agent tabs in reading order, each with whether Ask can fill it: its slot
+    /// says so, and a tab with no slot yet (its view is made on the next frame) can if its
+    /// provider is one fuxx has.
+    fn ask_tabs(&self, ws: WorkspaceId) -> Vec<(TabId, bool)> {
+        self.model
+            .agent_tabs(ws)
+            .into_iter()
+            .map(|tab| {
+                let ok = match self.agents.get(&tab) {
+                    Some(slot) => slot.attachable,
+                    None => self.agent_provider(tab).is_some(),
+                };
+                (tab, ok)
+            })
+            .collect()
+    }
+
+    /// The agent tab Ask goes to in workspace `ws`, if there is one.
+    fn ask_pick(&self, ws: WorkspaceId) -> Option<TabId> {
+        pick_agent_tab(&self.ask_tabs(ws), self.last_agent.get(&ws).copied())
+    }
+
+    /// What a file tab of workspace `ws` offers: Ask the agent it would go to (the picked tab's,
+    /// else the last used anywhere, else Claude), or copy only on another host (spec §1.6).
+    pub(crate) fn ask_target(&self, ws: WorkspaceId, _cx: &App) -> AskTo {
+        if self.workspace_is_ssh(ws) {
+            return AskTo::CopyOnly;
+        }
+        let picked = self.ask_pick(ws).and_then(|tab| self.agent_provider(tab));
+        AskTo::Agent(ask_agent(picked, self.last_agent_provider))
+    }
+
+    /// Remember the focused tab if it is an agent tab: the one Ask goes to next in its
+    /// workspace, and its provider the one the bar names where there is no agent tab.
+    pub(crate) fn note_last_agent(&mut self) {
+        let Some(tab) = self.model.focused_tab() else {
+            return;
+        };
+        let (Some(provider), Some((ws, _))) = (self.agent_provider(tab), self.model.locate(tab))
+        else {
+            return;
+        };
+        self.last_agent.insert(ws, tab);
+        self.last_agent_provider = Some(provider);
+    }
+
+    /// Tell every file tab which agent its bar's Ask names (`set_ask` draws it only on a change).
+    pub(crate) fn tell_ask_targets(&mut self, cx: &mut Context<Self>) {
+        let files: Vec<_> = self
+            .file_tabs
+            .iter()
+            .filter_map(|(tab, view)| Some((self.model.locate(*tab)?.0, view.clone())))
+            .collect();
+        for (ws, view) in files {
+            let to = self.ask_target(ws, cx);
+            view.update(cx, |view, cx| view.set_ask(to, cx));
+        }
+    }
+
+    /// Ask the agent about `code` from file tab `file_tab` (M11ag): a code chip in the box of
+    /// the agent tab Ask picks (a new one in the file tab's pane when the workspace has none),
+    /// that tab shown with the keyboard in its box. Never sends. Nothing on another host.
+    pub(crate) fn ask_code(
+        &mut self,
+        file_tab: TabId,
+        code: CodeRef,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((ws, pane)) = self.model.locate(file_tab) else {
+            return;
+        };
+        if self.workspace_is_ssh(ws) {
+            return;
+        }
+        let tab = match self.ask_pick(ws) {
+            Some(tab) => tab,
+            None => {
+                let provider = ask_agent(None, self.last_agent_provider);
+                let Some(tab) = self.new_agent_tab(pane, provider, window, cx) else {
+                    return;
+                };
+                tab
+            }
+        };
+        let chip = Attachment::Code(code);
+        match self.agents.get(&tab) {
+            Some(slot) => {
+                let view = slot.view.clone();
+                view.update(cx, |view, cx| view.attach(chip, cx));
+            }
+            None => {
+                let waiting = self.pending_chips.entry(tab).or_default();
+                if attachable(waiting, &chip) {
+                    waiting.push(chip);
+                }
+            }
+        }
+        self.last_agent.insert(ws, tab);
+        if let Some(provider) = self.agent_provider(tab) {
+            self.last_agent_provider = Some(provider);
+        }
+        // Shown and focused as a click on its tab does (its box takes the keyboard).
+        self.model.select_tab(tab);
+        self.sync();
+        self.activate(window, cx);
+    }
+
     /// Whether workspace `ws` runs on another host (any terminal of it is an SSH session's):
     /// agent tabs are this Mac's only (spec §1.6).
     pub(crate) fn workspace_is_ssh(&self, ws: WorkspaceId) -> bool {
@@ -1545,10 +1789,68 @@ impl Workspace {
     }
 }
 
+/// The file as text for `anchor_in`, read through a bound: None when it can't be read, is over
+/// `REFUSE_ABOVE` bytes or isn't text.
+fn read_for_notes(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(crate::highlight::REFUSE_ABOVE + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > crate::highlight::REFUSE_ABOVE {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::providers::claude::CLAUDE;
+
+    fn tabs(list: &[(u64, bool)]) -> Vec<(TabId, bool)> {
+        list.iter().map(|&(id, ok)| (TabId(id), ok)).collect()
+    }
+
+    #[test]
+    fn pick_takes_the_last_used_then_reading_order() {
+        let list = tabs(&[(1, true), (2, true), (3, true)]);
+        assert_eq!(pick_agent_tab(&list, Some(TabId(2))), Some(TabId(2)));
+        // Gone (not listed): the first in reading order.
+        assert_eq!(pick_agent_tab(&list, Some(TabId(9))), Some(TabId(1)));
+        assert_eq!(pick_agent_tab(&list, None), Some(TabId(1)));
+        assert_eq!(pick_agent_tab(&[], Some(TabId(1))), None);
+    }
+
+    #[test]
+    fn pick_skips_tabs_that_failed() {
+        let list = tabs(&[(1, false), (2, true), (3, false)]);
+        // The last used one failed to start: not picked.
+        assert_eq!(pick_agent_tab(&list, Some(TabId(1))), Some(TabId(2)));
+        assert_eq!(pick_agent_tab(&list, Some(TabId(3))), Some(TabId(2)));
+        assert_eq!(pick_agent_tab(&tabs(&[(1, false)]), None), None);
+    }
+
+    /// A new tab still waiting for its view counts as attachable by the caller, so a second
+    /// Ask finds it instead of opening another.
+    #[test]
+    fn a_waiting_new_tab_is_a_target() {
+        let list = tabs(&[(1, true)]);
+        assert_eq!(pick_agent_tab(&list, Some(TabId(1))), Some(TabId(1)));
+        assert_eq!(pick_agent_tab(&list, None), Some(TabId(1)));
+        // The new tab, last used, beside an older one: still the new one.
+        let list = tabs(&[(1, true), (5, true)]);
+        assert_eq!(pick_agent_tab(&list, Some(TabId(5))), Some(TabId(5)));
+    }
+
+    #[test]
+    fn ask_agent_falls_back_to_last_anywhere_then_claude() {
+        assert_eq!(ask_agent(Some("agy"), Some("claude")), "agy");
+        assert_eq!(ask_agent(None, Some("agy")), "agy");
+        assert_eq!(ask_agent(None, None), "claude");
+    }
 
     /// The classic view types the provider's resume command into a shell: only for an id of
     /// the provider's shape (anything else could be a shell command).

@@ -58,6 +58,18 @@
 //! never turns itself on) scrolls the agent's newest change into view, 3 lines from the top as a
 //! diff opens; scrolling, a mode switch (Preview on or off too) or cleared marks turn it off.
 //!
+//! **Ask the agent and notes (M11ag).** Part 1: a finished mouse selection (File or Diff mode)
+//! shows a bar beside it (`file_tab_ask.rs`): "Ask {agent} ⌘↵" and "Copy with path". Both take
+//! the selection as whole lines (`code_ask::CodeRef`; in Diff mode the current lines only). Ask
+//! raises `FileTabEvent::Ask`, the workspace puts a code chip in an agent tab's box and sends
+//! nothing; Copy puts the lines and their path on the clipboard. The bar's label is pushed in
+//! by the workspace (`set_ask`), never polled. Esc clears a selection when no find bar or
+//! outline panel is open. Part 2: the agent's reason for an edit, as note rows under its lines
+//! (`file_tab_notes.rs`, `Row::Note` in the row map). After each read the tab places its file's
+//! notes in the new text on the background executor (given up after 50 ms: no notes for that
+//! read); a pill in the bar counts them and steps to the next, and an eye hides them (per tab,
+//! not saved).
+//!
 //! **Folding (M11ah).** In File mode a file with blocks (`code_outline`) has a fold column between
 //! the numbers and the marks: ▸ on a folded line, ▾ on an open block's first line while the
 //! pointer is over the gutter. A fold hides the block's lines after its first (`hidden_ranges`;
@@ -95,7 +107,7 @@
 //! event handlers and reads, never while drawing, and nothing animates (M11p).
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::Read;
 use std::ops::Range;
@@ -116,6 +128,7 @@ use gpui::{
 
 use crate::agent_markdown::Md;
 use crate::appearance::Appearance;
+use crate::code_ask::{AskTo, CodeRef};
 use crate::code_outline::{self, Outline};
 use crate::diff_cards::{self, CardKind, CardTitle, Grouped};
 use crate::diff_view::{
@@ -123,12 +136,14 @@ use crate::diff_view::{
     diff_spans, dim, first_change, reveal_row, sides,
 };
 use crate::edit_ledger::{Ledger, SLACK};
+use crate::edit_notes::{self, Note, NoteStore, Placed};
 use crate::git_branch::{GIT_CAP, find_git, run_capped_outcome, run_git};
 use crate::git_status::{FileDiff, LineChange, file_diff, head_size, line_changes, repo_root_at};
 use crate::highlight::{Highlighter, PLAIN_ABOVE, REFUSE_ABOVE, Span, Viewable, classify};
 use crate::layout_model::{FileMode, PaneId, TabId, TabKind, WorkspaceId};
 use crate::live_lines::{
-    AgentMark, Compared, LIMIT, LineRecord, Mark, Sure, WARM, Who, age_words, compare, letter_of,
+    AgentMark, Compared, LIMIT, LineRecord, Mark, Sure, WARM, Who, age_words, compare,
+    deleted_edges, letter_of,
 };
 use crate::md_preview::{self, LinkTarget, is_markdown, link_target};
 use crate::mermaid::{self, Asked, Key};
@@ -137,7 +152,7 @@ use crate::name_input::{NameInput, NameInputEvent};
 use crate::overlay_panel;
 use crate::reduce_motion::WindowVisible;
 use crate::row_map::{
-    CardPairs, DiffLayout, Half, MapKey, Row, RowMap, change_starts, step_change,
+    CardPairs, DiffLayout, Half, MapKey, NoteSpan, Row, RowMap, change_starts, step_change,
 };
 use crate::scrollbar::{self, Axis, Bar, LaneMark, Thumb};
 use crate::sidebar_toggle::{Tip, tip_box};
@@ -167,7 +182,8 @@ gpui::actions!(
         UnfoldAll,
         PrevChange,
         NextChange,
-        ShowAllUnchanged
+        ShowAllUnchanged,
+        AskAgent
     ]
 );
 
@@ -1384,9 +1400,21 @@ struct Live {
     pending: Option<Pending>,
     /// The file's canonical path, as the edit ledger keeps paths (found with each text read).
     real: Option<PathBuf>,
+    /// M11ag: the latest change when it only removed lines: where (`deleted_edges`) and who
+    /// made it, as decided (settled, revised); a light reason may be about it.
+    deletion: Option<Deletion>,
     /// The time the glow is worked out at: a scene's own (frozen tabs never poll).
     #[cfg(feature = "ui-shots")]
     now: Option<SystemTime>,
+}
+
+/// M11ag: a change that only removed lines: the new text's line its first gap is before, and
+/// who made it, how sure.
+#[derive(Clone, Debug)]
+struct Deletion {
+    edge: usize,
+    who: Who,
+    sure: Sure,
 }
 
 /// A look the revision check waits for (M11af): when it was, the look before it, and whether
@@ -1465,6 +1493,7 @@ impl Live {
                 self.sync_marks();
                 self.last = None;
                 self.pending = None;
+                self.deletion = None;
                 return false;
             }
             Seen::Text {
@@ -1482,14 +1511,27 @@ impl Live {
             Rc::make_mut(&mut self.record).clear(lines);
             self.sync_marks();
             self.pending = None;
+            self.deletion = None;
             return false;
         };
-        let (who, sure, open) = if c.blocks.is_empty() {
-            (Who::You, Sure::Exact, false)
+        // M11ag: a change that only removed lines is decided too (nothing is marked for it).
+        let edges = if c.blocks.is_empty() {
+            deleted_edges(&c)
         } else {
-            decide(since)
+            Vec::new()
         };
-        let revisable = !c.blocks.is_empty() && (open || sure == Sure::Guess || who == Who::You);
+        let changed = !c.blocks.is_empty() || !edges.is_empty();
+        let (who, sure, open) = if changed {
+            decide(since)
+        } else {
+            (Who::You, Sure::Exact, false)
+        };
+        let revisable = changed && (open || sure == Sure::Guess || who == Who::You);
+        self.deletion = edges.first().map(|&edge| Deletion {
+            edge,
+            who: who.clone(),
+            sure,
+        });
         Rc::make_mut(&mut self.record).apply(&c, lines, Mark { who, sure, when });
         self.sync_marks();
         if !c.blocks.is_empty() {
@@ -1503,6 +1545,11 @@ impl Live {
     /// change's lines become `who`, `sure`, which may be less sure than they were. True when a
     /// mark changed.
     fn settle(&mut self, (who, sure): (Who, Sure)) -> bool {
+        // M11ag: a deletion has no marks; its stamp changes alone (nothing drawn changes).
+        if let Some(d) = &mut self.deletion {
+            d.who = who.clone();
+            d.sure = sure;
+        }
         let record = &self.record;
         let changed = record
             .last_blocks()
@@ -1524,6 +1571,66 @@ impl Live {
     fn revise(&mut self, found: Option<AgentMark>) -> bool {
         found.is_some_and(|agent| self.settle((Who::Agent(agent), Sure::Exact)))
     }
+
+    /// M11ag: the latest change, who made it (as decided, settled or revised) and its lines:
+    /// its first block, or for a change that only removed lines, the line above its first gap
+    /// (the first line for a gap at the top).
+    fn latest_change(&self) -> Option<(&Who, Sure, Range<usize>)> {
+        if let Some(block) = self.record.last_blocks().first() {
+            let m = self.record.mark(block.start)?;
+            return Some((&m.who, m.sure, block.clone()));
+        }
+        let d = self.deletion.as_ref()?;
+        let line = d.edge.saturating_sub(1);
+        Some((&d.who, d.sure, line..line + 1))
+    }
+}
+
+/// M11ag (the light way, plan-time call 13): when `live`'s latest change is an agent's, exact,
+/// a reason that agent left for `path` is taken from `store` and filed as a note about that
+/// change: under its first block for a reason of an agent that gives no text; for a change
+/// that only removed lines, on the line above the gap. A reason left by a pure deletion is
+/// taken only by a change that only removed lines (it is about no other; left, it expires).
+/// True when a note was filed.
+fn claim_light(live: &Live, doc: &Doc, path: &Path, store: &mut NoteStore, now: Instant) -> bool {
+    let Some((Who::Agent(agent), Sure::Exact, lines)) = live.latest_change() else {
+        return false;
+    };
+    if lines.end > doc.lines.len() {
+        return false;
+    }
+    let removal_only = live.record.last_blocks().is_empty();
+    let Some(light) = store.take_light(path, &agent.name, removal_only, now) else {
+        return false;
+    };
+    let anchor: Vec<String> = lines
+        .clone()
+        .map(|l| doc.line(l).trim_end_matches(['\r', '\n']).to_string())
+        .collect();
+    let note = Note {
+        id: 0,
+        agent: light.agent,
+        clock: light.clock,
+        reason: light.reason,
+        reason_key: light.reason_key,
+        anchor: Arc::new(anchor),
+        hint: lines.start,
+    };
+    store.add(path.to_path_buf(), note);
+    true
+}
+
+/// M11ag: a placement's answer for the text and notes it was asked for: the notes to show; or,
+/// given up (`None`, out of time), nothing to change: the notes shown stay, and `asked` is
+/// cleared so the next read or store change asks again.
+fn placement_answer(
+    placed: Option<Vec<Placed>>,
+    asked: &mut Option<(u64, u64)>,
+) -> Option<Vec<Placed>> {
+    if placed.is_none() {
+        *asked = None;
+    }
+    placed
 }
 
 /// A run of neighbouring changed lines glowing at one level (`LineRecord::warm_blocks`), and
@@ -1696,11 +1803,35 @@ pub fn row_hit(doc: &Doc, i: usize, row: (usize, usize, usize), last: bool, x_ce
     b.clamp(from, end.max(from))
 }
 
+/// M11ag: a press (or a drag) on note row `r` of `map` (none: not a note row): at the end of
+/// the line it is under; side by side (`half`), at the end of that half's nearest line above
+/// (the note's own line on its half), else the start of the one below.
+fn note_press(map: &RowMap, r: usize, half: Option<Half>, doc: &Doc) -> Option<Pos> {
+    let Row::Note { .. } = map.row(r)? else {
+        return None;
+    };
+    let (line, end) = match half {
+        Some(h) => map.nearest_on(r, h)?,
+        None => (map.line_of(r)?, true),
+    };
+    // A map a version behind (a reload not drawn yet) may know more lines than the text.
+    let line = line.min(doc.lines.len().saturating_sub(1));
+    let col = if end { doc.line(line).len() } else { 0 };
+    Some(Pos { line, col })
+}
+
 /// The top row after the rows are made again (`from` → `to`; Wrap switched; `from` none: a row
 /// a line): the row of the same line, so the line at the top stays at the top (a hidden line:
-/// the shown line above it).
+/// the shown line above it). M11ag: a note's row, the same row of that note (its last when it
+/// has fewer now), else its line's.
 pub fn rescroll_row(top: usize, from: Option<&RowMap>, to: &RowMap) -> usize {
     let line = match from.and_then(|m| m.row(top)) {
+        Some(Row::Note { note, k }) => {
+            if let Some(rows) = to.note_rows(note) {
+                return (rows.start + k).min(rows.end - 1);
+            }
+            from.and_then(|m| m.line_of(top)).unwrap_or(0)
+        }
         // M11ah: a side-by-side pair's line (the old side's when both).
         Some(row @ (Row::Line { .. } | Row::Pair { .. })) => row.line().unwrap_or(0),
         // A Diff card's title: that card's title.
@@ -1719,6 +1850,18 @@ pub fn rescroll_row(top: usize, from: Option<&RowMap>, to: &RowMap) -> usize {
         None => top,
     };
     (0..=line).rev().find_map(|l| to.first_row(l)).unwrap_or(0)
+}
+
+/// M11ag: how far below row `row` of `to` the view's top stays when the rows were made again
+/// for the notes alone (one placed, opened or folded; the same lines, Wrap and row height): as
+/// far as it was into row `top` of `from` when `row` is that same row (the same part of the
+/// same line, the same row of the same note), so nothing moves under the eye; else 0 (the row's
+/// top).
+pub fn rescroll_into(y: f32, top: usize, from: &RowMap, to: &RowMap, row: usize) -> f32 {
+    match from.row(top) {
+        Some(was) if to.row(row) == Some(was) => (y - from.top(top)).clamp(0.0, to.row_h()),
+        _ => 0.0,
+    }
 }
 
 /// The change under a press `y` points down the text (scroll included) in the bar column, by
@@ -2920,6 +3063,12 @@ struct Frame {
     side_by_side: bool,
     current_half: Option<Half>,
     sel_half: Option<Half>,
+    /// M11ag: the notes placed and their generation (the shapes' key), the ones opened, and
+    /// their rows' generation (the row map's key).
+    notes: Rc<Vec<Placed>>,
+    notes_gen: u64,
+    notes_open: HashSet<u64>,
+    note_rows_gen: u64,
 }
 
 /// What the text body draws of Diff mode's cards (M11ah).
@@ -2952,18 +3101,11 @@ impl LiveFrame {
 fn mark_look(m: &Mark, your_letter: char, ui: &UiColors, bg: Rgb) -> (Rgb, bool, char) {
     match &m.who {
         Who::You => (ui.tab(TabColor::Teal), true, your_letter),
-        Who::Agent(a) => match a.rgb {
-            Some(c) => {
-                let c = Rgb {
-                    r: (c >> 16) as u8,
-                    g: (c >> 8) as u8,
-                    b: c as u8,
-                };
-                let c = ensure_contrast(c, bg, MARK_MIN);
-                (c, m.sure == Sure::Exact, a.letter)
-            }
-            None => (ui.tab(TabColor::Grey), false, a.letter),
-        },
+        Who::Agent(a) => (
+            notes::agent_ink(a, ui, bg),
+            a.rgb.is_some() && m.sure == Sure::Exact,
+            a.letter,
+        ),
     }
 }
 
@@ -3343,6 +3485,7 @@ fn paint_body(
     g: &Geom,
     m: &CellMetrics,
     map: &RowMap,
+    shapes: Option<&notes::NoteShapes>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -3822,6 +3965,14 @@ fn paint_body(
             }
             Some(Row::Title { card }) => paint_card_title(f, g, card, y, false, window, cx),
             Some(Row::Unchanged { stretch }) => paint_unchanged(f, g, stretch, y, window, cx),
+            // M11ag: a note's rows, drawn whole from the first of them in sight.
+            Some(Row::Note { note, k }) => {
+                if let Some(shapes) = shapes
+                    && (k == 0 || r == rows.start)
+                {
+                    notes::paint_note(f, g, map, shapes, note, window, cx);
+                }
+            }
             None => {}
         }
     }
@@ -4153,6 +4304,8 @@ pub enum FileTabEvent {
     /// A link in the Preview to a file (M11ac): the workspace opens it in a tab; M11ai: with a
     /// `#part`, a Markdown file opens in Preview at that heading.
     OpenFile(PathBuf, Option<String>),
+    /// M11ag: Ask (the selection bar's button, ⌘↵): the selection's code, for an agent tab's box.
+    Ask(CodeRef),
 }
 
 /// The find bar: its box and what it found.
@@ -4316,6 +4469,12 @@ pub struct FileTab {
     rows: Rc<RefCell<Option<(MapKey, RowMap)>>>,
     /// M11ah: the scrollbar's marks (changes, find matches) as last worked out, and what for.
     lane: Lane,
+    /// M11ag: where Ask goes from this tab (the agent it names, or copy only): told by the
+    /// Workspace (`tell_ask_targets`).
+    ask_to: AskTo,
+    /// M11ag: where the selection bar and its buttons were drawn this frame (the scenes' probe).
+    #[cfg(feature = "ui-shots")]
+    bar_at: Rc<Cell<ask::BarAt>>,
     /// The selection: where the mouse went down, and where it is.
     selection: Option<(Pos, Pos)>,
     selecting: bool,
@@ -4461,7 +4620,24 @@ pub struct FileTab {
     live: Live,
     /// M11af: the mark under the pointer: its tooltip's place (window points) and words.
     mark_tip: Option<(Point<Pixels>, SharedString)>,
+    /// M11ag: the file's notes placed in the text shown (`place_notes`), and how many times
+    /// they changed; the text version and the store's generation last placed for.
+    notes: Rc<Vec<Placed>>,
+    notes_gen: u64,
+    notes_asked: Option<(u64, u64)>,
+    /// M11ag: the notes opened past their two rows (by id); the rows' generation (the row
+    /// map's key: it moves when the notes or an opened one change); each note's text as last
+    /// shaped (a layout cache, made in the prepaint).
+    notes_open: HashSet<u64>,
+    note_rows_gen: u64,
+    note_shapes: Rc<RefCell<Option<Rc<notes::NoteShapes>>>>,
+    /// M11ag: the eye's switch: no note rows in this tab (not saved; a new tab shows them), and
+    /// the notes pill and its eye as drawn this frame (none: not drawn).
+    notes_hidden: bool,
+    notes_at: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>,
     _appearance: Subscription,
+    /// M11ag: a note filed for any file: this file's are placed again if its changed.
+    _notes_seen: Subscription,
 }
 
 /// What each block does as a Mermaid diagram (M11ac Part 2, `mermaid::plan`).
@@ -4485,6 +4661,15 @@ impl Focusable for FileTab {
 }
 
 impl FileTab {
+    /// M11ag: where Ask goes from this tab, as the Workspace says; the tab is drawn again only
+    /// when that changes.
+    pub(crate) fn set_ask(&mut self, to: AskTo, cx: &mut Context<Self>) {
+        if self.ask_to != to {
+            self.ask_to = to;
+            cx.notify();
+        }
+    }
+
     /// A tab showing `path`: read at once, off the UI thread.
     pub fn new(
         path: PathBuf,
@@ -4508,6 +4693,16 @@ impl FileTab {
             this.preview_list.remeasure();
             this.track_due.set(true);
             cx.notify();
+        });
+        // M11ag: notes filed after the read are placed without another read.
+        let notes_seen = cx.observe_global::<NoteStore>(|this, cx| {
+            let generation = cx.global::<NoteStore>().generation(this.note_path());
+            if this
+                .notes_asked
+                .is_none_or(|(_, asked)| asked != generation)
+            {
+                this.place_notes(cx);
+            }
         });
         let track_armed: Rc<Cell<bool>> = Rc::default();
         let mut tab = Self {
@@ -4537,6 +4732,9 @@ impl FileTab {
             geom: Rc::default(),
             rows: Rc::default(),
             lane: Rc::default(),
+            ask_to: AskTo::default(),
+            #[cfg(feature = "ui-shots")]
+            bar_at: Rc::default(),
             selection: None,
             selecting: false,
             current: None,
@@ -4611,7 +4809,16 @@ impl FileTab {
             followed: None,
             live: Live::default(),
             mark_tip: None,
+            notes: Rc::default(),
+            notes_gen: 0,
+            notes_asked: None,
+            notes_open: HashSet::new(),
+            note_rows_gen: 0,
+            note_shapes: Rc::default(),
+            notes_hidden: false,
+            notes_at: Rc::default(),
             _appearance: appearance,
+            _notes_seen: notes_seen,
         };
         tab.check_disk(cx);
         tab
@@ -4644,8 +4851,9 @@ impl FileTab {
 
     /// M11ah: the screen rows of `doc` shown in `mode`, cut at `columns` (Wrap) with rows
     /// `row_h` tall and (File mode) the `folded` blocks' lines hidden, (Diff mode) in `cards`,
-    /// paired when `side` (side by side). The one place a map is made (the canvas, Follow, a
-    /// diff's reveal, a fold), so they never disagree.
+    /// paired when `side` (side by side), (M11ag) with the `notes`' rows. The one place a map is
+    /// made (the canvas, Follow, a diff's reveal, a fold), so they never disagree.
+    #[allow(clippy::too_many_arguments)]
     fn row_map_of(
         doc: &Doc,
         mode: FileMode,
@@ -4654,6 +4862,7 @@ impl FileTab {
         folded: &BTreeSet<usize>,
         cards: Option<&DiffParts>,
         side: bool,
+        notes: &[NoteSpan],
     ) -> RowMap {
         if let (FileMode::Diff, Some((grouped, shown, closed, pairs))) = (mode, cards) {
             let layout = DiffLayout {
@@ -4662,7 +4871,7 @@ impl FileTab {
                 closed,
                 pairs: side.then_some(&pairs[..]),
             };
-            return RowMap::diff(&doc.widths, columns, &layout, row_h);
+            return RowMap::diff(&doc.widths, columns, &layout, notes, row_h);
         }
         let hidden = match (mode, &doc.outline) {
             (FileMode::Plain, Some(outline)) if !folded.is_empty() => {
@@ -4670,7 +4879,7 @@ impl FileTab {
             }
             _ => Vec::new(),
         };
-        RowMap::file(&doc.widths, columns, &hidden, row_h)
+        RowMap::file(&doc.widths, columns, &hidden, notes, row_h)
     }
 
     /// The rows of the text shown now (its folds, the Wrap width and row height last drawn),
@@ -4685,6 +4894,7 @@ impl FileTab {
             &self.folded,
             self.diff_parts().as_ref(),
             self.side_on(),
+            &self.note_spans_now(),
         ))
     }
 
@@ -4879,6 +5089,8 @@ impl FileTab {
                 Some(Row::Line { line, .. }) if map.first_row(line) == Some(row) => {
                     y - before.top(before.first_row(line).unwrap_or(top))
                 }
+                // M11ag: the same note row.
+                note @ Some(Row::Note { .. }) if map.row(row) == note => y - before.top(top),
                 _ => 0.0,
             };
             self.scroll.y = px(map.top(row) + into.max(0.0));
@@ -5070,8 +5282,12 @@ impl FileTab {
         let Some((_, map)) = rows.as_ref() else {
             return 0;
         };
-        match map.row(map.row_at(f32::from(g.scroll.y))) {
-            Some(row @ (Row::Line { .. } | Row::Pair { .. })) => row.line().unwrap_or(0),
+        let r = map.row_at(f32::from(g.scroll.y));
+        match map.row(r) {
+            // M11ag: a note's row: the line it is under.
+            Some(Row::Line { .. } | Row::Pair { .. } | Row::Note { .. }) => {
+                map.line_of(r).unwrap_or(0)
+            }
             Some(Row::Title { card }) => d.grouped.cards.get(card).map_or(0, |c| c.rows.start),
             Some(Row::Unchanged { stretch }) => {
                 d.grouped.stretches.get(stretch).map_or(0, |s| s.rows.start)
@@ -5113,6 +5329,7 @@ impl FileTab {
             && key.layout == self.layout_gen
             && key.columns.is_some() == wrap
             && key.side == self.side_on()
+            && key.notes == self.note_rows_gen
         {
             return Some(map.clone());
         }
@@ -5149,10 +5366,8 @@ impl FileTab {
                 // As the next drawing keeps the scroll (`Geom::clamp`).
                 let max = (map.height() - f32::from(g.bounds.size.height)).max(0.0);
                 let y = f32::from(self.scroll.y).clamp(0.0, max);
-                let line_at = |y: f32| match map.row(map.row_at(y)) {
-                    Some(Row::Line { line, .. }) => line,
-                    _ => 0,
-                };
+                // M11ag: a note's row: the line it is under.
+                let line_at = |y: f32| map.line_of(map.row_at(y)).unwrap_or(0);
                 (line_at(y), line_at(y + map.row_h() - 1.0))
             }
             _ => (0, 0),
@@ -5224,8 +5439,9 @@ impl FileTab {
             return false;
         }
         let outline = self.doc().and_then(|d| d.outline.as_deref());
-        match (outline, map.row(r)) {
-            (Some(o), Some(Row::Line { line, .. })) => o.sticky(line).is_some(),
+        // M11ag: a note's row: the line it is under (as `place_now`).
+        match (outline, map.line_of(r)) {
+            (Some(o), Some(line)) => o.sticky(line).is_some(),
             _ => false,
         }
     }
@@ -5439,11 +5655,15 @@ impl FileTab {
                     State::Text(doc)
                 };
                 self.unrefuse_diff(was_refused);
+                // M11ag: a light reason for this change is filed before the notes are placed.
+                self.claim_light_note(cx);
                 self.colour(cx);
                 self.look_up_changes(cx);
                 self.follow_latest(cx);
             }
         }
+        // M11ag: the notes for the new text (none without one).
+        self.place_notes(cx);
         // M11ai Task 10: a new version: a "Copied" label goes (its row may be another block now;
         // its one-shot timer then finds nothing to clear).
         self.copied = None;
@@ -5545,6 +5765,8 @@ impl FileTab {
             self.follow_latest(cx);
             cx.notify();
         }
+        // M11ag: the change may be an agent's now (a late finish), its light reason left since.
+        self.claim_light_note(cx);
         None
     }
 
@@ -5605,6 +5827,93 @@ impl FileTab {
     /// changes are guessed theirs). Nothing is drawn differently.
     pub(crate) fn set_workspace(&mut self, ws: Option<WorkspaceId>) {
         self.live.workspace = ws;
+    }
+
+    /// M11ag: the path notes are filed under: the canonical one, as the ledger keeps paths.
+    fn note_path(&self) -> &Path {
+        self.live.real.as_deref().unwrap_or(&self.path)
+    }
+
+    /// M11ag: place the file's notes in the text shown, off the UI thread (given up after
+    /// `live_lines::LIMIT`: none for that read), none for a text shown `plain` or no text. The
+    /// answer is kept only while the text's version and the store's generation are still the
+    /// ones it was asked for.
+    fn place_notes(&mut self, cx: &mut Context<Self>) {
+        let (notes, generation) =
+            cx.try_global::<NoteStore>()
+                .map_or((Arc::default(), 0), |store| {
+                    (
+                        store.notes(self.note_path()),
+                        store.generation(self.note_path()),
+                    )
+                });
+        let State::Text(doc) = &self.state else {
+            self.notes_asked = None;
+            self.set_notes(Vec::new(), cx);
+            return;
+        };
+        let asked = (doc.version, generation);
+        if self.notes_asked == Some(asked) {
+            return;
+        }
+        self.notes_asked = Some(asked);
+        if notes.is_empty() {
+            self.set_notes(Vec::new(), cx);
+            return;
+        }
+        let (text, lines) = (doc.text.clone(), doc.lines.clone());
+        let placing = cx.background_spawn(async move {
+            let lines = line_slices(&text, &lines);
+            edit_notes::place(&notes, &lines, Instant::now() + LIMIT)
+        });
+        cx.spawn(async move |this, cx| {
+            let placed = placing.await;
+            this.update(cx, |this, cx| {
+                let version = match &this.state {
+                    State::Text(doc) => Some(doc.version),
+                    _ => None,
+                };
+                let generation = cx
+                    .try_global::<NoteStore>()
+                    .map_or(0, |store| store.generation(this.note_path()));
+                if version == Some(asked.0)
+                    && generation == asked.1
+                    && let Some(placed) = placement_answer(placed, &mut this.notes_asked)
+                {
+                    this.set_notes(placed, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// M11ag: the notes placed; drawn again only when they changed.
+    fn set_notes(&mut self, placed: Vec<Placed>, cx: &mut Context<Self>) {
+        if *self.notes != placed {
+            self.notes = Rc::new(placed);
+            self.notes_gen += 1;
+            self.note_rows_gen += 1;
+            cx.notify();
+        }
+    }
+
+    /// M11ag (the light way, plan-time call 13): `claim_light` for this tab's file, run after a
+    /// read and after the revision check (a late finish may make the change the agent's).
+    fn claim_light_note(&mut self, cx: &mut Context<Self>) {
+        if !matches!(
+            self.live.latest_change(),
+            Some((Who::Agent(_), Sure::Exact, _))
+        ) {
+            return;
+        }
+        let Some(doc) = self.doc() else {
+            return;
+        };
+        let (live, path) = (&self.live, self.note_path());
+        edit_notes::update(cx, |store| {
+            claim_light(live, doc, path, store, Instant::now());
+        });
     }
 
     /// M11af: who changed each line since the tab opened.
@@ -6326,8 +6635,8 @@ impl FileTab {
         let g = self.geom.get()?;
         let rows = self.rows.borrow();
         let (_, map) = rows.as_ref()?;
-        // M11ah: side by side, a pair's line.
-        map.row(map.row_at(f32::from(g.scroll.y)))?.line()
+        // M11ah: side by side, a pair's line; M11ag: a note's row, the line it is under.
+        map.line_of(map.row_at(f32::from(g.scroll.y)))
     }
 
     /// The place under window point `p` (the nearest character edge; above or below the text,
@@ -6342,6 +6651,10 @@ impl FileTab {
         // M11ah: side by side, the half the selection is in (`mouse_down` sets it: the half
         // pressed), and that half's line on the row.
         let half = g.side.map(|_| self.sel_half.unwrap_or(Half::Old));
+        // M11ag: a note's row: the end of its line.
+        if let Some(Row::Note { .. }) = map.row(row) {
+            return note_press(&map, row, half, doc);
+        }
         let (line, cell0, dx) = match (map.row(row), half) {
             (Some(Row::Line { line, cell0 }), _) => (line, cell0, px(0.0)),
             (Some(pair @ Row::Pair { .. }), Some(h)) => {
@@ -6455,6 +6768,11 @@ impl FileTab {
                 folded.insert(start);
             }
             self.set_folds(folded, cx);
+            return;
+        }
+        // M11ag: a note's "more" / "less" opens or folds it.
+        if let Some(note) = self.note_toggle_under(e.position) {
+            self.toggle_note(note, cx);
             return;
         }
         // M11ah: side by side, the selection stays in the half pressed (a press that starts
@@ -6632,7 +6950,10 @@ impl FileTab {
                 cx.notify();
             }
         }
-        self.selecting = false;
+        // M11ag: a finished selection shows its bar.
+        if std::mem::take(&mut self.selecting) {
+            cx.notify();
+        }
         // No old auto-scroll task resumes on a quick press again.
         self.drag_at = None;
         if self.scrollbar.end_drag(Instant::now()) {
@@ -6935,11 +7256,14 @@ impl FileTab {
     }
 
     /// Esc: the find bar closes and the tab takes the keyboard. With no bar, M11ai Task 9: the
-    /// narrow outline's panel closes, if open; else Esc goes on.
+    /// narrow outline's panel closes, if open; M11ag: else a selection clears; else Esc goes on.
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.find.take().is_none() {
             if self.outline_panel_open() {
                 self.close_outline_panel(cx);
+            } else if self.esc_takes_selection() {
+                // M11ag: a selection clears (and its bar goes); with none, Esc goes on.
+                self.clear_selection(cx);
             } else {
                 cx.propagate();
             }
@@ -7168,12 +7492,12 @@ impl FileTab {
             .into_any_element()
     }
 
-    fn text_button(
+    /// The text button's look (M11al): `text` colour on `panel`.
+    fn text_button_look(
         id: &'static str,
-        label: &'static str,
+        label: impl Into<SharedString>,
+        text_color: alacritty_terminal::vte::ansi::Rgb,
         ui: UiColors,
-        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-        cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
@@ -7188,13 +7512,32 @@ impl FileTab {
             .border_color(hsla(ui.panel_border))
             .bg(hsla(ui.panel))
             .text_size(px(text::NAME))
-            .text_color(hsla(ui.text))
+            .text_color(hsla(text_color))
+            .child(label.into())
+    }
+
+    fn text_button(
+        id: &'static str,
+        label: impl Into<SharedString>,
+        ui: UiColors,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        Self::text_button_look(id, label, ui.text, ui)
             .cursor_pointer()
             .hover(move |s| s.bg(hsla(ui.panel_hover)))
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, window, cx| on_click(this, window, cx)),
             )
-            .child(label)
+    }
+
+    /// The text button disabled: dim text, no hover, no click.
+    fn text_button_off(
+        id: &'static str,
+        label: impl Into<SharedString>,
+        ui: UiColors,
+    ) -> gpui::Stateful<gpui::Div> {
+        Self::text_button_look(id, label, ui.text_dim, ui)
     }
 
     /// One of the view switch's segments (M11ae): the current one `card_selected` in `text`,
@@ -7458,6 +7801,7 @@ impl FileTab {
             )
         });
         let follow = self.follow_pill(ui, cx);
+        let notes = self.notes_pill(ui, cx);
         let (name, chip) = self.title_words();
         let mut meta = self.meta_parts().into_iter();
         let place = meta.next().unwrap_or_default();
@@ -7574,6 +7918,7 @@ impl FileTab {
                     .flex_row()
                     .items_center()
                     .gap(px(8.0))
+                    .children(notes)
                     .children(follow)
                     .children(jumps.into_iter().flatten())
                     .children(switch)
@@ -7906,9 +8251,19 @@ impl FileTab {
             side_by_side: self.mode == FileMode::Diff && self.side_by_side,
             current_half: self.current_half,
             sel_half: self.sel_half,
+            // M11ag: the eye: hidden, no note has rows (the map is made again for the key).
+            notes: if self.notes_hidden {
+                Rc::default()
+            } else {
+                self.notes.clone()
+            },
+            notes_gen: self.notes_gen,
+            notes_open: self.notes_open.clone(),
+            note_rows_gen: self.note_rows_gen,
         });
         let geom = self.geom.clone();
         let row_map = self.rows.clone();
+        let note_shapes = self.note_shapes.clone();
         let fits_side = self.fits_side.clone();
         let drawn = self.drawn.clone();
         let lane = self.lane.clone();
@@ -7923,6 +8278,10 @@ impl FileTab {
         // M11af: the hovered mark's tooltip, under it (as the Changes bar's, drawn in place).
         let tip = self.mark_tip.clone().filter(|_| frame.live.is_some());
         let ui = theme.ui();
+        // M11ag: the selection bar, an overlay (the code doesn't move).
+        let ask_bar = self.ask_bar(ui, cx);
+        // Whether a bar is up: its place follows a reflow or a resize (checked in the prepaint).
+        let bar_up = ask_bar.is_some();
         div()
             .flex_1()
             .min_h(px(0.0))
@@ -7937,6 +8296,7 @@ impl FileTab {
                         .child(tip_box(words, &ui)),
                 ))
             })
+            .children(ask_bar)
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, cx| this.wheel(e, cx)))
             .on_mouse_down(
                 MouseButton::Left,
@@ -7979,6 +8339,23 @@ impl FileTab {
                                 .global::<Appearance>()
                                 .file_wrap
                                 .then(|| wrap_cells(width, cw, gutter, side));
+                            // M11ag: the notes' text shaped at the width a note wraps to (a
+                            // layout cache: shaped again only for other notes, another width or
+                            // theme).
+                            let note_left = notes::note_left(cw, gutter, side);
+                            let note_width = (!laid.notes.is_empty()).then(|| {
+                                notes::note_room(width, note_left, laid.mode)
+                                    .floor()
+                                    .max(1.0) as u32
+                            });
+                            let shapes = note_width.map(|width| {
+                                let key = notes::ShapeKey {
+                                    notes: laid.notes_gen,
+                                    width,
+                                    theme: laid.theme,
+                                };
+                                notes::shapes_for(&note_shapes, key, &laid.notes, window)
+                            });
                             // M11ah: the row map, a layout cache made again only for another
                             // key (mode, version, width...) or row height.
                             let row_h = row_height(m.line_height);
@@ -7989,8 +8366,12 @@ impl FileTab {
                                 folds: laid.folds_gen,
                                 layout: laid.layout_gen,
                                 side,
+                                notes: laid.note_rows_gen,
+                                note_width,
                             };
                             let before = row_map.borrow().clone();
+                            let rebuilt = !matches!(&before, Some((k, map))
+                                if *k == key && map.row_h() == f32::from(row_h));
                             let map = match &before {
                                 Some((k, map)) if *k == key && map.row_h() == f32::from(row_h) => {
                                     map.clone()
@@ -8003,6 +8384,15 @@ impl FileTab {
                                     &laid.folded,
                                     laid.cards.as_ref().map(|c| &c.parts),
                                     side,
+                                    &shapes.as_ref().map_or_else(Vec::new, |s| {
+                                        notes::spans_for(
+                                            &laid.notes,
+                                            &s.counts(),
+                                            &laid.notes_open,
+                                            laid.mode,
+                                            laid.diff.as_deref().map(Vec::as_slice),
+                                        )
+                                    }),
                                 ),
                             };
                             // The rows reflowed (Wrap switched, review fix; M11ah fix round 1:
@@ -8020,9 +8410,23 @@ impl FileTab {
                                     && if k.side != side {
                                         fit_changed
                                     } else {
-                                        b.columns() != wrap || b.row_h() != f32::from(row_h)
+                                        // M11ag: or the notes' rows changed (a note placed,
+                                        // opened or folded; another width for them).
+                                        b.columns() != wrap
+                                            || b.row_h() != f32::from(row_h)
+                                            || (k.notes, k.note_width)
+                                                != (key.notes, key.note_width)
                                     }
                             });
+                            // M11ag (final fixes): the notes' rows alone changed (the same
+                            // mode, layout, Wrap and row height).
+                            let notes_only = !wrap_switched
+                                && before.as_ref().is_some_and(|(k, b)| {
+                                    k.mode == laid.mode
+                                        && k.side == side
+                                        && b.columns() == wrap
+                                        && b.row_h() == f32::from(row_h)
+                                });
                             let before = before.map(|(_, map)| map);
                             let mut scroll = laid.scroll;
                             if wrap_switched || reflowed {
@@ -8032,8 +8436,15 @@ impl FileTab {
                                     |b| b.row_at(y),
                                 );
                                 let row = rescroll_row(top, before.as_ref(), &map);
+                                // M11ag (final fixes): made again for the notes alone, the
+                                // view stays as far into its top row as it was (no jump up
+                                // to the row's top when a note lands or is opened).
+                                let into = match before.as_ref() {
+                                    Some(b) if notes_only => rescroll_into(y, top, b, &map, row),
+                                    _ => 0.0,
+                                };
                                 let x = if wrap.is_some() { px(0.0) } else { scroll.x };
-                                scroll = point(x, px(map.top(row)));
+                                scroll = point(x, px(map.top(row) + into));
                                 let mode = laid.mode;
                                 keep.update(cx, |this, _| *this.mode_scroll_mut(mode) = scroll);
                             }
@@ -8048,6 +8459,16 @@ impl FileTab {
                                 widest,
                                 scroll,
                             );
+                            // M11ag: a bar up follows its selection's rows: drawn again once
+                            // when the rows or the text's place changed under it (its place is
+                            // read from this drawing's results, in the next frame's render).
+                            let moved = geom.get().is_none_or(|o| {
+                                o.bounds != g.bounds || o.line_height != g.line_height
+                            });
+                            if bar_up && (rebuilt || moved) {
+                                let keep = keep.clone();
+                                cx.defer(move |cx| keep.update(cx, |_, cx| cx.notify()));
+                            }
                             geom.set(Some(g));
                             // A new version (or mode) drawn: the scroll as kept in it is the
                             // scroll (after a shrink, the view doesn't jump back down when the
@@ -8094,11 +8515,11 @@ impl FileTab {
                                 let row = Bounds::new(bounds.origin, size(bounds.size.width, h));
                                 window.insert_hitbox(row, HitboxBehavior::Normal)
                             });
-                            (m, g, hitbox, map, sticky, marks)
+                            (m, g, hitbox, map, sticky, marks, shapes)
                         },
-                        move |_, (m, g, hitbox, map, sticky, marks), window, cx| {
+                        move |_, (m, g, hitbox, map, sticky, marks, shapes), window, cx| {
                             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
-                            paint_body(&frame, &g, &m, &map, window, cx);
+                            paint_body(&frame, &g, &m, &map, shapes.as_deref(), window, cx);
                             if let (Some(line), Some(row)) = (frame.sticky, &sticky) {
                                 window.set_cursor_style(CursorStyle::PointingHand, row);
                                 paint_sticky(&frame, &g, &m, &map, line, window, cx);
@@ -8164,6 +8585,12 @@ impl FileTab {
 
 #[path = "file_tab_preview.rs"]
 mod preview;
+
+#[path = "file_tab_ask.rs"]
+mod ask;
+
+#[path = "file_tab_notes.rs"]
+mod notes;
 
 /// What the UI screenshots read of a tab, and the change list they give it.
 #[cfg(feature = "ui-shots")]
@@ -8495,6 +8922,20 @@ impl FileTab {
             .collect()
     }
 
+    /// M11ag: where Ask goes from this tab (a scene's probe).
+    #[cfg(feature = "ui-shots")]
+    pub fn ask_to(&self) -> AskTo {
+        self.ask_to
+    }
+
+    /// M11ag: the notes placed in the text, as (the 0-based line each sits under, its reason).
+    pub fn placed_notes(&self) -> Vec<(usize, String)> {
+        self.notes
+            .iter()
+            .map(|p| (p.under, p.note.reason.to_string()))
+            .collect()
+    }
+
     /// M11af: the hovered mark's tooltip, if one shows.
     pub fn mark_tip(&self) -> Option<String> {
         self.mark_tip.as_ref().map(|(_, words)| words.to_string())
@@ -8728,6 +9169,7 @@ impl FileTab {
             &self.folded,
             Some(&parts),
             self.side_on(),
+            &self.note_spans_now(),
         );
         let card = d.grouped.cards.iter().position(|c| c.rows.contains(&row));
         let top = match card.and_then(|k| map.title_row(k)) {
@@ -8800,6 +9242,7 @@ impl Render for FileTab {
                 }
             }))
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
+            .on_action(cx.listener(|this, _: &AskAgent, _, cx| this.ask(cx)))
             .child(toolbar)
             .children(find_bar)
             .children(crumbs)
@@ -8968,6 +9411,8 @@ impl Workspace {
                         this.save();
                     }
                 }
+                // M11ag: the selection's code, a chip in an agent tab's box.
+                FileTabEvent::Ask(code) => this.ask_code(tab, code.clone(), window, cx),
                 FileTabEvent::OpenFile(path, part) => {
                     this.open_file_tab(path.clone(), FileMode::Plain, window, cx);
                     // M11ai: a Markdown file's heading: its Preview on (saved, as by hand),
@@ -8980,6 +9425,7 @@ impl Workspace {
         )
         .detach();
         self.file_tabs.insert(tab, view);
+        self.tell_ask_targets(cx);
     }
 
     /// The tab just opened on Markdown file `path` (the focused one) shows its Preview, saved
@@ -9036,6 +9482,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edit_notes::{Light, LightKind};
 
     /// M11ae: the view switch offers File always, Diff in a repo (or in Diff mode), Preview for
     /// Markdown (in either mode); it shows with two segments or more.
@@ -9110,8 +9557,8 @@ mod tests {
     #[allow(clippy::single_range_in_vec_init)] // `hidden`: one hidden run
     fn switching_wrap_keeps_the_top_line() {
         let doc = Doc::new("a\nbbbbbbbbbb\nc".to_string(), 0);
-        let w = RowMap::file(&doc.widths, Some(4), &[], 10.0);
-        let plain = RowMap::file(&doc.widths, None, &[], 10.0);
+        let w = RowMap::file(&doc.widths, Some(4), &[], &[], 10.0);
+        let plain = RowMap::file(&doc.widths, None, &[], &[], 10.0);
         // Rows: a | bbbb bbbb bb | c.
         assert_eq!(rescroll_row(4, Some(&w), &plain), 2);
         assert_eq!(rescroll_row(2, Some(&plain), &w), 4);
@@ -9120,9 +9567,148 @@ mod tests {
         assert_eq!(rescroll_row(2, Some(&w), &plain), 1);
         assert_eq!(rescroll_row(1, None, &w), 1);
         // M11ah: a line hidden in the rows made: the shown line above it.
-        let hidden = RowMap::file(&doc.widths, Some(4), &[1..2], 10.0);
+        let hidden = RowMap::file(&doc.widths, Some(4), &[1..2], &[], 10.0);
         assert_eq!(rescroll_row(1, Some(&plain), &hidden), 0);
         assert_eq!(rescroll_row(2, Some(&plain), &hidden), 1);
+    }
+
+    /// M11ag: a note row at the top when the rows are made again: the same row of that note
+    /// (as far down it as it has rows), else (no rows for it now) its line's row.
+    #[test]
+    fn rescroll_keeps_the_line_when_a_note_row_was_on_top() {
+        use crate::row_map::NoteSpan;
+        let widths = [1, 9, 1, 1, 1, 1];
+        let span = |rows| NoteSpan {
+            under: 3,
+            rows,
+            note: 0,
+        };
+        // 0 | 1 | 2 | 3 | note | note | 4 | 5.
+        let from = RowMap::file(&widths, None, &[], &[span(2)], 10.0);
+        assert_eq!(from.row(5), Some(Row::Note { note: 0, k: 1 }));
+        // Wrapped: 0 | 1 1 1 | 2 | 3 | note | note | 4 | 5.
+        let wrapped = RowMap::file(&widths, Some(4), &[], &[span(2)], 10.0);
+        assert_eq!(rescroll_row(5, Some(&from), &wrapped), 7);
+        assert_eq!(rescroll_row(4, Some(&from), &wrapped), 6);
+        // Fewer rows for it now: its last.
+        let shorter = RowMap::file(&widths, Some(4), &[], &[span(1)], 10.0);
+        assert_eq!(rescroll_row(5, Some(&from), &shorter), 6);
+        // Not there now: its line's row.
+        let none = RowMap::file(&widths, Some(4), &[], &[], 10.0);
+        assert_eq!(rescroll_row(5, Some(&from), &none), 5);
+    }
+
+    /// M11ag (final fixes, F5): rows made again for the notes alone keep the view as far into
+    /// its top row as it was when that row is the same one; a row that is another now (a note
+    /// with fewer rows, a note gone) is shown from its top.
+    #[test]
+    fn a_notes_reflow_keeps_the_offset_into_the_top_row() {
+        use crate::row_map::NoteSpan;
+        let widths = [1, 1, 1, 1, 1, 1];
+        let span = |under, rows, note| NoteSpan { under, rows, note };
+        // 0 | 1 | 2 | 3 | 4 | 5, then a note placed under line 1 (two rows).
+        let from = RowMap::file(&widths, None, &[], &[], 10.0);
+        let to = RowMap::file(&widths, None, &[], &[span(1, 2, 0)], 10.0);
+        // The view's top 4 pt into line 3 (row 3, now row 5): still 4 pt into it.
+        let row = rescroll_row(3, Some(&from), &to);
+        assert_eq!(row, 5);
+        assert_eq!(rescroll_into(34.0, 3, &from, &to, row), 4.0);
+        // A note opened (2 rows to 4) with the top 7 pt into its second row: the same row.
+        let open = RowMap::file(&widths, None, &[], &[span(1, 4, 0)], 10.0);
+        let row = rescroll_row(3, Some(&to), &open);
+        assert_eq!(open.row(row), Some(Row::Note { note: 0, k: 1 }));
+        assert_eq!(rescroll_into(37.0, 3, &to, &open, row), 7.0);
+        // Folded again with the top in its fourth row: its last row now, from its top.
+        let row = rescroll_row(5, Some(&open), &to);
+        assert_eq!(to.row(row), Some(Row::Note { note: 0, k: 1 }));
+        assert_eq!(rescroll_into(57.0, 5, &open, &to, row), 0.0);
+        // The note gone: its line's row, from its top.
+        let row = rescroll_row(3, Some(&to), &from);
+        assert_eq!(rescroll_into(37.0, 3, &to, &from, row), 0.0);
+    }
+
+    /// M11ag: a press (or a drag) on a note row is at the end of its line; side by side, at
+    /// the end of the pressed half's nearest line above (its own line on the new half).
+    #[test]
+    fn a_press_on_a_note_row_is_its_line_s_end() {
+        use crate::diff_view::{DiffRow, RowKind};
+        use crate::row_map::{CardPairs, NoteSpan};
+        let span = |under| NoteSpan {
+            under,
+            rows: 2,
+            note: 0,
+        };
+        let doc = Doc::new("ab\ncdef\ng".to_string(), 0);
+        // 0 | 1 | note | note | 2.
+        let map = RowMap::file(&doc.widths, None, &[], &[span(1)], 10.0);
+        for r in [2, 3] {
+            assert_eq!(
+                note_press(&map, r, None, &doc),
+                Some(Pos { line: 1, col: 4 })
+            );
+        }
+        assert_eq!(note_press(&map, 1, None, &doc), None, "a line's row");
+        assert_eq!(note_press(&map, 4, None, &doc), None);
+        // Side by side: s s - + + s, the note under the first added line.
+        let row = |kind, old, new| DiffRow { kind, old, new };
+        let rows = vec![
+            row(RowKind::Same, Some(1), Some(1)),
+            row(RowKind::Same, Some(2), Some(2)),
+            row(RowKind::Removed, Some(3), None),
+            row(RowKind::Added, None, Some(3)),
+            row(RowKind::Added, None, Some(4)),
+            row(RowKind::Same, Some(4), Some(5)),
+        ];
+        let g = diff_cards::group(&rows);
+        let pairs: Vec<CardPairs> = (g.cards.iter())
+            .map(|c| diff_cards::pair(&rows, c.rows.clone()))
+            .collect();
+        let layout = DiffLayout {
+            grouped: &g,
+            shown: &[],
+            closed: &[false],
+            pairs: Some(&pairs),
+        };
+        let doc = Doc::new("s0\ns1\nremoved!!\nad\nadded\ns5".to_string(), 0);
+        // title | 0 | 1 | 2·3 | 2·_ | 2·_ | note | note | _·4 | _·4 | 5.
+        let map = RowMap::diff(&doc.widths, Some(4), &layout, &[span(3)], 10.0);
+        assert_eq!(map.note_rows(0), Some(6..8));
+        let new = note_press(&map, 7, Some(Half::New), &doc);
+        assert_eq!(new, Some(Pos { line: 3, col: 2 }));
+        let old = note_press(&map, 6, Some(Half::Old), &doc);
+        assert_eq!(old, Some(Pos { line: 2, col: 9 }));
+    }
+
+    /// M11ag: change bars give note rows nothing: a bar's run stops at its line's rows, a
+    /// press on a note row's upper half finds no bar.
+    #[test]
+    fn change_bars_give_note_rows_nothing() {
+        use crate::row_map::NoteSpan;
+        let ink = BarColours {
+            added: Rgb { r: 1, g: 0, b: 0 },
+            changed: Rgb { r: 2, g: 0, b: 0 },
+            deleted: Rgb { r: 3, g: 0, b: 0 },
+        };
+        let mut changes = Changes::default();
+        changes.by_line.insert(1, LineChange::Added);
+        changes.by_line.insert(2, LineChange::Added);
+        let note = NoteSpan {
+            under: 1,
+            rows: 2,
+            note: 0,
+        };
+        // 0 | 1 | note | note | 2 | 3.
+        let map = RowMap::file(&[1; 4], None, &[], &[note], 10.0);
+        assert_eq!(
+            file_change_items(&changes, &map, &ink),
+            [(10.0, 10.0, ink.added), (40.0, 10.0, ink.added)]
+        );
+        assert_eq!(bar_at_rows(22.0, &map, &changes), None);
+        assert_eq!(bar_at_rows(32.0, &map, &changes), None);
+        assert_eq!(
+            bar_at_rows(42.0, &map, &changes),
+            Some((3, LineChange::Added))
+        );
     }
 
     /// Review fix (M11x part 2): with Wrap on, a press finds a change bar by its rows, and a
@@ -9130,7 +9716,7 @@ mod tests {
     #[test]
     fn bars_are_hit_by_their_rows_when_wrapped() {
         let doc = Doc::new("a\nbbbbbbbbbb\nc".to_string(), 0);
-        let w = RowMap::file(&doc.widths, Some(4), &[], 10.0);
+        let w = RowMap::file(&doc.widths, Some(4), &[], &[], 10.0);
         let mut changes = Changes::default();
         changes.by_line.insert(1, LineChange::Changed);
         // Any of line 1's three rows (rows 1-3): line 2 (1-based), changed.
@@ -9735,8 +10321,8 @@ mod tests {
             pairs: None,
         };
         let widths = vec![9; 41];
-        let from = RowMap::diff(&widths, None, &layout, 10.0);
-        let to = RowMap::diff(&widths, Some(4), &layout, 10.0);
+        let from = RowMap::diff(&widths, None, &layout, &[], 10.0);
+        let to = RowMap::diff(&widths, Some(4), &layout, &[], 10.0);
         let top = (0..from.len())
             .find(|&r| from.row(r) == Some(Row::Unchanged { stretch: 1 }))
             .expect("the second stretch's row");
@@ -9796,7 +10382,7 @@ mod tests {
             closed: &[false],
             pairs: Some(&pairs),
         };
-        let map = RowMap::diff(&[6; 6], None, &layout, 10.0);
+        let map = RowMap::diff(&[6; 6], None, &layout, &[], 10.0);
         let hit = |line, at: usize| Match {
             line,
             cols: at..at + 1,
@@ -9842,8 +10428,8 @@ mod tests {
             closed: &[false],
             pairs,
         };
-        let side = RowMap::diff(&widths, Some(4), &layout(Some(&pairs)), 10.0);
-        let unified = RowMap::diff(&widths, Some(4), &layout(None), 10.0);
+        let side = RowMap::diff(&widths, Some(4), &layout(Some(&pairs)), &[], 10.0);
+        let unified = RowMap::diff(&widths, Some(4), &layout(None), &[], 10.0);
         // Side: title | 0 | 1 | 2·3 | 2·_ | 2·_ | _·4 | _·4 | 5. Unified: title | 0 | 1 | 2 2 2
         // | 3 | 4 4 | 5.
         assert_eq!(rescroll_row(6, Some(&side), &unified), 7, "line 4");
@@ -9943,7 +10529,7 @@ mod tests {
         let (by_line, deleted) = bars(&[(3, LineChange::Changed), (6, LineChange::DeletedAfter)]);
         let changes = Changes { by_line, deleted };
         // A row a line (the identity map), 10 pt each.
-        let map = RowMap::file(&[1; 10], None, &[], 10.0);
+        let map = RowMap::file(&[1; 10], None, &[], &[], 10.0);
         // 0-based line 2 is (1-based) line 3.
         assert_eq!(
             bar_at_rows(25.0, &map, &changes),
@@ -10552,6 +11138,222 @@ mod tests {
         assert!(live.prev().is_none());
     }
 
+    /// M11ag: a change that only removed lines is decided too (a light reason may be about it):
+    /// its line is the one above its first gap (the first line for a gap at the top), and a
+    /// settle stamps it again; a change with new lines is its first block's; a read with no
+    /// change has none.
+    #[test]
+    fn a_pure_deletion_is_decided_and_stamped() {
+        let t0 = Instant::now();
+        let mut live = Live::default();
+        let one = doc("a\nb\nc\nd\n");
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let two = doc("a\nd\n");
+        let revise = live.saw(text_read(&live, &two, T0), t0, |_| {
+            (agent("claude"), Sure::Exact, true)
+        });
+        assert!(revise, "decided while the edit was open");
+        assert!(!live.record.any(), "nothing to mark");
+        assert_eq!(
+            live.latest_change(),
+            Some((&agent("claude"), Sure::Exact, 0..1))
+        );
+        assert!(!live.settle((Who::You, Sure::Exact)), "no mark changed");
+        assert_eq!(live.latest_change(), Some((&Who::You, Sure::Exact, 0..1)));
+        let three = doc("d\n");
+        live.saw(text_read(&live, &three, T0), t0, |_| {
+            (agent("agy"), Sure::Exact, false)
+        });
+        assert_eq!(
+            live.latest_change(),
+            Some((&agent("agy"), Sure::Exact, 0..1))
+        );
+        let four = doc("d\nX\nY\n");
+        live.saw(text_read(&live, &four, T0), t0, |_| {
+            (agent("agy"), Sure::Guess, false)
+        });
+        assert_eq!(
+            live.latest_change(),
+            Some((&agent("agy"), Sure::Guess, 1..3))
+        );
+        let five = doc("d\nX\nY\n");
+        live.saw(text_read(&live, &five, T0), t0, |_| {
+            unreachable!("nothing to decide")
+        });
+        assert_eq!(live.latest_change(), None);
+    }
+
+    fn light_of(kind: LightKind, name: &str, reason: &str, at: Instant) -> Light {
+        let Who::Agent(agent) = agent(name) else {
+            unreachable!()
+        };
+        Light {
+            kind,
+            agent,
+            clock: "10:42".into(),
+            reason: reason.into(),
+            reason_key: format!("a1:{reason}").into(),
+            at,
+        }
+    }
+
+    /// The notes filed for `path` as (anchor lines, hint, reason).
+    fn filed(store: &NoteStore, path: &Path) -> Vec<(Vec<String>, usize, String)> {
+        (store.notes(path).iter())
+            .map(|n| ((*n.anchor).clone(), n.hint, n.reason.to_string()))
+            .collect()
+    }
+
+    /// M11ag (final fixes, F1): a reason left by a pure deletion is not filed under a change
+    /// that has new lines (a hidden tab shown again reads an ordinary edit and the deletion as
+    /// one change): it would sit on an unrelated block and hide that block's own note. It
+    /// stays, and a change that only removed lines takes it, on the line above the gap.
+    #[test]
+    fn a_deletions_reason_is_claimed_only_by_a_removal_only_change() {
+        let (t0, path) = (Instant::now(), Path::new("src/workspace.rs"));
+        let mut store = NoteStore::default();
+        let mut live = Live::default();
+        let one = doc("a\nb\nc\nd\ne\nf\n");
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        // One read sees an edit of line b and the removal of d and e, both the agent's.
+        store.expect_light(
+            path.to_path_buf(),
+            light_of(LightKind::Removed, "claude", "drop the dead lines", t0),
+        );
+        let mixed = doc("a\nB\nc\nf\n");
+        live.saw(text_read(&live, &mixed, T0), t0, |_| {
+            (agent("claude"), Sure::Exact, false)
+        });
+        assert_eq!(
+            live.latest_change(),
+            Some((&agent("claude"), Sure::Exact, 1..2))
+        );
+        assert!(!claim_light(&live, &mixed, path, &mut store, t0));
+        assert!(filed(&store, path).is_empty(), "not on the edited block");
+        // The deletion read alone: the reason on the line above the gap (c, 0-based 2).
+        let mut live = Live::default();
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let gone = doc("a\nb\nc\nf\n");
+        live.saw(text_read(&live, &gone, T0), t0, |_| {
+            (agent("claude"), Sure::Exact, false)
+        });
+        assert!(claim_light(&live, &gone, path, &mut store, t0));
+        assert_eq!(
+            filed(&store, path),
+            vec![(vec!["c".to_string()], 2, "drop the dead lines".to_string())]
+        );
+        assert!(!claim_light(&live, &gone, path, &mut store, t0), "taken");
+    }
+
+    /// M11ag: the reason of an agent that gives no text goes under the first block of its
+    /// change (spec 7b), and on the line above the gap when that change only removed lines.
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // one block
+    fn a_no_text_reason_is_claimed_by_any_change_of_its_agent() {
+        let (t0, path) = (Instant::now(), Path::new("src/workspace.rs"));
+        let mut store = NoteStore::default();
+        let mut live = Live::default();
+        let one = doc("a\nb\nc\nd\ne\nf\n");
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let no_text = |reason| light_of(LightKind::NoText, "agy", reason, t0);
+        store.expect_light(path.to_path_buf(), no_text("tidy the loop"));
+        let two = doc("a\nB\nB2\nc\nd\ne\nF\n");
+        live.saw(text_read(&live, &two, T0), t0, |_| {
+            (agent("agy"), Sure::Exact, false)
+        });
+        assert_eq!(live.record.last_blocks(), &[1..3, 6..7]);
+        // A reason is its file's: none is waiting for another path.
+        assert!(!claim_light(
+            &live,
+            &two,
+            Path::new("src/other.rs"),
+            &mut store,
+            t0
+        ));
+        assert!(claim_light(&live, &two, path, &mut store, t0));
+        store.expect_light(path.to_path_buf(), no_text("cut the old lines"));
+        let three = doc("a\nB\nB2\nc\nF\n");
+        live.saw(text_read(&live, &three, T0), t0, |_| {
+            (agent("agy"), Sure::Exact, false)
+        });
+        assert!(claim_light(&live, &three, path, &mut store, t0));
+        let lines = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            filed(&store, path),
+            vec![
+                (lines(&["B", "B2"]), 1, "tidy the loop".to_string()),
+                (lines(&["c"]), 3, "cut the old lines".to_string()),
+            ]
+        );
+        // Past KEEP a reason is no one's.
+        store.expect_light(path.to_path_buf(), no_text("stale"));
+        let late = t0 + crate::edit_ledger::KEEP + Duration::from_secs(1);
+        assert!(!claim_light(&live, &three, path, &mut store, late));
+    }
+
+    /// M11ag: a change read while the agent's edit was still open and decided a guess (or
+    /// yours) claims nothing; settled the agent's, exact (the revision check), the claim made
+    /// then files the reason. A deletion's reason: only when the settled change removed lines
+    /// alone.
+    #[test]
+    fn a_light_reason_is_claimed_once_the_change_is_settled() {
+        let (t0, path) = (Instant::now(), Path::new("src/workspace.rs"));
+        let Who::Agent(claude) = agent("claude") else {
+            unreachable!()
+        };
+        let mut store = NoteStore::default();
+        let mut live = Live::default();
+        let one = doc("a\nb\nc\nd\n");
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let gone = doc("a\nd\n");
+        let revise = live.saw(text_read(&live, &gone, T0), t0, |_| {
+            (agent("claude"), Sure::Guess, true)
+        });
+        assert!(revise, "decided while the edit was open");
+        // The edit finishes after the read: its reason is left then.
+        store.expect_light(
+            path.to_path_buf(),
+            light_of(LightKind::Removed, "claude", "drop the dead lines", t0),
+        );
+        assert!(!claim_light(&live, &gone, path, &mut store, t0), "a guess");
+        live.settle((Who::Agent(claude.clone()), Sure::Exact));
+        assert!(claim_light(&live, &gone, path, &mut store, t0));
+        assert_eq!(
+            filed(&store, path),
+            vec![(vec!["a".to_string()], 0, "drop the dead lines".to_string())]
+        );
+
+        // The same with a change that has new lines: settled, a deletion's reason stays.
+        let mut live = Live::default();
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let mixed = doc("a\nB\nd\n");
+        live.saw(text_read(&live, &mixed, T0), t0, |_| {
+            (Who::You, Sure::Exact, true)
+        });
+        store.expect_light(
+            path.to_path_buf(),
+            light_of(LightKind::Removed, "claude", "another", t0),
+        );
+        assert!(live.revise(Some(claude)));
+        assert!(!claim_light(&live, &mixed, path, &mut store, t0));
+        assert_eq!(filed(&store, path).len(), 1);
+    }
+
+    /// M11ag (final fixes, F6): a placement that gave up (out of time) changes nothing shown
+    /// and is asked again by the next read or store change; an answer in time is shown.
+    #[test]
+    fn a_placement_given_up_keeps_the_notes_and_asks_again() {
+        let mut asked = Some((3, 7));
+        assert_eq!(placement_answer(None, &mut asked), None);
+        assert_eq!(asked, None, "asked again next time");
+        let mut asked = Some((3, 7));
+        assert_eq!(
+            placement_answer(Some(Vec::new()), &mut asked),
+            Some(Vec::new())
+        );
+        assert_eq!(asked, Some((3, 7)));
+    }
+
     /// A change is dated when fuxx saw it, unless the file's time is earlier (it changed while
     /// the tab was hidden): one seen 10 minutes after it was made is marked but not warm.
     #[test]
@@ -10957,7 +11759,7 @@ mod tests {
             (6, DeletedAfter),
             (40, Added),
         ]);
-        let map = RowMap::file(&[1; 10], None, &[], 10.0);
+        let map = RowMap::file(&[1; 10], None, &[], &[], 10.0);
         assert_eq!(
             file_change_items(&ch, &map, &ink),
             [(10.0, 20.0, a), (40.0, 10.0, c), (60.0, 0.0, d)]
@@ -10972,7 +11774,7 @@ mod tests {
             (5, DeletedAfter),
             (9, DeletedAfter),
         ]);
-        let map = RowMap::file(&[1; 10], None, &[3..7], 10.0);
+        let map = RowMap::file(&[1; 10], None, &[3..7], &[], 10.0);
         assert_eq!(
             file_change_items(&ch, &map, &ink),
             [(20.0, 10.0, c), (40.0, 10.0, c), (50.0, 0.0, d)]
@@ -10982,7 +11784,7 @@ mod tests {
         assert_eq!(file_change_items(&ch, &map, &ink), [(20.0, 10.0, a)]);
         // Wrap: line 1 is 3 rows (1..4); its change covers them all.
         let ch = changes(&[(2, Changed), (5, Added)]);
-        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[], 10.0);
+        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[], &[], 10.0);
         assert_eq!(
             file_change_items(&ch, &map, &ink),
             [(10.0, 30.0, c), (60.0, 10.0, a)]
@@ -10990,7 +11792,7 @@ mod tests {
         // Wrap and a fold of only deletions (above hidden line 3): one mark at its folded
         // line's first row (not one per wrapped row).
         let ch = changes(&[(3, DeletedAfter), (5, Added)]);
-        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[2..4], 10.0);
+        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[2..4], &[], 10.0);
         assert_eq!(
             file_change_items(&ch, &map, &ink),
             [(40.0, 10.0, a), (10.0, 0.0, d)]
@@ -11079,17 +11881,25 @@ mod tests {
         let slices: Vec<&str> = lines.clone();
         doc.outline = code_outline::outline(&slices, false, LIMIT).map(Arc::new);
         let folded: BTreeSet<usize> = [11].into();
-        let map = FileTab::row_map_of(&doc, FileMode::Plain, None, 10.0, &folded, None, false);
+        let map = FileTab::row_map_of(&doc, FileMode::Plain, None, 10.0, &folded, None, false, &[]);
         assert_eq!(map.row(11), Some(Row::Line { line: 11, cell0: 0 }));
         assert_eq!(map.row(12), Some(Row::Line { line: 36, cell0: 0 }));
         assert_eq!(map.hidden_after(11).len(), 24, "the pill's 24 lines");
         assert_eq!(map.len(), 40 - 24);
         // Wrap on: the same lines hidden.
-        let wrapped =
-            FileTab::row_map_of(&doc, FileMode::Plain, Some(80), 10.0, &folded, None, false);
+        let wrapped = FileTab::row_map_of(
+            &doc,
+            FileMode::Plain,
+            Some(80),
+            10.0,
+            &folded,
+            None,
+            false,
+            &[],
+        );
         assert_eq!(wrapped.row(12), Some(Row::Line { line: 36, cell0: 0 }));
         // Not in Diff mode.
-        let diff = FileTab::row_map_of(&doc, FileMode::Diff, None, 10.0, &folded, None, false);
+        let diff = FileTab::row_map_of(&doc, FileMode::Diff, None, 10.0, &folded, None, false, &[]);
         assert_eq!(diff.row(12), Some(Row::Line { line: 12, cell0: 0 }));
     }
 
@@ -11122,7 +11932,7 @@ mod tests {
     #[allow(clippy::single_range_in_vec_init)] // one fold
     fn a_press_on_a_folded_line_s_bar_finds_its_hidden_change() {
         // Line 2 folded, hiding 3..7: rows 0 1 2 | 7 8 9.
-        let map = RowMap::file(&[1; 10], None, &[3..7], 10.0);
+        let map = RowMap::file(&[1; 10], None, &[3..7], &[], 10.0);
         let deleted_only = Changes {
             by_line: HashMap::new(),
             deleted: vec![5],

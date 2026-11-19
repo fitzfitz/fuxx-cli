@@ -512,6 +512,9 @@ impl AgyTranslator {
                     .map(|c| ToolDetail::Command(c.to_string())),
                 parent: None,
                 writes: tool_writes(&name, params),
+                // M11ag Task 0 checked every agy recording: edit_file / write_file carry only
+                // `Path`, never the new text, so agy edits hand over none.
+                texts: Vec::new(),
                 name: name.clone(),
             });
         }
@@ -738,6 +741,23 @@ mod tests {
         assert_eq!(done.len(), 1, "{done:?}");
         assert!(done[0].starts_with("Done."), "{done:?}");
         assert!(matches!(ev.last(), Some(Event::TurnDone { ok: true, .. })));
+    }
+
+    #[test]
+    fn agy_edits_carry_no_text() {
+        let ev = decode_all(TOOLS);
+        let edit = ev.iter().find_map(|e| match e {
+            Event::ToolStarted {
+                name,
+                writes,
+                texts,
+                ..
+            } if name == "edit_file" => Some((writes, texts)),
+            _ => None,
+        });
+        let (writes, texts) = edit.expect("an edit_file step");
+        assert!(!writes.is_empty());
+        assert!(texts.is_empty());
     }
 
     #[test]

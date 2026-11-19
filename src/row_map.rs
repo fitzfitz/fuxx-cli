@@ -4,6 +4,14 @@
 //! nothing hidden, no Wrap and no cards it is the identity (row r is line r), kept without a
 //! list. A layout cache: the file tab builds it in its canvas's prepaint only when its `MapKey`
 //! changes (as `Wrapped` was). Pure: no GPUI.
+//!
+//! M11ag: note rows. The map takes a list of `NoteSpan`s (sorted by the line they sit under; in
+//! Diff mode the diff row) and adds that many `Row::Note { note, k }` rows right under the line's
+//! last row, in File mode and in both Diff layouts. They are rows like any other, so the scroll,
+//! the scrollbar's length, Find's reveal, folds (a note under a hidden line is hidden with it)
+//! and hit-testing see them, but they are no source line: `Row::line` and `Row::half` give none,
+//! so the selection, Copy, Ask, the sticky line, the breadcrumb and the change marks step around
+//! them. With no notes the map is what it was.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -27,6 +35,17 @@ pub enum Row {
         old: Option<(usize, usize)>,
         new: Option<(usize, usize)>,
     },
+    /// M11ag: row `k` of note `note`, under its line's last row (a pair's).
+    Note { note: usize, k: usize },
+}
+
+/// M11ag: a note's place in the rows: under doc line `under` (a file line; in Diff, a diff
+/// row), `rows` rows tall. A list of them is sorted by `under`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoteSpan {
+    pub under: usize,
+    pub rows: usize,
+    pub note: usize,
 }
 
 /// M11ah: a side-by-side half: the old file on the left, the new one on the right.
@@ -38,7 +57,7 @@ pub enum Half {
 
 impl Row {
     /// The doc line a row shows (a pair's first: the old side's when both have one); none: a
-    /// title's or a folded stretch's row.
+    /// title's, a folded stretch's or (M11ag) a note's row (`RowMap::line_of` gives its line).
     pub fn line(self) -> Option<usize> {
         match self {
             Row::Line { line, .. } => Some(line),
@@ -47,7 +66,7 @@ impl Row {
                 (Some((l, _)), None) | (None, Some((l, _))) => Some(l),
                 (None, None) => None,
             },
-            Row::Title { .. } | Row::Unchanged { .. } => None,
+            Row::Title { .. } | Row::Unchanged { .. } | Row::Note { .. } => None,
         }
     }
 
@@ -63,7 +82,8 @@ impl Row {
 }
 
 /// What a map was built for (rebuilt when any differs): mode, doc version, columns, folds'
-/// generation, the Diff layout's generation, side by side. (The row height is checked apart:
+/// generation, the Diff layout's generation, side by side, (M11ag) the notes' rows' generation
+/// and the width notes wrap at (none: no notes). (The row height is checked apart:
 /// `RowMap::row_h`.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapKey {
@@ -73,6 +93,8 @@ pub struct MapKey {
     pub folds: u64,
     pub layout: u64,
     pub side: bool,
+    pub notes: u64,
+    pub note_width: Option<u32>,
 }
 
 /// The screen rows of a text body: each row, each row's top in points, each line's first row.
@@ -102,7 +124,49 @@ enum Rows {
         held: Arc<[(Range<usize>, usize)]>,
         /// Diff mode's cards (none: a file's).
         diff: Option<Arc<DiffRows>>,
+        /// M11ag: each note with rows, in row order.
+        notes: Arc<[NoteRows]>,
     },
+}
+
+/// M11ag: where a note's rows sit, and the line they are under.
+#[derive(Clone, Debug)]
+struct NoteRows {
+    note: usize,
+    under: usize,
+    rows: Range<usize>,
+}
+
+/// M11ag: whether `notes` are sorted by `under` (as `RowMap::file` and `RowMap::diff` take them).
+fn sorted(notes: &[NoteSpan]) -> bool {
+    notes.windows(2).all(|w| w[0].under <= w[1].under)
+}
+
+/// M11ag: the notes under line `line` (`notes` sorted by `under`).
+fn notes_under(notes: &[NoteSpan], line: usize) -> &[NoteSpan] {
+    let from = notes.partition_point(|n| n.under < line);
+    let to = notes.partition_point(|n| n.under <= line);
+    &notes[from..to.max(from)]
+}
+
+/// M11ag: the rows of the notes under line `line`, after `rows` (each one with rows
+/// `placed`); how many were added.
+fn add_notes(
+    rows: &mut Vec<Row>,
+    placed: &mut Vec<NoteRows>,
+    notes: &[NoteSpan],
+    line: usize,
+) -> usize {
+    let start = rows.len();
+    for n in notes_under(notes, line).iter().filter(|n| n.rows > 0) {
+        placed.push(NoteRows {
+            note: n.note,
+            under: n.under,
+            rows: rows.len()..rows.len() + n.rows,
+        });
+        rows.extend((0..n.rows).map(|k| Row::Note { note: n.note, k }));
+    }
+    rows.len() - start
 }
 
 /// Where a Diff map's cards sit.
@@ -162,16 +226,25 @@ fn pair_rows(
 
 impl RowMap {
     /// A file's rows: each shown line (`hidden` ranges left out) cut at `columns` cells when
-    /// wrapping (a line takes at least one row, an empty one too; no room at all is one column).
+    /// wrapping (a line takes at least one row, an empty one too; no room at all is one column),
+    /// then (M11ag) the rows of the `notes` under it.
     pub fn file(
         widths: &[usize],
         columns: Option<usize>,
         hidden: &[Range<usize>],
+        notes: &[NoteSpan],
         row_h: f32,
     ) -> RowMap {
+        debug_assert!(
+            sorted(notes),
+            "note spans sorted by the line they are under"
+        );
         let lines = widths.len();
         let columns = columns.map(|c| c.max(1));
-        if columns.is_none() && hidden.iter().all(|h| h.start >= h.end.min(lines)) {
+        if columns.is_none()
+            && notes.is_empty()
+            && hidden.iter().all(|h| h.start >= h.end.min(lines))
+        {
             return RowMap {
                 rows: Rows::Identity { lines },
                 columns,
@@ -188,6 +261,7 @@ impl RowMap {
         let mut first = vec![None; lines];
         // Each run of hidden lines, held by the shown line before it (its fold's line).
         let mut held: Vec<(Range<usize>, usize)> = Vec::new();
+        let mut placed = Vec::new();
         let mut last_shown = None;
         for (line, &width) in widths.iter().enumerate() {
             if !shown[line] {
@@ -200,6 +274,7 @@ impl RowMap {
             first[line] = Some(rows.len());
             last_shown = Some(rows.len());
             rows.extend(line_rows(line, width, columns));
+            add_notes(&mut rows, &mut placed, notes, line);
         }
         let tops = tops_of(std::iter::repeat_n(row_h, rows.len()));
         RowMap {
@@ -209,6 +284,7 @@ impl RowMap {
                 first: first.into(),
                 held: held.into(),
                 diff: None,
+                notes: placed.into(),
             },
             columns,
             row_h,
@@ -293,14 +369,47 @@ impl RowMap {
         let Some(Some(mut r)) = first.get(line).copied() else {
             return none;
         };
-        // Past the line's own rows (Wrap: a few), to the next shown line.
+        // Past the line's own rows (Wrap: a few) and its notes' (M11ag), to the next shown line.
         while matches!(rows.get(r), Some(Row::Line { line: l, .. }) if *l == line) {
+            r += 1;
+        }
+        while matches!(rows.get(r), Some(Row::Note { .. })) {
             r += 1;
         }
         match rows.get(r) {
             Some(Row::Line { line: next, .. }) => line + 1..*next,
             Some(_) => none,
             None => line + 1..first.len(),
+        }
+    }
+
+    /// M11ag: note `note`'s rows (none: it has none, under a hidden line or none shown).
+    pub fn note_rows(&self, note: usize) -> Option<Range<usize>> {
+        (self.notes().iter())
+            .find(|n| n.note == note)
+            .map(|n| n.rows.clone())
+    }
+
+    /// M11ag: the doc line row `r` belongs to: a note row's, the line it is under; else the
+    /// line it shows (`Row::line`).
+    pub fn line_of(&self, r: usize) -> Option<usize> {
+        match self.row(r)? {
+            Row::Note { .. } => {
+                let notes = self.notes();
+                let k = notes.partition_point(|n| n.rows.end <= r);
+                notes
+                    .get(k)
+                    .filter(|n| n.rows.contains(&r))
+                    .map(|n| n.under)
+            }
+            row => row.line(),
+        }
+    }
+
+    fn notes(&self) -> &[NoteRows] {
+        match &self.rows {
+            Rows::Listed { notes, .. } => notes,
+            Rows::Identity { .. } => &[],
         }
     }
 
@@ -336,14 +445,17 @@ impl RowMap {
     /// card given: every row a `Row::Pair`, a card's rows paired as `pairs` says), a folded stretch one `⋯`
     /// row (unless `shown`), each card a title row `code::CARD_TITLE` tall (`code::CARD_GAP`
     /// further down for every card but the first) and its lines (none when `closed`); lines cut
-    /// at `columns` cells when wrapping.
+    /// at `columns` cells when wrapping; (M11ag) the rows of the `notes` under a shown line
+    /// after its rows (side by side: after the pair's).
     pub fn diff(
         widths: &[usize],
         columns: Option<usize>,
         layout: &DiffLayout,
+        notes: &[NoteSpan],
         row_h: f32,
     ) -> RowMap {
         use crate::ui_tokens::code::{CARD_GAP, CARD_TITLE};
+        debug_assert!(sorted(notes), "note spans sorted by the row they are under");
         let columns = columns.map(|c| c.max(1));
         let lines = widths.len();
         let g = layout.grouped;
@@ -352,12 +464,23 @@ impl RowMap {
         let mut first = vec![None; lines];
         let mut diff = DiffRows::default();
         let mut held: Vec<(Range<usize>, usize)> = Vec::new();
+        let mut placed = Vec::new();
         let (mut card, mut stretch) = (0, 0);
         let mut line = 0;
         let push = |rows: &mut Vec<Row>, heights: &mut Vec<f32>, row: Row, h: f32| {
             rows.push(row);
             heights.push(h);
         };
+        // M11ag: the notes under each of a row's lines (a pair's: both, once each), row_h tall.
+        let mut notes_after =
+            |rows: &mut Vec<Row>,
+             heights: &mut Vec<f32>,
+             (o, n): (Option<usize>, Option<usize>)| {
+                for l in [o, n.filter(|&n| Some(n) != o)].into_iter().flatten() {
+                    let added = add_notes(rows, &mut placed, notes, l);
+                    heights.extend(std::iter::repeat_n(row_h, added));
+                }
+            };
         while line < lines {
             if let Some(c) = g.cards.get(card).filter(|c| c.rows.start == line) {
                 if card > 0
@@ -380,6 +503,7 @@ impl RowMap {
                         for row in pair_rows((o, n), widths, columns) {
                             push(&mut rows, &mut heights, row, row_h);
                         }
+                        notes_after(&mut rows, &mut heights, (o, n));
                     }
                 } else {
                     for l in line..end {
@@ -387,6 +511,7 @@ impl RowMap {
                         for row in line_rows(l, widths[l], columns) {
                             push(&mut rows, &mut heights, row, row_h);
                         }
+                        notes_after(&mut rows, &mut heights, (Some(l), None));
                     }
                 }
                 diff.cards.push(title..rows.len());
@@ -421,6 +546,7 @@ impl RowMap {
                     push(&mut rows, &mut heights, row, row_h);
                 }
             }
+            notes_after(&mut rows, &mut heights, (Some(line), None));
             line += 1;
         }
         RowMap {
@@ -430,6 +556,7 @@ impl RowMap {
                 first: first.into(),
                 held: held.into(),
                 diff: Some(Arc::new(diff)),
+                notes: placed.into(),
             },
             columns,
             row_h,
@@ -475,10 +602,13 @@ impl RowMap {
 
     /// Side by side: the line of `half` nearest row `r` (a press on an empty half takes it):
     /// the nearest above (true: at its end), else the nearest below (false: at its start),
-    /// looking only through the paired rows around `r` (never past a title or a `⋯` row).
+    /// looking only through the paired rows around `r` (M11ag: past note rows; never past a
+    /// title or a `⋯` row).
     pub fn nearest_on(&self, r: usize, half: Half) -> Option<(usize, bool)> {
         let on = |k: usize| match self.row(k)? {
             row @ Row::Pair { .. } => Some(row.half(half)),
+            // M11ag: a note's rows are looked past.
+            Row::Note { .. } => Some(None),
             _ => None,
         };
         on(r)?;
@@ -590,7 +720,7 @@ mod tests {
 
     #[test]
     fn with_nothing_hidden_and_no_wrap_it_is_the_identity() {
-        let map = RowMap::file(&[3, 10, 0, 5], None, &[], 10.0);
+        let map = RowMap::file(&[3, 10, 0, 5], None, &[], &[], 10.0);
         assert_eq!(map.len(), 4);
         for r in 0..4 {
             assert_eq!(map.row(r), line(r, 0));
@@ -605,17 +735,17 @@ mod tests {
         // After the last line: the row count (lines deleted at the end).
         assert_eq!(map.first_row(4), Some(4));
         // Empty ranges hide nothing.
-        let empty = RowMap::file(&[1, 1], None, &[1..1], 10.0);
+        let empty = RowMap::file(&[1, 1], None, &[1..1], &[], 10.0);
         assert_eq!(listed(&empty), [(0, 0), (1, 0)]);
         // A fractional row height: the same tops as the row count times it.
-        let odd = RowMap::file(&[1; 50], None, &[], 18.000_002);
+        let odd = RowMap::file(&[1; 50], None, &[], &[], 18.000_002);
         assert_eq!(odd.top(37), 18.000_002 * 37.0);
     }
 
     /// M11x part 2's `visual_rows` / `first_rows` cases, now the map's.
     #[test]
     fn wrapped_lines_take_their_rows() {
-        let map = RowMap::file(&[3, 10, 0], Some(4), &[], 10.0);
+        let map = RowMap::file(&[3, 10, 0], Some(4), &[], &[], 10.0);
         assert_eq!(listed(&map), [(0, 0), (1, 0), (1, 4), (1, 8), (2, 0)]);
         // Each line's first row, and after the last line the row count.
         let first: Vec<_> = (0..=3).map(|i| map.first_row(i)).collect();
@@ -623,7 +753,7 @@ mod tests {
         assert_eq!(map.columns(), Some(4));
         assert_eq!((map.top(2), map.top(4), map.height()), (20.0, 40.0, 50.0));
         // Without Wrap, a row a line.
-        let plain = RowMap::file(&[3, 10], None, &[], 10.0);
+        let plain = RowMap::file(&[3, 10], None, &[], &[], 10.0);
         assert_eq!(listed(&plain), [(0, 0), (1, 0)]);
         assert_eq!(
             (plain.first_row(0), plain.first_row(1), plain.first_row(2)),
@@ -631,15 +761,15 @@ mod tests {
         );
         // Exactly full: no empty row after it.
         assert_eq!(
-            listed(&RowMap::file(&[8], Some(4), &[], 10.0)),
+            listed(&RowMap::file(&[8], Some(4), &[], &[], 10.0)),
             [(0, 0), (0, 4)]
         );
         // No room at all is one column.
-        let narrow = RowMap::file(&[2], Some(0), &[], 10.0);
+        let narrow = RowMap::file(&[2], Some(0), &[], &[], 10.0);
         assert_eq!(listed(&narrow), [(0, 0), (0, 1)]);
         assert_eq!(narrow.columns(), Some(1));
         // Listed tops are the identity's: the row count times a fractional row height.
-        let odd = RowMap::file(&[1; 50], Some(4), &[], 18.000_002);
+        let odd = RowMap::file(&[1; 50], Some(4), &[], &[], 18.000_002);
         assert_eq!(odd.top(37), 18.000_002 * 37.0);
         assert_eq!(odd.height(), 18.000_002 * 50.0);
     }
@@ -652,6 +782,7 @@ mod tests {
             &[1, 9, 1, 1, 1, 1, 1, 1],
             Some(4),
             &[2..4, 4..5, 6..8],
+            &[],
             10.0,
         );
         // Rows: line 0, line 1 (3 rows: 1..4), line 5 (row 4).
@@ -661,13 +792,21 @@ mod tests {
         assert_eq!(map.row_holding(5), Some(4), "shown: its own");
         assert_eq!(map.lines_held_at(1), Some(2..5));
         assert_eq!(map.lines_held_at(2), None);
-        assert!(RowMap::file(&[1; 4], None, &[], 10.0).held().is_empty());
-        assert!(RowMap::file(&[1; 4], Some(4), &[], 10.0).held().is_empty());
+        assert!(
+            RowMap::file(&[1; 4], None, &[], &[], 10.0)
+                .held()
+                .is_empty()
+        );
+        assert!(
+            RowMap::file(&[1; 4], Some(4), &[], &[], 10.0)
+                .held()
+                .is_empty()
+        );
     }
 
     #[test]
     fn hidden_lines_have_no_row() {
-        let map = RowMap::file(&[1; 10], None, &[3..7], 10.0);
+        let map = RowMap::file(&[1; 10], None, &[3..7], &[], 10.0);
         assert_eq!(map.len(), 6);
         assert_eq!(map.first_row(2), Some(2));
         assert_eq!(map.first_row(3), None);
@@ -679,11 +818,11 @@ mod tests {
         assert_eq!(map.height(), 60.0);
         // Out of order, overlapping and running past the end: each line hidden once.
         #[allow(clippy::reversed_empty_ranges)]
-        let map = RowMap::file(&[1; 10], None, &[8..20, 3..5, 4..7, 6..2], 10.0);
+        let map = RowMap::file(&[1; 10], None, &[8..20, 3..5, 4..7, 6..2], &[], 10.0);
         assert_eq!(listed(&map), [(0, 0), (1, 0), (2, 0), (7, 0)]);
         assert_eq!(map.first_row(10), Some(4));
         // With Wrap: a shown line keeps all its rows.
-        let wrapped = RowMap::file(&[2, 9, 9, 2], Some(4), &[1..2], 10.0);
+        let wrapped = RowMap::file(&[2, 9, 9, 2], Some(4), &[1..2], &[], 10.0);
         assert_eq!(listed(&wrapped), [(0, 0), (2, 0), (2, 4), (2, 8), (3, 0)]);
         assert_eq!(wrapped.first_row(3), Some(4));
     }
@@ -692,7 +831,7 @@ mod tests {
     #[test]
     fn row_at_finds_the_row_drawn_at_y_with_hidden_lines_and_titles() {
         // Rows: 0 | 1 1 1 | (2, 3 hidden) 4 | 5 5.
-        let map = RowMap::file(&[2, 10, 2, 2, 2, 8], Some(4), &[2..4], 10.0);
+        let map = RowMap::file(&[2, 10, 2, 2, 2, 8], Some(4), &[2..4], &[], 10.0);
         assert_eq!(
             listed(&map),
             [(0, 0), (1, 0), (1, 4), (1, 8), (4, 0), (5, 0), (5, 4)]
@@ -708,7 +847,7 @@ mod tests {
         assert_eq!(map.row_at(0.0), 0);
         assert_eq!(map.row_at(1000.0), 6);
         // The identity agrees.
-        let plain = RowMap::file(&[1; 5], None, &[], 10.0);
+        let plain = RowMap::file(&[1; 5], None, &[], &[], 10.0);
         assert_eq!(
             [-3.0, 0.0, 9.9, 10.0, 35.0, 49.9, 50.0, 400.0].map(|y| plain.row_at(y)),
             [0, 0, 0, 1, 3, 4, 4, 4]
@@ -717,8 +856,8 @@ mod tests {
 
     #[test]
     fn rows_in_covers_partly_shown_rows() {
-        let plain = RowMap::file(&[1; 10], None, &[], 10.0);
-        let listed = RowMap::file(&[1; 10], Some(4), &[], 10.0);
+        let plain = RowMap::file(&[1; 10], None, &[], &[], 10.0);
+        let listed = RowMap::file(&[1; 10], Some(4), &[], &[], 10.0);
         for map in [&plain, &listed] {
             assert_eq!(map.rows_in(15.0..35.0), 1..4);
             assert_eq!(map.rows_in(10.0..30.0), 1..3, "edges: no extra row");
@@ -727,24 +866,24 @@ mod tests {
             assert_eq!(map.rows_in(100.0..150.0), 10..10, "past the end: none");
         }
         // Hidden lines: the rows shown, not the lines.
-        let folded = RowMap::file(&[1; 10], None, &[2..8], 10.0);
+        let folded = RowMap::file(&[1; 10], None, &[2..8], &[], 10.0);
         assert_eq!(folded.rows_in(0.0..100.0), 0..4);
     }
 
     #[test]
     fn a_shown_line_knows_the_lines_hidden_after_it() {
-        let map = RowMap::file(&[1; 10], None, &[3..7, 8..10], 10.0);
+        let map = RowMap::file(&[1; 10], None, &[3..7, 8..10], &[], 10.0);
         assert_eq!(map.hidden_after(2), 3..7);
         assert_eq!(map.hidden_after(7), 8..10, "to the end");
         assert_eq!(map.hidden_after(0), 1..1);
         assert!(map.hidden_after(4).is_empty(), "a hidden line");
         assert!(map.hidden_after(30).is_empty(), "past the end");
         // With Wrap: after all of the line's rows.
-        let wrapped = RowMap::file(&[9, 2, 2, 2], Some(4), &[1..3], 10.0);
+        let wrapped = RowMap::file(&[9, 2, 2, 2], Some(4), &[1..3], &[], 10.0);
         assert_eq!(wrapped.hidden_after(0), 1..3);
         assert!(wrapped.hidden_after(3).is_empty());
         // The identity hides nothing.
-        let plain = RowMap::file(&[1; 4], None, &[], 10.0);
+        let plain = RowMap::file(&[1; 4], None, &[], &[], 10.0);
         assert!(plain.hidden_after(1).is_empty());
     }
 
@@ -848,7 +987,7 @@ mod tests {
             closed: &[false, false],
             pairs: None,
         };
-        let map = RowMap::diff(&widths, None, &layout, 10.0);
+        let map = RowMap::diff(&widths, None, &layout, &[], 10.0);
         // ⋯ | title 0 | 8..15 | ⋯ | title 1 | 23..30 | ⋯
         let rows: Vec<Row> = (0..map.len()).filter_map(|r| map.row(r)).collect();
         assert_eq!(rows.len(), 1 + 1 + 7 + 1 + 1 + 7 + 1);
@@ -879,7 +1018,10 @@ mod tests {
         assert_eq!(map.cards_in(0..11), 0..2);
         assert_eq!(map.cards_in(9..10), 1..1, "between them: none");
         assert_eq!(map.cards_in(5..12), 0..2);
-        assert_eq!(RowMap::file(&[1], None, &[], 10.0).cards_in(0..1), 0..0);
+        assert_eq!(
+            RowMap::file(&[1], None, &[], &[], 10.0).cards_in(0..1),
+            0..0
+        );
         assert!(map.hidden_after(14).is_empty(), "no fold pill in a diff");
         // A shown stretch is its lines; a closed card its title only.
         let layout = DiffLayout {
@@ -888,7 +1030,7 @@ mod tests {
             closed: &[true, false],
             pairs: None,
         };
-        let map = RowMap::diff(&widths, None, &layout, 10.0);
+        let map = RowMap::diff(&widths, None, &layout, &[], 10.0);
         let rows: Vec<Row> = (0..map.len()).filter_map(|r| map.row(r)).collect();
         assert_eq!(
             &rows[..4],
@@ -909,7 +1051,7 @@ mod tests {
         // With Wrap, a line takes its rows inside a card.
         let mut wide = widths.clone();
         wide[8] = 9;
-        let map = RowMap::diff(&wide, Some(4), &layout_all(&g), 10.0);
+        let map = RowMap::diff(&wide, Some(4), &layout_all(&g), &[], 10.0);
         assert_eq!(map.row(2), Some(Row::Line { line: 8, cell0: 0 }));
         assert_eq!(map.row(4), Some(Row::Line { line: 8, cell0: 8 }));
         assert_eq!(map.columns(), Some(4));
@@ -932,7 +1074,7 @@ mod tests {
         let g = two_cards();
         let mut widths = vec![1; 38];
         widths[24] = 9; // three rows at 4 columns
-        let map = RowMap::diff(&widths, Some(4), &layout_all(&g), 10.0);
+        let map = RowMap::diff(&widths, Some(4), &layout_all(&g), &[], 10.0);
         let at = |y: f32| map.row(map.row_at(y));
         assert_eq!(at(5.0), Some(Row::Unchanged { stretch: 0 }));
         assert_eq!(at(10.0 + CARD_TITLE - 0.1), Some(Row::Title { card: 0 }));
@@ -992,7 +1134,7 @@ mod tests {
         };
         // The removed line 9 cells (3 rows at 4 columns), the first added 2 (1 row).
         let widths = [1, 1, 9, 2, 5, 1];
-        let map = RowMap::diff(&widths, Some(4), &layout, 10.0);
+        let map = RowMap::diff(&widths, Some(4), &layout, &[], 10.0);
         let got: Vec<Row> = (0..map.len()).filter_map(|r| map.row(r)).collect();
         let both = |l: usize| Row::Pair {
             old: Some((l, 0)),
@@ -1039,7 +1181,7 @@ mod tests {
         assert_eq!(got[4].half(Half::New), None);
         assert_eq!(Row::Title { card: 0 }.line(), None);
         // Without Wrap a pair is one row; a stretch outside the cards is a line on both halves.
-        let map = RowMap::diff(&widths, None, &layout, 10.0);
+        let map = RowMap::diff(&widths, None, &layout, &[], 10.0);
         assert_eq!(map.len(), 1 + 6 - 1);
         assert_eq!(
             map.row(3),
@@ -1060,7 +1202,7 @@ mod tests {
             closed: &[false, false],
             pairs: Some(&pairs2),
         };
-        let map = RowMap::diff(&[1; 38], None, &layout, 10.0);
+        let map = RowMap::diff(&[1; 38], None, &layout, &[], 10.0);
         assert_eq!(
             map.row(0),
             Some(both(0)),
@@ -1094,7 +1236,7 @@ mod tests {
         };
         let widths = [1, 1, 9, 2, 5, 1];
         // Title | s0 | s1 | 2·3 | 2·_ | 2·_ | _·4 | _·4 | s5
-        let map = RowMap::diff(&widths, Some(4), &layout, 10.0);
+        let map = RowMap::diff(&widths, Some(4), &layout, &[], 10.0);
         assert_eq!(map.nearest_on(4, Half::New), Some((3, true)));
         assert_eq!(map.nearest_on(6, Half::Old), Some((2, true)));
         assert_eq!(map.nearest_on(3, Half::Old), Some((2, true)), "its own");
@@ -1113,9 +1255,225 @@ mod tests {
             closed: &[false],
             pairs: Some(&pairs),
         };
-        let map = RowMap::diff(&[1, 1], None, &layout, 10.0);
+        let map = RowMap::diff(&[1, 1], None, &layout, &[], 10.0);
         assert_eq!(map.row(0), Some(Row::Title { card: 0 }));
         assert_eq!(map.nearest_on(1, Half::Old), Some((1, false)));
         assert_eq!(map.nearest_on(0, Half::Old), None, "a title has no half");
+    }
+
+    fn note(under: usize, rows: usize, note: usize) -> NoteSpan {
+        NoteSpan { under, rows, note }
+    }
+
+    /// M11ag: a note's rows follow its line's, each a row tall; the lines below move down.
+    #[test]
+    fn note_rows_follow_their_line() {
+        let map = RowMap::file(&[1; 10], None, &[], &[note(4, 2, 0)], 10.0);
+        assert_eq!(map.len(), 12);
+        assert_eq!(map.row(4), line(4, 0));
+        assert_eq!(map.row(5), Some(Row::Note { note: 0, k: 0 }));
+        assert_eq!(map.row(6), Some(Row::Note { note: 0, k: 1 }));
+        assert_eq!(map.row(7), line(5, 0));
+        assert_eq!(map.first_row(5), Some(7));
+        assert_eq!(map.first_row(10), Some(12), "past the end: the row count");
+        assert_eq!(map.top(7), 7.0 * 10.0);
+        assert_eq!(map.height(), 120.0);
+        assert_eq!(map.note_rows(0), Some(5..7));
+        assert_eq!(map.note_rows(1), None, "no such note");
+        // A note row shows no line and no half; its line is the one it is under.
+        let row = map.row(5).unwrap();
+        assert_eq!((row.line(), row.half(Half::Old)), (None, None));
+        assert_eq!(
+            [4, 5, 6, 7].map(|r| map.line_of(r)),
+            [Some(4), Some(4), Some(4), Some(5)]
+        );
+        assert_eq!(map.line_of(12), None, "past the last row");
+        assert!(map.hidden_after(4).is_empty(), "not folded");
+        // Two notes, in order, under two lines.
+        let map = RowMap::file(&[1; 4], None, &[], &[note(0, 1, 3), note(2, 1, 7)], 10.0);
+        let rows: Vec<_> = (0..map.len()).filter_map(|r| map.row(r)).collect();
+        assert_eq!(
+            rows,
+            [
+                Row::Line { line: 0, cell0: 0 },
+                Row::Note { note: 3, k: 0 },
+                Row::Line { line: 1, cell0: 0 },
+                Row::Line { line: 2, cell0: 0 },
+                Row::Note { note: 7, k: 0 },
+                Row::Line { line: 3, cell0: 0 },
+            ]
+        );
+        assert_eq!(
+            (map.note_rows(3), map.note_rows(7)),
+            (Some(1..2), Some(4..5))
+        );
+        assert_eq!(map.line_of(4), Some(2));
+    }
+
+    /// M11ag: a note under a hidden line (a fold's) or past the last line has no rows.
+    #[test]
+    fn a_note_under_a_hidden_line_has_no_rows() {
+        let map = RowMap::file(
+            &[1; 10],
+            None,
+            &[3..7],
+            &[note(5, 2, 0), note(10, 1, 1)],
+            10.0,
+        );
+        assert_eq!(map.len(), 6);
+        assert_eq!(map.note_rows(0), None);
+        assert_eq!(map.note_rows(1), None);
+        assert!((0..map.len()).all(|r| !matches!(map.row(r), Some(Row::Note { .. }))));
+        assert_eq!(map.held(), [(3..7, 2)]);
+        // Wrap off and nothing hidden, but a note: every row listed all the same.
+        let map = RowMap::file(&[1; 3], None, &[], &[note(1, 1, 0)], 10.0);
+        assert_eq!(map.len(), 4);
+        assert_eq!(map.row(2), Some(Row::Note { note: 0, k: 0 }));
+    }
+
+    /// M11ag: a note under a folded line follows its row; the fold still knows its hidden
+    /// lines (the pill), stepping over the note's rows.
+    #[test]
+    fn a_note_under_a_fold_line_follows_it_and_hidden_after_skips_it() {
+        let map = RowMap::file(&[1; 10], None, &[3..7], &[note(2, 2, 0)], 10.0);
+        // 0 | 1 | 2 | note | note | 7 | 8 | 9
+        assert_eq!(map.len(), 8);
+        assert_eq!(map.note_rows(0), Some(3..5));
+        assert_eq!(map.hidden_after(2), 3..7);
+        assert_eq!(map.held(), [(3..7, 2)]);
+        assert_eq!(map.row_holding(4), Some(2), "a hidden line: its fold's row");
+        assert_eq!(map.lines_held_at(2), Some(3..7));
+        assert_eq!(map.lines_held_at(3), None, "a note row holds nothing");
+        assert_eq!(map.first_row(7), Some(5));
+        // A fold to the end with a note under it.
+        let map = RowMap::file(&[1; 10], None, &[8..10], &[note(7, 1, 0)], 10.0);
+        assert_eq!(map.hidden_after(7), 8..10);
+        assert_eq!(map.note_rows(0), Some(8..9));
+    }
+
+    /// M11ag: with Wrap, a note follows its line's last row.
+    #[test]
+    fn note_rows_follow_a_wrapped_line() {
+        let map = RowMap::file(&[1, 9, 1], Some(4), &[], &[note(1, 1, 0)], 10.0);
+        let rows: Vec<_> = (0..map.len()).filter_map(|r| map.row(r)).collect();
+        assert_eq!(
+            rows,
+            [
+                Row::Line { line: 0, cell0: 0 },
+                Row::Line { line: 1, cell0: 0 },
+                Row::Line { line: 1, cell0: 4 },
+                Row::Line { line: 1, cell0: 8 },
+                Row::Note { note: 0, k: 0 },
+                Row::Line { line: 2, cell0: 0 },
+            ]
+        );
+        assert_eq!(map.first_row(2), Some(5));
+        assert_eq!(map.line_of(4), Some(1));
+        assert!(map.hidden_after(1).is_empty());
+    }
+
+    /// M11ag: Diff mode: a note follows its row unified, the whole pair side by side (inside
+    /// the card); none in a folded stretch or a closed card; a press on an empty half looks
+    /// past the note's rows.
+    #[test]
+    fn diff_note_rows_follow_the_row_and_the_pair() {
+        use crate::diff_view::{DiffRow, RowKind};
+        let row = |kind, old, new| DiffRow { kind, old, new };
+        let rows = vec![
+            row(RowKind::Same, Some(1), Some(1)),
+            row(RowKind::Same, Some(2), Some(2)),
+            row(RowKind::Removed, Some(3), None),
+            row(RowKind::Added, None, Some(3)),
+            row(RowKind::Added, None, Some(4)),
+            row(RowKind::Same, Some(4), Some(5)),
+        ];
+        let g = crate::diff_cards::group(&rows);
+        let pairs: Vec<CardPairs> = (g.cards.iter())
+            .map(|c| crate::diff_cards::pair(&rows, c.rows.clone()))
+            .collect();
+        let layout = |pairs| DiffLayout {
+            grouped: &g,
+            shown: &[],
+            closed: &[false],
+            pairs,
+        };
+        let widths = [1, 1, 9, 2, 5, 1];
+        // Unified: title | 0 | 1 | 2 | 3 | note | 4 | 5.
+        let map = RowMap::diff(&widths, None, &layout(None), &[note(3, 1, 0)], 10.0);
+        assert_eq!(map.len(), 8);
+        assert_eq!(map.row(4), line(3, 0));
+        assert_eq!(map.row(5), Some(Row::Note { note: 0, k: 0 }));
+        assert_eq!(map.row(6), line(4, 0));
+        assert_eq!(map.card_rows(0), Some(0..8), "inside its card");
+        assert_eq!(map.line_of(5), Some(3));
+        // Side by side: title | 0 | 1 | 2·3 | 2·_ | 2·_ | note | _·4 | _·4 | 5.
+        let map = RowMap::diff(
+            &widths,
+            Some(4),
+            &layout(Some(&pairs)),
+            &[note(3, 1, 0)],
+            10.0,
+        );
+        assert_eq!(map.note_rows(0), Some(6..7));
+        assert_eq!(
+            map.row(7),
+            Some(Row::Pair {
+                old: None,
+                new: Some((4, 0))
+            })
+        );
+        assert_eq!(map.line_of(6), Some(3));
+        assert_eq!(map.first_row(4), Some(7));
+        assert_eq!(
+            map.nearest_on(7, Half::Old),
+            Some((2, true)),
+            "past the note"
+        );
+        assert_eq!(
+            map.nearest_on(6, Half::New),
+            Some((3, true)),
+            "the note's line"
+        );
+        // A note in a folded stretch or a closed card: no rows.
+        let g = two_cards();
+        let widths = vec![1; 38];
+        let notes = [note(3, 1, 0), note(9, 1, 1), note(24, 1, 2)];
+        let layout = DiffLayout {
+            grouped: &g,
+            shown: &[false, false, false],
+            closed: &[true, false],
+            pairs: None,
+        };
+        let map = RowMap::diff(&widths, None, &layout, &notes, 10.0);
+        assert_eq!((map.note_rows(0), map.note_rows(1)), (None, None));
+        let at = map.first_row(24).unwrap() + 1;
+        assert_eq!(map.note_rows(2), Some(at..at + 1));
+        assert_eq!(map.card_at(at), Some(1));
+    }
+
+    /// M11ag: presses and the rows in sight count note rows.
+    #[test]
+    fn row_at_and_rows_in_count_note_rows() {
+        let map = RowMap::file(&[1; 10], None, &[], &[note(4, 2, 0)], 10.0);
+        assert_eq!(
+            [45.0, 55.0, 65.0, 70.0].map(|y| map.row_at(y)),
+            [4, 5, 6, 7]
+        );
+        assert_eq!(map.row(map.row_at(75.0)), line(5, 0));
+        assert_eq!(map.rows_in(45.0..75.0), 4..8);
+        assert_eq!(map.row_at(1000.0), 11);
+    }
+
+    /// M11ag: Follow and reveals land on lines: each line's first row, its holding row and the
+    /// fold's lines are the same with notes.
+    #[test]
+    fn first_row_is_unchanged_by_notes() {
+        let map = RowMap::file(&[1, 9, 1, 1, 1], Some(4), &[3..4], &[note(1, 2, 0)], 10.0);
+        for l in [0, 1, 2, 4] {
+            assert_eq!(map.row(map.first_row(l).unwrap()), line(l, 0), "line {l}");
+            assert_eq!(map.row_holding(l), map.first_row(l));
+        }
+        assert_eq!(map.row_holding(3), map.first_row(2), "hidden: its fold's");
+        assert_eq!(map.lines_held_at(map.first_row(2).unwrap()), Some(3..4));
     }
 }
