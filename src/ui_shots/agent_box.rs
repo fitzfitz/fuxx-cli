@@ -22,6 +22,7 @@ use crate::agent_box::{
 use crate::agent_catalog::{Catalogs, Lookup};
 use crate::agent_conversation::Item;
 use crate::agent_tab::{AgentTab, AgentTabEvent, Attachment};
+use crate::code_ask::{CodeLines, CodeRef};
 use crate::folder_picker::{KnownFolders, PickerRow};
 use crate::providers::agy::AGY;
 use crate::providers::claude::CLAUDE;
@@ -165,6 +166,14 @@ pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "agent-box-file-chip",
         run: agent_box_file_chip,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: ATTACH,
+    },
+    Scene {
+        name: "agent-box-code-chip",
+        run: agent_box_code_chip,
         themes: Themes::Both,
         serial: false,
         kind: Kind::Visual,
@@ -1584,6 +1593,65 @@ pub(super) fn agent_box_file_chip() {
         );
         // One more waits for the shot.
         feed(cx, tab, |t, cx| t.attach_files(vec![notes.clone()], cx));
+    });
+}
+
+/// M11ag: code asked about from a file tab is a chip, `</> workspace.rs:43\u{2013}45`, with the full
+/// path on hover; the same code twice is one chip; the \u{d7} takes it off. Attaching writes nothing;
+/// the send puts the path (from the agent's folder), lines and a fence after the text.
+pub(super) fn agent_box_code_chip() {
+    layout_scene("agent-box-code-chip", |n, cx, window, tab| {
+        let cwd = cwd();
+        let code = || CodeRef {
+            path: cwd.join("src/workspace.rs"),
+            real: None,
+            lines: CodeLines::Lines {
+                first: 43,
+                last: 45,
+            },
+            fence: Some("rust".into()),
+            body: "if let Some(tab) = pane.find(&path) {\n    return self.show(tab);\n}".into(),
+        };
+        feed(cx, tab, |t, cx| t.attach(Attachment::Code(code()), cx));
+        feed(cx, tab, |t, cx| t.attach(Attachment::Code(code()), cx));
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            chips(cx, tab),
+            ["</> workspace.rs:43\u{2013}45"],
+            "{n}: one chip"
+        );
+        let tip = cx.read(|cx| tab.read(cx).shot_attachments()[0].tip());
+        assert_eq!(
+            tip.as_deref(),
+            Some(cwd.join("src/workspace.rs").to_str().unwrap()),
+            "{n}: hover says the full path"
+        );
+        let chip_row = part(cx, tab, n, "attachments");
+        assert!(inside(chip_row, part(cx, tab, n, "box")), "{n}: in the box");
+        assert!(written(cx, tab).is_empty(), "{n}: attaching sends nothing");
+        // Hovering it is harmless (the tip is a window overlay).
+        let x = cx
+            .read(|cx| tab.read(cx).shot_remove_bounds(0))
+            .expect("the chip's \u{d7}");
+        cx.simulate_mouse_move(window, chip_row.center(), None, Modifiers::none());
+        cx.run_until_parked();
+        assert!(written(cx, tab).is_empty(), "{n}: hovering sends nothing");
+        cx.simulate_click(window, x.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert!(chips(cx, tab).is_empty(), "{n}: \u{d7} took it off");
+        assert!(written(cx, tab).is_empty(), "{n}: removing sends nothing");
+        feed(cx, tab, |t, cx| t.attach(Attachment::Code(code()), cx));
+        let _ = frame_fresh(cx, window);
+        assert!(written(cx, tab).is_empty(), "{n}: nothing before the send");
+        feed(cx, tab, |t, cx| t.send("why?".into(), cx));
+        assert_eq!(
+            last_user(cx, tab)["message"]["content"],
+            "why?\n\nsrc/workspace.rs:43-45\n```rust\nif let Some(tab) = pane.find(&path) {\n    return self.show(tab);\n}\n```",
+            "{n}"
+        );
+        assert!(chips(cx, tab).is_empty(), "{n}: sent");
+        // One more waits for the shot.
+        feed(cx, tab, |t, cx| t.attach(Attachment::Code(code()), cx));
     });
 }
 

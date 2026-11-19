@@ -1444,11 +1444,19 @@ impl AgentTab {
                 )
             };
             let label = a.label();
+            let tip = a.tip();
             chip(
                 format!("{} {}", a.glyph(), label.lines().next().unwrap_or("")),
                 true,
                 c,
             )
+            .id(("attachment", i))
+            .when_some(tip, |d, tip| {
+                d.tooltip(move |_, cx| -> gpui::AnyView {
+                    cx.new(|_| crate::sidebar_toggle::Tip(tip.clone().into()))
+                        .into()
+                })
+            })
             .pr(px(4.))
             .flex()
             .items_center()
