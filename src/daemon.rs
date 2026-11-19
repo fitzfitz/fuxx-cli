@@ -784,12 +784,13 @@ fn tick_loop(shared: &Shared, guard: SocketGuard, idle_exit: Duration, reap: boo
             };
             let ui_attached = shared.ui_clients.load(Ordering::Acquire) > 0;
             if let Some(body) = daemon_should_notify(ui_attached, old, new) {
-                let (summary, body) = daemon_banner(
-                    &info,
-                    session.command().as_deref(),
-                    session.take_ended().as_ref(),
-                    body,
-                );
+                // Only a Done takes the ending: a Waiting banner (the status sampled before an
+                // end mark landed) leaves it for the Done tick after it.
+                let ended = (new == Status::Done)
+                    .then(|| session.take_ended())
+                    .flatten();
+                let (summary, body) =
+                    daemon_banner(&info, session.command().as_deref(), ended.as_ref(), body);
                 // Numbered by this run of the service.
                 let about = Terminal {
                     run: shared.instance,
