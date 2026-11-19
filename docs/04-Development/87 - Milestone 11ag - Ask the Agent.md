@@ -1,6 +1,6 @@
 # Milestone 11ag — Ask the Agent from the Code
 
-**Status:** 🟨 built, **merged to master 2026-11-19** on your standing word (not pushed), waiting for your on-screen check. Designed and approved 2026-11-19 ("approved"); all 14 plan tasks (0–13) built 2026-11-19 ([[M11ag Plan - Ask the Agent]]), Tasks 0–12 each reviewed; the whole-branch review and its fix wave are done, and the wave was re-reviewed clean ("Final numbers" has the numbers from before and after it).
+**Status:** 🟨 built, **merged to master 2026-11-19** on your standing word and pushed on your word (`abe581d`), waiting for your on-screen check. Designed and approved 2026-11-19 ("approved"); all 14 plan tasks (0–13) built 2026-11-19 ([[M11ag Plan - Ask the Agent]]), Tasks 0–12 each reviewed; the whole-branch review and its fix wave are done, and the wave was re-reviewed clean ("Final numbers" has the numbers from before and after it).
 
 **Asked for:** 2026-11-16, by you, in the file-view mockups (near-future idea 3, [[Proposal - File View Upgrades]]):
 
