@@ -301,7 +301,7 @@ pub enum Attachment {
     Text(String),
     File(PathBuf),
     /// Code asked about from a file tab (M11ag): sent as its path and lines, then the code.
-    #[allow(dead_code)] // made by Ask, wired in by a later M11ag task
+    #[allow(dead_code)] // made by Ask (`ask_code`), which the selection bar calls in Task 4
     Code(CodeRef),
     Image {
         name: String,
@@ -487,7 +487,7 @@ pub fn wire_text(
 }
 
 /// Whether `new` may join the waiting `list`: the same code (file and lines) twice is one chip.
-fn attachable(list: &[Attachment], new: &Attachment) -> bool {
+pub(crate) fn attachable(list: &[Attachment], new: &Attachment) -> bool {
     let Attachment::Code(code) = new else {
         return true;
     };

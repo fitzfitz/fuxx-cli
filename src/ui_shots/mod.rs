@@ -52,6 +52,7 @@ use crate::workspace::{Overlay, Workspace};
 mod agent;
 mod agent_box;
 mod args;
+mod ask;
 mod branch;
 mod changed;
 mod changes;

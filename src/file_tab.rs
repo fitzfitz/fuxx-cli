@@ -116,6 +116,7 @@ use gpui::{
 
 use crate::agent_markdown::Md;
 use crate::appearance::Appearance;
+use crate::code_ask::AskTo;
 use crate::code_outline::{self, Outline};
 use crate::diff_cards::{self, CardKind, CardTitle, Grouped};
 use crate::diff_view::{
@@ -4316,6 +4317,9 @@ pub struct FileTab {
     rows: Rc<RefCell<Option<(MapKey, RowMap)>>>,
     /// M11ah: the scrollbar's marks (changes, find matches) as last worked out, and what for.
     lane: Lane,
+    /// M11ag: where Ask goes from this tab (the agent it names, or copy only): told by the
+    /// Workspace (`tell_ask_targets`).
+    ask_to: AskTo,
     /// The selection: where the mouse went down, and where it is.
     selection: Option<(Pos, Pos)>,
     selecting: bool,
@@ -4485,6 +4489,15 @@ impl Focusable for FileTab {
 }
 
 impl FileTab {
+    /// M11ag: where Ask goes from this tab, as the Workspace says; the tab is drawn again only
+    /// when that changes.
+    pub(crate) fn set_ask(&mut self, to: AskTo, cx: &mut Context<Self>) {
+        if self.ask_to != to {
+            self.ask_to = to;
+            cx.notify();
+        }
+    }
+
     /// A tab showing `path`: read at once, off the UI thread.
     pub fn new(
         path: PathBuf,
@@ -4537,6 +4550,7 @@ impl FileTab {
             geom: Rc::default(),
             rows: Rc::default(),
             lane: Rc::default(),
+            ask_to: AskTo::default(),
             selection: None,
             selecting: false,
             current: None,
@@ -8495,6 +8509,12 @@ impl FileTab {
             .collect()
     }
 
+    /// M11ag: where Ask goes from this tab (a scene's probe).
+    #[cfg(feature = "ui-shots")]
+    pub fn ask_to(&self) -> AskTo {
+        self.ask_to
+    }
+
     /// M11af: the hovered mark's tooltip, if one shows.
     pub fn mark_tip(&self) -> Option<String> {
         self.mark_tip.as_ref().map(|(_, words)| words.to_string())
@@ -8980,6 +9000,7 @@ impl Workspace {
         )
         .detach();
         self.file_tabs.insert(tab, view);
+        self.tell_ask_targets(cx);
     }
 
     /// The tab just opened on Markdown file `path` (the focused one) shows its Preview, saved
