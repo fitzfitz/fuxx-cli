@@ -4,6 +4,14 @@
 //! nothing hidden, no Wrap and no cards it is the identity (row r is line r), kept without a
 //! list. A layout cache: the file tab builds it in its canvas's prepaint only when its `MapKey`
 //! changes (as `Wrapped` was). Pure: no GPUI.
+//!
+//! M11ag: note rows. The map takes a list of `NoteSpan`s (sorted by the line they sit under; in
+//! Diff mode the diff row) and adds that many `Row::Note { note, k }` rows right under the line's
+//! last row, in File mode and in both Diff layouts. They are rows like any other, so the scroll,
+//! the scrollbar's length, Find's reveal, folds (a note under a hidden line is hidden with it)
+//! and hit-testing see them, but they are no source line: `Row::line` and `Row::half` give none,
+//! so the selection, Copy, Ask, the sticky line, the breadcrumb and the change marks step around
+//! them. With no notes the map is what it was.
 
 use std::collections::HashMap;
 use std::ops::Range;
