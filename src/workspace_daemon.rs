@@ -434,6 +434,7 @@ impl Workspace {
             lost: false,
             ssh: saved.ssh,
             launched: None,
+            command: None,
             disconnected: None,
             retries: 0,
             opened_at: Instant::now(),
@@ -540,6 +541,7 @@ impl Workspace {
             return;
         };
         session.lost = true;
+        session.command = None;
         // A lost session's agent can't be known to work: its span ends.
         let lost_id = session.id;
         crate::edit_ledger::update(cx, |l, now| l.end_working(lost_id, now));

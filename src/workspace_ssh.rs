@@ -388,6 +388,7 @@ impl Workspace {
             lost: false,
             ssh: saved.ssh,
             launched: None,
+            command: None,
             disconnected: None,
             retries: session.retries,
             opened_at: Instant::now(),
@@ -554,6 +555,8 @@ impl Workspace {
         let Some(session) = self.sessions.get_mut(index) else {
             return;
         };
+        // The program is gone: no command runs.
+        session.command = None;
         let Some(host) = session.ssh.as_ref().map(|t| t.host.clone()) else {
             return;
         };
