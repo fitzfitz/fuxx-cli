@@ -14,7 +14,7 @@ updated: 2026-11-19
 | **Design (the spec)** | [[87 - Milestone 11ag - Ask the Agent]] |
 | **Status** | 📝 planned 2026-11-19 on branch `m11ag-ask-agent` (from `5564087`); not built |
 | **Tasks done** | 0 / 13 (plus Task 0) |
-| **Baselines** | Task 0 records them (last known, M11ai: clippy default 14 (bin) / 27 (test), `ui-shots` 16 / 29) |
+| **Baselines** | On `m11ag-ask-agent` at `687264d`, 2026-11-19: `cargo test --bin fuxx` 2,076 passed, 1 ignored, 0 failed; clippy default 14 (bin) / 27 (test); clippy `ui-shots` 16 (bin) / 29 (test); `cargo fmt --check` clean. Full `scripts/ui-shots.sh` not run in Task 0 (ruling R1; the user's decision): the ui-shots baseline is M11ai's last full run, 226 passed, 0 failed, 151.4 s |
 | **▶ Pick up here** | Task 0 |
 | **Decisions used** | Yours: "lets go" to the 11 points and **B** (no agent tab: open one), "go with A" (note rows in the code), "go ahead" (lines from the edit itself, 7b/7c/10), the full ui-shots run only before the final review and after its fix wave. The design's "Calls made" (AI's). Plan-time calls below (AI's). |
 | **Needs your eyes** | 👀 the on-screen check in note 87, after Task 13 |
@@ -47,7 +47,11 @@ row map) and [[82 - Milestone 11af - Live Changes]] (the ledger and the line rec
 1. **agy carries no edit text (checked at plan time).** All three agy recordings with an edit
    (`src/providers/fixtures/agy-tools.jsonl`, `agy-restart-flags.jsonl`, `agy-restart-flags-effort.jsonl`) give
    `edit_file` / `write_file` only `{"Path": …}`. So agy edits get notes the light way (7b). Task 0 re-checks; if a
-   recording does carry the new text, Task 6 Step 4b applies instead.
+   recording does carry the new text, Task 6 Step 4b applies instead. **Task 0 re-check (2026-11-19): confirmed.**
+   Eight `edit_file` / `write_file` calls across the three recordings (`agy-tools.jsonl`: 2 edit, 2 write;
+   `agy-restart-flags.jsonl`: 2 write; `agy-restart-flags-effort.jsonl`: 2 write); each one's `tool_info.parameters`
+   has the single key `Path`. No key besides `Path` in any of them, and no new-text-style key (content, replacement,
+   new string, text, diff, patch) anywhere in the `agy-*.jsonl` fixtures. Task 6 Step 4b does not apply.
 2. **No keyboard selection exists in the file tab** (no ⇧-arrows; ⌘A is the Edit menu's). The bar shows when a
    mouse selection ends (`mouse_up`) and the selection is not empty.
 3. **Esc does not clear the selection today** (`close_find` only closes the find bar or the outline panel, else
