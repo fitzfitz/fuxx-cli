@@ -58,7 +58,7 @@ fn next_word(s: &str) -> Option<(&str, &str)> {
 }
 
 /// `NAME=value` with `NAME` of `[A-Za-z_][A-Za-z0-9_]*`.
-fn is_assignment(word: &str) -> bool {
+pub(crate) fn is_assignment(word: &str) -> bool {
     let Some((name, _)) = word.split_once('=') else {
         return false;
     };
@@ -70,7 +70,7 @@ fn is_assignment(word: &str) -> bool {
 }
 
 /// One layer of matching `'…'` or `"…"` removed.
-fn unquote(word: &str) -> &str {
+pub(crate) fn unquote(word: &str) -> &str {
     for q in ['\'', '"'] {
         if let Some(inner) = word.strip_prefix(q).and_then(|w| w.strip_suffix(q)) {
             return inner;

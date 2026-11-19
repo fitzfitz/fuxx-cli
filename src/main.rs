@@ -35,6 +35,7 @@ mod cli;
 mod code_ask;
 mod code_outline;
 mod colors;
+mod command_name;
 mod composer;
 mod cursor_look;
 mod daemon;
