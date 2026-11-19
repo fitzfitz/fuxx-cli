@@ -787,7 +787,7 @@ mod tests {
 
     /// `bytes` fed through `blocks::advance`, as a shell with OSC 133 marks would be shown.
     fn tagged(term: &mut Term<VoidListener>, bytes: &[u8]) {
-        crate::blocks::advance(
+        let _ = crate::blocks::advance(
             &mut Processor::new(),
             term,
             &mut crate::blocks::Tagger::new(),
@@ -841,7 +841,7 @@ mod tests {
         let mut processor: Processor<StdSyncHandler> = Processor::new();
         processor.advance(&mut b, &snapshot);
         assert_eq!(list(&b)[0].outcome, Outcome::Running);
-        crate::blocks::advance(
+        let _ = crate::blocks::advance(
             &mut processor,
             &mut b,
             &mut Tagger::new(),

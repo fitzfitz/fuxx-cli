@@ -304,7 +304,7 @@ impl LocalFeed {
                 marks,
             } = &mut *guard;
             first_output.get_or_insert_with(Instant::now);
-            blocks::advance(processor, term, tagger, marks, bytes);
+            let _ = blocks::advance(processor, term, tagger, marks, bytes);
             clears.feed(bytes);
         } // lock released before waking the UI
         if let Some(event) = self.gate.after_batch(notifications) {
@@ -786,7 +786,7 @@ impl TerminalCore {
             ..
         } = &mut *guard;
         // Tagged like the program's output, so screenshots can draw command blocks.
-        blocks::advance(processor, term, tagger, marks, text.as_bytes());
+        let _ = blocks::advance(processor, term, tagger, marks, text.as_bytes());
         clears.feed(text.as_bytes());
     }
 
@@ -1137,7 +1137,7 @@ impl Replica {
                         marks,
                         ..
                     } = &mut *guard;
-                    blocks::advance(processor, term, tagger, marks, &snap.vt_bytes);
+                    let _ = blocks::advance(processor, term, tagger, marks, &snap.vt_bytes);
                 }
                 self.next = Some(snap.seq + 1);
                 self.set_title(snap.title);
@@ -1165,7 +1165,7 @@ impl Replica {
                     } = &mut *guard;
                     first_output.get_or_insert_with(Instant::now);
                     // The same bytes, split the same way, as the service's Term: tagged alike.
-                    blocks::advance(processor, term, tagger, marks, &bytes);
+                    let _ = blocks::advance(processor, term, tagger, marks, &bytes);
                     clears.feed(&bytes);
                 }
                 if let Some(dir) = self.reports.feed(&bytes) {
@@ -2911,7 +2911,7 @@ mod daemon_tests {
             &TermDims { cols: 20, rows: 3 },
             alacritty_terminal::event::VoidListener,
         );
-        blocks::advance(
+        let _ = blocks::advance(
             &mut Processor::new(),
             &mut term,
             &mut Tagger::new(),

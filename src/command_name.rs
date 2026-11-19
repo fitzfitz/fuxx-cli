@@ -5,7 +5,7 @@
 //! anywhere: a pane's name, a banner, the 🔔 list, Activity. Mark text is untrusted, so the
 //! result is cleaned and capped here.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::agent_detect::{is_assignment, unquote};
 
@@ -14,7 +14,6 @@ pub const PROGRAM_CAP: usize = 32;
 /// The longest subcommand word kept, in characters.
 pub const WORD_CAP: usize = 24;
 /// What a banner calls a command that has no short form.
-#[allow(dead_code)] // until M11q Task 3
 pub const NO_SHORT: &str = "command";
 
 /// Programs that run the next command: they and their options are skipped.
@@ -94,7 +93,6 @@ fn plain(word: &str) -> bool {
 /// The short form of a command line: the program, a plain word after it (and after `run`, `exec`,
 /// `x` or `dlx` one more), and ` …` when another command follows. `None` when no program can be
 /// named.
-#[allow(dead_code)] // until M11q Task 3
 pub fn short_form(line: &str) -> Option<String> {
     let (words, more) = first_command(line)?;
     let mut i = 0;
@@ -152,7 +150,7 @@ pub fn short_form(line: &str) -> Option<String> {
 }
 
 /// How a command ended, from the exit code its end mark carried (if any).
-#[allow(dead_code)] // until M11q Task 3 (Ending, Finished and their methods)
+#[allow(dead_code)] // until M11q Task 4 (the workspace words the ending)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ending {
     Done,
@@ -161,7 +159,7 @@ pub enum Ending {
     Finished,
 }
 
-#[allow(dead_code)] // until M11q Task 3
+#[allow(dead_code)] // until M11q Task 4
 impl Ending {
     /// 0 is done, 130 (⌃C) stopped, any other code failed; no code just finished.
     pub fn of(exit: Option<i32>) -> Ending {
@@ -180,7 +178,7 @@ impl Ending {
 
 /// A run's length in its two largest units, the smaller left out when zero: `40s`, `3m 12s`,
 /// `2m`, `1h 4m`, `1d 2h`.
-#[allow(dead_code)] // until M11q Task 3
+#[allow(dead_code)] // until M11q Task 4
 pub fn ran_label(d: Duration) -> String {
     let s = d.as_secs();
     let units = [(86_400, 'd'), (3600, 'h'), (60, 'm'), (1, 's')];
@@ -199,7 +197,7 @@ pub fn ran_label(d: Duration) -> String {
 }
 
 /// The banner's body for an ending.
-#[allow(dead_code)] // until M11q Task 3
+#[allow(dead_code)] // until M11q Task 4
 pub fn ending_words(ending: Ending, ran: Duration) -> String {
     let d = ran_label(ran);
     match ending {
@@ -211,7 +209,7 @@ pub fn ending_words(ending: Ending, ran: Duration) -> String {
 }
 
 /// A command that ended: its short form (if it had one), how, and how long it ran.
-#[allow(dead_code)] // until M11q Task 3
+#[allow(dead_code)] // until M11q Task 4
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finished {
     pub short: Option<String>,
@@ -219,7 +217,7 @@ pub struct Finished {
     pub ran: Duration,
 }
 
-#[allow(dead_code)] // until M11q Task 3
+#[allow(dead_code)] // until M11q Task 4
 impl Finished {
     pub fn name(&self) -> &str {
         self.short.as_deref().unwrap_or(NO_SHORT)
@@ -237,6 +235,68 @@ impl Finished {
     /// Activity's line.
     pub fn logged(&self) -> String {
         format!("{} — {}", self.name(), self.words())
+    }
+}
+
+/// What the OSC 133 marks say about the command at the shell prompt, already reduced to its
+/// short form: the full command line never leaves the parser.
+#[allow(dead_code)] // until M11q Task 4
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommandMark {
+    /// A command started; `short` is its short form, if it had a command line to make one from.
+    Started {
+        short: Option<String>,
+    },
+    Ended {
+        exit: Option<i32>,
+    },
+    /// A new prompt: nothing runs.
+    Prompt,
+    /// What runs is not known any more (a reattach snapshot); never made by `blocks::advance`.
+    Unknown,
+}
+
+/// What a mark changed in what runs now.
+#[allow(dead_code)] // until M11q Task 4
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Change {
+    Started(Option<String>),
+    Ended(Finished),
+    Cleared,
+}
+
+/// The command running at a shell prompt now, and when it started.
+#[allow(dead_code)] // until M11q Task 4
+#[derive(Default)]
+pub struct CommandRun {
+    running: Option<(Option<String>, Instant)>,
+}
+
+#[allow(dead_code)] // until M11q Task 4
+impl CommandRun {
+    pub fn on_mark(&mut self, mark: CommandMark, now: Instant) -> Option<Change> {
+        match mark {
+            CommandMark::Started { short } => {
+                self.running = Some((short.clone(), now));
+                Some(Change::Started(short))
+            }
+            CommandMark::Ended { exit } => {
+                let (short, since) = self.running.take()?;
+                Some(Change::Ended(Finished {
+                    short,
+                    ending: Ending::of(exit),
+                    ran: now.saturating_duration_since(since),
+                }))
+            }
+            CommandMark::Prompt | CommandMark::Unknown => {
+                self.running.take().map(|_| Change::Cleared)
+            }
+        }
+    }
+
+    /// The running command's short form, if it has one.
+    pub fn running(&self) -> Option<&str> {
+        self.running.as_ref()?.0.as_deref()
     }
 }
 
@@ -422,5 +482,102 @@ mod tests {
         };
         assert_eq!(none.name(), "command");
         assert_eq!(none.listed(), "command · Done in 3s");
+    }
+
+    fn started(short: &str) -> CommandMark {
+        CommandMark::Started {
+            short: Some(short.to_string()),
+        }
+    }
+
+    #[test]
+    fn a_command_runs_from_its_start_to_its_end() {
+        let mut run = CommandRun::default();
+        let t0 = Instant::now();
+        assert_eq!(
+            run.on_mark(started("pnpm dev"), t0),
+            Some(Change::Started(Some("pnpm dev".to_string())))
+        );
+        assert_eq!(run.running(), Some("pnpm dev"));
+        let end = CommandMark::Ended { exit: Some(0) };
+        assert_eq!(
+            run.on_mark(end, t0 + Duration::from_secs(192)),
+            Some(Change::Ended(Finished {
+                short: Some("pnpm dev".to_string()),
+                ending: Ending::Done,
+                ran: Duration::from_secs(192),
+            }))
+        );
+        assert_eq!(run.running(), None);
+    }
+
+    #[test]
+    fn an_end_with_no_start_is_nothing() {
+        let mut run = CommandRun::default();
+        let end = CommandMark::Ended { exit: Some(0) };
+        assert_eq!(run.on_mark(end, Instant::now()), None);
+        assert_eq!(run.running(), None);
+    }
+
+    #[test]
+    fn a_prompt_ends_the_name_without_a_result() {
+        let mut run = CommandRun::default();
+        let t0 = Instant::now();
+        run.on_mark(started("pnpm dev"), t0);
+        assert_eq!(run.on_mark(CommandMark::Prompt, t0), Some(Change::Cleared));
+        assert_eq!(run.running(), None);
+        assert_eq!(run.on_mark(CommandMark::Prompt, t0), None);
+    }
+
+    #[test]
+    fn unknown_forgets_the_running_command() {
+        let mut run = CommandRun::default();
+        let t0 = Instant::now();
+        run.on_mark(started("pnpm dev"), t0);
+        assert_eq!(run.on_mark(CommandMark::Unknown, t0), Some(Change::Cleared));
+        assert_eq!(run.running(), None);
+        assert_eq!(run.on_mark(CommandMark::Unknown, t0), None);
+        let end = CommandMark::Ended { exit: Some(0) };
+        assert_eq!(run.on_mark(end, t0), None);
+    }
+
+    #[test]
+    fn a_second_start_replaces_the_first() {
+        let mut run = CommandRun::default();
+        let t0 = Instant::now();
+        run.on_mark(started("pnpm dev"), t0);
+        let t1 = t0 + Duration::from_secs(5);
+        assert_eq!(
+            run.on_mark(started("cargo test"), t1),
+            Some(Change::Started(Some("cargo test".to_string())))
+        );
+        assert_eq!(run.running(), Some("cargo test"));
+        let end = CommandMark::Ended { exit: Some(1) };
+        assert_eq!(
+            run.on_mark(end, t1 + Duration::from_secs(2)),
+            Some(Change::Ended(Finished {
+                short: Some("cargo test".to_string()),
+                ending: Ending::Failed(1),
+                ran: Duration::from_secs(2),
+            }))
+        );
+    }
+
+    #[test]
+    fn a_command_with_no_short_form_still_ends() {
+        let mut run = CommandRun::default();
+        let t0 = Instant::now();
+        assert_eq!(
+            run.on_mark(CommandMark::Started { short: None }, t0),
+            Some(Change::Started(None))
+        );
+        assert_eq!(run.running(), None);
+        let end = CommandMark::Ended { exit: Some(0) };
+        let Some(Change::Ended(done)) = run.on_mark(end, t0 + Duration::from_secs(3)) else {
+            panic!("a command with no short form still ends");
+        };
+        assert_eq!(done.short, None);
+        assert_eq!(done.name(), "command");
+        assert_eq!(done.listed(), "command · Done in 3s");
     }
 }
