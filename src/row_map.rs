@@ -74,7 +74,8 @@ impl Row {
 }
 
 /// What a map was built for (rebuilt when any differs): mode, doc version, columns, folds'
-/// generation, the Diff layout's generation, side by side. (The row height is checked apart:
+/// generation, the Diff layout's generation, side by side, (M11ag) the notes' rows' generation
+/// and the width notes wrap at (none: no notes). (The row height is checked apart:
 /// `RowMap::row_h`.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapKey {
@@ -84,6 +85,8 @@ pub struct MapKey {
     pub folds: u64,
     pub layout: u64,
     pub side: bool,
+    pub notes: u64,
+    pub note_width: Option<u32>,
 }
 
 /// The screen rows of a text body: each row, each row's top in points, each line's first row.
@@ -124,6 +127,11 @@ struct NoteRows {
     note: usize,
     under: usize,
     rows: Range<usize>,
+}
+
+/// M11ag: whether `notes` are sorted by `under` (as `RowMap::file` and `RowMap::diff` take them).
+fn sorted(notes: &[NoteSpan]) -> bool {
+    notes.windows(2).all(|w| w[0].under <= w[1].under)
 }
 
 /// M11ag: the notes under line `line` (`notes` sorted by `under`).
@@ -219,6 +227,10 @@ impl RowMap {
         notes: &[NoteSpan],
         row_h: f32,
     ) -> RowMap {
+        debug_assert!(
+            sorted(notes),
+            "note spans sorted by the line they are under"
+        );
         let lines = widths.len();
         let columns = columns.map(|c| c.max(1));
         if columns.is_none()
@@ -435,6 +447,7 @@ impl RowMap {
         row_h: f32,
     ) -> RowMap {
         use crate::ui_tokens::code::{CARD_GAP, CARD_TITLE};
+        debug_assert!(sorted(notes), "note spans sorted by the row they are under");
         let columns = columns.map(|c| c.max(1));
         let lines = widths.len();
         let g = layout.grouped;
