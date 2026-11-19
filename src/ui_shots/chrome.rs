@@ -20,6 +20,7 @@ use gpui::{
 };
 
 use super::*;
+use crate::command_name::{Change, Ending, Finished};
 use crate::split_tree::Axis;
 use crate::status::Status;
 use crate::terminal_view::TerminalEvent;
@@ -2540,6 +2541,92 @@ pub(super) fn chrome_session_facts() {
             })
         });
     });
+    // The command running at the unnamed terminal's prompt (M11q): its name is on its tab, in
+    // `workspace_label` and the window title (its workspace shown first, for the title).
+    steps.step(
+        &mut cx,
+        window,
+        "the unnamed terminal shown",
+        Seen::Changes,
+        |cx| {
+            let i = cx
+                .read(|cx| ws.read(cx).index_of(unnamed))
+                .expect("its session");
+            on_ws(cx, window, ws, |ws, window, cx| ws.select(i, window, cx));
+        },
+    );
+    // Its tab's title, its workspace's label and the window title last set.
+    let names = |cx: &VisualTestAppContext| -> (String, String, Option<String>) {
+        cx.read(|cx| {
+            let ws = ws.read(cx);
+            let i = ws.index_of(unnamed).expect("its session");
+            let w = ws.workspace_of(i).expect("its workspace");
+            let pane = ws.model.workspace(w).expect("it").focused;
+            let tab = ws
+                .pane_bar_tabs(ws.model.pane(pane).expect("its pane"), Instant::now())
+                .into_iter()
+                .find(|t| t.terminal == Some(unnamed))
+                .expect("its tab");
+            (
+                tab.title.to_string(),
+                ws.workspace_label(w).to_string(),
+                ws.shot_window_title().map(String::from),
+            )
+        })
+    };
+    let command = |cx: &mut VisualTestAppContext, change: Change| {
+        let i = cx
+            .read(|cx| ws.read(cx).index_of(unnamed))
+            .expect("its session");
+        let view = cx.read(|cx| ws.read(cx).sessions.items()[i].view.clone());
+        cx.update(|cx| view.update(cx, |_, cx| cx.emit(TerminalEvent::Command(change))));
+    };
+    let ended = || {
+        Change::Ended(Finished {
+            short: Some("pnpm dev".into()),
+            ending: Ending::of(Some(0)),
+            ran: Duration::from_secs(1),
+        })
+    };
+    let before = names(&cx);
+    steps.step(
+        &mut cx,
+        window,
+        "a command starts (OSC 133 C)",
+        Seen::Changes,
+        |cx| command(cx, Change::Started(Some("pnpm dev".into()))),
+    );
+    let (tab, label, title) = names(&cx);
+    assert_eq!(tab, "pnpm dev", "{n}: the tab");
+    assert_eq!(label, "pnpm dev", "{n}: the workspace's label");
+    assert!(
+        title.as_deref().is_some_and(|t| t.ends_with("pnpm dev")),
+        "{n}: the window title {title:?}"
+    );
+    steps.step(&mut cx, window, "the command ends", Seen::Changes, |cx| {
+        command(cx, ended())
+    });
+    assert_eq!(names(&cx), before, "{n}: the names are back after the end");
+    steps.step(
+        &mut cx,
+        window,
+        "a second command starts",
+        Seen::Changes,
+        |cx| command(cx, Change::Started(Some("pnpm dev".into()))),
+    );
+    assert_eq!(names(&cx).0, "pnpm dev", "{n}: named again");
+    steps.step(
+        &mut cx,
+        window,
+        "the command is cleared",
+        Seen::Changes,
+        |cx| command(cx, Change::Cleared),
+    );
+    assert_eq!(
+        names(&cx),
+        before,
+        "{n}: the names are back after the clear"
+    );
     steps.step(
         &mut cx,
         window,
