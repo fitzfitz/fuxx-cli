@@ -289,8 +289,10 @@ hand-off) goes to the whole-branch review next. Not merged.
 
 **Part 2 — The agent's reason, under its edit**
 
-- **Task 6, edits carry their new text:** `EditText` on `Event::ToolStarted` for Claude's `Edit`, `MultiEdit`, `Write`
-  and notebook edits (provider code stays in `src/providers/claude.rs`; agy carries none).
+- **Task 6, edits carry their new text:** `EditText` on `Event::ToolStarted` for Claude's `Edit`, `MultiEdit` and
+  `Write`. A notebook edit, and an edit with no new text given, carry `EditText::NoNote` ("this call writes its file,
+  and there is no note for it"; the final review's fix wave), so they are never taken for an agent that gives no text.
+  Provider code stays in `src/providers/claude.rs`; agy carries none.
 - **Task 7, the reason:** the agent tab keeps the turn's last text before an edit as its reason (same turn, live,
   at most 2,000 characters, whitespace collapsed); cleared when a turn ends any way (force stop, exit).
 - **Task 8, the note store:** `src/edit_notes.rs`, app-wide, 200 notes per file, 2,000 files, oldest out first; at an
@@ -298,7 +300,8 @@ hand-off) goes to the whole-branch review next. Not merged.
   `Light` reason when it cannot).
 - **Task 9, notes find their lines:** each file tab places its file's notes in the text it shows, off the UI thread
   after each read; nearest the hint wins when the text appears twice; moved with later edits; a note whose text is
-  gone stays hidden and comes back with it; the light way claims the newest `Light` by an exact agent stamp.
+  gone stays hidden and comes back with it; the light way claims the newest `Light` by an exact agent stamp (a
+  deletion's `Light` only by a change that removed lines alone; the fix wave).
 - **Task 10, note rows in the row map:** `Row::Note` rows in File and both Diff layouts; every consumer of `Row`
   steps around them (sticky line, breadcrumb, scrollbar marks, selection).
 - **Task 11, note rows drawn:** a bar in the agent's colour, `claude · 10:42 — ` in dim text, the reason as raw
@@ -381,21 +384,51 @@ Calls made in the build (the controller's rulings, each with the reason in the b
 - **An opened note whose last line would run under "less" gets its own row for it** (Task 11's fix); otherwise it takes
   exactly its wrapped lines.
 
+Calls changed by the final review's fix wave:
+
+- **A light reason has a kind** (changes call 13): `NoText` (an agent that gives no edit text: agy) or `Removed` (a
+  pure deletion). A `NoText` reason is taken by any exact change of its agent, as before (the latest under the first
+  block). A `Removed` reason is taken only by a change that removed lines alone, and goes on the line above the gap;
+  read together with other edits (a tab hidden and shown again, two edits inside one poll) it is not filed under an
+  unrelated block: it waits its 600 s and is dropped.
+- **"No note" is said by the provider** (`EditText::NoNote`): a notebook edit and an edit with no new text leave
+  nothing, light or otherwise. Only an edit with no texts at all (agy) is "text unknown".
+- **A reason that needs no file read is in the store at once:** a pure deletion's and agy's light reason is left in
+  the same turn as the ledger's finish, before any file tab can read the change.
+- **The fence grows with the code** (changes call 5): it is one backtick longer than the longest run of backticks in
+  the selected lines, never under three, so Markdown with a fenced block of its own asks correctly.
+- **A placement that runs out of its 50 ms changes nothing** (changes call 14): the notes shown stay, and the next read
+  or change of the store asks again (before: the notes shown were cleared and never asked for again).
+- **Rows made again for the notes alone keep the view where it was** inside its top row (a note landing, "more" /
+  "less", a resize with Wrap off), as a fold change already did.
+- **The pill's click opens a fold when every note is under one** (File mode): the first note's folds open, as a find
+  step's do, and the view goes there.
+
 ## Limits (what it does not do)
 
 - An `Edit` whose new text also appears earlier in the file anchors its note to the first copy.
-- agy edits and pure deletions get notes only through a file tab that is showing the file when the edit lands (the
-  light way); an edit read by no shown tab gets no note for those.
+- agy edits and pure deletions get notes only through a file tab that reads the change (the light way): one showing
+  the file when the edit lands, or one hidden then and shown again within 10 minutes. A deletion's note only when
+  that read sees a change that removed lines alone: read together with other edits to the file (a tab shown again
+  after several edits), the deletion gets no note. An edit read by no tab in that time gets no note for those.
+- A deletion's reason left waiting that way can go to that agent's next change to the file that only removes lines,
+  inside the 10 minutes.
 - Notes are gone after a restart (the store is in memory).
 - There is no keyboard selection in the file tab, so the bar follows the mouse only.
 - Two edits by one agent to one file within about 2 s, while the first is still read open: the second's reason can
   land on the first's block (the light way takes the newest).
-- A light reason can be missed when the tab reads the change in the few milliseconds between the ledger finishing and
-  the store holding it; it then waits for that agent's next exact change.
-- A note under a fold counts in the pill but the pill's click skips it: with every note folded the click does nothing
-  while the pill says "1 note".
-- With Wrap off, a note landing far below the view, or a window resize, can snap the scroll to the top of a row (up to one
-  row's jump).
+- One edit with a text that is not found in the file and another that is a pure removal: its light reason is left
+  after the file is read (a few milliseconds), so a tab reading the change in between misses it; it then waits for
+  that agent's next change that only removes lines. (A pure deletion's and agy's reasons are left at once.)
+- A new text of several lines is not found in a file with CRLF line ends (Claude's text has LF ends): no note.
+- A note under a fold counts in the pill, and the pill's click passes over it while another note is shown. With every
+  note under a fold the click opens the first note's fold and goes there (File mode; in Diff mode a note in a folded
+  stretch is still passed over).
+- When the row at the top of the view is a note's row that is gone once that note's rows change (folded with "less"
+  while its later rows are at the top, or fewer lines after a resize), the view moves to a row's top (up to one row's
+  jump). In
+  every other case a note landing, "more" / "less" and a resize with Wrap off leave the view where it was. (With Wrap
+  on, a resize re-wraps the code and starts the view at a row's top, as before this milestone.)
 - A folded note's "more" can cut a word part-way at the end of its second row.
 - Right after a switch from File to Diff mode, a note's reveal (the pill's step) can be off by a row.
 - When one edit has one text that anchors and another that is a pure removal, no deletion note is placed; the one note
@@ -403,7 +436,8 @@ Calls made in the build (the controller's rulings, each with the reason in the b
 - A deletion that empties the file drops the light claim, so no note.
 - A `Write` with no readable file gives no note.
 - A turn you stop (Stop) clears the pending reasons, so an interrupted turn that keeps editing gets no note.
-- No notes for notebooks, and none in Preview; in Diff mode none where only removed lines surround.
+- No notes for notebooks or for an edit that carries no new text, and none in Preview; in Diff mode none where only
+  removed lines surround.
 - Ask works from a mouse selection that is scrolled off screen too (the bar is hidden then, ⌘↵ still asks).
 
 ## Final numbers
@@ -419,7 +453,19 @@ Before the final review (Task 13, 2026-11-19):
 - Public-repo grep of the branch's added lines: no personal paths, names, emails or time zones in code, scenes or docs
   (the only matches are the rule's own wording in the plan and its context).
 
-After the final review's fix wave: to be filled in by the controller (the full run again, then the same numbers).
+After the final review's fix wave (2026-11-19):
+
+- What the wave fixed: a deletion's reason no longer lands on an unrelated block (light reasons have a kind); a
+  notebook edit and an edit with no new text say "no note"; the fence is longer than any backtick run in the code; a
+  notes reflow keeps the view inside its top row; a placement that runs out of time keeps the notes and asks again;
+  the pill's click opens a fold when every note is under one; a reason that needs no file read is in the store at
+  once; this note's Limits and Task 6 wording corrected.
+- `cargo test --bin fuxx`: **2,154 passed, 0 failed, 1 ignored** (8 more tests).
+- Clippy: default **14 / 27**, `ui-shots` **16 / 29** — the baselines, no new warnings. `cargo fmt --check`: clean.
+- `scripts/ui-shots.sh --changed master`: **247 passed, 0 failed, 157.6 s**, exit 0 (the branch touches every
+  scene's sources, so all ran). Fingerprints: `0 same, 339 look different, 52 differ in size, 226 without a
+  reference` (the same stale-reference state).
+- Full `scripts/ui-shots.sh`: (controller's full run follows)
 
 ## On-screen check (for you; 15 items)
 
