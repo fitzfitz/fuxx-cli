@@ -150,7 +150,6 @@ pub fn short_form(line: &str) -> Option<String> {
 }
 
 /// How a command ended, from the exit code its end mark carried (if any).
-#[allow(dead_code)] // until M11q Task 4 (the workspace words the ending)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ending {
     Done,
@@ -159,7 +158,6 @@ pub enum Ending {
     Finished,
 }
 
-#[allow(dead_code)] // until M11q Task 4
 impl Ending {
     /// 0 is done, 130 (⌃C) stopped, any other code failed; no code just finished.
     pub fn of(exit: Option<i32>) -> Ending {
@@ -171,6 +169,7 @@ impl Ending {
         }
     }
 
+    #[allow(dead_code)] // until M11q Task 7
     pub fn failed(self) -> bool {
         matches!(self, Ending::Failed(_))
     }
@@ -178,7 +177,6 @@ impl Ending {
 
 /// A run's length in its two largest units, the smaller left out when zero: `40s`, `3m 12s`,
 /// `2m`, `1h 4m`, `1d 2h`.
-#[allow(dead_code)] // until M11q Task 4
 pub fn ran_label(d: Duration) -> String {
     let s = d.as_secs();
     let units = [(86_400, 'd'), (3600, 'h'), (60, 'm'), (1, 's')];
@@ -197,7 +195,6 @@ pub fn ran_label(d: Duration) -> String {
 }
 
 /// The banner's body for an ending.
-#[allow(dead_code)] // until M11q Task 4
 pub fn ending_words(ending: Ending, ran: Duration) -> String {
     let d = ran_label(ran);
     match ending {
@@ -209,7 +206,6 @@ pub fn ending_words(ending: Ending, ran: Duration) -> String {
 }
 
 /// A command that ended: its short form (if it had one), how, and how long it ran.
-#[allow(dead_code)] // until M11q Task 4
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finished {
     pub short: Option<String>,
@@ -217,22 +213,25 @@ pub struct Finished {
     pub ran: Duration,
 }
 
-#[allow(dead_code)] // until M11q Task 4
 impl Finished {
+    #[allow(dead_code)] // until M11q Task 7
     pub fn name(&self) -> &str {
         self.short.as_deref().unwrap_or(NO_SHORT)
     }
 
+    #[allow(dead_code)] // until M11q Task 7
     pub fn words(&self) -> String {
         ending_words(self.ending, self.ran)
     }
 
     /// The 🔔 list's line.
+    #[allow(dead_code)] // until M11q Task 7
     pub fn listed(&self) -> String {
         format!("{} · {}", self.name(), self.words())
     }
 
     /// Activity's line.
+    #[allow(dead_code)] // until M11q Task 9
     pub fn logged(&self) -> String {
         format!("{} — {}", self.name(), self.words())
     }
@@ -240,7 +239,6 @@ impl Finished {
 
 /// What the OSC 133 marks say about the command at the shell prompt, already reduced to its
 /// short form: the full command line never leaves the parser.
-#[allow(dead_code)] // until M11q Task 4
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandMark {
     /// A command started; `short` is its short form, if it had a command line to make one from.
@@ -257,7 +255,6 @@ pub enum CommandMark {
 }
 
 /// What a mark changed in what runs now.
-#[allow(dead_code)] // until M11q Task 4
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
     Started(Option<String>),
@@ -266,13 +263,11 @@ pub enum Change {
 }
 
 /// The command running at a shell prompt now, and when it started.
-#[allow(dead_code)] // until M11q Task 4
 #[derive(Default)]
 pub struct CommandRun {
     running: Option<(Option<String>, Instant)>,
 }
 
-#[allow(dead_code)] // until M11q Task 4
 impl CommandRun {
     pub fn on_mark(&mut self, mark: CommandMark, now: Instant) -> Option<Change> {
         match mark {
@@ -295,6 +290,7 @@ impl CommandRun {
     }
 
     /// The running command's short form, if it has one.
+    #[allow(dead_code)] // until M11q Task 10 (the service's `DaemonSession::command`)
     pub fn running(&self) -> Option<&str> {
         self.running.as_ref()?.0.as_deref()
     }

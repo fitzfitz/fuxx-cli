@@ -145,6 +145,7 @@ mod workspace;
 mod workspace_agent;
 mod workspace_api;
 mod workspace_browser;
+mod workspace_command;
 mod workspace_daemon;
 mod workspace_ssh;
 

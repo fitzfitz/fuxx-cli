@@ -530,6 +530,9 @@ pub struct Session {
     /// The background service's connection was lost: the view shows the last screen it had
     /// and nothing reaches the session.
     pub lost: bool,
+    /// The short form of the command running at its shell prompt (M11q); none when nothing
+    /// runs or the command has none.
+    pub command: Option<SharedString>,
     /// The host an SSH session connects to (M10b); none for a local one.
     pub ssh: Option<SshTarget>,
     /// The file name of the program it was started with (`sidebar::launch_name`); none for the
@@ -1773,6 +1776,7 @@ impl Workspace {
                 lost: false,
                 ssh: saved.ssh,
                 launched: None,
+                command: None,
                 disconnected: None,
                 retries: 0,
                 opened_at: Instant::now(),
@@ -2365,6 +2369,7 @@ impl Workspace {
             }
             TerminalEvent::Reconnect => self.reconnect_ssh(index, false, window, cx),
             TerminalEvent::DaemonLost => self.daemon_lost(index, window, cx),
+            TerminalEvent::Command(change) => self.command_changed(index, change, cx),
         }
     }
 

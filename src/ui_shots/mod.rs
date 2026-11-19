@@ -58,6 +58,7 @@ mod changed;
 mod changes;
 mod chrome;
 mod chrome_parts;
+mod command;
 mod file_tab;
 mod file_tab_md;
 mod file_tab_md_reader;
