@@ -202,7 +202,12 @@ pub fn anchor_in(text: &str, edit: &EditText) -> Option<(Vec<String>, usize)> {
                 return None;
             }
             let at = text.find(new.as_str())?;
-            let line_of = |byte: usize| text[..byte].matches('\n').count();
+            let line_of = |byte: usize| {
+                text.as_bytes()[..byte]
+                    .iter()
+                    .filter(|&&b| b == b'\n')
+                    .count()
+            };
             (line_of(at), line_of(at + new.len() - 1))
         }
     };
@@ -326,6 +331,14 @@ mod tests {
         let (lines, hint) = anchor_in("a\nb\nc\n", &ins("b\n")).expect("found");
         assert_eq!((lines, hint), (vec!["b".to_string()], 1));
         assert_eq!(anchor_in("a\nb\n", &ins("zzz")), None);
+    }
+
+    #[test]
+    fn anchor_ends_on_a_multi_byte_character() {
+        let (lines, hint) = anchor_in("a\nb\u{2192}\nc", &ins("b\u{2192}")).expect("found");
+        assert_eq!((lines, hint), (vec!["b\u{2192}".to_string()], 1));
+        let (lines, _) = anchor_in("\u{e9}\n", &ins("\u{e9}")).expect("found");
+        assert_eq!(lines, vec!["\u{e9}".to_string()]);
     }
 
     #[test]
