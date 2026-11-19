@@ -258,6 +258,7 @@ pub(super) const ORDER: &[&str] = &[
     "command-blocks-rerun",
     "command-reaches-workspace",
     "command-settles",
+    "command-name",
     "agent-tab-empty",
     "agent-tab-working",
     "agent-tab-permission",

@@ -619,11 +619,13 @@ impl Session {
         )
     }
 
-    /// Your name, else the program's own title, else the preset's name, else ╭∩╮.
+    /// Your name, else the program's own title, else the command running at its prompt (its
+    /// short form), else the preset's name, else ╭∩╮.
     pub fn label(&self) -> SharedString {
         groups::auto_name(
             self.name.as_deref(),
             self.title.as_deref(),
+            self.command.as_deref(),
             self.preset.as_ref().map(|p| p.name.as_str()),
         )
         .into()
@@ -2030,7 +2032,8 @@ impl Workspace {
     }
 
     /// Terminal `id`'s name as fuxx shows it: its `Session::label` (yours, else the program's
-    /// own title, else its preset's name, else ╭∩╮), as the scripting API names it.
+    /// own title, else the running command's short form, else its preset's name, else ╭∩╮), as
+    /// the scripting API names it.
     pub(crate) fn terminal_label(&self, id: u64) -> SharedString {
         self.sessions
             .items()
@@ -4197,6 +4200,11 @@ impl Workspace {
             _ => At::New,
         };
         self.open_shot_at(Some(name), Some(project), text, at, window, cx);
+    }
+
+    /// The window title as last set (UI screenshots).
+    pub(crate) fn shot_window_title(&self) -> Option<&str> {
+        self.last_title.as_deref()
     }
 
     /// `open_shot_session` for a terminal with no name of yours (a new one), in a workspace of

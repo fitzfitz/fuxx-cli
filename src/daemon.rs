@@ -738,6 +738,7 @@ fn notification_summary(info: &SessionInfo) -> String {
     let name = groups::auto_name(
         Some(&info.name),
         info.title.as_deref(),
+        None, // until M11q Task 10: the service's own command
         info.preset.as_deref(),
     );
     format!("fuxx — {name}")
