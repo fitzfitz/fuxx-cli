@@ -63,6 +63,7 @@ mod file_tab_md;
 mod file_tab_md_reader;
 mod harness;
 mod naming;
+mod notes;
 mod overlays;
 mod palette;
 mod panes;

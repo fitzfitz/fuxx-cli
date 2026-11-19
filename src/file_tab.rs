@@ -124,12 +124,14 @@ use crate::diff_view::{
     diff_spans, dim, first_change, reveal_row, sides,
 };
 use crate::edit_ledger::{Ledger, SLACK};
+use crate::edit_notes::{self, Note, NoteStore, Placed};
 use crate::git_branch::{GIT_CAP, find_git, run_capped_outcome, run_git};
 use crate::git_status::{FileDiff, LineChange, file_diff, head_size, line_changes, repo_root_at};
 use crate::highlight::{Highlighter, PLAIN_ABOVE, REFUSE_ABOVE, Span, Viewable, classify};
 use crate::layout_model::{FileMode, PaneId, TabId, TabKind, WorkspaceId};
 use crate::live_lines::{
-    AgentMark, Compared, LIMIT, LineRecord, Mark, Sure, WARM, Who, age_words, compare, letter_of,
+    AgentMark, Compared, LIMIT, LineRecord, Mark, Sure, WARM, Who, age_words, compare,
+    deleted_edges, letter_of,
 };
 use crate::md_preview::{self, LinkTarget, is_markdown, link_target};
 use crate::mermaid::{self, Asked, Key};
@@ -1386,9 +1388,21 @@ struct Live {
     pending: Option<Pending>,
     /// The file's canonical path, as the edit ledger keeps paths (found with each text read).
     real: Option<PathBuf>,
+    /// M11ag: the latest change when it only removed lines: where (`deleted_edges`) and who
+    /// made it, as decided (settled, revised); a light reason may be about it.
+    deletion: Option<Deletion>,
     /// The time the glow is worked out at: a scene's own (frozen tabs never poll).
     #[cfg(feature = "ui-shots")]
     now: Option<SystemTime>,
+}
+
+/// M11ag: a change that only removed lines: the new text's line its first gap is before, and
+/// who made it, how sure.
+#[derive(Clone, Debug)]
+struct Deletion {
+    edge: usize,
+    who: Who,
+    sure: Sure,
 }
 
 /// A look the revision check waits for (M11af): when it was, the look before it, and whether
@@ -1467,6 +1481,7 @@ impl Live {
                 self.sync_marks();
                 self.last = None;
                 self.pending = None;
+                self.deletion = None;
                 return false;
             }
             Seen::Text {
@@ -1484,14 +1499,27 @@ impl Live {
             Rc::make_mut(&mut self.record).clear(lines);
             self.sync_marks();
             self.pending = None;
+            self.deletion = None;
             return false;
         };
-        let (who, sure, open) = if c.blocks.is_empty() {
-            (Who::You, Sure::Exact, false)
+        // M11ag: a change that only removed lines is decided too (nothing is marked for it).
+        let edges = if c.blocks.is_empty() {
+            deleted_edges(&c)
         } else {
-            decide(since)
+            Vec::new()
         };
-        let revisable = !c.blocks.is_empty() && (open || sure == Sure::Guess || who == Who::You);
+        let changed = !c.blocks.is_empty() || !edges.is_empty();
+        let (who, sure, open) = if changed {
+            decide(since)
+        } else {
+            (Who::You, Sure::Exact, false)
+        };
+        let revisable = changed && (open || sure == Sure::Guess || who == Who::You);
+        self.deletion = edges.first().map(|&edge| Deletion {
+            edge,
+            who: who.clone(),
+            sure,
+        });
         Rc::make_mut(&mut self.record).apply(&c, lines, Mark { who, sure, when });
         self.sync_marks();
         if !c.blocks.is_empty() {
@@ -1505,6 +1533,11 @@ impl Live {
     /// change's lines become `who`, `sure`, which may be less sure than they were. True when a
     /// mark changed.
     fn settle(&mut self, (who, sure): (Who, Sure)) -> bool {
+        // M11ag: a deletion has no marks; its stamp changes alone (nothing drawn changes).
+        if let Some(d) = &mut self.deletion {
+            d.who = who.clone();
+            d.sure = sure;
+        }
         let record = &self.record;
         let changed = record
             .last_blocks()
@@ -1525,6 +1558,19 @@ impl Live {
     /// True when a mark changed.
     fn revise(&mut self, found: Option<AgentMark>) -> bool {
         found.is_some_and(|agent| self.settle((Who::Agent(agent), Sure::Exact)))
+    }
+
+    /// M11ag: the latest change, who made it (as decided, settled or revised) and its lines:
+    /// its first block, or for a change that only removed lines, the line above its first gap
+    /// (the first line for a gap at the top).
+    fn latest_change(&self) -> Option<(&Who, Sure, Range<usize>)> {
+        if let Some(block) = self.record.last_blocks().first() {
+            let m = self.record.mark(block.start)?;
+            return Some((&m.who, m.sure, block.clone()));
+        }
+        let d = self.deletion.as_ref()?;
+        let line = d.edge.saturating_sub(1);
+        Some((&d.who, d.sure, line..line + 1))
     }
 }
 
@@ -4471,7 +4517,15 @@ pub struct FileTab {
     live: Live,
     /// M11af: the mark under the pointer: its tooltip's place (window points) and words.
     mark_tip: Option<(Point<Pixels>, SharedString)>,
+    /// M11ag: the file's notes placed in the text shown (`place_notes`), and how many times
+    /// they changed; the text version and the store's generation last placed for.
+    notes: Rc<Vec<Placed>>,
+    #[allow(dead_code)] // read when note rows are drawn (M11ag Task 11)
+    notes_gen: u64,
+    notes_asked: Option<(u64, u64)>,
     _appearance: Subscription,
+    /// M11ag: a note filed for any file: this file's are placed again if its changed.
+    _notes_seen: Subscription,
 }
 
 /// What each block does as a Mermaid diagram (M11ac Part 2, `mermaid::plan`).
@@ -4527,6 +4581,16 @@ impl FileTab {
             this.preview_list.remeasure();
             this.track_due.set(true);
             cx.notify();
+        });
+        // M11ag: notes filed after the read are placed without another read.
+        let notes_seen = cx.observe_global::<NoteStore>(|this, cx| {
+            let generation = cx.global::<NoteStore>().generation(this.note_path());
+            if this
+                .notes_asked
+                .is_none_or(|(_, asked)| asked != generation)
+            {
+                this.place_notes(cx);
+            }
         });
         let track_armed: Rc<Cell<bool>> = Rc::default();
         let mut tab = Self {
@@ -4633,7 +4697,11 @@ impl FileTab {
             followed: None,
             live: Live::default(),
             mark_tip: None,
+            notes: Rc::default(),
+            notes_gen: 0,
+            notes_asked: None,
             _appearance: appearance,
+            _notes_seen: notes_seen,
         };
         tab.check_disk(cx);
         tab
@@ -5461,11 +5529,15 @@ impl FileTab {
                     State::Text(doc)
                 };
                 self.unrefuse_diff(was_refused);
+                // M11ag: a light reason for this change is filed before the notes are placed.
+                self.claim_light_note(cx);
                 self.colour(cx);
                 self.look_up_changes(cx);
                 self.follow_latest(cx);
             }
         }
+        // M11ag: the notes for the new text (none without one).
+        self.place_notes(cx);
         // M11ai Task 10: a new version: a "Copied" label goes (its row may be another block now;
         // its one-shot timer then finds nothing to clear).
         self.copied = None;
@@ -5567,6 +5639,8 @@ impl FileTab {
             self.follow_latest(cx);
             cx.notify();
         }
+        // M11ag: the change may be an agent's now (a late finish), its light reason left since.
+        self.claim_light_note(cx);
         None
     }
 
@@ -5627,6 +5701,107 @@ impl FileTab {
     /// changes are guessed theirs). Nothing is drawn differently.
     pub(crate) fn set_workspace(&mut self, ws: Option<WorkspaceId>) {
         self.live.workspace = ws;
+    }
+
+    /// M11ag: the path notes are filed under: the canonical one, as the ledger keeps paths.
+    fn note_path(&self) -> &Path {
+        self.live.real.as_deref().unwrap_or(&self.path)
+    }
+
+    /// M11ag: place the file's notes in the text shown, off the UI thread (given up after
+    /// `live_lines::LIMIT`: none for that read), none for a text shown `plain` or no text. The
+    /// answer is kept only while the text's version and the store's generation are still the
+    /// ones it was asked for.
+    fn place_notes(&mut self, cx: &mut Context<Self>) {
+        let (notes, generation) =
+            cx.try_global::<NoteStore>()
+                .map_or((Arc::default(), 0), |store| {
+                    (
+                        store.notes(self.note_path()),
+                        store.generation(self.note_path()),
+                    )
+                });
+        let State::Text(doc) = &self.state else {
+            self.notes_asked = None;
+            self.set_notes(Vec::new(), cx);
+            return;
+        };
+        let asked = (doc.version, generation);
+        if self.notes_asked == Some(asked) {
+            return;
+        }
+        self.notes_asked = Some(asked);
+        if notes.is_empty() {
+            self.set_notes(Vec::new(), cx);
+            return;
+        }
+        let (text, lines) = (doc.text.clone(), doc.lines.clone());
+        let placing = cx.background_spawn(async move {
+            let lines = line_slices(&text, &lines);
+            edit_notes::place(&notes, &lines, Instant::now() + LIMIT)
+        });
+        cx.spawn(async move |this, cx| {
+            let placed = placing.await;
+            this.update(cx, |this, cx| {
+                let version = match &this.state {
+                    State::Text(doc) => Some(doc.version),
+                    _ => None,
+                };
+                let generation = cx
+                    .try_global::<NoteStore>()
+                    .map_or(0, |store| store.generation(this.note_path()));
+                if version == Some(asked.0) && generation == asked.1 {
+                    this.set_notes(placed.unwrap_or_default(), cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// M11ag: the notes placed; drawn again only when they changed.
+    fn set_notes(&mut self, placed: Vec<Placed>, cx: &mut Context<Self>) {
+        if *self.notes != placed {
+            self.notes = Rc::new(placed);
+            self.notes_gen += 1;
+            cx.notify();
+        }
+    }
+
+    /// M11ag (the light way, plan-time call 13): when the latest change is an agent's, exact, a
+    /// reason that agent left for this file is taken and filed as a note about that change's
+    /// first block (for a change that only removed lines: the line above the gap). Run after a
+    /// read and after the revision check (a late finish may make the change the agent's).
+    fn claim_light_note(&mut self, cx: &mut Context<Self>) {
+        let Some((Who::Agent(agent), Sure::Exact, lines)) = self.live.latest_change() else {
+            return;
+        };
+        let Some(doc) = self.doc() else {
+            return;
+        };
+        if lines.end > doc.lines.len() {
+            return;
+        }
+        let anchor: Vec<String> = lines
+            .clone()
+            .map(|l| doc.line(l).trim_end_matches(['\r', '\n']).to_string())
+            .collect();
+        let (name, hint) = (agent.name.clone(), lines.start);
+        let path = self.note_path().to_path_buf();
+        edit_notes::update(cx, |store| {
+            if let Some(light) = store.take_light(&path, &name, Instant::now()) {
+                let note = Note {
+                    id: 0,
+                    agent: light.agent,
+                    clock: light.clock,
+                    reason: light.reason,
+                    reason_key: light.reason_key,
+                    anchor: Arc::new(anchor),
+                    hint,
+                };
+                store.add(path, note);
+            }
+        });
     }
 
     /// M11af: who changed each line since the tab opened.
@@ -8568,6 +8743,14 @@ impl FileTab {
         self.ask_to
     }
 
+    /// M11ag: the notes placed in the text, as (the 0-based line each sits under, its reason).
+    pub fn placed_notes(&self) -> Vec<(usize, String)> {
+        self.notes
+            .iter()
+            .map(|p| (p.under, p.note.reason.to_string()))
+            .collect()
+    }
+
     /// M11af: the hovered mark's tooltip, if one shows.
     pub fn mark_tip(&self) -> Option<String> {
         self.mark_tip.as_ref().map(|(_, words)| words.to_string())
@@ -10627,6 +10810,51 @@ mod tests {
         live.saw(Seen::Refused, t0, |_| unreachable!());
         assert!(!live.record.any());
         assert!(live.prev().is_none());
+    }
+
+    /// M11ag: a change that only removed lines is decided too (a light reason may be about it):
+    /// its line is the one above its first gap (the first line for a gap at the top), and a
+    /// settle stamps it again; a change with new lines is its first block's; a read with no
+    /// change has none.
+    #[test]
+    fn a_pure_deletion_is_decided_and_stamped() {
+        let t0 = Instant::now();
+        let mut live = Live::default();
+        let one = doc("a\nb\nc\nd\n");
+        live.saw(text_read(&live, &one, T0), t0, |_| unreachable!());
+        let two = doc("a\nd\n");
+        let revise = live.saw(text_read(&live, &two, T0), t0, |_| {
+            (agent("claude"), Sure::Exact, true)
+        });
+        assert!(revise, "decided while the edit was open");
+        assert!(!live.record.any(), "nothing to mark");
+        assert_eq!(
+            live.latest_change(),
+            Some((&agent("claude"), Sure::Exact, 0..1))
+        );
+        assert!(!live.settle((Who::You, Sure::Exact)), "no mark changed");
+        assert_eq!(live.latest_change(), Some((&Who::You, Sure::Exact, 0..1)));
+        let three = doc("d\n");
+        live.saw(text_read(&live, &three, T0), t0, |_| {
+            (agent("agy"), Sure::Exact, false)
+        });
+        assert_eq!(
+            live.latest_change(),
+            Some((&agent("agy"), Sure::Exact, 0..1))
+        );
+        let four = doc("d\nX\nY\n");
+        live.saw(text_read(&live, &four, T0), t0, |_| {
+            (agent("agy"), Sure::Guess, false)
+        });
+        assert_eq!(
+            live.latest_change(),
+            Some((&agent("agy"), Sure::Guess, 1..3))
+        );
+        let five = doc("d\nX\nY\n");
+        live.saw(text_read(&live, &five, T0), t0, |_| {
+            unreachable!("nothing to decide")
+        });
+        assert_eq!(live.latest_change(), None);
     }
 
     /// A change is dated when fuxx saw it, unless the file's time is earlier (it changed while
