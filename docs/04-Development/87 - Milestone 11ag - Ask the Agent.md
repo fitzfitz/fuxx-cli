@@ -426,9 +426,8 @@ Calls changed by the final review's fix wave:
   stretch is still passed over).
 - When the row at the top of the view is a note's row that is gone once that note's rows change (folded with "less"
   while its later rows are at the top, or fewer lines after a resize), the view moves to a row's top (up to one row's
-  jump). In
-  every other case a note landing, "more" / "less" and a resize with Wrap off leave the view where it was. (With Wrap
-  on, a resize re-wraps the code and starts the view at a row's top, as before this milestone.)
+  jump). In every other case a note landing, "more" / "less" and a resize with Wrap off leave the view where it was.
+  (With Wrap on, a resize re-wraps the code and starts the view at a row's top, as before this milestone.)
 - A folded note's "more" can cut a word part-way at the end of its second row.
 - Right after a switch from File to Diff mode, a note's reveal (the pill's step) can be off by a row.
 - When one edit has one text that anchors and another that is a pure removal, no deletion note is placed; the one note
@@ -465,7 +464,8 @@ After the final review's fix wave (2026-11-19):
 - `scripts/ui-shots.sh --changed master`: **247 passed, 0 failed, 157.6 s**, exit 0 (the branch touches every
   scene's sources, so all ran). Fingerprints: `0 same, 339 look different, 52 differ in size, 226 without a
   reference` (the same stale-reference state).
-- Full `scripts/ui-shots.sh`: (controller's full run follows)
+- Full `scripts/ui-shots.sh` (the controller's run after the wave): **247 passed, 0 failed, 158.3 s**, exit 0.
+  Fingerprints: `0 same, 339 look different, 52 differ in size, 226 without a reference`.
 
 ## On-screen check (for you; 15 items)
 
