@@ -34,6 +34,7 @@ use crate::block_view::{
     GUTTER_BAR, GUTTER_BAR_ACTIVE, GutterHit, Jump, Refusal,
 };
 use crate::blocks::{Block, Outcome};
+use crate::command_name::{Change, CommandMark, CommandRun};
 use crate::cursor_look::{self, Frames, Glide, PaintShape, Spark};
 use crate::daemon_client::DaemonClient;
 use crate::grid::{self, GridSnapshot, TextScope};
@@ -93,6 +94,8 @@ pub enum TerminalEvent {
     DaemonLost,
     /// The program reported another working folder (OSC 7: a `cd`).
     FolderMoved,
+    /// What runs at the shell prompt changed (OSC 133 marks): only its short form is in it.
+    Command(Change),
 }
 
 /// Where the grid was last painted, for turning mouse positions into grid points.
@@ -232,6 +235,8 @@ pub struct TerminalView {
     cwd_seen: u64,
     focus_handle: FocusHandle,
     tracker: StatusTracker,
+    /// The command running at the shell prompt now (M11q), from the OSC 133 marks.
+    run: CommandRun,
     /// When the canvas last sent the pty a new size; the tracker hears of it before the next
     /// output, input or tick, so the redraw that follows isn't taken for work.
     resized_at: Rc<Cell<Option<Instant>>>,
@@ -401,7 +406,8 @@ impl TerminalView {
     pub fn hold(&mut self, text: &str, cx: &mut Context<Self>) {
         self.disconnected = true;
         self.core.show_local(text);
-        cx.notify();
+        // The program is gone: what ran is not known any more.
+        self.command_marked(CommandMark::Unknown, cx);
     }
 
     /// Whether this pane is one of several in a split (less padding). Read when the view renders,
@@ -422,6 +428,15 @@ impl TerminalView {
     #[cfg(feature = "ui-shots")]
     pub fn shot_status(&self, status: Status, cx: &mut Context<Self>) {
         self.status_changed(status, cx);
+    }
+
+    /// `text` as the program's output, as the app takes it from the bytes on: the screen, then
+    /// each command mark as `on_term_event` takes it (UI screenshots).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_output(&mut self, text: &str, cx: &mut Context<Self>) {
+        for mark in self.core.show_local(text) {
+            self.on_term_event(TermEvent::Command(mark), cx);
+        }
     }
 
     /// Count this terminal's window as the key window (an off-screen window never is).
@@ -857,6 +872,7 @@ impl TerminalView {
             core,
             focus_handle,
             tracker: StatusTracker::new(),
+            run: CommandRun::default(),
             resized_at: Rc::new(Cell::new(None)),
             layout: Rc::new(Cell::new(None)),
             scroll: ScrollAccumulator::default(),
@@ -886,6 +902,36 @@ impl TerminalView {
             _ticker: ticker,
             _appearance: appearance,
         }
+    }
+
+    /// A mark changed what runs: tell the status tracker and the owner, and redraw (the chrome
+    /// shows the name). The order the owner hears them in matters: a start's status change (a
+    /// Done seen, as on a keystroke) comes before the command; an end's `Command` comes before
+    /// its Done, so the owner settles the status knowing which command ended, and the tracker's
+    /// own Done then changes nothing.
+    fn command_marked(&mut self, mark: CommandMark, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let tracks = self.tracks_status();
+        match self.run.on_mark(mark, now) {
+            Some(change @ Change::Started(_)) => {
+                if tracks && let Some(status) = self.tracker.on_command_start(now) {
+                    self.status_changed(status, cx);
+                }
+                cx.emit(TerminalEvent::Command(change));
+            }
+            Some(Change::Ended(finished)) => {
+                let settled = tracks
+                    .then(|| self.tracker.on_command_end(now, finished.ran))
+                    .flatten();
+                cx.emit(TerminalEvent::Command(Change::Ended(finished)));
+                if let Some(status) = settled {
+                    self.status_changed(status, cx);
+                }
+            }
+            Some(change @ Change::Cleared) => cx.emit(TerminalEvent::Command(change)),
+            None => {}
+        }
+        cx.notify();
     }
 
     fn on_term_event(&mut self, event: TermEvent, cx: &mut Context<Self>) {
@@ -939,6 +985,7 @@ impl TerminalView {
             TermEvent::Exited { code } => cx.emit(TerminalEvent::Exited { code }),
             TermEvent::Status(status) => self.status_changed(status, cx),
             TermEvent::DaemonLost => cx.emit(TerminalEvent::DaemonLost),
+            TermEvent::Command(mark) => self.command_marked(mark, cx),
             TermEvent::Term(_) => {}
         }
     }

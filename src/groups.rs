@@ -18,9 +18,15 @@ pub fn workspace_name(terminal: &str) -> &str {
     }
 }
 
-/// First of user name, terminal title, preset name that is not blank (trimmed), else the default.
-pub fn auto_name(user: Option<&str>, title: Option<&str>, preset: Option<&str>) -> String {
-    [user, title, preset]
+/// First of user name, terminal title, the running command's short form (M11q), preset name that
+/// is not blank (trimmed), else the default.
+pub fn auto_name(
+    user: Option<&str>,
+    title: Option<&str>,
+    command: Option<&str>,
+    preset: Option<&str>,
+) -> String {
+    [user, title, command, preset]
         .into_iter()
         .flatten()
         .map(str::trim)
@@ -190,11 +196,27 @@ mod tests {
     }
 
     #[test]
-    fn auto_name_prefers_user_then_title_then_preset() {
-        assert_eq!(auto_name(Some("api"), Some("vim"), Some("claude")), "api");
-        assert_eq!(auto_name(Some("  "), Some(" vim "), Some("claude")), "vim");
-        assert_eq!(auto_name(None, None, Some("claude")), "claude");
-        assert_eq!(auto_name(None, None, None), "╭∩╮");
+    fn auto_name_prefers_user_then_title_then_command_then_preset() {
+        let all = |u, t, c, p| auto_name(u, t, c, p);
+        assert_eq!(
+            all(Some("api"), Some("vim"), Some("pnpm dev"), Some("claude")),
+            "api"
+        );
+        assert_eq!(
+            all(Some("  "), Some(" vim "), Some("pnpm dev"), Some("claude")),
+            "vim"
+        );
+        assert_eq!(
+            all(None, Some("vim"), Some("pnpm dev"), Some("claude")),
+            "vim"
+        );
+        assert_eq!(
+            all(None, None, Some("pnpm dev"), Some("claude")),
+            "pnpm dev"
+        );
+        assert_eq!(all(None, None, Some("  "), Some("claude")), "claude");
+        assert_eq!(all(None, None, None, Some("claude")), "claude");
+        assert_eq!(all(None, None, None, None), "╭∩╮");
     }
 
     fn folder(path: &str) -> GroupKey {

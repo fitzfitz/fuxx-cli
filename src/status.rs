@@ -1,7 +1,9 @@
 //! Agent-state heuristics: is a session working, waiting for you, or done?
 //!
-//! Signals: output timing, terminal notifications (OSC 9 / 99 / 777 and BEL), and the screen's
-//! last lines.
+//! Signals: output timing, terminal notifications (OSC 9 / 99 / 777 and BEL), the screen's
+//! last lines, and the shell's marks round a command run at its prompt (OSC 133, M11q): the end
+//! mark settles the status at once, where silence is only a guess. The guess still runs while a
+//! command does, so an agent started from the prompt keeps its Working / Waiting / Done.
 //! Pure — the caller passes the time in — so every rule is unit-tested. The constants are a
 //! first guess; tune them against real agents during the M2 manual check.
 
@@ -133,6 +135,18 @@ pub fn age_label(d: Duration) -> String {
     }
 }
 
+/// Whether the end mark of a command that ran for `ran` settles a session in `status` on Done:
+/// one that worked or waited does; an idle one (the command printed nothing, or only at once)
+/// when the command ran as long as silence takes to settle (`IDLE_AFTER`); a Done one stays (no
+/// second Done). The window's and the service's trackers and the Workspace all ask this.
+pub fn settles_on_end(status: Status, ran: Duration) -> bool {
+    match status {
+        Status::Working | Status::Waiting => true,
+        Status::Idle => ran >= IDLE_AFTER,
+        Status::Done => false,
+    }
+}
+
 pub struct StatusTracker {
     status: Status,
     last_input: Option<Instant>,
@@ -144,6 +158,8 @@ pub struct StatusTracker {
     resize_until: Option<Instant>,
     /// New output (or a BEL) arrived since the screen was last read.
     dirty: bool,
+    /// A keystroke came since the last command's start mark: the next start mark counts as one.
+    typed: bool,
 }
 
 impl StatusTracker {
@@ -155,6 +171,7 @@ impl StatusTracker {
             attention: false,
             resize_until: None,
             dirty: false,
+            typed: false,
         }
     }
 
@@ -166,6 +183,12 @@ impl StatusTracker {
     /// The user typed into this session. Typing into a settled (Waiting/Done) session means
     /// you've seen it, so it goes back to Idle. Returns the new status when it changed.
     pub fn on_input(&mut self, now: Instant) -> Option<Status> {
+        self.typed = true;
+        self.attended(now)
+    }
+
+    /// What a keystroke does to the status (`on_input`), a start mark too (`on_command_start`).
+    fn attended(&mut self, now: Instant) -> Option<Status> {
         self.last_input = Some(now);
         self.attention = false;
         if matches!(self.status, Status::Waiting | Status::Done) {
@@ -173,6 +196,34 @@ impl StatusTracker {
             return Some(Status::Idle);
         }
         None
+    }
+
+    /// The shell's start mark for a command. With a keystroke since the previous start mark it
+    /// does what that keystroke did (`on_input`), now: a command typed ahead while the last one
+    /// ran starts after that one's end mark, with no keystroke of its own, and still works.
+    /// Without one (several pasted lines; marks a program printed) it does nothing, so marks
+    /// alone never make a session work again. Returns the new status when it changed.
+    pub fn on_command_start(&mut self, now: Instant) -> Option<Status> {
+        if !std::mem::take(&mut self.typed) {
+            return None;
+        }
+        self.attended(now)
+    }
+
+    /// The shell's end mark for a command that ran for `ran`: Done at once when
+    /// `settles_on_end`. Whatever the status, the command's notification or bell is dropped
+    /// with it, nothing is left to read, and output is prompt noise until the next keystroke (as
+    /// at startup): the prompt drawn after the mark is not work and makes no second Done.
+    /// Returns the new status when it changed.
+    pub fn on_command_end(&mut self, _now: Instant, ran: Duration) -> Option<Status> {
+        self.attention = false;
+        self.dirty = false;
+        self.last_input = None;
+        if !settles_on_end(self.status, ran) {
+            return None;
+        }
+        self.status = Status::Done;
+        Some(Status::Done)
     }
 
     /// A new size was sent to the program. Plain output for the next `RESIZE_WINDOW` is its
@@ -664,5 +715,153 @@ mod tests {
             t.tick(t0 + ms(400) + IDLE_AFTER + RESIZE_WINDOW, || "$ ".into()),
             Some(Status::Done)
         );
+    }
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    #[test]
+    fn settles_on_end_table() {
+        assert!(settles_on_end(Status::Working, secs(0)));
+        assert!(settles_on_end(Status::Waiting, secs(0)));
+        // An idle session: only a command as long as the silence guess waits.
+        assert!(!settles_on_end(Status::Idle, ms(2999)));
+        assert!(settles_on_end(Status::Idle, secs(3)));
+        // Done stays: no second Done.
+        assert!(!settles_on_end(Status::Done, secs(0)));
+        assert!(!settles_on_end(Status::Done, secs(60)));
+    }
+
+    #[test]
+    fn an_end_mark_settles_working_at_once() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        assert_eq!(t.on_output(t0 + ms(400), 0), Some(Status::Working));
+        // No tick in between: the mark says it ended.
+        assert_eq!(t.on_command_end(t0 + ms(5000), secs(5)), Some(Status::Done));
+        assert_eq!(t.status(), Status::Done);
+    }
+
+    #[test]
+    fn the_prompt_after_an_end_mark_is_not_work() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_output(t0 + ms(400), 0);
+        assert_eq!(t.on_command_end(t0 + ms(5000), secs(5)), Some(Status::Done));
+        // The shell draws its prompt after the mark.
+        assert_eq!(t.on_output(t0 + ms(5010), 0), None);
+        // No second Done from it, and nothing new to read.
+        assert_eq!(
+            t.tick(t0 + ms(15010), || -> String {
+                panic!("screen read after an end mark")
+            }),
+            None
+        );
+        assert_eq!(t.status(), Status::Done);
+    }
+
+    #[test]
+    fn an_end_mark_drops_a_pending_notification() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_output(t0 + ms(400), 0);
+        t.on_output(t0 + ms(500), 1); // the command's own notification, not yet settled on
+        assert_eq!(t.on_command_end(t0 + ms(600), ms(600)), Some(Status::Done));
+        // The command is over: an old question on screen is not read as its waiting.
+        assert_eq!(
+            t.tick(t0 + ms(650), || -> String {
+                panic!("screen read after an end mark")
+            }),
+            None
+        );
+        assert_eq!(t.status(), Status::Done);
+    }
+
+    #[test]
+    fn a_quick_silent_command_stays_idle() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        assert_eq!(t.on_command_end(t0 + ms(1000), secs(1)), None);
+        assert_eq!(t.status(), Status::Idle);
+        // The prompt's output, past the echo window of the typing.
+        assert_eq!(t.on_output(t0 + ms(1010), 0), None);
+        assert_eq!(t.status(), Status::Idle);
+    }
+
+    #[test]
+    fn a_silent_command_of_three_seconds_is_done() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        // No output at all (`sleep 3`).
+        assert_eq!(t.on_command_end(t0 + ms(3000), secs(3)), Some(Status::Done));
+        assert_eq!(t.status(), Status::Done);
+    }
+
+    #[test]
+    fn typing_after_an_end_mark_works_as_before() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_output(t0 + ms(400), 0);
+        assert_eq!(t.on_command_end(t0 + ms(5000), secs(5)), Some(Status::Done));
+        assert_eq!(t.on_input(t0 + ms(6000)), Some(Status::Idle)); // you saw it
+        assert_eq!(t.on_output(t0 + ms(6020), 0), None); // echo of typing
+        assert_eq!(t.on_output(t0 + ms(6400), 0), Some(Status::Working));
+    }
+
+    #[test]
+    fn a_typed_ahead_command_works_again() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        assert_eq!(t.on_command_start(t0 + ms(10)), None); // idle already: no change
+        assert_eq!(t.on_output(t0 + ms(400), 0), Some(Status::Working));
+        // The next command, typed while this one runs.
+        assert_eq!(t.on_input(t0 + ms(1000)), None);
+        assert_eq!(t.on_command_end(t0 + ms(5000), secs(5)), Some(Status::Done));
+        // It starts with no keystroke after the end mark, and works again.
+        assert_eq!(t.on_command_start(t0 + ms(5010)), Some(Status::Idle));
+        assert_eq!(t.on_output(t0 + ms(5400), 0), Some(Status::Working));
+        assert_eq!(t.on_command_end(t0 + ms(9000), secs(4)), Some(Status::Done));
+    }
+
+    #[test]
+    fn starts_without_typing_do_not_rearm() {
+        let t0 = Instant::now();
+        // Never typed in: a start mark leaves output startup noise.
+        let mut fresh = StatusTracker::new();
+        assert_eq!(fresh.on_command_start(t0), None);
+        assert_eq!(fresh.on_output(t0 + ms(400), 0), None);
+        assert_eq!(fresh.status(), Status::Idle);
+
+        let mut t = typed_at(t0);
+        assert_eq!(t.on_command_start(t0 + ms(10)), None);
+        assert_eq!(t.on_output(t0 + ms(400), 0), Some(Status::Working));
+        assert_eq!(t.on_command_end(t0 + ms(5000), secs(5)), Some(Status::Done));
+        // A second start with no keystroke since the first (pasted lines; marks a file printed).
+        assert_eq!(t.on_command_start(t0 + ms(5010)), None);
+        assert_eq!(t.on_output(t0 + ms(5400), 0), None);
+        assert_eq!(t.on_command_end(t0 + ms(9000), secs(4)), None);
+        assert_eq!(t.status(), Status::Done);
+    }
+
+    #[test]
+    fn the_silence_guess_still_runs_while_a_command_does() {
+        let t0 = Instant::now();
+        let mut t = typed_at(t0);
+        t.on_command_start(t0 + ms(10));
+        assert_eq!(t.on_output(t0 + ms(400), 0), Some(Status::Working));
+        // An agent started from the prompt goes quiet: Done, with no end mark.
+        assert_eq!(t.tick(t0 + ms(3000), || "> ".into()), None);
+        assert_eq!(
+            t.tick(t0 + ms(400) + IDLE_AFTER, || "> ".into()),
+            Some(Status::Done)
+        );
+        assert_eq!(t.on_output(t0 + ms(4000), 0), Some(Status::Working));
+        // Quiet with a question on screen: Waiting.
+        assert_eq!(
+            t.tick(t0 + ms(4000) + IDLE_AFTER, || "Continue? (y/n)".into()),
+            Some(Status::Waiting)
+        );
+        assert_eq!(t.on_output(t0 + ms(8000), 0), Some(Status::Working));
     }
 }

@@ -11,6 +11,9 @@
 //!
 //! Either way the bytes go through `blocks::advance`, which writes the command-block tags of a
 //! shell's OSC 133 marks into the grid (M11l), as the background service does for its own Term.
+//! The marks it returns (M11q) go out as `TermEvent::Command`, in order and ahead of the batch's
+//! `Output`, past the one-wake-per-batch gate: only a command's short form is in one, and a
+//! reattach snapshot sends `CommandMark::Unknown` instead (what runs is unknown until the next mark).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
@@ -29,6 +32,7 @@ use portable_pty::CommandBuilder;
 
 use crate::blocks::{self, Block, Tagger};
 use crate::colors;
+use crate::command_name::CommandMark;
 use crate::daemon_client::{DaemonClient, SessionStream};
 use crate::detector::{CwdReport, CwdReports, OscDetector};
 use crate::grid::{self, GridSnapshot};
@@ -126,6 +130,8 @@ pub enum TermEvent {
     Exited { code: Option<u32> },
     /// Daemon backend: the daemon's status for this session changed.
     Status(Status),
+    /// The OSC 133 marks the parser applied, reduced to the short form (M11q); never gated.
+    Command(CommandMark),
     /// Daemon backend: the connection to the daemon is gone. Not an exit: the session may
     /// still run there.
     DaemonLost,
@@ -293,7 +299,7 @@ impl LocalFeed {
         if let Some(dir) = self.reports.feed(bytes) {
             self.cwd.store(dir);
         }
-        {
+        let command_marks = {
             let mut guard = self.shared.lock();
             let Shared {
                 term,
@@ -304,9 +310,14 @@ impl LocalFeed {
                 marks,
             } = &mut *guard;
             first_output.get_or_insert_with(Instant::now);
-            blocks::advance(processor, term, tagger, marks, bytes);
+            let applied = blocks::advance(processor, term, tagger, marks, bytes);
             clears.feed(bytes);
-        } // lock released before waking the UI
+            applied
+        }; // lock released before waking the UI
+        // Command marks are not output: they skip the gate (one wake per batch) and go first.
+        for mark in command_marks {
+            let _ = self.events.unbounded_send(TermEvent::Command(mark));
+        }
         if let Some(event) = self.gate.after_batch(notifications) {
             let _ = self.events.unbounded_send(event);
         }
@@ -775,7 +786,7 @@ impl TerminalCore {
 
     /// Parse `text` into the screen as if the program had printed it; nothing reaches the
     /// program (an SSH session's reconnect line, M10b). The caller redraws.
-    pub fn show_local(&self, text: &str) {
+    pub fn show_local(&self, text: &str) -> Vec<CommandMark> {
         let mut guard = self.shared.lock();
         let Shared {
             term,
@@ -786,8 +797,9 @@ impl TerminalCore {
             ..
         } = &mut *guard;
         // Tagged like the program's output, so screenshots can draw command blocks.
-        blocks::advance(processor, term, tagger, marks, text.as_bytes());
+        let applied = blocks::advance(processor, term, tagger, marks, text.as_bytes());
         clears.feed(text.as_bytes());
+        applied
     }
 
     /// User input: snap the view back to the live bottom, drop any selection, then send the
@@ -1137,8 +1149,10 @@ impl Replica {
                         marks,
                         ..
                     } = &mut *guard;
-                    blocks::advance(processor, term, tagger, marks, &snap.vt_bytes);
+                    // What ran is not known any more, and a replay never starts a name.
+                    let _ = blocks::advance(processor, term, tagger, marks, &snap.vt_bytes);
                 }
+                self.emit(TermEvent::Command(CommandMark::Unknown));
                 self.next = Some(snap.seq + 1);
                 self.set_title(snap.title);
                 self.emit(TermEvent::Output { notifications: 0 });
@@ -1153,6 +1167,7 @@ impl Replica {
                 if let Err(step) = self.take_seq(seq) {
                     return step;
                 }
+                let command_marks;
                 {
                     let mut guard = shared.lock();
                     let Shared {
@@ -1165,8 +1180,11 @@ impl Replica {
                     } = &mut *guard;
                     first_output.get_or_insert_with(Instant::now);
                     // The same bytes, split the same way, as the service's Term: tagged alike.
-                    blocks::advance(processor, term, tagger, marks, &bytes);
+                    command_marks = blocks::advance(processor, term, tagger, marks, &bytes);
                     clears.feed(&bytes);
+                }
+                for mark in command_marks {
+                    self.emit(TermEvent::Command(mark));
                 }
                 if let Some(dir) = self.reports.feed(&bytes) {
                     self.cwd.store(dir);
@@ -1555,6 +1573,64 @@ mod tests {
         }
         assert_eq!(outputs, 3);
         assert!(screen_text(&core).contains("onetwothree"));
+    }
+
+    #[test]
+    fn command_marks_pass_the_output_gate() {
+        let (tx, mut rx) = unbounded();
+        let _core = TerminalCore::spawn(
+            sh("printf text; sleep 0.3; printf '\\033]133;C;cmdline_url=sleep%%205\\007\\033]133;D;0\\007'; sleep 5"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        // No `output_seen`: the gate sends one plain `Output` for all of this.
+        let (mut outputs, mut started, mut ended) = (0, false, false);
+        assert!(wait_for(&mut rx, |e| {
+            match e {
+                TermEvent::Output { .. } => outputs += 1,
+                TermEvent::Command(CommandMark::Started { short }) => {
+                    started = short.as_deref() == Some("sleep"); // `sleep` takes no subcommand
+                }
+                TermEvent::Command(CommandMark::Ended { exit: Some(0) }) => ended = true,
+                _ => {}
+            }
+            started && ended
+        }));
+        assert!(
+            outputs <= 1,
+            "more than one Output for one burst: {outputs}"
+        );
+    }
+
+    #[test]
+    fn a_batch_sends_its_command_marks_before_its_output() {
+        let (tx, mut rx) = unbounded();
+        // ONE write: a start mark, text and an end mark reach the reader as one batch.
+        let _core = TerminalCore::spawn(
+            sh("printf '\\033]133;C;cmdline_url=sleep%%205\\007text\\033]133;D;0\\007'; sleep 5"),
+            TermDims { cols: 40, rows: 5 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        // 'o' output, 's' started, 'e' ended, in arrival order.
+        let mut kinds = String::new();
+        assert!(wait_for(&mut rx, |e| {
+            match e {
+                TermEvent::Output { .. } => kinds.push('o'),
+                TermEvent::Command(CommandMark::Started { .. }) => kinds.push('s'),
+                TermEvent::Command(CommandMark::Ended { .. }) => kinds.push('e'),
+                _ => {}
+            }
+            kinds.contains('o') && kinds.contains('s') && kinds.contains('e')
+        }));
+        let first_output = kinds.find('o').unwrap();
+        assert!(
+            kinds.find('s').unwrap() < first_output && kinds.find('e').unwrap() < first_output,
+            "a command mark came after the output: {kinds}"
+        );
     }
 
     #[test]
@@ -2911,7 +2987,7 @@ mod daemon_tests {
             &TermDims { cols: 20, rows: 3 },
             alacritty_terminal::event::VoidListener,
         );
-        blocks::advance(
+        let _ = blocks::advance(
             &mut Processor::new(),
             &mut term,
             &mut Tagger::new(),
@@ -2929,6 +3005,80 @@ mod daemon_tests {
 
     const A: &str = "\x1b]133;A\x07";
     const B: &str = "\x1b]133;B\x07";
+
+    #[test]
+    fn a_snapshot_reports_the_command_unknown() {
+        let path = temp_sock("t-snapcmd");
+        // Raw bytes: a start mark is in them, as `advance` reads them.
+        let vt_bytes = format!("{A}$ {B}ls\r\n\x1b]133;C;cmdline_url=ls\x07ok\r\n").into_bytes();
+        let fake = scripted_daemon(
+            &path,
+            vec![vec![
+                Frame::Snapshot(mux_proto::Snapshot {
+                    id: 7,
+                    seq: 0,
+                    dims: Dims { cols: 20, rows: 3 },
+                    title: None,
+                    vt_bytes,
+                }),
+                Frame::Exited { id: 7 },
+            ]],
+        );
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, mut rx) = unbounded();
+        let _core = TerminalCore::attach_daemon(client, 7, tx, Theme::default()).unwrap();
+        let (mut unknown, mut started) = (false, false);
+        assert!(wait_event(&mut rx, |e| {
+            match e {
+                TermEvent::Command(CommandMark::Unknown) => unknown = true,
+                TermEvent::Command(CommandMark::Started { .. }) => started = true,
+                _ => {}
+            }
+            matches!(e, TermEvent::Exited { .. })
+        }));
+        assert!(unknown, "no Command(Unknown)");
+        assert!(!started, "a snapshot started a command");
+        let _ = fake.join();
+    }
+
+    #[test]
+    fn a_replica_sends_a_frames_command_marks_before_its_output() {
+        let path = temp_sock("t-markorder");
+        let fake = scripted_daemon(
+            &path,
+            vec![vec![
+                Frame::Snapshot(mux_proto::Snapshot {
+                    id: 7,
+                    seq: 0,
+                    dims: Dims { cols: 20, rows: 3 },
+                    title: None,
+                    vt_bytes: b"$ ".to_vec(),
+                }),
+                out(1, "\x1b]133;C;cmdline_url=ls\x07ok\r\n\x1b]133;D;0\x07"),
+                Frame::Exited { id: 7 },
+            ]],
+        );
+        let client = DaemonClient::connect(&path).unwrap();
+        let (tx, mut rx) = unbounded();
+        let _core = TerminalCore::attach_daemon(client, 7, tx, Theme::default()).unwrap();
+        let mut kinds = Vec::new();
+        assert!(wait_event(&mut rx, |e| {
+            match e {
+                TermEvent::Command(CommandMark::Unknown) => kinds.push("unknown"),
+                TermEvent::Command(CommandMark::Started { .. }) => kinds.push("started"),
+                TermEvent::Command(CommandMark::Ended { .. }) => kinds.push("ended"),
+                TermEvent::Output { .. } => kinds.push("output"),
+                _ => {}
+            }
+            matches!(e, TermEvent::Exited { .. })
+        }));
+        assert_eq!(
+            kinds,
+            ["unknown", "output", "started", "ended", "output"],
+            "{kinds:?}"
+        );
+        let _ = fake.join();
+    }
 
     #[test]
     fn a_reattached_replica_is_not_prompt_ready() {

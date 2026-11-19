@@ -35,6 +35,7 @@ mod cli;
 mod code_ask;
 mod code_outline;
 mod colors;
+mod command_name;
 mod composer;
 mod cursor_look;
 mod daemon;
@@ -144,6 +145,7 @@ mod workspace;
 mod workspace_agent;
 mod workspace_api;
 mod workspace_browser;
+mod workspace_command;
 mod workspace_daemon;
 mod workspace_ssh;
 
