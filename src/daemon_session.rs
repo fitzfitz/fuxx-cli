@@ -483,7 +483,7 @@ impl State {
         if !self.alive {
             return; // closed: what the dying child still wrote goes nowhere
         }
-        blocks::advance(
+        let _ = blocks::advance(
             &mut self.processor,
             &mut self.term,
             &mut self.tagger,
