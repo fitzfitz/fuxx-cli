@@ -14,7 +14,7 @@
 //! `--changed` follows.
 
 use super::{
-    Scene, agent, agent_box, branch, changes, chrome, chrome_parts, file_tab, file_tab_md,
+    Scene, agent, agent_box, ask, branch, changes, chrome, chrome_parts, file_tab, file_tab_md,
     file_tab_md_reader, naming, overlays, palette, panes, right_sidebar, sidebar, status_bar,
     terminal, welcome, window,
 };
@@ -51,6 +51,7 @@ pub(super) const AREAS: &[(&str, &[Scene])] = &[
     (terminal::FILE, terminal::SCENES),
     (agent::FILE, agent::SCENES),
     (agent_box::FILE, agent_box::SCENES),
+    (ask::FILE, ask::SCENES),
 ];
 
 /// The scenes with their own area file added to `sources`, as `--changed` reads them, so an edit
@@ -159,6 +160,8 @@ pub(super) const ORDER: &[&str] = &[
     "file-follow-scrolls",
     "file-follow-wheel-stops",
     "file-follow-mode",
+    "ask-existing-tab",
+    "ask-new-tab",
     "file-code-nav",
     "file-code-calm",
     "file-code-guides",
