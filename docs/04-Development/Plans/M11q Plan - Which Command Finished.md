@@ -1,7 +1,7 @@
 ---
 tags: [development, plan, milestone]
 milestone: M11q
-status: planned
+status: built-on-branch
 updated: 2026-11-19
 ---
 
@@ -12,10 +12,10 @@ updated: 2026-11-19
 | At a glance | |
 |---|---|
 | **Design (the spec)** | [[68 - Milestone 11q - Which Command Finished]] |
-| **Status** | 📝 planned 2026-11-19 on branch `m11q-command-finished`; not built |
-| **Tasks done** | 0 / 11 (Task 0 done) |
+| **Status** | 🟨 built on branch m11q-command-finished, waiting for your on-screen check; not merged |
+| **Tasks done** | 12 / 12 (Tasks 0–11 done; the whole-branch review and its fix wave are next) |
 | **Baselines** | `cargo test --bin fuxx`: 2154 passed, 0 failed, 1 ignored. `cargo clippy --all-targets`: 14 warnings (bin) / 27 (test). `cargo clippy --all-targets --features ui-shots`: 16 (bin) / 29 (test). `cargo fmt --check`: clean. ui-shots: M11ag's last full run, 247 passed, 0 failed (not re-run here). |
-| **▶ Pick up here** | Task 1 |
+| **▶ Pick up here** | The whole-branch review, its fix wave, then the second full ui-shots run (numbers in note 68, "Final numbers"); then your on-screen check |
 | **Decisions used** | Yours: the pane is named after the running command; the notification says which command; after M11p; "go ahead" (2026-11-19, incl. the row's who `› <short form>`); the full ui-shots run only before the final review and after its fix wave. The design's AI's calls §1–§6. Plan-time calls below (AI's). |
 | **Needs your eyes** | 👀 the plan-time calls 1, 2, 5 and 6 (they rule on things the design left open); then the on-screen check in note 68, after Task 11 |
 
@@ -165,7 +165,7 @@ protocol change.
   `WORD_CAP` characters, not starting with `-`); (e) if that word is `run`, `exec`, `x` or `dlx`, the word after
   it, if plain; (f) ` …` when (a) found something after the stop.
 
-- [ ] **Step 1: Write the failing tests** (in `command_name.rs`):
+- [x] **Step 1: Write the failing tests** (in `command_name.rs`):
   - `the_specs_table` (each row verbatim): `pnpm dev` → `pnpm dev`; `cargo test --release -- --nocapture` →
     `cargo test`; `API_KEY=sk-123 npm run deploy --token abc` → `npm run deploy`; `sudo -E ./scripts/build.sh prod`
     → `build.sh prod`; `cargo build && cargo test` → `cargo build …`; `curl -H "Authorization: Bearer x"
@@ -186,10 +186,10 @@ protocol change.
     `$EDITOR notes`, `echo "unclosed`, `FOO=1`.
   - `control_characters_and_long_names_are_cut`: a program of 40 letters → its first 32; a program word holding
     `\u{7}` and `\u{1b}` → without them; a result never holds a control character.
-- [ ] **Step 2: Run** `cargo test --bin fuxx command_name` — FAIL (module missing).
-- [ ] **Step 3: Implement** `short_form` as (a)–(f).
-- [ ] **Step 4: Run** — PASS; the gate.
-- [ ] **Step 5: Commit** `M11q Task 1: the short form`.
+- [x] **Step 2: Run** `cargo test --bin fuxx command_name` — FAIL (module missing).
+- [x] **Step 3: Implement** `short_form` as (a)–(f).
+- [x] **Step 4: Run** — PASS; the gate.
+- [x] **Step 5: Commit** `M11q Task 1: the short form`.
 
 ### Task 2: How it ended, in words (pure)
 
@@ -208,7 +208,7 @@ protocol change.
     words(&self) -> String` (`ending_words`)`; pub fn listed(&self) -> String` (`"{name} · {words}"`)`; pub fn
     logged(&self) -> String` (`"{name} — {words}"`) `}`.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `the_banner_tables_bodies` (the spec's rows): `(Some(0), 192 s)` → `Done in 3m 12s`; `(Some(130), 3840 s)` →
     `Stopped after 1h 4m`; `(Some(101), 40 s)` → `Failed (exit 101) after 40s`; `(None, 120 s)` → `Finished after
     2m`.
@@ -219,8 +219,8 @@ protocol change.
   - `a_finished_command_in_the_list_and_in_activity`: `pnpm build`, `Failed(101)`, 40 s → `listed()` == `pnpm
     build · Failed (exit 101) after 40s`, `logged()` == `pnpm build — Failed (exit 101) after 40s`; `short: None`
     → `name()` == `command`.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate.
-- [ ] **Step 5: Commit** `M11q Task 2: ending words`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS; the gate.
+- [x] **Step 5: Commit** `M11q Task 2: ending words`.
 
 ### Task 3: The marks come out of the parser, and what runs now
 
@@ -244,7 +244,7 @@ protocol change.
   update), in order: `Mark::PromptStart` → `Prompt`; `Mark::OutputStart { cmd, .. }` → `Started { short:
   cmd.as_deref().and_then(short_form) }`; `Mark::Done { exit }` → `Ended { exit }`; `Mark::CommandStart` → nothing.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `command_name.rs`: `a_command_runs_from_its_start_to_its_end` (`Started { Some("pnpm dev") }` at `t0` →
     `Some(Change::Started(Some("pnpm dev")))`, `running() == Some("pnpm dev")`; `Ended { Some(0) }` at `t0 + 192 s`
     → `Ended(Finished { short: Some("pnpm dev"), ending: Done, ran: 192 s })`, `running() == None`);
@@ -258,11 +258,11 @@ protocol change.
     `marks_on_the_alt_screen_return_nothing` and `marks_inside_a_sync_update_return_nothing` (beside the two
     existing "are ignored" tests); `an_overlong_command_starts_with_no_short_form` (a `C` over `CMD_CAP` → `Started
     { short: None }`).
-- [ ] **Step 2: Run** `cargo test --bin fuxx command_name blocks` — FAIL.
-- [ ] **Step 3: Implement.** Every caller of `advance` compiles by dropping the result (`let _ =`); behaviour
+- [x] **Step 2: Run** `cargo test --bin fuxx command_name blocks` — FAIL.
+- [x] **Step 3: Implement.** Every caller of `advance` compiles by dropping the result (`let _ =`); behaviour
   unchanged.
-- [ ] **Step 4: Run** — PASS; the gate.
-- [ ] **Step 5: Commit** `M11q Task 3: command marks out of the parser`.
+- [x] **Step 4: Run** — PASS; the gate.
+- [x] **Step 5: Commit** `M11q Task 3: command marks out of the parser`.
 
 ### Task 4: The marks reach the workspace
 
@@ -295,20 +295,20 @@ protocol change.
     (`disconnected`) session ignores all three; always `cx.notify()` (the chrome parts observe the workspace).
     `Workspace::hold` and `daemon_lost` clear `command`.
 
-- [ ] **Step 1: Write the failing tests** (`terminal.rs`, as its tests run a real `sh` and `wait_for`):
+- [x] **Step 1: Write the failing tests** (`terminal.rs`, as its tests run a real `sh` and `wait_for`):
   `command_marks_pass_the_output_gate` (a script printing text, a pause, then `C;cmdline_url=sleep%205` and `D;0`
   marks, with no `output_seen` acknowledged → the channel yields `Command(Started { short: Some("sleep 5") })` and
   `Command(Ended { exit: Some(0) })` though only one plain `Output` was sent);
   `a_snapshot_reports_the_command_unknown` (a replica's `apply(Frame::Snapshot)` whose `vt_bytes` hold a `C` mark →
   the events hold `Command(Unknown)` and no `Started`).
-- [ ] **Step 2: Write the failing scene** `command-reaches-workspace` (`command.rs`, State): a plain terminal;
+- [x] **Step 2: Write the failing scene** `command-reaches-workspace` (`command.rs`, State): a plain terminal;
   `shot_output` of a prompt and a `C` mark for `API_KEY=sk-123 npm run deploy --token abc` → the session's
   `command` is `npm run deploy`; a `D;0` mark → `None`; a `C` mark with no `cmdline_url` → `None` while it runs; a
   `C` then a prompt mark → `None`; a `C`, then the pane held (`Workspace::hold`) → `None`, and a `D` after it
   changes nothing; a `C`, then `TerminalEvent::DaemonLost` → `None`. No panic.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.**
-- [ ] **Step 5: Run** — PASS; the gate; `scripts/ui-shots.sh --changed master`.
-- [ ] **Step 6: Commit** `M11q Task 4: command marks reach the workspace`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.**
+- [x] **Step 5: Run** — PASS; the gate; `scripts/ui-shots.sh --changed master`.
+- [x] **Step 6: Commit** `M11q Task 4: command marks reach the workspace`.
 
 ### Task 5: The end mark settles the status
 
@@ -332,7 +332,7 @@ protocol change.
   - `command_changed`, on `Ended(fin)`: `if settles_on_end(session.status, fin.ran) { self.set_status(index,
     Status::Done, true, cx) }` (the words come in Task 7).
 
-- [ ] **Step 1: Write the failing tests** (`status.rs`, with its `typed_at` / `ms` helpers):
+- [x] **Step 1: Write the failing tests** (`status.rs`, with its `typed_at` / `ms` helpers):
   - `settles_on_end_table`: Working and Waiting with 0 s → true; Idle with 2 999 ms → false; Idle with 3 s → true;
     Done → false.
   - `an_end_mark_settles_working_at_once` (typed, output → Working; `on_command_end(t, 5 s)` → `Some(Done)` with no
@@ -350,12 +350,12 @@ protocol change.
     `None`; end → `None`).
   - `the_silence_guess_still_runs_while_a_command_does` (typed, start, output → Working; quiet 3 s → tick `Done`,
     or `Waiting` with a question on screen; more output → `Working`).
-- [ ] **Step 2: Write the failing scene** `command-settles` (State): a terminal that is not the active one; typed
+- [x] **Step 2: Write the failing scene** `command-settles` (State): a terminal that is not the active one; typed
   into, a `C` mark, output until Working, a `D;0` mark → its status is Done on the next frame (no 3 s wait) and the
   row's mark is the Done one; the prompt printed after → still Done, and `notifications` holds one entry. A `C`
   and a `D` with no output and under 3 s → Idle, no entry.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
-- [ ] **Step 6: Commit** `M11q Task 5: the end mark settles the status`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
+- [x] **Step 6: Commit** `M11q Task 5: the end mark settles the status`.
 
 ### Task 6: The name (tab, window title, ⌘K, the row's who)
 
@@ -373,7 +373,7 @@ protocol change.
     the terminal) first, as today; else `command` as `Who::Program` (`› pnpm dev`); else `program`; else the shell.
     `row_who` passes its terminal's `command`.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `groups.rs`: `auto_name_prefers_user_then_title_then_command_then_preset` (`(Some("api"), Some("vim"),
     Some("pnpm dev"), Some("claude"))` → `api`; `(None, Some("vim"), Some("pnpm dev"), ..)` → `vim`; `(None, None,
     Some("pnpm dev"), Some("claude"))` → `pnpm dev`; `(None, None, Some("  "), Some("claude"))` → `claude`; all
@@ -382,7 +382,7 @@ protocol change.
     Some("pnpm")` → `Who::Program("pnpm dev")`, label `› pnpm dev`); `an_agent_in_the_terminal_wins_over_the_command`
     (`terminal_agent: Some("claude")`, `command: Some("claude")` → the Claude agent);
     `an_active_agent_tab_wins_over_the_command`.
-- [ ] **Step 2: Write the failing scenes:**
+- [x] **Step 2: Write the failing scenes:**
   - In `chrome-session-facts` (M11p: every source of change), three steps on the unnamed session, each
     `Seen::Changes`, driven as its title step is (`emit` of the view's event): "a command starts (OSC 133 C)"
     (`TerminalEvent::Command(Change::Started(Some("pnpm dev".into())))`), "the command ends"
@@ -396,8 +396,8 @@ protocol change.
     `API_KEY`, `--token` or `abc`**. Then: a terminal you named keeps your name on its tab while its row's who still
     reads the command; a terminal whose program set a title (`TitleChanged`) keeps the title on its tab; an agent
     seen in the terminal (`agents_now`) keeps `✳ Claude` as who; the `D` mark puts every name back.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
-- [ ] **Step 6: Commit** `M11q Task 6: the pane is named after the running command`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
+- [x] **Step 6: Commit** `M11q Task 6: the pane is named after the running command`.
 
 ### Task 7: The banner says which command and how it ended
 
@@ -437,7 +437,7 @@ protocol change.
     event, and `banner` → `post_banner` with `banner_title(name, fin.name())`, the usual subtitle and `fin.words()`;
     `end_told = true`.
 
-- [ ] **Step 1: Write the failing tests** (`notifier.rs`):
+- [x] **Step 1: Write the failing tests** (`notifier.rs`):
   - `the_banner_table` (the spec's four rows, in today's shape, workspace `fuxx-cli`): `pnpm build`, exit 0, 192 s
     → `banner_title("fuxx-cli", &w.message)` == `fuxx-cli — pnpm build`, body `Done in 3m 12s`; `pnpm dev`, 130,
     3840 s → `fuxx-cli — pnpm dev`, `Stopped after 1h 4m`, `failed` false; `cargo test`, 101, 40 s → `fuxx-cli —
@@ -454,7 +454,7 @@ protocol change.
     true, told: false)` → list only; `(Done, .., told: true)` → nothing; `(Done, .., looking)` → nothing.
   - `a_command_name_is_escaped_like_a_title` (a short form holding `"` and `\`: `applescript_escape` of its title
     has every `"` and `\` escaped and no control character).
-- [ ] **Step 2: Write the failing scene** `command-banner` (State; endings driven by the view's `Command` events
+- [x] **Step 2: Write the failing scene** `command-banner` (State; endings driven by the view's `Command` events
   with a chosen `ran`, banners read from `shot_banners`; a "background" terminal is not the active one):
   - `sleep 8 …` ends with exit 0 after 8 s in the background → exactly one banner `("<workspace> — sleep 8 …", "#n…",
     "Done in 8s")`, one 🔔 entry `sleep 8 … · Done in 8s`, one `notification` event with the same title and body.
@@ -470,8 +470,8 @@ protocol change.
   - output, a Done by silence, more output (Working again), the end mark → at most one banner after the end.
   - a terminal with no marks (bash): `StatusChanged(Done)` after Working of 20 s → today's banner, message
     `Finished`.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
-- [ ] **Step 6: Commit** `M11q Task 7: the banner names the command`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
+- [x] **Step 6: Commit** `M11q Task 7: the banner names the command`.
 
 ### Task 8: The 🔔 list shows a failure
 
@@ -487,15 +487,15 @@ protocol change.
   `ensure_contrast(ui.block_failed, <the popover's fill>, TEXT_MIN)`; else `ui.text_dim`), used for the message
   line.
 
-- [ ] **Step 1: Write the failing tests:** `title_area.rs` `a_failed_entry_uses_the_failure_colour` (every theme:
+- [x] **Step 1: Write the failing tests:** `title_area.rs` `a_failed_entry_uses_the_failure_colour` (every theme:
   the failed ink differs from `text_dim`, meets `TEXT_MIN` on the popover's fill; closed wins);
   `notification_list.rs` `a_scripts_notification_is_never_failed`.
-- [ ] **Step 2: Write the failing scene** `command-bell-failed` (`Themes::Both`, Visual): two background endings,
+- [x] **Step 2: Write the failing scene** `command-bell-failed` (`Themes::Both`, Visual): two background endings,
   `cargo test` failed (101, 40 s) and `pnpm build` done → the popover's newest entries read `cargo test · Failed
   (exit 101) after 40s` and `pnpm build · Done in 3m 12s` under the workspace's name; a pixel of the first
   message's text is the failure ink, of the second the usual one.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
-- [ ] **Step 6: Commit** `M11q Task 8: a failed command in the list`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
+- [x] **Step 6: Commit** `M11q Task 8: a failed command in the list`.
 
 ### Task 9: Activity gets "command finished"
 
@@ -517,17 +517,17 @@ protocol change.
   - `end_command` calls `session.activity.command(fin, SystemTime::now())` for every ending of a session not held,
     looked at or not, after any status entry.
 
-- [ ] **Step 1: Write the failing tests:** `activity.rs` `a_command_is_logged_when_it_ran_three_seconds_or_failed`
+- [x] **Step 1: Write the failing tests:** `activity.rs` `a_command_is_logged_when_it_ran_three_seconds_or_failed`
   (2 999 ms Done → none; 3 s Done → one; 0 s `Failed(1)` → one; 1 s `Stopped` → none; 30 s `Stopped` → one);
   `a_commands_words` (`pnpm build — Done in 3m 12s`, no second line); `activity_panel.rs`
   `a_command_row_is_marked_by_its_ending` (rows' marks and tips); the dot contrast test covers
   `RowMark::Command(Failed(1))`, `Command(Stopped)` and `Command(Done)`.
-- [ ] **Step 2: Extend the scene** `activity`: on its terminal, a failed ending (`cargo test`, 101, 40 s), a stopped
+- [x] **Step 2: Extend the scene** `activity`: on its terminal, a failed ending (`cargo test`, 101, 40 s), a stopped
   one (`pnpm dev`, 130, 30 s) and a quick `ls` (exit 0, 1 s) → two new rows reading `cargo test — Failed (exit 101)
   after 40s` and `pnpm dev — Stopped after 30s`, none for `ls`; the first row's dot pixel is the failure colour,
   the second's the faint one.
-- [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
-- [ ] **Step 6: Commit** `M11q Task 9: command finished in Activity`.
+- [x] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS; the gate; `--changed master`.
+- [x] **Step 6: Commit** `M11q Task 9: command finished in Activity`.
 
 ### Task 10: The background service
 
@@ -550,7 +550,7 @@ protocol change.
     `message`). `tick_loop` uses it with `session.command()` and `session.take_ended()`; `daemon_should_notify` is
     unchanged (no window attached, a change to Done or Waiting).
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `daemon_session.rs` (as `status_goes_working_then_settles_once_quiet` runs a real `sh`):
     `an_end_mark_settles_the_service_s_status_at_once` (a script that waits for a typed line, prints a `C` mark for
     `sleep 5`, text, pauses 300 ms and prints `D;0` → after `input`, a `Status` frame `done` arrives well inside
@@ -562,10 +562,10 @@ protocol change.
     Some(&cargo test failed 101 after 40 s), "Finished")` → (`fuxx — cargo test`, `Failed (exit 101) after 40s`);
     no short form → `fuxx — command`; no ending, running `claude` → (`fuxx — claude`, `Finished`); neither →
     today's).
-- [ ] **Step 2: Run** `cargo test --bin fuxx daemon` — FAIL. **Step 3: Implement.** No test calls `tick_loop`'s
+- [x] **Step 2: Run** `cargo test --bin fuxx daemon` — FAIL. **Step 3: Implement.** No test calls `tick_loop`'s
   post.
-- [ ] **Step 4: Run** — PASS; the gate.
-- [ ] **Step 5: Commit** `M11q Task 10: the background service settles and names too`.
+- [x] **Step 4: Run** — PASS; the gate.
+- [x] **Step 5: Commit** `M11q Task 10: the background service settles and names too`.
 
 ### Task 11: Hand-off — docs, the full run and the on-screen check
 
@@ -576,13 +576,13 @@ protocol change.
   `docs/06-Progress-Log/60 - Progress Log.md` (a new entry), module docs of `terminal.rs`, `status.rs`,
   `blocks.rs` and `groups.rs` where they describe names, marks and settling
 
-- [ ] **Step 1: M11p grep:** `git diff master...HEAD` for added `timer(`, `request_animation_frame`, `spawn(`: none
+- [x] **Step 1: M11p grep:** `git diff master...HEAD` for added `timer(`, `request_animation_frame`, `spawn(`: none
   expected; any found is listed in note 68 with why it is a one-shot.
-- [ ] **Step 2: Leak and public-repo greps** of the branch's added lines: no event or struct field holding a whole
+- [x] **Step 2: Leak and public-repo greps** of the branch's added lines: no event or struct field holding a whole
   command line outside `blocks.rs` / `shell_marks.rs`; no `/Users/`, personal names, emails or time-zone names.
-- [ ] **Step 3: The full `scripts/ui-shots.sh`** (before the final review); numbers into note 68. After the final
+- [x] **Step 3: The full `scripts/ui-shots.sh`** (before the final review); numbers into note 68. After the final
   review's fix wave, the full run again.
-- [ ] **Step 4: Write note 68's sections.** Limits to state at least: a wrapper option's value reads as the program
+- [x] **Step 4: Write note 68's sections.** Limits to state at least: a wrapper option's value reads as the program
   (`sudo -u deploy make`); one plain word after the program is shown whatever it is (`echo <word>`); several pasted
   lines get one banner (plan-time call 5); the 3 s edge between the window's and the service's clocks (call 3);
   after a restart or reattach the running command is unknown until its next mark; powerlevel10k's own marks carry
@@ -591,9 +591,9 @@ protocol change.
   subtitle), plus: the 🔔 list's failed entry is red; a command typed ahead gets its own banner; idle CPU with a
   command running is as on master (`top -l 6 -s 5 -pid <pid>`). Run only with `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock
   cargo run` (debug); items 4–7 once with "Keep running after quit" on and once off.
-- [ ] **Step 5:** Status everywhere: "🟨 built on branch m11q-command-finished, waiting for your on-screen check;
+- [x] **Step 5:** Status everywhere: "🟨 built on branch m11q-command-finished, waiting for your on-screen check;
   not merged". The gate passes.
-- [ ] **Step 6: Commit** `M11q Task 11: docs and hand-off` (explicit paths).
+- [x] **Step 6: Commit** `M11q Task 11: docs and hand-off` (explicit paths).
 
 ## Self-review (done at plan time)
 

@@ -14,7 +14,8 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Current milestone (2026-11-19, latest):** **M11ag — Ask the agent from the code** 🟨 built, **merged to master 2026-11-19** on your standing word and pushed on your word (`abe581d`), waiting for your on-screen check (all 14 tasks, each of 0–12 reviewed; the whole-branch review's fix wave in, re-reviewed clean; note 87, 15 on-screen items). M11ai's check is still open.
+- **Current milestone (2026-11-19, latest):** **M11q — Which command finished** 🟨 built on branch m11q-command-finished, waiting for your on-screen check; not merged (all 12 tasks, 0–11; note 68, 17 on-screen items). The whole-branch review and its fix wave are next. M11ag's check is still open.
+- **Current milestone (2026-11-19, previous):** **M11ag — Ask the agent from the code** 🟨 built, **merged to master 2026-11-19** on your standing word and pushed on your word (`abe581d`), waiting for your on-screen check (all 14 tasks, each of 0–12 reviewed; the whole-branch review's fix wave in, re-reviewed clean; note 87, 15 on-screen items). M11ai's check is still open.
 - **Current milestone (2026-11-18, previous):** **M11ai — Markdown reader upgrade** 🟨 built (12 tasks, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`f7707e9`); waiting for your on-screen check (note 86, 15 items). M11ag is next.
 - **Current milestone (2026-11-18, M11al):** **M11al — UI Uplift 3** 🟨 built (13 tasks + 8b, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`6dabcf9`); waiting for your on-screen check (note 84, 14 items). M11ai (Markdown reader) resumes next, then M11ag.
 - **Current milestone (2026-11-18, M11ah lane):** **M11ah — Code view upgrade** 🟨 built (all 13 tasks, each reviewed), **merged to master and pushed 2026-11-18**; waiting for your on-screen check (note 85, 15 items).
@@ -27,6 +28,17 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-19 — M11q: built on its branch (not merged)
+- **Status:** 🟨 built on branch m11q-command-finished, waiting for your on-screen check; not merged. All 12 plan tasks (0–11) built; Tasks 0–10 each reviewed (4 and 10 after one fix round). Next: the whole-branch review, its fix wave and a second full ui-shots run.
+- **Built:** a pane is named after the command running at its shell prompt (tab, window title, ⌘K, the row's who reads `› pnpm dev`); the end mark settles the status at once; the banner (title `<workspace> — <short form>`, subtitle `#n`, body `Done in 3m 12s` / `Failed (exit 101) after 40s` / `Stopped after …`), the 🔔 list (a failure in red) and Activity say which command and how it ended; the background service settles and posts its own banner the same way. Only a short form of the command line ever leaves the terminal. No protocol change.
+- **Numbers (measured by the hand-off):** 2,206 tests passed, 0 failed, 1 ignored (baseline 2,154); clippy 14 / 27 default and 16 / 29 `ui-shots` (the baselines); `cargo fmt --check` clean; the full `scripts/ui-shots.sh` **244 passed, 8 failed**, 115.3 s. The 8 are the known display-dependent scenes (card-split, chrome-pixels-same, file-code-bars, file-tab, file-tab-md-reader-column, right-panel-comfortable, tab-bars, title-area), which fail the same on untouched earlier code; **a full run on your usual display is still owed before merging.** The stand-in `osascript`'s log stayed 597 bytes: nothing posted a real banner.
+- **M11p:** no `timer(` or `request_animation_frame` added; the `spawn(`s are test code plus the one-shot banner post inside `post_banner`.
+- **Public-repo grep:** clean.
+- **Found on the way:** the existing scene `chrome-notifications` posted two real banners per ui-shots run; fixed by routing every banner through `Workspace::post_banner` (nothing posts under `ui-shots`).
+- **Limits (full list in note 68):** `sudo -u deploy make` reads as `deploy make`; several pasted lines get one banner; the 3 s edge between the window's and the service's clocks; after a restart the running command is unknown until its next mark; powerlevel10k's own marks carry no command (`command`); no marks (bash, fish, `command-blocks = off`), no change; an unnamed workspace's silence banner can read `pnpm dev — pnpm dev` (your call on the wording).
+- **Needs your eyes:** note 68's on-screen check (17 items; run only as `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`); plan-time calls 1, 2, 5 and 6.
+- **Next:** the whole-branch review and its fix wave; then your on-screen check; then merge on your word.
 
 ### 2026-11-19 — M11ag: built, whole-branch review and its fix wave done
 - **Status:** 🟨 built, **merged to master 2026-11-19** on your standing word and pushed on your word (`abe581d`), waiting for your on-screen check. All 14 plan tasks (0–13) built; Tasks 0–12 each reviewed (7, 8 and 11 after one fix round).

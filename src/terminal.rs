@@ -11,6 +11,9 @@
 //!
 //! Either way the bytes go through `blocks::advance`, which writes the command-block tags of a
 //! shell's OSC 133 marks into the grid (M11l), as the background service does for its own Term.
+//! The marks it returns (M11q) go out as `TermEvent::Command`, in order and ahead of the batch's
+//! `Output`, past the one-wake-per-batch gate: only a command's short form is in one, and a
+//! reattach snapshot sends `CommandMark::Unknown` instead (what runs is unknown until the next mark).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
