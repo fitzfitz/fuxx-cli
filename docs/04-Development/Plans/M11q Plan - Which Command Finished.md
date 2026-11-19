@@ -13,9 +13,9 @@ updated: 2026-11-19
 |---|---|
 | **Design (the spec)** | [[68 - Milestone 11q - Which Command Finished]] |
 | **Status** | 📝 planned 2026-11-19 on branch `m11q-command-finished`; not built |
-| **Tasks done** | 0 / 11 (plus Task 0) |
-| **Baselines** | Task 0 fills this in (expected clippy: default 14 bin / 27 test; `ui-shots` 16 / 29) |
-| **▶ Pick up here** | Task 0 |
+| **Tasks done** | 0 / 11 (Task 0 done) |
+| **Baselines** | `cargo test --bin fuxx`: 2154 passed, 0 failed, 1 ignored. `cargo clippy --all-targets`: 14 warnings (bin) / 27 (test). `cargo clippy --all-targets --features ui-shots`: 16 (bin) / 29 (test). `cargo fmt --check`: clean. ui-shots: M11ag's last full run, 247 passed, 0 failed (not re-run here). |
+| **▶ Pick up here** | Task 1 |
 | **Decisions used** | Yours: the pane is named after the running command; the notification says which command; after M11p; "go ahead" (2026-11-19, incl. the row's who `› <short form>`); the full ui-shots run only before the final review and after its fix wave. The design's AI's calls §1–§6. Plan-time calls below (AI's). |
 | **Needs your eyes** | 👀 the plan-time calls 1, 2, 5 and 6 (they rule on things the design left open); then the on-screen check in note 68, after Task 11 |
 
@@ -139,11 +139,11 @@ protocol change.
 
 ### Task 0: Baselines
 
-- [ ] **Step 1:** On `m11q-command-finished` at the plan commit: `cargo test --bin fuxx` (passed / ignored), both
+- [x] **Step 1:** On `m11q-command-finished` at the plan commit: `cargo test --bin fuxx` (passed / ignored), both
   clippies (warning counts; expected 14 / 27 and 16 / 29), `cargo fmt --check`. The full `scripts/ui-shots.sh` is
   not run here (your decision): the ui-shots baseline is M11ag's last full run (247 passed, 0 failed). Write the
   numbers into "Baselines".
-- [ ] **Step 2:** Commit `M11q Task 0: baselines` (this plan only).
+- [x] **Step 2:** Commit `M11q Task 0: baselines` (this plan only).
 
 ### Task 1: The short form (pure)
 
