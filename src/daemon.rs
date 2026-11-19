@@ -734,7 +734,7 @@ fn daemon_should_notify(ui_attached: bool, old: Status, new: Status) -> Option<&
     notifier::message(new)
 }
 
-/// "fuxx — <name>": the name the GUI shows (user name, then title, then preset).
+/// "fuxx — <name>": the name the GUI shows (user name, then title, then the running command, then preset).
 fn notification_summary(info: &SessionInfo, command: Option<&str>) -> String {
     let name = groups::auto_name(
         Some(&info.name),

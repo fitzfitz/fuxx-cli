@@ -922,6 +922,10 @@ fn command_banner() {
         assert_eq!(status(cx, BACK), Status::Done, "{n}: and it is Done");
         reports(cx, BACK, Status::Done);
         assert_eq!(told(cx), nothing, "{n}: its tracker's own Done is no news");
+        // Marks again with no keystroke (forged, or a program's): this Done had its ending told.
+        output(cx, BACK, &started(Some("x")));
+        ends(cx, BACK, Some(0), 8);
+        assert_eq!(told(cx), nothing, "{n}: forged marks after a told ending");
 
         // A failure; and a stop on the terminal you look at.
         starts(cx, BACK, Some("cargo test --release"));

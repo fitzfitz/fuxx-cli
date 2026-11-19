@@ -650,8 +650,6 @@ mod tests {
         assert!(rows(&ActivityLog::default(), |_| 0).is_empty());
     }
 
-    /// Part 4: a day's heading before each day's events, newest first; the day is the local one
-    /// at each event's time.
     #[test]
     fn a_command_row_is_marked_by_its_ending() {
         use crate::command_name::Finished;
@@ -695,6 +693,8 @@ mod tests {
         );
     }
 
+    /// Part 4: a day's heading before each day's events, newest first; the day is the local one
+    /// at each event's time.
     #[test]
     fn the_timeline_groups_events_under_their_day() {
         let day = 20_768_u64; // 2026-11-11
