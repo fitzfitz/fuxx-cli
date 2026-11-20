@@ -136,9 +136,8 @@ pub(crate) const COUNT_RADIUS: f32 = 10.0;
 /// and its room right of them.
 pub(crate) const ROW: f32 = 32.0;
 pub(crate) const TEXT: f32 = 14.0;
-/// A row's name (M11al §6.5) and its folder, faint beside it.
+/// A row's name (M11al §6.5).
 pub(crate) const NAME: f32 = 13.5;
-pub(crate) const FOLDER: f32 = 12.0;
 pub(crate) const SMALL: f32 = 12.0;
 pub(crate) const HEADER: f32 = REPO_TOP + REPO_PAD_Y + REPO_LINE + REPO_PAD_Y + REPO_BOTTOM;
 pub(crate) const TITLE: f32 = 14.0;
@@ -2937,7 +2936,8 @@ mod tests {
         // M11al §6.5: roomier rows, pills inset 10 with 12 inside, names 13.5.
         assert_eq!(ROW, 32.0);
         assert_eq!((PILL_INSET, PILL_PAD, PILL_RADIUS), (10.0, 12.0, 9.0));
-        assert_eq!((NAME, FOLDER), (13.5, 12.0));
+        // (The Git tab's rows are smaller since 2026-11-20: `changes_panel::GIT_*`.)
+        assert_eq!(NAME, 13.5);
         assert_eq!((FILTER, FILTER_RADIUS), (34.0, 10.0));
         // M11al §6.3: the header is the repo card (4 / 12 + 20 + 12 / 6), Changes' 8 more.
         assert_eq!(HEADER, 54.0);

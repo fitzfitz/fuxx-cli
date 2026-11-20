@@ -38,9 +38,8 @@ use crate::git_stage::{self, FileWork};
 use crate::git_status::{self, Change, ChangeList, Counts, Mark};
 use crate::layout_model::{FileMode, TabKind};
 use crate::right_sidebar::{
-    COUNT_PAD_X, COUNT_PAD_Y, COUNT_RADIUS, FOLDER, NAME, NO_FOLDER, PILL_INSET, PILL_PAD,
-    PILL_RADIUS, Panel, REFRESH, ROW, SECTION_BELOW, SECTION_SIDE, SMALL, TEXT, TITLE, back_off,
-    due, find_root, mark_ink, note,
+    COUNT_PAD_X, COUNT_PAD_Y, COUNT_RADIUS, NO_FOLDER, PILL_INSET, PILL_PAD, PILL_RADIUS, Panel,
+    REFRESH, SECTION_SIDE, SMALL, TEXT, TITLE, back_off, due, find_root, mark_ink, note,
 };
 use crate::sidebar::tabular;
 use crate::sidebar_toggle::{Tip, tip_box};
@@ -68,6 +67,15 @@ const HEADER_LINE: f32 = 20.0;
 /// Part 2: the header's progress bar, the check circles, the dialog's widest.
 const PROGRESS: f32 = 3.0;
 const CIRCLE: f32 = 16.0;
+/// The Git tab's rows (chore 2026-11-20, your ask: "make the size of icon, text smaller, and make
+/// it indented"): every row of its lists (headers, files, commits) `GIT_ROW` tall (a list's rows
+/// are one height), names `GIT_NAME`, the rest `GIT_SMALL`, a file's circle `ROW_CIRCLE`, the
+/// content `GIT_INDENT` further in, under its header's label. The Files tab keeps its rows.
+pub(crate) const GIT_ROW: f32 = 24.0;
+pub(crate) const GIT_NAME: f32 = 12.0;
+pub(crate) const GIT_SMALL: f32 = 11.0;
+const ROW_CIRCLE: f32 = 12.0;
+pub(crate) const GIT_INDENT: f32 = 16.0;
 const CONFIRM_WIDTH: f32 = 280.0;
 /// The branch bar (M11v): its padding, its buttons' size and corner, the gap between them,
 /// the tooltip's gap above its button and how long the pointer rests before it shows.
@@ -678,26 +686,26 @@ pub(crate) enum Circle {
     On,
 }
 
-/// A `CIRCLE` pt circle in `state`: its edge faint (Off) or green, a green dash (Half), or
-/// filled green with a ✓ in the panel's colour (On).
-fn circle(state: Circle, green: Rgb, ui: &UiColors) -> Div {
+/// A `side` pt circle in `state` (`CIRCLE` in the header, `ROW_CIRCLE` on a row): its edge faint
+/// (Off) or green, a green dash (Half), or filled green with a ✓ in the panel's colour (On).
+fn circle(state: Circle, side: f32, green: Rgb, ui: &UiColors) -> Div {
     let d = div()
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .size(px(CIRCLE))
+        .size(px(side))
         .rounded_full()
         .border_1();
     match state {
         Circle::Off => d.border_color(hsla(ui.text_faint)),
         Circle::Half => d
             .border_color(hsla(green))
-            .child(div().w(px(7.0)).h(px(1.5)).bg(hsla(green))),
+            .child(div().w(px(side * 0.44)).h(px(1.5)).bg(hsla(green))),
         Circle::On => d
             .bg(hsla(green))
             .border_color(hsla(green))
-            .text_size(px(10.0))
+            .text_size(px(side * 0.62))
             .font_weight(FontWeight::BOLD)
             .text_color(hsla(ui.panel))
             .child("\u{2713}"),
@@ -730,12 +738,11 @@ fn divider_row(
         .id(("change-divider", usize::from(staged)))
         .group("change-divider")
         .flex()
-        .items_end()
+        .items_center()
         .gap(px(6.0))
-        .h(px(ROW))
+        .h(px(GIT_ROW))
         .w_full()
         .px(px(SECTION_SIDE))
-        .pb(px(SECTION_BELOW))
         .cursor_pointer()
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
             this.right_sidebar.changes.toggle_group(staged);
@@ -752,7 +759,7 @@ fn divider_row(
         .child(
             div()
                 .flex_none()
-                .text_size(px(SMALL))
+                .text_size(px(GIT_SMALL))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(hsla(ui.text_faint))
                 .child(if staged { "STAGED" } else { "CHANGES" }),
@@ -764,7 +771,7 @@ fn divider_row(
                 div()
                     .absolute()
                     .right(px(SECTION_SIDE - 4.0))
-                    .bottom(px(SECTION_BELOW - 6.0))
+                    .top(px((GIT_ROW - 20.0) / 2.0))
                     .child(
                         revert_button(
                             "changes-revert-all",
@@ -837,7 +844,7 @@ fn counts_element(added: Option<String>, removed: Option<String>, inks: &ChangeI
         .flex()
         .flex_none()
         .gap(px(COUNTS_GAP))
-        .text_size(px(SMALL))
+        .text_size(px(GIT_SMALL))
         .font_features(tabular())
         .children(added.map(|a| div().text_color(hsla(inks.added)).child(a)))
         .children(removed.map(|r| div().text_color(hsla(inks.removed)).child(r)))
@@ -870,7 +877,7 @@ fn change_row(
         CountsLabel::Binary => Some(
             div()
                 .flex_none()
-                .text_size(px(SMALL))
+                .text_size(px(GIT_SMALL))
                 .text_color(hsla(ui.text_faint))
                 .child(BINARY)
                 .into_any_element(),
@@ -890,22 +897,27 @@ fn change_row(
     };
     let green = inks.added;
     let can_act = enabled && !change.folder;
-    let tick = circle(if staged { Circle::On } else { Circle::Off }, green, &ui)
-        .id(("change-circle", i))
-        .when(can_act, |c| {
-            let tip: SharedString = if staged { "Unstage" } else { "Stage" }.into();
-            c.cursor_pointer()
-                .hover(move |s| s.border_color(hsla(green)))
-                .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone())).into() })
-                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
-                    cx.stop_propagation()
-                })
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    cx.stop_propagation();
-                    this.run_file_work(stage_work.clone(), cx)
-                }))
-        })
-        .when(!can_act, |c| c.opacity(0.4));
+    let tick = circle(
+        if staged { Circle::On } else { Circle::Off },
+        ROW_CIRCLE,
+        green,
+        &ui,
+    )
+    .id(("change-circle", i))
+    .when(can_act, |c| {
+        let tip: SharedString = if staged { "Unstage" } else { "Stage" }.into();
+        c.cursor_pointer()
+            .hover(move |s| s.border_color(hsla(green)))
+            .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone())).into() })
+            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                cx.stop_propagation()
+            })
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                this.run_file_work(stage_work.clone(), cx)
+            }))
+    })
+    .when(!can_act, |c| c.opacity(0.4));
     let offers_revert = can_act && revertable(change);
     let counts = counts.map(|c| {
         div()
@@ -920,7 +932,7 @@ fn change_row(
         div()
             .absolute()
             .right(px(PILL_PAD - 4.0))
-            .top(px((ROW - 20.0) / 2.0))
+            .top(px((GIT_ROW - 20.0) / 2.0))
             .child(
                 revert_button(
                     ("change-revert", i),
@@ -942,11 +954,11 @@ fn change_row(
         .items_center()
         .h_full()
         .w_full()
-        .pl(px(PILL_PAD))
+        .pl(px(PILL_PAD + GIT_INDENT))
         .pr(px(PILL_PAD))
         .rounded(px(PILL_RADIUS))
         .gap(px(ROW_GAP))
-        .text_size(px(NAME))
+        .text_size(px(GIT_NAME))
         .when(opens, |r| r.cursor_pointer())
         .when(selected, |r| r.bg(hsla(ui.side_selected)))
         .when(!selected && opens, |r| r.hover(move |s| s.bg(hsla(hover))))
@@ -956,7 +968,7 @@ fn change_row(
             div()
                 .flex_none()
                 .w(px(MARK_COLUMN))
-                .text_size(px(SMALL))
+                .text_size(px(GIT_SMALL))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(hsla(ink))
                 .child(mark_letter(change.mark)),
@@ -974,7 +986,7 @@ fn change_row(
                 .flex_1()
                 .min_w(px(0.0))
                 .truncate()
-                .text_size(px(FOLDER))
+                .text_size(px(GIT_SMALL))
                 .text_color(hsla(ui.text_faint))
                 .child(folder),
         )
@@ -988,7 +1000,7 @@ fn change_row(
         });
     // The pill in its row: inset from the card's sides (part 4).
     div()
-        .h(px(ROW))
+        .h(px(GIT_ROW))
         .w_full()
         .px(px(PILL_INSET))
         .child(pill)
@@ -1000,10 +1012,10 @@ fn clean_row(ui: &UiColors) -> AnyElement {
     div()
         .flex()
         .items_center()
-        .h(px(ROW))
+        .h(px(GIT_ROW))
         .w_full()
-        .pl(px(PILL_INSET + PILL_PAD))
-        .text_size(px(SMALL))
+        .pl(px(PILL_INSET + PILL_PAD + GIT_INDENT))
+        .text_size(px(GIT_SMALL))
         .text_color(hsla(ui.text_dim))
         .child(NO_CHANGES)
         .into_any_element()
@@ -1016,13 +1028,14 @@ pub(crate) fn load_more_row(ui: &UiColors, cx: &mut Context<Workspace>) -> AnyEl
         .id("graph-more")
         .flex()
         .items_center()
-        .h(px(ROW))
+        .h(px(GIT_ROW))
         .mx(px(PILL_INSET))
-        .px(px(PILL_PAD))
+        .pl(px(PILL_PAD + GIT_INDENT))
+        .pr(px(PILL_PAD))
         .rounded(px(PILL_RADIUS))
         .cursor_pointer()
         .hover(move |s| s.bg(hsla(ui.side_hover)))
-        .text_size(px(SMALL))
+        .text_size(px(GIT_SMALL))
         .text_color(hsla(ui.text_faint))
         .child("Load more\u{2026}")
         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.graph_load_more(cx)))
@@ -1035,14 +1048,15 @@ fn more_row(more: usize, ui: &UiColors) -> AnyElement {
         .id("change-more")
         .flex()
         .items_center()
-        .h(px(ROW))
+        .h(px(GIT_ROW))
         .w_full()
         .pl(px(PILL_INSET
             + PILL_PAD
-            + CIRCLE
+            + GIT_INDENT
+            + ROW_CIRCLE
             + MARK_COLUMN
             + 2.0 * ROW_GAP))
-        .text_size(px(NAME))
+        .text_size(px(GIT_NAME))
         .text_color(hsla(ui.text_faint))
         .child(format!("\u{2026} {more} more"))
         .into_any_element()
@@ -1318,7 +1332,7 @@ impl Workspace {
             } else {
                 "Stage all".into()
             };
-            circle(state, green, &ui)
+            circle(state, CIRCLE, green, &ui)
                 .id("changes-stage-all")
                 .when(enabled, |c| {
                     c.cursor_pointer()
@@ -1830,7 +1844,7 @@ impl Workspace {
                 let rows = changes.change_rows();
                 // The top row: how far the list is scrolled, in rows (all rows are `ROW` tall).
                 let scrolled = -f32::from(changes.scroll.0.borrow().base_handle.offset().y);
-                let top = (scrolled.max(0.0) / ROW).floor() as usize;
+                let top = (scrolled.max(0.0) / GIT_ROW).floor() as usize;
                 let is_header = |r: &RowItem| matches!(r, RowItem::Divider(_));
                 let pinned = rows
                     .get(..=top.min(rows.len().saturating_sub(1)))
@@ -2236,6 +2250,21 @@ mod tests {
         assert!(!panel.groups.staged && panel.groups.changes);
         panel.toggle_group(true);
         assert!(panel.groups.staged);
+    }
+
+    /// Chore 2026-11-20 (your ask: "make the size of icon, text smaller, and make it indented"):
+    /// the Git tab's rows, smaller than the Files tab's and indented under their header's label.
+    #[test]
+    fn git_rows_are_smaller_and_indented() {
+        assert_eq!(
+            (GIT_ROW, GIT_NAME, GIT_SMALL, ROW_CIRCLE, GIT_INDENT),
+            (24.0, 12.0, 11.0, 12.0, 16.0)
+        );
+        assert!(
+            GIT_ROW < crate::right_sidebar::ROW,
+            "the Files tab keeps its 32 pt rows"
+        );
+        assert_eq!(crate::right_sidebar::ROW, 32.0);
     }
 
     fn commit_at(i: usize, head: bool) -> crate::git_graph::Commit {
