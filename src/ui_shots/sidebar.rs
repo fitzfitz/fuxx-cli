@@ -1669,21 +1669,23 @@ fn sidebar_band_scenes() {
         assert_eq!(FOOTER_BUTTON, 34.0, "{n}: the bell's box");
         let right = bell - FOOTER_GAP;
         let (button_top, button_mid) = (foot + 12.0, foot + FOOTER / 2.0);
+        // The button's edge: almost the sidebar's colour (chore 2026-11-20, `canvas_line`).
+        let quiet = ui.canvas_line;
         assert!(
-            near(at(FOOTER_SIDE + 0.5, button_mid), edge),
+            near(at(FOOTER_SIDE + 0.5, button_mid), quiet),
             "{n}: button, left"
         );
         assert!(
-            near(at(right - 0.5, button_mid), edge),
+            near(at(right - 0.5, button_mid), quiet),
             "{n}: button, right"
         );
         assert!(
             near(at(right + 2.0, button_mid), side),
             "{n}: gap to the bell"
         );
-        assert!(near(at(60.0, button_top + 0.5), edge), "{n}: button, top");
+        assert!(near(at(60.0, button_top + 0.5), quiet), "{n}: button, top");
         assert!(
-            near(at(60.0, button_top + 37.5), edge),
+            near(at(60.0, button_top + 37.5), quiet),
             "{n}: button, bottom"
         );
         assert!(

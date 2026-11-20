@@ -154,6 +154,9 @@ pub struct UiColors {
     /// between panes and under bars; the card's own outer edge is the canvas colour since
     /// 2026-11-20).
     pub card_border: Rgb,
+    /// A line on the canvas almost its own colour (your words, 2026-11-20: "make it almost the
+    /// same as the outer background"): the sidebar's "New Fuxxpace" button edge.
+    pub canvas_line: Rgb,
     /// The Changes progress bar's unfilled track, on the repo card (`card_hover`; M11al Task 9).
     pub progress_track: Rgb,
     /// The card's shadow: `shadow` at this opacity (0-1).
@@ -488,6 +491,7 @@ impl Theme {
             tab_colors,
             card,
             card_border,
+            canvas_line: mix(canvas, fg, if dark { 0.05 } else { 0.07 }),
             window_edge: mix(canvas, black, if dark { 0.55 } else { 0.18 }),
             card_top_light: if dark { mix(card, white, 0.14) } else { white },
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
@@ -967,6 +971,24 @@ mod tests {
     /// outer border on the inner floating window"; "a shadow that looks like just a border at the
     /// top"): the window's edge darker than the canvas it frames; the card's top line lighter than
     /// the card in a dark theme, apart from it in every theme.
+    /// Chore 2026-11-20 (your words: "the border color, make it almost the same as the outer
+    /// background"): the sidebar's "New Fuxxpace" button edge sits just apart from the sidebar,
+    /// quieter than the card's border.
+    #[test]
+    fn the_new_button_edge_is_almost_the_sidebar() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let canvas = ui.sidebar_background;
+            let edge = contrast(ui.canvas_line, canvas);
+            assert_ne!(ui.canvas_line, canvas, "{name}: the edge still shows");
+            assert!(edge < 1.2, "{name}: canvas_line on the canvas is {edge:.2}");
+            assert!(
+                edge < contrast(ui.card_border, canvas),
+                "{name}: quieter than card_border"
+            );
+        }
+    }
+
     #[test]
     fn the_window_edge_is_darker_and_the_card_has_a_light_top_line() {
         use crate::ui_tokens::relative_luminance as lum;

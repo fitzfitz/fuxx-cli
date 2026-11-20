@@ -581,3 +581,17 @@ pass on this run; `right-panel-comfortable`, past its old failure, needed the ho
 **On-screen check (yours):** the window's outermost edge darker than before; the card with only a thin light
 line along its top; the repo card's words and circle the size of the rows under it.
 
+## Chores after M11q, part 7 (2026-11-20, the New button's edge)
+
+Your words, on a screenshot of the sidebar's "+ New Fuxxpace ⌘N" button: "the border color, make it almost the
+same as the outer background".
+
+1. **The button's edge** is a new `canvas_line`: the sidebar colour with 5 % of the ink (7 % on light themes), just
+   apart from the sidebar and quieter than `card_border`, which it used before. **AI's call:** only the button's
+   edge; the footer's top line keeps `card_border`.
+
+**Checks:** 2231 tests (`the_new_button_edge_is_almost_the_sidebar`: in every theme the edge differs from the
+sidebar, under 1.2:1 against it, quieter than `card_border`); clippy: no new warnings; fmt; full ui-shots.
+
+**On-screen check (yours):** the New button's outline barely lifts off the sidebar.
+
