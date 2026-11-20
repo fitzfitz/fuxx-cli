@@ -228,6 +228,16 @@ impl Ending {
 
 /// A run's length in its two largest units, the smaller left out when zero: `40s`, `3m 12s`,
 /// `2m`, `1h 4m`, `1d 2h`.
+/// A card's duration (M11ab): under a second in hundredths (`0.04s`), under a minute in tenths
+/// (`3.2s`), from a minute as `ran_label` (`3m 12s`).
+pub fn card_duration(ms: u64) -> String {
+    match ms {
+        0..=999 => format!("{:.2}s", ms as f64 / 1000.0),
+        1_000..=59_999 => format!("{:.1}s", ms as f64 / 1000.0),
+        _ => ran_label(Duration::from_millis(ms)),
+    }
+}
+
 pub fn ran_label(d: Duration) -> String {
     let s = d.as_secs();
     let units = [(86_400, 'd'), (3600, 'h'), (60, 'm'), (1, 's')];
@@ -652,5 +662,14 @@ mod tests {
         assert_eq!(done.short, None);
         assert_eq!(done.name(), "command");
         assert_eq!(done.listed(), "command · Done in 3s");
+    }
+
+    /// M11ab: a card's duration, short (sub-second, then tenths, then M11q's two units).
+    #[test]
+    fn card_durations_read_short() {
+        assert_eq!(card_duration(40), "0.04s");
+        assert_eq!(card_duration(3_200), "3.2s");
+        assert_eq!(card_duration(59_900), "59.9s");
+        assert_eq!(card_duration(192_000), "3m 12s");
     }
 }
