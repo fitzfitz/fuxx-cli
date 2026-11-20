@@ -1270,52 +1270,6 @@ pub(super) fn near_by(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, tol: u8
         .all(|(a, b)| a.abs_diff(b) <= tol)
 }
 
-/// Whether pixel `p` is colour `c` under the card's rim light (`panes::card_rim`, 2026-11-20):
-/// a soft white light along the card's top inside, `RIM_LIGHT_ALPHA` at its top fading to none
-/// `2 × RIM_LIGHT` down. So `p` is between `c` and `c` lit at the full alpha, give or take `tol`
-/// a channel: never darker, never another colour.
-pub(super) fn near_lit(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, tol: u8) -> bool {
-    let white = alacritty_terminal::vte::ansi::Rgb {
-        r: 255,
-        g: 255,
-        b: 255,
-    };
-    let lit = theme::mix(c, white, crate::panes::RIM_LIGHT_ALPHA);
-    p.iter()
-        .zip([c.r, c.g, c.b])
-        .zip([lit.r, lit.g, lit.b])
-        .all(|((&v, lo), hi)| v.saturating_add(tol) >= lo && v <= hi.saturating_add(tol))
-}
-
-/// `c` under the card's rim light `depth` pt below where the light starts (just inside the
-/// card's top edge and ring: a window-top card's `CARD_INSET + 2 × HAIRLINE`), as drawn: the
-/// light's alpha falls from `RIM_LIGHT_ALPHA` to none over `2 × RIM_LIGHT`.
-pub(super) fn rim_lit(
-    c: alacritty_terminal::vte::ansi::Rgb,
-    depth: f32,
-) -> alacritty_terminal::vte::ansi::Rgb {
-    let reach = 2.0 * crate::panes::RIM_LIGHT;
-    let alpha = crate::panes::RIM_LIGHT_ALPHA * (1.0 - depth / reach).clamp(0.0, 1.0);
-    let white = alacritty_terminal::vte::ansi::Rgb {
-        r: 255,
-        g: 255,
-        b: 255,
-    };
-    theme::mix(c, white, alpha)
-}
-
-/// Whether pixel `p`, at window `y` inside a card at the window's top (`CARD_INSET`), is `c` lit
-/// exactly as much as the rim's light is there (`rim_lit`), give or take `tol`: below the
-/// light's reach, `c` itself. Tight where `near_lit` (any depth) is loose (review, 2026-11-20).
-pub(super) fn near_at(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, y: f32, tol: u8) -> bool {
-    use crate::ui_tokens::size::{CARD_INSET, HAIRLINE};
-    near_by(
-        p,
-        rim_lit(c, (y - CARD_INSET - 2.0 * HAIRLINE).max(0.0)),
-        tol,
-    )
-}
-
 /// Keep `shot` as `<name>-<slug>` (`keep_shot`: its PNG in `target/ui-shots/` with `--png`).
 pub(super) fn save_shot(name: &str, slug: &str, shot: &Shot) -> PathBuf {
     let path = keep_shot(&format!("{name}-{slug}"), shot);

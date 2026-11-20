@@ -144,10 +144,15 @@ pub struct UiColors {
     pub tab_colors: [Rgb; 11],
     /// A raised card (each pane, the right sidebar; M11i): the terminal's own background.
     pub card: Rgb,
-    /// A card's 1 px edge, quiet on the canvas (the sidebar colour) and on the card.
-    /// The card's outer edge (chore 2026-11-20): a step darker than `card_border`; inside it a
-    /// ring of the canvas colour and a soft light along the top (`panes::card_rim`).
-    pub card_edge: Rgb,
+    /// The window's outermost edge (chore 2026-11-20, your words: "the outermost window border"):
+    /// darker than the canvas it frames, drawn just inside macOS's own rim (`panes::window_edge`).
+    pub window_edge: Rgb,
+    /// The card's top line (your words: "a shadow that looks like just a border at the top"):
+    /// a light line along its top edge (`panes::card_rim`); its other edges are the canvas colour.
+    pub card_top_light: Rgb,
+    /// A card's 1 px edge, quiet on the canvas (the sidebar colour) and on the card (the hairlines
+    /// between panes and under bars; the card's own outer edge is the canvas colour since
+    /// 2026-11-20).
     pub card_border: Rgb,
     /// The Changes progress bar's unfilled track, on the repo card (`card_hover`; M11al Task 9).
     pub progress_track: Rgb,
@@ -483,7 +488,8 @@ impl Theme {
             tab_colors,
             card,
             card_border,
-            card_edge: mix(card_border, black, if dark { 0.35 } else { 0.12 }),
+            window_edge: mix(canvas, black, if dark { 0.55 } else { 0.18 }),
+            card_top_light: if dark { mix(card, white, 0.14) } else { white },
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
             card_shadow_alpha: if dark { 0.45 } else { 0.12 },
             raised,
@@ -957,20 +963,28 @@ mod tests {
         }
     }
 
-    /// Chore 2026-11-20 (your ask: "make the outer border slightly darker and have the inner
-    /// border same as the main background color"): the card's outer edge a step darker than the
-    /// hairlines inside it, in every theme.
+    /// Chore 2026-11-20 (your words: "outer border I mean the outermost window border, not an
+    /// outer border on the inner floating window"; "a shadow that looks like just a border at the
+    /// top"): the window's edge darker than the canvas it frames; the card's top line lighter than
+    /// the card in a dark theme, apart from it in every theme.
     #[test]
-    fn the_cards_outer_edge_is_darker_than_its_hairlines() {
-        use crate::ui_tokens::relative_luminance;
+    fn the_window_edge_is_darker_and_the_card_has_a_light_top_line() {
+        use crate::ui_tokens::relative_luminance as lum;
         for (name, theme) in every_theme() {
             let ui = theme.ui();
             assert!(
-                relative_luminance(ui.card_edge) < relative_luminance(ui.card_border),
-                "{name}: card_edge {:?} vs card_border {:?}",
-                ui.card_edge,
-                ui.card_border
+                lum(ui.window_edge) < lum(ui.sidebar_background),
+                "{name}: window_edge {:?} vs the canvas {:?}",
+                ui.window_edge,
+                ui.sidebar_background
             );
+            assert_ne!(ui.card_top_light, ui.card, "{name}: the top line shows");
+            if theme.is_dark() {
+                assert!(
+                    lum(ui.card_top_light) > lum(ui.card),
+                    "{name}: a light line"
+                );
+            }
         }
     }
 

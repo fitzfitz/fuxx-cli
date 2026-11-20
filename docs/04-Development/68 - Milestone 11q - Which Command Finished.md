@@ -558,3 +558,26 @@ in the top inner window… with inner and outer border, as it looks very clean a
 3. Quit and reopen: the GRAPH height is as you left it.
 4. The card's edge: a darker outer line, the background colour just inside it, a soft light along the top.
 
+## Chores after M11q, part 6 (2026-11-20, the edges as you meant them; the repo card)
+
+Your words on part 5's card edge: "outer border I mean the outermost window border, not adding an outer border
+to the inner floating window; and the shadow, I don't want a shadow like this, I want one that looks like just a
+border at the top" (you chose "the macOS window edge"); and on the repo card: "this also text and icon too big,
+make same as the changes accordion".
+
+1. **The window's outer edge** is darker: a 1 pt line in `window_edge` (the canvas darkened) around the whole
+   window, following its 14 pt corners (measured from your screenshot), drawn over the window's content under
+   macOS's own light rim, which reads darker over it. Left out in full screen. **AI's call:** 1 pt, not 2: a
+   second point covered the sidebar's accent bar at the window's left edge. macOS draws its rim itself; fuxx
+   can't remove it, only darken what lies under it.
+2. **The floating card** has no extra outline any more: its edge is the canvas colour, and along its top a thin
+   light line (`card_top_light`) following its top corners, in place of part 5's fade.
+3. **The repo card** (its circle, name and `N of M staged`) at the Git rows' sizes: a 12 pt circle, the name 12 pt,
+   the count 11 pt.
+
+**Checks:** 2230 tests; clippy: no new warnings; fmt; full ui-shots 252 passed (the six display-dependent scenes
+pass on this run; `right-panel-comfortable`, past its old failure, needed the hover fill the icon switch has).
+
+**On-screen check (yours):** the window's outermost edge darker than before; the card with only a thin light
+line along its top; the repo card's words and circle the size of the rows under it.
+

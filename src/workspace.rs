@@ -4092,7 +4092,7 @@ impl Render for Workspace {
                                             )
                                             .children(right_sidebar)
                                             .children(sliding_right_sidebar)
-                                            // Its rim over everything in it (2026-11-20).
+                                            // Its top line over everything in it (2026-11-20).
                                             .child(panes::card_rim(&colors)),
                                     ),
                             ),
@@ -4100,6 +4100,10 @@ impl Render for Workspace {
                     .children(sliding_sidebar),
             )
             .children(status_bar)
+            // The window's outer edge over its content (2026-11-20; not in full screen).
+            .when(!window.is_fullscreen(), |root| {
+                root.child(panes::window_edge(&colors))
+            })
             // The collapsed title bar's name and buttons, over the bands (below the overlays, so
             // the Welcome scrim and the popovers stay above them).
             .child(title)

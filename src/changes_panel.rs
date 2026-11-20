@@ -39,7 +39,7 @@ use crate::git_status::{self, Change, ChangeList, Counts, Mark};
 use crate::layout_model::{FileMode, TabKind};
 use crate::right_sidebar::{
     COUNT_PAD_X, COUNT_PAD_Y, COUNT_RADIUS, NO_FOLDER, PILL_INSET, PILL_PAD, PILL_RADIUS, Panel,
-    REFRESH, SECTION_SIDE, SMALL, TEXT, TITLE, back_off, due, find_root, mark_ink, note,
+    REFRESH, SECTION_SIDE, SMALL, TEXT, back_off, due, find_root, mark_ink, note,
 };
 use crate::sidebar::tabular;
 use crate::sidebar_toggle::{Tip, tip_box};
@@ -64,9 +64,8 @@ const COUNTS_GAP: f32 = 4.0;
 /// 4: the panels' 42 pt) and its line.
 pub(crate) const HEADER: f32 = crate::right_sidebar::HEADER + 8.0;
 const HEADER_LINE: f32 = 20.0;
-/// Part 2: the header's progress bar, the check circles, the dialog's widest.
+/// Part 2: the header's progress bar.
 const PROGRESS: f32 = 3.0;
-const CIRCLE: f32 = 16.0;
 /// The Git tab's rows (chore 2026-11-20, your ask: "make the size of icon, text smaller, and make
 /// it indented"): every row of its lists (headers, files, commits) `GIT_ROW` tall (a list's rows
 /// are one height), names `GIT_NAME`, the rest `GIT_SMALL`, a file's circle `ROW_CIRCLE`, the
@@ -76,6 +75,11 @@ pub(crate) const GIT_NAME: f32 = 12.0;
 pub(crate) const GIT_SMALL: f32 = 11.0;
 const ROW_CIRCLE: f32 = 12.0;
 pub(crate) const GIT_INDENT: f32 = 16.0;
+/// The repo card's circle, name and `N of M staged` (your ask, 2026-11-20: "make same as the
+/// changes accordion"): the Git rows' sizes.
+const REPO_CIRCLE: f32 = ROW_CIRCLE;
+const REPO_NAME: f32 = GIT_NAME;
+const REPO_META: f32 = GIT_SMALL;
 const CONFIRM_WIDTH: f32 = 280.0;
 /// The branch bar (M11v): its padding, its buttons' size and corner, the gap between them,
 /// the tooltip's gap above its button and how long the pointer rests before it shows.
@@ -686,7 +690,7 @@ pub(crate) enum Circle {
     On,
 }
 
-/// A `side` pt circle in `state` (`CIRCLE` in the header, `ROW_CIRCLE` on a row): its edge faint
+/// A `side` pt circle in `state` (`REPO_CIRCLE` in the header, `ROW_CIRCLE` on a row): its edge faint
 /// (Off) or green, a green dash (Half), or filled green with a ✓ in the panel's colour (On).
 fn circle(state: Circle, side: f32, green: Rgb, ui: &UiColors) -> Div {
     let d = div()
@@ -1332,7 +1336,7 @@ impl Workspace {
             } else {
                 "Stage all".into()
             };
-            circle(state, CIRCLE, green, &ui)
+            circle(state, REPO_CIRCLE, green, &ui)
                 .id("changes-stage-all")
                 .when(enabled, |c| {
                     c.cursor_pointer()
@@ -1349,7 +1353,7 @@ impl Workspace {
         let line = div()
             .flex()
             .items_center()
-            .gap(px(ROW_GAP + 2.0))
+            .gap(px(ROW_GAP))
             .h(px(HEADER_LINE))
             .w_full()
             .children(all)
@@ -1358,7 +1362,7 @@ impl Workspace {
                     .flex_1()
                     .min_w(px(0.0))
                     .truncate()
-                    .text_size(px(TITLE))
+                    .text_size(px(REPO_NAME))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(ui.text))
                     .child(name),
@@ -1367,7 +1371,7 @@ impl Workspace {
                 div()
                     .flex_none()
                     .flex()
-                    .text_size(px(crate::ui_tokens::text::META))
+                    .text_size(px(REPO_META))
                     .text_color(hsla(ui.text_faint))
                     .child(div().text_color(hsla(green)).child(staged.to_string()))
                     .child(format!("\u{a0}of {total} staged"))
@@ -2260,11 +2264,17 @@ mod tests {
             (GIT_ROW, GIT_NAME, GIT_SMALL, ROW_CIRCLE, GIT_INDENT),
             (24.0, 12.0, 11.0, 12.0, 16.0)
         );
-        assert!(
-            GIT_ROW < crate::right_sidebar::ROW,
-            "the Files tab keeps its 32 pt rows"
-        );
+        // Smaller than the Files tab's, which keeps its 32 pt rows.
         assert_eq!(crate::right_sidebar::ROW, 32.0);
+    }
+
+    /// Your ask (2026-11-20, the repo card: "this also text and icon too big, make same as the
+    /// changes accordion"): its circle and words at the Git rows' sizes.
+    #[test]
+    fn the_repo_header_matches_the_git_rows() {
+        assert_eq!(REPO_CIRCLE, ROW_CIRCLE);
+        assert_eq!(REPO_NAME, GIT_NAME);
+        assert_eq!(REPO_META, GIT_SMALL);
     }
 
     fn commit_at(i: usize, head: bool) -> crate::git_graph::Commit {

@@ -562,10 +562,9 @@ fn split_scenes() {
                 };
                 let p = px_at((x, middle));
                 assert!(is(p, want), "{n}: {which}'s tab {p:?}, want {want:?}");
-                // No fill above it: the bar is the card (under the card rim's light along its
-                // top, 2026-11-20).
+                // No fill above it: the bar is the card.
                 let p = px_at((f32::from(place.center().x), bar_top + 3.0));
-                assert!(near_lit(p, ui.card, 3), "{n}: the bar above {which}: {p:?}");
+                assert!(near_by(p, ui.card, 3), "{n}: the bar above {which}: {p:?}");
             }
             // The vertical line, a 1 px `card_border` hairline with no canvas beside it; the
             // 2 px quiet line over it only when hovered or dragged. Measured across at
@@ -931,12 +930,11 @@ fn tab_bar_scenes() {
                         "{n}: api is `tab_active`: {shown:?}"
                     );
                     assert!(!is(shown, ui.card), "{n}: api stands off the bar");
-                    // The bar: no fill above the tabs (the card, under its rim's light along
-                    // its top, 2026-11-20), its `card_border` line along its bottom, the
-                    // terminal right under it.
+                    // The bar: no fill above the tabs (the card), its `card_border` line along
+                    // its bottom, the terminal right under it.
                     let above = px_at(x, bar_top + 2.0);
                     assert!(
-                        near_lit(above, ui.card, 3),
+                        near_by(above, ui.card, 3),
                         "{n}: the bar above api: {above:?}"
                     );
                     let line = px_at(x, bar_top + TAB_BAR - 0.5);
@@ -972,13 +970,8 @@ fn tab_bar_scenes() {
                     let plus_x = f32::from(tabs[3].right()) + crate::tab_bar::PLUS_GAP;
                     let plus = px_at(plus_x + 2.0, bar_top + BUTTON_TOP + 2.0);
                     let more = button_corner(MORE_FROM_EDGE);
-                    // (Both under the card's top light, lit as much as it is there: 2026-11-20.)
-                    let y = bar_top + BUTTON_TOP + 2.0;
-                    assert!(
-                        near_at(plus, ui.card_hover, y, 3),
-                        "{n}: + hovered: {plus:?}"
-                    );
-                    assert!(near_at(more, ui.card, y, 3), "{n}: ⋯ not: {more:?}");
+                    assert!(near_by(plus, ui.card_hover, 3), "{n}: + hovered: {plus:?}");
+                    assert!(near_by(more, ui.card, 3), "{n}: ⋯ not: {more:?}");
                 }
                 "tab-bars-more" => {
                     // ⋯ lit: its fill stands off the bar in the gap beside it (both under the
@@ -1401,9 +1394,8 @@ fn tab_drag_scenes() {
                         top + crate::tab_bar::TAB - 5.0,
                     ] {
                         let p = px_at(x, y);
-                        // (The bar, under the card's top light: 2026-11-20.)
                         assert!(
-                            near_lit(p, ui.card, 3),
+                            near_by(p, ui.card, 3),
                             "{n}: {what} empty at {x},{y}: {p:?}"
                         );
                     }
@@ -1414,14 +1406,13 @@ fn tab_drag_scenes() {
                 "tab-drag-gap" => {
                     // claude (tinted) slid left into api's place; the gap is where claude was.
                     let claude = px_at(f32::from(tabs[0].center().x), top + 3.0);
-                    // (Under the card's top light, 2026-11-20.)
                     assert!(
-                        near_lit(claude, ui.waiting_tint, 3),
+                        near_by(claude, ui.waiting_tint, 3),
                         "{n}: claude slid left: {claude:?}"
                     );
                     // (Its right end: the chip covers the rest.)
                     let gap = px_at(f32::from(tabs[1].right()) - 4.0, top + 3.0);
-                    assert!(near_lit(gap, ui.card, 3), "{n}: the gap: {gap:?}");
+                    assert!(near_by(gap, ui.card, 3), "{n}: the gap: {gap:?}");
                     // The chip is where api was taken: its left edge at the pointer less the
                     // grab, level with the tabs (not under them).
                     assert_eq!(chip_y, top, "{n}: the chip's top is the tabs'");
@@ -1447,7 +1438,7 @@ fn tab_drag_scenes() {
                     // Its own bar closed up: claude in api's place, the last place empty.
                     let claude = px_at(f32::from(tabs[0].center().x), top + 3.0);
                     assert!(
-                        near_lit(claude, ui.waiting_tint, 3),
+                        near_by(claude, ui.waiting_tint, 3),
                         "{n}: claude slid left: {claude:?}"
                     );
                     empty(tabs[3], width, "the left bar's end");
@@ -1457,7 +1448,7 @@ fn tab_drag_scenes() {
                     let tests = px_at(left + width + 4.0, top + crate::tab_bar::TAB / 2.0);
                     assert!(is(tests, ui.card_lift), "{n}: tests slid right: {tests:?}");
                     let gap = px_at(left + width - 6.0, top + 3.0);
-                    assert!(near_lit(gap, ui.card, 3), "{n}: the gap: {gap:?}");
+                    assert!(near_by(gap, ui.card, 3), "{n}: the gap: {gap:?}");
                     no_line();
                 }
                 _ => {
@@ -2310,9 +2301,8 @@ fn tabs_minimal_scenes() {
                 ("above codex", f32::from(tabs[2].center().x), bar_top + 3.0),
                 ("beside the buttons", beside, cy),
             ] {
-                // (Under the card rim's light along its top, 2026-11-20.)
                 let p = at(x, y);
-                assert!(near_lit(p, ui.card, 3), "{n}: the card {what}: {p:?}");
+                assert!(near_by(p, ui.card, 3), "{n}: the card {what}: {p:?}");
             }
             for x in [beside, f32::from(tabs[2].center().x)] {
                 let line = at(x, bar_top + TAB_BAR - 0.5);
@@ -2387,14 +2377,13 @@ fn tabs_minimal_scenes() {
                 let tile = left + TAB_PAD;
                 let corner_y = cy - TILE / 2.0 + 0.5;
                 let corner = at(tile + 0.5, corner_y);
-                // The pill's fill at the same height (the card's top light falls off downward,
-                // 2026-11-20).
+                // The pill's fill at the same height.
                 let fill_there = at(right - TAB_PAD / 2.0, corner_y);
                 assert!(
                     corner
                         .iter()
                         .zip(fill_there)
-                        .all(|(a, b)| a.abs_diff(b) <= 5), // (the round end's anti-aliasing; a tile is ~10 off)
+                        .all(|(a, b)| a.abs_diff(b) <= 3),
                     "{what}: no tile behind the icon: {corner:?} beside {fill_there:?}"
                 );
                 let inside = in_box(tile, tile + TILE, cy - TILE / 2.0, cy + TILE / 2.0);
@@ -2440,10 +2429,8 @@ fn tabs_minimal_scenes() {
                     // Idle: no dot. (api's short title leaves the box empty; a longer idle
                     // title runs on into it, so there only no status colour is checked.)
                     None if i == 0 => {
-                        // (Within 8: the card's top light falls off across the box's height,
-                        // 2026-11-20; a status dot is far further off.)
                         let off = dot.iter().map(|&p| gap(p, fill)).max().unwrap_or(0);
-                        assert!(off <= 8, "{what}: no dot, but {off} off its fill");
+                        assert!(off <= 3, "{what}: no dot, but {off} off its fill");
                     }
                     None => {
                         for mark in [ui.ring_working, ui.ring_waiting] {
@@ -2458,16 +2445,16 @@ fn tabs_minimal_scenes() {
                 let hovered = scene == "tabs-minimal-hover" && i == 2;
                 assert_eq!(drawn, hovered, "{what}: its ×");
                 // A pill: its round ends leave the card at its corners; clear card after it (no
-                // separator line). (The card under its rim's light along its top, 2026-11-20.)
+                // separator line).
                 let corner_y = f32::from(place.top()) + 1.0;
                 let corner = at(left + 1.0, corner_y);
                 assert!(
-                    near_at(corner, ui.card, corner_y, 3),
+                    near_by(corner, ui.card, 3),
                     "{what}: a round end: {corner:?}"
                 );
                 let room = at(right + after / 2.0, cy);
                 assert!(
-                    near_at(room, ui.card, cy, 3),
+                    near_by(room, ui.card, 3),
                     "{what}: clear after it: {room:?}"
                 );
             }
@@ -2481,7 +2468,7 @@ fn tabs_minimal_scenes() {
             assert!(inked, "{n}: + drawn after the last tab, at {plus}");
             let between = at(plus + BUTTON, cy);
             assert!(
-                near_lit(between, ui.card, 3),
+                near_by(between, ui.card, 3),
                 "{n}: nothing just past +: {between:?}"
             );
             // The tile glyphs and dots read (their floors, as `drawn_pairs` checks).
