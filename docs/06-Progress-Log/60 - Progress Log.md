@@ -29,6 +29,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-20 — Chores after M11q, part 7: the New button's edge
+
+- **What:** the sidebar's "+ New Fuxxpace ⌘N" button outlined in a new `canvas_line`, almost the sidebar's own
+  colour (your words: "make it almost the same as the outer background"). Note 68, part 7.
+- **Checks:** 2231 tests; clippy: no new warnings; fmt; full ui-shots.
+
 ### 2026-11-20 — Chores after M11q, part 6: the window's edge, the card's top line, the repo card
 
 - **What:** your correction of part 5: the darker edge is the window's outermost one (a 1 pt `window_edge` line
