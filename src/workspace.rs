@@ -3430,22 +3430,17 @@ impl Workspace {
         });
         // Each pane's tab bar (outside the cached terminal, so a mark or a hover redraws only
         // the bar), drawn first: it needs the listeners `cx` makes.
-        // The bars at the window's top edge also drag the window (not in full screen, which has
-        // no title bar to move).
-        let top = if window.is_fullscreen() {
-            Vec::new()
-        } else {
-            tree.top_leaves()
-        };
+        // Where each bar is (`BarPlace`): the top row's drag the window (not in full screen,
+        // which has no title bar to move), the top-right one has the right sidebar's button, the
+        // top-left one makes room for the lights while the sidebar is hidden.
         let bars: RefCell<HashMap<PaneId, AnyElement>> = RefCell::new(
-            tree.leaves()
+            self.tab_bar_keys(window)
                 .into_iter()
-                .filter_map(|id| {
-                    let drags = top.contains(&id);
+                .filter_map(|(id, place)| {
                     let part = self
                         .chrome
                         .tab_bars
-                        .get(&(id, drags))
+                        .get(&(id, place))
                         .filter(|_| crate::chrome_cache::enabled());
                     let bar = match part {
                         Some(part) => {
@@ -3459,7 +3454,7 @@ impl Workspace {
                                 )
                                 .into_any_element()
                         }
-                        None => self.render_tab_bar(id, ui, drags, window, cx)?,
+                        None => self.render_tab_bar(id, ui, place, window, cx)?,
                     };
                     Some((id, bar))
                 })
@@ -3568,8 +3563,8 @@ impl Workspace {
     /// window, and a double-click does what the macOS setting "Double-click a window's title bar
     /// to" says. In full screen, which has no traffic lights, it is a strip that moves nothing.
     /// `label`, if any, is drawn in the band: the open sidebar's title and sidebar button
-    /// (`render_sidebar`, M11m). With the sidebar hidden the bands have none: the workspace's
-    /// name and the band's buttons are drawn at the window's root over them (`title_area`).
+    /// (`render_sidebar`, M11m). Only the sidebar has one since 2026-11-20 (hidden, the card's
+    /// top-left bar takes the lights).
     pub(crate) fn render_top_band(
         &self,
         id: &'static str,
@@ -3830,12 +3825,9 @@ impl Render for Workspace {
         let (right_sidebar, sliding_right_sidebar) = self.right_sidebar_layout(ui, window, cx);
         let right_sliding_in = sliding_right_sidebar.is_some() && !self.right_sidebar.hidden;
         let right_width = self.right_sidebar_drawn_width(window);
-        // With the sidebar shown its button is in its band (`render_sidebar`); hidden, the
-        // window's band is the title bar (M11m): the workspace's name centred on the window and
-        // [🔔] [⚙] [sidebar] at its far right, at the root so they sit over the panes' band and
-        // the right sidebar's alike (and over a sidebar sliding out). The name waits for the
-        // hide slide to end, so it never paints over the sliding sidebar's title and rows; it
-        // shows at once when the sidebar has left (`render_title`).
+        // With the sidebar shown its button is in its band (`render_sidebar`); hidden (M11m),
+        // [sidebar] [🔔] [⚙] by the traffic lights, at the root so they sit over the top-left
+        // pane's bar, which leaves them room (and over a sidebar sliding out).
         let title_box = || {
             StyleRefinement::default()
                 .absolute()
@@ -3870,14 +3862,11 @@ impl Render for Workspace {
         self.refresh_palette(cx);
         // Last, once every overlay of this frame is known: which pages show.
         self.update_pages(window, cx);
-        // Above the card: with the sidebar hidden, the window's top band (the name over it is
-        // drawn at the root); else the `CARD_INSET` canvas strip, which drags the window too
-        // (M11i, M11al §3.7).
-        let pane_band = if self.sidebar.hidden {
-            self.render_top_band("pane-band", None, window, cx)
-        } else {
-            Some(self.render_drag_strip("pane-strip", window, cx))
-        };
+        // Above the card: the `CARD_INSET` canvas strip, which drags the window too (M11i,
+        // M11al §3.7); with the sidebar hidden too since 2026-11-20 (critique issue 5: the
+        // window's own band over the card made two headers): the card's top-left bar holds the
+        // lights and the sidebar's buttons (`BarPlace::under_lights`).
+        let pane_band = self.render_drag_strip("pane-strip", window, cx);
         let panes = self.render_panes(colors, ui, window, cx);
         // M11v part 3: Settings → General → Status Bar off leaves it out; the card takes its
         // room.
@@ -4065,7 +4054,7 @@ impl Render for Workspace {
                             .when(slide.is_some() && !self.sidebar.hidden, |column| {
                                 column.ml(px(sidebar_width))
                             })
-                            .children(pane_band)
+                            .child(pane_band)
                             // The one floating card (M11al §3.1): flush against the sidebar
                             // (with it hidden, `CARD_INSET` from the window's left),
                             // `CARD_INSET` from the window's right edge and from the bottom.

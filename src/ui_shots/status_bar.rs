@@ -931,13 +931,16 @@ fn update_button_scenes() {
                 (right - (w0 + PILL_ICON + PILL_GAP + said) - PILL_PAD).abs() <= 2.0,
                 "{n}: the words end short of {PILL_PAD} from the right"
             );
+            // The icon set's package (2026-11-20) keeps a margin inside its box: its ink is
+            // three quarters of it or more.
             assert!(
-                (icon - PILL_ICON).abs() <= 1.0,
+                (PILL_ICON * 0.75..=PILL_ICON + 1.0).contains(&icon),
                 "{n}: the icon's ink is {icon} pt wide, its box {PILL_ICON}"
             );
-            // The words' own side bearing adds a little to the gap.
+            // The words' own side bearing adds a little to the gap, and the icon's margin
+            // inside its box up to a point and a half more.
             assert!(
-                (PILL_GAP - 0.5..=PILL_GAP + 1.5).contains(&gap),
+                (PILL_GAP - 0.5..=PILL_GAP + 3.0).contains(&gap),
                 "{n}: {gap} pt between the icon and the words, expected {PILL_GAP}"
             );
             let expected = PILL_ICON + PILL_GAP + said;

@@ -1039,12 +1039,6 @@ fn sidebar_comfortable_scenes() {
             let (x, y) = ((left, right), (top + HEADING_ABOVE - 4.0, top + height));
             let pill = count_box(&shot, dims, ui.waiting_tint, 3, x, y);
             assert!(pill > 0, "{n}: web shows how many wait");
-            // (A square of an avatar's colour, not a stray pixel of the pill's anti-aliased
-            // words that happens to match one.)
-            for (fill, _, _) in ui.avatars {
-                let faces = solid_count(&shot, dims, fill, x, y);
-                assert_eq!(faces, 0, "{n}: no avatars on web's heading");
-            }
             // The long row: its name and line two stop inside its right padding.
             let (left, right, top, height) = span(5);
             let (one, two) = row_lines(top, height);
@@ -1281,9 +1275,10 @@ fn sidebar_selection_scenes() {
 /// `sidebar-button-shown`, `-hidden`, `-hover` (the pointer over it) and `-sliding` (a hide
 /// 60 ms in, the sidebar partly out and over the pane column).
 ///
-/// Panics unless the icon is drawn at the sidebar band's right edge shown (M11m) and at the
-/// window's right hidden (the collapsed band's last button), the hover paints the hit area, and
-/// mid-slide the sidebar has left the middle of the window (it is only partly out).
+/// Panics unless the icon is drawn at the sidebar band's right edge shown (M11m) and just past
+/// the traffic lights hidden (2026-11-20, over the card's top-left bar), the hover paints the
+/// hit area, and mid-slide the sidebar has left the middle of the window (it is only partly
+/// out).
 fn sidebar_button_scenes() {
     use crate::sidebar_toggle::{BUTTON_Y, Slide, open_button_x};
     use crate::title_area::band_buttons;
@@ -1293,13 +1288,14 @@ fn sidebar_button_scenes() {
 
     // Tall enough that the pane's terminal still shows above the status bar (M11i).
     let dims = size(px(360.0), px(140.0));
-    // Shown, the button is at the sidebar band's right edge (M11m); hidden, it is the collapsed
-    // band's last button, at the window's right.
+    // Shown, the button is at the sidebar band's right edge (M11m); hidden, the first of the
+    // collapsed sidebar's buttons, by the lights.
     let (bx, by) = (open_button_x(SIDEBAR_DEFAULT_WIDTH), BUTTON_Y);
-    let hx = band_buttons(f32::from(dims.width), false)[2];
-    // The hit area's left margin (inside it, outside the icon), and the icon's left edge.
-    let (margin, edge) = (point(bx + 1.5, by + 12.0), point(bx + 4.75, by + 12.0));
-    let hidden_edge = point(hx + 4.75, by + 12.0);
+    let hx = band_buttons(false)[0];
+    // The hit area's left margin (inside it, outside the icon), and the icon's left edge
+    // (Lucide's panel-left, 16 in the 24 hit: its frame's line 6 in).
+    let (margin, edge) = (point(bx + 1.5, by + 12.0), point(bx + 6.0, by + 12.0));
+    let hidden_edge = point(hx + 6.0, by + 12.0);
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -1338,17 +1334,16 @@ fn sidebar_button_scenes() {
             pixel_at(shot, dims, p.x, p.y)
         };
         let bg = |rgb: alacritty_terminal::vte::ansi::Rgb| [rgb.r, rgb.g, rgb.b];
-        // The icon's left edge is not the band's background: shown, at the sidebar band's
-        // right edge; hidden, at the window's right (`band_buttons`).
+        // The icon's left edge is not what is under it: shown, the band at the sidebar band's
+        // right edge; hidden, the card's top-left bar by the lights (`band_buttons`).
         assert_ne!(
             at("shown", edge),
             bg(ui.sidebar_background),
             "{slug}: icon shown"
         );
-        // (With the sidebar hidden the band is the canvas, the sidebar's colour, since M11i.)
         assert_ne!(
             at("hidden", hidden_edge),
-            bg(ui.sidebar_background),
+            bg(theme.background),
             "{slug}: icon hidden"
         );
         // Hover: the hit area is panel_hover, not the sidebar's colour.
@@ -1360,8 +1355,9 @@ fn sidebar_button_scenes() {
         assert_eq!(at("hover", margin), bg(ui.panel_hover), "{slug}: hovered");
         // Inside: on the search button (M11r; the cards below it are the terminal's colour).
         // Beyond it: the pane's tab bar above its tab (M11al: no fill, the card, which is the
-        // terminal's colour; the 52 pt bar fills this short window's card under the band).
-        let bar_above_tab = ui_tokens::size::TOP_BAND
+        // terminal's colour; under the `CARD_INSET` strip since 2026-11-20, its room by the
+        // lights empty there).
+        let bar_above_tab = ui_tokens::size::CARD_INSET
             + ui_tokens::size::HAIRLINE
             + (ui_tokens::size::TAB_BAR - crate::tab_bar::TAB) / 4.0;
         let (inside, beyond) = (point(30.0, 58.0), point(150.0, bar_above_tab));
@@ -1376,30 +1372,6 @@ fn sidebar_button_scenes() {
             "{slug}: still partly in"
         );
     }
-}
-
-/// How many 3 × 3 pt squares (at pixel steps) in the box (`x0..x1`, `y0..y1`, points) are all
-/// within 3 of `c`: a filled shape of that colour, not anti-aliased text that touches it.
-fn solid_count(
-    shot: &Shot,
-    dims: Size<Pixels>,
-    c: alacritty_terminal::vte::ansi::Rgb,
-    (x0, x1): (f32, f32),
-    (y0, y1): (f32, f32),
-) -> usize {
-    let scale = shot.width as f32 / f32::from(dims.width);
-    let side = (3.0 * scale) as usize;
-    let at = |x: usize, y: usize| {
-        let i = (y * shot.width as usize + x) * 4;
-        near_by([shot.rgba[i], shot.rgba[i + 1], shot.rgba[i + 2]], c, 3)
-    };
-    let (xs, ys) = (
-        (x0 * scale) as usize..(x1 * scale) as usize - side,
-        (y0 * scale) as usize..(y1 * scale) as usize - side,
-    );
-    ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
-        .filter(|&(x, y)| (0..side).all(|dy| (0..side).all(|dx| at(x + dx, y + dy))))
-        .count()
 }
 
 /// How many pixels in the box (`x0..x1`, `y0..y1`, points) are within `tol` of `c`.
@@ -1578,8 +1550,13 @@ fn sidebar_quiet_scenes() {
         );
         let green = count_box(&shot, dims, ui.ring_done, 3, face.0, face.1);
         assert_eq!(green, 0, "{n}: no green dot on the done row");
-        // The check's stroke is anti-aliased: near `text_dim`.
-        let tick = count_box(&shot, dims, ui.text_dim, 20, face.0, face.1);
+        // The check's stroke is anti-aliased: near `text_dim`. Looked for in the badge's
+        // corner only, past the avatar's letters (`text_dim` too since 2026-11-20).
+        let corner = (
+            (left + ROW_PAD + AVATAR - 10.0, face.0.1),
+            ((top + bottom) / 2.0 + AVATAR / 2.0 - 10.0, bottom),
+        );
+        let tick = count_box(&shot, dims, ui.text_dim, 20, corner.0, corner.1);
         assert!(tick > 0, "{n}: the done row's muted check");
         // The closed headers' right side: past their names, before the count and chevron.
         let closed = |b: gpui::Bounds<Pixels>| {
@@ -1587,10 +1564,6 @@ fn sidebar_quiet_scenes() {
             ((right - 80.0, right - 34.0), (top, bottom))
         };
         let (x, y) = closed(web);
-        for (fill, _, _) in ui.avatars {
-            let faces = count_box(&shot, dims, fill, 3, x, y);
-            assert_eq!(faces, 0, "{n}: no small avatars on web's header");
-        }
         assert_eq!(
             count_box(&shot, dims, ui.ring_done, 3, x, y),
             0,

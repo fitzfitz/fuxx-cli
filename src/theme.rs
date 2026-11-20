@@ -154,10 +154,6 @@ pub struct UiColors {
     pub block_ok: Rgb,
     pub block_failed: Rgb,
     pub block_running: Rgb,
-    /// The sidebar's avatars (M11r), one per tab colour (`TabColor::ALL` order): a gradient of
-    /// the colour (its top-left and bottom-right) and its letters' ink, held to `TEXT_MIN` on
-    /// both ends.
-    pub avatars: [(Rgb, Rgb, Rgb); 11],
     /// The selected sidebar row in a group's card (M11r): a neutral lift of the card.
     pub card_lift: Rgb,
     /// Under a dragged command block (M11aa Task 11): a pane tab that takes it (an agent's),
@@ -428,29 +424,6 @@ impl Theme {
         let drop_tab = wash(card, 0.20, &[&words[..], &tab_marks[..]].concat());
         let drop_card = wash(card, 0.08, &words);
         let tab_colors = TabColor::ALL.map(|c| mark(c.base()));
-        // A gradient of the colour over the card it mostly sits on, lit at its top left; its
-        // letters a pale (dark: light) tint of the colour.
-        // A bright colour (a yellow) is washed back in steps until its letters read on it.
-        let avatars = tab_colors.map(|c| {
-            let ink = if dark {
-                mix(c, white, 0.78)
-            } else {
-                mix(c, black, 0.55)
-            };
-            let (lit, deep) = if dark { (0.62, 0.36) } else { (0.34, 0.20) };
-            let ends = |n: f32| {
-                let step = 0.04 * n;
-                (
-                    mix(card, c, (lit - step).max(0.0)),
-                    mix(card, c, (deep - step).max(0.0)),
-                )
-            };
-            let (top, bottom) = (0..=15)
-                .map(|n| ends(n as f32))
-                .find(|&(t, b)| contrast(ink, t) >= TEXT_MIN && contrast(ink, b) >= TEXT_MIN)
-                .unwrap_or_else(|| ends(15.0));
-            (top, bottom, readable(ink, &[top, bottom], TEXT_MIN))
-        });
         UiColors {
             sidebar_background: canvas,
             sidebar_border: quiet(mix(canvas, fg, 0.12), &[canvas, bg]),
@@ -496,7 +469,6 @@ impl Theme {
             block_ok: ensure_contrast(self.palette[8], bg, MARK_MIN),
             block_failed: ensure_contrast(self.palette[1], bg, MARK_MIN),
             block_running: ensure_contrast(ring_working, bg, MARK_MIN),
-            avatars,
             card_lift,
             drop_tab,
             drop_card,
@@ -657,11 +629,6 @@ impl Theme {
         ];
         for (line, bg) in lines {
             pairs.push(pair(line, bg, QUIET_LINE_MIN));
-        }
-        // The sidebar's avatars' letters on both ends of their gradients (M11r).
-        for (c, (top, bottom, ink)) in TabColor::ALL.into_iter().zip(ui.avatars) {
-            pairs.push(pair(("avatar_ink", ink), (c.name(), top), TEXT_MIN));
-            pairs.push(pair(("avatar_ink", ink), (c.name(), bottom), TEXT_MIN));
         }
         // A waiting row's Open button: the sidebar's colour on the waiting colour (M11r).
         pairs.push(pair(

@@ -421,3 +421,39 @@ ones the known display-dependent scenes (checked against master in a worktree: s
 5. ⌘\ to hide the sidebar: its button appears just right of the traffic lights; clicking it brings the sidebar back.
 6. Dragging a tab still shows the gap and drops where it shows.
 
+## Chores after M11q, part 2 (2026-11-20, the critique's five fixes)
+
+A UI/UX critique of the pill-tab chores (impeccable, design review only: native app) scored the chrome 24/36 and
+named five issues; your call: "fix all five". Mid-way, your screenshot of the collapsed band: "fix alignment and add
+more acceptable gaps". Built on master, test first.
+
+1. **One icon set everywhere.** Every hand-drawn line icon (the bars', the sidebar's search, bell, gear, folders and
+   chevrons, the Changes bar's, the file and browser bars', the callouts', the update pill's) is now drawn from Lucide
+   (`tab_bar::Glyph` is `icons::Icon`; 41 files in `assets/icons/lucide/`). The sidebar button is Lucide's
+   panel-left. The per-icon stroke widths went (the set has its own).
+2. **No coloured tiles in the sidebar.** A row's avatar keeps its letters on a hairline outline with no fill; the
+   letters are dim, or your tab colour when you set one (`avatar_ink`). The name-picked gradient palette is gone from
+   the themes. Colour in a row now means status. **AI's call:** keep the letters (they tell rows apart).
+3. **One line across the window's top.** The traffic lights, the sidebar band's title and button, and every pane
+   bar's pills are centred on `CHROME_LINE` (28 pt: the 8 pt strip plus half the 40 pt bar). The sidebar's band is
+   48 pt (down to the bars' bottom). On macOS 26 the lights are 14 pt, 22 apart; the button after them starts 12 pt
+   past the green one (your "more acceptable gaps"; it was about 8).
+4. **One right-sidebar button per window**, on the top-right pane's bar; the other panes keep only ⋯ (and +).
+5. **Collapsed: no second header.** With the sidebar hidden there is no band over the card: the card rises to the
+   8 pt strip, and [sidebar] [🔔] [⚙] sit by the traffic lights in the top-left pane's bar, whose tabs start 12 pt
+   after the ⚙ (that room drags the window). The 🔔's popover drops from the 🔔. The workspace's name is no longer
+   shown there (the sidebar's row says it). **AI's call:** the 🔔 and ⚙ go left with the sidebar button, not right,
+   so they never sit over the right panel's switch.
+
+**Checks:** 2215 tests; clippy: no new warnings; fmt; full ui-shots 246 passed, 6 failed, all six the known
+display-dependent scenes (`title-area`, one of them before, passes now).
+
+**On-screen check (yours):** with `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`:
+1. The traffic lights, "the Fuxx?", the sidebar button and the tab pills share one line.
+2. ⌘\ hides the sidebar: no band appears over the terminals; [sidebar] [🔔] [⚙] sit just right of the lights with
+   a clear gap, the tabs after them; pressing the empty space after the ⚙ drags the window.
+3. The 🔔 there opens its list just under it; the ⚙ opens Preferences; the sidebar button brings the sidebar back.
+4. Split right and down: only the top-right pane has the right-panel button; ⋯ is in every pane.
+5. Sidebar rows show letters on an outline (no coloured squares); a row you coloured shows its letters in that colour.
+6. Icons everywhere (search, bell, gear, folders, chevrons, Changes bar, file bar) look like one family.
+

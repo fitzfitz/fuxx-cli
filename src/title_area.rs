@@ -9,14 +9,16 @@
 //! app's title, "the Fuxx?", in its middle (M11m), where it fits (`shows_title`), and the
 //! sidebar button at its right edge (`sidebar_toggle`).
 //!
-//! With the sidebar hidden (M11m) the window's band is the title bar: the name centred on the
-//! window (drawn at its root over the panes' band and the right sidebar's), the sidebar button
-//! just past the traffic lights (since 2026-11-20) and [🔔] [⚙] at its far right
-//! (`band_buttons`), the 🔔 and ⚙ doing what the footer's do.
+//! With the sidebar hidden (M11m) the window had a band of its own over the card, with the
+//! workspace's name; since 2026-11-20 (critique issue 5: two headers stacked) the card rises to
+//! the top as with the sidebar shown, and [sidebar] [🔔] [⚙] sit just past the traffic lights,
+//! on the window's line, in the top-left pane's bar, whose tabs start after them
+//! (`band_buttons`, `band_reserve`); the 🔔 and ⚙ do what the footer's do. No name: the
+//! sidebar's selected row says it.
 //!
 //! The popover is one of the overlays (one open at a time): it opens upward from the footer's
 //! 🔔, over the sidebar with its right edge the gear's, or, with the sidebar hidden, drops down
-//! from the band's 🔔 with its right edge the band's; every sidebar toggle closes it (its 🔔
+//! from the band's 🔔 with its left edge the 🔔's; every sidebar toggle closes it (its 🔔
 //! goes), giving the keyboard back to the terminal. The 🔔 stays lit on its fill while it shows
 //! (as the + with its menu). It holds the keyboard so Escape closes it, and a click anywhere
 //! else, or a shortcut that moves the keyboard (`close_menus`), closes it too. Clicking an entry
@@ -26,7 +28,7 @@
 //!
 //! `footer_buttons`, `band_buttons`, `popover_anchor`, `list_room`, `entry_top`, the band's
 //! `band_popover_anchor`, `band_popover_width`, `band_list_room` and `band_entry_top`,
-//! `name_inset` and `shows_title` are the pure geometry.
+//! `band_reserve` and `shows_title` are the pure geometry.
 
 use std::time::Instant;
 
@@ -40,7 +42,7 @@ use crate::notification_list::Entry;
 use crate::overlay_panel;
 use crate::preferences;
 use crate::sidebar::{FOOTER, MARK_SLOT, mark_size, mark_slot, tabular};
-use crate::sidebar_toggle::{self, BAND_EDGE, HIT, Tip, band_button};
+use crate::sidebar_toggle::{self, HIT, Tip, band_button};
 use crate::status::{self, Status};
 use crate::status_bar::status_bar_room;
 use crate::status_mark;
@@ -48,7 +50,7 @@ use crate::tab_bar::{Glyph, footer_glyph};
 use crate::tab_menu::Dismiss;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
-use crate::ui_tokens::size::{STATUS_BAR, TOP_BAND};
+use crate::ui_tokens::size::{CHROME_LINE, STATUS_BAR, TOP_BAND};
 use crate::ui_tokens::{TEXT_MIN, ensure_contrast, text};
 use crate::workspace::{Overlay, Workspace};
 
@@ -58,11 +60,6 @@ pub(crate) const FOOTER_GAP: f32 = 12.0;
 /// The footer's inset from the sidebar's sides (and its New button's height, below).
 pub(crate) const FOOTER_SIDE: f32 = 14.0;
 pub(crate) const FOOTER_NEW: f32 = 38.0;
-/// The space between the workspace's name and what is beside it in the collapsed band (the
-/// lights, the band's buttons), and the least room the name is drawn in (less would show little
-/// more than an ellipsis).
-const NAME_GAP: f32 = 12.0;
-const NAME_MIN: f32 = 60.0;
 /// The app's title, drawn in the open sidebar's band (M11m), the least room it is drawn in
 /// (centred on the sidebar's middle), and the least space between it and the sidebar button.
 pub(crate) const TITLE: &str = "the Fuxx?";
@@ -76,11 +73,10 @@ pub(crate) const TITLE_GAP: f32 = 8.0;
 pub(crate) const PREFERENCES_TIP: &str = "Preferences (⌘,)";
 /// The 🔔's tooltip (the footer's, and the collapsed band's).
 pub(crate) const NOTIFICATIONS_TIP: &str = "Notifications";
-/// The collapsed band's buttons (M11m), [🔔] [⚙] at the window's right (the sidebar button by
-/// the traffic lights since 2026-11-20): the space between them, and the right group's width
-/// from the 🔔's left edge to the window's right edge.
+/// The collapsed sidebar's buttons (M11m; [sidebar] [🔔] [⚙] by the traffic lights since
+/// 2026-11-20): the space between them, and between the ⚙ and the top-left pane's first tab.
 pub(crate) const BAND_GAP: f32 = 4.0;
-pub(crate) const BAND_GROUP: f32 = BAND_EDGE + 2.0 * HIT + BAND_GAP;
+pub(crate) const RESERVE_GAP: f32 = 12.0;
 /// The band 🔔's and ⚙'s hover groups.
 pub(crate) const BAND_BELL_GROUP: &str = "band-notifications";
 pub(crate) const BAND_PREFERENCES_GROUP: &str = "band-preferences";
@@ -109,12 +105,11 @@ const ENTRY_GAP: f32 = 2.0;
 const ENTRY: f32 = ENTRY_PAD + LINE + SUB + ENTRY_PAD;
 /// A script's notification's mark (it has no status).
 const SCRIPT_DOT: f32 = 6.0;
-/// The footer's 🔔 button's hover group, and the footer icons' box and line width (the same for
-/// the +, the 🔔 and the gear).
+/// The footer's 🔔 button's hover group, and the footer icons' box (the same for the +,
+/// the 🔔 and the gear).
 pub(crate) const BELL_GROUP: &str = "notifications-button";
 pub(crate) const PREFERENCES_GROUP: &str = "sidebar-preferences";
 const ICON: f32 = 15.0;
-const STROKE: f32 = 1.5;
 
 /// The popover's height around its list: its edge, padding, header and the gap under it.
 const PANEL_CHROME: f32 = 2.0 + 2.0 * PADDING + HEADER + PADDING;
@@ -167,10 +162,10 @@ pub(crate) fn band_popover_width(window_width: f32) -> f32 {
     (window_width - 2.0 * EDGE_MARGIN).clamp(POPOVER_MIN, POPOVER_WIDTH)
 }
 
-/// The popover's top right corner from the collapsed band's 🔔: just under the band, its right
-/// edge the band's (`BAND_EDGE` from the window's), so it drops down over the band's buttons.
-pub(crate) fn band_popover_anchor(window_width: f32) -> (f32, f32) {
-    (window_width - BAND_EDGE, TOP_BAND + POPOVER_DROP)
+/// The popover's top left corner from the collapsed sidebar's 🔔: just under the pane bars, its
+/// left edge the 🔔's.
+pub(crate) fn band_popover_anchor(full_screen: bool) -> (f32, f32) {
+    (band_buttons(full_screen)[1], TOP_BAND + POPOVER_DROP)
 }
 
 /// The most the list may take in the popover from the band, in a window `viewport_height` high:
@@ -188,29 +183,20 @@ pub(crate) fn band_entry_top(i: usize) -> f32 {
     TOP_BAND + POPOVER_DROP + 1.0 + PADDING + HEADER + PADDING + i as f32 * (ENTRY + ENTRY_GAP)
 }
 
-/// The left edges, in a window `window_width` wide (`full_screen` or not), of the collapsed
-/// band's buttons (🔔, ⚙, sidebar): the ⚙ `BAND_EDGE` from the window's right edge, the 🔔
-/// `BAND_GAP` to its left; the sidebar button on the left, just past the traffic lights
-/// (`lights_clear`; your call, 2026-11-20: "beside the 3 window button on the left").
-pub fn band_buttons(window_width: f32, full_screen: bool) -> [f32; 3] {
-    let gear = window_width - BAND_EDGE - HIT;
-    [
-        gear - BAND_GAP - HIT,
-        gear,
-        sidebar_toggle::lights_clear(full_screen),
-    ]
+/// The left edges, windowed or `full_screen`, of the collapsed sidebar's buttons [sidebar] [🔔]
+/// [⚙]: in a row from just past the traffic lights (`lights_clear`; your call, 2026-11-20: "on
+/// collapse, put the sidebar toggle button beside the 3 window button on the left"), `BAND_GAP`
+/// apart.
+pub fn band_buttons(full_screen: bool) -> [f32; 3] {
+    let sidebar = sidebar_toggle::lights_clear(full_screen);
+    let bell = sidebar + HIT + BAND_GAP;
+    [sidebar, bell, bell + HIT + BAND_GAP]
 }
 
-/// How far in from each side of the window the workspace's name keeps in the collapsed band:
-/// clear of the traffic lights and the sidebar button by them on the left and of the 🔔 and ⚙
-/// on the right, the same on both sides so it stays centred on the window.
-pub fn name_inset(full_screen: bool) -> f32 {
-    (sidebar_toggle::lights_clear(full_screen) + HIT).max(BAND_GROUP) + NAME_GAP
-}
-
-/// Whether a window `width` wide has room for the name between its insets.
-pub fn shows_name(width: f32, full_screen: bool) -> bool {
-    width - 2.0 * name_inset(full_screen) >= NAME_MIN
+/// Where, from the window's left edge, the top-left pane's tabs may start with the sidebar
+/// hidden: `RESERVE_GAP` past the ⚙.
+pub fn band_reserve(full_screen: bool) -> f32 {
+    band_buttons(full_screen)[2] + HIT + RESERVE_GAP
 }
 
 /// Whether the open sidebar's band, `sidebar_width` wide in a window `window_width` wide, has
@@ -359,7 +345,7 @@ impl Workspace {
             .child(header)
             .child(body);
         let (anchor, (x, y)) = if from_band {
-            (Anchor::TopRight, band_popover_anchor(width))
+            (Anchor::TopLeft, band_popover_anchor(window.is_fullscreen()))
         } else {
             (
                 Anchor::BottomLeft,
@@ -502,7 +488,7 @@ impl Workspace {
     }
 
     /// The app's title for the open sidebar's band: centred on the band's full width (the
-    /// sidebar's middle), vertically centred, never cut; `None` where it doesn't fit
+    /// sidebar's middle), on the window's line, never cut; `None` where it doesn't fit
     /// (`shows_title`). It takes no clicks, so the band under it still drags the window and a
     /// double-click still zooms.
     pub(crate) fn render_app_title(&self, ui: UiColors, window: &Window) -> Option<AnyElement> {
@@ -511,9 +497,11 @@ impl Workspace {
             return None;
         }
         Some(
+            // Centred on the window's line (`CHROME_LINE`, below the band's middle): the box
+            // runs from as far above the line as the band's bottom is below it.
             div()
                 .absolute()
-                .top_0()
+                .top(px(2.0 * CHROME_LINE - TOP_BAND))
                 .bottom_0()
                 .left_0()
                 .right_0()
@@ -533,49 +521,10 @@ impl Workspace {
         )
     }
 
-    /// The selected workspace's name for the collapsed band, placed at the window's root over
-    /// both bands (the panes' and the right sidebar's): centred on the window between its
-    /// insets (`name_inset`), cut with an ellipsis when the window is narrow (and left out when
-    /// there's hardly room for one). It takes no clicks, so the bands under it still drag the
-    /// window and a double-click still zooms.
-    pub(crate) fn render_workspace_name(
-        &self,
-        ui: UiColors,
-        window: &Window,
-    ) -> Option<AnyElement> {
-        let ws = self.model.focused_workspace()?;
-        let full_screen = window.is_fullscreen();
-        if !shows_name(window.viewport_size().width.as_f32(), full_screen) {
-            return None;
-        }
-        let inset = name_inset(full_screen);
-        Some(
-            div()
-                .absolute()
-                .top_0()
-                .h(px(TOP_BAND))
-                .left(px(inset))
-                .right(px(inset))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .min_w(px(0.0))
-                        .truncate()
-                        .text_size(px(text::NAME))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(hsla(ui.text))
-                        .child(self.workspace_label(ws)),
-                )
-                .into_any_element(),
-        )
-    }
-
-    /// The title area (M11p's title part): the collapsed band's workspace name and buttons,
-    /// filling a full-width `TOP_BAND` box at the window's top left (its holder places it).
-    /// Empty while the sidebar is shown (its band has them). The box takes no clicks: what is
-    /// under it gets them, except on the buttons.
+    /// The title area (M11p's title part): the collapsed sidebar's buttons, in a full-width
+    /// `TOP_BAND` box at the window's top left (its holder places it). Empty while the sidebar
+    /// is shown (its band has them). The box takes no clicks: what is under it gets them,
+    /// except on the buttons.
     pub(crate) fn render_title(
         &mut self,
         ui: UiColors,
@@ -583,23 +532,15 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         crate::chrome_cache::bump(crate::chrome_cache::Counted::Title);
-        // The name waits for the hide slide to end, so it never paints over the sliding
-        // sidebar's title and rows; it shows at once when the sidebar has left.
-        let name = if self.sidebar.hidden && self.slide.is_none() {
-            self.render_workspace_name(ui, window)
-        } else {
-            None
-        };
         div()
             .relative()
             .size_full()
-            .children(name)
             .children(self.render_band_buttons(ui, window, cx))
             .into_any_element()
     }
 
-    /// The collapsed band's buttons (M11m): [🔔] [⚙] at the window's far right and the sidebar
-    /// button by the traffic lights (2026-11-20), at `band_buttons`, in the sidebar button's look. The 🔔 opens the notifications popover (lit
+    /// The collapsed sidebar's buttons (M11m): [sidebar] [🔔] [⚙] by the traffic lights
+    /// (2026-11-20), at `band_buttons`, in the sidebar button's look. The 🔔 opens the notifications popover (lit
     /// on its fill while that shows, with the unseen dot while some are unseen), the ⚙ opens
     /// Preferences (as ⌘,), the sidebar button shows the sidebar. Each one's press is its own: it
     /// never drags the window. `None` while the sidebar is shown (its footer has the 🔔 and ⚙,
@@ -613,16 +554,13 @@ impl Workspace {
         if !self.sidebar.hidden {
             return None;
         }
-        let [bell_x, gear_x, sidebar_x] = band_buttons(
-            window.viewport_size().width.as_f32(),
-            window.is_fullscreen(),
-        );
+        let [sidebar_x, bell_x, gear_x] = band_buttons(window.is_fullscreen());
         let popover = self.notifications_popover.is_some();
         let unseen = self.notifications.unseen() > 0;
         let bell = band_button("band-notifications", BAND_BELL_GROUP, bell_x, ui)
             .when(popover, |b| b.bg(hsla(ui.panel_hover)))
             .child(footer_icon(Glyph::Bell, ui, BAND_BELL_GROUP, popover))
-            .when(unseen, |b| b.child(unseen_dot(ui)))
+            .when(unseen, |b| b.child(unseen_dot(ui, ui.card)))
             .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip(NOTIFICATIONS_TIP.into())).into() })
             .on_click(
                 cx.listener(|this, _: &ClickEvent, window, cx| this.open_notifications(window, cx)),
@@ -641,7 +579,7 @@ impl Workspace {
                 .child(bell)
                 .child(gear)
                 // The sidebar button by the lights only once a hide slide has ended (the
-                // sliding sidebar carries its own past that spot until then), as the name.
+                // sliding sidebar carries its own past that spot until then).
                 .when(self.slide.is_none(), |band| {
                     band.child(self.render_sidebar_button(ui, sidebar_x, cx))
                 })
@@ -678,20 +616,21 @@ pub(crate) fn footer_icon(kind: Glyph, ui: UiColors, group: &'static str, lit: b
         .relative()
         .size(px(ICON))
         .child(
-            footer_glyph(kind, dim, ICON, STROKE)
+            footer_glyph(kind, dim, ICON)
                 .absolute()
                 .group_hover(group, |s| s.invisible()),
         )
         .child(
-            footer_glyph(kind, ui.text, ICON, STROKE)
+            footer_glyph(kind, ui.text, ICON)
                 .absolute()
                 .invisible()
                 .group_hover(group, |s| s.visible()),
         )
 }
 
-/// The unseen dot for the 🔔's top right, ringed in the sidebar's colour.
-pub(crate) fn unseen_dot(ui: UiColors) -> Div {
+/// The unseen dot for the 🔔's top right, ringed in `ring`, the colour under it (the sidebar's in
+/// its footer, the card's by the lights).
+pub(crate) fn unseen_dot(ui: UiColors, ring: Rgb) -> Div {
     div()
         .absolute()
         .top(px(DOT_INSET))
@@ -699,7 +638,7 @@ pub(crate) fn unseen_dot(ui: UiColors) -> Div {
         .size(px(DOT))
         .rounded_full()
         .border_2()
-        .border_color(hsla(ui.sidebar_background))
+        .border_color(hsla(ring))
         .bg(hsla(ui.accent))
 }
 
@@ -841,57 +780,43 @@ mod tests {
         assert_eq!(top, y - 1.0 - PADDING - list_room(600.0, STATUS_BAR));
     }
 
+    /// Critique issue 5 (2026-11-20): collapsed, there is no band over the card; the sidebar
+    /// button, the 🔔 and the ⚙ sit by the traffic lights in a row, in the top-left pane's bar,
+    /// whose tabs start `RESERVE_GAP` past the ⚙.
     #[test]
-    fn the_band_has_the_sidebar_button_by_the_lights_and_bell_gear_at_the_right() {
-        use crate::sidebar_toggle::{BAND_EDGE, lights_clear};
-        // Your call (2026-11-20): "on collapse, put the sidebar toggle button beside the 3
-        // window button on the left". [🔔, ⚙, sidebar] left edges.
-        assert_eq!(band_buttons(960.0, false), [900.0, 928.0, 80.0]);
+    fn collapsed_the_bands_buttons_sit_by_the_lights_and_the_tabs_start_after_them() {
+        use crate::sidebar_toggle::lights_clear;
+        assert_eq!(band_buttons(false), [84.0, 112.0, 140.0]);
         for fs in [false, true] {
-            for w in [240.0, 360.0, 760.0, 1600.0] {
-                let b = band_buttons(w, fs);
-                assert_eq!(
-                    b[2],
-                    lights_clear(fs),
-                    "{w}, {fs}: the sidebar button by the lights"
-                );
-                assert_eq!(
-                    b[1] + HIT + BAND_EDGE,
-                    w,
-                    "{w}, {fs}: the gear at the right edge"
-                );
-                assert_eq!(
-                    b[0] + HIT + BAND_GAP,
-                    b[1],
-                    "{w}, {fs}: the bell beside the gear"
-                );
-                assert_eq!(w - b[0], BAND_GROUP, "{w}, {fs}: the right group's width");
-            }
+            let [sidebar, bell, gear] = band_buttons(fs);
+            assert_eq!(
+                sidebar,
+                lights_clear(fs),
+                "{fs}: the sidebar button by the lights"
+            );
+            assert_eq!(bell, sidebar + HIT + BAND_GAP, "{fs}: the bell next");
+            assert_eq!(gear, bell + HIT + BAND_GAP, "{fs}: then the gear");
+            assert_eq!(
+                band_reserve(fs),
+                gear + HIT + RESERVE_GAP,
+                "{fs}: the tabs' start"
+            );
         }
-        // The collapsed band keeps its own margin (the open button's is `OPEN_EDGE`).
-        assert_eq!(BAND_EDGE, 8.0);
-        assert_eq!(BAND_GROUP, 60.0);
+        assert_eq!(band_reserve(false), 176.0);
     }
 
     #[test]
-    fn the_band_popover_drops_from_the_band_inside_the_window() {
-        use crate::sidebar_toggle::BAND_EDGE;
-        // 300 pt: the window's margins bind the width (284 pt, under `POPOVER_WIDTH`).
+    fn the_band_popover_drops_from_the_bell_inside_the_window() {
+        for fs in [false, true] {
+            let (l, t) = band_popover_anchor(fs);
+            assert_eq!(l, band_buttons(fs)[1], "{fs}: its left edge the bell's");
+            assert_eq!(t, TOP_BAND + POPOVER_DROP, "{fs}: just under the bars");
+        }
         for w in [300.0, 360.0, 760.0, 960.0, 1600.0] {
-            let (r, t) = band_popover_anchor(w);
-            assert_eq!(r, w - BAND_EDGE, "width {w}: its right edge the band's");
-            assert_eq!(t, TOP_BAND + POPOVER_DROP, "width {w}: just under the band");
             let pw = band_popover_width(w);
             assert!(
                 (POPOVER_MIN..=POPOVER_WIDTH).contains(&pw),
                 "width {w}: {pw} wide"
-            );
-            assert!(r - pw >= EDGE_MARGIN, "width {w}: inside the window");
-            assert!(
-                r - pw <= band_buttons(w, false)[0],
-                "width {w}: it spans the 🔔 ({} vs {})",
-                r - pw,
-                band_buttons(w, false)[0]
             );
         }
         assert_eq!(band_popover_width(1600.0), POPOVER_WIDTH);
@@ -912,7 +837,7 @@ mod tests {
     #[test]
     fn the_band_popovers_list_stops_above_the_status_bar() {
         for h in [300.0, 480.0, 600.0, 1000.0] {
-            let (_, t) = band_popover_anchor(960.0);
+            let (_, t) = band_popover_anchor(false);
             assert!(
                 t + PANEL_CHROME + band_list_room(h, STATUS_BAR) <= h - STATUS_BAR - EDGE_MARGIN,
                 "height {h}: {} vs {}",
@@ -937,24 +862,6 @@ mod tests {
     }
 
     #[test]
-    fn the_name_keeps_clear_of_the_lights_and_the_band_buttons() {
-        // Clear of the lights and the sidebar button beside them (windowed), of the bell and
-        // gear (both); the same on both sides, so centred.
-        assert_eq!(name_inset(false), 80.0 + HIT + NAME_GAP);
-        assert_eq!(name_inset(true), BAND_GROUP + NAME_GAP);
-        for fs in [false, true] {
-            assert!(
-                name_inset(fs) >= lights_clear(fs) + HIT + NAME_GAP,
-                "full screen {fs}: clear of the lights and the sidebar button"
-            );
-            assert!(
-                name_inset(fs) >= BAND_GROUP + NAME_GAP,
-                "full screen {fs}: clear of the band buttons"
-            );
-        }
-    }
-
-    #[test]
     fn the_title_shows_where_it_fits() {
         assert!(
             shows_title(240.0, 960.0, false),
@@ -965,7 +872,7 @@ mod tests {
             "too narrow beside the lights"
         );
         assert!(shows_title(180.0, 960.0, true), "no lights in full screen");
-        let t = 2.0 * (80.0 + TITLE_ROOM / 2.0);
+        let t = 2.0 * (84.0 + TITLE_ROOM / 2.0);
         assert!(shows_title(t, 960.0, false), "at the threshold {t}");
         assert!(
             !shows_title(t - 0.5, 960.0, false),
@@ -1032,21 +939,6 @@ mod tests {
                 }
                 s += 5.0;
             }
-        }
-    }
-
-    #[test]
-    fn a_window_too_narrow_for_the_name_leaves_it_out() {
-        for fs in [false, true] {
-            let least = 2.0 * name_inset(fs) + NAME_MIN;
-            assert!(
-                shows_name(least, fs),
-                "full screen {fs}: {least} pt shows it"
-            );
-            assert!(
-                !shows_name(least - 0.5, fs),
-                "full screen {fs}: just under doesn't"
-            );
         }
     }
 }

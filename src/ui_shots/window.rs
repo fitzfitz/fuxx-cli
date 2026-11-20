@@ -694,7 +694,7 @@ fn window_scenes() {
             };
             let path = shoot(scene, slug, &theme, dims, build);
             let shot = render(&theme, dims, build);
-            check_window(&shot, &theme, dims, split, hidden, scene, slug);
+            check_window(&shot, &theme, dims, split, scene, slug);
             println!("ui-shots: {}", path.display());
         }
     }
@@ -708,11 +708,10 @@ fn check_window(
     theme: &Theme,
     dims: Size<Pixels>,
     split: bool,
-    hidden: bool,
     scene: &str,
     slug: &str,
 ) {
-    use ui_tokens::size::{CARD_RADIUS, HAIRLINE, STATUS_BAR, TAB_BAR, TOP_BAND};
+    use ui_tokens::size::{CARD_RADIUS, HAIRLINE, STATUS_BAR, TAB_BAR};
 
     let scale = shot.width as f32 / f32::from(dims.width);
     let bg = theme.background;
@@ -734,7 +733,8 @@ fn check_window(
     // The card starts under the band (sidebar hidden) or the `CARD_INSET` strip, and ends
     // `CARD_INSET` short of the window's right and the status bar (M11al); inside its 1 pt edge,
     // each pane's tab bar, then its terminal.
-    let card_top = if hidden { TOP_BAND } else { CARD_INSET };
+    // Under the `CARD_INSET` strip, the sidebar shown or hidden (2026-11-20: no band over it).
+    let card_top = CARD_INSET;
     let top = card_top + HAIRLINE + TAB_BAR;
     let (right, bottom) = (
         w - CARD_INSET - HAIRLINE,
@@ -774,12 +774,6 @@ fn check_window(
     }
     canvas(w * 0.75, h - STATUS_BAR - CARD_INSET / 2.0);
     canvas(w * 0.75, card_top / 2.0);
-    if hidden {
-        for x in [w * 0.75, w - 20.0] {
-            canvas(x, 6.0);
-            canvas(x, TOP_BAND - CARD_INSET / 2.0);
-        }
-    }
     // The left pane's left padding: where the terminal background starts (after the sidebar,
     // or the inset, and the card's edge), `pad_x` of background, then the grid's first column (its
     // prompt and output) within a cell and a half (the grid's leftover width is shared by both
@@ -1818,17 +1812,17 @@ fn one_card_slide_scene() {
 }
 
 /// M11al §3.1 with the sidebar hidden (⌘B), in both themes (960 × 600): `card-sidebar-hidden`.
-/// Panics unless the card starts `CARD_INSET` from the window's left, right under the window's
-/// top band (`TOP_BAND`), and keeps its insets on the right and above the status bar
-/// (`check_one_card`); the canvas shows left of it and in the band.
+/// Panics unless the card starts `CARD_INSET` from the window's left and top (2026-11-20: no band
+/// over it), and keeps its insets on the right and above the status bar (`check_one_card`); the
+/// canvas shows left of it and in the strip above it.
 fn one_card_sidebar_hidden_scene() {
-    use ui_tokens::size::{CARD_INSET, STATUS_BAR, TOP_BAND};
+    use ui_tokens::size::{CARD_INSET, STATUS_BAR};
 
     let dims = size(px(960.0), px(600.0));
     let (w, h) = (960.0_f32, 600.0_f32);
     let bounds = (
         CARD_INSET,
-        TOP_BAND,
+        CARD_INSET,
         w - CARD_INSET,
         h - STATUS_BAR - CARD_INSET,
     );
@@ -1849,12 +1843,11 @@ fn one_card_sidebar_hidden_scene() {
         let n = format!("card-sidebar-hidden-{slug}");
         let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
         check_one_card(&shot, dims, &ui, bounds, ui.card, &n);
-        // Left of the card, and the band above it (away from the name centred in it and the
-        // buttons at its right).
+        // Left of the card, and the strip above it.
         for (what, x, y) in [
             ("left of the card", CARD_INSET / 2.0, 300.0),
-            ("in the band", 200.0, TOP_BAND / 2.0),
-            ("in the band, just above the card", 200.0, TOP_BAND - 2.0),
+            ("in the strip above the card", 200.0, CARD_INSET / 2.0),
+            ("in the strip, just above the card", 500.0, CARD_INSET - 2.0),
         ] {
             let p = at(x, y);
             assert!(is_canvas(p, &ui), "{n}: canvas {what} at ({x}, {y}): {p:?}");
@@ -2128,9 +2121,9 @@ const LONG_NAME: &str = "Refactor the auth middleware to use the new session sto
 /// - `title-popover-empty`: the popover with none yet.
 ///
 /// Panics unless the dot shows exactly while some are unseen (and never with the sidebar
-/// hidden), the band (sidebar hidden) holds no 🔔 or + where they were, opening the popover sees
-/// them all (and it counts as an overlay), the name is drawn in the band only with the sidebar
-/// hidden and never past its inset; and (Mocha) unless a press where the buttons were still arms
+/// hidden), opening the popover sees them all (and it counts as an overlay), with the sidebar
+/// hidden the card's top-left bar holds a bare room for the lights, then the sidebar button,
+/// the 🔔 and the ⚙, and its first tab at `band_reserve` (2026-11-20); and (Mocha) unless a press where the buttons were still arms
 /// a window drag, a press on the 🔔 doesn't, a click on the 🔔 opens the popover and Escape or a
 /// click outside closes it, a click on the + opens its menu, a click on a closed terminal's entry
 /// (or a script's with no terminal) does nothing, a click on agent's entry shows agent (its
@@ -2139,8 +2132,8 @@ fn title_area_scenes() {
     use crate::sidebar_toggle::{BUTTON_Y, HIT, lights_clear};
     use crate::tab_menu::Dismiss;
     use crate::title_area::{
-        DOT, DOT_INSET, FOOTER_BUTTON, band_buttons, entry_top, footer_buttons, name_inset,
-        popover_anchor, popover_width,
+        DOT, DOT_INSET, FOOTER_BUTTON, band_buttons, entry_top, footer_buttons, popover_anchor,
+        popover_width,
     };
     use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, STATUS_BAR};
     use gpui::{Focusable, KeyBinding, Modifiers, MouseButton};
@@ -2259,7 +2252,8 @@ fn title_area_scenes() {
                         assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot");
                         assert!(bell_has(ui.text_dim), "{n}: the bell, dim");
                         // Each icon's drawn ink (pixels at least half-way from the footer's
-                        // colour to the dim text colour): 14-16 px tall, the three centred on
+                        // colour to the dim text colour): 8-16 px tall (the icon set's keep a
+                        // margin in their 15 pt box: the + is 9, since 2026-11-20), centred on
                         // one line, the bell and gear centred in their `footer_buttons` slots,
                         // the + centred in the New button's padding (its left edge as far from
                         // the sidebar's left edge as the gear's box is from its right edge: the
@@ -2278,7 +2272,7 @@ fn title_area_scenes() {
                         for (name, b) in ["+", "bell", "gear"].iter().zip(boxes) {
                             let tall = b.3 - b.2;
                             assert!(
-                                (14.0..=16.0).contains(&tall),
+                                (8.0..=16.0).contains(&tall),
                                 "{n}: the {name} is {tall} px tall"
                             );
                         }
@@ -2391,65 +2385,54 @@ fn title_area_scenes() {
                 // No footer, so no 🔔, whatever is unseen: nothing at the foot but the panes.
                 assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot");
             }
-            // With the sidebar hidden the band holds no 🔔 or + where they were: only the canvas
-            // the cards sit on (the sidebar's colour since M11i) from the band's left (the lights,
-            // which shots don't draw) to the name's inset; its buttons are at its right now
-            // (M11m). (With it shown the band holds the title there now: `title-bar`.)
-            let inset = name_inset(false);
+            // With the sidebar hidden (2026-11-20, critique issue 5) there is no band over the
+            // card: the card's top-left bar holds the room for the lights (bare: shots don't draw
+            // them), then [sidebar] [🔔] [⚙] on the window's line, and its tabs start at
+            // `band_reserve`; no name.
             if hidden {
-                let stop = inset - 2.0;
-                for y in [sy + 2.0, sy + HIT / 2.0, sy + HIT - 2.0] {
-                    let mut x = 0.0;
-                    while x < stop {
-                        // (The canvas, within the shadow's slack: the card's shadow reaches a
-                        // little way up into the band.)
+                let [side_x, bell_x, gear_x] = band_buttons(false);
+                let card = bg(theme.background);
+                let line = sy + HIT / 2.0;
+                // The lights' room: the card's own colour from past its corner to the buttons.
+                for y in [sy + 2.0, line, sy + HIT - 2.0] {
+                    let mut x = ui_tokens::size::CARD_INSET + ui_tokens::size::CARD_RADIUS;
+                    while x < side_x - 1.0 {
                         let p = at(x, y);
-                        assert!(
-                            is_canvas(p, &ui),
-                            "{n}: the band is bare at ({x}, {y}): {p:?}"
-                        );
+                        assert_eq!(p, card, "{n}: the lights' room is bare at ({x}, {y})");
                         x += 1.0;
                     }
                 }
-            }
-            // The name: ink in the band's middle with the sidebar hidden, none past its inset
-            // (the band is the canvas, M11i).
-            let band_ink = |x0: f32, x1: f32| -> usize {
-                (0..20)
-                    .map(|k| 9.0 + k as f32)
-                    .map(|y| {
-                        let mut x = x0;
-                        let mut inked = 0;
-                        while x < x1 {
-                            // (Not the canvas: its shade under the card's shadow isn't ink.)
-                            inked += usize::from(!is_canvas(at(x, y), &ui));
-                            x += 1.0;
-                        }
-                        inked
-                    })
-                    .sum()
-            };
-            if hidden {
-                assert!(
-                    band_ink(inset, width - inset) > 20,
-                    "{n}: the name in the band"
+                // Each button's icon: ink in its box.
+                for (what, x0) in [("sidebar", side_x), ("bell", bell_x), ("gear", gear_x)] {
+                    let inked = (0..HIT as usize)
+                        .flat_map(|dy| (0..HIT as usize).map(move |dx| (dx, dy)))
+                        .filter(|&(dx, dy)| at(x0 + dx as f32, sy + dy as f32) != card)
+                        .count();
+                    assert!(inked > 8, "{n}: the {what} button is drawn at {x0}");
+                }
+                // Between the ⚙ and the first tab: bare.
+                let reserve = crate::title_area::band_reserve(false);
+                let mut x = gear_x + HIT + 1.0;
+                while x < reserve - 1.0 {
+                    assert_eq!(at(x, line), card, "{n}: bare after the gear at {x}");
+                    x += 1.0;
+                }
+                // The first tab's pill starts at the reserve: its fill on the line just past it.
+                assert_ne!(
+                    at(reserve + 6.0, line),
+                    card,
+                    "{n}: the first tab at {reserve}"
                 );
-                // Between the name's room and the band's buttons (from `band_buttons`' 🔔 on).
-                assert_eq!(
-                    band_ink(width - inset, band_buttons(width, false)[0]),
-                    0,
-                    "{n}: nothing between the name's room and the band's buttons"
-                );
-                // The pane tab bars start under the band: the bar (no fill since M11al, the
-                // card) ends `TAB_BAR` under the card's top edge with its `card_border` line.
-                let line = ui_tokens::size::TOP_BAND
+                // The bars sit under the `CARD_INSET` strip: the bar's `card_border` line
+                // `TAB_BAR` under the card's top edge.
+                let rule = ui_tokens::size::CARD_INSET
                     + ui_tokens::size::HAIRLINE
                     + ui_tokens::size::TAB_BAR
                     - 0.5;
-                let p = at(width / 2.0, line);
+                let p = at(width / 2.0, rule);
                 assert!(
                     near(p, ui.card_border),
-                    "{n}: a bar's line at {line}: {p:?}"
+                    "{n}: a bar's line at {rule}: {p:?}"
                 );
             }
         }
@@ -2687,9 +2670,11 @@ fn title_bar_scenes() {
     use crate::tab_menu::Dismiss;
     use crate::title_area::{
         DOT, DOT_INSET, EDGE_MARGIN, FOOTER_BUTTON, TITLE_GAP, TITLE_ROOM, band_buttons,
-        band_entry_top, band_popover_anchor, band_popover_width, footer_buttons, name_inset,
+        band_entry_top, band_popover_anchor, band_popover_width, footer_buttons,
     };
-    use crate::ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, STATUS_BAR, TOP_BAND};
+    use crate::ui_tokens::size::{
+        CHROME_LINE, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, STATUS_BAR, TOP_BAND,
+    };
     use gpui::Focusable;
     use gpui::{KeyBinding, Modifiers, MouseButton};
     use std::cell::RefCell;
@@ -2761,9 +2746,8 @@ fn title_bar_scenes() {
                 button_x + HIT / 2.0
             );
             assert!(
-                (by - TOP_BAND / 2.0).abs() <= 0.5,
-                "{n}: the button's ink is centred at y {by}, the band's middle {}",
-                TOP_BAND / 2.0
+                (by - CHROME_LINE).abs() <= 0.5,
+                "{n}: the button's ink is centred at y {by}, the window's line {CHROME_LINE}"
             );
             let (gx, _) = mid(gear);
             assert!(
@@ -2771,11 +2755,12 @@ fn title_bar_scenes() {
                 "{n}: the button's ink at {bx}, the gear's at {gx}"
             );
             // Where the button was (right of the lights, which shots don't draw): nothing.
-            let old = ink_box(&shot, dims, (0.0, 0.0, 80.0, TOP_BAND), band, dim);
-            assert_eq!(old, None, "{n}: ink in the band's left (x 0 to 80)");
+            let clear = lights_clear(false);
+            let old = ink_box(&shot, dims, (0.0, 0.0, clear, TOP_BAND), band, dim);
+            assert_eq!(old, None, "{n}: ink in the band's left (x 0 to {clear})");
             match scene {
                 "title-bar-open-narrow" => {
-                    let between = (80.0, 0.0, button_x - 80.0, TOP_BAND);
+                    let between = (clear, 0.0, button_x - clear, TOP_BAND);
                     let ink = ink_box(&shot, dims, between, band, dim);
                     assert_eq!(ink, None, "{n}: no title in a narrow sidebar");
                 }
@@ -2801,12 +2786,12 @@ fn title_bar_scenes() {
                         sidebar_width / 2.0
                     );
                     assert!(
-                        (ty - TOP_BAND / 2.0).abs() <= 1.0,
-                        "{n}: the title's middle at y {ty}"
+                        (ty - CHROME_LINE).abs() <= 1.0,
+                        "{n}: the title's middle at y {ty}, the window's line {CHROME_LINE}"
                     );
                     assert!(
-                        t.0 >= 80.0 && t.1 <= button_x - TITLE_GAP,
-                        "{n}: the title {t:?} runs past [80, {}]",
+                        t.0 >= clear && t.1 <= button_x - TITLE_GAP,
+                        "{n}: the title {t:?} runs past [{clear}, {}]",
                         button_x - TITLE_GAP
                     );
                 }
@@ -2888,13 +2873,17 @@ fn title_bar_scenes() {
         render_with(&theme, size(px(200.0), px(200.0)), build, act);
     }
 
-    // Collapsed (M11m Task 2): the workspace's name centred on the window, [🔔] [⚙] [sidebar] at
-    // the band's far right.
+    // Collapsed (M11m Task 2; 2026-11-20, critique issue 5): no band over the card; [sidebar]
+    // [🔔] [⚙] by the lights, on the card's top-left bar, on the window's line; no name.
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let bg = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
-        let (band, dim, full) = (bg(ui.sidebar_background), bg(ui.text_dim), bg(ui.text));
+        let (band, card, dim) = (
+            bg(ui.sidebar_background),
+            bg(theme.background),
+            bg(ui.text_dim),
+        );
         for (scene, w, h) in [
             ("title-bar-collapsed", 760.0, 200.0),
             ("title-bar-collapsed-hover", 760.0, 200.0),
@@ -2906,7 +2895,7 @@ fn title_bar_scenes() {
             ("title-bar-sliding", 760.0, 200.0),
         ] {
             let dims = size(px(w), px(h));
-            let b = band_buttons(w, false);
+            let b = band_buttons(false);
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
                 cx.set_global(sidebar_appearance(theme, cx));
                 let ws = cx.new(|cx| {
@@ -2935,7 +2924,7 @@ fn title_bar_scenes() {
                         });
                     }
                     if scene == "title-bar-collapsed" {
-                        // A hide slide that has finished: the name is back.
+                        // A hide slide that has finished: the sidebar button is back.
                         ws.slide = Some(Slide {
                             showing: false,
                             since: Instant::now() - Duration::from_millis(400),
@@ -2948,8 +2937,8 @@ fn title_bar_scenes() {
             };
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 let on = match scene {
-                    "title-bar-collapsed-hover" => Some(b[1]),
-                    "title-bar-collapsed-hover-sidebar" => Some(b[2]),
+                    "title-bar-collapsed-hover" => Some(b[2]),
+                    "title-bar-collapsed-hover-sidebar" => Some(b[0]),
                     _ => None,
                 };
                 if let Some(x) = on {
@@ -2963,19 +2952,16 @@ fn title_bar_scenes() {
             let n = format!("{scene}-{slug}");
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
             let mid = |b: (f32, f32, f32, f32)| ((b.0 + b.1) / 2.0, (b.2 + b.3) / 2.0);
-            // The three icons' ink, each read over its 24 × 24 slot: centred in it, all on the
-            // band's middle line.
-            // (Mid-slide the sidebar button by the lights waits: the bell and gear only.)
-            let slots = if scene == "title-bar-sliding" { 2 } else { 3 };
+            // The icons' ink, each read over its 24 × 24 slot on the card: centred in it, all on
+            // the window's line. (Mid-slide the sidebar button by the lights waits: the bell
+            // and gear only.)
+            let skip = usize::from(scene == "title-bar-sliding");
             let icons_at_slots = || {
-                let boxes: Vec<_> = (b.iter().take(slots))
-                    .map(|&x| {
-                        ink_box(&shot, dims, (x, BUTTON_Y, HIT, HIT), band, dim)
-                            .unwrap_or_else(|| panic!("{n}: no icon ink in the slot at {x}"))
-                    })
-                    .collect();
-                println!("ui-shots: {n}: band icons (x0, x1, y0, y1) {boxes:?}");
-                for ((name, x), &ink) in ["bell", "gear", "sidebar"].iter().zip(b).zip(&boxes) {
+                let names = ["sidebar", "bell", "gear"];
+                for (name, &x) in names.iter().zip(&b).skip(skip) {
+                    let ink = ink_box(&shot, dims, (x, BUTTON_Y, HIT, HIT), card, dim)
+                        .unwrap_or_else(|| panic!("{n}: no {name} ink in the slot at {x}"));
+                    println!("ui-shots: {n}: {name} ink (x0, x1, y0, y1) {ink:?}");
                     let (ix, iy) = mid(ink);
                     assert!(
                         (ix - (x + HIT / 2.0)).abs() <= 0.5,
@@ -2983,42 +2969,19 @@ fn title_bar_scenes() {
                         x + HIT / 2.0
                     );
                     assert!(
-                        (iy - TOP_BAND / 2.0).abs() <= 0.5,
-                        "{n}: the {name}'s ink is centred at y {iy}, the band's middle {}",
-                        TOP_BAND / 2.0
+                        (iy - CHROME_LINE).abs() <= 0.5,
+                        "{n}: the {name}'s ink is centred at y {iy}, the line {CHROME_LINE}"
                     );
                 }
-                let ys: Vec<f32> = boxes.iter().map(|&ink| mid(ink).1).collect();
-                for &y in &ys {
-                    assert!((y - ys[0]).abs() <= 0.5, "{n}: the icons' middles {ys:?}");
-                }
-            };
-            // The name's ink (toward `text`), in the band between the sidebar button (by the
-            // lights since 2026-11-20) and the 🔔.
-            let from = b[2] + HIT;
-            let name_ink = ink_box(&shot, dims, (from, 0.0, b[0] - from, TOP_BAND), band, full);
-            println!("ui-shots: {n}: name {name_ink:?}");
-            let centred = |ink: Option<(f32, f32, f32, f32)>| {
-                let ink = ink.unwrap_or_else(|| panic!("{n}: no name"));
-                let (nx, _) = mid(ink);
-                assert!(
-                    (nx - w / 2.0).abs() <= 1.0,
-                    "{n}: the name is centred at {nx}, the window's middle {}",
-                    w / 2.0
-                );
-                assert!(
-                    ink.0 >= name_inset(false) && ink.1 <= w - name_inset(false),
-                    "{n}: the name {ink:?} runs past its insets"
-                );
             };
             // The 🔔's unseen dot, at its top right.
             let dot = (
-                b[0] + HIT - DOT_INSET - DOT / 2.0,
+                b[1] + HIT - DOT_INSET - DOT / 2.0,
                 BUTTON_Y + DOT_INSET + DOT / 2.0,
             );
             // The device pixels of the sidebar's own fill (`sidebar_background`) down the line
-            // x = 30, over the pane's body (under the band, above the status bar): none once the
-            // sidebar has gone (the pane is there: its card is the terminal's colour), some
+            // x = 30, over the pane's body (under the bars, above the status bar): none once
+            // the sidebar has gone (the pane is there: its card is the terminal's colour), some
             // while it is partly in (round its search box, rows and footer). Not one point: the
             // sidebar's group cards are `card`, which is the terminal's background
             // (`theme.rs`), so a point on one can't tell the sidebar from the pane.
@@ -3034,112 +2997,78 @@ fn title_bar_scenes() {
                     })
                     .count()
             };
-            // The bare band at a point: the canvas, give or take the card's shadow (M11al: it
-            // reaches a little way up into the band), and nearer it than `other`.
-            let on_band = |p: [u8; 3], other: alacritty_terminal::vte::ansi::Rgb| {
-                gap(p, ui.sidebar_background) <= SHADOW_SLACK
-                    && gap(p, ui.sidebar_background) < gap(p, other)
+            // The bare card at a point, nearer it than `other`.
+            let on_card = |p: [u8; 3], other: alacritty_terminal::vte::ansi::Rgb| {
+                gap(p, theme.background) <= SHADOW_SLACK && gap(p, theme.background) < gap(p, other)
             };
+            // The lights' room on the card (past its rounded corner, inside its top edge).
+            let corner = ui_tokens::size::CARD_INSET + ui_tokens::size::CARD_RADIUS;
+            let lights_room = (corner, BUTTON_Y, b[0] - corner, HIT);
+            let hover_y = BUTTON_Y + 3.0;
             match scene {
                 "title-bar-collapsed" => {
                     icons_at_slots();
                     assert_ne!(at(dot.0, dot.1), bg(ui.accent), "{n}: no dot");
-                    centred(name_ink);
                     let fill = sidebar_fill();
                     assert_eq!(fill, 0, "{n}: {fill} pixels of sidebar at x 30, slid out");
-                    // The band's left: bare up to the sidebar button by the lights (since
-                    // 2026-11-20), and its only ink to x 110 is that button's icon (no title).
-                    let lights = ink_box(&shot, dims, (0.0, 0.0, b[2], TOP_BAND), band, dim);
-                    assert_eq!(lights, None, "{n}: ink left of the sidebar button");
-                    let left = ink_box(&shot, dims, (0.0, 0.0, 110.0, TOP_BAND), band, dim)
-                        .unwrap_or_else(|| panic!("{n}: no sidebar button by the lights"));
-                    assert!(
-                        left.0 >= b[2] && left.1 <= b[2] + HIT,
-                        "{n}: the band's left ink {left:?} is the sidebar button's, at {}",
-                        b[2]
-                    );
+                    let lights = ink_box(&shot, dims, lights_room, card, dim);
+                    assert_eq!(lights, None, "{n}: ink in the lights' room");
                 }
                 "title-bar-collapsed-hover" => {
-                    assert_eq!(at(b[1] + 1.5, 19.0), bg(ui.panel_hover), "{n}: ⚙ hovered");
-                    let p = at(b[0] + 1.5, 19.0);
-                    assert!(on_band(p, ui.panel_hover), "{n}: 🔔 not hovered: {p:?}");
+                    assert_eq!(
+                        at(b[2] + 1.5, hover_y),
+                        bg(ui.panel_hover),
+                        "{n}: ⚙ hovered"
+                    );
+                    let p = at(b[1] + 1.5, hover_y);
+                    assert!(on_card(p, ui.panel_hover), "{n}: 🔔 not hovered: {p:?}");
                 }
                 "title-bar-collapsed-hover-sidebar" => {
                     assert_eq!(
-                        at(b[2] + 1.5, 19.0),
+                        at(b[0] + 1.5, hover_y),
                         bg(ui.panel_hover),
                         "{n}: the sidebar button hovered"
                     );
-                    let p = at(b[1] + 1.5, 19.0);
-                    assert!(on_band(p, ui.panel_hover), "{n}: ⚙ not hovered: {p:?}");
+                    let p = at(b[1] + 1.5, hover_y);
+                    assert!(on_card(p, ui.panel_hover), "{n}: 🔔 not hovered: {p:?}");
                 }
                 "title-bar-unseen" => {
                     assert_eq!(at(dot.0, dot.1), bg(ui.accent), "{n}: the dot");
                     let p = at(dot.0 + DOT / 2.0 - 1.0, dot.1);
-                    assert!(on_band(p, ui.accent), "{n}: its ring: {p:?}");
+                    assert!(on_card(p, ui.accent), "{n}: its ring: {p:?}");
                 }
-                "title-bar-collapsed-narrow" => {
+                "title-bar-collapsed-narrow" | "title-bar-collapsed-tiny" => {
                     icons_at_slots();
-                    let ink = name_ink.unwrap_or_else(|| panic!("{n}: no name"));
-                    assert!(
-                        ink.0 >= name_inset(false) && ink.1 <= w - name_inset(false),
-                        "{n}: the name {ink:?} runs past [100, {}]",
-                        w - name_inset(false)
-                    );
-                    // Enough of it is drawn to read (cut with an ellipsis, not left out).
-                    let scale = shot.width as f32 / w;
-                    let inked = (0..(TOP_BAND * scale) as usize)
-                        .flat_map(|y| (0..(b[0] * scale) as usize).map(move |x| (x, y)))
-                        .filter(|&(x, y)| {
-                            let p = pixel_at(&shot, dims, x as f32 / scale, y as f32 / scale);
-                            gap(p, ui.sidebar_background) > gap(p, ui.text)
-                        })
-                        .count();
-                    assert!(inked > 20, "{n}: {inked} pixels of the name");
-                }
-                "title-bar-collapsed-tiny" => {
-                    icons_at_slots();
-                    assert_eq!(name_ink, None, "{n}: no name in a window this narrow");
                 }
                 "title-bar-collapsed-right" => {
-                    // Over the right sidebar's band, not under it or clipped by the pane column;
-                    // the name on the window's middle, not the pane column's.
+                    // Over the card's top-left bar, clear of the right sidebar.
                     icons_at_slots();
-                    centred(name_ink);
                 }
                 "title-bar-sliding" => {
                     icons_at_slots();
                     // The sidebar is partly in (and partly out), as in `sidebar-button-sliding`.
                     let fill = sidebar_fill();
                     assert!(fill > 0, "{n}: no sidebar at x 30, not still partly in");
-                    // At x 150, the pane's tab bar above its tab (M11al: no fill, the card,
-                    // the terminal's colour; the 52 pt bar fills this short window's card).
-                    let bar_above_tab = TOP_BAND
+                    // At x 150, the pane's tab bar above the ⚙ (no fill, the card).
+                    let bar_above = ui_tokens::size::CARD_INSET
                         + ui_tokens::size::HAIRLINE
                         + (ui_tokens::size::TAB_BAR - crate::tab_bar::TAB) / 4.0;
-                    let p = at(150.0, bar_above_tab);
-                    assert_eq!(p, bg(theme.background), "{n}: slid out");
+                    let p = at(150.0, bar_above);
+                    assert_eq!(p, card, "{n}: slid out");
                     // The sliding sidebar still carries its own button, and nothing is drawn at
-                    // the collapsed band's button place (x 80, by the lights) over it until the
-                    // slide ends.
+                    // the collapsed sidebar button's place by the lights until the slide ends.
                     let own = ink_box(&shot, dims, (0.0, BUTTON_Y, 60.0, HIT), band, dim);
                     assert!(own.is_some(), "{n}: the sliding sidebar's button");
-                    let old = ink_box(&shot, dims, (80.0, BUTTON_Y, HIT, HIT), band, dim);
-                    assert_eq!(old, None, "{n}: a button at the old place (x 80)");
-                    // The name waits for the sidebar to leave: none in the band between its
-                    // insets (it would paint over the sliding sidebar's title and rows).
-                    let inset = name_inset(false);
-                    let room = (inset, 0.0, w - 2.0 * inset, TOP_BAND);
-                    let name = ink_box(&shot, dims, room, band, full);
-                    assert_eq!(name, None, "{n}: the name drawn mid-slide");
+                    let old = ink_box(&shot, dims, (b[0], BUTTON_Y, HIT, HIT), card, dim);
+                    assert_eq!(old, None, "{n}: a button by the lights mid-slide");
                 }
                 _ => unreachable!(),
             }
         }
     }
 
-    // The popover from the band's 🔔 (M11m Task 3): it drops down from under the band, its right
-    // edge the band's, inside the window however narrow.
+    // The popover from the band's 🔔 (M11m Task 3): it drops down from under the bars, its left
+    // edge the 🔔's (2026-11-20), inside the window however narrow.
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -3150,7 +3079,7 @@ fn title_bar_scenes() {
             ("title-bar-popover-short", 960.0, 300.0),
         ] {
             let dims = size(px(w), px(h));
-            let b = band_buttons(w, false);
+            let b = band_buttons(false);
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -3185,18 +3114,21 @@ fn title_bar_scenes() {
             println!("ui-shots: {}", path.display());
             let n = format!("{scene}-{slug}");
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
-            let (r, t) = band_popover_anchor(w);
+            let (l, t) = band_popover_anchor(false);
             let pw = band_popover_width(w);
+            // Snapped inside the window's margin where it would run past it.
+            let left = l.min(w - EDGE_MARGIN - pw);
+            let r = left + pw;
             let panel = bg(ui.panel);
-            // Under the band, its right edge the band's, its left `pw` from it.
+            // Under the bars, from the 🔔's left edge (or snapped in), `pw` wide.
             let y = t + 20.0;
             assert_eq!(at(r - 3.0, y), panel, "{n}: the popover's right");
-            assert_eq!(at(r - pw + 3.0, y), panel, "{n}: the popover's left");
+            assert_eq!(at(left + 3.0, y), panel, "{n}: the popover's left");
             assert_ne!(at(r + 3.0, y), panel, "{n}: nothing past its right");
             assert_ne!(
-                at(r - 20.0, t - 6.0),
+                at(left + 20.0, t - 6.0),
                 panel,
-                "{n}: it starts under the band"
+                "{n}: it starts under the bars"
             );
             // Every device pixel of row `y`: the panel's ink keeps inside the window's margins.
             let scale = shot.width as f32 / w;
@@ -3208,21 +3140,22 @@ fn title_bar_scenes() {
             let (first, last) = (xs[0], xs[xs.len() - 1] + dp);
             println!("ui-shots: {n}: the panel's row {y} runs {first}..{last}");
             assert!(first >= EDGE_MARGIN, "{n}: the panel starts at {first}");
-            assert!(last <= w - BAND_EDGE, "{n}: the panel ends at {last}");
+            assert!(last <= w - EDGE_MARGIN, "{n}: the panel ends at {last}");
             // Exactly where the model says, inside its 1 pt edge: the anchor is in whole points,
             // so the edges fall on the pixel grid (less than a device pixel off).
             assert!(
-                (last - (r - 1.0)).abs() < dp && (first - (r - pw + 1.0)).abs() < dp,
+                (last - (r - 1.0)).abs() < dp && (first - (left + 1.0)).abs() < dp,
                 "{n}: the panel's inside runs {first}..{last}, the model's {}..{}",
-                r - pw + 1.0,
+                left + 1.0,
                 r - 1.0
             );
-            // Down column `r − 20` (clear of the rounded corners), every device pixel: its top
-            // just under the band, inside its edge; its foot above the status bar by the margin
-            // (and, in the short window, the list fills the room down to there).
+            // Down column `left + 20` (clear of the rounded corners), every device pixel: its
+            // top just under the bars, inside its edge; its foot above the status bar by the
+            // margin (and, in the short window, the list fills the room down to there).
+            // (Below the bars: the column crosses the lit 🔔 above them.)
             let ys: Vec<f32> = (0..shot.height as usize)
                 .map(|y| y as f32 / scale)
-                .filter(|&y| at(r - 20.0, y) == panel)
+                .filter(|&y| y > TOP_BAND - 2.0 && at(left + 20.0, y) == panel)
                 .collect();
             let (top, foot) = (ys[0], ys[ys.len() - 1] + dp);
             println!("ui-shots: {n}: the panel's column runs {top}..{foot}");
@@ -3250,35 +3183,28 @@ fn title_bar_scenes() {
                     .map(|(&x, y)| (i32::from(x) - i32::from(y)).pow(2))
                     .sum()
             };
-            // The panel's shadow reaches up into the band (a level or two darker in Mocha, six in
-            // Latte), so the fill is compared, not matched (as `title-area` does for the footer's
-            // 🔔): the slot's corner differs from the band just left of the 🔔, under the same
-            // shadow, by what `panel_hover` differs from the band's colour: within 1 a channel,
-            // and the same way on every channel that differs at all (in Latte that is 3, 1, 1, so
-            // an unlit slot, which differs by nothing, fails on all three). The shadow also
-            // darkens the difference itself (the canvas is darker since M11al, so it is a bigger
-            // one in Mocha: 37, 38, 46 want, 35, 36, 45 got): up to an eighth of it more.
-            // M11al: the card's soft shadow reaches up into the band too, under the bare band
-            // beside the slot but not under the slot's fill (drawn over it): what it takes off
-            // the band, measured at the same height away from the popover, is allowed on top.
-            let fill = at(b[0] + 1.5, 19.0);
-            let beside = at(b[0] - 3.0, 19.0);
-            let (hover, band) = (bg(ui.panel_hover), bg(ui.sidebar_background));
-            let card_shade = at(w * 0.25, 19.0);
+            // The panel's shadow reaches up over the bar, so the fill is compared, not matched
+            // (as `title-area` does for the footer's 🔔): the slot's corner differs from the
+            // card just left of the 🔔, under the same shadow, by what `panel_hover` differs
+            // from the card's colour, give or take a little, and the same way on every channel
+            // that differs at all (an unlit slot differs by nothing).
+            let hover_y = BUTTON_Y + 3.0;
+            let fill = at(b[1] + 1.5, hover_y);
+            let beside = at(b[1] - 2.0, hover_y);
+            let (hover, card) = (bg(ui.panel_hover), bg(theme.background));
             let off = (0..3).all(|k| {
                 let got = i32::from(fill[k]) - i32::from(beside[k]);
-                let want = i32::from(hover[k]) - i32::from(band[k]);
-                let shade = (i32::from(band[k]) - i32::from(card_shade[k])).max(0);
-                (got - want).abs() <= 1 + want.abs() / 8 + shade
+                let want = i32::from(hover[k]) - i32::from(card[k]);
+                (got - want).abs() <= 2 + want.abs() / 4
                     && (want == 0 || got.signum() == want.signum())
             });
             assert!(
                 off,
                 "{n}: the band 🔔 on its fill ({fill:?} beside {beside:?}; panel_hover {hover:?} \
-                 on the band's {band:?})"
+                 on the card's {card:?})"
             );
             let ink = (0..HIT as usize)
-                .map(|k| at(b[0] + HIT / 2.0, BUTTON_Y + k as f32))
+                .map(|k| at(b[1] + HIT / 2.0, BUTTON_Y + k as f32))
                 .max_by_key(|&p| dist(p, fill))
                 .expect("the bell's column");
             assert!(
@@ -3329,10 +3255,10 @@ fn title_bar_scenes() {
                 ws.sessions.active().map(|s| s.label().to_string())
             })
         };
-        let b = band_buttons(width, false);
-        let band_bell = point(px(b[0] + HIT / 2.0), px(BUTTON_Y + HIT / 2.0));
-        let (r, _) = band_popover_anchor(width);
-        let left = r - band_popover_width(width);
+        let b = band_buttons(false);
+        let band_bell = point(px(b[1] + HIT / 2.0), px(BUTTON_Y + HIT / 2.0));
+        let (left, _) = band_popover_anchor(false);
+        assert!(left + band_popover_width(width) <= width - EDGE_MARGIN);
         let entry = |i: usize| point(px(left + 60.0), px(band_entry_top(i) + 20.0));
         // The closed terminal's entry (the fourth) does nothing.
         cx.simulate_click(window, band_bell, none);
@@ -3394,9 +3320,8 @@ fn title_bar_scenes() {
                 );
             })
             .expect("read the focus");
-            // In the band's top strip: the title band with the sidebar hidden, the drag strip
-            // above the card with it shown (M11al: the 52 pt tab bar, and its wider tabs, reach
-            // up to `CARD_INSET` there, and a press on a tab is the tab's, not a drag).
+            // In the drag strip above the card, the sidebar shown or hidden (2026-11-20: no band
+            // over the card; a press on a tab is the tab's, not a drag).
             let on_band = point(px(width / 2.0), px(CARD_INSET / 2.0));
             cx.simulate_mouse_down(window, on_band, MouseButton::Left, none);
             assert!(pressed(cx), "{n}: after {how} the band drags (no backdrop)");
@@ -3461,7 +3386,7 @@ fn title_bar_scenes() {
         let pressed = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).band_pressed);
         let hidden = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).sidebar.hidden);
         // A press on the title arms a window drag: it takes no clicks.
-        let on_title = point(px(SIDEBAR_DEFAULT_WIDTH / 2.0), px(TOP_BAND / 2.0));
+        let on_title = point(px(SIDEBAR_DEFAULT_WIDTH / 2.0), px(CHROME_LINE));
         cx.simulate_mouse_down(window, on_title, MouseButton::Left, none);
         assert!(
             pressed(cx),
@@ -3471,7 +3396,7 @@ fn title_bar_scenes() {
         assert!(!pressed(cx), "title-bar: released");
         // A press on the button is its own; released, it is a click that hides the sidebar.
         let x = open_button_x(SIDEBAR_DEFAULT_WIDTH) + HIT / 2.0;
-        let on_button = point(px(x), px(TOP_BAND / 2.0));
+        let on_button = point(px(x), px(CHROME_LINE));
         cx.simulate_mouse_down(window, on_button, MouseButton::Left, none);
         assert!(
             !pressed(cx),
@@ -3485,14 +3410,13 @@ fn title_bar_scenes() {
         );
         cx.simulate_keystrokes(window, "cmd-\\");
         assert!(!hidden(cx), "title-bar: ⌘\\ shows it again");
-        // With the sidebar shown there are no band buttons: a click over where the band's
-        // sidebar button would be (in the strip above the card, `CARD_INSET / 2` down: the
-        // slot's middle, at `TOP_BAND / 2`, is now inside the pane tab bar's own ◧, a 28 pt
-        // button in the 52 pt bar's middle) leaves this one shown. The ◧ opens the right
-        // sidebar and leaves this one shown.
+        // With the sidebar shown there are no band buttons: a click over where the collapsed
+        // sidebar button would be (in the strip above the card, `CARD_INSET / 2` down) leaves
+        // this one shown. The top-right pane bar's ◧ opens the right sidebar and leaves this one
+        // shown.
         let right = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).right_sidebar.hidden);
         assert!(right(cx), "title-bar: the right sidebar starts hidden");
-        let slot_x = band_buttons(960.0, false)[2] + HIT / 2.0;
+        let slot_x = band_buttons(false)[0] + HIT / 2.0;
         cx.simulate_click(window, point(px(slot_x), px(CARD_INSET / 2.0)), none);
         assert!(
             !hidden(cx),
@@ -3552,24 +3476,24 @@ fn title_bar_scenes() {
             let open = |cx: &mut VisualTestAppContext| {
                 cx.read(|cx| ws.read(cx).notifications_popover.is_some())
             };
-            let b = band_buttons(960.0, false);
+            let b = band_buttons(false);
             let y = BUTTON_Y + HIT / 2.0;
-            // A press on the name arms a window drag: it takes no clicks.
-            let on_name = point(px(480.0), px(y));
-            cx.simulate_mouse_down(window, on_name, MouseButton::Left, none);
-            assert!(pressed(cx), "{n}: a press on the name arms a window drag");
-            cx.simulate_mouse_up(window, on_name, MouseButton::Left, none);
+            // A press on the room by the lights, past the ⚙, arms a window drag.
+            let on_room = point(px(crate::title_area::band_reserve(false) - 4.0), px(y));
+            cx.simulate_mouse_down(window, on_room, MouseButton::Left, none);
+            assert!(pressed(cx), "{n}: a press by the lights arms a window drag");
+            cx.simulate_mouse_up(window, on_room, MouseButton::Left, none);
             assert!(!pressed(cx), "{n}: released");
             // A press on each band button is its own, released off it (so it is no click: the
             // ⚙ opens no Preferences window).
-            for (name, x) in ["bell", "gear", "sidebar"].iter().zip(b) {
+            for (name, x) in ["sidebar", "bell", "gear"].iter().zip(b) {
                 let on = point(px(x + HIT / 2.0), px(y));
                 cx.simulate_mouse_down(window, on, MouseButton::Left, none);
                 assert!(
                     !pressed(cx),
                     "{n}: a press on the {name} doesn't drag the window"
                 );
-                cx.simulate_mouse_up(window, on_name, MouseButton::Left, none);
+                cx.simulate_mouse_up(window, on_room, MouseButton::Left, none);
                 assert!(
                     hidden(cx) && !open(cx),
                     "{n}: released off the {name}, no click"
@@ -3577,13 +3501,13 @@ fn title_bar_scenes() {
             }
             // A click on the 🔔 opens the popover, which sees everything; Escape closes it.
             assert_eq!(cx.read(|cx| ws.read(cx).notifications.unseen()), 6);
-            cx.simulate_click(window, point(px(b[0] + HIT / 2.0), px(y)), none);
+            cx.simulate_click(window, point(px(b[1] + HIT / 2.0), px(y)), none);
             assert!(open(cx), "{n}: the 🔔 opens the popover");
             assert_eq!(cx.read(|cx| ws.read(cx).notifications.unseen()), 0);
             cx.simulate_keystrokes(window, "escape");
             assert!(!open(cx), "{n}: Escape closes it");
             // And the 🔔 is no longer lit: its slot's fill is gone (the pointer moved off it, so
-            // no hover fill either), the band's own colour again.
+            // no hover fill either), the card's own colour again.
             cx.simulate_mouse_move(window, point(px(480.0), px(300.0)), None, none);
             cx.run_until_parked();
             let image = cx.capture_screenshot(window).expect("capture the window");
@@ -3593,17 +3517,20 @@ fn title_bar_scenes() {
                 rgba: image.as_raw().to_vec(),
             };
             let ui = theme.ui();
-            // (Give or take the card's shadow, which reaches a little way up into the band since
-            // M11al, and nearer the band than the hover fill.)
-            let corner = pixel_at(&shot, size(px(960.0), px(600.0)), b[0] + 1.5, 19.0);
-            let band = ui.sidebar_background;
+            let corner = pixel_at(
+                &shot,
+                size(px(960.0), px(600.0)),
+                b[1] + 1.5,
+                BUTTON_Y + 3.0,
+            );
+            let card = theme.background;
             assert!(
-                gap(corner, band) <= SHADOW_SLACK
-                    && gap(corner, band) < gap(corner, ui.panel_hover),
+                gap(corner, card) <= SHADOW_SLACK
+                    && gap(corner, card) < gap(corner, ui.panel_hover),
                 "{n}: after Escape the 🔔's fill is gone: {corner:?}"
             );
             // A click on the sidebar button shows the sidebar.
-            cx.simulate_click(window, point(px(b[2] + HIT / 2.0), px(y)), none);
+            cx.simulate_click(window, point(px(b[0] + HIT / 2.0), px(y)), none);
             assert!(!hidden(cx), "{n}: the sidebar button shows the sidebar");
             slot.borrow_mut().take();
         };

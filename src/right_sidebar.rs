@@ -152,10 +152,6 @@ pub(crate) const HEADER_ICON: f32 = 15.0;
 pub(crate) const HEADER_PAD_RIGHT: f32 = 8.0;
 /// A thin chevron's box (› / ⌄, part 4).
 pub(crate) const CHEVRON: f32 = 12.0;
-const CHEVRON_STROKE: f32 = 1.25;
-/// The tree's icons' lines (in their 16 pt box) and the header buttons'.
-const ICON_STROKE: f32 = 1.2;
-const HEADER_ICON_STROKE: f32 = 1.3;
 /// The filter field under the Files header: its height, its corners, its padding and the
 /// room under it; its search icon.
 pub(crate) const FILTER: f32 = 34.0;
@@ -512,12 +508,7 @@ fn file_row(
                     .flex_none()
                     .size(px(ICON))
                     .mr(px(ICON_GAP))
-                    .child(tab_bar::footer_glyph(
-                        kind,
-                        ui.text_faint,
-                        ICON,
-                        ICON_STROKE,
-                    )),
+                    .child(tab_bar::footer_glyph(kind, ui.text_faint, ICON)),
             )
             .child(
                 div()
@@ -954,7 +945,7 @@ pub(crate) fn header_button(
     tip: &'static str,
     ui: UiColors,
 ) -> gpui::Stateful<gpui::Div> {
-    let icon = |ink: Rgb| tab_bar::footer_glyph(kind, ink, HEADER_ICON, HEADER_ICON_STROKE);
+    let icon = |ink: Rgb| tab_bar::footer_glyph(kind, ink, HEADER_ICON);
     div()
         .id(id)
         // One `group_hover` per element (GPUI keeps the last): one per glyph.
@@ -991,7 +982,7 @@ pub(crate) fn thin_chevron(open: bool, ink: Rgb) -> gpui::Div {
     } else {
         Glyph::ChevronRight
     };
-    tab_bar::footer_glyph(kind, ink, CHEVRON, CHEVRON_STROKE)
+    tab_bar::footer_glyph(kind, ink, CHEVRON)
 }
 
 /// The wait before the next refresh, after one that waited `wait`: `REFRESH` after a good git
@@ -2126,7 +2117,6 @@ impl Workspace {
                         Glyph::Search,
                         ui.text_faint,
                         FILTER_ICON,
-                        HEADER_ICON_STROKE,
                     ))
                     .child(
                         div()

@@ -1,7 +1,7 @@
 //! The sidebar button (M11): a sidebar-outline icon in the top band that hides or shows the
 //! sidebar like ⌘\. With the sidebar shown it sits at the right edge of the sidebar's band, over
-//! the footer gear (M11m), and rides the sidebar when it slides; hidden, it is the last of the
-//! collapsed band's buttons at the window's far right (`title_area::band_buttons`). With motion
+//! the footer gear (M11m), and rides the sidebar when it slides; hidden, it is the first of the
+//! collapsed sidebar's buttons, just past the traffic lights (`title_area::band_buttons`). With motion
 //! on, the sidebar slides in or out over 160 ms (`shown_fraction`); the pane column takes its
 //! final width at once, so the terminals re-fit one time and not on every frame of the slide.
 
@@ -15,7 +15,7 @@ use gpui::{
 use crate::appearance::Appearance;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
-use crate::ui_tokens::size::TOP_BAND;
+use crate::ui_tokens::size::{CHROME_LINE, LIGHT, LIGHT_PITCH, TRAFFIC_LIGHTS};
 use crate::workspace::Workspace;
 
 /// How long the slide takes.
@@ -23,22 +23,25 @@ pub const SLIDE: Duration = Duration::from_millis(160);
 /// The hit area's side, and its corner radius.
 pub(crate) const HIT: f32 = 24.0;
 pub(crate) const HIT_RADIUS: f32 = 6.0;
-/// The icon (15 px wide since M11al): a 15 × 12 rounded outline with a divider a third of the way in.
-const ICON: (f32, f32) = (15.0, 12.0);
-const STROKE: f32 = 1.5;
-const ICON_RADIUS: f32 = 3.0;
+/// The icon's side (the icon set's panel-left since 2026-11-20; a drawn 15 × 12 outline before).
+const ICON: f32 = 16.0;
 /// How far the collapsed title band's buttons keep from the window's right edge (and the
 /// open button, in a window narrower than its sidebar).
 pub(crate) const BAND_EDGE: f32 = 8.0;
 /// How far the open sidebar's button keeps from its band's right edge: its centre is then the
 /// footer gear's (`OPEN_EDGE + HIT / 2 == FOOTER_SIDE + FOOTER_BUTTON / 2`; M11al).
 pub(crate) const OPEN_EDGE: f32 = 19.0;
-/// The button's top: its hit area centred in the top band, on the traffic lights' line.
-pub(crate) const BUTTON_Y: f32 = (TOP_BAND - HIT) / 2.0;
-/// Where the traffic lights' area ends: just right of the green button (windowed), or the band's
-/// left margin (full screen, which has no lights; it is where they started before M11al moved
-/// them to `TRAFFIC_LIGHTS`' 18).
-const LIGHTS_CLEAR: f32 = 80.0;
+/// The button's top: its hit area centred on the window's line (`CHROME_LINE`), with the
+/// traffic lights.
+pub(crate) const BUTTON_Y: f32 = CHROME_LINE - HIT / 2.0;
+/// The clear space between the green light's edge and the next icon (your call, 2026-11-20:
+/// "add more acceptable gaps").
+pub(crate) const LIGHTS_GAP: f32 = 12.0;
+/// Where the traffic lights' area ends, the left edge of a button after them: its icon
+/// `LIGHTS_GAP` past the green light (windowed), or the band's left margin (full screen, which
+/// has no lights).
+const LIGHTS_CLEAR: f32 =
+    TRAFFIC_LIGHTS.0 + 2.0 * LIGHT_PITCH + LIGHT + LIGHTS_GAP - (HIT - ICON) / 2.0;
 const LIGHTS_CLEAR_FULL_SCREEN: f32 = 13.0;
 
 /// A slide in progress: towards shown or hidden, since when, and from how much shown (a
@@ -68,7 +71,7 @@ impl Slide {
     }
 }
 
-/// The first x clear of the traffic lights: 80 windowed, 13 in full screen.
+/// The first x clear of the traffic lights: 84 windowed, 13 in full screen.
 pub fn lights_clear(full_screen: bool) -> f32 {
     if full_screen {
         LIGHTS_CLEAR_FULL_SCREEN
@@ -142,31 +145,10 @@ pub(crate) fn tip_box(text: SharedString, ui: &UiColors) -> Div {
         .child(text)
 }
 
-/// The icon: an outline with a divider, both in the current text colour of the `group`.
-fn icon(ui: UiColors) -> Div {
-    let outline = |mut d: Div| {
-        d.style().border_widths.top = Some(px(STROKE).into());
-        d.style().border_widths.bottom = Some(px(STROKE).into());
-        d.style().border_widths.left = Some(px(STROKE).into());
-        d.style().border_widths.right = Some(px(STROKE).into());
-        d
-    };
-    let divider = div()
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .left(px(ICON.0 / 3.0 - STROKE / 2.0))
-        .w(px(STROKE))
-        .bg(hsla(ui.text_dim))
-        .group_hover("sidebar-toggle", move |s| s.bg(hsla(ui.text)));
-    outline(div())
-        .relative()
-        .w(px(ICON.0))
-        .h(px(ICON.1))
-        .rounded(px(ICON_RADIUS))
-        .border_color(hsla(ui.text_dim))
-        .group_hover("sidebar-toggle", move |s| s.border_color(hsla(ui.text)))
-        .child(divider)
+/// The icon: the icon set's panel-left, dim, full on hover of the button.
+fn icon(ui: UiColors) -> gpui::Svg {
+    crate::icons::icon(crate::icons::Icon::PanelLeft, px(ICON), hsla(ui.text_dim))
+        .group_hover("sidebar-toggle", move |s| s.text_color(hsla(ui.text)))
 }
 
 /// A band button's shell, absolutely placed at (`x`, `BUTTON_Y`) in its parent: a `HIT` square
@@ -237,9 +219,9 @@ mod tests {
                 "width {w}: over the footer gear's centre"
             );
         }
-        // Centred on the lights: the band's middle.
-        assert_eq!(BUTTON_Y + HIT / 2.0, TOP_BAND / 2.0);
-        assert_eq!(lights_clear(false), 80.0);
+        // Centred on the lights: the window's one line (critique issue 3).
+        assert_eq!(BUTTON_Y + HIT / 2.0, CHROME_LINE);
+        assert_eq!(lights_clear(false), 84.0);
         assert_eq!(lights_clear(true), 13.0);
     }
 
@@ -267,6 +249,19 @@ mod tests {
             }
             s += 10.0;
         }
+    }
+
+    /// Your screenshot (2026-11-20, "fix alignment and add more acceptable gaps"): the button
+    /// was tight on the green light. The lights on macOS 26 are 14 pt, 22 apart; the icon now
+    /// starts `LIGHTS_GAP` past the green one's edge.
+    #[test]
+    fn the_band_button_keeps_a_clear_gap_after_the_lights() {
+        use crate::ui_tokens::size::{LIGHT, LIGHT_PITCH, TRAFFIC_LIGHTS};
+        let green_edge = TRAFFIC_LIGHTS.0 + 2.0 * LIGHT_PITCH + LIGHT;
+        assert_eq!(green_edge, 76.0);
+        let icon_left = lights_clear(false) + (HIT - ICON) / 2.0;
+        assert_eq!(icon_left - green_edge, LIGHTS_GAP);
+        assert_eq!(LIGHTS_GAP, 12.0);
     }
 
     #[test]

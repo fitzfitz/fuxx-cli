@@ -839,8 +839,11 @@ fn changes_bar_scenes() {
             );
             // M11al §6.6: the buttons are 34 pt squares in a `card_border` edge, the icons
             // `text_dim` (no accent fill any more); the one action's button is the second.
-            // Count the edges along the bar's middle: two a button. (Dimmed while it works:
-            // the edge blends with the fill, so it isn't counted then.)
+            // Count the edges along the bar's middle: two a button, `BAR_BUTTON` apart (34, less
+            // the line's own width). The icon set's thin strokes (2026-11-20) pass through
+            // `card_border`'s shade where they cross the line, so only runs with a partner a
+            // button's width on count as edges. (Dimmed while it works: the edge blends with the
+            // fill, so it isn't counted then.)
             let mid = (bar_top + bar_bottom) / 2.0;
             let mut starts = vec![];
             let mut inside = false;
@@ -852,22 +855,18 @@ fn changes_bar_scenes() {
                 }
                 inside = on;
             }
-            let runs = starts.len();
-            if busy.is_none() {
-                // Each button's two edges are `BAR_BUTTON` apart (34, less the line's own width).
-                for pair in starts.chunks(2) {
-                    let w = pair[1] - pair[0];
-                    assert!(
-                        (w - 33.0).abs() <= 1.0,
-                        "{n}: a button is 34 pt wide: {w} ({starts:?})"
-                    );
-                }
-            }
+            let buttons: Vec<(f32, f32)> = starts
+                .iter()
+                .filter_map(|&a| {
+                    let b = starts.iter().find(|&&b| (b - a - 33.0).abs() <= 1.0)?;
+                    Some((a, *b))
+                })
+                .collect();
             if busy.is_none() {
                 assert_eq!(
-                    runs,
-                    if accent { 4 } else { 2 },
-                    "{n}: the buttons' edges (two a button)"
+                    buttons.len(),
+                    if accent { 2 } else { 1 },
+                    "{n}: the buttons' edges, 34 pt apart ({starts:?})"
                 );
             }
             assert!(
