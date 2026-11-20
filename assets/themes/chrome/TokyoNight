@@ -1,0 +1,7 @@
+# fuxx's window chrome for TokyoNight, from TokyoNight's palette (not part of the upstream file).
+# canvas: bg_dark; accent: blue; working: yellow; needs you: red; done: green.
+chrome-canvas = #15161e
+chrome-accent = #7aa2f7
+chrome-working = #e0af68
+chrome-waiting = #f7768e
+chrome-done = #9ece6a

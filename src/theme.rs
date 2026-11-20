@@ -52,6 +52,24 @@ pub struct Theme {
     pub selection_background: Option<Rgb>,
     pub selection_foreground: Option<Rgb>,
     pub palette: [Rgb; 16],
+    /// The theme's own window-chrome colours (`chrome-*` keys), where it sets them.
+    pub chrome: Chrome,
+}
+
+/// A theme's own chrome colours (chore 2026-11-20, your call: "give each theme its own chrome
+/// colours"): each one set replaces what `ui()` would derive for it from the terminal's colours,
+/// still held to the same contrast floors. The built-in themes set all five (`builtin_theme`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Chrome {
+    /// The accent (selection, the shown tab, focus); derived from palette 4 (blue).
+    pub accent: Option<Rgb>,
+    /// The window's canvas, the sidebar's colour; derived by darkening (lightly inking) the
+    /// background.
+    pub canvas: Option<Rgb>,
+    /// The status colours: working (palette 3), needs you (palette 1), done (palette 2).
+    pub working: Option<Rgb>,
+    pub waiting: Option<Rgb>,
+    pub done: Option<Rgb>,
 }
 
 impl Default for Theme {
@@ -64,6 +82,7 @@ impl Default for Theme {
             selection_background: None,
             selection_foreground: None,
             palette: DEFAULT_PALETTE,
+            chrome: Chrome::default(),
         }
     }
 }
@@ -246,11 +265,12 @@ impl Theme {
         // The sidebar colour is the window's canvas (M11al): the darkest surface. A dark one sinks
         // well below the terminal; a light one dips toward the theme's own ink (black would turn
         // it grey).
-        let canvas = if dark {
+        let chrome = self.chrome;
+        let canvas = chrome.canvas.unwrap_or(if dark {
             mix(bg, black, 0.42)
         } else {
             mix(bg, fg, 0.08)
-        };
+        });
         // The sidebar colour before M11al. Text and selections keep mixing from it, and the
         // surfaces that were derived from it (rows, tints) are also kept as
         // "legacy" floors for text and marks, so the text hierarchy does not drift while the
@@ -296,8 +316,8 @@ impl Theme {
             row_hover,
             row_active,
         ];
-        let waiting = readable(self.palette[1], &plain, MARK_MIN);
-        let done = readable(self.palette[2], &plain, MARK_MIN);
+        let waiting = readable(chrome.waiting.unwrap_or(self.palette[1]), &plain, MARK_MIN);
+        let done = readable(chrome.done.unwrap_or(self.palette[2]), &plain, MARK_MIN);
         // The card is the terminal; a hovered row on it (and, M11al, a hovered pane tab).
         let card_hover = mix(card, fg, 0.06);
         // What a sidebar colour `on` carries: a soft wash of the status colour (done is subtler:
@@ -332,8 +352,8 @@ impl Theme {
         ];
         let surfaces = [&legacy_surfaces[..], &fresh_surfaces[..]].concat();
         let mark = |c: Rgb| readable(c, &surfaces, MARK_MIN);
-        let accent = mark(self.palette[4]);
-        let ring_working = mark(self.palette[3]);
+        let accent = mark(chrome.accent.unwrap_or(self.palette[4]));
+        let ring_working = mark(chrome.working.unwrap_or(self.palette[3]));
         // A selection is a soft wash of the accent over its surface, lowered in 2 % steps while
         // the text (as it reads on the other surfaces) would fall below 4.5:1 on it. At 0 it is
         // the surface itself, which the text reads on.
@@ -355,6 +375,10 @@ impl Theme {
         let legacy_selected = tint(base);
         let card_selected = tint(card);
         let side_selected = tint(side);
+        // The status marks read on the selections too: a theme's own accent (2026-11-20) can
+        // make them darker than the blue one did (Latte's peach and green, on its mauve).
+        let selections = [row_selected, legacy_selected, card_selected, side_selected];
+        let ring_working = readable(ring_working, &selections, MARK_MIN);
         // Text reads on every surface, the new ones too.
         let text_surfaces = [
             &legacy_surfaces[..],
@@ -389,7 +413,7 @@ impl Theme {
             ],
             TEXT_MIN,
         );
-        let ring_done = mark(done);
+        let ring_done = readable(mark(done), &selections, MARK_MIN);
         // Under a dragged command block (M11aa Task 11): a pane tab, and an agent tab's page
         // (the card). A wash of the accent (20 %; 8 % on the page), lowered in 2 % steps while
         // the text (and, on a tab, its status marks) would fall below its floor. At 0 it is
@@ -423,7 +447,7 @@ impl Theme {
         // the card.
         let drop_tab = wash(card, 0.20, &[&words[..], &tab_marks[..]].concat());
         let drop_card = wash(card, 0.08, &words);
-        let tab_colors = TabColor::ALL.map(|c| mark(c.base()));
+        let tab_colors = TabColor::ALL.map(|c| readable(mark(c.base()), &selections, MARK_MIN));
         UiColors {
             sidebar_background: canvas,
             sidebar_border: quiet(mix(canvas, fg, 0.12), &[canvas, bg]),
@@ -701,6 +725,11 @@ pub fn apply(theme: &mut Theme, entries: &[Entry]) {
             "cursor-text" => set_optional(&mut theme.cursor_text, e),
             "selection-background" => set_optional(&mut theme.selection_background, e),
             "selection-foreground" => set_optional(&mut theme.selection_foreground, e),
+            "chrome-accent" => set_optional(&mut theme.chrome.accent, e),
+            "chrome-canvas" => set_optional(&mut theme.chrome.canvas, e),
+            "chrome-working" => set_optional(&mut theme.chrome.working, e),
+            "chrome-waiting" => set_optional(&mut theme.chrome.waiting, e),
+            "chrome-done" => set_optional(&mut theme.chrome.done, e),
             "palette" => {
                 if e.value.is_empty() {
                     theme.palette = DEFAULT_PALETTE;
@@ -790,15 +819,26 @@ pub const BUILTIN_THEMES: [&str; 6] = [
     "TokyoNight",
 ];
 
-/// The text of a built-in theme. The name match is exact and case-sensitive.
+/// The text of a built-in theme: the upstream file, then fuxx's own chrome colours for it
+/// (`assets/themes/chrome/`, from the theme's official palette; 2026-11-20). The name match is
+/// exact and case-sensitive.
 pub fn builtin_theme(name: &str) -> Option<&'static str> {
+    macro_rules! with_chrome {
+        ($file:literal) => {
+            concat!(
+                include_str!(concat!("../assets/themes/", $file)),
+                "\n",
+                include_str!(concat!("../assets/themes/chrome/", $file)),
+            )
+        };
+    }
     Some(match name {
-        "Catppuccin Mocha" => include_str!("../assets/themes/Catppuccin Mocha"),
-        "Catppuccin Latte" => include_str!("../assets/themes/Catppuccin Latte"),
-        "Dracula" => include_str!("../assets/themes/Dracula"),
-        "Nord" => include_str!("../assets/themes/Nord"),
-        "Gruvbox Dark" => include_str!("../assets/themes/Gruvbox Dark"),
-        "TokyoNight" => include_str!("../assets/themes/TokyoNight"),
+        "Catppuccin Mocha" => with_chrome!("Catppuccin Mocha"),
+        "Catppuccin Latte" => with_chrome!("Catppuccin Latte"),
+        "Dracula" => with_chrome!("Dracula"),
+        "Nord" => with_chrome!("Nord"),
+        "Gruvbox Dark" => with_chrome!("Gruvbox Dark"),
+        "TokyoNight" => with_chrome!("TokyoNight"),
         _ => return None,
     })
 }
@@ -834,6 +874,82 @@ mod tests {
     }
     fn read(name: &str) -> Option<String> {
         (name == "Catppuccin Mocha").then(|| MOCHA.to_string())
+    }
+
+    /// Chore 2026-11-20 (your call: "give each theme its own chrome colours"): a theme sets its
+    /// chrome's accent, canvas and status colours with `chrome-*` keys; empty clears one.
+    #[test]
+    fn a_theme_can_set_its_own_chrome_colours() {
+        let mut t = Theme::default();
+        apply(
+            &mut t,
+            &entries(
+                "chrome-accent = #cba6f7\nchrome-canvas = #11111b\nchrome-working = #fab387\n\
+                 chrome-waiting = #f38ba8\nchrome-done = #a6e3a1",
+            ),
+        );
+        assert_eq!(
+            t.chrome,
+            Chrome {
+                accent: Some(hex(0xcba6f7)),
+                canvas: Some(hex(0x11111b)),
+                working: Some(hex(0xfab387)),
+                waiting: Some(hex(0xf38ba8)),
+                done: Some(hex(0xa6e3a1)),
+            }
+        );
+        apply(&mut t, &entries("chrome-accent =\nchrome-done = nope"));
+        assert_eq!(t.chrome.accent, None, "empty clears it");
+        assert_eq!(t.chrome.done, Some(hex(0xa6e3a1)), "a bad value is skipped");
+    }
+
+    /// The chrome's own colours replace the derived ones (held to the same floors: these read).
+    #[test]
+    fn a_themes_chrome_colours_replace_the_derived_ones() {
+        let mut t = Theme {
+            background: hex(0x1e1e2e),
+            foreground: hex(0xcdd6f4),
+            ..Theme::default()
+        };
+        let derived = t.ui();
+        t.chrome = Chrome {
+            accent: Some(hex(0xcba6f7)),
+            canvas: Some(hex(0x11111b)),
+            working: Some(hex(0xfab387)),
+            waiting: Some(hex(0xf38ba8)),
+            done: Some(hex(0xa6e3a1)),
+        };
+        let ui = t.ui();
+        assert_eq!(ui.sidebar_background, hex(0x11111b));
+        assert_eq!(ui.accent, hex(0xcba6f7));
+        assert_eq!(ui.ring_working, hex(0xfab387));
+        assert_eq!(ui.ring_waiting, hex(0xf38ba8));
+        assert_eq!(ui.ring_done, hex(0xa6e3a1));
+        assert_ne!(ui.accent, derived.accent, "not the theme's blue");
+    }
+
+    /// Every built-in theme has its own chrome (2026-11-20), and its accent stands apart from
+    /// its status colours (one accent; colour otherwise means status).
+    #[test]
+    fn every_builtin_theme_has_its_own_chrome() {
+        for (name, theme) in every_theme() {
+            if name == "default" {
+                continue;
+            }
+            let c = theme.chrome;
+            let all = [c.accent, c.canvas, c.working, c.waiting, c.done];
+            assert!(all.iter().all(Option::is_some), "{name}: {c:?}");
+            let ui = theme.ui();
+            for (what, status) in [
+                ("working", ui.ring_working),
+                ("waiting", ui.ring_waiting),
+                ("done", ui.ring_done),
+            ] {
+                let d = (hue(ui.accent) - hue(status)).abs();
+                let d = d.min(360.0 - d);
+                assert!(d >= 25.0, "{name}: the accent {d}° from {what}");
+            }
+        }
     }
 
     #[test]
@@ -1191,17 +1307,18 @@ mod tests {
 
     #[test]
     fn tab_active_keeps_the_accent_hue() {
-        // Like `row_selected`'s check: the washes of a few themes are too faint for the 8-bit
-        // channels to keep a hue, so the two reference themes carry it.
+        // The shown tab is the accent washed over the card (10 %, 8 % on light, or less in 2 %
+        // steps): a tint of the accent, whatever hue the card leans to (a 10 % mauve wash on
+        // Mocha's blue card reads 19° off mauve's own hue, 2026-11-20; it is still mauve's).
         for (name, theme) in every_theme() {
-            if !matches!(name, "Catppuccin Mocha" | "Catppuccin Latte") {
-                continue;
-            }
             let ui = theme.ui();
-            let d = (hue(ui.tab_active) - hue(ui.accent)).abs();
+            let washes: Vec<Rgb> = (0..=5)
+                .map(|n| mix(ui.card, ui.accent, 0.10 - 0.02 * n as f32))
+                .chain((0..=4).map(|n| mix(ui.card, ui.accent, 0.08 - 0.02 * n as f32)))
+                .collect();
             assert!(
-                d.min(360.0 - d) <= 15.0,
-                "{name}: tab_active {:?} is {d:.1} degrees from the accent {:?}",
+                washes.contains(&ui.tab_active),
+                "{name}: tab_active {:?} isn't the accent {:?} over the card",
                 ui.tab_active,
                 ui.accent
             );
@@ -1215,15 +1332,17 @@ mod tests {
 
     #[test]
     fn dim_and_faint_text_keep_todays_values() {
-        // Read from master before M11al darkened the canvas (the text hierarchy must not drift).
+        // Read from master before M11al darkened the canvas (the text hierarchy must not drift);
+        // moved on purpose 2026-11-20, when each theme got its own chrome: Mocha a step, Latte
+        // three darker (its text must read on the mauve selection).
         let themes = every_theme();
         let named = |name: &str| themes.iter().find(|(n, _)| *n == name).unwrap().1.ui();
         let mocha = named("Catppuccin Mocha");
-        assert_eq!(mocha.text_dim, hex(0x9ca2ba));
-        assert_eq!(mocha.text_faint, hex(0x9fa2b3));
+        assert_eq!(mocha.text_dim, hex(0x9da2bb));
+        assert_eq!(mocha.text_faint, hex(0xa0a2b4));
         let latte = named("Catppuccin Latte");
-        assert_eq!(latte.text_dim, hex(0x5a5a6c));
-        assert_eq!(latte.text_faint, hex(0x5a5b66));
+        assert_eq!(latte.text_dim, hex(0x575769));
+        assert_eq!(latte.text_faint, hex(0x585863));
     }
 
     #[test]
