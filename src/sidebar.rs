@@ -25,7 +25,7 @@ use gpui::{
     Animation, AnimationExt, AnyElement, AnyView, App, Bounds, BoxShadow, ClickEvent, Context,
     DispatchPhase, Div, DragMoveEvent, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle, SharedString, Task, Window, canvas, div,
-    point, prelude::*, px, relative,
+    linear_color_stop, linear_gradient, point, prelude::*, px, relative,
 };
 
 use crate::appearance::Appearance;
@@ -55,7 +55,7 @@ use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
     SIDEBAR_ROW, SIDEBAR_ROW_TWO, STATUS_MARK,
 };
-use crate::ui_tokens::{TEXT_MIN, ensure_contrast, text};
+use crate::ui_tokens::text;
 use crate::workspace::{POP_SHOWN, Renaming, Session, Workspace};
 use crate::workspace_agent::{RowWinner, row_winner};
 
@@ -563,14 +563,20 @@ pub fn initials(label: &str) -> String {
     }
 }
 
-/// A workspace's avatar letters' colour: dim, or your tab colour when you set one (held to text
-/// contrast on the sidebar). The tile has no fill since 2026-11-20 (critique issue 2: the
-/// name-picked gradient tiles competed with the status colours).
-pub fn avatar_ink(color: Option<TabColor>, ui: &UiColors) -> Rgb {
-    match color {
-        Some(c) => ensure_contrast(ui.tab(c), ui.sidebar_background, TEXT_MIN),
-        None => ui.text_dim,
-    }
+/// A workspace's avatar colour (M11r; back in part 10 of the chores after M11q): its tab colour
+/// when you set one, else one of the tab colours but grey, picked from its name (FNV-1a), so a
+/// name keeps its colour across restarts.
+pub fn avatar_color(color: Option<TabColor>, label: &str) -> TabColor {
+    color.unwrap_or_else(|| {
+        let hash = label.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        let picks: Vec<TabColor> = TabColor::ALL
+            .into_iter()
+            .filter(|&c| c != TabColor::Grey)
+            .collect();
+        picks[(hash % picks.len() as u64) as usize]
+    })
 }
 
 /// How many lines a row has under its name: the one `line_two` says (since M11r every row
@@ -1072,7 +1078,7 @@ impl Render for DragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
         let badge = badge(self.status, self.running, ui, ui.row_active, None);
-        let face = avatar(self.color, ui, AVATAR)
+        let face = avatar(&self.label, self.color, ui, AVATAR)
             .flex()
             .items_center()
             .justify_center()
@@ -1146,30 +1152,25 @@ pub(crate) fn mark_slot(mark: impl IntoElement) -> Div {
         .child(mark)
 }
 
-/// An avatar's square (M11r): `side` across, an outline with no fill (2026-11-20), its letters'
-/// colour (`avatar_ink`) and weight set for the children.
-pub(crate) fn avatar(color: Option<TabColor>, ui: UiColors, side: f32) -> Div {
+/// An avatar's square (M11r; its colour back in part 10 of the chores after M11q): `side`
+/// across, on its colour (`avatar_color`), its letters' colour and weight set for the children.
+pub(crate) fn avatar(label: &str, color: Option<TabColor>, ui: UiColors, side: f32) -> Div {
+    let (top, bottom, ink) = ui.avatars[avatar_color(color, label) as usize];
     let radius = if side >= AVATAR { AVATAR_RADIUS } else { 4.0 };
     div()
         .flex_none()
         .relative()
         .size(px(side))
         .rounded(px(radius))
-        // The outline drawn over the square, not as its border: a border would move the
-        // children placed from its edges (the badge, the ×) in by its width.
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .rounded(px(radius))
-                .border_1()
-                .border_color(hsla(ui.card_border)),
-        )
-        .text_color(hsla(avatar_ink(color, &ui)))
+        // Lit at its top left (M11r, as the mockup).
+        .bg(linear_gradient(
+            135.0,
+            linear_color_stop(hsla(top), 0.0),
+            linear_color_stop(hsla(bottom), 1.0),
+        ))
+        .text_color(hsla(ink))
         .text_size(px(AVATAR_TEXT))
-        .font_weight(FontWeight::SEMIBOLD)
+        .font_weight(FontWeight::BOLD)
 }
 
 /// The place of a closed group's header mark among the mark views (`Workspace::marks`), keyed
@@ -1239,11 +1240,22 @@ pub fn closed_mark(header: &HeaderRow) -> Option<ClosedMark> {
     }
 }
 
-/// A row's status badge (M11r; M11al §2.3): a `BADGE` mark in a `BADGE_RING` ring of the
-/// row's own fill (`surface`; `hover` while the row is hovered), set `BADGE_OUT` past the
-/// avatar's bottom-right corner, holding `badge_look`: a dot in the status colour (working: a
-/// smaller dot in its soft halo; idle: dim while a program runs, fainter at the prompt), or
-/// Done's muted ✓ on the row's fill. Drawn still: no animation, so no redraws.
+/// A badge's own fill for its `look` on a row of `surface`, and whether that fill is the row's
+/// (it then follows the row's hover): working's soft halo of its colour; any other dot, and
+/// Done's ✓, on the row's own colour, the disc that parts the mark from the avatar (part 10 of
+/// the chores after M11q, as before M11al: "the dot … is too big and no gap").
+fn badge_fill(look: BadgeLook, surface: Rgb) -> (Rgb, bool) {
+    match look {
+        BadgeLook::Dot { color, halo: true } => (mix(surface, color, 0.35), false),
+        BadgeLook::Dot { halo: false, .. } | BadgeLook::Check(_) => (surface, true),
+    }
+}
+
+/// A row's status badge (M11r; M11al §2.3): a `BADGE` disc in a `BADGE_RING` ring of the row's
+/// own fill (`surface`; `hover` while the row is hovered), set `BADGE_OUT` past the avatar's
+/// bottom-right corner, its fill `badge_fill`, holding `badge_look`: a `BADGE_DOT` dot in the
+/// status colour (working: in its soft halo; idle: dim while a program runs, fainter at the
+/// prompt), or Done's muted ✓. Drawn still: no animation, so no redraws.
 fn badge(status: Status, running: bool, ui: UiColors, surface: Rgb, hover: Option<Rgb>) -> Div {
     let dot = |color: Rgb| {
         div()
@@ -1252,16 +1264,15 @@ fn badge(status: Status, running: bool, ui: UiColors, surface: Rgb, hover: Optio
             .bg(hsla(color))
             .into_any_element()
     };
+    let look = badge_look(status, running, &ui);
     // The mark's own fill, what it holds, and whether its fill is the row's (it follows hover).
-    let (fill, inside, on_row) = match badge_look(status, running, &ui) {
-        BadgeLook::Dot { color, halo: true } => {
-            (mix(surface, color, 0.35), Some(dot(color)), false)
-        }
-        BadgeLook::Dot { color, halo: false } => (color, None, false),
+    let (fill, on_row) = badge_fill(look, surface);
+    let (fill, inside, on_row) = match look {
+        BadgeLook::Dot { color, .. } => (fill, Some(dot(color)), on_row),
         BadgeLook::Check(color) => (
-            surface,
+            fill,
             Some(status_mark::done_check(color, px(BADGE)).into_any_element()),
-            true,
+            on_row,
         ),
     };
     div()
@@ -2548,7 +2559,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Div {
         let badge = badge(row.status, row.running, ui, surface, hover);
-        let ink = avatar_ink(row.color, &ui);
+        let (fill, _, ink) = ui.avatars[avatar_color(row.color, &row.label) as usize];
         let close = div()
             .id(("row-close", ws.0 as usize))
             .absolute()
@@ -2559,7 +2570,7 @@ impl Workspace {
             .rounded(px(AVATAR_RADIUS))
             .text_size(px(16.0))
             .text_color(hsla(ink))
-            .hover(move |s| s.bg(hsla(ui.panel_hover)))
+            .hover(move |s| s.bg(hsla(mix(fill, ink, 0.18))))
             .child("×")
             .invisible()
             // Only over the avatar itself (2026-11-11, your call), not the whole row.
@@ -2568,7 +2579,7 @@ impl Workspace {
                 cx.stop_propagation(); // not also a click on the row
                 this.close_workspace(ws, window, cx)
             }));
-        avatar(row.color, ui, AVATAR)
+        avatar(&row.label, row.color, ui, AVATAR)
             .group(AVATAR_GROUP)
             .child(
                 div()
@@ -4373,22 +4384,72 @@ mod tests {
         assert_eq!(initials("   "), "");
     }
 
-    /// Chore after the pill tabs (2026-11-20, critique issue 2): no coloured tile; the letters
-    /// are dim on an outline, in your tab colour only when you set one, so colour in a row
-    /// means status (and your own label).
+    /// M11r, back since part 10 of the chores after M11q (your words: "it has colorful avatars,
+    /// why we dont do that?").
     #[test]
-    fn an_avatars_letters_are_dim_unless_you_gave_it_a_colour() {
-        for (name, theme) in crate::theme::every_theme() {
-            let ui = theme.ui();
-            assert_eq!(avatar_ink(None, &ui), ui.text_dim, "{name}: no colour");
-            for c in TabColor::ALL {
-                assert_eq!(
-                    avatar_ink(Some(c), &ui),
-                    ensure_contrast(ui.tab(c), ui.sidebar_background, TEXT_MIN),
-                    "{name}: {c:?}"
-                );
-            }
-        }
+    fn an_avatar_takes_the_tab_colour_else_a_stable_one_from_the_name() {
+        assert_eq!(avatar_color(Some(TabColor::Red), "api"), TabColor::Red);
+        assert_eq!(avatar_color(Some(TabColor::Grey), "api"), TabColor::Grey);
+        assert_eq!(avatar_color(None, "api"), avatar_color(None, "api"));
+        let names = [
+            "a",
+            "b",
+            "c",
+            "api",
+            "web",
+            "John Cena",
+            "New Fuxxpace",
+            "x1",
+            "x2",
+            "x3",
+        ];
+        let picks: Vec<TabColor> = names.iter().map(|n| avatar_color(None, n)).collect();
+        assert!(picks.iter().all(|&c| c != TabColor::Grey), "never grey");
+        let mut distinct = picks.clone();
+        distinct.sort_by_key(|&c| c as usize);
+        distinct.dedup();
+        assert!(
+            distinct.len() >= 4,
+            "names spread over the colours: {picks:?}"
+        );
+    }
+
+    /// Part 10 of the chores after M11q (your words: "the dot (on left) is too big and no gap
+    /// just like in right"): an idle dot is the small dot in a disc of the row's own colour (the
+    /// gap), as before M11al; working keeps its halo, Done its check on the row's colour.
+    #[test]
+    fn an_idle_badge_is_a_small_dot_in_the_rows_colour() {
+        let (row, grey, green) = (
+            Rgb {
+                r: 20,
+                g: 20,
+                b: 30,
+            },
+            Rgb {
+                r: 150,
+                g: 150,
+                b: 150,
+            },
+            Rgb {
+                r: 80,
+                g: 200,
+                b: 90,
+            },
+        );
+        let idle = BadgeLook::Dot {
+            color: grey,
+            halo: false,
+        };
+        assert_eq!(badge_fill(idle, row), (row, true), "the disc is the row's");
+        let working = BadgeLook::Dot {
+            color: green,
+            halo: true,
+        };
+        assert_eq!(
+            badge_fill(working, row),
+            (crate::theme::mix(row, green, 0.35), false)
+        );
+        assert_eq!(badge_fill(BadgeLook::Check(grey), row), (row, true));
     }
 
     #[test]
