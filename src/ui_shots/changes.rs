@@ -931,7 +931,7 @@ fn changes_bar_scenes() {
             let probe = |y: f32, c: Rgb| near(pixel_at(&shot, dims, sidebar_left + 4.0, y), c, 3);
             let bar_bottom = (0..40)
                 .map(|i| 540.0 - i as f32 * 0.5)
-                .find(|&y| probe(y, ui.card_edge))
+                .find(|&y| probe(y, ui.sidebar_background))
                 .expect("the card's bottom edge");
             let bar_top = (0..460)
                 .map(|i| bar_bottom - 2.0 - i as f32 * 0.5)

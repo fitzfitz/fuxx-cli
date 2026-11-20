@@ -29,6 +29,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-20 — Chores after M11q, part 6: the window's edge, the card's top line, the repo card
+
+- **What:** your correction of part 5: the darker edge is the window's outermost one (a 1 pt `window_edge` line
+  under macOS's rim, its 14 pt corners), not a second outline on the card; the card's light is a thin line along
+  its top only; and the repo card's circle and words at the Git rows' sizes. Note 68, part 6.
+- **Checks:** 2230 tests; clippy: no new warnings; fmt; full ui-shots 252 passed.
+- **Learned:** ask which edge when a request names "the outer border" of nested boxes; a 2 pt edge covers what
+  sits at the window's edge (the sidebar's accent bar), 1 pt under the system rim doesn't.
+
 ### 2026-11-20 — Chores after M11q, part 5: the Git tab's docked GRAPH; the card's edge
 
 - **What:** on your example screenshots: the Changes panel's GRAPH docked at the bottom with its own list and a

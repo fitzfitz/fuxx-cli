@@ -222,7 +222,7 @@ fn right_sidebar_scenes() {
             if width > 0.0 {
                 for x in [card_right - width + 6.0, card_right - 6.0] {
                     let p = at(x, y);
-                    assert!(near_at(p, ui.side, y, 3), "{n}: sidebar at {x}: {p:?}");
+                    assert!(near_by(p, ui.side, 3), "{n}: sidebar at {x}: {p:?}");
                 }
                 let x = window_right - CARD_INSET / 2.0;
                 let p = at(x, y);
@@ -253,7 +253,7 @@ fn right_sidebar_scenes() {
             } else {
                 let p = at(card_right - 6.0, y);
                 assert!(
-                    near_at(p, theme.background, y, 3),
+                    near_by(p, theme.background, 3),
                     "{n}: no right sidebar: {p:?}"
                 );
                 let p = at(window_right - CARD_INSET / 2.0, y);
@@ -1340,21 +1340,16 @@ fn right_panel_scenes() {
                 ("above the tabs", x_files, card_top + 2.0),
                 ("its empty part", empty, tab_middle),
             ] {
-                // (Near the card's top and right edges: under its rim's light, 2026-11-20.)
                 let p = at(x, y);
-                assert!(near_lit(p, ui.side, 3), "{n}: the strip {what}: {p:?}");
+                assert!(near_by(p, ui.side, 3), "{n}: the strip {what}: {p:?}");
             }
-            // (Beside the tabs, near the card's right edge: under its rim's light, 2026-11-20.)
             for (what, x) in [("beside the tabs", empty), ("under Files", x_files)] {
                 let p = at(x, card_top + TAB_BAR - 0.5);
-                assert!(
-                    near_lit(p, ui.card_border, 3),
-                    "{n}: the line {what}: {p:?}"
-                );
+                assert!(near_by(p, ui.card_border, 3), "{n}: the line {what}: {p:?}");
             }
             let p = at(empty, card_top + TAB_BAR + 0.5);
             assert!(
-                near_lit(p, ui.side, 3),
+                near_by(p, ui.side, 3),
                 "{n}: the panel's `side` right under it: {p:?}"
             );
         }
@@ -1553,12 +1548,8 @@ fn right_panel_comfortable_scenes() {
                 ("left of the track", sidebar_left + 4.0),
                 ("right of it", card_right - 4.0),
             ] {
-                // (4 pt from the card's right edge: under its rim's light, 2026-11-20.)
                 let p = at(x, header_top - 0.5);
-                assert!(
-                    near_lit(p, ui.card_border, 3),
-                    "{n}: the line {what}: {p:?}"
-                );
+                assert!(near_by(p, ui.card_border, 3), "{n}: the line {what}: {p:?}");
             }
             // The track: `canvas` inside its `card_border` edge, 14 pt from the panel's sides.
             let p = at(track_left + 0.5, middle);
@@ -1567,11 +1558,10 @@ fn right_panel_comfortable_scenes() {
             assert!(near(p, ui.side, 3), "{n}: `side` outside the track: {p:?}");
             let p = at(track_left + HAIRLINE + 1.5, middle);
             assert!(near(p, canvas, 3), "{n}: the track's `canvas`: {p:?}");
-            // (Its right and top edges near the card's: under its rim's light, 2026-11-20.)
             let p = at(track_right - 0.5, middle);
-            assert!(near_lit(p, ui.card_border, 3), "{n}: the right edge: {p:?}");
+            assert!(near_by(p, ui.card_border, 3), "{n}: the right edge: {p:?}");
             let p = at(track_left + 20.0, track_top + 0.5);
-            assert!(near_lit(p, ui.card_border, 3), "{n}: the top edge: {p:?}");
+            assert!(near_by(p, ui.card_border, 3), "{n}: the top edge: {p:?}");
             // Three equal segments, `SWITCH_SEGMENT` tall, `SWITCH_PAD` inside the edge.
             let w = (track_right - track_left - 2.0 * (SWITCH_PAD + HAIRLINE)) / 3.0;
             for (i, b) in seg.iter().enumerate() {
@@ -1588,11 +1578,17 @@ fn right_panel_comfortable_scenes() {
                     "{n}: segment {i} centred"
                 );
             }
-            // The shown segment on `card_lift` with the text colour; the others unfilled.
+            // The shown segment on `card_lift` with the text colour; the hovered one (Activity,
+            // the pointer on it) on `card_hover` (the icon switch, 2026-11-20); the others
+            // unfilled.
             let shown = usize::from(panel == Panel::Changes);
             for (i, b) in seg.iter().enumerate() {
                 let p = at(f32::from(b.left()) + 5.0, middle);
-                let fill = if i == shown { ui.card_lift } else { canvas };
+                let fill = match i {
+                    _ if i == shown => ui.card_lift,
+                    2 => ui.card_hover,
+                    _ => canvas,
+                };
                 assert!(near(p, fill, 3), "{n}: segment {i}'s fill: {p:?}");
                 let (x0, x1) = (f32::from(b.left()), f32::from(b.right()));
                 let ink = match i {

@@ -44,9 +44,10 @@ pub struct PaneColors {
     /// panes.
     pub card: Hsla,
     pub card_border: Hsla,
-    /// The card's outer edge (darker), and its rim's inner ring (the canvas colour).
-    pub card_edge: Hsla,
+    /// The card's outer edge (the canvas colour, 2026-11-20), its top line, and the window's edge.
     pub rim: Hsla,
+    pub top_light: Hsla,
+    pub window_edge: Hsla,
     /// The card's shadow: `shadow` at `shadow_alpha` (0-1).
     pub shadow: Hsla,
     pub shadow_alpha: f32,
@@ -72,8 +73,9 @@ impl PaneColors {
             accent: resize_line(ui),
             card: hsla(ui.card),
             card_border: hsla(ui.card_border),
-            card_edge: hsla(ui.card_edge),
             rim: hsla(ui.sidebar_background),
+            top_light: hsla(ui.card_top_light),
+            window_edge: hsla(ui.window_edge),
             shadow: hsla(ui.shadow),
             shadow_alpha: ui.card_shadow_alpha,
         }
@@ -81,9 +83,10 @@ impl PaneColors {
 }
 
 /// The floating card (M11al §3.1; the one the panes sit in, and until it moves in, the right
-/// sidebar's): the card's fill, `CARD_RADIUS` corners, a `HAIRLINE` `card_edge` edge (darker
-/// than the hairlines inside it since 2026-11-20), and its soft shadow (`CARD_SHADOW_Y` down,
-/// `CARD_SHADOW_BLUR` blurred). Its rim (`card_rim`) is its last child.
+/// sidebar's): the card's fill, `CARD_RADIUS` corners, a `HAIRLINE` edge in the canvas colour
+/// (since 2026-11-20, your words: "not adding an outer border to the inner floating window"), and
+/// its soft shadow (`CARD_SHADOW_Y` down, `CARD_SHADOW_BLUR` blurred). Its top line (`card_rim`) is
+/// its last child.
 /// Its content is clipped to the inside of its edge (a rectangle: content that reaches a corner
 /// rounds its own background, see note 60 §5).
 pub fn card(colors: &PaneColors) -> Div {
@@ -91,7 +94,7 @@ pub fn card(colors: &PaneColors) -> Div {
         .bg(colors.card)
         .rounded(px(CARD_RADIUS))
         .border(px(HAIRLINE))
-        .border_color(colors.card_edge)
+        .border_color(colors.rim)
         .shadow(vec![BoxShadow {
             color: Hsla {
                 a: colors.shadow_alpha,
@@ -105,45 +108,40 @@ pub fn card(colors: &PaneColors) -> Div {
         .overflow_hidden()
 }
 
-/// How far the card's top light reaches in (it fades out over twice this), and how strong it is
-/// at the top.
-pub(crate) const RIM_LIGHT: f32 = 10.0;
-pub(crate) const RIM_LIGHT_ALPHA: f32 = 0.07;
+/// The window's outer edge (2026-11-20): its width (the point macOS's own light rim lies over, so
+/// the rim reads darker and nothing inside the window loses a pixel), and the window's corner
+/// radius on macOS 26 (measured from a screenshot: 14 pt).
+pub(crate) const WINDOW_EDGE: f32 = 1.0;
+pub(crate) const WINDOW_RADIUS: f32 = 14.0;
 
-/// The card's rim (chore 2026-11-20, your ask: "inner and outer border… clean and futuristic",
-/// "add light top box shadow in the top inner window"): over its inside, drawn after its
-/// content, a `HAIRLINE` ring of the canvas colour just inside the outer edge, and along the top
-/// only a soft white light fading out over `2 × RIM_LIGHT`. It takes no clicks, and the panes'
-/// padding is wider than it.
+/// The card's top line (chore 2026-11-20, your words: "a shadow that looks like just a border at
+/// the top"): a `HAIRLINE` light line along the card's top edge, over its content, following its
+/// top corners. It takes no clicks.
 pub fn card_rim(colors: &PaneColors) -> Div {
-    let white = |a: f32| Hsla {
-        h: 0.0,
-        s: 0.0,
-        l: 1.0,
-        a,
-    };
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(CARD_RADIUS))
+        .rounded_t(px(CARD_RADIUS - HAIRLINE))
+        .border_t(px(HAIRLINE))
+        .border_color(colors.top_light)
+}
+
+/// The window's outermost edge (your words: "the outermost window border… slightly darker"): a
+/// `WINDOW_EDGE` line in `window_edge` around the whole window, following its rounded corners,
+/// drawn over the window's content at its root, under macOS's own light rim, which reads darker
+/// over it. Left out in full screen (no rim, no corners). It takes no clicks.
+pub fn window_edge(colors: &PaneColors) -> Div {
     div()
         .absolute()
         .top_0()
         .left_0()
         .size_full()
-        .rounded(px(CARD_RADIUS - HAIRLINE))
-        .border(px(HAIRLINE))
-        .border_color(colors.rim)
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .right_0()
-                .h(px(2.0 * RIM_LIGHT))
-                .rounded_t(px(CARD_RADIUS - 2.0 * HAIRLINE))
-                .bg(gpui::linear_gradient(
-                    180.0,
-                    gpui::linear_color_stop(white(RIM_LIGHT_ALPHA), 0.0),
-                    gpui::linear_color_stop(white(0.0), 1.0),
-                )),
-        )
+        .rounded(px(WINDOW_RADIUS))
+        .border(px(WINDOW_EDGE))
+        .border_color(colors.window_edge)
 }
 
 /// What every pane of one layout is drawn with.

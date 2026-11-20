@@ -716,12 +716,12 @@ fn check_window(
     let scale = shot.width as f32 / f32::from(dims.width);
     let bg = theme.background;
     let ui = theme.ui();
-    // The terminal's background, under the card rim's light near its edges (2026-11-20).
+    // The terminal's background.
     let is_bg = |x: f32, y: f32| {
         let (x, y) = ((x * scale) as usize, (y * scale) as usize);
         let i = (y * shot.width as usize + x) * 4;
         let px = &shot.rgba[i..i + 3];
-        near_lit([px[0], px[1], px[2]], bg, 2)
+        near_by([px[0], px[1], px[2]], bg, 2)
     };
     let (w, h) = (f32::from(dims.width), f32::from(dims.height));
     let (pad_x, pad_y) = if split {
@@ -778,9 +778,8 @@ fn check_window(
     // or the inset, and the card's edge), `pad_x` of background, then the grid's first column (its
     // prompt and output) within a cell and a half (the grid's leftover width is shared by both
     // sides).
-    // Since 2026-11-20 the card's edge (`card_edge`) is followed by the rim's 1 pt ring of the
-    // canvas colour, which takes the padding's first point: the background starts after both,
-    // and `left` is the card's inside edge (the ring's).
+    // Since 2026-11-20 the card's edge is the canvas colour: the background starts right after
+    // it, and `left` is that edge.
     let mid = (top + h) / 2.0;
     let left = (2..w as usize)
         .map(|x| x as f32)
@@ -790,7 +789,6 @@ fn check_window(
                     pixel_at(shot, dims, x - HAIRLINE, mid),
                     ui.sidebar_background,
                 )
-                && near(pixel_at(shot, dims, x - 2.0 * HAIRLINE, mid), ui.card_edge)
         })
         .expect("a terminal")
         - HAIRLINE;
@@ -1087,7 +1085,7 @@ fn card_scenes() {
         for y in [100.0, 500.0] {
             let p = at(left + 0.5, y);
             assert!(
-                near(p, ui.card_edge),
+                near(p, ui.sidebar_background),
                 "{n}: the pane card's edge against the sidebar at y {y}: {p:?}"
             );
         }
@@ -1131,14 +1129,11 @@ fn card_scenes() {
         }
         // The first tab's own top-left corner is rounded (Task 5 review, Minor 1; M11al: all
         // its corners, `TAB_RADIUS`) and clear of the card's curve: 1.5 pt into its corner, the
-        // bar shows (the card, no fill of its own; under the rim's light), not the shown tab's
-        // `tab_active` wash.
+        // bar shows (the card, no fill of its own), not the shown tab's `tab_active` wash.
         let (tab_left, tab_top) = first_tab.get();
         let (x, y) = (tab_left + 1.5, tab_top + 1.5);
         let p = at(x, y);
-        // Both lit as much as the light is at this depth (2026-11-20).
-        let depth = y - ui_tokens::size::CARD_INSET - 2.0 * ui_tokens::size::HAIRLINE;
-        let (card, tab) = (rim_lit(ui.card, depth), rim_lit(ui.tab_active, depth));
+        let (card, tab) = (ui.card, ui.tab_active);
         assert!(
             gap(p, card) <= 4 && gap(p, card) < gap(p, tab),
             "{n}: the bar inside the first tab's rounded corner at ({x}, {y}): {p:?}"
@@ -1165,10 +1160,11 @@ fn card_scenes() {
         let edge = 440.0 - CARD_INSET - 0.5;
         let p = at(edge, 150.0);
         assert!(
-            near(p, ui.card_edge),
+            near(p, ui.sidebar_background),
             "{n}: the pane card's right edge at {edge}: {p:?}"
         );
-        for x in [440.0 - CARD_INSET / 2.0, 440.0 - 1.0] {
+        // (Up to the window's 1 pt edge, 2026-11-20.)
+        for x in [440.0 - CARD_INSET / 2.0, 440.0 - 1.5] {
             let p = at(x, 150.0);
             assert!(is_canvas(p, &ui), "{n}: canvas right of it at {x}: {p:?}");
         }
@@ -1313,7 +1309,10 @@ fn card_split_scenes() {
                 ("right edge", right_end - 0.5),
             ] {
                 let p = at(x, 300.0);
-                assert!(near(p, ui.card_edge), "{n}: the card's {which}: {p:?}");
+                assert!(
+                    near(p, ui.sidebar_background),
+                    "{n}: the card's {which}: {p:?}"
+                );
             }
             println!("ui-shots: {}", path.display());
         }
@@ -1404,7 +1403,7 @@ fn card_corner_scenes() {
                 !near(p, ui.accent),
                 "{n}: no ring on a lone pane, {which}: {p:?}"
             );
-            assert!(near(p, ui.card_edge), "{n}: {which} edge: {p:?}");
+            assert!(near(p, ui.sidebar_background), "{n}: {which} edge: {p:?}");
         }
         println!("ui-shots: {}", path.display());
     }
@@ -1471,11 +1470,11 @@ fn check_one_card(
     ] {
         let p = at(x, y);
         assert!(
-            near(p, ui.card_edge),
+            near(p, ui.sidebar_background),
             "{n}: the card's {which} edge at ({x}, {y}): {p:?}"
         );
     }
-    // The fill (the rim's light is along the top only, out of reach here).
+    // The fill.
     for (which, x, y, fill) in [
         ("left", left + 20.0, mid_y, ui.card),
         ("right", right - 20.0, mid_y, right_fill),
@@ -1483,7 +1482,7 @@ fn check_one_card(
     ] {
         let p = at(x, y);
         assert!(
-            near_at(p, fill, y, 3),
+            near_by(p, fill, 3),
             "{n}: the fill inside the card's {which} edge at ({x}, {y}): {p:?}, want {fill:?}"
         );
     }
@@ -1621,7 +1620,7 @@ fn one_card_scene() {
         let (x, y) = (right - 7.0, bottom - 7.0);
         let p = at(x, y);
         assert!(
-            near_lit(p, ui.side, 3),
+            near_by(p, ui.side, 3),
             "{n}: the panel's fill in its bottom-right corner at ({x}, {y}): {p:?}"
         );
         println!("ui-shots: {}", path.display());
@@ -1669,7 +1668,7 @@ fn one_card_right_hidden_scene() {
         ] {
             let p = at(x, y);
             assert!(
-                near_at(p, ui.card, y, 3),
+                near_by(p, ui.card, 3),
                 "{n}: the terminal {what} at ({x}, {y}): {p:?}"
             );
         }
@@ -1717,7 +1716,7 @@ fn one_card_narrow_scene() {
         while x < right - HAIRLINE - 2.0 {
             let p = pixel_at(&shot, dims, x, y);
             assert!(
-                near_at(p, ui.card, y, 3),
+                near_by(p, ui.card, 3),
                 "{n}: the card's fill only at ({x}, {y}): {p:?}"
             );
             x += 1.0;
@@ -1804,7 +1803,10 @@ fn one_card_slide_scene() {
             );
         }
         let p = at(right - 0.5, y);
-        assert!(near(p, ui.card_edge), "{n}: the card's right edge: {p:?}");
+        assert!(
+            near(p, ui.sidebar_background),
+            "{n}: the card's right edge: {p:?}"
+        );
         // Nothing of it past the card, or outside the card's rounded right corners.
         for (what, x, y) in [
             ("right of the card", right + CARD_INSET / 2.0, y),
@@ -2411,8 +2413,8 @@ fn title_area_scenes() {
             // `band_reserve`; no name.
             if hidden {
                 let [side_x, bell_x, gear_x] = band_buttons(false);
-                // The card's own colour, under the rim's light along its top (2026-11-20).
-                let card = |p: [u8; 3]| near_lit(p, theme.background, 1);
+                // The card's own colour.
+                let card = |p: [u8; 3]| near_by(p, theme.background, 1);
                 let line = sy + HIT / 2.0;
                 // The lights' room: the card's own colour from past its corner to the buttons.
                 for y in [sy + 2.0, line, sy + HIT - 2.0] {
@@ -2744,7 +2746,9 @@ fn title_bar_scenes() {
             // The title's ink to a fraction of a pixel (`ink_span`): a half-way threshold
             // (`ink_box`) takes or drops a whole device pixel at each side as the theme thickens
             // or thins its anti-aliased edges, and moved the centre 0.25 pt between the themes.
-            let title = ink_span(&shot, dims, (0.0, 0.0, button_x, TOP_BAND), band, dim);
+            // (Past the window's edge and its rounded corner, 2026-11-20.)
+            let e = crate::panes::WINDOW_RADIUS;
+            let title = ink_span(&shot, dims, (e, e, button_x - e, TOP_BAND - e), band, dim);
             let button = ink_box(&shot, dims, (button_x, BUTTON_Y, HIT, HIT), band, dim)
                 .unwrap_or_else(|| panic!("{n}: no button ink"));
             // The footer gear's ink, in its slot centred in the footer under its 1 px edge.
@@ -2778,7 +2782,7 @@ fn title_bar_scenes() {
             );
             // Where the button was (right of the lights, which shots don't draw): nothing.
             let clear = lights_clear(false);
-            let old = ink_box(&shot, dims, (0.0, 0.0, clear, TOP_BAND), band, dim);
+            let old = ink_box(&shot, dims, (e, e, clear - e, TOP_BAND - e), band, dim);
             assert_eq!(old, None, "{n}: ink in the band's left (x 0 to {clear})");
             match scene {
                 "title-bar-open-narrow" => {
@@ -2851,7 +2855,8 @@ fn title_bar_scenes() {
         );
         let button = ink_box(&shot, dims, (x, BUTTON_Y, HIT, HIT), band, dim)
             .unwrap_or_else(|| panic!("{n}: no button ink at {x}"));
-        let title = ink_box(&shot, dims, (0.0, 0.0, x, TOP_BAND), band, dim);
+        let e = crate::panes::WINDOW_RADIUS;
+        let title = ink_box(&shot, dims, (e, e, x - e, TOP_BAND - e), band, dim);
         println!("ui-shots: {n}: button {button:?}, title {title:?}");
         let mid = (button.0 + button.1) / 2.0;
         assert!(
@@ -3075,9 +3080,8 @@ fn title_bar_scenes() {
                     let bar_above = ui_tokens::size::CARD_INSET
                         + ui_tokens::size::HAIRLINE
                         + (ui_tokens::size::TAB_BAR - crate::tab_bar::TAB) / 4.0;
-                    // (Under the card rim's light along its top, 2026-11-20.)
                     let p = at(150.0, bar_above);
-                    assert!(near_lit(p, theme.background, 1), "{n}: slid out: {p:?}");
+                    assert!(near_by(p, theme.background, 1), "{n}: slid out: {p:?}");
                     // The sliding sidebar still carries its own button, and nothing is drawn at
                     // the collapsed sidebar button's place by the lights until the slide ends.
                     let own = ink_box(&shot, dims, (0.0, BUTTON_Y, 60.0, HIT), band, dim);
@@ -3215,8 +3219,8 @@ fn title_bar_scenes() {
             let fill = at(b[1] + 1.5, hover_y);
             let beside = at(b[1] - 2.0, hover_y);
             let (hover, card) = (bg(ui.panel_hover), bg(theme.background));
-            // The 🔔 is drawn over the card's top light (2026-11-20), the bar beside it under it:
-            // its fill is `panel_hover`, standing off the lit bar the same way on every channel.
+            // Its fill is `panel_hover`, standing off the bar beside it the same way on every
+            // channel.
             let off = (0..3).all(|k| {
                 let got = i32::from(fill[k]) - i32::from(beside[k]);
                 let want = i32::from(hover[k]) - i32::from(card[k]);

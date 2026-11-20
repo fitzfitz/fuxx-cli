@@ -403,30 +403,34 @@ fn status_bar_scenes() {
             // The card's inside (the terminal's background) stops at the rim's 1 pt ring of the
             // canvas colour inside its 1 pt edge (2026-11-20), `CARD_INSET` above the bar (its
             // shadow shades the inset, so the inset isn't looked at): the lowest pixel of the
-            // fill (under the rim's light) with the ring right under it.
+            // fill with the card's edge (the canvas colour since 2026-11-20) right under it.
             let card_x = SIDEBAR_DEFAULT_WIDTH + 40.0;
             let inside = (0..(top * scale) as usize)
                 .map(|dy| dy as f32 / scale)
                 .filter(|&y| {
-                    near_lit(at(card_x, y), ui.card, 2)
+                    near_by(at(card_x, y), ui.card, 2)
                         && near_by(at(card_x, y + 1.0 / scale), ui.sidebar_background, 2)
                 })
                 .fold(0.0, f32::max)
                 + 1.0 / scale;
             assert!(
-                (top - inside - (CARD_INSET + 2.0 * HAIRLINE)).abs() <= 0.75,
+                (top - inside - (CARD_INSET + HAIRLINE)).abs() <= 0.75,
                 "{n}: the card's inside ends at {inside}, {} above the bar",
                 top - inside
             );
             // The left side's ink, from the mark to the folder's end, as wide as measured.
             let (word_w, branch_w, folder_w) = widths.get();
-            let ys: Vec<f32> = (0..((STATUS_BAR - 4.0) * scale) as usize)
+            // (The bar's upper rows: the window's edge, 2026-11-20, rounds its bottom corners
+            // through the lower ones.)
+            let ys: Vec<f32> = (0..((STATUS_BAR / 2.0 - 2.0) * scale) as usize)
                 .map(|dy| top + 2.0 + dy as f32 / scale)
                 .collect();
             // Ink is where a pixel differs from the one before it: the card's shadow over the bar
             // only shades it smoothly.
             let inked = |x: f32| ys.iter().any(|&y| apart(at(x, y), at(x - 1.0 / scale, y)));
-            let xs: Vec<f32> = (0..(w / 2.0 * scale) as usize)
+            // (Past the window's 1 pt edge, 2026-11-20.)
+            let edge = crate::panes::WINDOW_EDGE + 1.0;
+            let xs: Vec<f32> = ((edge * scale) as usize..(w / 2.0 * scale) as usize)
                 .map(|dx| dx as f32 / scale)
                 .collect();
             let ink: Vec<f32> = xs.iter().copied().filter(|&x| inked(x)).collect();
@@ -530,7 +534,7 @@ fn status_bar_ports_scenes() {
                 .into()
         };
         let plain = render(&theme, dims, build);
-        let chips = runs_over(&plain, dims, line, ui.row_hover, Some(-6.0));
+        let chips = runs_over(&plain, dims, line, ui.row_hover, Some(-4.0));
         println!("ui-shots: status-bar-ports-{slug}: chips {chips:?}");
         assert_eq!(chips.len(), 4, "{slug}: three chips and +2: {chips:?}");
         let last = chips[3].1;
@@ -693,7 +697,7 @@ fn status_bar_narrow_scenes() {
         // The ports, one chip.
         let line = mid + crate::status_bar::CHIP / 2.0 - 1.5;
         let mut chips: Vec<(f32, f32)> = Vec::new();
-        for run in runs_over(&shot, dims, line, ui.row_hover, Some(-6.0)) {
+        for run in runs_over(&shot, dims, line, ui.row_hover, Some(-4.0)) {
             // The `p`'s tail cuts the chip's fill at this height: its two sides are one chip.
             match chips.last_mut() {
                 Some(last) if run.0 - last.1 < 6.0 => last.1 = run.1,
