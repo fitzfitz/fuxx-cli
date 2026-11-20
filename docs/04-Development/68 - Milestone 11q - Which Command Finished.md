@@ -618,3 +618,20 @@ the full gate below.
 **On-screen check (yours):** the window's inner grey edge a little darker than before; no light line along the
 card's top.
 
+## Chores after M11q, part 9 (2026-11-20, part 7 undone; the borders darker)
+
+Your words: "yes revert the New button outline and make it darker all those borders".
+
+1. **Part 7 undone:** the New button's outline is `card_border` again (`canvas_line` is gone).
+2. **`card_border` darker on dark themes:** the terminal background with 6 % of the ink (was 10 %), held at a new
+   `SOFT_LINE_MIN` (1.2:1, was `QUIET_LINE_MIN` 1.4:1) on the canvas, the card, the right panel and the search
+   box's fill. It is every such line: the New button and search box outlines, the footer's top line, the hairlines
+   between panes and under the bars. Mocha, for one: 1.41 → 1.21 on the card, 1.61 → 1.39 on the canvas. Light
+   themes keep theirs. **AI's call:** "all those borders" read as this one colour, the one the New button uses.
+
+**Checks:** `dark_theme_borders_are_darker_but_still_show` (red at 1.41 on Mocha's card first); the floors'
+audit and two older tests take `SOFT_LINE_MIN` for it on dark themes; 2232 tests; clippy: no new warnings; fmt;
+full ui-shots.
+
+**On-screen check (yours):** the sidebar's lines and boxes and the card's hairlines quieter than before.
+

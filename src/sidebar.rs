@@ -2807,7 +2807,7 @@ impl Workspace {
                     .px(px(12.0))
                     .rounded(px(10.0))
                     .border_1()
-                    .border_color(hsla(ui.canvas_line))
+                    .border_color(hsla(ui.card_border))
                     .when(open, |b| b.bg(hsla(ui.row_active)))
                     .text_size(px(text::UI))
                     .text_color(hsla(ui.text_dim))
