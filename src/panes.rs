@@ -44,6 +44,9 @@ pub struct PaneColors {
     /// panes.
     pub card: Hsla,
     pub card_border: Hsla,
+    /// The card's outer edge (darker), and its rim's inner ring (the canvas colour).
+    pub card_edge: Hsla,
+    pub rim: Hsla,
     /// The card's shadow: `shadow` at `shadow_alpha` (0-1).
     pub shadow: Hsla,
     pub shadow_alpha: f32,
@@ -69,6 +72,8 @@ impl PaneColors {
             accent: resize_line(ui),
             card: hsla(ui.card),
             card_border: hsla(ui.card_border),
+            card_edge: hsla(ui.card_edge),
+            rim: hsla(ui.sidebar_background),
             shadow: hsla(ui.shadow),
             shadow_alpha: ui.card_shadow_alpha,
         }
@@ -76,8 +81,9 @@ impl PaneColors {
 }
 
 /// The floating card (M11al §3.1; the one the panes sit in, and until it moves in, the right
-/// sidebar's): the card's fill, `CARD_RADIUS` corners, a `HAIRLINE` `card_border` edge drawn
-/// over its content, and its soft shadow (`CARD_SHADOW_Y` down, `CARD_SHADOW_BLUR` blurred).
+/// sidebar's): the card's fill, `CARD_RADIUS` corners, a `HAIRLINE` `card_edge` edge (darker
+/// than the hairlines inside it since 2026-11-20), and its soft shadow (`CARD_SHADOW_Y` down,
+/// `CARD_SHADOW_BLUR` blurred). Its rim (`card_rim`) is its last child.
 /// Its content is clipped to the inside of its edge (a rectangle: content that reaches a corner
 /// rounds its own background, see note 60 §5).
 pub fn card(colors: &PaneColors) -> Div {
@@ -85,7 +91,7 @@ pub fn card(colors: &PaneColors) -> Div {
         .bg(colors.card)
         .rounded(px(CARD_RADIUS))
         .border(px(HAIRLINE))
-        .border_color(colors.card_border)
+        .border_color(colors.card_edge)
         .shadow(vec![BoxShadow {
             color: Hsla {
                 a: colors.shadow_alpha,
@@ -97,6 +103,47 @@ pub fn card(colors: &PaneColors) -> Div {
             inset: false,
         }])
         .overflow_hidden()
+}
+
+/// How far the card's top light reaches in (it fades out over twice this), and how strong it is
+/// at the top.
+pub(crate) const RIM_LIGHT: f32 = 10.0;
+pub(crate) const RIM_LIGHT_ALPHA: f32 = 0.07;
+
+/// The card's rim (chore 2026-11-20, your ask: "inner and outer border… clean and futuristic",
+/// "add light top box shadow in the top inner window"): over its inside, drawn after its
+/// content, a `HAIRLINE` ring of the canvas colour just inside the outer edge, and along the top
+/// only a soft white light fading out over `2 × RIM_LIGHT`. It takes no clicks, and the panes'
+/// padding is wider than it.
+pub fn card_rim(colors: &PaneColors) -> Div {
+    let white = |a: f32| Hsla {
+        h: 0.0,
+        s: 0.0,
+        l: 1.0,
+        a,
+    };
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .rounded(px(CARD_RADIUS - HAIRLINE))
+        .border(px(HAIRLINE))
+        .border_color(colors.rim)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(2.0 * RIM_LIGHT))
+                .rounded_t(px(CARD_RADIUS - 2.0 * HAIRLINE))
+                .bg(gpui::linear_gradient(
+                    180.0,
+                    gpui::linear_color_stop(white(RIM_LIGHT_ALPHA), 0.0),
+                    gpui::linear_color_stop(white(0.0), 1.0),
+                )),
+        )
 }
 
 /// What every pane of one layout is drawn with.

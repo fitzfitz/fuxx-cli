@@ -962,8 +962,10 @@ mod tests {
     /// came; nothing while it's closed.
     #[test]
     fn the_graph_rows_are_its_commits_then_load_more() {
-        let mut g = GraphState::default();
-        g.commits = vec![commit_at(0, false), commit_at(1, false)];
+        let mut g = GraphState {
+            commits: vec![commit_at(0, false), commit_at(1, false)],
+            ..GraphState::default()
+        };
         assert!(g.rows_shown().is_empty(), "closed");
         g.open = true;
         g.limit = 2;
@@ -977,9 +979,11 @@ mod tests {
 
     #[test]
     fn head_is_found_in_the_graph_rows() {
-        let mut g = GraphState::default();
-        g.open = true;
-        g.commits = vec![commit_at(0, false), commit_at(1, false), commit_at(2, true)];
+        let mut g = GraphState {
+            open: true,
+            commits: vec![commit_at(0, false), commit_at(1, false), commit_at(2, true)],
+            ..GraphState::default()
+        };
         assert_eq!(g.graph_head_row(), Some(2));
         g.commits[2].head = false;
         assert_eq!(g.graph_head_row(), None);

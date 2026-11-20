@@ -145,6 +145,9 @@ pub struct UiColors {
     /// A raised card (each pane, the right sidebar; M11i): the terminal's own background.
     pub card: Rgb,
     /// A card's 1 px edge, quiet on the canvas (the sidebar colour) and on the card.
+    /// The card's outer edge (chore 2026-11-20): a step darker than `card_border`; inside it a
+    /// ring of the canvas colour and a soft light along the top (`panes::card_rim`).
+    pub card_edge: Rgb,
     pub card_border: Rgb,
     /// The Changes progress bar's unfilled track, on the repo card (`card_hover`; M11al Task 9).
     pub progress_track: Rgb,
@@ -447,6 +450,10 @@ impl Theme {
         // the card.
         let drop_tab = wash(card, 0.20, &[&words[..], &tab_marks[..]].concat());
         let drop_card = wash(card, 0.08, &words);
+        let card_border = quiet(
+            mix(bg, fg, if dark { 0.10 } else { 0.12 }),
+            &[canvas, card, side],
+        );
         let tab_colors = TabColor::ALL.map(|c| readable(mark(c.base()), &selections, MARK_MIN));
         UiColors {
             sidebar_background: canvas,
@@ -475,10 +482,8 @@ impl Theme {
             selection,
             tab_colors,
             card,
-            card_border: quiet(
-                mix(bg, fg, if dark { 0.10 } else { 0.12 }),
-                &[canvas, card, side],
-            ),
+            card_border,
+            card_edge: mix(card_border, black, if dark { 0.35 } else { 0.12 }),
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
             card_shadow_alpha: if dark { 0.45 } else { 0.12 },
             raised,
@@ -949,6 +954,23 @@ mod tests {
                 let d = d.min(360.0 - d);
                 assert!(d >= 25.0, "{name}: the accent {d}° from {what}");
             }
+        }
+    }
+
+    /// Chore 2026-11-20 (your ask: "make the outer border slightly darker and have the inner
+    /// border same as the main background color"): the card's outer edge a step darker than the
+    /// hairlines inside it, in every theme.
+    #[test]
+    fn the_cards_outer_edge_is_darker_than_its_hairlines() {
+        use crate::ui_tokens::relative_luminance;
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            assert!(
+                relative_luminance(ui.card_edge) < relative_luminance(ui.card_border),
+                "{name}: card_edge {:?} vs card_border {:?}",
+                ui.card_edge,
+                ui.card_border
+            );
         }
     }
 

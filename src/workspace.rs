@@ -4091,7 +4091,9 @@ impl Render for Workspace {
                                                     .children(panes),
                                             )
                                             .children(right_sidebar)
-                                            .children(sliding_right_sidebar),
+                                            .children(sliding_right_sidebar)
+                                            // Its rim over everything in it (2026-11-20).
+                                            .child(panes::card_rim(&colors)),
                                     ),
                             ),
                     )

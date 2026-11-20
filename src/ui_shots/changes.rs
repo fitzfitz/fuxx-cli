@@ -109,6 +109,7 @@ pub(super) const SCENES: &[Scene] = &[
 ///   room, at its bottom.
 /// - `changes-graph-card`: the pointer on the merge: its card, with Open on GitHub.
 /// - `changes-graph-closed`: closed, its header alone at the room's bottom.
+///
 /// Acting (Mocha): its divider dragged to the room's top holds it at half, to its bottom at a
 /// quarter.
 fn changes_graph_scenes() {
@@ -886,24 +887,19 @@ fn changes_bar_scenes() {
                     })
                 })
             };
-            // The bar is the card's last stretch (to 532 in a 560 pt window): its top is the
-            // `card_border` line found by scanning up the panel's left edge (M11al Task 10: the
+            // The bar is the card's last stretch (to 532 in a 560 pt window): from the card's
+            // bottom edge (`card_edge` since 2026-11-20) up to its top, the `card_border` line,
+            // both found by scanning up the panel's left edge (M11al Task 10: the
             // bar is `BAR_PAD_Y` + its two lines or the 34 pt buttons + `BAR_PAD_Y`, taller than 56);
             // its buttons in its right 80 pt; the tooltip hangs just above them, where no row is.
-            let probe = |y: f32| {
-                near(
-                    pixel_at(&shot, dims, sidebar_left + 4.0, y),
-                    ui.card_border,
-                    3,
-                )
-            };
+            let probe = |y: f32, c: Rgb| near(pixel_at(&shot, dims, sidebar_left + 4.0, y), c, 3);
             let bar_bottom = (0..40)
                 .map(|i| 540.0 - i as f32 * 0.5)
-                .find(|&y| probe(y))
+                .find(|&y| probe(y, ui.card_edge))
                 .expect("the card's bottom edge");
             let bar_top = (0..460)
                 .map(|i| bar_bottom - 2.0 - i as f32 * 0.5)
-                .find(|&y| probe(y))
+                .find(|&y| probe(y, ui.card_border))
                 .expect("the bar's top line");
             assert!(
                 bar_bottom - bar_top >= 63.0 - 1.0,

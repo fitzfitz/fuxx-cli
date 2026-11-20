@@ -220,9 +220,10 @@ fn right_sidebar_scenes() {
             let card_right = window_right - CARD_INSET;
             let line = card_right - width - HAIRLINE;
             if width > 0.0 {
+                // (6 pt from the card's right edge: under its rim's light, 2026-11-20.)
                 for x in [card_right - width + 6.0, card_right - 6.0] {
                     let p = at(x, y);
-                    assert!(near(p, ui.side), "{n}: sidebar at {x}: {p:?}");
+                    assert!(near_lit(p, ui.side, 3), "{n}: sidebar at {x}: {p:?}");
                 }
                 let x = window_right - CARD_INSET / 2.0;
                 let p = at(x, y);
@@ -251,8 +252,12 @@ fn right_sidebar_scenes() {
                 let p = at(line - 6.0, y);
                 assert!(near(p, theme.background), "{n}: the pane left of it: {p:?}");
             } else {
+                // (Under the card rim's light, 6 pt from its right edge, 2026-11-20.)
                 let p = at(card_right - 6.0, y);
-                assert!(near(p, theme.background), "{n}: no right sidebar: {p:?}");
+                assert!(
+                    near_lit(p, theme.background, 3),
+                    "{n}: no right sidebar: {p:?}"
+                );
                 let p = at(window_right - CARD_INSET / 2.0, y);
                 assert!(
                     is_canvas(p, &ui),
@@ -1337,16 +1342,21 @@ fn right_panel_scenes() {
                 ("above the tabs", x_files, card_top + 2.0),
                 ("its empty part", empty, tab_middle),
             ] {
+                // (Near the card's top and right edges: under its rim's light, 2026-11-20.)
                 let p = at(x, y);
-                assert!(near(p, ui.side), "{n}: the strip {what}: {p:?}");
+                assert!(near_lit(p, ui.side, 3), "{n}: the strip {what}: {p:?}");
             }
+            // (Beside the tabs, near the card's right edge: under its rim's light, 2026-11-20.)
             for (what, x) in [("beside the tabs", empty), ("under Files", x_files)] {
                 let p = at(x, card_top + TAB_BAR - 0.5);
-                assert!(near(p, ui.card_border), "{n}: the line {what}: {p:?}");
+                assert!(
+                    near_lit(p, ui.card_border, 3),
+                    "{n}: the line {what}: {p:?}"
+                );
             }
             let p = at(empty, card_top + TAB_BAR + 0.5);
             assert!(
-                near(p, ui.side),
+                near_lit(p, ui.side, 3),
                 "{n}: the panel's `side` right under it: {p:?}"
             );
         }
@@ -1545,8 +1555,12 @@ fn right_panel_comfortable_scenes() {
                 ("left of the track", sidebar_left + 4.0),
                 ("right of it", card_right - 4.0),
             ] {
+                // (4 pt from the card's right edge: under its rim's light, 2026-11-20.)
                 let p = at(x, header_top - 0.5);
-                assert!(near(p, ui.card_border, 3), "{n}: the line {what}: {p:?}");
+                assert!(
+                    near_lit(p, ui.card_border, 3),
+                    "{n}: the line {what}: {p:?}"
+                );
             }
             // The track: `canvas` inside its `card_border` edge, 14 pt from the panel's sides.
             let p = at(track_left + 0.5, middle);
@@ -1555,10 +1569,11 @@ fn right_panel_comfortable_scenes() {
             assert!(near(p, ui.side, 3), "{n}: `side` outside the track: {p:?}");
             let p = at(track_left + HAIRLINE + 1.5, middle);
             assert!(near(p, canvas, 3), "{n}: the track's `canvas`: {p:?}");
+            // (Its right and top edges near the card's: under its rim's light, 2026-11-20.)
             let p = at(track_right - 0.5, middle);
-            assert!(near(p, ui.card_border, 3), "{n}: the right edge: {p:?}");
+            assert!(near_lit(p, ui.card_border, 3), "{n}: the right edge: {p:?}");
             let p = at(track_left + 20.0, track_top + 0.5);
-            assert!(near(p, ui.card_border, 3), "{n}: the top edge: {p:?}");
+            assert!(near_lit(p, ui.card_border, 3), "{n}: the top edge: {p:?}");
             // Three equal segments, `SWITCH_SEGMENT` tall, `SWITCH_PAD` inside the edge.
             let w = (track_right - track_left - 2.0 * (SWITCH_PAD + HAIRLINE)) / 3.0;
             for (i, b) in seg.iter().enumerate() {

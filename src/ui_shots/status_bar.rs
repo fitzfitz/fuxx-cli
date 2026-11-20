@@ -258,7 +258,7 @@ fn status_bar_scenes() {
     use crate::status_bar::{
         BRANCH_GAP, BRANCH_GLYPH, ITEM_GAP, MARK, MARK_GAP, PAD, StatusWord, text_width,
     };
-    use crate::ui_tokens::size::{CARD_INSET, SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
+    use crate::ui_tokens::size::{CARD_INSET, HAIRLINE, SIDEBAR_DEFAULT_WIDTH, STATUS_BAR};
     use gpui::FontWeight;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -400,16 +400,21 @@ fn status_bar_scenes() {
                 under.iter().zip(bare).all(|(a, b)| *a <= b) && under != bare,
                 "{n}: the card's shadow darkens the bar's top: {under:?} vs canvas {bare:?}"
             );
-            // The card's inside (the terminal's background) stops at its 1 pt edge, `CARD_INSET`
-            // above the bar (its shadow shades the inset, so the inset isn't looked at).
+            // The card's inside (the terminal's background) stops at the rim's 1 pt ring of the
+            // canvas colour inside its 1 pt edge (2026-11-20), `CARD_INSET` above the bar (its
+            // shadow shades the inset, so the inset isn't looked at): the lowest pixel of the
+            // fill (under the rim's light) with the ring right under it.
             let card_x = SIDEBAR_DEFAULT_WIDTH + 40.0;
             let inside = (0..(top * scale) as usize)
                 .map(|dy| dy as f32 / scale)
-                .filter(|&y| near_by(at(card_x, y), ui.card, 2))
+                .filter(|&y| {
+                    near_lit(at(card_x, y), ui.card, 2)
+                        && near_by(at(card_x, y + 1.0 / scale), ui.sidebar_background, 2)
+                })
                 .fold(0.0, f32::max)
                 + 1.0 / scale;
             assert!(
-                (top - inside - (CARD_INSET + 1.0)).abs() <= 0.75,
+                (top - inside - (CARD_INSET + 2.0 * HAIRLINE)).abs() <= 0.75,
                 "{n}: the card's inside ends at {inside}, {} above the bar",
                 top - inside
             );

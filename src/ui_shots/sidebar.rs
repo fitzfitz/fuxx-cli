@@ -1341,10 +1341,11 @@ fn sidebar_button_scenes() {
             bg(ui.sidebar_background),
             "{slug}: icon shown"
         );
-        assert_ne!(
-            at("hidden", hidden_edge),
-            bg(theme.background),
-            "{slug}: icon hidden"
+        // (The card under its rim's light near its top edge, 2026-11-20.)
+        let p = at("hidden", hidden_edge);
+        assert!(
+            !near_lit(p, theme.background, 1),
+            "{slug}: icon hidden: {p:?}"
         );
         // Hover: the hit area is panel_hover, not the sidebar's colour.
         assert_eq!(
@@ -1361,10 +1362,10 @@ fn sidebar_button_scenes() {
             + ui_tokens::size::HAIRLINE
             + (ui_tokens::size::TAB_BAR - crate::tab_bar::TAB) / 4.0;
         let (inside, beyond) = (point(30.0, 58.0), point(150.0, bar_above_tab));
-        assert_eq!(
-            at("sliding", beyond),
-            bg(theme.background),
-            "{slug}: slid out"
+        let p = at("sliding", beyond);
+        assert!(
+            near_lit(p, theme.background, 1),
+            "{slug}: slid out (the card under its rim's light): {p:?}"
         );
         assert_ne!(
             at("sliding", inside),
