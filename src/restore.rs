@@ -147,6 +147,9 @@ pub struct SavedState {
     /// missing or unknown: Files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub right_sidebar_panel: Option<String>,
+    /// The Changes panel's GRAPH share of its room (chore 2026-11-20); none: 1/3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_fraction: Option<f32>,
     /// The Welcome card has been shown (M11k); a file from before it: welcomed.
     #[serde(default = "already_welcomed")]
     pub welcomed: bool,
@@ -180,6 +183,7 @@ impl Default for SavedState {
             right_sidebar_hidden: true,
             right_sidebar_width: None,
             right_sidebar_panel: None,
+            graph_fraction: None,
             welcomed: false,
             recent_folders: Vec::new(),
         }
@@ -573,6 +577,19 @@ mod tests {
         assert!(old.right_sidebar_hidden);
         assert_eq!(old.right_sidebar_width, None);
         assert!(SavedState::default().right_sidebar_hidden);
+    }
+
+    /// The GRAPH's share of the Changes panel (chore 2026-11-20): kept; a file from before it
+    /// has none (the panel then gives 1/3).
+    #[test]
+    fn the_graph_fraction_round_trips_and_an_old_file_has_none() {
+        let state = SavedState {
+            graph_fraction: Some(0.4),
+            ..sample()
+        };
+        assert_eq!(decode(&encode(&state)), Some(state));
+        let old = decode(r#"{"version":2,"sessions":[{}]}"#).expect("an old file loads");
+        assert_eq!(old.graph_fraction, None);
     }
 
     #[test]

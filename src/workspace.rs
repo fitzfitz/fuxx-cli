@@ -1529,6 +1529,7 @@ impl Workspace {
             right_sidebar_hidden: self.right_sidebar.hidden,
             right_sidebar_width: Some(self.right_sidebar.width),
             right_sidebar_panel: Some(self.right_sidebar.panel.key().to_string()),
+            graph_fraction: Some(self.right_sidebar.changes.graph.fraction),
             recent_folders: self.recent_folders.folders().to_vec(),
         }
     }
