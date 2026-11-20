@@ -289,17 +289,17 @@ fn tab_scenes() {
             let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
             println!("ui-shots: {}", path.display());
             if scene == "tabs" || scene == "tabs-narrow" {
-                // codex's colour is its avatar's (M11r: no separate dot), on its row's line.
+                // codex's colour is its avatar's (M11r: no separate dot), on its row's line: its
+                // letters' since 2026-11-20 (the tile has no fill).
                 let shot = render_with(&theme, dims, build, act);
-                let y = dot_y.get();
-                // Its gradient's middle, give or take the blend.
-                let (top, bottom, _) = ui.avatars[TabColor::Blue as usize];
-                let mid = crate::theme::mix(top, bottom, 0.5);
+                // The letters sit on the row's middle, 6.5 pt under its name line.
+                let y = dot_y.get() + 6.5;
+                let mid = crate::sidebar::avatar_ink(Some(TabColor::Blue), &ui);
                 let scale = shot.width as f32 / f32::from(dims.width);
                 let dots = (0..(width * scale) as usize)
                     .filter(|&x| gap(pixel_at(&shot, dims, x as f32 / scale, y), mid) <= 14)
                     .count();
-                assert!(dots > 0, "{scene}-{slug}: codex's blue avatar");
+                assert!(dots > 0, "{scene}-{slug}: codex's blue letters");
             }
         }
 
@@ -696,12 +696,10 @@ const BAR_BUTTONS: f32 = crate::tab_bar::PLUS_GAP
     + 2.0 * crate::tab_bar::BUTTON
     + crate::tab_bar::BUTTON_GAP;
 
-/// How far left of its pane's right edge ⋯'s centre is: past the right sidebar's button and a
-/// gap, then half a button.
-const MORE_FROM_EDGE: f32 = crate::tab_bar::BUTTONS_PAD
-    + crate::tab_bar::BUTTON
-    + crate::tab_bar::BUTTON_GAP
-    + crate::tab_bar::BUTTON / 2.0;
+/// How far left of its pane's right edge ⋯'s centre is in a bar that isn't the top-right one
+/// (the left bars these scenes use): the bar's last button since 2026-11-20 (the right
+/// sidebar's button is the top-right bar's alone), half a button in from its padding.
+const MORE_FROM_EDGE: f32 = crate::tab_bar::BUTTONS_PAD + crate::tab_bar::BUTTON / 2.0;
 
 /// A bar's buttons sit in its middle.
 const BUTTON_TOP: f32 = (ui_tokens::size::TAB_BAR - crate::tab_bar::BUTTON) / 2.0;
@@ -2659,8 +2657,9 @@ fn tabs_minimal_scenes() {
             "{n}: the shown tab {last} in view, left of the buttons"
         );
         for (pane, pane_right) in [("left", across - HAIRLINE / 2.0), ("right", right)] {
-            // The left pane's one tab leaves its row short: its + is right after api, not here.
-            for k in 0..if pane == "left" { 2 } else { 3 } {
+            // The left pane's one tab leaves its row short: its + is right after api, not here;
+            // and it has ⋯ alone (the right sidebar's button is the top-right bar's).
+            for k in 0..if pane == "left" { 1 } else { 3 } {
                 // ⋯ and the right sidebar's pinned, + right after the (full) row, left of them.
                 let centre =
                     pane_right - BUTTONS_PAD - BUTTON / 2.0 - k as f32 * (BUTTON + BUTTON_GAP)

@@ -487,7 +487,7 @@ impl FileTab {
                 .child(
                     part("file-notes-eye")
                         .px(px(5.0))
-                        .child(glyph_with(kind, ink, BUTTON_STROKE))
+                        .child(glyph(kind, ink))
                         .child(place(eye_at, 1))
                         .on_click(
                             cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_notes_hidden(cx)),

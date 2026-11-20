@@ -712,17 +712,17 @@ fn chrome_notify_redraws_parts() {
     draw(&mut cx, window);
     assert_fresh(&mut cx, window, &format!("{n}: the hide slide ended"));
 
-    // The band under the title's box: a press there starts a window drag.
-    let width = f32::from(
-        cx.update_window(window, |_, window, _| window.viewport_size().width)
-            .expect("the window's width"),
+    // The top-left bar's room by the lights, past the ⚙ (2026-11-20), under the title's box: a
+    // press there starts a window drag.
+    let [sidebar_x, bell_x, _] = band_buttons(false);
+    let band = point(
+        px(crate::title_area::band_reserve(false) - 4.0),
+        px(BUTTON_Y + HIT / 2.0),
     );
-    let [bell_x, _, sidebar_x] = band_buttons(width, false);
-    let band = point(px(width * 0.25), px(BUTTON_Y + HIT / 2.0));
     cx.simulate_mouse_down(window, band, gpui::MouseButton::Left, Modifiers::none());
     assert!(
         cx.read(|cx| ws.read(cx).band_pressed),
-        "{n}: a press on the band under the title's box reaches the band"
+        "{n}: a press on the room by the lights under the title's box drags the window"
     );
     cx.simulate_mouse_up(window, band, gpui::MouseButton::Left, Modifiers::none());
     // The 🔔: its popover.
@@ -905,7 +905,7 @@ fn chrome_pane_churn() {
                 .tab_bar_keys(window)
                 .into_iter()
                 .find(|(p, _)| *p == pane)
-                .map(|(_, top)| top)
+                .map(|(_, place)| place.drags_window)
         })
         .expect("read the keys")
     };

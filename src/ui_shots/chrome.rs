@@ -1025,39 +1025,6 @@ pub(super) fn chrome_resize_title() {
             "{n}: {what}: the title shows only when wide"
         );
     }
-    // The sidebar hidden: the title band's workspace name has its own threshold (`shows_name`).
-    on_ws(&mut cx, window, &ws, |ws, window, cx| {
-        ws.toggle_sidebar(window, cx)
-    });
-    let started = Instant::now();
-    while cx.read(|cx| ws.read(cx).slide.is_some()) {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "{n}: the slide ends"
-        );
-        crate::ui_shots::prof::sleep(Duration::from_millis(16));
-        settle_frames(&mut cx, window);
-    }
-    let named = |w: f32| crate::title_area::shows_name(w, false);
-    let nameless = (0..f32::from(start.width) as i32)
-        .rev()
-        .map(|w| w as f32)
-        .find(|w| !named(*w))
-        .expect("a width that hides the name");
-    for (what, w) in [
-        ("hidden: narrowed past the name's", nameless),
-        ("hidden: widened back", f32::from(start.width)),
-    ] {
-        steps.step(&mut cx, window, what, Seen::Changes, |_| {
-            let height = f64::from(f32::from(start.height));
-            ns.setContentSize(objc2_foundation::NSSize::new(f64::from(w), height));
-        });
-        assert_eq!(
-            named(w),
-            w > nameless,
-            "{n}: {what}: the name shows only when wide"
-        );
-    }
     steps.done();
 }
 
@@ -2890,17 +2857,25 @@ pub(super) fn chrome_bars_and_edges() {
     steps.step(
         &mut cx,
         window,
-        "hidden: its terminal renamed",
+        "hidden: notifications raised",
         Seen::Changes,
         |cx| {
-            // (`session.rename`; the workspace has no name of its own, so it takes its terminal's.)
-            let i = cx
-                .read(|cx| {
-                    let ws = ws.read(cx);
-                    ws.focused_terminal().and_then(|id| ws.index_of(id))
+            // The 🔔 by the lights takes its unseen dot (the title part redraws; the collapsed
+            // band's name, which a rename redrew, is gone since 2026-11-20).
+            cx.update(|cx| {
+                ws.update(cx, |ws, cx| {
+                    let terminal = ws.focused_terminal();
+                    ws.note_notification(crate::notification_list::Entry {
+                        terminal,
+                        title: "api".into(),
+                        message: "Done".into(),
+                        status: Some(crate::status::Status::Done),
+                        failed: false,
+                        at: Instant::now(),
+                    });
+                    cx.notify();
                 })
-                .expect("the focused terminal");
-            cx.update(|cx| ws.update(cx, |ws, cx| ws.rename_at(i, "renamed", cx)));
+            });
         },
     );
     steps.done();

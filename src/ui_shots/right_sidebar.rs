@@ -264,12 +264,20 @@ fn right_sidebar_scenes() {
             // is Lucide's outline panel-right since 2026-11-20: its ink is read as the pixel
             // nearest the colour anywhere in its box.)
             let scale = shot.width as f32 / f32::from(dims.width);
+            // The button is the top-right bar's alone since 2026-11-20 (critique issue 4): the
+            // rightmost pane's here (both panes reach the top); the other's ⋯ sits in its
+            // place, never lit.
+            let rightmost = edges.borrow().iter().copied().fold(f32::MIN, f32::max);
             for (i, right) in edges.borrow().iter().enumerate() {
                 let centre = right - RIGHT_SIDEBAR_FROM_EDGE;
                 assert!(*right > left, "{n}: pane {i}'s edge {right}");
                 // Inside the button, left of its icon.
                 let beside = centre - crate::tab_bar::BUTTON / 2.0 + 2.0;
                 let fill = at(beside, BAR_MIDDLE);
+                if *right < rightmost {
+                    assert!(near(fill, ui.card), "{n}: pane {i}'s ⋯ unlit: {fill:?}");
+                    continue;
+                }
                 let half = crate::tab_bar::BUTTON_ICON / 2.0;
                 let ink_off = |c: alacritty_terminal::vte::ansi::Rgb| {
                     let mut best = u32::MAX;
@@ -526,7 +534,7 @@ fn files_scenes() {
         FILTER_BAND, HEADER, LIST_TOP, REPO_BOTTOM, REPO_PAD_X, REPO_SIDE, REPO_TOP, ROW,
         mark_color,
     };
-    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR, TOP_BAND};
+    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use gpui::{Focusable, Modifiers};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -593,8 +601,9 @@ fn files_scenes() {
 
         for scene in ["files", "files-filter", "files-bare"] {
             let bare = scene == "files-bare";
-            // The header row's top: under the band with the left sidebar hidden.
-            let top = if bare { TOP_BAND + HAIRLINE } else { card_top };
+            // The header row's top: under the strip, the left sidebar shown or hidden
+            // (2026-11-20: no band over the card).
+            let top = card_top;
             let slot: Slot = Rc::new(RefCell::new(None));
             let open_util = scene == "files";
             let build = build_for(bare, open_util, slot.clone());
@@ -754,17 +763,21 @@ fn files_scenes() {
                     "{n}: {what}'s icon isn't tinted by its type"
                 );
             }
-            // An open folder's icon differs from a closed one's: its flap's top edge crosses
-            // the middle of the 16 pt box (`(ROW - 16) / 2` down the row), where a closed folder is
-            // empty. (No triangles, part 4: the icon alone says open or closed.)
-            let open_flap = |row: usize| {
-                let (x, y) = (
-                    icon_left(row) + 8.0,
-                    list_top + row as f32 * ROW + (ROW - 16.0) / 2.0 + 7.3,
-                );
-                near(at(x, y), quiet, 40)
+            // An open folder's icon differs from a closed one's, in its 16 pt box (`(ROW - 16) / 2`
+            // down the row). (No triangles, part 4: the icon alone says open or closed.)
+            // (The icon set's folder and folder-open since 2026-11-20: their ink differs.)
+            let ink = |row: usize| -> Vec<bool> {
+                let top = list_top + row as f32 * ROW + (ROW - 16.0) / 2.0;
+                (0..16 * 16)
+                    .map(|k| {
+                        let (x, y) = (k % 16, k / 16);
+                        let p = at(icon_left(row) + x as f32 + 0.5, top + y as f32 + 0.5);
+                        near(p, quiet, 40)
+                    })
+                    .collect()
             };
-            assert!(open_flap(1) && !open_flap(0), "{n}: src open, docs closed");
+            assert!(ink(1).contains(&true), "{n}: src's icon drawn");
+            assert_ne!(ink(1), ink(0), "{n}: src open, docs closed");
             // Indent guides: 1 pt in `guide` at each level above the row, at the middle of
             // that level's icon (`edge` + 8 + 16 d), the row's full height; none at the
             // top level. (It spans x - 0.5 to x + 0.5: on a 1x shot it lands on one side.)

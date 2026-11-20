@@ -24,8 +24,8 @@ use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     Animation, AnimationExt, AnyElement, AnyView, App, Bounds, BoxShadow, ClickEvent, Context,
     DispatchPhase, Div, DragMoveEvent, FontFeatures, FontWeight, Hsla, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, ScrollHandle, SharedString, Task, Window,
-    canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, relative,
+    MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle, SharedString, Task, Window, canvas, div,
+    point, prelude::*, px, relative,
 };
 
 use crate::appearance::Appearance;
@@ -55,7 +55,7 @@ use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
     SIDEBAR_ROW, SIDEBAR_ROW_TWO, STATUS_MARK,
 };
-use crate::ui_tokens::text;
+use crate::ui_tokens::{TEXT_MIN, ensure_contrast, text};
 use crate::workspace::{POP_SHOWN, Renaming, Session, Workspace};
 use crate::workspace_agent::{RowWinner, row_winner};
 
@@ -563,19 +563,14 @@ pub fn initials(label: &str) -> String {
     }
 }
 
-/// A workspace's avatar colour (M11r): its tab colour when you set one, else one of the tab
-/// colours but grey, picked from its name (FNV-1a), so a name keeps its colour across restarts.
-pub fn avatar_color(color: Option<TabColor>, label: &str) -> TabColor {
-    color.unwrap_or_else(|| {
-        let hash = label.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
-            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-        });
-        let picks: Vec<TabColor> = TabColor::ALL
-            .into_iter()
-            .filter(|&c| c != TabColor::Grey)
-            .collect();
-        picks[(hash % picks.len() as u64) as usize]
-    })
+/// A workspace's avatar letters' colour: dim, or your tab colour when you set one (held to text
+/// contrast on the sidebar). The tile has no fill since 2026-11-20 (critique issue 2: the
+/// name-picked gradient tiles competed with the status colours).
+pub fn avatar_ink(color: Option<TabColor>, ui: &UiColors) -> Rgb {
+    match color {
+        Some(c) => ensure_contrast(ui.tab(c), ui.sidebar_background, TEXT_MIN),
+        None => ui.text_dim,
+    }
 }
 
 /// How many lines a row has under its name: the one `line_two` says (since M11r every row
@@ -887,12 +882,11 @@ const ROW_RADIUS: f32 = 12.0;
 /// The slot a status mark (or a header's chevron) sits in; a waiting mark fills it.
 pub(crate) const MARK_SLOT: f32 = 14.0;
 /// A group heading (M11al §2.5, quiet text): room above and below its words and at the
-/// sidebar's sides; its count's size and its chevron's line.
+/// sidebar's sides; its count's size.
 pub(crate) const HEADING_ABOVE: f32 = 16.0;
 const HEADING_BELOW: f32 = 8.0;
 pub(crate) const HEADING_SIDE: f32 = 20.0;
 const HEADER_COUNT: f32 = 12.0;
-const CHEVRON_STROKE: f32 = 1.25;
 /// The space between the mark and the name, and before the age.
 const SLOT_GAP: f32 = 8.0;
 /// A row's name line, and the small line under it (M11i), 3 px under it (M11al §2.3).
@@ -1078,7 +1072,7 @@ impl Render for DragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<Appearance>().theme.ui();
         let badge = badge(self.status, self.running, ui, ui.row_active, None);
-        let face = avatar(&self.label, self.color, ui, AVATAR)
+        let face = avatar(self.color, ui, AVATAR)
             .flex()
             .items_center()
             .justify_center()
@@ -1152,25 +1146,30 @@ pub(crate) fn mark_slot(mark: impl IntoElement) -> Div {
         .child(mark)
 }
 
-/// An avatar's square (M11r): `side` across, on its colour (`avatar_color`), its letters'
-/// colour and weight set for the children (the letters, or nothing for a small one).
-pub(crate) fn avatar(label: &str, color: Option<TabColor>, ui: UiColors, side: f32) -> Div {
-    let (top, bottom, ink) = ui.avatars[avatar_color(color, label) as usize];
+/// An avatar's square (M11r): `side` across, an outline with no fill (2026-11-20), its letters'
+/// colour (`avatar_ink`) and weight set for the children.
+pub(crate) fn avatar(color: Option<TabColor>, ui: UiColors, side: f32) -> Div {
     let radius = if side >= AVATAR { AVATAR_RADIUS } else { 4.0 };
     div()
         .flex_none()
         .relative()
         .size(px(side))
         .rounded(px(radius))
-        // Lit at its top left (M11r, as the mockup).
-        .bg(linear_gradient(
-            135.0,
-            linear_color_stop(hsla(top), 0.0),
-            linear_color_stop(hsla(bottom), 1.0),
-        ))
-        .text_color(hsla(ink))
+        // The outline drawn over the square, not as its border: a border would move the
+        // children placed from its edges (the badge, the ×) in by its width.
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .rounded(px(radius))
+                .border_1()
+                .border_color(hsla(ui.card_border)),
+        )
+        .text_color(hsla(avatar_ink(color, &ui)))
         .text_size(px(AVATAR_TEXT))
-        .font_weight(FontWeight::BOLD)
+        .font_weight(FontWeight::SEMIBOLD)
 }
 
 /// The place of a closed group's header mark among the mark views (`Workspace::marks`), keyed
@@ -1311,27 +1310,13 @@ pub(crate) fn color_dot(color: TabColor, ui: UiColors) -> Div {
         .bg(hsla(ui.tab(color)))
 }
 
-/// A header's thin line chevron (M11v part 4: › turning ⌄, was a filled triangle), `angle`
-/// radians clockwise from pointing right (a quarter turn: down), in its `CHEVRON` box.
+/// A header's thin line chevron (M11v part 4: › turning ⌄, was a filled triangle; the icon
+/// set's since 2026-11-20), `angle` radians clockwise from pointing right (a quarter turn: down),
+/// in its `CHEVRON` box.
 fn chevron(angle: f32, color: Rgb) -> impl IntoElement {
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            let c = bounds.center();
-            let (sin, cos) = angle.sin_cos();
-            let p =
-                |x: f32, y: f32| point(c.x + px(x * cos - y * sin), c.y + px(x * sin + y * cos));
-            let mut path = PathBuilder::stroke(px(CHEVRON_STROKE));
-            path.move_to(p(-1.5, -3.5));
-            path.line_to(p(2.0, 0.0));
-            path.line_to(p(-1.5, 3.5));
-            if let Ok(path) = path.build() {
-                window.paint_path(path, hsla(color));
-            }
-        },
-    )
-    .flex_none()
-    .size(px(crate::right_sidebar::CHEVRON))
+    let side = px(crate::right_sidebar::CHEVRON);
+    crate::icons::icon(crate::icons::Icon::ChevronRight, side, hsla(color))
+        .with_transformation(gpui::Transformation::rotate(gpui::radians(angle)))
 }
 
 impl Workspace {
@@ -2563,7 +2548,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Div {
         let badge = badge(row.status, row.running, ui, surface, hover);
-        let (fill, _, ink) = ui.avatars[avatar_color(row.color, &row.label) as usize];
+        let ink = avatar_ink(row.color, &ui);
         let close = div()
             .id(("row-close", ws.0 as usize))
             .absolute()
@@ -2574,7 +2559,7 @@ impl Workspace {
             .rounded(px(AVATAR_RADIUS))
             .text_size(px(16.0))
             .text_color(hsla(ink))
-            .hover(move |s| s.bg(hsla(mix(fill, ink, 0.18))))
+            .hover(move |s| s.bg(hsla(ui.panel_hover)))
             .child("×")
             .invisible()
             // Only over the avatar itself (2026-11-11, your call), not the whole row.
@@ -2583,7 +2568,7 @@ impl Workspace {
                 cx.stop_propagation(); // not also a click on the row
                 this.close_workspace(ws, window, cx)
             }));
-        avatar(&row.label, row.color, ui, AVATAR)
+        avatar(row.color, ui, AVATAR)
             .group(AVATAR_GROUP)
             .child(
                 div()
@@ -2841,7 +2826,7 @@ impl Workspace {
                     .relative()
                     .when(popover, |b| b.bg(hsla(ui.row_hover)))
                     .child(footer_icon(Glyph::Bell, ui, BELL_GROUP, popover))
-                    .when(unseen, |b| b.child(unseen_dot(ui)))
+                    .when(unseen, |b| b.child(unseen_dot(ui, ui.sidebar_background)))
                     .tooltip(|_, cx| -> AnyView {
                         cx.new(|_| Tip(NOTIFICATIONS_TIP.into())).into()
                     })
@@ -4388,32 +4373,22 @@ mod tests {
         assert_eq!(initials("   "), "");
     }
 
+    /// Chore after the pill tabs (2026-11-20, critique issue 2): no coloured tile; the letters
+    /// are dim on an outline, in your tab colour only when you set one, so colour in a row
+    /// means status (and your own label).
     #[test]
-    fn an_avatar_takes_the_tab_colour_else_a_stable_one_from_the_name() {
-        assert_eq!(avatar_color(Some(TabColor::Red), "api"), TabColor::Red);
-        assert_eq!(avatar_color(Some(TabColor::Grey), "api"), TabColor::Grey);
-        assert_eq!(avatar_color(None, "api"), avatar_color(None, "api"));
-        let names = [
-            "a",
-            "b",
-            "c",
-            "api",
-            "web",
-            "John Cena",
-            "New Fuxxpace",
-            "x1",
-            "x2",
-            "x3",
-        ];
-        let picks: Vec<TabColor> = names.iter().map(|n| avatar_color(None, n)).collect();
-        assert!(picks.iter().all(|&c| c != TabColor::Grey), "never grey");
-        let mut distinct = picks.clone();
-        distinct.sort_by_key(|&c| c as usize);
-        distinct.dedup();
-        assert!(
-            distinct.len() >= 4,
-            "names spread over the colours: {picks:?}"
-        );
+    fn an_avatars_letters_are_dim_unless_you_gave_it_a_colour() {
+        for (name, theme) in crate::theme::every_theme() {
+            let ui = theme.ui();
+            assert_eq!(avatar_ink(None, &ui), ui.text_dim, "{name}: no colour");
+            for c in TabColor::ALL {
+                assert_eq!(
+                    avatar_ink(Some(c), &ui),
+                    ensure_contrast(ui.tab(c), ui.sidebar_background, TEXT_MIN),
+                    "{name}: {c:?}"
+                );
+            }
+        }
     }
 
     #[test]

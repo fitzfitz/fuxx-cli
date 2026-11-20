@@ -29,6 +29,19 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-20 — Chores after M11q, part 2: the critique's five fixes
+
+- **What:** a UI/UX critique of the pill-tab chores named five issues; you said "fix all five": every line icon from
+  the one Lucide set; sidebar avatars as letters on an outline (no gradient tiles, the theme palette for them
+  removed); one line (`CHROME_LINE`, 28 pt) for the lights, the sidebar band and the pane bars, with a 12 pt gap
+  after the lights (your "fix alignment and add more acceptable gaps"); the right-sidebar button on the top-right
+  pane only (`BarPlace`); with the sidebar hidden, no band over the card: its buttons sit by the lights in the
+  top-left pane's bar. Details and your on-screen check in note 68, "Chores after M11q, part 2".
+- **Checks:** 2215 tests; clippy: no new warnings; fmt; full ui-shots 246 passed, 6 failed (the known
+  display-dependent scenes; `title-area` passes now).
+- **Learned:** a border on a box moves its absolutely placed children in by its width (offsets count from inside
+  it), so the avatar's outline is an overlay; and macOS 26 draws the traffic lights at 14 pt, 22 apart.
+
 ### 2026-11-20 — Chores after M11q: pill tabs, an icon set, the icon switch, the collapsed sidebar button
 
 - **What:** on your screenshots and words, built on master: pane tabs as small pills as wide as their titles with +

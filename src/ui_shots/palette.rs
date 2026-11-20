@@ -1391,8 +1391,16 @@ fn palette_files_scene() {
                     let left = f32::from(row.left()) + 8.0;
                     let (top, bottom) = (f32::from(row.top()), f32::from(row.bottom()));
                     let ink = palette_file_ink(FileKind::Red, &theme);
-                    let icon =
-                        count_in(&shot, dims, ink, 6, (left, left + MARK_SLOT), (top, bottom));
+                    // (The icon set's thin outline, 2026-11-20: its anti-aliased stroke comes near
+                    // the ink, not always onto it.)
+                    let icon = count_in(
+                        &shot,
+                        dims,
+                        ink,
+                        24,
+                        (left, left + MARK_SLOT),
+                        (top, bottom),
+                    );
                     assert!(icon > 0, "{n}: the icon in its kind's ink ({icon})");
                     // The name (`text`) then, right of it, its folder in `text_faint`.
                     let names = left + MARK_SLOT;

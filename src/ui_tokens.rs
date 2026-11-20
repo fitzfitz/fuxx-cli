@@ -190,12 +190,20 @@ pub mod size {
     /// M11al, level with the right panel's header; 40 since the pill chore, 2026-11-20: "the
     /// gap between tab and edges is too big").
     pub const TAB_BAR: f32 = 40.0;
-    /// The band at the top of the window that the traffic lights sit in (the drag area); 52
-    /// since M11al (38 before), level with the tab bars (40 with them since 2026-11-20).
-    pub const TOP_BAND: f32 = 40.0;
-    /// Where the traffic lights go: (x, y) from the window's top left (centred in `TOP_BAND`
-    /// since M11al).
-    pub const TRAFFIC_LIGHTS: (f32, f32) = (18.0, 14.0);
+    /// The band at the top of the sidebar that the traffic lights sit in (the drag area); 52
+    /// since M11al (38 before); since 2026-11-20 down to the pane tab bars' bottom: the
+    /// `CARD_INSET` strip over the card and the bar.
+    pub const TOP_BAND: f32 = CARD_INSET + TAB_BAR;
+    /// The window's one line (critique issue 3, 2026-11-20: "fix alignment"): the pane tab bars'
+    /// middle, which the traffic lights, the sidebar band's title and buttons and the collapsed
+    /// sidebar's buttons are centred on.
+    pub const CHROME_LINE: f32 = CARD_INSET + TAB_BAR / 2.0;
+    /// A traffic light's side and the distance from one to the next, as macOS 26 draws them.
+    pub const LIGHT: f32 = 14.0;
+    pub const LIGHT_PITCH: f32 = 22.0;
+    /// Where the traffic lights go: (x, y) of the first one's top left, centred on
+    /// `CHROME_LINE`.
+    pub const TRAFFIC_LIGHTS: (f32, f32) = (18.0, CHROME_LINE - LIGHT / 2.0);
     /// Terminal padding: (sides, top and bottom); smaller in splits. Enough that nothing the
     /// grid paints reaches into the card's rounded corner (M11i): the grid's corner cell starts
     /// inside the `CARD_RADIUS` curve.
@@ -340,12 +348,15 @@ mod tests {
     #[test]
     fn the_sidebars_band_and_default_width_are_the_uplifts() {
         use super::size::*;
-        // M11al 2.1: the band with the lights (12 tall) centred in it; 40 since 2026-11-20,
-        // level with the pane tab bars ("the gap between tab and edges is too big"); a new
-        // window's sidebar 290, inside its limits.
-        assert_eq!(TOP_BAND, 40.0);
-        assert_eq!(TOP_BAND, TAB_BAR);
-        assert_eq!(TRAFFIC_LIGHTS, (18.0, (TOP_BAND - 12.0) / 2.0));
+        // Chore 2026-11-20 (critique issue 3, "fix alignment"): one line for the window's top,
+        // the pane bars' middle (under the `CARD_INSET` strip); the sidebar's band reaches the
+        // bars' bottom; the lights (14 pt on macOS 26) centred on the line. A new window's
+        // sidebar 290, inside its limits.
+        assert_eq!(CHROME_LINE, CARD_INSET + TAB_BAR / 2.0);
+        assert_eq!(CHROME_LINE, 28.0);
+        assert_eq!(TOP_BAND, CARD_INSET + TAB_BAR);
+        assert_eq!(TRAFFIC_LIGHTS, (18.0, CHROME_LINE - LIGHT / 2.0));
+        assert_eq!(LIGHT, 14.0);
         assert_eq!(SIDEBAR_DEFAULT_WIDTH, 290.0);
         assert!((SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH).contains(&SIDEBAR_DEFAULT_WIDTH));
     }

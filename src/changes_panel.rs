@@ -78,9 +78,8 @@ const BAR_BUTTON_RADIUS: f32 = 9.0;
 /// The branch glyph's box and the line under the name (M11al §6.6).
 const BAR_BRANCH_ICON: f32 = 16.0;
 const BAR_LINE: f32 = 12.5;
-/// The bar's icons: 15 pt (part 6, as the mockup), their lines 1.2 pt.
+/// The bar's icons: 15 pt (part 6, as the mockup).
 const BAR_ICON: f32 = 15.0;
-const BAR_ICON_STROKE: f32 = 1.2;
 const BAR_GAP: f32 = 6.0;
 const TIP_GAP: f32 = 6.0;
 const TIP_DELAY: Duration = Duration::from_millis(400);
@@ -1628,12 +1627,7 @@ impl Workspace {
                     this.open_branch_switcher(terminal, window, cx);
                 }
             }))
-            .child(footer_glyph(
-                Glyph::Branch,
-                ui.text_dim,
-                BAR_BRANCH_ICON,
-                BAR_ICON_STROKE,
-            ))
+            .child(footer_glyph(Glyph::Branch, ui.text_dim, BAR_BRANCH_ICON))
             .child(
                 div()
                     .min_w(px(0.0))
@@ -1733,7 +1727,7 @@ impl Workspace {
                         this.run_bar_action(action, FetchMode::Button, cx)
                     }))
             })
-            .child(footer_glyph(kind, ink, BAR_ICON, BAR_ICON_STROKE))
+            .child(footer_glyph(kind, ink, BAR_ICON))
             .when(shown, |d| {
                 // A zero-size point at the button's top right (`TIP_GAP` above it, a little
                 // right of it); the tooltip hangs from it by its bottom right corner.

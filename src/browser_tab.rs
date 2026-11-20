@@ -35,7 +35,7 @@ use crate::layout_model::TabId;
 use crate::name_input::{NameInput, NameInputEvent};
 use crate::pane_browser::{NativeWindow, PaneWebView, Showing, page_hidden};
 use crate::sidebar_toggle::Tip;
-use crate::tab_bar::{BROWSER_TITLE, Glyph, glyph, glyph_with};
+use crate::tab_bar::{BROWSER_TITLE, Glyph, glyph};
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::ui_tokens::text;
@@ -53,8 +53,6 @@ actions!(
 pub const BAR: f32 = 34.0;
 const BUTTON: f32 = 24.0;
 const BUTTON_GAP: f32 = 2.0;
-/// The buttons' lines: heavier than the tab bar's, so a usable button reads in full colour.
-const BUTTON_STROKE: f32 = 1.75;
 const FIELD: f32 = 24.0;
 const FIELD_RADIUS: f32 = 7.0;
 const BAR_PAD: f32 = 6.0;
@@ -656,7 +654,7 @@ impl BrowserTab {
             .justify_center()
             .size(px(BUTTON))
             .rounded(px(5.0))
-            .child(glyph_with(kind, color, BUTTON_STROKE))
+            .child(glyph(kind, color))
             .when(enabled, |b| {
                 b.cursor_pointer()
                     .hover(move |s| s.bg(hsla(ui.panel_hover)))

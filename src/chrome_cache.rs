@@ -42,10 +42,44 @@ pub enum ChromeKind {
     Sidebar,
     /// `render_status_bar`.
     StatusBar,
-    /// `pane`'s `render_tab_bar`; `drags_window`: the bar is at the window's top edge.
-    TabBar { pane: PaneId, drags_window: bool },
-    /// `render_title`: the collapsed band's workspace name and buttons.
+    /// `pane`'s `render_tab_bar`, its bar where `place` says.
+    TabBar { pane: PaneId, place: BarPlace },
+    /// `render_title`: the collapsed sidebar's buttons.
     Title,
+}
+
+/// Where a pane's tab bar is in the window, for what it draws (chores 2026-11-20).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct BarPlace {
+    /// At the window's top edge, not in full screen: its empty part drags the window.
+    pub drags_window: bool,
+    /// The top-right pane's: it has the right sidebar's button (critique issue 4: one per
+    /// window, not one per pane).
+    pub top_right: bool,
+    /// The top-left pane's while the sidebar is hidden: its tabs start after the traffic lights
+    /// and the sidebar's buttons (`title_area::band_reserve`; critique issue 5).
+    pub under_lights: bool,
+}
+
+/// Each of `leaves`' bar's place, `top` being the leaves along the layout's top edge, left to
+/// right (`top_leaves`).
+pub fn bar_places(
+    leaves: &[PaneId],
+    top: &[PaneId],
+    full_screen: bool,
+    sidebar_hidden: bool,
+) -> Vec<(PaneId, BarPlace)> {
+    leaves
+        .iter()
+        .map(|&id| {
+            let place = BarPlace {
+                drags_window: !full_screen && top.contains(&id),
+                top_right: top.last() == Some(&id),
+                under_lights: sidebar_hidden && top.first() == Some(&id),
+            };
+            (id, place)
+        })
+        .collect()
 }
 
 /// One cached part of the chrome: draws `kind` through the `Workspace`, and is drawn again
@@ -85,9 +119,10 @@ pub struct ChromeParts {
     pub sidebar: Option<Entity<ChromePart>>,
     pub status_bar: Option<Entity<ChromePart>>,
     pub title: Option<Entity<ChromePart>>,
-    /// One per pane on screen, by (pane, whether its bar drags the window): a pane that moves
-    /// to or from the window's top edge gets a new part (the old one is dropped).
-    pub tab_bars: HashMap<(PaneId, bool), Entity<ChromePart>>,
+    /// One per pane on screen, by (pane, its bar's place): a pane whose place changes (to or
+    /// from the window's top edge, its corners, the sidebar hidden) gets a new part (the old one
+    /// is dropped).
+    pub tab_bars: HashMap<(PaneId, BarPlace), Entity<ChromePart>>,
 }
 
 impl Workspace {
@@ -119,10 +154,10 @@ impl Workspace {
                 sidebar
             }
             ChromeKind::StatusBar => self.render_status_bar(ui, window, cx),
-            ChromeKind::TabBar { pane, drags_window } => {
+            ChromeKind::TabBar { pane, place } => {
                 let new = !self.tab_scroll.borrow().contains_key(&pane);
                 let bar = self
-                    .render_tab_bar(pane, ui, drags_window, window, cx)
+                    .render_tab_bar(pane, ui, place, window, cx)
                     .unwrap_or_else(|| div().into_any_element());
                 let unrevealed = || {
                     let shown = self.model.pane(pane).map(|p| p.active);
@@ -158,9 +193,9 @@ impl Workspace {
         let keys = self.tab_bar_keys(window);
         let bars = &mut self.chrome.tab_bars;
         bars.retain(|key, _| keys.contains(key));
-        for (pane, drags_window) in keys {
-            bars.entry((pane, drags_window))
-                .or_insert_with(|| part(ChromeKind::TabBar { pane, drags_window }, cx));
+        for (pane, place) in keys {
+            bars.entry((pane, place))
+                .or_insert_with(|| part(ChromeKind::TabBar { pane, place }, cx));
         }
         // Each part read in every frame, so the window keeps it among the entities it shows:
         // GPUI drops a notify of an entity the last frame didn't touch, and a cached part's
@@ -196,22 +231,22 @@ impl Workspace {
         }
     }
 
-    /// The tab-bar parts the screen wants: each pane of the shown layout, and whether its bar
-    /// drags the window (at the window's top edge, not in full screen).
-    pub(crate) fn tab_bar_keys(&self, window: &Window) -> Vec<(PaneId, bool)> {
+    /// The tab-bar parts the screen wants: each pane of the shown layout, and its bar's place.
+    pub(crate) fn tab_bar_keys(&self, window: &Window) -> Vec<(PaneId, BarPlace)> {
         let Some(tree) = self.shown_layout() else {
             return Vec::new();
         };
-        let top = if window.is_fullscreen() {
-            Vec::new()
-        } else {
-            tree.top_leaves()
-        };
-        tree.leaves()
+        let leaves: Vec<PaneId> = tree
+            .leaves()
             .into_iter()
             .filter(|id| self.model.pane(*id).is_some())
-            .map(|id| (id, top.contains(&id)))
-            .collect()
+            .collect();
+        bar_places(
+            &leaves,
+            &tree.top_leaves(),
+            window.is_fullscreen(),
+            self.sidebar.hidden,
+        )
     }
 }
 
@@ -257,8 +292,8 @@ pub enum Counted {
     StatusBar,
     /// `render_tab_bar`, once per pane's bar.
     TabBar,
-    /// `render_title`: the collapsed band's workspace name and buttons (empty while the
-    /// sidebar is shown: its band is the sidebar's, counted as `Sidebar`).
+    /// `render_title`: the collapsed sidebar's buttons (empty while the sidebar is shown: its
+    /// band is the sidebar's, counted as `Sidebar`).
     Title,
     /// `sidebar_rows`, the sidebar's row model (also called outside `render_sidebar`).
     SidebarRows,
@@ -301,7 +336,46 @@ pub fn bump(_: Counted) {}
 
 #[cfg(test)]
 mod tests {
-    use super::on_for;
+    use super::{BarPlace, bar_places, on_for};
+    use crate::layout_model::PaneId;
+
+    /// Critique issues 4 and 5 (2026-11-20): one right-sidebar button per window, on the
+    /// top-right pane's bar; with the sidebar hidden the top-left pane's bar makes room for the
+    /// lights and the sidebar's buttons; only the top row drags the window (not in full screen).
+    #[test]
+    fn each_bar_knows_its_place_in_the_window() {
+        let p = PaneId;
+        // 1 | (2 over 3): leaves 1, 2, 3; top 1, 2.
+        let leaves = [p(1), p(2), p(3)];
+        let top = [p(1), p(2)];
+        let place = |drags_window, top_right, under_lights| BarPlace {
+            drags_window,
+            top_right,
+            under_lights,
+        };
+        assert_eq!(
+            bar_places(&leaves, &top, false, false),
+            vec![
+                (p(1), place(true, false, false)),
+                (p(2), place(true, true, false)),
+                (p(3), place(false, false, false)),
+            ]
+        );
+        // Hidden sidebar: the top-left one is under the lights; full screen drags nothing.
+        assert_eq!(
+            bar_places(&leaves, &top, true, true),
+            vec![
+                (p(1), place(false, false, true)),
+                (p(2), place(false, true, false)),
+                (p(3), place(false, false, false)),
+            ]
+        );
+        // One pane: it is both.
+        assert_eq!(
+            bar_places(&[p(7)], &[p(7)], false, true),
+            vec![(p(7), place(true, true, true))]
+        );
+    }
 
     #[test]
     fn the_cache_is_off_only_when_the_variable_says_off() {

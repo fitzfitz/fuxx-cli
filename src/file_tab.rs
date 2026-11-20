@@ -156,7 +156,7 @@ use crate::row_map::{
 };
 use crate::scrollbar::{self, Axis, Bar, LaneMark, Thumb};
 use crate::sidebar_toggle::{Tip, tip_box};
-use crate::tab_bar::{Glyph, glyph_with};
+use crate::tab_bar::{Glyph, glyph};
 use crate::tab_color::TabColor;
 use crate::terminal_view::{CellMetrics, Copy, hsla};
 use crate::theme::{Theme, UiColors, mix};
@@ -234,7 +234,6 @@ const TOOLBAR: f32 = crate::browser_tab::BAR;
 const FILE_TOOLBAR: f32 = 42.0;
 const BAR_PAD: f32 = 6.0;
 const BUTTON: f32 = 24.0;
-const BUTTON_STROKE: f32 = 1.75;
 const FIND_BOX: f32 = 260.0;
 /// The room below the last line (M11i): as tall as the card's rounded corners, so no line's
 /// tint, match or selection reaches them.
@@ -7393,7 +7392,7 @@ impl FileTab {
             .cursor_pointer()
             .when(on, |b| b.bg(hsla(ui.card_selected)))
             .when(!on, |b| b.hover(move |s| s.bg(hsla(ui.panel_hover))))
-            .child(glyph_with(kind, ui.text, BUTTON_STROKE))
+            .child(glyph(kind, ui.text))
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, window, cx| on_click(this, window, cx)),
             )
@@ -7436,7 +7435,7 @@ impl FileTab {
                         }),
                     )
             })
-            .child(glyph_with(kind, ink, BUTTON_STROKE))
+            .child(glyph(kind, ink))
             .child(
                 canvas(
                     move |b, _, _| {
@@ -7480,7 +7479,7 @@ impl FileTab {
                         cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_side_by_side(cx)),
                     )
             })
-            .child(glyph_with(Glyph::SideBySide, ink, BUTTON_STROKE))
+            .child(glyph(Glyph::SideBySide, ink))
             .child(
                 canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
                     .absolute()

@@ -27,12 +27,13 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, AnyView, App, Bounds, ClickEvent, Context, CursorStyle, Div, DragMoveEvent,
-    Focusable, FontWeight, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, ScrollHandle,
-    SharedString, Window, canvas, div, point, prelude::*, px, relative,
+    Focusable, FontWeight, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, SharedString,
+    Window, canvas, div, prelude::*, px, relative,
 };
 
 use crate::appearance::Appearance;
 use crate::block_view::BlockDrag;
+use crate::chrome_cache::BarPlace;
 use crate::drag_gap::{self, Slid};
 use crate::layout_model::{Pane, PaneId, TabDrop, TabId, TabKind};
 use crate::restore::{Launch, SavedSession};
@@ -44,7 +45,7 @@ use crate::status_mark;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::ui_tokens::MARK_MIN;
-use crate::ui_tokens::size::{HAIRLINE, TAB_BAR, TABS_LEFT};
+use crate::ui_tokens::size::{CARD_INSET, HAIRLINE, TAB_BAR, TABS_LEFT};
 use crate::ui_tokens::text;
 use crate::workspace::{At, Renaming, Workspace};
 use crate::workspace_ssh::Place;
@@ -435,10 +436,8 @@ pub(crate) const BUTTON: f32 = 24.0;
 pub(crate) const BUTTON_ICON: f32 = 14.0;
 pub(crate) const BUTTON_GAP: f32 = 4.0;
 pub(crate) const BUTTONS_PAD: f32 = 10.0;
-/// The line icons' drawing box (12 units, scaled to the box they are drawn in) and their line
-/// width in it.
+/// The bars' line icons' box.
 pub(crate) const ICON: f32 = 12.0;
-const STROKE: f32 = 1.25;
 
 impl Workspace {
     /// Tab `tab`'s tooltip at `now` (its age then); none for a tab gone.
@@ -486,13 +485,16 @@ impl Workspace {
     }
 
     /// `pane`'s tab bar: its tabs (scrolling sideways when they don't fit) and, pinned on the
-    /// right, its buttons. None for an unknown pane. `drags_window`: the bar is at the window's
-    /// top edge, so its empty part (after the last tab) drags the window.
+    /// right, its buttons. None for an unknown pane. `place` (`BarPlace`): at the window's top
+    /// edge its empty part (after the last tab) drags the window; the top-right bar alone has
+    /// the right sidebar's button; the top-left one, with the sidebar hidden, starts with the
+    /// room the traffic lights and the sidebar's buttons take (`title_area::band_reserve`),
+    /// which drags the window too.
     pub(crate) fn render_tab_bar(
         &self,
         pane: PaneId,
         ui: UiColors,
-        drags_window: bool,
+        place: BarPlace,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -547,8 +549,9 @@ impl Workspace {
             .min_w(px(0.0))
             .h_full()
             // The tabs float in the bar's middle (M11al); the first starts `TABS_LEFT` in from
-            // the card's edge, as the right sidebar's panel tabs.
-            .pl(px(TABS_LEFT))
+            // the card's edge, as the right sidebar's panel tabs (under the lights, the room
+            // before the row holds that gap).
+            .when(!place.under_lights, |row| row.pl(px(TABS_LEFT)))
             .overflow_x_scroll()
             .track_scroll(&scroll)
             .children(tabs.into_iter().zip(targets).zip(naturals).enumerate().map(
@@ -590,11 +593,28 @@ impl Workspace {
             .flex_1()
             .min_w(px(0.0))
             .h_full();
-        let filler = if drags_window {
+        let filler = if place.drags_window {
             self.drag_window_by(filler, cx)
         } else {
             filler
         };
+        // Under the lights: up to `band_reserve` from the window's left (the card starts
+        // `CARD_INSET` in, inside its 1 pt edge; the row then has no `TABS_LEFT` of its own, so
+        // the whole gap to the first tab drags the window).
+        let reserve = place.under_lights.then(|| {
+            let width =
+                crate::title_area::band_reserve(window.is_fullscreen()) - CARD_INSET - HAIRLINE;
+            let room = div()
+                .id(("pane-tabs-lights", pane.0 as usize))
+                .flex_none()
+                .w(px(width))
+                .h_full();
+            if place.drags_window {
+                self.drag_window_by(room, cx)
+            } else {
+                room
+            }
+        });
         let buttons = div()
             .flex()
             .flex_none()
@@ -603,7 +623,12 @@ impl Workspace {
             .h_full()
             .px(px(BUTTONS_PAD))
             .gap(px(BUTTON_GAP))
-            .children(BarButton::PINNED.map(|b| button(b, cx)));
+            .children(
+                BarButton::PINNED
+                    .into_iter()
+                    .filter(|&b| b != BarButton::RightSidebar || place.top_right)
+                    .map(|b| button(b, cx)),
+            );
         Some(
             div()
                 .flex()
@@ -640,6 +665,7 @@ impl Workspace {
                         this.select_tab(tab, window, cx);
                     }
                 }))
+                .children(reserve)
                 .child(row)
                 .child(plus)
                 .child(filler)
@@ -1212,623 +1238,22 @@ fn render_button(
     )
 }
 
-/// The small line icons the tab bars (and the browser tabs' bars) draw.
-#[derive(Clone, Copy)]
-pub(crate) enum Glyph {
-    /// A circle with a meridian and the equator.
-    Globe,
-    /// A page with its top right corner folded over.
-    File,
-    /// Chevrons left and right.
-    Back,
-    Forward,
-    /// Three quarters of a circle with an arrowhead.
-    Reload,
-    /// A cross.
-    Stop,
-    /// A magnifying glass.
-    Search,
-    /// The sidebar footer's three (drawn in a 16 px box, `footer_glyph`): a plus (also a pane
-    /// bar's +, in 12), a bell (a dome open at the bottom, its rim and clapper) and a gear (a
-    /// ring with teeth around a hub).
-    Plus,
-    Bell,
-    Gear,
-    /// The update pill's (a 12 px box in the status bar, M11i): a package, an isometric box
-    /// (its outline, the edges meeting at its front corner) with a tape line across its top.
-    Package,
-    /// The Files tree's (M11i): a folder (a box with a tab on its top left) and an open one
-    /// (its back, and its front flap leaning out); the header's collapse all, two chevrons
-    /// pointing up.
-    Folder,
-    FolderOpen,
-    CollapseAll,
-    /// The status bar's branch (M11i): a small fork, a trunk with a commit at each end and a
-    /// branch leaving it for a third.
-    Branch,
-    /// The Changes bar's actions (M11v): an arrow down onto a line (Pull), an arrow up from a
-    /// line (Push), and a branch with an arrow going up beside it (Publish). Fetch is `Reload`.
-    Pull,
-    Push,
-    Publish,
-    /// The Changes rows' revert (M11v part 2): an arrow back to the left, turning down and back
-    /// under itself (a U-turn).
-    Revert,
-    /// M11v part 4: the thin line chevrons that replace the ▸ / ▾ triangles (› closed, ⌄ open).
-    ChevronRight,
-    ChevronDown,
-    /// The file bar's (M11ae): Wrap, three lines, the last ending in a return arrow (down from
-    /// the right, back to the left); Open in Editor, a box with an arrow leaving its top right.
-    Wrap,
-    OpenExternal,
-    /// The file bar's jumps between changes (M11ah): an arrow up and an arrow down, a shaft and
-    /// a head with no line.
-    ChangeUp,
-    ChangeDown,
-    /// The file bar's Side by side (M11ah): a box split in two columns.
-    SideBySide,
-    /// A code block's Copy in the Markdown reader (M11ai): two sheets, the front one whole, the
-    /// back one showing at its top right; and Copied's tick.
-    Copy,
-    Check,
-    /// The narrow "On this page" button (M11ai Task 9): three lines, the middle one indented
-    /// (an outline's subheading).
-    Outline,
-    /// The Markdown reader's callouts (M11ai): a circle with an i (Note), a bulb (Tip), a speech
-    /// box with a ! (Important), a triangle with a ! (Warning) and an octagon with a ! (Caution;
-    /// `Stop` is a plain cross).
-    Info,
-    Bulb,
-    Report,
-    Alert,
-    Octagon,
-    /// The notes pill's eye (M11ag): an eye, and the same crossed out.
-    Eye,
-    EyeOff,
-}
+/// The bars' line icons (the tab bars', the browser and file tabs' bars, the sidebar's and the
+/// panels'): the app's icon set, `icons::Icon` (Lucide outlines since 2026-11-20, your call:
+/// "find icon with outline no backgrounds… we need to have icon sets"; drawn here before).
+pub(crate) type Glyph = crate::icons::Icon;
 
 /// `kind` in `color`, in a 12 px box.
 pub(crate) fn glyph(kind: Glyph, color: Rgb) -> Div {
-    glyph_with(kind, color, STROKE)
+    footer_glyph(kind, color, ICON)
 }
 
-/// `glyph` with lines `stroke` px wide (in the 12 px box).
-pub(crate) fn glyph_with(kind: Glyph, color: Rgb, stroke: f32) -> Div {
-    glyph_sized(kind, color, stroke, ICON)
-}
-
-/// `kind` in `color`, in a `size` px box, the line `stroke` px wide at that size.
-pub(crate) fn footer_glyph(kind: Glyph, color: Rgb, size: f32, stroke: f32) -> Div {
-    glyph_sized(kind, color, stroke * ICON / size, size)
-}
-
-/// `glyph_with` in a `size` px box (the 12-unit drawing scaled up to it).
-fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
-    div().flex_none().size(px(size)).child(
-        canvas(
-            |_, _, _| (),
-            move |bounds, _, window, _| {
-                let (o, size) = (bounds.origin, bounds.size.width);
-                // `x`, `y` in a 12-unit box.
-                let u = f32::from(size) / ICON;
-                let p =
-                    |x: f32, y: f32| -> Point<Pixels> { point(o.x + px(x * u), o.y + px(y * u)) };
-                let mut paths: Vec<PathBuilder> = Vec::new();
-                let stroke = || PathBuilder::stroke(px(stroke * u));
-                // A ring and a filled dot (callouts' icons), centre and radius in the 12 box.
-                let ring = |c: (f32, f32), r: f32| {
-                    let mut e = stroke();
-                    let radii = point(px(r * u), px(r * u));
-                    e.move_to(p(c.0, c.1 - r));
-                    e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 + r));
-                    e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 - r));
-                    e.close();
-                    e
-                };
-                let dot = |c: (f32, f32)| {
-                    let r = 0.9;
-                    let mut d = PathBuilder::fill();
-                    let radii = point(px(r * u), px(r * u));
-                    d.move_to(p(c.0, c.1 - r));
-                    d.arc_to(radii, px(0.0), false, true, p(c.0, c.1 + r));
-                    d.arc_to(radii, px(0.0), false, true, p(c.0, c.1 - r));
-                    d.close();
-                    d
-                };
-                // A line from `a` to `b`.
-                let bar = |a: (f32, f32), b: (f32, f32)| {
-                    let mut l = stroke();
-                    l.move_to(p(a.0, a.1));
-                    l.line_to(p(b.0, b.1));
-                    l
-                };
-                match kind {
-                    Glyph::Globe => {
-                        let (c, r) = ((6.0, 6.0), 5.0);
-                        let ellipse = |rx: f32| {
-                            let mut e = stroke();
-                            let radii = point(px(rx * u), px(r * u));
-                            e.move_to(p(c.0, c.1 - r));
-                            e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 + r));
-                            e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 - r));
-                            e.close();
-                            e
-                        };
-                        paths.push(ellipse(r));
-                        paths.push(ellipse(2.2));
-                        let mut equator = stroke();
-                        equator.move_to(p(c.0 - r, c.1));
-                        equator.line_to(p(c.0 + r, c.1));
-                        paths.push(equator);
-                    }
-                    Glyph::File => {
-                        // The page's outline, its top right corner cut; the fold's two edges.
-                        let (left, right, top, bottom, fold) = (2.5, 9.5, 1.0, 11.0, 3.0);
-                        let mut page = stroke();
-                        page.add_polygon(
-                            &[
-                                p(left, top),
-                                p(right - fold, top),
-                                p(right, top + fold),
-                                p(right, bottom),
-                                p(left, bottom),
-                            ],
-                            true,
-                        );
-                        paths.push(page);
-                        let mut corner = stroke();
-                        corner.move_to(p(right - fold, top));
-                        corner.line_to(p(right - fold, top + fold));
-                        corner.line_to(p(right, top + fold));
-                        paths.push(corner);
-                    }
-                    Glyph::Back | Glyph::Forward => {
-                        let (tip, wing) = if matches!(kind, Glyph::Back) {
-                            (3.5, 8.0)
-                        } else {
-                            (8.5, 4.0)
-                        };
-                        let mut chevron = stroke();
-                        chevron.move_to(p(wing, 1.5));
-                        chevron.line_to(p(tip, 6.0));
-                        chevron.line_to(p(wing, 10.5));
-                        paths.push(chevron);
-                    }
-                    Glyph::Reload => {
-                        let (c, r) = ((6.0, 6.0), 4.5);
-                        let mut arc = stroke();
-                        arc.move_to(p(c.0 + r, c.1));
-                        let radii = point(px(r * u), px(r * u));
-                        arc.arc_to(radii, px(0.0), true, true, p(c.0, c.1 - r));
-                        paths.push(arc);
-                        let mut head = stroke();
-                        head.move_to(p(c.0 - 1.8, c.1 - r - 1.8));
-                        head.line_to(p(c.0, c.1 - r));
-                        head.line_to(p(c.0 - 1.8, c.1 - r + 1.8));
-                        paths.push(head);
-                    }
-                    Glyph::Stop => {
-                        for (a, b) in [((2.5, 2.5), (9.5, 9.5)), ((9.5, 2.5), (2.5, 9.5))] {
-                            let mut line = stroke();
-                            line.move_to(p(a.0, a.1));
-                            line.line_to(p(b.0, b.1));
-                            paths.push(line);
-                        }
-                    }
-                    Glyph::Search => {
-                        let (c, r) = ((5.0, 5.0), 3.5);
-                        let mut lens = stroke();
-                        let radii = point(px(r * u), px(r * u));
-                        lens.move_to(p(c.0, c.1 - r));
-                        lens.arc_to(radii, px(0.0), false, true, p(c.0, c.1 + r));
-                        lens.arc_to(radii, px(0.0), false, true, p(c.0, c.1 - r));
-                        lens.close();
-                        paths.push(lens);
-                        let mut handle = stroke();
-                        handle.move_to(p(7.6, 7.6));
-                        handle.line_to(p(10.8, 10.8));
-                        paths.push(handle);
-                    }
-                    Glyph::Plus => {
-                        for (a, b) in [((0.5, 6.0), (11.5, 6.0)), ((6.0, 0.5), (6.0, 11.5))] {
-                            let mut line = stroke();
-                            line.move_to(p(a.0, a.1));
-                            line.line_to(p(b.0, b.1));
-                            paths.push(line);
-                        }
-                    }
-                    Glyph::Bell => {
-                        // The dome and its sides, then the rim across their feet, the clapper
-                        // under it.
-                        let (c, r, foot) = ((6.0, 4.5), 3.8, 9.3);
-                        let mut body = stroke();
-                        body.move_to(p(c.0 - r, foot));
-                        body.line_to(p(c.0 - r, c.1));
-                        let radii = point(px(r * u), px(r * u));
-                        body.arc_to(radii, px(0.0), false, true, p(c.0 + r, c.1));
-                        body.line_to(p(c.0 + r, foot));
-                        paths.push(body);
-                        let mut rim = stroke();
-                        rim.move_to(p(0.9, foot));
-                        rim.line_to(p(11.1, foot));
-                        paths.push(rim);
-                        let mut clapper = stroke();
-                        clapper.move_to(p(4.8, 11.2));
-                        clapper.line_to(p(7.2, 11.2));
-                        paths.push(clapper);
-                    }
-                    Glyph::Gear => {
-                        let c = (6.0, 6.0);
-                        let circle = |r: f32| {
-                            let mut e = stroke();
-                            let radii = point(px(r * u), px(r * u));
-                            e.move_to(p(c.0, c.1 - r));
-                            e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 + r));
-                            e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 - r));
-                            e.close();
-                            e
-                        };
-                        // The ring, the hub, and eight teeth between them and out past the ring.
-                        paths.push(circle(3.7));
-                        paths.push(circle(1.5));
-                        for k in 0..8 {
-                            let a = k as f32 * std::f32::consts::FRAC_PI_4;
-                            let (dx, dy) = (a.cos(), a.sin());
-                            let mut tooth = stroke();
-                            tooth.move_to(p(c.0 + dx * 3.7, c.1 + dy * 3.7));
-                            tooth.line_to(p(c.0 + dx * 5.5, c.1 + dy * 5.5));
-                            paths.push(tooth);
-                        }
-                    }
-                    Glyph::Package => {
-                        // The box's six outer corners, clockwise from the top; its front corner.
-                        let (top, right_up, right_down) = ((6.0, 0.75), (11.25, 3.4), (11.25, 8.6));
-                        let (bottom, left_down, left_up) = ((6.0, 11.25), (0.75, 8.6), (0.75, 3.4));
-                        let front = (6.0, 6.0);
-                        let mut outline = stroke();
-                        outline.add_polygon(
-                            &[top, right_up, right_down, bottom, left_down, left_up]
-                                .map(|(x, y)| p(x, y)),
-                            true,
-                        );
-                        paths.push(outline);
-                        // The top face's front edges, and the edge down the front corner.
-                        let mut edges = stroke();
-                        edges.move_to(p(left_up.0, left_up.1));
-                        edges.line_to(p(front.0, front.1));
-                        edges.line_to(p(right_up.0, right_up.1));
-                        edges.move_to(p(front.0, front.1));
-                        edges.line_to(p(bottom.0, bottom.1));
-                        paths.push(edges);
-                        // The tape: from the middle of the back left edge to the middle of the
-                        // front right one.
-                        let mid =
-                            |a: (f32, f32), b: (f32, f32)| ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
-                        let (from, to) = (mid(top, left_up), mid(front, right_up));
-                        let mut tape = stroke();
-                        tape.move_to(p(from.0, from.1));
-                        tape.line_to(p(to.0, to.1));
-                        paths.push(tape);
-                    }
-                    Glyph::Folder => {
-                        let mut folder = stroke();
-                        folder.add_polygon(
-                            &[
-                                p(1.0, 2.0),
-                                p(4.5, 2.0),
-                                p(5.75, 3.5),
-                                p(11.0, 3.5),
-                                p(11.0, 10.0),
-                                p(1.0, 10.0),
-                            ],
-                            true,
-                        );
-                        paths.push(folder);
-                    }
-                    Glyph::FolderOpen => {
-                        // The back: up the left side, over the tab, down to where the flap
-                        // starts.
-                        let mut back = stroke();
-                        back.move_to(p(1.0, 10.0));
-                        back.line_to(p(1.0, 2.0));
-                        back.line_to(p(4.5, 2.0));
-                        back.line_to(p(5.75, 3.5));
-                        back.line_to(p(9.5, 3.5));
-                        back.line_to(p(9.5, 5.5));
-                        paths.push(back);
-                        let mut flap = stroke();
-                        flap.add_polygon(
-                            &[p(1.0, 10.0), p(3.0, 5.5), p(11.5, 5.5), p(9.5, 10.0)],
-                            true,
-                        );
-                        paths.push(flap);
-                    }
-                    Glyph::Branch => {
-                        let ring = |c: (f32, f32)| {
-                            let r = 1.6;
-                            let mut e = stroke();
-                            let radii = point(px(r * u), px(r * u));
-                            e.move_to(p(c.0, c.1 - r));
-                            e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 + r));
-                            e.arc_to(radii, px(0.0), false, true, p(c.0, c.1 - r));
-                            e.close();
-                            e
-                        };
-                        let (top, bottom, side) = ((3.5, 2.2), (3.5, 9.8), (8.5, 3.6));
-                        paths.extend([ring(top), ring(bottom), ring(side)]);
-                        let mut trunk = stroke();
-                        trunk.move_to(p(top.0, top.1 + 1.6));
-                        trunk.line_to(p(bottom.0, bottom.1 - 1.6));
-                        paths.push(trunk);
-                        // From under the side commit, bending down into the trunk.
-                        let mut branch = stroke();
-                        branch.move_to(p(side.0, side.1 + 1.6));
-                        branch.curve_to(p(top.0, 8.0), p(side.0, 8.0));
-                        paths.push(branch);
-                    }
-                    Glyph::ChevronRight => {
-                        let mut chevron = stroke();
-                        chevron.move_to(p(4.5, 2.5));
-                        chevron.line_to(p(8.0, 6.0));
-                        chevron.line_to(p(4.5, 9.5));
-                        paths.push(chevron);
-                    }
-                    Glyph::ChevronDown => {
-                        let mut chevron = stroke();
-                        chevron.move_to(p(2.5, 4.5));
-                        chevron.line_to(p(6.0, 8.0));
-                        chevron.line_to(p(9.5, 4.5));
-                        paths.push(chevron);
-                    }
-                    Glyph::CollapseAll => {
-                        for y in [1.5, 6.0] {
-                            let mut chevron = stroke();
-                            chevron.move_to(p(2.5, y + 4.0));
-                            chevron.line_to(p(6.0, y + 0.5));
-                            chevron.line_to(p(9.5, y + 4.0));
-                            paths.push(chevron);
-                        }
-                    }
-                    Glyph::Pull | Glyph::Push => {
-                        // The shaft and its head point down (Pull) or up (Push); the line is
-                        // where it lands (below) or leaves from (above).
-                        let down = matches!(kind, Glyph::Pull);
-                        let (from, to, rule) = if down {
-                            (1.5, 8.0, 10.5)
-                        } else {
-                            (10.5, 4.0, 1.5)
-                        };
-                        let mut shaft = stroke();
-                        shaft.move_to(p(6.0, from));
-                        shaft.line_to(p(6.0, to));
-                        paths.push(shaft);
-                        let back = if down { to - 3.0 } else { to + 3.0 };
-                        let mut head = stroke();
-                        head.move_to(p(3.0, back));
-                        head.line_to(p(6.0, to));
-                        head.line_to(p(9.0, back));
-                        paths.push(head);
-                        let mut line = stroke();
-                        line.move_to(p(2.0, rule));
-                        line.line_to(p(10.0, rule));
-                        paths.push(line);
-                    }
-                    Glyph::ChangeUp | Glyph::ChangeDown => {
-                        let up = matches!(kind, Glyph::ChangeUp);
-                        let (from, to) = if up { (10.0, 2.0) } else { (2.0, 10.0) };
-                        let back = if up { to + 3.0 } else { to - 3.0 };
-                        let mut shaft = stroke();
-                        shaft.move_to(p(6.0, from));
-                        shaft.line_to(p(6.0, to));
-                        paths.push(shaft);
-                        let mut head = stroke();
-                        head.move_to(p(3.0, back));
-                        head.line_to(p(6.0, to));
-                        head.line_to(p(9.0, back));
-                        paths.push(head);
-                    }
-                    Glyph::Publish => {
-                        // Part 6 (your pick, C): a branch (two commits on a trunk) and, beside
-                        // it, an arrow going up: "send this branch up".
-                        let r = 1.2;
-                        for (cx_, cy) in [(3.4, 2.6), (3.4, 9.4)] {
-                            let mut dot = stroke();
-                            let radii = point(px(r * u), px(r * u));
-                            dot.move_to(p(cx_, cy - r));
-                            dot.arc_to(radii, px(0.0), false, true, p(cx_, cy + r));
-                            dot.arc_to(radii, px(0.0), false, true, p(cx_, cy - r));
-                            paths.push(dot);
-                        }
-                        let mut trunk = stroke();
-                        trunk.move_to(p(3.4, 3.8));
-                        trunk.line_to(p(3.4, 8.2));
-                        paths.push(trunk);
-                        let mut shaft = stroke();
-                        shaft.move_to(p(8.6, 10.0));
-                        shaft.line_to(p(8.6, 3.6));
-                        paths.push(shaft);
-                        let mut head = stroke();
-                        head.move_to(p(6.7, 5.5));
-                        head.line_to(p(8.6, 3.6));
-                        head.line_to(p(10.5, 5.5));
-                        paths.push(head);
-                    }
-                    Glyph::Revert => {
-                        let mut head = stroke();
-                        head.move_to(p(4.8, 1.8));
-                        head.line_to(p(2.2, 4.4));
-                        head.line_to(p(4.8, 7.0));
-                        paths.push(head);
-                        let mut shaft = stroke();
-                        shaft.move_to(p(2.2, 4.4));
-                        shaft.line_to(p(7.2, 4.4));
-                        let r = point(px(3.0 * u), px(3.0 * u));
-                        shaft.arc_to(r, px(0.0), false, true, p(7.2, 10.4));
-                        shaft.line_to(p(4.5, 10.4));
-                        paths.push(shaft);
-                    }
-                    Glyph::Wrap => {
-                        for (y, right) in [(2.0, 10.5), (6.0, 7.5), (10.0, 4.0)] {
-                            let mut line = stroke();
-                            line.move_to(p(1.5, y));
-                            line.line_to(p(right, y));
-                            paths.push(line);
-                        }
-                        // The return: down from beside the middle line, back left along the
-                        // last, its head pointing left.
-                        let mut back = stroke();
-                        back.move_to(p(10.5, 6.0));
-                        back.line_to(p(10.5, 10.0));
-                        back.line_to(p(6.5, 10.0));
-                        paths.push(back);
-                        let mut head = stroke();
-                        head.move_to(p(8.3, 8.2));
-                        head.line_to(p(6.5, 10.0));
-                        head.line_to(p(8.3, 11.8));
-                        paths.push(head);
-                    }
-                    Glyph::Copy => {
-                        let mut front = stroke();
-                        front.add_polygon(
-                            &[p(1.5, 4.0), p(8.0, 4.0), p(8.0, 10.5), p(1.5, 10.5)],
-                            true,
-                        );
-                        paths.push(front);
-                        // The back sheet: its edges not behind the front one.
-                        let mut back = stroke();
-                        back.move_to(p(4.0, 4.0));
-                        back.line_to(p(4.0, 1.5));
-                        back.line_to(p(10.5, 1.5));
-                        back.line_to(p(10.5, 8.0));
-                        back.line_to(p(8.0, 8.0));
-                        paths.push(back);
-                    }
-                    Glyph::Outline => {
-                        for (y, left) in [(2.5, 1.5), (6.0, 4.0), (9.5, 1.5)] {
-                            paths.push(bar((left, y), (10.5, y)));
-                        }
-                    }
-                    Glyph::Check => {
-                        let mut tick = stroke();
-                        tick.move_to(p(1.5, 6.5));
-                        tick.line_to(p(4.5, 9.5));
-                        tick.line_to(p(10.5, 2.5));
-                        paths.push(tick);
-                    }
-                    Glyph::Info => {
-                        paths.push(ring((6.0, 6.0), 5.0));
-                        paths.push(dot((6.0, 3.7)));
-                        paths.push(bar((6.0, 5.6), (6.0, 8.9)));
-                    }
-                    Glyph::Bulb => {
-                        paths.push(ring((6.0, 4.7), 3.5));
-                        let mut neck = stroke();
-                        neck.move_to(p(4.9, 7.6));
-                        neck.line_to(p(4.9, 9.6));
-                        neck.line_to(p(7.1, 9.6));
-                        neck.line_to(p(7.1, 7.6));
-                        paths.push(neck);
-                        paths.push(bar((5.0, 11.2), (7.0, 11.2)));
-                    }
-                    Glyph::Report => {
-                        let mut speech = stroke();
-                        speech.add_polygon(
-                            &[
-                                p(1.5, 1.5),
-                                p(10.5, 1.5),
-                                p(10.5, 8.5),
-                                p(7.0, 8.5),
-                                p(4.5, 10.8),
-                                p(4.5, 8.5),
-                                p(1.5, 8.5),
-                            ],
-                            true,
-                        );
-                        paths.push(speech);
-                        paths.push(bar((6.0, 3.3), (6.0, 5.4)));
-                        paths.push(dot((6.0, 7.0)));
-                    }
-                    Glyph::Alert => {
-                        let mut tri = stroke();
-                        tri.add_polygon(&[p(6.0, 1.3), p(11.0, 10.3), p(1.0, 10.3)], true);
-                        paths.push(tri);
-                        paths.push(bar((6.0, 4.6), (6.0, 7.0)));
-                        paths.push(dot((6.0, 8.7)));
-                    }
-                    Glyph::Eye | Glyph::EyeOff => {
-                        // The lids (an almond) round a pupil; off: a slash across.
-                        let mut lids = stroke();
-                        lids.move_to(p(0.8, 6.0));
-                        lids.curve_to(p(11.2, 6.0), p(6.0, 0.0));
-                        lids.curve_to(p(0.8, 6.0), p(6.0, 12.0));
-                        paths.push(lids);
-                        paths.push(ring((6.0, 6.0), 1.6));
-                        if matches!(kind, Glyph::EyeOff) {
-                            paths.push(bar((1.5, 10.5), (10.5, 1.5)));
-                        }
-                    }
-                    Glyph::Octagon => {
-                        let mut oct = stroke();
-                        oct.add_polygon(
-                            &[
-                                p(4.0, 1.0),
-                                p(8.0, 1.0),
-                                p(11.0, 4.0),
-                                p(11.0, 8.0),
-                                p(8.0, 11.0),
-                                p(4.0, 11.0),
-                                p(1.0, 8.0),
-                                p(1.0, 4.0),
-                            ],
-                            true,
-                        );
-                        paths.push(oct);
-                        paths.push(bar((6.0, 3.4), (6.0, 6.5)));
-                        paths.push(dot((6.0, 8.3)));
-                    }
-                    Glyph::SideBySide => {
-                        let mut frame = stroke();
-                        frame.move_to(p(1.5, 2.0));
-                        frame.line_to(p(10.5, 2.0));
-                        frame.line_to(p(10.5, 10.0));
-                        frame.line_to(p(1.5, 10.0));
-                        frame.line_to(p(1.5, 2.0));
-                        paths.push(frame);
-                        let mut middle = stroke();
-                        middle.move_to(p(6.0, 2.0));
-                        middle.line_to(p(6.0, 10.0));
-                        paths.push(middle);
-                    }
-                    Glyph::OpenExternal => {
-                        // The box, open at its top right corner.
-                        let mut frame = stroke();
-                        frame.move_to(p(5.5, 2.0));
-                        frame.line_to(p(2.0, 2.0));
-                        frame.line_to(p(2.0, 10.0));
-                        frame.line_to(p(10.0, 10.0));
-                        frame.line_to(p(10.0, 6.5));
-                        paths.push(frame);
-                        // The arrow, from inside the box out past that corner.
-                        let mut shaft = stroke();
-                        shaft.move_to(p(6.0, 6.0));
-                        shaft.line_to(p(10.5, 1.5));
-                        paths.push(shaft);
-                        let mut head = stroke();
-                        head.move_to(p(7.0, 1.5));
-                        head.line_to(p(10.5, 1.5));
-                        head.line_to(p(10.5, 5.0));
-                        paths.push(head);
-                    }
-                }
-                for path in paths {
-                    if let Ok(path) = path.build() {
-                        window.paint_path(path, hsla(color));
-                    }
-                }
-            },
-        )
-        .size_full(),
-    )
+/// `kind` in `color`, in a `size` px box.
+pub(crate) fn footer_glyph(kind: Glyph, color: Rgb, size: f32) -> Div {
+    div()
+        .flex_none()
+        .size(px(size))
+        .child(crate::icons::icon(kind, px(size), hsla(color)))
 }
 
 #[cfg(test)]
