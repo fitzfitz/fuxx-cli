@@ -1304,6 +1304,18 @@ pub(super) fn rim_lit(
     theme::mix(c, white, alpha)
 }
 
+/// Whether pixel `p`, at window `y` inside a card at the window's top (`CARD_INSET`), is `c` lit
+/// exactly as much as the rim's light is there (`rim_lit`), give or take `tol`: below the
+/// light's reach, `c` itself. Tight where `near_lit` (any depth) is loose (review, 2026-11-20).
+pub(super) fn near_at(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb, y: f32, tol: u8) -> bool {
+    use crate::ui_tokens::size::{CARD_INSET, HAIRLINE};
+    near_by(
+        p,
+        rim_lit(c, (y - CARD_INSET - 2.0 * HAIRLINE).max(0.0)),
+        tol,
+    )
+}
+
 /// Keep `shot` as `<name>-<slug>` (`keep_shot`: its PNG in `target/ui-shots/` with `--png`).
 pub(super) fn save_shot(name: &str, slug: &str, shot: &Shot) -> PathBuf {
     let path = keep_shot(&format!("{name}-{slug}"), shot);

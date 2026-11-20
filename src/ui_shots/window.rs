@@ -1475,7 +1475,7 @@ fn check_one_card(
             "{n}: the card's {which} edge at ({x}, {y}): {p:?}"
         );
     }
-    // The fill: 4 pt above the bottom edge it shows under the rim's light.
+    // The fill (the rim's light is along the top only, out of reach here).
     for (which, x, y, fill) in [
         ("left", left + 20.0, mid_y, ui.card),
         ("right", right - 20.0, mid_y, right_fill),
@@ -1483,7 +1483,7 @@ fn check_one_card(
     ] {
         let p = at(x, y);
         assert!(
-            near_lit(p, fill, 3),
+            near_at(p, fill, y, 3),
             "{n}: the fill inside the card's {which} edge at ({x}, {y}): {p:?}, want {fill:?}"
         );
     }
@@ -1667,10 +1667,9 @@ fn one_card_right_hidden_scene() {
             ("where the hairline would be", line + 0.5, 300.0),
             ("where the panel would be", right - 150.0, 300.0),
         ] {
-            // Near the edges, under the rim's light.
             let p = at(x, y);
             assert!(
-                near_lit(p, ui.card, 3),
+                near_at(p, ui.card, y, 3),
                 "{n}: the terminal {what} at ({x}, {y}): {p:?}"
             );
         }
@@ -1712,13 +1711,13 @@ fn one_card_narrow_scene() {
         let path = save_shot("card-narrow", slug, &shot);
         let n = format!("card-narrow-{slug}");
         check_one_card(&shot, dims, &ui, bounds, ui.card, &n);
-        // Past the rim's canvas ring; near the edges, the fill under the rim's light.
+        // Past the rim's canvas ring (the light is along the top only, out of reach here).
         let y = (top + bottom) / 2.0 + 20.0;
         let mut x = left + HAIRLINE + 2.0;
         while x < right - HAIRLINE - 2.0 {
             let p = pixel_at(&shot, dims, x, y);
             assert!(
-                near_lit(p, ui.card, 3),
+                near_at(p, ui.card, y, 3),
                 "{n}: the card's fill only at ({x}, {y}): {p:?}"
             );
             x += 1.0;

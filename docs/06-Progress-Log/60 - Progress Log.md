@@ -29,6 +29,17 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-20 — Chores after M11q, part 5: the Git tab's docked GRAPH; the card's edge
+
+- **What:** on your example screenshots: the Changes panel's GRAPH docked at the bottom with its own list and a
+  drag divider (1/4 to 1/2 of the room, 1/3 at first, remembered), the Git tab's rows 24 pt, smaller and indented;
+  and the window's card with a darker outer edge, an inner ring of the canvas colour and a light along the top
+  inside. Details and your on-screen check in note 68, part 5.
+- **Checks:** 2229 tests; clippy: no new warnings; fmt; full ui-shots 246 passed, 6 failed (known
+  display-dependent); a whole-branch review at the end.
+- **Learned:** GPUI's `uniform_list` measures one row, so a list's headers shrink with its rows; and an inset
+  shadow lights every side, so a light along one edge is a gradient band.
+
 ### 2026-11-20 — Chores after M11q, part 4: no prompt copies after a resize
 
 - **What:** your report of a messy terminal after resizing (stacked powerlevel10k prompts). Root cause: the reflow

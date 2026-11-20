@@ -220,10 +220,9 @@ fn right_sidebar_scenes() {
             let card_right = window_right - CARD_INSET;
             let line = card_right - width - HAIRLINE;
             if width > 0.0 {
-                // (6 pt from the card's right edge: under its rim's light, 2026-11-20.)
                 for x in [card_right - width + 6.0, card_right - 6.0] {
                     let p = at(x, y);
-                    assert!(near_lit(p, ui.side, 3), "{n}: sidebar at {x}: {p:?}");
+                    assert!(near_at(p, ui.side, y, 3), "{n}: sidebar at {x}: {p:?}");
                 }
                 let x = window_right - CARD_INSET / 2.0;
                 let p = at(x, y);
@@ -252,10 +251,9 @@ fn right_sidebar_scenes() {
                 let p = at(line - 6.0, y);
                 assert!(near(p, theme.background), "{n}: the pane left of it: {p:?}");
             } else {
-                // (Under the card rim's light, 6 pt from its right edge, 2026-11-20.)
                 let p = at(card_right - 6.0, y);
                 assert!(
-                    near_lit(p, theme.background, 3),
+                    near_at(p, theme.background, y, 3),
                     "{n}: no right sidebar: {p:?}"
                 );
                 let p = at(window_right - CARD_INSET / 2.0, y);
