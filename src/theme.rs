@@ -144,12 +144,11 @@ pub struct UiColors {
     pub tab_colors: [Rgb; 11],
     /// A raised card (each pane, the right sidebar; M11i): the terminal's own background.
     pub card: Rgb,
-    /// The window's outermost edge (chore 2026-11-20, your words: "the outermost window border"):
-    /// darker than the canvas it frames, drawn just inside macOS's own rim (`panes::window_edge`).
+    /// What lies under macOS's own light rim at the window's edge (`panes::window_edge`; part 8 of
+    /// the chores, your words: "the window edge border … almost the same as the outer background"):
+    /// the rim adds light over it, so on a dark theme black, the darkest it can read; on a light
+    /// theme the canvas (no line).
     pub window_edge: Rgb,
-    /// The card's top line (your words: "a shadow that looks like just a border at the top"):
-    /// a light line along its top edge (`panes::card_rim`); its other edges are the canvas colour.
-    pub card_top_light: Rgb,
     /// A card's 1 px edge, quiet on the canvas (the sidebar colour) and on the card (the hairlines
     /// between panes and under bars; the card's own outer edge is the canvas colour since
     /// 2026-11-20).
@@ -492,8 +491,7 @@ impl Theme {
             card,
             card_border,
             canvas_line: mix(canvas, fg, if dark { 0.05 } else { 0.07 }),
-            window_edge: mix(canvas, black, if dark { 0.55 } else { 0.18 }),
-            card_top_light: if dark { mix(card, white, 0.14) } else { white },
+            window_edge: if dark { black } else { canvas },
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
             card_shadow_alpha: if dark { 0.45 } else { 0.12 },
             raised,
@@ -989,24 +987,20 @@ mod tests {
         }
     }
 
+    /// Chore 2026-11-20, part 8 (your words: "I meant this border … the window edge border and the
+    /// inside border (vertical)", almost the outer background): macOS's light rim adds light over
+    /// what is under it, so on a dark theme the line under it is black, the darkest the rim can
+    /// read; a light theme draws no line (the canvas itself).
     #[test]
-    fn the_window_edge_is_darker_and_the_card_has_a_light_top_line() {
-        use crate::ui_tokens::relative_luminance as lum;
+    fn the_window_edge_is_black_on_dark_themes_and_absent_on_light() {
         for (name, theme) in every_theme() {
             let ui = theme.ui();
-            assert!(
-                lum(ui.window_edge) < lum(ui.sidebar_background),
-                "{name}: window_edge {:?} vs the canvas {:?}",
-                ui.window_edge,
+            let expected = if theme.is_dark() {
+                Rgb { r: 0, g: 0, b: 0 }
+            } else {
                 ui.sidebar_background
-            );
-            assert_ne!(ui.card_top_light, ui.card, "{name}: the top line shows");
-            if theme.is_dark() {
-                assert!(
-                    lum(ui.card_top_light) > lum(ui.card),
-                    "{name}: a light line"
-                );
-            }
+            };
+            assert_eq!(ui.window_edge, expected, "{name}");
         }
     }
 

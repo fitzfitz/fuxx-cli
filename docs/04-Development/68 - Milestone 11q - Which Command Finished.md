@@ -595,3 +595,26 @@ sidebar, under 1.2:1 against it, quieter than `card_border`); clippy: no new war
 
 **On-screen check (yours):** the New button's outline barely lifts off the sidebar.
 
+## Chores after M11q, part 8 (2026-11-20, the window edge as quiet as macOS allows; no top line)
+
+Your words, with a close-up of the window's left edge: "I meant this border … the window edge border and the
+inside border (vertical)" (part 7's "almost the same as the outer background"); and on the card's top: "also the
+top inset is ugly".
+
+1. **What the two vertical lines are:** both are macOS's own frame, not fuxx's. Your screenshots show it: before
+   fuxx drew any edge (part 5's), the window's left edge was a black outline (`000000`) then a grey line
+   (`434446`) on a `141517` sidebar; today a black one (`000203`) then grey (`3a3c3d`) on `17181e`. The grey line
+   is macOS's rim, which adds light over what lies under it (about `2f` per channel here); the black one is drawn
+   outside the window.
+2. **So fuxx draws black under the rim** on a dark theme (`window_edge`), the darkest it can read (about `2f2f2f`
+   against `3a3c3d` now), one screen pixel wide (`window_edge_width`: half a point on a Retina screen, so no dark
+   pixel shows inside the rim); on a light theme no line (the canvas). **AI's call:** it can't reach the canvas
+   colour exactly: the rim adds light even over black.
+3. **The card's top line is gone** (`card_rim`, `card_top_light`): the card's edge is the canvas colour all round.
+
+**Checks:** `the_window_edge_is_black_on_dark_themes_and_absent_on_light`, `the_window_edge_is_one_screen_pixel`;
+the full gate below.
+
+**On-screen check (yours):** the window's inner grey edge a little darker than before; no light line along the
+card's top.
+

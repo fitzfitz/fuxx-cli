@@ -44,9 +44,8 @@ pub struct PaneColors {
     /// panes.
     pub card: Hsla,
     pub card_border: Hsla,
-    /// The card's outer edge (the canvas colour, 2026-11-20), its top line, and the window's edge.
+    /// The card's outer edge (the canvas colour, 2026-11-20), and the window's edge.
     pub rim: Hsla,
-    pub top_light: Hsla,
     pub window_edge: Hsla,
     /// The card's shadow: `shadow` at `shadow_alpha` (0-1).
     pub shadow: Hsla,
@@ -74,7 +73,6 @@ impl PaneColors {
             card: hsla(ui.card),
             card_border: hsla(ui.card_border),
             rim: hsla(ui.sidebar_background),
-            top_light: hsla(ui.card_top_light),
             window_edge: hsla(ui.window_edge),
             shadow: hsla(ui.shadow),
             shadow_alpha: ui.card_shadow_alpha,
@@ -85,8 +83,8 @@ impl PaneColors {
 /// The floating card (M11al §3.1; the one the panes sit in, and until it moves in, the right
 /// sidebar's): the card's fill, `CARD_RADIUS` corners, a `HAIRLINE` edge in the canvas colour
 /// (since 2026-11-20, your words: "not adding an outer border to the inner floating window"), and
-/// its soft shadow (`CARD_SHADOW_Y` down, `CARD_SHADOW_BLUR` blurred). Its top line (`card_rim`) is
-/// its last child.
+/// its soft shadow (`CARD_SHADOW_Y` down, `CARD_SHADOW_BLUR` blurred). No light line along its top
+/// (part 8 of the chores, your words: "the top inset is ugly").
 /// Its content is clipped to the inside of its edge (a rectangle: content that reaches a corner
 /// rounds its own background, see note 60 §5).
 pub fn card(colors: &PaneColors) -> Div {
@@ -108,39 +106,28 @@ pub fn card(colors: &PaneColors) -> Div {
         .overflow_hidden()
 }
 
-/// The window's outer edge (2026-11-20): its width (the point macOS's own light rim lies over, so
-/// the rim reads darker and nothing inside the window loses a pixel), and the window's corner
-/// radius on macOS 26 (measured from a screenshot: 14 pt).
-pub(crate) const WINDOW_EDGE: f32 = 1.0;
+/// The window's corner radius on macOS 26 (measured from a screenshot: 14 pt).
 pub(crate) const WINDOW_RADIUS: f32 = 14.0;
 
-/// The card's top line (chore 2026-11-20, your words: "a shadow that looks like just a border at
-/// the top"): a `HAIRLINE` light line along the card's top edge, over its content, following its
-/// top corners. It takes no clicks.
-pub fn card_rim(colors: &PaneColors) -> Div {
-    div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .right_0()
-        .h(px(CARD_RADIUS))
-        .rounded_t(px(CARD_RADIUS - HAIRLINE))
-        .border_t(px(HAIRLINE))
-        .border_color(colors.top_light)
+/// The window edge's width in points: one screen pixel (part 8 of the chores), just the pixel
+/// macOS's own light rim lies over, so no darker pixel shows inside it on a Retina screen.
+pub(crate) fn window_edge_width(scale: f32) -> f32 {
+    1.0 / scale.max(1.0)
 }
 
-/// The window's outermost edge (your words: "the outermost window border… slightly darker"): a
-/// `WINDOW_EDGE` line in `window_edge` around the whole window, following its rounded corners,
-/// drawn over the window's content at its root, under macOS's own light rim, which reads darker
-/// over it. Left out in full screen (no rim, no corners). It takes no clicks.
-pub fn window_edge(colors: &PaneColors) -> Div {
+/// The window's outermost edge: a one-pixel line in `window_edge` around the whole window,
+/// following its rounded corners, drawn over the window's content at its root, right under
+/// macOS's own light rim, which adds light over it (black on a dark theme: the rim at its
+/// darkest; part 8 of the chores, your words: "almost the same as the outer background"). Left
+/// out in full screen (no rim, no corners). It takes no clicks.
+pub fn window_edge(colors: &PaneColors, width: f32) -> Div {
     div()
         .absolute()
         .top_0()
         .left_0()
         .size_full()
         .rounded(px(WINDOW_RADIUS))
-        .border(px(WINDOW_EDGE))
+        .border(px(width))
         .border_color(colors.window_edge)
 }
 
@@ -335,6 +322,14 @@ fn render_node(node: &Node<PaneId>, path: Vec<bool>, panes: &Panes) -> AnyElemen
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Part 8 of the chores: the window's edge is one screen pixel, the one macOS's rim covers.
+    #[test]
+    fn the_window_edge_is_one_screen_pixel() {
+        assert_eq!(window_edge_width(1.0), 1.0);
+        assert_eq!(window_edge_width(2.0), 0.5);
+        assert_eq!(window_edge_width(0.0), 1.0, "no scale yet: a whole point");
+    }
 
     #[test]
     fn the_grab_strip_is_centred_on_the_hairline_at_any_ratio() {
