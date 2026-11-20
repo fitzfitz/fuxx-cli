@@ -94,7 +94,8 @@ pub(super) const SCENES: &[Scene] = &[
     },
 ];
 
-const PROMPT: &str = "\x1b]133;A\x07$ \x1b]133;B\x07";
+// (`redraw=0`: a scripted shell, it never redraws its prompt, so a resize must not empty it.)
+const PROMPT: &str = "\x1b]133;A;redraw=0\x07$ \x1b]133;B\x07";
 
 /// A start mark for `cmd` (percent-encoded as the shell integration does), none for no text.
 fn started(cmd: Option<&str>) -> String {

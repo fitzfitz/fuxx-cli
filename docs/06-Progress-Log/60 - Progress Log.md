@@ -29,6 +29,18 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-20 — Chores after M11q, part 4: no prompt copies after a resize
+
+- **What:** your report of a messy terminal after resizing (stacked powerlevel10k prompts). Root cause: the reflow
+  moved the cursor onto the wrapped tail of a prompt row whose right prompt reached the last column, and zsh's
+  redraw (from the cursor's row down) left the head behind each step. Fix: kitty's rule, a width change at a live
+  prompt empties it before the reflow unless its A says `redraw=0` (`blocks::resize`, for the local terminal, the
+  replica and the daemon's session alike). Details and your on-screen check in note 68, part 4.
+- **Checks:** 2220 tests; clippy: no new warnings; fmt; full ui-shots 246 passed, 6 failed (known
+  display-dependent).
+- **Learned:** capture the real shell's bytes (a pty, a few `TIOCSWINSZ`) and replay them through the grid: the
+  probe showed 10 copies before and 1 after, so the fix was proven on your own prompt, not a model of it.
+
 ### 2026-11-20 — Chores after M11q, part 3: each theme's own chrome colours
 
 - **What:** your ask, "give each theme its own chrome colours": a theme can set `chrome-canvas`, `chrome-accent`,

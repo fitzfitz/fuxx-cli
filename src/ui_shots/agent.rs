@@ -2202,11 +2202,12 @@ fn attachment_shell() -> String {
     .concat()
 }
 
-const MARK_A: &str = "\x1b]133;A\x07";
+// (`redraw=0`: a scripted shell, it never redraws its prompt, so a resize must not empty it.)
+const MARK_A: &str = "\x1b]133;A;redraw=0\x07";
 const MARK_B: &str = "\x1b]133;B\x07";
 
 /// `npm test` ends with exit 1, and the next prompt shows.
-const ATTACHMENT_END: &str = "\x1b]133;D;1\x07\x1b]133;A\x07$ \x1b]133;B\x07";
+const ATTACHMENT_END: &str = "\x1b]133;D;1\x07\x1b]133;A;redraw=0\x07$ \x1b]133;B\x07";
 
 /// `npm test`'s output in `attachment_shell` (its rows end in `\r\n` on the screen).
 const ATTACHMENT_OUTPUT: &str = "> app@1.0.0 test\r\n> node --test\r\n\r\n\

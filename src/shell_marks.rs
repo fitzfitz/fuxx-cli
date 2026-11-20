@@ -24,7 +24,11 @@ const CMDLINE_URL: &[u8] = b"cmdline_url=";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mark {
-    PromptStart,
+    /// `redraw`: the shell redraws its prompt after a resize, so the terminal may empty it first
+    /// (`blocks::resize`): true unless the A says `redraw=0` (kitty's rule).
+    PromptStart {
+        redraw: bool,
+    },
     CommandStart,
     /// `cmd` is the decoded command line, if the mark had a valid one no longer than
     /// `blocks::CMD_CAP` bytes; `truncated` when it had one that was longer.
@@ -175,7 +179,11 @@ fn parse(body: &[u8]) -> Option<Mark> {
     };
     let mut options = options.split(|&b| b == b';').filter(|o| !o.is_empty());
     match letter {
-        b'A' => Some(Mark::PromptStart),
+        // kitty's rule: the shell redraws its prompt after a resize unless it says `redraw=0`
+        // (powerlevel10k's own marks, plain A, rely on it: its README's fix for the resize mess).
+        b'A' => Some(Mark::PromptStart {
+            redraw: !options.any(|o| o == b"redraw=0"),
+        }),
         b'B' => Some(Mark::CommandStart),
         b'C' => {
             let url = options.find_map(|o| o.strip_prefix(CMDLINE_URL));
@@ -358,7 +366,10 @@ mod tests {
     fn reads_the_four_marks() {
         assert_eq!(
             feed(b"\x1b]133;A\x07x\x1b]133;B\x1b\\"),
-            vec![(8, Mark::PromptStart), (18, Mark::CommandStart)]
+            vec![
+                (8, Mark::PromptStart { redraw: true }),
+                (18, Mark::CommandStart)
+            ]
         );
         assert_eq!(
             marks(b"\x1b]133;C;cmdline_url=echo%20hi\x07"),
@@ -373,7 +384,20 @@ mod tests {
         );
         assert_eq!(marks(b"\x1b]133;D\x07"), vec![Mark::Done { exit: None }]);
         // Other keys after the letter are ignored.
-        assert_eq!(marks(b"\x1b]133;A;cl=m;aid=7\x07"), vec![Mark::PromptStart]);
+        assert_eq!(
+            marks(b"\x1b]133;A;cl=m;aid=7\x07"),
+            vec![Mark::PromptStart { redraw: true }]
+        );
+        // `redraw=0`: the shell does not redraw its prompt after a resize (kitty's key), so it
+        // is left as it is; anything else, it does (2026-11-20).
+        assert_eq!(
+            marks(b"\x1b]133;A;aid=7;redraw=0\x07"),
+            vec![Mark::PromptStart { redraw: false }]
+        );
+        assert_eq!(
+            marks(b"\x1b]133;A;redraw=1\x07"),
+            vec![Mark::PromptStart { redraw: true }]
+        );
         assert_eq!(
             marks(b"\x1b]133;C\x07"),
             vec![Mark::OutputStart {
@@ -502,7 +526,7 @@ mod tests {
         assert!(scanner.feed(&abandoned).is_empty());
         assert_eq!(
             scanner.feed(b"\x1b]133;A\x07"),
-            vec![(8, Mark::PromptStart)]
+            vec![(8, Mark::PromptStart { redraw: true })]
         );
         // Exactly at the cap is kept.
         let mut at_cap = b"\x1b]133;D;0;".to_vec();
