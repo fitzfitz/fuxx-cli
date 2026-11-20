@@ -237,6 +237,10 @@ pub struct TerminalView {
     tracker: StatusTracker,
     /// The command running at the shell prompt now (M11q), from the OSC 133 marks.
     run: CommandRun,
+    /// Whether its zsh started with fuxx's marks (M11ab: it may show cards): known for a shell
+    /// this window spawned (from its env); for a background-service session, unknown until its
+    /// first mark, which makes it true (note 88, ruling 3).
+    integration: Option<bool>,
     /// When the canvas last sent the pty a new size; the tracker hears of it before the next
     /// output, input or tick, so the redraw that follows isn't taken for work.
     resized_at: Rc<Cell<Option<Instant>>>,
@@ -329,7 +333,17 @@ impl TerminalView {
             // The shell reads this as typed-ahead input once it is up.
             core.write(format!("{cmd}\r").as_bytes());
         }
-        Ok(cx.new(|cx| Self::new(core, rx, cx)))
+        let integrated = crate::shell_integration::integrated_in(env);
+        Ok(cx.new(|cx| {
+            let mut view = Self::new(core, rx, cx);
+            view.integration = Some(integrated);
+            view
+        }))
+    }
+
+    /// Whether its zsh started with fuxx's marks (M11ab's card view needs them).
+    pub fn integrated(&self) -> bool {
+        self.integration == Some(true)
     }
 
     /// A view of daemon session `id` (Daemon backend). It never waits on the daemon. For a new
@@ -873,6 +887,7 @@ impl TerminalView {
             focus_handle,
             tracker: StatusTracker::new(),
             run: CommandRun::default(),
+            integration: None,
             resized_at: Rc::new(Cell::new(None)),
             layout: Rc::new(Cell::new(None)),
             scroll: ScrollAccumulator::default(),
@@ -910,6 +925,8 @@ impl TerminalView {
     /// its Done, so the owner settles the status knowing which command ended, and the tracker's
     /// own Done then changes nothing.
     fn command_marked(&mut self, mark: CommandMark, cx: &mut Context<Self>) {
+        // A background-service session shows it was started with the marks (ruling 3).
+        self.integration.get_or_insert(true);
         let now = Instant::now();
         let tracks = self.tracks_status();
         match self.run.on_mark(mark, now) {

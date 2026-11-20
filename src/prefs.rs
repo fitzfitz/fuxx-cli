@@ -149,6 +149,12 @@ pub fn cursor_glide_values(on: bool) -> Vec<String> {
     if on { vec![] } else { vec!["off".to_string()] }
 }
 
+/// `shell-cards` values to write (M11ab): nothing when on (the default, so no line), `off`
+/// otherwise.
+pub fn shell_cards_values(on: bool) -> Vec<String> {
+    if on { vec![] } else { vec!["off".to_string()] }
+}
+
 /// `command-blocks` values to write: nothing when on (the default, so no line), `off`
 /// otherwise.
 pub fn command_blocks_values(on: bool) -> Vec<String> {
@@ -395,5 +401,12 @@ mod tests {
         assert!(cursor_fun_values(CursorFun::Off).is_empty());
         assert_eq!(cursor_fun_values(CursorFun::Trail), ["trail"]);
         assert_eq!(cursor_fun_values(CursorFun::Sparks), ["sparks"]);
+    }
+
+    /// M11ab: on is the default, so only `off` is written.
+    #[test]
+    fn shell_cards_values_write_only_off() {
+        assert!(shell_cards_values(true).is_empty());
+        assert_eq!(shell_cards_values(false), ["off"]);
     }
 }
