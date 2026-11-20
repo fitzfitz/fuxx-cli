@@ -529,3 +529,32 @@ warnings; fmt; full ui-shots 246 passed, 6 failed (the known display-dependent s
 2. Toggle the sidebar and the right panel (both change the terminal's width): the same.
 3. While a command runs (`sleep 30`), resizing leaves its output as before.
 
+## Chores after M11q, part 5 (2026-11-20, the Git tab like your example; the card's edge)
+
+Your asks, with an example screenshot: "can you make our git tab section graph to be like the example? always on
+the bottom appeared flexed, can be dragged the height with min height of 1/4 of container and max height of half
+the container", "make the size of icon, text smaller, and make it indented", and for the window "make the outer
+border slightly darker and have the inner border same as the main background color and add light top box shadow
+in the top inner window… with inner and outer border, as it looks very clean and futuristic". Design:
+`docs/superpowers/specs/2026-11-20-git-tab-docked-graph-design.md`; plan:
+`docs/superpowers/plans/2026-11-20-git-tab-docked-graph.md` (built in the session, one review at the end).
+
+1. **GRAPH docked at the bottom.** The Changes panel's room (under its header, over the branch bar) holds the
+   STAGED / CHANGES list on top, scrolling on its own, and the GRAPH at its bottom: closed, its header alone; open,
+   its header and its own list of commits ("Load more" at its end; ◎ scrolls this list).
+2. **Its divider.** Drag the GRAPH's top edge (the quiet line shows on hover): its height stays between 1/4 and 1/2
+   of the room (also when the window resizes); 1/3 the first time; the height you set is kept in the sessions
+   file (`graph_fraction`).
+3. **Smaller, indented rows** (Git tab only; Files keeps its own): every row 24 pt (headers too: one list, one
+   height), names 12 pt, folders, counts and letters 11 pt, the circle 12 pt, the content 16 pt further in, under
+   its header's label.
+4. **The card's edge.** Its outer line a step darker (`card_edge`), a 1 pt ring of the canvas colour just inside
+   it, and a soft white light along the top inside (7 % at the top, gone 20 pt down). **AI's call:** a top band,
+   not an inset shadow, which lit all four sides.
+
+**On-screen check (yours):** with `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`, the right panel on Changes:
+1. Rows are compact and indented under STAGED / CHANGES, as in your example.
+2. GRAPH sits at the bottom, closed or open; open, drag its top edge: it stops at a quarter and at half.
+3. Quit and reopen: the GRAPH height is as you left it.
+4. The card's edge: a darker outer line, the background colour just inside it, a soft light along the top.
+

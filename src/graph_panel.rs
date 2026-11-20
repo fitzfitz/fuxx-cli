@@ -403,12 +403,9 @@ impl Workspace {
         if !graph.open {
             return section.child(header).into_any_element();
         }
+        // A share of the room it's drawn in, every frame (review, 2026-11-20: never the room's
+        // last drawn size, which can be another window size's when the Git tab shows again).
         let fraction = graph.fraction.clamp(GRAPH_MIN, GRAPH_MAX);
-        // The room as last drawn; before the first frame, a share of the parent.
-        let height = graph
-            .room
-            .get()
-            .map(|b| f32::from(b.size.height) * fraction);
         let count = graph.rows_shown().len();
         let list = gpui::uniform_list(
             "graph-rows",
@@ -429,11 +426,8 @@ impl Workspace {
         .track_scroll(&graph.scroll)
         .flex_1()
         .min_h(px(0.0));
-        let section = match height {
-            Some(h) => section.h(px(h)),
-            None => section.h(gpui::relative(fraction)),
-        };
         section
+            .h(gpui::relative(fraction))
             .child(header)
             .child(list)
             .child(self.render_graph_divider(*ui, cx))

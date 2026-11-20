@@ -972,9 +972,13 @@ fn tab_bar_scenes() {
                     let plus_x = f32::from(tabs[3].right()) + crate::tab_bar::PLUS_GAP;
                     let plus = px_at(plus_x + 2.0, bar_top + BUTTON_TOP + 2.0);
                     let more = button_corner(MORE_FROM_EDGE);
-                    // (Both under the card's top light, 2026-11-20.)
-                    assert!(near_lit(plus, ui.card_hover, 3), "{n}: + hovered: {plus:?}");
-                    assert!(near_lit(more, ui.card, 3), "{n}: ⋯ not: {more:?}");
+                    // (Both under the card's top light, lit as much as it is there: 2026-11-20.)
+                    let y = bar_top + BUTTON_TOP + 2.0;
+                    assert!(
+                        near_at(plus, ui.card_hover, y, 3),
+                        "{n}: + hovered: {plus:?}"
+                    );
+                    assert!(near_at(more, ui.card, y, 3), "{n}: ⋯ not: {more:?}");
                 }
                 "tab-bars-more" => {
                     // ⋯ lit: its fill stands off the bar in the gap beside it (both under the
@@ -2455,14 +2459,15 @@ fn tabs_minimal_scenes() {
                 assert_eq!(drawn, hovered, "{what}: its ×");
                 // A pill: its round ends leave the card at its corners; clear card after it (no
                 // separator line). (The card under its rim's light along its top, 2026-11-20.)
-                let corner = at(left + 1.0, f32::from(place.top()) + 1.0);
+                let corner_y = f32::from(place.top()) + 1.0;
+                let corner = at(left + 1.0, corner_y);
                 assert!(
-                    near_lit(corner, ui.card, 3),
+                    near_at(corner, ui.card, corner_y, 3),
                     "{what}: a round end: {corner:?}"
                 );
                 let room = at(right + after / 2.0, cy);
                 assert!(
-                    near_lit(room, ui.card, 3),
+                    near_at(room, ui.card, cy, 3),
                     "{what}: clear after it: {room:?}"
                 );
             }

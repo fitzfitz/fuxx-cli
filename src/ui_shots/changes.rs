@@ -344,12 +344,12 @@ fn changes_graph_scenes() {
     render_with(&theme, dims, build, act);
 }
 
-/// Sticky headers (your ask: "make other accordion sticky"): 60 commits, scrolled 8 rows down:
-/// the GRAPH's header stays pinned over the list's top, its hairline under it.
+/// Sticky headers (your ask: "make other accordion sticky"): 30 changed files, the list scrolled 8
+/// rows down: CHANGES' header stays pinned over the list's top, its hairline under it. (The GRAPH
+/// has its own list, docked at the bottom, since 2026-11-20; closed here, so the list has room.)
 fn changes_sticky_scenes() {
     use crate::changes_panel::GIT_ROW as ROW;
-    use crate::git_graph::Commit;
-    use crate::git_status::ChangeList;
+    use crate::git_status::{Change, ChangeList, Counts, Mark};
     use crate::right_sidebar::Panel;
     use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
@@ -361,28 +361,30 @@ fn changes_sticky_scenes() {
     let sidebar_left = right_panel_left(window_right, 300.0);
     let list_top = CARD_INSET + HAIRLINE + TAB_BAR + crate::changes_panel::HEADER;
     let root = files_fixture();
-    let commits: Vec<Commit> = (0..60)
-        .map(|i| Commit {
-            hash: format!("{i:07x}"),
-            parents: if i < 59 {
-                vec![format!("{:07x}", i + 1)]
-            } else {
-                vec![]
-            },
-            author: "Ayu".into(),
-            time: 1_794_455_520 - i * 600,
-            refs: vec![],
-            subject: format!("Commit number {i}"),
-            head: i == 0,
-        })
-        .collect();
+    let list = ChangeList {
+        entries: (0..30)
+            .map(|i| Change {
+                path: std::path::PathBuf::from(format!("src/file_{i:02}.rs")),
+                mark: Mark::Modified,
+                counts: Counts::Lines {
+                    added: i + 1,
+                    removed: 1,
+                },
+                folder: false,
+                staged: false,
+                untracked: false,
+            })
+            .collect(),
+        more: 0,
+        counts_failed: false,
+    };
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let n = format!("changes-sticky-{slug}");
         let slot: Slot = Rc::new(RefCell::new(None));
         let build = {
-            let (root, commits) = (root.clone(), commits.clone());
+            let (root, list) = (root.clone(), list.clone());
             right_panel_workspace(
                 theme,
                 root.clone(),
@@ -391,10 +393,7 @@ fn changes_sticky_scenes() {
                 slot.clone(),
                 move |ws| {
                     let changes = &mut ws.right_sidebar.changes;
-                    changes.show_for_shots(root.clone(), true, Some(ChangeList::default()));
-                    // GRAPH starts closed (M11x, your call): these scenes open it.
-                    changes.graph.open = true;
-                    changes.graph.apply("shot".into(), commits.clone(), None);
+                    changes.show_for_shots(root.clone(), true, Some(list.clone()));
                 },
             )
         };
@@ -445,18 +444,55 @@ fn changes_sticky_scenes() {
                 })
             })
         };
-        // The pinned header: `GRAPH` (faint) in the list's first row, though its row has
-        // scrolled away.
+        // The pinned header in the list's first row, though its row has scrolled away: the
+        // `CHANGES` words (faint) where an entry's name would be; no entry's mark letter (an
+        // `M` in its blue) in that row; the header's hairline under it.
+        let first = (list_top + 2.0, list_top + ROW - 2.0);
         assert!(
             has(
-                sidebar_left + 28.0,
-                sidebar_left + 90.0,
-                list_top + 2.0,
-                list_top + ROW - 2.0,
+                sidebar_left + 38.0,
+                sidebar_left + 100.0,
+                first.0,
+                first.1,
                 ui.text_faint,
                 16
             ),
-            "{n}: the GRAPH header is pinned at the top"
+            "{n}: CHANGES' header is pinned at the top"
+        );
+        let m = crate::right_sidebar::mark_color(Mark::Modified, &theme);
+        assert!(
+            !has(
+                sidebar_left + 50.0,
+                sidebar_left + 70.0,
+                first.0,
+                first.1,
+                m,
+                24
+            ),
+            "{n}: no entry under the pinned header's words"
+        );
+        assert!(
+            has(
+                sidebar_left + 20.0,
+                sidebar_left + 280.0,
+                list_top + ROW - 1.0,
+                list_top + ROW + 1.0,
+                ui.divider,
+                6
+            ),
+            "{n}: the pinned header's hairline"
+        );
+        // And the rows under it are entries (scrolled: its own row is gone).
+        assert!(
+            has(
+                sidebar_left + 50.0,
+                sidebar_left + 70.0,
+                list_top + ROW + 2.0,
+                list_top + 2.0 * ROW - 2.0,
+                m,
+                24
+            ),
+            "{n}: an entry right under the pinned header"
         );
     }
 }
