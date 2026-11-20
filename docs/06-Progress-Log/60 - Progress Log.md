@@ -29,6 +29,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-20 — Chores after M11q, part 10: coloured avatars back; the old status dot
+
+- **What:** on your screenshot comparing today's sidebar with an older one: M11r's coloured gradient avatars
+  are back (part 2's outlines undone), and every status dot is the small dot in a disc of the row's colour again
+  (the gap), as before M11al. Note 68, part 10.
+- **Learned:** a "gap" ring in the row's colour only shows against a filled tile; removing the fill (part 2) and
+  filling the idle badge (M11al) together made the dot read big and gapless.
+
 ### 2026-11-20 — Chores after M11q, part 9: part 7 undone; the borders darker
 
 - **What:** the New button's outline back to `card_border`; `card_border` darker on dark themes (6 % of the ink,

@@ -635,3 +635,24 @@ full ui-shots.
 
 **On-screen check (yours):** the sidebar's lines and boxes and the card's hairlines quieter than before.
 
+## Chores after M11q, part 10 (2026-11-20, coloured avatars back; the old status dot)
+
+Your words, on a screenshot of today's sidebar beside an older one: "I like the dot on the right (old ones) … the
+one on the avatar's right bottom. The check right now is acceptable, but the dot (on left) is too big and no gap
+just like in right. the right is very nice, it has colorful avatars, why we dont do that?"
+
+1. **The coloured avatars are back** as M11r had them (part 2 had made them outlines, critique issue 2): a
+   gradient of the workspace's colour, your tab colour if you set one, else a stable one picked from its name
+   (never grey), its letters held to text contrast on both ends (`UiColors::avatars`, `avatar_color`).
+2. **The status dot as before M11al:** every dot is the small 6 pt dot (`BADGE_DOT`) inside a disc of the row's own
+   colour, which parts it from the tile (the gap); M11al had made an idle badge a solid 10 pt dot. Working keeps
+   its soft halo, Done its ✓ (`badge_fill`).
+
+**Checks:** `an_avatar_takes_the_tab_colour_else_a_stable_one_from_the_name` (back),
+`an_idle_badge_is_a_small_dot_in_the_rows_colour`, `every_avatar_tile_is_coloured_and_its_letters_read`; the
+floors' audit checks the tiles' letters again; the `tabs` scene finds codex's blue tile and the comfortable
+sidebar no tile on a closed heading again; full gate below.
+
+**On-screen check (yours):** coloured tiles in the sidebar; each status dot small, in a dark disc that cuts into
+the tile's corner; the Done check unchanged.
+

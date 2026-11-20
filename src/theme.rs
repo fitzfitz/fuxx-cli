@@ -144,6 +144,10 @@ pub struct UiColors {
     pub selection: Rgb,
     /// The tab colours (`TabColor::ALL` order), fitted to stand out on every surface as marks do.
     pub tab_colors: [Rgb; 11],
+    /// The sidebar's avatars (M11r; back in part 10 of the chores after M11q), one per tab colour
+    /// (`TabColor::ALL` order): a gradient of the colour (its top-left and bottom-right) and its
+    /// letters' ink, held to `TEXT_MIN` on both ends.
+    pub avatars: [(Rgb, Rgb, Rgb); 11],
     /// A raised card (each pane, the right sidebar; M11i): the terminal's own background.
     pub card: Rgb,
     /// What lies under macOS's own light rim at the window's edge (`panes::window_edge`; part 8 of
@@ -468,6 +472,29 @@ impl Theme {
             quiet(mix(bg, fg, 0.12), &[canvas, card, side])
         };
         let tab_colors = TabColor::ALL.map(|c| readable(mark(c.base()), &selections, MARK_MIN));
+        // The avatars (M11r): a gradient of the colour over the card it mostly sits on, lit at
+        // its top left; its letters a pale (dark: light) tint of the colour. A bright colour (a
+        // yellow) is washed back in steps until its letters read on it.
+        let avatars = tab_colors.map(|c| {
+            let ink = if dark {
+                mix(c, white, 0.78)
+            } else {
+                mix(c, black, 0.55)
+            };
+            let (lit, deep) = if dark { (0.62, 0.36) } else { (0.34, 0.20) };
+            let ends = |n: f32| {
+                let step = 0.04 * n;
+                (
+                    mix(card, c, (lit - step).max(0.0)),
+                    mix(card, c, (deep - step).max(0.0)),
+                )
+            };
+            let (top, bottom) = (0..=15)
+                .map(|n| ends(n as f32))
+                .find(|&(t, b)| contrast(ink, t) >= TEXT_MIN && contrast(ink, b) >= TEXT_MIN)
+                .unwrap_or_else(|| ends(15.0));
+            (top, bottom, readable(ink, &[top, bottom], TEXT_MIN))
+        });
         UiColors {
             sidebar_background: canvas,
             sidebar_border: quiet(mix(canvas, fg, 0.12), &[canvas, bg]),
@@ -494,6 +521,7 @@ impl Theme {
             shadow: if dark { black } else { mix(fg, black, 0.5) },
             selection,
             tab_colors,
+            avatars,
             card,
             card_border,
             window_edge: if dark { black } else { canvas },
@@ -678,6 +706,11 @@ impl Theme {
                 QUIET_LINE_MIN
             };
             pairs.push(pair(line, bg, min));
+        }
+        // The sidebar's avatars' letters on both ends of their gradients (M11r).
+        for (c, (top, bottom, ink)) in TabColor::ALL.into_iter().zip(ui.avatars) {
+            pairs.push(pair(("avatar_ink", ink), (c.name(), top), TEXT_MIN));
+            pairs.push(pair(("avatar_ink", ink), (c.name(), bottom), TEXT_MIN));
         }
         // A waiting row's Open button: the sidebar's colour on the waiting colour (M11r).
         pairs.push(pair(
@@ -973,6 +1006,24 @@ mod tests {
                 let d = (hue(ui.accent) - hue(status)).abs();
                 let d = d.min(360.0 - d);
                 assert!(d >= 25.0, "{name}: the accent {d}° from {what}");
+            }
+        }
+    }
+
+    /// M11r's coloured avatars, back in part 10 of the chores after M11q (your words: "it has
+    /// colorful avatars, why we dont do that?"): each tile is a gradient of its colour whose
+    /// letters read on both ends, and it shows apart from the card.
+    #[test]
+    fn every_avatar_tile_is_coloured_and_its_letters_read() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            for (c, (top, bottom, ink)) in TabColor::ALL.into_iter().zip(ui.avatars) {
+                assert!(contrast(ink, top) >= TEXT_MIN, "{name} {c:?}: on its top");
+                assert!(
+                    contrast(ink, bottom) >= TEXT_MIN,
+                    "{name} {c:?}: on its bottom"
+                );
+                assert_ne!(top, ui.card, "{name} {c:?}: a coloured tile");
             }
         }
     }

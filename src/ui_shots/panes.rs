@@ -289,17 +289,17 @@ fn tab_scenes() {
             let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
             println!("ui-shots: {}", path.display());
             if scene == "tabs" || scene == "tabs-narrow" {
-                // codex's colour is its avatar's (M11r: no separate dot), on its row's line: its
-                // letters' since 2026-11-20 (the tile has no fill).
+                // codex's colour is its avatar's (M11r: no separate dot), on its row's line.
                 let shot = render_with(&theme, dims, build, act);
-                // The letters sit on the row's middle, 6.5 pt under its name line.
-                let y = dot_y.get() + 6.5;
-                let mid = crate::sidebar::avatar_ink(Some(TabColor::Blue), &ui);
+                let y = dot_y.get();
+                // Its gradient's middle, give or take the blend.
+                let (top, bottom, _) = ui.avatars[TabColor::Blue as usize];
+                let mid = crate::theme::mix(top, bottom, 0.5);
                 let scale = shot.width as f32 / f32::from(dims.width);
                 let dots = (0..(width * scale) as usize)
                     .filter(|&x| gap(pixel_at(&shot, dims, x as f32 / scale, y), mid) <= 14)
                     .count();
-                assert!(dots > 0, "{scene}-{slug}: codex's blue letters");
+                assert!(dots > 0, "{scene}-{slug}: codex's blue avatar");
             }
         }
 

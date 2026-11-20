@@ -1039,6 +1039,12 @@ fn sidebar_comfortable_scenes() {
             let (x, y) = ((left, right), (top + HEADING_ABOVE - 4.0, top + height));
             let pill = count_box(&shot, dims, ui.waiting_tint, 3, x, y);
             assert!(pill > 0, "{n}: web shows how many wait");
+            // (A square of an avatar's colour, not a stray pixel of the pill's anti-aliased
+            // words that happens to match one.)
+            for (fill, _, _) in ui.avatars {
+                let faces = solid_count(&shot, dims, fill, x, y);
+                assert_eq!(faces, 0, "{n}: no avatars on web's heading");
+            }
             // The long row: its name and line two stop inside its right padding.
             let (left, right, top, height) = span(5);
             let (one, two) = row_lines(top, height);
@@ -1369,6 +1375,30 @@ fn sidebar_button_scenes() {
             "{slug}: still partly in"
         );
     }
+}
+
+/// How many 3 × 3 pt squares (at pixel steps) in the box (`x0..x1`, `y0..y1`, points) are all
+/// within 3 of `c`: a filled shape of that colour, not anti-aliased text that touches it.
+fn solid_count(
+    shot: &Shot,
+    dims: Size<Pixels>,
+    c: alacritty_terminal::vte::ansi::Rgb,
+    (x0, x1): (f32, f32),
+    (y0, y1): (f32, f32),
+) -> usize {
+    let scale = shot.width as f32 / f32::from(dims.width);
+    let side = (3.0 * scale) as usize;
+    let at = |x: usize, y: usize| {
+        let i = (y * shot.width as usize + x) * 4;
+        near_by([shot.rgba[i], shot.rgba[i + 1], shot.rgba[i + 2]], c, 3)
+    };
+    let (xs, ys) = (
+        (x0 * scale) as usize..(x1 * scale) as usize - side,
+        (y0 * scale) as usize..(y1 * scale) as usize - side,
+    );
+    ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
+        .filter(|&(x, y)| (0..side).all(|dy| (0..side).all(|dx| at(x + dx, y + dy))))
+        .count()
 }
 
 /// How many pixels in the box (`x0..x1`, `y0..y1`, points) are within `tol` of `c`.
