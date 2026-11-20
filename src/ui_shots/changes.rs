@@ -112,10 +112,11 @@ pub(super) const SCENES: &[Scene] = &[
 /// Acting (Mocha): its divider dragged to the room's top holds it at half, to its bottom at a
 /// quarter.
 fn changes_graph_scenes() {
+    use crate::changes_panel::{GIT_INDENT, GIT_ROW as ROW};
     use crate::git_graph::{Commit, Details, Ref};
     use crate::git_status::ChangeList;
     use crate::graph_panel::{GRAPH_DEFAULT, GRAPH_MAX, GRAPH_MIN};
-    use crate::right_sidebar::{Panel, ROW};
+    use crate::right_sidebar::Panel;
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -278,12 +279,12 @@ fn changes_graph_scenes() {
             if !open {
                 continue;
             }
-            // Its commits under its header; the lanes in the first 24 pt.
+            // Its commits under its header; the lanes in the first 24 pt past the rows' indent.
             let commits_top = section_top + 1.0 + ROW;
             let lanes = |c: Rgb| {
                 has(
-                    sidebar_left + 12.0,
-                    sidebar_left + 36.0,
+                    sidebar_left + 12.0 + GIT_INDENT,
+                    sidebar_left + 36.0 + GIT_INDENT,
                     commits_top,
                     // (Its list shows what fits above the room's bottom.)
                     (commits_top + 4.0 * ROW).min(room_bottom - 1.0),
@@ -345,9 +346,10 @@ fn changes_graph_scenes() {
 /// Sticky headers (your ask: "make other accordion sticky"): 60 commits, scrolled 8 rows down:
 /// the GRAPH's header stays pinned over the list's top, its hairline under it.
 fn changes_sticky_scenes() {
+    use crate::changes_panel::GIT_ROW as ROW;
     use crate::git_graph::Commit;
     use crate::git_status::ChangeList;
-    use crate::right_sidebar::{Panel, ROW};
+    use crate::right_sidebar::Panel;
     use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
@@ -466,9 +468,7 @@ fn changes_sticky_scenes() {
 /// - `changes-staging-all`: everything staged: the header's circle filled, no CHANGES divider.
 fn changes_staging_scenes() {
     use crate::git_status::{Change, ChangeList, Counts, Mark};
-    use crate::right_sidebar::{
-        Panel, REPO_BOTTOM, REPO_PAD_X, REPO_PAD_Y, REPO_SIDE, REPO_TOP, ROW,
-    };
+    use crate::right_sidebar::{Panel, REPO_BOTTOM, REPO_PAD_X, REPO_PAD_Y, REPO_SIDE, REPO_TOP};
     use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use gpui::Modifiers;
@@ -518,7 +518,11 @@ fn changes_staging_scenes() {
         ..mixed.clone()
     };
     // Rows: 0 STAGED, 1–2 staged, 3 CHANGES, 4–7 the rest; Scope.md is row 5 (entry 3).
+    // The Git tab's rows (2026-11-20: 24 pt, indented `GIT_INDENT`).
+    use crate::changes_panel::{GIT_INDENT, GIT_ROW as ROW};
     let row_top = |r: usize| list_top + r as f32 * ROW;
+    // A row's circle: from the content edge (`PILL_INSET` + `PILL_PAD`) and the indent, 12 pt.
+    let circle_left = sidebar_left + 22.0 + GIT_INDENT;
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
@@ -559,7 +563,7 @@ fn changes_staging_scenes() {
                     // closes it: nothing under the dim layer is clicked. (Not for the shot: the
                     // dialog opens again after.)
                     let ws = slotted(&slot);
-                    let on = point(px(sidebar_left + 15.0), px(row_top(1) + ROW / 2.0));
+                    let on = point(px(circle_left + 6.0), px(row_top(1) + ROW / 2.0));
                     cx.simulate_click(window, on, Modifiers::none());
                     cx.run_until_parked();
                     let (open, working) = cx.read(|cx| {
@@ -616,8 +620,8 @@ fn changes_staging_scenes() {
             };
             let circle_green = |r: usize| {
                 has(
-                    sidebar_left + 10.0,
-                    sidebar_left + 30.0,
+                    circle_left - 2.0,
+                    circle_left + 14.0,
                     row_top(r) + 2.0,
                     row_top(r) + ROW - 2.0,
                     green,
@@ -988,10 +992,11 @@ fn changes_bar_scenes() {
 /// - `changes-click`: a click on the M row opens src/main.rs in the focused pane in Diff mode
 ///   (the model's tab), and that row is drawn `side_selected`.
 fn changes_scenes() {
+    use crate::changes_panel::{GIT_INDENT, GIT_ROW as ROW};
     use crate::changes_panel::{HEADER, NO_CHANGES, NO_REPO, SSH_NOTE, totals};
     use crate::git_status::{Change, ChangeList, Counts, Mark};
     use crate::layout_model::{FileMode, TabKind};
-    use crate::right_sidebar::{PILL_INSET, PILL_PAD, Panel, ROW, mark_color};
+    use crate::right_sidebar::{PILL_INSET, PILL_PAD, Panel, mark_color};
     use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use gpui::{Focusable, Modifiers};
@@ -1155,10 +1160,10 @@ fn changes_scenes() {
             "{n}: the progress bar's track"
         );
         // Each row's letter in its mark's colour, and in no other mark's.
-        // Part 2: after the row's circle (16 pt and a 6 pt gap) from its content edge
-        // (`PILL_INSET` + `PILL_PAD`, M11al §6.5).
-        let content = sidebar_left + PILL_INSET + PILL_PAD;
-        let letter = |i: usize, c: Rgb| in_row(i, content + 22.0, content + 34.0, c);
+        // Part 2: after the row's circle (12 pt since 2026-11-20, and a 6 pt gap) from its
+        // content edge (`PILL_INSET` + `PILL_PAD`, M11al §6.5, and the Git tab's indent).
+        let content = sidebar_left + PILL_INSET + PILL_PAD + GIT_INDENT;
+        let letter = |i: usize, c: Rgb| in_row(i, content + 18.0, content + 30.0, c);
         for (i, mark) in [(0, m), (1, a), (2, d), (3, a), (4, m), (5, a)] {
             assert!(letter(i, mark), "{n}: row {i}'s letter in {mark:?}");
             for other in [m, a, d].into_iter().filter(|o| *o != mark) {
@@ -1184,15 +1189,11 @@ fn changes_scenes() {
             );
         }
         assert!(counts(3, ui.text_faint), "{n}: `binary`, faint");
-        // `… 3 more`, faint, under the names; then the GRAPH's header (M11w; no commits here:
-        // the fixture isn't a git repo), and nothing after it.
+        // `… 3 more`, faint, under the names, and nothing after it: the GRAPH is docked at the
+        // room's bottom since 2026-11-20 (`changes-graph` checks it there).
         let more = |i: usize, c: Rgb| in_row(i, content + 50.0, content + 140.0, c);
         assert!(more(6, ui.text_faint), "{n}: the more row");
-        assert!(more(7, ui.text_faint), "{n}: the GRAPH header after it");
-        assert!(
-            !more(8, ui.text_faint),
-            "{n}: nothing after the GRAPH header"
-        );
+        assert!(!more(7, ui.text_faint), "{n}: nothing after the more row");
         // The hovered row filled `side_hover`, the one above it the panel's `side` (part 4: a
         // pill `PILL_INSET` in from the side, so read 4 pt inside it; M11al §6.5).
         let fill = |i: usize| at(sidebar_left + PILL_INSET + 4.0, row_mid(i));

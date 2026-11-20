@@ -15,12 +15,11 @@ use gpui::{
 };
 
 use crate::activity::{civil_date, local_day};
+use crate::changes_panel::{GIT_INDENT, GIT_NAME, GIT_ROW, GIT_SMALL};
 use crate::git_branch::run_git;
 use crate::git_graph::{self, Commit, Details, Ref, Scope};
 use crate::graph_layout::{self, Row};
-use crate::right_sidebar::{
-    PILL_INSET, PILL_PAD, PILL_RADIUS, ROW, SECTION_BELOW, SECTION_SIDE, SMALL, TEXT,
-};
+use crate::right_sidebar::{PILL_INSET, PILL_PAD, PILL_RADIUS, SECTION_SIDE, SMALL, TEXT};
 use crate::status::age_label;
 use crate::tab_bar::{Glyph, glyph};
 use crate::terminal_view::hsla;
@@ -307,7 +306,7 @@ fn lanes(row: &Row, columns: usize, head: bool, inks: Vec<Rgb>, fill: Rgb) -> im
     div()
         .flex_none()
         .w(px(columns as f32 * LANE))
-        .h(px(ROW))
+        .h(px(GIT_ROW))
         .child(
             canvas(
                 |_, _, _| (),
@@ -563,13 +562,12 @@ impl Workspace {
         div()
             .id("graph-header")
             .flex()
-            .items_end()
+            .items_center()
             .gap(px(6.0))
-            .h(px(ROW))
+            .h(px(GIT_ROW))
             .w_full()
             .pl(px(SECTION_SIDE))
             .pr(px(SECTION_SIDE - 4.0))
-            .pb(px(SECTION_BELOW))
             .cursor_pointer()
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 let graph = &mut this.right_sidebar.changes.graph;
@@ -595,7 +593,7 @@ impl Workspace {
                     .h(px(20.0))
                     .flex()
                     .items_center()
-                    .text_size(px(SMALL))
+                    .text_size(px(GIT_SMALL))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(ui.text_faint))
                     .child("GRAPH"),
@@ -692,10 +690,11 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(px(6.0))
-            .h(px(ROW))
+            .h(px(GIT_ROW))
             .w_full()
             .min_w(px(0.0))
-            .px(px(PILL_PAD))
+            .pl(px(PILL_PAD + GIT_INDENT))
+            .pr(px(PILL_PAD))
             .rounded(px(PILL_RADIUS))
             .hover(move |s| s.bg(hsla(ui.side_hover)))
             .on_hover(
@@ -713,7 +712,7 @@ impl Workspace {
                     .flex_1()
                     .min_w(px(SUBJECT_MIN))
                     .truncate()
-                    .text_size(px(TEXT))
+                    .text_size(px(GIT_NAME))
                     .text_color(hsla(ui.text))
                     .when(commit.head, |d| d.font_weight(FontWeight::SEMIBOLD))
                     .child(commit.subject.clone()),
