@@ -102,15 +102,20 @@ pub(super) const SCENES: &[Scene] = &[
     },
 ];
 
-/// The GRAPH (M11w, note 74), in both themes, a clean repo: "No changes", the GRAPH header,
-/// then a merge (HEAD, `feat/x` and `origin/feat/x`), its two parents on two lanes, their fork.
-/// - `changes-graph`: the lanes in their colours, HEAD's ring, the pills.
+/// The GRAPH (M11w, note 74), in both themes, a clean repo: "No changes" on top, the GRAPH docked
+/// at the room's bottom (2026-11-20): its header, then a merge (HEAD, `feat/x` and
+/// `origin/feat/x`), its two parents on two lanes, their fork.
+/// - `changes-graph`: the lanes in their colours, HEAD's ring, the pills; the GRAPH a third of the
+///   room, at its bottom.
 /// - `changes-graph-card`: the pointer on the merge: its card, with Open on GitHub.
+/// - `changes-graph-closed`: closed, its header alone at the room's bottom.
+/// Acting (Mocha): its divider dragged to the room's top holds it at half, to its bottom at a
+/// quarter.
 fn changes_graph_scenes() {
     use crate::git_graph::{Commit, Details, Ref};
     use crate::git_status::ChangeList;
+    use crate::graph_panel::{GRAPH_DEFAULT, GRAPH_MAX, GRAPH_MIN};
     use crate::right_sidebar::{Panel, ROW};
-    use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -118,7 +123,6 @@ fn changes_graph_scenes() {
     let dims = size(px(1100.0), px(560.0));
     let window_right = 1100.0_f32;
     let sidebar_left = right_panel_left(window_right, 300.0);
-    let list_top = CARD_INSET + HAIRLINE + TAB_BAR + crate::changes_panel::HEADER;
     let root = files_fixture();
     let commit = |hash: &str, parents: &[&str], subject: &str, refs: Vec<Ref>, head: bool| Commit {
         hash: hash.to_string(),
@@ -166,12 +170,11 @@ fn changes_graph_scenes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
         let inks = crate::graph_panel::lane_inks(&theme);
-        for card in [false, true] {
-            let scene = if card {
-                "changes-graph-card"
-            } else {
-                "changes-graph"
-            };
+        for (scene, card, open) in [
+            ("changes-graph", false, true),
+            ("changes-graph-card", true, true),
+            ("changes-graph-closed", false, false),
+        ] {
             let n = format!("{scene}-{slug}");
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = {
@@ -186,7 +189,7 @@ fn changes_graph_scenes() {
                         let changes = &mut ws.right_sidebar.changes;
                         changes.show_for_shots(root.clone(), true, Some(ChangeList::default()));
                         // GRAPH starts closed (M11x, your call): these scenes open it.
-                        changes.graph.open = true;
+                        changes.graph.open = open;
                         changes.graph.apply(
                             "shot".into(),
                             commits.clone(),
@@ -207,10 +210,18 @@ fn changes_graph_scenes() {
                     },
                 )
             };
+            // The room the changes list and the GRAPH share, as drawn: (top, height).
+            let room: Rc<std::cell::Cell<(f32, f32)>> = Rc::default();
+            let seen = room.clone();
             let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
                 cx.update_window(window, |_, window, _| window.refresh())
                     .expect("refresh");
                 cx.run_until_parked();
+                let ws = slotted(&slot);
+                let b = cx
+                    .read(|cx| ws.read(cx).right_sidebar.changes.graph.room.get())
+                    .expect("the room was drawn");
+                seen.set((f32::from(b.top()), f32::from(b.size.height)));
                 slot.borrow_mut().take();
             };
             let path = shoot_with(scene, slug, &theme, dims, build.clone(), act.clone());
@@ -233,38 +244,62 @@ fn changes_graph_scenes() {
                     })
                 })
             };
-            // Rows: 0 "No changes", 1 GRAPH, 2–5 the commits; the lanes in the first 24 pt.
-            let commits_top = list_top + 2.0 * ROW;
+            let (room_top, room_h) = room.get();
+            let room_bottom = room_top + room_h;
+            // Open: a third of the room at its bottom (its 1 pt top edge, then its header); closed,
+            // its header alone.
+            let section_top = if open {
+                room_bottom - room_h * GRAPH_DEFAULT
+            } else {
+                room_bottom - ROW - 1.0
+            };
+            let edge = (0..8).map(|k| section_top - 2.0 + k as f32 * 0.5).any(|y| {
+                near(
+                    pixel_at(&shot, dims, sidebar_left + 150.0, y),
+                    ui.divider,
+                    6,
+                )
+            });
+            assert!(
+                edge,
+                "{n}: the GRAPH's top edge at {section_top} (room {room_top}..{room_bottom})"
+            );
+            assert!(
+                has(
+                    sidebar_left + 12.0,
+                    sidebar_left + 290.0,
+                    section_top + 1.0,
+                    section_top + 1.0 + ROW,
+                    ui.text_faint,
+                    16
+                ),
+                "{n}: the GRAPH header"
+            );
+            if !open {
+                continue;
+            }
+            // Its commits under its header; the lanes in the first 24 pt.
+            let commits_top = section_top + 1.0 + ROW;
             let lanes = |c: Rgb| {
                 has(
                     sidebar_left + 12.0,
                     sidebar_left + 36.0,
                     commits_top,
-                    commits_top + 4.0 * ROW,
+                    // (Its list shows what fits above the room's bottom.)
+                    (commits_top + 4.0 * ROW).min(room_bottom - 1.0),
                     c,
                     16,
                 )
             };
             assert!(lanes(inks[0]), "{n}: the first lane's colour");
             assert!(lanes(inks[1]), "{n}: the merged lane's colour");
-            assert!(
-                has(
-                    sidebar_left + 12.0,
-                    sidebar_left + 290.0,
-                    list_top + ROW,
-                    list_top + 2.0 * ROW,
-                    ui.text_faint,
-                    16
-                ),
-                "{n}: the GRAPH header"
-            );
             // The card: to the left of the panel, on `panel`, with its accent link.
             let card_area = |c: Rgb| {
                 has(
                     sidebar_left - 300.0,
                     sidebar_left - 20.0,
-                    commits_top,
-                    commits_top + 200.0,
+                    (commits_top - 200.0).max(0.0),
+                    (commits_top + 200.0).min(559.0),
                     c,
                     6,
                 )
@@ -272,6 +307,39 @@ fn changes_graph_scenes() {
             assert_eq!(card_area(ui.accent), card, "{n}: the card's links");
         }
     }
+
+    // Acting (Mocha): the divider dragged past the room's top and bottom holds at its bounds.
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let build = right_panel_workspace(theme, root.clone(), 300.0, Panel::Changes, slot.clone(), {
+        let root = root.clone();
+        move |ws| {
+            let changes = &mut ws.right_sidebar.changes;
+            changes.show_for_shots(root.clone(), true, Some(ChangeList::default()));
+            changes.graph.open = true;
+        }
+    });
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        cx.update_window(window, |_, window, _| window.refresh())
+            .expect("refresh");
+        cx.run_until_parked();
+        let ws = slotted(&slot);
+        let room = cx
+            .read(|cx| ws.read(cx).right_sidebar.changes.graph.room.get())
+            .expect("the room was drawn");
+        let fraction = |cx: &mut VisualTestAppContext| {
+            cx.read(|cx| ws.read(cx).right_sidebar.changes.graph.fraction)
+        };
+        for (y, want) in [
+            (f32::from(room.top()) - 50.0, GRAPH_MAX),
+            (f32::from(room.bottom()) + 50.0, GRAPH_MIN),
+        ] {
+            cx.update(|cx| ws.update(cx, |ws, cx| ws.resize_graph(y, cx)));
+            assert_eq!(fraction(cx), want, "changes-graph drag to {y}");
+        }
+        slot.borrow_mut().take();
+    };
+    render_with(&theme, dims, build, act);
 }
 
 /// Sticky headers (your ask: "make other accordion sticky"): 60 commits, scrolled 8 rows down:
