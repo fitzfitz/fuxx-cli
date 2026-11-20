@@ -1010,7 +1010,7 @@ fn clean_row(ui: &UiColors) -> AnyElement {
 }
 
 /// The GRAPH's "Load more" row (M11w): the next page of commits.
-fn load_more_row(ui: &UiColors, cx: &mut Context<Workspace>) -> AnyElement {
+pub(crate) fn load_more_row(ui: &UiColors, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = *ui;
     div()
         .id("graph-more")
@@ -1880,6 +1880,23 @@ impl Workspace {
             }
             _ => None,
         };
+        // The room under the header and over the bar: the changes list on top, the GRAPH docked
+        // at its bottom (2026-11-20), whose share of it is measured from these bounds.
+        let graph = root.map(|_| self.render_graph_section(&ui, cx));
+        let room_cell = changes.graph.room.clone();
+        let room_bounds = gpui::canvas(move |b, _, _| room_cell.set(Some(b)), |_, _, _, _| {})
+            .absolute()
+            .size_full();
+        let room = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .child(room_bounds)
+            .child(div().flex_1().min_h(px(0.0)).w_full().children(body))
+            .children(graph);
         div()
             .id("changes-panel")
             .flex()
@@ -1889,7 +1906,7 @@ impl Workspace {
             .w_full()
             .relative()
             .children(header)
-            .child(div().flex_1().min_h(px(0.0)).w_full().children(body))
+            .child(room)
             .children(bar)
             .children(confirm)
             .into_any_element()

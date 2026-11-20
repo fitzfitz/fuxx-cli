@@ -96,6 +96,10 @@ pub(crate) struct GraphState {
     pub fraction: f32,
     /// Its own list's scroll (docked at the panel's bottom since 2026-11-20).
     pub scroll: gpui::UniformListScrollHandle,
+    /// Its divider is being dragged.
+    pub resizing: bool,
+    /// The room it shares with the changes list, as last drawn (window coordinates).
+    pub room: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
 }
 
 impl Default for GraphState {
@@ -114,6 +118,8 @@ impl Default for GraphState {
             details: None,
             fraction: GRAPH_DEFAULT,
             scroll: gpui::UniformListScrollHandle::new(),
+            resizing: false,
+            room: std::rc::Rc::default(),
         }
     }
 }
@@ -380,6 +386,156 @@ fn lanes(row: &Row, columns: usize, head: bool, inks: Vec<Rgb>, fill: Rgb) -> im
 }
 
 impl Workspace {
+    /// The GRAPH docked at the bottom of the Changes panel's room (chore 2026-11-20, your ask:
+    /// "always on the bottom"): closed, its header alone; open, its header and its own list,
+    /// `fraction` of the room tall (held to `GRAPH_MIN`..`GRAPH_MAX`), with the divider on its
+    /// top edge to drag.
+    pub(crate) fn render_graph_section(&self, ui: &UiColors, cx: &mut Context<Self>) -> AnyElement {
+        let graph = &self.right_sidebar.changes.graph;
+        let header = self.graph_header_row(ui, cx);
+        let section = div()
+            .relative()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .w_full()
+            .border_t_1()
+            .border_color(hsla(ui.divider));
+        if !graph.open {
+            return section.child(header).into_any_element();
+        }
+        let fraction = graph.fraction.clamp(GRAPH_MIN, GRAPH_MAX);
+        // The room as last drawn; before the first frame, a share of the parent.
+        let height = graph
+            .room
+            .get()
+            .map(|b| f32::from(b.size.height) * fraction);
+        let count = graph.rows_shown().len();
+        let list = gpui::uniform_list(
+            "graph-rows",
+            count,
+            cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
+                let theme = cx.global::<crate::appearance::Appearance>().theme;
+                let rows = this.right_sidebar.changes.graph.rows_shown();
+                range
+                    .filter_map(|r| match *rows.get(r)? {
+                        GraphRow::Commit(i) => this.graph_commit_row(i, &theme, cx),
+                        GraphRow::LoadMore => {
+                            Some(crate::changes_panel::load_more_row(&theme.ui(), cx))
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .track_scroll(&graph.scroll)
+        .flex_1()
+        .min_h(px(0.0));
+        let section = match height {
+            Some(h) => section.h(px(h)),
+            None => section.h(gpui::relative(fraction)),
+        };
+        section
+            .child(header)
+            .child(list)
+            .child(self.render_graph_divider(*ui, cx))
+            .into_any_element()
+    }
+
+    /// The GRAPH's divider: a `GRAB` strip centred on its top edge; the quiet resize line shows
+    /// on hover and while dragging; while dragging, the window follows the mouse until release
+    /// (as the right sidebar's edge does), and the share is saved once at the end.
+    fn render_graph_divider(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+        use gpui::{DispatchPhase, MouseMoveEvent, MouseUpEvent};
+        let grab = crate::panes::GRAB;
+        let resizing = self.right_sidebar.changes.graph.resizing;
+        let this = cx.entity().downgrade();
+        let follow = canvas(
+            |_, _, _| (),
+            move |_, _, window, _| {
+                if !resizing {
+                    return;
+                }
+                let moved = this.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Capture {
+                        return;
+                    }
+                    moved
+                        .update(cx, |this, cx| {
+                            // Released where no mouse-up reached us (outside the window).
+                            if event.dragging() {
+                                this.resize_graph(f32::from(event.position.y), cx)
+                            } else {
+                                this.end_graph_resize(cx)
+                            }
+                        })
+                        .ok();
+                });
+                let released = this.clone();
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                        released
+                            .update(cx, |this, cx| this.end_graph_resize(cx))
+                            .ok();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_0();
+        div()
+            .id("graph-resize")
+            .group("graph-edge")
+            .absolute()
+            .left_0()
+            .right_0()
+            .top(px(-grab / 2.0))
+            .h(px(grab))
+            .cursor_row_resize()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation(); // not a click on the header
+                    this.right_sidebar.changes.graph.resizing = true;
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(crate::panes::accent_offset(grab)))
+                    .h(px(crate::ui_tokens::size::DIVIDER_ACTIVE))
+                    .bg(crate::panes::resize_line(&ui))
+                    .when(!resizing, |line| {
+                        line.invisible().group_hover("graph-edge", |s| s.visible())
+                    }),
+            )
+            .child(follow)
+            .into_any_element()
+    }
+
+    /// The divider follows the pointer to window `y`.
+    pub(crate) fn resize_graph(&mut self, y: f32, cx: &mut Context<Self>) {
+        let graph = &mut self.right_sidebar.changes.graph;
+        let Some(room) = graph.room.get() else {
+            return;
+        };
+        let f = graph_fraction(f32::from(room.top()), f32::from(room.size.height), y);
+        if f != graph.fraction {
+            graph.fraction = f;
+            cx.notify();
+        }
+    }
+
+    fn end_graph_resize(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.right_sidebar.changes.graph.resizing) {
+            self.save(); // once per drag
+            cx.notify();
+        }
+    }
+
     /// The GRAPH header row: a thin chevron, `GRAPH`, a hairline; the scope button, ◎ go to
     /// HEAD, Refresh. A click elsewhere on it opens or closes the accordion.
     pub(crate) fn graph_header_row(&self, ui: &UiColors, cx: &mut Context<Self>) -> AnyElement {
