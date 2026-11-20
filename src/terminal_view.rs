@@ -2487,90 +2487,56 @@ impl CursorMotion {
     }
 }
 
-/// Paint `snap` with its first cell at `origin`, over `bounds` (the whole pane, padding
-/// included) filled with the theme background, and `cursor` over it: its trail and glow under
-/// the text, a block under its letter (which takes the block's text colour), any other shape
-/// over the text, then the sparks. `under_text` paints over the cells' backgrounds, before the
-/// cursor and the text.
-#[allow(clippy::too_many_arguments)]
-fn paint_grid(
-    mut snap: GridSnapshot,
+/// M11ab: `lines` (rows of cells, top first) with their first cell at `origin`: the cells'
+/// backgrounds, then their text, with nothing under them filled and no cursor (a card's
+/// output; `paint_grid` paints the two halves around its cursor).
+fn paint_lines(
+    lines: &[Vec<grid::CellView>],
     theme: &Theme,
     m: &CellMetrics,
-    bounds: Bounds<Pixels>,
     origin: gpui::Point<Pixels>,
-    cursor: Option<CursorLook>,
-    under_text: impl FnOnce(&mut Window),
     window: &mut Window,
     cx: &mut App,
 ) {
-    // Its bottom corners rounded with the card's (M11i; `CARD_RADIUS`, 14 since M11al): the
-    // padding keeps the cells out of them, so nothing square shows past the card's edge. A
-    // pane away from the card's corners rounds too, onto the card's own colour (§3.4).
-    let corner = px(ui_size::CARD_RADIUS);
-    window.paint_quad(fill(bounds, hsla(theme.background)).corner_radii(Corners {
-        bottom_left: corner,
-        bottom_right: corner,
-        ..Corners::default()
-    }));
+    paint_line_backgrounds(lines, theme, m, origin, window);
+    paint_line_text(lines, m, origin, window, cx);
+}
 
-    let at_cells =
-        |(x, y): (f32, f32)| point(origin.x + m.cell_width * x, origin.y + m.line_height * y);
-    let cell_origin = |row: usize, col: usize| at_cells((col as f32, row as f32));
-
-    // A block on its cell: the letter there turns the block's text colour, as much as the
-    // block shows through its breath.
-    if let Some(c) = &cursor
-        && c.shape == PaintShape::Block
-        && c.at == (c.cell.0 as f32, c.cell.1 as f32)
-        && let Some(cell) = snap
-            .lines
-            .get_mut(c.cell.1)
-            .and_then(|l| l.get_mut(c.cell.0))
-    {
-        cell.fg = mix(cell.fg, c.text, c.alpha);
-    }
-
-    for (row, line) in snap.lines.iter().enumerate() {
+/// The cells' backgrounds that differ from the theme's (`grid::bg_rects`).
+fn paint_line_backgrounds(
+    lines: &[Vec<grid::CellView>],
+    theme: &Theme,
+    m: &CellMetrics,
+    origin: gpui::Point<Pixels>,
+    window: &mut Window,
+) {
+    for (row, line) in lines.iter().enumerate() {
         for rect in grid::bg_rects(line, theme.background) {
+            let at = point(
+                origin.x + m.cell_width * rect.col as f32,
+                origin.y + m.line_height * row as f32,
+            );
             let size = size(m.cell_width * rect.cells as f32, m.line_height);
-            window.paint_quad(fill(
-                Bounds::new(cell_origin(row, rect.col), size),
-                hsla(rect.color),
-            ));
+            window.paint_quad(fill(Bounds::new(at, size), hsla(rect.color)));
         }
     }
-    // Over the cells' backgrounds, under the cursor and the text (M11l's command blocks).
-    under_text(window);
+}
 
-    if let Some(c) = &cursor {
-        for &(x, y, scale, alpha) in &c.trail {
-            c.paint(
-                c.bounds(at_cells((x, y)), m, scale),
-                alpha * c.alpha,
-                window,
-            );
-        }
-        let shape = c.bounds(at_cells(c.at), m, 1.0);
-        if c.glow {
-            window.paint_drop_shadows(
-                shape,
-                Corners::default(),
-                &[BoxShadow {
-                    color: hsla(c.color).opacity(GLOW_ALPHA * c.alpha),
-                    offset: point(px(0.0), px(0.0)),
-                    blur_radius: px(GLOW_BLUR),
-                    spread_radius: px(0.0),
-                    inset: false,
-                }],
-            );
-        }
-        if c.shape == PaintShape::Block {
-            c.paint(shape, c.alpha, window);
-        }
-    }
-
-    for (row, line) in snap.lines.iter().enumerate() {
+/// The cells' text, shaped one cell per glyph (`grid::text_spans`).
+fn paint_line_text(
+    lines: &[Vec<grid::CellView>],
+    m: &CellMetrics,
+    origin: gpui::Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let cell_origin = |row: usize, col: usize| {
+        point(
+            origin.x + m.cell_width * col as f32,
+            origin.y + m.line_height * row as f32,
+        )
+    };
+    for (row, line) in lines.iter().enumerate() {
         for span in grid::text_spans(line) {
             let color = hsla(span.fg);
             let run = TextRun {
@@ -2614,6 +2580,83 @@ fn paint_grid(
             );
         }
     }
+}
+
+/// Paint `snap` with its first cell at `origin`, over `bounds` (the whole pane, padding
+/// included) filled with the theme background, and `cursor` over it: its trail and glow under
+/// the text, a block under its letter (which takes the block's text colour), any other shape
+/// over the text, then the sparks. `under_text` paints over the cells' backgrounds, before the
+/// cursor and the text.
+#[allow(clippy::too_many_arguments)]
+fn paint_grid(
+    mut snap: GridSnapshot,
+    theme: &Theme,
+    m: &CellMetrics,
+    bounds: Bounds<Pixels>,
+    origin: gpui::Point<Pixels>,
+    cursor: Option<CursorLook>,
+    under_text: impl FnOnce(&mut Window),
+    window: &mut Window,
+    cx: &mut App,
+) {
+    // Its bottom corners rounded with the card's (M11i; `CARD_RADIUS`, 14 since M11al): the
+    // padding keeps the cells out of them, so nothing square shows past the card's edge. A
+    // pane away from the card's corners rounds too, onto the card's own colour (§3.4).
+    let corner = px(ui_size::CARD_RADIUS);
+    window.paint_quad(fill(bounds, hsla(theme.background)).corner_radii(Corners {
+        bottom_left: corner,
+        bottom_right: corner,
+        ..Corners::default()
+    }));
+
+    let at_cells =
+        |(x, y): (f32, f32)| point(origin.x + m.cell_width * x, origin.y + m.line_height * y);
+
+    // A block on its cell: the letter there turns the block's text colour, as much as the
+    // block shows through its breath.
+    if let Some(c) = &cursor
+        && c.shape == PaintShape::Block
+        && c.at == (c.cell.0 as f32, c.cell.1 as f32)
+        && let Some(cell) = snap
+            .lines
+            .get_mut(c.cell.1)
+            .and_then(|l| l.get_mut(c.cell.0))
+    {
+        cell.fg = mix(cell.fg, c.text, c.alpha);
+    }
+
+    paint_line_backgrounds(&snap.lines, theme, m, origin, window);
+    // Over the cells' backgrounds, under the cursor and the text (M11l's command blocks).
+    under_text(window);
+
+    if let Some(c) = &cursor {
+        for &(x, y, scale, alpha) in &c.trail {
+            c.paint(
+                c.bounds(at_cells((x, y)), m, scale),
+                alpha * c.alpha,
+                window,
+            );
+        }
+        let shape = c.bounds(at_cells(c.at), m, 1.0);
+        if c.glow {
+            window.paint_drop_shadows(
+                shape,
+                Corners::default(),
+                &[BoxShadow {
+                    color: hsla(c.color).opacity(GLOW_ALPHA * c.alpha),
+                    offset: point(px(0.0), px(0.0)),
+                    blur_radius: px(GLOW_BLUR),
+                    spread_radius: px(0.0),
+                    inset: false,
+                }],
+            );
+        }
+        if c.shape == PaintShape::Block {
+            c.paint(shape, c.alpha, window);
+        }
+    }
+
+    paint_line_text(&snap.lines, m, origin, window, cx);
 
     if let Some(c) = &cursor {
         if c.shape != PaintShape::Block {
