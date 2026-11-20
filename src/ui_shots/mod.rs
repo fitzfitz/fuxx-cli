@@ -740,11 +740,21 @@ fn shown_panes(
     })
 }
 
-/// How far left of its pane's right edge the + button's centre is: past the buttons' room, the
-/// right sidebar's and ⋯ (each a button and a gap), then half a button (M11al §4.6).
-const PLUS_FROM_EDGE: f32 = crate::tab_bar::BUTTONS_PAD
-    + 2.0 * (crate::tab_bar::BUTTON + crate::tab_bar::BUTTON_GAP)
-    + crate::tab_bar::BUTTON / 2.0;
+/// The centre of `pane`'s + button: right after its last tab's place (the pill and its gap),
+/// `PLUS_GAP` on, then half a button (chore 2026-11-20: + follows the last tab); in the tabs'
+/// middle. None for a bar not laid out.
+fn plus_centre(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+    pane: crate::layout_model::PaneId,
+) -> Option<gpui::Point<Pixels>> {
+    let count = cx.read(|cx| ws.read(cx).model.pane(pane).map(|p| p.tabs.len()))?;
+    let last = tab_bounds(cx, ws, pane, count.checked_sub(1)?)?;
+    Some(gpui::point(
+        last.right() + px(crate::tab_bar::PLUS_GAP + crate::tab_bar::BUTTON / 2.0),
+        last.center().y,
+    ))
+}
 /// What the browser tab scenes' page shows (no page is made off-screen: the bar is given it).
 const PAGE_URL: &str = "http://localhost:3000/dashboard";
 const PAGE_TITLE: &str = "Acme dashboard";

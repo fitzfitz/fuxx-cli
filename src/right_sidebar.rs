@@ -103,13 +103,15 @@ actions!(
 pub const REFRESH: Duration = Duration::from_secs(2);
 /// The panel switch in the card's strip (M11al §6.2): a track `SWITCH_SIDE` from the panel's
 /// sides, `SWITCH_PAD` of padding inside its 1 pt edge, three equal segments `SWITCH_SEGMENT`
-/// tall; their corners, the track's corners and their words.
-pub(crate) const SWITCH_SIDE: f32 = 14.0;
-pub(crate) const SWITCH_PAD: f32 = 3.0;
-pub(crate) const SWITCH_SEGMENT: f32 = 28.0;
-pub(crate) const SWITCH_RADIUS: f32 = 10.0;
-const SWITCH_SEGMENT_RADIUS: f32 = 8.0;
-const SWITCH_LABEL: f32 = 13.0;
+/// tall; their corners, the track's corners and their icons. Since 2026-11-20 (your call: "a
+/// full width tab with icons only, tooltip for the label") the segments are pills as tall as a
+/// pane tab, each an outline icon (`SWITCH_ICON`) with its panel's name in its tooltip.
+pub(crate) const SWITCH_SIDE: f32 = 6.0;
+pub(crate) const SWITCH_PAD: f32 = 2.0;
+pub(crate) const SWITCH_SEGMENT: f32 = crate::tab_bar::TAB;
+pub(crate) const SWITCH_RADIUS: f32 = SWITCH_SEGMENT / 2.0 + SWITCH_PAD;
+const SWITCH_SEGMENT_RADIUS: f32 = SWITCH_SEGMENT / 2.0;
+const SWITCH_ICON: f32 = 16.0;
 /// The repo card (M11al §6.3) heading Files and Changes: its margin above, at the sides and
 /// below, its padding, its corners, and the line (name and meta) inside.
 pub(crate) const REPO_TOP: f32 = 4.0;
@@ -191,7 +193,16 @@ impl Panel {
     /// Every panel, in the strip's order.
     pub const ALL: [Panel; 3] = [Panel::Files, Panel::Changes, Panel::Activity];
 
-    /// Its tab's words.
+    /// Its segment's icon in the switch (since 2026-11-20 the switch shows icons only).
+    pub fn icon(self) -> crate::icons::Icon {
+        match self {
+            Panel::Files => crate::icons::Icon::Folder,
+            Panel::Changes => crate::icons::Icon::GitCompare,
+            Panel::Activity => crate::icons::Icon::Activity,
+        }
+    }
+
+    /// Its name: its segment's tooltip.
     pub fn label(self) -> &'static str {
         match self {
             Panel::Files => "Files",
@@ -1569,15 +1580,18 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// `panel`'s segment in the switch (M11h, M11al §6.2): a third of the track, `SWITCH_SEGMENT`
-    /// tall, 13 pt words in the middle; the shown panel's on `card_lift` in the text colour,
-    /// semibold, the others unfilled, `text_faint`, `text_dim` under the pointer (words, not a
-    /// fill). A click shows its panel.
+    /// `panel`'s segment in the switch (M11h, M11al §6.2; icons since 2026-11-20): a third of
+    /// the track, `SWITCH_SEGMENT` tall, its outline icon in the middle; the shown panel's on
+    /// `card_lift` in the text colour, the others unfilled, `text_faint`, `text_dim` and the
+    /// card's hover shade under the pointer. Its tooltip is the panel's name. A click shows its
+    /// panel.
     fn render_panel_tab(&self, panel: Panel, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         let active = self.right_sidebar.panel == panel;
         let i = panel as usize;
+        let group: SharedString = format!("right-panel-tab-{i}").into();
         let tab = div()
             .id(("right-panel-tab", i))
+            .group(group.clone())
             .relative()
             .flex()
             .flex_1()
@@ -1586,19 +1600,26 @@ impl Workspace {
             .justify_center()
             .h(px(SWITCH_SEGMENT))
             .rounded(px(SWITCH_SEGMENT_RADIUS))
-            .text_size(px(SWITCH_LABEL))
-            .text_color(hsla(if active { ui.text } else { ui.text_faint }))
-            .when(active, |t| {
-                t.bg(hsla(ui.card_lift)).font_weight(FontWeight::SEMIBOLD)
-            })
+            .when(active, |t| t.bg(hsla(ui.card_lift)))
             .when(!active, |t| {
-                t.cursor_pointer()
-                    .hover(move |s| s.text_color(hsla(ui.text_dim)))
+                t.cursor_pointer().hover(move |s| s.bg(hsla(ui.card_hover)))
             })
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.show_right_panel(panel, window, cx)
             }))
-            .child(panel.label());
+            .tooltip(move |_, cx| -> gpui::AnyView {
+                cx.new(|_| crate::sidebar_toggle::Tip(panel.label().into()))
+                    .into()
+            })
+            .child({
+                let (ink, hover) = if active {
+                    (ui.text, ui.text)
+                } else {
+                    (ui.text_faint, ui.text_dim)
+                };
+                crate::icons::icon(panel.icon(), px(SWITCH_ICON), hsla(ink))
+                    .group_hover(group.clone(), move |s| s.text_color(hsla(hover)))
+            });
         // Where it is (the screenshots click it).
         #[cfg(feature = "ui-shots")]
         let tab = {
@@ -2907,6 +2928,20 @@ mod tests {
     /// Part 4: one system for the three panels (note 73): 28 pt rows, a 42 pt header, 14 / 12 pt
     /// text, 16 pt icons, pills inset 6 pt so everything starts on the 12 pt edge.
     #[test]
+    fn the_switch_shows_each_panel_as_an_icon_with_its_name_in_the_tooltip() {
+        // Your call (2026-11-20): "a full width tab with icons only, tooltip for the label".
+        use crate::icons::Icon;
+        assert_eq!(
+            Panel::ALL.map(Panel::icon),
+            [Icon::Folder, Icon::GitCompare, Icon::Activity]
+        );
+        assert_eq!(
+            Panel::ALL.map(Panel::label),
+            ["Files", "Changes", "Activity"]
+        );
+    }
+
+    #[test]
     fn the_panels_share_one_set_of_sizes() {
         // M11al §6.5: roomier rows, pills inset 10 with 12 inside, names 13.5.
         assert_eq!(ROW, 32.0);
@@ -2917,9 +2952,11 @@ mod tests {
         assert_eq!(HEADER, 54.0);
         assert_eq!(crate::changes_panel::HEADER, 62.0);
         assert_eq!((REPO_SIDE, REPO_PAD_X, REPO_RADIUS), (14.0, 14.0, 12.0));
-        // §6.2: the switch's track, its padding, its segments.
-        assert_eq!((SWITCH_SIDE, SWITCH_PAD, SWITCH_SEGMENT), (14.0, 3.0, 28.0));
-        assert_eq!(SWITCH_RADIUS, 10.0);
+        // §6.2: the switch's track, its padding, its segments; since 2026-11-20 it fits the
+        // 40 pt strip as the pane bars' pills do: 6 from the sides, segments as tall as a tab.
+        assert_eq!((SWITCH_SIDE, SWITCH_PAD, SWITCH_SEGMENT), (6.0, 2.0, 28.0));
+        assert_eq!(SWITCH_RADIUS, SWITCH_SEGMENT / 2.0 + SWITCH_PAD);
+        assert_eq!(SWITCH_SEGMENT, crate::tab_bar::TAB);
         assert_eq!((TEXT, SMALL, TITLE), (14.0, 12.0, 14.0));
         assert_eq!(ICON, 16.0);
         // A row's content starts 22 in (10 + 12); the headers keep the 12 pt edge.

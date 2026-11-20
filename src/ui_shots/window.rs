@@ -1973,15 +1973,16 @@ fn one_card_split_scenes() {
                 }
             }
             // Focus by the tabs (§3.3): the focused pane's shown tab has the accent wash, the
-            // others' a neutral one (`card_hover`); read in each tab's right padding.
-            let after = 2.0 * crate::tab_bar::SEPARATOR_ROOM + crate::tab_bar::SEPARATOR.0;
+            // others' a neutral one (`card_lift`, pills since 2026-11-20); read in each tab's
+            // right padding.
+            let after = crate::tab_bar::AFTER;
             for (i, place) in places.borrow().iter().enumerate() {
                 let x = f32::from(place.right()) - after - crate::tab_bar::TAB_PAD / 2.0;
                 let y = f32::from(place.center().y);
                 let (want, what) = if i == 0 {
                     (ui.tab_active, "tab_active")
                 } else {
-                    (ui.card_hover, "card_hover")
+                    (ui.card_lift, "card_lift")
                 };
                 let p = at(x, y);
                 assert!(near(p, want), "{n}: pane {i}'s shown tab is {what}: {p:?}");
@@ -2435,7 +2436,7 @@ fn title_area_scenes() {
                 );
                 // Between the name's room and the band's buttons (from `band_buttons`' 🔔 on).
                 assert_eq!(
-                    band_ink(width - inset, band_buttons(width)[0]),
+                    band_ink(width - inset, band_buttons(width, false)[0]),
                     0,
                     "{n}: nothing between the name's room and the band's buttons"
                 );
@@ -2905,7 +2906,7 @@ fn title_bar_scenes() {
             ("title-bar-sliding", 760.0, 200.0),
         ] {
             let dims = size(px(w), px(h));
-            let b = band_buttons(w);
+            let b = band_buttons(w, false);
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
                 cx.set_global(sidebar_appearance(theme, cx));
                 let ws = cx.new(|cx| {
@@ -2964,13 +2965,17 @@ fn title_bar_scenes() {
             let mid = |b: (f32, f32, f32, f32)| ((b.0 + b.1) / 2.0, (b.2 + b.3) / 2.0);
             // The three icons' ink, each read over its 24 × 24 slot: centred in it, all on the
             // band's middle line.
+            // (Mid-slide the sidebar button by the lights waits: the bell and gear only.)
+            let slots = if scene == "title-bar-sliding" { 2 } else { 3 };
             let icons_at_slots = || {
-                let boxes = b.map(|x| {
-                    ink_box(&shot, dims, (x, BUTTON_Y, HIT, HIT), band, dim)
-                        .unwrap_or_else(|| panic!("{n}: no icon ink in the slot at {x}"))
-                });
+                let boxes: Vec<_> = (b.iter().take(slots))
+                    .map(|&x| {
+                        ink_box(&shot, dims, (x, BUTTON_Y, HIT, HIT), band, dim)
+                            .unwrap_or_else(|| panic!("{n}: no icon ink in the slot at {x}"))
+                    })
+                    .collect();
                 println!("ui-shots: {n}: band icons (x0, x1, y0, y1) {boxes:?}");
-                for ((name, x), ink) in ["bell", "gear", "sidebar"].iter().zip(b).zip(boxes) {
+                for ((name, x), &ink) in ["bell", "gear", "sidebar"].iter().zip(b).zip(&boxes) {
                     let (ix, iy) = mid(ink);
                     assert!(
                         (ix - (x + HIT / 2.0)).abs() <= 0.5,
@@ -2983,13 +2988,15 @@ fn title_bar_scenes() {
                         TOP_BAND / 2.0
                     );
                 }
-                let ys = boxes.map(|ink| mid(ink).1);
-                for y in ys {
+                let ys: Vec<f32> = boxes.iter().map(|&ink| mid(ink).1).collect();
+                for &y in &ys {
                     assert!((y - ys[0]).abs() <= 0.5, "{n}: the icons' middles {ys:?}");
                 }
             };
-            // The name's ink (toward `text`), in the band left of the 🔔.
-            let name_ink = ink_box(&shot, dims, (0.0, 0.0, b[0], TOP_BAND), band, full);
+            // The name's ink (toward `text`), in the band between the sidebar button (by the
+            // lights since 2026-11-20) and the 🔔.
+            let from = b[2] + HIT;
+            let name_ink = ink_box(&shot, dims, (from, 0.0, b[0] - from, TOP_BAND), band, full);
             println!("ui-shots: {n}: name {name_ink:?}");
             let centred = |ink: Option<(f32, f32, f32, f32)>| {
                 let ink = ink.unwrap_or_else(|| panic!("{n}: no name"));
@@ -3040,10 +3047,17 @@ fn title_bar_scenes() {
                     centred(name_ink);
                     let fill = sidebar_fill();
                     assert_eq!(fill, 0, "{n}: {fill} pixels of sidebar at x 30, slid out");
-                    // Where the sidebar button was (x 80) and the band's left: bare, and no
-                    // title anywhere.
-                    let left = ink_box(&shot, dims, (0.0, 0.0, 100.0, TOP_BAND), band, dim);
-                    assert_eq!(left, None, "{n}: ink in the band's left (x 0 to 100)");
+                    // The band's left: bare up to the sidebar button by the lights (since
+                    // 2026-11-20), and its only ink to x 110 is that button's icon (no title).
+                    let lights = ink_box(&shot, dims, (0.0, 0.0, b[2], TOP_BAND), band, dim);
+                    assert_eq!(lights, None, "{n}: ink left of the sidebar button");
+                    let left = ink_box(&shot, dims, (0.0, 0.0, 110.0, TOP_BAND), band, dim)
+                        .unwrap_or_else(|| panic!("{n}: no sidebar button by the lights"));
+                    assert!(
+                        left.0 >= b[2] && left.1 <= b[2] + HIT,
+                        "{n}: the band's left ink {left:?} is the sidebar button's, at {}",
+                        b[2]
+                    );
                 }
                 "title-bar-collapsed-hover" => {
                     assert_eq!(at(b[1] + 1.5, 19.0), bg(ui.panel_hover), "{n}: ⚙ hovered");
@@ -3106,7 +3120,8 @@ fn title_bar_scenes() {
                     let p = at(150.0, bar_above_tab);
                     assert_eq!(p, bg(theme.background), "{n}: slid out");
                     // The sliding sidebar still carries its own button, and nothing is drawn at
-                    // the collapsed button's old place (x 80) over it.
+                    // the collapsed band's button place (x 80, by the lights) over it until the
+                    // slide ends.
                     let own = ink_box(&shot, dims, (0.0, BUTTON_Y, 60.0, HIT), band, dim);
                     assert!(own.is_some(), "{n}: the sliding sidebar's button");
                     let old = ink_box(&shot, dims, (80.0, BUTTON_Y, HIT, HIT), band, dim);
@@ -3135,7 +3150,7 @@ fn title_bar_scenes() {
             ("title-bar-popover-short", 960.0, 300.0),
         ] {
             let dims = size(px(w), px(h));
-            let b = band_buttons(w);
+            let b = band_buttons(w, false);
             let slot: Slot = Rc::new(RefCell::new(None));
             let keep = slot.clone();
             let build = move |window: &mut Window, cx: &mut App| -> AnyView {
@@ -3314,7 +3329,7 @@ fn title_bar_scenes() {
                 ws.sessions.active().map(|s| s.label().to_string())
             })
         };
-        let b = band_buttons(width);
+        let b = band_buttons(width, false);
         let band_bell = point(px(b[0] + HIT / 2.0), px(BUTTON_Y + HIT / 2.0));
         let (r, _) = band_popover_anchor(width);
         let left = r - band_popover_width(width);
@@ -3477,7 +3492,7 @@ fn title_bar_scenes() {
         // sidebar and leaves this one shown.
         let right = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).right_sidebar.hidden);
         assert!(right(cx), "title-bar: the right sidebar starts hidden");
-        let slot_x = band_buttons(960.0)[2] + HIT / 2.0;
+        let slot_x = band_buttons(960.0, false)[2] + HIT / 2.0;
         cx.simulate_click(window, point(px(slot_x), px(CARD_INSET / 2.0)), none);
         assert!(
             !hidden(cx),
@@ -3537,7 +3552,7 @@ fn title_bar_scenes() {
             let open = |cx: &mut VisualTestAppContext| {
                 cx.read(|cx| ws.read(cx).notifications_popover.is_some())
             };
-            let b = band_buttons(960.0);
+            let b = band_buttons(960.0, false);
             let y = BUTTON_Y + HIT / 2.0;
             // A press on the name arms a window drag: it takes no clicks.
             let on_name = point(px(480.0), px(y));

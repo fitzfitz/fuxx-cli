@@ -259,22 +259,52 @@ fn right_sidebar_scenes() {
                     "{n}: the inset at the window's edge: {p:?}"
                 );
             }
-            // Every pane's icon: lit (the hover fill beside the glyph, the glyph's filled side
-            // in the text colour) while open; else on the bar (the card: no fill, M11al), faint.
+            // Every pane's icon: lit (the hover fill beside the icon, the icon in the text
+            // colour) while open; else on the bar (the card: no fill, M11al), faint. (The icon
+            // is Lucide's outline panel-right since 2026-11-20: its ink is read as the pixel
+            // nearest the colour anywhere in its box.)
+            let scale = shot.width as f32 / f32::from(dims.width);
             for (i, right) in edges.borrow().iter().enumerate() {
                 let centre = right - RIGHT_SIDEBAR_FROM_EDGE;
                 assert!(*right > left, "{n}: pane {i}'s edge {right}");
-                // Inside the button, left of its glyph; and in the glyph's filled right third.
-                let beside = centre - crate::tab_bar::BUTTON / 2.0 + 3.0;
-                let (fill, glyph) = (at(beside, BAR_MIDDLE), at(centre + 3.0, BAR_MIDDLE));
-                if width > 0.0 {
+                // Inside the button, left of its icon.
+                let beside = centre - crate::tab_bar::BUTTON / 2.0 + 2.0;
+                let fill = at(beside, BAR_MIDDLE);
+                let half = crate::tab_bar::BUTTON_ICON / 2.0;
+                let ink_off = |c: alacritty_terminal::vte::ansi::Rgb| {
+                    let mut best = u32::MAX;
+                    let (x0, x1) = ((centre - half) * scale, (centre + half) * scale);
+                    let (y0, y1) = ((BAR_MIDDLE - half) * scale, (BAR_MIDDLE + half) * scale);
+                    for dy in y0 as usize..y1 as usize {
+                        for dx in x0 as usize..x1 as usize {
+                            let p = at(dx as f32 / scale, dy as f32 / scale);
+                            let d = p
+                                .iter()
+                                .zip([c.r, c.g, c.b])
+                                .map(|(a, b)| a.abs_diff(b) as u32)
+                                .max()
+                                .unwrap_or(0);
+                            best = best.min(d);
+                        }
+                    }
+                    best
+                };
+                let (want, what) = if width > 0.0 {
                     assert!(near(fill, ui.card_hover), "{n}: pane {i} lit: {fill:?}");
-                    assert!(near(glyph, ui.text), "{n}: pane {i} glyph: {glyph:?}");
+                    (ui.text, "lit")
                 } else {
                     assert!(near(fill, ui.card), "{n}: pane {i} unlit: {fill:?}");
+                    (ui.text_faint, "faint")
+                };
+                // (A thin stroke's darkest pixel is antialiased a little: within 16. A faint one
+                // never reaches the lit colour; a lit one's edges pass through faint shades.)
+                let off = ink_off(want);
+                assert!(off <= 16, "{n}: pane {i} icon {what} ({off} off {want:?})");
+                if width == 0.0 {
+                    let lit = ink_off(ui.text);
                     assert!(
-                        near(glyph, ui.text_faint),
-                        "{n}: pane {i} glyph faint: {glyph:?}"
+                        off < lit,
+                        "{n}: pane {i} icon faint, not lit ({off}, {lit})"
                     );
                 }
             }
@@ -623,7 +653,11 @@ fn files_scenes() {
             // own (the panel's `side` shows in its padding, left of the track) and the pane tab
             // bars' `card_border` line along its bottom; the panel's `side` right below (§6.1,
             // §6.2).
-            let inside = at(sidebar_left + 6.0, top + TAB_BAR / 2.0);
+            // (Left of the track, which starts `SWITCH_SIDE` in.)
+            let inside = at(
+                sidebar_left + crate::right_sidebar::SWITCH_SIDE / 2.0,
+                top + TAB_BAR / 2.0,
+            );
             assert!(near(inside, ui.side, 3), "{n}: the strip: {inside:?}");
             let edge = at(sidebar_left + 250.0, top + TAB_BAR - 0.5);
             assert!(
@@ -1268,26 +1302,23 @@ fn right_panel_scenes() {
             let shot = render_with(&theme, dims, build, act);
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
             let [files, changes, activity] = seen.get().map(|b| b.expect("seen"));
-            // Inside each segment's left (no words there), in its middle: the shown one's
-            // `card_lift`, the others the track's `canvas`; the hovered Activity's fill stays
-            // the track's (its words change, not a fill).
-            let pad = |b: Bounds<Pixels>| at(f32::from(b.left()) + 2.0, tab_middle);
-            assert!(
-                near(pad(files), ui.card_lift),
-                "{n}: Files is shown: {:?}",
-                pad(files)
-            );
-            for (what, b) in [("Changes", changes), ("Activity (hovered)", activity)] {
-                assert!(
-                    near(pad(b), ui.sidebar_background),
-                    "{n}: {what} isn't: {:?}",
-                    pad(b)
-                );
+            // Inside each segment's left (no icon there), in its middle: the shown one's
+            // `card_lift`, Changes the track's `canvas`; the hovered Activity the card's hover
+            // shade (icon pills since 2026-11-20).
+            let pad = |b: Bounds<Pixels>| at(f32::from(b.left()) + 3.0, tab_middle);
+            for (what, b, want) in [
+                ("Files is shown", files, ui.card_lift),
+                ("Changes isn't", changes, ui.sidebar_background),
+                ("Activity is hovered", activity, ui.card_hover),
+            ] {
+                assert!(near(pad(b), want), "{n}: {what}: {:?}", pad(b));
             }
             // The strip: above the tabs and its empty part the panel's `side` (no fill of its
             // own); its last row the `card_border` line, beside the tabs and under them; the
             // panel's `side` right under it.
-            let empty = card_right - 10.0;
+            // (The track runs to `SWITCH_SIDE` from the edge since 2026-11-20: the strip's
+            // empty part is that last strip of it.)
+            let empty = card_right - SWITCH_SIDE / 2.0;
             let x_files = f32::from(files.left()) + 4.0;
             for (what, x, y) in [
                 ("above the tabs", x_files, card_top + 2.0),

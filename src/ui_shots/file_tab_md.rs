@@ -635,7 +635,10 @@ fn file_tab_md_mermaid_scenes() {
         let theme = shot_theme(name);
         let n = format!("file-tab-md-mermaid-{slug}");
         let slot: TabSlot = Rc::default();
-        let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+        let mut cx = gpui::VisualTestAppContext::with_asset_source(
+            current_platform(false),
+            std::sync::Arc::new(crate::icons::Assets),
+        );
         fonts::register_bundled_fonts(&cx.text_system().all_font_names());
         let build = build_for(theme, slot.clone());
         let window = cx
@@ -764,7 +767,10 @@ fn file_tab_md_mermaid_scenes() {
     .expect("NET.md");
     let theme = shot_theme("Catppuccin Mocha");
     let slot: TabSlot = Rc::default();
-    let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+    let mut cx = gpui::VisualTestAppContext::with_asset_source(
+        current_platform(false),
+        std::sync::Arc::new(crate::icons::Assets),
+    );
     fonts::register_bundled_fonts(&cx.text_system().all_font_names());
     let path = net.clone();
     let tab_slot = slot.clone();
@@ -844,7 +850,10 @@ fn file_tab_md_mermaid_scenes() {
     // why, and when the pause ends the windows draw again and ask for it again.
     let theme = shot_theme("Catppuccin Mocha");
     let slot: TabSlot = Rc::default();
-    let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+    let mut cx = gpui::VisualTestAppContext::with_asset_source(
+        current_platform(false),
+        std::sync::Arc::new(crate::icons::Assets),
+    );
     fonts::register_bundled_fonts(&cx.text_system().all_font_names());
     cx.update(|cx| Mermaids::set_limits(2, crate::mermaid::CACHE_BYTES, cx));
     let build = build_for(theme, slot.clone());

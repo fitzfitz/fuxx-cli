@@ -65,6 +65,7 @@ mod help_panel;
 mod help_shortcuts;
 mod highlight;
 mod host_picker;
+mod icons;
 mod keys;
 mod layout_model;
 mod links;
@@ -931,6 +932,7 @@ fn main() {
 
     // macOS apps normally keep running with no windows; a terminal should quit instead.
     application()
+        .with_assets(icons::Assets)
         .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx: &mut App| {
             cx.bind_keys(new_bindings());

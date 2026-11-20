@@ -388,3 +388,36 @@ subtitle `#n`, plus the folder group when it differs from the workspace's name; 
 19. Run `sleep 5 && echo hi &` in a pane: expect no Working and no Done for the background job (plan-time call 4).
 20. Run `echo sk-test-123` in a background pane: the tab, row and any banner read `echo`, never the word after it.
 21. Run `cd src && sleep 4` in a background pane: the pane reads `sleep`, not `cd src …`, and its banner names `sleep`.
+
+## Chores after M11q (2026-11-20, layout)
+
+Your ask: "let's do layout chores then just go straight to master", with screenshots of what to change. Built on
+master, test first; full gate green (2215 tests; clippy 14/27 and 16/29; fmt); full ui-shots 243 passed, the failing
+ones the known display-dependent scenes (checked against master in a worktree: same failures; `tab-bars` now passes).
+
+1. **Pane tabs are small pills** ("I want the tab like this, a pill, not that big and the + is instead beside the
+   last tab"; "the buttons look too big and the tab x padding is too big"; "the gap between tab and edges is too big").
+   Tabs 28 pt tall with round ends, as wide as their titles (measured, 100–220 pt), 8 pt side padding, 4 pt clear
+   between pills, no separator line; every tab a quiet `card_hover` pill, the shown one the accent wash (an unfocused
+   pane's shown one `card_lift`). **+ follows the last tab**; ⋯ and the right sidebar's stay pinned right. Bar buttons
+   24 pt (14 pt icons). The bar, the window's top band and the right panel's strip are **40 pt** (52 before), tabs
+   6 pt in from the edge; the traffic lights stay centred (y 14).
+2. **An icon set** ("find icon with outline no backgrounds… we need to have icon sets"): Lucide's outline icons
+   (lucide-static 0.460.0, ISC, `assets/icons/lucide/`), embedded and served as GPUI's asset source (`src/icons.rs`);
+   the screenshot harness gets them too. Tab icons are now outline icons with no tile behind them; the bar's +, ⋯
+   and right-sidebar buttons use the set. **AI's call:** Lucide (you can name another set).
+3. **Files / Changes / Activity switch: icons only, full width, tooltips** ("a full width tab with icons only,
+   tooltip for the label"): folder, git-compare and activity icons in pill segments as tall as a tab, 6 pt from the
+   panel's sides; the shown one `card_lift`, the others light on hover; each segment's name in its tooltip.
+4. **Collapsed sidebar: its button beside the traffic lights** ("on collapse, put the sidebar toggle button beside
+   the 3 window button on the left"): at x 80 (13 in full screen); the 🔔 and ⚙ stay at the right; the centred name
+   keeps clear of both. **AI's call:** the button waits until a hide slide ends (the sliding sidebar carries its own).
+
+**On-screen check (yours):** with `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`:
+1. Tabs are pills as wide as their titles, the + right after the last one; long titles stop at 220 pt with `…`.
+2. Many tabs shrink to 100 pt, then the row scrolls; + stays in sight after them.
+3. Tab icons are thin outlines with no square behind them; ⋯ and the panel button look the same weight.
+4. The right panel's switch shows three icons; hovering each says Files / Changes / Activity.
+5. ⌘\ to hide the sidebar: its button appears just right of the traffic lights; clicking it brings the sidebar back.
+6. Dragging a tab still shows the gap and drops where it shows.
+

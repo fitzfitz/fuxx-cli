@@ -122,7 +122,7 @@ impl Workspace {
             ChromeKind::TabBar { pane, drags_window } => {
                 let new = !self.tab_scroll.borrow().contains_key(&pane);
                 let bar = self
-                    .render_tab_bar(pane, ui, drags_window, cx)
+                    .render_tab_bar(pane, ui, drags_window, window, cx)
                     .unwrap_or_else(|| div().into_any_element());
                 let unrevealed = || {
                     let shown = self.model.pane(pane).map(|p| p.active);

@@ -3459,7 +3459,7 @@ impl Workspace {
                                 )
                                 .into_any_element()
                         }
-                        None => self.render_tab_bar(id, ui, drags, cx)?,
+                        None => self.render_tab_bar(id, ui, drags, window, cx)?,
                     };
                     Some((id, bar))
                 })

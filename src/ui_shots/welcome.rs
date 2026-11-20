@@ -640,10 +640,14 @@ fn welcome_keys_scene() {
             // The tab bar's +, in the top band (not under the scrim): a click there still
             // opens a tab.
             open_welcome_on(cx, window, &ws, first);
-            let right = 960.0 - CARD_INSET - 1.0;
-            let plus = point(
-                px(right - PLUS_FROM_EDGE),
-                px(CARD_INSET + 1.0 + ui_tokens::size::TAB_BAR / 2.0),
+            let pane = cx
+                .read(|cx| ws.read(cx).model.focused_pane())
+                .expect("a pane");
+            let plus = plus_centre(cx, &ws, pane).expect("the bar's +");
+            assert_eq!(
+                f32::from(plus.y),
+                CARD_INSET + 1.0 + ui_tokens::size::TAB_BAR / 2.0,
+                "{n}: + in the top band"
             );
             cx.simulate_click(window, plus, gpui::Modifiers::none());
             settle(cx, window);

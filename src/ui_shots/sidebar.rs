@@ -1296,7 +1296,7 @@ fn sidebar_button_scenes() {
     // Shown, the button is at the sidebar band's right edge (M11m); hidden, it is the collapsed
     // band's last button, at the window's right.
     let (bx, by) = (open_button_x(SIDEBAR_DEFAULT_WIDTH), BUTTON_Y);
-    let hx = band_buttons(f32::from(dims.width))[2];
+    let hx = band_buttons(f32::from(dims.width), false)[2];
     // The hit area's left margin (inside it, outside the icon), and the icon's left edge.
     let (margin, edge) = (point(bx + 1.5, by + 12.0), point(bx + 4.75, by + 12.0));
     let hidden_edge = point(hx + 4.75, by + 12.0);

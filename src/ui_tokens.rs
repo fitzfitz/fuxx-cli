@@ -187,14 +187,15 @@ pub mod size {
     /// A group heading: its 12 px words with 16 above and 8 below (M11al §2.5).
     pub const GROUP_HEADER: f32 = 36.0;
     /// A pane's tab bar (M11b; it replaced M11's 22 px pane header; 30 since M11i; 52 since
-    /// M11al, level with the right panel's header).
-    pub const TAB_BAR: f32 = 52.0;
+    /// M11al, level with the right panel's header; 40 since the pill chore, 2026-11-20: "the
+    /// gap between tab and edges is too big").
+    pub const TAB_BAR: f32 = 40.0;
     /// The band at the top of the window that the traffic lights sit in (the drag area); 52
-    /// since M11al (38 before), level with the tab bars.
-    pub const TOP_BAND: f32 = 52.0;
+    /// since M11al (38 before), level with the tab bars (40 with them since 2026-11-20).
+    pub const TOP_BAND: f32 = 40.0;
     /// Where the traffic lights go: (x, y) from the window's top left (centred in `TOP_BAND`
     /// since M11al).
-    pub const TRAFFIC_LIGHTS: (f32, f32) = (18.0, 20.0);
+    pub const TRAFFIC_LIGHTS: (f32, f32) = (18.0, 14.0);
     /// Terminal padding: (sides, top and bottom); smaller in splits. Enough that nothing the
     /// grid paints reaches into the card's rounded corner (M11i): the grid's corner cell starts
     /// inside the `CARD_RADIUS` curve.
@@ -212,8 +213,8 @@ pub mod size {
     pub const STATUS_BAR: f32 = 26.0;
     /// How far in from its card's left edge the first tab starts, in a pane's tab bar and in
     /// the right sidebar's panel tabs alike (2026-11-10, your call: the pane's had none; 12
-    /// since M11al).
-    pub const TABS_LEFT: f32 = 12.0;
+    /// since M11al; 6 since 2026-11-20, as far as the pills sit from the bar's top and bottom).
+    pub const TABS_LEFT: f32 = 6.0;
     pub const SIDEBAR_MIN_WIDTH: f32 = 180.0;
     pub const SIDEBAR_MAX_WIDTH: f32 = 400.0;
     /// 290 since M11al (240 before); a saved width is kept.
@@ -339,10 +340,12 @@ mod tests {
     #[test]
     fn the_sidebars_band_and_default_width_are_the_uplifts() {
         use super::size::*;
-        // M11al 2.1: the band is 52 with the lights centred in it; a new window's sidebar 290,
-        // inside its limits.
-        assert_eq!(TOP_BAND, 52.0);
-        assert_eq!(TRAFFIC_LIGHTS, (18.0, 20.0));
+        // M11al 2.1: the band with the lights (12 tall) centred in it; 40 since 2026-11-20,
+        // level with the pane tab bars ("the gap between tab and edges is too big"); a new
+        // window's sidebar 290, inside its limits.
+        assert_eq!(TOP_BAND, 40.0);
+        assert_eq!(TOP_BAND, TAB_BAR);
+        assert_eq!(TRAFFIC_LIGHTS, (18.0, (TOP_BAND - 12.0) / 2.0));
         assert_eq!(SIDEBAR_DEFAULT_WIDTH, 290.0);
         assert!((SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH).contains(&SIDEBAR_DEFAULT_WIDTH));
     }
