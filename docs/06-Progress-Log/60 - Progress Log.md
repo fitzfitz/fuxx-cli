@@ -29,6 +29,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — M11ab designed and approved: chat-style shell tabs
+
+- **What:** designed with you in browser mockups: A, message cards; R2, a running command stays in the live box and
+  becomes a card when it ends; the live box grows to the full pane; cards as views onto the grid (approach 1).
+  A fresh builder's read raised six points, settled as AI's calls in the note. You approved it ("approved, go
+  ahead with the plan"). **Order changed by you: M11ab now before M11ad and M11am.** Note 88; branch
+  `m11ab-shell-cards`; the plan next.
+- **Learned:** Claude Code typed in a shell draws inline (M11l's note), so a running command's box must be able to
+  take the whole pane.
+
 ### 2026-11-20 — Chores after M11q, part 10: coloured avatars back; the old status dot
 
 - **What:** on your screenshot comparing today's sidebar with an older one: M11r's coloured gradient avatars
