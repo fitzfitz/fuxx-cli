@@ -29,6 +29,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-20 — Chores after M11q, part 8: the window edge under macOS's rim; no top line
+
+- **What:** the window's two edge lines are macOS's (a black outline and a light rim that adds light over what is
+  under it); fuxx now draws pure black, one screen pixel, under the rim on dark themes (nothing on light), and
+  the card's light top line is gone (your words: "the top inset is ugly"). Note 68, part 8.
+- **Learned:** measure pixels from the user's screenshots before and after a change: here they showed both lines
+  were the system's, which no colour fuxx draws can fully hide.
+
 ### 2026-11-20 — Chores after M11q, part 7: the New button's edge
 
 - **What:** the sidebar's "+ New Fuxxpace ⌘N" button outlined in a new `canvas_line`, almost the sidebar's own

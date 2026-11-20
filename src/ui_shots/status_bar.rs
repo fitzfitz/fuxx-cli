@@ -428,8 +428,8 @@ fn status_bar_scenes() {
             // Ink is where a pixel differs from the one before it: the card's shadow over the bar
             // only shades it smoothly.
             let inked = |x: f32| ys.iter().any(|&y| apart(at(x, y), at(x - 1.0 / scale, y)));
-            // (Past the window's 1 pt edge, 2026-11-20.)
-            let edge = crate::panes::WINDOW_EDGE + 1.0;
+            // (Past the window's one-pixel edge, 2026-11-20.)
+            let edge = crate::panes::window_edge_width(scale) + 1.0;
             let xs: Vec<f32> = ((edge * scale) as usize..(w / 2.0 * scale) as usize)
                 .map(|dx| dx as f32 / scale)
                 .collect();
