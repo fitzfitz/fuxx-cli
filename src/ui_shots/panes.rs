@@ -540,12 +540,12 @@ fn split_scenes() {
             // Tab fills, away from the text (in each tab's right padding): api (left), claude
             // (top right), both their pane's shown (and only) tab, in the bars that start
             // inside the card's 1 pt edge, `CARD_INSET` + 1 down; the tabs in their middle. The
-            // focused pane's has the accent wash, the other's the neutral one (claude's too,
+            // focused pane's has the accent wash, the other's the neutral one (`card_lift`) (claude's too,
             // though it waits: a shown tab isn't tinted).
             let ratio = if scene == "splits-drag" { 0.4 } else { 0.5 };
             let bar_top = CARD_INSET + HAIRLINE;
             let middle = bar_top + TAB_BAR / 2.0;
-            let after = 2.0 * crate::tab_bar::SEPARATOR_ROOM + crate::tab_bar::SEPARATOR.0;
+            let after = crate::tab_bar::AFTER;
             let is = |p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb| {
                 p.iter()
                     .zip([c.r, c.g, c.b])
@@ -558,7 +558,7 @@ fn split_scenes() {
                 let want = if i == focus {
                     ui.tab_active
                 } else {
-                    ui.card_hover
+                    ui.card_lift
                 };
                 let p = px_at((x, middle));
                 assert!(is(p, want), "{n}: {which}'s tab {p:?}, want {want:?}");
@@ -687,11 +687,14 @@ fn workspace_scenes() {
     }
 }
 
-/// A bar's buttons (`tab_bar`, M11al §4.6): three of them (M11i: +, ⋯, the right sidebar's),
-/// `BUTTON_GAP` apart, `BUTTONS_PAD` in from the ends.
-const BAR_BUTTONS: f32 = 2.0 * crate::tab_bar::BUTTONS_PAD
-    + 3.0 * crate::tab_bar::BUTTON
-    + 2.0 * crate::tab_bar::BUTTON_GAP;
+/// What a bar keeps from its tabs (`tab_bar`, M11al §4.6): + right after the row (`PLUS_GAP`
+/// on; chore 2026-11-20), then ⋯ and the right sidebar's pinned, `BUTTON_GAP` apart,
+/// `BUTTONS_PAD` in from the ends.
+const BAR_BUTTONS: f32 = crate::tab_bar::PLUS_GAP
+    + crate::tab_bar::BUTTON
+    + 2.0 * crate::tab_bar::BUTTONS_PAD
+    + 2.0 * crate::tab_bar::BUTTON
+    + crate::tab_bar::BUTTON_GAP;
 
 /// How far left of its pane's right edge ⋯'s centre is: past the right sidebar's button and a
 /// gap, then half a button.
@@ -704,7 +707,7 @@ const MORE_FROM_EDGE: f32 = crate::tab_bar::BUTTONS_PAD
 const BUTTON_TOP: f32 = (ui_tokens::size::TAB_BAR - crate::tab_bar::BUTTON) / 2.0;
 
 /// What a tab's place in a bar holds after the tab: the separator and its room (M11al §4.2).
-const AFTER: f32 = 2.0 * crate::tab_bar::SEPARATOR_ROOM + crate::tab_bar::SEPARATOR.0;
+const AFTER: f32 = crate::tab_bar::AFTER;
 
 /// The two-pane tab bar and tab drag scenes' window width: wide enough (M11al: 100 pt tabs,
 /// 28 pt buttons) that the left pane's four tabs fit unscrolled.
@@ -725,9 +728,9 @@ const LEFT_BAR_WIDTH: f32 = (TAB_BARS_WIDTH
 ///   `tab_active`), claude (waiting, tinted), codex (working, no fill) and a browser tab ("New
 ///   tab", globe); the right one with tests (done; shown in an unfocused pane: `card_hover`).
 ///   The `TAB_BAR` bars have no fill (the card) and a `card_border` line along their bottom;
-///   their tabs are `TAB` tall in the middle, shrunk below `TAB_MAX_WIDTH`.
-/// - `tab-bars-hover`: the pointer over codex (`card_hover`, × shown); `tab-bars-button`: over
-///   the left bar's + (the first of its three buttons).
+///   their tabs are `TAB` tall pills in the middle, each as wide as its title (chore 2026-11-20).
+/// - `tab-bars-hover`: the pointer over codex (`card_lift`, × shown); `tab-bars-button`: over
+///   the left bar's + (right after its last tab).
 /// - `tab-bars-more`: the left bar's ⋯ clicked: its menu (New Terminal Tab ⌘T, New Browser Tab,
 ///   Split Right ⌘D, Split Down ⇧⌘D) under it, right edges together, the ⋯ lit.
 /// - `tab-bars-menu`: claude's right-click menu (Close Tab, Close Other Tabs in Pane, Rename
@@ -790,19 +793,24 @@ fn tab_bar_scenes() {
                 let tabs: Vec<_> = (0..4)
                     .map(|i| tab_bounds(cx, &ws, panes[0], i).expect("laid out"))
                     .collect();
-                // Four tabs in the left bar, equally shrunk, between the bounds (each place holds
-                // its tab and the separator's room after it); `TAB` tall in the bar's middle.
+                // Four tabs in the left bar, each as wide as its title within the bounds (each
+                // place holds its pill and the gap after it; chore 2026-11-20); `TAB` tall in the
+                // bar's middle.
                 for b in &tabs {
                     let w = f32::from(b.size.width) - AFTER;
                     assert!(
-                        (TAB_MIN_WIDTH..TAB_MAX_WIDTH).contains(&w),
+                        (TAB_MIN_WIDTH - 0.5..=TAB_MAX_WIDTH + 0.5).contains(&w),
                         "{n}: tab width {w}"
                     );
-                    let first = f32::from(tabs[0].size.width) - AFTER;
-                    assert!((w - first).abs() <= 1.0, "{n}: equal widths ({w}, {first})");
                     assert_eq!(f32::from(b.top()), tabs_top, "{n}: in the bar's middle");
                     assert_eq!(f32::from(b.size.height), TAB, "{n}: `TAB` tall");
                 }
+                // "New tab" (the browser's title) is wider than "api": not all one width.
+                let width = |b: &gpui::Bounds<Pixels>| f32::from(b.size.width);
+                assert!(
+                    width(&tabs[3]) > width(&tabs[0]),
+                    "{n}: as wide as their titles"
+                );
                 assert_eq!(
                     cx.read(|cx| ws.read(cx).tab_sessions().len()),
                     4,
@@ -814,11 +822,8 @@ fn tab_bar_scenes() {
                         cx.simulate_mouse_move(window, tabs[2].center(), None, none);
                     }
                     "tab-bars-button" => {
-                        // The left pane's buttons sit at its right edge: + is the first of
-                        // three.
-                        let right = tabs[0].left() - px(crate::ui_tokens::size::TABS_LEFT)
-                            + px(LEFT_BAR_WIDTH);
-                        let at = point(right - px(PLUS_FROM_EDGE), tabs[0].center().y);
+                        // The left pane's +, right after its last tab.
+                        let at = plus_centre(cx, &ws, panes[0]).expect("the left bar's +");
                         cx.simulate_mouse_move(window, at, None, none);
                     }
                     "tab-bars-more" => {
@@ -835,7 +840,13 @@ fn tab_bar_scenes() {
                             right - px(MORE_FROM_EDGE - BUTTON / 2.0),
                             px(bar_top + BUTTON_TOP + BUTTON),
                         );
-                        assert_eq!(menu, Some((panes[0], corner)), "{n}: under the left ⋯");
+                        // (Within half a point: the bar's half-point width rounds.)
+                        let (pane, at) = menu.expect("the ⋯ menu");
+                        assert_eq!(pane, panes[0], "{n}: the left ⋯'s menu");
+                        assert!(
+                            (at.x - corner.x).abs() <= px(0.5) && at.y == corner.y,
+                            "{n}: under the left ⋯: {at:?}, {corner:?}"
+                        );
                     }
                     "tab-bars-menu" => {
                         cx.simulate_mouse_down(window, tabs[1].center(), MouseButton::Right, none);
@@ -931,16 +942,16 @@ fn tab_bar_scenes() {
                     assert!(is(under, theme.background), "{n}: the terminal: {under:?}");
                     let (x, y) = fill_at(claude);
                     assert!(is(px_at(x, y), ui.waiting_tint), "{n}: claude tinted");
-                    // codex: no fill, no ×.
+                    // codex: a quiet pill (chore 2026-11-20), no ×.
                     let (x, y) = fill_at(codex);
-                    assert!(is(px_at(x, y), ui.card), "{n}: codex on the bar");
-                    assert!(!close_drawn(codex, ui.card), "{n}: codex's × hidden");
+                    assert!(is(px_at(x, y), ui.card_hover), "{n}: codex a quiet pill");
+                    assert!(!close_drawn(codex, ui.card_hover), "{n}: codex's × hidden");
                     // The right pane's tests: shown in the unfocused pane, the neutral wash
-                    // (M11al §3.3), in its right padding (one tab: `TAB_MAX_WIDTH` wide).
+                    // (M11al §3.3; `card_lift` among pills), in its left padding.
                     let tests_left = f32::from(api.left()) + LEFT_BAR_WIDTH + HAIRLINE;
-                    let x = tests_left + TAB_MAX_WIDTH - TAB_PAD / 2.0;
+                    let x = tests_left + TAB_PAD / 2.0;
                     let p = px_at(x, middle);
-                    assert!(is(p, ui.card_hover), "{n}: tests is `card_hover`: {p:?}");
+                    assert!(is(p, ui.card_lift), "{n}: tests is `card_lift`: {p:?}");
                     let line = px_at(x, bar_top + TAB_BAR - 0.5);
                     assert!(
                         is(line, ui.card_border),
@@ -950,12 +961,14 @@ fn tab_bar_scenes() {
                 "tab-bars-hover" => {
                     let (x, y) = fill_at(codex);
                     let p = px_at(x, y);
-                    assert!(is(p, ui.card_hover), "{n}: codex hovered: {p:?}");
-                    assert!(close_drawn(codex, ui.card_hover), "{n}: codex's × shown");
+                    assert!(is(p, ui.card_lift), "{n}: codex hovered: {p:?}");
+                    assert!(close_drawn(codex, ui.card_lift), "{n}: codex's × shown");
                 }
                 "tab-bars-button" => {
-                    let (plus, more) =
-                        (button_corner(PLUS_FROM_EDGE), button_corner(MORE_FROM_EDGE));
+                    // + right after the last tab: its corner, hovered.
+                    let plus_x = f32::from(tabs[3].right()) + crate::tab_bar::PLUS_GAP;
+                    let plus = px_at(plus_x + 2.0, bar_top + BUTTON_TOP + 2.0);
+                    let more = button_corner(MORE_FROM_EDGE);
                     assert!(is(plus, ui.card_hover), "{n}: + hovered: {plus:?}");
                     assert!(is(more, ui.card), "{n}: ⋯ not: {more:?}");
                 }
@@ -1042,7 +1055,11 @@ fn tab_bar_scenes() {
                 });
                 let width = f32::from(first.size.width) - AFTER;
                 if many == 1 {
-                    assert_eq!(width, TAB_MAX_WIDTH, "{n}: widest");
+                    // One tab: as wide as its title (chore 2026-11-20), within the bounds.
+                    assert!(
+                        (TAB_MIN_WIDTH..=TAB_MAX_WIDTH).contains(&width),
+                        "{n}: as wide as its title: {width}"
+                    );
                     assert_eq!(offset, 0.0, "{n}: no scroll");
                 } else {
                     assert_eq!(width, TAB_MIN_WIDTH, "{n}: narrowest");
@@ -1359,15 +1376,26 @@ fn tab_drag_scenes() {
                     assert!(!is(px_at(x, top + 3.0), ui.accent), "{n}: no line at {x}");
                 }
             };
-            // A place in the left bar with nothing drawn in it (a tab gone from there): the
-            // bar, which has no fill (the card, M11al).
-            let empty = |tab: gpui::Bounds<Pixels>, what: &str| {
-                let left = f32::from(tab.left());
-                for dx in [6.0, 20.0, 40.0, 60.0, 80.0] {
-                    for y in [top + 7.0, top + 17.0, top + 27.0] {
-                        let p = px_at(left + dx, y);
-                        assert!(is(p, ui.card), "{n}: {what} empty at +{dx},{y}: {p:?}");
+            // The end of the left bar the taken tab's place left (`gone` wide, ending where its
+            // last tab's place ended) with nothing drawn in it: the bar, which has no fill (the
+            // card, M11al). (Tabs are as wide as their titles since 2026-11-20, so it is the
+            // taken tab's width, not the last place.)
+            let empty = |last: gpui::Bounds<Pixels>, gone: f32, what: &str| {
+                let (from, to) = (
+                    f32::from(last.right()) - gone + 6.0,
+                    f32::from(last.right()) - 6.0,
+                );
+                let mut x = from;
+                while x <= to {
+                    for y in [
+                        top + 5.0,
+                        top + crate::tab_bar::TAB / 2.0,
+                        top + crate::tab_bar::TAB - 5.0,
+                    ] {
+                        let p = px_at(x, y);
+                        assert!(is(p, ui.card), "{n}: {what} empty at {x},{y}: {p:?}");
                     }
+                    x += 10.0;
                 }
             };
             match scene {
@@ -1393,9 +1421,12 @@ fn tab_drag_scenes() {
                     assert!(!is(outside, ui.panel), "{n}: left of the chip: {outside:?}");
                     let low = px_at(chip_x + 6.0, top + 23.0);
                     assert!(is(low, ui.panel), "{n}: the chip down the bar: {low:?}");
+                    // (Its left edge half api's width left of that: tabs are as wide as their
+                    // titles since 2026-11-20.)
+                    let want = f32::from(tabs[1].center().x) - 10.0 - width / 2.0;
                     assert!(
-                        (chip_x - (f32::from(tabs[1].left()) - 10.0)).abs() <= 1.0,
-                        "{n}: the chip's centre 10 px short of claude's middle"
+                        (chip_x - want).abs() <= 1.0,
+                        "{n}: the chip's centre 10 px short of claude's middle ({chip_x}, {want})"
                     );
                     no_line();
                 }
@@ -1406,12 +1437,12 @@ fn tab_drag_scenes() {
                         is(claude, ui.waiting_tint),
                         "{n}: claude slid left: {claude:?}"
                     );
-                    empty(tabs[3], "the left bar's last place");
-                    // The right bar: tests (shown in the unfocused pane: `card_hover`, M11al) slid
-                    // right by api's place; the gap's end shows the bar (the card).
+                    empty(tabs[3], width, "the left bar's end");
+                    // The right bar: tests (shown in the unfocused pane: `card_lift` among pills,
+                    // M11al) slid right by api's place; the gap's end shows the bar (the card).
                     let left = f32::from(g.right.left());
-                    let tests = px_at(left + width + 6.0, top + 3.0);
-                    assert!(is(tests, ui.card_hover), "{n}: tests slid right: {tests:?}");
+                    let tests = px_at(left + width + 4.0, top + crate::tab_bar::TAB / 2.0);
+                    assert!(is(tests, ui.card_lift), "{n}: tests slid right: {tests:?}");
                     let gap = px_at(left + width - 6.0, top + 3.0);
                     assert!(is(gap, ui.card), "{n}: the gap: {gap:?}");
                     no_line();
@@ -1422,8 +1453,8 @@ fn tab_drag_scenes() {
                     let ring = crate::ui_tokens::size::DIVIDER_ACTIVE / 2.0;
                     let (x, y) = (f32::from(g.row.left()) + ring, f32::from(g.row.center().y));
                     assert!(is(px_at(x, y), ui.accent), "{n}: docs's row ringed");
-                    // Its own bar closed up: the browser tab's place is empty.
-                    empty(tabs[3], "the left bar's last place");
+                    // Its own bar closed up: codex's width at its end is empty.
+                    empty(tabs[3], f32::from(tabs[2].size.width), "the left bar's end");
                     no_line();
                 }
             }
@@ -2128,19 +2159,20 @@ fn browser_tab_scenes() {
 ///
 /// Panics unless the bar has no fill (the card shows above the tabs and beside the buttons) and
 /// a `card_border` line along its bottom; the tabs are `TAB` tall in its middle; every tab has
-/// its `card_lift` tile with its glyph in its kind's colour (an agent's in its provider's, a
+/// its outline icon (no tile behind it, 2026-11-20) in its kind's colour (an agent's in its provider's, a
 /// terminal's and a browser's in the accent, a file's in `text_dim`); the status dot follows the
-/// title (the working arc, the waiting dot, Done's muted ✓ in `text_dim`, nothing when idle); a
-/// `card_border` separator stands between every two tabs; the shown tab has the `tab_active`
-/// wash, the others none (a waiting one its tint), the shown one's title in `text` and the
-/// others' in `text_faint`; notes.md is a preview; a hovered tab is `card_hover` with its ×;
-/// and, overflowing, each tab keeps at least `TAB_MIN_WIDTH`, the row scrolls, and ＋ ⋯ ▥
-/// stay inside each pane, drawn.
+/// title (the working arc, the waiting dot, Done's muted ✓ in `text_dim`, nothing when idle);
+/// each tab is a pill (round ends, clear card after it, no separator; chore 2026-11-20); the
+/// shown tab has the `tab_active` wash, the others `card_hover` (a waiting one its tint), the
+/// shown one's title in `text` and the others' in `text_faint`; notes.md is a preview; a
+/// hovered tab is `card_lift` with its ×; + is drawn right after the last tab; and,
+/// overflowing, each tab keeps at least `TAB_MIN_WIDTH`, the row scrolls, and ＋ ⋯ ▥ stay
+/// inside each pane, drawn.
 fn tabs_minimal_scenes() {
     use crate::layout_model::{FileMode, TabKind};
     use crate::tab_bar::{
-        BUTTON, BUTTON_GAP, BUTTON_ICON, BUTTONS_PAD, CLOSE, PART_GAP, SEPARATOR, SEPARATOR_ROOM,
-        STATUS_DOT, TAB, TAB_MIN_WIDTH, TAB_PAD, TILE,
+        AFTER, BUTTON, BUTTON_GAP, BUTTON_ICON, BUTTONS_PAD, CLOSE, PART_GAP, PLUS_GAP, STATUS_DOT,
+        TAB, TAB_MIN_WIDTH, TAB_PAD, TILE,
     };
     use crate::ui_tokens::size::{CARD_INSET, HAIRLINE, SIDEBAR_DEFAULT_WIDTH, TAB_BAR};
     use crate::ui_tokens::{MARK_MIN, TEXT_MIN};
@@ -2148,9 +2180,12 @@ fn tabs_minimal_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    // A tab's place in the row: the tab, then the room for the separator after it.
-    let after = 2.0 * SEPARATOR_ROOM + SEPARATOR.0;
-    let buttons = 2.0 * BUTTONS_PAD + 3.0 * BUTTON + 2.0 * BUTTON_GAP;
+    // A tab's place in the row: the pill, then the clear gap after it.
+    let after = AFTER;
+    // The bar's right end: ⋯ and the right sidebar's, pinned (chore 2026-11-20); the room the
+    // tabs can't use adds + (right after the row) to it.
+    let pinned = 2.0 * BUTTONS_PAD + 2.0 * BUTTON + BUTTON_GAP;
+    let buttons = PLUS_GAP + BUTTON + pinned;
     let bar_top = CARD_INSET + HAIRLINE;
     let cy = bar_top + TAB_BAR / 2.0;
     let dir =
@@ -2256,7 +2291,7 @@ fn tabs_minimal_scenes() {
             let tabs = places.borrow().clone();
             let pane_right = 1280.0 - CARD_INSET - HAIRLINE;
             // The bar: no fill above the tabs and beside the buttons, and its bottom line.
-            let beside = pane_right - buttons + BUTTONS_PAD / 2.0;
+            let beside = pane_right - pinned + BUTTONS_PAD / 2.0;
             for (what, x, y) in [
                 ("above api", f32::from(tabs[0].center().x), bar_top + 3.0),
                 ("above codex", f32::from(tabs[2].center().x), bar_top + 3.0),
@@ -2291,18 +2326,19 @@ fn tabs_minimal_scenes() {
                     None,
                 ],
             );
+            // Pills (chore 2026-11-20): the others `card_hover`, `card_lift` under the pointer.
             let fills = [
                 Some(ui.tab_active),
                 Some(ui.waiting_tint),
                 Some(if scene == "tabs-minimal-hover" {
-                    ui.card_hover
+                    ui.card_lift
                 } else {
-                    ui.card
+                    ui.card_hover
                 }),
-                Some(ui.card),
-                Some(ui.card),
-                Some(ui.card),
-                Some(ui.card),
+                Some(ui.card_hover),
+                Some(ui.card_hover),
+                Some(ui.card_hover),
+                Some(ui.card_hover),
             ];
             let glyphs = [
                 ui.accent,
@@ -2332,14 +2368,15 @@ fn tabs_minimal_scenes() {
                 let fill = fills[i].expect("a fill");
                 let p = at(right - TAB_PAD / 2.0, cy);
                 assert!(near(p, fill), "{what}: its fill {p:?}, want {fill:?}");
-                // Its tile, and the glyph in it.
+                // Its icon: an outline of the set on the pill itself, no tile behind it
+                // (2026-11-20); its ink in its kind's colour.
                 let tile = left + TAB_PAD;
-                let top_of_tile = at(tile + TILE / 2.0, cy - TILE / 2.0 + 1.5);
+                let corner = at(tile + 0.5, cy - TILE / 2.0 + 0.5);
                 assert!(
-                    near(top_of_tile, ui.card_lift),
-                    "{what}: the tile {top_of_tile:?}"
+                    near(corner, fill),
+                    "{what}: no tile behind the icon: {corner:?}"
                 );
-                let inside = in_box(tile + 3.0, tile + TILE - 3.0, cy - 6.0, cy + 6.0);
+                let inside = in_box(tile, tile + TILE, cy - TILE / 2.0, cy + TILE / 2.0);
                 let ink = nearest(&inside, glyphs[i]);
                 assert!(
                     ink <= 30,
@@ -2397,26 +2434,26 @@ fn tabs_minimal_scenes() {
                 let drawn = x_box.iter().any(|&p| gap(p, fill) > 30);
                 let hovered = scene == "tabs-minimal-hover" && i == 2;
                 assert_eq!(drawn, hovered, "{what}: its ×");
-                // The separator after it: 1 × 16 `card_border`, `SEPARATOR_ROOM` clear; none
-                // after the last.
-                let sep = right + SEPARATOR_ROOM + SEPARATOR.0 / 2.0;
-                let p = at(sep, cy);
-                if i < 6 {
-                    assert!(
-                        near(p, ui.card_border),
-                        "{what}: the separator after it: {p:?}"
-                    );
-                    let clear = at(sep, cy - SEPARATOR.1 / 2.0 - 2.0);
-                    assert!(near(clear, ui.card), "{what}: 16 tall: {clear:?}");
-                    let room = at(right + SEPARATOR_ROOM / 2.0, cy);
-                    assert!(near(room, ui.card), "{what}: room before it: {room:?}");
-                } else {
-                    assert!(
-                        !near(p, ui.card_border),
-                        "{what}: no separator after the last"
-                    );
-                }
+                // A pill: its round ends leave the card at its corners; clear card after it (no
+                // separator line).
+                let corner = at(left + 1.0, f32::from(place.top()) + 1.0);
+                assert!(near(corner, ui.card), "{what}: a round end: {corner:?}");
+                let room = at(right + after / 2.0, cy);
+                assert!(near(room, ui.card), "{what}: clear after it: {room:?}");
             }
+            // + right after the last tab: drawn there, the card between them.
+            let last_right = f32::from(tabs[6].right());
+            let plus = last_right + PLUS_GAP + BUTTON / 2.0;
+            let half = BUTTON_ICON / 2.0;
+            let inked = in_box(plus - half, plus + half, cy - half, cy + half)
+                .iter()
+                .any(|&p| gap(p, ui.card) > 40);
+            assert!(inked, "{n}: + drawn after the last tab, at {plus}");
+            let between = at(plus + BUTTON, cy);
+            assert!(
+                near(between, ui.card),
+                "{n}: nothing just past +: {between:?}"
+            );
             // The tile glyphs and dots read (their floors, as `drawn_pairs` checks).
             assert!(
                 contrast(glyphs[4], ui.card_lift) >= MARK_MIN,
@@ -2432,8 +2469,9 @@ fn tabs_minimal_scenes() {
         // status dot and its × whole and drawn inside the row, left of the buttons; t1 keeps
         // `TAB_MIN_WIDTH` and is scrolled away.
         // 680 pt over the old 240 pt sidebar: wider by what the default sidebar grew, so the panes
-        // stay about 215 pt each.
-        let small_w = 680.0 + (SIDEBAR_DEFAULT_WIDTH - 240.0);
+        // stay about 215 pt each; 20 narrower since the bar's buttons shrank (2026-11-20), so the
+        // row stays narrower than one tab's place.
+        let small_w = 660.0 + (SIDEBAR_DEFAULT_WIDTH - 240.0);
         let small = size(px(small_w), px(420.0));
         let slot: Slot = Rc::new(RefCell::new(None));
         let keep = slot.clone();
@@ -2514,13 +2552,14 @@ fn tabs_minimal_scenes() {
             codex_left >= row_left - 0.5 && codex_right <= row_right + 0.5,
             "{n}: the shown tab {codex_left}–{codex_right} inside the row {row_left}–{row_right}"
         );
-        // Its tile, its working dot and its × (hovered), drawn inside it.
+        // Its icon, its working dot and its × (hovered), drawn inside it.
         let tile = codex_left + TAB_PAD;
-        let top_of_tile = at(tile + TILE / 2.0, cy - TILE / 2.0 + 1.5);
-        assert!(
-            near(top_of_tile, ui.card_lift),
-            "{n}: the tile {top_of_tile:?}"
-        );
+        let ink = in_box(tile, tile + TILE, cy - TILE / 2.0, cy + TILE / 2.0)
+            .iter()
+            .map(|&p| gap(p, ui.accent))
+            .min()
+            .unwrap_or(255);
+        assert!(ink <= 30, "{n}: its icon drawn ({ink} off the accent)");
         let close = codex_right - TAB_PAD - CLOSE;
         let dot = in_box(
             tile + TILE,
@@ -2540,9 +2579,14 @@ fn tabs_minimal_scenes() {
             x_box.iter().any(|&p| gap(p, fill) > 30),
             "{n}: its × drawn on hover"
         );
-        // The buttons stay drawn, in the pane.
+        // The buttons stay drawn, in the pane: ⋯ and the right sidebar's pinned, + left of them.
         for k in 0..3 {
-            let centre = right - BUTTONS_PAD - BUTTON / 2.0 - k as f32 * (BUTTON + BUTTON_GAP);
+            let centre = right - BUTTONS_PAD - BUTTON / 2.0 - k as f32 * (BUTTON + BUTTON_GAP)
+                + if k == 2 {
+                    BUTTON_GAP - BUTTONS_PAD
+                } else {
+                    0.0
+                };
             let half = BUTTON_ICON / 2.0;
             let inked = in_box(centre - half, centre + half, cy - half, cy + half)
                 .iter()
@@ -2615,9 +2659,16 @@ fn tabs_minimal_scenes() {
             "{n}: the shown tab {last} in view, left of the buttons"
         );
         for (pane, pane_right) in [("left", across - HAIRLINE / 2.0), ("right", right)] {
-            for k in 0..3 {
+            // The left pane's one tab leaves its row short: its + is right after api, not here.
+            for k in 0..if pane == "left" { 2 } else { 3 } {
+                // ⋯ and the right sidebar's pinned, + right after the (full) row, left of them.
                 let centre =
-                    pane_right - BUTTONS_PAD - BUTTON / 2.0 - k as f32 * (BUTTON + BUTTON_GAP);
+                    pane_right - BUTTONS_PAD - BUTTON / 2.0 - k as f32 * (BUTTON + BUTTON_GAP)
+                        + if k == 2 {
+                            BUTTON_GAP - BUTTONS_PAD
+                        } else {
+                            0.0
+                        };
                 let half = BUTTON_ICON / 2.0;
                 let mut inked = false;
                 for dy in ((cy - half) * scale) as usize..((cy + half) * scale) as usize {

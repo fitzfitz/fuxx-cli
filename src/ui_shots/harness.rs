@@ -74,7 +74,10 @@ pub fn render_with(
     act: impl FnOnce(&mut VisualTestAppContext, AnyWindowHandle),
 ) -> Shot {
     let started = Instant::now();
-    let mut cx = gpui::VisualTestAppContext::new(current_platform(false));
+    let mut cx = gpui::VisualTestAppContext::with_asset_source(
+        current_platform(false),
+        std::sync::Arc::new(crate::icons::Assets),
+    );
     let hang_up = HangUp::new();
     let mut t = prof::lap(prof::NEW_APP, started);
     register_fonts(&cx);
@@ -156,7 +159,10 @@ pub(super) struct ShotApp {
 
 impl ShotApp {
     pub(super) fn new() -> Self {
-        let cx = gpui::VisualTestAppContext::new(current_platform(false));
+        let cx = gpui::VisualTestAppContext::with_asset_source(
+            current_platform(false),
+            std::sync::Arc::new(crate::icons::Assets),
+        );
         let hang_up = HangUp::new();
         register_fonts(&cx);
         Self {

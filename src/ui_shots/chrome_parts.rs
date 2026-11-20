@@ -717,7 +717,7 @@ fn chrome_notify_redraws_parts() {
         cx.update_window(window, |_, window, _| window.viewport_size().width)
             .expect("the window's width"),
     );
-    let [bell_x, _, sidebar_x] = band_buttons(width);
+    let [bell_x, _, sidebar_x] = band_buttons(width, false);
     let band = point(px(width * 0.25), px(BUTTON_Y + HIT / 2.0));
     cx.simulate_mouse_down(window, band, gpui::MouseButton::Left, Modifiers::none());
     assert!(

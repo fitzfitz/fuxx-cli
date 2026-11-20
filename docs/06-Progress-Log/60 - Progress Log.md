@@ -29,6 +29,18 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-20 — Chores after M11q: pill tabs, an icon set, the icon switch, the collapsed sidebar button
+
+- **What:** on your screenshots and words, built on master: pane tabs as small pills as wide as their titles with +
+  after the last one; a 40 pt bar (and band and panel strip); Lucide outline icons embedded as GPUI's asset source
+  (`src/icons.rs`); the right panel's Files / Changes / Activity switch as icon pills with tooltips; the collapsed
+  sidebar's button beside the traffic lights. Details and your on-screen check in note 68, "Chores after M11q".
+- **Checks:** 2215 tests; clippy 14/27 and 16/29; fmt; full ui-shots 243 passed, the rest the known display-dependent
+  scenes (same failures on master; `tab-bars` passes now).
+- **Learned:** taffy sizes a scroll row's content from its items' widths, not their flex basis: a basis alone left
+  every tab at its minimum.
+- **Next:** a UI/UX review of these, then a theme colour rework (your asks, queued).
+
 ### 2026-11-20 — M11q: pushed
 
 - **What:** master pushed to origin (`fca01ce..f93654b`, 25 commits: M11q and its short-form fix), on your word ("scrub then push").

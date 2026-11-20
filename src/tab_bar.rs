@@ -1,14 +1,15 @@
 //! Pane tab bars (M11b): a bar on top of every pane (even a lone one, as cmux does), in place of
 //! M11's pane headers. Since M11al (style E, "minimal") the bar is `TAB_BAR` (52 pt) with no
 //! fill of its own (the card shows through) and a 1 pt `card_border` line along its bottom. Its
-//! tabs float in its middle, `TAB` tall and rounded: each shows an icon tile (a terminal's `>_`,
-//! a browser's globe, a file's page, an agent's provider letters), its title, and after it a
-//! small status dot while its terminal or agent is Working, Waiting or Done; × closes it (shown
-//! on hover). Thin separators stand between the tabs. The shown tab has the accent wash
-//! (`tab_active`; in an unfocused split pane a neutral one, `card_hover`); a waiting one that
-//! isn't shown is tinted. Too many tabs shrink to a minimum width, then the row scrolls
-//! sideways. On the right, pinned: + (a new terminal tab), ⋯ (the pane's actions,
-//! `pane_actions`) and the right sidebar's (M11g; lit while it's open).
+//! tabs float in its middle as pills (chore 2026-11-20), `TAB` tall with round ends, each as
+//! wide as its title: each shows an icon tile (a terminal's `>_`, a browser's globe, a file's
+//! page, an agent's provider letters), its title, and after it a small status dot while its
+//! terminal or agent is Working, Waiting or Done; × closes it (shown on hover). The shown tab
+//! has the accent wash (`tab_active`; in an unfocused split pane a neutral one, `card_lift`);
+//! the others are quiet pills (`card_hover`), a waiting one tinted. Too many tabs shrink to a
+//! minimum width, then the row scrolls sideways. + (a new terminal tab) follows the last tab;
+//! on the right, pinned: ⋯ (the pane's actions, `pane_actions`) and the right sidebar's (M11g;
+//! lit while it's open).
 //!
 //! A tab can be dragged (M11b Task 7): within its bar or into another pane's, or onto a sidebar
 //! row (into that workspace's focused pane, at the end). It is picked up (Task 7b): the pointer
@@ -250,16 +251,16 @@ pub struct Look {
 }
 
 /// The look of a tab with `status`, `active` in its pane or not, in the focused pane or not
-/// (M11al §3.3, §4.2). The shown tab has full text and a wash: the accent's (`tab_active`) in
-/// the focused pane, a neutral one (`card_hover`) in another (no per-pane ring shows the focus
-/// now). The others have no fill (the card shows through), faint text and the card's hover
-/// shade; a waiting one keeps its tint.
+/// (M11al §3.3, §4.2; pills since 2026-11-20). The shown tab has full text and a wash: the
+/// accent's (`tab_active`) in the focused pane, a neutral one (`card_lift`) in another (no
+/// per-pane ring shows the focus now). The others are quiet pills (`card_hover`, `card_lift`
+/// under the pointer) with faint text; a waiting one keeps its tint.
 pub fn look(ui: &UiColors, status: Status, active: bool, pane_focused: bool) -> Look {
     let waiting = status == Status::Waiting;
     let (fill, hover) = match (active, waiting) {
         (true, _) if pane_focused => (Some(ui.tab_active), None),
-        (true, _) => (Some(ui.card_hover), None),
-        (false, false) => (None, Some(ui.card_hover)),
+        (true, _) => (Some(ui.card_lift), None),
+        (false, false) => (Some(ui.card_hover), Some(ui.card_lift)),
         (false, true) => (Some(ui.waiting_tint), Some(ui.waiting_hover)),
     };
     Look {
@@ -267,6 +268,14 @@ pub fn look(ui: &UiColors, status: Status, active: bool, pane_focused: bool) -> 
         hover,
         text: if active { ui.text } else { ui.text_faint },
     }
+}
+
+/// A tab's width for a title `title` wide (with a status dot after it or not): its tile, title
+/// and ×, `PART_GAP` apart, inside `TAB_PAD`; held between `TAB_MIN_WIDTH` and `TAB_MAX_WIDTH`.
+pub fn natural_width(title: f32, dot: bool) -> f32 {
+    let dot = if dot { PART_GAP + STATUS_DOT } else { 0.0 };
+    (2.0 * TAB_PAD + TILE + 2.0 * PART_GAP + CLOSE + title + dot)
+        .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
 }
 
 /// The colour of the glyph in a tab's icon tile (M11al §4.3): a terminal's and a browser's the
@@ -286,15 +295,16 @@ pub fn tile_ink(ui: &UiColors, icon: TabIcon) -> Rgb {
     }
 }
 
-/// A tab's icon tile (M11al §4.3): `TILE` square, `TILE_RADIUS` corners, `card_lift`, its glyph
-/// (`TILE_GLYPH`; an agent's provider letters) in the middle in `tile_ink`.
+/// A tab's icon (M11al §4.3; since 2026-11-20 an outline icon of the set, no tile behind it:
+/// "find icon with outline no backgrounds"): `TILE` square, in `tile_ink`; an agent's provider
+/// letters (`TILE_GLYPH`) in its provider's colour.
 fn tile(icon: TabIcon, ui: &UiColors) -> Div {
     let ink = tile_ink(ui, icon);
-    let line = |kind| footer_glyph(kind, ink, TILE_GLYPH, STROKE).into_any_element();
+    let line = |i| crate::icons::icon(i, px(TILE), hsla(ink)).into_any_element();
     let inside = match icon {
-        TabIcon::Terminal => line(Glyph::Terminal),
-        TabIcon::Globe => line(Glyph::Globe),
-        TabIcon::File => line(Glyph::File),
+        TabIcon::Terminal => line(crate::icons::Icon::Terminal),
+        TabIcon::Globe => line(crate::icons::Icon::Globe),
+        TabIcon::File => line(crate::icons::Icon::File),
         TabIcon::Agent { badge, .. } => div()
             .text_size(px(TILE_GLYPH))
             .font_weight(FontWeight::SEMIBOLD)
@@ -305,8 +315,6 @@ fn tile(icon: TabIcon, ui: &UiColors) -> Div {
     div()
         .flex_none()
         .size(px(TILE))
-        .rounded(px(TILE_RADIUS))
-        .bg(hsla(ui.card_lift))
         .flex()
         .items_center()
         .justify_center()
@@ -324,11 +332,14 @@ pub enum BarButton {
 }
 
 impl BarButton {
+    #[cfg(test)]
     pub const ALL: [BarButton; 3] = [
         BarButton::NewTerminal,
         BarButton::More,
         BarButton::RightSidebar,
     ];
+    /// The ones pinned at the bar's right end; + follows the last tab (chore 2026-11-20).
+    pub const PINNED: [BarButton; 2] = [BarButton::More, BarButton::RightSidebar];
 
     /// Whether it can be clicked (all can, since browser tabs exist).
     pub fn enabled(self) -> bool {
@@ -403,23 +414,25 @@ impl Render for TabChip {
 /// parts; the separator after each tab but the last (1 × 16 `card_border`, `SEPARATOR_ROOM`
 /// clear on each side), which its place in the row holds (`AFTER`); the icon tile, its corners
 /// and its glyph; the status dot after the title; the ×.
-pub(crate) const TAB: f32 = 34.0;
-pub(crate) const TAB_RADIUS: f32 = 8.0;
-pub(crate) const TAB_PAD: f32 = 12.0;
+///
+/// Since the pill chore (2026-11-20, your reference: "a pill, not that big"): `TAB` 28 tall with
+/// fully round ends, as wide as its title (`natural_width`), no separator line; `AFTER` is the
+/// clear gap after each pill.
+pub(crate) const TAB: f32 = 28.0;
+pub(crate) const TAB_RADIUS: f32 = TAB / 2.0;
+pub(crate) const TAB_PAD: f32 = 8.0;
 pub(crate) const PART_GAP: f32 = 8.0;
-pub(crate) const SEPARATOR: (f32, f32) = (1.0, 16.0);
-pub(crate) const SEPARATOR_ROOM: f32 = 4.0;
-const AFTER: f32 = 2.0 * SEPARATOR_ROOM + SEPARATOR.0;
-pub(crate) const TILE: f32 = 20.0;
-const TILE_RADIUS: f32 = 6.0;
-const TILE_GLYPH: f32 = 11.5;
+pub(crate) const AFTER: f32 = 4.0;
+/// The gap between the last tab's pill and the + after it.
+pub(crate) const PLUS_GAP: f32 = 2.0;
+pub(crate) const TILE: f32 = 14.0;
+const TILE_GLYPH: f32 = 11.0;
 pub(crate) const STATUS_DOT: f32 = 8.0;
 pub(crate) const CLOSE: f32 = 16.0;
 /// A bar button, its glyph (drawn with the title area's line width) and the gap between
 /// buttons and around them.
-pub(crate) const BUTTON: f32 = 28.0;
-pub(crate) const BUTTON_ICON: f32 = 16.0;
-const BUTTON_STROKE: f32 = 1.5;
+pub(crate) const BUTTON: f32 = 24.0;
+pub(crate) const BUTTON_ICON: f32 = 14.0;
 pub(crate) const BUTTON_GAP: f32 = 4.0;
 pub(crate) const BUTTONS_PAD: f32 = 10.0;
 /// The line icons' drawing box (12 units, scaled to the box they are drawn in) and their line
@@ -480,6 +493,7 @@ impl Workspace {
         pane: PaneId,
         ui: UiColors,
         drags_window: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         crate::chrome_cache::bump(crate::chrome_cache::Counted::TabBar);
@@ -487,6 +501,31 @@ impl Workspace {
         let focused = self.model.focused_pane() == Some(pane);
         let now = Instant::now();
         let tabs = self.pane_bar_tabs(p, now);
+        // Each pill as wide as its title (chore 2026-11-20): the title measured in the bar's
+        // font at `text::UI` (a preview's in italics), a point spare so it never truncates.
+        let font = window.text_style().font();
+        let naturals: Vec<f32> = tabs
+            .iter()
+            .map(|t| {
+                let mut font = font.clone();
+                if t.preview {
+                    font.style = gpui::FontStyle::Italic;
+                }
+                let run = gpui::TextRun {
+                    len: t.title.len(),
+                    font: font.clone(),
+                    color: hsla(ui.text),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let line =
+                    window
+                        .text_system()
+                        .shape_line(t.title.clone(), px(text::UI), &[run], None);
+                natural_width(f32::from(line.width()) + 1.0, t.status != Status::Idle)
+            })
+            .collect();
         let scroll = self.tab_row_scroll(pane, p.active, &tabs);
         // While a tab is dragged: where each tab is drawn, out of its way.
         let targets = match self.tab_grab(cx) {
@@ -497,13 +536,14 @@ impl Workspace {
             None => vec![0.0; tabs.len()],
         };
         let animate = !cx.reduce_motion();
-        let count = tabs.len();
+        // The tabs: as wide as they need (the sum of their pills), giving way to the bar's
+        // width; past that they shrink, then the row scrolls sideways.
         let row = div()
             .id(("pane-tabs", pane.0 as usize))
             .flex()
             .flex_row()
             .items_center()
-            .flex_1()
+            .flex_initial()
             .min_w(px(0.0))
             .h_full()
             // The tabs float in the bar's middle (M11al); the first starts `TABS_LEFT` in from
@@ -511,38 +551,50 @@ impl Workspace {
             .pl(px(TABS_LEFT))
             .overflow_x_scroll()
             .track_scroll(&scroll)
-            .children(
-                tabs.into_iter()
-                    .zip(targets)
-                    .enumerate()
-                    .map(|(i, (tab, target))| {
-                        // As last laid out, for its drag chip.
-                        let width = scroll
-                            .bounds_for_item(i)
-                            .map_or(TAB_MAX_WIDTH + AFTER, |b| f32::from(b.size.width));
-                        let offset = self.drag_slides.borrow_mut().offset(
-                            Slid::Tab(tab.tab),
-                            target,
-                            now,
-                            animate,
-                        );
-                        let last = i + 1 == count;
-                        self.render_tab(tab, ui, focused, offset, width, last, cx)
-                    }),
-            )
-            // What the tabs leave empty; it takes no space once they fill the row.
-            .child({
-                let filler = div()
-                    .id(("pane-tabs-empty", pane.0 as usize))
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .h_full();
-                if drags_window {
-                    self.drag_window_by(filler, cx)
-                } else {
-                    filler
-                }
-            });
+            .children(tabs.into_iter().zip(targets).zip(naturals).enumerate().map(
+                |(i, ((tab, target), natural))| {
+                    // As last laid out, for its drag chip.
+                    let width = scroll
+                        .bounds_for_item(i)
+                        .map_or(natural + AFTER, |b| f32::from(b.size.width));
+                    let offset = self.drag_slides.borrow_mut().offset(
+                        Slid::Tab(tab.tab),
+                        target,
+                        now,
+                        animate,
+                    );
+                    self.render_tab(tab, ui, focused, offset, width, natural, cx)
+                },
+            ));
+        let button = |b: BarButton, cx: &mut Context<Self>| {
+            // The right sidebar's is lit while the sidebar is open; ⋯ while its menu is.
+            let lit = match b {
+                BarButton::NewTerminal => false,
+                BarButton::More => self.pane_actions.as_ref().is_some_and(|m| m.pane == pane),
+                BarButton::RightSidebar => !self.right_sidebar.hidden,
+            };
+            render_button(pane, b, lit, ui, cx)
+        };
+        // + right after the last tab (chore 2026-11-20: "the + is instead beside the last tab"),
+        // staying in sight when the row scrolls.
+        let plus = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h_full()
+            .pl(px(PLUS_GAP))
+            .child(button(BarButton::NewTerminal, cx));
+        // What the tabs and + leave empty; it takes no space once they fill the bar.
+        let filler = div()
+            .id(("pane-tabs-empty", pane.0 as usize))
+            .flex_1()
+            .min_w(px(0.0))
+            .h_full();
+        let filler = if drags_window {
+            self.drag_window_by(filler, cx)
+        } else {
+            filler
+        };
         let buttons = div()
             .flex()
             .flex_none()
@@ -551,15 +603,7 @@ impl Workspace {
             .h_full()
             .px(px(BUTTONS_PAD))
             .gap(px(BUTTON_GAP))
-            .children(BarButton::ALL.map(|b| {
-                // The right sidebar's is lit while the sidebar is open; ⋯ while its menu is.
-                let lit = match b {
-                    BarButton::NewTerminal => false,
-                    BarButton::More => self.pane_actions.as_ref().is_some_and(|m| m.pane == pane),
-                    BarButton::RightSidebar => !self.right_sidebar.hidden,
-                };
-                render_button(pane, b, lit, ui, cx)
-            }));
+            .children(BarButton::PINNED.map(|b| button(b, cx)));
         Some(
             div()
                 .flex()
@@ -597,6 +641,8 @@ impl Workspace {
                     }
                 }))
                 .child(row)
+                .child(plus)
+                .child(filler)
                 .child(buttons)
                 // Its 1 pt `card_border` line along its bottom, over the bar's last row of
                 // pixels (out of the layout, so the tabs stay in the bar's middle).
@@ -634,11 +680,12 @@ impl Workspace {
     }
 
     /// One tab (M11al §4.2): its icon tile, its title (or the rename box), its status dot, × on
-    /// hover; `TAB` tall, rounded, floating in the bar's middle; after it (unless `last`) a
-    /// separator. It can be dragged (a press and a move of a few pixels; a click stays a click):
-    /// its chip is it meanwhile, and its place shows empty. Its place is `width` wide (the tab and
-    /// the separator's room, `AFTER`). It is drawn `offset` px right of its place (out of a
-    /// dragged tab's way; its place in the row, which the drop rules measure, stays where it is).
+    /// hover; a `TAB` tall pill (chore 2026-11-20) floating in the bar's middle, `natural` wide
+    /// (`natural_width`) unless the row is short of room; `AFTER` clear after it. It can be
+    /// dragged (a press and a move of a few pixels; a click stays a click): its chip is it
+    /// meanwhile, and its place shows empty. Its place is `width` wide as last laid out (the pill
+    /// and its gap). It is drawn `offset` px right of its place (out of a dragged tab's way; its
+    /// place in the row, which the drop rules measure, stays where it is).
     #[allow(clippy::too_many_arguments)]
     fn render_tab(
         &self,
@@ -647,7 +694,7 @@ impl Workspace {
         pane_focused: bool,
         offset: f32,
         width: f32,
-        last: bool,
+        natural: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let look = look(&ui, tab.status, tab.active, pane_focused);
@@ -828,32 +875,21 @@ impl Workspace {
                     .unwrap_or_else(|| tip.clone());
                 cx.new(|_| Tip(now.into())).into()
             });
-        // The separator after it (M11al §4.2): 1 × 16 `card_border` in the middle of its room.
-        let separator = div()
-            .flex_none()
-            .w(px(AFTER))
-            .h_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .when(!last, |room| {
-                room.child(
-                    div()
-                        .w(px(SEPARATOR.0))
-                        .h(px(SEPARATOR.1))
-                        .bg(hsla(ui.card_border)),
-                )
-            });
-        // Its place in the row: the size the row gives it (the tab and the separator's room),
-        // `TAB` tall in the bar's middle; the tab and its separator are drawn from it, slid by
-        // `offset`. Its chip is it while it's dragged: its place shows empty. At least
-        // `TAB_MIN_WIDTH` (then the row scrolls); but the shown tab, in a row narrower than that,
-        // fits the row (its title gives way): its minimum is its content's (a strut that wide),
-        // held to the row's width by its `max_w` (taffy's automatic minimum size of a flex item,
-        // css-flexbox-1 §4.5, clamps the content size by the max size).
+        // The clear gap after it (no separator line between pills).
+        let gap = div().flex_none().w(px(AFTER)).h_full();
+        // Its place in the row: the size the row gives it (the pill and its gap), `TAB` tall in
+        // the bar's middle; the tab and its gap are drawn from it, slid by `offset`. Its chip is
+        // it while it's dragged: its place shows empty. `natural` wide while the row has room;
+        // short of room, at least `TAB_MIN_WIDTH` (then the row scrolls); but the shown tab, in a
+        // row narrower than that, fits the row (its title gives way): its minimum is its
+        // content's (a strut that wide), held to the row's width by its `max_w` (taffy's
+        // automatic minimum size of a flex item, css-flexbox-1 §4.5, clamps the content size by
+        // the max size).
+        // (Its width, not a flex basis: the row is as wide as its content, and taffy sizes that
+        // content from the places' widths; a basis alone left every place at its minimum.)
         let place = div()
             .relative()
-            .flex_basis(px(TAB_MAX_WIDTH + AFTER))
+            .w(px(natural + AFTER))
             .flex_shrink_1()
             .h(px(TAB));
         let place = if shown {
@@ -876,7 +912,7 @@ impl Workspace {
                     .flex_row()
                     .when(lifted, |t| t.opacity(0.0))
                     .child(tab)
-                    .child(separator),
+                    .child(gap),
             )
             .into_any_element()
     }
@@ -1123,28 +1159,17 @@ fn render_button(
         (false, _) => (ui.text_faint, ui.text_faint),
     };
     let kind = match button {
-        BarButton::NewTerminal => Glyph::Plus,
-        BarButton::More => Glyph::More,
-        BarButton::RightSidebar => Glyph::RightSidebar,
+        BarButton::NewTerminal => crate::icons::Icon::Plus,
+        BarButton::More => crate::icons::Icon::Ellipsis,
+        BarButton::RightSidebar => crate::icons::Icon::PanelRight,
     };
     let tip = button.tooltip();
     // Where it was last painted: the ⋯ menu opens under it.
     let placed: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
     let place = placed.clone();
-    let icon = div()
-        .relative()
-        .size(px(BUTTON_ICON))
-        .child(
-            footer_glyph(kind, dim, BUTTON_ICON, BUTTON_STROKE)
-                .absolute()
-                .group_hover(group.clone(), |s| s.invisible()),
-        )
-        .child(
-            footer_glyph(kind, lit, BUTTON_ICON, BUTTON_STROKE)
-                .absolute()
-                .invisible()
-                .group_hover(group.clone(), |s| s.visible()),
-        );
+    // Its icon of the set (chore 2026-11-20), in the hover colour while the pointer is on it.
+    let icon = crate::icons::icon(kind, px(BUTTON_ICON), hsla(dim))
+        .group_hover(group.clone(), move |s| s.text_color(hsla(lit)));
     div().child(
         div()
             .id(SharedString::from(format!("{group}-hit")))
@@ -1190,16 +1215,10 @@ fn render_button(
 /// The small line icons the tab bars (and the browser tabs' bars) draw.
 #[derive(Clone, Copy)]
 pub(crate) enum Glyph {
-    /// `>_`
-    Terminal,
     /// A circle with a meridian and the equator.
     Globe,
     /// A page with its top right corner folded over.
     File,
-    /// Three dots in a row (a pane bar's ⋯, M11i).
-    More,
-    /// The right sidebar's: a box with its right side filled.
-    RightSidebar,
     /// Chevrons left and right.
     Back,
     Forward,
@@ -1324,17 +1343,6 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                     l
                 };
                 match kind {
-                    Glyph::Terminal => {
-                        let mut chevron = stroke();
-                        chevron.move_to(p(1.5, 2.5));
-                        chevron.line_to(p(5.5, 6.0));
-                        chevron.line_to(p(1.5, 9.5));
-                        paths.push(chevron);
-                        let mut cursor = stroke();
-                        cursor.move_to(p(6.5, 10.0));
-                        cursor.line_to(p(11.0, 10.0));
-                        paths.push(cursor);
-                    }
                     Glyph::Globe => {
                         let (c, r) = ((6.0, 6.0), 5.0);
                         let ellipse = |rx: f32| {
@@ -1501,32 +1509,6 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         tape.move_to(p(from.0, from.1));
                         tape.line_to(p(to.0, to.1));
                         paths.push(tape);
-                    }
-                    Glyph::RightSidebar => {
-                        // The split buttons' frame, and its right third filled.
-                        let (left, right, top, bottom, side) = (1.0, 11.0, 1.5, 10.5, 7.5);
-                        let mut frame = stroke();
-                        frame.add_polygon(
-                            &[
-                                p(left, top),
-                                p(right, top),
-                                p(right, bottom),
-                                p(left, bottom),
-                            ],
-                            true,
-                        );
-                        paths.push(frame);
-                        let mut filled = PathBuilder::fill();
-                        filled.add_polygon(
-                            &[
-                                p(side, top),
-                                p(right, top),
-                                p(right, bottom),
-                                p(side, bottom),
-                            ],
-                            true,
-                        );
-                        paths.push(filled);
                     }
                     Glyph::Folder => {
                         let mut folder = stroke();
@@ -1837,19 +1819,6 @@ fn glyph_sized(kind: Glyph, color: Rgb, stroke: f32, size: f32) -> Div {
                         head.line_to(p(10.5, 5.0));
                         paths.push(head);
                     }
-                    Glyph::More => {
-                        // Filled dots, as wide as the lines are thick and a little more.
-                        let r = 1.1;
-                        for x in [2.0, 6.0, 10.0] {
-                            let mut dot = PathBuilder::fill();
-                            let radii = point(px(r * u), px(r * u));
-                            dot.move_to(p(x, 6.0 - r));
-                            dot.arc_to(radii, px(0.0), false, true, p(x, 6.0 + r));
-                            dot.arc_to(radii, px(0.0), false, true, p(x, 6.0 - r));
-                            dot.close();
-                            paths.push(dot);
-                        }
-                    }
                 }
                 for path in paths {
                     if let Ok(path) = path.build() {
@@ -2061,14 +2030,15 @@ mod tests {
     }
 
     #[test]
-    fn look_active_unfocused_is_card_hover() {
+    fn look_active_unfocused_is_card_lift() {
         let ui = ui();
-        // An unfocused split pane's shown tab: a neutral wash (no per-pane ring, M11al §3.3).
+        // An unfocused split pane's shown tab: a neutral wash a step above the other pills
+        // (no per-pane ring, M11al §3.3; pills, chore 2026-11-20).
         for status in [Status::Idle, Status::Waiting] {
             assert_eq!(
                 look(&ui, status, true, false),
                 Look {
-                    fill: Some(ui.card_hover),
+                    fill: Some(ui.card_lift),
                     hover: None,
                     text: ui.text,
                 },
@@ -2078,23 +2048,45 @@ mod tests {
     }
 
     #[test]
-    fn look_inactive_has_no_fill_and_faint_text() {
+    fn look_inactive_is_a_quiet_pill_with_faint_text() {
         let ui = ui();
-        // No fill (the card shows through), faint text, the card's hover shade; in the focused
-        // pane or not.
+        // Every tab is a pill (chore 2026-11-20): the others have the card's hover shade, a step
+        // more under the pointer, and faint text; in the focused pane or not.
         for focused in [true, false] {
             for status in [Status::Idle, Status::Working, Status::Done] {
                 assert_eq!(
                     look(&ui, status, false, focused),
                     Look {
-                        fill: None,
-                        hover: Some(ui.card_hover),
+                        fill: Some(ui.card_hover),
+                        hover: Some(ui.card_lift),
                         text: ui.text_faint,
                     },
                     "{status:?}, focused {focused}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_tab_is_a_small_pill() {
+        // Your reference (2026-11-20): a pill, not that big.
+        assert_eq!(TAB, 28.0);
+        assert_eq!(TAB_RADIUS, TAB / 2.0);
+    }
+
+    #[test]
+    fn a_tab_is_as_wide_as_its_title_between_the_bounds() {
+        // The tile, the title, the ×, each a gap apart, inside the padding.
+        let parts = 2.0 * TAB_PAD + TILE + 2.0 * PART_GAP + CLOSE;
+        assert_eq!(natural_width(60.0, false), parts + 60.0);
+        // A status dot takes its own gap.
+        assert_eq!(
+            natural_width(60.0, true),
+            parts + 60.0 + PART_GAP + STATUS_DOT
+        );
+        // Never narrower than the least, nor wider than the most.
+        assert_eq!(natural_width(1.0, false), TAB_MIN_WIDTH);
+        assert_eq!(natural_width(900.0, true), TAB_MAX_WIDTH);
     }
 
     #[test]
@@ -2130,6 +2122,11 @@ mod tests {
                 "More",
                 "Toggle right sidebar (⌥⌘\\)"
             ]
+        );
+        // + follows the last tab; ⋯ and the right sidebar's stay pinned on the right.
+        assert_eq!(
+            BarButton::PINNED,
+            [BarButton::More, BarButton::RightSidebar]
         );
     }
 
