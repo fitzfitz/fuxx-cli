@@ -93,6 +93,7 @@ const ANIMATIONS_NOTE: &str = "Also off when macOS Reduce motion is on.";
 const CHECK_UPDATES_NOTE: &str = "Asks GitHub once a day whether a newer fuxx is out.";
 const KEEP_NOTE: &str = "Takes effect the next time fuxx starts.";
 const COMMAND_BLOCKS_NOTE: &str = "Marks each command in zsh. New terminals only.";
+const SHELL_CARDS_NOTE: &str = "Shows each finished command as a card. Needs Command blocks.";
 const CURSOR_NOTE: &str =
     "Programs that set their own cursor (vim, for example) still choose their shape.";
 
@@ -194,7 +195,7 @@ impl Section {
                 },
                 Group {
                     title: "Terminal",
-                    rows: &[Switch(OnOff::CommandBlocks)],
+                    rows: &[Switch(OnOff::CommandBlocks), Switch(OnOff::ShellCards)],
                 },
             ],
             Section::Browser => &[Group {
@@ -318,6 +319,7 @@ impl Control {
             Control::Switch(OnOff::CheckUpdates) => "Check for updates",
             Control::Switch(OnOff::KeepRunning) => "Keep running after quit",
             Control::Switch(OnOff::CommandBlocks) => "Command blocks",
+            Control::Switch(OnOff::ShellCards) => "Commands as cards",
             Control::Switch(OnOff::AddressBar) => "Show address bar",
             Control::Switch(OnOff::KeepData) => "Keep history and data",
             Control::Switch(OnOff::CursorGlide) => "Glide",
@@ -350,6 +352,7 @@ impl Control {
             Control::Switch(OnOff::CheckUpdates) => CHECK_UPDATES_NOTE,
             Control::Switch(OnOff::KeepRunning) => KEEP_NOTE,
             Control::Switch(OnOff::CommandBlocks) => COMMAND_BLOCKS_NOTE,
+            Control::Switch(OnOff::ShellCards) => SHELL_CARDS_NOTE,
             Control::Switch(OnOff::AddressBar) => {
                 "The bar with the address, back and reload above each page."
             }
@@ -421,6 +424,8 @@ pub(crate) enum OnOff {
     KeepRunning,
     /// `command-blocks`: new terminals' zsh gets fuxx's integration (M11l).
     CommandBlocks,
+    /// `shell-cards`: finished commands as cards (M11ab); needs `CommandBlocks`.
+    ShellCards,
     AddressBar,
     KeepData,
     CursorGlide,
@@ -438,6 +443,7 @@ impl OnOff {
             OnOff::CheckUpdates => "check-updates",
             OnOff::KeepRunning => "persistent-sessions",
             OnOff::CommandBlocks => "command-blocks",
+            OnOff::ShellCards => "shell-cards",
             OnOff::AddressBar => "browser-address-bar",
             OnOff::KeepData => "browser-keep-data",
             OnOff::CursorGlide => "cursor-glide",
@@ -454,6 +460,7 @@ impl OnOff {
             OnOff::CheckUpdates => prefs::check_updates_values(on),
             OnOff::KeepRunning => prefs::persistence_values(on),
             OnOff::CommandBlocks => prefs::command_blocks_values(on),
+            OnOff::ShellCards => prefs::shell_cards_values(on),
             OnOff::AddressBar => prefs::browser_address_bar_values(on),
             OnOff::KeepData => prefs::browser_keep_data_values(on),
             OnOff::CursorGlide => prefs::cursor_glide_values(on),
@@ -470,6 +477,8 @@ impl OnOff {
             OnOff::CheckUpdates => a.check_updates,
             OnOff::KeepRunning => a.persistent,
             OnOff::CommandBlocks => a.command_blocks,
+            // Shown off while Command blocks is off (there are no marks to card).
+            OnOff::ShellCards => a.shell_cards && a.command_blocks,
             OnOff::AddressBar => a.browser_address_bar,
             OnOff::KeepData => a.browser_keep_data,
             OnOff::CursorGlide => a.cursor_glide,
@@ -1589,11 +1598,22 @@ fn cursor_fun_switch(ui: UiColors, cx: &Context<PreferencesView>) -> Div {
 
 /// An on / off switch for `setting` (M11x): a click turns it the other way.
 fn on_off_switch(setting: OnOff, ui: UiColors, cx: &Context<PreferencesView>) -> Stateful<Div> {
-    let on_now = setting.current(cx.global::<Appearance>());
+    let a = cx.global::<Appearance>();
+    let on_now = setting.current(a);
+    if !switch_enabled(setting, a.command_blocks) {
+        // Disabled (M11ab): shown off, faint, no click.
+        return toggle(setting.key(), false, ui).opacity(0.5);
+    }
     toggle(setting.key(), on_now, ui).on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
         let on = !setting.current(cx.global::<Appearance>());
         apply(cx, setting.key(), &setting.values(on));
     }))
+}
+
+/// Whether a switch can be turned (M11ab): "Commands as cards" only while Command blocks is on
+/// (`command_blocks`); every other switch always.
+fn switch_enabled(setting: OnOff, command_blocks: bool) -> bool {
+    setting != OnOff::ShellCards || command_blocks
 }
 
 /// A switch (M11x): a 38 × 22 pt track, filled in the accent colour with its knob at the right
@@ -1962,11 +1982,12 @@ mod tests {
     #[test]
     fn palette_settings_cover_every_control() {
         let all = palette_settings();
-        assert_eq!(all.len(), 23);
+        // 24 since M11ab's "Commands as cards".
+        assert_eq!(all.len(), 24);
         let mut names: Vec<&str> = all.iter().map(|s| s.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 23, "names unique");
+        assert_eq!(names.len(), 24, "names unique");
         let order = |s: Section| Section::ALL.iter().position(|&x| x == s);
         assert!(
             all.windows(2)
@@ -1981,7 +2002,8 @@ mod tests {
         assert!(all.iter().all(|s| s.name != "Cursor"));
         assert_eq!(all[0].name, "Animations");
         assert_eq!(all[1].name, "Status Bar");
-        assert_eq!(all[17].name, "Keep history and data");
+        // (One later than before M11ab: "Commands as cards" comes before Browser's.)
+        assert_eq!(all[18].name, "Keep history and data");
         for section in Section::ALL {
             for control in section.controls() {
                 if let Control::Switch(switch) = control {
@@ -2223,10 +2245,16 @@ mod tests {
                     ),
                     (
                         "Terminal",
-                        vec![(
-                            "Command blocks",
-                            "Marks each command in zsh. New terminals only."
-                        )]
+                        vec![
+                            (
+                                "Command blocks",
+                                "Marks each command in zsh. New terminals only."
+                            ),
+                            (
+                                "Commands as cards",
+                                "Shows each finished command as a card. Needs Command blocks."
+                            )
+                        ]
                     ),
                 ]
             )
@@ -2353,7 +2381,8 @@ mod tests {
             [
                 Restore,
                 Switch(OnOff::KeepRunning),
-                Switch(OnOff::CommandBlocks)
+                Switch(OnOff::CommandBlocks),
+                Switch(OnOff::ShellCards)
             ]
         );
         assert_eq!(
@@ -2385,6 +2414,7 @@ mod tests {
             Switch(OnOff::CheckUpdates),
             Switch(OnOff::KeepRunning),
             Switch(OnOff::CommandBlocks),
+            Switch(OnOff::ShellCards),
             Switch(OnOff::AddressBar),
             Switch(OnOff::KeepData),
             Switch(OnOff::CursorGlide),
@@ -2434,13 +2464,46 @@ mod tests {
         assert_eq!(Control::Switch(OnOff::KeepRunning).explanation(), KEEP_NOTE);
     }
 
+    /// M11ab: "Commands as cards", right after Command blocks, word for word; it needs Command
+    /// blocks, so it's disabled while that is off.
+    #[test]
+    fn shell_cards_switch_follows_command_blocks() {
+        let controls = Section::Sessions.controls();
+        let blocks = controls
+            .iter()
+            .position(|c| *c == Control::Switch(OnOff::CommandBlocks))
+            .expect("command blocks listed");
+        assert_eq!(
+            controls.get(blocks + 1),
+            Some(&Control::Switch(OnOff::ShellCards))
+        );
+        assert_eq!(OnOff::ShellCards.key(), "shell-cards");
+        assert_eq!(
+            Control::Switch(OnOff::ShellCards).label(),
+            "Commands as cards"
+        );
+        assert_eq!(
+            Control::Switch(OnOff::ShellCards).explanation(),
+            "Shows each finished command as a card. Needs Command blocks."
+        );
+        for on in [true, false] {
+            assert_eq!(OnOff::ShellCards.values(on), prefs::shell_cards_values(on));
+        }
+        assert!(switch_enabled(OnOff::ShellCards, true));
+        assert!(!switch_enabled(OnOff::ShellCards, false));
+        assert!(switch_enabled(OnOff::CommandBlocks, false), "others always");
+    }
+
     #[test]
     fn command_blocks_switch() {
-        // Preferences → Sessions, after Keep running (note 63 §6), word for word.
-        assert_eq!(
-            Section::Sessions.controls().last(),
-            Some(&Control::Switch(OnOff::CommandBlocks))
-        );
+        // Preferences → Sessions, after Keep running (note 63 §6), word for word; since M11ab
+        // "Commands as cards" follows it.
+        let controls = Section::Sessions.controls();
+        let at = controls
+            .iter()
+            .position(|c| *c == Control::Switch(OnOff::CommandBlocks))
+            .expect("listed");
+        assert_eq!(controls[at - 1], Control::Switch(OnOff::KeepRunning));
         assert_eq!(OnOff::CommandBlocks.key(), "command-blocks");
         assert_eq!(
             Control::Switch(OnOff::CommandBlocks).label(),

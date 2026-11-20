@@ -66,6 +66,9 @@ pub struct Appearance {
     /// `command-blocks = on|off`: new terminals' zsh gets fuxx's integration, and the window
     /// draws command blocks (default on, M11l).
     pub command_blocks: bool,
+    /// `shell-cards = on|off`: a zsh tab with fuxx's marks shows each finished command as a card
+    /// (default on, M11ab).
+    pub shell_cards: bool,
     /// `file-wrap = on|off`: file tabs wrap long lines at their width (default off, M11x).
     pub file_wrap: bool,
     /// `sound-enter` / `sound-ctrl-c` (M11s): each key's sound link, as typed (`SoundKey::ALL`
@@ -321,6 +324,11 @@ fn file_wrap_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
     switch_from_entries(entries, "file-wrap", false)
 }
 
+/// `shell-cards`, on by default (M11ab; see `switch_from_entries`).
+fn shell_cards_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    switch_from_entries(entries, "shell-cards", true)
+}
+
 /// `command-blocks`, on by default (see `switch_from_entries`).
 fn command_blocks_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
     switch_from_entries(entries, "command-blocks", true)
@@ -440,6 +448,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
     let (cursor_follows_status, cursor_color_warnings) = cursor_color_from_entries(&entries);
     let (cursor_fun, cursor_fun_warnings) = cursor_fun_from_entries(&entries);
     let (command_blocks, command_blocks_warnings) = command_blocks_from_entries(&entries);
+    let (shell_cards, shell_cards_warnings) = shell_cards_from_entries(&entries);
     let (file_wrap, file_wrap_warnings) = file_wrap_from_entries(&entries);
     let (sound_on, sound_on_warnings) = sound_on_from_entries(&entries);
     for warning in preset_warnings
@@ -458,6 +467,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         .chain(&cursor_color_warnings)
         .chain(&cursor_fun_warnings)
         .chain(&command_blocks_warnings)
+        .chain(&shell_cards_warnings)
         .chain(&file_wrap_warnings)
         .chain(&sound_on_warnings)
     {
@@ -489,6 +499,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         cursor_follows_status,
         cursor_fun,
         command_blocks,
+        shell_cards,
         file_wrap,
         sound_links: sound_links_from_entries(&entries),
         sound_on,
@@ -941,6 +952,23 @@ mod tests {
         assert_eq!(
             file_wrap_from_entries(&[entry("file-wrap", "on"), entry("file-wrap", "off")]),
             (false, vec![])
+        );
+    }
+
+    /// M11ab: `shell-cards = on | off`, on by default.
+    #[test]
+    fn shell_cards_setting() {
+        assert_eq!(shell_cards_from_entries(&[]), (true, vec![]));
+        assert_eq!(
+            shell_cards_from_entries(&[entry("shell-cards", "off")]),
+            (false, vec![])
+        );
+        assert_eq!(
+            shell_cards_from_entries(&[entry("shell-cards", "maybe")]),
+            (
+                true,
+                vec!["shell-cards \"maybe\": expected on or off".to_string()]
+            )
         );
     }
 

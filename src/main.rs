@@ -29,6 +29,7 @@ mod browser_history;
 mod browser_js;
 mod browser_tab;
 mod browser_url;
+mod card_view;
 mod changes_panel;
 mod chrome_cache;
 mod cli;
