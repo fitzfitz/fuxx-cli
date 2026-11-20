@@ -68,6 +68,13 @@ pub(crate) fn saved_fraction(saved: Option<f32>) -> f32 {
         .map_or(GRAPH_DEFAULT, |f| f.clamp(GRAPH_MIN, GRAPH_MAX))
 }
 
+/// A row of the GRAPH's own list (chore 2026-11-20): a commit (its index), or "Load more".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraphRow {
+    Commit(usize),
+    LoadMore,
+}
+
 /// The GRAPH's state on the Changes panel.
 pub(crate) struct GraphState {
     pub open: bool,
@@ -87,6 +94,8 @@ pub(crate) struct GraphState {
     pub details: Option<(String, Option<Details>)>,
     /// Its share of the room it shares with the changes list (`graph_fraction`; remembered).
     pub fraction: f32,
+    /// Its own list's scroll (docked at the panel's bottom since 2026-11-20).
+    pub scroll: gpui::UniformListScrollHandle,
 }
 
 impl Default for GraphState {
@@ -104,11 +113,32 @@ impl Default for GraphState {
             hover: None,
             details: None,
             fraction: GRAPH_DEFAULT,
+            scroll: gpui::UniformListScrollHandle::new(),
         }
     }
 }
 
 impl GraphState {
+    /// The rows of its own list: none while closed; its commits, then "Load more" when a full
+    /// page came (there may be more).
+    pub(crate) fn rows_shown(&self) -> Vec<GraphRow> {
+        if !self.open {
+            return Vec::new();
+        }
+        let mut rows: Vec<GraphRow> = (0..self.commits.len()).map(GraphRow::Commit).collect();
+        if !self.commits.is_empty() && self.commits.len() >= self.limit {
+            rows.push(GraphRow::LoadMore);
+        }
+        rows
+    }
+
+    /// HEAD's row in its list, if it is listed.
+    pub(crate) fn graph_head_row(&self) -> Option<usize> {
+        self.rows_shown().iter().position(
+            |r| matches!(r, GraphRow::Commit(i) if self.commits.get(*i).is_some_and(|c| c.head)),
+        )
+    }
+
     /// Take a read: the commits, laid out.
     pub(crate) fn apply(&mut self, stamp: String, commits: Vec<Commit>, origin: Option<String>) {
         let ids: Vec<(String, Vec<String>)> = commits
@@ -760,6 +790,45 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn commit_at(i: usize, head: bool) -> Commit {
+        Commit {
+            hash: format!("{i:040}"),
+            parents: Vec::new(),
+            author: "a".into(),
+            time: 0,
+            refs: Vec::new(),
+            subject: format!("c{i}"),
+            head,
+        }
+    }
+
+    /// Chore 2026-11-20: the GRAPH's own list: its commits, then "Load more" when a full page
+    /// came; nothing while it's closed.
+    #[test]
+    fn the_graph_rows_are_its_commits_then_load_more() {
+        let mut g = GraphState::default();
+        g.commits = vec![commit_at(0, false), commit_at(1, false)];
+        assert!(g.rows_shown().is_empty(), "closed");
+        g.open = true;
+        g.limit = 2;
+        assert_eq!(
+            g.rows_shown(),
+            vec![GraphRow::Commit(0), GraphRow::Commit(1), GraphRow::LoadMore]
+        );
+        g.commits.pop();
+        assert_eq!(g.rows_shown(), vec![GraphRow::Commit(0)]);
+    }
+
+    #[test]
+    fn head_is_found_in_the_graph_rows() {
+        let mut g = GraphState::default();
+        g.open = true;
+        g.commits = vec![commit_at(0, false), commit_at(1, false), commit_at(2, true)];
+        assert_eq!(g.graph_head_row(), Some(2));
+        g.commits[2].head = false;
+        assert_eq!(g.graph_head_row(), None);
+    }
 
     /// Chore 2026-11-20 (your ask: "can be dragged the height with min height of 1/4 of
     /// container and max height of half the container"): the divider at window y, in a room 0..400.
