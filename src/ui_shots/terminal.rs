@@ -879,7 +879,8 @@ fn blocks_text() -> String {
 
 /// `blocks_text` with `filler` more lines of output after block 1's `hi`.
 fn blocks_text_with(filler: usize) -> String {
-    const A: &str = "\x1b]133;A\x07";
+    // (`redraw=0`: a scripted shell, it never redraws its prompt, so a resize must not empty it.)
+    const A: &str = "\x1b]133;A;redraw=0\x07";
     const B: &str = "\x1b]133;B\x07";
     let c = |cmd: &str| format!("\x1b]133;C;cmdline_url={cmd}\x07");
     let d = |x: i32| format!("\x1b]133;D;{x}\x07");
@@ -2056,7 +2057,8 @@ fn command_blocks_rerun_scene() {
 /// `ESC [200~echo a\necho b ESC [201~`: wrapped, with no `\r`.
 fn rerun_odd_blocks(theme: Theme, n: &str) {
     use crate::block_view::Refusal;
-    const A: &str = "\x1b]133;A\x07";
+    // (`redraw=0`: a scripted shell, it never redraws its prompt, so a resize must not empty it.)
+    const A: &str = "\x1b]133;A;redraw=0\x07";
     const B: &str = "\x1b]133;B\x07";
     let c = |cmd: &str| format!("\x1b]133;C;cmdline_url={cmd}\x07");
     let d0 = "\x1b]133;D;0\x07";

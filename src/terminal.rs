@@ -876,7 +876,11 @@ impl TerminalCore {
         *current = (dims, cell);
         match &self.backend {
             Backend::Local { pty, .. } => {
-                self.shared.lock().term.resize(dims);
+                {
+                    let mut guard = self.shared.lock();
+                    let shared = &mut *guard;
+                    crate::blocks::resize(&mut shared.term, &shared.tagger, dims);
+                }
                 if let Ok(pty) = pty.lock() {
                     let _ = pty.resize(dims, cell);
                 }
@@ -1196,7 +1200,11 @@ impl Replica {
                 if let Err(step) = self.take_seq(r.seq) {
                     return step;
                 }
-                shared.lock().term.resize(wire_dims(r.cols, r.rows));
+                // Emptying a live prompt first as the daemon's session did (`blocks::resize`).
+                let mut guard = shared.lock();
+                let s = &mut *guard;
+                crate::blocks::resize(&mut s.term, &s.tagger, wire_dims(r.cols, r.rows));
+                drop(guard);
                 self.emit(TermEvent::Term(Event::Wakeup));
             }
             // Protocol 2: comes right before `Exited`, even while waiting for a snapshot.

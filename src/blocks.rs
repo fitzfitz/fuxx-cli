@@ -34,6 +34,7 @@ use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 use crate::command_name::{CommandMark, short_form};
 use crate::grid::BlockView;
 use crate::shell_marks::{Mark, MarkScanner, percent_decode};
+use crate::terminal::TermDims;
 
 /// Every tag's URI starts with this (`links.rs` ignores such hyperlinks).
 pub const URI_PREFIX: &str = "fuxx-block:";
@@ -173,11 +174,13 @@ enum ShellState {
     Unknown,
     /// Between A and the next C: `lfs` counts the prompt's lines from A to B (line feeds, less
     /// those a cursor-up took back); `seq` is where that count is in an escape sequence;
-    /// `input_start` is the cursor at B (none until B).
+    /// `input_start` is the cursor at B (none until B); `redraws`: the shell redraws this prompt
+    /// after a resize (its A didn't say `redraw=0`), so `resize` may empty it first.
     Prompt {
         lfs: usize,
         seq: Seq,
         input_start: Option<Point>,
+        redraws: bool,
     },
     Running,
 }
@@ -237,6 +240,32 @@ impl Tagger {
         self.input_start().is_some()
     }
 
+    /// The first row of the shown prompt, when the shell redraws it after a resize: between its
+    /// B and the next C, found from the prompt's tag (written at B on its command row, it
+    /// moves with the text, unlike a point) and its prompt lines above that.
+    fn redrawn_prompt_top(&self, grid: &Grid<Cell>) -> Option<Line> {
+        let ShellState::Prompt {
+            input_start: Some(_),
+            redraws: true,
+            ..
+        } = self.state
+        else {
+            return None;
+        };
+        let (row, tag) = nearest_tag(grid, grid.cursor.point.line, C_SCAN_ROWS)?;
+        if tag.state != BlockState::Prompt {
+            return None;
+        }
+        let mut top = row;
+        for _ in 0..tag.prompt_lines {
+            if top <= grid.topmost_line() {
+                break;
+            }
+            top = line_start(grid, top - 1);
+        }
+        Some(top)
+    }
+
     /// Where typing started at the shown prompt (the cursor at B).
     pub fn input_start(&self) -> Option<Point> {
         match self.state {
@@ -276,6 +305,7 @@ impl Tagger {
             lfs,
             seq,
             input_start: None,
+            ..
         } = &mut self.state
         else {
             return;
@@ -315,7 +345,7 @@ impl Tagger {
             self.d_missed = false;
         }
         match mark {
-            Mark::PromptStart => {
+            Mark::PromptStart { redraw } => {
                 // The prompt always starts a hard line. zsh's PROMPT_SP, after output without
                 // a final newline, prints its EOL mark and `cols - 1` spaces, then `\r`: the
                 // spaces soft-wrap the output's row, so without this the prompt and command
@@ -332,12 +362,13 @@ impl Tagger {
                     lfs: 0,
                     seq: Seq::Ground,
                     input_start: None,
+                    redraws: redraw,
                 };
             }
             Mark::CommandStart => {
-                let lfs = match self.state {
-                    ShellState::Prompt { lfs, .. } => lfs,
-                    _ => 0,
+                let (lfs, redraws) = match self.state {
+                    ShellState::Prompt { lfs, redraws, .. } => (lfs, redraws),
+                    _ => (0, false),
                 };
                 let row = line_start(term.grid(), cursor.line);
                 // A B repeated with no redraw in between (a second integration) finds this
@@ -362,6 +393,7 @@ impl Tagger {
                     lfs,
                     seq: Seq::Ground,
                     input_start: Some(cursor),
+                    redraws,
                 };
             }
             Mark::OutputStart { cmd, truncated } => {
@@ -452,7 +484,7 @@ pub fn advance<L: EventListener>(
         // the bytes say yet), the mark is dropped.
         if !term.mode().contains(TermMode::ALT_SCREEN) && processor.sync_bytes_count() == 0 {
             let command = match &mark {
-                Mark::PromptStart => Some(CommandMark::Prompt),
+                Mark::PromptStart { .. } => Some(CommandMark::Prompt),
                 Mark::CommandStart => None,
                 Mark::OutputStart { cmd, .. } => Some(CommandMark::Started {
                     short: cmd.as_deref().and_then(short_form),
@@ -787,6 +819,30 @@ fn write_tag<L>(term: &mut Term<L>, row: Line, tag: &Tag) {
     term.grid_mut()[row][Column(0)].set_hyperlink(Some(encode(tag)));
 }
 
+/// `term` resized to `dims`. A width change at a live prompt of a shell that redraws it (any A
+/// but one saying `redraw=0`, kitty's rule) empties the prompt first, from its first row
+/// to the screen's bottom (text, colours and soft wraps): reflowing it would move the cursor off
+/// the prompt's first row (a right prompt reaching the last column wraps), and zsh, which
+/// redraws from where it thinks the prompt starts, left a copy of it behind on every step of a
+/// resize (your report, 2026-11-20; Powerlevel10k's "horrific mess when resizing"). Blank rows
+/// don't reflow, so the cursor keeps its distance from the prompt's start, and the shell's
+/// redraw lands on it. kitty and Ghostty do the same. Every Term that resizes goes through
+/// here (the local terminal, a window's replica and the background service's session), so a
+/// replica stays the daemon's copy.
+pub fn resize<L: EventListener>(term: &mut Term<L>, tagger: &Tagger, dims: TermDims) {
+    if dims.columns() != term.columns()
+        && let Some(top) = tagger.redrawn_prompt_top(term.grid())
+    {
+        let blank = Cell::default();
+        let bottom = term.grid().bottommost_line();
+        let grid = term.grid_mut();
+        for line in top.0..=bottom.0 {
+            grid[Line(line)].reset(&blank);
+        }
+    }
+    term.resize(dims);
+}
+
 /// The tag whose id is `id`, anywhere in the grid (column 0 of every row; only the matching
 /// one is decoded).
 fn find_tag(grid: &Grid<Cell>, id: &str) -> Option<(Line, Tag)> {
@@ -885,7 +941,7 @@ fn count_lines(grid: &Grid<Cell>, from: Line, to: Line) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::{TermDims, term_config};
+    use crate::terminal::term_config;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::Column;
@@ -906,6 +962,120 @@ mod tests {
             Some(x) => format!("\x1b]133;D;{x}\x07").into_bytes(),
             None => b"\x1b]133;D\x07".to_vec(),
         }
+    }
+
+    /// A p10k-style prompt (left part, then a right prompt reaching the last column), marked as
+    /// p10k marks it (a plain A), and zsh's redraw after a resize: `\r`, clear to the end of
+    /// the screen from the cursor's row, the prompt again.
+    const A_REDRAW: &[u8] = A;
+    const A_NO_REDRAW: &[u8] = b"\x1b]133;A;redraw=0\x07";
+    fn right_prompt(cols: usize) -> Vec<u8> {
+        // "~ " on the left; "12:00" ending at the last column; the cursor back after "~ ".
+        let mut v = A_REDRAW.to_vec();
+        v.extend_from_slice(b"~ \x1b[K");
+        // (Written in the last column, the cursor stays there: back `cols - 3` to column 2.)
+        v.extend_from_slice(format!("\x1b[{}C12:00\x1b[{}D", cols - 7, cols - 3).as_bytes());
+        v.extend_from_slice(B);
+        v
+    }
+    fn zsh_redraw(cols: usize) -> Vec<u8> {
+        let mut v = b"\r\x1b[J".to_vec();
+        v.extend(right_prompt(cols));
+        v
+    }
+    /// How many rows, history included, start with the prompt's "~ ".
+    fn prompt_rows(term: &Term<VoidListener>) -> usize {
+        let grid = term.grid();
+        (grid.topmost_line().0..=grid.bottommost_line().0)
+            .filter(|&l| {
+                let row = &grid[Line(l)];
+                row[Column(0)].c == '~' && row[Column(1)].c == ' '
+            })
+            .count()
+    }
+
+    /// Your report (2026-11-20, a p10k prompt after a window resize: copies of the prompt
+    /// stacked up): the reflow put the cursor on the prompt row's wrapped tail, so zsh's redraw
+    /// (from the cursor's row down) left the prompt's head behind, a copy per resize step. With
+    /// a shell that redraws its prompt, the prompt is emptied before a width change (as kitty
+    /// and Ghostty do), so nothing reflows under it.
+    #[test]
+    fn resizing_at_a_redrawing_prompt_leaves_one_prompt() {
+        for out in [0, 2, 8] {
+            let mut sh = Shell::new();
+            for i in 0..out {
+                sh.feed(format!("line {i}\r\n").as_bytes());
+            }
+            sh.feed(&right_prompt(20));
+            assert_eq!(prompt_rows(&sh.term), 1, "{out} lines above: drawn once");
+            for cols in [17, 14, 11, 16, 20, 9, 20] {
+                resize(&mut sh.term, &sh.tagger, TermDims { cols, rows: 6 });
+                sh.feed(&zsh_redraw(cols));
+                assert_eq!(
+                    prompt_rows(&sh.term),
+                    1,
+                    "{out} lines above, at {cols} cols: one prompt"
+                );
+                assert_eq!(sh.term.grid().cursor.point.column, Column(2), "{cols} cols");
+            }
+            // The output above it is still there.
+            if out > 0 {
+                let grid = sh.term.grid();
+                let text: String = (grid.topmost_line().0..=grid.bottommost_line().0)
+                    .map(|l| {
+                        (0..grid.columns())
+                            .map(|c| grid[Line(l)][Column(c)].c)
+                            .collect::<String>()
+                    })
+                    .collect();
+                assert!(
+                    text.contains(&format!("line {}", out - 1)),
+                    "{out}: output kept"
+                );
+            }
+        }
+    }
+
+    /// A prompt whose A says the shell doesn't redraw it (`redraw=0`) is left alone, and so is
+    /// a running command's screen: only a redrawing shell's live prompt is emptied.
+    #[test]
+    fn only_a_redrawing_prompt_is_emptied_on_resize() {
+        let mut plain = Shell::new();
+        plain.feed(A_NO_REDRAW).feed(b"$ ").feed(B).feed(b"typed");
+        resize(
+            &mut plain.term,
+            &plain.tagger,
+            TermDims { cols: 12, rows: 6 },
+        );
+        let row0: String = (0..7)
+            .map(|c| plain.term.grid()[Line(0)][Column(c)].c)
+            .collect();
+        assert_eq!(row0, "$ typed", "redraw=0: left alone");
+        let mut running = Shell::new();
+        running
+            .feed(A_REDRAW)
+            .feed(b"$ ")
+            .feed(B)
+            .feed(b"ls\r\n")
+            .feed(&c(Some("ls")));
+        running.feed(b"output");
+        resize(
+            &mut running.term,
+            &running.tagger,
+            TermDims { cols: 12, rows: 6 },
+        );
+        let row1: String = (0..6)
+            .map(|c| running.term.grid()[Line(1)][Column(c)].c)
+            .collect();
+        assert_eq!(row1, "output", "a running command: left alone");
+        // Same width (a height change): nothing emptied either.
+        let mut tall = Shell::new();
+        tall.feed(A_REDRAW).feed(b"$ ").feed(B).feed(b"typed");
+        resize(&mut tall.term, &tall.tagger, TermDims { cols: 20, rows: 9 });
+        let row0: String = (0..7)
+            .map(|c| tall.term.grid()[Line(0)][Column(c)].c)
+            .collect();
+        assert_eq!(row0, "$ typed", "a height change: left alone");
     }
 
     /// A Term of 20 × 6 with 50 lines of history, fed through `advance`.

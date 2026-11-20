@@ -496,3 +496,36 @@ scenes).
    Nord frost, Gruvbox orange, TokyoNight blue).
 2. A row that needs you is clearly a different colour from the selected one.
 3. The sidebar sits darker than the terminal card (lighter-grey on Latte) and the two read as one family.
+
+## Chores after M11q, part 4 (2026-11-20, the prompt mess on resize)
+
+Your report, with a screenshot: "when I resize it, it became messy, the terminal" (copies of the powerlevel10k
+prompt stacked up, right-prompt times left behind).
+
+**Root cause (found, then fixed; systematic debugging):** your zsh's output for a 15-step drag, captured in a
+throwaway pty and replayed through fuxx's own grid, left 10 copies of the prompt. A right prompt reaching the
+last column makes the prompt row wrap when the width shrinks, and the reflow put the cursor on the wrapped tail;
+zsh redraws from the cursor's row down (`\r`, `ESC [J`, the prompt), so the prompt's head stayed behind, once per
+resize step. Powerlevel10k's README calls it the "horrific mess when resizing" and names the fix kitty applies.
+
+**Fix (kitty's rule):** on a width change while the shell sits at its prompt (between its B and the next C), fuxx
+empties the prompt's rows, from its first row (found from the prompt's tag) to the screen's bottom, before the
+reflow, so nothing moves under it and the shell's redraw lands on it. A prompt whose A says `redraw=0` is left
+alone (a shell that doesn't redraw). Every Term that resizes goes through `blocks::resize` (the local terminal, a
+window's replica, the background service's session), so a replica stays the daemon's copy. With the same capture:
+one prompt.
+
+**AI's calls and limits:** kitty's default (a plain A means the shell redraws) rather than asking for `redraw=1`,
+because powerlevel10k (yours, 1.20.0) marks its prompts itself with a plain A. As in kitty, a bash prompt over
+several lines marked with a plain A by another integration loses its leading lines on a resize (readline redraws
+only the last). Right after a window reattaches to a running terminal, its replica doesn't yet know a prompt is
+live, so until the next prompt it reflows as before. The scenes' scripted shells now say `redraw=0`.
+
+**Checks:** 2220 tests (the reproduction fails without the fix: two prompts after one shrink); clippy: no new
+warnings; fmt; full ui-shots 246 passed, 6 failed (the known display-dependent scenes).
+
+**On-screen check (yours):** with `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`, at a powerlevel10k prompt:
+1. Drag the window narrower and wider several times: one prompt stays, no copies above it.
+2. Toggle the sidebar and the right panel (both change the terminal's width): the same.
+3. While a command runs (`sleep 30`), resizing leaves its output as before.
+
