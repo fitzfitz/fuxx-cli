@@ -8,7 +8,9 @@
 
 use crate::settings::{Entry, parse};
 use crate::tab_color::TabColor;
-use crate::ui_tokens::{MARK_MIN, QUIET_LINE_MIN, TEXT_MIN, contrast, ensure_contrast};
+use crate::ui_tokens::{
+    MARK_MIN, QUIET_LINE_MIN, SOFT_LINE_MIN, TEXT_MIN, contrast, ensure_contrast,
+};
 use alacritty_terminal::vte::ansi::Rgb;
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -153,9 +155,6 @@ pub struct UiColors {
     /// between panes and under bars; the card's own outer edge is the canvas colour since
     /// 2026-11-20).
     pub card_border: Rgb,
-    /// A line on the canvas almost its own colour (your words, 2026-11-20: "make it almost the
-    /// same as the outer background"): the sidebar's "New Fuxxpace" button edge.
-    pub canvas_line: Rgb,
     /// The Changes progress bar's unfilled track, on the repo card (`card_hover`; M11al Task 9).
     pub progress_track: Rgb,
     /// The card's shadow: `shadow` at this opacity (0-1).
@@ -457,10 +456,17 @@ impl Theme {
         // the card.
         let drop_tab = wash(card, 0.20, &[&words[..], &tab_marks[..]].concat());
         let drop_card = wash(card, 0.08, &words);
-        let card_border = quiet(
-            mix(bg, fg, if dark { 0.10 } else { 0.12 }),
-            &[canvas, card, side],
-        );
+        // On a dark theme softer (part 9 of the chores after M11q, your words: "make it darker all
+        // those borders"): less of the ink, held at `SOFT_LINE_MIN` on everything it's drawn on.
+        let card_border = if dark {
+            readable(
+                mix(bg, fg, 0.06),
+                &[canvas, card, side, raised],
+                SOFT_LINE_MIN,
+            )
+        } else {
+            quiet(mix(bg, fg, 0.12), &[canvas, card, side])
+        };
         let tab_colors = TabColor::ALL.map(|c| readable(mark(c.base()), &selections, MARK_MIN));
         UiColors {
             sidebar_background: canvas,
@@ -490,7 +496,6 @@ impl Theme {
             tab_colors,
             card,
             card_border,
-            canvas_line: mix(canvas, fg, if dark { 0.05 } else { 0.07 }),
             window_edge: if dark { black } else { canvas },
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
             card_shadow_alpha: if dark { 0.45 } else { 0.12 },
@@ -664,8 +669,15 @@ impl Theme {
                 ("card_hover", ui.card_hover),
             ),
         ];
+        // The card's border on a dark theme is softer (part 9 of the chores after M11q).
+        let dark = self.is_dark();
         for (line, bg) in lines {
-            pairs.push(pair(line, bg, QUIET_LINE_MIN));
+            let min = if dark && line.0 == "card_border" {
+                SOFT_LINE_MIN
+            } else {
+                QUIET_LINE_MIN
+            };
+            pairs.push(pair(line, bg, min));
         }
         // A waiting row's Open button: the sidebar's colour on the waiting colour (M11r).
         pairs.push(pair(
@@ -965,25 +977,31 @@ mod tests {
         }
     }
 
-    /// Chore 2026-11-20 (your words: "outer border I mean the outermost window border, not an
-    /// outer border on the inner floating window"; "a shadow that looks like just a border at the
-    /// top"): the window's edge darker than the canvas it frames; the card's top line lighter than
-    /// the card in a dark theme, apart from it in every theme.
-    /// Chore 2026-11-20 (your words: "the border color, make it almost the same as the outer
-    /// background"): the sidebar's "New Fuxxpace" button edge sits just apart from the sidebar,
-    /// quieter than the card's border.
+    /// Chore 2026-11-20, part 9 (your words: "make it darker all those borders"): on a dark theme
+    /// the card's border (the sidebar's lines and boxes, the hairlines in the card) sits closer to
+    /// what it's drawn on, yet still shows (`SOFT_LINE_MIN`).
     #[test]
-    fn the_new_button_edge_is_almost_the_sidebar() {
+    fn dark_theme_borders_are_darker_but_still_show() {
         for (name, theme) in every_theme() {
+            if !theme.is_dark() {
+                continue;
+            }
             let ui = theme.ui();
-            let canvas = ui.sidebar_background;
-            let edge = contrast(ui.canvas_line, canvas);
-            assert_ne!(ui.canvas_line, canvas, "{name}: the edge still shows");
-            assert!(edge < 1.2, "{name}: canvas_line on the canvas is {edge:.2}");
-            assert!(
-                edge < contrast(ui.card_border, canvas),
-                "{name}: quieter than card_border"
-            );
+            let on_card = contrast(ui.card_border, ui.card);
+            let on_canvas = contrast(ui.card_border, ui.sidebar_background);
+            assert!(on_card < 1.35, "{name}: on the card {on_card:.2}");
+            // (Before: 1.48 to 1.76; the canvas is darker than the card, so held at 1.2 on the
+            // card it stays a little more apart on the canvas.)
+            assert!(on_canvas <= 1.55, "{name}: on the canvas {on_canvas:.2}");
+            for (what, on) in [
+                ("canvas", ui.sidebar_background),
+                ("card", ui.card),
+                ("side", ui.side),
+                ("raised", ui.raised),
+            ] {
+                let r = contrast(ui.card_border, on);
+                assert!(r >= SOFT_LINE_MIN, "{name}: on {what} {r:.2}");
+            }
         }
     }
 
@@ -1250,7 +1268,13 @@ mod tests {
                 contrast(ui.guide, ui.side_selected),
             ),
         ] {
-            assert!(ratio >= QUIET_LINE_MIN, "{what} is {ratio:.2}: invisible");
+            // Mocha is dark: its card border is the softer one (part 9 of the chores).
+            let min = if what.starts_with("card_border") {
+                SOFT_LINE_MIN
+            } else {
+                QUIET_LINE_MIN
+            };
+            assert!(ratio >= min, "{what} is {ratio:.2}: invisible");
             assert!(ratio < MARK_MIN, "{what} is {ratio:.2}: too loud");
         }
         // The card is the terminal's own background.
@@ -1298,16 +1322,19 @@ mod tests {
     fn card_border_is_quiet_on_canvas_card_and_side() {
         for (name, theme) in every_theme() {
             let ui = theme.ui();
+            // Softer on a dark theme (part 9 of the chores after M11q).
+            let min = if theme.is_dark() {
+                SOFT_LINE_MIN
+            } else {
+                QUIET_LINE_MIN
+            };
             for (what, on) in [
                 ("canvas", ui.sidebar_background),
                 ("card", ui.card),
                 ("side", ui.side),
             ] {
                 let r = contrast(ui.card_border, on);
-                assert!(
-                    r >= QUIET_LINE_MIN,
-                    "{name}: card_border on {what} is {r:.2}"
-                );
+                assert!(r >= min, "{name}: card_border on {what} is {r:.2}");
             }
         }
     }

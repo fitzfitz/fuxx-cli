@@ -29,6 +29,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-20 — Chores after M11q, part 9: part 7 undone; the borders darker
+
+- **What:** the New button's outline back to `card_border`; `card_border` darker on dark themes (6 % of the ink,
+  held at a new 1.2:1 `SOFT_LINE_MIN` instead of 1.4:1): every outline and hairline drawn in it. Note 68, part 9.
+- **Checks:** 2232 tests; clippy: no new warnings; fmt; full ui-shots.
+
 ### 2026-11-20 — Chores after M11q, part 8: the window edge under macOS's rim; no top line
 
 - **What:** the window's two edge lines are macOS's (a black outline and a light rim that adds light over what is

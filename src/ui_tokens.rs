@@ -15,6 +15,9 @@ pub const MARK_MIN: f32 = 3.0;
 /// `MARK_MIN`: the spec wants dividers "1 px and quiet", and a 3:1 hairline reads as heavy. Lines
 /// that carry meaning (the accent bar, a divider while hovered or dragged) use `MARK_MIN`.
 pub const QUIET_LINE_MIN: f32 = 1.4;
+/// The card's border on a dark theme (chores after M11q, part 9, your words: "make it darker all
+/// those borders"): softer than `QUIET_LINE_MIN`, still apart from what it's drawn on.
+pub const SOFT_LINE_MIN: f32 = 1.2;
 
 /// M11ah (code view upgrade): every size the file tab's code view is drawn with, in points, in
 /// one place so M11al can move them together. Row = the font's line height x `ROW_SCALE`.
