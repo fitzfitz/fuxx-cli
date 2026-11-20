@@ -142,7 +142,7 @@ pub(crate) struct Confirm {
 }
 
 /// A row of the Changes list (part 2): a group's divider (`true`: STAGED), an entry (its index
-/// in the list), or `… N more`.
+/// in the list), or `… N more`. The GRAPH has its own list since 2026-11-20 (`GraphRow`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RowItem {
     Divider(bool),
@@ -150,10 +150,6 @@ pub(crate) enum RowItem {
     More,
     /// "No changes since the last commit.", above the GRAPH in a clean repo (M11w).
     Clean,
-    /// The GRAPH's header, a commit (its index in the graph) and "Load more" (M11w).
-    GraphHeader,
-    Commit(usize),
-    LoadMore,
 }
 
 /// Which groups are open (part 6: STAGED and CHANGES are accordions; both open at first).
@@ -364,24 +360,14 @@ impl ChangesPanel {
         true
     }
 
-    /// Every row the list shows: STAGED and CHANGES (or "No changes" in a clean repo), then, in
-    /// a repo, the GRAPH's header and, open, its commits and "Load more" (M11w).
-    pub(crate) fn all_rows(&self) -> Vec<RowItem> {
-        let mut rows = match &self.list {
+    /// Every row the changes list shows: STAGED and CHANGES, or "No changes" in a clean repo.
+    /// The GRAPH, docked under it, has its own list (`GraphState::rows_shown`; 2026-11-20).
+    pub(crate) fn change_rows(&self) -> Vec<RowItem> {
+        match &self.list {
             Some(l) if !l.entries.is_empty() || l.more > 0 => rows_of_in(l, self.groups),
             Some(_) => vec![RowItem::Clean],
             None => Vec::new(),
-        };
-        if self.in_repo && self.root.is_some() {
-            rows.push(RowItem::GraphHeader);
-            if self.graph.open {
-                rows.extend((0..self.graph.commits.len()).map(RowItem::Commit));
-                if !self.graph.commits.is_empty() && self.graph.commits.len() >= self.graph.limit {
-                    rows.push(RowItem::LoadMore);
-                }
-            }
         }
-        rows
     }
 
     /// The repo's top folder, when the panel shows a repo.
@@ -389,13 +375,12 @@ impl ChangesPanel {
         self.root.clone().filter(|_| self.in_repo)
     }
 
-    /// ◎ in the GRAPH's header: scroll to HEAD's row.
+    /// ◎ in the GRAPH's header: scroll its own list to HEAD's row.
     pub(crate) fn scroll_to_graph_head(&self) {
-        let at = self.all_rows().iter().position(|r| {
-            matches!(r, RowItem::Commit(i) if self.graph.commits.get(*i).is_some_and(|c| c.head))
-        });
-        if let Some(at) = at {
-            self.scroll.scroll_to_item(at, gpui::ScrollStrategy::Center);
+        if let Some(at) = self.graph.graph_head_row() {
+            self.graph
+                .scroll
+                .scroll_to_item(at, gpui::ScrollStrategy::Center);
         }
     }
 
@@ -1801,7 +1786,7 @@ impl Workspace {
             (_, Some(_)) if root.is_some() => {
                 // Part 2: STAGED's divider and rows, then CHANGES', then `… N more`; then the
                 // GRAPH (M11w).
-                let count = changes.all_rows().len();
+                let count = changes.change_rows().len();
                 let list = uniform_list(
                     "change-rows",
                     count,
@@ -1813,9 +1798,8 @@ impl Workspace {
                         let Some(list) = changes.list.clone() else {
                             return Vec::new();
                         };
-                        let rows = changes.all_rows();
+                        let rows = changes.change_rows();
                         let groups = changes.groups;
-                        let theme = cx.global::<Appearance>().theme;
                         let revert_all = enabled && revert_all_work(&list).is_some();
                         range
                             .filter_map(|r| match *rows.get(r)? {
@@ -1834,9 +1818,6 @@ impl Workspace {
                                 }
                                 RowItem::More => Some(more_row(list.more, &inks.ui)),
                                 RowItem::Clean => Some(clean_row(&inks.ui)),
-                                RowItem::GraphHeader => Some(this.graph_header_row(&inks.ui, cx)),
-                                RowItem::Commit(i) => this.graph_commit_row(i, &theme, cx),
-                                RowItem::LoadMore => Some(load_more_row(&inks.ui, cx)),
                             })
                             .collect::<Vec<_>>()
                     }),
@@ -1846,12 +1827,11 @@ impl Workspace {
                 // Sticky headers (your ask: "make other accordion sticky"): the header of the
                 // section the top row is in stays pinned over the list's top while its rows
                 // scroll under it; it works as the header itself (opens or closes the section).
-                let rows = changes.all_rows();
+                let rows = changes.change_rows();
                 // The top row: how far the list is scrolled, in rows (all rows are `ROW` tall).
                 let scrolled = -f32::from(changes.scroll.0.borrow().base_handle.offset().y);
                 let top = (scrolled.max(0.0) / ROW).floor() as usize;
-                let is_header =
-                    |r: &RowItem| matches!(r, RowItem::Divider(_) | RowItem::GraphHeader);
+                let is_header = |r: &RowItem| matches!(r, RowItem::Divider(_));
                 let pinned = rows
                     .get(..=top.min(rows.len().saturating_sub(1)))
                     .filter(|_| top > 0 && !rows.get(top).is_some_and(is_header))
@@ -1863,31 +1843,31 @@ impl Workspace {
                         .as_ref()
                         .is_some_and(|l| revert_all_work(l).is_some());
                 let groups = changes.groups;
-                let sticky = pinned.map(|header| {
-                    let row = match header {
-                        RowItem::Divider(staged) => {
-                            let count = changes.list.as_ref().map_or(0, |l| group_count(l, staged));
-                            divider_row(
-                                staged,
-                                groups.open(staged),
-                                count,
-                                !staged && revert_all,
-                                &ui,
-                                cx,
-                            )
-                        }
-                        _ => self.graph_header_row(&ui, cx),
+                let sticky = pinned.and_then(|header| {
+                    let RowItem::Divider(staged) = header else {
+                        return None;
                     };
-                    div()
-                        .absolute()
-                        .top(px(0.0))
-                        .left(px(0.0))
-                        .right(px(0.0))
-                        // The panel's own fill (M11al §6.1): rows scroll under it unseen.
-                        .bg(hsla(ui.side))
-                        .border_b_1()
-                        .border_color(hsla(ui.divider))
-                        .child(row)
+                    let count = changes.list.as_ref().map_or(0, |l| group_count(l, staged));
+                    let row = divider_row(
+                        staged,
+                        groups.open(staged),
+                        count,
+                        !staged && revert_all,
+                        &ui,
+                        cx,
+                    );
+                    Some(
+                        div()
+                            .absolute()
+                            .top(px(0.0))
+                            .left(px(0.0))
+                            .right(px(0.0))
+                            // The panel's own fill (M11al §6.1): rows scroll under it unseen.
+                            .bg(hsla(ui.side))
+                            .border_b_1()
+                            .border_color(hsla(ui.divider))
+                            .child(row),
+                    )
                 });
                 Some(
                     div()
@@ -2239,6 +2219,54 @@ mod tests {
         assert!(!panel.groups.staged && panel.groups.changes);
         panel.toggle_group(true);
         assert!(panel.groups.staged);
+    }
+
+    fn commit_at(i: usize, head: bool) -> crate::git_graph::Commit {
+        crate::git_graph::Commit {
+            hash: format!("{i:040}"),
+            parents: Vec::new(),
+            author: "a".into(),
+            time: 0,
+            refs: Vec::new(),
+            subject: format!("c{i}"),
+            head,
+        }
+    }
+
+    /// Chore 2026-11-20: the GRAPH has its own list, docked at the bottom; the changes list holds
+    /// STAGED and CHANGES only.
+    #[test]
+    fn the_changes_list_holds_no_graph_rows() {
+        let mut panel = ChangesPanel::new();
+        panel.root = Some(PathBuf::from("/r"));
+        panel.in_repo = true;
+        panel.list = Some(list_of(
+            vec![
+                change("a.rs", Mark::Modified, Counts::Unknown),
+                change("b.rs", Mark::Modified, Counts::Unknown),
+            ],
+            0,
+        ));
+        panel.graph.open = true;
+        panel.graph.commits = vec![commit_at(0, true), commit_at(1, false)];
+        assert_eq!(
+            panel.change_rows(),
+            vec![
+                RowItem::Divider(false),
+                RowItem::Entry(0),
+                RowItem::Entry(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_clean_repo_keeps_its_note_on_top() {
+        let mut panel = ChangesPanel::new();
+        panel.root = Some(PathBuf::from("/r"));
+        panel.in_repo = true;
+        panel.list = Some(list_of(vec![], 0));
+        panel.graph.open = true;
+        assert_eq!(panel.change_rows(), vec![RowItem::Clean]);
     }
 
     /// Part 2: the header's circle stages everything, or unstages everything once all of it
