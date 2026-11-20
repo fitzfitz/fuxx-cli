@@ -457,3 +457,42 @@ display-dependent scenes (`title-area`, one of them before, passes now).
 5. Sidebar rows show letters on an outline (no coloured squares); a row you coloured shows its letters in that colour.
 6. Icons everywhere (search, bell, gear, folders, chevrons, Changes bar, file bar) look like one family.
 
+## Chores after M11q, part 3 (2026-11-20, each theme's own chrome colours)
+
+Your ask: "rework the color combination of each theme… it doesn't match good with the combination"; then "just
+dive in, give each theme its own chrome colours". Built on master, test first.
+
+**Before:** every theme file holds only the terminal's colours, and one shared recipe derived all the chrome from
+them: the accent was always palette 4 (blue), working 3 (yellow), needs you 1 (red), done 2 (green), and the
+canvas the background darkened 42 %. Gruvbox got Nord's treatment.
+
+**Now:** a theme can set five chrome colours, `chrome-canvas`, `chrome-accent`, `chrome-working`,
+`chrome-waiting` and `chrome-done` (in a theme file or your settings; empty clears one); each replaces what the
+recipe would derive, still held to the same contrast floors. The built-in themes carry them in fuxx's own
+`assets/themes/chrome/` files (the upstream files untouched; `NOTICE.md` says so), all from each theme's published
+palette:
+
+| Theme | Canvas | Accent | Working | Needs you | Done |
+|---|---|---|---|---|---|
+| Catppuccin Mocha | crust `#11111b` | mauve `#cba6f7` | peach `#fab387` | red `#f38ba8` | green `#a6e3a1` |
+| Catppuccin Latte | crust `#dce0e8` | mauve `#8839ef` | peach `#fe640b` | red `#d20f39` | green `#40a02b` |
+| Dracula | `#191a21` | purple `#bd93f9` | cyan `#8be9fd` | orange `#ffb86c` | green `#50fa7b` |
+| Nord | `#242933` | frost `#88c0d0` | yellow `#ebcb8b` | red `#bf616a` | green `#a3be8c` |
+| Gruvbox Dark | bg0_h `#1d2021` | orange `#fe8019` | blue `#83a598` | purple `#d3869b` | green `#b8bb26` |
+| TokyoNight | `#15161e` | blue `#7aa2f7` | yellow `#e0af68` | red `#f7768e` | green `#9ece6a` |
+
+**AI's calls:** one rule for every theme: neutrals carry the structure, the accent alone means "you are here",
+and each status colour stands at least 25° of hue from the accent (a test holds it). Gruvbox's working is blue,
+not yellow (15° from its orange); Dracula's needs you is orange, not pink (it read like the purple selection, seen
+in the six-theme renders). The status marks and tab colours are now also held to 3:1 on the selections (Latte's
+mauve made them dip to 2.93); Mocha's dim and faint text moved a step, Latte's three darker, to stay readable.
+
+**Checks:** 2218 tests (one daemon start-up test failed once in a full run and passed three times alone and in the
+next full run); clippy: no new warnings; fmt; full ui-shots 246 passed, 6 failed (the known display-dependent
+scenes).
+
+**On-screen check (yours):** Settings → Appearance, each built-in theme in turn:
+1. The selected row, the shown tab and the left edge bar are the theme's accent (Mocha/Latte mauve, Dracula purple,
+   Nord frost, Gruvbox orange, TokyoNight blue).
+2. A row that needs you is clearly a different colour from the selected one.
+3. The sidebar sits darker than the terminal card (lighter-grey on Latte) and the two read as one family.

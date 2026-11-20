@@ -29,6 +29,19 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-20 — Chores after M11q, part 3: each theme's own chrome colours
+
+- **What:** your ask, "give each theme its own chrome colours": a theme can set `chrome-canvas`, `chrome-accent`,
+  `chrome-working`, `chrome-waiting` and `chrome-done` (`theme::Chrome`); each replaces the shared recipe's
+  derived colour, held to the same floors. The six built-ins carry them from their own palettes in
+  `assets/themes/chrome/` (Mocha and Latte mauve, Dracula purple, Nord frost, Gruvbox orange, TokyoNight blue).
+  Table and your on-screen check in note 68, "Chores after M11q, part 3".
+- **Checks:** 2218 tests; clippy: no new warnings; fmt; full ui-shots 246 passed, 6 failed (known
+  display-dependent).
+- **Learned:** a 10 % accent wash leans toward the card's own hue (mauve over Mocha's blue card reads 19° off), so
+  "keeps the accent's hue" is tested as "is the accent washed over the card"; the status marks must be held on
+  the selections, which a theme's own accent can darken.
+
 ### 2026-11-20 — Chores after M11q, part 2: the critique's five fixes
 
 - **What:** a UI/UX critique of the pill-tab chores named five issues; you said "fix all five": every line icon from

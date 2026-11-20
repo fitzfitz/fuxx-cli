@@ -1,0 +1,7 @@
+# fuxx's window chrome for Nord, from Nord's palette (not part of the upstream file).
+# canvas: Polar Night, a step below nord0; accent: frost (nord8); working: aurora yellow; needs you: aurora red; done: aurora green.
+chrome-canvas = #242933
+chrome-accent = #88c0d0
+chrome-working = #ebcb8b
+chrome-waiting = #bf616a
+chrome-done = #a3be8c

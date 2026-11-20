@@ -18,3 +18,7 @@ cross-checked against the original project's own licence page:
 TokyoNight is Apache-2.0, not MIT; its licence text ships as `LICENSE-TokyoNight-Apache-2.0.txt` (the
 upstream repo has no NOTICE file): the scheme is credited to folke/tokyonight.nvim, not to
 enkia/tokyo-night-vscode-theme (MIT).
+
+The `chrome/` folder is fuxx's own (2026-11-20), not upstream: for each built-in theme, five window-chrome
+colours (`chrome-canvas`, `chrome-accent`, `chrome-working`, `chrome-waiting`, `chrome-done`) picked from that
+theme's published palette, appended to the theme when it is loaded (`theme::builtin_theme`).
