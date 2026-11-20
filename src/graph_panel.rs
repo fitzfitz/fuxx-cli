@@ -44,6 +44,30 @@ const SUBJECT_MIN: f32 = 90.0;
 /// The most pills on a row; the rest are `+N`.
 const PILLS: usize = 2;
 
+/// The GRAPH's share of the room it and the changes list share (chore 2026-11-20, your ask: "min
+/// height of 1/4 of container and max height of half the container"), and its first one.
+pub(crate) const GRAPH_MIN: f32 = 0.25;
+pub(crate) const GRAPH_MAX: f32 = 0.5;
+pub(crate) const GRAPH_DEFAULT: f32 = 1.0 / 3.0;
+
+/// The GRAPH's share with its divider dragged to window `y`, in a room `room_height` tall from
+/// `room_top`: what lies under the divider, held between `GRAPH_MIN` and `GRAPH_MAX`; no room:
+/// `GRAPH_DEFAULT`.
+pub(crate) fn graph_fraction(room_top: f32, room_height: f32, y: f32) -> f32 {
+    if room_height <= 0.0 {
+        return GRAPH_DEFAULT;
+    }
+    ((room_top + room_height - y) / room_height).clamp(GRAPH_MIN, GRAPH_MAX)
+}
+
+/// The GRAPH's share as the sessions file kept it, held to its bounds; none or not a number:
+/// `GRAPH_DEFAULT`.
+pub(crate) fn saved_fraction(saved: Option<f32>) -> f32 {
+    saved
+        .filter(|f| f.is_finite())
+        .map_or(GRAPH_DEFAULT, |f| f.clamp(GRAPH_MIN, GRAPH_MAX))
+}
+
 /// The GRAPH's state on the Changes panel.
 pub(crate) struct GraphState {
     pub open: bool,
@@ -61,6 +85,8 @@ pub(crate) struct GraphState {
     pub hover: Option<(usize, bool)>,
     /// The details read for a hash (none inside: git couldn't read it).
     pub details: Option<(String, Option<Details>)>,
+    /// Its share of the room it shares with the changes list (`graph_fraction`; remembered).
+    pub fraction: f32,
 }
 
 impl Default for GraphState {
@@ -77,6 +103,7 @@ impl Default for GraphState {
             origin: None,
             hover: None,
             details: None,
+            fraction: GRAPH_DEFAULT,
         }
     }
 }
@@ -733,6 +760,39 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Chore 2026-11-20 (your ask: "can be dragged the height with min height of 1/4 of
+    /// container and max height of half the container"): the divider at window y, in a room 0..400.
+    #[test]
+    fn the_graph_takes_a_quarter_to_a_half_of_the_room() {
+        let at = |y: f32| graph_fraction(0.0, 400.0, y);
+        assert_eq!(at(300.0), 0.25);
+        assert_eq!(at(250.0), 0.375);
+        assert_eq!(at(100.0), 0.5);
+        assert_eq!(at(390.0), 0.25, "held at a quarter");
+        assert_eq!(at(-50.0), 0.5, "held at half");
+        assert_eq!(
+            graph_fraction(100.0, 40.0, 120.0),
+            0.5,
+            "a tiny room still clamps"
+        );
+        assert_eq!(
+            graph_fraction(0.0, 0.0, 10.0),
+            GRAPH_DEFAULT,
+            "no room: the default"
+        );
+        assert_eq!(GRAPH_DEFAULT, 1.0 / 3.0);
+    }
+
+    #[test]
+    fn a_saved_fraction_is_clamped() {
+        assert_eq!(saved_fraction(None), GRAPH_DEFAULT);
+        assert_eq!(saved_fraction(Some(0.1)), GRAPH_MIN);
+        assert_eq!(saved_fraction(Some(0.9)), GRAPH_MAX);
+        assert_eq!(saved_fraction(Some(f32::NAN)), GRAPH_DEFAULT);
+        assert_eq!(saved_fraction(Some(0.4)), 0.4);
+        assert_eq!((GRAPH_MIN, GRAPH_MAX), (0.25, 0.5));
+    }
 
     /// Your call (2026-11-12, "make "Graph" by default collapsed"): GRAPH starts closed.
     #[test]

@@ -1138,6 +1138,7 @@ impl RightSidebarState {
         self.hidden = saved.right_sidebar_hidden;
         self.width = clamp(saved.right_sidebar_width);
         self.panel = Panel::from_key(saved.right_sidebar_panel.as_deref());
+        self.changes.graph.fraction = crate::graph_panel::saved_fraction(saved.graph_fraction);
     }
 
     /// The Files, Changes and Activity tabs, as last drawn.
