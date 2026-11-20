@@ -22,7 +22,7 @@
 use std::collections::hash_map::RandomState;
 use std::fmt::Write as _;
 use std::hash::{BuildHasher, Hasher};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::{Dimensions, Grid};
@@ -91,9 +91,13 @@ pub struct Tag {
     pub cmd: Option<String>,
     /// The command was longer than `CMD_CAP` and left out (`t=1`).
     pub truncated: bool,
+    /// When the command started, Unix seconds (`t0`, set at C; M11ab's card header).
+    pub t0: Option<u64>,
+    /// How long it ran, milliseconds (`ms`, set at D by the tagger that saw its C).
+    pub ms: Option<u64>,
 }
 
-/// The tag as a hyperlink: `fuxx-block:?v=1&s=…&p=…[&c=…][&o=…][&x=…][&cmd=…][&t=1]`, bytes
+/// The tag as a hyperlink: `fuxx-block:?v=1&s=…&p=…[&c=…][&o=…][&x=…][&cmd=…][&t=1][&t0=…][&ms=…]`, bytes
 /// 0x21–0x7E only and never `;`, so `vt_snapshot` writes it and `vte` reads it back unchanged.
 pub fn encode(tag: &Tag) -> Hyperlink {
     let mut uri = format!(
@@ -123,6 +127,12 @@ pub fn encode(tag: &Tag) -> Hyperlink {
     if tag.truncated {
         uri.push_str("&t=1");
     }
+    if let Some(t0) = tag.t0 {
+        let _ = write!(uri, "&t0={t0}");
+    }
+    if let Some(ms) = tag.ms {
+        let _ = write!(uri, "&ms={ms}");
+    }
     Hyperlink::new(Some(&tag.id), uri)
 }
 
@@ -140,6 +150,8 @@ pub fn decode(link: &Hyperlink) -> Option<Tag> {
         exit: None,
         cmd: None,
         truncated: false,
+        t0: None,
+        ms: None,
     };
     let mut state = None;
     for pair in query.split('&') {
@@ -156,6 +168,8 @@ pub fn decode(link: &Hyperlink) -> Option<Tag> {
             "x" => tag.exit = Some(value.parse().ok()?),
             "cmd" => tag.cmd = percent_decode(value.as_bytes()),
             "t" => tag.truncated = value == "1",
+            "t0" => tag.t0 = Some(value.parse().ok()?),
+            "ms" => tag.ms = Some(value.parse().ok()?),
             _ => {}
         }
     }
@@ -182,7 +196,28 @@ enum ShellState {
         input_start: Option<Point>,
         redraws: bool,
     },
-    Running,
+    /// After C: `since` is when this tagger saw it (none when the C came before a reattach),
+    /// so D can stamp the duration (M11ab).
+    Running { since: Option<Instant> },
+}
+
+/// The time a mark arrives (M11ab): the wall clock for the tag's `t0`, and a steady instant
+/// for its duration. Tests pass their own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Now {
+    pub unix: u64,
+    pub at: Instant,
+}
+
+impl Now {
+    pub fn current() -> Self {
+        Now {
+            unix: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+            at: Instant::now(),
+        }
+    }
 }
 
 /// Where the prompt's line count is in an escape sequence, carried from one read to the next.
@@ -339,7 +374,7 @@ impl Tagger {
         }
     }
 
-    fn apply<L>(&mut self, term: &mut Term<L>, mark: Mark) {
+    fn apply<L>(&mut self, term: &mut Term<L>, mark: Mark, now: Now) {
         let cursor = term.grid().cursor.point;
         if !matches!(mark, Mark::Done { .. }) {
             self.d_missed = false;
@@ -387,6 +422,8 @@ impl Tagger {
                     exit: None,
                     cmd: None,
                     truncated: false,
+                    t0: None,
+                    ms: None,
                 };
                 write_tag(term, row, &tag);
                 self.state = ShellState::Prompt {
@@ -397,7 +434,12 @@ impl Tagger {
                 };
             }
             Mark::OutputStart { cmd, truncated } => {
-                self.state = ShellState::Running;
+                // A second C (another integration) keeps the first one's start.
+                let since = match self.state {
+                    ShellState::Running { since: Some(s) } => s,
+                    _ => now.at,
+                };
+                self.state = ShellState::Running { since: Some(since) };
                 let grid = term.grid();
                 let Some((row, mut tag)) = nearest_tag(grid, cursor.line, C_SCAN_ROWS) else {
                     return;
@@ -408,6 +450,7 @@ impl Tagger {
                         tag.cmd_lines = Some(count_lines(grid, row, cursor.line));
                         tag.cmd = cmd;
                         tag.truncated = truncated;
+                        tag.t0 = Some(now.unix);
                     }
                     // A second C (another integration) only fills a missing command.
                     BlockState::Running
@@ -436,6 +479,10 @@ impl Tagger {
                 ) {
                     return;
                 }
+                let since = match self.state {
+                    ShellState::Running { since } => since,
+                    _ => None,
+                };
                 self.state = ShellState::Unknown;
                 let grid = term.grid();
                 let rows = grid.history_size() + grid.screen_lines();
@@ -457,6 +504,7 @@ impl Tagger {
                 tag.state = BlockState::Done;
                 tag.out_lines = Some(count_lines(grid, out_start, end));
                 tag.exit = exit;
+                tag.ms = since.map(|s| now.at.saturating_duration_since(s).as_millis() as u64);
                 write_tag(term, row, &tag);
             }
         }
@@ -473,6 +521,18 @@ pub fn advance<L: EventListener>(
     tagger: &mut Tagger,
     scanner: &mut MarkScanner,
     bytes: &[u8],
+) -> Vec<CommandMark> {
+    advance_at(processor, term, tagger, scanner, bytes, Now::current())
+}
+
+/// `advance`, with the marks stamped at `now` (M11ab: a command's start and duration).
+pub fn advance_at<L: EventListener>(
+    processor: &mut Processor<StdSyncHandler>,
+    term: &mut Term<L>,
+    tagger: &mut Tagger,
+    scanner: &mut MarkScanner,
+    bytes: &[u8],
+    now: Now,
 ) -> Vec<CommandMark> {
     let mut applied = Vec::new();
     let mut from = 0;
@@ -491,7 +551,7 @@ pub fn advance<L: EventListener>(
                 }),
                 Mark::Done { exit } => Some(CommandMark::Ended { exit: *exit }),
             };
-            tagger.apply(term, mark);
+            tagger.apply(term, mark, now);
             applied.extend(command);
         }
         from = end;
@@ -532,6 +592,9 @@ pub struct Block {
     /// First and last output rows; none when there is no output.
     pub output: Option<(Line, Line)>,
     pub cmd: Option<String>,
+    /// The tag's start (Unix seconds) and duration (milliseconds), when it has them (M11ab).
+    pub t0: Option<u64>,
+    pub ms: Option<u64>,
 }
 
 /// Every running or finished command still in the grid, oldest first; none on the alternate
@@ -539,6 +602,27 @@ pub struct Block {
 /// so no row is in two blocks, whatever a forged tag claims, and the walks add up to one pass
 /// over the grid. Reads the whole scrollback: on a keypress or off the UI thread only.
 pub fn list<L>(term: &Term<L>) -> Vec<Block> {
+    segments(term)
+        .into_iter()
+        .filter_map(|s| match s {
+            Segment::Command(b) => Some(b),
+            Segment::Prompt { .. } => None,
+        })
+        .collect()
+}
+
+/// One tagged stretch of the grid (M11ab's card view): a command (running or finished), or a
+/// prompt with no command (an empty Return, ⌃C on a half-typed line, or the prompt shown now),
+/// from its prompt's top to the row above the next segment's.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Segment {
+    Prompt { id: String, top: Line, bottom: Line },
+    Command(Block),
+}
+
+/// Every segment still in the grid, oldest first (`list`'s blocks with the prompts between
+/// them); none on the alternate screen. Reads the whole scrollback, as `list`.
+pub fn segments<L>(term: &Term<L>) -> Vec<Segment> {
     if term.mode().contains(TermMode::ALT_SCREEN) {
         return Vec::new();
     }
@@ -549,11 +633,20 @@ pub fn list<L>(term: &Term<L>) -> Vec<Block> {
         .map(Line)
         .filter_map(|row| Some((row, tag_at(grid, row)?)))
         .collect();
-    let mut blocks = Vec::new();
+    let mut segments = Vec::new();
     // The first row the next block may use: below the last tag and block seen.
     let mut floor = top;
     for (i, (row, tag)) in tags.iter().enumerate() {
         if tag.state == BlockState::Prompt {
+            // To the row above the next segment's prompt (its tag's prompt lines above it).
+            let last = tags.get(i + 1).map_or(bottom, |(next, next_tag)| {
+                lines_up(grid, *next, next_tag.prompt_lines.into(), *row + 1i32) - 1i32
+            });
+            segments.push(Segment::Prompt {
+                id: tag.id.clone(),
+                top: lines_up(grid, *row, tag.prompt_lines.into(), floor),
+                bottom: last.max(*row),
+            });
             floor = *row + 1i32;
             continue;
         }
@@ -562,9 +655,9 @@ pub fn list<L>(term: &Term<L>) -> Vec<Block> {
         });
         let (b, cmd_end) = block(grid, *row, tag.clone(), cursor, Bounds { floor, stop });
         floor = last_row(&b, cmd_end) + 1i32;
-        blocks.push(b);
+        segments.push(Segment::Command(b));
     }
-    blocks
+    segments
 }
 
 /// A block's last row: its output's, or its command's.
@@ -806,6 +899,8 @@ fn block(grid: &Grid<Cell>, row: Line, tag: Tag, cursor: Line, bounds: Bounds) -
         cmd_row: row,
         output,
         cmd: tag.cmd,
+        t0: tag.t0,
+        ms: tag.ms,
     };
     (block, cmd_end)
 }
@@ -1136,6 +1231,36 @@ mod tests {
                 .feed(&d(exit))
         }
 
+        /// Like `feed`, at a given time (M11ab: the tagger stamps C and D with it).
+        fn feed_at(&mut self, bytes: &[u8], now: Now) -> &mut Self {
+            advance_at(
+                &mut self.processor,
+                &mut self.term,
+                &mut self.tagger,
+                &mut self.scanner,
+                bytes,
+                now,
+            );
+            self
+        }
+
+        /// `command`, its C at `start` and its D at `end`.
+        fn command_at(
+            &mut self,
+            cmd: &str,
+            output: &str,
+            exit: Option<i32>,
+            start: Now,
+            end: Now,
+        ) -> &mut Self {
+            self.prompt()
+                .feed(cmd.as_bytes())
+                .feed(b"\r\n")
+                .feed_at(&c(Some(cmd)), start)
+                .feed(output.as_bytes())
+                .feed_at(&d(exit), end)
+        }
+
         fn blocks(&self) -> Vec<Block> {
             list(&self.term)
         }
@@ -1168,6 +1293,8 @@ mod tests {
             exit: Some(-1),
             cmd: cmd.map(String::from),
             truncated: false,
+            t0: None,
+            ms: None,
         }
     }
 
@@ -1185,6 +1312,8 @@ mod tests {
                 exit: None,
                 cmd: None,
                 truncated: true,
+                t0: None,
+                ms: None,
             },
         ] {
             let link = encode(&t);
@@ -2111,5 +2240,116 @@ mod tests {
         let (mut a, b) = (a, b);
         let id = a.fresh_id();
         assert!(a.issued(&id) && !b.issued(&id), "{id}");
+    }
+
+    /// M11ab: a start (`unix` 1,795,000,000) and an end 3.2 s later.
+    fn start_and_end() -> (Now, Now) {
+        let at = std::time::Instant::now();
+        (
+            Now {
+                unix: 1_795_000_000,
+                at,
+            },
+            Now {
+                unix: 1_795_000_003,
+                at: at + std::time::Duration::from_millis(3_200),
+            },
+        )
+    }
+
+    fn done_tag(term: &Term<VoidListener>) -> Tag {
+        tags(term)
+            .into_iter()
+            .map(|(_, t)| t)
+            .find(|t| t.state == BlockState::Done)
+            .expect("a done tag")
+    }
+
+    #[test]
+    fn a_finished_command_carries_its_start_and_duration() {
+        let (start, end) = start_and_end();
+        let mut sh = Shell::new();
+        sh.command_at("make", "ok\r\n", Some(0), start, end);
+        let done = done_tag(&sh.term);
+        assert_eq!(done.t0, Some(1_795_000_000));
+        assert_eq!(done.ms, Some(3_200));
+        let block = &sh.blocks()[0];
+        assert_eq!((block.t0, block.ms), (Some(1_795_000_000), Some(3_200)));
+    }
+
+    #[test]
+    fn times_round_trip_and_an_old_tag_has_none() {
+        let t = Tag {
+            t0: Some(1_795_000_000),
+            ms: Some(3_200),
+            ..tag(BlockState::Done, Some("ls"))
+        };
+        assert_eq!(decode(&encode(&t)), Some(t));
+        let old = Hyperlink::new(
+            Some("fuxx-block-1"),
+            "fuxx-block:?v=1&s=done&p=0&x=0".into(),
+        );
+        let old = decode(&old).expect("an older tag reads");
+        assert_eq!((old.t0, old.ms), (None, None));
+        let bad = Hyperlink::new(
+            Some("fuxx-block-1"),
+            "fuxx-block:?v=1&s=done&p=0&t0=abc".into(),
+        );
+        assert_eq!(
+            decode(&bad),
+            None,
+            "a bad t0 rejects the tag, as a bad o does"
+        );
+    }
+
+    #[test]
+    fn times_survive_the_snapshot() {
+        let (start, end) = start_and_end();
+        let mut sh = Shell::new();
+        sh.command_at("make", "ok\r\n", Some(0), start, end)
+            .prompt();
+        let bytes = crate::vt_snapshot::encode(&mut sh.term);
+        let config = Config {
+            scrolling_history: 50,
+            ..term_config()
+        };
+        let mut fresh = Term::new(config, &TermDims { cols: 20, rows: 6 }, VoidListener);
+        Processor::<StdSyncHandler>::new().advance(&mut fresh, &bytes);
+        let done = done_tag(&fresh);
+        assert_eq!((done.t0, done.ms), (Some(1_795_000_000), Some(3_200)));
+    }
+
+    #[test]
+    fn a_reattached_tagger_gives_no_duration() {
+        let (start, end) = start_and_end();
+        let mut sh = Shell::new();
+        sh.prompt()
+            .feed(b"make")
+            .feed(b"\r\n")
+            .feed_at(&c(Some("make")), start)
+            .feed(b"ok\r\n");
+        // A reattach: a fresh tagger (no start instant) sees the D.
+        sh.tagger = Tagger::new();
+        sh.feed_at(&d(Some(0)), end);
+        let done = done_tag(&sh.term);
+        assert_eq!(done.t0, Some(1_795_000_000), "the start is kept");
+        assert_eq!(done.ms, None, "no duration without the start instant");
+    }
+
+    #[test]
+    fn segments_keep_empty_prompts() {
+        let mut sh = Shell::new();
+        sh.command("ls", "a\r\n", Some(0));
+        // An empty Return: A, B, then a new A (no C).
+        sh.prompt().feed(b"\r\n");
+        sh.command("npm test", "FAIL\r\n", Some(1)).prompt();
+        let kinds: Vec<String> = segments(&sh.term)
+            .into_iter()
+            .map(|s| match s {
+                Segment::Prompt { .. } => "prompt".to_string(),
+                Segment::Command(b) => b.cmd.unwrap_or_default(),
+            })
+            .collect();
+        assert_eq!(kinds, ["ls", "prompt", "npm test", "prompt"]);
     }
 }
