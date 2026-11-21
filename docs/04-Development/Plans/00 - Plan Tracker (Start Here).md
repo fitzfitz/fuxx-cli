@@ -20,7 +20,7 @@ below. Every task carries a status indicator, and every step is a checkbox.
 | | |
 |---|---|
 | **Current milestone** | **M11ab — Chat-style shell tabs**, built, reworked and polished (the composer, the agent box made the same, the send notch), merged, pushed and **released in v0.11.0**; waiting for your on-screen check ([[88 - Milestone 11ab - Chat-Style Shell Tabs]]). |
-| **Status** | **v0.11.0 released 2026-11-21** (run 44910715796; tag `v0.11.0` on `1031713`; `fuxx-0.11.0.zip`): M11y, M11z, M11p, M11q, M11aa, M11ab, M11ac, M11ae, M11af, M11ag, M11ah, M11ai, M11aj, M11ak and M11al, all 🟨 built and merged, their on-screen checks pending. Placeholders: M11an (full-width typing line), M11ao (one chat box with add-ons). |
+| **Status** | **v0.12.0 released 2026-11-22** (run 44941540508; tag `v0.12.0` on `78f92b6`; `fuxx-0.12.0.zip`): M11ap live usage and the chores since v0.11.0 (the chat box's feel, the model menu, the status bar following agent tabs, the sidebar footer, fixes). Before it: **v0.11.0 released 2026-11-21** (run 44910715796; tag `v0.11.0` on `1031713`; `fuxx-0.11.0.zip`): M11y, M11z, M11p, M11q, M11aa, M11ab, M11ac, M11ae, M11af, M11ag, M11ah, M11ai, M11aj, M11ak and M11al, all 🟨 built and merged, their on-screen checks pending. Placeholders: M11an (full-width typing line), M11ao (one chat box with add-ons). |
 | **▶ Next action** | Your on-screen checks of the released milestones; then M11ad (background agents) → M11am (agent tab rework); M11an → M11ao (the recommended order, waiting for your word: [[90 - Milestone 11ao - One Chat Box]]). |
 | **Blocked on** | Nothing. |
 | **Last updated** | 2026-11-21 |

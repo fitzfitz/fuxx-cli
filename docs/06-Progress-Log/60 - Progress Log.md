@@ -15,6 +15,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ## Current status snapshot
 
 - **Latest (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
+- **Released (2026-11-22):** **v0.12.0** (run 44941540508, `fuxx-0.12.0.zip`): M11ap and the chores since v0.11.0.
 - **Released (2026-11-21):** **v0.11.0** (run 44910715796, `fuxx-0.11.0.zip`), M11y through M11al and M11ab.
 - **Current milestone (2026-11-21, latest):** **M11ab — Chat-style shell tabs** 🟨 reworked after your first look (soft cards on a rail, the composer, your prompt left out; inner box in the sidebar's colour), merged to master and pushed (`07395eb`); waiting for your on-screen check (note 88's rework checklist, 8 items).
 - **Current milestone (2026-11-19, latest):** **M11q — Which command finished** 🟨 built, **merged to master and pushed 2026-11-20** (`f93654b`), waiting for your on-screen check (all 12 tasks, 0–11; note 68, 21 on-screen items). The whole-branch review is done, its fix wave applied and the second full ui-shots run done (244 passed, the same 8 display-dependent scenes failing); next is your on-screen check. M11ag's check is still open.
@@ -31,6 +32,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-22 — v0.12.0 released
+
+- **What:** on your word ("push then release it"): everything since v0.11.0 — M11ap live usage (the status bar's
+  strip and Orca-style popover, one usage panel), the chat box's feel and its send wave, the model menu's second
+  design pass, the status bar following agent tabs, tabs, the Git bar, the sidebar footer, and the fixes (the shell
+  box's full-row prompt, the usage popover closing, `/clear`, the first `clear`).
+- **Release:** pushed `19ef2bb..9c2a514`; commit `78f92b6` (`chore(release): 0.12.0`), tag `v0.12.0`, run 44941540508
+  (green), asset `fuxx-0.12.0.zip` (29.8 MB) at https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.12.0.
+- **Then:** cleanups (`1c235cf`): a dead probe arm in the box menus, an unused field in the Git bar scene.
 
 ### 2026-11-22 — Chores and fixes: notch, shell box, Git bar, usage, tabs, status bar, model menu
 
