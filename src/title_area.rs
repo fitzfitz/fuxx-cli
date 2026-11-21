@@ -54,12 +54,14 @@ use crate::ui_tokens::size::{CHROME_LINE, STATUS_BAR, TOP_BAND};
 use crate::ui_tokens::{TEXT_MIN, ensure_contrast, text};
 use crate::workspace::{Overlay, Workspace};
 
-/// The footer's buttons (the +, the 🔔, the gear): each one's side, and the space between them.
-pub(crate) const FOOTER_BUTTON: f32 = 34.0;
-pub(crate) const FOOTER_GAP: f32 = 12.0;
-/// The footer's inset from the sidebar's sides (and its New button's height, below).
-pub(crate) const FOOTER_SIDE: f32 = 14.0;
-pub(crate) const FOOTER_NEW: f32 = 38.0;
+/// The footer's controls (New, the 🔔, the gear; the lead designer's spec, 2026-11-22: "make
+/// these mess good"): one 28 pt box each, nothing drawn at rest; the least space between New
+/// and the 🔔; the footer's inset from the sidebar's sides (the rows'); the narrowest sidebar
+/// that shows New's words (narrower: its + alone).
+pub(crate) const FOOTER_BUTTON: f32 = 28.0;
+pub(crate) const FOOTER_GAP: f32 = 8.0;
+pub(crate) const FOOTER_SIDE: f32 = 10.0;
+pub(crate) const FOOTER_WORDS_MIN: f32 = 220.0;
 /// The app's title, drawn in the open sidebar's band (M11m), the least room it is drawn in
 /// (centred on the sidebar's middle), and the least space between it and the sidebar button.
 pub(crate) const TITLE: &str = "the Fuxx?";
@@ -84,6 +86,8 @@ pub(crate) const BAND_PREFERENCES_GROUP: &str = "band-preferences";
 /// from the 🔔 (inside `DOT`).
 pub(crate) const DOT: f32 = 10.0;
 pub(crate) const DOT_INSET: f32 = 1.5;
+/// In the footer's 28 pt box: on the 🔔's top-right shoulder.
+pub(crate) const FOOTER_DOT_INSET: f32 = 3.0;
 /// The popover: its widest and narrowest (the room in the default sidebar), how far above the
 /// footer it opens, how far from the window's edges it keeps, and the most its list may take
 /// (the rest scrolls).
@@ -114,12 +118,12 @@ const ICON: f32 = 15.0;
 /// The popover's height around its list: its edge, padding, header and the gap under it.
 const PANEL_CHROME: f32 = 2.0 + 2.0 * PADDING + HEADER + PADDING;
 
-/// The left edges, in the sidebar `width` wide, of the footer's buttons: the + at the footer's
-/// left inset, the gear at the right (the same distance from the sidebar's edge, which has no
-/// border since M11i), the 🔔 beside it.
+/// The left edges, in the sidebar `width` wide, of the footer's controls: New at the footer's
+/// left inset, the gear at the right (the same distance from the sidebar's edge), the 🔔
+/// `BAND_GAP` before it.
 pub(crate) fn footer_buttons(width: f32) -> [f32; 3] {
     let gear = width - FOOTER_SIDE - FOOTER_BUTTON;
-    [FOOTER_SIDE, gear - FOOTER_GAP - FOOTER_BUTTON, gear]
+    [FOOTER_SIDE, gear - BAND_GAP - FOOTER_BUTTON, gear]
 }
 
 /// The popover's width over a sidebar `sidebar_width` wide: the footer's, inside its insets,
@@ -560,7 +564,7 @@ impl Workspace {
         let bell = band_button("band-notifications", BAND_BELL_GROUP, bell_x, ui)
             .when(popover, |b| b.bg(hsla(ui.panel_hover)))
             .child(footer_icon(Glyph::Bell, ui, BAND_BELL_GROUP, popover))
-            .when(unseen, |b| b.child(unseen_dot(ui, ui.card)))
+            .when(unseen, |b| b.child(unseen_dot(ui, ui.card, DOT_INSET)))
             .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip(NOTIFICATIONS_TIP.into())).into() })
             .on_click(
                 cx.listener(|this, _: &ClickEvent, window, cx| this.open_notifications(window, cx)),
@@ -628,13 +632,13 @@ pub(crate) fn footer_icon(kind: Glyph, ui: UiColors, group: &'static str, lit: b
         )
 }
 
-/// The unseen dot for the 🔔's top right, ringed in `ring`, the colour under it (the sidebar's in
-/// its footer, the card's by the lights).
-pub(crate) fn unseen_dot(ui: UiColors, ring: Rgb) -> Div {
+/// The unseen dot for the 🔔's top right, `inset` in its box, ringed in `ring`, the colour under
+/// it (the sidebar's in its footer, the card's by the lights).
+pub(crate) fn unseen_dot(ui: UiColors, ring: Rgb, inset: f32) -> Div {
     div()
         .absolute()
-        .top(px(DOT_INSET))
-        .right(px(DOT_INSET))
+        .top(px(inset))
+        .right(px(inset))
         .size(px(DOT))
         .rounded_full()
         .border_2()
@@ -694,7 +698,7 @@ mod tests {
                 "width {width}: the + and the gear mirror each other"
             );
             assert_eq!(
-                bell + FOOTER_BUTTON + FOOTER_GAP,
+                bell + FOOTER_BUTTON + BAND_GAP,
                 gear,
                 "the bell beside the gear"
             );
@@ -703,8 +707,9 @@ mod tests {
                 "width {width}: no overlap"
             );
         }
-        assert_eq!(FOOTER_BUTTON, 34.0);
-        assert_eq!(FOOTER_GAP, 12.0);
+        // The lead designer's spec (2026-11-22): one 28 pt box each, 8 at least before the bell.
+        assert_eq!(FOOTER_BUTTON, 28.0);
+        assert_eq!(FOOTER_GAP, 8.0);
     }
 
     #[test]

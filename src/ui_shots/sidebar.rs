@@ -1620,7 +1620,7 @@ fn sidebar_band_scenes() {
     use std::rc::Rc;
 
     use crate::sidebar::{FOOTER, SEARCH, SEARCH_BOTTOM, SEARCH_SIDE, SEARCH_TOP};
-    use crate::title_area::{FOOTER_BUTTON, FOOTER_GAP, FOOTER_SIDE, footer_buttons};
+    use crate::title_area::{FOOTER_BUTTON, FOOTER_SIDE, footer_buttons};
     use ui_tokens::size::{SIDEBAR_DEFAULT_WIDTH, STATUS_BAR, TOP_BAND};
 
     let dims = size(px(960.0), px(600.0));
@@ -1686,43 +1686,48 @@ fn sidebar_band_scenes() {
             "{n}: margin, below"
         );
 
-        // The footer: FOOTER tall above the status bar, its line on top, the button 38 tall
-        // with 12 above and below, from FOOTER_SIDE to a FOOTER_GAP short of the bell's box.
+        // The footer (the lead designer's spec, 2026-11-22: "make these mess good"): FOOTER 48
+        // above the status bar, its line on top; three 28 pt controls with nothing drawn at
+        // rest (no edge, no fill), 10 in from the sides as the rows; the bell and gear 4 apart.
         let foot = dims.height.as_f32() - STATUS_BAR - FOOTER;
-        assert_eq!(FOOTER, 62.0, "{n}: the footer's height");
+        assert_eq!(FOOTER, 48.0, "{n}: the footer's height");
+        assert_eq!(FOOTER_BUTTON, 28.0, "{n}: the controls' box");
+        assert_eq!(FOOTER_SIDE, 10.0, "{n}: as the rows' inset");
         assert!(
             near(at(w / 2.0, foot + 0.5), edge),
             "{n}: the footer's top line"
         );
         assert!(near(at(5.0, foot + 3.0), side), "{n}: under the line");
-        let [_, bell, _] = footer_buttons(w);
-        assert_eq!(FOOTER_BUTTON, 34.0, "{n}: the bell's box");
-        let right = bell - FOOTER_GAP;
-        let (button_top, button_mid) = (foot + 12.0, foot + FOOTER / 2.0);
-        assert!(
-            near(at(FOOTER_SIDE + 0.5, button_mid), edge),
-            "{n}: button, left"
+        let [new, bell, gear] = footer_buttons(w);
+        assert_eq!(new, FOOTER_SIDE, "{n}: New at the left inset");
+        assert_eq!(
+            gear + FOOTER_BUTTON,
+            w - FOOTER_SIDE,
+            "{n}: the gear 10 from the right"
         );
-        assert!(
-            near(at(right - 0.5, button_mid), edge),
-            "{n}: button, right"
+        assert_eq!(
+            gear - (bell + FOOTER_BUTTON),
+            4.0,
+            "{n}: the bell 4 before the gear"
         );
+        let mid = foot + FOOTER / 2.0;
+        for (what, x) in [
+            ("New's left end", FOOTER_SIDE + 0.5),
+            ("the gear's right end", w - FOOTER_SIDE - 0.5),
+            ("between the bell and the gear", gear - 2.0),
+            ("New's old edge", 60.0),
+        ] {
+            assert!(near(at(x, mid), side), "{n}: nothing drawn at rest: {what}");
+        }
         assert!(
-            near(at(right + 2.0, button_mid), side),
-            "{n}: gap to the bell"
+            near(at(60.0, foot + 10.5), side),
+            "{n}: no edge along New's top"
         );
-        assert!(near(at(60.0, button_top + 0.5), edge), "{n}: button, top");
-        assert!(
-            near(at(60.0, button_top + 37.5), edge),
-            "{n}: button, bottom"
-        );
-        assert!(
-            near(at(60.0, button_top - 1.5), side),
-            "{n}: 12 above the button"
-        );
-        assert!(
-            near(at(60.0, button_top + 39.5), side),
-            "{n}: 12 below the button"
+        // The open-sidebar button above stays centred on the gear.
+        assert_eq!(
+            crate::sidebar_toggle::OPEN_EDGE + crate::sidebar_toggle::HIT / 2.0,
+            FOOTER_SIDE + FOOTER_BUTTON / 2.0,
+            "{n}: the band's button over the gear"
         );
         // No edge line down the sidebar's right: the card's edge and shadow separate them.
         assert!(

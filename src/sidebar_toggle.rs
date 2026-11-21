@@ -30,7 +30,7 @@ const ICON: f32 = 16.0;
 pub(crate) const BAND_EDGE: f32 = 8.0;
 /// How far the open sidebar's button keeps from its band's right edge: its centre is then the
 /// footer gear's (`OPEN_EDGE + HIT / 2 == FOOTER_SIDE + FOOTER_BUTTON / 2`; M11al).
-pub(crate) const OPEN_EDGE: f32 = 19.0;
+pub(crate) const OPEN_EDGE: f32 = 12.0;
 /// The button's top: its hit area centred on the window's line (`CHROME_LINE`), with the
 /// traffic lights.
 pub(crate) const BUTTON_Y: f32 = CHROME_LINE - HIT / 2.0;

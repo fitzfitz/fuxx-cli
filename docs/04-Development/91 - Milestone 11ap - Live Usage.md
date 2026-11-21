@@ -201,3 +201,8 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
   round as the reference), 8 round the circle, the outer corner concentric. The old square-and-patches is gone.
 - **Box controls, clean** ("make it clean!"): with no fills the invisible room set the gaps — `+` now sits under the
   ✦, and 12 between what shows (pills 6 each side, no gap between controls).
+- **Sidebar footer**, the lead designer's spec ("make these mess good"): 48 tall (was 62), its line kept; three 28 pt
+  controls with nothing drawn at rest (no edge, no fill; `row_hover` on hover or while open), 10 in from the sides as
+  the rows; New hugs "+ New Fuxxpace" (⌘N in its tooltip, no keycap; under a 220 pt sidebar its + alone); the bell
+  and gear 4 apart; the dot on the bell's shoulder (3 in), its ring the colour under it; `OPEN_EDGE` 12 so the band's
+  button stays over the gear. Not shot yet: hover, narrow and dot scenes.

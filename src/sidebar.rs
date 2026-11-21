@@ -48,8 +48,9 @@ use crate::tab_menu::TabMenu;
 use crate::terminal_view::hsla;
 use crate::theme::{UiColors, mix};
 use crate::title_area::{
-    BELL_GROUP, FOOTER_BUTTON, FOOTER_GAP, FOOTER_NEW, FOOTER_SIDE, NOTIFICATIONS_TIP,
-    PREFERENCES_GROUP, PREFERENCES_TIP, footer_icon, unseen_dot,
+    BAND_GAP, BELL_GROUP, FOOTER_BUTTON, FOOTER_DOT_INSET, FOOTER_GAP, FOOTER_SIDE,
+    FOOTER_WORDS_MIN, NOTIFICATIONS_TIP, PREFERENCES_GROUP, PREFERENCES_TIP, footer_icon,
+    unseen_dot,
 };
 use crate::ui_tokens::size::{
     DIVIDER_ACTIVE, GROUP_HEADER, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
@@ -904,7 +905,7 @@ const AGE_TEXT: f32 = 12.0;
 /// A header's + (a new workspace in the group), shown on hover.
 const ADD_BUTTON: f32 = 18.0;
 /// The footer under the rows; the resize strip along the right edge.
-pub(crate) const FOOTER: f32 = 62.0;
+pub(crate) const FOOTER: f32 = 48.0;
 const RESIZE_STRIP: f32 = 4.0;
 /// A row narrower than this leaves the age out, so the name keeps its room (220 before
 /// M11al's wider avatar).
@@ -2799,17 +2800,21 @@ impl Workspace {
                 .cursor_pointer()
                 .hover(|style| style.bg(hsla(ui.row_hover)).text_color(hsla(ui.text)))
         };
+        // New's words while the sidebar has room for them whole (never cut short).
+        let words = self.sidebar.width >= FOOTER_WORDS_MIN;
+        let dot_ring = if popover {
+            ui.row_hover
+        } else {
+            ui.sidebar_background
+        };
         div()
             .flex_none()
             .flex()
             .items_center()
             .relative()
-            .gap(px(FOOTER_GAP))
             .h(px(FOOTER))
             .px(px(FOOTER_SIDE))
-            .py(px(12.0))
-            // The line on top is drawn over the padding, so the button sits 12 pt in from the
-            // footer's top and bottom (12 + 38 + 12 = `FOOTER`).
+            // The line on top (it separates the footer from the scrolling rows).
             .child(
                 div()
                     .absolute()
@@ -2819,38 +2824,49 @@ impl Workspace {
                     .h(px(1.0))
                     .bg(hsla(ui.card_border)),
             )
-            // "+ New Fuxxpace ⌘N" (M11r): the + menu, as the + was.
+            // "+ New Fuxxpace" (M11r): the + menu. Its box hugs its words; ⌘N is in its
+            // tooltip; lit like the others while its menu is open.
             .child(
                 button("sidebar-new")
                     .group("sidebar-new")
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .justify_start()
-                    .h(px(FOOTER_NEW))
-                    .gap(px(8.0))
-                    .px(px(12.0))
-                    .rounded(px(10.0))
-                    .border_1()
-                    .border_color(hsla(ui.card_border))
-                    .when(open, |b| b.bg(hsla(ui.row_active)))
+                    .when(words, |b| {
+                        b.w_auto()
+                            .justify_start()
+                            .gap(px(8.0))
+                            .pl(px((FOOTER_BUTTON - 15.0) / 2.0))
+                            .pr(px(10.0))
+                    })
+                    .when(open, |b| b.bg(hsla(ui.row_hover)))
                     .text_size(px(text::UI))
-                    .text_color(hsla(ui.text_dim))
+                    .text_color(hsla(if open { ui.text } else { ui.text_dim }))
+                    .group_hover("sidebar-new", |s| s.text_color(hsla(ui.text)))
                     .child(footer_icon(Glyph::Plus, ui, "sidebar-new", open))
-                    .child(div().flex_1().min_w(px(0.0)).truncate().child(NEW_TEXT))
-                    .child(keycap(NEW_KEYS, ui))
-                    .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("New\u{2026}".into())).into() })
+                    .when(words, |b| {
+                        b.child(div().whitespace_nowrap().child(NEW_TEXT))
+                    })
+                    .tooltip(|_, cx| -> AnyView {
+                        cx.new(|_| Tip(format!("{NEW_TEXT} ({NEW_KEYS})").into()))
+                            .into()
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.sidebar.new_menu = !this.sidebar.new_menu;
                         cx.notify();
                     })),
             )
+            .child(div().flex_1().min_w(px(FOOTER_GAP)))
             .child(
                 button("sidebar-notifications")
                     .group(BELL_GROUP)
                     .relative()
                     .when(popover, |b| b.bg(hsla(ui.row_hover)))
                     .child(footer_icon(Glyph::Bell, ui, BELL_GROUP, popover))
-                    .when(unseen, |b| b.child(unseen_dot(ui, ui.sidebar_background)))
+                    // Its ring the colour under it, the hover fill's too (no dark halo).
+                    .when(unseen, |b| {
+                        b.child(
+                            unseen_dot(ui, dot_ring, FOOTER_DOT_INSET)
+                                .group_hover(BELL_GROUP, |s| s.border_color(hsla(ui.row_hover))),
+                        )
+                    })
                     .tooltip(|_, cx| -> AnyView {
                         cx.new(|_| Tip(NOTIFICATIONS_TIP.into())).into()
                     })
@@ -2858,6 +2874,7 @@ impl Workspace {
                         this.open_notifications(window, cx)
                     })),
             )
+            .child(div().flex_none().w(px(BAND_GAP)))
             .child(
                 button("sidebar-preferences")
                     .group(PREFERENCES_GROUP)

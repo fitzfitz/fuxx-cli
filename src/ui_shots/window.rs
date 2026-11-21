@@ -2306,10 +2306,9 @@ fn title_area_scenes() {
                         }
                         // Where the model puts each button (the popover hangs from the gear's
                         // edge) is where it is drawn: the ink's centre is the slot's. The +
-                        // is inside the New button: its 1 px edge and 12 pt padding in, the
-                        // 15 pt icon's middle 7.5 further.
+                        // sits in New's first 28 pt as an icon button's glyph (2026-11-22).
                         let wants = [
-                            plus_x + 1.0 + 12.0 + 7.5,
+                            plus_x + FOOTER_BUTTON / 2.0,
                             bell_x + FOOTER_BUTTON / 2.0,
                             gear_x + FOOTER_BUTTON / 2.0,
                         ];
