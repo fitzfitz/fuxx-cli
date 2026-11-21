@@ -1574,10 +1574,23 @@ impl Workspace {
             .map(|s| (("status-bar", s.id), s.status));
         let agents =
             (self.tab_agents().into_iter()).map(|(_, id, status)| ((AGENT_MARK, id), status));
+        // The status bar's agent tab, when it follows one (else its terminal).
+        let bar_agent = self
+            .right_sidebar
+            .followed_agent
+            .and_then(|tab| self.agents.get(&tab))
+            .map(|slot| {
+                (
+                    (crate::status_bar::STATUS_BAR_AGENT_MARK, slot.id),
+                    slot.status,
+                )
+            });
+        let followed = followed.filter(|_| bar_agent.is_none());
         headers
             .chain(tabs)
             .chain(agents)
             .chain(followed)
+            .chain(bar_agent)
             .filter(|(_, status)| *status != Status::Idle)
             .collect()
     }

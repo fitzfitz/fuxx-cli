@@ -1113,6 +1113,9 @@ pub struct RightSidebarState {
     /// An agent tab's folder, while one is focused (or was the last followed tab): Files and
     /// Changes show it in place of the followed terminal's (`right_sidebar_folder`).
     pub(crate) agent_folder: Option<PathBuf>,
+    /// That agent tab, while it is followed: the status bar describes it (your report,
+    /// 2026-11-22: "it doesn't follow the active tab status").
+    pub(crate) followed_agent: Option<crate::layout_model::TabId>,
     /// The last folder found: for which terminal, the folder (none: not found) and whether that
     /// terminal is an SSH one.
     pub(crate) found: Option<(u64, Option<PathBuf>, bool)>,
@@ -1149,6 +1152,7 @@ impl RightSidebarState {
             found: None,
             looked: None,
             agent_folder: None,
+            followed_agent: None,
             ticking: false,
             panel: Panel::Files,
             files: FilesPanel::new(),
@@ -1315,13 +1319,16 @@ impl Workspace {
     /// (a redraw asked for then reaches no one).
     pub(crate) fn follow_terminal(&mut self, cx: &mut Context<Self>) {
         // An agent tab focused: its folder; a terminal focused: back to terminals.
-        let focused = self
-            .model
-            .focused_tab()
+        let tab = self.model.focused_tab();
+        let focused = tab
             .and_then(|t| self.model.tab(t))
             .map(|t| Follow::of(&t.kind));
         match focused {
             Some(Follow::Folder(folder)) => {
+                if self.right_sidebar.followed_agent != tab {
+                    self.right_sidebar.followed_agent = tab;
+                    cx.notify();
+                }
                 if self.right_sidebar.agent_folder.as_ref() != Some(&folder) {
                     self.right_sidebar.agent_folder = Some(folder);
                     self.right_sidebar.refresh_now();
@@ -1331,6 +1338,7 @@ impl Workspace {
             }
             Some(Follow::Terminal(_)) if self.right_sidebar.agent_folder.is_some() => {
                 self.right_sidebar.agent_folder = None;
+                self.right_sidebar.followed_agent = None;
                 self.right_sidebar.refresh_now();
                 cx.notify();
             }

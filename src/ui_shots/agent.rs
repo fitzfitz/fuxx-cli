@@ -2114,6 +2114,17 @@ pub(super) fn agent_workspace_split() {
                         other => panic!("{n}: {other:?}"),
                     }
                     assert_eq!(ws.agents[&tab].id, 1, "{n}: the first agent tab is a1");
+                    // The status bar follows the focused agent tab (your report, 2026-11-22:
+                    // "it doesn't follow the active tab status"): its status and its folder.
+                    let agent = ws.agents[&tab].status;
+                    assert_ne!(agent, crate::status::Status::Idle, "{n}: it has news");
+                    let facts = ws.status_bar_facts().expect("the bar says something");
+                    assert_eq!(facts.status, agent, "{n}: the bar says the agent's status");
+                    assert_eq!(
+                        facts.folder.as_deref(),
+                        Some(std::path::Path::new("/Users/me/code/my-app")),
+                        "{n}: and its folder"
+                    );
                     let keys = view.read(cx).focus_handle(cx).is_focused(window);
                     assert!(keys, "{n}: the new agent tab has the keyboard");
                 })

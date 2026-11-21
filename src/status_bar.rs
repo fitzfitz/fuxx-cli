@@ -457,6 +457,9 @@ pub struct BarFacts {
     pub ports: Vec<u16>,
 }
 
+/// The status bar's mark for a followed agent tab (its `aN`), apart from its tab's.
+pub(crate) const STATUS_BAR_AGENT_MARK: &str = "status-bar-agent";
+
 /// `branch` as a cut branch shows it: its first `BRANCH_SHORT` characters, then `…` (an SSH
 /// terminal's `ssh` kept before its cut host).
 pub fn cut_branch(branch: &str) -> String {
@@ -523,6 +526,29 @@ impl Workspace {
     /// What the status bar says about the followed terminal (`right_sidebar.followed`): none
     /// with no terminal followed.
     pub(crate) fn status_bar_facts(&self) -> Option<BarFacts> {
+        // An agent tab followed: its status, its folder and the branch there.
+        if let Some(slot) = self
+            .right_sidebar
+            .followed_agent
+            .and_then(|tab| self.agents.get(&tab))
+        {
+            let word = status_word(slot.status, &ProgramState::Prompt);
+            let news = matches!(
+                word,
+                StatusWord::Working | StatusWord::NeedsInput | StatusWord::Done
+            );
+            let folder = self.right_sidebar.agent_folder.as_deref();
+            return Some(BarFacts {
+                status: slot.status,
+                word,
+                text: word_text(word, news.then(|| slot.since.elapsed())),
+                running: false,
+                branch: folder.and_then(|f| self.places.branch(f)).map(String::from),
+                ssh: false,
+                folder: folder.map(Path::to_path_buf),
+                ports: Vec::new(),
+            });
+        }
         let id = self.right_sidebar.followed?;
         let s = self.sessions.items().iter().find(|s| s.id == id)?;
         let host = s.ssh.as_ref().map(|t| t.host.as_str());
@@ -1043,8 +1069,26 @@ impl Workspace {
         let left = facts.as_ref().map(|f| {
             let id = self.right_sidebar.followed;
             let session = id.and_then(|id| self.sessions.items().iter().find(|s| s.id == id));
-            let mark = match session {
-                Some(session) if f.status != Status::Idle => {
+            let agent = self
+                .right_sidebar
+                .followed_agent
+                .and_then(|tab| self.agents.get(&tab));
+            let mark = match (agent, session) {
+                (Some(slot), _) if f.status != Status::Idle => {
+                    let size = MARK * crate::sidebar::mark_size(f.status) / STATUS_MARK;
+                    self.status_mark(
+                        STATUS_BAR_AGENT_MARK,
+                        slot.id,
+                        slot.status,
+                        None,
+                        ui,
+                        ui.sidebar_background,
+                        size,
+                        cx,
+                    )
+                }
+                (Some(_), _) => status_mark::idle_mark(false, &ui).into_any_element(),
+                (None, Some(session)) if f.status != Status::Idle => {
                     // Its halo's box scaled as the sidebar's is to its mark.
                     let size = MARK * crate::sidebar::mark_size(f.status) / STATUS_MARK;
                     self.session_mark_sized(
@@ -1056,7 +1100,7 @@ impl Workspace {
                         cx,
                     )
                 }
-                _ => status_mark::idle_mark(f.running, &ui).into_any_element(),
+                (None, _) => status_mark::idle_mark(f.running, &ui).into_any_element(),
             };
             let word_color = if f.word == StatusWord::NeedsInput {
                 ui.ring_waiting

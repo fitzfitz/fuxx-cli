@@ -633,7 +633,8 @@ impl Workspace {
 
     /// Whether the places' refresh should run: they can be seen and a place is on screen.
     fn places_wanted(&self, cx: &App) -> bool {
-        self.places_seen(cx) && !self.place_subjects().is_empty()
+        self.places_seen(cx)
+            && (!self.place_subjects().is_empty() || self.right_sidebar.followed_agent.is_some())
     }
 
     /// Look up again, where due (`due`), the place of each terminal whose place is on screen
@@ -677,25 +678,37 @@ impl Workspace {
             else {
                 continue;
             };
-            let Some(git) = self.places.ask_branch(&folder, now) else {
-                continue;
-            };
-            let dir = folder.clone();
-            cx.spawn(async move |this, cx| {
-                let branch = cx
-                    .background_executor()
-                    .spawn(async move { branch_at(&git, &dir) })
-                    .await;
-                this.update(cx, |this, cx| {
-                    if this.places.set_branch(&folder, branch) {
-                        cx.notify();
-                    }
-                })
-                .ok();
-            })
-            .detach();
+            self.ask_branch_at(folder, now, cx);
+        }
+        // The status bar's agent tab: the branch in its folder.
+        if self.right_sidebar.followed_agent.is_some()
+            && let Some(folder) = self.right_sidebar.agent_folder.clone()
+        {
+            self.ask_branch_at(folder, now, cx);
         }
         changed
+    }
+
+    /// Ask git for the branch in `folder` where due (`ask_branch`), off the UI thread; redraw
+    /// when it changes.
+    fn ask_branch_at(&mut self, folder: PathBuf, now: Instant, cx: &mut Context<Self>) {
+        let Some(git) = self.places.ask_branch(&folder, now) else {
+            return;
+        };
+        let dir = folder.clone();
+        cx.spawn(async move |this, cx| {
+            let branch = cx
+                .background_executor()
+                .spawn(async move { branch_at(&git, &dir) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.places.set_branch(&folder, branch) {
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The 1 s folder check (`CHECK`): look up again the places due (`refresh_places`) and
