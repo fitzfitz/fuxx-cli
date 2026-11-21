@@ -30,6 +30,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Chore: the agent composer as the shell's; folder fixed after the first message
+
+- **What:** the agent tab's composer takes the shell tab's folder-tab shape and palette (pills in a tab, the box
+  you type in inside the outer box); once you've sent a prompt, the folder can't be changed. Note 88.
+- **Checks:** 2302 tests; clippy at the baseline; ui-shots 254 passed, 5 known failures.
+
 ### 2026-11-21 — M11an added (placeholder): full-width typing line
 
 - **What:** on your word, a placeholder milestone for the composer's short first line, with the cause and two ways

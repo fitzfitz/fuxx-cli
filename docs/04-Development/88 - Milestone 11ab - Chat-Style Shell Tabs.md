@@ -566,6 +566,25 @@ corners … can we make it gone so it looks clean?"
   the box"). Scene `shell-cards-wrap` (it failed with the indent taken out).
 - **Checks:** 2301 tests; clippy at the baseline; ui-shots 255 passed, the 5 known failures.
 
+### Chore: the agent tab's composer as the shell tab's; the folder fixed once you've spoken (2026-11-21)
+
+Your words: "let's redesign the chat on agent tab to be more likely in terminal tab. make sure when we already make a
+prompt, disabled the change project/folder", then "just go ahead with your best recommendation" (the AI's calls).
+Kept to the composer: the agent tab's layout and flow stay M11am's, which waits for a discussion.
+
+- **Folder-tab composer:** the agent box takes the shell composer's shape and palette: the folder and branch as pills
+  (the app's Lucide icons, no 📁/⑂/▾ text, `PILL_MAX` with "…", tooltips with the full path / branch) in a tab at
+  the box's top-left; the box you type in (attachments, the text, `+`, model, mode, send) is the inner box
+  (`composer_inner`, its edge, the focus ring while typing), `OUTER_INSET` inside the outer box. Built from elements
+  (`AgentTab::folder_tab`): the tab sizes to its pills, the concave step a page-coloured corner over the box's fill.
+  The conversation's column lines up with the outer box.
+- **The folder is fixed once you've spoken** (`folder_changeable`): before the first message the folder pill opens
+  the picker as before; after it the pill is a plain label (its path in the tooltip) and `open_folder_picker`
+  refuses from any route. The Move this conversation / New conversation choice that followed is unreachable now
+  (its code stays; its two scenes became `agent-box-folder-locked`, which fails with the lock off).
+- **Checks:** 2302 tests; clippy at the baseline; ui-shots 254 passed, the 5 known failures (the 71 agent scenes
+  pass).
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·

@@ -39,10 +39,8 @@ use alacritty_terminal::vte::ansi::Rgb;
 pub(crate) const AREA_X: f32 = 28.0;
 const AREA_TOP: f32 = 8.0;
 const AREA_BOTTOM: f32 = 20.0;
-/// Between the folder row and the box.
-const PLACE_GAP: f32 = 8.0;
-/// The box: its corners, its inner room, the gap between its rows (attachments, text, chips).
-const BOX_RADIUS: f32 = 14.0;
+/// The box (the folder tab's inner box since the chores: its corners are 12): its inner room,
+/// the gap between its rows (attachments, text, chips).
 const BOX_X: f32 = 14.0;
 const BOX_Y: f32 = 12.0;
 const BOX_GAP: f32 = 10.0;
@@ -276,17 +274,25 @@ pub fn mode_chip_text(
     Some(format!("\u{1f6e1} {label} \u{25be}"))
 }
 
-/// The folder chip: `📁 <the folder's name> ▾` (it opens the picker).
+/// The folder pill's words: the folder's name (the app's folder icon draws beside it; before
+/// the first message it opens the picker).
 pub fn folder_chip_text(folder: &Path) -> String {
-    let name = folder
+    folder
         .file_name()
-        .map_or_else(|| folder.to_string_lossy(), |n| n.to_string_lossy());
-    format!("\u{1f4c1} {name} \u{25be}")
+        .map_or_else(|| folder.to_string_lossy(), |n| n.to_string_lossy())
+        .into_owned()
 }
 
-/// The branch chip: `⑂ <branch> ▾` (it opens the branch switcher on the folder).
+/// The branch pill's words: the branch (the app's branch icon beside it; it opens the branch
+/// switcher on the folder).
 pub fn branch_chip_text(branch: &str) -> String {
-    format!("\u{2442} {branch} \u{25be}")
+    branch.to_string()
+}
+
+/// Whether the folder can still change: an agent to start there, and nothing said yet (your
+/// words: "when we already make a prompt, disabled the change project/folder").
+pub fn folder_changeable(has_agent: bool, spoken: bool) -> bool {
+    has_agent && !spoken
 }
 
 /// What the pane's top line says after the status: `$0.21 · context 18%`, either part alone,
@@ -887,25 +893,50 @@ impl AgentTab {
         let edge = self.box_edge(c, window, cx);
         let menu = self.menu.clone();
         let menu_on = |chip: fn(&BoxMenu) -> bool| menu.as_ref().is_some_and(chip);
-        let folder_hover = c.box_hover;
+        // The context as pills in a folder tab, as the shell tab's composer (chores: "redesign
+        // the chat on agent tab to be more likely in terminal tab"): the app's icons, the
+        // name ending in "…" past `PILL_MAX`.
+        use crate::card_view::{PILL_H, PILL_MAX};
+        use crate::icons::{Icon, icon};
+        let pill = |id: &'static str, glyph: Icon, words: String| {
+            div()
+                .id(id)
+                .flex()
+                .flex_shrink(1.0)
+                .min_w(px(0.))
+                .max_w(px(PILL_MAX))
+                .items_center()
+                .gap(px(5.))
+                .h(px(PILL_H))
+                .px(px(8.))
+                .rounded(px(PILL_H / 2.))
+                .bg(hsla(c.pill))
+                .text_size(px(12.))
+                .text_color(hsla(c.dim))
+                .child(icon(glyph, px(13.), hsla(c.dim)))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .truncate()
+                        .child(SharedString::from(words)),
+                )
+        };
+        let (pill_hover, ink) = (hsla(c.pill_hover), hsla(c.text));
+        let changeable = folder_changeable(self.provider.is_some(), self.spoken());
+        let home = crate::workspace::home_dir();
+        let path_tip = crate::sidebar::home_relative(&self.start.cwd, home.as_deref());
         let folder = self
             .marked(
                 "folder",
-                div()
-                    .id("agent-folder")
-                    .flex_none()
-                    .h(px(CHIP_H))
-                    .px(px(CHIP_X))
-                    .flex()
-                    .items_center()
-                    .rounded(px(CHIP_RADIUS))
-                    .text_size(px(text::META))
-                    .text_color(hsla(c.dim))
-                    .child(SharedString::from(texts.folder.clone())),
+                pill("agent-folder", Icon::Folder, texts.folder.clone()).tooltip(move |_, cx| {
+                    cx.new(|_| crate::sidebar_toggle::Tip(path_tip.clone().into()))
+                        .into()
+                }),
             )
-            .when(self.provider.is_some(), |d| {
+            // Before the first message it opens the picker; after it the folder is fixed.
+            .when(changeable, |d| {
                 d.cursor_pointer()
-                    .hover(move |s| s.bg(hsla(folder_hover)))
+                    .hover(move |s| s.bg(pill_hover).text_color(ink))
                     .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                         let pressed = match event {
                             ClickEvent::Mouse(click) => Some(click.down.position),
@@ -926,27 +957,18 @@ impl AgentTab {
                 },
             );
         let branch = texts.branch.clone().map(|text| {
-            let hover = c.box_hover;
-            self.marked(
-                "branch",
-                div()
-                    .id("agent-branch")
-                    .flex_none()
-                    .h(px(CHIP_H))
-                    .px(px(CHIP_X))
-                    .flex()
-                    .items_center()
-                    .rounded(px(CHIP_RADIUS))
-                    .text_size(px(text::META))
-                    .text_color(hsla(c.dim))
-                    .child(SharedString::from(text)),
-            )
-            .cursor_pointer()
-            .hover(move |s| s.bg(hsla(hover)))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.close_menu(cx);
-                cx.emit(AgentTabEvent::OpenBranchSwitcher(this.start.cwd.clone()))
-            }))
+            let tip = text.clone();
+            self.marked("branch", pill("agent-branch", Icon::Branch, text))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| crate::sidebar_toggle::Tip(tip.clone().into()))
+                        .into()
+                })
+                .cursor_pointer()
+                .hover(move |s| s.bg(pill_hover).text_color(ink))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.close_menu(cx);
+                    cx.emit(AgentTabEvent::OpenBranchSwitcher(this.start.cwd.clone()))
+                }))
         });
         let attach = self
             .marked(
@@ -1081,7 +1103,7 @@ impl AgentTab {
                 .gap(px(BOX_GAP))
                 .px(px(BOX_X))
                 .py(px(BOX_Y))
-                .rounded(px(BOX_RADIUS))
+                .rounded(px(12.))
                 .border_1()
                 .border_color(hsla(edge))
                 // A press on the box's own room (not a chip or button: theirs act as well)
@@ -1131,19 +1153,76 @@ impl AgentTab {
             .flex_col()
             .children(self.at_list(c, mono.clone(), cx))
             .children(self.slash_list(c, mono, cx))
-            .child(
-                // The folder's name lines up with the text in the box.
-                div()
-                    .pl(px(BOX_X - CHIP_X))
-                    .mb(px(PLACE_GAP))
-                    .flex()
-                    .items_center()
-                    .gap(px(CHIP_GAP))
-                    .child(folder)
-                    .children(branch),
-            )
-            .child(the_box)
+            .child(self.folder_tab(folder, branch, the_box, c))
             .into_any_element()
+    }
+
+    /// The folder-tab composer round `the_box` (as the shell tab's, `paint_cards`): the outer box
+    /// a shade over the page, its top edge `TAB_RISE` down; at its left a tab rising to hold the
+    /// pills, its top corners 14, the box's 15, a concave 8 where the tab steps down; the box
+    /// you type in `OUTER_INSET` in.
+    fn folder_tab(
+        &self,
+        folder: impl IntoElement,
+        branch: Option<impl IntoElement>,
+        the_box: impl IntoElement,
+        c: &Colors,
+    ) -> Div {
+        use crate::card_view::{EDGE, OUTER_INSET, PILL_GAP, TAB_PAD, TAB_RISE};
+        let (outer, edge) = (hsla(c.outer), hsla(c.outer_edge));
+        let body = div()
+            .w_full()
+            .mt(px(TAB_RISE))
+            .p(px(OUTER_INSET))
+            .bg(outer)
+            .border_1()
+            .border_color(edge)
+            .rounded_tr(px(15.))
+            .rounded_b(px(15.))
+            .child(the_box);
+        // The tab: no bottom edge, down over the body's top line (its fill hides it there).
+        let tab = div()
+            .flex()
+            .flex_none()
+            .items_start()
+            .gap(px(PILL_GAP))
+            .h(px(TAB_RISE + EDGE))
+            .pt(px(TAB_PAD - EDGE))
+            .px(px(TAB_PAD))
+            .bg(outer)
+            .border_t_1()
+            .border_l_1()
+            .border_r_1()
+            .border_color(edge)
+            .rounded_t(px(14.))
+            .child(folder)
+            .children(branch);
+        // The step: the box's fill under a page-coloured square whose rounded corner (its left
+        // and bottom edges drawn) carves the concave curve; 1 pt over the tab's right edge.
+        let step = div()
+            .flex_none()
+            .ml(px(-EDGE))
+            .size(px(16.))
+            .bg(outer)
+            .child(
+                div()
+                    .size_full()
+                    .bg(hsla(c.page))
+                    .border_l_1()
+                    .border_b_1()
+                    .border_color(edge)
+                    .rounded_bl(px(8.)),
+            );
+        div().relative().w_full().child(body).child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .flex()
+                .items_end()
+                .child(tab)
+                .child(step),
+        )
     }
 
     /// The `/` list, over the box while it is open: the agent's commands, skills and sub-agents
@@ -2220,20 +2299,29 @@ mod tests {
 
     #[test]
     fn the_branch_chip_names_the_branch() {
-        assert_eq!(branch_chip_text("master"), "\u{2442} master \u{25be}");
-        assert_eq!(
-            branch_chip_text("feature/rows"),
-            "\u{2442} feature/rows \u{25be}"
-        );
+        // A pill as the shell tab's (chores: "redesign the chat on agent tab to be more likely in
+        // terminal tab"): the app's branch icon draws beside the name, no ⑂ or ▾ in the text.
+        assert_eq!(branch_chip_text("master"), "master");
+        assert_eq!(branch_chip_text("feature/rows"), "feature/rows");
     }
 
     #[test]
     fn the_folder_chip_names_the_folder() {
         assert_eq!(
             folder_chip_text(Path::new("/home/me/code/my-app")),
-            "\u{1f4c1} my-app \u{25be}"
+            "my-app"
         );
-        assert_eq!(folder_chip_text(Path::new("/")), "\u{1f4c1} / \u{25be}");
+        assert_eq!(folder_chip_text(Path::new("/")), "/");
+    }
+
+    /// Your words: "make sure when we already make a prompt, disabled the change
+    /// project/folder": the folder changes before the first message only (and only with an
+    /// agent to start there).
+    #[test]
+    fn the_folder_is_fixed_once_you_have_spoken() {
+        assert!(folder_changeable(true, false));
+        assert!(!folder_changeable(true, true), "spoken: fixed");
+        assert!(!folder_changeable(false, false), "no agent");
     }
 
     #[test]

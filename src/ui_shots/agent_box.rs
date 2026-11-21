@@ -16,8 +16,7 @@ use super::{
     shot_themes,
 };
 use crate::agent_box::{
-    AtRow, BoxMenu, CHECKING, Change, MOVE_HERE, ModeRow, ModelRow, NEW_CONVERSATION, PLACEHOLDER,
-    SlashRow, UsageRow,
+    AtRow, BoxMenu, CHECKING, Change, ModeRow, ModelRow, PLACEHOLDER, SlashRow, UsageRow,
 };
 use crate::agent_catalog::{Catalogs, Lookup};
 use crate::agent_conversation::Item;
@@ -228,16 +227,8 @@ pub(super) const SCENES: &[Scene] = &[
         sources: FOLDER,
     },
     Scene {
-        name: "agent-box-folder-move-ask",
-        run: agent_box_folder_move_ask,
-        themes: Themes::Both,
-        serial: false,
-        kind: Kind::Visual,
-        sources: FOLDER,
-    },
-    Scene {
-        name: "agent-box-folder-move-new-only",
-        run: agent_box_folder_move_new_only,
+        name: "agent-box-folder-locked",
+        run: agent_box_folder_locked,
         themes: Themes::Both,
         serial: false,
         kind: Kind::Visual,
@@ -1108,7 +1099,7 @@ fn composer_bounds(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Bounds<
 pub(super) fn agent_box_empty() {
     layout_scene("agent-box-empty", |n, cx, window, tab| {
         let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
-        assert_eq!(texts.folder, "\u{1f4c1} my-app \u{25be}", "{n}");
+        assert_eq!(texts.folder, "my-app", "{n}");
         assert_eq!(texts.model, "Claude Example 5  High \u{25be}", "{n}");
         assert_eq!(
             texts.mode.as_deref(),
@@ -1266,19 +1257,21 @@ pub(super) fn agent_box_card() {
             let shot = frame_fresh(cx, window);
             let the_box = part(cx, tab, n, "box");
             let column = part(cx, tab, n, "column");
-            // The box's part is inside its 1 px edge.
-            let (side, edge) = (px(28.0), px(1.0));
+            // The box's part is inside its 1 px edge; since the folder-tab chores it sits in the
+            // outer box (its 1 px edge and `OUTER_INSET`), which is 28 in.
+            let inset = crate::card_view::EDGE + crate::card_view::OUTER_INSET;
+            let (side, edge) = (px(28.0 + inset), px(1.0));
             assert!(
                 (the_box.left() - edge - side).abs() < px(0.5),
-                "{n}: the box is 28 in from the left: {the_box:?}"
+                "{n}: the box is 28 + {inset} in from the left: {the_box:?}"
             );
             assert!(
                 (px(DIMS.0) - the_box.right() - edge - side).abs() < px(0.5),
-                "{n}: and 28 in from the right: {the_box:?}"
+                "{n}: and from the right: {the_box:?}"
             );
             assert!(
-                (column.left() - (the_box.left() - edge)).abs() < px(0.5),
-                "{n}: the conversation's column starts at the box's x: {column:?} {the_box:?}"
+                (column.left() - (the_box.left() - edge - px(inset))).abs() < px(0.5),
+                "{n}: the conversation's column starts at the outer box's x: {column:?} {the_box:?}"
             );
             // The page's bottom corners: inside the curve is the page, just outside it is not.
             let page = cx.read(|cx| {
@@ -2155,120 +2148,28 @@ pub(super) fn agent_box_folder_search() {
     );
 }
 
-/// After the first message a folder chosen asks: New conversation opens a new tab there
-/// (this one stays as it is); Move this conversation restarts Claude on it in the new folder
-/// (`--resume`), with one quiet row, the folder saved and the menus' lists read for it.
-pub(super) fn agent_box_folder_move_ask() {
+/// After the first message the folder is fixed (chores, your words: "when we already make a
+/// prompt, disabled the change project/folder"): a click on its pill opens nothing, asking for
+/// the picker another way is refused, the conversation stays where it is and nothing is sent.
+pub(super) fn agent_box_folder_locked() {
     folder_scene(
-        "agent-box-folder-move-ask",
+        "agent-box-folder-locked",
         "2.1.326 (Claude Code)",
         |n, cx, window, tab, moves| {
-            let id = first_message(cx, tab);
-            let before = argv(cx, tab);
-            let sent = |cx: &VisualTestAppContext| {
-                written(cx, tab)
-                    .iter()
-                    .filter(|l| l["type"] == "user")
-                    .count()
-            };
-            assert_eq!(sent(cx), 1, "{n}");
-
-            click_folder_chip(n, cx, window, tab);
-            click_row(n, cx, window, tab, "~/code/scratch");
-            assert_eq!(menu(cx, tab), Some(BoxMenu::Move(folder("scratch"))), "{n}");
-            assert_eq!(
-                labels(cx, tab),
-                [MOVE_HERE, NEW_CONVERSATION],
-                "{n}: it asks"
-            );
-            click_row(n, cx, window, tab, NEW_CONVERSATION);
-            assert_eq!(menu(cx, tab), None, "{n}");
-            assert_eq!(
-                *moves.borrow(),
-                [(folder("scratch"), true)],
-                "{n}: a new conversation there"
-            );
-            assert_eq!(tab_cwd(cx, tab), folder("my-app"), "{n}: this one stays");
-            assert_eq!(argv(cx, tab), before, "{n}: and isn't restarted");
-            assert!(notices(cx, tab).is_empty(), "{n}");
-
-            click_folder_chip(n, cx, window, tab);
-            click_row(n, cx, window, tab, "~/code/scratch");
-            click_row(n, cx, window, tab, MOVE_HERE);
-            assert_eq!(menu(cx, tab), None, "{n}");
-            assert_eq!(tab_cwd(cx, tab), folder("scratch"), "{n}: moved");
-            let a = argv(cx, tab);
-            assert_eq!(
-                flag(&a, "--resume"),
-                Some(id),
-                "{n}: the same conversation {a:?}"
-            );
-            assert_eq!(notices(cx, tab), ["Moved to ~/code/scratch"], "{n}");
-            assert_eq!(
-                moves.borrow().last().cloned(),
-                Some((folder("scratch"), false)),
-                "{n}: saved"
-            );
-            assert_eq!(
-                cx.read(|cx| cx
-                    .global::<Catalogs>()
-                    .catalog("claude", &folder("scratch"))
-                    .cloned()),
-                Some(Lookup::Loading),
-                "{n}: the menus' lists are read for the new folder"
-            );
-            assert_eq!(sent(cx), 1, "{n}: moving sends nothing");
-            assert_eq!(
-                cx.read(|cx| tab.read(cx).shot_box(cx)).folder,
-                "\u{1f4c1} scratch \u{25be}",
-                "{n}"
-            );
-
-            // The ✓ follows; choosing where it is does nothing; the ask stays open for the shot.
-            click_folder_chip(n, cx, window, tab);
-            assert_eq!(
-                rows(cx, tab)[1..3],
-                [
-                    folder_row_of("my-app", false),
-                    folder_row_of("scratch", true)
-                ],
-                "{n}"
-            );
-            click_row(n, cx, window, tab, "~/code/scratch");
-            assert_eq!(menu(cx, tab), None, "{n}: the folder it is in: nothing");
-            assert_eq!(moves.borrow().len(), 2, "{n}");
-            click_folder_chip(n, cx, window, tab);
-            click_row(n, cx, window, tab, "~/code/my-app");
-            assert_eq!(labels(cx, tab), [MOVE_HERE, NEW_CONVERSATION], "{n}");
-            let (the_menu, chip) = (part(cx, tab, n, "menu"), part(cx, tab, n, "folder"));
-            assert!(the_menu.bottom() <= chip.top(), "{n}: over the chip");
-        },
-    );
-}
-
-/// A Claude older than 2.1.223 can't resume a conversation from another folder: only New
-/// conversation is offered.
-pub(super) fn agent_box_folder_move_new_only() {
-    folder_scene(
-        "agent-box-folder-move-new-only",
-        "2.1.200 (Claude Code)",
-        |n, cx, window, tab, moves| {
-            feed(cx, tab, |t, cx| t.shot_place(folder("scratch"), None, cx));
             first_message(cx, tab);
-            click_folder_chip(n, cx, window, tab);
-            assert_eq!(
-                rows(cx, tab)[1..3],
-                [
-                    folder_row_of("my-app", false),
-                    folder_row_of("scratch", true)
-                ],
-                "{n}: placed in scratch"
-            );
-            click_row(n, cx, window, tab, "~/code/my-app");
-            assert_eq!(menu(cx, tab), Some(BoxMenu::Move(folder("my-app"))), "{n}");
-            assert_eq!(labels(cx, tab), [NEW_CONVERSATION], "{n}: no Move");
-            assert!(moves.borrow().is_empty(), "{n}");
-            assert_eq!(tab_cwd(cx, tab), folder("scratch"), "{n}");
+            let before = argv(cx, tab);
+            let chip = part(cx, tab, n, "folder");
+            cx.simulate_click(window, chip.center(), gpui::Modifiers::none());
+            cx.run_until_parked();
+            assert_eq!(menu(cx, tab), None, "{n}: the pill opens nothing");
+            cx.update_window(window, |_, window, cx| {
+                tab.update(cx, |t, cx| t.open_folder_picker(window, cx))
+            })
+            .expect("window");
+            assert_eq!(menu(cx, tab), None, "{n}: nor the picker asked for");
+            assert_eq!(tab_cwd(cx, tab), folder("my-app"), "{n}: it stays");
+            assert_eq!(argv(cx, tab), before, "{n}: not restarted");
+            assert!(moves.borrow().is_empty(), "{n}: nothing saved");
         },
     );
 }
@@ -2322,7 +2223,7 @@ pub(super) fn agent_box_folder_before_first() {
             assert!(written(cx, tab).is_empty(), "{n}: and sent nothing");
             assert_eq!(
                 cx.read(|cx| tab.read(cx).shot_box(cx)).folder,
-                "\u{1f4c1} my-app \u{25be}",
+                "my-app",
                 "{n}"
             );
         },
@@ -3619,12 +3520,8 @@ pub(super) fn agent_box_branch() {
         });
         let _ = frame_fresh(cx, window);
         let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
-        assert_eq!(
-            texts.branch.as_deref(),
-            Some("\u{2442} master \u{25be}"),
-            "{n}"
-        );
-        assert_eq!(texts.folder, "\u{1f4c1} my-app \u{25be}", "{n}");
+        assert_eq!(texts.branch.as_deref(), Some("master"), "{n}");
+        assert_eq!(texts.folder, "my-app", "{n}");
         let (folder_chip, chip) = (part(cx, tab, n, "folder"), part(cx, tab, n, "branch"));
         assert!(
             chip.left() >= folder_chip.right(),
