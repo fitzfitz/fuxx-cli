@@ -1,6 +1,5 @@
 # fuxx's window chrome for Catppuccin Mocha, from Catppuccin's Mocha palette (not part of the upstream file).
-# canvas: crust; accent: mauve; working: peach; needs you: red; done: green.
-chrome-canvas = #11111b
+# accent: mauve; working: peach; needs you: red; done: green.
 chrome-accent = #cba6f7
 chrome-working = #fab387
 chrome-waiting = #f38ba8

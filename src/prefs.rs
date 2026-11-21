@@ -189,7 +189,8 @@ pub fn cursor_fun_values(fun: CursorFun) -> Vec<String> {
 /// the defaults for `Default`, otherwise the named theme read with `read_theme`.
 pub fn choice_theme(name: &str, read_theme: &dyn Fn(&str) -> Option<String>) -> Theme {
     if name == DEFAULT_CHOICE {
-        return Theme::default();
+        // The defaults as the app settles them (the dark-panel chore).
+        return theme::resolve(&[], true, read_theme);
     }
     let entry = Entry {
         key: "theme".into(),
@@ -318,11 +319,12 @@ mod tests {
             b: hex as u8,
         };
         let read = |name: &str| theme::builtin_theme(name).map(str::to_string);
-        // Nord's own file: background, foreground, then palette 1-6.
+        // Nord's own file: background, foreground, then palette 1-6; the background is the
+        // terminal's as shown: a quiet step below its window since the palette chore (2026-11-21).
         assert_eq!(
             swatch(&choice_theme("Nord", &read)),
             [
-                rgb(0x2e3440),
+                rgb(0x242932),
                 rgb(0xd8dee9),
                 rgb(0xbf616a),
                 rgb(0xa3be8c),
@@ -333,7 +335,7 @@ mod tests {
             ]
         );
         // `Default` is the built-in defaults; a user theme is read like a built-in one.
-        let plain = Theme::default();
+        let plain = Theme::default().with_dark_panel();
         let mut expected = [
             plain.background,
             plain.foreground,
@@ -348,7 +350,8 @@ mod tests {
         let mine = |name: &str| {
             (name == "Mine").then(|| "background = #102030\npalette = 3=#405060\n".to_string())
         };
-        expected[0] = rgb(0x102030);
+        // Its panel: no canvas of its own, so derived (22 % toward black).
+        expected[0] = rgb(0x0c1925);
         expected[4] = rgb(0x405060);
         assert_eq!(swatch(&choice_theme("Mine", &mine)), expected);
     }

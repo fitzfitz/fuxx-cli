@@ -791,7 +791,7 @@ impl DaemonSession {
             // (A live prompt the shell redraws is emptied first, as the replica does at the same
             // point, `blocks::resize`.)
             let s = &mut *s;
-            crate::blocks::resize(&mut s.term, &s.tagger, dims);
+            crate::blocks::resize(&mut s.term, &mut s.tagger, dims);
             s.seq += 1;
             let frame = Frame::Resized(mux_proto::Resized {
                 id: self.id,

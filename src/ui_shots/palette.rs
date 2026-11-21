@@ -1598,11 +1598,13 @@ fn palette_settings_scene() {
                 let n = format!("palette-settings-{slug}");
                 let (top, bottom) = (f32::from(row.top()), f32::from(row.bottom()));
                 let left = f32::from(row.left()) + 8.0;
+                // 12: the gear's thin strokes blend with the row at 1×, and the darker
+                // `text_dim` of the dark-panel chore sits further from the blend.
                 let gear = count_in(
                     &shot,
                     dims,
                     ui.text_dim,
-                    6,
+                    12,
                     (left, left + MARK_SLOT),
                     (top, bottom),
                 );
