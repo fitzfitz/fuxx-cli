@@ -269,10 +269,11 @@ impl Theme {
     /// grey).
     fn window_canvas(&self) -> Rgb {
         let (bg, fg) = (self.background, self.foreground);
-        // A quiet step (the palette chore, after the reference app's 1.1:1): dark 17 % toward
-        // black, light 5 % toward the ink (M11al sank it 42 % / 8 %).
+        // A quiet step (the palette chore, after the reference app's 1.1:1): dark 22 % toward
+        // black (17 % until you agreed with the designer's flag: its edge got lost on a dim
+        // display), light 5 % toward the ink (M11al sank it 42 % / 8 %).
         self.chrome.canvas.unwrap_or(if self.is_dark() {
-            mix(bg, hex(0x000000), 0.17)
+            mix(bg, hex(0x000000), 0.22)
         } else {
             mix(bg, fg, 0.05)
         })
@@ -445,9 +446,11 @@ impl Theme {
         let text_dim = text(mix(base, fg, 0.50));
         let quiet = |c: Rgb, on: &[Rgb]| readable(c, on, QUIET_LINE_MIN);
         // The chrome's full text brighter than the terminal's (the palette chore, after the
-        // reference app's near-white): half way to white on a dark theme, to black on a light,
+        // reference app's near-white): toward white on a dark theme, toward black on a light,
         // so dim text has room below it. The terminal keeps the theme's own foreground.
-        let ink = text(mix(fg, if dark { white } else { black }, 0.5));
+        // 30 % (half way until you agreed with the designer's flag: brighter, it pulled the
+        // eye off the terminal).
+        let ink = text(mix(fg, if dark { white } else { black }, 0.30));
         // The accent over the box (drawn on the sidebar colour), 30 % or less: as much as keeps
         // the text on it readable. At 0 it is the box itself, which the text reads on.
         let selection = (0..=6)
@@ -1223,14 +1226,15 @@ mod tests {
     }
 
     /// The palette chore: dim text keeps its distance from the full text (the reference app's
-    /// `#878781` under `#f7f7f0`), as far as reading on every surface allows: 1.6:1 or more in
-    /// every theme (Mocha 2.1, Latte 2.05, Nord 1.66; Latte was 1.12 before).
+    /// `#878781` under `#f7f7f0`), as far as reading on every surface allows: 1.5:1 or more in
+    /// every theme with the chrome text at 30 % (Mocha 1.98, Latte 1.64, Nord 1.56; Latte was
+    /// 1.12 before the palette chore).
     #[test]
     fn dim_text_keeps_its_distance() {
         for (name, theme) in every_theme() {
             let ui = theme.ui();
             let gap = contrast(ui.text, ui.text_dim);
-            assert!(gap >= 1.6, "{name}: text to dim {gap:.2}");
+            assert!(gap >= 1.5, "{name}: text to dim {gap:.2}");
         }
     }
 
@@ -1259,7 +1263,7 @@ mod tests {
         // The palette chore: the panel a quiet step from the window (dark 17 % toward black,
         // light 5 % toward the ink), not the theme's deep canvas.
         let mocha = named("Catppuccin Mocha");
-        assert_eq!(mocha.background, mix(hex(0x1e1e2e), hex(0x000000), 0.17));
+        assert_eq!(mocha.background, mix(hex(0x1e1e2e), hex(0x000000), 0.22));
         assert_eq!(mocha.ui().sidebar_background, hex(0x1e1e2e));
         let latte = named("Catppuccin Latte");
         assert_eq!(latte.background, mix(hex(0xeff1f5), hex(0x4c4f69), 0.05));
@@ -1275,7 +1279,7 @@ mod tests {
             true,
             &|_| None,
         );
-        assert_eq!(t.background, mix(hex(0x202020), hex(0x000000), 0.17));
+        assert_eq!(t.background, mix(hex(0x202020), hex(0x000000), 0.22));
         assert_eq!(t.ui().sidebar_background, hex(0x202020));
     }
 
@@ -1311,8 +1315,10 @@ mod tests {
             let on_canvas = contrast(ui.card_border, ui.sidebar_background);
             // (Before: 1.48 to 1.76.) Quiet on the lighter surface, a little more apart on the
             // darker one: since the dark-panel chore the card is the darker (the bounds switched
-            // with the two colours).
-            assert!(on_canvas < 1.35, "{name}: on the canvas {on_canvas:.2}");
+            // with the two colours). 1.45 on the canvas since the panel's 22 % step (your call
+            // on the designer's flag): held at 1.2 on the darker card, Nord's line sits at 1.41
+            // on the lighter window.
+            assert!(on_canvas < 1.45, "{name}: on the canvas {on_canvas:.2}");
             assert!(on_card <= 1.55, "{name}: on the card {on_card:.2}");
             for (what, on) in [
                 ("canvas", ui.sidebar_background),
@@ -1470,7 +1476,7 @@ mod tests {
             true,
             &|n| builtin_theme(n).map(str::to_string),
         );
-        assert_eq!(t.background, mix(hex(0x303030), hex(0x000000), 0.17));
+        assert_eq!(t.background, mix(hex(0x303030), hex(0x000000), 0.22));
         assert_eq!(t.chrome.canvas, Some(hex(0x303030)));
     }
 
@@ -1736,8 +1742,8 @@ mod tests {
         let themes = every_theme();
         let named = |name: &str| themes.iter().find(|(n, _)| *n == name).unwrap().1.ui();
         let mocha = named("Catppuccin Mocha");
-        assert_eq!(mocha.text_dim, hex(0x9ea2ad));
-        assert_eq!(mocha.text_faint, hex(0x9ea2ad));
+        assert_eq!(mocha.text_dim, hex(0x9ea2ae));
+        assert_eq!(mocha.text_faint, hex(0x9ea2ae));
         let latte = named("Catppuccin Latte");
         assert_eq!(latte.text_dim, hex(0x575761));
         assert_eq!(latte.text_faint, hex(0x575761));
