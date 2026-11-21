@@ -441,6 +441,26 @@ harness too); the prefs swatches show the panel colour. Along the way, from your
 - **Checks:** 2289 tests; clippy at the baseline; fmt; ui-shots 253 passed, the 6 known display-dependent failures
   (scene probes moved for the smaller corners and the missing shadow).
 
+### Chore: the reference app's palette rules (2026-11-21, a try on `theme-dark-panel`)
+
+Your words: "learn this app's color palette, how it present their color combinations", then "yes adapt it, show me
+the screenshots". Measured from your screenshot: one window colour (`#2a2b26`: sidebar, title bar, strips), the
+panel a quiet step below (`#23241f`, 1.1:1), what you work in raised above the panel (composer `#2d2e29`), edges
+lighter than their fill and lit along the top, full text near white (`#f7f7f0`) with dim text well below
+(`#878781`), colour only where it means something. Adapted, each still derived from the theme's own colours:
+
+- **The panel a quiet step below the window:** dark 17 % toward black, light 5 % toward the ink; the built-in
+  themes' deep `chrome-canvas` lines dropped (yours, set in your config, still win).
+- **The composer raised:** outer box and inner box a shade and two above the panel, the inner box's top edge the
+  lightest (replaces "the panel colour" for the inner box).
+- **Text hierarchy:** the chrome's full text half way to white (dark) or black (light), the terminal keeping its
+  theme's own; dim text half way down, pushed to its floor: full to dim 1.6:1 or more in every theme (Latte was
+  1.12). Latte's dim and faint now meet at its floor.
+- **Found on the way:** Latte's lighter panel had met `panel_hover` (a pressed title-bar button's fill, 1.01:1); it's
+  held off the card at `SOFT_LINE_MIN` now.
+- **Checks:** 2292 tests; clippy at the baseline; fmt; ui-shots 253 passed, the 6 known failures (the file tab's
+  glyph check now reads `tile_ink`, the colour the tab draws it in).
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·

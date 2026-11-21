@@ -1,6 +1,5 @@
 # fuxx's window chrome for Gruvbox Dark, from Gruvbox's palette (not part of the upstream file).
-# canvas: bg0_h; accent: bright orange; working: bright blue (yellow sits 15° from the orange accent); needs you: bright purple; done: bright green.
-chrome-canvas = #1d2021
+# accent: bright orange; working: bright blue (yellow sits 15° from the orange accent); needs you: bright purple; done: bright green.
 chrome-accent = #fe8019
 chrome-working = #83a598
 chrome-waiting = #d3869b

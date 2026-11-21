@@ -314,7 +314,6 @@ pub(super) const SCENES: &[Scene] = &[
 /// itself (`file_view_scenes`).
 fn file_tab_scenes() {
     use crate::layout_model::TabKind;
-    use crate::tab_bar::look;
     use gpui::Focusable;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -412,10 +411,12 @@ fn file_tab_scenes() {
         let (build, act) = scene(false);
         let path = shoot_with("file-tab", slug, &theme, dims, build.clone(), act.clone());
         println!("ui-shots: {}", path.display());
-        // Its bar tab (active, in the focused pane) draws the glyph in the tab's text colour.
+        // Its bar tab draws the glyph in its tile's ink (`tile_ink`: a file's `text_dim`; it
+        // passed as the tab's text colour only while the two were close, before the palette
+        // chore set dim text apart).
         let shot = render_with(&theme, dims, build, act);
         let tab = tab_at.get().expect("the file tab was laid out");
-        let text = look(&ui, Status::Idle, true, true).text;
+        let text = crate::tab_bar::tile_ink(&ui, crate::tab_bar::TabIcon::File);
         let near = |p: [u8; 3]| {
             p.iter()
                 .zip([text.r, text.g, text.b])

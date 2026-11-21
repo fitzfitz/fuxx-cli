@@ -320,11 +320,11 @@ mod tests {
         };
         let read = |name: &str| theme::builtin_theme(name).map(str::to_string);
         // Nord's own file: background, foreground, then palette 1-6; the background is the
-        // terminal's as shown, its canvas since the dark-panel chore (2026-11-21).
+        // terminal's as shown: a quiet step below its window since the palette chore (2026-11-21).
         assert_eq!(
             swatch(&choice_theme("Nord", &read)),
             [
-                rgb(0x242933),
+                rgb(0x262b35),
                 rgb(0xd8dee9),
                 rgb(0xbf616a),
                 rgb(0xa3be8c),
@@ -350,8 +350,8 @@ mod tests {
         let mine = |name: &str| {
             (name == "Mine").then(|| "background = #102030\npalette = 3=#405060\n".to_string())
         };
-        // Its panel: no canvas of its own, so derived (42 % toward black).
-        expected[0] = rgb(0x09131c);
+        // Its panel: no canvas of its own, so derived (17 % toward black).
+        expected[0] = rgb(0x0d1b28);
         expected[4] = rgb(0x405060);
         assert_eq!(swatch(&choice_theme("Mine", &mine)), expected);
     }

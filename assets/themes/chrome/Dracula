@@ -1,7 +1,6 @@
 # fuxx's window chrome for Dracula, from Dracula's palette (not part of the upstream file).
-# canvas: the darkest background; accent: purple; working: cyan; needs you: orange (pink read too
+# accent: purple; working: cyan; needs you: orange (pink read too
 # close to the purple selection); done: green.
-chrome-canvas = #191a21
 chrome-accent = #bd93f9
 chrome-working = #8be9fd
 chrome-waiting = #ffb86c
