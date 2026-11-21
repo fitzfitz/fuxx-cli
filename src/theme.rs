@@ -182,6 +182,11 @@ pub struct UiColors {
     /// Graph rows' fills since M11al.
     pub side: Rgb,
     pub side_hover: Rgb,
+    /// The right panel's tabs and header button, hovered and selected, and its filter field:
+    /// neutral steps over `side` (the designer's redesign: 4 %, 8 %, 5 %).
+    pub side_tab_hover: Rgb,
+    pub side_tab_selected: Rgb,
+    pub side_field: Rgb,
     pub side_selected: Rgb,
     /// The active tab's fill: a faint wash of the accent over the card.
     pub tab_active: Rgb,
@@ -609,6 +614,9 @@ impl Theme {
             raised,
             side,
             side_hover,
+            side_tab_hover: mix(side, fg, 0.04),
+            side_tab_selected: mix(side, fg, 0.08),
+            side_field: mix(side, fg, 0.05),
             side_selected,
             tab_active,
             row_selected,
@@ -1167,6 +1175,26 @@ mod tests {
             ] {
                 let r = contrast(edge, on);
                 assert!(r >= SOFT_LINE_MIN, "{name}: {what} {r:.2}");
+            }
+        }
+    }
+
+    /// The designer's right-panel redesign: its tabs, header button and filter field are
+    /// neutral steps above the panel's `side` (hover 4 %, selected 8 %, the field 5 %), and text
+    /// reads on all of them.
+    #[test]
+    fn the_right_panel_steps_are_neutral() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let fg = theme.foreground;
+            assert_eq!(ui.side_tab_hover, mix(ui.side, fg, 0.04), "{name}");
+            assert_eq!(ui.side_tab_selected, mix(ui.side, fg, 0.08), "{name}");
+            assert_eq!(ui.side_field, mix(ui.side, fg, 0.05), "{name}");
+            for on in [ui.side_tab_hover, ui.side_tab_selected, ui.side_field] {
+                for ink in [ui.text, ui.text_dim] {
+                    let r = contrast(ink, on);
+                    assert!(r >= TEXT_MIN, "{name}: {r:.2}");
+                }
             }
         }
     }

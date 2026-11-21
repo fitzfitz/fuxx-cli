@@ -1422,7 +1422,7 @@ impl Workspace {
         });
         // The repo card (M11al §6.3), the bar inside it under the line; `HEADER` is the card with
         // its margin, 8 pt more than Files' for the bar.
-        let (outer, card) = crate::right_sidebar::repo_card(HEADER, ui);
+        let (outer, card) = crate::right_sidebar::repo_card(HEADER);
         outer
             .child(
                 card.flex_col()
