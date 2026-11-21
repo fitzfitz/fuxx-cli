@@ -943,10 +943,10 @@ fn tab_bar_scenes() {
                     assert!(is(under, theme.background), "{n}: the terminal: {under:?}");
                     let (x, y) = fill_at(claude);
                     assert!(is(px_at(x, y), ui.waiting_tint), "{n}: claude tinted");
-                    // codex: a quiet pill (chore 2026-11-20), no ×.
+                    // codex: a quiet pill (chore 2026-11-20; `tab_idle` since spec B-C), no ×.
                     let (x, y) = fill_at(codex);
-                    assert!(is(px_at(x, y), ui.card_hover), "{n}: codex a quiet pill");
-                    assert!(!close_drawn(codex, ui.card_hover), "{n}: codex's × hidden");
+                    assert!(is(px_at(x, y), ui.tab_idle), "{n}: codex a quiet pill");
+                    assert!(!close_drawn(codex, ui.tab_idle), "{n}: codex's × hidden");
                     // The right pane's tests: shown in the unfocused pane, the neutral wash
                     // (M11al §3.3; `card_lift` among pills), in its left padding.
                     let tests_left = f32::from(api.left()) + LEFT_BAR_WIDTH + HAIRLINE;
@@ -962,8 +962,12 @@ fn tab_bar_scenes() {
                 "tab-bars-hover" => {
                     let (x, y) = fill_at(codex);
                     let p = px_at(x, y);
-                    assert!(is(p, ui.card_lift), "{n}: codex hovered: {p:?}");
-                    assert!(close_drawn(codex, ui.card_lift), "{n}: codex's × shown");
+                    // `tab_idle_hover` under the pointer (spec B-C).
+                    assert!(is(p, ui.tab_idle_hover), "{n}: codex hovered: {p:?}");
+                    assert!(
+                        close_drawn(codex, ui.tab_idle_hover),
+                        "{n}: codex's × shown"
+                    );
                 }
                 "tab-bars-button" => {
                     // + right after the last tab: its corner, hovered.
@@ -2167,7 +2171,7 @@ fn browser_tab_scenes() {
 /// terminal's and a browser's in the accent, a file's in `text_dim`); the status dot follows the
 /// title (the working arc, the waiting dot, Done's muted ✓ in `text_dim`, nothing when idle);
 /// each tab is a pill (round ends, clear card after it, no separator; chore 2026-11-20); the
-/// shown tab has the `tab_active` wash, the others `card_hover` (a waiting one its tint), the
+/// shown tab has the `tab_active` wash, the others `tab_idle` (a waiting one its tint), the
 /// shown one's title in `text` and the others' in `text_faint`; notes.md is a preview; a
 /// hovered tab is `card_lift` with its ×; + is drawn right after the last tab; and,
 /// overflowing, each tab keeps at least `TAB_MIN_WIDTH`, the row scrolls, and ＋ ⋯ ▥ stay
@@ -2329,7 +2333,8 @@ fn tabs_minimal_scenes() {
                     None,
                 ],
             );
-            // Pills (chore 2026-11-20): the others `card_hover`, `card_lift` under the pointer.
+            // Pills (chore 2026-11-20): the others `tab_idle`, `tab_idle_hover` under the pointer
+            // (spec B-C).
             let fills = [
                 Some(ui.tab_active),
                 Some(ui.waiting_tint),

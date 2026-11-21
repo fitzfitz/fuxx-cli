@@ -1081,6 +1081,9 @@ fn chrome_pixels_same() {
     });
     cx.update(|cx| claude.update(cx, |t, cx| t.send("Fix the date check".into(), cx)));
     cx.run_until_parked();
+    // Its top bar's pill blends Idle → Working over 200 ms by the real clock (spec A §C): let it
+    // end, so the frames compared below don't catch it at two points of the blend.
+    super::chrome::settle_frames(&mut cx, window);
     // A Working mark mid-beat (M11p Task 6: it is its own view, turned by the clock): its arc
     // has turned 144°, as the cached frame, the uncached one and a full redraw all draw it.
     let clock = cx.read(|cx| ws.read(cx).clock.clone());
