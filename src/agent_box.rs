@@ -1143,19 +1143,16 @@ impl AgentTab {
                     .into_any_element()
             }
             None => {
-                // The accent (your words: "the button background should back to the first one the
-                // blue one"); empty, a dimmed accent, not yet pressable (the designer).
+                // Ready, the accent (your words: "the button background should back to the first
+                // one the blue one"); empty, a control like `+` (the designer's review, your "go
+                // with the designer, grey when empty"): turning blue says it can send.
                 let hover = c.send_hover;
                 self.marked("send", circle("agent-send"))
-                    .bg(hsla(if empty { c.send_empty } else { c.accent }))
+                    .bg(hsla(if empty { c.control } else { c.accent }))
                     .child(crate::icons::icon(
                         crate::icons::Icon::ArrowUp,
                         px(18.),
-                        hsla(if empty {
-                            c.send_empty_arrow
-                        } else {
-                            c.on_accent
-                        }),
+                        hsla(if empty { c.dim } else { c.on_accent }),
                     ))
                     .when(!empty, |d| {
                         d.cursor_pointer().hover(move |s| s.bg(hsla(hover)))

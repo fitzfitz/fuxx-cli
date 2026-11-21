@@ -681,6 +681,11 @@ so the radius rounded and the button circle match".
   edges 43 in, the mode pill 51 in); the circle the accent again, `on_accent` arrow, a step lighter or darker under the
   pointer; empty, a dimmed accent (`mix(composer_outer, accent, 0.60)`: the designer's 0.45 looked muddy on Mocha,
   its fallback taken) with its arrow held to `MARK_MIN`. (The inner-box-coloured circle of your previous look is gone.)
+- **The designer's honest review** (your words: "is the button color accepted and match with the combinations?"): the
+  ready blue belongs (one muted accent on the one primary action, tied to the `❯`); the dimmed blue at rest didn't
+  (louder than any pill for a button that does nothing, a muddy dark arrow at 3.29:1, and blue at rest says nothing
+  when you start typing). On your word ("go with the designer, grey when empty"): empty, the circle is a control
+  like `+` (`control`, its arrow `dim`, no hover); it turns blue when you can send.
 - **Checks:** 2306 tests; scenes `agent-box-terminal-text` (now also: a changed setting redraws; a typed letter glides,
   failing with glide off) and `agent-box-send-notch` (34 across, 3 in, level with the controls, the mode pill 11
   before it, 14 since the gap; unchanged as the box grows); clippy at the baseline; ui-shots 259 passed, the 5 known failures
