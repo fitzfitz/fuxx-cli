@@ -6,6 +6,7 @@ mod activity_panel;
 mod adopt;
 mod agent_box;
 mod agent_catalog;
+mod agent_chat;
 mod agent_conversation;
 mod agent_detect;
 mod agent_markdown;

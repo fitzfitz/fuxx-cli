@@ -84,10 +84,8 @@ pub const RESTORED_NOTICE: &str = "Conversation restored";
 const AT_LIMIT: usize = 8;
 /// A chat row's text, and the avatar's side.
 const BODY: f32 = 13.0;
-const AVATAR: f32 = 22.0;
 /// The provider's logo in the avatar's slot (spec B-A).
-const LOGO: f32 = 18.0;
-const AVATAR_GAP: f32 = 9.0;
+const LOGO: f32 = crate::agent_chat::chat::LOGO;
 /// The most lines of a permission's detail shown on its card.
 const DETAIL_LINES: usize = 12;
 
@@ -569,7 +567,7 @@ fn pictures(attachments: &[Attachment]) -> Vec<Picture> {
 }
 
 /// What an item looks like, as a number: a row is laid out again when its number changes.
-fn fingerprint(item: &Item) -> u64 {
+pub(crate) fn fingerprint(item: &Item) -> u64 {
     let mut h = DefaultHasher::new();
     std::mem::discriminant(item).hash(&mut h);
     match item {
@@ -620,14 +618,6 @@ fn parent_of(item: &Item) -> Option<&str> {
     }
 }
 
-/// An item said by the agent (its avatar column), not you or the tab.
-fn agent_side(item: &Item) -> bool {
-    matches!(
-        item,
-        Item::Agent { .. } | Item::Tool { .. } | Item::Todo(_) | Item::Permission { .. }
-    )
-}
-
 /// The colours the tab draws with, from the theme's `UiColors` (text held to `TEXT_MIN` on what
 /// it is drawn on).
 #[derive(Clone, Copy, Debug)]
@@ -643,13 +633,7 @@ pub struct Colors {
     pub panel_text: Rgb,
     pub panel_dim: Rgb,
     pub tool_name: Rgb,
-    pub ok: Rgb,
     pub failed_panel: Rgb,
-    /// Your message's card.
-    pub card: Rgb,
-    pub card_border: Rgb,
-    pub card_text: Rgb,
-    pub card_dim: Rgb,
     /// An error row's text.
     pub failed: Rgb,
     /// The permission card: its edge, fill, heading and quiet text.
@@ -691,6 +675,25 @@ pub struct Colors {
     /// The tool modal's scrim (spec A §B): the theme's shadow, at this strength.
     pub scrim: Rgb,
     pub scrim_alpha: f32,
+    /// The chat (spec B-B). Your bubble: the box you typed it in (its inner fill and edge),
+    /// its text, its quiet text and an attachment's chip.
+    pub you_fill: Rgb,
+    pub you_edge: Rgb,
+    pub you_text: Rgb,
+    pub you_dim: Rgb,
+    pub chip_fill: Rgb,
+    /// A queued message: the box's outer fill, quieter text.
+    pub queued_fill: Rgb,
+    pub queued_text: Rgb,
+    /// A tool row's ok dot, the line between a group's rows, the todo meter's track.
+    pub tool_ok: Rgb,
+    pub tool_divider: Rgb,
+    pub todo_track: Rgb,
+    /// An error card: its fill, edge, octagon and text.
+    pub error_fill: Rgb,
+    pub error_edge: Rgb,
+    pub error_mark: Rgb,
+    pub error_text: Rgb,
 }
 
 const WHITE: Rgb = Rgb {
@@ -716,6 +719,9 @@ impl Colors {
         let row_hover = mix(ui.panel, theme.foreground, 0.04);
         let meter_track = readable(mix(page, theme.foreground, 0.12), &[page], QUIET_LINE_MIN);
         let on_meter = |c: Rgb| readable(c, &[page, meter_track], MARK_MIN);
+        let you_fill = ui.composer_inner;
+        let chip_fill = mix(you_fill, theme.foreground, 0.06);
+        let error_fill = mix(page, ui.block_failed, 0.08);
         Colors {
             page,
             text: fit(ui.text, page),
@@ -724,14 +730,9 @@ impl Colors {
             panel_border: ui.panel_border,
             panel_hover: ui.panel_hover,
             panel_text: readable(ui.text, &[ui.panel, row_hover], TEXT_MIN),
-            panel_dim: fit(ui.text_dim, ui.panel),
+            panel_dim: readable(ui.text_dim, &[ui.panel, row_hover], TEXT_MIN),
             tool_name: readable(ui.accent, &[ui.panel, row_hover], TEXT_MIN),
-            ok: fit(ui.block_ok, ui.panel),
-            failed_panel: fit(ui.block_failed, ui.panel),
-            card: ui.card,
-            card_border: ui.card_border,
-            card_text: fit(ui.text, ui.card),
-            card_dim: fit(ui.text_dim, ui.card),
+            failed_panel: readable(ui.block_failed, &[ui.panel, row_hover], TEXT_MIN),
             failed: fit(ui.block_failed, page),
             ask_edge: ui.ring_waiting,
             ask_fill,
@@ -761,6 +762,32 @@ impl Colors {
             pct_critical: fit(theme.palette[1], page),
             scrim: ui.shadow,
             scrim_alpha: if theme.is_dark() { 0.35 } else { 0.25 },
+            you_fill,
+            you_edge: ui.composer_edge,
+            you_text: fit(ui.text, you_fill),
+            you_dim: readable(ui.text_dim, &[you_fill, chip_fill], TEXT_MIN),
+            chip_fill,
+            queued_fill: ui.composer_outer,
+            queued_text: fit(ui.text_dim, ui.composer_outer),
+            tool_ok: readable(ui.ring_done, &[ui.panel, row_hover], MARK_MIN),
+            tool_divider: readable(
+                mix(ui.panel, theme.foreground, 0.07),
+                &[ui.panel],
+                crate::ui_tokens::SOFT_LINE_MIN,
+            ),
+            todo_track: readable(
+                mix(ui.panel, theme.foreground, 0.10),
+                &[ui.panel],
+                crate::ui_tokens::SOFT_LINE_MIN,
+            ),
+            error_fill,
+            error_edge: readable(
+                mix(page, ui.block_failed, 0.30),
+                &[page, error_fill],
+                QUIET_LINE_MIN,
+            ),
+            error_mark: readable(ui.block_failed, &[error_fill], MARK_MIN),
+            error_text: fit(ui.text, error_fill),
         }
     }
 }
@@ -896,6 +923,11 @@ pub struct AgentTab {
     top_mark: Entity<MarkView>,
     /// The tool modal's header mark while its tool runs.
     modal_mark: Entity<MarkView>,
+    /// The marks' clock (the Workspace's once `use_clock`); the Working arcs of the running
+    /// tools' rows (made and dropped in `after_change`, by tool id) and of the "Thinking…" line.
+    clock: Entity<MarkClock>,
+    tool_marks: std::collections::HashMap<String, Entity<MarkView>>,
+    thinking_mark: Entity<MarkView>,
     bar_width: Rc<Cell<f32>>,
     /// When each running tool started (for its elapsed time).
     tool_started: std::collections::HashMap<String, Instant>,
@@ -1274,6 +1306,8 @@ impl AgentTab {
         let clock = cx.new(|_| MarkClock { phase: 0.0 });
         let top_mark = cx.new(|cx| MarkView::new(&clock, Status::Idle, px(MARK), BLACK, cx));
         let modal_mark = cx.new(|cx| MarkView::new(&clock, Status::Working, px(MARK), BLACK, cx));
+        let thinking_mark =
+            cx.new(|cx| MarkView::new(&clock, Status::Working, px(MARK), BLACK, cx));
         Self {
             provider,
             provider_name,
@@ -1306,6 +1340,9 @@ impl AgentTab {
             top: crate::agent_top::TopState::default(),
             top_mark,
             modal_mark,
+            clock,
+            tool_marks: std::collections::HashMap::new(),
+            thinking_mark,
             bar_width: Rc::new(Cell::new(f32::MAX)),
             tool_started: std::collections::HashMap::new(),
             open_edits: HashSet::new(),
@@ -2008,6 +2045,25 @@ impl AgentTab {
 
     /// After the conversation changed: rows, events, placeholder, the elapsed ticker, a redraw.
     fn after_change(&mut self, live: bool, cx: &mut Context<Self>) {
+        // A Working arc for each running tool's row (spec B-B), none for the others.
+        let running: Vec<String> = self
+            .conversation
+            .items()
+            .iter()
+            .filter_map(|i| match i {
+                Item::Tool {
+                    id, running: true, ..
+                } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        self.tool_marks.retain(|id, _| running.contains(id));
+        for id in running {
+            let clock = self.clock.clone();
+            self.tool_marks.entry(id).or_insert_with(|| {
+                cx.new(|cx| MarkView::new(&clock, Status::Working, px(MARK), BLACK, cx))
+            });
+        }
         self.sync_rows();
         // The modal's tool gone (a restart, a new conversation): back out to what is left.
         if let Some(modal) = &mut self.modal
@@ -2046,7 +2102,12 @@ impl AgentTab {
     /// ones at the end, drop any gone from it.
     fn sync_rows(&mut self) {
         let items = self.conversation.items();
-        let new: Vec<u64> = items.iter().map(fingerprint).collect();
+        // A row's print holds its shape in its tool group and whether it carries the thinking
+        // line (spec B-B): a neighbour arriving lays it out again.
+        let thinking = crate::agent_chat::shows_thinking(self.status() == Status::Working, items);
+        let new: Vec<u64> = (0..items.len())
+            .map(|i| crate::agent_chat::row_print(items, i, thinking))
+            .collect();
         let old: Vec<u64> = self.rows.iter().map(|r| r.print).collect();
         let mut dirty = changed_rows(&old, &new);
         // A sub-agent's item is drawn inside its parent's row.
@@ -3436,10 +3497,13 @@ pub(crate) fn button(
     } else {
         (c.panel, c.panel_text, c.panel_border)
     };
+    // Spec B-B: 28 high, 14 in from its sides, r6.
     div()
         .id(id.into())
-        .px(px(12.))
-        .py(px(3.))
+        .h(px(28.))
+        .px(px(14.))
+        .flex()
+        .items_center()
         .rounded(px(6.))
         .border_1()
         .border_color(hsla(edge))
@@ -3478,117 +3542,175 @@ fn on_tab(
 impl AgentTab {
     /// Item `ix`'s row of the list.
     fn item_row(&self, ix: usize, look: &Look) -> AnyElement {
-        let items = self.conversation.items();
-        let Some(item) = items.get(ix) else {
-            return div().into_any_element();
+        use crate::agent_chat::{
+            agent_side, avatar_top, chat, gap_before, is_row, shows_avatar, shows_thinking,
         };
-        // A sub-agent's items are drawn inside their parent's row.
-        if let Some(parent) = parent_of(item)
-            && items
-                .iter()
-                .any(|t| matches!(t, Item::Tool { id, .. } if id == parent))
-        {
+        let items = self.conversation.items();
+        // A sub-agent's items are drawn in their tool's detail (the modal), not as rows.
+        if !is_row(items, ix) {
             return div().into_any_element();
         }
-        let prev = items[..ix].iter().rev().find(|i| {
-            parent_of(i).is_none_or(|p| {
-                !items
-                    .iter()
-                    .any(|t| matches!(t, Item::Tool { id, .. } if id == p))
-            })
-        });
-        let starts_group = !(agent_side(item) && prev.is_some_and(agent_side));
-        let top = match (prev, starts_group) {
-            (None, _) => 14.,
-            (Some(_), true) => 14.,
-            (Some(_), false) => 6.,
-        };
-        let last = ix + 1 == items.len();
+        let item = &items[ix];
+        let c = &look.c;
+        let last = (ix + 1..items.len()).all(|i| !is_row(items, i));
+        let thinking = last && shows_thinking(self.status() == Status::Working, items);
         let body = self.item_body(ix, item, 0, look);
-        let row = div()
-            .w_full()
-            .px(px(AREA_X))
-            .pt(px(top))
-            .when(last, |d| d.pb(px(14.)))
-            .text_size(px(BODY))
-            .line_height(relative(1.45));
-        let row = if agent_side(item) {
-            let gutter = if starts_group && let Some(logo) = look.logo_image.clone() {
-                // Spec B-A: the logo bare, 18 pt in the 22 pt slot.
-                div()
-                    .flex_none()
-                    .size(px(AVATAR))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(gpui::img(logo).size(px(LOGO)))
-            } else if starts_group {
-                div()
-                    .flex_none()
-                    .size(px(AVATAR))
-                    .rounded(px(6.))
-                    .bg(hsla(Rgb {
-                        r: (look.badge_rgb >> 16) as u8,
-                        g: (look.badge_rgb >> 8) as u8,
-                        b: look.badge_rgb as u8,
-                    }))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(text::META))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(gpui::white())
-                    .child(look.badge.clone())
-            } else {
-                div().flex_none().w(px(AVATAR))
-            };
-            row.flex()
+        let text_column = chat::AVATAR + chat::AVATAR_GAP;
+        let column = div().w_full().max_w(px(chat::COLUMN_MAX));
+        let column = if agent_side(item) {
+            let gutter = div()
+                .flex_none()
+                .w(px(chat::AVATAR))
+                .when(shows_avatar(items, ix), |d| {
+                    d.pt(px(avatar_top(item))).child(self.avatar(look))
+                });
+            column
+                .flex()
                 .flex_row()
-                .gap(px(AVATAR_GAP))
+                .gap(px(chat::AVATAR_GAP))
                 .child(self.marked("column", gutter))
                 .child(div().flex_1().min_w(px(0.)).child(body))
+        } else if matches!(item, Item::Notice(_) | Item::Error(_)) {
+            column.pl(px(text_column)).child(body)
         } else {
-            row.child(body)
+            column.child(body)
         };
-        row.into_any_element()
+        // "Thinking…" under the last row while the turn works and nothing else moves (spec
+        // B-B): after your message with the avatar, else in the text column; fading in late,
+        // so short gaps never flash it.
+        let thinking = thinking.then(|| {
+            let after_you = matches!(item, Item::You { .. });
+            let gap = match item {
+                Item::You { .. } => chat::GAP_TURN,
+                Item::Tool { .. } => chat::GAP_TEXT_TOOL,
+                _ => chat::GAP_ITEM,
+            };
+            let slot = div()
+                .flex_none()
+                .w(px(chat::AVATAR))
+                .flex()
+                .justify_center()
+                .when(after_you, |d| d.child(self.avatar(look)));
+            div()
+                .w_full()
+                .max_w(px(chat::COLUMN_MAX))
+                .pt(px(gap))
+                .h(px(gap + chat::THINKING_H))
+                .flex()
+                .items_center()
+                .gap(px(chat::AVATAR_GAP))
+                .child(slot)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .text_size(px(text::META))
+                        .text_color(hsla(c.dim))
+                        .child(self.thinking_mark.clone())
+                        .child("Thinking…"),
+                )
+                .with_animation(
+                    ("agent-thinking", ix),
+                    Animation::new(Duration::from_millis(chat::THINKING_FADE_MS)),
+                    |d, t| {
+                        let t = ((t - chat::THINKING_HOLD) / (1. - chat::THINKING_HOLD)).max(0.);
+                        d.opacity(crate::agent_top::ease_out_cubic(t))
+                    },
+                )
+        });
+        div()
+            .w_full()
+            .px(px(AREA_X))
+            .pt(px(gap_before(items, ix)))
+            .when(last, |d| d.pb(px(chat::LAST_BOTTOM)))
+            .text_size(px(chat::BODY))
+            .line_height(relative(chat::BODY_LINE))
+            .child(column)
+            .children(thinking)
+            .into_any_element()
+    }
+
+    /// The agent's avatar (spec B-A): its logo bare, else its letters on its colour.
+    fn avatar(&self, look: &Look) -> AnyElement {
+        use crate::agent_chat::chat;
+        match look.logo_image.clone() {
+            Some(logo) => div()
+                .flex_none()
+                .size(px(chat::AVATAR))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(gpui::img(logo).size(px(chat::LOGO)))
+                .into_any_element(),
+            None => div()
+                .flex_none()
+                .size(px(chat::AVATAR))
+                .rounded(px(6.))
+                .bg(hsla(Rgb {
+                    r: (look.badge_rgb >> 16) as u8,
+                    g: (look.badge_rgb >> 8) as u8,
+                    b: look.badge_rgb as u8,
+                }))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(text::META))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(gpui::white())
+                .child(look.badge.clone())
+                .into_any_element(),
+        }
     }
 
     /// An item's own look (inside a row, or nested `depth` deep under a tool).
     fn item_body(&self, ix: usize, item: &Item, depth: usize, look: &Look) -> AnyElement {
+        use crate::agent_chat::chat;
         let c = &look.c;
         match item {
+            // Your message (spec B-B): a bubble in the colours of the box you typed it in, its
+            // tail at the bottom right; attachments as chips under the text.
             Item::You { text, attachments } => div()
                 .w_full()
                 .flex()
                 .justify_end()
                 .child(
-                    div()
-                        .max_w(relative(0.8))
-                        .px(px(12.))
-                        .py(px(8.))
-                        .rounded(px(12.))
-                        .bg(hsla(c.card))
-                        .border_1()
-                        .border_color(hsla(c.card_border))
-                        .text_color(hsla(c.card_text))
-                        .flex()
-                        .flex_col()
-                        .gap(px(5.))
-                        .child(SharedString::from(text.clone()))
-                        .children(attachments.iter().map(|a| {
-                            div()
-                                .px(px(8.))
-                                .py(px(2.))
-                                .rounded(px(6.))
-                                .border_1()
-                                .border_color(hsla(c.card_border))
-                                .text_size(px(text::META))
-                                .text_color(hsla(c.card_dim))
-                                .child(SharedString::from(format!(
-                                    "📎 {}",
-                                    a.lines().next().unwrap_or("")
-                                )))
-                        })),
+                    div().w(relative(0.78)).flex().justify_end().child(
+                        div()
+                            .max_w(px(520.))
+                            .px(px(14.))
+                            .py(px(9.))
+                            .rounded(px(chat::R_BUBBLE))
+                            .rounded_br(px(chat::R_TAIL))
+                            .bg(hsla(c.you_fill))
+                            .border_1()
+                            .border_color(hsla(c.you_edge))
+                            .text_color(hsla(c.you_text))
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.))
+                            .child(SharedString::from(text.clone()))
+                            .when(!attachments.is_empty(), |d| {
+                                d.child(div().flex().flex_wrap().gap(px(6.)).children(
+                                    attachments.iter().map(|a| {
+                                        div()
+                                            .h(px(22.))
+                                            .px(px(8.))
+                                            .rounded(px(chat::R_CHIP))
+                                            .bg(hsla(c.chip_fill))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .text_size(px(text::META))
+                                            .text_color(hsla(c.you_dim))
+                                            .child(icon(Icon::Paperclip, px(12.), hsla(c.you_dim)))
+                                            .child(SharedString::from(
+                                                a.lines().next().unwrap_or("").to_string(),
+                                            ))
+                                    }),
+                                ))
+                            }),
+                    ),
                 )
                 .into_any_element(),
             Item::Agent { .. } => {
@@ -3599,35 +3721,113 @@ impl AgentTab {
                     .unwrap_or_default();
                 div()
                     .w_full()
+                    .max_w(px(chat::COLUMN_MAX - 32.))
                     .text_color(hsla(c.text))
                     .when(depth > 0, |d| d.text_color(hsla(c.dim)))
                     .child(md_preview::column(&blocks, ix, &look.draw))
                     .into_any_element()
             }
             Item::Tool { .. } => self.tool(ix, item, look),
-            Item::Todo(list) => div()
-                .w_full()
-                .px(px(10.))
-                .py(px(8.))
-                .rounded(px(7.))
-                .bg(hsla(c.panel))
-                .border_1()
-                .border_color(hsla(c.panel_border))
-                .text_size(px(BODY - 1.))
-                .flex()
-                .flex_col()
-                .gap(px(1.))
-                .children(list.iter().map(|t| {
-                    let (mark, ink) = match t.state {
-                        TodoState::Done => ("✓", c.ok),
-                        TodoState::Active => ("◐", c.todo_active),
-                        TodoState::Pending => ("○", c.panel_dim),
-                    };
-                    div()
-                        .text_color(hsla(ink))
-                        .child(SharedString::from(format!("{mark} {}", t.text)))
-                }))
-                .into_any_element(),
+            // The todo list (spec B-B): a card with its count and a still meter, then the tasks.
+            Item::Todo(list) => {
+                let done = list.iter().filter(|t| t.state == TodoState::Done).count();
+                let meter = crate::agent_top::meter_fill(
+                    (done * 100).checked_div(list.len()).unwrap_or(0) as u8,
+                    crate::agent_top::METER_W,
+                );
+                div()
+                    .w_full()
+                    .px(px(14.))
+                    .py(px(10.))
+                    .rounded(px(chat::R_CARD))
+                    .bg(hsla(c.panel))
+                    .border_1()
+                    .border_color(hsla(c.panel_border))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(20.))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(px(text::META))
+                            .child(icon(Icon::ListChecks, px(12.), hsla(c.panel_dim)))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(hsla(c.panel_text))
+                                    .child("Tasks"),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                div()
+                                    .font_features(crate::sidebar::tabular())
+                                    .text_color(hsla(c.panel_dim))
+                                    .child(SharedString::from(format!("{done} of {}", list.len()))),
+                            )
+                            .child(
+                                div()
+                                    .ml(px(2.))
+                                    .relative()
+                                    .w(px(crate::agent_top::METER_W))
+                                    .h(px(crate::agent_top::METER_H))
+                                    .rounded(px(2.))
+                                    .bg(hsla(c.todo_track))
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left_0()
+                                            .top_0()
+                                            .h_full()
+                                            .w(px(meter))
+                                            .rounded(px(2.))
+                                            .bg(hsla(c.tool_ok)),
+                                    ),
+                            ),
+                    )
+                    .child(div().my(px(8.)).h(px(1.)).bg(hsla(c.tool_divider)))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .text_size(px(13.))
+                            .line_height(relative(1.45))
+                            .children(list.iter().map(|t| {
+                                let (glyph, ink, words, medium) = match t.state {
+                                    TodoState::Done => (Icon::Check, c.tool_ok, c.panel_dim, false),
+                                    TodoState::Active => {
+                                        (Icon::CircleDot, c.todo_active, c.panel_text, true)
+                                    }
+                                    TodoState::Pending => {
+                                        (Icon::Circle, c.panel_dim, c.panel_text, false)
+                                    }
+                                };
+                                div()
+                                    .flex()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .w(px(14.))
+                                            .h(px(13. * 1.45))
+                                            .flex()
+                                            .items_center()
+                                            .child(icon(glyph, px(12.), hsla(ink))),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .text_color(hsla(words))
+                                            .when(medium, |d| d.font_weight(FontWeight::MEDIUM))
+                                            .child(SharedString::from(t.text.clone())),
+                                    )
+                            })),
+                    )
+                    .into_any_element()
+            }
             Item::Permission {
                 tool,
                 what,
@@ -3635,36 +3835,93 @@ impl AgentTab {
                 always,
                 answer,
                 ..
-            } => match answer {
-                Some(answer) => div()
-                    .w_full()
-                    .text_color(hsla(c.dim))
-                    .text_size(px(BODY - 1.))
-                    .child(SharedString::from(format!(
-                        "{} · {tool} {what}",
-                        answer_line(answer)
-                    )))
-                    .into_any_element(),
-                None => self.permission_card(tool, what, detail, always.as_deref(), look),
-            },
+            } => {
+                match answer {
+                    // Answered (spec B-B): one quiet line, a check or a cross before it.
+                    Some(answer) => {
+                        let allowed = matches!(answer, Answer::Allowed | Answer::AlwaysAllowed);
+                        let (glyph, ink) = if allowed {
+                            (Icon::Check, c.tool_ok)
+                        } else {
+                            (Icon::Stop, c.failed)
+                        };
+                        div()
+                            .w_full()
+                            .h(px(22.))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(px(text::META))
+                            .text_color(hsla(c.dim))
+                            .child(icon(glyph, px(12.), hsla(ink)))
+                            .child(div().flex_1().min_w(px(0.)).truncate().child(
+                                SharedString::from(format!(
+                                    "{} · {tool} {what}",
+                                    answer_line(answer)
+                                )),
+                            ))
+                            .into_any_element()
+                    }
+                    None => self.permission_card(tool, what, detail, always.as_deref(), look),
+                }
+            }
+            // A notice (spec B-B): an info mark and the words, quiet, on the text's column.
             Item::Notice(t) => div()
                 .w_full()
-                .text_size(px(BODY - 1.))
+                .flex()
+                .gap(px(6.))
+                .text_size(px(text::META))
                 .text_color(hsla(c.dim))
-                .child(SharedString::from(t.clone()))
+                .child(
+                    div()
+                        .flex_none()
+                        .h(px(text::META * 1.5))
+                        .flex()
+                        .items_center()
+                        .child(icon(Icon::Info, px(12.), hsla(c.dim))),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .child(SharedString::from(t.clone())),
+                )
                 .into_any_element(),
             Item::Error(t) => {
                 let classic = self.provider.is_some() && self.conversation_id().is_some();
                 let closable = self.provider.is_none();
+                // An error (spec B-B): a card washed with the failure's colour, its octagon,
+                // the message in the body's colour (readable), its buttons under it.
                 div()
                     .w_full()
+                    .px(px(14.))
+                    .py(px(12.))
+                    .rounded(px(chat::R_CARD))
+                    .bg(hsla(c.error_fill))
+                    .border_1()
+                    .border_color(hsla(c.error_edge))
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(px(10.))
                     .child(
                         div()
-                            .text_color(hsla(c.failed))
-                            .child(SharedString::from(t.clone())),
+                            .flex()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .h(px(chat::BODY * chat::BODY_LINE))
+                                    .flex()
+                                    .items_center()
+                                    .child(icon(Icon::Octagon, px(14.), hsla(c.error_mark))),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_color(hsla(c.error_text))
+                                    .child(SharedString::from(t.clone())),
+                            ),
                     )
                     .when(classic || closable, |d| {
                         d.child(
@@ -3701,9 +3958,11 @@ impl AgentTab {
         }
     }
 
-    /// A tool call's row: name, target, result at the right (a spinner and the time while it
-    /// runs); a click opens its diff, its command and output, or its sub-agent's steps.
+    /// A tool call's row (spec B-B): its status (an arc while it runs, a dot once done), name,
+    /// target and result, and a chevron when it has more to show; a run of tool rows draws as one
+    /// group (`agent_chat::group_shape`). A click opens its detail in the modal (spec A).
     fn tool(&self, ix: usize, item: &Item, look: &Look) -> AnyElement {
+        use crate::agent_chat::{Shape, chat, group_shape, summary_shown};
         let Item::Tool {
             id,
             name,
@@ -3720,12 +3979,10 @@ impl AgentTab {
         };
         let c = &look.c;
         let items = self.conversation.items();
-        let children: Vec<usize> = items
+        let steps = items
             .iter()
-            .enumerate()
-            .filter(|(_, i)| parent_of(i) == Some(id.as_str()))
-            .map(|(i, _)| i)
-            .collect();
+            .filter(|i| parent_of(i) == Some(id.as_str()))
+            .count();
         let diff = match detail {
             Some(ToolDetail::Diff { unified, .. }) => Some(parse_diff(unified)),
             _ => None,
@@ -3736,10 +3993,10 @@ impl AgentTab {
                 .tool_started
                 .get(id)
                 .map_or(Duration::ZERO, |t| look.now.saturating_duration_since(*t));
-            let spin = ["◐", "◓", "◑", "◒"][(since.as_secs() % 4) as usize];
-            (format!("{spin} {}", elapsed_label(since)), c.panel_dim)
+            (elapsed_label(since), c.panel_dim)
         } else if *ok == Some(false) {
-            (format!("✗ {result}"), c.failed_panel)
+            let bare = result.trim_start_matches('✗').trim_start();
+            (bare.to_string(), c.failed_panel)
         } else if let Some(d) = &diff {
             let added = d.rows.iter().filter(|r| r.kind == RowKind::Added).count();
             let removed = d.rows.iter().filter(|r| r.kind == RowKind::Removed).count();
@@ -3749,7 +4006,28 @@ impl AgentTab {
         } else {
             (result.clone(), c.panel_dim)
         };
-        let steps = (!children.is_empty()).then(|| format!("{} steps", children.len()));
+        // Its status: running, the Working arc; ok, a dot; failed, a red dot; else a ring.
+        let dot = |fill: Rgb| {
+            div()
+                .size(px(chat::TOOL_DOT))
+                .rounded_full()
+                .bg(hsla(fill))
+                .into_any_element()
+        };
+        let status: AnyElement = match (running, ok) {
+            (true, _) => match self.tool_marks.get(id) {
+                Some(mark) => mark.clone().into_any_element(),
+                None => dot(c.todo_active),
+            },
+            (false, Some(true)) => dot(c.tool_ok),
+            (false, Some(false)) => dot(c.failed_panel),
+            (false, None) => div()
+                .size(px(chat::TOOL_DOT))
+                .rounded_full()
+                .border_1()
+                .border_color(hsla(c.panel_dim))
+                .into_any_element(),
+        };
         let chevron_slot = div()
             .flex_none()
             .size(px(crate::right_sidebar::CHEVRON))
@@ -3760,12 +4038,40 @@ impl AgentTab {
                         .group_hover("agent-tool-row", move |s| s.text_color(hover)),
                 )
             });
-        let head = div()
+        let shape = group_shape(items, ix).unwrap_or(Shape::Solo);
+        let (top, bottom) = match shape {
+            Shape::Solo => (true, true),
+            Shape::First => (true, false),
+            Shape::Middle => (false, false),
+            Shape::Last => (false, true),
+        };
+        let row_hover = hsla(c.row_hover);
+        let tool = div()
+            .id(("agent-tool", ix))
+            .group("agent-tool-row")
+            .relative()
+            .w_full()
+            .h(px(chat::TOOL_ROW))
+            .px(px(chat::TOOL_PAD_X))
             .flex()
-            .flex_row()
             .items_center()
-            .gap(px(8.))
-            .min_w(px(0.))
+            .gap(px(chat::TOOL_GAP))
+            .bg(hsla(c.panel))
+            .border_color(hsla(c.panel_border))
+            .border_l_1()
+            .border_r_1()
+            .when(top, |d| d.border_t_1().rounded_t(px(chat::R_GROUP)))
+            .when(bottom, |d| d.border_b_1().rounded_b(px(chat::R_GROUP)))
+            .text_size(px(text::META))
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(chat::TOOL_STATUS))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(status),
+            )
             .child(
                 div()
                     .flex_none()
@@ -3779,38 +4085,40 @@ impl AgentTab {
                     .min_w(px(0.))
                     .truncate()
                     .text_color(hsla(c.panel_text))
-                    .child(SharedString::from(summary.clone())),
+                    .when(summary_shown(name, summary), |d| {
+                        d.child(SharedString::from(summary.clone()))
+                    }),
             )
-            .when_some(steps, |d, s| {
+            .when(steps > 0, |d| {
                 d.child(
                     div()
                         .flex_none()
                         .text_color(hsla(c.panel_dim))
-                        .child(SharedString::from(s)),
+                        .child(SharedString::from(format!("{steps} steps"))),
                 )
             })
             .child(
                 div()
                     .flex_none()
-                    .max_w(relative(0.45))
+                    .max_w(relative(0.4))
                     .truncate()
+                    .font_features(crate::sidebar::tabular())
                     .text_color(hsla(right.1))
                     .child(SharedString::from(right.0)),
             )
-            .child(chevron_slot);
-        let row_hover = hsla(c.row_hover);
-        let tool = div()
-            .id(("agent-tool", ix))
-            .group("agent-tool-row")
-            .w_full()
-            .px(px(10.))
-            .py(px(6.))
-            .rounded(px(7.))
-            .bg(hsla(c.panel))
-            .border_1()
-            .border_color(hsla(c.panel_border))
-            .text_size(px(BODY - 1.))
-            .child(head);
+            .child(chevron_slot)
+            // The line between a group's rows, from the name's column (spec B-B).
+            .when(!bottom, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left(px(chat::TOOL_DIVIDER_INSET))
+                        .right_0()
+                        .h(px(1.))
+                        .bg(hsla(c.tool_divider)),
+                )
+            });
         // The whole row opens the tool's detail (spec A §A): a modal, never inline.
         let tool = if openable {
             let view = look.view.clone();
@@ -3884,31 +4192,37 @@ impl AgentTab {
             shown.push("…");
         }
         let label = look.label.clone();
+        // Spec B-B: a card (r12), a shield before its heading, the command in a well.
         div()
             .w_full()
-            .px(px(12.))
-            .py(px(10.))
-            .rounded(px(9.))
+            .px(px(14.))
+            .py(px(12.))
+            .rounded(px(crate::agent_chat::chat::R_CARD))
             .border_1()
             .border_color(hsla(c.ask_edge))
             .bg(hsla(c.ask_fill))
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(px(10.))
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
                     .text_color(hsla(c.ask_head))
                     .font_weight(FontWeight::SEMIBOLD)
+                    .child(icon(Icon::Shield, px(14.), hsla(c.ask_head)))
                     .child(SharedString::from(format!("{label} wants to run {tool}"))),
             )
             .child(
                 div()
                     .w_full()
-                    .px(px(10.))
-                    .py(px(8.))
-                    .rounded(px(5.))
+                    .px(px(12.))
+                    .py(px(10.))
+                    .rounded(px(crate::agent_chat::chat::R_GROUP))
                     .bg(hsla(c.code_fill))
                     .font_family(look.mono.clone())
+                    .text_size(px(12.5))
                     .text_color(hsla(c.code_text))
                     .child(SharedString::from(what.to_string())),
             )
@@ -4363,6 +4677,10 @@ impl AgentTab {
     pub fn use_clock(&mut self, clock: &Entity<MarkClock>, cx: &mut Context<Self>) {
         self.top_mark = cx.new(|cx| MarkView::new(clock, Status::Idle, px(MARK), BLACK, cx));
         self.modal_mark = cx.new(|cx| MarkView::new(clock, Status::Working, px(MARK), BLACK, cx));
+        self.thinking_mark =
+            cx.new(|cx| MarkView::new(clock, Status::Working, px(MARK), BLACK, cx));
+        self.clock = clock.clone();
+        self.tool_marks.clear();
     }
 
     /// The pane's top bar (spec A §C): the status pill on the left; on the right what the
@@ -4596,16 +4914,18 @@ impl AgentTab {
                 .items_end()
                 .gap(px(6.))
                 .text_size(px(BODY))
+                // Spec B-B: your bubble, quieter (the box's outer fill), waiting to go.
                 .children(self.queued.iter().map(|(text, _)| {
                     div()
-                        .max_w(relative(0.8))
-                        .px(px(12.))
-                        .py(px(8.))
-                        .rounded(px(12.))
-                        .bg(hsla(c.card))
+                        .max_w(relative(0.78))
+                        .px(px(14.))
+                        .py(px(9.))
+                        .rounded(px(crate::agent_chat::chat::R_BUBBLE))
+                        .rounded_br(px(crate::agent_chat::chat::R_TAIL))
+                        .bg(hsla(c.queued_fill))
                         .border_1()
-                        .border_color(hsla(c.card_border))
-                        .text_color(hsla(c.card_dim))
+                        .border_color(hsla(c.you_edge))
+                        .text_color(hsla(c.queued_text))
                         .child(SharedString::from(text.clone()))
                 }))
                 .child(
@@ -4618,20 +4938,65 @@ impl AgentTab {
         )
     }
 
-    fn empty_state(&self, c: &Colors) -> AnyElement {
+    /// Nothing said yet (spec B-B): the agent's logo, what to do, and where, a little above the
+    /// middle.
+    fn empty_state(&self, c: &Colors, cx: &App) -> AnyElement {
         let home = crate::workspace::home_dir();
         let place = crate::sidebar::home_relative(&self.start.cwd, home.as_deref());
+        let info = self.provider.map(|p| p.info());
+        let mark: AnyElement = match info
+            .and_then(|i| i.logo)
+            .and_then(|logo| crate::logos::image(logo, 40., cx))
+        {
+            Some(logo) => gpui::img(logo).size(px(40.)).into_any_element(),
+            None => {
+                let rgb = info.map_or(0x6b6b6b, |i| i.badge_rgb);
+                div()
+                    .size(px(40.))
+                    .rounded(px(10.))
+                    .bg(hsla(Rgb {
+                        r: (rgb >> 16) as u8,
+                        g: (rgb >> 8) as u8,
+                        b: rgb as u8,
+                    }))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(16.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(gpui::white())
+                    .child(info.map_or("?", |i| i.badge))
+                    .into_any_element()
+            }
+        };
         div()
             .flex_1()
             .w_full()
+            .pb(px(48.))
             .flex()
+            .flex_col()
             .items_center()
             .justify_center()
-            .text_color(hsla(c.dim))
-            .child(SharedString::from(format!(
-                "Ask {} to do something in {place}",
-                self.label()
-            )))
+            .child(mark)
+            .child(
+                div()
+                    .mt(px(16.))
+                    .text_size(px(15.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(hsla(c.text))
+                    .child(SharedString::from(format!(
+                        "Ask {} to do something",
+                        self.label()
+                    ))),
+            )
+            .child(
+                div()
+                    .mt(px(6.))
+                    .font_family(cx.global::<Appearance>().font.family.clone())
+                    .text_size(px(12.5))
+                    .text_color(hsla(c.dim))
+                    .child(SharedString::from(place)),
+            )
             .into_any_element()
     }
 }
@@ -4676,7 +5041,7 @@ impl Render for AgentTab {
         let built = self.rows_built.clone();
         let pending = self.pending(&c);
         let stream = if empty && self.queued.is_empty() {
-            self.empty_state(&c)
+            self.empty_state(&c, cx)
         } else if empty {
             div().flex_1().into_any_element()
         } else {
@@ -5380,10 +5745,7 @@ mod tests {
                 ("text", c.text, c.page),
                 ("dim", c.dim, c.page),
                 ("dim on panel", c.panel_dim, c.panel),
-                ("dim on card", c.card_dim, c.card),
-                ("text on card", c.card_text, c.card),
                 ("tool name", c.tool_name, c.panel),
-                ("ok", c.ok, c.panel),
                 ("failed", c.failed, c.page),
                 ("failed on panel", c.failed_panel, c.panel),
                 ("ask head", c.ask_head, c.ask_fill),
@@ -5403,6 +5765,30 @@ mod tests {
             ] {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got:.2}");
+            }
+            // The chat (spec B-B): your bubble and its chips, a queued one, an error card's text;
+            // a failed result on a hovered row.
+            for (what, fg, on) in [
+                ("you", c.you_text, c.you_fill),
+                ("you dim", c.you_dim, c.you_fill),
+                ("chip", c.you_dim, c.chip_fill),
+                ("queued", c.queued_text, c.queued_fill),
+                ("error", c.error_text, c.error_fill),
+                ("failed on a hovered row", c.failed_panel, c.row_hover),
+                ("dim on a hovered row", c.panel_dim, c.row_hover),
+            ] {
+                let got = contrast(fg, on);
+                assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got:.2}");
+            }
+            // Marks: the ok dot on a row and a hovered one, the error's octagon.
+            let mark = crate::ui_tokens::MARK_MIN - 0.01;
+            for (what, fg, on) in [
+                ("ok dot", c.tool_ok, c.panel),
+                ("ok dot hovered", c.tool_ok, c.row_hover),
+                ("error mark", c.error_mark, c.error_fill),
+            ] {
+                let got = contrast(fg, on);
+                assert!(got >= mark, "{name}: {what} {got:.2}");
             }
             // The send circle (the designer's details): ready, the arrow on the accent (text's
             // floor, "on accent" above) and under the pointer, a mark; empty, a control ("dim on

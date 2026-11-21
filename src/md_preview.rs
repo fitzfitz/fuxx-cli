@@ -69,26 +69,26 @@ pub struct Sizes {
 }
 
 impl Sizes {
-    /// M11ac's sizes, which agent chat keeps.
+    /// Agent chat's sizes (spec B-B): M11ac's, with smaller headings and more room.
     pub const CHAT: Sizes = Sizes {
         body: 14.0,
         line: 1.5,
-        headings: [24.0, 20.0, 17.0, 15.0, 14.0, 13.0],
-        heading_line: 1.3,
-        code: 13.0,
-        code_line: 1.45,
+        headings: [18.0, 16.0, 15.0, 14.0, 14.0, 13.0],
+        heading_line: 1.35,
+        code: 12.5,
+        code_line: 1.5,
         block_gap: 12.0,
-        item_gap: 4.0,
-        heading_above: 12.0,
-        heading_below: 12.0,
+        item_gap: 6.0,
+        heading_above: 20.0,
+        heading_below: 6.0,
         rule_below: 6.0,
         code_pad: (12.0, 10.0),
-        code_radius: 6.0,
-        indent: 20.0,
+        code_radius: 8.0,
+        indent: 22.0,
         marker_gap: 6.0,
         quote_pad: 12.0,
         quote_bar: 3.0,
-        rule_margin: 4.0,
+        rule_margin: 8.0,
         rule_line: 1.0,
         table_cell: (10.0, 5.0),
     };
@@ -1437,7 +1437,8 @@ fn block(md: &Md, draw: &Draw) -> AnyElement {
                 .when(*level == 6 && draw.reader.is_some(), |d| {
                     d.text_color(hsla(c.dim))
                 })
-                .when(*level <= 2, |d| {
+                // H1 / H2's underline: the reader's; chat has none (spec B-B).
+                .when(*level <= 2 && draw.reader.is_some(), |d| {
                     d.pb(px(s.rule_below))
                         .border_b_1()
                         .border_color(hsla(c.line))
@@ -2034,8 +2035,8 @@ mod tests {
         assert_eq!(marker(&Md::Para(vec![]), 0), None);
     }
 
-    /// Agent chat draws as today (plan-time call 1): `Sizes::CHAT` is M11ac's numbers, and its
-    /// gaps are M11ac's `gap_before`'s (its test, moved).
+    /// Agent chat's sizes (the lead designer's spec B-B, chores after M11ab): smaller headings
+    /// with more room above them, roomier lists and code.
     #[test]
     fn chat_keeps_today_s_sizes() {
         assert_eq!(
@@ -2043,22 +2044,22 @@ mod tests {
             Sizes {
                 body: 14.0,
                 line: 1.5,
-                headings: [24.0, 20.0, 17.0, 15.0, 14.0, 13.0],
-                heading_line: 1.3,
-                code: 13.0,
-                code_line: 1.45,
+                headings: [18.0, 16.0, 15.0, 14.0, 14.0, 13.0],
+                heading_line: 1.35,
+                code: 12.5,
+                code_line: 1.5,
                 block_gap: 12.0,
-                item_gap: 4.0,
-                heading_above: 12.0,
-                heading_below: 12.0,
+                item_gap: 6.0,
+                heading_above: 20.0,
+                heading_below: 6.0,
                 rule_below: 6.0,
                 code_pad: (12.0, 10.0),
-                code_radius: 6.0,
-                indent: 20.0,
+                code_radius: 8.0,
+                indent: 22.0,
                 marker_gap: 6.0,
                 quote_pad: 12.0,
                 quote_bar: 3.0,
-                rule_margin: 4.0,
+                rule_margin: 8.0,
                 rule_line: 1.0,
                 table_cell: (10.0, 5.0),
             }
@@ -2069,13 +2070,13 @@ mod tests {
         let para = Md::Para(vec![]);
         let heading = Md::Heading(2, vec![]);
         assert_eq!(gap_between(chat, None, &para), 0.0);
-        assert_eq!(gap_between(chat, Some(&item), &nested), 4.0);
-        assert_eq!(gap_between(chat, Some(&nested), &item), 4.0);
+        assert_eq!(gap_between(chat, Some(&item), &nested), 6.0);
+        assert_eq!(gap_between(chat, Some(&nested), &item), 6.0);
         assert_eq!(gap_between(chat, Some(&para), &item), 12.0);
         assert_eq!(gap_between(chat, Some(&item), &para), 12.0);
         assert_eq!(gap_between(chat, Some(&para), &para), 12.0);
-        assert_eq!(gap_between(chat, Some(&para), &heading), 12.0);
-        assert_eq!(gap_between(chat, Some(&heading), &para), 12.0);
+        assert_eq!(gap_between(chat, Some(&para), &heading), 20.0);
+        assert_eq!(gap_between(chat, Some(&heading), &para), 6.0);
     }
 
     /// The reader's spacing (spec A): 1 em between blocks, 32 pt above a heading and 12 under

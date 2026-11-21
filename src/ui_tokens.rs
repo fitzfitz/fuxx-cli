@@ -72,6 +72,42 @@ pub mod code {
 /// M11ai (Markdown reader): every size the file tab's Markdown Preview is drawn with, in points,
 /// in one place (agent chat keeps its own, `md_preview::Sizes::CHAT`). The Preview's side and top
 /// padding is `size::TERMINAL_PADDING`.
+/// The agent chat (chores after M11ab, the lead designer's spec B-B).
+pub mod chat {
+    /// The conversation's column at most (avatar included), left-aligned at the tab's margin.
+    pub const COLUMN_MAX: f32 = 760.0;
+    pub const AVATAR: f32 = 22.0;
+    pub const LOGO: f32 = 18.0;
+    pub const AVATAR_GAP: f32 = 10.0;
+    pub const BODY: f32 = 14.0;
+    pub const BODY_LINE: f32 = 1.5;
+    /// Gaps above a row, by what came before it.
+    pub const FIRST_TOP: f32 = 16.0;
+    pub const LAST_BOTTOM: f32 = 20.0;
+    pub const GAP_TURN: f32 = 24.0;
+    pub const GAP_ITEM: f32 = 12.0;
+    pub const GAP_TEXT_TOOL: f32 = 8.0;
+    pub const GAP_STACK: f32 = 0.0;
+    pub const GAP_NOTICE: f32 = 16.0;
+    /// A tool row: its height, padding, gaps, status slot, dot, and its divider's inset.
+    pub const TOOL_ROW: f32 = 30.0;
+    pub const TOOL_PAD_X: f32 = 10.0;
+    pub const TOOL_GAP: f32 = 8.0;
+    pub const TOOL_STATUS: f32 = 12.0;
+    pub const TOOL_DOT: f32 = 6.0;
+    pub const TOOL_DIVIDER_INSET: f32 = 30.0;
+    /// The "Thinking…" line: its height, its fade and how much of the fade it waits first.
+    pub const THINKING_H: f32 = 24.0;
+    pub const THINKING_FADE_MS: u64 = 500;
+    pub const THINKING_HOLD: f32 = 0.4;
+    /// Radii: chips and buttons, tool groups / code / wells, cards; your bubble and its tail.
+    pub const R_CHIP: f32 = 6.0;
+    pub const R_GROUP: f32 = 8.0;
+    pub const R_CARD: f32 = 12.0;
+    pub const R_BUBBLE: f32 = 16.0;
+    pub const R_TAIL: f32 = 6.0;
+}
+
 pub mod reader {
     /// Body text, and its line height (a multiple of the size).
     pub const BODY: f32 = 16.0;
