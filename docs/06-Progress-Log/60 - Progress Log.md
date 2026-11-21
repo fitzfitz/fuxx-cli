@@ -30,6 +30,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Chore: the agent box and the shell box made the same
+
+- **What:** the agent box types in the terminal's font and cells, with the terminal's cursor and the shell's `❯`;
+  one placeholder style in both; no inner-box edge in either (the lead designer's details). Note 88.
+- **Checks:** 2308 tests; clippy at the baseline; ui-shots 258 passed, 5 known failures.
+
 ### 2026-11-21 — M11ao added (placeholder): one chat box with add-ons
 
 - **What:** on your word, a placeholder for one reusable box for the shell and agent tabs, with the lead designer's

@@ -3930,7 +3930,7 @@ impl AgentTab {
 }
 
 impl Render for AgentTab {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let appearance = cx.global::<Appearance>();
         let theme = appearance.theme;
         let mono = appearance.font.family.clone();
@@ -4014,7 +4014,7 @@ impl Render for AgentTab {
             .children(pending)
             // An error tab (no such agent) has nothing to send to.
             .when(self.provider.is_some(), |d| {
-                d.child(self.box_area(&c, mono, cx))
+                d.child(self.box_area(&c, mono, window, cx))
             })
     }
 }

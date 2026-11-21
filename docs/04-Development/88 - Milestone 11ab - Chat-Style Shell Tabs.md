@@ -627,6 +627,32 @@ what ⌃W / ⌃K / ⌃U took) and ⌘↑ / ⌘↓ (the terminal uses them to scr
 - **Checks:** 2305 tests (the two operations, the key map); scene `agent-box-shell-keys` (real keystrokes; fails
   with ⌥⌫ unbound); clippy at the baseline; ui-shots 256 passed, the 5 known failures.
 
+### Chore: the agent box and the shell box made the same (2026-11-21)
+
+Your words: "Because right now, you see the differences? also the cursor is very different". The lead designer's
+call: the shell's typing is zsh's line in the grid, so the agent box moves to it; what fuxx draws itself follows one
+rule in both.
+
+- **The typing:** the agent box types in the terminal's font, size and cell height (`CellMetrics`), wrapping a cell
+  short of the edge for the caret.
+- **The cursor:** the agent box's caret is the terminal's cursor: the cursor setting's shape (bar, underline, hollow
+  or block) in the theme's cursor colour, one cell; hollow when the box isn't focused in the key window; a block's
+  letter drawn again in the cursor's text colour (`cursor_look::box_caret`, `caret_rect`). The shell box is
+  unchanged: zsh and programs still choose its shape.
+- **`❯`:** the agent box has the shell's, in the accent, the typing two cells after it (wrapped rows too); in both
+  boxes it sits 14 in from the inner box's left and the first line 12 down.
+- **The placeholder:** one style in both: the terminal's font and size, dim, one cell after the cursor's, cut with
+  "…" when it doesn't fit (`card_view::fit_words`). Each keeps its words.
+- **The inner box:** no edge in either (the shell's 1 px edge and lit top edge, and their two colour tokens, are
+  gone); its fill on the outer box sets it apart. The shell box's text moved in by the edge's 1 pt.
+- **The AI's calls:** the agent caret doesn't breathe (the cursor glow is the terminal's animation) and keeps the
+  theme's cursor colour when the cursor follows the status (an agent box's typing is idle anyway); the shell box's
+  "…" only shows below about 17 cells, narrower than its card view draws.
+- **Checks:** 2308 tests; scenes `agent-box-terminal-text` (cell height, block caret one cell, hollow when not key,
+  placeholder one cell on, `❯` 14 in, typing two cells after, 12 down; fails before the change) and
+  `shell-cards-placeholder`; two older scenes given more text (the smaller cell wraps the same words into 8 rows,
+  not more); clippy at the baseline; ui-shots 258 passed, the 5 known failures.
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·

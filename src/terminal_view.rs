@@ -75,7 +75,9 @@ const TICK: Duration = Duration::from_millis(50);
 const GLOW_BLUR: f32 = 6.0;
 const GLOW_ALPHA: f32 = 0.30;
 /// The bar's width and the underline's height; a spark's size.
-const BAR: f32 = 2.0;
+const BAR: f32 = cursor_look::BAR;
+/// The shell box's placeholder.
+pub const PLACEHOLDER: &str = "Type a command";
 const SPARK: f32 = 2.0;
 
 /// What a terminal tells its owner.
@@ -521,6 +523,12 @@ impl TerminalView {
     #[cfg(feature = "ui-shots")]
     pub fn shot_typed_row(&self) -> String {
         self.cards.borrow().typed_row.clone()
+    }
+
+    /// The card view's placeholder as drawn and its left edge (none: not drawn).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_hint(&self) -> Option<(String, f32)> {
+        self.cards.borrow().hint.clone()
     }
 
     /// The composer's pill row as laid out last frame, its width (UI screenshots).
@@ -3433,26 +3441,10 @@ fn paint_cards(
                             px(height - EDGE - CTX_ROW - OUTER_INSET - EDGE),
                         ),
                     );
-                    window.paint_quad(gpui::quad(
-                        inner,
-                        px(12.0),
-                        hsla(p.ui.composer_inner),
-                        px(EDGE),
-                        hsla(p.ui.composer_inner_edge),
-                        gpui::BorderStyle::Solid,
-                    ));
-                    window.paint_quad(gpui::quad(
-                        inner,
-                        px(12.0),
-                        gpui::transparent_black(),
-                        gpui::Edges {
-                            top: px(EDGE),
-                            ..gpui::Edges::default()
-                        },
-                        hsla(p.ui.composer_inner_top),
-                        gpui::BorderStyle::Solid,
-                    ));
-                    let origin_x = f32::from(inner.left()) + EDGE + INNER_PAD_X;
+                    // No edge: its fill on the outer box sets it apart (the designer).
+                    window
+                        .paint_quad(fill(inner, hsla(p.ui.composer_inner)).corner_radii(px(12.0)));
+                    let origin_x = f32::from(inner.left()) + INNER_PAD_X;
                     // Only what you type: the first row from where the typing starts to the
                     // right-hand prompt, after a `❯` (rework); the rows under it as they are.
                     let mut lines = rows.lines.clone();
@@ -3535,18 +3527,31 @@ fn paint_cards(
                     // (No fill: the inner box shows through the cells' default background.)
                     let none = Bounds::new(origin, size(px(0.0), px(0.0)));
                     paint_grid(snap, p.theme, m, none, origin, look, |_| {}, window, cx);
+                    #[cfg(feature = "ui-shots")]
+                    {
+                        p.state.borrow_mut().hint = None;
+                    }
                     if hint {
-                        let words = "Type a command";
+                        // The agent box's style (the designer): the terminal's font and size,
+                        // dim, one cell after the cursor's, "…" when it doesn't fit.
+                        let from = origin_x + 3.0 * cell_w;
+                        let room = f32::from(inner.right()) - INNER_PAD_X - from;
+                        let cols = (room / cell_w).floor().max(0.0) as usize;
+                        let words = crate::card_view::fit_words(PLACEHOLDER, cols);
                         paint_words(
-                            words,
+                            &words,
                             &[(words.len(), p.ui.text_dim)],
-                            ui_font.clone(),
-                            px(crate::ui_tokens::text::UI),
-                            point(px(origin_x + 3.5 * cell_w), px(rows.y)),
+                            m.font.clone(),
+                            m.font_size,
+                            point(px(from), px(rows.y)),
                             m.line_height,
                             window,
                             cx,
                         );
+                        #[cfg(feature = "ui-shots")]
+                        {
+                            p.state.borrow_mut().hint = Some((words.clone(), from));
+                        }
                     }
                 }
             }
