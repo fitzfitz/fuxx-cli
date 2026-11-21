@@ -478,6 +478,11 @@ impl TerminalView {
 
     /// The card view's last frame: whether it drew cards, and the terminal's size then.
     #[cfg(feature = "ui-shots")]
+    pub fn shot_card_count(&self) -> usize {
+        self.cards.borrow().hits.len()
+    }
+
+    #[cfg(feature = "ui-shots")]
     pub fn shot_cards(&self) -> (bool, crate::terminal::TermDims, (f32, f32)) {
         (self.cards_on.get(), self.core.dims(), self.card_cell.get())
     }
