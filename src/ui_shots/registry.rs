@@ -294,6 +294,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-tab-attachment",
     "agent-box-change-waits",
     "agent-box-mode-waits",
+    "agent-box-shell-keys",
     "agent-box-change-restart",
     "agent-box-restart-keeps-queued-text",
     "agent-box-empty",

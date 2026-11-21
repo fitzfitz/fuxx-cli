@@ -30,6 +30,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Chore: the agent box edits like the shell's line
+
+- **What:** ⌥⌫ and ⌃W delete a word, ⌃K / ⌃U to the line's end / start, ⌃A ⌃E ⌃B ⌃F ⌃P ⌃N ⌃H ⌃D as in zsh, in
+  the agent tab's box. Note 88.
+- **Checks:** 2305 tests; clippy at the baseline; ui-shots 256 passed, 5 known failures.
+
 ### 2026-11-21 — Chore: the agent box's controls and menus redesigned; the mode chosen mid-run shows
 
 - **What:** the agent box borderless, `+` a circle, the model and mode pickers pills (the mode with its icon), the

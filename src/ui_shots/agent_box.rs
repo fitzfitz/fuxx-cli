@@ -259,6 +259,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: BOX,
     },
     Scene {
+        name: "agent-box-shell-keys",
+        run: agent_box_shell_keys,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: BOX,
+    },
+    Scene {
         name: "agent-box-change-restart",
         run: agent_box_change_restart,
         themes: Themes::One,
@@ -643,6 +651,40 @@ fn agy_conversation() -> String {
             _ => None,
         })
         .expect("agy-text starts a conversation")
+}
+
+/// Your words: "make sure the font the textbox nature like cursor move with keyboard, delete
+/// text/sentences,etc same as terminal textbox": real keystrokes edit the box as they edit the
+/// shell's line (⌥⌫, ⌃W, ⌃A, ⌃F, ⌃K, ⌃B, ⌃H, ⌃D, ⌃E, ⌃U).
+pub(super) fn agent_box_shell_keys() {
+    layout_scene("agent-box-shell-keys", |n, cx, window, tab| {
+        cx.simulate_input(window, "git commit -m fix it");
+        let _ = frame_fresh(cx, window);
+        press(cx, window, "alt-backspace");
+        assert_eq!(
+            box_text(cx, tab),
+            "git commit -m fix ",
+            "{n}: \u{2325}\u{232b}"
+        );
+        press(cx, window, "ctrl-w");
+        assert_eq!(box_text(cx, tab), "git commit -m ", "{n}: \u{2303}W");
+        press(cx, window, "ctrl-a ctrl-f ctrl-f ctrl-f ctrl-f ctrl-k");
+        assert_eq!(
+            box_text(cx, tab),
+            "git ",
+            "{n}: \u{2303}A, \u{2303}F, \u{2303}K"
+        );
+        press(cx, window, "ctrl-b ctrl-h");
+        assert_eq!(box_text(cx, tab), "gi ", "{n}: \u{2303}B, \u{2303}H");
+        press(cx, window, "ctrl-d");
+        assert_eq!(box_text(cx, tab), "gi", "{n}: \u{2303}D");
+        press(cx, window, "ctrl-a ctrl-e");
+        cx.simulate_input(window, "t");
+        assert_eq!(box_text(cx, tab), "git", "{n}: \u{2303}E to the end");
+        press(cx, window, "ctrl-u");
+        assert_eq!(box_text(cx, tab), "", "{n}: \u{2303}U");
+        assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
+    });
 }
 
 /// Your words: "Make sure I can choose mode mid run and the next prompt will pick up my chosen
