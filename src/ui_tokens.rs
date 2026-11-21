@@ -213,10 +213,11 @@ pub mod size {
     pub const TERMINAL_PADDING: (f32, f32) = (28.0, 22.0);
     pub const SPLIT_TERMINAL_PADDING: (f32, f32) = (20.0, 14.0);
     /// The floating card's corner radius, matched to the window's by eye (the dark-panel chore,
-    /// your pick from renders): between the strict parallel curve (the window's 14 less the 8 pt
+    /// your pick from renders, 9 then "add more border radius": 11): between the strict parallel
+    /// curve (the window's 14 less the 8 pt
     /// `CARD_INSET`) and the window's own 14 (M11al §3.1), which widened the gap at the corners;
     /// macOS's smooth corner reads larger than its circle. M11i's cards' was 8.
-    pub const CARD_RADIUS: f32 = 9.0;
+    pub const CARD_RADIUS: f32 = 11.0;
     /// M11al's one floating card: the canvas inset around it, its shadow's drop and blur, and
     /// the 1 px lines.
     pub const CARD_INSET: f32 = 8.0;

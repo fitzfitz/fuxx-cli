@@ -329,8 +329,9 @@ mod tests {
         // The dark-panel chore (your words: "the border radius on the floating panel, is not
         // matching the window (outter border) border radius"): 14 (the window's own) widened
         // the gap at the corner, the strict parallel curve (14 − 8 = 6) read too tight against
-        // macOS's smooth corner; you picked 9 from renders side by side.
-        assert_eq!(CARD_RADIUS, 9.0);
+        // macOS's smooth corner; you picked 9 from renders side by side, then "add more border
+        // radius": 11, the next of those renders.
+        assert_eq!(CARD_RADIUS, 11.0);
         let parallel = WINDOW_RADIUS - crate::ui_tokens::size::CARD_INSET;
         assert!(parallel < CARD_RADIUS && CARD_RADIUS < WINDOW_RADIUS);
     }
