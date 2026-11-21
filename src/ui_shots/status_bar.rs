@@ -390,15 +390,15 @@ fn status_bar_scenes() {
                 "{n}: the bar's bottom at its left end"
             );
             // No fill of its own (M11al §7): under the sidebar the bar is the canvas's colour,
-            // and just under the card the card's shadow falls over it, darker than the canvas.
+            // and just under the card too (no card shadow since the dark-panel chore).
             assert!(canvas(at(2.0, mid)), "{n}: the bar's middle is the canvas");
             let (under, bare) = (
                 at(SIDEBAR_DEFAULT_WIDTH + 40.0, top + 1.0),
                 at(2.0, top + 1.0),
             );
             assert!(
-                under.iter().zip(bare).all(|(a, b)| *a <= b) && under != bare,
-                "{n}: the card's shadow darkens the bar's top: {under:?} vs canvas {bare:?}"
+                under == bare,
+                "{n}: the bar's top under the card is the canvas: {under:?} vs canvas {bare:?}"
             );
             // The card's inside (the terminal's background) stops at the rim's 1 pt ring of the
             // canvas colour inside its 1 pt edge (2026-11-20), `CARD_INSET` above the bar (its
