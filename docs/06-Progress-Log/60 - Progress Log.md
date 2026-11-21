@@ -30,6 +30,11 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — M11ao added (placeholder): one chat box with add-ons
+
+- **What:** on your word, a placeholder for one reusable box for the shell and agent tabs, with the lead designer's
+  outline: share the frame, tab pills and controls slots, not the middle; after M11an. Note 90; roadmap.
+
 ### 2026-11-21 — Chore: the agent box edits like the shell's line
 
 - **What:** ⌥⌫ and ⌃W delete a word, ⌃K / ⌃U to the line's end / start, ⌃A ⌃E ⌃B ⌃F ⌃P ⌃N ⌃H ⌃D as in zsh, in
