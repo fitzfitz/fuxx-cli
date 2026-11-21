@@ -55,8 +55,8 @@ use crate::providers::{
 };
 use crate::status::Status;
 use crate::terminal_view::hsla;
-use crate::theme::{Theme, UiColors, mix};
-use crate::ui_tokens::{TEXT_MIN, ensure_contrast, text};
+use crate::theme::{Theme, UiColors, mix, readable};
+use crate::ui_tokens::{MARK_MIN, QUIET_LINE_MIN, TEXT_MIN, ensure_contrast, text};
 use crate::workspace_agent::Holder;
 
 // ↑ / ↓ in the `@` file list and the `/` list (bound in main.rs to "AtPopup > Composer", so they
@@ -682,6 +682,19 @@ pub struct Colors {
     /// The send circle under the pointer, ready (the designer's details): the accent a step
     /// lighter (dark) or darker. (Empty, it is a control: `control`, its arrow `dim`.)
     pub send_hover: Rgb,
+    /// A tool row under the pointer (spec A §A): the panel a step towards the foreground.
+    pub row_hover: Rgb,
+    /// The context meter (spec A §C): its track, and its fill under 70 %, to 89 % and from 90 %;
+    /// the percent's colour in the last two.
+    pub meter_track: Rgb,
+    pub meter_ok: Rgb,
+    pub meter_caution: Rgb,
+    pub meter_critical: Rgb,
+    pub pct_caution: Rgb,
+    pub pct_critical: Rgb,
+    /// The tool modal's scrim (spec A §B): the theme's shadow, at this strength.
+    pub scrim: Rgb,
+    pub scrim_alpha: f32,
 }
 
 const WHITE: Rgb = Rgb {
@@ -698,6 +711,9 @@ impl Colors {
         let fit = |c: Rgb, on: Rgb| ensure_contrast(c, on, TEXT_MIN);
         let ask_fill = mix(page, ui.ring_waiting, 0.07);
         let code_fill = mix(page, ui.text, 0.06);
+        let row_hover = mix(ui.panel, theme.foreground, 0.04);
+        let meter_track = readable(mix(page, theme.foreground, 0.12), &[page], QUIET_LINE_MIN);
+        let on_meter = |c: Rgb| readable(c, &[page, meter_track], MARK_MIN);
         Colors {
             page,
             text: fit(ui.text, page),
@@ -705,9 +721,9 @@ impl Colors {
             panel: ui.panel,
             panel_border: ui.panel_border,
             panel_hover: ui.panel_hover,
-            panel_text: fit(ui.text, ui.panel),
+            panel_text: readable(ui.text, &[ui.panel, row_hover], TEXT_MIN),
             panel_dim: fit(ui.text_dim, ui.panel),
-            tool_name: fit(ui.accent, ui.panel),
+            tool_name: readable(ui.accent, &[ui.panel, row_hover], TEXT_MIN),
             ok: fit(ui.block_ok, ui.panel),
             failed_panel: fit(ui.block_failed, ui.panel),
             card: ui.card,
@@ -735,6 +751,15 @@ impl Colors {
             control: mix(ui.composer_inner, theme.foreground, 0.06),
             control_hover: mix(ui.composer_inner, theme.foreground, 0.10),
             send_hover: mix(ui.accent, if theme.is_dark() { WHITE } else { BLACK }, 0.10),
+            row_hover,
+            meter_track,
+            meter_ok: on_meter(ui.accent),
+            meter_caution: on_meter(theme.palette[3]),
+            meter_critical: on_meter(theme.palette[1]),
+            pct_caution: fit(theme.palette[3], page),
+            pct_critical: fit(theme.palette[1], page),
+            scrim: ui.shadow,
+            scrim_alpha: if theme.is_dark() { 0.35 } else { 0.25 },
         }
     }
 }

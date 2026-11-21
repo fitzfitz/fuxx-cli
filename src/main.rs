@@ -11,6 +11,7 @@ mod agent_detect;
 mod agent_markdown;
 mod agent_process;
 mod agent_tab;
+mod agent_top;
 mod api;
 mod api_client;
 mod api_events;
