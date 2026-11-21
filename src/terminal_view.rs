@@ -1046,7 +1046,7 @@ impl TerminalView {
         // mark, or at its snapshot a tag already in its grid (final review #2).
         let core = self.core.clone();
         self.integration = integration_after(&mark, self.integration, || {
-            core.read_term(|term, _, _| !crate::blocks::segments(term).is_empty())
+            core.read_term(|term, _| !crate::blocks::segments(term).is_empty())
         });
         self.marks_seen += 1;
         let now = Instant::now();
@@ -3067,7 +3067,7 @@ fn paint_cards(
     let line_h = f32::from(m.line_height);
     let cell_w = f32::from(m.cell_width);
     let dims = p.core.dims();
-    let (frame, clears) = p.core.read_term(|term, clears, input| {
+    let (frame, clears) = p.core.read_term(|term, clears| {
         let shape = term.renderable_content().cursor.shape;
         let shape = (shape != alacritty_terminal::vte::ansi::CursorShape::Hidden)
             .then(|| (shape, term.cursor_style().blinking));
@@ -3087,7 +3087,6 @@ fn paint_cards(
             (f32::from(content.top()), f32::from(content.size.height)),
             p.utc_offset,
             shape,
-            input,
         );
         (frame, clears)
     });

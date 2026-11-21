@@ -36,8 +36,13 @@ pub enum Item {
     Card(Card),
     /// Rows after a card that belong to no command (a background job printing later).
     Loose { top: Line, bottom: Line },
-    /// The live box: the prompt shown now, or the command running now.
-    Live { top: Line, bottom: Line },
+    /// The live box: the prompt shown now, or the command running now; `typing`: at a prompt,
+    /// the column the typing starts at on its first row (the crop, rework).
+    Live {
+        top: Line,
+        bottom: Line,
+        typing: Option<usize>,
+    },
 }
 
 /// A finished command as its card shows it.
@@ -134,6 +139,7 @@ pub fn column(
         items.push(Item::Live {
             top: screen_top,
             bottom: end.max(screen_top),
+            typing: None,
         });
         return items;
     };
@@ -142,15 +148,25 @@ pub fn column(
     // The live box starts where the typing does (the shown prompt's B row), or at a running
     // command's output (rework: its prompt and command rows are left out, its command is in the
     // chip); the rows above that within the live segment are hidden, not loose.
-    let (before, seg_top, live_top) = if live_last {
-        let start = match last {
-            Segment::Prompt { row, .. } => *row,
-            Segment::Command(b) => b.output.map_or(b.cmd_end + 1i32, |(s, _)| s),
+    let (before, seg_top, live_top, typing) = if live_last {
+        let (start, typing) = match last {
+            // Where the typing starts (from the tag: a wrapped prompt's lower row), else the
+            // tag's row.
+            Segment::Prompt { row, input, .. } => (
+                input.map_or(*row, |(line, _)| line),
+                input.map(|(_, col)| col),
+            ),
+            Segment::Command(b) => (b.output.map_or(b.cmd_end + 1i32, |(s, _)| s), None),
         };
-        (&segments[..segments.len() - 1], extent(last).0, start)
+        (
+            &segments[..segments.len() - 1],
+            extent(last).0,
+            start,
+            typing,
+        )
     } else {
         let after = extent(last).1 + 1i32;
-        (segments, after, after)
+        (segments, after, after, None)
     };
     let mut items = Vec::new();
     let mut next = first;
@@ -192,6 +208,7 @@ pub fn column(
     // The box holds the screen's rows at most (the terminal is sized to its inside, Settled 4):
     // a running command's rows already in the scrollback show as plain rows above its chips.
     let screen_top = Line(0);
+    let typing = typing.filter(|_| live_top >= screen_top);
     let live_top = if live_top < screen_top {
         items.push(Item::Loose {
             top: live_top,
@@ -204,6 +221,7 @@ pub fn column(
     items.push(Item::Live {
         top: live_top,
         bottom: end.max(live_top),
+        typing,
     });
     items
 }
@@ -270,11 +288,13 @@ fn shift(segment: &Segment, by: i32) -> Segment {
             row,
             top,
             bottom,
+            input,
         } => Segment::Prompt {
             id: id.clone(),
             row: *row + by,
             top: *top + by,
             bottom: *bottom + by,
+            input: input.map(|(line, col)| (line + by, col)),
         },
         Segment::Command(b) => Segment::Command(Block {
             prompt_top: b.prompt_top + by,
@@ -427,7 +447,7 @@ pub fn item_height(item: &Item, unfolded: bool, line_h: f32) -> f32 {
     match item {
         Item::Card(card) => card_height(card, unfolded, line_h),
         Item::Earlier { top, bottom } | Item::Loose { top, bottom } => rows(*top, *bottom),
-        Item::Live { top, bottom } => COMPOSER_FRAME + rows(*top, *bottom),
+        Item::Live { top, bottom, .. } => COMPOSER_FRAME + rows(*top, *bottom),
     }
 }
 
@@ -464,12 +484,15 @@ pub struct Crop {
     pub cut: Option<usize>,
 }
 
-pub fn crop(line: &[CellView], input_col: Option<usize>) -> Crop {
+pub fn crop(line: &[CellView], input_col: Option<usize>, cursor_col: Option<usize>) -> Crop {
     let blank = |c: &CellView| (c.ch == ' ' || c.ch == '\0') && !c.spacer;
     let from = input_col.unwrap_or(0).min(line.len());
     let end = line.iter().rposition(|c| !blank(c));
     let at_edge = end.is_some_and(|e| e + 2 >= line.len());
-    let cut = crate::block_view::right_run(line, blank).filter(|&start| at_edge && start > from);
+    // Nothing you typed is cut (review #3): the cursor must be on this row (the typing hasn't
+    // wrapped on), and the right part start past it.
+    let cut = crate::block_view::right_run(line, blank)
+        .filter(|&start| at_edge && start > from && cursor_col.is_some_and(|c| start > c));
     Crop { from, cut }
 }
 
@@ -691,7 +714,6 @@ pub fn frame<L: EventListener>(
     (view_top, view_height): (f32, f32),
     utc_offset: i64,
     cursor_shape: Option<(CursorShape, bool)>,
-    input: Option<Point>,
 ) -> CardFrame {
     state.cache.refresh(term, key);
     let grid = term.grid();
@@ -789,7 +811,11 @@ pub fn frame<L: EventListener>(
                     failed: card.failed,
                 });
             }
-            Item::Live { top, bottom } => {
+            Item::Live {
+                top,
+                bottom,
+                typing,
+            } => {
                 // In the composer's inner box: under the outer edge, the context row and the
                 // inner box's edge and padding.
                 let rows_y = y + EDGE + CTX_ROW + EDGE + INNER_PAD_Y;
@@ -805,9 +831,10 @@ pub fn frame<L: EventListener>(
                         shape,
                         blinking,
                     });
-                let cut = input
-                    .filter(|p| p.line == *top && rows.top == *top)
-                    .and_then(|p| rows.lines.first().map(|l| crop(l, Some(p.column.0))));
+                let on_first = (point.line == *top).then_some(point.column.0);
+                let cut = typing
+                    .filter(|_| rows.top == *top)
+                    .and_then(|col| rows.lines.first().map(|l| crop(l, Some(col), on_first)));
                 draws.push(Draw::Live {
                     y,
                     height: at.height,
@@ -886,6 +913,7 @@ mod tests {
             row: Line(row),
             top: Line(top),
             bottom: Line(bottom),
+            input: None,
         }
     }
 
@@ -896,7 +924,7 @@ mod tests {
                 Item::Earlier { top, bottom } => format!("earlier {}..{}", top.0, bottom.0),
                 Item::Card(c) => format!("card {}{}", c.id, if c.failed { " failed" } else { "" }),
                 Item::Loose { top, bottom } => format!("loose {}..{}", top.0, bottom.0),
-                Item::Live { top, bottom } => format!("live {}..{}", top.0, bottom.0),
+                Item::Live { top, bottom, .. } => format!("live {}..{}", top.0, bottom.0),
             })
             .collect()
     }
@@ -1249,6 +1277,7 @@ mod tests {
             Item::Live {
                 top: Line(5),
                 bottom: Line(6),
+                typing: None,
             },
         ];
         let (placed, total) = layout(&items, &|_| false, lh);
@@ -1431,7 +1460,7 @@ mod tests {
         let row = format!("{:<34}{}", "~/code/api main ls", "\u{2714} 08:00");
         let line = cells(&row, 40);
         assert_eq!(
-            crop(&line, Some(16)),
+            crop(&line, Some(16), Some(18)),
             Crop {
                 from: 16,
                 cut: Some(34)
@@ -1439,21 +1468,86 @@ mod tests {
         );
         // A plain `$ ` prompt: no right part.
         assert_eq!(
-            crop(&cells("$ ls", 40), Some(2)),
+            crop(&cells("$ ls", 40), Some(2), Some(4)),
             Crop { from: 2, cut: None }
         );
         // A double space typed mid-line isn't a right prompt (the run doesn't reach the edge).
         assert_eq!(
-            crop(&cells("$ git commit -m  x", 40), Some(2)),
+            crop(&cells("$ git commit -m  x", 40), Some(2), Some(18)),
             Crop { from: 2, cut: None }
         );
         // Where the typing starts unknown (a reattached session): the whole row.
         assert_eq!(
-            crop(&line, None),
+            crop(&line, None, Some(18)),
             Crop {
                 from: 0,
                 cut: Some(34)
             }
+        );
+    }
+
+    // Rework review fixes.
+
+    /// #1/#2: the box starts at the row the typing is on (a wrapped prompt's second row), and
+    /// carries the typing's column for the crop.
+    #[test]
+    fn a_wrapped_prompt_starts_the_box_at_the_typing() {
+        let live = Segment::Prompt {
+            id: "live".into(),
+            row: Line(3),
+            top: Line(3),
+            bottom: Line(4),
+            input: Some((Line(4), 5)),
+        };
+        let items = column(&[live], Line(0), Line(4), Line(4), 0);
+        assert_eq!(
+            items.last(),
+            Some(&Item::Live {
+                top: Line(4),
+                bottom: Line(4),
+                typing: Some(5),
+            })
+        );
+    }
+
+    /// #1: a prompt on the screen's last row, then lines printed under it and the cursor moved
+    /// back up (a completion list): the box still starts at the typing, with its column.
+    #[test]
+    fn the_crop_survives_a_scroll() {
+        let mut sh = Sh::new(100);
+        sh.command("ls", "a\r\nb\r\nc\r\n").prompt();
+        sh.feed(b"x\r\n\r\n\r\n\x1b[3A\x1b[3C");
+        let items = items_for(&sh.term, &mut SegmentCache::default(), key(2, 0), 0);
+        let Some(Item::Live { typing, top, .. }) = items.last() else {
+            panic!("a live box")
+        };
+        assert_eq!(*typing, Some(2), "the typing's column, where B was");
+        assert!(
+            tag_id_at(&sh.term, *top).is_some(),
+            "the box starts on the tag's row"
+        );
+    }
+
+    /// #3: nothing you typed is cut: no cut at or left of the cursor, none when the cursor has
+    /// moved past the row (the typing wraps on).
+    #[test]
+    fn typed_text_is_never_cut() {
+        let row = format!("{:<34}{}", "$ git commit -m a  b", "\u{2714} 08:00");
+        let line = cells(&row, 40);
+        assert_eq!(
+            crop(&line, Some(2), Some(20)).cut,
+            Some(34),
+            "a right prompt"
+        );
+        assert_eq!(
+            crop(&line, Some(2), Some(36)).cut,
+            None,
+            "the cursor is past it"
+        );
+        assert_eq!(
+            crop(&line, Some(2), None).cut,
+            None,
+            "the typing wrapped on"
         );
     }
 }

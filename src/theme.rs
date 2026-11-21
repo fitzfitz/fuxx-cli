@@ -537,7 +537,8 @@ impl Theme {
             card_surface: mix(bg, fg, 0.045),
             composer_outer: mix(bg, fg, 0.025),
             composer_edge: mix(bg, fg, 0.085),
-            composer_inner: mix(bg, fg, 0.06),
+            // Where you type: the sidebar's colour (the user's call after the rework).
+            composer_inner: canvas,
             composer_inner_edge: mix(bg, fg, 0.1),
             composer_inner_top: mix(bg, fg, 0.15),
             window_edge: if dark { black } else { canvas },
@@ -1055,6 +1056,17 @@ mod tests {
                     assert!(r >= TEXT_MIN, "{name}: {ink} on {what} is {r:.2}");
                 }
             }
+        }
+    }
+
+    /// The composer's inner box (where you type) is the sidebar's colour, in every theme (your
+    /// words: "inner terminal chat background use the background color of this [the sidebar]. We
+    /// make it follow the palette").
+    #[test]
+    fn the_composer_inner_box_is_the_sidebar_colour() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            assert_eq!(ui.composer_inner, ui.sidebar_background, "{name}");
         }
     }
 
