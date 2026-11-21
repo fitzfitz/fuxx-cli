@@ -14,6 +14,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
+- **Released (2026-11-21):** **v0.11.0** (run 44910715796, `fuxx-0.11.0.zip`), M11y through M11al and M11ab.
 - **Current milestone (2026-11-21, latest):** **M11ab — Chat-style shell tabs** 🟨 reworked after your first look (soft cards on a rail, the composer, your prompt left out; inner box in the sidebar's colour), merged to master and pushed (`07395eb`); waiting for your on-screen check (note 88's rework checklist, 8 items).
 - **Current milestone (2026-11-19, latest):** **M11q — Which command finished** 🟨 built, **merged to master and pushed 2026-11-20** (`f93654b`), waiting for your on-screen check (all 12 tasks, 0–11; note 68, 21 on-screen items). The whole-branch review is done, its fix wave applied and the second full ui-shots run done (244 passed, the same 8 display-dependent scenes failing); next is your on-screen check. M11ag's check is still open.
 - **Current milestone (2026-11-19, previous):** **M11ag — Ask the agent from the code** 🟨 built, **merged to master 2026-11-19** on your standing word and pushed on your word (`abe581d`), waiting for your on-screen check (all 14 tasks, each of 0–12 reviewed; the whole-branch review's fix wave in, re-reviewed clean; note 87, 15 on-screen items). M11ai's check is still open.
@@ -29,6 +30,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-21 — v0.11.0 released
+
+- **What:** on your word ("then we are ready to go release"), v0.11.0: everything since v0.10.0 (401 commits): M11y
+  and M11z (plugins), M11p (chrome caching), M11q (which command finished), M11aa (agent tabs), M11ab (chat-style
+  shell tabs and today's chores), M11ac, M11ae, M11af, M11ag, M11ah, M11ai, M11aj, M11ak and M11al.
+- **Release:** commit `1031713` (`chore(release): 0.11.0`), tag `v0.11.0`, run 44910715796 (green, 3 min), asset
+  `fuxx-0.11.0.zip` (29.8 MB) at https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.11.0. Roadmap lines and the
+  plan tracker updated.
+- **Next:** your on-screen checks; then M11ad → M11am; M11an → M11ao (order waiting for your word).
 
 ### 2026-11-21 — Chore: the agent caret is the terminal's cursor; send in a notch
 
