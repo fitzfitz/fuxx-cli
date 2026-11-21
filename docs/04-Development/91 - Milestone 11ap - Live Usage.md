@@ -122,3 +122,8 @@ Then (2026-11-22): "the chat's inner and outer gap/padding is too small add more
 send is the accent's circle with its arrow (the white one in the first was the empty box's voice button); empty, a
 quiet control.
 
+Then (2026-11-22, your two reports): the shell tab's box kept a 3 pt gap on top — its inner box hung from `CTX_ROW`
+(28), now `TAB_RISE + OUTER_INSET`, so the top gap is the sides'; the agent tab's lit edge stopped at the curve round
+send — now stroked along the inner box's outline there too (`notch_rim`: down the right edge, round the joint, along
+the cut, round the other joint, into the bottom edge).
+
