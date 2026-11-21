@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(
             swatch(&choice_theme("Nord", &read)),
             [
-                rgb(0x262b35),
+                rgb(0x242932),
                 rgb(0xd8dee9),
                 rgb(0xbf616a),
                 rgb(0xa3be8c),
@@ -350,8 +350,8 @@ mod tests {
         let mine = |name: &str| {
             (name == "Mine").then(|| "background = #102030\npalette = 3=#405060\n".to_string())
         };
-        // Its panel: no canvas of its own, so derived (17 % toward black).
-        expected[0] = rgb(0x0d1b28);
+        // Its panel: no canvas of its own, so derived (22 % toward black).
+        expected[0] = rgb(0x0c1925);
         expected[4] = rgb(0x405060);
         assert_eq!(swatch(&choice_theme("Mine", &mine)), expected);
     }

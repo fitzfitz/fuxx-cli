@@ -470,8 +470,11 @@ that agent suggestion"; a fresh Opus agent, read only):
 4. Selection neutral: the selected sidebar row 8 % toward the text colour, hover 4 %, the shown pane tab 6 %; the
    2 pt accent bar is the one accent mark.
 5. Faint text is dim text: two greys, rank below dim by size and place.
-6. Kept: the panel step (17 % / 5 %; if the panel edge gets lost on a dim display, 22 % on dark), the brighter
-   chrome text (if it pulls the eye off the terminal, 0.30), no shadow, the 11/14/8 pt corners.
+6. Kept: no shadow, the 11/14/8 pt corners. Its two flags, taken (your words: "I meant I agreed with the 2 things
+   the designer flagged"): the panel step on dark themes **22 %** (was 17 %: its edge got lost on a dim display) and
+   the chrome's full text **30 %** toward white or black (was 50 %: it pulled the eye off the terminal); full to dim
+   is now 1.5:1 or more (Mocha 1.98, Latte 1.64, Nord 1.56), and a dark theme's border may sit at 1.45 on the
+   window (Nord 1.41).
 - **AI's call on the way:** a pressed or lifted row (`row_active`, a dragged row's copy) at 14 % on every theme, clear
   of the 8 % selection (Latte's 10 % had met it).
 - **Checks:** 2295 tests; clippy at the baseline; fmt; ui-shots 253 passed, the 6 known failures.
