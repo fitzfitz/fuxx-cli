@@ -52,7 +52,8 @@ const CONTROL_INSET: f32 = 3.0;
 /// inset from the outer box's inside edges, the notch's square (the circle, 3 around it), the
 /// joints' radius, the outer box's bottom corners.
 const SEND: f32 = 34.0;
-const SEND_INSET: f32 = 3.0;
+/// As the inner box's gap (`card_view::OUTER_INSET`), so the curves stay concentric.
+const SEND_INSET: f32 = crate::card_view::OUTER_INSET;
 /// The cut's distance round the circle (your words: "add gap between chatbox with button"; the
 /// designer: 6, twice the box's 3 pt step), and the square it is cut with: from the outer
 /// box's inside corner to the cut's straight edges.
@@ -1189,8 +1190,8 @@ impl AgentTab {
                 // Ready, the accent (your words: "the button background should back to the first
                 // one the blue one"); empty, a control like `+` (the designer's review, your "go
                 // with the designer, grey when empty"): turning blue says it can send.
-                // Your reference (2026-11-21): ready, the ink's circle (white on dark) with the
-                // page's arrow, the one strong thing in the box.
+                // Your reference (2026-11-22): ready, the accent's circle with its arrow — the
+                // one strong thing in the box; empty, a quiet control.
                 let hover = c.send_hover;
                 self.marked("send", circle("agent-send"))
                     .bg(hsla(if empty { c.control } else { c.send_fill }))

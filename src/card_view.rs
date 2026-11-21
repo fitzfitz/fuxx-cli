@@ -437,7 +437,7 @@ pub const PILL_GAP: f32 = 4.0;
 pub const INDENT_COLS: usize = 2;
 /// A folder or branch pill's widest; its name ends in "…" past it.
 pub const PILL_MAX: f32 = 160.0;
-pub const OUTER_INSET: f32 = 3.0;
+pub const OUTER_INSET: f32 = 5.0;
 pub const INNER_PAD_X: f32 = 14.0;
 pub const INNER_PAD_Y: f32 = 12.0;
 /// The composer's height beside its rows: the outer box's edges, the context row, the inner
@@ -1188,9 +1188,9 @@ mod tests {
             (dims.cols, dims.rows),
             ((w / 8.0) as usize - INDENT_COLS, (h / 17.0) as usize)
         );
-        // Chores: the inner box 3 pt in from the outer box (was 5; your words: "make the gap
-        // between command box and the outter border smaller").
-        assert_eq!(OUTER_INSET, 3.0);
+        // Chores: the inner box 5 pt in from the outer box (3 before; your words, 2026-11-22: "the
+        // chat's inner and outer gap/padding is too small add more").
+        assert_eq!(OUTER_INSET, 5.0);
         // Two columns kept for the `❯ ` the typing rows hang under (your words: "the second
         // line is supposed to align with the first line, the icon below should be empty").
         assert_eq!((dims.cols, dims.rows), (111, 35));

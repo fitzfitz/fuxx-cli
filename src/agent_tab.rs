@@ -662,8 +662,8 @@ pub struct Colors {
     /// The send circle under the pointer, ready (the designer's details): the accent a step
     /// lighter (dark) or darker. (Empty, it is a control: `control`, its arrow `dim`.)
     pub send_hover: Rgb,
-    /// The send circle, ready (your reference, 2026-11-21): the ink's colour (white on a dark
-    /// theme), its arrow the page's — the one strong thing in the box.
+    /// The send circle, ready (your reference, 2026-11-22): the accent, its arrow on it — the
+    /// one strong thing in the box.
     pub send_fill: Rgb,
     pub send_ink: Rgb,
     /// The inner box's lit edge (`UiColors::composer_glow_*`).
@@ -756,9 +756,18 @@ impl Colors {
             pill_hover: ui.composer_pill_hover,
             control: mix(ui.composer_inner, theme.foreground, 0.06),
             control_hover: mix(ui.composer_inner, theme.foreground, 0.10),
-            send_hover: mix(ui.text, page, 0.12),
-            send_fill: ui.text,
-            send_ink: readable(page, &[ui.text, mix(ui.text, page, 0.12)], TEXT_MIN),
+            // Your reference (2026-11-22): the accent's circle, its arrow on it.
+            send_hover: mix(
+                ui.accent,
+                if theme.is_dark() {
+                    theme.foreground
+                } else {
+                    page
+                },
+                0.12,
+            ),
+            send_fill: ui.accent,
+            send_ink: fit(ui.on_accent, ui.accent),
             glow_top: ui.composer_glow_top,
             glow_bottom: ui.composer_glow_bottom,
             page_is_dark: theme.is_dark(),
@@ -5856,10 +5865,12 @@ mod tests {
             // The send circle (the designer's details): ready, the arrow on the accent (text's
             // floor, "on accent" above) and under the pointer, a mark; empty, a control ("dim on
             // a control" above).
-            // Your reference (2026-11-21): send is the ink's circle with the page's arrow, the
-            // one strong thing in the box.
+            // Your reference (2026-11-22): send is the accent's circle with its arrow.
             let got = contrast(c.send_ink, c.send_fill);
-            assert!(got >= TEXT_MIN - 0.01, "{name}: send's arrow {got:.2}");
+            assert!(
+                got >= crate::ui_tokens::MARK_MIN - 0.01,
+                "{name}: send's arrow {got:.2}"
+            );
             let got = contrast(c.send_ink, c.send_hover);
             assert!(
                 got >= crate::ui_tokens::MARK_MIN - 0.01,

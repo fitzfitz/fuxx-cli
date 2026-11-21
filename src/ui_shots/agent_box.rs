@@ -680,13 +680,14 @@ pub(super) fn agent_box_send_notch() {
             let (outer, send) = (part(cx, tab, n, "outer"), part(cx, tab, n, "send"));
             let (attach, mode) = (part(cx, tab, n, "attach"), part(cx, tab, n, "mode"));
             assert_eq!(send.size, size(px(34.), px(34.)), "{n} {when}: 34 across");
-            // (Inside the outer box's 1 px edge, 3 in.)
+            // (Inside the outer box's 1 px edge, the box's gap in: `OUTER_INSET`.)
+            let inset = px(crate::card_view::EDGE + crate::card_view::OUTER_INSET);
             assert!(
-                near(outer.right() - send.right(), px(4.)),
+                near(outer.right() - send.right(), inset),
                 "{n} {when}: right {outer:?} {send:?}"
             );
             assert!(
-                near(outer.bottom() - send.bottom(), px(4.)),
+                near(outer.bottom() - send.bottom(), inset),
                 "{n} {when}: bottom"
             );
             // (Within a pixel: layout lands on whole pixels.)
