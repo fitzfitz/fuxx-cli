@@ -505,7 +505,7 @@ fn changes_sticky_scenes() {
 /// - `changes-staging-all`: everything staged: the header's circle filled, no CHANGES divider.
 fn changes_staging_scenes() {
     use crate::git_status::{Change, ChangeList, Counts, Mark};
-    use crate::right_sidebar::{Panel, REPO_BOTTOM, REPO_PAD_X, REPO_PAD_Y, REPO_SIDE, REPO_TOP};
+    use crate::right_sidebar::{EDGE, Panel};
     use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
     use gpui::Modifiers;
@@ -674,13 +674,11 @@ fn changes_staging_scenes() {
                     for r in 4..8 {
                         assert!(!circle_green(r), "{n}: row {r}'s circle is empty");
                     }
-                    // The bar's green third, then its track: inside the repo card (M11al §6.3),
-                    // its line (20), a 5 pt gap and the bar (3) centred in it.
-                    let card_mid = header_top
-                        + REPO_TOP
-                        + (crate::changes_panel::HEADER - REPO_TOP - REPO_BOTTOM) / 2.0;
+                    // The bar's green third, then its track: in the plain header row (the
+                    // designer's redesign), its line (20), a 5 pt gap and the bar (3) centred.
+                    let card_mid = header_top + crate::changes_panel::HEADER / 2.0;
                     let bar_y = card_mid + 12.5;
-                    let inner = sidebar_left + REPO_SIDE + REPO_PAD_X;
+                    let inner = sidebar_left + EDGE;
                     assert!(
                         has(inner, inner + 46.0, bar_y - 3.0, bar_y + 3.0, green, 16),
                         "{n}: the progress bar's green share"
@@ -735,16 +733,10 @@ fn changes_staging_scenes() {
                 }
                 _ => {
                     // All staged: the header's circle is filled.
-                    let inner = sidebar_left + REPO_SIDE + REPO_PAD_X;
+                    let inner = sidebar_left + EDGE;
+                    let line_top = header_top + (crate::changes_panel::HEADER - 28.0) / 2.0;
                     assert!(
-                        has(
-                            inner,
-                            inner + 16.0,
-                            header_top + REPO_TOP + REPO_PAD_Y,
-                            header_top + REPO_TOP + REPO_PAD_Y + 20.0,
-                            green,
-                            16
-                        ),
+                        has(inner, inner + 16.0, line_top, line_top + 20.0, green, 16),
                         "{n}: the header's circle is filled"
                     );
                 }
@@ -1154,10 +1146,10 @@ fn changes_scenes() {
         // the right (faint), and under them the progress bar's track.
         assert_eq!(totals(&six), (18, 14), "{n}: the totals");
         assert_eq!(crate::git_stage::staged_summary(&six), (0, 9));
-        // Inside the repo card (M11al §6.3): the line (20), a 5 pt gap and the bar (3) centred.
-        use crate::right_sidebar::{REPO_BOTTOM, REPO_PAD_X, REPO_SIDE, REPO_TOP};
-        let line_top = header_top + REPO_TOP + (HEADER - REPO_TOP - REPO_BOTTOM - 28.0) / 2.0;
-        let inset = REPO_SIDE + REPO_PAD_X;
+        // In the plain header row (the designer's redesign): the line (20), a 5 pt gap and the
+        // bar (3) centred; its words on the 12 pt edge.
+        let line_top = header_top + (HEADER - 28.0) / 2.0;
+        let inset = crate::right_sidebar::EDGE;
         let (left, right) = (sidebar_left + inset - 20.0, sidebar_right - inset);
         assert!(
             has(

@@ -42,9 +42,9 @@ use crate::ui_tokens::TEXT_MIN;
 use crate::workspace::{Session, Workspace};
 use crate::workspace_agent::AgentSlot;
 
-/// The Activity header's height (part 4): the name and its status pill, a hairline under it. It
-/// has no repo card, so it is not the Files panel's `right_sidebar::HEADER` (54), as before M11al.
-pub(crate) const HEADER: f32 = 42.0;
+/// The Activity header's height (part 4): the name and its status pill, a hairline under it.
+/// The panels' one 36 since the designer's redesign (was 42, beside the Files panel's 54).
+pub(crate) const HEADER: f32 = 36.0;
 pub(crate) const NO_ACTIVITY: &str = "No activity yet.";
 pub(crate) const NO_TERMINAL: &str = "No terminal to follow.";
 /// An event (part 4): the rail's width and the room after it, the dot and its room above,
@@ -543,11 +543,12 @@ mod tests {
     use crate::ui_tokens::{MARK_MIN, contrast};
     use std::time::Duration;
 
-    /// The header has no repo card: it keeps its own 42, not the Files panel's 54.
+    /// The designer's redesign: one rhythm across the panels, Activity's header the Files
+    /// panel's 36 (it was 42, beside a 54 repo card).
     #[test]
-    fn the_header_is_42_not_the_repo_cards() {
-        assert_eq!(HEADER, 42.0);
-        assert_ne!(HEADER, crate::right_sidebar::HEADER);
+    fn the_header_is_the_panels_36() {
+        assert_eq!(HEADER, 36.0);
+        assert_eq!(HEADER, crate::right_sidebar::HEADER);
     }
 
     #[test]
