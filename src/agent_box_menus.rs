@@ -2,7 +2,7 @@
 //! rows they share (moved out of `agent_box.rs`, which keeps the pure part and the box itself).
 
 use super::*;
-use crate::usage_view::{heading, quiet, top_row};
+use crate::usage_view::{heading, quiet};
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{Animation, AnimationExt, FontWeight};
 
@@ -994,19 +994,6 @@ impl AgentTab {
         let Some(provider) = self.provider else {
             return Vec::new();
         };
-        let agent = provider.info().name;
-        let catalogs = cx.try_global::<Catalogs>();
-        // The last reading, however old: the panel never swaps numbers for `Checking…`; a
-        // reopening reads again.
-        // M11ap: the live usage (the last good reading, freshened by what the agent said since),
-        // else what the reading is doing (checking, failed).
-        let live = catalogs
-            .and_then(|c| c.live_usage(agent))
-            .map(Lookup::Ready);
-        let found = live
-            .as_ref()
-            .or_else(|| catalogs.and_then(|c| c.usage_last(agent)));
-        let limits = catalogs.map_or(&[][..], |c| c.limits(agent));
         let available = provider
             .usage_probe()
             .is_none()
@@ -1015,93 +1002,27 @@ impl AgentTab {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
         let offset = crate::cli::local_utc_offset(now as u64 * 1000);
-        let mut rows = usage_rows(found, limits, available, now, offset);
-        // Kept numbers whose refresh failed say so, and how old they are (the review's 5).
-        let failed = matches!(
-            catalogs.and_then(|c| c.usage_last(agent)),
-            Some(Lookup::Failed(_))
-        );
-        let ago = catalogs.and_then(|c| c.usage_ready_at(agent)).map(|at| {
-            std::time::Instant::now()
-                .saturating_duration_since(at)
-                .as_secs()
-        });
-        if live.is_some()
-            && let Some(note) = crate::agent_catalog::stale_note(failed, ago)
-        {
-            rows.push(UsageRow::Quiet(note));
-        }
-        rows
+        crate::usage_view::agent_rows(
+            provider.info().name,
+            available,
+            cx.try_global::<Catalogs>(),
+            now,
+            offset,
+        )
     }
 
     /// The usage panel over its button (§5): per group its name, each limit's name,
     /// `N% left` with a ring and `Resets …`, what the agent said of it underneath.
     pub(super) fn usage_panel(&self, ui: &UiColors, cx: &App) -> AnyElement {
-        // A "Top …" list once (the agent's text repeats them for the week: the session's
-        // first), as a heading and up to three one-line rows (the designer's details).
-        let mut tops_seen: Vec<String> = Vec::new();
-        let mut items: Vec<AnyElement> = Vec::new();
-        for row in self.usage_rows_now(cx) {
-            match row {
-                UsageRow::Heading(name) => items.push(heading(name, ui)),
-                UsageRow::Quiet(text) => items.push(quiet(text, ui)),
-                UsageRow::Text(text) => match top_list(&text) {
-                    Some((title, list)) => {
-                        if tops_seen.contains(&title) {
-                            continue;
-                        }
-                        tops_seen.push(title.clone());
-                        items.push(heading(title, ui));
-                        items.extend(list.into_iter().map(|(name, pct)| top_row(name, pct, ui)));
-                    }
-                    None => items.push(
-                        div()
-                            .px(px(8.))
-                            .py(px(4.))
-                            .text_color(hsla(ui.text_dim))
-                            .child(SharedString::from(text))
-                            .into_any_element(),
-                    ),
-                },
-                UsageRow::Limit {
-                    name,
-                    used_pct,
-                    resets,
-                    note,
-                } => items.push(self.limit_row(name, used_pct, resets, note, ui, cx)),
-            }
-        }
-        let panel = crate::overlay_panel::shell(ui, USAGE_WIDTH)
-            .p(px(4.))
-            .gap(px(0.))
-            .occlude()
-            .child(
-                div()
-                    .id("agent-usage")
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .max_h(px(USAGE_MAX_H))
-                    .overflow_y_scroll()
-                    .children(items),
-            );
-        self.marked("usage", div().child(panel)).into_any_element()
-    }
-
-    /// One limit of the usage panel (`usage_view::limit_row`), marked for the scenes.
-    fn limit_row(
-        &self,
-        name: String,
-        used_pct: Option<u8>,
-        resets: Option<String>,
-        note: Option<String>,
-        ui: &UiColors,
-        cx: &App,
-    ) -> AnyElement {
+        // The status bar's agent detail draws the same (`usage_view::limits_panel`).
         let ink = crate::usage_view::UsageInk::of(&cx.global::<Appearance>().theme);
-        let row = crate::usage_view::limit_row(name.clone(), used_pct, resets, note, ui, &ink);
-        self.marked_row(format!("Usage \u{25b8} {name}"), row)
-            .into_any_element()
+        let items =
+            crate::usage_view::limit_items(self.usage_rows_now(cx), ui, &ink, |name, row| {
+                self.marked_row(format!("Usage \u{25b8} {name}"), row)
+                    .into_any_element()
+            });
+        let panel = crate::usage_view::limits_panel("agent-usage", None, items, ui).occlude();
+        self.marked("usage", div().child(panel)).into_any_element()
     }
 
     /// One model of the menu (the lead designer's second pass, 2026-11-22): the check column

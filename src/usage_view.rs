@@ -137,31 +137,99 @@ pub fn heading(text: String, ui: &UiColors) -> AnyElement {
         .into_any_element()
 }
 
-/// One row of a usage "Top …" list: its name on one line, cut with "…", its percentage on the
-/// right.
-pub fn top_row(name: String, pct: String, ui: &UiColors) -> AnyElement {
-    div()
-        .h(px(24.))
-        .px(px(8.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .child(SharedString::from(name)),
-        )
-        .child(
-            div()
-                .flex_none()
+/// An agent's usage rows (`agent_box::usage_rows`) from what fuxx knows: its live usage (the
+/// last good reading, freshened by what the agent said since), else what the reading is doing;
+/// kept numbers whose refresh failed say so, and how old they are. `available`: an agent with no
+/// reading of its own (named in its note). The agent box's panel and the status bar's detail
+/// both show these.
+pub fn agent_rows(
+    agent: &str,
+    available: Option<&str>,
+    catalogs: Option<&crate::agent_catalog::Catalogs>,
+    now_unix: i64,
+    utc_offset: i64,
+) -> Vec<crate::agent_box::UsageRow> {
+    use crate::agent_catalog::Lookup;
+    let live = catalogs
+        .and_then(|c| c.live_usage(agent))
+        .map(Lookup::Ready);
+    let found = live
+        .as_ref()
+        .or_else(|| catalogs.and_then(|c| c.usage_last(agent)));
+    let limits = catalogs.map_or(&[][..], |c| c.limits(agent));
+    let mut rows = crate::agent_box::usage_rows(found, limits, available, now_unix, utc_offset);
+    let failed = matches!(
+        catalogs.and_then(|c| c.usage_last(agent)),
+        Some(Lookup::Failed(_))
+    );
+    let ago = catalogs.and_then(|c| c.usage_ready_at(agent)).map(|at| {
+        std::time::Instant::now()
+            .saturating_duration_since(at)
+            .as_secs()
+    });
+    if live.is_some()
+        && let Some(note) = crate::agent_catalog::stale_note(failed, ago)
+    {
+        rows.push(crate::agent_box::UsageRow::Quiet(note));
+    }
+    rows
+}
+
+/// `rows` drawn: headings, quiet lines, the agent's own words, and each limit (`limit_row`,
+/// passed to `mark` with its name: the agent box marks them for its scenes).
+pub fn limit_items(
+    rows: Vec<crate::agent_box::UsageRow>,
+    ui: &UiColors,
+    ink: &UsageInk,
+    mark: impl Fn(String, Div) -> AnyElement,
+) -> Vec<AnyElement> {
+    use crate::agent_box::UsageRow;
+    rows.into_iter()
+        .map(|row| match row {
+            UsageRow::Heading(name) => heading(name, ui),
+            UsageRow::Quiet(text) => quiet(text, ui),
+            UsageRow::Text(text) => div()
+                .px(px(8.))
+                .py(px(4.))
                 .text_color(hsla(ui.text_dim))
-                .child(SharedString::from(pct)),
+                .child(SharedString::from(text))
+                .into_any_element(),
+            UsageRow::Limit {
+                name,
+                used_pct,
+                resets,
+                note,
+            } => mark(
+                name.clone(),
+                limit_row(name, used_pct, resets, note, ui, ink),
+            ),
+        })
+        .collect()
+}
+
+/// The usage panel, one look app-wide (your words, 2026-11-22: "why can't we just reuse it"):
+/// the overlay shell, `header` (the status bar's agent name) over `items`, which scroll past
+/// `USAGE_MAX_H`.
+pub fn limits_panel(
+    id: &'static str,
+    header: Option<AnyElement>,
+    items: Vec<AnyElement>,
+    ui: &UiColors,
+) -> gpui::Div {
+    crate::overlay_panel::shell(ui, crate::agent_box::USAGE_WIDTH)
+        .p(px(4.))
+        .gap(px(0.))
+        .children(header)
+        .child(
+            div()
+                .id(id)
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .max_h(px(crate::agent_box::USAGE_MAX_H))
+                .overflow_y_scroll()
+                .children(items),
         )
-        .into_any_element()
 }
 
 /// A quiet line in a list (no row to pick).

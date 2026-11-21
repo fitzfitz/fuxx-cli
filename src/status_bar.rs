@@ -650,7 +650,7 @@ impl Workspace {
         use crate::agent_catalog::{Catalogs, Lookup};
         use crate::icons::{Icon, icon};
         use crate::usage_strip::StripValue;
-        use crate::usage_view::{UsageInk, heading, limit_row, quiet, top_row};
+        use crate::usage_view::UsageInk;
         use gpui::{
             Animation, AnimationExt, Transformation, anchored, deferred, percentage, point,
         };
@@ -831,79 +831,44 @@ impl Workspace {
             .map(|agent| {
                 let failed = catalogs
                     .is_some_and(|c| matches!(c.usage_last(agent.name), Some(Lookup::Failed(_))));
-                let mut body: Vec<AnyElement> = vec![
-                    div()
-                        .h(px(28.))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .children(
-                            agent
-                                .logo
-                                .and_then(|l| crate::logos::image(l, 14., cx))
-                                .map(|img| gpui::img(img).size(px(14.))),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(13.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(hsla(ui.text))
-                                .child(agent.label),
-                        )
-                        .when(failed, |d| {
-                            d.child(
-                                div()
-                                    .text_size(px(crate::ui_tokens::text::META))
-                                    .text_color(hsla(ui.text_dim))
-                                    .child("Couldn't refresh"),
-                            )
-                        })
-                        .into_any_element(),
-                ];
-                let live = catalogs
-                    .and_then(|c| c.live_usage(agent.name))
-                    .map(Lookup::Ready);
-                let found = live
-                    .as_ref()
-                    .or_else(|| catalogs.and_then(|c| c.usage_last(agent.name)));
-                let limits = catalogs.map_or(&[][..], |c| c.limits(agent.name));
-                for row in crate::agent_box::usage_rows(found, limits, None, now_unix, offset) {
-                    use crate::agent_box::UsageRow;
-                    body.push(match row {
-                        UsageRow::Heading(name) => heading(name, &ui),
-                        UsageRow::Quiet(text) => quiet(text, &ui),
-                        UsageRow::Text(text) => match crate::agent_box::top_list(&text) {
-                            Some((title, list)) => div()
-                                .flex()
-                                .flex_col()
-                                .child(heading(title, &ui))
-                                .children(list.into_iter().map(|(n, p)| top_row(n, p, &ui)))
-                                .into_any_element(),
-                            None => quiet(text, &ui),
-                        },
-                        UsageRow::Limit {
-                            name,
-                            used_pct,
-                            resets,
-                            note,
-                        } => limit_row(name, used_pct, resets, note, &ui, &ink).into_any_element(),
-                    });
-                }
-                crate::overlay_panel::shell(&ui, crate::agent_box::USAGE_WIDTH)
-                    .id("usage-detail")
-                    .p(px(4.))
-                    .gap(px(0.))
+                let header = div()
+                    .h(px(28.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .children(
+                        agent
+                            .logo
+                            .and_then(|l| crate::logos::image(l, 14., cx))
+                            .map(|img| gpui::img(img).size(px(14.))),
+                    )
                     .child(
                         div()
-                            .id("usage-detail-body")
-                            .flex()
-                            .flex_col()
-                            .max_h(px(crate::agent_box::USAGE_MAX_H))
-                            .overflow_y_scroll()
-                            .children(body),
+                            .flex_1()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(hsla(ui.text))
+                            .child(agent.label),
                     )
+                    .when(failed, |d| {
+                        d.child(
+                            div()
+                                .text_size(px(crate::ui_tokens::text::META))
+                                .text_color(hsla(ui.text_dim))
+                                .child("Couldn't refresh"),
+                        )
+                    })
+                    .into_any_element();
+                // The agent box's usage panel, with the agent's name over it (one look: your
+                // words, 2026-11-22, "why can't we just reuse it").
+                let rows =
+                    crate::usage_view::agent_rows(agent.name, None, catalogs, now_unix, offset);
+                let items = crate::usage_view::limit_items(rows, &ui, &ink, |_, row| {
+                    row.into_any_element()
+                });
+                crate::usage_view::limits_panel("usage-detail-body", Some(header), items, &ui)
+                    .id("usage-detail")
             });
         // The panels' box blocks the mouse, not each panel: a panel that did would hide the
         // pointer from this box's hover, and the popover closed under a resting pointer (your
