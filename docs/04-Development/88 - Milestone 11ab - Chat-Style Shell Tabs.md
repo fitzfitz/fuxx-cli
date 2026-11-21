@@ -691,6 +691,245 @@ so the radius rounded and the button circle match".
   before it, 14 since the gap; unchanged as the box grows); clippy at the baseline; ui-shots 259 passed, the 5 known failures
   (`file-tab-md-mermaid` failed once in a full run and passed alone twice: timing).
 
+### Chores: the agent tab redesign — tool modal, top bar, live context, chat, logos, both clears (2026-11-21, 🟨 built, reviewed)
+
+Your words: "each action accordion arrow, change to chevron. when its clicked change it into a modal instead on
+dropdown"; "agent top status bar, make it excellent, the color, gaps, animation, is the price and context live?";
+"Go with the Lead Designer agent recommendations"; "go ahead, make context live". Plan:
+[[Chores Plan - Agent Tab Redesign]].
+
+**Live context (done, `5ec0b41`).** Before, cost and context changed once a turn, from Claude's end-of-turn `result`.
+Now each main-thread model call moves the context (its `usage`), measured against the model's window, which a
+finished turn reports and fuxx remembers per model for the app's run (so the first turn on a model after launch
+still updates at its end). Cost stays exact and updates at each turn's end (Claude gives no live cost; estimating
+from a price table was ruled out). agy reports neither. A sub-agent's calls don't move the meter.
+
+**The lead designer's spec A (2026-11-21).**
+
+*A. Chevron.* `Icon::ChevronRight`, 12 px box (`right_sidebar::CHEVRON`), never rotates (it opens a modal: "go
+into"); rest `panel_dim`; hover: the whole row, pointer, fill `row_hover = mix(ui.panel, fg, 0.04)`, chevron
+`panel_text`; no motion. Rows that can't open keep the empty 12 px slot (results stay on one right edge).
+`tool_name` fitted on both `panel` and `row_hover` (`readable(accent, [panel, row_hover], TEXT_MIN)`).
+
+*B. Tool detail modal.* Scoped to the agent tab: the scrim covers the tab below its top bar (the bar stays lit and
+live). Top 48 px from the tab's top, centred; width `min(pane_w − 48, 720)` (`pane_w − 16` under 360); height fits,
+up to `pane_h − 72`, top-anchored (live output grows it downward). Scrim `ui.shadow` α 0.35 dark / 0.25 light, a
+click on it closes. Surface as `overlay_panel::shell` (panel, 1 px `panel_border`, shadow α 0.3 y 8 blur 24),
+radius 12. Header 44 px, padding 14 left / 8 right, gap 10, 1 px divider: Back (in a sub-step) · status mark 12 px
+(running: the Working arc; done: `done_check` in `text_dim`, popping once (`POP`) if it finished while open;
+failed: `Icon::Octagon` in `failed_panel`) · name 13.5 MEDIUM `tool_name` · summary 13.5 `panel_text`, truncating
+("Task › " prefix in `panel_dim` inside a sub-step) · "N steps" `panel_dim` · right text 12.5 tabular (running:
+elapsed; diff: `+a` in `added_ink`, `−r` in `removed_ink`; failed: the result in `failed_panel`, no "✗";
+else the result in `panel_dim`) · ✕ 28 px r8, 15 px glyph, `text_dim` → `text` on `panel_hover`. Body: one scroll,
+padding 16, gap 12; each section labelled (11.5 MEDIUM `panel_dim`, 6 px above its well). Wells: fill `page`
+(not `code_fill`, which is 1.00:1 on `panel` in dark themes), 1 px `panel_border`, r8, padding 10/12, mono 12, line
+height 1.45; text `c.text`, dim `c.dim`. Sections in order, each when it applies: Command ("$ " dim, wraps),
+Changes (`diff_block`), Output ("… N earlier lines" first; "No output yet" while running with none), Steps (the
+children via `item_body`; a step's click replaces the content (a stack), Back = `Icon::Back` 14 px in 28 px r8).
+Running: elapsed ticks on the tab's 1 s redraw, output appends, the body follows the bottom only while within
+24 px of it. Motion: scrim fades in 140 ms ease-out; the panel fades and rises 8 px over 180 ms ease-out-cubic;
+closing and content switches instant; nothing with Reduce motion. Keys (context `AgentToolModal`): Esc back one
+level, then close; ✕ / scrim close; ↑/↓ previous/next openable tool among the level's siblings, no wrap;
+PageUp/PageDown scroll; focus returns to the agent box; the modal closes if its tool disappears. Copy buttons on the
+Command and Output wells only if the Markdown reader's Copy is a straight reuse.
+
+*C. Top status bar.* 32 px (was 26), `AREA_X` padding, no fill, no line. Left: the status pill — 22 px, r11,
+padding 8/10, gap 6, word 12.5 MEDIUM; its fill hangs at `AREA_X − 8` so the mark sits on the conversation's
+column; mark: a 12 px `MarkView` on the shared clock (in step with the sidebar and tab marks).
+`PILL_TINT` 0.16 dark / 0.12 light:
+
+| State | Fill | Mark | Word |
+|---|---|---|---|
+| Working | `mix(page, ring_working, PILL_TINT)` (#403c35 / #e3d6d3) | turning arc, `ring_working` | "Working", `ring_working` fitted to 4.5 on the fill |
+| Needs input | `mix(page, ring_waiting, PILL_TINT)` | breathing dot, `ring_waiting` | "Needs input", fitted |
+| Done | `mix(page, fg, 0.06)` | `done_check` `text_dim`, pops once | "Done", `text_dim` fitted |
+| Stopping… | neutral | Working arc | "Stopping…", `text_dim` |
+| Idle | none | idle ring `ring_idle` | "Idle", `c.dim` |
+
+State change: fill and word blend 200 ms ease-out-cubic (keyed by a change counter); width snaps. No shimmer (the
+10 fps mark clock stays the only continuous redraw). Right: cost "$3.99" 12.5 MEDIUM tabular `c.text`; after a turn
+raises it, "+$0.42" 6 px to its left in `c.dim`, fading in 200 ms, gone when the next turn starts working; none for
+the first value; tooltip "Conversation cost · updates when each turn ends". 16 px. Context: "Context" `c.dim` · 8 ·
+meter 56×4 r2 on `meter_track` (`mix(page, fg, 0.12)` held to `QUIET_LINE_MIN`), fill `pct/100 × 56` (≥ 2 px above
+0) · 8 · the percent, min width 32, right-aligned. Below 70 %: fill `meter_ok` (accent held to `MARK_MIN` on page and
+track), percent `c.dim`; 70–89 %: `meter_caution` (palette 3), percent in it fitted; 90 %+: `meter_critical`
+(palette 1). Each new value moves the fill old → new over 400 ms ease-out-cubic (the live signal); the number
+updates at once; tooltip "Context window used · updates as the agent works". Missing data: the group isn't drawn
+(agy: an empty right side); a group appearing fades in 200 ms. Narrow: the delta goes below 480 px, "Context"
+below 420, the meter below 320.
+
+*D. Audit (the designer's).* Every text pair ≥ 4.5:1 and every mark/line ≥ 3:1 across seven themes (tightest: Latte
+working word 4.50, Gruvbox critical meter 3.01, Latte caution 3.01). Three colour roles, one job each: state colour
+(the pill, with motion), accent (the meter), caution/critical (only near a full window). Done stays muted (colour
+means activity). "Needs input" replaces "needs you", as the sidebar and status bar say.
+
+*E. On-screen checks.* (1) Esc with the modal open never stops the agent; ↑/↓ never reach the box's history.
+(2) Only the marks redraw per tick (no observing the clock from the tab). (3) Animations keyed by change counters,
+not restarted by the 1 s redraw. (4) The scrim's bottom corners against the card's radius, and in split panes.
+(5) The modal follows a long Bash at the bottom and stops when you scroll up. (6) The new pairs in the contrast
+tests. (7) Context mid-turn against Claude's `/context`. (8) Each pill state dark and light; the meter at 30 / 75 /
+95 %; the delta; an agy tab; narrow trimming. (9) The modal: Bash running → done, failed Bash, an Edit, a Task's
+steps (in, Back), ↑/↓ at both ends, a split pane. (10) Reduce motion: nothing animates.
+
+**More asks (2026-11-21):** "add colored icon for claude and antigravity. Icon on tab change to claude icon (not "CC")
+… do it also with antigravity"; "chat icon as well change it to the each respective icon"; "make the chat better and
+excellent. Im handing the design to the Lead UI/UX Designer agent"; "inactive tabs, make it slighly more
+darker/transparent on the background"; "fix the `/clear` on claude … when the session clear, remove all chat history
+in the session. make it looks like the chat is being cleared".
+
+**The lead designer's spec B (2026-11-21).** Values: default dark (page #1f2229) / Catppuccin Latte (#e7e9ee).
+
+*B-A. Logos.* `ProviderInfo.logo: Option<Logo>` (`Logo::{Claude, Antigravity}`); `TabIcon::Agent` and the chat's
+`Look` carry it; others keep the text badge. Assets in `assets/logos/` (not `icons/lucide`, which `svg()` tints;
+logos draw in full colour with `img()`), with a `NOTICE.md` (Claude: Simple Icons, CC0 SVG, Anthropic's trademark,
+filled #D97757; Antigravity: Google's mark, from the Antigravity IDE). GPUI rasterises an SVG `img` at 2× the
+file's own width/height, so each drawn size gets its own `width`/`height`, and each `Arc<Image>` is built once per
+(logo, size). Tab: bare 14 pt in the `TILE` slot (no tile); fallback today's letters. Chat avatar: bare 18 pt in a
+22 × 22 slot; fallback today's tile. Empty state: 40 pt (fallback tile 40 r10, letters 16 semibold). Inactive tab,
+dark themes: the tile (and the Lucide glyphs of other inactive tabs) at opacity 0.75, 1.0 hovered or active; light
+themes always 1.0 (the logos are only ~2.5:1 on Latte). Brand colours are never contrast-fitted. (The sidebar's
+preset rows' "CC" at 16 could take the logo too — not asked for.)
+
+*B-B. Chat.* Tokens `ui_tokens::chat`: COLUMN_MAX 760 (the whole column incl. avatar, left-aligned at `AREA_X`),
+AVATAR 22, LOGO 18, AVATAR_GAP 10, BODY 14 / 1.5 (your message 13 → 14), META 12.5, FIRST_TOP 16, LAST_BOTTOM 20,
+GAP_TURN 24 (before You, and before the first agent item after You), GAP_ITEM 12 (text → text, before todo or
+permission), GAP_TEXT_TOOL 8, GAP_STACK 0 (tool → tool), GAP_NOTICE 16, TOOL_ROW 30, TOOL_PAD_X 10, TOOL_GAP 8,
+TOOL_STATUS 12, TOOL_DOT 6, TOOL_DIVIDER_INSET 30, THINKING_H 24, THINKING_FADE 500 ms, THINKING_HOLD 0.4,
+TODO_METER 56 × 4. Radii: 6 chips/buttons, 8 tool groups/code/wells, 12 cards, bubble 16 with a 6 bottom-right.
+Gaps from the previous visible item. The avatar on the first visible agent-side item after You, a Notice, an Error or
+the list's start, and on the thinking line after You; its top offset: text 2, tool 6, todo 11, permission 16,
+answered 2, thinking 3. No timestamps (no data).
+- **Your message:** bubble `max_w min(78 %, 520)`, padding 14 × 9, the radii above, 14 / 1.5, fill
+  `ui.composer_inner`, 1 px `ui.composer_edge`, text fitted on it. Attachments under it (gap 6, wrapping): chips 22
+  high, padding 8, r6, fill `mix(you_fill, fg, .06)`, Lucide Paperclip 12 + 4 + name META `you_dim` (no 📎).
+- **Agent message:** `Sizes::CHAT` — headings [18, 16, 15, 14, 14, 13], heading line 1.35, above 20, below 6;
+  block gap 12, item gap 6, indent 22, marker gap 6; code 12.5 / 1.5, pad (12, 10), r8; rule margin 8; quote 12 / 3;
+  table cell (10, 5). No H1/H2 underline in chat (only with `draw.reader`). List markers `dim`, numbers tabular.
+  Content capped at COLUMN_MAX − 32.
+- **Tool rows:** a run of consecutive top-level tools is one group (children skipped). Rows 30 high, `panel`;
+  shape from neighbours — Solo r8 all, borders all; First top r8, borders top/left/right, divider below; Middle no
+  radius, left/right, divider; Last bottom r8, left/right/bottom. Borders 1 px `panel_border`; divider 1 px
+  `tool_divider = readable(mix(panel, fg, .07), [panel], SOFT_LINE_MIN)`, inset 30. Contents: status slot 12
+  (running: the Working arc; ok: 6 px dot `tool_ok = readable(ring_done, [panel, row_hover], MARK_MIN)`; failed:
+  6 px dot `failed_panel`; neither: 6 px hollow ring 1 px `panel_dim`) · name META medium `tool_name` · summary META
+  `panel_text`, truncating, **hidden when it equals the name** · result META `panel_dim`, max 40 %, truncating
+  (failed: `failed_panel`, no ✗; running: elapsed, tabular) · chevron (spec A). Hover `row_hover` with the shape's
+  corners. No ◐ spinner; no inline expansion.
+- **Todo:** a card — `panel`, 1 px `panel_border`, r12, padding 14 × 10. Header 20 high: ListChecks 12 `panel_dim`
+  + 6 + "Tasks" (META semibold `panel_text`) · spacer · "3 of 7" (META `panel_dim`, tabular) + 8 + meter 56 × 4 r2
+  (track `readable(mix(panel, fg, .10), [panel], 1.2)`, fill `tool_ok`, still). Divider `tool_divider`, 8 above
+  and below. Rows 13 / 1.45, gap 4, mark slot 14, gap 8: done Check 12 `tool_ok`, text `panel_dim`; active
+  CircleDot 12 `todo_active`, text `panel_text` medium; pending Circle 12 `panel_dim`, text `panel_text`.
+- **Permission (open):** `ask_fill`, 1 px `ask_edge`, r12, padding 14 × 12, gap 10. Header Shield 14 `ask_head` + 8
+  + "Claude wants to run Bash" (14 semibold `ask_head`). Command well `code_fill`, r8, padding 12 × 10, mono 12.5.
+  Detail mono META `ask_dim`, ≤ 12 lines. Buttons 28 high, padding 14, r6 (Allow ⏎ primary). Hint META `ask_dim`.
+  **Answered:** one 22 px line, no card — Check 12 `tool_ok` (allowed) / `Icon::Stop` 12 `failed` (denied) + 6 +
+  "Allowed · Bash cd …" (META `dim`, truncating).
+- **Notice:** on the agent's text column (`pl = AVATAR + AVATAR_GAP`): Info 12 `dim` + 6 + META `dim`, wrapping.
+- **Error:** a card, r12, padding 14 × 12, fill `mix(page, block_failed, .08)`, 1 px
+  `readable(mix(page, block_failed, .30), [page, fill], QUIET_LINE_MIN)`, Octagon 14
+  `readable(block_failed, [fill], MARK_MIN)` + 8 + the message in `text` (fitted on the fill); buttons below, gap 10.
+- **Thinking line:** while Working and the last visible item isn't streaming text, a running tool or an open
+  permission. Drawn inside the last row, under it; 24 high; after You the avatar logo in the slot, else empty; the
+  Working arc 12 + 8 + "Thinking…" (META `dim`); its top gap as an agent item's after that item. Fades in
+  over 500 ms, opacity `clamp((t − 0.4) / 0.6)` eased out (a built-in delay: short gaps never flash); still with
+  Reduce motion.
+- **Queued:** the bubble, quieter — fill `ui.composer_outer`, edge `composer_edge`, text `fit(text_dim,
+  composer_outer)`; the "Starting Claude…" caption stays.
+- **Empty state:** centred, 24 above the true centre: logo 40 · 16 · "Ask Claude to do something" (15 semibold
+  `text`) · 6 · the place (mono 12.5 `dim`).
+- Motion: only the thinking fade, the arcs (the 10 fps clock) and the bar's meter. No row entrances; instant hovers.
+
+*B-C. Inactive tabs.* Today inactive (`card_hover`, .06) equals active (`tab_active`, .06). New `tab_idle =
+mix(card, fg, 0.025)` (#25282e / #e3e5eb) and `tab_idle_hover = mix(card, fg, 0.045)`; active stays `tab_active`; the
+active tab of an unfocused pane stays `card_lift`; a waiting inactive tab keeps its tint; titles stay `text_faint`
+(7.46 / 5.67). Both added to `drawn_pairs`' tab bars.
+
+*B-D. Audit.* Every text pair ≥ 4.5 (tightest: tool name on hover 4.50 dark, failed result on hover 4.53, error red
+4.50 Latte, todo active 4.50 Latte); no new hues (every token a mix of `UiColors`).
+
+*B-E. Risks.* (1) A tool group row's shape depends on the next item and the thinking line on being last: fold
+both into the row's fingerprint so `changed_rows` lays the old last row out again. (2) Arcs inside the cached tab
+redraw it at 10 fps while working; make the running tools' `MarkView`s in `after_change`, keyed by tool id; time a
+long conversation; fallback a still dot. (3) The SVG logos at 14 pt (Antigravity's mask, clip-path, blurs; Claude's
+rays); opacity reaching the `img`; Antigravity's faded top on Latte. (4) Licensing: both marks are brand assets in a
+public repo — your OK, plus a NOTICE. (5) The thinking fade restarts when the line moves to a new last row. (6)
+Per-side borders and corners; `max_w` wrapping inside the `list`. (7) New Lucide icons: circle, circle-dot,
+paperclip. (8) The composer stays full width while the chat caps at 760 (left alone, as asked).
+
+**What was built (2026-11-21, on master, 14 commits `5ec0b41`…`3f82e6c`).** Plan:
+[[Chores Plan - Agent Tab Redesign]], tasks 0–8, built in the session, one whole-branch review at the end.
+- **Live context** (`5ec0b41`): see above.
+- **Top bar** (`51a6836`, `19d70c1`): `src/agent_top.rs` (the pill, the meter's bands, the cost delta, narrow
+  trimming, and `TopState`, which keys the animations by change counters); `agent_tab::top_line` draws spec A §C.
+  The pill's mark is a `MarkView` on the Workspace's clock (`AgentTab::use_clock`).
+- **Tool modal** (`233f087`, `ad1b5ed`): `src/agent_tool_modal.rs` (the stack, ↑/↓ among a level's tools,
+  pruning when a tool goes, sizing, following the bottom, the header's right side); `agent_tab::modal_layer` draws
+  spec A §B. Keys in context `AgentToolModal`. No Copy buttons (not a straight reuse).
+- **`/clear` in the agent tab** (`91d1c10`): Claude Code 2.1.330 answers `/clear` with a `conversation_reset`
+  line, then a new `system/init` under a new session id; fuxx ignored the line, so only the id changed. Now
+  `Event::Cleared` empties the chat (and its cost and context) and the emptied chat fades in. agy has no `/clear`.
+- **The shell tab's first `clear`** (`0339453`, your second report): macOS `clear` sends `ESC[3J` before
+  `ESC[H ESC[2J`, and alacritty's 2J scrolls the screen into the scrollback the 3J had just emptied, so the old
+  output stayed until a second `clear`. `shell_marks::FullClear` finds that pair (only cursor homes between) and
+  `blocks::advance` empties the scrollback again where it ends; a plain 2J (zsh's ⌃L) keeps the scrollback. This
+  also holds in the classic terminal view (what `clear`'s 3J asks for).
+- **Logos and inactive tabs** (`51601e7`): `src/logos.rs` (sized and rasterised once per size, so the cached tab
+  bar draws them on its first frame), `assets/logos/` with a NOTICE; `ProviderInfo.logo`; `tab_idle`,
+  `tab_idle_hover`, `tab_bar::icon_opacity`.
+- **The chat** (`b6b94f2`): `src/agent_chat.rs` (rows, gaps, groups, avatar, thinking line, the row print that
+  lays a row out again when its neighbours change it), `ui_tokens::chat`, the drawing in `agent_tab`, `Sizes::CHAT`,
+  Lucide circle, circle-dot and paperclip.
+- **Scenes** (`967c94f`, `8892acf`): `agent-tab-modal`, `agent-tab-bar`, `agent-tab-thinking`; tab scenes expect
+  the quieter tabs; `chrome-pixels-same` lets the pill's 200 ms blend end before it compares frames.
+
+- **Usage beside the model pill** (`e069e7e`, your word: "take out usage from the agent tab from model popover to
+  outside … (:pluss-icon [model] :usage-icon)"): the model menu ends with its models; a round gauge button after the
+  model pill opens the usage panel over itself (and `/usage` still does); the limit-warning dot moved onto it.
+- **"Cultivating…"** (`125f3d3`, your word): the pill's Working word and the line under the last row.
+- **The whole-branch review** (opus, "with fixes") and its fix pass (`3f82e6c`): a click on the modal's dim area no
+  longer reaches what is under it (it could press Stop); while the modal is open the tab's keyboard goes to it, and
+  the box's Esc backs out of it, so Esc never stops the agent; a long tool opens at its top and follows the bottom
+  only from there; each animation plays once, when its change happens, not again when the tab is shown; a modal
+  closed because its tool went takes no keyboard from another pane; the "Task › " breadcrumb is one line. Deferred:
+  the pill's breathing mark also redraws the tab while it Needs input (add to the CPU check); PageUp/PageDown in
+  the modal; the shell `clear` fix inside a synchronized update; small duplications and doc wording.
+
+**Calls made without asking** (the ledger's rulings, for you to check):
+1. Context is live only once a finished turn has told fuxx the model's window: the first turn on a model after
+   launch still updates at its end. The window is remembered per model for the app's run.
+2. The pill's arc inside the agent tab redraws the tab at the clock's 10 fps while it works (GPUI redraws a moving
+   view's parents). Fallback if it costs too much CPU: a still arc.
+3. After `clear` the old screen isn't in the scrollback any more, in the classic view too (as Terminal.app does).
+4. After `/clear` the emptied chat fades in (the old rows are gone at once; nothing is left to fade out).
+5. Brand logos are never contrast-fitted (Claude's orange is ~2.6:1 on Latte); on dark themes every inactive tab's
+   icon is at 0.75.
+6. Gaps the spec left open: a notice or error, then the agent: 12; a tool after a todo or permission: 12. Notices
+   and errors sit on the agent's text column.
+7. The two brand marks are committed to this public repo with a NOTICE (Claude: Simple Icons CC0, Anthropic's
+   trademark; Antigravity: from the Antigravity IDE, Google's trademark) — **your OK is asked before the push.**
+
+**On-screen check** (I can't see the window):
+1. Agent tab, working: the pill turns amber with its arc and says Cultivating…; Needs input; Done with its check
+   popping once; Stopping….
+2. Context moves during a turn (compare with Claude's `/context`); the cost changes at the turn's end with "+$…".
+3. A context over 70 % and over 90 %: the meter's colour and the percent's.
+4. Click a tool row: the modal opens (fade, small rise); Esc closes it and never stops the agent; ↑/↓ walk the tools
+   and never reach the box's history; a click on the dim area closes it; ✕ closes it.
+5. A Task with steps: open it, open a step (Back appears), Esc backs out, then closes.
+6. A long Bash while the modal is open: the output follows at the bottom, stops following when you scroll up.
+7. `/clear` in a Claude tab: the chat empties and fades back in empty; the cost and context go.
+8. `clear` in a shell tab: the old output goes the first time; ⌃L keeps the scrollback.
+9. The Claude and Antigravity logos on their tabs (dimmer while inactive on dark themes) and as the chat's avatar;
+   Antigravity's arch on a light theme.
+10. Inactive tabs a step quieter than the shown one, in dark and light.
+11. The chat: your bubble, grouped tool rows (dots, the running arc, chevrons), the Tasks card, the permission card,
+    the answered line, a notice, an error card, "Cultivating…" after your message and after a tool, the empty state.
+12. CPU while an agent works for a while, and while one sits in Needs input (item 2 of the calls above).
+13. The usage button after the model pill: its panel opens over it; the warning dot on it near a limit; `/usage`.
+14. With the modal open: click the dim area over Stop (nothing stops); ⌘K then Esc (the modal closes, the agent
+    works on); switch tabs and back (nothing replays its animation).
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·

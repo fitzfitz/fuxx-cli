@@ -14,6 +14,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
+- **Latest (2026-11-21):** the agent tab redesign chores 🟨 built and reviewed on master (14 commits, `5ec0b41`…`3f82e6c`), not pushed: waiting for your OK on the brand logos, then your on-screen check (note 88, 14 items).
 - **Released (2026-11-21):** **v0.11.0** (run 44910715796, `fuxx-0.11.0.zip`), M11y through M11al and M11ab.
 - **Current milestone (2026-11-21, latest):** **M11ab — Chat-style shell tabs** 🟨 reworked after your first look (soft cards on a rail, the composer, your prompt left out; inner box in the sidebar's colour), merged to master and pushed (`07395eb`); waiting for your on-screen check (note 88's rework checklist, 8 items).
 - **Current milestone (2026-11-19, latest):** **M11q — Which command finished** 🟨 built, **merged to master and pushed 2026-11-20** (`f93654b`), waiting for your on-screen check (all 12 tasks, 0–11; note 68, 21 on-screen items). The whole-branch review is done, its fix wave applied and the second full ui-shots run done (244 passed, the same 8 display-dependent scenes failing); next is your on-screen check. M11ag's check is still open.
@@ -30,6 +31,26 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-21 — Chores: the agent tab redesigned (tool modal, top bar, live context, chat, logos); both clears fixed
+
+- **What:** on your words ("each action accordion arrow, change to chevron … a modal instead on dropdown", "agent top
+  status bar, make it excellent … is the price and context live?", "go ahead, make context live", the logos, "make
+  the chat better and excellent", "inactive tabs … slightly more darker", "fix the `/clear` on claude", "on terminal
+  tab, the clear first time not clear it"), and the lead designer's specs A and B, which you said to go with. Tool
+  rows open a detail modal; the top bar is a status pill, the cost with what each turn added, and a live context
+  meter; the chat redesigned; Claude and Antigravity logos on their tabs and as the avatar; inactive tabs quieter;
+  `/clear` empties the agent tab; a shell tab's first `clear` clears it; usage is its own button beside the model
+  pill; the agent "Cultivating…" while it works. Note 88's new section; plan
+  [[Chores Plan - Agent Tab Redesign]].
+- **Learned:** Claude reports the context window and the cost only at a turn's end, but each model call's token use
+  as it goes; `/clear` is a `conversation_reset` line; macOS `clear` sends 3J before 2J, and alacritty's 2J scrolls
+  the screen into the scrollback; an SVG `img` decodes on a task, so a cached view needs it rasterised up front.
+- **Checks:** 2345 tests; clippy at the baseline (30 / 32); fmt clean; the full ui-shots **268 passed, 0 failed**
+  (the two display-dependent ones too). One whole-branch review (opus): "with fixes"; its two must-fixes (a click
+  through the modal's dim area could press Stop; Esc could stop the agent once the box had the keyboard back) and
+  four more fixed in one pass, each test-first; seven minors deferred (note 88).
+- **Next:** your OK on committing the two brand logos (then the push), and your on-screen check (note 88, 14 items).
 
 ### 2026-11-21 — v0.11.0 released
 
