@@ -165,3 +165,9 @@ Your words: "about the popup model, make the popup UI great, its too boring". Sp
 - **Risks**: the rim may vanish on Latte (then ambient .16, no dark border); "Latest" relies on newest-first catalog
   order per family (agy's labels: flat if odd); a long label must ellipsize before the effort pill and ✓.
 
+Then (2026-11-22): the agent box's `❯` is a sparkle (fuxx's own filled icon, `assets/icons/fuxx/sparkle.svg`; the icon
+set's outline rule kept for Lucide's); and "resize the font and icon to match what we have done on git tab … same as
+activity, also git bottom bar": the right panel's shared sizes are the Git tab's (rows 24, names and text 12, small
+11, icons 12; were 32 / 13.5–14 / 12 / 16), and the Git bottom bar's text and icons 12 with 28 pt buttons (were
+12.5 / 16 / 15 / 34).
+
