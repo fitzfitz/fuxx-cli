@@ -1018,8 +1018,9 @@ fn changes_bar_scenes() {
 ///   green, D red); `+12` in the added ink and `−3` in the removed one, a binary or uncounted
 ///   row in neither; the hovered row (the fifth) `side_hover`, the others `side`.
 /// - `changes-empty-clean`: an empty list in a repo: the header (name only), then
-///   "No changes since the last commit."; `changes-empty-norepo`: not a repo: "Not a git
-///   repository." and no header; `changes-empty-ssh`: an SSH terminal followed: "Changes
+///   "No changes since the last commit."; `changes-empty-norepo`: not a repo: no git tab in
+///   the strip, the Files panel in place of Changes (your words: "hide git tab if the folder is
+///   not git"); `changes-empty-ssh`: an SSH terminal followed: "Changes
 ///   aren't shown for SSH terminals.", no header.
 /// - `changes-click`: a click on the M row opens src/main.rs in the focused pane in Diff mode
 ///   (the model's tab), and that row is drawn `side_selected`.
@@ -1259,11 +1260,21 @@ fn changes_scenes() {
                     frame(cx, window);
                     let shown = cx.read(|cx| ws.read(cx).changes_note(cx));
                     assert_eq!(shown, Some(note), "{n}");
+                    if case == "norepo" {
+                        use crate::right_sidebar::Panel;
+                        let (tabs, panel) = cx.read(|cx| ws.read(cx).right_panels_shown());
+                        assert_eq!(tabs, vec![Panel::Files, Panel::Activity], "{n}: no git tab");
+                        assert_eq!(panel, Panel::Files, "{n}: Files in place of Changes");
+                    }
                     slot.borrow_mut().take();
                 }
             };
             let path = shoot_with(&scene, slug, &theme, dims, build.clone(), act.clone());
             println!("ui-shots: {}", path.display());
+            if case == "norepo" {
+                // The Files panel shows: its own scenes check how it looks.
+                continue;
+            }
             let shot = render_with(&theme, dims, build, act);
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
             // Tight: Latte's dim and full text colours are close (6 apart in a channel since the

@@ -215,6 +215,25 @@ impl Panel {
         }
     }
 
+    /// The tabs the strip shows: all three, but no Changes (git) tab once the folder is known
+    /// not to be in a repo (`repo`: none while unknown).
+    pub fn shown(repo: Option<bool>) -> Vec<Panel> {
+        Panel::ALL
+            .into_iter()
+            .filter(|&p| p != Panel::Changes || repo != Some(false))
+            .collect()
+    }
+
+    /// The panel that shows for this choice: Files when it's Changes and the folder is known not
+    /// to be in a repo.
+    pub fn shown_as(self, repo: Option<bool>) -> Panel {
+        if self == Panel::Changes && repo == Some(false) {
+            Panel::Files
+        } else {
+            self
+        }
+    }
+
     /// The panel saved as `key`; missing or unknown: Files.
     pub fn from_key(key: Option<&str>) -> Panel {
         Panel::ALL
@@ -1305,7 +1324,11 @@ impl Workspace {
             return;
         }
         self.look_up_right_sidebar_folder(cx);
-        match self.right_sidebar.panel {
+        // Whether the folder is a repo, whichever panel shows: the strip hides the git tab
+        // outside one.
+        self.root_changes(cx);
+        let repo = self.right_sidebar.changes.repo_known();
+        match self.right_sidebar.panel.shown_as(repo) {
             Panel::Files => self.refresh_files(cx),
             Panel::Changes => self.refresh_changes(cx),
             Panel::Activity => {}
@@ -1502,7 +1525,11 @@ impl Workspace {
             .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
                 cx.stop_propagation()
             })
-            .children(Panel::ALL.map(|p| self.render_panel_tab(p, ui, cx)));
+            .children(
+                Panel::shown(self.right_sidebar.changes.repo_known())
+                    .into_iter()
+                    .map(|p| self.render_panel_tab(p, ui, cx)),
+            );
         let strip = div()
             .id("right-sidebar-band")
             .flex()
@@ -1534,7 +1561,11 @@ impl Workspace {
         } else {
             self.drag_window_by(strip, cx)
         };
-        let body = match self.right_sidebar.panel {
+        let body = match self
+            .right_sidebar
+            .panel
+            .shown_as(self.right_sidebar.changes.repo_known())
+        {
             Panel::Files => self.render_files_panel(ui, width, cx),
             Panel::Changes => self.render_changes_panel(ui, width, cx),
             Panel::Activity => self.render_activity_panel(ui, width, cx),
@@ -2330,6 +2361,22 @@ mod tests {
         state.load(&saved);
         assert!(!state.hidden);
         assert_eq!(state.width, 560.0);
+    }
+
+    #[test]
+    fn the_git_tab_hides_outside_a_repo() {
+        // Your words: "hide git tab if the folder is not git". Only once that's known: while
+        // the folder's root is being looked up the tab stays (no flicker).
+        assert_eq!(
+            Panel::shown(Some(false)),
+            vec![Panel::Files, Panel::Activity]
+        );
+        assert_eq!(Panel::shown(Some(true)), Panel::ALL.to_vec());
+        assert_eq!(Panel::shown(None), Panel::ALL.to_vec(), "not known yet");
+        // Changes chosen in a folder that isn't a repo: Files shows.
+        assert_eq!(Panel::Changes.shown_as(Some(false)), Panel::Files);
+        assert_eq!(Panel::Changes.shown_as(None), Panel::Changes);
+        assert_eq!(Panel::Activity.shown_as(Some(false)), Panel::Activity);
     }
 
     #[test]
