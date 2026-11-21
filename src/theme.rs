@@ -176,6 +176,11 @@ pub struct UiColors {
     /// The model menu's current row (the lead designer's spec, 2026-11-22): the accent washed
     /// over the menu's fill, as strong as keeps its words (and the dim ones) readable.
     pub menu_current: Rgb,
+    /// The model menu's divider and its ✓ (the lead designer's second pass, 2026-11-22): a line
+    /// that shows on `composer_inner` (its edge nearly vanishes there on dark themes), and the
+    /// accent held to show on the menu and on a hovered row.
+    pub menu_rule: Rgb,
+    pub menu_check: Rgb,
     /// The branch pill in the composer's tab, under the pointer: a step over `composer_inner`.
     pub composer_pill_hover: Rgb,
     /// The Changes progress bar's unfilled track, on the repo card (`card_hover`; M11al Task 9).
@@ -633,6 +638,16 @@ impl Theme {
                     .unwrap_or(composer_inner)
             },
             composer_pill_hover: mix(composer_inner, fg, 0.05),
+            menu_rule: readable(
+                mix(composer_inner, fg, 0.08),
+                &[composer_inner],
+                SOFT_LINE_MIN,
+            ),
+            menu_check: readable(
+                accent,
+                &[composer_inner, mix(composer_inner, fg, 0.05)],
+                MARK_MIN,
+            ),
             window_edge: if dark { black } else { canvas },
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
             // No shadow since the dark-panel chore (your words: "sidebar background color and the
@@ -1973,6 +1988,22 @@ mod tests {
 
     /// The model menu (the lead designer's spec, 2026-11-22): the current row's accent tint keeps
     /// its words readable, and the accent (its bar and ✓) shows on it, in every theme.
+    #[test]
+    fn the_model_menus_rule_and_check_show() {
+        // The lead designer's second pass (2026-11-22): a divider that shows on the menu's
+        // fill, and a ✓ that shows on it and on a hovered row.
+        use crate::ui_tokens::{MARK_MIN, SOFT_LINE_MIN, contrast};
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let got = contrast(ui.menu_rule, ui.composer_inner);
+            assert!(got >= SOFT_LINE_MIN - 0.01, "{name}: rule {got:.2}");
+            for on in [ui.composer_inner, ui.composer_pill_hover] {
+                let got = contrast(ui.menu_check, on);
+                assert!(got >= MARK_MIN - 0.01, "{name}: check {got:.2}");
+            }
+        }
+    }
+
     #[test]
     fn the_menus_current_row_stays_readable() {
         use crate::ui_tokens::{MARK_MIN, TEXT_MIN, contrast};

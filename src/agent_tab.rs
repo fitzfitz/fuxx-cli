@@ -930,9 +930,14 @@ pub struct AgentTab {
     modal_focus: FocusHandle,
     pub(crate) modal_scroll: gpui::ScrollHandle,
     refocus: Option<Refocus>,
-    /// The model menu's "Older" group, opened (None: as it starts — open when the current
-    /// model is older; reset when the menu closes).
+    /// The model menu's "Older" group, opened (None: as it starts, closed; reset when the
+    /// menu closes).
     pub(crate) models_older_open: Option<bool>,
+    /// The model menu's pending swap of the effort panel to another hovered row (it waits
+    /// `EFFORT_SWITCH_DELAY`; dropped to cancel), and the panel's bounds as last drawn (a press
+    /// there is a pick, not outside the menu).
+    pub(crate) effort_switch: Option<gpui::Task<()>>,
+    pub(crate) effort_panel_at: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// The top bar (spec A §C): what its animations start from (`agent_top::TopState`), its
     /// status mark and the clock that turns it (a still one of its own until the Workspace
     /// gives it the shared one, `use_clock`), and its width as last laid out (`agent_top::trim`).
@@ -1362,6 +1367,8 @@ impl AgentTab {
             modal_scroll: gpui::ScrollHandle::new(),
             refocus: None,
             models_older_open: None,
+            effort_switch: None,
+            effort_panel_at: Default::default(),
             top: crate::agent_top::TopState::default(),
             top_mark,
             modal_mark,
@@ -2567,6 +2574,8 @@ impl AgentTab {
     pub(crate) fn close_menu(&mut self, cx: &mut Context<Self>) {
         self.picker = None;
         self.models_older_open = None;
+        self.effort_switch = None;
+        self.effort_panel_at.set(None);
         #[cfg(feature = "ui-shots")]
         self.menu_rows.borrow_mut().clear();
         if self.menu.take().is_some() {

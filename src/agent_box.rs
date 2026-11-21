@@ -106,7 +106,18 @@ pub const NEXT_CONVERSATION_NOTE: &str = "applies to a new conversation";
 pub const VIEW_USAGE: &str = "Usage";
 /// The id of the effort list's rows, beside the model menu, and the width of its panel.
 const EFFORT_ROWS: &str = "box-effort";
-const EFFORT_WIDTH: f32 = 140.0;
+const EFFORT_WIDTH: f32 = 128.0;
+/// The model menu (the lead designer's second pass, 2026-11-22, "one list, one light"): its
+/// width, its list's tallest (12 rows; it scrolls), its rows' height and corners, the check
+/// column and the chevron's; how long a pointer rests on another row before its efforts swap
+/// in while some are open.
+const MODEL_MENU_WIDTH: f32 = 240.0;
+const MODEL_LIST_MAX: f32 = 312.0;
+const MODEL_ROW_H: f32 = 26.0;
+const MODEL_ROW_RADIUS: f32 = 6.0;
+const CHECK_COL: f32 = 16.0;
+const CHEVRON_COL: f32 = 12.0;
+pub(crate) const EFFORT_SWITCH_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 /// The usage view's width.
 pub(crate) const USAGE_WIDTH: f32 = 300.0;
 /// The usage view's tallest; it scrolls past it.
@@ -613,6 +624,25 @@ pub fn group_models(labels: &[&str]) -> Option<(Vec<usize>, Vec<usize>)> {
     (!older.is_empty()).then_some((latest, older))
 }
 
+/// `group_models` with the current model (`current`, by place in `labels`) always shown (the
+/// lead designer's second pass, 2026-11-22): an older one moves into the top group, right after
+/// its family's newest.
+pub fn model_groups(labels: &[&str], current: Option<usize>) -> Option<(Vec<usize>, Vec<usize>)> {
+    let (mut top, mut older) = group_models(labels)?;
+    if let Some(c) = current
+        && let Some(at) = older.iter().position(|&o| o == c)
+    {
+        older.remove(at);
+        let family = split_label(labels[c]).0;
+        let newest = top
+            .iter()
+            .position(|&t| split_label(labels[t]).0 == family)
+            .map_or(top.len(), |p| p + 1);
+        top.insert(newest, c);
+    }
+    Some((top, older))
+}
+
 /// One row of the mode menu, top to bottom.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModeRow {
@@ -1099,8 +1129,8 @@ impl AgentTab {
                     }))
             })
             .when(menu_on(|m| matches!(m, BoxMenu::Model { .. })), |d| {
-                let (menu, side) = self.model_menu(cx);
-                d.child(self.menu_frame(Some(menu), side, MENU_WIDTH, cx))
+                let menu = self.model_menu(cx);
+                d.child(self.menu_frame(Some(menu), None, MODEL_MENU_WIDTH, cx))
             });
         // Usage, its own button beside the model pill (your word, 2026-11-21: "take out usage
         // … from model popover to outside"): the gauge, round like +; its panel opens over it;
@@ -2978,6 +3008,31 @@ mod tests {
         );
         assert_eq!(split_label("Opus 5.5"), ("Opus", Some("5.5")));
         assert_eq!(split_label("Default"), ("Default", None));
+    }
+
+    /// The lead designer's second pass (2026-11-22): the current model always shows; an older
+    /// one sits in the top group right after its family's newest.
+    #[test]
+    fn an_older_current_model_shows_after_its_familys_newest() {
+        let labels = [
+            "Opus 5.5",
+            "Fable 5.2",
+            "Sonnet 5.5",
+            "Haiku 5.5",
+            "Fable 5.1",
+            "Opus 5",
+            "Sonnet 4.6",
+        ];
+        let (top, older) = model_groups(&labels, Some(5)).expect("grouped");
+        assert_eq!(top, [0, 5, 1, 2, 3], "Opus 5 after Opus 5.5");
+        assert_eq!(older, [4, 6]);
+        assert_eq!(
+            model_groups(&labels, Some(2)),
+            group_models(&labels),
+            "a latest current: as grouped"
+        );
+        assert_eq!(model_groups(&labels, None), group_models(&labels));
+        assert_eq!(model_groups(&labels[..6], Some(5)), None, "flat stays flat");
     }
 
     #[test]

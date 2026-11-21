@@ -294,6 +294,10 @@ pub mod text {
     /// M11al: tabs, search, buttons, right-panel rows; and shortcut keys.
     pub const UI: f32 = 13.5;
     pub const KEYS: f32 = 11.5;
+    /// The model menu's labels and its small words (the lead designer's second pass,
+    /// 2026-11-22).
+    pub const MENU: f32 = 13.0;
+    pub const MENU_META: f32 = 11.5;
 }
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };

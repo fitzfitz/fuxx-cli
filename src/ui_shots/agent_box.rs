@@ -2987,6 +2987,15 @@ pub(super) fn agent_box_effort_list() {
                 }),
                 "{n}: hovering opens its efforts"
             );
+            // Beside the hovered row, its first level at the row's top (your words,
+            // 2026-11-22: "the effort is always appear on the bottom, this is wrong").
+            let low = effort_row(cx, tab, "Low").expect("its first level");
+            assert!(
+                (low.top() - row.top()).abs() <= px(1.),
+                "{n}: the first level at the hovered row's top ({:?} {:?})",
+                low.top(),
+                row.top()
+            );
             click_more(n, cx, window, tab, "Claude Example 4");
             assert_eq!(
                 menu(cx, tab),

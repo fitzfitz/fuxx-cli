@@ -3,7 +3,8 @@
 
 use super::*;
 use crate::usage_view::{heading, quiet, top_row};
-use gpui::{Animation, AnimationExt};
+use alacritty_terminal::vte::ansi::Rgb;
+use gpui::{Animation, AnimationExt, FontWeight};
 
 impl AgentTab {
     /// The open menu's panel (`content` in it), hung above its chip (a child of it) and opening
@@ -50,6 +51,15 @@ impl AgentTab {
                             .gap(px(MENU_GAP))
                             .on_mouse_down_out(cx.listener(
                                 |this, event: &MouseDownEvent, _, cx| {
+                                    // The model menu's effort panel hangs beside its row, not
+                                    // in here: a press on it is a pick.
+                                    if this
+                                        .effort_panel_at
+                                        .get()
+                                        .is_some_and(|b| b.contains(&event.position))
+                                    {
+                                        return;
+                                    }
                                     if matches!(
                                         this.menu,
                                         Some(
@@ -498,8 +508,11 @@ impl AgentTab {
         self.keyboard_back(window, cx);
     }
 
-    /// The model menu's panel content, and the open model's effort list beside it.
-    pub(super) fn model_menu(&self, cx: &mut Context<Self>) -> (AnyElement, Option<AnyElement>) {
+    /// The model menu's panel content (the lead designer's second pass, 2026-11-22, "one list,
+    /// one light"): "Model", then Default, a divider, each family's newest (and the current
+    /// model, wherever it is: `model_groups`), a divider and "Older models" (closed at first)
+    /// with the rest. The open model's efforts hang beside its row (`model_row`).
+    pub(super) fn model_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let ui = cx.global::<Appearance>().theme.ui();
         let lookup = self.catalog_lookup(cx);
         let shown = self.shown_start(cx);
@@ -510,23 +523,10 @@ impl AgentTab {
             Some(BoxMenu::Model { efforts_of }) => *efforts_of,
             _ => None,
         };
-        let mut top = Vec::new();
-        let mut list = Vec::new();
+        // Set again as the effort panel is drawn.
+        self.effort_panel_at.set(None);
         let rows = model_rows(&lookup, &shown, applies);
-        // The current model, said in the header (the lead designer's spec).
-        let now = rows.iter().find_map(|r| match r {
-            ModelRow::Model {
-                label,
-                effort,
-                current: true,
-                ..
-            } => Some(match effort {
-                Some(e) => format!("{label} \u{b7} {}", effort_word(e)),
-                None => label.clone(),
-            }),
-            _ => None,
-        });
-        // Grouped by family when long (`group_models`): each one's latest, then "Older".
+        // The models other than Default, by row: grouped when long (`model_groups`).
         let models: Vec<(usize, &str, bool)> = rows
             .iter()
             .enumerate()
@@ -538,40 +538,40 @@ impl AgentTab {
             })
             .collect();
         let labels: Vec<&str> = models.iter().map(|m| m.1).collect();
-        let groups = group_models(&labels);
-        let older_rows: Vec<usize> = groups
-            .as_ref()
-            .map(|(_, older)| older.iter().map(|&k| models[k].0).collect())
-            .unwrap_or_default();
-        let first_latest = groups
-            .as_ref()
-            .and_then(|(latest, _)| latest.first().map(|&k| models[k].0));
-        let first_older = older_rows.first().copied();
-        let older_open = self.models_older_open.unwrap_or_else(|| {
-            older_rows
-                .iter()
-                .any(|&i| matches!(&rows[i], ModelRow::Model { current: true, .. }))
+        let current = models.iter().position(|m| m.2);
+        let grouped = model_groups(&labels, current).map(|(top, older)| {
+            let row = |ks: Vec<usize>| ks.into_iter().map(|k| models[k].0).collect::<Vec<_>>();
+            (row(top), row(older))
         });
+        let older_open = self.models_older_open.unwrap_or(false);
+        let mut header = None;
+        let mut list = Vec::new();
+        let mut placed = false;
         for (i, row) in rows.iter().enumerate() {
-            if Some(i) == first_latest {
-                list.push(menu_heading(&ui, "Latest", None));
-            }
-            if Some(i) == first_older {
-                list.push(self.older_row(older_rows.len(), older_open, &ui, cx));
-            }
-            if older_rows.contains(&i) && !older_open {
-                continue;
-            }
             match row {
-                ModelRow::Heading => top.push(menu_heading(&ui, MODEL_HEADING, now.clone())),
+                ModelRow::Heading => header = Some(model_heading(&ui)),
                 ModelRow::Note(note) => list.push(quiet(*note, &ui)),
-                ModelRow::Model { label, .. } => {
+                ModelRow::Model { label, .. } if label.starts_with("Default") => {
                     list.push(self.model_row(i, row, efforts_of, &ui, cx));
-                    // A 4 pt gap under "Default" (the lead designer's spec: no line).
-                    if label.starts_with("Default") {
-                        list.push(div().h(px(4.)).into_any_element());
-                    }
+                    list.push(menu_rule(&ui));
                 }
+                ModelRow::Model { .. } => match &grouped {
+                    None => list.push(self.model_row(i, row, efforts_of, &ui, cx)),
+                    Some(_) if placed => {}
+                    Some((top, older)) => {
+                        placed = true;
+                        for &r in top {
+                            list.push(self.model_row(r, &rows[r], efforts_of, &ui, cx));
+                        }
+                        list.push(menu_rule(&ui));
+                        list.push(self.older_row(older.len(), older_open, &ui, cx));
+                        if older_open {
+                            for &r in older {
+                                list.push(self.model_row(r, &rows[r], efforts_of, &ui, cx));
+                            }
+                        }
+                    }
+                },
                 ModelRow::NewConversation => list.push(self.menu_row(
                     ("box-model", i),
                     NEW_CONVERSATION.into(),
@@ -587,56 +587,182 @@ impl AgentTab {
                 )),
             }
         }
-        let menu = div()
+        div()
             .flex()
             .flex_col()
-            .children(top)
+            .text_size(px(crate::ui_tokens::text::MENU))
+            .children(header)
             .child(
                 div()
                     .id("box-model-rows")
                     .flex()
                     .flex_col()
-                    .max_h(px(MENU_LIST_MAX))
+                    .max_h(px(MODEL_LIST_MAX))
                     .overflow_y_scroll()
+                    // A scroll closes the efforts: never beside a row scrolled away.
+                    .on_scroll_wheel(cx.listener(|this, _: &gpui::ScrollWheelEvent, _, cx| {
+                        if let Some(BoxMenu::Model { efforts_of }) = &mut this.menu
+                            && efforts_of.is_some()
+                        {
+                            *efforts_of = None;
+                            this.effort_switch = None;
+                            cx.notify();
+                        }
+                    }))
                     .children(list),
             )
-            .into_any_element();
-        let side = match (efforts_of, &lookup) {
-            (Some(ix), Lookup::Ready(catalog)) => {
-                let items: Vec<AnyElement> = effort_rows(catalog, ix, &shown)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (level, current))| {
-                        self.menu_row(
-                            (EFFORT_ROWS, i),
-                            effort_word(&level),
-                            current,
-                            false,
-                            &ui,
-                            cx,
-                            move |this, window, cx| this.pick_effort(ix, level.clone(), window, cx),
-                        )
-                    })
-                    .collect();
-                let dark = cx.global::<Appearance>().theme.is_dark();
-                let panel = menu_surface(&ui, dark, EFFORT_WIDTH)
-                    .id("agent-box-effort")
-                    .occlude()
-                    .child(
-                        menu_inside(&ui)
-                            .child(menu_heading(&ui, "Effort", None))
-                            .children(items),
-                    )
-                    .with_animation(
-                        "agent-box-effort-open",
-                        Animation::new(std::time::Duration::from_millis(90)),
-                        |d, t| d.opacity(t),
-                    );
-                Some(self.marked("effort", div().child(panel)).into_any_element())
-            }
-            _ => None,
+            .into_any_element()
+    }
+
+    /// The pointer rests on a model row (`shows`: its place when it has efforts): with no
+    /// efforts open, its own open at once; with another's open, they swap after
+    /// `EFFORT_SWITCH_DELAY` (on the way to the panel, the pointer may cross a row); back on the
+    /// open one, nothing swaps.
+    fn model_hovered(&mut self, shows: Option<usize>, cx: &mut Context<Self>) {
+        let Some(BoxMenu::Model { efforts_of }) = &self.menu else {
+            return;
         };
-        (menu, side)
+        let open = *efforts_of;
+        if open == shows {
+            self.effort_switch = None;
+            return;
+        }
+        if open.is_none() {
+            self.effort_switch = None;
+            self.menu = Some(BoxMenu::Model { efforts_of: shows });
+            cx.notify();
+            return;
+        }
+        self.effort_switch = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(EFFORT_SWITCH_DELAY).await;
+            this.update(cx, |this, cx| {
+                if matches!(this.menu, Some(BoxMenu::Model { .. })) {
+                    this.menu = Some(BoxMenu::Model { efforts_of: shows });
+                    this.effort_switch = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// The efforts of the model at `ix`, beside its row (the lead designer's second pass): the
+    /// panel's left 4 past the menu's right edge, its first level at the row's top; kept in the
+    /// window (it moves up near the bottom). A 4 pt bridge leads to it from the menu. The
+    /// running model's level ticked; another model's, the level a pick of it would use, ticked
+    /// quieter.
+    fn effort_panel(&self, ix: usize, ui: &UiColors, cx: &mut Context<Self>) -> AnyElement {
+        let Lookup::Ready(catalog) = self.catalog_lookup(cx) else {
+            return div().into_any_element();
+        };
+        let shown = self.shown_start(cx);
+        let levels = effort_rows(&catalog, ix, &shown);
+        let running = levels.iter().any(|(_, current)| *current);
+        let would = catalog
+            .models
+            .get(ix)
+            .filter(|_| !running)
+            .and_then(|m| effort_on_switch(m, shown.effort.as_deref()));
+        let items: Vec<AnyElement> = levels
+            .into_iter()
+            .enumerate()
+            .map(|(i, (level, current))| {
+                let check = if current {
+                    Some(ui.menu_check)
+                } else if would.as_deref() == Some(level.as_str()) {
+                    Some(ui.text_dim)
+                } else {
+                    None
+                };
+                self.effort_row(i, ix, level, check, ui, cx)
+            })
+            .collect();
+        let dark = cx.global::<Appearance>().theme.is_dark();
+        let panel = menu_surface(ui, dark, EFFORT_WIDTH)
+            .id("agent-box-effort")
+            .child(
+                menu_inside(ui)
+                    .text_size(px(crate::ui_tokens::text::MENU))
+                    .children(items),
+            )
+            .with_animation(
+                "agent-box-effort-open",
+                Animation::new(std::time::Duration::from_millis(90)),
+                |d, t| d.opacity(t),
+            );
+        let at = self.effort_panel_at.clone();
+        let bridge = div()
+            .id("agent-box-effort-bridge")
+            .relative()
+            .pl(px(MENU_GAP))
+            .occlude()
+            .on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                if *hovered {
+                    this.effort_switch = None;
+                }
+            }))
+            .child(
+                gpui::canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+            .child(self.marked("effort", div().child(panel)));
+        // From the row's top left (the menu's 1 pt rim and 4 pt inside in from its edge).
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .child(
+                deferred(
+                    anchored()
+                        .offset(point(px(MODEL_MENU_WIDTH - 5.), px(-5.)))
+                        .snap_to_window_with_margin(px(MENU_EDGE))
+                        .child(bridge),
+                )
+                .with_priority(1),
+            )
+            .into_any_element()
+    }
+
+    /// One level of the effort panel: the check column (`check`'s colour), its word.
+    fn effort_row(
+        &self,
+        i: usize,
+        ix: usize,
+        level: String,
+        check: Option<Rgb>,
+        ui: &UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hover = ui.composer_pill_hover;
+        let word = effort_word(&level);
+        let row = div()
+            .id((EFFORT_ROWS, i))
+            .relative()
+            .h(px(MODEL_ROW_H))
+            .pl(px(6.))
+            .pr(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .rounded(px(MODEL_ROW_RADIUS))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hsla(hover)))
+            .child(check_col(check))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(SharedString::from(word.clone())),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.pick_effort(ix, level.clone(), window, cx)
+            }));
+        self.marked_row(format!("Effort \u{25b8} {word}"), row)
+            .into_any_element()
     }
 
     /// The mode in force: the chosen one, else the one the catalog says the agent runs, else
@@ -978,9 +1104,11 @@ impl AgentTab {
             .into_any_element()
     }
 
-    /// One model of the menu: ✓ when current, its name, its effort in grey (the current one's),
-    /// and `▸` (when it has efforts), which opens its effort list beside the menu. A click on
-    /// the name picks the model.
+    /// One model of the menu (the lead designer's second pass, 2026-11-22): the check column
+    /// (✓ on the current one), the family (medium on the current one) and its version quiet,
+    /// "recommended" or the current effort quiet on the right, and a › on a model with efforts.
+    /// One fill: under the pointer, or while its efforts are open (they hang beside it). A
+    /// click on its name picks it; resting on it opens its efforts (`model_hovered`).
     fn model_row(
         &self,
         i: usize,
@@ -1000,70 +1128,71 @@ impl AgentTab {
             return div().into_any_element();
         };
         use crate::icons::{Icon, icon};
-        let (ix, hover) = (*ix, ui.composer_pill_hover);
-        let group = SharedString::from(format!("box-model-row-{i}"));
+        let (ix, hover, current) = (*ix, ui.composer_pill_hover, *current);
+        let open = efforts_of == Some(ix);
         // "Default (recommended)" reads "Default" with "recommended" quiet beside it.
         let (shown, aside) = match label.strip_suffix(" (recommended)") {
-            Some(base) => (base.to_string(), Some("recommended")),
+            Some(base) => (base.to_string(), Some("recommended".to_string())),
             None => (label.clone(), None),
         };
-        // The lead designer's spec (2026-11-22): the family in the text colour, its version
-        // quiet; "recommended" a hairline tag; the effort a pill; the ✓ in the accent.
         let (family, version) = crate::agent_box::split_label(&shown);
         let (family, version) = (family.to_string(), version.map(str::to_string));
+        let small = |words: String| {
+            div()
+                .flex_none()
+                .text_size(px(crate::ui_tokens::text::MENU_META))
+                .text_color(hsla(ui.text_dim))
+                .child(SharedString::from(words))
+        };
         let name = div()
             .id(("box-model-pick", i))
             .flex_1()
             .min_w_0()
             .h_full()
-            .pl(px(10.))
             .flex()
             .items_center()
             .gap(px(6.))
             .cursor_pointer()
+            .child(check_col(current.then_some(ui.menu_check)))
             .child(
                 div()
                     .min_w_0()
+                    .flex()
+                    .items_center()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(SharedString::from(family))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .when(current, |d| d.font_weight(FontWeight::MEDIUM))
+                            .child(SharedString::from(family)),
+                    )
                     .children(version.map(|v| {
                         div()
                             .flex_none()
-                            .ml(px(5.))
+                            .ml(px(4.))
                             .text_color(hsla(ui.text_dim))
                             .child(SharedString::from(v))
-                    }))
-                    .flex()
-                    .items_center(),
+                    })),
             )
-            .children(aside.map(|a| row_pill(ui, a, true)))
+            .children(aside.map(small))
             .child(div().flex_1())
-            .children(
-                effort
-                    .as_deref()
-                    .map(|level| row_pill(ui, effort_word(level), false)),
-            )
-            .child(div().flex_none().w(px(14.)).when(*current, |d| {
-                d.child(icon(Icon::Check, px(14.), hsla(ui.accent)))
-            }))
+            .children(effort.as_deref().map(|level| small(effort_word(level))))
             .on_click(cx.listener(move |this, _, window, cx| this.pick_model(ix, window, cx)));
         let more = div()
             .id(("box-model-more", i))
             .flex_none()
+            .w(px(CHEVRON_COL))
             .h_full()
-            .px(px(6.))
             .flex()
             .items_center()
+            .justify_center()
             .cursor_pointer()
-            .child(icon(Icon::ChevronRight, px(14.), hsla(ui.text_dim)))
-            // Only seen on the hovered row and the current one (the designer's details); still
-            // there to press on the others.
-            .when(!*current, |d| {
-                d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.))
-            })
+            .child(icon(Icon::ChevronRight, px(12.), hsla(ui.text_dim)))
             .on_click(cx.listener(move |this, _, _, cx| {
+                this.effort_switch = None;
                 this.open_menu(
                     BoxMenu::Model {
                         efforts_of: Some(ix),
@@ -1071,37 +1200,32 @@ impl AgentTab {
                     cx,
                 )
             }));
+        let shows = has_efforts.then_some(ix);
         let row = div()
             .id(("box-model", i))
-            .group(group.clone())
-            .h(px(ROW_H))
+            .relative()
+            .h(px(MODEL_ROW_H))
+            .pl(px(6.))
+            .pr(px(8.))
             .flex()
             .items_center()
-            .relative()
-            .rounded(px(ROW_RADIUS))
+            .gap(px(6.))
+            .rounded(px(MODEL_ROW_RADIUS))
             .hover(move |s| s.bg(hsla(hover)))
-            .when(*current, |d| d.bg(hsla(ui.menu_current)).child(current_bar(ui)))
-            .when(efforts_of == Some(ix) && !*current, move |d| d.bg(hsla(hover)))
-            // Your words (2026-11-22): hovering a model shows its efforts beside it (none, for
-            // a model without), no click.
-            .on_hover({
-                let shows = has_efforts.then_some(ix);
-                cx.listener(move |this, hovered: &bool, _, cx| {
-                    if *hovered
-                        && matches!(this.menu, Some(BoxMenu::Model { efforts_of }) if efforts_of != shows)
-                    {
-                        this.menu = Some(BoxMenu::Model { efforts_of: shows });
-                        cx.notify();
-                    }
-                })
-            })
+            .when(open, move |d| d.bg(hsla(hover)))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.model_hovered(shows, cx);
+                }
+            }))
             .child(name)
-            .when(*has_efforts, |d| d.child(more));
+            .when(*has_efforts, |d| d.child(more))
+            .when(open, |d| d.child(self.effort_panel(ix, ui, cx)));
         self.marked_row(label.clone(), row).into_any_element()
     }
 
-    /// The "Older  N ⌄" row (the lead designer's spec): opens or closes the older models in
-    /// place.
+    /// The "Older models  N ›" row (the lead designer's second pass): opens or closes the older
+    /// models in place; closed each time the menu opens.
     fn older_row(
         &self,
         count: usize,
@@ -1113,27 +1237,40 @@ impl AgentTab {
         let hover = ui.composer_pill_hover;
         let row = div()
             .id("box-model-older")
-            .h(px(28.))
-            .px(px(10.))
-            .rounded(px(ROW_RADIUS))
+            .relative()
+            .h(px(MODEL_ROW_H))
+            .pl(px(6.))
+            .pr(px(8.))
+            .rounded(px(MODEL_ROW_RADIUS))
             .flex()
             .items_center()
             .gap(px(6.))
             .cursor_pointer()
             .hover(move |s| s.bg(hsla(hover)))
-            .text_size(px(crate::ui_tokens::text::META))
             .text_color(hsla(ui.text_dim))
-            .child(div().flex_1().child("Older"))
-            .child(SharedString::from(count.to_string()))
-            .child(icon(
-                if open {
-                    Icon::ChevronDown
-                } else {
-                    Icon::ChevronRight
-                },
-                px(12.),
-                hsla(ui.text_dim),
-            ))
+            .child(check_col(None))
+            .child(div().flex_1().child("Older models"))
+            .child(
+                div()
+                    .text_size(px(crate::ui_tokens::text::MENU_META))
+                    .child(SharedString::from(count.to_string())),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(CHEVRON_COL))
+                    .flex()
+                    .justify_center()
+                    .child(icon(
+                        if open {
+                            Icon::ChevronDown
+                        } else {
+                            Icon::ChevronRight
+                        },
+                        px(12.),
+                        hsla(ui.text_dim),
+                    )),
+            )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.models_older_open = Some(!open);
                 cx.notify();
@@ -1282,48 +1419,36 @@ fn current_bar(ui: &UiColors) -> Div {
         .bg(hsla(ui.accent))
 }
 
-/// A small pill beside a row's words: filled (an effort) or a hairline tag ("recommended").
-fn row_pill(ui: &UiColors, words: impl Into<SharedString>, hairline: bool) -> Div {
+/// A model menu row's check column (16 wide): a ✓ in `ink`, or empty.
+fn check_col(ink: Option<Rgb>) -> Div {
     div()
         .flex_none()
-        .h(px(18.))
-        .px(px(7.))
-        .rounded(px(9.))
+        .w(px(CHECK_COL))
         .flex()
         .items_center()
-        .text_size(px(crate::ui_tokens::text::META))
-        .text_color(hsla(ui.text_dim))
-        .map(|d| {
-            if hairline {
-                d.border_1().border_color(hsla(ui.composer_edge))
-            } else {
-                d.bg(hsla(ui.composer_pill_hover))
-            }
-        })
-        .child(words.into())
+        .justify_center()
+        .children(ink.map(|ink| crate::icons::icon(crate::icons::Icon::Check, px(12.), hsla(ink))))
 }
 
-/// A menu's section heading (the lead designer's spec): 26 tall, META, quiet; `right` (the
-/// current model) in the text colour on its right.
-fn menu_heading(ui: &UiColors, text: &'static str, right: Option<String>) -> AnyElement {
+/// The model menu's divider: a 1 pt `menu_rule` line, 8 in, 4 above and below.
+fn menu_rule(ui: &UiColors) -> AnyElement {
     div()
-        .h(px(26.))
-        .px(px(10.))
+        .h(px(1.))
+        .mx(px(8.))
+        .my(px(4.))
+        .bg(hsla(ui.menu_rule))
+        .into_any_element()
+}
+
+/// The model menu's heading: "Model", 24 tall, small and quiet.
+fn model_heading(ui: &UiColors) -> AnyElement {
+    div()
+        .h(px(24.))
+        .px(px(8.))
         .flex()
         .items_center()
-        .gap(px(8.))
-        .text_size(px(crate::ui_tokens::text::META))
+        .text_size(px(crate::ui_tokens::text::MENU_META))
         .text_color(hsla(ui.text_dim))
-        .child(div().flex_none().child(text))
-        .child(div().flex_1())
-        .children(right.map(|r| {
-            div()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .text_color(hsla(ui.text))
-                .child(SharedString::from(r))
-        }))
+        .child(MODEL_HEADING)
         .into_any_element()
 }
