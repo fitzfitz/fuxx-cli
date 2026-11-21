@@ -11,10 +11,11 @@ impl AgentTab {
         &self,
         content: Option<AnyElement>,
         side: Option<AnyElement>,
+        width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let ui = cx.global::<Appearance>().theme.ui();
-        let panel = crate::overlay_panel::shell(&ui, MENU_WIDTH)
+        let panel = crate::overlay_panel::shell(&ui, width)
             .id("agent-box-menu")
             .p(px(4.))
             .gap(px(0.))
@@ -501,8 +502,12 @@ impl AgentTab {
             match row {
                 ModelRow::Heading => top.push(heading(MODEL_HEADING.into(), &ui)),
                 ModelRow::Note(note) => list.push(quiet(*note, &ui)),
-                ModelRow::Model { .. } => {
+                ModelRow::Model { label, .. } => {
                     list.push(self.model_row(i, row, efforts_of, &ui, cx));
+                    // A line under "Default" (the designer's details).
+                    if label.starts_with("Default") {
+                        list.push(divider(&ui));
+                    }
                 }
                 ModelRow::NewConversation => list.push(self.menu_row(
                     ("box-model", i),
@@ -517,23 +522,8 @@ impl AgentTab {
                         this.keyboard_back(window, cx);
                     },
                 )),
-                ModelRow::Divider => bottom.push(
-                    div()
-                        .h(px(1.))
-                        .mx(px(4.))
-                        .my(px(4.))
-                        .bg(hsla(ui.panel_border))
-                        .into_any_element(),
-                ),
-                ModelRow::Usage => bottom.push(self.menu_row(
-                    ("box-model", i),
-                    VIEW_USAGE.into(),
-                    false,
-                    false,
-                    &ui,
-                    cx,
-                    |this, _, cx| this.open_usage(cx),
-                )),
+                ModelRow::Divider => bottom.push(divider(&ui)),
+                ModelRow::Usage => bottom.push(self.usage_menu_row(i, &ui, cx)),
             }
         }
         let menu = div()
@@ -583,10 +573,10 @@ impl AgentTab {
 
     /// The mode in force: the chosen one, else the one the catalog says the agent runs, else
     /// the provider's default (as the chip says it).
-    fn mode_now<'a>(&'a self, cx: &'a App) -> Option<&'a str> {
+    pub(super) fn mode_now<'a>(&'a self, cx: &'a App) -> Option<&'a str> {
         let provider = self.provider?;
         current_mode(
-            self.start.mode.as_deref(),
+            self.mode_chosen(),
             self.catalog(cx).and_then(|c| c.mode.as_deref()),
             provider.info().default_mode,
         )
@@ -718,10 +708,16 @@ impl AgentTab {
                 )),
             }
         }
-        div().flex().flex_col().children(items).into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .children(items)
+            .into_any_element()
     }
 
-    /// One mode of the menu: ✓ when in force, its name, and its one-line description under it.
+    /// One mode of the menu (the designer's details): its icon in a 32 pt column, its name and
+    /// its description (two lines at most) under it, a check on the right when in force.
     #[allow(clippy::too_many_arguments)]
     fn mode_row(
         &self,
@@ -733,37 +729,46 @@ impl AgentTab {
         ui: &UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        use crate::icons::{Icon, icon};
         let hover = ui.panel_hover;
         let row = div()
             .id(("box-mode", i))
-            .px(px(8.))
-            .py(px(4.))
+            .p(px(8.))
             .flex()
             .items_start()
-            .gap(px(6.))
-            .rounded(px(ROW_RADIUS))
+            .rounded(px(6.))
             .cursor_pointer()
             .hover(move |s| s.bg(hsla(hover)))
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(12.))
-                    .text_color(hsla(ui.accent))
-                    .child(if current { "\u{2713}" } else { "" }),
-            )
+            .child(div().flex_none().w(px(32.)).pt(px(1.)).child(icon(
+                mode_icon(id),
+                px(16.),
+                hsla(ui.text_dim),
+            )))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(div().child(label))
+                    .gap(px(2.))
+                    .child(div().text_size(px(13.)).child(label))
                     .child(
                         div()
-                            .text_size(px(text::META))
+                            .text_size(px(12.))
                             .text_color(hsla(ui.text_dim))
+                            .line_clamp(2)
                             .child(about),
                     ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(14.))
+                    .ml(px(8.))
+                    .pt(px(1.))
+                    .when(current, |d| {
+                        d.child(icon(Icon::Check, px(14.), hsla(ui.text)))
+                    }),
             )
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.choose_mode(id, cx);
@@ -821,31 +826,54 @@ impl AgentTab {
     /// The View Usage panel beside the model menu (§5): per group its name, each limit's name,
     /// `N% left` with a ring and `Resets …`, what the agent said of it underneath.
     fn usage_panel(&self, ui: &UiColors, cx: &App) -> AnyElement {
-        let items: Vec<AnyElement> = self
-            .usage_rows_now(cx)
-            .into_iter()
-            .map(|row| match row {
-                UsageRow::Heading(name) => heading(name, ui),
-                UsageRow::Quiet(text) => quiet(text, ui),
-                UsageRow::Text(text) => div()
-                    .px(px(8.))
-                    .py(px(4.))
-                    .text_color(hsla(ui.text_dim))
-                    .child(SharedString::from(text))
-                    .into_any_element(),
+        // A "Top …" list once (the agent's text repeats them for the week: the session's
+        // first), as a heading and up to three one-line rows (the designer's details).
+        let mut tops_seen: Vec<String> = Vec::new();
+        let mut items: Vec<AnyElement> = Vec::new();
+        for row in self.usage_rows_now(cx) {
+            match row {
+                UsageRow::Heading(name) => items.push(heading(name, ui)),
+                UsageRow::Quiet(text) => items.push(quiet(text, ui)),
+                UsageRow::Text(text) => match top_list(&text) {
+                    Some((title, list)) => {
+                        if tops_seen.contains(&title) {
+                            continue;
+                        }
+                        tops_seen.push(title.clone());
+                        items.push(heading(title, ui));
+                        items.extend(list.into_iter().map(|(name, pct)| top_row(name, pct, ui)));
+                    }
+                    None => items.push(
+                        div()
+                            .px(px(8.))
+                            .py(px(4.))
+                            .text_color(hsla(ui.text_dim))
+                            .child(SharedString::from(text))
+                            .into_any_element(),
+                    ),
+                },
                 UsageRow::Limit {
                     name,
                     left_pct,
                     resets,
                     note,
-                } => self.limit_row(name, left_pct, resets, note, ui),
-            })
-            .collect();
+                } => items.push(self.limit_row(name, left_pct, resets, note, ui)),
+            }
+        }
         let panel = crate::overlay_panel::shell(ui, USAGE_WIDTH)
             .p(px(4.))
             .gap(px(0.))
             .occlude()
-            .children(items);
+            .child(
+                div()
+                    .id("agent-usage")
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .max_h(px(USAGE_MAX_H))
+                    .overflow_y_scroll()
+                    .children(items),
+            );
         self.marked("usage", div().child(panel)).into_any_element()
     }
 
@@ -865,11 +893,14 @@ impl AgentTab {
                 .text_color(hsla(color))
                 .child(SharedString::from(t))
         };
-        let (dim, track, arc) = (ui.text_dim, ui.panel_border, ui.accent);
+        // The designer's details: the name and `N% left`, a full-width bar (the waiting colour at
+        // 10 % left or less), `Resets …` under it.
+        let dim = ui.text_dim;
         let top = div()
             .flex()
             .items_center()
             .gap(px(8.))
+            .text_size(px(13.))
             .child(
                 div()
                     .flex_1()
@@ -882,20 +913,33 @@ impl AgentTab {
             .children(left_pct.map(|left| {
                 div()
                     .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
                     .text_color(hsla(dim))
                     .child(SharedString::from(format!("{left}% left")))
-                    .child(ring(left, track, arc))
             }));
+        let bar = left_pct.map(|left| {
+            let fill = if left <= 10 { ui.ring_waiting } else { dim };
+            div()
+                .w_full()
+                .h(px(4.))
+                .my(px(4.))
+                .rounded(px(2.))
+                .bg(hsla(ui.panel_border))
+                .child(
+                    div()
+                        .h_full()
+                        .w(gpui::relative(f32::from(left.min(100)) / 100.))
+                        .rounded(px(2.))
+                        .bg(hsla(fill)),
+                )
+        });
         let row = div()
             .px(px(8.))
-            .py(px(4.))
+            .py(px(6.))
             .flex()
             .flex_col()
             .child(top)
-            .children(resets.map(|t| small(t, ui.text_faint)))
+            .children(bar)
+            .children(resets.map(|t| small(t, dim)))
             .children(note.map(|t| small(t, ui.ring_waiting)));
         self.marked_row(format!("Usage \u{25b8} {name}"), row)
             .into_any_element()
@@ -922,7 +966,14 @@ impl AgentTab {
         else {
             return div().into_any_element();
         };
+        use crate::icons::{Icon, icon};
         let (ix, hover) = (*ix, ui.panel_hover);
+        let group = SharedString::from(format!("box-model-row-{i}"));
+        // "Default (recommended)" reads "Default" with "recommended" quiet beside it.
+        let (shown, aside) = match label.strip_suffix(" (recommended)") {
+            Some(base) => (base.to_string(), Some("recommended")),
+            None => (label.clone(), None),
+        };
         let name = div()
             .id(("box-model-pick", i))
             .flex_1()
@@ -935,37 +986,38 @@ impl AgentTab {
             .cursor_pointer()
             .child(
                 div()
-                    .flex_none()
-                    .w(px(12.))
-                    .text_color(hsla(ui.accent))
-                    .child(if *current { "\u{2713}" } else { "" }),
-            )
-            .child(
-                div()
-                    .flex_1()
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .child(SharedString::from(label.clone())),
+                    .child(SharedString::from(shown)),
             )
+            .children(aside.map(|a| div().flex_none().text_color(hsla(ui.text_dim)).child(a)))
+            .child(div().flex_1())
             .children(effort.as_deref().map(|level| {
                 div()
                     .flex_none()
                     .text_color(hsla(ui.text_dim))
                     .child(SharedString::from(effort_word(level)))
             }))
+            .child(div().flex_none().w(px(14.)).when(*current, |d| {
+                d.child(icon(Icon::Check, px(14.), hsla(ui.text)))
+            }))
             .on_click(cx.listener(move |this, _, window, cx| this.pick_model(ix, window, cx)));
         let more = div()
             .id(("box-model-more", i))
             .flex_none()
             .h_full()
-            .px(px(8.))
+            .px(px(6.))
             .flex()
             .items_center()
-            .text_color(hsla(ui.text_dim))
             .cursor_pointer()
-            .child("\u{25b8}")
+            .child(icon(Icon::ChevronRight, px(14.), hsla(ui.text_dim)))
+            // Only seen on the hovered row and the current one (the designer's details); still
+            // there to press on the others.
+            .when(!*current, |d| {
+                d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.))
+            })
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.open_menu(
                     BoxMenu::Model {
@@ -977,6 +1029,7 @@ impl AgentTab {
             }));
         let row = div()
             .id(("box-model", i))
+            .group(group.clone())
             .h(px(ROW_H))
             .flex()
             .items_center()
@@ -1014,13 +1067,6 @@ impl AgentTab {
             .hover(move |s| s.bg(hsla(hover)))
             .child(
                 div()
-                    .flex_none()
-                    .w(px(12.))
-                    .text_color(hsla(ui.accent))
-                    .child(if check { "\u{2713}" } else { "" }),
-            )
-            .child(
-                div()
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
@@ -1028,13 +1074,20 @@ impl AgentTab {
                     .text_ellipsis_start()
                     .child(SharedString::from(label.clone())),
             )
+            // The check on the right, in the text colour (the designer's details).
+            .when(check, |d| {
+                d.child(crate::icons::icon(
+                    crate::icons::Icon::Check,
+                    px(14.),
+                    hsla(ui.text),
+                ))
+            })
             .when(more, |d| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .text_color(hsla(ui.text_dim))
-                        .child("\u{25b8}"),
-                )
+                d.child(crate::icons::icon(
+                    crate::icons::Icon::ChevronRight,
+                    px(14.),
+                    hsla(ui.text_dim),
+                ))
             })
             .on_click(cx.listener(move |this, _, window, cx| pick(this, window, cx)));
         // A row beside the menu (This Computer's, an effort) is probed apart from the menu's own.
@@ -1044,6 +1097,28 @@ impl AgentTab {
             _ => label,
         };
         self.marked_row(probe, row).into_any_element()
+    }
+
+    /// The model menu's last row: the gauge, "Usage", a chevron; it opens the usage view.
+    fn usage_menu_row(&self, i: usize, ui: &UiColors, cx: &mut Context<Self>) -> AnyElement {
+        use crate::icons::{Icon, icon};
+        let hover = ui.panel_hover;
+        let row = div()
+            .id(("box-model", i))
+            .h(px(ROW_H))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .rounded(px(ROW_RADIUS))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hsla(hover)))
+            .child(icon(Icon::Gauge, px(14.), hsla(ui.text_dim)))
+            .child(div().flex_1().child(VIEW_USAGE))
+            .child(icon(Icon::ChevronRight, px(14.), hsla(ui.text_dim)))
+            .on_click(cx.listener(|this, _, _, cx| this.open_usage(cx)));
+        self.marked_row(VIEW_USAGE.to_string(), row)
+            .into_any_element()
     }
 
     /// `el`, and under `ui-shots` a probe that keeps where it was laid out by its `label`.
@@ -1072,18 +1147,56 @@ impl AgentTab {
     }
 }
 
-/// A menu's section heading.
+/// A menu's section heading: 24 tall, quiet (the designer's details).
 fn heading(text: String, ui: &UiColors) -> AnyElement {
     div()
+        .h(px(24.))
         .px(px(8.))
-        .pt(px(6.))
-        .pb(px(2.))
+        .flex()
+        .items_center()
         .text_size(px(text::META))
-        .text_color(hsla(ui.text_faint))
+        .text_color(hsla(ui.text_dim))
         .overflow_hidden()
         .whitespace_nowrap()
         .text_ellipsis_start()
         .child(SharedString::from(text))
+        .into_any_element()
+}
+
+/// A 1 px line between a menu's parts, 4 above and below.
+fn divider(ui: &UiColors) -> AnyElement {
+    div()
+        .h(px(1.))
+        .mx(px(4.))
+        .my(px(4.))
+        .bg(hsla(ui.panel_border))
+        .into_any_element()
+}
+
+/// One row of a usage "Top …" list: its name on one line, cut with "…", its percentage on the
+/// right.
+fn top_row(name: String, pct: String, ui: &UiColors) -> AnyElement {
+    div()
+        .h(px(24.))
+        .px(px(8.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(SharedString::from(name)),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_color(hsla(ui.text_dim))
+                .child(SharedString::from(pct)),
+        )
         .into_any_element()
 }
 
@@ -1097,47 +1210,4 @@ fn quiet(text: impl Into<SharedString>, ui: &UiColors) -> AnyElement {
         .text_color(hsla(ui.text_dim))
         .child(text.into())
         .into_any_element()
-}
-
-/// A small ring showing `left` percent: a quiet track, and over it an arc (from the top,
-/// clockwise) as long as what is left.
-fn ring(left: u8, track: Rgb, arc: Rgb) -> impl IntoElement {
-    gpui::canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            let size = f32::from(bounds.size.width.min(bounds.size.height));
-            let r = (size - RING_STROKE) / 2.0;
-            let (cx, cy) = (
-                f32::from(bounds.origin.x) + size / 2.0,
-                f32::from(bounds.origin.y) + size / 2.0,
-            );
-            let at = |angle: f32| point(px(cx + r * angle.sin()), px(cy - r * angle.cos()));
-            let radii = point(px(r), px(r));
-            let tau = std::f32::consts::TAU;
-            let circle = |color: Rgb, fraction: f32| {
-                let mut path = gpui::PathBuilder::stroke(px(RING_STROKE));
-                path.move_to(at(0.0));
-                if fraction >= 0.999 {
-                    path.arc_to(radii, px(0.0), false, true, at(tau / 2.0));
-                    path.arc_to(radii, px(0.0), false, true, at(0.0));
-                } else {
-                    let end = tau * fraction;
-                    path.arc_to(radii, px(0.0), fraction > 0.5, true, at(end));
-                }
-                (path, color)
-            };
-            let fraction = f32::from(left.min(100)) / 100.0;
-            let mut paths = vec![circle(track, 1.0)];
-            if fraction > 0.0 {
-                paths.push(circle(arc, fraction));
-            }
-            for (path, color) in paths {
-                if let Ok(path) = path.build() {
-                    window.paint_path(path, hsla(color));
-                }
-            }
-        },
-    )
-    .flex_none()
-    .size(px(RING_SIZE))
 }

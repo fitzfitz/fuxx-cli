@@ -55,11 +55,19 @@ pub enum Icon {
     Octagon,
     Eye,
     EyeOff,
+    /// The agent composer (the designer's details): the send arrow, the modes' icons and the
+    /// model menu's Usage row.
+    ArrowUp,
+    Shield,
+    FilePen,
+    ListChecks,
+    Zap,
+    Gauge,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 42] = [
+    pub const ALL: [Icon; 48] = [
         Icon::Terminal,
         Icon::Globe,
         Icon::File,
@@ -102,6 +110,12 @@ impl Icon {
         Icon::Octagon,
         Icon::Eye,
         Icon::EyeOff,
+        Icon::ArrowUp,
+        Icon::Shield,
+        Icon::FilePen,
+        Icon::ListChecks,
+        Icon::Zap,
+        Icon::Gauge,
     ];
 
     /// Its asset path.
@@ -149,12 +163,38 @@ impl Icon {
             Icon::Octagon => "icons/lucide/octagon-alert.svg",
             Icon::Eye => "icons/lucide/eye.svg",
             Icon::EyeOff => "icons/lucide/eye-off.svg",
+            Icon::ArrowUp => "icons/lucide/arrow-up.svg",
+            Icon::Shield => "icons/lucide/shield.svg",
+            Icon::FilePen => "icons/lucide/file-pen.svg",
+            Icon::ListChecks => "icons/lucide/list-checks.svg",
+            Icon::Zap => "icons/lucide/zap.svg",
+            Icon::Gauge => "icons/lucide/gauge.svg",
         }
     }
 }
 
 /// The embedded files, by asset path.
-const FILES: [(&str, &[u8]); 41] = [
+const FILES: [(&str, &[u8]); 46] = [
+    (
+        "icons/lucide/shield.svg",
+        include_bytes!("../assets/icons/lucide/shield.svg"),
+    ),
+    (
+        "icons/lucide/file-pen.svg",
+        include_bytes!("../assets/icons/lucide/file-pen.svg"),
+    ),
+    (
+        "icons/lucide/list-checks.svg",
+        include_bytes!("../assets/icons/lucide/list-checks.svg"),
+    ),
+    (
+        "icons/lucide/zap.svg",
+        include_bytes!("../assets/icons/lucide/zap.svg"),
+    ),
+    (
+        "icons/lucide/gauge.svg",
+        include_bytes!("../assets/icons/lucide/gauge.svg"),
+    ),
     (
         "icons/lucide/activity.svg",
         include_bytes!("../assets/icons/lucide/activity.svg"),

@@ -667,19 +667,18 @@ pub struct Colors {
     pub code_fill: Rgb,
     pub code_text: Rgb,
     pub code_dim: Rgb,
-    /// The agent box (M11ak): its fill and edge, its quiet chips, and a hovered one.
+    /// The agent box you type in (M11ak; the folder tab's inner box since the chores).
     pub box_fill: Rgb,
-    pub box_edge: Rgb,
-    /// The box's edge while its text has the keyboard.
-    pub box_focus: Rgb,
-    pub box_dim: Rgb,
-    pub box_hover: Rgb,
     /// The folder-tab composer (chores: as the shell tab's): its outer box and edge, its pills
     /// and a pill under the pointer (`page` is behind it: the tab's concave corner).
     pub outer: Rgb,
     pub outer_edge: Rgb,
     pub pill: Rgb,
     pub pill_hover: Rgb,
+    /// The box's controls (the designer's details): `+`, the model and mode pills and an idle
+    /// send button, a step over the box (6 %), a little more under the pointer (10 %).
+    pub control: Rgb,
+    pub control_hover: Rgb,
 }
 
 impl Colors {
@@ -719,14 +718,12 @@ impl Colors {
             // The shell composer's palette (chores: "more likely in terminal tab"): the box you
             // type in is its inner box, raised over its outer box.
             box_fill: ui.composer_inner,
-            box_edge: ui.composer_inner_edge,
-            box_focus: ui.focus_ring,
-            box_dim: fit(ui.text_dim, ui.composer_inner),
-            box_hover: ui.composer_pill_hover,
             outer: ui.composer_outer,
             outer_edge: ui.composer_edge,
             pill: ui.composer_inner,
             pill_hover: ui.composer_pill_hover,
+            control: mix(ui.composer_inner, theme.foreground, 0.06),
+            control_hover: mix(ui.composer_inner, theme.foreground, 0.10),
         }
     }
 }
@@ -1142,12 +1139,6 @@ impl AgentTab {
     #[cfg(feature = "ui-shots")]
     pub fn shot_part(&self, part: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
         self.parts.borrow().get(part).copied()
-    }
-
-    /// The colour the box's edge is drawn in now.
-    #[cfg(feature = "ui-shots")]
-    pub fn shot_box_edge(&self, window: &Window, cx: &App) -> Rgb {
-        self.box_edge(&Colors::of(&cx.global::<Appearance>().theme), window, cx)
     }
 
     /// The box's open menu.
@@ -1688,6 +1679,20 @@ impl AgentTab {
             .iter()
             .rev()
             .find(|c| matches!(c, Change::Model { .. }))
+    }
+
+    /// The mode change waiting for the turn to end, if there is one.
+    pub(crate) fn waiting_mode(&self) -> Option<&str> {
+        self.waiting.iter().rev().find_map(|c| match c {
+            Change::Mode(id) => Some(id.as_str()),
+            _ => None,
+        })
+    }
+
+    /// The mode chosen: one waiting for the turn (shown at once, your words: "Make sure I can
+    /// choose mode mid run"), else the start flag's.
+    pub(crate) fn mode_chosen(&self) -> Option<&str> {
+        self.waiting_mode().or(self.start.mode.as_deref())
     }
 
     /// The latest change waiting for the turn to end.
@@ -3925,7 +3930,7 @@ impl AgentTab {
 }
 
 impl Render for AgentTab {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let appearance = cx.global::<Appearance>();
         let theme = appearance.theme;
         let mono = appearance.font.family.clone();
@@ -4009,7 +4014,7 @@ impl Render for AgentTab {
             .children(pending)
             // An error tab (no such agent) has nothing to send to.
             .when(self.provider.is_some(), |d| {
-                d.child(self.box_area(&c, mono, window, cx))
+                d.child(self.box_area(&c, mono, cx))
             })
     }
 }
@@ -4647,7 +4652,15 @@ mod tests {
                 ("code", c.code_text, c.code_fill),
                 ("code dim", c.code_dim, c.code_fill),
                 ("todo active", c.todo_active, c.panel),
-                ("box dim", c.box_dim, c.box_fill),
+                // The composer's controls and pills (the designer's details): their words in
+                // `dim` on the control and pill fills.
+                ("dim on a control", c.dim, c.control),
+                (
+                    "text on a control under the pointer",
+                    c.text,
+                    c.control_hover,
+                ),
+                ("dim on a pill", c.dim, c.pill),
             ] {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got:.2}");

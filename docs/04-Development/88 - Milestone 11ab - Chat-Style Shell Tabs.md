@@ -590,6 +590,30 @@ Kept to the composer: the agent tab's layout and flow stay M11am's, which waits 
 - **Checks:** 2302 tests; clippy at the baseline; ui-shots 254 passed, the 5 known failures (the 71 agent scenes
   pass).
 
+### Chore: the agent box's controls and menus redesigned; the mode waits too (2026-11-21)
+
+Your words: "view usage broken, model list is ugly", "the chat is different, should have no border, the '+' and model
+picker trigger is ugly (gap) … add circle background to '+' and make the model picker to be pill, same goes the mode
+picker", "Make sure I can choose mode mid run and the next prompt will pick up my chosen mode. same goes model". The
+lead designer's details, as given:
+
+- **The box:** no border and no focus ring; the controls 8 in from its edges. `+` a 28 pt circle (`control` fill, a
+  Lucide plus); the model and mode pickers 28 pt pills (`control` fill, a chevron-down, the mode with its icon:
+  shield / file-pen / list-checks / zap); under the pointer the pill's fill steps up and its text turns full
+  (`control_hover`, readable). Send a circle with an arrow-up, the accent when there's text, quiet when empty.
+- **Menus:** headings 24 tall in the dim text; rows radius 6, the check (Lucide, text colour) on the right.
+  Model menu: the effort's chevron only on the hovered row and the current one; "Default" with "recommended" quiet
+  beside it and a line under it; the last row "Usage" with a gauge. Mode menu 300 wide: an icon column, the name,
+  its description (two lines at most), 2 pt between rows.
+- **Usage:** 300 wide, scrolls past 480; each limit its name and "N% left", a 4 pt bar (the waiting colour at 10 %
+  left or less), "Resets …" under it (the rings are gone); a "Top …" line becomes a heading and up to three rows,
+  shown once (`top_list`).
+- **The mode chosen mid-run:** the model already waited for the turn's end and went with the next prompt; the mode did
+  too, but the picker kept showing the old one until then. Now it shows the chosen one at once
+  (`mode_chosen`); scene `agent-box-mode-waits` (the picker shows Plan mid-run; the next send sets the mode before
+  the message).
+- **Checks:** 2302 tests; clippy at the baseline; ui-shots 255 passed, the 5 known failures.
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·
