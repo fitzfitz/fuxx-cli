@@ -402,6 +402,8 @@ opens a folder window, is it a good UX? I don't think so".
   `a_terminal_gets_its_folder_with_its_branch`).
 - **The folder is a plain label:** a click does nothing (opening Finder from it was the AI's call in the rework, and
   out of place in a terminal).
+- **The folder's tooltip** (your words: "on folder information, give tooltip"): its whole path as the app writes
+  folders (`~/…`), on hover. Not in a screenshot (the scenes don't hover); yours to check.
 - **Checks:** 2284 tests; clippy at the baseline; fmt; ui-shots: the 6 known display-dependent failures only.
 
 ## Related
