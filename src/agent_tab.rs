@@ -29,14 +29,15 @@ use alacritty_terminal::vte::ansi::Rgb;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    IntoElement, ListAlignment, ListState, MouseButton, Render, SharedString, Stateful,
-    Subscription, Task, WeakEntity, Window, actions, div, list, prelude::*, px, relative,
+    Animation, AnimationExt, AnyElement, App, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, FontWeight, IntoElement, ListAlignment, ListState, MouseButton, Render,
+    SharedString, Stateful, Subscription, Task, WeakEntity, Window, actions, div, list, prelude::*,
+    px, relative,
 };
 
 use crate::agent_box::{
     AREA_X, AtRow, BoxMenu, Change, PLACEHOLDER, SLASH_LIMIT, SlashRow, Step, at_rows, slash_query,
-    slash_rows, step_for, switched_notice, usage_line,
+    slash_rows, step_for, switched_notice,
 };
 use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, parse};
@@ -47,6 +48,7 @@ use crate::code_ask::{CodeRef, agent_path};
 use crate::composer::{Composer, ComposerEvent};
 use crate::diff_view::{RowKind, parse_diff};
 use crate::file_tab::{DiffRowColours, diff_row_colours};
+use crate::mark_view::{MarkClock, MarkView};
 use crate::md_preview::{self, LinkTarget};
 use crate::palette_items::FileHit;
 use crate::providers::{
@@ -54,6 +56,7 @@ use crate::providers::{
     Provider, Start, TodoState, ToolDetail, Translator,
 };
 use crate::status::Status;
+use crate::status_mark;
 use crate::terminal_view::hsla;
 use crate::theme::{Theme, UiColors, mix, readable};
 use crate::ui_tokens::{MARK_MIN, QUIET_LINE_MIN, TEXT_MIN, ensure_contrast, text};
@@ -273,16 +276,6 @@ impl ProcessEnd {
 /// resume failed (a deleted transcript, an unknown id).
 pub fn resume_failed(started: bool, resume: bool) -> bool {
     resume && !started
-}
-
-/// The status in the tab's top line.
-pub fn status_word(status: Status) -> &'static str {
-    match status {
-        Status::Working => "working",
-        Status::Waiting => "needs you",
-        Status::Done => "done",
-        Status::Idle => "idle",
-    }
 }
 
 /// A running tool's elapsed time: `4s`, `1m 05s`.
@@ -704,6 +697,9 @@ const WHITE: Rgb = Rgb {
 };
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
 
+/// The status marks' size in the tab (the top bar's pill, the tool modal's header).
+const MARK: f32 = 12.0;
+
 impl Colors {
     pub fn of(theme: &Theme) -> Colors {
         let ui: UiColors = theme.ui();
@@ -873,6 +869,12 @@ pub struct AgentTab {
     rows: Vec<Row>,
     /// Tool rows opened by a click (by tool id).
     expanded: HashSet<String>,
+    /// The top bar (spec A §C): what its animations start from (`agent_top::TopState`), its
+    /// status mark and the clock that turns it (a still one of its own until the Workspace
+    /// gives it the shared one, `use_clock`), and its width as last laid out (`agent_top::trim`).
+    top: crate::agent_top::TopState,
+    top_mark: Entity<MarkView>,
+    bar_width: Rc<Cell<f32>>,
     /// When each running tool started (for its elapsed time).
     tool_started: std::collections::HashMap<String, Instant>,
     /// Tool calls that write files and haven't finished (reported to the edit ledger).
@@ -1233,6 +1235,8 @@ impl AgentTab {
                 }
             }),
         ];
+        let clock = cx.new(|_| MarkClock { phase: 0.0 });
+        let top_mark = cx.new(|cx| MarkView::new(&clock, Status::Idle, px(MARK), BLACK, cx));
         Self {
             provider,
             provider_name,
@@ -1257,6 +1261,9 @@ impl AgentTab {
             list,
             rows: Vec::new(),
             expanded: HashSet::new(),
+            top: crate::agent_top::TopState::default(),
+            top_mark,
+            bar_width: Rc::new(Cell::new(f32::MAX)),
             tool_started: std::collections::HashMap::new(),
             open_edits: HashSet::new(),
             reasons: Reasons::default(),
@@ -3885,27 +3892,224 @@ impl AgentTab {
         }
     }
 
-    /// The pane's top line: the status, and on the right what the conversation cost and how
-    /// full its context is (§1: no longer chips by the box).
-    fn top_line(&self, c: &Colors) -> AnyElement {
-        let usage = usage_line(
-            self.conversation.cost_usd(),
-            self.conversation.context_pct(),
-        );
+    /// Turn the top bar's mark with `clock` (the Workspace's, shared by every mark on screen, so
+    /// they all turn together and only the marks redraw on its ticks).
+    pub fn use_clock(&mut self, clock: &Entity<MarkClock>, cx: &mut Context<Self>) {
+        self.top_mark = cx.new(|cx| MarkView::new(clock, Status::Idle, px(MARK), BLACK, cx));
+    }
+
+    /// The pane's top bar (spec A §C): the status pill on the left; on the right what the
+    /// conversation cost (and what its last turn added) and how full its context is, live.
+    fn top_line(&mut self, theme: &Theme, c: &Colors, cx: &mut Context<Self>) -> AnyElement {
+        use crate::agent_top::{
+            Band, METER_H, METER_W, PillMark, band, ease_out_cubic, meter_fill, pill, trim,
+        };
+        let status = self.status();
+        let stopping = self.stopping.is_some();
+        let cost = self.conversation.cost_usd();
+        let context = self.conversation.context_pct();
+        self.top.observe(status, stopping, cost, context);
+        let top = self.top.clone();
+        let now = pill(status, stopping, theme);
+        let from = top.pill_from.map(|(s, st)| pill(s, st, theme));
+        let fill_of = |p: &crate::agent_top::Pill| p.fill.unwrap_or(c.page);
+        let blend = from.map(|f| (fill_of(&f), f.word_ink));
+        let (to_fill, to_ink) = (fill_of(&now), now.word_ink);
+        let mark: AnyElement = match now.mark {
+            PillMark::Status(s) => {
+                let fill = to_fill;
+                self.top_mark.update(cx, |m, _| m.set(s, px(MARK), fill));
+                self.top_mark.clone().into_any_element()
+            }
+            PillMark::DoneCheck => {
+                let ink = now.mark_ink;
+                let slot = div()
+                    .flex_none()
+                    .size(px(MARK))
+                    .flex()
+                    .items_center()
+                    .justify_center();
+                if top.pill_from.is_some() {
+                    slot.with_animation(
+                        ("agent-pill-done", top.pill_key),
+                        Animation::new(status_mark::POP),
+                        move |slot, t| {
+                            slot.child(status_mark::done_check(
+                                ink,
+                                px(MARK * status_mark::pop_curve(t)),
+                            ))
+                        },
+                    )
+                    .into_any_element()
+                } else {
+                    slot.child(status_mark::done_check(ink, px(MARK)))
+                        .into_any_element()
+                }
+            }
+        };
+        let pill_el = div()
+            .flex_none()
+            .h(px(22.))
+            .ml(px(-8.))
+            .pl(px(8.))
+            .pr(px(10.))
+            .rounded(px(11.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .font_weight(FontWeight::MEDIUM)
+            .bg(hsla(to_fill))
+            .text_color(hsla(to_ink))
+            .child(mark)
+            .child(SharedString::from(now.word));
+        let pill_el = match blend {
+            Some((from_fill, from_ink)) => pill_el
+                .with_animation(
+                    ("agent-pill", top.pill_key),
+                    Animation::new(Duration::from_millis(200)).with_easing(ease_out_cubic),
+                    move |d, t| {
+                        d.bg(hsla(mix(from_fill, to_fill, t)))
+                            .text_color(hsla(mix(from_ink, to_ink, t)))
+                    },
+                )
+                .into_any_element(),
+            None => pill_el.into_any_element(),
+        };
+        let shown = trim(self.bar_width.get());
+        let cost_group = cost.map(|usd| {
+            let delta = top.delta.clone().filter(|_| shown.delta).map(|d| {
+                div()
+                    .text_color(hsla(c.dim))
+                    .child(SharedString::from(d))
+                    .with_animation(
+                        ("agent-delta", top.delta_key),
+                        Animation::new(Duration::from_millis(200)),
+                        |d, t| d.opacity(t),
+                    )
+            });
+            div()
+                .id("agent-cost")
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .children(delta)
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(hsla(c.text))
+                        .child(SharedString::from(format!("${usd:.2}"))),
+                )
+                .tooltip(|_, cx| {
+                    cx.new(|_| {
+                        crate::sidebar_toggle::Tip(
+                            "Conversation cost · updates when each turn ends".into(),
+                        )
+                    })
+                    .into()
+                })
+                .with_animation(
+                    "agent-cost-in",
+                    Animation::new(Duration::from_millis(200)),
+                    |d, t| d.opacity(t),
+                )
+        });
+        let context_group = context.map(|pct| {
+            let (fill, pct_ink) = match band(pct) {
+                Band::Ok => (c.meter_ok, c.dim),
+                Band::Caution => (c.meter_caution, c.pct_caution),
+                Band::Critical => (c.meter_critical, c.pct_critical),
+            };
+            let to_w = meter_fill(pct, METER_W);
+            let from_w = top.context_from.map(|p| meter_fill(p, METER_W));
+            let bar = div()
+                .absolute()
+                .left_0()
+                .top_0()
+                .h(px(METER_H))
+                .rounded(px(METER_H / 2.))
+                .bg(hsla(fill));
+            let bar = match from_w {
+                Some(from_w) => bar
+                    .with_animation(
+                        ("agent-meter", top.context_key),
+                        Animation::new(Duration::from_millis(400)).with_easing(ease_out_cubic),
+                        move |d, t| d.w(px(from_w + (to_w - from_w) * t)),
+                    )
+                    .into_any_element(),
+                None => bar.w(px(to_w)).into_any_element(),
+            };
+            let meter = shown.meter.then(|| {
+                div()
+                    .relative()
+                    .flex_none()
+                    .w(px(METER_W))
+                    .h(px(METER_H))
+                    .rounded(px(METER_H / 2.))
+                    .bg(hsla(c.meter_track))
+                    .child(bar)
+            });
+            div()
+                .id("agent-context")
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .when(shown.label, |d| {
+                    d.child(div().text_color(hsla(c.dim)).child("Context"))
+                })
+                .children(meter)
+                .child(
+                    div()
+                        .min_w(px(32.))
+                        .flex()
+                        .justify_end()
+                        .text_color(hsla(pct_ink))
+                        .child(SharedString::from(format!("{pct}%"))),
+                )
+                .tooltip(|_, cx| {
+                    cx.new(|_| {
+                        crate::sidebar_toggle::Tip(
+                            "Context window used · updates as the agent works".into(),
+                        )
+                    })
+                    .into()
+                })
+                .with_animation(
+                    "agent-context-in",
+                    Animation::new(Duration::from_millis(200)),
+                    |d, t| d.opacity(t),
+                )
+        });
+        let width = self.bar_width.clone();
+        let measure = gpui::canvas(
+            move |bounds, window, _| {
+                let w = f32::from(bounds.size.width);
+                if trim(width.replace(w)) != trim(w) {
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
         div()
+            .relative()
             .flex_none()
             .w_full()
-            .h(px(26.))
+            .h(px(32.))
             .px(px(AREA_X))
             .flex()
             .items_center()
             .text_size(px(text::META))
+            .font_features(crate::sidebar::tabular())
             .text_color(hsla(c.dim))
-            .child(SharedString::from(status_word(self.status())))
+            .child(measure)
+            .child(self.marked("status", div().flex_none().child(pill_el)))
             .child(div().flex_1())
-            .when_some(usage, |d, t| {
-                d.child(self.marked("usage", div().child(SharedString::from(t))))
+            .children(cost_group)
+            .when(cost.is_some() && context.is_some(), |d| {
+                d.child(div().w(px(16.)))
             })
+            .children(context_group.map(|g| self.marked("usage", g)))
             .into_any_element()
     }
 
@@ -4045,7 +4249,7 @@ impl Render for AgentTab {
                     }))
             })
             .text_color(hsla(c.text))
-            .child(self.top_line(&c))
+            .child(self.top_line(&theme, &c, cx))
             .child(stream)
             .children(pending)
             // An error tab (no such agent) has nothing to send to.
@@ -4347,8 +4551,6 @@ mod tests {
 
     #[test]
     fn words_and_chips() {
-        assert_eq!(status_word(Status::Waiting), "needs you");
-        assert_eq!(status_word(Status::Working), "working");
         assert_eq!(elapsed_label(Duration::from_secs(4)), "4s");
         assert_eq!(elapsed_label(Duration::from_secs(65)), "1m 05s");
         assert_eq!(lines_label(1), "1 line");

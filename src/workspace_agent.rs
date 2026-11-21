@@ -501,6 +501,9 @@ impl Workspace {
                 AgentTab::new(provider, name.clone(), start, classic, window, cx)
             }
         });
+        // Its status mark turns with every other mark on screen.
+        let clock = self.clock.clone();
+        view.update(cx, |view, cx| view.use_clock(&clock, cx));
         cx.subscribe_in(&view, window, move |this, _, event, window, cx| {
             this.on_agent_event(tab, event, window, cx)
         })

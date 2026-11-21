@@ -8,6 +8,11 @@ use crate::status::Status;
 use crate::theme::{Theme, mix};
 use crate::ui_tokens::{TEXT_MIN, ensure_contrast};
 
+/// Cubic ease-out: fast, then settling (the bar's blends and the meter's glide).
+pub fn ease_out_cubic(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
 /// The meter's size (spec A §C): 56 × 4, radius 2.
 pub const METER_W: f32 = 56.0;
 pub const METER_H: f32 = 4.0;
@@ -122,6 +127,60 @@ pub fn pill(status: Status, stopping: bool, theme: &Theme) -> Pill {
         word_ink,
         mark,
         mark_ink: quiet(fill.unwrap_or(page)),
+    }
+}
+
+/// What the bar remembers between draws to animate its changes (spec A §C): each animation is
+/// keyed by a counter of its changes, so the tab's 1 s redraw never starts one again.
+#[derive(Clone, Debug, Default)]
+pub struct TopState {
+    /// The pill's state (status, stopping) and the one before it, which its blend starts from.
+    pill_now: Option<(Status, bool)>,
+    pub pill_from: Option<(Status, bool)>,
+    pub pill_key: u64,
+    /// The cost last seen, and what the last turn added (cleared when the next starts working).
+    cost_seen: Option<f64>,
+    pub delta: Option<String>,
+    pub delta_key: u64,
+    /// The context last seen and the one before it, which the meter glides from.
+    context_now: Option<u8>,
+    pub context_from: Option<u8>,
+    pub context_key: u64,
+}
+
+impl TopState {
+    /// The tab's state now: `status`, a stop asked (`stopping`), its cost and context.
+    pub fn observe(
+        &mut self,
+        status: Status,
+        stopping: bool,
+        cost: Option<f64>,
+        context: Option<u8>,
+    ) {
+        let state = (status, stopping);
+        if self.pill_now != Some(state) {
+            if self.pill_now.is_some() {
+                self.pill_from = self.pill_now;
+                self.pill_key += 1;
+            }
+            if status == Status::Working && self.pill_now.is_none_or(|(s, _)| s != Status::Working)
+            {
+                self.delta = None;
+            }
+            self.pill_now = Some(state);
+        }
+        if cost != self.cost_seen {
+            if let Some(delta) = cost_delta(self.cost_seen, cost) {
+                self.delta = Some(delta);
+                self.delta_key += 1;
+            }
+            self.cost_seen = cost;
+        }
+        if context != self.context_now {
+            self.context_from = self.context_now;
+            self.context_now = context;
+            self.context_key += 1;
+        }
     }
 }
 
@@ -252,5 +311,51 @@ mod tests {
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got:.2}");
             }
         }
+    }
+
+    #[test]
+    fn a_turn_that_raises_the_cost_shows_what_it_added_until_the_next_starts() {
+        let mut top = TopState::default();
+        top.observe(Status::Working, false, None, None);
+        top.observe(Status::Done, false, Some(3.57), None);
+        assert_eq!(top.delta, None, "the first cost has nothing to add to");
+        top.observe(Status::Working, false, Some(3.57), None);
+        top.observe(Status::Done, false, Some(3.99), None);
+        assert_eq!(top.delta.as_deref(), Some("+$0.42"));
+        let shown = top.delta_key;
+        top.observe(Status::Done, false, Some(3.99), None);
+        assert_eq!(
+            top.delta_key, shown,
+            "nothing new: its fade isn't started again"
+        );
+        top.observe(Status::Working, false, Some(3.99), None);
+        assert_eq!(top.delta, None, "the next turn's start clears it");
+    }
+
+    #[test]
+    fn each_new_context_value_moves_the_meter_from_the_last() {
+        let mut top = TopState::default();
+        top.observe(Status::Working, false, None, Some(20));
+        let first = top.context_key;
+        assert_eq!(top.context_from, None, "the first value appears, no glide");
+        top.observe(Status::Working, false, None, Some(20));
+        assert_eq!(top.context_key, first, "the same value: no glide");
+        top.observe(Status::Working, false, None, Some(30));
+        assert_eq!(top.context_key, first + 1);
+        assert_eq!(top.context_from, Some(20));
+    }
+
+    #[test]
+    fn a_change_of_state_keys_the_pill_s_blend() {
+        let mut top = TopState::default();
+        top.observe(Status::Idle, false, None, None);
+        let k = top.pill_key;
+        top.observe(Status::Idle, false, None, None);
+        assert_eq!(top.pill_key, k);
+        top.observe(Status::Working, false, None, None);
+        assert_eq!(top.pill_key, k + 1);
+        assert_eq!(top.pill_from, Some((Status::Idle, false)));
+        top.observe(Status::Working, true, None, None);
+        assert_eq!(top.pill_key, k + 2, "a stop asked is a new state too");
     }
 }
