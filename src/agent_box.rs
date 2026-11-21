@@ -1078,7 +1078,8 @@ impl AgentTab {
                     .items_center()
                     .justify_center()
                     .rounded_full()
-                    .bg(hsla(c.control))
+                    // No fill until hovered (your words, 2026-11-22: "only show background when
+                    // hover"), as the pills and the usage button.
                     .child(crate::icons::icon(
                         crate::icons::Icon::Plus,
                         px(16.),
@@ -1148,7 +1149,6 @@ impl AgentTab {
                     .items_center()
                     .justify_center()
                     .rounded_full()
-                    .bg(hsla(c.control))
                     .child(crate::icons::icon(
                         crate::icons::Icon::Gauge,
                         px(16.),
@@ -2087,7 +2087,6 @@ fn control_pill(
         .flex()
         .items_center()
         .rounded(px(CHIP_H / 2.))
-        .bg(hsla(c.control))
         .text_size(px(13.))
         .text_color(dim)
         .children(glyph.map(|g| div().mr(px(6.)).child(icon(g, px(14.), dim))))
