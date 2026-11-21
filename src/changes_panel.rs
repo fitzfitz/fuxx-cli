@@ -382,6 +382,12 @@ impl ChangesPanel {
         }
     }
 
+    /// Whether the followed folder is in a repo: none while that's being looked up or no folder
+    /// is rooted (the strip then keeps the git tab).
+    pub(crate) fn repo_known(&self) -> Option<bool> {
+        (!self.rooting && self.root.is_some()).then_some(self.in_repo)
+    }
+
     /// The repo's top folder, when the panel shows a repo.
     pub(crate) fn repo_root(&self) -> Option<PathBuf> {
         self.root.clone().filter(|_| self.in_repo)
@@ -1073,6 +1079,22 @@ impl Workspace {
     /// on the background executor. An SSH terminal's changes aren't looked at; with no folder
     /// there is nothing to show.
     pub(crate) fn refresh_changes(&mut self, cx: &mut Context<Self>) {
+        if !self.root_changes(cx) {
+            return;
+        }
+        let now = Instant::now();
+        let changes = &mut self.right_sidebar.changes;
+        let due = due(changes.refreshed, changes.wait, now);
+        if changes.rooting || changes.refreshing || !due || !changes.in_repo {
+            return;
+        }
+        self.refresh_changes_status(now, cx);
+    }
+
+    /// The followed folder's root (whether it's a repo; whichever panel shows, so the strip
+    /// knows whether to show the git tab): a new folder is looked up (`find_root`, off the UI
+    /// thread); no folder (or an SSH terminal's) forgets it. True when the root is settled.
+    pub(crate) fn root_changes(&mut self, cx: &mut Context<Self>) -> bool {
         let folder = self.right_sidebar_folder(cx);
         let changes = &mut self.right_sidebar.changes;
         let Some((folder, false)) = folder else {
@@ -1082,7 +1104,7 @@ impl Workspace {
                 changes.rooting = false;
                 cx.notify();
             }
-            return;
+            return false;
         };
         let now = Instant::now();
         if changes.needs_root(&folder, now) {
@@ -1119,12 +1141,14 @@ impl Workspace {
                 .ok();
             })
             .detach();
-            return;
+            return false;
         }
-        let due = due(changes.refreshed, changes.wait, now);
-        if changes.rooting || changes.refreshing || !due || !changes.in_repo {
-            return;
-        }
+        true
+    }
+
+    /// `git status` for the rooted repo (`refresh_changes`, when due).
+    fn refresh_changes_status(&mut self, now: Instant, cx: &mut Context<Self>) {
+        let changes = &mut self.right_sidebar.changes;
         let Some(root) = changes.root.clone() else {
             return;
         };
@@ -1748,6 +1772,14 @@ impl Workspace {
                 )
             })
             .into_any_element()
+    }
+
+    /// The right sidebar's tabs as the strip shows them, and the panel shown (no git tab, and
+    /// Files for Changes, outside a repo). For the screenshots' checks.
+    #[cfg(feature = "ui-shots")]
+    pub(crate) fn right_panels_shown(&self) -> (Vec<Panel>, Panel) {
+        let repo = self.right_sidebar.changes.repo_known();
+        (Panel::shown(repo), self.right_sidebar.panel.shown_as(repo))
     }
 
     /// What the Changes panel shows in place of its rows, if anything: an SSH terminal's note,

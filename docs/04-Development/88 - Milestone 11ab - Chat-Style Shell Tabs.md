@@ -496,6 +496,15 @@ where the next redraw started, leaving the piece behind and pushing the prompt (
 - Tests: `a_resize_mid_redraw_leaves_no_pieces`, `two_resizes_before_the_redraw_keep_the_output`; your recorded
   drag replays to the grid as it was before it.
 
+### Chore: no git tab outside a repo (2026-11-21, on master)
+
+Your words: "hide git tab if the folder is not git". The right sidebar now works out whether the followed folder is
+in a repo whichever panel shows (the Changes panel's root lookup, `find_root`, split out as `root_changes`); once
+it's known not to be one, the strip shows Files and Activity only, and Changes chosen there shows Files. While the
+answer is on its way the tab stays (no flicker); an SSH terminal's folder is unchanged. Test
+`the_git_tab_hides_outside_a_repo`; the scene `changes-empty-norepo` now checks the two tabs and Files shown. Checks:
+2296 tests; clippy at the baseline; ui-shots the 6 known failures.
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·
