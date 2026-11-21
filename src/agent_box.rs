@@ -43,9 +43,12 @@ const AREA_BOTTOM: f32 = 20.0;
 const BOX_X: f32 = 14.0;
 const BOX_Y: f32 = 12.0;
 const BOX_GAP: f32 = 10.0;
-/// A chip: its height, inner room and corners; the gap between chips.
+/// A chip's height.
 const CHIP_H: f32 = 28.0;
-const CHIP_GAP: f32 = 6.0;
+/// A box control's icon (`+`, the gauge) and a control pill's room round its words: with no
+/// fill at rest, the room is the gap you see (6 + 6 between neighbours).
+const CONTROL_ICON: f32 = 16.0;
+const PILL_ROOM: f32 = 6.0;
 /// The box's controls' room from its sides and bottom (the designer's details).
 const CONTROL_INSET: f32 = 3.0;
 /// The send circle in the box's bottom-right notch (the designer's details): its size, its
@@ -1083,7 +1086,7 @@ impl AgentTab {
                     // hover"), as the pills and the usage button.
                     .child(crate::icons::icon(
                         crate::icons::Icon::Plus,
-                        px(16.),
+                        px(CONTROL_ICON),
                         hsla(c.dim),
                     )),
             )
@@ -1152,7 +1155,7 @@ impl AgentTab {
                     .rounded_full()
                     .child(crate::icons::icon(
                         crate::icons::Icon::Gauge,
-                        px(16.),
+                        px(CONTROL_ICON),
                         hsla(c.dim),
                     )),
             )
@@ -1347,10 +1350,12 @@ impl AgentTab {
                         .w_full()
                         .flex()
                         .items_center()
+                        // Clean with no fills (your words, 2026-11-22: "make it clean!"): `+`
+                        // under the ✦, then 12 between what shows (the buttons' and pills' own
+                        // room, no gap between them).
+                        .pl(px(BOX_X - CONTROL_INSET - (BUTTON - CONTROL_ICON) / 2.))
                         .child(attach)
-                        .child(div().w(px(CHIP_GAP)))
                         .child(model)
-                        .child(div().w(px(CHIP_GAP)))
                         .child(usage)
                         .child(div().flex_1())
                         .children(mode)
@@ -2062,8 +2067,7 @@ fn control_pill(
         .id(id)
         .flex_none()
         .h(px(CHIP_H))
-        .pl(px(10.))
-        .pr(px(8.))
+        .px(px(PILL_ROOM))
         .flex()
         .items_center()
         .rounded(px(CHIP_H / 2.))
