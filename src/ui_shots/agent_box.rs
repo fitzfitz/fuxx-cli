@@ -3565,6 +3565,7 @@ pub(super) fn agent_box_usage_limit_close() {
                     limit: "Current session".into(),
                     state,
                     resets_at: None,
+                    used_pct: None,
                 })]
             };
             let warning =
@@ -3612,6 +3613,7 @@ pub(super) fn agent_box_usage_limit_close() {
                         limit: "Current session".into(),
                         state: LimitState::Reached,
                         resets_at: Some(now_unix() + 3600),
+                        used_pct: None,
                     })],
                     cx,
                 )

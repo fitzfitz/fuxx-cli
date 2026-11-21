@@ -810,20 +810,42 @@ fn limit_name(kind: &str) -> String {
 
 fn rate_limit(v: &Value) -> Vec<Event> {
     let info = &v["rate_limit_info"];
-    let state = match info["status"].as_str() {
-        Some("allowed") => LimitState::Fine,
-        Some("allowed_warning") => LimitState::Close,
-        Some("rejected") => LimitState::Reached,
-        _ => return Vec::new(),
-    };
     let Some(kind) = info["rateLimitType"].as_str() else {
         return Vec::new();
     };
-    vec![Event::RateLimit(RateLimit {
+    let Some(first) = window_limit(kind, info) else {
+        return Vec::new();
+    };
+    // M11ap: the other windows the line carries (`unifiedWindows`), each with its own status,
+    // use and reset: Claude's usage, live while it works.
+    let others = info["unifiedWindows"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(name, _)| name.as_str() != kind)
+        .filter_map(|(name, w)| window_limit(name, w));
+    std::iter::once(first)
+        .chain(others)
+        .map(Event::RateLimit)
+        .collect()
+}
+
+/// One rate-limit window (`five_hour`, `seven_day`, …): its status, reset and use.
+fn window_limit(kind: &str, w: &Value) -> Option<RateLimit> {
+    let state = match w["status"].as_str() {
+        Some("allowed") => LimitState::Fine,
+        Some("allowed_warning") => LimitState::Close,
+        Some("rejected") => LimitState::Reached,
+        _ => return None,
+    };
+    Some(RateLimit {
         limit: limit_name(kind),
         state,
-        resets_at: info["resetsAt"].as_i64(),
-    })]
+        resets_at: w["resetsAt"].as_i64(),
+        used_pct: w["utilization"]
+            .as_f64()
+            .map(|u| (u * 100.0).round().clamp(0.0, 100.0) as u8),
+    })
 }
 
 /// A message's `content`: the text as it is, or with images a block each, then the text block
@@ -2669,19 +2691,22 @@ mod tests {
                 _ => None,
             })
             .collect();
+        // M11ap: each line's own window, then the others it carries (`unifiedWindows`), each
+        // with how much is used — live usage while Claude works, no `/usage` needed.
+        let limit = |name: &str, state, resets_at, used| RateLimit {
+            limit: String::from(name),
+            state,
+            resets_at: Some(resets_at),
+            used_pct: Some(used),
+        };
+        let (week, session) = ("Current week (all models)", "Current session");
         assert_eq!(
             limits,
             [
-                RateLimit {
-                    limit: "Current week (all models)".into(),
-                    state: LimitState::Close,
-                    resets_at: Some(1794754800)
-                },
-                RateLimit {
-                    limit: "Current session".into(),
-                    state: LimitState::Close,
-                    resets_at: Some(1794535800)
-                },
+                limit(week, LimitState::Close, 1794754800, 78),
+                limit(session, LimitState::Fine, 1794535800, 90),
+                limit(session, LimitState::Close, 1794535800, 90),
+                limit(week, LimitState::Close, 1794754800, 78),
             ]
         );
     }

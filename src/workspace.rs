@@ -929,7 +929,45 @@ impl Workspace {
                 this.notice = Some(UNANSWERED_NOTICE.into());
             }
         }
+        Self::watch_usage(cx);
         this
+    }
+
+    /// M11ap: every agent's usage read again in the background (its own `/usage`, quietly)
+    /// every `USAGE_REFRESH` while the window is seen, so the status bar's usage stays current
+    /// without anyone asking. Checked every 30 s; ends with the workspace.
+    fn watch_usage(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                let alive = this
+                    .update(cx, |_, cx| {
+                        let seen = cx
+                            .try_global::<crate::reduce_motion::WindowVisible>()
+                            .is_none_or(|w| w.visible);
+                        let now = Instant::now();
+                        let home = crate::workspace::home_dir().unwrap_or_default();
+                        for &provider in crate::providers::all() {
+                            let name = provider.info().name;
+                            let last = cx
+                                .try_global::<crate::agent_catalog::Catalogs>()
+                                .and_then(|c| c.usage_read_at(name));
+                            if provider.usage_probe().is_some()
+                                && crate::agent_catalog::refresh_due(last, now, seen)
+                            {
+                                crate::agent_catalog::load_usage(provider, home.clone(), cx);
+                            }
+                        }
+                    })
+                    .is_ok();
+                if !alive {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(30))
+                    .await;
+            }
+        })
+        .detach();
     }
 
     /// A workspace with no sessions, still restoring (so nothing is saved yet).

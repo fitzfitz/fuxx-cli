@@ -139,6 +139,8 @@ pub struct RateLimit {
     pub limit: String,
     pub state: LimitState,
     pub resets_at: Option<i64>,
+    /// How much of it is used, when the agent says (Claude's stream does: M11ap, live usage).
+    pub used_pct: Option<u8>,
 }
 
 /// What a change in the agent box changes.

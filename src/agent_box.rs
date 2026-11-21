@@ -2630,6 +2630,7 @@ mod tests {
             limit: name.into(),
             state,
             resets_at,
+            used_pct: None,
         }
     }
 
