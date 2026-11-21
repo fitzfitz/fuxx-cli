@@ -2,11 +2,19 @@
 //! the conversation's cost and its live context meter. Pure: the words, colours and sizes the
 //! bar draws with; `agent_tab::top_line` draws them.
 
+use std::time::Instant;
+
 use alacritty_terminal::vte::ansi::Rgb;
 
 use crate::status::Status;
 use crate::theme::{Theme, mix};
 use crate::ui_tokens::{TEXT_MIN, ensure_contrast};
+
+/// Whether a change made `at` is still within its animation's `duration` at `now` (else it is
+/// drawn at its end).
+pub fn animating(at: Option<Instant>, now: Instant, duration: std::time::Duration) -> bool {
+    at.is_some_and(|at| now.saturating_duration_since(at) < duration)
+}
 
 /// Cubic ease-out: fast, then settling (the bar's blends and the meter's glide).
 pub fn ease_out_cubic(t: f32) -> f32 {
@@ -139,6 +147,14 @@ pub struct TopState {
     pill_now: Option<(Status, bool)>,
     pub pill_from: Option<(Status, bool)>,
     pub pill_key: u64,
+    /// When each last changed: its animation plays only while it is new (`animating`), so a
+    /// tab shown again draws them at their ends (the review's finding 4).
+    pub pill_at: Option<Instant>,
+    pub delta_at: Option<Instant>,
+    pub context_at: Option<Instant>,
+    /// When the cost and the context first showed (their groups fade in then).
+    pub cost_shown_at: Option<Instant>,
+    pub context_shown_at: Option<Instant>,
     /// The cost last seen, and what the last turn added (cleared when the next starts working).
     cost_seen: Option<f64>,
     pub delta: Option<String>,
@@ -158,11 +174,24 @@ impl TopState {
         cost: Option<f64>,
         context: Option<u8>,
     ) {
+        self.observe_at(status, stopping, cost, context, Instant::now());
+    }
+
+    /// `observe`, the changes stamped `now`.
+    pub fn observe_at(
+        &mut self,
+        status: Status,
+        stopping: bool,
+        cost: Option<f64>,
+        context: Option<u8>,
+        now: Instant,
+    ) {
         let state = (status, stopping);
         if self.pill_now != Some(state) {
             if self.pill_now.is_some() {
                 self.pill_from = self.pill_now;
                 self.pill_key += 1;
+                self.pill_at = Some(now);
             }
             if status == Status::Working && self.pill_now.is_none_or(|(s, _)| s != Status::Working)
             {
@@ -174,16 +203,24 @@ impl TopState {
             if cost.is_none() {
                 self.delta = None;
             }
+            if self.cost_seen.is_none() {
+                self.cost_shown_at = Some(now);
+            }
             if let Some(delta) = cost_delta(self.cost_seen, cost) {
                 self.delta = Some(delta);
                 self.delta_key += 1;
+                self.delta_at = Some(now);
             }
             self.cost_seen = cost;
         }
         if context != self.context_now {
+            if self.context_now.is_none() {
+                self.context_shown_at = Some(now);
+            }
             self.context_from = self.context_now;
             self.context_now = context;
             self.context_key += 1;
+            self.context_at = Some(now);
         }
     }
 }
@@ -373,5 +410,26 @@ mod tests {
         assert!(top.delta.is_some());
         top.observe(Status::Done, false, None, None);
         assert_eq!(top.delta, None);
+    }
+
+    /// The review's finding 4: a change's animation plays once, when it happens; drawn again
+    /// later (the tab shown again) it is drawn at its end.
+    #[test]
+    fn a_change_animates_only_while_it_is_new() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut top = TopState::default();
+        top.observe_at(Status::Idle, false, None, None, t0);
+        top.observe_at(Status::Working, false, None, Some(20), t0);
+        let ms = Duration::from_millis;
+        assert!(animating(top.pill_at, t0 + ms(100), ms(200)), "mid-blend");
+        assert!(
+            !animating(top.pill_at, t0 + ms(250), ms(200)),
+            "over: its end"
+        );
+        assert!(!animating(None, t0, ms(200)), "no change: nothing to play");
+        assert_eq!(top.context_at, Some(t0));
+        top.observe_at(Status::Working, false, None, Some(20), t0 + ms(900));
+        assert_eq!(top.context_at, Some(t0), "the same value: no new glide");
     }
 }

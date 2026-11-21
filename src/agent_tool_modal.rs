@@ -16,8 +16,8 @@ pub struct ToolModal {
     /// open (the header's check pops once, keyed by it).
     was_running: Option<bool>,
     pub finished: u64,
-    /// The body's height to scroll, at the last draw (output growing keeps it at the bottom).
-    pub last_max: f32,
+    /// The body's height to scroll at its last measurement (none before its first layout).
+    last_max: Option<f32>,
 }
 
 impl ToolModal {
@@ -28,8 +28,31 @@ impl ToolModal {
             follow: true,
             was_running: None,
             finished: 0,
-            last_max: 0.0,
+            last_max: None,
         }
+    }
+
+    /// The body measured at a draw (`laid_out`: it has been; scrolled to `offset`, of `max`):
+    /// whether to scroll it to the bottom now. The first layout only decides whether it follows
+    /// (a body all in view does; a long one opens at its top); after that it follows its growth
+    /// while it was near the bottom (`follows`).
+    pub fn measured(&mut self, laid_out: bool, offset: f32, max: f32) -> bool {
+        if !laid_out {
+            return false;
+        }
+        let scroll = match self.last_max {
+            None => {
+                self.follow = near_bottom(offset, max);
+                false
+            }
+            Some(last) => {
+                let grew = max > last + 0.5;
+                self.follow = follows(self.follow, grew, near_bottom(offset, last));
+                self.follow && grew
+            }
+        };
+        self.last_max = Some(max);
+        scroll
     }
 
     /// The shown tool is `running` at this draw: whether it just finished (it ran at the last).
@@ -46,7 +69,7 @@ impl ToolModal {
     pub fn switched(&mut self) {
         self.follow = true;
         self.was_running = None;
-        self.last_max = 0.0;
+        self.last_max = None;
     }
 
     /// The tool on screen.
@@ -327,5 +350,31 @@ mod tests {
         assert!(!m.saw(false), "only once");
         let mut done = open(&["b"]);
         assert!(!done.saw(false), "opened finished: no pop");
+    }
+
+    /// The review's finding 3: a long tool opens at its top. The body's first measurements
+    /// (before it is laid out, then its first layout) are not growth; it follows the bottom
+    /// only from there, while near it.
+    #[test]
+    fn a_long_tool_opens_at_its_top_and_follows_only_from_the_bottom() {
+        let mut m = open(&["a"]);
+        assert!(!m.measured(false, 0.0, 0.0), "not laid out yet: nothing");
+        assert!(
+            !m.measured(true, 0.0, 800.0),
+            "first layout: no jump to the bottom"
+        );
+        assert!(!m.follow, "at the top of a long body: not following");
+        assert!(!m.measured(true, 0.0, 900.0), "it grows: still at the top");
+        // Scrolled to the bottom, it follows the growth.
+        assert!(!m.measured(true, -900.0, 900.0));
+        assert!(
+            m.measured(true, -900.0, 950.0),
+            "grew while at the bottom: follow"
+        );
+        // A short body (all in view) follows from the start.
+        let mut short = open(&["b"]);
+        assert!(!short.measured(true, 0.0, 10.0));
+        assert!(short.follow);
+        assert!(short.measured(true, 0.0, 60.0));
     }
 }

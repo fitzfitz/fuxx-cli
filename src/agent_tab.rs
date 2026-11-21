@@ -911,8 +911,12 @@ pub struct AgentTab {
     /// next draw (a click or an action has no window: `render` does it).
     modal: Option<ToolModal>,
     modals_opened: u64,
-    /// How many times the conversation was cleared (`/clear`): keys the emptied chat's fade.
+    /// How many times the conversation was cleared (`/clear`), and when last: keys the emptied
+    /// chat's fade, which plays only while the clear is new.
     cleared: u64,
+    cleared_at: Option<Instant>,
+    /// When the modal last opened: its open animation plays only then.
+    modal_opened_at: Option<Instant>,
     modal_focus: FocusHandle,
     pub(crate) modal_scroll: gpui::ScrollHandle,
     refocus: Option<Refocus>,
@@ -991,8 +995,13 @@ pub struct AgentTab {
 impl EventEmitter<AgentTabEvent> for AgentTab {}
 
 impl Focusable for AgentTab {
-    /// The composer: the tab takes the keyboard there.
+    /// The composer: the tab takes the keyboard there — or the tool modal while it is open, so
+    /// a Workspace giving the tab the keyboard back (after the palette, a tab switch) never
+    /// puts Esc in the box, where it stops the agent (the review's finding 2).
     fn focus_handle(&self, cx: &App) -> FocusHandle {
+        if self.modal.is_some() {
+            return self.modal_focus.clone();
+        }
         self.composer.read(cx).focus_handle(cx)
     }
 }
@@ -1334,6 +1343,8 @@ impl AgentTab {
             modal: None,
             modals_opened: 0,
             cleared: 0,
+            cleared_at: None,
+            modal_opened_at: None,
             modal_focus: cx.focus_handle(),
             modal_scroll: gpui::ScrollHandle::new(),
             refocus: None,
@@ -1997,6 +2008,7 @@ impl AgentTab {
                 Event::Cleared => {
                     self.tool_started.clear();
                     self.cleared += 1;
+                    self.cleared_at = Some(Instant::now());
                 }
                 Event::Catalog(catalog) => {
                     self.catalog_pending = false;
@@ -2474,7 +2486,10 @@ impl AgentTab {
                 self.submit(text.clone(), composer, cx);
             }
             ComposerEvent::Stop => {
-                if self.menu.is_some() {
+                // The modal open with the box focused anyway: Esc backs out of it, never stops.
+                if self.modal.is_some() {
+                    self.back_out(cx);
+                } else if self.menu.is_some() {
                     self.close_menu(cx);
                 } else if self.at.take().is_some() {
                     cx.notify();
@@ -2958,6 +2973,7 @@ impl AgentTab {
             return;
         }
         self.modals_opened += 1;
+        self.modal_opened_at = Some(Instant::now());
         self.modal = Some(ToolModal::new(vec![id], self.modals_opened));
         self.modal_scroll = gpui::ScrollHandle::new();
         self.refocus = Some(Refocus::Modal);
@@ -4288,7 +4304,7 @@ impl AgentTab {
     /// in one scroll. It holds the keyboard (key context `AgentToolModal`: Esc, ↑, ↓).
     fn modal_layer(&mut self, look: &Rc<Look>, cx: &mut Context<Self>) -> AnyElement {
         use crate::agent_tool_modal::{
-            Right, follows, index_of, modal_width, near_bottom, parent_of as parent_id, right_of,
+            Right, index_of, modal_width, parent_of as parent_id, right_of,
         };
         let c = look.c;
         let items = self.conversation.items();
@@ -4315,15 +4331,16 @@ impl AgentTab {
         };
         modal.saw(*running);
         let (opened, finished, in_step) = (modal.opened, modal.finished, modal.stack.len() > 1);
+        // Its open animation plays when it opens, not each time the tab is shown again.
+        let fresh =
+            crate::agent_top::animating(self.modal_opened_at, look.now, Duration::from_millis(180));
         // Output growing keeps the body at its bottom while it follows (spec A §B).
         let (offset, max) = (
             f32::from(self.modal_scroll.offset().y),
             f32::from(self.modal_scroll.max_offset().y),
         );
-        let grew = max > modal.last_max + 0.5;
-        modal.follow = follows(modal.follow, grew, near_bottom(offset, modal.last_max));
-        modal.last_max = max;
-        if modal.follow && grew {
+        let laid_out = self.modal_scroll.bounds().size.height > px(0.);
+        if modal.measured(laid_out, offset, max) {
             self.modal_scroll.scroll_to_bottom();
         }
         let parent_name = parent_id(&items[ix])
@@ -4461,21 +4478,30 @@ impl AgentTab {
                     .text_color(hsla(c.tool_name))
                     .child(SharedString::from(name.clone())),
             )
+            // One line: "Task › " (in a step) and the summary, which truncates.
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.))
-                    .truncate()
+                    .flex()
+                    .items_center()
                     .text_color(hsla(c.panel_text))
                     .when_some(parent_name.filter(|_| in_step), |d, p| {
                         d.child(
                             div()
                                 .flex_none()
+                                .whitespace_nowrap()
                                 .text_color(hsla(c.panel_dim))
                                 .child(SharedString::from(format!("{p} › "))),
                         )
                     })
-                    .child(SharedString::from(summary.clone())),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .child(SharedString::from(summary.clone())),
+                    ),
             )
             .when_some(steps, |d, s| {
                 d.child(
@@ -4629,8 +4655,8 @@ impl AgentTab {
             .child(header)
             .child(body)
             .with_animation(
-                ("agent-modal-open", opened),
-                Animation::new(Duration::from_millis(180))
+                ("agent-modal-open", opened * 2 + u64::from(fresh)),
+                Animation::new(Duration::from_millis(if fresh { 180 } else { 1 }))
                     .with_easing(crate::agent_top::ease_out_cubic),
                 |d, t| d.opacity(t).mt(px(8. * (1. - t))),
             );
@@ -4654,13 +4680,17 @@ impl AgentTab {
             .flex()
             .flex_col()
             .items_center()
+            // Nothing under the scrim is pressed, hovered or scrolled (the review's finding 1:
+            // a click over Stop must close the modal and stop nothing).
+            .occlude()
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
                 close_view.update(cx, |this, cx| this.close_modal(cx)).ok();
             })
             .child(panel)
             .with_animation(
-                ("agent-modal-scrim", opened),
-                Animation::new(Duration::from_millis(140))
+                ("agent-modal-scrim", opened * 2 + u64::from(fresh)),
+                Animation::new(Duration::from_millis(if fresh { 140 } else { 1 }))
                     .with_easing(crate::agent_top::ease_out_cubic),
                 move |d, t| {
                     d.bg(gpui::Hsla {
@@ -4687,8 +4717,11 @@ impl AgentTab {
     /// conversation cost (and what its last turn added) and how full its context is, live.
     fn top_line(&mut self, theme: &Theme, c: &Colors, cx: &mut Context<Self>) -> AnyElement {
         use crate::agent_top::{
-            Band, METER_H, METER_W, PillMark, band, ease_out_cubic, meter_fill, pill, trim,
+            Band, METER_H, METER_W, PillMark, animating, band, ease_out_cubic, meter_fill, pill,
+            trim,
         };
+        let clock_now = Instant::now();
+        let ms = Duration::from_millis;
         let status = self.status();
         let stopping = self.stopping.is_some();
         let cost = self.conversation.cost_usd();
@@ -4698,7 +4731,10 @@ impl AgentTab {
         let now = pill(status, stopping, theme);
         let from = top.pill_from.map(|(s, st)| pill(s, st, theme));
         let fill_of = |p: &crate::agent_top::Pill| p.fill.unwrap_or(c.page);
-        let blend = from.map(|f| (fill_of(&f), f.word_ink));
+        // Each change plays its animation once, while it is new (the review's finding 4).
+        let blend = from
+            .filter(|_| animating(self.top.pill_at, clock_now, ms(200)))
+            .map(|f| (fill_of(&f), f.word_ink));
         let (to_fill, to_ink) = (fill_of(&now), now.word_ink);
         let mark: AnyElement = match now.mark {
             PillMark::Status(s) => {
@@ -4714,7 +4750,7 @@ impl AgentTab {
                     .flex()
                     .items_center()
                     .justify_center();
-                if top.pill_from.is_some() {
+                if animating(top.pill_at, clock_now, status_mark::POP) {
                     slot.with_animation(
                         ("agent-pill-done", top.pill_key),
                         Animation::new(status_mark::POP),
@@ -4762,16 +4798,21 @@ impl AgentTab {
         };
         let shown = trim(self.bar_width.get());
         let cost_group = cost.map(|usd| {
+            let fresh = animating(top.delta_at, clock_now, ms(200));
             let delta = top.delta.clone().filter(|_| shown.delta).map(|d| {
-                div()
-                    .text_color(hsla(c.dim))
-                    .child(SharedString::from(d))
-                    .with_animation(
+                let el = div().text_color(hsla(c.dim)).child(SharedString::from(d));
+                if fresh {
+                    el.with_animation(
                         ("agent-delta", top.delta_key),
-                        Animation::new(Duration::from_millis(200)),
+                        Animation::new(ms(200)),
                         |d, t| d.opacity(t),
                     )
+                    .into_any_element()
+                } else {
+                    el.into_any_element()
+                }
             });
+            let appearing = animating(top.cost_shown_at, clock_now, ms(200));
             div()
                 .id("agent-cost")
                 .flex()
@@ -4793,8 +4834,8 @@ impl AgentTab {
                     .into()
                 })
                 .with_animation(
-                    "agent-cost-in",
-                    Animation::new(Duration::from_millis(200)),
+                    ("agent-cost-in", u64::from(appearing)),
+                    Animation::new(ms(if appearing { 200 } else { 1 })),
                     |d, t| d.opacity(t),
                 )
         });
@@ -4805,7 +4846,11 @@ impl AgentTab {
                 Band::Critical => (c.meter_critical, c.pct_critical),
             };
             let to_w = meter_fill(pct, METER_W);
-            let from_w = top.context_from.map(|p| meter_fill(p, METER_W));
+            let from_w = top
+                .context_from
+                .filter(|_| animating(top.context_at, clock_now, ms(400)))
+                .map(|p| meter_fill(p, METER_W));
+            let appearing = animating(top.context_shown_at, clock_now, ms(200));
             let bar = div()
                 .absolute()
                 .left_0()
@@ -4859,8 +4904,8 @@ impl AgentTab {
                     .into()
                 })
                 .with_animation(
-                    "agent-context-in",
-                    Animation::new(Duration::from_millis(200)),
+                    ("agent-context-in", u64::from(appearing)),
+                    Animation::new(ms(if appearing { 200 } else { 1 })),
                     |d, t| d.opacity(t),
                 )
         });
@@ -5069,10 +5114,13 @@ impl Render for AgentTab {
         // The keyboard moves where a click or an action asked (they have no window).
         match self.refocus.take() {
             Some(Refocus::Modal) => window.focus(&self.modal_focus, cx),
-            Some(Refocus::Box) => {
+            // Back to the box only if the modal had the keyboard: a modal closed because its tool
+            // went (a restart) while you type elsewhere takes nothing from you.
+            Some(Refocus::Box) if self.modal_focus.is_focused(window) => {
                 let to = self.composer.read(cx).focus_handle(cx);
                 window.focus(&to, cx);
             }
+            Some(Refocus::Box) => {}
             None => {}
         }
         let modal = self.modal.is_some().then(|| self.modal_layer(&look, cx));
@@ -5098,25 +5146,31 @@ impl Render for AgentTab {
             })
             .text_color(hsla(c.text))
             .child(self.top_line(&theme, &c, cx))
-            .child(if self.cleared > 0 {
-                // After `/clear` the emptied chat fades in: it reads as cleared, not swapped.
-                div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .child(stream)
-                    .with_animation(
-                        ("agent-cleared", self.cleared),
-                        Animation::new(Duration::from_millis(220))
-                            .with_easing(crate::agent_top::ease_out_cubic),
-                        |d, t| d.opacity(t),
-                    )
-                    .into_any_element()
-            } else {
-                stream
-            })
+            .child(
+                if crate::agent_top::animating(
+                    self.cleared_at,
+                    Instant::now(),
+                    Duration::from_millis(220),
+                ) {
+                    // After `/clear` the emptied chat fades in: it reads as cleared, not swapped.
+                    div()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .child(stream)
+                        .with_animation(
+                            ("agent-cleared", self.cleared),
+                            Animation::new(Duration::from_millis(220))
+                                .with_easing(crate::agent_top::ease_out_cubic),
+                            |d, t| d.opacity(t),
+                        )
+                        .into_any_element()
+                } else {
+                    stream
+                },
+            )
             .children(pending)
             // An error tab (no such agent) has nothing to send to.
             .when(self.provider.is_some(), |d| {

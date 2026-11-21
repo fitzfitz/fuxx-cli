@@ -179,6 +179,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: TAB,
     },
     Scene {
+        name: "agent-tab-modal-guard",
+        run: agent_tab_modal_guard,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: TAB,
+    },
+    Scene {
         name: "agent-tab-bar",
         run: agent_tab_bar,
         themes: Themes::Both,
@@ -669,6 +677,87 @@ pub(super) fn agent_tab_modal() {
             cx.read(|cx| tab.read(cx).shot_open(&id)),
             "{n}: the modal shows it"
         );
+    });
+}
+
+/// The review's finding 1 and 2: with the modal open over a working tab, nothing under it is
+/// pressed — a click on the dim area over Stop closes the modal and leaves the agent working,
+/// one over another tool's row doesn't open that tool — and Esc never stops the agent, even
+/// once the tab is focused again (as the Workspace does after a palette or a tab switch).
+pub(super) fn agent_tab_modal_guard() {
+    scene("agent-tab-modal-guard", |n, cx, window, tab| {
+        use gpui::{Modifiers, point};
+        feed(cx, tab, |t, cx| t.send("List the folder".into(), cx));
+        let bash = |id: &str, cmd: &str| Event::ToolStarted {
+            id: id.into(),
+            name: "Bash".into(),
+            summary: cmd.into(),
+            parent: None,
+            detail: Some(crate::providers::ToolDetail::Command(cmd.into())),
+            writes: Vec::new(),
+            texts: Vec::new(),
+        };
+        let done = |id: &str| Event::ToolFinished {
+            id: id.into(),
+            ok: true,
+            summary: "ok".into(),
+            output: Some("a\nb".into()),
+        };
+        play(
+            cx,
+            tab,
+            vec![bash("b1", "ls"), done("b1"), bash("b2", "pwd"), done("b2")],
+        );
+        let working = |cx: &mut VisualTestAppContext| {
+            cx.read(|cx| tab.read(cx).shot_stop_label()) == Some("■ Stop  esc")
+        };
+        assert!(working(cx), "{n}: it works");
+        let open = |cx: &mut VisualTestAppContext| {
+            feed(cx, tab, |t, cx| t.shot_open_tool(1, cx));
+            let _ = frame_fresh(cx, window);
+            assert!(cx.read(|cx| tab.read(cx).shot_open("b1")), "{n}: open");
+        };
+        // The dim area over Stop.
+        open(cx);
+        let stop = cx
+            .read(|cx| tab.read(cx).shot_part("send"))
+            .expect("the Stop button");
+        cx.simulate_click(window, stop.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert!(!cx.read(|cx| tab.read(cx).shot_open("b1")), "{n}: closed");
+        assert!(working(cx), "{n}: the click didn't reach Stop");
+        // Closed, the keyboard is back in the box (the modal had it).
+        let _ = frame_fresh(cx, window);
+        let in_box = cx.update(|cx| {
+            let composer = tab.read(cx).shot_composer().read(cx).focus_handle(cx);
+            window
+                .update(cx, |_, window, _| composer.is_focused(window))
+                .unwrap_or(false)
+        });
+        assert!(in_box, "{n}: the box has the keyboard again");
+        // The dim area over the second tool's row (rows from 48: the bar, a 16 gap, ~30 each).
+        open(cx);
+        cx.simulate_click(window, point(px(DIMS.0 - 12.), px(128.)), Modifiers::none());
+        cx.run_until_parked();
+        assert!(
+            !cx.read(|cx| tab.read(cx).shot_open("b2")),
+            "{n}: no other tool opened"
+        );
+        // Esc after the tab is focused again: the modal goes, the agent works on.
+        open(cx);
+        cx.update(|cx| {
+            let handle = tab.read(cx).focus_handle(cx);
+            let _ = window.update(cx, |_, window, cx| handle.focus(window, cx));
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window, "escape");
+        cx.run_until_parked();
+        assert!(
+            !cx.read(|cx| tab.read(cx).shot_open("b1")),
+            "{n}: Esc closed it"
+        );
+        assert!(working(cx), "{n}: Esc didn't stop the agent");
+        open(cx);
     });
 }
 
