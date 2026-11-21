@@ -339,6 +339,55 @@ icons, we use the icons that we already used".
 terminal background, held to the text floor; the chosen card shows by an accent ring on its dot and an accent edge
 on its surface.
 
+### Rework as built (2026-11-21)
+
+Branch `m11ab-rework`, 4 tasks in the session (executing-plans), one whole-branch review (Opus), one fix pass. Plan:
+[[M11ab Rework Plan - Composer and Rail]].
+
+- **`card_view.rs`:** cards keep all their command's rows; the live box runs from where the typing starts (or a
+  running command's output); `crop` (what of the typing row shows: from B's column, the right-hand part cut);
+  the composer's sizes (`COMPOSER_FRAME`, `card_dims`).
+- **The prompt's tag records where the typing starts** (`br`, `bc`: rows below the tag's row and B's column), so it
+  moves with the text: a prompt on the screen's last row with a list printed under it keeps its crop, and a prompt
+  that wraps starts the box at its second row (the review's #1 and #2).
+- **The right-hand cut** applies only right of the cursor and only while the cursor is on that row, so nothing you
+  typed is hidden once the line wraps (the review's #3).
+- **Shades** (`theme.rs`): card surface, composer outer box and edges stepped from the terminal background; the
+  **inner box is the sidebar's colour** in every theme (your call after the rework: "inner terminal chat background
+  use the background color of this [the sidebar]. We make it follow the palette").
+- **`terminal_view.rs`:** `paint_cards` paints the rail, the soft cards and the composer; `context_row` places the
+  running chip, folder and branch (Lucide `Folder`, `Branch`, `ChevronDown`) over the outer box.
+- **Checks:** 2283 tests; clippy at the baseline (14/27, 16/29); fmt; ui-shots 253 passed, the 6 known
+  display-dependent failures; a new scene `shell-cards-prompt` (a two-sided prompt: the box shows `❯ ls` only).
+
+**Rulings (the AI's):** the done dots use the theme's done green, a card whose exit wasn't reported a faint dot; the
+old chips are removed (the context row replaces them); a press over `❯` lands at the hidden prompt's column 0; a
+right-hand part counts only when it reaches the row's end (a double space typed mid-line isn't one); the review's
+unjudged items stand as built: a right prompt with a double space inside it leaves its earlier parts (M11l's rule), a
+session reattached mid-command shows the command's rows until the next prompt, the cursor jumps (no glide) when the
+crop turns on.
+
+**Deferred (minor, from the review):** a selection can't cross from the typing row to the rows under it; a copy to
+the row's end can include the hidden right prompt; a prompt shorter than 2 cells lets text run 2 cells past the box;
+the context row doesn't truncate in a narrow split; the folder shows your user name at home and nothing at `/` (not
+`~` / `/`); the running chip's peach isn't held to the text floor on the outer box; the chosen card's ring clips about
+1 pt in a split pane; the crop's painting has no unit test of its own; a prompt redraw may flash the full prompt for
+one frame.
+
+### On-screen checklist for the rework (yours)
+
+With `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`, a new zsh tab with your Powerlevel10k prompt:
+
+1. A new tab: the composer at the bottom: folder ▾ and branch ▾ in the top row, the inner box in the sidebar's
+   colour with `❯ Type a command`; neither side of your prompt shows.
+2. Type `ls`: `❯ ls`; Return: a soft card with a green dot on the rail; `false`: a red dot and `exit 1`.
+3. Type a long command until it wraps: all of it shows, nothing cut on the right.
+4. Tab-complete at a prompt on the bottom row (a list under it): the prompt stays left out.
+5. Make the window narrow so the prompt wraps: the box shows only your typing row.
+6. `ping localhost`: the box grows, only output inside it, the peach chip ticking in the context row; ⌃C: a card.
+7. Click the branch ▾: the branch switcher; the folder ▾: Finder.
+8. Switch the theme (Latte and a dark one): the inner box follows the sidebar's colour.
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·

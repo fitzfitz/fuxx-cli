@@ -95,6 +95,10 @@ pub struct Tag {
     pub t0: Option<u64>,
     /// How long it ran, milliseconds (`ms`, set at D by the tagger that saw its C).
     pub ms: Option<u64>,
+    /// Where the typing starts, set at B: rows below the tag's row (a wrapped prompt puts B a
+    /// row down) and the column (`br`, `bc`; M11ab rework: it moves with the text, unlike the
+    /// tagger's cursor point).
+    pub input: Option<(u8, u16)>,
 }
 
 /// The tag as a hyperlink: `fuxx-block:?v=1&s=…&p=…[&c=…][&o=…][&x=…][&cmd=…][&t=1][&t0=…][&ms=…]`, bytes
@@ -133,6 +137,9 @@ pub fn encode(tag: &Tag) -> Hyperlink {
     if let Some(ms) = tag.ms {
         let _ = write!(uri, "&ms={ms}");
     }
+    if let Some((rows, col)) = tag.input {
+        let _ = write!(uri, "&br={rows}&bc={col}");
+    }
     Hyperlink::new(Some(&tag.id), uri)
 }
 
@@ -152,7 +159,9 @@ pub fn decode(link: &Hyperlink) -> Option<Tag> {
         truncated: false,
         t0: None,
         ms: None,
+        input: None,
     };
+    let (mut br, mut bc) = (None, None);
     let mut state = None;
     for pair in query.split('&') {
         let (key, value) = pair.split_once('=')?;
@@ -170,12 +179,15 @@ pub fn decode(link: &Hyperlink) -> Option<Tag> {
             "t" => tag.truncated = value == "1",
             "t0" => tag.t0 = Some(value.parse().ok()?),
             "ms" => tag.ms = Some(value.parse().ok()?),
+            "br" => br = Some(value.parse().ok()?),
+            "bc" => bc = Some(value.parse().ok()?),
             _ => {}
         }
     }
     if !version {
         return None;
     }
+    tag.input = br.zip(bc);
     tag.state = state?;
     Some(tag)
 }
@@ -424,6 +436,10 @@ impl Tagger {
                     truncated: false,
                     t0: None,
                     ms: None,
+                    input: Some((
+                        (cursor.line.0 - row.0).clamp(0, 255) as u8,
+                        cursor.column.0.min(usize::from(u16::MAX)) as u16,
+                    )),
                 };
                 write_tag(term, row, &tag);
                 self.state = ShellState::Prompt {
@@ -620,10 +636,12 @@ pub fn list<L>(term: &Term<L>) -> Vec<Block> {
 pub enum Segment {
     Prompt {
         id: String,
-        /// Its tag's row: where the typing starts (B's row).
+        /// Its tag's row (the first row of B's line).
         row: Line,
         top: Line,
         bottom: Line,
+        /// Where the typing starts: its row and column (from the tag; none for an older one).
+        input: Option<(Line, usize)>,
     },
     Command(Block),
 }
@@ -653,6 +671,9 @@ pub fn segments<L>(term: &Term<L>) -> Vec<Segment> {
             segments.push(Segment::Prompt {
                 id: tag.id.clone(),
                 row: *row,
+                input: tag
+                    .input
+                    .map(|(r, c)| (*row + i32::from(r), usize::from(c))),
                 top: lines_up(grid, *row, tag.prompt_lines.into(), floor),
                 bottom: last.max(*row),
             });
@@ -1315,6 +1336,7 @@ mod tests {
             truncated: false,
             t0: None,
             ms: None,
+            input: None,
         }
     }
 
@@ -1334,6 +1356,7 @@ mod tests {
                 truncated: true,
                 t0: None,
                 ms: None,
+                input: None,
             },
         ] {
             let link = encode(&t);
@@ -2371,5 +2394,28 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["ls", "prompt", "npm test", "prompt"]);
+    }
+
+    /// Rework review #1/#2: the prompt's tag keeps where the typing starts, as rows below the
+    /// tag and a column, so it moves with the text (a wrapped prompt: one row below).
+    #[test]
+    fn the_prompt_tag_keeps_where_the_typing_starts() {
+        let mut sh = Shell::new();
+        sh.feed(A).feed(b"$ ").feed(B);
+        let (row, tag) = tags(&sh.term).pop().expect("the prompt's tag");
+        assert_eq!(tag.input, Some((0, 2)));
+        // A prompt longer than the 20 columns: B on the wrapped row.
+        sh.feed(b"\r\n")
+            .feed(A)
+            .feed(b"~/a/long/folder/name ")
+            .feed(B);
+        let (_, tag) = tags(&sh.term).pop().expect("the wrapped prompt's tag");
+        assert_eq!(tag.input, Some((1, 1)));
+        let segs = segments(&sh.term);
+        let Some(Segment::Prompt { input, row: r, .. }) = segs.last() else {
+            panic!("a prompt last")
+        };
+        assert_eq!(*input, Some((*r + 1i32, 1)));
+        let _ = row;
     }
 }

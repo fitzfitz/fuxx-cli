@@ -934,17 +934,9 @@ impl TerminalCore {
 
     /// Read the `Term` under its lock, with the clears so far (M11ab: the card view's column and
     /// the rows it paints, read in one go per frame).
-    pub fn read_term<R>(
-        &self,
-        f: impl FnOnce(&Term<Listener>, u64, Option<alacritty_terminal::index::Point>) -> R,
-    ) -> R {
+    pub fn read_term<R>(&self, f: impl FnOnce(&Term<Listener>, u64) -> R) -> R {
         let shared = self.shared.lock();
-        // Where the typing starts at the shown prompt (rework: the composer shows from there).
-        f(
-            &shared.term,
-            shared.clears.count,
-            shared.tagger.input_start(),
-        )
+        f(&shared.term, shared.clears.count)
     }
 
     /// `snapshot` with the command blocks to draw (M11l), under the same lock: the viewport
