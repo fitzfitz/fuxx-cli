@@ -401,8 +401,6 @@ pub const COMPOSER_FRAME: f32 = EDGE + CTX_ROW + 2.0 * (EDGE + INNER_PAD_Y) + OU
 
 /// A card's header line (UI text), points.
 pub const HEADER_H: f32 = 18.0;
-/// Between the command line and its output panel, points.
-pub const PANEL_GAP: f32 = 4.0;
 /// Between items, points.
 pub const CARD_GAP: f32 = 14.0;
 
@@ -513,6 +511,9 @@ pub struct CardsState {
     pub items_key: Option<(u64, usize, i32, i32, i64)>,
     /// The column's view last frame (window points, `x, y, w, h`): hit areas are cut to it.
     pub view_rect: (f32, f32, f32, f32),
+    /// The composer's top-left and width last frame (window points): its context row is
+    /// placed there (rework).
+    pub composer: Option<(f32, f32, f32)>,
 }
 
 /// Rows painted this frame that the pointer can select in (window points): the first row is
@@ -574,32 +575,6 @@ pub fn card_point(
 /// The running chip's words: `● npm test · 1m 15s` (whole seconds, M11q's `ran_label`).
 pub fn running_words(short: &str, elapsed: std::time::Duration) -> String {
     format!("\u{25cf} {short} \u{b7} {}", ran_label(elapsed))
-}
-
-/// One chip above the live box.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Chip {
-    pub words: String,
-    /// The running command's (drawn in the running colour).
-    pub running: bool,
-}
-
-/// The chips above the live box (note 88 §3; ruling 1: folder and branch, no counts): the
-/// running command first, then the folder, then the branch.
-pub fn chips(folder: Option<&str>, branch: Option<&str>, running: Option<String>) -> Vec<Chip> {
-    let running = running.map(|words| Chip {
-        words,
-        running: true,
-    });
-    let folder = folder.map(|f| Chip {
-        words: f.to_string(),
-        running: false,
-    });
-    let branch = branch.map(|b| Chip {
-        words: format!("\u{2387} {b}"),
-        running: false,
-    });
-    running.into_iter().chain(folder).chain(branch).collect()
 }
 
 /// The scroll for a column that grew from `old_total` to `total` (final review #4): scrolled up,
@@ -675,12 +650,14 @@ pub enum Draw {
         failed: bool,
     },
     Live {
-        /// The chips row's top; the box starts `CHIPS_ROW` below it.
+        /// The composer's top (its outer box; the context row, then the inner box below it).
         y: f32,
         height: f32,
         /// The rows in view, with the cursor among them (rows relative to `rows.y`).
         rows: Rows,
         cursor: Option<CursorView>,
+        /// At a prompt whose typing start is known: what of the first row to show (rework).
+        crop: Option<Crop>,
     },
 }
 
@@ -689,7 +666,6 @@ pub enum Draw {
 #[derive(Clone, Debug)]
 pub struct Panel {
     pub y: f32,
-    pub height: f32,
     pub fold: Option<String>,
     pub rows: Rows,
 }
@@ -712,6 +688,7 @@ pub fn frame<L: EventListener>(
     (view_top, view_height): (f32, f32),
     utc_offset: i64,
     cursor_shape: Option<(CursorShape, bool)>,
+    input: Option<Point>,
 ) -> CardFrame {
     state.cache.refresh(term, key);
     let grid = term.grid();
@@ -794,7 +771,6 @@ pub fn frame<L: EventListener>(
                     let shown_rows = count(s.top, s.bottom);
                     Panel {
                         y: panel_y,
-                        height: (shown_rows + usize::from(fold.is_some())) as f32 * line_h,
                         fold,
                         rows: read(s.top, rows_y, shown_rows),
                     }
@@ -826,11 +802,15 @@ pub fn frame<L: EventListener>(
                         shape,
                         blinking,
                     });
+                let cut = input
+                    .filter(|p| p.line == *top && rows.top == *top)
+                    .and_then(|p| rows.lines.first().map(|l| crop(l, Some(p.column.0))));
                 draws.push(Draw::Live {
                     y,
                     height: at.height,
                     rows,
                     cursor,
+                    crop: cut,
                 });
             }
         }
@@ -838,12 +818,6 @@ pub fn frame<L: EventListener>(
     state.items = items;
     CardFrame { draws }
 }
-
-/// The chips row above the live box (folder, branch, the running command), points.
-pub const CHIPS_ROW: f32 = 28.0;
-/// The live box's (and a card panel's) inner padding and edge, points.
-pub const BOX_PAD: f32 = 10.0;
-pub const BOX_EDGE: f32 = 1.0;
 
 /// The terminal's size in card view (note 88 §4, Settled 4): the live box's inside at its
 /// tallest, the pane less its padding (`terminal_view::inset`), the chips row, and the box's
@@ -1331,22 +1305,6 @@ mod tests {
             running_words("make", std::time::Duration::from_millis(12_400)),
             "\u{25cf} make \u{b7} 12s"
         );
-    }
-
-    #[test]
-    fn branch_chip_comes_from_the_workspace() {
-        let words = |c: Vec<Chip>| c.into_iter().map(|c| c.words).collect::<Vec<_>>();
-        assert_eq!(
-            words(chips(Some("~/code/api"), Some("main"), None)),
-            ["~/code/api", "\u{2387} main"]
-        );
-        assert_eq!(words(chips(None, None, None)), Vec::<String>::new());
-        let running = chips(Some("~"), None, Some("\u{25cf} make \u{b7} 3s".into()));
-        assert!(
-            running[0].running && running[0].words.contains("make"),
-            "running first"
-        );
-        assert_eq!(running[1].words, "~");
     }
 
     #[test]

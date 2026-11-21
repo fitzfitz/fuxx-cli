@@ -1583,7 +1583,9 @@ fn shell_cards_scene() {
             })
         };
         assert!(any(ui.block_failed), "{n}: exit 1 in the failed colour");
-        assert!(any(ui.raised), "{n}: the chips' pills");
+        // Rework: the composer's two boxes.
+        assert!(any(ui.composer_outer), "{n}: the composer's outer box");
+        assert!(any(ui.composer_inner), "{n}: the composer's inner box");
     }
 }
 
