@@ -90,9 +90,13 @@ rules; building the shared box first would mean reworking its shell side straigh
 
 ## Open questions (for the design talk)
 
-1. Is the designer's split right for you: the shell box keeps no controls row?
-2. Which add-ons do you want first beyond folder and branch (for the shell: a running-command chip in the tab)?
-3. Order against M11ad and M11am, once M11an is done.
+1. Is the designer's split right for you: the shell box keeps no controls row? **Yes** (you, 2026-11-21).
+2. Which add-ons first? **"the pills, buttons"** (you, 2026-11-21): the first version carries what the boxes have
+   today onto the shared box (the tab's pills: folder, branch, the running chip; the agent's buttons and pickers:
+   `+`, model, mode, send), nothing new.
+3. Order against M11ad and M11am? You: "I don't know". The AI's recommendation, waiting for your word: M11ad stays
+   next (background agents don't touch the box), then M11an → M11ao → M11am, so the agent tab's rework builds on
+   the finished shared box instead of redoing it.
 
 ## Related
 
