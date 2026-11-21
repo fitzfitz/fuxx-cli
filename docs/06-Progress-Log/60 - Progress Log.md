@@ -30,6 +30,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Fix: prompt pieces piling up after many resizes
+
+- **What:** a resize landing between the two pieces of a Powerlevel10k redraw left the second piece stale; it wrapped
+  in the narrower grid, moving the prompt down a row and leaving pieces behind (your tab resized 50 times or more).
+  The next redraw now lands back on the emptied prompt's row and clears the piece. Note 88 "Fix: pieces of the prompt".
+- **Checks:** 2294 tests (two new, each failing first); your shell's recorded 121-step drag replays clean.
+- **Learned:** record the real bytes and replay them through the grid: guessing the shell's redraw from its docs
+  would never have shown a redraw split in two.
+
 ### 2026-11-21 — Chore: the panel darker, the window lighter (branch `theme-dark-panel`)
 
 - **What:** your call ("It supposed to be darker in the floating panel and the window background is ligher", B):
