@@ -1003,6 +1003,19 @@ impl AgentTab {
             .rounded(px(ROW_RADIUS))
             .hover(move |s| s.bg(hsla(hover)))
             .when(efforts_of == Some(ix), move |d| d.bg(hsla(hover)))
+            // Your words (2026-11-22): hovering a model shows its efforts beside it (none, for
+            // a model without), no click.
+            .on_hover({
+                let shows = has_efforts.then_some(ix);
+                cx.listener(move |this, hovered: &bool, _, cx| {
+                    if *hovered
+                        && matches!(this.menu, Some(BoxMenu::Model { efforts_of }) if efforts_of != shows)
+                    {
+                        this.menu = Some(BoxMenu::Model { efforts_of: shows });
+                        cx.notify();
+                    }
+                })
+            })
             .child(name)
             .when(*has_efforts, |d| d.child(more));
         self.marked_row(label.clone(), row).into_any_element()

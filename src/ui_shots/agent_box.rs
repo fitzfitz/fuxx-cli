@@ -2971,6 +2971,21 @@ pub(super) fn agent_box_effort_list() {
         Lookup::Ready(model_catalog()),
         |n, cx, window, tab| {
             click_model_chip(n, cx, window, tab);
+            // Your words (2026-11-22): hovering a model that has efforts shows them beside it,
+            // no click.
+            let row = cx
+                .read(|cx| tab.read(cx).shot_menu_row("Claude Example 4"))
+                .expect("its row");
+            cx.simulate_mouse_move(window, row.center(), None, Modifiers::none());
+            cx.run_until_parked();
+            let _ = frame_fresh(cx, window);
+            assert_eq!(
+                menu(cx, tab),
+                Some(BoxMenu::Model {
+                    efforts_of: Some(1)
+                }),
+                "{n}: hovering opens its efforts"
+            );
             click_more(n, cx, window, tab, "Claude Example 4");
             assert_eq!(
                 menu(cx, tab),
