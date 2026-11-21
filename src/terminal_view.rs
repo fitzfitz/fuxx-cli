@@ -1611,7 +1611,7 @@ impl TerminalView {
     /// folder is a plain label (opening Finder from it was out of place, your call); a click on
     /// the branch opens the branch switcher. None when the box is out of view.
     fn context_row(&self, ui: &UiColors, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        use crate::card_view::CTX_ROW;
+        use crate::card_view::{CTX_ROW, EDGE, PILL_GAP, PILL_H, TAB_PAD};
         use crate::icons::{Icon, icon};
         let (composer, (ox, oy), view) = {
             let cards = self.cards.borrow();
@@ -1622,57 +1622,101 @@ impl TerminalView {
             return None;
         }
         let dim = hsla(ui.text_dim);
-        let running = self.run.started().map(|at| {
-            let short = self.run.running().unwrap_or(crate::command_name::NO_SHORT);
-            crate::card_view::running_words(short, at.elapsed())
-        });
-        let folder = self.folder.clone();
-        let item = |glyph: Icon, words: String| {
+        // A pill (the designer's details): 22 tall, 8 in, round, on `composer_inner`.
+        let pill = || {
             div()
                 .flex()
+                .flex_none()
                 .items_center()
                 .gap(px(5.0))
-                .child(icon(glyph, px(13.0), dim))
-                .child(words)
+                .h(px(PILL_H))
+                .px(px(8.0))
+                .rounded(px(PILL_H / 2.0))
+                .bg(hsla(ui.composer_inner))
         };
-        let folder_item =
-            folder.and_then(|path| {
-                let name = path.file_name()?.to_string_lossy().to_string();
-                // Its whole path on hover, as the app writes folders (`~/…`; chores: "on folder
-                // information, give tooltip").
-                let home = crate::workspace::home_dir();
-                let tip = crate::sidebar::home_relative(&path, home.as_deref());
-                Some(item(Icon::Folder, name).id("composer-folder").tooltip(
-                    move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone().into())).into() },
-                ))
-            });
-        let branch_item = self.branch.clone().map(|branch| {
-            item(Icon::Branch, branch).cursor_pointer().on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|_, _: &MouseDownEvent, window, cx| {
-                    cx.stop_propagation();
-                    window.dispatch_action(Box::new(crate::workspace::SwitchBranch), cx);
-                }),
+        // The running command first: its dot the composer's one colour.
+        let running = self.run.started().map(|at| {
+            let short = self.run.running().unwrap_or(crate::command_name::NO_SHORT);
+            let words = crate::card_view::running_words(short, at.elapsed());
+            let words = words.trim_start_matches("\u{25cf} ").to_string();
+            pill()
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(6.0))
+                        .rounded_full()
+                        .bg(hsla(ui.ring_working)),
+                )
+                .child(words)
+        });
+        let folder_item = self.folder.clone().and_then(|path| {
+            let name = path.file_name()?.to_string_lossy().to_string();
+            // Its whole path on hover, as the app writes folders (`~/…`; chores: "on folder
+            // information, give tooltip"). Its name gives way first when the row is too wide.
+            let home = crate::workspace::home_dir();
+            let tip = crate::sidebar::home_relative(&path, home.as_deref());
+            Some(
+                pill()
+                    .flex_shrink(1.0)
+                    .min_w(px(0.0))
+                    .id("composer-folder")
+                    .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone().into())).into() })
+                    .child(icon(Icon::Folder, px(13.0), dim))
+                    .child(div().min_w(px(0.0)).truncate().child(name)),
             )
         });
+        let branch_item = self.branch.clone().map(|branch| {
+            let hover = hsla(ui.composer_pill_hover);
+            let ink = hsla(ui.text);
+            pill()
+                .id("composer-branch")
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover).text_color(ink))
+                .child(icon(Icon::Branch, px(13.0), dim))
+                .child(branch)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|_, _: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        window.dispatch_action(Box::new(crate::workspace::SwitchBranch), cx);
+                    }),
+                )
+        });
+        // The row's laid-out width, for the tab painted round it next frame (`pills_w`).
+        let cards = self.cards.clone();
+        let measure = canvas(
+            move |bounds, window, _| {
+                let width = f32::from(bounds.size.width);
+                let mut state = cards.borrow_mut();
+                if (state.pills_w - width).abs() > 0.5 {
+                    state.pills_w = width;
+                    window.request_animation_frame();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+        let inset = EDGE + TAB_PAD;
         Some(
             div()
                 .absolute()
-                .left(px(x - ox))
-                .top(px(y - oy))
-                .w(px(w))
-                .h(px(CTX_ROW))
+                .left(px(x - ox + inset))
+                .top(px(y - oy + TAB_PAD))
+                .max_w(px((w - 48.0 - 2.0 * inset).max(0.0)))
+                .h(px(PILL_H))
                 .flex()
                 .items_center()
-                .gap(px(14.0))
-                .px(px(12.0))
-                .text_size(px(crate::ui_tokens::text::META))
+                .gap(px(PILL_GAP))
+                .overflow_hidden()
+                .text_size(px(12.0))
                 .text_color(dim)
-                .children(
-                    running.map(|words| div().text_color(hsla(ui.block_running)).child(words)),
-                )
+                .children(running)
                 .children(folder_item)
                 .children(branch_item)
+                .child(measure)
                 .into_any_element(),
         )
     }
@@ -3059,7 +3103,7 @@ fn paint_cards(
 ) {
     use crate::card_view::{
         CTX_ROW, CacheKey, CardHit, Draw, EDGE, HEADER_H, INNER_PAD_X, OUTER_INSET, Region,
-        SURF_PAD_TOP, SURF_PAD_X,
+        SURF_PAD_TOP, SURF_PAD_X, TAB_RISE,
     };
     let corner = px(ui_size::CARD_RADIUS);
     window.paint_quad(
@@ -3283,17 +3327,90 @@ fn paint_cards(
                     crop,
                 } => {
                     let (y, height) = (*y, *height);
-                    // The composer: the outer box (the context row is elements over it) and,
-                    // inset, the inner box with its lightest edge along the top.
-                    let outer = Bounds::new(point(left, px(y)), size(width, px(height)));
+                    // The composer, a folder tab (the designer's details): the box's top edge
+                    // `TAB_RISE` down, the pills (elements over it, `context_row`) in a tab
+                    // rising from its left; then, inset, the inner box with its lightest edge
+                    // along the top.
+                    let (outer_fill, edge_ink) =
+                        (hsla(p.ui.composer_outer), hsla(p.ui.composer_edge));
+                    let body_top = y + TAB_RISE;
+                    let body = Bounds::new(
+                        point(left, px(body_top)),
+                        size(width, px(height - TAB_RISE)),
+                    );
+                    let tab = crate::card_view::composer_tab(p.state.borrow().pills_w, w);
+                    let (r_tab, r_body, r_step) = (px(14.0), px(15.0), px(8.0));
                     window.paint_quad(gpui::quad(
-                        outer,
-                        px(16.0),
-                        hsla(p.ui.composer_outer),
+                        body,
+                        Corners {
+                            top_left: if tab.is_some() { px(0.0) } else { r_body },
+                            top_right: r_body,
+                            bottom_left: r_body,
+                            bottom_right: r_body,
+                        },
+                        outer_fill,
                         px(EDGE),
-                        hsla(p.ui.composer_edge),
+                        edge_ink,
                         gpui::BorderStyle::Solid,
                     ));
+                    if let Some(tw) = tab {
+                        let tab_right = left + px(tw);
+                        // The tab: rounded at the top, open at the bottom, its sides down past
+                        // the body's edge.
+                        window.paint_quad(gpui::quad(
+                            Bounds::new(point(left, px(y)), size(px(tw), px(TAB_RISE + EDGE))),
+                            Corners {
+                                top_left: r_tab,
+                                top_right: r_tab,
+                                ..Corners::default()
+                            },
+                            outer_fill,
+                            gpui::Edges {
+                                top: px(EDGE),
+                                left: px(EDGE),
+                                right: px(EDGE),
+                                bottom: px(0.0),
+                            },
+                            edge_ink,
+                            gpui::BorderStyle::Solid,
+                        ));
+                        // No seam: the body's top edge under the tab filled over.
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                point(left + px(EDGE), px(body_top)),
+                                size(px(tw - 2.0 * EDGE), px(EDGE)),
+                            ),
+                            outer_fill,
+                        ));
+                        // The concave corner where the tab steps down: the box's fill under a
+                        // panel-coloured quad whose rounded corner (its left and bottom edges
+                        // drawn) carves the curve.
+                        window.paint_quad(fill(
+                            Bounds::from_corners(
+                                point(tab_right - px(EDGE), px(body_top - 8.0)),
+                                point(tab_right + px(8.0), px(body_top + EDGE)),
+                            ),
+                            outer_fill,
+                        ));
+                        window.paint_quad(gpui::quad(
+                            Bounds::new(
+                                point(tab_right - px(EDGE), px(body_top + EDGE - 16.0)),
+                                size(px(16.0), px(16.0)),
+                            ),
+                            Corners {
+                                bottom_left: r_step,
+                                ..Corners::default()
+                            },
+                            hsla(p.theme.background),
+                            gpui::Edges {
+                                left: px(EDGE),
+                                bottom: px(EDGE),
+                                ..gpui::Edges::default()
+                            },
+                            edge_ink,
+                            gpui::BorderStyle::Solid,
+                        ));
+                    }
                     composer = Some((f32::from(left), y, w));
                     let side = EDGE + OUTER_INSET;
                     let inner = Bounds::new(

@@ -378,6 +378,20 @@ fn status_bar_scenes() {
             save_shot(scene, slug, &shot);
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
             let scale = shot.width as f32 / w;
+            // The window's corners are macOS's own (your report, 2026-11-21: "a slight border or
+            // shadow" on the 4 corners): fuxx's one-pixel edge runs along the straight sides
+            // only, so where a circular corner of it would cross the diagonal, the window's
+            // own colour shows (a dark theme's edge is black: that pixel was it).
+            if theme.is_dark() {
+                let d = crate::panes::WINDOW_RADIUS * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
+                for (what, x, y) in [("top left", d, d), ("bottom left", d, h - d)] {
+                    let p = at(x, y);
+                    assert!(
+                        !near_by(p, ui.window_edge, 12),
+                        "{n}: no edge drawn round the {what} corner: {p:?}"
+                    );
+                }
+            }
             let canvas = |p: [u8; 3]| near_by(p, ui.sidebar_background, 2);
             // `STATUS_BAR` of canvas along the bar's left end (under the sidebar, past the card's
             // shadow), the card's bottom `CARD_INSET` above it.
