@@ -108,8 +108,9 @@ pub fn pill(status: Status, stopping: bool, theme: &Theme) -> Pill {
             (Some(neutral), quiet(neutral)),
             PillMark::Status(Status::Working),
         ),
+        // Your word (2026-11-21): "working change to cultivating…".
         (Status::Working, false) => (
-            "Working",
+            "Cultivating…",
             tinted(ui.ring_working),
             PillMark::Status(Status::Working),
         ),
@@ -260,7 +261,8 @@ mod tests {
     #[test]
     fn the_pill_says_the_state_in_the_bar_s_words() {
         let theme = crate::theme::Theme::default();
-        assert_eq!(pill(Status::Working, false, &theme).word, "Working");
+        // Your word (2026-11-21): "working change to cultivating…".
+        assert_eq!(pill(Status::Working, false, &theme).word, "Cultivating…");
         assert_eq!(pill(Status::Waiting, false, &theme).word, "Needs input");
         assert_eq!(pill(Status::Done, false, &theme).word, "Done");
         assert_eq!(pill(Status::Idle, false, &theme).word, "Idle");

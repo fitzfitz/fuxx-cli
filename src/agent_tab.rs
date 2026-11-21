@@ -924,7 +924,7 @@ pub struct AgentTab {
     /// The tool modal's header mark while its tool runs.
     modal_mark: Entity<MarkView>,
     /// The marks' clock (the Workspace's once `use_clock`); the Working arcs of the running
-    /// tools' rows (made and dropped in `after_change`, by tool id) and of the "Thinking…" line.
+    /// tools' rows (made and dropped in `after_change`, by tool id) and of the "Cultivating…" line.
     clock: Entity<MarkClock>,
     tool_marks: std::collections::HashMap<String, Entity<MarkView>>,
     thinking_mark: Entity<MarkView>,
@@ -3575,7 +3575,7 @@ impl AgentTab {
         } else {
             column.child(body)
         };
-        // "Thinking…" under the last row while the turn works and nothing else moves (spec
+        // "Cultivating…" under the last row while the turn works and nothing else moves (spec
         // B-B): after your message with the avatar, else in the text column; fading in late,
         // so short gaps never flash it.
         let thinking = thinking.then(|| {
@@ -3608,7 +3608,7 @@ impl AgentTab {
                         .text_size(px(text::META))
                         .text_color(hsla(c.dim))
                         .child(self.thinking_mark.clone())
-                        .child("Thinking…"),
+                        .child(crate::agent_chat::THINKING_WORD),
                 )
                 .with_animation(
                     ("agent-thinking", ix),

@@ -702,7 +702,7 @@ pub(super) fn agent_tab_bar() {
     });
 }
 
-/// Spec B-B: "Thinking…" under the last row while the turn works and nothing moves (motion
+/// Spec B-B: "Cultivating…" (your word; the spec's "Thinking…") under the last row while the turn works and nothing moves (motion
 /// off: the fade's end).
 pub(super) fn agent_tab_thinking() {
     scene("agent-tab-thinking", |n, cx, _, tab| {

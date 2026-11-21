@@ -32,6 +32,10 @@ pub fn agent_side(item: &Item) -> bool {
     )
 }
 
+/// The line under the last row while the turn works and nothing else moves (your word,
+/// 2026-11-21: "thinking change to cultivating…").
+pub const THINKING_WORD: &str = "Cultivating…";
+
 /// A tool row's place in its run of tool rows (spec B-B): alone, first, between, last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Shape {
@@ -254,6 +258,12 @@ mod tests {
             "it asks you"
         );
         assert!(!shows_thinking(true, &[]));
+    }
+
+    /// Your word (2026-11-21): "thinking change to cultivating…".
+    #[test]
+    fn the_waiting_line_says_cultivating() {
+        assert_eq!(THINKING_WORD, "Cultivating…");
     }
 
     #[test]
