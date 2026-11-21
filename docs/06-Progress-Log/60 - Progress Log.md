@@ -35,7 +35,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   its output folded past 20 lines, Copy / Rerun, drag onto an agent tab) and the live terminal in a framed box at the
   bottom that grows to the pane; `shell-cards = on | off`. 7 tasks in the session, then an Opus whole-branch review:
   1 Critical (the mouse in card view: drags, ⌘-click, releases) and 6 Important, all fixed with failing tests first.
-  Note 88 "as built"; not merged or pushed (your word).
+  Note 88 "as built"; merged to master and pushed on your word ("push it", `42ade7f`).
 - **Checks:** 2274 tests; clippy at the pre-M11ab baseline; fmt; ui-shots: 6 new card scenes, both themes.
 - **Learned:** a paint path that returns early skips the frame's window-wide mouse registrations; and a background
   session's snapshot mark is no proof of the zsh integration.
