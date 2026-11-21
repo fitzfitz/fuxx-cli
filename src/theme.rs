@@ -171,8 +171,6 @@ pub struct UiColors {
     pub composer_inner: Rgb,
     /// The branch pill in the composer's tab, under the pointer: a step over `composer_inner`.
     pub composer_pill_hover: Rgb,
-    pub composer_inner_edge: Rgb,
-    pub composer_inner_top: Rgb,
     /// The Changes progress bar's unfilled track, on the repo card (`card_hover`; M11al Task 9).
     pub progress_track: Rgb,
     /// The card's shadow: `shadow` at this opacity (0-1).
@@ -553,11 +551,6 @@ impl Theme {
         } else {
             (mix(card, white, 0.40), mix(card, white, 0.80))
         };
-        let composer_inner_edge = if dark {
-            readable(mix(card, fg, 0.11), &[composer_inner], SOFT_LINE_MIN)
-        } else {
-            readable(mix(card, fg, 0.14), &[composer_inner], QUIET_LINE_MIN)
-        };
         UiColors {
             sidebar_background: canvas,
             sidebar_border: quiet(mix(canvas, fg, 0.12), &[canvas, bg]),
@@ -591,9 +584,9 @@ impl Theme {
             card_surface: card,
             card_edge: readable(mix(card, fg, 0.08), &[card], SOFT_LINE_MIN),
             // Raised over the panel, lighter on every theme (the designer's call): dark, steps
-            // toward the ink with a lit top edge; light, toward white (an input field) with
-            // darker hairlines and no lit top. Edges held to `SOFT_LINE_MIN` (the inner one on a
-            // light theme to `QUIET_LINE_MIN`) on what they divide.
+            // toward the ink; light, toward white (an input field). The outer edge held to
+            // `SOFT_LINE_MIN` on what it divides; the inner box has no edge (the designer: its
+            // fill on the outer's sets it apart).
             composer_outer,
             composer_edge: readable(
                 mix(card, fg, if dark { 0.11 } else { 0.10 }),
@@ -602,12 +595,6 @@ impl Theme {
             ),
             composer_inner,
             composer_pill_hover: mix(composer_inner, fg, 0.05),
-            composer_inner_edge,
-            composer_inner_top: if dark {
-                mix(card, fg, 0.18)
-            } else {
-                composer_inner_edge
-            },
             window_edge: if dark { black } else { canvas },
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
             // No shadow since the dark-panel chore (your words: "sidebar background color and the
@@ -1122,7 +1109,6 @@ mod tests {
                 ("outer", ui.composer_outer, bg),
                 ("inner", ui.composer_inner, ui.composer_outer),
                 ("outer edge", ui.composer_edge, ui.composer_outer),
-                ("inner edge", ui.composer_inner_edge, ui.composer_inner),
                 ("card edge", ui.card_edge, ui.card_surface),
             ];
             for (what, c, below) in steps {
@@ -1163,18 +1149,9 @@ mod tests {
                 l(ui.composer_inner) > l(ui.composer_outer),
                 "{name}: inner over the outer"
             );
-            if theme.is_dark() {
-                assert!(
-                    l(ui.composer_inner_top) > l(ui.composer_inner_edge),
-                    "{name}: top-lit"
-                );
-            } else {
-                assert_eq!(ui.composer_inner_top, ui.composer_inner_edge, "{name}");
-            }
             for (what, edge, on) in [
                 ("outer edge", ui.composer_edge, theme.background),
                 ("outer edge", ui.composer_edge, ui.composer_outer),
-                ("inner edge", ui.composer_inner_edge, ui.composer_inner),
             ] {
                 let r = contrast(edge, on);
                 assert!(r >= SOFT_LINE_MIN, "{name}: {what} {r:.2}");

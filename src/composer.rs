@@ -20,7 +20,9 @@ use gpui::{
 };
 
 use crate::appearance::Appearance;
+use crate::cursor_look::PaintShape;
 use crate::name_input::{next_char, prev_char, utf8_offset, utf16_offset, word_end, word_start};
+use crate::terminal_view::CellMetrics;
 use crate::terminal_view::hsla;
 
 /// Rows shown before the box scrolls.
@@ -467,6 +469,13 @@ pub struct Composer {
     /// Drawn with no edge, fill or padding of its own: a box around it draws them (the agent
     /// box, M11ak).
     bare: bool,
+    /// From the last paint: the cell's width and height, the caret's shape and box, and the
+    /// placeholder as drawn and where (scenes read them).
+    last_cell: (Pixels, Pixels),
+    last_caret: Option<(PaintShape, Bounds<Pixels>)>,
+    last_placeholder: Option<(String, Bounds<Pixels>)>,
+    /// Scenes' stand-in for "the window is the key window" (none: ask the window).
+    key_window: Option<bool>,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -502,6 +511,10 @@ impl Composer {
             last_bounds: None,
             last_line_height: px(0.),
             bare: false,
+            last_cell: (px(0.), px(0.)),
+            last_caret: None,
+            last_placeholder: None,
+            key_window: None,
         }
     }
 
@@ -558,6 +571,34 @@ impl Composer {
             self.first_row,
             self.last_bounds,
         )
+    }
+
+    /// The cell's width and height as last drawn.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_cell(&self) -> (Pixels, Pixels) {
+        self.last_cell
+    }
+
+    /// The caret's shape and box as last drawn (none: not drawn).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_caret(&self) -> Option<(PaintShape, Bounds<Pixels>)> {
+        self.last_caret
+    }
+
+    /// The placeholder as last drawn, and where (none: not drawn).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_placeholder(&self) -> Option<(String, Bounds<Pixels>)> {
+        self.last_placeholder.clone()
+    }
+
+    /// Draw as if the window were the key window, or not.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_be_key(&mut self) {
+        self.key_window = Some(true);
+    }
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_not_key(&mut self) {
+        self.key_window = Some(false);
     }
 
     /// A new placeholder (redrawn only when it is new).
@@ -887,8 +928,6 @@ impl Render for Composer {
                 ui.text_dim
             }
         });
-        let empty = self.buf.text().is_empty();
-        let placeholder = self.placeholder.clone();
         div()
             .w_full()
             .overflow_hidden()
@@ -937,21 +976,7 @@ impl Render for Composer {
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_scroll_wheel(cx.listener(Self::scroll))
-            .child(
-                div()
-                    .relative()
-                    .child(ComposerText { input: cx.entity() })
-                    .when(empty, |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .text_color(hsla(ui.text_dim))
-                                .child(placeholder),
-                        )
-                    }),
-            )
+            .child(ComposerText { input: cx.entity() })
     }
 }
 
@@ -1025,17 +1050,11 @@ impl Element for ComposerText {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let text_style = window.text_style();
-        let font_size = text_style.font_size.to_pixels(window.rem_size());
-        let text_system = window.text_system();
-        let font_id = text_system.resolve_font(&text_style.font());
-        let cell = text_system
-            .advance(font_id, font_size, 'm')
-            .map(|a| a.width)
-            .unwrap_or(font_size * 0.6);
-        let line_height = window.line_height();
+        // The terminal's font, size and cell (the designer: the agent box types as the shell's).
+        let m = CellMetrics::measure(cx.global::<Appearance>(), window);
+        let (cell, line_height) = (m.cell_width, m.line_height);
         let input = self.input.clone();
         let mut style = Style::default();
         style.size.width = relative(1.).into();
@@ -1081,16 +1100,16 @@ impl Element for ComposerText {
                 first = caret_row + 1 - shown;
             }
         }
-        let style = window.text_style();
+        let m = CellMetrics::measure(cx.global::<Appearance>(), window);
         let base = TextRun {
             len: 0,
-            font: style.font(),
-            color: style.color,
+            font: m.font.clone(),
+            color: window.text_style().color,
             background_color: None,
             underline: None,
             strikethrough: None,
         };
-        let font_size = style.font_size.to_pixels(window.rem_size());
+        let font_size = m.font_size;
         let text = input.buf.text();
         let lines = rows[first..first + shown]
             .iter()
@@ -1117,15 +1136,27 @@ impl Element for ComposerText {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let line_height = window.line_height();
-        let (focus_handle, caret, selection) = {
+        let appearance = cx.global::<Appearance>();
+        let m = CellMetrics::measure(appearance, window);
+        let (cell_w, line_height) = (m.cell_width, m.line_height);
+        let theme = appearance.theme;
+        let ui = theme.ui();
+        let setting = appearance.cursor_style;
+        let (focus_handle, caret, selection, key_window, placeholder) = {
             let input = self.input.read(cx);
             (
                 input.focus_handle.clone(),
                 input.buf.cursor(),
                 input.buf.selection(),
+                input.key_window,
+                input
+                    .buf
+                    .text()
+                    .is_empty()
+                    .then(|| input.placeholder.clone()),
             )
         };
+        let key_window = key_window.unwrap_or_else(|| window.is_window_active());
         window.handle_input(
             &focus_handle,
             ElementInputHandler::new(bounds, self.input.clone()),
@@ -1135,7 +1166,7 @@ impl Element for ComposerText {
         let caret_row = row_at(rows, caret);
         let caret_shown = shown_row(caret_row, first, lines.len());
         // A caret row wider than the box (wide characters) scrolls left so the caret shows.
-        let caret_width = px(2.);
+        let caret_width = cell_w;
         let left = match caret_shown {
             Some(n) => {
                 let line = &lines[n];
@@ -1146,7 +1177,7 @@ impl Element for ComposerText {
             }
             None => bounds.left(),
         };
-        let shade = cx.global::<Appearance>().theme.ui().selection;
+        let shade = ui.selection;
         for (n, line) in lines.iter().enumerate() {
             let range = &rows[first + n];
             let top = bounds.top() + line_height * n as f32;
@@ -1180,16 +1211,79 @@ impl Element for ComposerText {
             )
             .ok();
         }
-        if focus_handle.is_focused(window)
-            && let Some(n) = caret_shown
-        {
-            let x = left + lines[n].x_for_index(caret - rows[caret_row].start);
+        // The placeholder (the shell box's style): one cell after the caret's, dim, "…" when
+        // it doesn't fit.
+        let mut drawn_placeholder = None;
+        if let Some(words) = placeholder {
+            let cols = ((bounds.size.width / cell_w).floor() as usize).saturating_sub(1);
+            let words = crate::card_view::fit_words(&words, cols);
+            let at = point(bounds.left() + cell_w, bounds.top());
+            if !words.is_empty() {
+                let run = TextRun {
+                    len: words.len(),
+                    font: m.font.clone(),
+                    color: hsla(ui.text_dim),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window.text_system().shape_line(
+                    words.clone().into(),
+                    m.font_size,
+                    &[run],
+                    None,
+                );
+                shaped
+                    .paint(at, line_height, TextAlign::Left, None, window, cx)
+                    .ok();
+                drawn_placeholder = Some((
+                    words.clone(),
+                    Bounds::new(at, size(shaped.width, line_height)),
+                ));
+            }
+        }
+        // The caret: the terminal's cursor (the designer): the setting's shape in the theme's
+        // cursor colour, one cell; hollow without focus in the key window; a block's letter
+        // drawn again in the cursor's text colour.
+        let mut drawn_caret = None;
+        if let Some(n) = caret_shown {
+            let live = key_window && focus_handle.is_focused(window);
+            let shape = crate::cursor_look::box_caret(setting, live);
+            let col = caret - rows[caret_row].start;
+            let x = left + lines[n].x_for_index(col);
             let y = bounds.top() + line_height * n as f32;
-            let color = window.text_style().color;
-            window.paint_quad(fill(
-                Bounds::new(point(x, y), size(caret_width, line_height)),
-                color,
-            ));
+            let (dx, dy, w, h) =
+                crate::cursor_look::caret_rect(shape, f32::from(cell_w), f32::from(line_height));
+            let at = Bounds::new(point(x + px(dx), y + px(dy)), size(px(w), px(h)));
+            let color = hsla(theme.cursor.unwrap_or(theme.foreground));
+            match shape {
+                PaintShape::Hollow => {
+                    window.paint_quad(gpui::outline(at, color, gpui::BorderStyle::Solid))
+                }
+                _ => window.paint_quad(fill(at, color)),
+            }
+            let text = self.input.read(cx).buf.text();
+            let under = &text[caret..crate::name_input::next_char(text, caret)];
+            if shape == PaintShape::Block && !under.trim().is_empty() {
+                let run = TextRun {
+                    len: under.len(),
+                    font: m.font.clone(),
+                    color: hsla(theme.cursor_text.unwrap_or(theme.background)),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window.text_system().shape_line(
+                    under.to_string().into(),
+                    m.font_size,
+                    &[run],
+                    None,
+                );
+                shaped
+                    .paint(point(x, y), line_height, TextAlign::Left, None, window, cx)
+                    .ok();
+            }
+            drawn_caret = Some((shape, at));
         }
         let lines = std::mem::take(&mut shaped.lines);
         self.input.update(cx, |input, _| {
@@ -1198,16 +1292,19 @@ impl Element for ComposerText {
             input.last_origin = Some(point(left, bounds.top()));
             input.last_bounds = Some(bounds);
             input.last_line_height = line_height;
+            input.last_cell = (cell_w, line_height);
+            input.last_caret = drawn_caret;
+            input.last_placeholder = drawn_placeholder;
         });
     }
 }
 
-/// How many cells of width `cell` fit in `width` (at least one), less room for the caret.
+/// How many cells of width `cell` fit in `width` (at least one), less a cell for the caret.
 fn wrap_columns(width: Pixels, cell: Pixels) -> usize {
     if cell <= px(0.) {
         return 1;
     }
-    (((width - px(2.)) / cell).floor() as usize).max(1)
+    (((width - cell) / cell).floor() as usize).max(1)
 }
 
 #[cfg(test)]

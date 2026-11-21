@@ -259,6 +259,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: BOX,
     },
     Scene {
+        name: "agent-box-terminal-text",
+        run: agent_box_terminal_text,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: BOX,
+    },
+    Scene {
         name: "agent-box-shell-keys",
         run: agent_box_shell_keys,
         themes: Themes::One,
@@ -651,6 +659,88 @@ fn agy_conversation() -> String {
             _ => None,
         })
         .expect("agy-text starts a conversation")
+}
+
+/// Your words: "Because right now, you see the differences? also the cursor is very different"
+/// (the agent box beside the shell box). The designer's details: the typing in the terminal's
+/// font, size and cell height; the caret the terminal's cursor (the setting's shape, one cell,
+/// hollow without focus); a `❯` 14 in from the box's left, the typing two cells after it, the
+/// first line 12 down; the placeholder one cell after the caret's cell.
+pub(super) fn agent_box_terminal_text() {
+    use crate::appearance::{Appearance, CursorShapeSetting};
+    use crate::cursor_look::PaintShape;
+    layout_scene("agent-box-terminal-text", |n, cx, window, tab| {
+        cx.update(|cx| {
+            cx.update_global::<Appearance, _>(|a, _| a.cursor_style = CursorShapeSetting::Block)
+        });
+        let composer = cx.read(|cx| tab.read(cx).shot_composer());
+        cx.update(|cx| composer.update(cx, |c, _| c.shot_be_key()));
+        let text = composer_bounds(cx, tab);
+        cx.simulate_click(window, text.center(), Modifiers::none());
+        cx.run_until_parked();
+        let _ = frame_fresh(cx, window);
+        let font_size = cx.read(|cx| cx.global::<Appearance>().font_size);
+        let (cell_w, line_h) = cx.read(|cx| composer.read(cx).shot_cell());
+        assert_eq!(
+            f32::from(line_h),
+            (font_size * 1.3).round(),
+            "{n}: the terminal's cell height"
+        );
+        let text = composer_bounds(cx, tab);
+        assert_eq!(text.size.height, line_h, "{n}: one row, a cell tall");
+        let caret = |cx: &VisualTestAppContext| cx.read(|cx| composer.read(cx).shot_caret());
+        let (shape, at) = caret(cx).unwrap_or_else(|| panic!("{n}: no caret"));
+        assert_eq!(shape, PaintShape::Block, "{n}: the setting's shape");
+        assert_eq!(
+            (at.size.width, at.size.height),
+            (cell_w, line_h),
+            "{n}: one cell"
+        );
+        assert_eq!(at.left(), text.left(), "{n}: at the start");
+        let (words, spot) = cx
+            .read(|cx| composer.read(cx).shot_placeholder())
+            .unwrap_or_else(|| panic!("{n}: no placeholder"));
+        assert!(
+            PLACEHOLDER.starts_with(words.trim_end_matches('\u{2026}')),
+            "{n}: {words}"
+        );
+        assert_eq!(
+            spot.left(),
+            text.left() + cell_w,
+            "{n}: one cell after the caret"
+        );
+        let (mark, the_box) = (part(cx, tab, n, "mark"), part(cx, tab, n, "box"));
+        assert_eq!(mark.left() - the_box.left(), px(14.), "{n}: the mark 14 in");
+        // (Layout lands on whole pixels; the cells are fractional.)
+        let near = |a: Pixels, b: Pixels| (a - b).abs() <= px(0.5);
+        let gap = text.left() - mark.left();
+        assert!(
+            near(gap, cell_w * 2.),
+            "{n}: the typing two cells after ({gap:?})"
+        );
+        assert_eq!(
+            text.top() - the_box.top(),
+            px(12.),
+            "{n}: the first line 12 down"
+        );
+        cx.simulate_input(window, "hi");
+        let _ = frame_fresh(cx, window);
+        let (_, at) = caret(cx).unwrap_or_else(|| panic!("{n}: no caret"));
+        assert_eq!(
+            at.left(),
+            text.left() + cell_w * 2.,
+            "{n}: after two letters"
+        );
+        cx.update(|cx| composer.update(cx, |c, _| c.shot_not_key()));
+        cx.update_window(window, |_, w, _| w.refresh()).ok();
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            caret(cx).map(|c| c.0),
+            Some(PaintShape::Hollow),
+            "{n}: hollow, not key"
+        );
+        assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
+    });
 }
 
 /// Your words: "make sure the font the textbox nature like cursor move with keyboard, delete
@@ -1907,7 +1997,7 @@ pub(super) fn agent_box_long_text() {
         cx.simulate_input(window, "Fix it");
         let _ = frame_fresh(cx, window);
         let one = composer_bounds(cx, tab);
-        cx.simulate_input(window, &line.repeat(4));
+        cx.simulate_input(window, &line.repeat(6));
         let _ = frame_fresh(cx, window);
         let composer = cx.read(|cx| tab.read(cx).shot_composer());
         let (rows, first, _) = cx.read(|cx| composer.read(cx).shot_rows());

@@ -403,6 +403,20 @@ pub fn items_for<L>(
     )
 }
 
+/// A placeholder in `cols` cells (fuxx's own words, one cell a character): whole when it fits,
+/// else cut with "…" in the last cell.
+pub fn fit_words(words: &str, cols: usize) -> String {
+    if words.chars().count() <= cols {
+        return words.to_string();
+    }
+    if cols == 0 {
+        return String::new();
+    }
+    let mut cut: String = words.chars().take(cols - 1).collect();
+    cut.push('\u{2026}');
+    cut
+}
+
 /// The rework's sizes (note 88 "Rework"), points: a 1 pt edge; the card surface's padding and
 /// the gap above its output; the composer: the context row, the inner box 3 pt in from the outer
 /// box's sides and bottom (5 until the chores after the rework), its padding.
@@ -428,7 +442,7 @@ pub const INNER_PAD_X: f32 = 14.0;
 pub const INNER_PAD_Y: f32 = 12.0;
 /// The composer's height beside its rows: the outer box's edges, the context row, the inner
 /// box's edges and padding, and its inset at the bottom.
-pub const COMPOSER_FRAME: f32 = EDGE + CTX_ROW + 2.0 * (EDGE + INNER_PAD_Y) + OUTER_INSET + EDGE;
+pub const COMPOSER_FRAME: f32 = EDGE + CTX_ROW + 2.0 * INNER_PAD_Y + OUTER_INSET + EDGE;
 
 /// A card's header line (UI text), points.
 pub const HEADER_H: f32 = 18.0;
@@ -557,6 +571,9 @@ pub struct CardsState {
     /// The composer's first row as painted last frame, as text (the scenes check what shows).
     #[cfg(feature = "ui-shots")]
     pub typed_row: String,
+    /// The placeholder as drawn and its left edge (none: not drawn).
+    #[cfg(feature = "ui-shots")]
+    pub hint: Option<(String, f32)>,
 }
 
 /// Rows painted this frame that the pointer can select in (window points): the first row is
@@ -841,7 +858,7 @@ pub fn frame<L: EventListener>(
             } => {
                 // In the composer's inner box: under the outer edge, the context row and the
                 // inner box's edge and padding.
-                let rows_y = y + EDGE + CTX_ROW + EDGE + INNER_PAD_Y;
+                let rows_y = y + EDGE + CTX_ROW + INNER_PAD_Y;
                 let rows = read(*top, rows_y, count(*top, *bottom));
                 let first = *top + ((rows.y - rows_y) / line_h).round() as i32;
                 let point = term.grid().cursor.point;
@@ -918,7 +935,7 @@ pub fn card_dims(pane: Size<Pixels>, split: bool, cell_w: f32, line_h: f32) -> T
     } else {
         ui_size::TERMINAL_PADDING
     };
-    let side = 2.0 * (EDGE + OUTER_INSET + EDGE + INNER_PAD_X);
+    let side = 2.0 * (EDGE + OUTER_INSET + INNER_PAD_X);
     let w = f32::from(pane.width) - 2.0 * pad_x - side;
     let h = f32::from(pane.height) - 2.0 * pad_y - COMPOSER_FRAME;
     TermDims {
@@ -932,6 +949,18 @@ pub fn card_dims(pane: Size<Pixels>, split: bool, cell_w: f32, line_h: f32) -> T
 
 #[cfg(test)]
 mod tests {
+    /// A placeholder in `cols` cells: whole when it fits, else cut with "…" in the last cell;
+    /// nothing when there's no room.
+    #[test]
+    fn a_placeholder_fits_its_cells_with_an_ellipsis() {
+        use super::fit_words;
+        assert_eq!(fit_words("Type a command", 20), "Type a command");
+        assert_eq!(fit_words("Type a command", 14), "Type a command");
+        assert_eq!(fit_words("Type a command", 8), "Type a \u{2026}");
+        assert_eq!(fit_words("Ask éé", 5), "Ask \u{2026}");
+        assert_eq!(fit_words("Type", 1), "\u{2026}");
+        assert_eq!(fit_words("Type", 0), "");
+    }
     use super::*;
 
     #[test]
@@ -1151,8 +1180,8 @@ mod tests {
         // Rework: the inner box's inside: less the pane's padding, the outer box's edge and
         // inset and the inner box's edge and padding each side; the context row above.
         let pane = gpui::size(gpui::px(1000.0), gpui::px(700.0));
-        let side = 2.0 * (EDGE + OUTER_INSET + EDGE + INNER_PAD_X);
-        let tall = EDGE + CTX_ROW + 2.0 * (EDGE + INNER_PAD_Y) + OUTER_INSET + EDGE;
+        let side = 2.0 * (EDGE + OUTER_INSET + INNER_PAD_X);
+        let tall = EDGE + CTX_ROW + 2.0 * INNER_PAD_Y + OUTER_INSET + EDGE;
         let (w, h) = (1000.0 - 2.0 * 28.0 - side, 700.0 - 2.0 * 22.0 - tall);
         let dims = card_dims(pane, false, 8.0, 17.0);
         assert_eq!(

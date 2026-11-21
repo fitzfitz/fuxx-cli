@@ -94,6 +94,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: &["src/terminal_view.rs", "src/card_view.rs"],
     },
     Scene {
+        name: "shell-cards-placeholder",
+        run: shell_cards_placeholder_scene,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/terminal_view.rs", "src/card_view.rs"],
+    },
+    Scene {
         name: "shell-cards-prompt",
         run: shell_cards_prompt_scene,
         themes: Themes::Both,
@@ -1698,6 +1706,32 @@ fn shell_cards_select_scene() {
             "{n}: Rerun snaps to the bottom"
         );
     }
+}
+
+/// `shell-cards-placeholder` (your words: "you see the differences?"): an empty prompt shows
+/// "Type a command" in the terminal's font, one cell after the cursor's (three cells after the
+/// typing's start: `❯`, a blank, the cursor); typing takes it away. (Cut with "…" when the
+/// box is narrower than it: `card_view::fit_words`, unit-tested; the card view's box is wider.)
+fn shell_cards_placeholder_scene() {
+    use crate::terminal_view::PLACEHOLDER;
+    let (slug, name) = shot_themes()[0];
+    let theme = shot_theme(name);
+    let n = format!("shell-cards-placeholder-{slug}");
+    let mut rig = cards_rig(theme, &blocks_text(), size(px(640.0), px(360.0)));
+    let text = "\r\n\x1b]133;A;redraw=0\x07~/code/api main \x1b]133;B\x07";
+    let view = rig.view.clone();
+    rig.cx
+        .update(|cx| view.update(cx, |v, cx| v.shot_output(text, cx)));
+    let shot = rig.frame();
+    save_shot("shell-cards-placeholder", slug, &shot);
+    let (words, _) = rig
+        .read(|v| v.shot_hint())
+        .unwrap_or_else(|| panic!("{n}: no placeholder"));
+    assert_eq!(words, PLACEHOLDER, "{n}");
+    rig.cx
+        .update(|cx| view.update(cx, |v, cx| v.shot_output("ls", cx)));
+    let _ = rig.frame();
+    assert_eq!(rig.read(|v| v.shot_hint()), None, "{n}: gone once you type");
 }
 
 /// `shell-cards-prompt` (rework): a two-sided prompt (`~/code/api main` on the left, `✔ 08:00` at

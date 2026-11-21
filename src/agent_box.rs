@@ -904,9 +904,12 @@ impl AgentTab {
         &self,
         c: &Colors,
         mono: SharedString,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let texts = self.box_texts(cx);
+        // The typing on the terminal's cells, after a `❯` (the shell box's, the designer).
+        let cells = crate::terminal_view::CellMetrics::measure(cx.global::<Appearance>(), window);
         let menu = self.menu.clone();
         let menu_on = |chip: fn(&BoxMenu) -> bool| menu.as_ref().is_some_and(chip);
         // The context as pills in a folder tab, as the shell tab's composer (chores: "redesign
@@ -1156,8 +1159,22 @@ impl AgentTab {
                         })
                         .w_full()
                         .pl(px(BOX_X - CONTROL_INSET))
+                        .flex()
                         .font_family(mono.clone())
-                        .child(self.composer.clone()),
+                        .text_size(cells.font_size)
+                        .line_height(cells.line_height)
+                        .child(
+                            self.marked(
+                                "mark",
+                                div()
+                                    .relative()
+                                    .flex_none()
+                                    .w(cells.cell_width * crate::card_view::INDENT_COLS as f32)
+                                    .text_color(hsla(c.accent))
+                                    .child("\u{276f}"),
+                            ),
+                        )
+                        .child(div().flex_1().min_w_0().child(self.composer.clone())),
                 )
                 .child(
                     div()

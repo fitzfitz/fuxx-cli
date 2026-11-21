@@ -1400,7 +1400,7 @@ pub(super) fn agent_tab_composer_wrap() {
         let composer = cx.read(|cx| tab.read(cx).shot_composer());
         let line = "Please read src/rsvp.ts and the failing test, then explain why past dates are \
                     accepted and fix the comparison without changing today() at all. ";
-        cx.simulate_input(window, &line.repeat(4));
+        cx.simulate_input(window, &line.repeat(6));
         cx.run_until_parked();
         let _ = frame_fresh(cx, window);
         let (rows, first, bounds) = cx.read(|cx| composer.read(cx).shot_rows());
