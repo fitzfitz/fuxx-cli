@@ -793,11 +793,16 @@ fn files_scenes() {
             };
             // Part 4: a level's guide runs down the middle of that level's icon box: 12 pt
             // in, 16 pt a level, 8 pt to its middle.
+            // (The icon 12 pt since 2026-11-22: its middle 6 in.)
+            let mid = crate::right_sidebar::ICON / 2.0;
             for row in [2, 3, 4, 5] {
-                assert!(guide_at(row, edge + 8.0), "{n}: row {row}'s depth-1 guide");
+                assert!(guide_at(row, edge + mid), "{n}: row {row}'s depth-1 guide");
             }
-            assert!(guide_at(3, edge + 24.0), "{n}: a.rs's depth-2 guide");
-            assert!(!guide_at(4, edge + 24.0), "{n}: main.rs is at depth 1");
+            assert!(guide_at(3, edge + 16.0 + mid), "{n}: a.rs's depth-2 guide");
+            assert!(
+                !guide_at(4, edge + 16.0 + mid),
+                "{n}: main.rs is at depth 1"
+            );
             for row in [6, 7, 9] {
                 assert!(
                     !guide_at(row, edge + 8.0),

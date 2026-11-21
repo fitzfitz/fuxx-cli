@@ -85,13 +85,14 @@ const CONFIRM_WIDTH: f32 = 280.0;
 /// the tooltip's gap above its button and how long the pointer rests before it shows.
 const BAR_PAD_X: f32 = 16.0;
 const BAR_PAD_Y: f32 = 14.0;
-const BAR_BUTTON: f32 = 34.0;
+// The bottom bar at the Git tab's sizes (your words, 2026-11-22: "also git bottom bar").
+const BAR_BUTTON: f32 = 28.0;
 const BAR_BUTTON_RADIUS: f32 = 9.0;
 /// The branch glyph's box and the line under the name (M11al §6.6).
-const BAR_BRANCH_ICON: f32 = 16.0;
-const BAR_LINE: f32 = 12.5;
+const BAR_BRANCH_ICON: f32 = 12.0;
+const BAR_LINE: f32 = GIT_NAME;
 /// The bar's icons: 15 pt (part 6, as the mockup).
-const BAR_ICON: f32 = 15.0;
+const BAR_ICON: f32 = 12.0;
 const BAR_GAP: f32 = 6.0;
 const TIP_GAP: f32 = 6.0;
 const TIP_DELAY: Duration = Duration::from_millis(400);
@@ -2296,8 +2297,9 @@ mod tests {
             (GIT_ROW, GIT_NAME, GIT_SMALL, ROW_CIRCLE, GIT_INDENT),
             (24.0, 12.0, 11.0, 12.0, 16.0)
         );
-        // Smaller than the Files tab's, which keeps its 32 pt rows.
-        assert_eq!(crate::right_sidebar::ROW, 32.0);
+        // The Files tab's too, since 2026-11-22 (your words: "match what we have done on git
+        // tab").
+        assert_eq!(crate::right_sidebar::ROW, GIT_ROW);
     }
 
     /// Your ask (2026-11-20, the repo card: "this also text and icon too big, make same as the

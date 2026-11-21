@@ -954,7 +954,8 @@ fn changes_bar_scenes() {
             let buttons: Vec<(f32, f32)> = starts
                 .iter()
                 .filter_map(|&a| {
-                    let b = starts.iter().find(|&&b| (b - a - 33.0).abs() <= 1.0)?;
+                    // 28 pt buttons since 2026-11-22 (the Git tab's sizes).
+                    let b = starts.iter().find(|&&b| (b - a - 27.0).abs() <= 1.0)?;
                     Some((a, *b))
                 })
                 .collect();
@@ -962,7 +963,7 @@ fn changes_bar_scenes() {
                 assert_eq!(
                     buttons.len(),
                     if accent { 2 } else { 1 },
-                    "{n}: the buttons' edges, 34 pt apart ({starts:?})"
+                    "{n}: the buttons' edges, 28 pt apart ({starts:?})"
                 );
             }
             assert!(

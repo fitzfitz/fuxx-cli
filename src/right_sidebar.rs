@@ -126,15 +126,17 @@ pub(crate) const COUNT_RADIUS: f32 = 10.0;
 /// selection are pills (`PILL_RADIUS` corners) inset `PILL_INSET` from the card's sides, with
 /// `PILL_PAD` inside them; a header's icon buttons (`HEADER_BUTTON`, their icons `HEADER_ICON`)
 /// and its room right of them.
-pub(crate) const ROW: f32 = 32.0;
-pub(crate) const TEXT: f32 = 14.0;
-/// A row's name (M11al §6.5).
-pub(crate) const NAME: f32 = 13.5;
-pub(crate) const SMALL: f32 = 12.0;
+/// The Files and Activity tabs at the Git tab's sizes (your words, 2026-11-22: "resize the font
+/// and icon to match what we have done on git tab"): its rows, names, small text and icons.
+pub(crate) const ROW: f32 = crate::changes_panel::GIT_ROW;
+pub(crate) const TEXT: f32 = crate::changes_panel::GIT_NAME;
+/// A row's name (M11al §6.5; the Git tab's since 2026-11-22).
+pub(crate) const NAME: f32 = crate::changes_panel::GIT_NAME;
+pub(crate) const SMALL: f32 = crate::changes_panel::GIT_SMALL;
 /// A panel's header row: plain since the designer's redesign (was the 54 pt repo card).
 pub(crate) const HEADER: f32 = 36.0;
 pub(crate) const TITLE: f32 = 14.0;
-pub(crate) const ICON: f32 = 16.0;
+pub(crate) const ICON: f32 = 12.0;
 pub(crate) const EDGE: f32 = 12.0;
 pub(crate) const PILL_INSET: f32 = 10.0;
 pub(crate) const PILL_PAD: f32 = 12.0;
@@ -2982,8 +2984,9 @@ mod tests {
     #[test]
     fn guides_sit_at_each_ancestor_level_s_icon_centre() {
         assert!(guides(0).is_empty(), "none at the top level");
-        assert_eq!(guides(1), vec![20.0]);
-        assert_eq!(guides(3), vec![20.0, 36.0, 52.0]);
+        // At the 12 pt icon's centre (the Git tab's size since 2026-11-22).
+        assert_eq!(guides(1), vec![18.0]);
+        assert_eq!(guides(3), vec![18.0, 34.0, 50.0]);
     }
 
     /// Part 4 (Files A): only changed files carry colour, a file's name and its letter; a
@@ -3050,10 +3053,10 @@ mod tests {
     #[test]
     fn the_panels_share_one_set_of_sizes() {
         // M11al §6.5: roomier rows, pills inset 10 with 12 inside, names 13.5.
-        assert_eq!(ROW, 32.0);
+        assert_eq!(ROW, crate::changes_panel::GIT_ROW);
         assert_eq!((PILL_INSET, PILL_PAD, PILL_RADIUS), (10.0, 12.0, 9.0));
         // (The Git tab's rows are smaller since 2026-11-20: `changes_panel::GIT_*`.)
-        assert_eq!(NAME, 13.5);
+        assert_eq!(NAME, crate::changes_panel::GIT_NAME);
         // The designer's redesign (your words: "yes build it"): one quiet field 30 tall, 8 in
         // from the sides, corners 8.
         assert_eq!((FILTER, FILTER_RADIUS, FILTER_SIDE), (30.0, 8.0, 8.0));
@@ -3067,8 +3070,9 @@ mod tests {
         assert_eq!((SWITCH_SIDE, SWITCH_GAP, SWITCH_SEGMENT), (8.0, 2.0, 28.0));
         assert_eq!(SWITCH_SEGMENT_RADIUS, 8.0);
         assert_eq!(SWITCH_SEGMENT, crate::tab_bar::TAB);
-        assert_eq!((TEXT, SMALL, TITLE), (14.0, 12.0, 14.0));
-        assert_eq!(ICON, 16.0);
+        // The Git tab's sizes (2026-11-22).
+        assert_eq!((TEXT, SMALL, TITLE), (12.0, 11.0, 14.0));
+        assert_eq!(ICON, 12.0);
         // A row's content starts 22 in (10 + 12); the headers keep the 12 pt edge.
         assert_eq!(PILL_INSET + PILL_PAD, 22.0);
         assert_eq!(EDGE, 12.0);
