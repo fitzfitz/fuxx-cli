@@ -142,7 +142,7 @@ subagents / plugins / MCP servers" lists after its limits are left out of the us
 Then (2026-11-22, "when hover the model that has effort, just directly show it on the side"): a model row's hover opens
 its effort list beside it (a model without efforts closes it). Scene `agent-box-effort-list` hovers.
 
-## Chore: the model menu redesigned (2026-11-22, building) — the lead designer's spec
+## Chore: the model menu redesigned (2026-11-22, built) — the lead designer's spec
 
 Your words: "about the popup model, make the popup UI great, its too boring". Spec ("quiet glass, one lit row"):
 - **Surface** in `menu_frame` (so mode, folder, attach menus share it): outer div `linear_gradient(180°, glow_top @0,
