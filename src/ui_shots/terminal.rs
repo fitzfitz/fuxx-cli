@@ -86,6 +86,14 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "shell-cards-wrap",
+        run: shell_cards_wrap_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/terminal_view.rs", "src/card_view.rs"],
+    },
+    Scene {
         name: "shell-cards-prompt",
         run: shell_cards_prompt_scene,
         themes: Themes::Both,
@@ -1717,6 +1725,61 @@ fn shell_cards_prompt_scene() {
         save_shot("shell-cards-prompt", slug, &shot);
         let typed = rig.read(|v| v.shot_typed_row());
         assert_eq!(typed, "\u{276f} ls", "{n}: only what you typed");
+    }
+}
+
+/// `shell-cards-wrap` (chores after the rework): a command typed long enough to wrap, under a
+/// long folder and branch: the second row starts where the typing does, under `❯` nothing
+/// (your words: "the second line is supposed to align with the first line, the icon below
+/// should be empty"); each pill at most `PILL_MAX`, its name ending in "…".
+fn shell_cards_wrap_scene() {
+    use crate::card_view::{PILL_GAP, PILL_MAX};
+    let dims = size(px(640.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let n = format!("shell-cards-wrap-{slug}");
+        let mut rig = cards_rig(theme, &blocks_text(), dims);
+        let view = rig.view.clone();
+        rig.cx.update(|cx| {
+            view.update(cx, |v, cx| {
+                v.set_place(
+                    Some("/w/a-folder-name-far-too-long-for-its-pill".into()),
+                    Some("feature/a-branch-name-far-too-long-for-its-pill".into()),
+                    cx,
+                )
+            })
+        });
+        let _ = rig.frame();
+        let (_, dims_t, (cell_w, _)) = rig.read(|v| v.shot_cards());
+        let left = "~/code/api main ";
+        let typed: String = "sadad ajshdjasdhka ".repeat(dims_t.cols / 10);
+        let text = format!("\r\n\x1b]133;A;redraw=0\x07{left}\x1b]133;B\x07{typed}");
+        rig.cx
+            .update(|cx| view.update(cx, |v, cx| v.shot_output(&text, cx)));
+        let _ = rig.frame();
+        let shot = rig.frame();
+        save_shot("shell-cards-wrap", slug, &shot);
+        let regions = rig.read(|v| v.shot_card_regions());
+        let x_of = |key: &str| {
+            regions
+                .iter()
+                .find(|r| r.0 == key)
+                .unwrap_or_else(|| panic!("{n}: no {key} region"))
+                .1
+        };
+        // Row 0's typing starts at the prompt's end (its cells from `left.len()` on); row 1's
+        // first cell must sit right under it.
+        let first_typed = x_of("live0") + left.len() as f32 * cell_w;
+        let second = x_of("live");
+        assert!(
+            (first_typed - second).abs() < 0.5,
+            "{n}: the second row at {second}, the typing at {first_typed}"
+        );
+        let pills = rig.read(|v| v.shot_pills_w());
+        assert!(
+            pills > 0.0 && pills <= 2.0 * PILL_MAX + PILL_GAP + 0.5,
+            "{n}: the pills {pills} wide"
+        );
     }
 }
 

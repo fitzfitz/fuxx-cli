@@ -419,6 +419,10 @@ pub const TAB_RISE: f32 = 25.0;
 pub const PILL_H: f32 = 22.0;
 pub const TAB_PAD: f32 = 3.0;
 pub const PILL_GAP: f32 = 4.0;
+/// The cells `❯ ` takes in front of the typing: the rows under the first hang this far in.
+pub const INDENT_COLS: usize = 2;
+/// A folder or branch pill's widest; its name ends in "…" past it.
+pub const PILL_MAX: f32 = 160.0;
 pub const OUTER_INSET: f32 = 3.0;
 pub const INNER_PAD_X: f32 = 14.0;
 pub const INNER_PAD_Y: f32 = 12.0;
@@ -544,6 +548,9 @@ pub struct CardsState {
     /// The composer's top-left and width last frame (window points): its context row is
     /// placed there (rework).
     pub composer: Option<(f32, f32, f32)>,
+    /// The live prompt's right-hand part as last cut: the prompt's row (from the scrollback's
+    /// top), its first column and its text (`remembered_cut`).
+    pub right_side: Option<(i64, (usize, String))>,
     /// The composer's pills as laid out last frame, their row's width (the tab is painted round
     /// them; 0: no pills, no tab).
     pub pills_w: f32,
@@ -848,9 +855,27 @@ pub fn frame<L: EventListener>(
                         blinking,
                     });
                 let on_first = (point.line == *top).then_some(point.column.0);
-                let cut = typing
+                let first = rows.lines.first();
+                let mut cut = typing
                     .filter(|_| rows.top == *top)
-                    .and_then(|col| rows.lines.first().map(|l| crop(l, Some(col), on_first)));
+                    .and_then(|col| first.map(|l| crop(l, Some(col), on_first)));
+                // The right side seen for this prompt stays cut while zsh keeps it with one
+                // blank before it (your report: `cd ../../hube_` then the right prompt).
+                let here = i64::from(top.0) + grid.history_size() as i64;
+                if let (Some(c), Some(line)) = (cut.as_mut(), first) {
+                    match c.cut {
+                        Some(_) => {
+                            state.right_side = seen_right_side(line, c.cut).map(|s| (here, s));
+                        }
+                        None => {
+                            c.cut = state
+                                .right_side
+                                .as_ref()
+                                .filter(|(at, _)| *at == here)
+                                .and_then(|(_, seen)| remembered_cut(line, on_first, seen));
+                        }
+                    }
+                }
                 draws.push(Draw::Live {
                     y,
                     height: at.height,
@@ -863,6 +888,25 @@ pub fn frame<L: EventListener>(
     }
     state.items = items;
     CardFrame { draws }
+}
+
+/// The right-hand part a crop cut at `cut`: its first column and its cells' text, kept so it
+/// stays cut while zsh keeps it with a single blank before it (`remembered_cut`).
+pub fn seen_right_side(line: &[CellView], cut: Option<usize>) -> Option<(usize, String)> {
+    let start = cut?;
+    Some((start, line.get(start..)?.iter().map(|c| c.ch).collect()))
+}
+
+/// Where to cut a typing row by the right-hand part `seen` for this prompt: its column while the
+/// cursor is on the row left of it and the cells from there are exactly what was seen.
+pub fn remembered_cut(
+    line: &[CellView],
+    cursor_col: Option<usize>,
+    seen: &(usize, String),
+) -> Option<usize> {
+    let (start, text) = seen;
+    let now: String = line.get(*start..)?.iter().map(|c| c.ch).collect();
+    (cursor_col.is_some_and(|c| c < *start) && now == *text).then_some(*start)
 }
 
 /// The terminal's size in card view (note 88 §4, Settled 4): the live box's inside at its
@@ -878,7 +922,10 @@ pub fn card_dims(pane: Size<Pixels>, split: bool, cell_w: f32, line_h: f32) -> T
     let w = f32::from(pane.width) - 2.0 * pad_x - side;
     let h = f32::from(pane.height) - 2.0 * pad_y - COMPOSER_FRAME;
     TermDims {
-        cols: ((w / cell_w).floor().max(0.0) as usize).max(2),
+        // Less the `❯ ` the typing rows hang under, so a row shifted by it still fits.
+        cols: ((w / cell_w).floor().max(0.0) as usize)
+            .saturating_sub(INDENT_COLS)
+            .max(2),
         rows: ((h / line_h).floor().max(0.0) as usize).max(1),
     }
 }
@@ -1088,6 +1135,9 @@ mod tests {
             (TAB_RISE, PILL_H, TAB_PAD, PILL_GAP),
             (25.0, 22.0, 3.0, 4.0)
         );
+        // A long folder or branch name ends in "…" (your words: "add max width on the folder and
+        // branch, make it ellipsis").
+        assert_eq!(PILL_MAX, 160.0);
         assert_eq!(composer_tab(0.0, 400.0), None);
         assert_eq!(
             composer_tab(120.0, 400.0),
@@ -1107,12 +1157,14 @@ mod tests {
         let dims = card_dims(pane, false, 8.0, 17.0);
         assert_eq!(
             (dims.cols, dims.rows),
-            ((w / 8.0) as usize, (h / 17.0) as usize)
+            ((w / 8.0) as usize - INDENT_COLS, (h / 17.0) as usize)
         );
         // Chores: the inner box 3 pt in from the outer box (was 5; your words: "make the gap
         // between command box and the outter border smaller").
         assert_eq!(OUTER_INSET, 3.0);
-        assert_eq!((dims.cols, dims.rows), (113, 35));
+        // Two columns kept for the `❯ ` the typing rows hang under (your words: "the second
+        // line is supposed to align with the first line, the icon below should be empty").
+        assert_eq!((dims.cols, dims.rows), (111, 35));
     }
 
     // M11ab Task 5: the cache, the layout, the rows a paint reads.
@@ -1563,6 +1615,29 @@ mod tests {
             tag_id_at(&sh.term, *top).is_some(),
             "the box starts on the tag's row"
         );
+    }
+
+    /// Your report (2026-11-21, `cd ../../hube_` then the right prompt in the box): zsh keeps the
+    /// right prompt until one blank is left before it, where the two-blank rule no longer finds
+    /// it. Seen once for this prompt, it stays cut while the cursor is left of it and its cells
+    /// are still exactly what was seen; typed over or dropped, nothing is cut.
+    #[test]
+    fn the_right_side_once_seen_stays_cut() {
+        let before = cells(&format!("{:<21}{}", "$ cd a", "R 14:40"), 29);
+        let first = crop(&before, Some(2), Some(6));
+        assert_eq!(first.cut, Some(21), "found with two blanks");
+        let seen = seen_right_side(&before, first.cut).expect("remembered");
+        // One blank left: the two-blank rule misses it, the memory doesn't.
+        let close = cells(&format!("{:<21}{}", "$ cd abcdefghijklmno", "R 14:40"), 29);
+        assert_eq!(crop(&close, Some(2), Some(20)).cut, None);
+        assert_eq!(remembered_cut(&close, Some(20), &seen), Some(21));
+        // The cursor at or past it, or its cells changed (typed over, zsh dropped it): no cut.
+        assert_eq!(remembered_cut(&close, Some(21), &seen), None);
+        assert_eq!(remembered_cut(&close, None, &seen), None);
+        let over = cells("$ cd abcdefghijklmnopqrstuvwx", 29);
+        assert_eq!(remembered_cut(&over, Some(28), &seen), None);
+        let dropped = cells("$ cd abcdefghijklmno", 29);
+        assert_eq!(remembered_cut(&dropped, Some(20), &seen), None);
     }
 
     /// #3: nothing you typed is cut: no cut at or left of the cursor, none when the cursor has

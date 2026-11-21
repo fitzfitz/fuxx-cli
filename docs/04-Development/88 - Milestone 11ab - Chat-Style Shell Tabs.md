@@ -551,6 +551,21 @@ corners … can we make it gone so it looks clean?"
   checks a dark theme's corner diagonal (it read the edge's black before the fix).
 - **Checks:** 2300 tests; clippy at the baseline; ui-shots 254 passed, the 5 known failures.
 
+### Chores: the right prompt near the typing; capped pills; the typing's second row (2026-11-21)
+
+- **The right prompt stayed in the box** (your screenshot: `cd ../../hube_` then `✔ / 14:38:07`). Recorded from your
+  shell keystroke by keystroke: zsh keeps the right prompt until one blank is left before it, where `crop`'s
+  two-blank rule no longer finds it. The right-hand part found once for a prompt is remembered (its column and
+  text, `seen_right_side`) and stays cut while the cursor is left of it and its cells still match
+  (`remembered_cut`); typed over or dropped by zsh, nothing is cut. Test `the_right_side_once_seen_stays_cut`.
+- **Pills capped** (your words: "add max width on the folder and branch, make it ellipsis"): each at most `PILL_MAX`
+  (160 pt, the AI's call), the name ending in "…"; the branch pill's tooltip has its whole name.
+- **The typing's second row hangs under the first** ("the second line is supposed to align with the first line,
+  the icon below should be empty"): rows under the first shift `INDENT_COLS` (2, the width of `❯ `), the terminal
+  two columns narrower in card view so they still fit (which also closes the deferred "text can run 2 cells past
+  the box"). Scene `shell-cards-wrap` (it failed with the indent taken out).
+- **Checks:** 2301 tests; clippy at the baseline; ui-shots 255 passed, the 5 known failures.
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·

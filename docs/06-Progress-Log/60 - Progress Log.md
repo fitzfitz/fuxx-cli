@@ -30,6 +30,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Chores: the right prompt near the typing; capped pills; hanging second row
+
+- **What:** the right prompt stays cut while zsh keeps it one blank from the typing (remembered per prompt); the
+  folder and branch pills cap at 160 pt with "…"; a wrapped command's next rows line up under the typing. Note 88.
+- **Checks:** 2301 tests; clippy at the baseline; ui-shots 255 passed, 5 known failures.
+- **Learned:** record the shell keystroke by keystroke: the broken frame lived for exactly one keystroke.
+
 ### 2026-11-21 — Chores: the composer as a folder tab; clean window corners
 
 - **What:** the shell composer's context became pills in a folder tab (the lead designer's details); the window's
