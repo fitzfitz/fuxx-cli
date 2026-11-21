@@ -1293,6 +1293,26 @@ mod tests {
         );
     }
 
+    /// The user's report (2026-11-21): macOS `clear` sends `ESC [ 3 J` first, then
+    /// `ESC [ H ESC [ 2 J`; alacritty's 2J scrolls the screen into the scrollback the 3J had
+    /// just emptied, so the first `clear` left everything. It clears all of it now.
+    #[test]
+    fn cards_rebuild_after_a_macos_clear() {
+        let mut sh = Sh::new(100);
+        sh.command("ls", "a\r\n").command("pwd", "/\r\n").prompt();
+        let mut cache = SegmentCache::default();
+        assert_eq!(
+            card_ids(&items_for(&sh.term, &mut cache, key(1, 0), 0)).len(),
+            2
+        );
+        sh.feed(b"\x1b[3J\x1b[H\x1b[2J").prompt();
+        let items = items_for(&sh.term, &mut cache, key(2, 1), 0);
+        assert!(
+            matches!(items.as_slice(), [Item::Live { .. }]),
+            "only the live box: {items:?}"
+        );
+    }
+
     #[test]
     fn the_cache_keeps_cards_as_output_scrolls() {
         let mut sh = Sh::new(100);

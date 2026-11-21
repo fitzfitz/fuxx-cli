@@ -586,6 +586,48 @@ pub fn advance_at<L: EventListener>(
     bytes: &[u8],
     now: Now,
 ) -> Vec<CommandMark> {
+    // `clear`'s erase-everything pair (`shell_marks::FullClear`): the scrollback is emptied
+    // again where it ends, so the screen its 2J scrolled up goes too.
+    let ends = scanner.full_clear.feed(bytes);
+    if ends.is_empty() {
+        return advance_part(processor, term, tagger, scanner, bytes, now);
+    }
+    let mut applied = Vec::new();
+    let mut from = 0;
+    for end in ends {
+        applied.extend(advance_part(
+            processor,
+            term,
+            tagger,
+            scanner,
+            &bytes[from..end],
+            now,
+        ));
+        if !term.mode().contains(TermMode::ALT_SCREEN) {
+            term.grid_mut().clear_history();
+        }
+        from = end;
+    }
+    applied.extend(advance_part(
+        processor,
+        term,
+        tagger,
+        scanner,
+        &bytes[from..],
+        now,
+    ));
+    applied
+}
+
+/// `advance_at` on one part of the bytes (between full clears).
+fn advance_part<L: EventListener>(
+    processor: &mut Processor<StdSyncHandler>,
+    term: &mut Term<L>,
+    tagger: &mut Tagger,
+    scanner: &mut MarkScanner,
+    bytes: &[u8],
+    now: Now,
+) -> Vec<CommandMark> {
     let mut applied = Vec::new();
     let mut from = 0;
     for (end, mark) in scanner.feed(bytes) {

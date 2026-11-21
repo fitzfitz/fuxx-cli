@@ -22,6 +22,59 @@ pub const MARK_CAP: usize = 8192;
 const INTRO: &[u8] = b"\x1b]133;";
 const CMDLINE_URL: &[u8] = b"cmdline_url=";
 
+/// Finds `clear`'s erase-everything pair in a terminal's output: `ESC [ 3 J` (erase the
+/// scrollback), cursor homes (`ESC [ H`) and `ESC [ 2 J` (erase the screen), nothing printed
+/// between — the order macOS's `clear` sends them. alacritty's 2J scrolls the screen into the
+/// scrollback, which the 3J before it had just emptied, so the old screen would stay above; the
+/// caller empties the scrollback again where the pair ends. A plain 2J (zsh's ⌃L) keeps it.
+#[derive(Clone, Debug, Default)]
+pub struct FullClear {
+    /// A 3J was seen and nothing but cursor homes since.
+    armed: bool,
+    /// The last byte was ESC.
+    esc: bool,
+    /// Inside `ESC [`: its parameters so far (capped).
+    csi: Option<Vec<u8>>,
+}
+
+impl FullClear {
+    /// Where in `bytes` a pair ends (just past its 2J).
+    pub fn feed(&mut self, bytes: &[u8]) -> Vec<usize> {
+        let mut ends = Vec::new();
+        for (i, &b) in bytes.iter().enumerate() {
+            if let Some(params) = &mut self.csi {
+                if (0x40..=0x7e).contains(&b) {
+                    let params = std::mem::take(params);
+                    self.csi = None;
+                    match (params.as_slice(), b) {
+                        (b"3", b'J') => self.armed = true,
+                        (b"2", b'J') if self.armed => {
+                            self.armed = false;
+                            ends.push(i + 1);
+                        }
+                        (b"" | b"1" | b"1;1", b'H') => {}
+                        _ => self.armed = false,
+                    }
+                } else if params.len() < 16 {
+                    params.push(b);
+                }
+            } else if self.esc {
+                self.esc = false;
+                if b == b'[' {
+                    self.csi = Some(Vec::new());
+                } else {
+                    self.armed = false;
+                }
+            } else if b == 0x1b {
+                self.esc = true;
+            } else {
+                self.armed = false;
+            }
+        }
+        ends
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mark {
     /// `redraw`: the shell redraws its prompt after a resize, so the terminal may empty it first
@@ -43,6 +96,9 @@ pub enum Mark {
 
 /// Finds the marks in a terminal's raw output, across reads.
 pub struct MarkScanner {
+    /// `clear`'s erase-everything pair, found as it goes by (`blocks::advance` empties the
+    /// scrollback again after it).
+    pub full_clear: FullClear,
     /// How many leading bytes of `INTRO` have matched so far.
     matched: usize,
     /// After the intro: the mark's body so far; none while not inside one.
@@ -57,6 +113,7 @@ pub struct MarkScanner {
 impl MarkScanner {
     pub fn new() -> Self {
         MarkScanner {
+            full_clear: FullClear::default(),
             matched: 0,
             body: None,
             overflow: false,
@@ -537,5 +594,27 @@ mod tests {
         over.extend(std::iter::repeat_n(b'k', MARK_CAP - 3));
         over.push(0x07);
         assert!(marks(&over).is_empty());
+    }
+
+    /// `clear`'s erase-everything pair (macOS: `ESC[3J ESC[H ESC[2J`) is found where its 2J
+    /// ends, also split over reads; a plain 2J (⌃L) or output between the two isn't one.
+    #[test]
+    fn full_clears_are_found_after_their_2j() {
+        let mut f = FullClear::default();
+        assert_eq!(f.feed(b"ab\x1b[3J\x1b[H\x1b[2Jcd"), vec![13]);
+        assert_eq!(
+            f.feed(b"\x1b[H\x1b[2J"),
+            Vec::<usize>::new(),
+            "a plain 2J keeps it"
+        );
+        assert_eq!(
+            f.feed(b"\x1b[3Jout\x1b[2J"),
+            Vec::<usize>::new(),
+            "output between"
+        );
+        let mut split = FullClear::default();
+        assert_eq!(split.feed(b"\x1b[3"), Vec::<usize>::new());
+        assert_eq!(split.feed(b"J\x1b[H\x1b["), Vec::<usize>::new());
+        assert_eq!(split.feed(b"2Jx"), vec![2]);
     }
 }
