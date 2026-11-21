@@ -534,8 +534,7 @@ fn files_scenes() {
     use crate::git_status::Mark;
     use crate::layout_model::{FileMode, TabKind};
     use crate::right_sidebar::{
-        FILTER_BAND, HEADER, LIST_TOP, REPO_BOTTOM, REPO_PAD_X, REPO_SIDE, REPO_TOP, ROW,
-        mark_color,
+        EDGE, FILTER_BAND, HEADER, HEADER_PAD_RIGHT, LIST_TOP, ROW, mark_color,
     };
     use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use gpui::{Focusable, Modifiers};
@@ -813,11 +812,11 @@ fn files_scenes() {
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = build_for(false, true, slot.clone());
             let header_top = card_top + TAB_BAR;
-            // Part 4, M11al §6.3: one line, centred in the repo card (4 pt margin above, 6
-            // below); Collapse all is a 26 pt button `REPO_PAD_X` in from the card's right.
-            let line_one = header_top + REPO_TOP + (HEADER - REPO_TOP - REPO_BOTTOM) / 2.0;
+            // One line, centred in the plain header row (the designer's redesign); Collapse all
+            // a 26 pt button `HEADER_PAD_RIGHT` in from the panel's right.
+            let line_one = header_top + HEADER / 2.0;
             let button = point(
-                px(right_panel_right(window_right) - REPO_SIDE - REPO_PAD_X - 13.0),
+                px(right_panel_right(window_right) - HEADER_PAD_RIGHT - 13.0),
                 px(line_one),
             );
             let name = point(px(sidebar_left + 60.0), px(line_one));
@@ -881,14 +880,13 @@ fn files_scenes() {
                     (0..w).any(|dx| near(at(x0 + dx as f32 * 0.5, y0 + dy as f32 * 0.5), c, by))
                 })
             };
-            // Part 4, M11al §6.3: one line, centred in the repo card: the name in the text colour
-            // `REPO_PAD_X` in from its edge (its path is in its tooltip, no second line),
-            // Collapse all's icon in a 26 pt button the same distance from the right.
-            let line_top = header_top + REPO_TOP + (HEADER - REPO_TOP - REPO_BOTTOM - 20.0) / 2.0;
-            let inset = REPO_SIDE + REPO_PAD_X;
+            // One line, centred in the plain header row (the designer's redesign): the name in
+            // the text colour on the 12 pt `EDGE` (its path is in its tooltip), Collapse all's
+            // icon in a 26 pt button `HEADER_PAD_RIGHT` from the right.
+            let line_top = header_top + (HEADER - 20.0) / 2.0;
             let (left, right) = (
-                sidebar_left + inset,
-                right_panel_right(window_right) - inset,
+                sidebar_left + EDGE,
+                right_panel_right(window_right) - HEADER_PAD_RIGHT,
             );
             assert!(
                 has(left, left + 140.0, line_top, line_top + 20.0, ui.text, 24),
@@ -1206,11 +1204,11 @@ pub(super) fn right_panel_workspace(
 ///   filter box focused and a click on Changes: Changes shown, saved as `changes`, the
 ///   terminal has the keyboard back (not the Files panel), and now the Changes segment is the
 ///   filled one.
-/// - `right-panels-narrow`: the sidebar at its narrowest (220 pt): the three segments fit, the
-///   Activity segment's right edge inside the track's padding.
+/// - `right-panels-narrow`: the sidebar at its narrowest (220 pt): the three tabs fit,
+///   left-aligned (the designer's redesign: no track).
 fn right_panel_scenes() {
     use crate::right_sidebar::{
-        FILTER_BAND, HEADER, Panel, SWITCH_PAD, SWITCH_SEGMENT, SWITCH_SIDE,
+        FILTER_BAND, HEADER, Panel, SWITCH_GAP, SWITCH_SEGMENT, SWITCH_SIDE,
     };
     use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use gpui::{Bounds, Focusable, Modifiers};
@@ -1278,14 +1276,20 @@ fn right_panel_scenes() {
                         |b: Bounds<Pixels>| f32::from(b.bottom()),
                     );
                     let close = |a: f32, b: f32| (a - b).abs() < 0.5;
-                    // The switch's segments (M11al §6.2): the track's edge and padding in from
-                    // `SWITCH_SIDE`, side by side with no gap between them.
+                    // The tabs (the designer's redesign): left-aligned `SWITCH_SIDE` in, square,
+                    // `SWITCH_GAP` apart, no track.
                     assert!(
-                        close(l(files), sidebar_left + SWITCH_SIDE + HAIRLINE + SWITCH_PAD),
-                        "{n}: Files inside the track's padding: {files:?}"
+                        close(l(files), sidebar_left + SWITCH_SIDE),
+                        "{n}: Files `SWITCH_SIDE` in: {files:?}"
                     );
-                    assert!(close(l(changes), r(files)), "{n}: no gap: {changes:?}");
-                    assert!(close(l(activity), r(changes)), "{n}: no gap: {activity:?}");
+                    assert!(
+                        close(l(changes), r(files) + SWITCH_GAP),
+                        "{n}: 2 apart: {changes:?}"
+                    );
+                    assert!(
+                        close(l(activity), r(changes) + SWITCH_GAP),
+                        "{n}: 2 apart: {activity:?}"
+                    );
                     for tab in [files, changes, activity] {
                         assert!(close(t(tab), seg_top), "{n}: in the middle: {tab:?}");
                         assert!(
@@ -1293,16 +1297,14 @@ fn right_panel_scenes() {
                             "{n}: `SWITCH_SEGMENT` tall: {tab:?}"
                         );
                         assert!(
-                            (f32::from(tab.size.width) - f32::from(files.size.width)).abs() <= 1.0,
-                            "{n}: equal widths: {tab:?}"
+                            close(f32::from(tab.size.width), SWITCH_SEGMENT),
+                            "{n}: square: {tab:?}"
                         );
                     }
+                    // Left-aligned: the rest of the strip is empty (it drags the window).
                     assert!(
-                        close(
-                            r(activity),
-                            card_right - SWITCH_SIDE - HAIRLINE - SWITCH_PAD
-                        ),
-                        "{n}: Activity ends at {}, the track's padding in from its edge",
+                        r(activity) < card_right - 60.0,
+                        "{n}: Activity ends at {}, the strip's rest empty",
                         r(activity)
                     );
                     seen.set([Some(files), Some(changes), Some(activity)]);
@@ -1318,23 +1320,23 @@ fn right_panel_scenes() {
             let shot = render_with(&theme, dims, build, act);
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
             let [files, changes, activity] = seen.get().map(|b| b.expect("seen"));
-            // Inside each segment's left (no icon there), in its middle: the shown one's
-            // `card_lift`, Changes the track's `canvas`; the hovered Activity the card's hover
-            // shade (icon pills since 2026-11-20).
-            let pad = |b: Bounds<Pixels>| at(f32::from(b.left()) + 3.0, tab_middle);
+            // Inside each tab's left (no icon there), in its middle: the shown one's
+            // `side_tab_selected`, Changes no fill (the panel's `side`), the hovered Activity
+            // `side_tab_hover` (the designer's redesign: neutral, no track).
+            let pad = |b: Bounds<Pixels>| at(f32::from(b.left()) + 4.0, tab_middle);
             for (what, b, want) in [
-                ("Files is shown", files, ui.card_lift),
-                ("Changes isn't", changes, ui.sidebar_background),
-                ("Activity is hovered", activity, ui.card_hover),
+                ("Files is shown", files, ui.side_tab_selected),
+                ("Changes isn't", changes, ui.side),
+                ("Activity is hovered", activity, ui.side_tab_hover),
             ] {
                 assert!(near(pad(b), want), "{n}: {what}: {:?}", pad(b));
             }
             // The strip: above the tabs and its empty part the panel's `side` (no fill of its
             // own); its last row the `card_border` line, beside the tabs and under them; the
             // panel's `side` right under it.
-            // (The track runs to `SWITCH_SIDE` from the edge since 2026-11-20: the strip's
-            // empty part is that last strip of it.)
-            let empty = card_right - SWITCH_SIDE / 2.0;
+            // (The tabs are left-aligned since the designer's redesign: the strip's right part
+            // is empty.)
+            let empty = card_right - 20.0;
             let x_files = f32::from(files.left()) + 4.0;
             for (what, x, y) in [
                 ("above the tabs", x_files, card_top + 2.0),
@@ -1417,33 +1419,32 @@ fn right_panel_scenes() {
         };
         let shot = render_with(&theme, dims, build, act);
         let [files, changes, _] = seen.get().map(|b| b.expect("seen"));
-        let pad = |b: Bounds<Pixels>| pixel_at(&shot, dims, f32::from(b.left()) + 2.0, tab_middle);
+        let pad = |b: Bounds<Pixels>| pixel_at(&shot, dims, f32::from(b.left()) + 4.0, tab_middle);
         assert!(
-            near(pad(changes), ui.card_lift),
+            near(pad(changes), ui.side_tab_selected),
             "{n}: Changes is shown now"
         );
-        assert!(near(pad(files), ui.sidebar_background), "{n}: Files isn't");
+        assert!(near(pad(files), ui.side), "{n}: Files isn't");
         println!("ui-shots: {n} ok");
     }
 }
 
 /// The right panel's comfortable look (M11al Task 9, §6.2 to §6.4), in both themes, 1100 × 560:
 /// - `right-panel-comfortable` on Files: the header `TAB_BAR` tall, its bottom `card_border`
-///   line level with the pane tab bar's; the switch's track on `canvas` inside a `card_border`
-///   edge, `SWITCH_SIDE` from the panel's sides; three equal `SWITCH_SEGMENT` tall segments,
-///   the shown one on `card_lift` in the text colour, the others unfilled in `text_faint`, the
-///   hovered one's words `text_dim` with no fill; the repo card (4 / 14 / 6 margin, `card_hover`
-///   fill) with the folder's name in the text colour.
-/// - On Files (M11al Task 10, §6.5): the filter field `FILTER` (34) tall in `raised` with its
-///   placeholder in `text_faint`. (The rows' hover, selection and guides are read in `files`,
+///   line level with the pane tab bar's; (the designer's redesign) no track: square
+///   `SWITCH_SEGMENT` tabs left-aligned `SWITCH_SIDE` in, `SWITCH_GAP` apart, the shown one on
+///   `side_tab_selected` in the text colour, the hovered one on `side_tab_hover`, the others
+///   unfilled in `text_dim`; a plain header row (no card: the panel's `side`) with the
+///   folder's name in the text colour on the 12 pt edge.
+/// - On Files: the filter field `FILTER` (30) tall in `side_field` with its placeholder in
+///   `text_dim`. (The rows' hover, selection and guides are read in `files`,
 ///   `changes`; the footer's buttons in `changes-bar`.)
 /// - The same on Changes: the repo card's meta (`N of M staged`) `text_faint`; the STAGED
 ///   heading's words in capitals (`text_faint`) and, at its right, the count's `card_lift` pill.
 fn right_panel_comfortable_scenes() {
     use crate::git_status::{Change, ChangeList, Counts, Mark};
     use crate::right_sidebar::{
-        Panel, REPO_BOTTOM, REPO_SIDE, REPO_TOP, SECTION_SIDE, SWITCH_PAD, SWITCH_SEGMENT,
-        SWITCH_SIDE,
+        EDGE, Panel, SECTION_SIDE, SWITCH_GAP, SWITCH_SEGMENT, SWITCH_SIDE,
     };
     use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     use alacritty_terminal::vte::ansi::Rgb;
@@ -1458,10 +1459,8 @@ fn right_panel_comfortable_scenes() {
     let card_top = CARD_INSET + HAIRLINE;
     let header_top = card_top + TAB_BAR;
     let root = files_fixture();
-    // The track: 2 × (`SWITCH_PAD` + 1 pt edge) round the segments, in the header's middle.
-    let track_h = SWITCH_SEGMENT + 2.0 * (SWITCH_PAD + HAIRLINE);
-    let (track_left, track_right) = (sidebar_left + SWITCH_SIDE, card_right - SWITCH_SIDE);
-    let track_top = card_top + (TAB_BAR - track_h) / 2.0;
+    // The tabs' row: left-aligned `SWITCH_SIDE` in, in the header's middle.
+    let tabs_left = sidebar_left + SWITCH_SIDE;
     let middle = card_top + TAB_BAR / 2.0;
     let entry = |path: &str, mark, staged| Change {
         path: PathBuf::from(path),
@@ -1540,7 +1539,6 @@ fn right_panel_comfortable_scenes() {
             };
             let close = |a: f32, b: f32| (a - b).abs() < 0.5;
             let seg = seen.get().map(|b| b.expect("segments laid out"));
-            let canvas = ui.sidebar_background;
 
             // The header: `TAB_BAR` tall, its last row the pane bar's `card_border` line (one
             // line across the card).
@@ -1551,64 +1549,58 @@ fn right_panel_comfortable_scenes() {
                 let p = at(x, header_top - 0.5);
                 assert!(near_by(p, ui.card_border, 3), "{n}: the line {what}: {p:?}");
             }
-            // The track: `canvas` inside its `card_border` edge, 14 pt from the panel's sides.
-            let p = at(track_left + 0.5, middle);
-            assert!(near(p, ui.card_border, 3), "{n}: the track's edge: {p:?}");
-            let p = at(track_left - 3.0, middle);
-            assert!(near(p, ui.side, 3), "{n}: `side` outside the track: {p:?}");
-            let p = at(track_left + HAIRLINE + 1.5, middle);
-            assert!(near(p, canvas, 3), "{n}: the track's `canvas`: {p:?}");
-            let p = at(track_right - 0.5, middle);
-            assert!(near_by(p, ui.card_border, 3), "{n}: the right edge: {p:?}");
-            let p = at(track_left + 20.0, track_top + 0.5);
-            assert!(near_by(p, ui.card_border, 3), "{n}: the top edge: {p:?}");
-            // Three equal segments, `SWITCH_SEGMENT` tall, `SWITCH_PAD` inside the edge.
-            let w = (track_right - track_left - 2.0 * (SWITCH_PAD + HAIRLINE)) / 3.0;
+            // No track: the panel's `side` left of the tabs and right of them.
+            for (what, x) in [
+                ("left of the tabs", tabs_left - 3.0),
+                ("right of them", card_right - 20.0),
+            ] {
+                let p = at(x, middle);
+                assert!(near(p, ui.side, 3), "{n}: `side` {what}: {p:?}");
+            }
+            // Square tabs, `SWITCH_GAP` apart, centred in the strip.
             for (i, b) in seg.iter().enumerate() {
                 let (l, t) = (f32::from(b.left()), f32::from(b.top()));
-                let want = track_left + HAIRLINE + SWITCH_PAD + i as f32 * w;
-                assert!(close(l, want), "{n}: segment {i} at {l}, wanted {want}");
-                assert!(close(f32::from(b.size.width), w), "{n}: segment {i}: {b:?}");
+                let want = tabs_left + i as f32 * (SWITCH_SEGMENT + SWITCH_GAP);
+                assert!(close(l, want), "{n}: tab {i} at {l}, wanted {want}");
                 assert!(
-                    close(f32::from(b.size.height), SWITCH_SEGMENT),
-                    "{n}: segment {i}'s height {b:?}"
+                    close(f32::from(b.size.width), SWITCH_SEGMENT)
+                        && close(f32::from(b.size.height), SWITCH_SEGMENT),
+                    "{n}: tab {i}: {b:?}"
                 );
                 assert!(
                     close(t, middle - SWITCH_SEGMENT / 2.0),
-                    "{n}: segment {i} centred"
+                    "{n}: tab {i} centred"
                 );
             }
-            // The shown segment on `card_lift` with the text colour; the hovered one (Activity,
-            // the pointer on it) on `card_hover` (the icon switch, 2026-11-20); the others
-            // unfilled.
+            // The shown tab on `side_tab_selected` with the text colour; the hovered one
+            // (Activity, the pointer on it) on `side_tab_hover`; the others unfilled, `text_dim`.
             let shown = usize::from(panel == Panel::Changes);
             for (i, b) in seg.iter().enumerate() {
-                let p = at(f32::from(b.left()) + 5.0, middle);
+                let p = at(f32::from(b.left()) + 4.0, middle);
                 let fill = match i {
-                    _ if i == shown => ui.card_lift,
-                    2 => ui.card_hover,
-                    _ => canvas,
+                    _ if i == shown => ui.side_tab_selected,
+                    2 => ui.side_tab_hover,
+                    _ => ui.side,
                 };
-                assert!(near(p, fill, 3), "{n}: segment {i}'s fill: {p:?}");
+                assert!(near(p, fill, 3), "{n}: tab {i}'s fill: {p:?}");
                 let (x0, x1) = (f32::from(b.left()), f32::from(b.right()));
                 let ink = match i {
-                    _ if i == shown => ui.text,
-                    2 => ui.text_dim,
-                    _ => ui.text_faint,
+                    _ if i == shown || i == 2 => ui.text,
+                    _ => ui.text_dim,
                 };
                 assert!(
                     has(x0 + 4.0, x1 - 4.0, middle - 8.0, middle + 8.0, ink, 24),
-                    "{n}: segment {i}'s words"
+                    "{n}: tab {i}'s icon"
                 );
             }
 
-            // M11al Task 10 (§6.5): the filter field under the Files header is `FILTER` (34) tall
-            // in `raised`, with `text_faint` words; read down its right end, clear of the words.
+            // The filter field under the Files header is `FILTER` (30) tall in `side_field`, with
+            // `text_dim` words; read down its right end, clear of the words.
             if panel == Panel::Files {
                 let band_top = header_top + crate::right_sidebar::HEADER;
                 let x = card_right - crate::right_sidebar::EDGE - 20.0;
                 let run = (0..(crate::right_sidebar::FILTER_BAND * 2.0) as usize)
-                    .filter(|&i| near(at(x, band_top + i as f32 * 0.5), ui.raised, 0))
+                    .filter(|&i| near(at(x, band_top + i as f32 * 0.5), ui.side_field, 0))
                     .count() as f32
                     / 2.0;
                 assert!(
@@ -1621,33 +1613,28 @@ fn right_panel_comfortable_scenes() {
                         sidebar_left + 120.0,
                         band_top,
                         band_top + crate::right_sidebar::FILTER_BAND,
-                        ui.text_faint,
+                        ui.text_dim,
                         24
                     ),
-                    "{n}: the placeholder in `text_faint`"
+                    "{n}: the placeholder in `text_dim`"
                 );
             }
-            // The repo card: 4 / 14 / 6 margin, `card_hover`, the folder's name in `text`.
-            let top = header_top + REPO_TOP;
-            let header = if panel == Panel::Files {
+            // A plain header row (the designer's redesign): no card, the panel's `side`; the
+            // folder's name in `text` from the 12 pt edge.
+            let top = header_top;
+            let h = if panel == Panel::Files {
                 crate::right_sidebar::HEADER
             } else {
                 crate::changes_panel::HEADER
             };
-            let h = header - REPO_TOP - REPO_BOTTOM;
-            let (cl, cr) = (sidebar_left + REPO_SIDE, card_right - REPO_SIDE);
-            let cmid = top + h / 2.0;
-            for (what, x, y, c) in [
-                ("inside its left", cl + 3.0, cmid, ui.card_hover),
-                ("inside its right", cr - 3.0, cmid, ui.card_hover),
-                ("inside its top", cl + 40.0, top + 1.5, ui.card_hover),
-                ("inside its bottom", cl + 40.0, top + h - 1.5, ui.card_hover),
-                ("above it (4 pt)", cl + 40.0, top - 2.0, ui.side),
-                ("left of it (14 pt)", cl - 5.0, cmid, ui.side),
-                ("below it (6 pt)", cl + 40.0, top + h + 3.0, ui.side),
+            let (cl, cr) = (sidebar_left + EDGE - 14.0, card_right - EDGE + 14.0);
+            for (what, x, y) in [
+                ("at its left", sidebar_left + 3.0, top + h / 2.0),
+                ("at its right", card_right - 3.0, top + h / 2.0),
+                ("at its top", sidebar_left + 150.0, top + 1.5),
             ] {
                 let p = at(x, y);
-                assert!(near(p, c, 3), "{n}: the repo card {what}: {p:?}");
+                assert!(near(p, ui.side, 3), "{n}: the header row {what}: {p:?}");
             }
             assert!(
                 has(cl + 14.0, cl + 120.0, top + 8.0, top + h - 8.0, ui.text, 24),

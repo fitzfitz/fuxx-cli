@@ -101,26 +101,18 @@ actions!(
 /// How often the followed terminal's folder is looked up again while the sidebar can be seen,
 /// and the shown panel (Files or Changes) refreshed.
 pub const REFRESH: Duration = Duration::from_secs(2);
-/// The panel switch in the card's strip (M11al §6.2): a track `SWITCH_SIDE` from the panel's
-/// sides, `SWITCH_PAD` of padding inside its 1 pt edge, three equal segments `SWITCH_SEGMENT`
-/// tall; their corners, the track's corners and their icons. Since 2026-11-20 (your call: "a
-/// full width tab with icons only, tooltip for the label") the segments are pills as tall as a
-/// pane tab, each an outline icon (`SWITCH_ICON`) with its panel's name in its tooltip.
-pub(crate) const SWITCH_SIDE: f32 = 6.0;
-pub(crate) const SWITCH_PAD: f32 = 2.0;
+/// The panel tabs in the card's strip (the designer's redesign; your words: "yes build it"):
+/// no track, icon tabs as the pane tabs, `SWITCH_SEGMENT` square with `SWITCH_SEGMENT_RADIUS`
+/// corners, `SWITCH_GAP` apart, left-aligned `SWITCH_SIDE` from the strip's side; each an
+/// outline icon (`SWITCH_ICON`) with its panel's name in its tooltip (your call of 2026-11-20).
+pub(crate) const SWITCH_SIDE: f32 = 8.0;
+pub(crate) const SWITCH_GAP: f32 = 2.0;
 pub(crate) const SWITCH_SEGMENT: f32 = crate::tab_bar::TAB;
-pub(crate) const SWITCH_RADIUS: f32 = SWITCH_SEGMENT / 2.0 + SWITCH_PAD;
-const SWITCH_SEGMENT_RADIUS: f32 = SWITCH_SEGMENT / 2.0;
+const SWITCH_SEGMENT_RADIUS: f32 = 8.0;
 const SWITCH_ICON: f32 = 16.0;
-/// The repo card (M11al §6.3) heading Files and Changes: its margin above, at the sides and
-/// below, its padding, its corners, and the line (name and meta) inside.
-pub(crate) const REPO_TOP: f32 = 4.0;
-pub(crate) const REPO_SIDE: f32 = 14.0;
-pub(crate) const REPO_BOTTOM: f32 = 6.0;
-pub(crate) const REPO_PAD_Y: f32 = 12.0;
-pub(crate) const REPO_PAD_X: f32 = 14.0;
-pub(crate) const REPO_RADIUS: f32 = 12.0;
-pub(crate) const REPO_LINE: f32 = 20.0;
+/// The folder's name in the Files header is a button padded `TITLE_PAD`, so its words land on
+/// the 12 pt `EDGE` (the header row starts `EDGE - TITLE_PAD` in).
+pub(crate) const TITLE_PAD: f32 = 6.0;
 /// A section heading (§6.4): its side padding, the room under its words, its count pill's
 /// padding and corners.
 pub(crate) const SECTION_SIDE: f32 = 20.0;
@@ -139,7 +131,8 @@ pub(crate) const TEXT: f32 = 14.0;
 /// A row's name (M11al §6.5).
 pub(crate) const NAME: f32 = 13.5;
 pub(crate) const SMALL: f32 = 12.0;
-pub(crate) const HEADER: f32 = REPO_TOP + REPO_PAD_Y + REPO_LINE + REPO_PAD_Y + REPO_BOTTOM;
+/// A panel's header row: plain since the designer's redesign (was the 54 pt repo card).
+pub(crate) const HEADER: f32 = 36.0;
 pub(crate) const TITLE: f32 = 14.0;
 pub(crate) const ICON: f32 = 16.0;
 pub(crate) const EDGE: f32 = 12.0;
@@ -151,10 +144,12 @@ pub(crate) const HEADER_ICON: f32 = 15.0;
 pub(crate) const HEADER_PAD_RIGHT: f32 = 8.0;
 /// A thin chevron's box (› / ⌄, part 4).
 pub(crate) const CHEVRON: f32 = 12.0;
-/// The filter field under the Files header: its height, its corners, its padding and the
-/// room under it; its search icon.
-pub(crate) const FILTER: f32 = 34.0;
-const FILTER_RADIUS: f32 = 10.0;
+/// The filter field under the Files header: its height, its corners, its room from the panel's
+/// sides, its padding and the room under it; its search icon (a quiet field since the
+/// designer's redesign: 30, corners 8, 8 from the sides).
+pub(crate) const FILTER: f32 = 30.0;
+const FILTER_RADIUS: f32 = 8.0;
+pub(crate) const FILTER_SIDE: f32 = 8.0;
 const FILTER_PAD: f32 = 10.0;
 pub(crate) const FILTER_BELOW: f32 = 8.0;
 const FILTER_ICON: f32 = 14.0;
@@ -930,18 +925,10 @@ pub(crate) fn header_row(height: f32) -> gpui::Div {
         .pr(px(HEADER_PAD_RIGHT))
 }
 
-/// The repo card (M11al §6.3) round a header's content: `height` tall with its margin (4 above, 14
-/// at the sides, 6 below), the card `card_hover`-filled and rounded, its content from
-/// `REPO_PAD_X` in, centred.
-pub(crate) fn repo_card(height: f32, ui: UiColors) -> (gpui::Div, gpui::Div) {
-    let outer = div()
-        .flex_none()
-        .flex()
-        .w_full()
-        .h(px(height))
-        .pt(px(REPO_TOP))
-        .pb(px(REPO_BOTTOM))
-        .px(px(REPO_SIDE));
+/// A header's row round its content (the designer's redesign: plain, no card fill): `height`
+/// tall, its content from the 12 pt `EDGE` to `HEADER_PAD_RIGHT` from the right, centred.
+pub(crate) fn repo_card(height: f32) -> (gpui::Div, gpui::Div) {
+    let outer = div().flex_none().flex().w_full().h(px(height));
     let card = div()
         .flex()
         .flex_1()
@@ -949,14 +936,14 @@ pub(crate) fn repo_card(height: f32, ui: UiColors) -> (gpui::Div, gpui::Div) {
         .h_full()
         .items_center()
         .gap(px(8.0))
-        .px(px(REPO_PAD_X))
-        .rounded(px(REPO_RADIUS))
-        .bg(hsla(ui.card_hover));
+        .pl(px(EDGE))
+        .pr(px(HEADER_PAD_RIGHT));
     (outer, card)
 }
 
-/// A header's icon button (part 4): `HEADER_BUTTON` square, its `HEADER_ICON` glyph faint, the
-/// text colour and a `card_hover` fill under the pointer; `tip` in its tooltip.
+/// A header's icon button (part 4): `HEADER_BUTTON` square, its `HEADER_ICON` glyph dim, the
+/// text colour and a `side_tab_hover` fill under the pointer (the designer's redesign); `tip` in
+/// its tooltip.
 pub(crate) fn header_button(
     id: &'static str,
     kind: Glyph,
@@ -976,11 +963,10 @@ pub(crate) fn header_button(
         .size(px(HEADER_BUTTON))
         .rounded(px(6.0))
         .cursor_pointer()
-        // On the repo card's `card_hover` fill: a step lighter.
-        .hover(move |s| s.bg(hsla(ui.card_lift)))
+        .hover(move |s| s.bg(hsla(ui.side_tab_hover)))
         .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.into())).into() })
         .child(
-            icon(ui.text_faint)
+            icon(ui.text_dim)
                 .absolute()
                 .group_hover(id, |s| s.invisible()),
         )
@@ -1508,20 +1494,15 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let corner = px(CARD_RADIUS - HAIRLINE);
-        // The switch: a track on `canvas` in a `card_border` edge, three equal segments. A press
-        // on it is its own (the header's padding round it drags the window, below).
+        // The tabs (the designer's redesign): left-aligned icon tabs, no track. A press on them
+        // is theirs (the rest of the strip drags the window, below).
         let track = div()
             .id("right-sidebar-switch")
             .flex()
             .flex_row()
-            .flex_1()
-            .min_w(px(0.0))
+            .flex_none()
             .items_center()
-            .p(px(SWITCH_PAD))
-            .rounded(px(SWITCH_RADIUS))
-            .border(px(HAIRLINE))
-            .border_color(hsla(ui.card_border))
-            .bg(hsla(ui.sidebar_background))
+            .gap(px(SWITCH_GAP))
             .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
                 cx.stop_propagation()
             })
@@ -1602,13 +1583,13 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// `panel`'s segment in the switch (M11h, M11al §6.2; icons since 2026-11-20): a third of
-    /// the track, `SWITCH_SEGMENT` tall, its outline icon in the middle; the shown panel's on
-    /// `card_lift` in the text colour, the others unfilled, `text_faint`, `text_dim` and the
-    /// card's hover shade under the pointer. Its tooltip is the panel's name. A click shows its
-    /// panel.
+    /// `panel`'s tab (the designer's redesign): `SWITCH_SEGMENT` square, its outline icon in the
+    /// middle; the shown panel's on `side_tab_selected` in the text colour, the others unfilled
+    /// in `text_dim`, `side_tab_hover` and the text colour under the pointer. Its tooltip is the
+    /// panel's name. A click shows its panel.
     fn render_panel_tab(&self, panel: Panel, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
-        let active = self.right_sidebar.panel == panel;
+        let repo = self.right_sidebar.changes.repo_known();
+        let active = self.right_sidebar.panel.shown_as(repo) == panel;
         let i = panel as usize;
         let group: SharedString = format!("right-panel-tab-{i}").into();
         let tab = div()
@@ -1616,15 +1597,15 @@ impl Workspace {
             .group(group.clone())
             .relative()
             .flex()
-            .flex_1()
-            .min_w(px(0.0))
+            .flex_none()
             .items_center()
             .justify_center()
-            .h(px(SWITCH_SEGMENT))
+            .size(px(SWITCH_SEGMENT))
             .rounded(px(SWITCH_SEGMENT_RADIUS))
-            .when(active, |t| t.bg(hsla(ui.card_lift)))
+            .when(active, |t| t.bg(hsla(ui.side_tab_selected)))
             .when(!active, |t| {
-                t.cursor_pointer().hover(move |s| s.bg(hsla(ui.card_hover)))
+                t.cursor_pointer()
+                    .hover(move |s| s.bg(hsla(ui.side_tab_hover)))
             })
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.show_right_panel(panel, window, cx)
@@ -1637,7 +1618,7 @@ impl Workspace {
                 let (ink, hover) = if active {
                     (ui.text, ui.text)
                 } else {
-                    (ui.text_faint, ui.text_dim)
+                    (ui.text_dim, ui.text)
                 };
                 crate::icons::icon(panel.icon(), px(SWITCH_ICON), hsla(ink))
                     .group_hover(group.clone(), move |s| s.text_color(hsla(hover)))
@@ -2057,6 +2038,7 @@ impl Workspace {
             cx.stop_propagation();
             this.files_collapse_all(cx)
         }));
+        // The folder's name and its chevron: one quiet button (the designer's redesign).
         let title = div()
             .id("files-root")
             .flex()
@@ -2064,7 +2046,10 @@ impl Workspace {
             .min_w(px(0.0))
             .items_center()
             .gap(px(4.0))
-            .h_full()
+            .h(px(HEADER_BUTTON))
+            .px(px(TITLE_PAD))
+            .rounded(px(6.0))
+            .hover(move |s| s.bg(hsla(ui.side_tab_hover)))
             .cursor_pointer()
             .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(full.clone())).into() })
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.files_toggle_root(cx)))
@@ -2072,15 +2057,20 @@ impl Workspace {
                 div()
                     .min_w(px(0.0))
                     .truncate()
-                    .text_size(px(TITLE))
+                    .text_size(px(NAME))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(ui.text))
                     .child(name),
             )
-            .child(thin_chevron(!tree.root_collapsed(), ui.text_faint));
-        let (outer, card) = repo_card(HEADER, ui);
+            .child(thin_chevron(!tree.root_collapsed(), ui.text_dim));
+        let (outer, card) = repo_card(HEADER);
         outer
-            .child(card.child(title).child(div().flex_1()).child(collapse_all))
+            .child(
+                card.pl(px(EDGE - TITLE_PAD))
+                    .child(title)
+                    .child(div().flex_1())
+                    .child(collapse_all),
+            )
             .into_any_element()
     }
 
@@ -2143,10 +2133,10 @@ impl Workspace {
                     .w_full()
                     .px(px(FILTER_PAD))
                     .rounded(px(FILTER_RADIUS))
-                    .bg(hsla(ui.raised))
+                    .bg(hsla(ui.side_field))
                     .child(tab_bar::footer_glyph(
                         Glyph::Search,
-                        ui.text_faint,
+                        ui.text_dim,
                         FILTER_ICON,
                     ))
                     .child(
@@ -2165,7 +2155,7 @@ impl Workspace {
                                         .top_0()
                                         // Clear of the caret at the start.
                                         .left(px(2.0))
-                                        .text_color(hsla(ui.text_faint))
+                                        .text_color(hsla(ui.text_dim))
                                         .child(FILTER_PLACEHOLDER),
                                 )
                             }),
@@ -2173,7 +2163,7 @@ impl Workspace {
                 div()
                     .flex_none()
                     .h(px(FILTER_BAND))
-                    .px(px(EDGE))
+                    .px(px(FILTER_SIDE))
                     .pb(px(FILTER_BELOW))
                     // The box keeps its clicks from reaching whatever holds it, so it takes the
                     // keyboard here, before they arrive.
@@ -2985,15 +2975,18 @@ mod tests {
         assert_eq!((PILL_INSET, PILL_PAD, PILL_RADIUS), (10.0, 12.0, 9.0));
         // (The Git tab's rows are smaller since 2026-11-20: `changes_panel::GIT_*`.)
         assert_eq!(NAME, 13.5);
-        assert_eq!((FILTER, FILTER_RADIUS), (34.0, 10.0));
-        // M11al §6.3: the header is the repo card (4 / 12 + 20 + 12 / 6), Changes' 8 more.
-        assert_eq!(HEADER, 54.0);
-        assert_eq!(crate::changes_panel::HEADER, 62.0);
-        assert_eq!((REPO_SIDE, REPO_PAD_X, REPO_RADIUS), (14.0, 14.0, 12.0));
-        // §6.2: the switch's track, its padding, its segments; since 2026-11-20 it fits the
-        // 40 pt strip as the pane bars' pills do: 6 from the sides, segments as tall as a tab.
-        assert_eq!((SWITCH_SIDE, SWITCH_PAD, SWITCH_SEGMENT), (6.0, 2.0, 28.0));
-        assert_eq!(SWITCH_RADIUS, SWITCH_SEGMENT / 2.0 + SWITCH_PAD);
+        // The designer's redesign (your words: "yes build it"): one quiet field 30 tall, 8 in
+        // from the sides, corners 8.
+        assert_eq!((FILTER, FILTER_RADIUS, FILTER_SIDE), (30.0, 8.0, 8.0));
+        // A plain 36 pt header row (no repo card), Changes' 8 more for its bar; the folder's
+        // name a button padded 6, so its words land on the 12 pt edge.
+        assert_eq!(HEADER, 36.0);
+        assert_eq!(crate::changes_panel::HEADER, 44.0);
+        assert_eq!(TITLE_PAD, 6.0);
+        // The tabs: no track, 28 pt squares as the pane tabs, corners 8, 2 apart, 8 from the
+        // strip's side, left-aligned.
+        assert_eq!((SWITCH_SIDE, SWITCH_GAP, SWITCH_SEGMENT), (8.0, 2.0, 28.0));
+        assert_eq!(SWITCH_SEGMENT_RADIUS, 8.0);
         assert_eq!(SWITCH_SEGMENT, crate::tab_bar::TAB);
         assert_eq!((TEXT, SMALL, TITLE), (14.0, 12.0, 14.0));
         assert_eq!(ICON, 16.0);
