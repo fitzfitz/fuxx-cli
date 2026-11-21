@@ -36,6 +36,8 @@ actions!(
         Backspace,
         Clear,
         Delete,
+        DeleteWordLeft,
+        DeleteToLineEnd,
         Copy,
         Cut,
         Paste,
@@ -213,6 +215,31 @@ impl EditBuffer {
             start
         };
         self.replace(from..self.cursor, "");
+    }
+
+    /// ⌥⌫ / ⌃W: the selection, else back over the spaces and the word before the caret (a line
+    /// break counts as a space, as in zsh).
+    pub fn delete_word_left(&mut self) {
+        let sel = self.selection();
+        if !sel.is_empty() {
+            return self.replace(sel, "");
+        }
+        self.replace(word_start(&self.text, self.cursor)..self.cursor, "");
+    }
+
+    /// ⌃K: the selection, else on to the end of the line (the newline after, at it).
+    pub fn delete_to_line_end(&mut self) {
+        let sel = self.selection();
+        if !sel.is_empty() {
+            return self.replace(sel, "");
+        }
+        let end = self.line_end_of(self.cursor);
+        let to = if end == self.cursor {
+            next_char(&self.text, end)
+        } else {
+            end
+        };
+        self.replace(self.cursor..to, "");
     }
 
     /// A horizontal move: without ⇧ a selection collapses to its edge on that side instead.
@@ -576,6 +603,8 @@ impl Composer {
         backspace: Backspace => |b| b.backspace();
         delete: Delete => |b| b.delete();
         clear: Clear => |b| b.delete_to_line_start();
+        delete_word_left: DeleteWordLeft => |b| b.delete_word_left();
+        delete_to_line_end: DeleteToLineEnd => |b| b.delete_to_line_end();
         newline: Newline => |b| b.newline();
         select_all: SelectAll => |b| b.select_all();
         move_left: MoveLeft => |b| b.left(false);
@@ -880,6 +909,8 @@ impl Render for Composer {
             .on_action(cx.listener(Self::complete))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::clear))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_to_line_end))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
@@ -1368,6 +1399,48 @@ mod tests {
         m.delete();
         m.delete();
         assert_eq!(m.text(), "");
+    }
+
+    #[test]
+    fn delete_word_left_takes_the_word_before_the_caret() {
+        let mut b = EditBuffer::new("git commit -m  ");
+        b.delete_word_left();
+        assert_eq!(
+            b.text(),
+            "git commit -",
+            "the spaces and the word before them"
+        );
+        b.delete_word_left();
+        assert_eq!(b.text(), "git ");
+        let mut s = EditBuffer::new("one two");
+        s.select_range(0, 3);
+        s.delete_word_left();
+        assert_eq!(s.text(), " two", "a selection goes first");
+        let mut l = EditBuffer::new("a\nb");
+        l.set_cursor(2);
+        l.delete_word_left();
+        assert_eq!(l.text(), "b", "across the line break, like zsh");
+        let mut e = EditBuffer::new("é😀 x");
+        e.set_cursor(6);
+        e.delete_word_left();
+        assert_eq!(e.text(), " x");
+    }
+
+    #[test]
+    fn delete_to_line_end_kills_the_rest_of_the_line() {
+        let mut b = EditBuffer::new("ab\ncd");
+        b.set_cursor(1);
+        b.delete_to_line_end();
+        assert_eq!(b.text(), "a\ncd");
+        b.delete_to_line_end();
+        assert_eq!(b.text(), "acd", "at a line end it takes the newline");
+        b.set_cursor(b.text().len());
+        b.delete_to_line_end();
+        assert_eq!(b.text(), "acd", "nothing after the caret: nothing");
+        let mut s = EditBuffer::new("abc");
+        s.select_range(0, 1);
+        s.delete_to_line_end();
+        assert_eq!(s.text(), "bc", "a selection goes first");
     }
 
     #[test]

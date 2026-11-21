@@ -614,6 +614,19 @@ lead designer's details, as given:
   the message).
 - **Checks:** 2302 tests; clippy at the baseline; ui-shots 255 passed, the 5 known failures.
 
+### Chore: the agent box edits like the shell's line (2026-11-21)
+
+Your words: "make sure the font the textbox nature like cursor move with keyboard, delete text/sentences,etc same as
+terminal textbox". The box had the Mac keys (⌥←/⌥→, ⌘←/⌘→, ⌘⌫) but none of the shell's editing keys. Added, in
+the "Composer" key context: **⌥⌫ and ⌃W** delete the word before the caret (`delete_word_left`; across a line break,
+as zsh does); **⌃K** to the end of the line (`delete_to_line_end`; at the end it joins the next line); **⌃U** to
+its start (as ⌘⌫); **⌃A / ⌃E** line start and end; **⌃B / ⌃F / ⌃P / ⌃N** a character or a row (⌃P / ⌃N walk an
+open `@` or `/` list, as ↑ / ↓); **⌃H / ⌃D** a character back and forward. Not added: zsh's kill ring (⌃Y pastes
+what ⌃W / ⌃K / ⌃U took) and ⌘↑ / ⌘↓ (the terminal uses them to scroll).
+
+- **Checks:** 2305 tests (the two operations, the key map); scene `agent-box-shell-keys` (real keystrokes; fails
+  with ⌥⌫ unbound); clippy at the baseline; ui-shots 256 passed, the 5 known failures.
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·

@@ -445,6 +445,19 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("backspace", composer::Backspace, Some("Composer")),
         KeyBinding::new("cmd-backspace", composer::Clear, Some("Composer")),
         KeyBinding::new("delete", composer::Delete, Some("Composer")),
+        // The shell line's editing keys (zsh's emacs keys; ⌥⌫ as the terminal sends it).
+        KeyBinding::new("alt-backspace", composer::DeleteWordLeft, Some("Composer")),
+        KeyBinding::new("ctrl-w", composer::DeleteWordLeft, Some("Composer")),
+        KeyBinding::new("ctrl-u", composer::Clear, Some("Composer")),
+        KeyBinding::new("ctrl-k", composer::DeleteToLineEnd, Some("Composer")),
+        KeyBinding::new("ctrl-a", composer::LineStart, Some("Composer")),
+        KeyBinding::new("ctrl-e", composer::LineEnd, Some("Composer")),
+        KeyBinding::new("ctrl-b", composer::MoveLeft, Some("Composer")),
+        KeyBinding::new("ctrl-f", composer::MoveRight, Some("Composer")),
+        KeyBinding::new("ctrl-p", composer::MoveUp, Some("Composer")),
+        KeyBinding::new("ctrl-n", composer::MoveDown, Some("Composer")),
+        KeyBinding::new("ctrl-h", composer::Backspace, Some("Composer")),
+        KeyBinding::new("ctrl-d", composer::Delete, Some("Composer")),
         KeyBinding::new("left", composer::MoveLeft, Some("Composer")),
         KeyBinding::new("right", composer::MoveRight, Some("Composer")),
         KeyBinding::new("up", composer::MoveUp, Some("Composer")),
@@ -479,6 +492,8 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         // The agent tab's `@` file list and `/` list, while one is open over the composer.
         KeyBinding::new("up", agent_tab::AtUp, Some("AtPopup > Composer")),
         KeyBinding::new("down", agent_tab::AtDown, Some("AtPopup > Composer")),
+        KeyBinding::new("ctrl-p", agent_tab::AtUp, Some("AtPopup > Composer")),
+        KeyBinding::new("ctrl-n", agent_tab::AtDown, Some("AtPopup > Composer")),
         KeyBinding::new("tab", composer::Complete, Some("AtPopup > Composer")),
     ];
     bindings.extend(browser_tab::page_bindings());
@@ -1516,6 +1531,37 @@ mod tests {
         assert!(runs(&keymap, "cmd-k", composer).partial_eq(&OpenPalette));
         assert!(runs(&keymap, "cmd-t", composer).partial_eq(&NewTab));
         assert!(runs(&keymap, "cmd-w", composer).partial_eq(&CloseSession));
+    }
+
+    /// The agent composer edits like the shell's line (zsh's emacs keys and the Mac ones the
+    /// terminal sends): ⌥⌫ and ⌃W a word back, ⌃U and ⌃K to the line's start and end, ⌃A/⌃E/
+    /// ⌃B/⌃F/⌃P/⌃N moves, ⌃H/⌃D a character; ⌃P/⌃N walk an open `@` list like ↑/↓.
+    #[test]
+    fn composer_edits_like_the_shell_line() {
+        use crate::composer;
+        let keymap = keymap();
+        let composer: &[&str] = &["Workspace", "AgentTab", "Composer"];
+        let at_list: &[&str] = &["Workspace", "AgentTab", "AtPopup", "Composer"];
+        let keys: [(&str, Box<dyn Action>); 12] = [
+            ("alt-backspace", Box::new(composer::DeleteWordLeft)),
+            ("ctrl-w", Box::new(composer::DeleteWordLeft)),
+            ("ctrl-u", Box::new(composer::Clear)),
+            ("ctrl-k", Box::new(composer::DeleteToLineEnd)),
+            ("ctrl-a", Box::new(composer::LineStart)),
+            ("ctrl-e", Box::new(composer::LineEnd)),
+            ("ctrl-b", Box::new(composer::MoveLeft)),
+            ("ctrl-f", Box::new(composer::MoveRight)),
+            ("ctrl-p", Box::new(composer::MoveUp)),
+            ("ctrl-n", Box::new(composer::MoveDown)),
+            ("ctrl-h", Box::new(composer::Backspace)),
+            ("ctrl-d", Box::new(composer::Delete)),
+        ];
+        for (key, action) in keys {
+            let got = runs(&keymap, key, composer);
+            assert!(got.partial_eq(&*action), "{key}: {}", got.name());
+        }
+        assert!(runs(&keymap, "ctrl-p", at_list).partial_eq(&crate::agent_tab::AtUp));
+        assert!(runs(&keymap, "ctrl-n", at_list).partial_eq(&crate::agent_tab::AtDown));
     }
 
     #[test]
