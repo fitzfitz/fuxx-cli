@@ -304,6 +304,41 @@ With `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`, a new zsh tab:
 11. Preferences → Sessions → Commands as cards off: today's terminal at once; on again: cards.
 12. A bash tab (or with Command blocks off): today's terminal, unchanged.
 
+## Rework (2026-11-21, after your first look)
+
+Your words, on screenshots of the build with your Powerlevel10k prompt: "Very ugly". The framed box took columns, so
+your two-sided prompt wrapped; its second half leaked between cards; a new tab was a tiny box under a blank pane; the
+branch showed twice. Redesigned with you in browser mockups (`card-rework-*.html`): you chose **D2 + D3 combined**
+("Combine D2 and D3"), then the live prompt as a **composer** like your reference ("Pay attention to details, the
+border, background, outer border, gap between the inner box and the outer border"), then **your prompt left out of
+it** ("now that we already have folder and git information, we don't need this"); "let's try this. make sure for
+icons, we use the icons that we already used".
+
+1. **Cards (D2 + D3):** each finished command on one soft surface (a shade above the pane, radius 8, no border); a
+   **rail** down the left in the pane's padding (no terminal columns) with a dot per card beside its header: green
+   done, red failed, the accent ring around a chosen card's dot. No red outline: the dot and `exit N` carry a failure.
+   A card covers all its command's rows (a wrapped command line's second row too), so nothing is left between cards.
+2. **The composer** at the pane's bottom, measured from your reference: an **outer box** a shade above the pane (1 pt
+   edge a little lighter, radius 16) holding the **context row** (the running chip first, peach `● cmd · 1m 04s`;
+   then `Folder` icon + folder `ChevronDown`; then `Branch` icon + branch `ChevronDown`, the app's Lucide icons) and,
+   5 pt in from its sides and bottom, the **inner box** a shade above that (1 pt edge, lightest along its top,
+   radius 12, 14 pt padding).
+3. **In the inner box only what you type:** your prompt's rows are left out (from the mark where the prompt ends:
+   the typing starts at B's column; a multi-line prompt's upper rows go too) and its right-hand part (the run after
+   two blank cells, as M11l's chip finds it). A `❯` in the accent leads; empty, a quiet `Type a command`. Completion
+   menus and suggestions under the line still show. **A running command:** only its output (its command is in the
+   chip), the box growing up to the pane. A session reattached before its next prompt shows the row as the terminal
+   has it until the next prompt.
+4. **The terminal's size** is the inner box's inside at its tallest (pane less padding, the outer box's edge and
+   inset, the inner box's edge and padding, the context row).
+5. **Unchanged from the build:** bottom-anchored column, folding, Copy / Rerun on hover, ⇧⌘↑/↓, drag onto an agent
+   tab, the alternate screen in today's view, `shell-cards`.
+
+**AI's calls:** the context row's ▾s act: the branch opens M11o's branch switcher, the folder shows it in Finder
+(you didn't say; plain labels if you'd rather); the composer's shades are new theme colours stepped from the
+terminal background, held to the text floor; the chosen card shows by an accent ring on its dot and an accent edge
+on its surface.
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·
