@@ -117,3 +117,8 @@ fills; the light still comes from above (a white top, a darker bottom). Test `th
 above`; send's contrast in the tab's test. Your bubble and queued messages follow (they use the box's colours).
 On-screen: does it feel like the reference?
 
+Then (2026-11-22): "the chat's inner and outer gap/padding is too small add more": the gap between the boxes 5 pt
+(`OUTER_INSET`, was 3; the send circle's inset follows so the curves stay concentric). Your second reference: ready,
+send is the accent's circle with its arrow (the white one in the first was the empty box's voice button); empty, a
+quiet control.
+
