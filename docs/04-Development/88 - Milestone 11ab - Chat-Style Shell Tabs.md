@@ -406,6 +406,96 @@ opens a folder window, is it a good UX? I don't think so".
   folders (`~/…`), on hover. Not in a screenshot (the scenes don't hover); yours to check.
 - **Checks:** 2284 tests; clippy at the baseline; fmt; ui-shots: the 6 known display-dependent failures only.
 
+### Chore design: the panel darker, the window lighter (2026-11-21, approved)
+
+Your words: "I just realized how bad our theme color combination is. It supposed to be darker in the floating panel
+and the window background is ligher. Can we switch it? ensure others follow the palette rules". Two ways offered: A,
+lift the window above the terminal; B, darken the panel below the theme's background. You picked **B** ("let's try
+B"), then approved this design ("approved, go ahead").
+
+- **The switch:** the terminal and the floating panel take today's window colour: each built-in theme's
+  `chrome-canvas` (Mocha `#11111b`, Latte `#dce0e8`, Nord `#242933`, Dracula `#191a21`, Gruvbox `#1d2021`,
+  TokyoNight `#15161e`), else today's derived one (dark: the background 42 % toward black; light: 8 % toward the ink);
+  the window and the sidebar take the theme's own background. Done once where a theme is settled
+  (`theme::resolve`), so everything that reads the background follows.
+- **The rest follows the rules:** what sits on the panel (cards, the composer's outer box, file and diff tabs,
+  previews, hovers, hairlines) mixes from the darker panel; what sits on the window (sidebar rows, search box, tints)
+  from the lighter one; text and marks keep their contrast floors in every theme.
+- **The composer's inner box** is the panel colour (the darkest, an inset), replacing "the sidebar's colour".
+- **Light themes** follow the same rule. A theme's ANSI colours are unchanged.
+- **Tried on a branch** (`theme-dark-panel`), screenshots in Mocha and Latte for you before it reaches master.
+
+**As built (branch `theme-dark-panel`):** `Theme::with_dark_panel` at the end of `theme::resolve` (the screenshot
+harness too); the prefs swatches show the panel colour. Along the way, from your looks at it:
+- **One window colour** ("sidebar background color and the floating panel background … should be same"): the
+  panel's drop shadow darkened the 8 pt of window round it; it's gone (`card_shadow_alpha` 0), the panel stands out by
+  its colour.
+- **Corners** ("the border radius on the floating panel, is not matching the window"): 14 (the window's own) widened
+  the gap at the corners and the strict parallel curve (6) read too tight; you picked **9 pt** from renders side by
+  side, then **11 pt** ("add more border radius on floating, now it doesn't match the outter"). The diff view's
+  cards follow it.
+- **AI's calls:** a config `background = …` line without its own `chrome-canvas` drops the theme's canvas (it was
+  picked for the theme's background, not yours), so the panel derives from your colour; the pinned dim and faint
+  text values moved (Mocha `9da3b9` / `9fa3ae`, Latte `515263` / `52525f`), every contrast floor holding. **For your
+  check:** in Latte the dim text is now close to the full text (the darker panel pulls it down to stay readable).
+- **Checks:** 2289 tests; clippy at the baseline; fmt; ui-shots 253 passed, the 6 known display-dependent failures
+  (scene probes moved for the smaller corners and the missing shadow).
+
+### Chore: the reference app's palette rules (2026-11-21, a try on `theme-dark-panel`)
+
+Your words: "learn this app's color palette, how it present their color combinations", then "yes adapt it, show me
+the screenshots". Measured from your screenshot: one window colour (`#2a2b26`: sidebar, title bar, strips), the
+panel a quiet step below (`#23241f`, 1.1:1), what you work in raised above the panel (composer `#2d2e29`), edges
+lighter than their fill and lit along the top, full text near white (`#f7f7f0`) with dim text well below
+(`#878781`), colour only where it means something. Adapted, each still derived from the theme's own colours:
+
+- **The panel a quiet step below the window:** dark 17 % toward black, light 5 % toward the ink; the built-in
+  themes' deep `chrome-canvas` lines dropped (yours, set in your config, still win).
+- **The composer raised:** outer box and inner box a shade and two above the panel, the inner box's top edge the
+  lightest (replaces "the panel colour" for the inner box).
+- **Text hierarchy:** the chrome's full text half way to white (dark) or black (light), the terminal keeping its
+  theme's own; dim text half way down, pushed to its floor: full to dim 1.6:1 or more in every theme (Latte was
+  1.12). Latte's dim and faint now meet at its floor.
+- **Found on the way:** Latte's lighter panel had met `panel_hover` (a pressed title-bar button's fill, 1.01:1); it's
+  held off the card at `SOFT_LINE_MIN` now.
+- **Checks:** 2292 tests; clippy at the baseline; fmt; ui-shots 253 passed, the 6 known failures (the file tab's
+  glyph check now reads `tile_ink`, the colour the tab draws it in).
+
+**The lead designer's review, taken as given** (your words: "ask 'lead UI/UX designer' agent and then I'd go with
+that agent suggestion"; a fresh Opus agent, read only):
+1. Command cards are the panel with a 1 px edge (held to `SOFT_LINE_MIN`), not a fill lighter than the composer.
+2. Light themes: raised is lighter, an input field: outer 40 % and inner 80 % toward white, darker hairlines (the
+   inner one at `QUIET_LINE_MIN`), no lit top line.
+3. Dark composer at the reference's step: outer 6 %, inner 9 %, edges 11 %, the inner box's top 18 %.
+4. Selection neutral: the selected sidebar row 8 % toward the text colour, hover 4 %, the shown pane tab 6 %; the
+   2 pt accent bar is the one accent mark.
+5. Faint text is dim text: two greys, rank below dim by size and place.
+6. Kept: no shadow, the 11/14/8 pt corners. Its two flags, taken (your words: "I meant I agreed with the 2 things
+   the designer flagged"): the panel step on dark themes **22 %** (was 17 %: its edge got lost on a dim display) and
+   the chrome's full text **30 %** toward white or black (was 50 %: it pulled the eye off the terminal); full to dim
+   is now 1.5:1 or more (Mocha 1.98, Latte 1.64, Nord 1.56), and a dark theme's border may sit at 1.45 on the
+   window (Nord 1.41).
+- **AI's call on the way:** a pressed or lifted row (`row_active`, a dragged row's copy) at 14 % on every theme, clear
+  of the 8 % selection (Latte's 10 % had met it).
+- **Checks:** 2295 tests; clippy at the baseline; fmt; ui-shots 253 passed, the 6 known failures.
+
+### Fix: pieces of the prompt piling up after many resizes (2026-11-21)
+
+Your report: after resizing, "it still showing the older terminal slightly … the previous chat command goes up and
+create gaps"; "only happens in current tab which resized multiple times (50x at least)". Found by recording your
+own zsh and Powerlevel10k through 121 fast resizes and replaying the bytes through fuxx's grid: Powerlevel10k writes
+a redraw in two pieces (A, the left side, B; then the right side placed for the width zsh knew). A resize between
+the pieces made the second one stale: in the narrower grid its right side wrapped and the cursor ended a row lower,
+where the next redraw started, leaving the piece behind and pushing the prompt (and the cards) up a row each time.
+
+- A width change that empties the live prompt remembers its row (from the top of the scrollback, so scrolling
+  doesn't move it); the shell's next A finds the prompt there: the rows between (at most 4, never a tagged one) are
+  emptied and the redraw starts back on the prompt's row.
+- A second width change before the redraw (the prompt's tag already gone) empties the same rows again, so they
+  never reflow and the remembered row stays true (without it, a reflow above pushed it a row off and output was lost).
+- Tests: `a_resize_mid_redraw_leaves_no_pieces`, `two_resizes_before_the_redraw_keep_the_output`; your recorded
+  drag replays to the grid as it was before it.
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·

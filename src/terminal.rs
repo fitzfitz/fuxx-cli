@@ -879,7 +879,7 @@ impl TerminalCore {
                 {
                     let mut guard = self.shared.lock();
                     let shared = &mut *guard;
-                    crate::blocks::resize(&mut shared.term, &shared.tagger, dims);
+                    crate::blocks::resize(&mut shared.term, &mut shared.tagger, dims);
                 }
                 if let Ok(pty) = pty.lock() {
                     let _ = pty.resize(dims, cell);
@@ -1210,7 +1210,7 @@ impl Replica {
                 // Emptying a live prompt first as the daemon's session did (`blocks::resize`).
                 let mut guard = shared.lock();
                 let s = &mut *guard;
-                crate::blocks::resize(&mut s.term, &s.tagger, wire_dims(r.cols, r.rows));
+                crate::blocks::resize(&mut s.term, &mut s.tagger, wire_dims(r.cols, r.rows));
                 drop(guard);
                 self.emit(TermEvent::Term(Event::Wakeup));
             }

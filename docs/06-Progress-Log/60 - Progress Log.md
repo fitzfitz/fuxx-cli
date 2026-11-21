@@ -33,8 +33,27 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ### 2026-11-21 — The palette and resize work merged and pushed
 
 - **What:** branch `theme-dark-panel` (the panel darker and a quiet step below the window, no shadow, 11 pt corners,
-  the reference palette's rules, the lead designer's calls, the resize-pieces fix) merged to master and pushed on
-  your approval ("I agree with the designer agent said"). Your on-screen check: note 88's chore sections.
+  the reference palette's rules, the lead designer's calls and its two flags, the resize-pieces fix) merged to
+  master and pushed on your word ("merge it and push"). Your on-screen check: note 88's chore sections. (A docs-only
+  commit saying so went out early, on a misread of "I agree with the designer"; it's true from this merge on.)
+### 2026-11-21 — Fix: prompt pieces piling up after many resizes
+
+- **What:** a resize landing between the two pieces of a Powerlevel10k redraw left the second piece stale; it wrapped
+  in the narrower grid, moving the prompt down a row and leaving pieces behind (your tab resized 50 times or more).
+  The next redraw now lands back on the emptied prompt's row and clears the piece. Note 88 "Fix: pieces of the prompt".
+- **Checks:** 2294 tests (two new, each failing first); your shell's recorded 121-step drag replays clean.
+- **Learned:** record the real bytes and replay them through the grid: guessing the shell's redraw from its docs
+  would never have shown a redraw split in two.
+
+### 2026-11-21 — Chore: the panel darker, the window lighter (branch `theme-dark-panel`)
+
+- **What:** your call ("It supposed to be darker in the floating panel and the window background is ligher", B):
+  each theme's canvas becomes the terminal and panel, its background the window and sidebar; everything derived
+  follows. Then from your looks: no panel shadow (the window round it is the sidebar's colour), panel corners 9 pt
+  (your pick), the composer's inner box the panel colour. Note 88 "Chore design: the panel darker".
+- **Checks:** 2289 tests; clippy at the baseline; fmt; ui-shots 253 passed, the 6 known failures.
+- **Learned:** nested corners: equal radii widen the gap, the strict parallel curve can read too tight against
+  macOS's smooth window corner; render the options and let the eye pick.
 
 ### 2026-11-21 — Chores after the M11ab rework: the composer's context row
 

@@ -30,7 +30,8 @@ pub fn shot_theme(name: &str) -> Theme {
     let text = theme::builtin_theme(name).expect("a built-in theme");
     let mut t = Theme::default();
     theme::apply(&mut t, &settings::parse(text));
-    t
+    // As `resolve` settles it: the panel darker, the window lighter (the dark-panel chore).
+    t.with_dark_panel()
 }
 
 /// A rendered scene: size in device pixels and RGBA bytes, row by row.
@@ -1215,6 +1216,7 @@ pub(super) fn count_along(
 /// How far a gap's pixel may be from the canvas: the cards' shadows (`card_shadow_alpha`,
 /// blurred 6 pt) reach into the 6 pt gaps and darken them a little (M11i). 12 at M11i's alphas
 /// (0.30 dark, 0.08 light); 18 since M11al raised them to 0.45 / 0.12 (the same 1.5 times).
+/// Kept at 18 when the dark-panel chore lowered them to 0.25 / 0.06 (the canvas now lighter).
 pub(super) const SHADOW_SLACK: u8 = 18;
 
 /// Whether pixel `p` shows the canvas (`sidebar_background`) round the card: within the
