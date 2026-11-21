@@ -425,7 +425,9 @@ pub const SURF_PAD_TOP: f32 = 8.0;
 pub const SURF_PAD_X: f32 = 12.0;
 pub const SURF_PAD_BOTTOM: f32 = 10.0;
 pub const OUT_GAP: f32 = 4.0;
-pub const CTX_ROW: f32 = 28.0;
+/// From the composer's top to its inner box: the tab's rise, the box's edge, and the box's gap
+/// (`OUTER_INSET`), so the gap on top matches the sides (your report, 2026-11-22).
+pub const CTX_ROW: f32 = TAB_RISE + OUTER_INSET;
 /// The folder-tab composer (the designer's details): the context pills sit in a tab that rises
 /// `TAB_RISE` above the box's top edge, `PILL_H` tall, `TAB_PAD` in from the tab's sides,
 /// `PILL_GAP` apart.
@@ -1159,7 +1161,8 @@ mod tests {
     /// on every side; no pills, no tab; never wider than the box less 48.
     #[test]
     fn the_composer_tab_fits_its_pills() {
-        assert_eq!(CTX_ROW, 28.0);
+        // The gap above the inner box is the sides' (your report, 2026-11-22).
+        assert_eq!(CTX_ROW, TAB_RISE + OUTER_INSET);
         assert_eq!(
             (TAB_RISE, PILL_H, TAB_PAD, PILL_GAP),
             (25.0, 22.0, 3.0, 4.0)
