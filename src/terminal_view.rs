@@ -221,6 +221,21 @@ pub fn inset(bounds: Bounds<Pixels>, split: bool) -> Bounds<Pixels> {
     )
 }
 
+/// Whether a terminal is card-capable after `mark` (M11ab ruling 3, final review #2): a known
+/// answer stands (a shell this window spawned); otherwise a real mark says yes, and a snapshot
+/// (`Unknown`) says yes only when the grid already holds a tag (`tagged`).
+fn integration_after(
+    mark: &CommandMark,
+    now: Option<bool>,
+    tagged: impl FnOnce() -> bool,
+) -> Option<bool> {
+    match (now, mark) {
+        (Some(known), _) => Some(known),
+        (None, CommandMark::Unknown) => tagged().then_some(true),
+        (None, _) => Some(true),
+    }
+}
+
 /// The terminal's size for a pane of `bounds` (M11ab): in card view the live box's inside at
 /// its tallest (`card_view::card_dims`), otherwise the cells that fit inside the padding.
 fn pane_dims(
@@ -477,6 +492,29 @@ impl TerminalView {
     }
 
     /// The card view's last frame: whether it drew cards, and the terminal's size then.
+    /// Last frame's rows to point into: (key, x, y, bottom, live).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_card_regions(&self) -> Vec<(String, f32, f32, f32, bool)> {
+        self.cards
+            .borrow()
+            .regions
+            .iter()
+            .map(|r| (r.key.clone(), r.x, r.y, r.bottom, r.live))
+            .collect()
+    }
+
+    /// The column's scroll from its bottom, and a way to set it (the scenes scroll up).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_card_scroll(&self) -> f32 {
+        self.cards.borrow().scroll
+    }
+
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_scroll_cards(&mut self, by: f32) {
+        let mut cards = self.cards.borrow_mut();
+        cards.scroll = (cards.scroll + by).clamp(0.0, cards.max_scroll);
+    }
+
     #[cfg(feature = "ui-shots")]
     pub fn shot_card_count(&self) -> usize {
         self.cards.borrow().hits.len()
@@ -999,8 +1037,12 @@ impl TerminalView {
     /// its Done, so the owner settles the status knowing which command ended, and the tracker's
     /// own Done then changes nothing.
     fn command_marked(&mut self, mark: CommandMark, cx: &mut Context<Self>) {
-        // A background-service session shows it was started with the marks (ruling 3).
-        self.integration.get_or_insert(true);
+        // A background-service session shows it was started with the marks (ruling 3): a real
+        // mark, or at its snapshot a tag already in its grid (final review #2).
+        let core = self.core.clone();
+        self.integration = integration_after(&mark, self.integration, || {
+            core.read_term(|term, _| !crate::blocks::segments(term).is_empty())
+        });
         self.marks_seen += 1;
         let now = Instant::now();
         let tracks = self.tracks_status();
@@ -1187,8 +1229,11 @@ impl TerminalView {
     }
 
     /// A mouse report (or wheel as arrows) for the program; dropped once disconnected.
-    fn report(&self, bytes: &[u8]) {
+    fn report(&mut self, bytes: &[u8]) {
         if !self.disconnected {
+            // (The scenes read the mouse reports with what was typed.)
+            #[cfg(feature = "ui-shots")]
+            self.sent.extend_from_slice(bytes);
             self.core.write(bytes);
         }
     }
@@ -1215,7 +1260,10 @@ impl TerminalView {
     fn card_point_at(&self, pos: gpui::Point<Pixels>) -> Option<(Point, Side, bool)> {
         let cards = self.cards.borrow();
         let (x, y) = (f32::from(pos.x), f32::from(pos.y));
-        let region = match (&self.card_region, self.selecting) {
+        // Held while a selection or the program's mouse press lasts: a drag or a release over a
+        // gap or the chips still lands in the region it started in (final review #1).
+        let held = self.selecting || self.mouse_reported;
+        let region = match (&self.card_region, held) {
             (Some(key), true) => cards.regions.iter().find(|r| &r.key == key),
             _ => cards.regions.iter().find(|r| y >= r.y && y < r.bottom),
         }?;
@@ -1488,6 +1536,15 @@ impl TerminalView {
             cx.propagate();
             return;
         }
+        // In card view the column scrolls, by a view's height (final review #6).
+        if self.cards_on.get() {
+            let mut cards = self.cards.borrow_mut();
+            let up = matches!(scroll, Scroll::PageUp);
+            cards.scroll = crate::card_view::page(cards.scroll, cards.view, cards.max_scroll, up);
+            drop(cards);
+            cx.notify();
+            return;
+        }
         self.core.scroll(scroll);
         cx.notify();
     }
@@ -1531,6 +1588,14 @@ impl TerminalView {
                 self.chosen_block = None;
             }
         }
+        cx.notify();
+    }
+
+    /// A card's Rerun (M11ab): M11l's Rerun (types it, never runs it), and the column back at
+    /// its bottom, where it types (final review).
+    pub fn rerun_card(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.rerun_block(id, cx);
+        self.cards.borrow_mut().typed();
         cx.notify();
     }
 
@@ -1580,7 +1645,7 @@ impl TerminalView {
                 MouseButton::Left,
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                     cx.stop_propagation();
-                    this.rerun_block(&rerun_id, cx);
+                    this.rerun_card(&rerun_id, cx);
                 }),
             ));
         let (cx0, cy0, cw, ch) = hit.cmd;
@@ -1936,11 +2001,13 @@ impl Render for TerminalView {
         });
 
         let overlays: Vec<gpui::AnyElement> = if was_cards {
-            let (hits, origin) = {
+            let (hits, origin, view) = {
                 let cards = self.cards.borrow();
-                (cards.hits.clone(), cards.origin)
+                (cards.hits.clone(), cards.origin, cards.view_rect)
             };
-            hits.into_iter()
+            // Cut to the column's view (final review #5): nothing over the padding or the bar.
+            hits.iter()
+                .filter_map(|hit| crate::card_view::clip_hit(hit, view))
                 .map(|hit| self.card_overlay(hit, origin, &ui, cx))
                 .collect()
         } else {
@@ -2049,6 +2116,9 @@ impl Render for TerminalView {
                                 Frames::None => {}
                             }
                             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
+                            // The card view drags, selects and releases as today's view does
+                            // (final review #1).
+                            follow_mouse(&view, &hitbox, window);
                             return;
                         }
                         // With command blocks on, the blocks in view come with the screen,
@@ -2138,24 +2208,7 @@ impl Render for TerminalView {
 
                         // Move/up anywhere in the window, so a drag that leaves the pane keeps
                         // going. Paint-phase registrations last for one frame.
-                        window.on_mouse_event({
-                            let view = view.clone();
-                            let hitbox = hitbox.clone();
-                            move |e: &MouseMoveEvent, phase, window, cx| {
-                                if phase == DispatchPhase::Bubble {
-                                    let over_pane = hitbox.is_hovered(window);
-                                    view.update(cx, |this, cx| {
-                                        this.on_mouse_move(e, over_pane, cx)
-                                    });
-                                }
-                            }
-                        });
-                        window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
-                            if phase == DispatchPhase::Bubble {
-                                let over_pane = hitbox.is_hovered(window);
-                                view.update(cx, |this, cx| this.on_mouse_up(e, over_pane, cx));
-                            }
-                        });
+                        follow_mouse(&view, &hitbox, window);
                     },
                 )
                 .size_full(),
@@ -2878,6 +2931,29 @@ impl CursorMotion {
     }
 }
 
+/// Follow the mouse's moves and releases anywhere in the window this frame (a drag that leaves
+/// the pane keeps going; paint-phase registrations last one frame), for both views.
+fn follow_mouse(view: &Entity<TerminalView>, hitbox: &gpui::Hitbox, window: &mut Window) {
+    window.on_mouse_event({
+        let view = view.clone();
+        let hitbox = hitbox.clone();
+        move |e: &MouseMoveEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble {
+                let over_pane = hitbox.is_hovered(window);
+                view.update(cx, |this, cx| this.on_mouse_move(e, over_pane, cx));
+            }
+        }
+    });
+    let view = view.clone();
+    let hitbox = hitbox.clone();
+    window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
+        if phase == DispatchPhase::Bubble {
+            let over_pane = hitbox.is_hovered(window);
+            view.update(cx, |this, cx| this.on_mouse_up(e, over_pane, cx));
+        }
+    });
+}
+
 /// What `paint_cards` reads from (M11ab).
 struct CardPaint<'a> {
     core: &'a TerminalCore,
@@ -3163,6 +3239,12 @@ fn paint_cards(
     state.regions = regions;
     state.hits = hits;
     state.origin = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+    state.view_rect = (
+        f32::from(content.left()),
+        f32::from(content.top()),
+        f32::from(content.size.width),
+        f32::from(content.size.height),
+    );
 }
 
 /// `text` in `font` at `size`, its first `runs` bytes each in their colour, from `at` on a line
@@ -3589,6 +3671,31 @@ mod tests {
         ] {
             assert!(!is_typed_text(not), "{not:?}");
         }
+    }
+
+    /// Final review #2: a background-service session turns card-capable only on a real mark,
+    /// or at its snapshot (`Unknown`) when its grid already holds a tag; a bash session never.
+    #[test]
+    fn only_a_real_mark_or_a_tag_makes_a_session_card_capable() {
+        use super::integration_after;
+        use crate::command_name::CommandMark;
+        assert_eq!(
+            integration_after(&CommandMark::Unknown, None, || false),
+            None
+        );
+        assert_eq!(
+            integration_after(&CommandMark::Unknown, None, || true),
+            Some(true)
+        );
+        assert_eq!(
+            integration_after(&CommandMark::Prompt, None, || false),
+            Some(true)
+        );
+        assert_eq!(
+            integration_after(&CommandMark::Prompt, Some(false), || true),
+            Some(false),
+            "a spawned shell's answer stands"
+        );
     }
 
     /// M11ab: in card view the terminal takes the live box's inside (`card_dims`); otherwise

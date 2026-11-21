@@ -250,6 +250,7 @@ pub(super) const ORDER: &[&str] = &[
     "command-blocks",
     "command-blocks-alt-screen",
     "shell-cards",
+    "shell-cards-select",
     "shell-cards-running-full",
     "shell-cards-alt-screen",
     "shell-cards-off",

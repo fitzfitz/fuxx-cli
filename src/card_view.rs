@@ -123,10 +123,20 @@ pub fn column(
 ) -> Vec<Item> {
     let end = cursor.max(last_text);
     let Some(last) = segments.last() else {
-        return vec![Item::Live {
-            top: first,
-            bottom: end.max(first),
-        }];
+        // The box keeps to the screen (Settled 4): rows above it are earlier rows.
+        let screen_top = Line(0).max(first);
+        let mut items = Vec::new();
+        if first < screen_top {
+            items.push(Item::Earlier {
+                top: first,
+                bottom: screen_top - 1i32,
+            });
+        }
+        items.push(Item::Live {
+            top: screen_top,
+            bottom: end.max(screen_top),
+        });
+        return items;
     };
     // The last segment is live unless it is a finished command (its prompt not shown yet).
     let live_last = !matches!(last, Segment::Command(b) if b.outcome != Outcome::Running);
@@ -242,6 +252,8 @@ pub struct SegmentCache {
     /// The newest command's id and its tag's row from the top: if the tag isn't there any
     /// more, the scrollback rotated.
     check: Option<(String, i64)>,
+    /// Moves on every rebuild or shift (the column built from these segments is kept by it).
+    pub generation: u64,
 }
 
 fn shift(segment: &Segment, by: i32) -> Segment {
@@ -264,13 +276,49 @@ impl SegmentCache {
     /// The grid's segments (rows as the grid numbers them now), read again only when `key`
     /// changed or the scrollback rotated; and whether it read them.
     pub fn segments<L>(&mut self, term: &Term<L>, key: CacheKey) -> (Vec<Segment>, bool) {
+        let rebuilt = self.refresh(term, key);
         let history = term.grid().history_size() as i64;
-        let still = self.key == Some(key)
-            && self.check.as_ref().is_none_or(|(id, from_top)| {
-                let row = Line((from_top - history) as i32);
-                tag_id_at(term, row).as_deref() == Some(id.as_str())
-            });
-        let rebuilt = !still;
+        let now = self
+            .from_top
+            .iter()
+            .map(|s| shift(s, -(history as i32)))
+            .collect();
+        (now, rebuilt)
+    }
+
+    /// Bring the cache up to date; true when it read the whole scrollback again. At the
+    /// scrollback cap every row moves up as lines rotate out: the newest card's tag is looked
+    /// for above its old row, and the cache shifts by as much (final review #7) instead.
+    pub fn refresh<L>(&mut self, term: &Term<L>, key: CacheKey) -> bool {
+        let history = term.grid().history_size() as i64;
+        let at = |from_top: i64| Line((from_top - history) as i32);
+        if self.key == Some(key) {
+            let Some((id, from_top)) = self.check.clone() else {
+                return false;
+            };
+            if tag_id_at(term, at(from_top)).as_deref() == Some(id.as_str()) {
+                return false;
+            }
+            let rows = history + term.screen_lines() as i64;
+            if let Some(k) = (1..=rows)
+                .find(|&k| tag_id_at(term, at(from_top - k)).as_deref() == Some(id.as_str()))
+            {
+                // Every row moved up by `k`: shift, and drop the segments whose top rotated out
+                // (their tags went with it; what's left of them reads as earlier rows, as a
+                // full read would have it).
+                let by = -(k as i32);
+                self.from_top = self
+                    .from_top
+                    .iter()
+                    .map(|s| shift(s, by))
+                    .filter(|s| extent(s).0.0 >= 0)
+                    .collect();
+                self.check = Some((id, from_top - k));
+                self.generation += 1;
+                return false;
+            }
+        }
+        let rebuilt = true;
         if rebuilt {
             let segments = segments(term);
             self.check = segments.iter().rev().find_map(|s| match s {
@@ -279,14 +327,25 @@ impl SegmentCache {
             });
             self.from_top = segments.iter().map(|s| shift(s, history as i32)).collect();
             self.key = Some(key);
+            self.generation += 1;
         }
-        let now = self
-            .from_top
-            .iter()
-            .map(|s| shift(s, -(history as i32)))
-            .collect();
-        (now, rebuilt)
+        rebuilt
     }
+}
+
+/// The screen's last row with text on it (row 0 when it's blank).
+fn last_text_row<L>(term: &Term<L>) -> Line {
+    let grid = term.grid();
+    (0..term.screen_lines() as i32)
+        .rev()
+        .map(Line)
+        .find(|&row| {
+            (0..term.columns()).any(|c| {
+                let ch = grid[row][Column(c)].c;
+                ch != ' ' && ch != '\0'
+            })
+        })
+        .unwrap_or(Line(0))
 }
 
 /// The column for `term` now (the segments from `cache`, the cursor and the last row with text
@@ -300,16 +359,7 @@ pub fn items_for<L>(
     let (segments, _) = cache.segments(term, key);
     let grid = term.grid();
     let cursor = grid.cursor.point.line;
-    let last_text = (0..term.screen_lines() as i32)
-        .rev()
-        .map(Line)
-        .find(|&row| {
-            (0..term.columns()).any(|c| {
-                let ch = grid[row][alacritty_terminal::index::Column(c)].c;
-                ch != ' ' && ch != '\0'
-            })
-        })
-        .unwrap_or(Line(0));
+    let last_text = last_text_row(term);
     column(
         &segments,
         grid.topmost_line(),
@@ -409,6 +459,12 @@ pub struct CardsState {
     pub view: f32,
     /// The pane's top-left corner last frame (window points): the overlays are placed from it.
     pub origin: (f32, f32),
+    /// The column last built and what it was built from (cache generation, history size,
+    /// cursor row, last text row, UTC offset): rebuilt only when one moves (final review #7).
+    pub items: Vec<Item>,
+    pub items_key: Option<(u64, usize, i32, i32, i64)>,
+    /// The column's view last frame (window points, `x, y, w, h`): hit areas are cut to it.
+    pub view_rect: (f32, f32, f32, f32),
 }
 
 /// Rows painted this frame that the pointer can select in (window points): the first row is
@@ -498,6 +554,42 @@ pub fn chips(folder: Option<&str>, branch: Option<&str>, running: Option<String>
     running.into_iter().chain(folder).chain(branch).collect()
 }
 
+/// The scroll for a column that grew from `old_total` to `total` (final review #4): scrolled up,
+/// it grows by as much, so what you read stays put; at the bottom it stays at the bottom.
+pub fn keep_view(scroll: f32, old_total: f32, total: f32) -> f32 {
+    if scroll <= 0.0 || old_total <= 0.0 {
+        return scroll;
+    }
+    (scroll + total - old_total).max(0.0)
+}
+
+/// Shift+Page Up (`up`) / Down in card view (final review #6): a view's height, within
+/// `0..=max`.
+pub fn page(scroll: f32, view: f32, max: f32, up: bool) -> f32 {
+    let step = if up { view } else { -view };
+    (scroll + step).clamp(0.0, max.max(0.0))
+}
+
+/// A card's hit areas cut to the column's view `(x, y, w, h)` (final review #5): none when the
+/// card is out of view; an area out of view shrinks to nothing (height 0).
+pub fn clip_hit(hit: &CardHit, view: (f32, f32, f32, f32)) -> Option<CardHit> {
+    let (top, bottom) = (view.1, view.1 + view.3);
+    let cut = |(x, y, w, h): (f32, f32, f32, f32)| {
+        let (a, b) = (y.max(top), (y + h).min(bottom));
+        (x, a, w, (b - a).max(0.0))
+    };
+    let card = cut(hit.card);
+    if card.3 <= 0.0 {
+        return None;
+    }
+    Some(CardHit {
+        card,
+        cmd: cut(hit.cmd),
+        fold: hit.fold.map(cut).filter(|f| f.3 > 0.0),
+        ..hit.clone()
+    })
+}
+
 /// The scroll (from the column's bottom) that shows a card at `top`, `height` tall, in a
 /// column `total` tall seen through a view `view` tall, now scrolled `scroll`: unchanged when
 /// it's in view, else its top at the view's top (as far as the column goes).
@@ -573,9 +665,25 @@ pub fn frame<L: EventListener>(
     utc_offset: i64,
     cursor_shape: Option<(CursorShape, bool)>,
 ) -> CardFrame {
-    let items = items_for(term, &mut state.cache, key, utc_offset);
+    state.cache.refresh(term, key);
+    let grid = term.grid();
+    let (cursor, last_text) = (grid.cursor.point.line, last_text_row(term));
+    let items_key = (
+        state.cache.generation,
+        grid.history_size(),
+        cursor.0,
+        last_text.0,
+        utc_offset,
+    );
+    if state.items_key != Some(items_key) {
+        state.items = items_for(term, &mut state.cache, key, utc_offset);
+        state.items_key = Some(items_key);
+    }
+    let items = std::mem::take(&mut state.items);
     let unfolded = &state.unfolded;
     let (placed, total) = layout(&items, &|id| unfolded.contains(id), line_h);
+    // Scrolled up, what you read stays put as the column grows (final review #4).
+    state.scroll = keep_view(state.scroll, state.total, total);
     state.max_scroll = (total - view_height).max(0.0);
     state.order = items
         .iter()
@@ -677,6 +785,7 @@ pub fn frame<L: EventListener>(
             }
         }
     }
+    state.items = items;
     CardFrame { draws }
 }
 
@@ -775,8 +884,13 @@ mod tests {
 
     #[test]
     fn no_tags_is_one_live_box() {
+        // Final review #3: rows above the screen are earlier rows, the box keeps to the screen.
         let items = column(&[], Line(-20), Line(3), Line(5), 0);
-        assert_eq!(ids(&items), ["live -20..5"]);
+        assert_eq!(ids(&items), ["earlier -20..-1", "live 0..5"]);
+        assert_eq!(
+            ids(&column(&[], Line(0), Line(3), Line(5), 0)),
+            ["live 0..5"]
+        );
     }
 
     #[test]
@@ -1037,8 +1151,10 @@ mod tests {
             sh.feed(format!("out {i}\r\n").as_bytes());
         }
         assert_eq!(sh.term.grid().history_size(), 10, "at the cap");
+        // Final review #7: the rotation is found by looking up from the newest card's old row
+        // (no full walk), and the cached segments are shifted by it.
         let (segments, rebuilt) = cache.segments(&sh.term, key(1, 0));
-        assert!(rebuilt, "rotation rebuilds");
+        assert!(!rebuilt, "a rotation shifts the cache, no full walk");
         assert!(
             segments
                 .iter()
@@ -1185,5 +1301,58 @@ mod tests {
         assert_eq!(reveal(1500.0, 100.0, 2000.0, 600.0, 0.0), 0.0);
         // Taller than the view: its top at the view's top.
         assert_eq!(reveal(100.0, 900.0, 2000.0, 600.0, 0.0), 1300.0);
+    }
+
+    // Final review fixes.
+
+    /// #4: scrolled up, new output (a taller column) keeps what you read in place; at the
+    /// bottom it stays at the bottom.
+    #[test]
+    fn scrolled_up_the_view_stays_put_as_the_column_grows() {
+        assert_eq!(keep_view(120.0, 1000.0, 1040.0), 160.0);
+        assert_eq!(
+            keep_view(0.0, 1000.0, 1040.0),
+            0.0,
+            "at the bottom: stays there"
+        );
+        assert_eq!(
+            keep_view(120.0, 1000.0, 900.0),
+            20.0,
+            "a shorter column (a clear)"
+        );
+        assert_eq!(keep_view(120.0, 0.0, 1040.0), 120.0, "no last frame yet");
+    }
+
+    /// #6: Shift+Page Up / Down move the column by a view's height, within its bounds.
+    #[test]
+    fn page_keys_scroll_the_column() {
+        assert_eq!(page(0.0, 600.0, 2000.0, true), 600.0);
+        assert_eq!(page(1800.0, 600.0, 2000.0, true), 2000.0);
+        assert_eq!(page(500.0, 600.0, 2000.0, false), 0.0);
+    }
+
+    /// #5: a card's hit areas are cut to the column's view: the part scrolled above it takes no
+    /// presses (it would lie over the pane's tab bar).
+    #[test]
+    fn hits_are_cut_to_the_view() {
+        let hit = CardHit {
+            id: "c".into(),
+            card: (10.0, -50.0, 300.0, 200.0),
+            cmd: (10.0, -32.0, 300.0, 17.0),
+            fold: Some((21.0, 100.0, 278.0, 17.0)),
+            command: None,
+            outcome: Outcome::Ok,
+        };
+        let cut = clip_hit(&hit, (0.0, 0.0, 400.0, 600.0)).expect("partly in view");
+        assert_eq!(cut.card, (10.0, 0.0, 300.0, 150.0));
+        assert_eq!(
+            cut.cmd.3, 0.0,
+            "the command line is above the view: no handle"
+        );
+        assert_eq!(cut.fold, hit.fold, "the fold row is in view");
+        assert!(
+            clip_hit(&hit, (0.0, 200.0, 400.0, 600.0)).is_none(),
+            "wholly out of view"
+        );
     }
 }

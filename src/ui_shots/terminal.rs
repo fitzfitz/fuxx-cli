@@ -72,6 +72,20 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "shell-cards-select",
+        run: shell_cards_select_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/terminal_view.rs",
+            "src/card_view.rs",
+            "src/terminal.rs",
+            "src/grid.rs",
+            "src/blocks.rs",
+        ],
+    },
+    Scene {
         name: "shell-cards-running-full",
         run: shell_cards_running_full_scene,
         themes: Themes::Both,
@@ -1570,6 +1584,95 @@ fn shell_cards_scene() {
         };
         assert!(any(ui.block_failed), "{n}: exit 1 in the failed colour");
         assert!(any(ui.raised), "{n}: the chips' pills");
+    }
+}
+
+/// `shell-cards-select` (final review #1): a drag across a card's output selects its rows (the
+/// selection stays in that card), and a press-drag-release in the live box selects there too.
+fn shell_cards_select_scene() {
+    let dims = size(px(640.0), px(520.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let n = format!("shell-cards-select-{slug}");
+        let mut rig = cards_rig(theme, &blocks_text_with(24), dims);
+        let _ = rig.frame();
+        let (_, _, (cw, lh)) = rig.read(|v| v.shot_cards());
+        let regions = rig.read(|v| v.shot_card_regions());
+        let (window, none) = (rig.window, gpui::Modifiers::none());
+        let left = Some(gpui::MouseButton::Left);
+        let drag = |rig: &mut CursorRig, from: gpui::Point<Pixels>, to: gpui::Point<Pixels>| {
+            rig.cx
+                .simulate_mouse_down(window, from, gpui::MouseButton::Left, none);
+            rig.cx.simulate_mouse_move(window, to, left, none);
+            rig.cx
+                .simulate_mouse_up(window, to, gpui::MouseButton::Left, none);
+            rig.cx.run_until_parked();
+            rig.read(|v| v.selection_text()).unwrap_or_default()
+        };
+        // The folded echo card's rows ("line 13" ..): from its first row to its third.
+        let (_, x, y, _, _) = regions
+            .iter()
+            .find(|r| !r.4 && !r.0.starts_with("rows:"))
+            .cloned()
+            .expect("a card's panel in view");
+        let from = point(px(x + 1.0), px(y + lh * 0.5));
+        let to = point(px(x + cw * 6.5), px(y + lh * 2.5));
+        let text = drag(&mut rig, from, to);
+        assert!(
+            text.contains("line"),
+            "{n}: a drag selects the card's rows: {text:?}"
+        );
+        assert_eq!(text.lines().count(), 3, "{n}: three rows: {text:?}");
+        let shot = rig.frame();
+        save_shot("shell-cards-select", slug, &shot);
+        // A program in the live box that turned the mouse on gets its press, and its release
+        // even when the button comes up over the chips row (above the box).
+        rig.write("\x1b[?1000h");
+        let _ = rig.frame();
+        let view = rig.view.clone();
+        let take_sent =
+            |rig: &mut CursorRig| rig.cx.update(|cx| view.update(cx, |v, _| v.take_sent()));
+        let _ = take_sent(&mut rig);
+        let regions = rig.read(|v| v.shot_card_regions());
+        let (_, x, y, _, _) = regions.iter().find(|r| r.4).cloned().expect("the live box");
+        let press = point(px(x + cw * 2.5), px(y + lh * 0.5));
+        let above = point(px(x + cw * 2.5), px(y - 30.0));
+        rig.cx
+            .simulate_mouse_down(window, press, gpui::MouseButton::Left, none);
+        rig.cx
+            .simulate_mouse_up(window, above, gpui::MouseButton::Left, none);
+        rig.cx.run_until_parked();
+        let sent = take_sent(&mut rig);
+        // X10 reports: ESC [ M, then a button byte: 32 (press), 35 (release).
+        let reports: Vec<u8> = sent
+            .windows(4)
+            .filter(|w| w[..3] == *b"\x1b[M")
+            .map(|w| w[3])
+            .collect();
+        assert_eq!(
+            reports,
+            [32, 35],
+            "{n}: press and release reported: {sent:?}"
+        );
+        // Rerun on a card far up brings the column to its bottom, where it types (review).
+        rig.write("\x1b[?1000l");
+        let view = rig.view.clone();
+        rig.cx
+            .update(|cx| view.update(cx, |v, _| v.shot_scroll_cards(200.0)));
+        let _ = rig.frame();
+        assert!(rig.read(|v| v.shot_card_scroll()) > 0.0, "{n}: scrolled up");
+        let id = rig
+            .read(|v| v.block_ids())
+            .first()
+            .cloned()
+            .expect("a card");
+        rig.cx
+            .update(|cx| view.update(cx, |v, cx| v.rerun_card(&id, cx)));
+        assert_eq!(
+            rig.read(|v| v.shot_card_scroll()),
+            0.0,
+            "{n}: Rerun snaps to the bottom"
+        );
     }
 }
 
