@@ -347,6 +347,11 @@ impl CommandRun {
     pub fn running(&self) -> Option<&str> {
         self.running.as_ref()?.0.as_deref()
     }
+
+    /// When the command running now started (M11ab: the running chip's time).
+    pub fn started(&self) -> Option<Instant> {
+        self.running.as_ref().map(|(_, at)| *at)
+    }
 }
 
 #[cfg(test)]
