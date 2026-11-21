@@ -589,6 +589,8 @@ pub struct Block {
     pub outcome: Outcome,
     pub prompt_top: Line,
     pub cmd_row: Line,
+    /// The command line's last row (a wrapped command line runs past `cmd_row`).
+    pub cmd_end: Line,
     /// First and last output rows; none when there is no output.
     pub output: Option<(Line, Line)>,
     pub cmd: Option<String>,
@@ -616,7 +618,13 @@ pub fn list<L>(term: &Term<L>) -> Vec<Block> {
 /// from its prompt's top to the row above the next segment's.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Segment {
-    Prompt { id: String, top: Line, bottom: Line },
+    Prompt {
+        id: String,
+        /// Its tag's row: where the typing starts (B's row).
+        row: Line,
+        top: Line,
+        bottom: Line,
+    },
     Command(Block),
 }
 
@@ -644,6 +652,7 @@ pub fn segments<L>(term: &Term<L>) -> Vec<Segment> {
             });
             segments.push(Segment::Prompt {
                 id: tag.id.clone(),
+                row: *row,
                 top: lines_up(grid, *row, tag.prompt_lines.into(), floor),
                 bottom: last.max(*row),
             });
@@ -897,6 +906,7 @@ fn block(grid: &Grid<Cell>, row: Line, tag: Tag, cursor: Line, bounds: Bounds) -
         outcome,
         prompt_top: lines_up(grid, row, tag.prompt_lines.into(), floor),
         cmd_row: row,
+        cmd_end,
         output,
         cmd: tag.cmd,
         t0: tag.t0,
