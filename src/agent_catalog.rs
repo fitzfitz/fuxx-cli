@@ -34,7 +34,6 @@ pub struct Catalogs {
     catalogs: HashMap<(String, PathBuf), Lookup<Catalog>>,
     usage: HashMap<String, (Lookup<Vec<UsageGroup>>, Instant)>,
     limits: HashMap<String, Vec<RateLimit>>,
-    versions: HashMap<String, Lookup<Option<String>>>,
     known_folders: HashMap<String, Lookup<Vec<PathBuf>>>,
 }
 
@@ -131,27 +130,6 @@ impl Catalogs {
 
     pub fn limits(&self, agent: &str) -> &[RateLimit] {
         self.limits.get(agent).map_or(&[], Vec::as_slice)
-    }
-
-    pub fn version(&self, agent: &str) -> Option<&Lookup<Option<String>>> {
-        self.versions.get(agent)
-    }
-
-    /// Mark the version reading; false when it already is, or is read (a failure is tried
-    /// again, as `begin_catalog`).
-    pub fn begin_version(&mut self, agent: &str) -> bool {
-        if matches!(
-            self.versions.get(agent),
-            Some(Lookup::Loading | Lookup::Ready(_))
-        ) {
-            return false;
-        }
-        self.versions.insert(agent.to_string(), Lookup::Loading);
-        true
-    }
-
-    pub fn set_version(&mut self, agent: &str, found: Lookup<Option<String>>) {
-        self.versions.insert(agent.to_string(), found);
     }
 
     /// The folders the agent itself knows (its own project list), once read.
@@ -326,39 +304,6 @@ pub fn load_usage(provider: &'static dyn Provider, folder: PathBuf, cx: &mut App
     .detach();
 }
 
-/// Read the agent's version (its `version_probe`) in the background, once per app run (a
-/// failed read is tried again); an agent without one is known to have none.
-pub fn load_version(provider: &'static dyn Provider, cx: &mut App) {
-    let agent = provider.info().name;
-    if !with_catalogs(cx, |c| c.begin_version(agent)) {
-        return;
-    }
-    let Some(probe) = provider.version_probe() else {
-        with_catalogs(cx, |c| c.set_version(agent, Lookup::Ready(None)));
-        return;
-    };
-    cx.spawn(async move |cx| {
-        let found = cx
-            .background_executor()
-            .spawn(async move {
-                let home = crate::workspace::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-                run_probe(&probe, &home, login_path().as_deref(), PROBE_DEADLINE)
-            })
-            .await;
-        let found = match found {
-            Ok(out) => Lookup::Ready(
-                out.lines()
-                    .map(str::trim)
-                    .find(|l| !l.is_empty())
-                    .map(String::from),
-            ),
-            Err(why) => Lookup::Failed(why),
-        };
-        cx.update(|cx| with_catalogs(cx, |c| c.set_version(agent, found)));
-    })
-    .detach();
-}
-
 /// Read the folders `provider` itself knows (`Provider::known_folders`, under your home) in the
 /// background, once per app run.
 pub fn load_known_folders(provider: &'static dyn Provider, cx: &mut App) {
@@ -415,22 +360,6 @@ mod tests {
             state,
             resets_at: None,
         }
-    }
-
-    #[test]
-    fn the_version_is_read_once_and_a_failure_is_tried_again() {
-        let mut c = Catalogs::default();
-        assert!(c.begin_version("claude"));
-        assert!(!c.begin_version("claude"), "reading already");
-        c.set_version(
-            "claude",
-            Lookup::Ready(Some("2.1.223 (Claude Code)".into())),
-        );
-        assert!(!c.begin_version("claude"), "read already");
-        assert!(c.begin_version("agy"));
-        c.set_version("agy", Lookup::Failed("timed out".into()));
-        assert!(c.begin_version("agy"), "a failure is tried again");
-        assert_eq!(c.version("agy"), Some(&Lookup::Loading));
     }
 
     #[test]

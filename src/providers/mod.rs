@@ -272,17 +272,6 @@ pub trait Provider: Sync {
     fn applies(&self, _change: ChangeKind) -> Applies {
         Applies::Restart
     }
-    /// The short process that prints the agent's version (read once per app run, when the
-    /// folder picker first opens). None: its version doesn't matter.
-    fn version_probe(&self) -> Option<Probe> {
-        None
-    }
-    /// Whether a conversation can be moved to another folder (restarted there on the same
-    /// conversation), the agent's `version` as its probe printed it. Default: no (only a new
-    /// conversation in that folder).
-    fn can_move(&self, _version: Option<&str>) -> bool {
-        false
-    }
     /// The folders the agent itself knows (its own list of projects), under your `home`.
     /// Reads files: call it off the UI thread. Default: none.
     fn known_folders(&self, _home: &Path) -> Vec<PathBuf> {

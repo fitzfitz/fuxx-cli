@@ -580,8 +580,13 @@ Kept to the composer: the agent tab's layout and flow stay M11am's, which waits 
   The conversation's column lines up with the outer box.
 - **The folder is fixed once you've spoken** (`folder_changeable`): before the first message the folder pill opens
   the picker as before; after it the pill is a plain label (its path in the tooltip) and `open_folder_picker`
-  refuses from any route. The Move this conversation / New conversation choice that followed is unreachable now
-  (its code stays; its two scenes became `agent-box-folder-locked`, which fails with the lock off).
+  refuses from any route. The Move this conversation / New conversation choice that followed became unreachable;
+  its two scenes became `agent-box-folder-locked`, which fails with the lock off.
+- **The move code removed** (your words: "yes remove it"): the Move / New conversation choice (`BoxMenu::Move`,
+  `move_choice`, `can_move`, `MOVE_HERE`), the agent-version reading that existed only to ask whether a Claude
+  could move a conversation (`Provider::version_probe` and `can_move`, Claude's `MOVE_SINCE` / `version_at_least`,
+  the catalog's version store and `load_version`, the `claude-version.txt` fixture) and their tests; about 230 lines
+  net. Kept: "New conversation" (other menus use it) and a folder change before the first message.
 - **Checks:** 2302 tests; clippy at the baseline; ui-shots 254 passed, the 5 known failures (the 71 agent scenes
   pass).
 

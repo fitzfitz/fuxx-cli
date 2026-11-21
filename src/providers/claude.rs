@@ -389,40 +389,11 @@ impl Provider for Claude {
         }
     }
 
-    /// `claude --version` (`2.1.326 (Claude Code)`): Move needs `MOVE_SINCE`.
-    fn version_probe(&self) -> Option<Probe> {
-        Some(Probe {
-            argv: vec![self.program().to_string(), "--version".into()],
-            stdin: Vec::new(),
-            until: None,
-        })
-    }
-
-    /// `--resume` from another folder carries a conversation on since `MOVE_SINCE` (Task 0
-    /// recorded it with 2.1.326); an older or unknown version can't.
-    fn can_move(&self, version: Option<&str>) -> bool {
-        version.is_some_and(|v| version_at_least(v, MOVE_SINCE))
-    }
-
     /// The `projects` keys of `~/.claude.json` (only read; missing or unreadable: none).
     fn known_folders(&self, home: &Path) -> Vec<PathBuf> {
         std::fs::read_to_string(home.join(".claude.json"))
             .map(|text| claude_json_projects(&text))
             .unwrap_or_default()
-    }
-}
-
-/// The first Claude Code that resumes a conversation from another folder.
-const MOVE_SINCE: (u32, u32, u32) = (2, 1, 223);
-
-/// Whether `claude --version`'s text (`2.1.326 (Claude Code)`) names a version at least `min`.
-/// Anything else: false.
-pub fn version_at_least(text: &str, min: (u32, u32, u32)) -> bool {
-    let word = text.split_whitespace().next().unwrap_or("");
-    let parts: Vec<u32> = word.split('.').map_while(|n| n.parse().ok()).collect();
-    match parts[..] {
-        [a, b, c, ..] => (a, b, c) >= min,
-        _ => false,
     }
 }
 
@@ -2809,22 +2780,6 @@ mod tests {
         assert_eq!(CLAUDE.applies(ChangeKind::Effort), Applies::Live);
         assert_eq!(CLAUDE.applies(ChangeKind::Mode), Applies::Live);
         assert_eq!(CLAUDE.applies(ChangeKind::Folder), Applies::Restart);
-    }
-
-    #[test]
-    fn move_needs_2_1_223() {
-        assert!(!CLAUDE.can_move(Some("2.1.222 (Claude Code)")));
-        assert!(CLAUDE.can_move(Some("2.1.223 (Claude Code)")));
-        assert!(CLAUDE.can_move(Some(include_str!("fixtures/claude-version.txt").trim())));
-        assert!(CLAUDE.can_move(Some("3.0.0 (Claude Code)")));
-        assert!(!CLAUDE.can_move(Some("2.0.999 (Claude Code)")));
-        assert!(!CLAUDE.can_move(Some("Claude Code")), "garbage");
-        assert!(!CLAUDE.can_move(Some("2.1")), "too short");
-        assert!(!CLAUDE.can_move(Some("")));
-        assert!(!CLAUDE.can_move(None), "unknown");
-        assert!(version_at_least("2.1.223", (2, 1, 223)));
-        let probe = CLAUDE.version_probe().expect("Claude has a version");
-        assert_eq!(probe.argv, ["claude", "--version"]);
     }
 
     #[test]

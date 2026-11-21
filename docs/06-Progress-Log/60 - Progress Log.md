@@ -30,6 +30,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Chore: the agent tab's move-conversation code removed
+
+- **What:** with the folder fixed after the first message, the Move this conversation choice and the version
+  reading behind it could never run; removed (about 230 lines net, two tests and a fixture). Note 88.
+- **Checks:** 2300 tests; clippy at the baseline; ui-shots 254 passed, 5 known failures.
+
 ### 2026-11-21 — Chore: the agent composer as the shell's; folder fixed after the first message
 
 - **What:** the agent tab's composer takes the shell tab's folder-tab shape and palette (pills in a tab, the box

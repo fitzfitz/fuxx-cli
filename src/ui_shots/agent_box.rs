@@ -1879,7 +1879,6 @@ type Moves = Rc<RefCell<Vec<(PathBuf, bool)>>>;
 /// kept. The picker is left as `act` leaves it for the shot.
 fn folder_scene(
     name: &str,
-    version: &'static str,
     act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>, &Moves)
     + Clone
     + 'static,
@@ -1906,7 +1905,6 @@ fn folder_scene(
                     projects: both,
                 });
                 let catalogs = cx.default_global::<Catalogs>();
-                catalogs.set_version("claude", Lookup::Ready(Some(version.to_string())));
                 catalogs.set_known_folders("claude", Lookup::Ready(vec![folder("scratch")]));
                 let tab = cx.new(|cx| AgentTab::for_shots(&CLAUDE, example_start(), window, cx));
                 cx.subscribe(&tab, move |_, e: &AgentTabEvent, _| match e {
@@ -2031,147 +2029,135 @@ fn first_message(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>) -> Strin
 /// folder the agent is in); This Computer ▸, which opens fuxx's and Claude's folders beside it;
 /// New Project; No Project. Opening it chooses nothing.
 pub(super) fn agent_box_folder_picker() {
-    folder_scene(
-        "agent-box-folder-picker",
-        "2.1.326 (Claude Code)",
-        |n, cx, window, tab, moves| {
-            let before = argv(cx, tab);
-            click_folder_chip(n, cx, window, tab);
-            assert_eq!(
-                menu(cx, tab),
-                Some(BoxMenu::Folder),
-                "{n}: the chip opens it"
-            );
-            assert!(
-                search_has_keys(cx, window, tab),
-                "{n}: the search has the keyboard"
-            );
-            assert_eq!(
-                rows(cx, tab),
-                [
-                    PickerRow::Heading("Recent"),
-                    folder_row_of("my-app", true),
-                    folder_row_of("scratch", false),
-                    PickerRow::ThisComputer,
-                    PickerRow::NewProject,
-                    PickerRow::NoProject,
-                ],
-                "{n}"
-            );
-            assert_eq!(
-                labels(cx, tab),
-                [
-                    "~/code/my-app",
-                    "~/code/scratch",
-                    "This Computer",
-                    "New Project",
-                    "No Project"
-                ],
-                "{n}: drawn top to bottom"
-            );
-            let (the_menu, chip) = (part(cx, tab, n, "menu"), part(cx, tab, n, "folder"));
-            assert!(
-                the_menu.bottom() <= chip.top(),
-                "{n}: it opens up from the chip"
-            );
-            click_row(n, cx, window, tab, "This Computer");
-            assert_eq!(
-                cx.read(|cx| tab.read(cx).shot_computer_rows()),
-                Some(vec![
-                    folder_row_of("my-app", true),
-                    folder_row_of("scratch", false)
-                ]),
-                "{n}: fuxx's and Claude's folders, each once"
-            );
-            let beside = part(cx, tab, n, "computer");
-            assert!(
-                beside.left() >= the_menu.right(),
-                "{n}: beside the picker {beside:?} {the_menu:?}"
-            );
-            assert_eq!(menu(cx, tab), Some(BoxMenu::Folder), "{n}: still open");
-            // The chip pressed while it is open closes it (not closed and opened again); the
-            // next press opens it.
-            click_folder_chip(n, cx, window, tab);
-            assert_eq!(menu(cx, tab), None, "{n}: the chip closes it");
-            click_folder_chip(n, cx, window, tab);
-            assert_eq!(
-                menu(cx, tab),
-                Some(BoxMenu::Folder),
-                "{n}: and opens it again"
-            );
-            click_row(n, cx, window, tab, "This Computer");
-            assert!(
-                cx.read(|cx| tab.read(cx).shot_computer_rows()).is_some(),
-                "{n}"
-            );
-            assert_eq!(argv(cx, tab), before, "{n}: nothing restarted");
-            assert!(moves.borrow().is_empty(), "{n}: nothing chosen");
-            assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
-        },
-    );
+    folder_scene("agent-box-folder-picker", |n, cx, window, tab, moves| {
+        let before = argv(cx, tab);
+        click_folder_chip(n, cx, window, tab);
+        assert_eq!(
+            menu(cx, tab),
+            Some(BoxMenu::Folder),
+            "{n}: the chip opens it"
+        );
+        assert!(
+            search_has_keys(cx, window, tab),
+            "{n}: the search has the keyboard"
+        );
+        assert_eq!(
+            rows(cx, tab),
+            [
+                PickerRow::Heading("Recent"),
+                folder_row_of("my-app", true),
+                folder_row_of("scratch", false),
+                PickerRow::ThisComputer,
+                PickerRow::NewProject,
+                PickerRow::NoProject,
+            ],
+            "{n}"
+        );
+        assert_eq!(
+            labels(cx, tab),
+            [
+                "~/code/my-app",
+                "~/code/scratch",
+                "This Computer",
+                "New Project",
+                "No Project"
+            ],
+            "{n}: drawn top to bottom"
+        );
+        let (the_menu, chip) = (part(cx, tab, n, "menu"), part(cx, tab, n, "folder"));
+        assert!(
+            the_menu.bottom() <= chip.top(),
+            "{n}: it opens up from the chip"
+        );
+        click_row(n, cx, window, tab, "This Computer");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).shot_computer_rows()),
+            Some(vec![
+                folder_row_of("my-app", true),
+                folder_row_of("scratch", false)
+            ]),
+            "{n}: fuxx's and Claude's folders, each once"
+        );
+        let beside = part(cx, tab, n, "computer");
+        assert!(
+            beside.left() >= the_menu.right(),
+            "{n}: beside the picker {beside:?} {the_menu:?}"
+        );
+        assert_eq!(menu(cx, tab), Some(BoxMenu::Folder), "{n}: still open");
+        // The chip pressed while it is open closes it (not closed and opened again); the
+        // next press opens it.
+        click_folder_chip(n, cx, window, tab);
+        assert_eq!(menu(cx, tab), None, "{n}: the chip closes it");
+        click_folder_chip(n, cx, window, tab);
+        assert_eq!(
+            menu(cx, tab),
+            Some(BoxMenu::Folder),
+            "{n}: and opens it again"
+        );
+        click_row(n, cx, window, tab, "This Computer");
+        assert!(
+            cx.read(|cx| tab.read(cx).shot_computer_rows()).is_some(),
+            "{n}"
+        );
+        assert_eq!(argv(cx, tab), before, "{n}: nothing restarted");
+        assert!(moves.borrow().is_empty(), "{n}: nothing chosen");
+        assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
+    });
 }
 
 /// The search filters every section as you type (`scr` leaves `~/code/scratch`); Esc closes the
 /// picker and gives the keyboard back to the box (stopping nothing).
 pub(super) fn agent_box_folder_search() {
-    folder_scene(
-        "agent-box-folder-search",
-        "2.1.326 (Claude Code)",
-        |n, cx, window, tab, moves| {
-            click_folder_chip(n, cx, window, tab);
-            cx.simulate_keystrokes(window, "escape");
-            cx.run_until_parked();
-            assert_eq!(menu(cx, tab), None, "{n}: Esc closed it");
-            let composer = cx.read(|cx| tab.read(cx).shot_composer());
-            assert!(
-                has_keys(cx, window, move |cx| composer.read(cx).focus_handle(cx)),
-                "{n}: the keyboard is back in the box"
-            );
-            assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Idle, "{n}");
+    folder_scene("agent-box-folder-search", |n, cx, window, tab, moves| {
+        click_folder_chip(n, cx, window, tab);
+        cx.simulate_keystrokes(window, "escape");
+        cx.run_until_parked();
+        assert_eq!(menu(cx, tab), None, "{n}: Esc closed it");
+        let composer = cx.read(|cx| tab.read(cx).shot_composer());
+        assert!(
+            has_keys(cx, window, move |cx| composer.read(cx).focus_handle(cx)),
+            "{n}: the keyboard is back in the box"
+        );
+        assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Idle, "{n}");
 
-            click_folder_chip(n, cx, window, tab);
-            cx.simulate_input(window, "scr");
-            cx.run_until_parked();
-            let _ = frame_fresh(cx, window);
-            assert_eq!(
-                rows(cx, tab),
-                [
-                    PickerRow::Heading("Recent"),
-                    folder_row_of("scratch", false)
-                ],
-                "{n}"
-            );
-            assert_eq!(labels(cx, tab), ["~/code/scratch"], "{n}: drawn so");
-            assert!(moves.borrow().is_empty(), "{n}: typing chooses nothing");
-            assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
-        },
-    );
+        click_folder_chip(n, cx, window, tab);
+        cx.simulate_input(window, "scr");
+        cx.run_until_parked();
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            rows(cx, tab),
+            [
+                PickerRow::Heading("Recent"),
+                folder_row_of("scratch", false)
+            ],
+            "{n}"
+        );
+        assert_eq!(labels(cx, tab), ["~/code/scratch"], "{n}: drawn so");
+        assert!(moves.borrow().is_empty(), "{n}: typing chooses nothing");
+        assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
+    });
 }
 
 /// After the first message the folder is fixed (chores, your words: "when we already make a
 /// prompt, disabled the change project/folder"): a click on its pill opens nothing, asking for
 /// the picker another way is refused, the conversation stays where it is and nothing is sent.
 pub(super) fn agent_box_folder_locked() {
-    folder_scene(
-        "agent-box-folder-locked",
-        "2.1.326 (Claude Code)",
-        |n, cx, window, tab, moves| {
-            first_message(cx, tab);
-            let before = argv(cx, tab);
-            let chip = part(cx, tab, n, "folder");
-            cx.simulate_click(window, chip.center(), gpui::Modifiers::none());
-            cx.run_until_parked();
-            assert_eq!(menu(cx, tab), None, "{n}: the pill opens nothing");
-            cx.update_window(window, |_, window, cx| {
-                tab.update(cx, |t, cx| t.open_folder_picker(window, cx))
-            })
-            .expect("window");
-            assert_eq!(menu(cx, tab), None, "{n}: nor the picker asked for");
-            assert_eq!(tab_cwd(cx, tab), folder("my-app"), "{n}: it stays");
-            assert_eq!(argv(cx, tab), before, "{n}: not restarted");
-            assert!(moves.borrow().is_empty(), "{n}: nothing saved");
-        },
-    );
+    folder_scene("agent-box-folder-locked", |n, cx, window, tab, moves| {
+        first_message(cx, tab);
+        let before = argv(cx, tab);
+        let chip = part(cx, tab, n, "folder");
+        cx.simulate_click(window, chip.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(menu(cx, tab), None, "{n}: the pill opens nothing");
+        cx.update_window(window, |_, window, cx| {
+            tab.update(cx, |t, cx| t.open_folder_picker(window, cx))
+        })
+        .expect("window");
+        assert_eq!(menu(cx, tab), None, "{n}: nor the picker asked for");
+        assert_eq!(tab_cwd(cx, tab), folder("my-app"), "{n}: it stays");
+        assert_eq!(argv(cx, tab), before, "{n}: not restarted");
+        assert!(moves.borrow().is_empty(), "{n}: nothing saved");
+    });
 }
 
 /// Before the first message a folder chosen just changes where the agent starts: the idle
@@ -2180,7 +2166,6 @@ pub(super) fn agent_box_folder_locked() {
 pub(super) fn agent_box_folder_before_first() {
     folder_scene(
         "agent-box-folder-before-first",
-        "2.1.326 (Claude Code)",
         |n, cx, window, tab, moves| {
             let first = flag(&argv(cx, tab), "--session-id").expect("a new conversation");
             // Chosen from This Computer's list, beside the picker.

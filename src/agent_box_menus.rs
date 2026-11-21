@@ -42,7 +42,6 @@ impl AgentTab {
                                         this.menu,
                                         Some(
                                             BoxMenu::Folder
-                                                | BoxMenu::Move(_)
                                                 | BoxMenu::Model { .. }
                                                 | BoxMenu::Mode
                                                 | BoxMenu::Attach
@@ -62,7 +61,7 @@ impl AgentTab {
 
     /// The folder chip's click: the picker opens over it, or (open) closes.
     pub(super) fn folder_clicked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.menu, Some(BoxMenu::Folder | BoxMenu::Move(_))) {
+        if matches!(self.menu, Some(BoxMenu::Folder)) {
             self.close_menu(cx);
         } else {
             self.open_folder_picker(window, cx);
@@ -83,7 +82,6 @@ impl AgentTab {
         };
         if !self.no_process {
             crate::agent_catalog::load_known_folders(provider, cx);
-            crate::agent_catalog::load_version(provider, cx);
         }
         let search = cx.new(|cx| NameInput::new(String::new(), window, cx));
         let subscriptions = vec![
@@ -269,91 +267,18 @@ impl AgentTab {
     }
 
     /// `folder` chosen: the folder it is in already does nothing; before the first message the
-    /// agent starts there (`choose`); after it, the picker asks: Move this conversation, or a
-    /// New conversation there.
+    /// agent starts there (`choose`). After it the folder is fixed (the picker doesn't open).
     fn choose_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
-        if folder == self.start.cwd {
-            self.close_menu(cx);
-        } else if self.spoken() {
-            self.open_menu(BoxMenu::Move(folder), cx);
-        } else {
-            self.close_menu(cx);
-            self.choose(Change::Folder(folder), cx);
-        }
-    }
-
-    /// The answer to Move this conversation (`move_it`) or New conversation: the agent
-    /// restarts on this conversation in the folder (after the turn, if one runs), or a new
-    /// agent tab opens there.
-    pub fn move_choice(&mut self, move_it: bool, cx: &mut Context<Self>) {
-        let Some(BoxMenu::Move(folder)) = self.menu.clone() else {
-            return;
-        };
         self.close_menu(cx);
-        if !move_it {
-            cx.emit(AgentTabEvent::NewConversationIn(folder));
-        } else if self.can_move(cx) {
+        if folder != self.start.cwd && !self.spoken() {
             self.choose(Change::Folder(folder), cx);
         }
-    }
-
-    /// Whether the agent can carry this conversation to another folder: by a restart (never
-    /// live), and its provider says so for the version it read.
-    fn can_move(&self, cx: &App) -> bool {
-        let Some(provider) = self.provider else {
-            return false;
-        };
-        let version =
-            cx.try_global::<Catalogs>()
-                .and_then(|c| match c.version(provider.info().name) {
-                    Some(Lookup::Ready(version)) => version.clone(),
-                    _ => None,
-                });
-        provider.applies(ChangeKind::Folder) == Applies::Restart
-            && provider.can_move(version.as_deref())
     }
 
     /// The folder menu's panel content, and This Computer's list beside it while open: the
-    /// picker (search, rows), or after the first message the Move / New conversation choice.
+    /// picker (search, rows).
     pub(super) fn folder_menu(&self, cx: &mut Context<Self>) -> (AnyElement, Option<AnyElement>) {
         let ui = cx.global::<Appearance>().theme.ui();
-        if let Some(BoxMenu::Move(folder)) = &self.menu {
-            let home = crate::workspace::home_dir();
-            let mut rows = vec![heading(
-                crate::sidebar::home_relative(folder, home.as_deref()),
-                &ui,
-            )];
-            if self.can_move(cx) {
-                rows.push(self.menu_row(
-                    ("box-move", 0),
-                    MOVE_HERE.into(),
-                    false,
-                    false,
-                    &ui,
-                    cx,
-                    |this, window, cx| {
-                        this.move_choice(true, cx);
-                        this.keyboard_back(window, cx);
-                    },
-                ));
-            }
-            rows.push(self.menu_row(
-                ("box-move", 1),
-                NEW_CONVERSATION.into(),
-                false,
-                false,
-                &ui,
-                cx,
-                |this, window, cx| {
-                    this.move_choice(false, cx);
-                    this.keyboard_back(window, cx);
-                },
-            ));
-            return (
-                div().flex().flex_col().children(rows).into_any_element(),
-                None,
-            );
-        }
         let Some(picker) = &self.picker else {
             return (div().into_any_element(), None);
         };

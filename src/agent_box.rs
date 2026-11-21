@@ -68,7 +68,6 @@ const COMPUTER_ROWS: &str = "box-computer";
 
 /// The folder picker's words (§2), and the choice it asks after the first message.
 const SEARCH: &str = "Search";
-pub const MOVE_HERE: &str = "Move this conversation";
 pub const NEW_CONVERSATION: &str = "New conversation";
 
 /// The model menu's words (§4).
@@ -144,7 +143,6 @@ pub enum BoxMenu {
     },
     Mode,
     Attach,
-    Move(PathBuf),
 }
 
 /// What the box's chips and the top line say, as drawn (scenes read it).
@@ -949,13 +947,10 @@ impl AgentTab {
                         }
                     }))
             })
-            .when(
-                menu_on(|m| matches!(m, BoxMenu::Folder | BoxMenu::Move(_))),
-                |d| {
-                    let (menu, side) = self.folder_menu(cx);
-                    d.child(self.menu_frame(Some(menu), side, cx))
-                },
-            );
+            .when(menu_on(|m| matches!(m, BoxMenu::Folder)), |d| {
+                let (menu, side) = self.folder_menu(cx);
+                d.child(self.menu_frame(Some(menu), side, cx))
+            });
         let branch = texts.branch.clone().map(|text| {
             let tip = text.clone();
             self.marked("branch", pill("agent-branch", Icon::Branch, text))
