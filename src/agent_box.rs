@@ -31,7 +31,6 @@ use crate::providers::{
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::ui_tokens::text;
-use alacritty_terminal::vte::ansi::Rgb;
 
 /// The box's sizes, named here so the UI uplift (M11al) restyles them in one place.
 /// The room around the box: at its sides, above the folder row, under the box.
@@ -46,9 +45,9 @@ const BOX_Y: f32 = 12.0;
 const BOX_GAP: f32 = 10.0;
 /// A chip: its height, inner room and corners; the gap between chips.
 const CHIP_H: f32 = 28.0;
-const CHIP_X: f32 = 10.0;
-const CHIP_RADIUS: f32 = 8.0;
 const CHIP_GAP: f32 = 6.0;
+/// The box's controls' room from its sides and bottom (the designer's details).
+const CONTROL_INSET: f32 = 8.0;
 /// The `+` and send buttons' side.
 const BUTTON: f32 = 28.0;
 /// A menu: its width, and the gap between it and the chip it opens up from.
@@ -85,16 +84,17 @@ pub const SLASH_NONE: &str = "No command matches";
 pub const MODEL_LIST_FAILED: &str = "Couldn't read the model list";
 pub const DEFAULT_LIST: &str = "(default list)";
 pub const NEXT_CONVERSATION_NOTE: &str = "applies to a new conversation";
-pub const VIEW_USAGE: &str = "View Usage \u{25b8}";
+pub const VIEW_USAGE: &str = "Usage";
 /// The id of the effort list's rows, beside the model menu, and the width of its panel.
 const EFFORT_ROWS: &str = "box-effort";
 const EFFORT_WIDTH: f32 = 140.0;
-/// The View Usage panel's width, and its ring's size and stroke.
-const USAGE_WIDTH: f32 = 270.0;
-const RING_SIZE: f32 = 14.0;
-const RING_STROKE: f32 = 2.0;
+/// The usage view's width.
+const USAGE_WIDTH: f32 = 300.0;
+/// The usage view's tallest; it scrolls past it.
+const USAGE_MAX_H: f32 = 480.0;
+/// The mode menu's width (its rows carry a description).
+const MODE_MENU_WIDTH: f32 = 300.0;
 
-/// The send button's glyph.
 /// The warning dot on the model chip.
 const LIMIT_DOT: f32 = 6.0;
 const SEND: &str = "\u{27a4}";
@@ -232,8 +232,8 @@ pub fn effort_word(level: &str) -> String {
 /// The model chip: `<label>  <Effort> ▾`, or `<label> ▾` with no effort known.
 pub fn model_chip_text(label: &str, effort: Option<&str>) -> String {
     match effort {
-        Some(level) => format!("{label}  {} \u{25be}", effort_word(level)),
-        None => format!("{label} \u{25be}"),
+        Some(level) => format!("{label}  {}", effort_word(level)),
+        None => label.to_string(),
     }
 }
 
@@ -269,7 +269,19 @@ pub fn mode_chip_text(
     }
     let id = current_mode(chosen, reported, default)?;
     let label = modes.iter().find(|m| m.id == id).map_or(id, |m| m.label);
-    Some(format!("\u{1f6e1} {label} \u{25be}"))
+    Some(label.to_string())
+}
+
+/// The mode pill's and the mode menu's icon for mode `id` (the designer's details): shield to
+/// ask before edits, a pen to accept them, a checklist to plan, a bolt for auto; else the shield.
+pub fn mode_icon(id: &str) -> crate::icons::Icon {
+    use crate::icons::Icon;
+    match id {
+        "acceptEdits" => Icon::FilePen,
+        "plan" => Icon::ListChecks,
+        "auto" => Icon::Zap,
+        _ => Icon::Shield,
+    }
 }
 
 /// The folder pill's words: the folder's name (the app's folder icon draws beside it; before
@@ -402,6 +414,25 @@ pub enum UsageRow {
     Text(String),
     /// Checking, failed, or not available.
     Quiet(String),
+}
+
+/// A "Top …" line of the agent's usage text (`Top skills: a 8%, b 3%, …`) as its title and its
+/// first three items, each a name and its percentage; none for any other line.
+pub fn top_list(text: &str) -> Option<(String, Vec<(String, String)>)> {
+    let (title, rest) = text.split_once(':')?;
+    if !title.starts_with("Top ") {
+        return None;
+    }
+    let items: Vec<(String, String)> = rest
+        .split(", ")
+        .filter_map(|item| {
+            let (name, pct) = item.trim().rsplit_once(' ')?;
+            pct.ends_with('%')
+                .then(|| (name.trim().to_string(), pct.to_string()))
+        })
+        .take(3)
+        .collect();
+    (!items.is_empty()).then(|| (title.trim().to_string(), items))
 }
 
 /// The View Usage panel's lines (§5). `found` is the reading (none: not asked yet, as loading);
@@ -814,7 +845,7 @@ impl AgentTab {
             let info = provider.info();
             mode_chip_text(
                 info.modes,
-                self.start.mode.as_deref(),
+                self.mode_chosen(),
                 catalog.and_then(|c| c.mode.as_deref()),
                 info.default_mode,
             )
@@ -839,17 +870,6 @@ impl AgentTab {
         self.provider
             .zip(cx.try_global::<Catalogs>())
             .is_some_and(|(p, catalogs)| limits_warn(catalogs.limits(p.info().name), now_unix()))
-    }
-
-    /// The box's edge: the focus ring while its text has the keyboard, else the quiet edge
-    /// (as the framed composer's own edge was). Read while drawing: a focus change refreshes
-    /// the window, which draws cached views again.
-    pub(crate) fn box_edge(&self, c: &Colors, window: &Window, cx: &App) -> Rgb {
-        if self.composer.read(cx).focus_handle(cx).is_focused(window) {
-            c.box_focus
-        } else {
-            c.box_edge
-        }
     }
 
     /// `el`, and under `ui-shots` a probe that keeps where it was laid out as `part`.
@@ -884,11 +904,9 @@ impl AgentTab {
         &self,
         c: &Colors,
         mono: SharedString,
-        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let texts = self.box_texts(cx);
-        let edge = self.box_edge(c, window, cx);
         let menu = self.menu.clone();
         let menu_on = |chip: fn(&BoxMenu) -> bool| menu.as_ref().is_some_and(chip);
         // The context as pills in a folder tab, as the shell tab's composer (chores: "redesign
@@ -949,7 +967,7 @@ impl AgentTab {
             })
             .when(menu_on(|m| matches!(m, BoxMenu::Folder)), |d| {
                 let (menu, side) = self.folder_menu(cx);
-                d.child(self.menu_frame(Some(menu), side, cx))
+                d.child(self.menu_frame(Some(menu), side, MENU_WIDTH, cx))
             });
         let branch = texts.branch.clone().map(|text| {
             let tip = text.clone();
@@ -975,12 +993,16 @@ impl AgentTab {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(CHIP_RADIUS))
-                    .text_color(hsla(c.box_dim))
-                    .child("+"),
+                    .rounded_full()
+                    .bg(hsla(c.control))
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::Plus,
+                        px(16.),
+                        hsla(c.dim),
+                    )),
             )
             .when(self.provider.is_some(), |d| {
-                let hover = c.box_hover;
+                let hover = c.control_hover;
                 d.cursor_pointer()
                     .hover(move |s| s.bg(hsla(hover)))
                     .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
@@ -996,12 +1018,16 @@ impl AgentTab {
                     }))
             })
             .when(menu_on(|m| matches!(m, BoxMenu::Attach)), |d| {
-                d.child(self.menu_frame(Some(self.attach_menu(cx)), None, cx))
+                d.child(self.menu_frame(Some(self.attach_menu(cx)), None, MENU_WIDTH, cx))
             });
-        let model_hover = c.box_hover;
+        let model_hover = c.control_hover;
+        let ink_on_hover = c.text;
         let warn = c.ask_edge;
         let model = self
-            .marked("model", box_chip("agent-model", texts.model.clone(), c))
+            .marked(
+                "model",
+                control_pill("agent-model", None, texts.model.clone(), c),
+            )
             .relative()
             .when(texts.limit_warning, |d| {
                 d.child(
@@ -1019,7 +1045,8 @@ impl AgentTab {
             })
             .when(self.provider.is_some(), |d| {
                 d.cursor_pointer()
-                    .hover(move |s| s.bg(hsla(model_hover)))
+                    // Its words full under the pointer (the designer's details).
+                    .hover(move |s| s.bg(hsla(model_hover)).text_color(hsla(ink_on_hover)))
                     .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                         let pressed = match event {
                             ClickEvent::Mouse(click) => Some(click.down.position),
@@ -1034,13 +1061,14 @@ impl AgentTab {
             })
             .when(menu_on(|m| matches!(m, BoxMenu::Model { .. })), |d| {
                 let (menu, side) = self.model_menu(cx);
-                d.child(self.menu_frame(Some(menu), side, cx))
+                d.child(self.menu_frame(Some(menu), side, MENU_WIDTH, cx))
             });
+        let mode_glyph = self.mode_now(cx).map(mode_icon);
         let mode = texts.mode.clone().map(|text| {
-            let hover = c.box_hover;
-            self.marked("mode", box_chip("agent-mode", text, c))
+            let hover = c.control_hover;
+            self.marked("mode", control_pill("agent-mode", mode_glyph, text, c))
                 .cursor_pointer()
-                .hover(move |s| s.bg(hsla(hover)))
+                .hover(move |s| s.bg(hsla(hover)).text_color(hsla(ink_on_hover)))
                 .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                     let pressed = match event {
                         ClickEvent::Mouse(click) => Some(click.down.position),
@@ -1053,9 +1081,11 @@ impl AgentTab {
                     }
                 }))
                 .when(menu_on(|m| matches!(m, BoxMenu::Mode)), |d| {
-                    d.child(self.menu_frame(Some(self.mode_menu(cx)), None, cx))
+                    d.child(self.menu_frame(Some(self.mode_menu(cx)), None, MODE_MENU_WIDTH, cx))
                 })
         });
+        // While the box is empty, send is a quiet control (the designer's details).
+        let empty = self.composer.read(cx).text().trim().is_empty();
         let send = match self.stop_label() {
             // (A wrapper is probed: a probe inside an edge would sit 1 px in.)
             Some(label) => self
@@ -1079,11 +1109,13 @@ impl AgentTab {
                         .items_center()
                         .justify_center()
                         .rounded_full()
-                        .bg(hsla(c.accent))
-                        .text_color(hsla(c.on_accent))
-                        .text_size(px(text::META))
+                        .bg(hsla(if empty { c.control } else { c.accent }))
                         .cursor_pointer()
-                        .child(SEND),
+                        .child(crate::icons::icon(
+                            crate::icons::Icon::ArrowUp,
+                            px(16.),
+                            hsla(if empty { c.dim } else { c.on_accent }),
+                        )),
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.send_pressed(cx)))
                 .into_any_element(),
@@ -1096,11 +1128,12 @@ impl AgentTab {
                 .flex()
                 .flex_col()
                 .gap(px(BOX_GAP))
-                .px(px(BOX_X))
-                .py(px(BOX_Y))
+                // The controls 8 in from its sides and bottom; the text keeps its 14 (the
+                // designer's details); no border and no focus ring (the caret shows it).
+                .px(px(CONTROL_INSET))
+                .pt(px(BOX_Y))
+                .pb(px(CONTROL_INSET))
                 .rounded(px(12.))
-                .border_1()
-                .border_color(hsla(edge))
                 // A press on the box's own room (not a chip or button: theirs act as well)
                 // puts the keyboard in its text, as the framed text box did.
                 .on_mouse_down(
@@ -1122,6 +1155,7 @@ impl AgentTab {
                             d.key_context("AtPopup")
                         })
                         .w_full()
+                        .pl(px(BOX_X - CONTROL_INSET))
                         .font_family(mono.clone())
                         .child(self.composer.clone()),
                 )
@@ -1130,11 +1164,12 @@ impl AgentTab {
                         .w_full()
                         .flex()
                         .items_center()
-                        .gap(px(CHIP_GAP))
                         .child(attach)
+                        .child(div().w(px(CHIP_GAP)))
                         .child(model)
                         .child(div().flex_1())
                         .children(mode)
+                        .child(div().w(px(8.)))
                         .child(send),
                 ),
         );
@@ -1714,18 +1749,36 @@ impl AgentTab {
 }
 
 /// A chip on the box's bottom row: quiet text, no edge.
-fn box_chip(id: &'static str, text: String, c: &Colors) -> Stateful<Div> {
+/// A control pill in the box's bottom row (the designer's details): `CHIP_H` tall, round, on
+/// `control`; an optional icon (14, then 6), its words at 13 in `dim`, then a chevron-down (12)
+/// 4 after them.
+fn control_pill(
+    id: &'static str,
+    glyph: Option<crate::icons::Icon>,
+    text: String,
+    c: &Colors,
+) -> Stateful<Div> {
+    use crate::icons::{Icon, icon};
+    let dim = hsla(c.dim);
     div()
         .id(id)
         .flex_none()
         .h(px(CHIP_H))
-        .px(px(CHIP_X))
+        .pl(px(10.))
+        .pr(px(8.))
         .flex()
         .items_center()
-        .rounded(px(CHIP_RADIUS))
-        .text_size(px(text::META))
-        .text_color(hsla(c.box_dim))
+        .rounded(px(CHIP_H / 2.))
+        .bg(hsla(c.control))
+        .text_size(px(13.))
+        .text_color(dim)
+        .children(glyph.map(|g| div().mr(px(6.)).child(icon(g, px(14.), dim))))
         .child(SharedString::from(text))
+        .child(
+            div()
+                .ml(px(4.))
+                .child(icon(Icon::ChevronDown, px(12.), dim)),
+        )
 }
 
 #[cfg(test)]
@@ -2198,9 +2251,22 @@ mod tests {
         assert_eq!(effort_word(""), "");
         assert_eq!(
             model_chip_text("Claude Example 5", Some("high")),
-            "Claude Example 5  High \u{25be}"
+            "Claude Example 5  High"
         );
-        assert_eq!(model_chip_text("Opus 5.5", None), "Opus 5.5 \u{25be}");
+        // A pill (the designer's details): its chevron is the app's icon, not a ▾ in the text.
+        assert_eq!(model_chip_text("Opus 5.5", None), "Opus 5.5");
+    }
+
+    /// The mode pill's icon (the designer's details): shield to ask, a pen to accept edits, a
+    /// checklist to plan, a bolt for auto; anything else the shield.
+    #[test]
+    fn each_mode_has_its_icon() {
+        use crate::icons::Icon;
+        assert_eq!(mode_icon("default"), Icon::Shield);
+        assert_eq!(mode_icon("acceptEdits"), Icon::FilePen);
+        assert_eq!(mode_icon("plan"), Icon::ListChecks);
+        assert_eq!(mode_icon("auto"), Icon::Zap);
+        assert_eq!(mode_icon("bypassPermissions"), Icon::Shield);
     }
 
     #[test]
@@ -2209,22 +2275,22 @@ mod tests {
         let chip = |chosen, reported, default| mode_chip_text(modes, chosen, reported, default);
         assert_eq!(
             chip(Some("plan"), Some("default"), None).as_deref(),
-            Some("\u{1f6e1} Plan \u{25be}"),
+            Some("Plan"),
             "chosen first"
         );
         assert_eq!(
             chip(None, Some("default"), None).as_deref(),
-            Some("\u{1f6e1} Ask before edits \u{25be}"),
+            Some("Ask before edits"),
             "then what the agent reports"
         );
         assert_eq!(
             mode_chip_text(AGY.info().modes, None, None, AGY.info().default_mode).as_deref(),
-            Some("\u{1f6e1} Accept edits \u{25be}"),
+            Some("Accept edits"),
             "then the provider's default"
         );
         assert_eq!(
             chip(None, Some("bypassPermissions"), None).as_deref(),
-            Some("\u{1f6e1} bypassPermissions \u{25be}"),
+            Some("bypassPermissions"),
             "a mode not listed: its id"
         );
         assert_eq!(chip(None, None, None), None, "none known");
@@ -2542,6 +2608,34 @@ mod tests {
             resets: resets.map(String::from),
             note: note.map(String::from),
         }
+    }
+
+    /// The usage view's "Top …" lines (the designer's details: a heading, then up to 3 rows,
+    /// each a name and its percentage, nothing wrapping): read from the agent's text.
+    #[test]
+    fn a_top_line_becomes_a_short_list() {
+        let (title, items) = top_list(
+            "Top skills: /superpowers:executing-plans 8%, /superpowers:writing-plans 3%, \
+             /superpowers:systematic-debugging 2%, /ecc:frontend-design-direction 1%",
+        )
+        .expect("a top line");
+        assert_eq!(title, "Top skills");
+        assert_eq!(
+            items,
+            [
+                ("/superpowers:executing-plans".to_string(), "8%".to_string()),
+                ("/superpowers:writing-plans".to_string(), "3%".to_string()),
+                (
+                    "/superpowers:systematic-debugging".to_string(),
+                    "2%".to_string()
+                ),
+            ],
+            "the first three"
+        );
+        let (_, one) = top_list("Top plugins: superpowers 16%").expect("one item");
+        assert_eq!(one, [("superpowers".to_string(), "16%".to_string())]);
+        assert_eq!(top_list("Current session 38% left"), None, "not a top line");
+        assert_eq!(top_list("Top skills:"), None, "nothing listed");
     }
 
     #[test]

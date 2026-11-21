@@ -30,6 +30,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Chore: the agent box's controls and menus redesigned; the mode chosen mid-run shows
+
+- **What:** the agent box borderless, `+` a circle, the model and mode pickers pills (the mode with its icon), the
+  send a circle; the model, mode and usage menus to the lead designer's details (usage as bars, "Top …" lists short);
+  the mode picked mid-run shows at once and goes with the next prompt, as the model did. Note 88.
+- **Checks:** 2302 tests; clippy at the baseline; ui-shots 255 passed, 5 known failures.
+
 ### 2026-11-21 — Chore: the agent tab's move-conversation code removed
 
 - **What:** with the folder fixed after the first message, the Move this conversation choice and the version

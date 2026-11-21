@@ -251,6 +251,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: BOX,
     },
     Scene {
+        name: "agent-box-mode-waits",
+        run: agent_box_mode_waits,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: BOX,
+    },
+    Scene {
         name: "agent-box-change-restart",
         run: agent_box_change_restart,
         themes: Themes::One,
@@ -635,6 +643,46 @@ fn agy_conversation() -> String {
             _ => None,
         })
         .expect("agy-text starts a conversation")
+}
+
+/// Your words: "Make sure I can choose mode mid run and the next prompt will pick up my chosen
+/// mode. same goes model": a mode chosen while Claude works shows at once on the chip and in the
+/// menu (it waits for the turn, as a model does), and when the turn ends the mode is asked for
+/// before the next message is written.
+pub(super) fn agent_box_mode_waits() {
+    run_scene(
+        "agent-box-mode-waits",
+        &CLAUDE,
+        start(None, Some("opus")),
+        |n, cx, tab, _told| {
+            feed(cx, tab, |t, cx| t.send("Fix notes.txt".into(), cx));
+            assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Working, "{n}");
+            feed(cx, tab, |t, cx| t.choose(Change::Mode("plan".into()), cx));
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_box(cx)).mode.as_deref(),
+                Some("Plan"),
+                "{n}: the chip shows the mode chosen, at once"
+            );
+            let before = written(cx, tab).len();
+            feed(cx, tab, |t, cx| t.shot_feed(vec![turn_done()], cx));
+            feed(cx, tab, |t, cx| t.send("Now plan the rest".into(), cx));
+            let lines = written(cx, tab);
+            let after: Vec<_> = lines[before..].iter().collect();
+            let mode_at = after
+                .iter()
+                .position(|l| l["request"]["subtype"] == "set_permission_mode")
+                .unwrap_or_else(|| panic!("{n}: the mode asked for: {after:?}"));
+            assert_eq!(after[mode_at]["request"]["mode"], "plan", "{n}");
+            let message_at = after
+                .iter()
+                .position(|l| l["type"] == "user")
+                .unwrap_or_else(|| panic!("{n}: the next message: {after:?}"));
+            assert!(
+                mode_at < message_at,
+                "{n}: the mode before the next message"
+            );
+        },
+    );
 }
 
 /// Review Focus #1: a change chosen while Claude works waits for the turn — nothing is written
@@ -1100,10 +1148,10 @@ pub(super) fn agent_box_empty() {
     layout_scene("agent-box-empty", |n, cx, window, tab| {
         let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
         assert_eq!(texts.folder, "my-app", "{n}");
-        assert_eq!(texts.model, "Claude Example 5  High \u{25be}", "{n}");
+        assert_eq!(texts.model, "Claude Example 5  High", "{n}");
         assert_eq!(
             texts.mode.as_deref(),
-            Some("\u{1f6e1} Ask before edits \u{25be}"),
+            Some("Ask before edits"),
             "{n}: the mode Claude reports"
         );
         assert_eq!(texts.send, "\u{27a4}", "{n}");
@@ -1197,34 +1245,24 @@ pub(super) fn agent_box_empty() {
         });
         assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
 
-        // The box's edge shows where the keyboard is: the focus ring while its text has it,
-        // the quiet edge when not; a click on the box's own room (not a chip) gives it back.
-        let colors = cx.read(|cx| {
-            crate::agent_tab::Colors::of(&cx.global::<crate::appearance::Appearance>().theme)
-        });
-        let edge = |cx: &mut VisualTestAppContext| {
+        // The box looks the same with or without the keyboard (the designer's call: no border,
+        // no focus ring; the caret shows it); a click on the box's own room (not a chip) gives
+        // it the keyboard back.
+        let edge_px = |cx: &mut VisualTestAppContext| {
             let shot = frame_fresh(cx, window);
             // Mid-way down the box's left edge (its probe sits just inside it).
-            let at = (
+            super::pixel_at(
+                &shot,
+                size(px(DIMS.0), px(DIMS.1)),
                 f32::from(the_box.left()) - 0.5,
                 f32::from(the_box.center().y),
-            );
-            (
-                cx.update_window(window, |_, window, cx| {
-                    tab.read(cx).shot_box_edge(window, cx)
-                })
-                .expect("the window"),
-                super::pixel_at(&shot, size(px(DIMS.0), px(DIMS.1)), at.0, at.1),
             )
         };
-        let (focused, focused_px) = edge(cx);
-        assert_eq!(focused, colors.box_focus, "{n}: focused, the focus ring");
+        let focused_px = edge_px(cx);
         cx.update_window(window, |_, window, _| window.blur())
             .expect("the window");
         cx.run_until_parked();
-        let (blurred, blurred_px) = edge(cx);
-        assert_eq!(blurred, colors.box_edge, "{n}: not focused, the quiet edge");
-        assert_ne!(focused_px, blurred_px, "{n}: and it is drawn so");
+        assert_eq!(edge_px(cx), focused_px, "{n}: no focus ring");
         let room = gpui::point(the_box.center().x, send.center().y);
         cx.simulate_click(window, room, Modifiers::none());
         cx.run_until_parked();
@@ -1235,9 +1273,6 @@ pub(super) fn agent_box_empty() {
             );
         })
         .expect("the window");
-        let (back, back_px) = edge(cx);
-        assert_eq!(back, colors.box_focus, "{n}: focused again");
-        assert_eq!(back_px, focused_px, "{n}");
         assert!(written(cx, tab).is_empty(), "{n}: the click sent nothing");
     });
 }
@@ -1257,10 +1292,10 @@ pub(super) fn agent_box_card() {
             let shot = frame_fresh(cx, window);
             let the_box = part(cx, tab, n, "box");
             let column = part(cx, tab, n, "column");
-            // The box's part is inside its 1 px edge; since the folder-tab chores it sits in the
-            // outer box (its 1 px edge and `OUTER_INSET`), which is 28 in.
+            // The box (no edge of its own since the designer's details) sits in the outer box
+            // (its 1 px edge and `OUTER_INSET`), which is 28 in.
             let inset = crate::card_view::EDGE + crate::card_view::OUTER_INSET;
-            let (side, edge) = (px(28.0 + inset), px(1.0));
+            let (side, edge) = (px(28.0 + inset), px(0.0));
             assert!(
                 (the_box.left() - edge - side).abs() < px(0.5),
                 "{n}: the box is 28 + {inset} in from the left: {the_box:?}"
@@ -2392,7 +2427,7 @@ pub(super) fn agent_box_model_menu() {
                 at("Claude Example 4"),
                 at("Claude Tiny"),
             );
-            let usage = at("View Usage \u{25b8}");
+            let usage = at("Usage");
             assert!(a.bottom() <= b.top() && b.bottom() <= t.top(), "{n}");
             assert!(t.bottom() < usage.top(), "{n}: the divider between");
             let menu_box = part(cx, tab, n, "menu");
@@ -2577,11 +2612,7 @@ pub(super) fn agent_box_mode_agy_after_message() {
             assert_eq!(notices(cx, tab), ["Switched to Plan"], "{n}");
             assert_eq!(written(cx, tab).len(), sent, "{n}: nothing sent");
             let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
-            assert_eq!(
-                texts.mode.as_deref(),
-                Some("\u{1f6e1} Plan \u{25be}"),
-                "{n}"
-            );
+            assert_eq!(texts.mode.as_deref(), Some("Plan"), "{n}");
             // Left open, on the new mode, for the shot.
             click_mode_chip(n, cx, window, tab);
             let rows = mode_rows_of(cx, tab);
@@ -2614,11 +2645,7 @@ pub(super) fn agent_box_mode_reported() {
         Lookup::Ready(list),
         |n, cx, window, tab| {
             let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
-            assert_eq!(
-                texts.mode.as_deref(),
-                Some("\u{1f6e1} Ask before edits \u{25be}"),
-                "{n}"
-            );
+            assert_eq!(texts.mode.as_deref(), Some("Ask before edits"), "{n}");
             click_mode_chip(n, cx, window, tab);
             let rows = mode_rows_of(cx, tab);
             assert!(
@@ -2657,7 +2684,7 @@ pub(super) fn agent_box_mode_follows_claude() {
             assert_eq!(mode(cx).as_deref(), Some("acceptEdits"), "{n}");
             assert_eq!(
                 chip(cx).as_deref(),
-                Some("\u{1f6e1} Accept edits \u{25be}"),
+                Some("Accept edits"),
                 "{n}: the chip follows"
             );
             assert_eq!(
@@ -2861,8 +2888,7 @@ pub(super) fn agent_box_model_loading() {
                 "{n}"
             );
             assert!(
-                cx.read(|cx| tab.read(cx).shot_menu_row("View Usage \u{25b8}"))
-                    .is_some(),
+                cx.read(|cx| tab.read(cx).shot_menu_row("Usage")).is_some(),
                 "{n}"
             );
         },
@@ -2966,10 +2992,7 @@ pub(super) fn agent_box_model_choose_sends_nothing() {
                 )
             });
             let texts = cx.read(|cx| tab.read(cx).shot_box(cx));
-            assert_eq!(
-                texts.model, "Claude Example 4  High \u{25be}",
-                "{n}: {texts:?}"
-            );
+            assert_eq!(texts.model, "Claude Example 4  High", "{n}: {texts:?}");
             // An effort of the running model alone: an effort request.
             let before = lines(cx);
             click_model_chip(n, cx, window, tab);
@@ -3099,7 +3122,7 @@ fn open_usage(
     tab: &Entity<AgentTab>,
 ) {
     click_model_chip(n, cx, window, tab);
-    click_row(n, cx, window, tab, "View Usage \u{25b8}");
+    click_row(n, cx, window, tab, "Usage");
     assert_eq!(
         menu(cx, tab),
         Some(BoxMenu::Model {
@@ -3194,7 +3217,7 @@ pub(super) fn agent_box_usage_claude() {
                 "{n}: the usage panel makes way"
             );
             // And the panel is back for the shot.
-            click_row(n, cx, window, tab, "View Usage \u{25b8}");
+            click_row(n, cx, window, tab, "Usage");
             assert_usage_panel(n, cx, tab, &["Current session"]);
         },
     );
