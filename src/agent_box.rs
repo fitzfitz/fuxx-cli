@@ -77,7 +77,7 @@ const MENU_EDGE: f32 = 8.0;
 /// A menu row's height and corners; the most a menu's list grows before it scrolls.
 const ROW_H: f32 = 32.0;
 const ROW_RADIUS: f32 = 8.0;
-const MENU_LIST_MAX: f32 = 320.0;
+const MENU_LIST_MAX: f32 = 360.0;
 /// The `/` list's tallest height (it scrolls) and the width its names have before their lines.
 const SLASH_MAX_H: f32 = 340.0;
 const SLASH_NAME_W: f32 = 180.0;
@@ -581,6 +581,36 @@ pub fn model_rows(catalog: &Lookup<Catalog>, start: &Start, applies: Applies) ->
         rows.push(ModelRow::NewConversation);
     }
     rows
+}
+
+/// A model's label as the menu shows it: its family (the first word) and its version (the
+/// rest), none when it is one word.
+pub fn split_label(label: &str) -> (&str, Option<&str>) {
+    match label.split_once(' ') {
+        Some((family, version)) if !version.is_empty() => (family, Some(version)),
+        _ => (label, None),
+    }
+}
+
+/// The model menu's groups (the lead designer's spec, 2026-11-22), by place in `labels`: each
+/// family's first in catalog order ("Latest"), and the rest ("Older"). None (a flat list) under
+/// 7 models or with nothing older.
+pub fn group_models(labels: &[&str]) -> Option<(Vec<usize>, Vec<usize>)> {
+    if labels.len() < 7 {
+        return None;
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    let (mut latest, mut older) = (Vec::new(), Vec::new());
+    for (i, label) in labels.iter().enumerate() {
+        let family = split_label(label).0;
+        if seen.contains(&family) {
+            older.push(i);
+        } else {
+            seen.push(family);
+            latest.push(i);
+        }
+    }
+    (!older.is_empty()).then_some((latest, older))
 }
 
 /// One row of the mode menu, top to bottom.
@@ -2915,6 +2945,32 @@ mod tests {
 
     /// Your words (2026-11-22): "why it show everything including the top skills etc? i dont
     /// need that" — Claude's "Top …" lists after its limits are left out.
+    /// The model menu (the lead designer's spec, 2026-11-22): each family's first model in the
+    /// catalog is "Latest", the rest "Older"; a short list (under 7) isn't grouped.
+    #[test]
+    fn models_group_into_each_familys_latest_and_the_older() {
+        let labels = [
+            "Opus 5.5",
+            "Fable 5.2",
+            "Sonnet 5.5",
+            "Haiku 5.5",
+            "Fable 5.1",
+            "Opus 5",
+            "Sonnet 4.6",
+        ];
+        let (latest, older) = group_models(&labels).expect("seven: grouped");
+        assert_eq!(latest, [0, 1, 2, 3]);
+        assert_eq!(older, [4, 5, 6]);
+        assert_eq!(group_models(&labels[..6]), None, "six: flat");
+        assert_eq!(
+            group_models(&["A 1", "B 1", "C 1", "D 1", "E 1", "F 1", "G 1"]),
+            None,
+            "no older: flat"
+        );
+        assert_eq!(split_label("Opus 5.5"), ("Opus", Some("5.5")));
+        assert_eq!(split_label("Default"), ("Default", None));
+    }
+
     #[test]
     fn usage_rows_leave_out_the_top_lists() {
         let found = Lookup::Ready(vec![UsageGroup {

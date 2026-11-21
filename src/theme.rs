@@ -173,6 +173,9 @@ pub struct UiColors {
     /// top, softer down its sides.
     pub composer_glow_top: Rgb,
     pub composer_glow_bottom: Rgb,
+    /// The model menu's current row (the lead designer's spec, 2026-11-22): the accent washed
+    /// over the menu's fill, as strong as keeps its words (and the dim ones) readable.
+    pub menu_current: Rgb,
     /// The branch pill in the composer's tab, under the pointer: a step over `composer_inner`.
     pub composer_pill_hover: Rgb,
     /// The Changes progress bar's unfilled track, on the repo card (`card_hover`; M11al Task 9).
@@ -618,6 +621,17 @@ impl Theme {
             composer_inner,
             composer_glow_top,
             composer_glow_bottom,
+            menu_current: {
+                let start = if dark { 0.12 } else { 0.08 };
+                (0..=6)
+                    .map(|k| mix(composer_inner, accent, start - 0.02 * k as f32))
+                    .find(|&c| {
+                        contrast(ink, c) >= TEXT_MIN
+                            && contrast(text_dim, c) >= TEXT_MIN
+                            && contrast(accent, c) >= MARK_MIN
+                    })
+                    .unwrap_or(composer_inner)
+            },
             composer_pill_hover: mix(composer_inner, fg, 0.05),
             window_edge: if dark { black } else { canvas },
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
@@ -1953,6 +1967,27 @@ mod tests {
                     "{name}: the outer box a whisper above the page ({lift:.2})"
                 );
             }
+        }
+    }
+
+    /// The model menu (the lead designer's spec, 2026-11-22): the current row's accent tint keeps
+    /// its words readable, and the accent (its bar and ✓) shows on it, in every theme.
+    #[test]
+    fn the_menus_current_row_stays_readable() {
+        use crate::ui_tokens::{MARK_MIN, TEXT_MIN, contrast};
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            for (what, on) in [
+                ("current", ui.menu_current),
+                ("hover", ui.composer_pill_hover),
+            ] {
+                for (ink, fg) in [("text", ui.text), ("dim", ui.text_dim)] {
+                    let got = contrast(fg, on);
+                    assert!(got >= TEXT_MIN - 0.01, "{name}: {ink} on {what} {got:.2}");
+                }
+            }
+            let got = contrast(ui.accent, ui.menu_current);
+            assert!(got >= MARK_MIN - 0.01, "{name}: accent on current {got:.2}");
         }
     }
 }

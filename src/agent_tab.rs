@@ -938,6 +938,9 @@ pub struct AgentTab {
     modal_focus: FocusHandle,
     pub(crate) modal_scroll: gpui::ScrollHandle,
     refocus: Option<Refocus>,
+    /// The model menu's "Older" group, opened (None: as it starts — open when the current
+    /// model is older; reset when the menu closes).
+    pub(crate) models_older_open: Option<bool>,
     /// The top bar (spec A §C): what its animations start from (`agent_top::TopState`), its
     /// status mark and the clock that turns it (a still one of its own until the Workspace
     /// gives it the shared one, `use_clock`), and its width as last laid out (`agent_top::trim`).
@@ -1366,6 +1369,7 @@ impl AgentTab {
             modal_focus: cx.focus_handle(),
             modal_scroll: gpui::ScrollHandle::new(),
             refocus: None,
+            models_older_open: None,
             top: crate::agent_top::TopState::default(),
             top_mark,
             modal_mark,
@@ -2570,6 +2574,7 @@ impl AgentTab {
     /// Close the box's menu (a click outside it).
     pub(crate) fn close_menu(&mut self, cx: &mut Context<Self>) {
         self.picker = None;
+        self.models_older_open = None;
         #[cfg(feature = "ui-shots")]
         self.menu_rows.borrow_mut().clear();
         if self.menu.take().is_some() {

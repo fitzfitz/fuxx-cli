@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::usage_view::{heading, quiet, top_row};
+use gpui::{Animation, AnimationExt};
 
 impl AgentTab {
     /// The open menu's panel (`content` in it), hung above its chip (a child of it) and opening
@@ -17,13 +18,19 @@ impl AgentTab {
     ) -> AnyElement {
         let ui = cx.global::<Appearance>().theme.ui();
         // No content: only the panel beside it (the usage button's).
+        let dark = cx.global::<Appearance>().theme.is_dark();
+        // The lead designer's "quiet glass" (2026-11-22): it rises 4 pt as it fades in.
         let panel = content.map(|content| {
-            crate::overlay_panel::shell(&ui, width)
+            menu_surface(&ui, dark, width)
                 .id("agent-box-menu")
-                .p(px(4.))
-                .gap(px(0.))
                 .occlude()
-                .child(content)
+                .child(menu_inside(&ui).child(content))
+                .with_animation(
+                    "agent-box-menu-open",
+                    Animation::new(std::time::Duration::from_millis(120))
+                        .with_easing(crate::agent_top::ease_out_cubic),
+                    |d, t| d.opacity(t).mt(px(4. * (1. - t))),
+                )
         });
         div()
             .absolute()
@@ -505,15 +512,64 @@ impl AgentTab {
         };
         let mut top = Vec::new();
         let mut list = Vec::new();
-        for (i, row) in model_rows(&lookup, &shown, applies).iter().enumerate() {
+        let rows = model_rows(&lookup, &shown, applies);
+        // The current model, said in the header (the lead designer's spec).
+        let now = rows.iter().find_map(|r| match r {
+            ModelRow::Model {
+                label,
+                effort,
+                current: true,
+                ..
+            } => Some(match effort {
+                Some(e) => format!("{label} \u{b7} {}", effort_word(e)),
+                None => label.clone(),
+            }),
+            _ => None,
+        });
+        // Grouped by family when long (`group_models`): each one's latest, then "Older".
+        let models: Vec<(usize, &str, bool)> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| match r {
+                ModelRow::Model { label, current, .. } if !label.starts_with("Default") => {
+                    Some((i, label.as_str(), *current))
+                }
+                _ => None,
+            })
+            .collect();
+        let labels: Vec<&str> = models.iter().map(|m| m.1).collect();
+        let groups = group_models(&labels);
+        let older_rows: Vec<usize> = groups
+            .as_ref()
+            .map(|(_, older)| older.iter().map(|&k| models[k].0).collect())
+            .unwrap_or_default();
+        let first_latest = groups
+            .as_ref()
+            .and_then(|(latest, _)| latest.first().map(|&k| models[k].0));
+        let first_older = older_rows.first().copied();
+        let older_open = self.models_older_open.unwrap_or_else(|| {
+            older_rows
+                .iter()
+                .any(|&i| matches!(&rows[i], ModelRow::Model { current: true, .. }))
+        });
+        for (i, row) in rows.iter().enumerate() {
+            if Some(i) == first_latest {
+                list.push(menu_heading(&ui, "Latest", None));
+            }
+            if Some(i) == first_older {
+                list.push(self.older_row(older_rows.len(), older_open, &ui, cx));
+            }
+            if older_rows.contains(&i) && !older_open {
+                continue;
+            }
             match row {
-                ModelRow::Heading => top.push(heading(MODEL_HEADING.into(), &ui)),
+                ModelRow::Heading => top.push(menu_heading(&ui, MODEL_HEADING, now.clone())),
                 ModelRow::Note(note) => list.push(quiet(*note, &ui)),
                 ModelRow::Model { label, .. } => {
                     list.push(self.model_row(i, row, efforts_of, &ui, cx));
-                    // A line under "Default" (the designer's details).
+                    // A 4 pt gap under "Default" (the lead designer's spec: no line).
                     if label.starts_with("Default") {
-                        list.push(divider(&ui));
+                        list.push(div().h(px(4.)).into_any_element());
                     }
                 }
                 ModelRow::NewConversation => list.push(self.menu_row(
@@ -562,11 +618,20 @@ impl AgentTab {
                         )
                     })
                     .collect();
-                let panel = crate::overlay_panel::shell(&ui, EFFORT_WIDTH)
-                    .p(px(4.))
-                    .gap(px(0.))
+                let dark = cx.global::<Appearance>().theme.is_dark();
+                let panel = menu_surface(&ui, dark, EFFORT_WIDTH)
+                    .id("agent-box-effort")
                     .occlude()
-                    .children(items);
+                    .child(
+                        menu_inside(&ui)
+                            .child(menu_heading(&ui, "Effort", None))
+                            .children(items),
+                    )
+                    .with_animation(
+                        "agent-box-effort-open",
+                        Animation::new(std::time::Duration::from_millis(90)),
+                        |d, t| d.opacity(t),
+                    );
                 Some(self.marked("effort", div().child(panel)).into_any_element())
             }
             _ => None,
@@ -935,19 +1000,23 @@ impl AgentTab {
             return div().into_any_element();
         };
         use crate::icons::{Icon, icon};
-        let (ix, hover) = (*ix, ui.panel_hover);
+        let (ix, hover) = (*ix, ui.composer_pill_hover);
         let group = SharedString::from(format!("box-model-row-{i}"));
         // "Default (recommended)" reads "Default" with "recommended" quiet beside it.
         let (shown, aside) = match label.strip_suffix(" (recommended)") {
             Some(base) => (base.to_string(), Some("recommended")),
             None => (label.clone(), None),
         };
+        // The lead designer's spec (2026-11-22): the family in the text colour, its version
+        // quiet; "recommended" a hairline tag; the effort a pill; the ✓ in the accent.
+        let (family, version) = crate::agent_box::split_label(&shown);
+        let (family, version) = (family.to_string(), version.map(str::to_string));
         let name = div()
             .id(("box-model-pick", i))
             .flex_1()
             .min_w_0()
             .h_full()
-            .pl(px(8.))
+            .pl(px(10.))
             .flex()
             .items_center()
             .gap(px(6.))
@@ -958,18 +1027,26 @@ impl AgentTab {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .child(SharedString::from(shown)),
+                    .child(SharedString::from(family))
+                    .children(version.map(|v| {
+                        div()
+                            .flex_none()
+                            .ml(px(5.))
+                            .text_color(hsla(ui.text_dim))
+                            .child(SharedString::from(v))
+                    }))
+                    .flex()
+                    .items_center(),
             )
-            .children(aside.map(|a| div().flex_none().text_color(hsla(ui.text_dim)).child(a)))
+            .children(aside.map(|a| row_pill(ui, a, true)))
             .child(div().flex_1())
-            .children(effort.as_deref().map(|level| {
-                div()
-                    .flex_none()
-                    .text_color(hsla(ui.text_dim))
-                    .child(SharedString::from(effort_word(level)))
-            }))
+            .children(
+                effort
+                    .as_deref()
+                    .map(|level| row_pill(ui, effort_word(level), false)),
+            )
             .child(div().flex_none().w(px(14.)).when(*current, |d| {
-                d.child(icon(Icon::Check, px(14.), hsla(ui.text)))
+                d.child(icon(Icon::Check, px(14.), hsla(ui.accent)))
             }))
             .on_click(cx.listener(move |this, _, window, cx| this.pick_model(ix, window, cx)));
         let more = div()
@@ -1000,9 +1077,11 @@ impl AgentTab {
             .h(px(ROW_H))
             .flex()
             .items_center()
+            .relative()
             .rounded(px(ROW_RADIUS))
             .hover(move |s| s.bg(hsla(hover)))
-            .when(efforts_of == Some(ix), move |d| d.bg(hsla(hover)))
+            .when(*current, |d| d.bg(hsla(ui.menu_current)).child(current_bar(ui)))
+            .when(efforts_of == Some(ix) && !*current, move |d| d.bg(hsla(hover)))
             // Your words (2026-11-22): hovering a model shows its efforts beside it (none, for
             // a model without), no click.
             .on_hover({
@@ -1021,6 +1100,47 @@ impl AgentTab {
         self.marked_row(label.clone(), row).into_any_element()
     }
 
+    /// The "Older  N ⌄" row (the lead designer's spec): opens or closes the older models in
+    /// place.
+    fn older_row(
+        &self,
+        count: usize,
+        open: bool,
+        ui: &UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::icons::{Icon, icon};
+        let hover = ui.composer_pill_hover;
+        let row = div()
+            .id("box-model-older")
+            .h(px(28.))
+            .px(px(10.))
+            .rounded(px(ROW_RADIUS))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hsla(hover)))
+            .text_size(px(crate::ui_tokens::text::META))
+            .text_color(hsla(ui.text_dim))
+            .child(div().flex_1().child("Older"))
+            .child(SharedString::from(count.to_string()))
+            .child(icon(
+                if open {
+                    Icon::ChevronDown
+                } else {
+                    Icon::ChevronRight
+                },
+                px(12.),
+                hsla(ui.text_dim),
+            ))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.models_older_open = Some(!open);
+                cx.notify();
+            }));
+        self.marked_row("Older".to_string(), row).into_any_element()
+    }
+
     /// A menu row: a ✓ when `check`, its words (cut at the start when long: a path keeps its
     /// folder's name), `▸` when `more` opens beside it; `pick` on its click.
     #[allow(clippy::too_many_arguments)]
@@ -1034,17 +1154,23 @@ impl AgentTab {
         cx: &mut Context<Self>,
         pick: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> AnyElement {
-        let hover = ui.panel_hover;
+        let hover = ui.composer_pill_hover;
         let row = div()
             .id(id)
+            .relative()
             .h(px(ROW_H))
-            .px(px(8.))
+            .pl(px(10.))
+            .pr(px(6.))
             .flex()
             .items_center()
             .gap(px(6.))
             .rounded(px(ROW_RADIUS))
             .cursor_pointer()
             .hover(move |s| s.bg(hsla(hover)))
+            // The current one (the lead designer's spec): the accent's tint and bar.
+            .when(check, |d| {
+                d.bg(hsla(ui.menu_current)).child(current_bar(ui))
+            })
             .child(
                 div()
                     .flex_1()
@@ -1054,12 +1180,12 @@ impl AgentTab {
                     .text_ellipsis_start()
                     .child(SharedString::from(label.clone())),
             )
-            // The check on the right, in the text colour (the designer's details).
+            // The check on the right, in the accent (the lead designer's spec, 2026-11-22).
             .when(check, |d| {
                 d.child(crate::icons::icon(
                     crate::icons::Icon::Check,
                     px(14.),
-                    hsla(ui.text),
+                    hsla(ui.accent),
                 ))
             })
             .when(more, |d| {
@@ -1105,12 +1231,99 @@ impl AgentTab {
     }
 }
 
-/// A 1 px line between a menu's parts, 4 above and below.
-fn divider(ui: &UiColors) -> AnyElement {
+/// A box menu's surface (the lead designer's spec, 2026-11-22, "quiet glass"): the menu's fill
+/// in a 1 pt rim lit from above (the chat box's edge), radius 13 / 12, resting on two shadows.
+fn menu_surface(ui: &UiColors, dark: bool, width: f32) -> Div {
+    let shadow = |y: f32, blur: f32, a: f32| gpui::BoxShadow {
+        color: gpui::Hsla { a, ..gpui::black() },
+        offset: point(px(0.), px(y)),
+        blur_radius: px(blur),
+        spread_radius: px(0.),
+        inset: false,
+    };
     div()
-        .h(px(1.))
-        .mx(px(4.))
-        .my(px(4.))
-        .bg(hsla(ui.panel_border))
+        .w(px(width))
+        .max_w_full()
+        .p(px(1.))
+        .rounded(px(13.))
+        .bg(gpui::linear_gradient(
+            180.,
+            gpui::linear_color_stop(hsla(ui.composer_glow_top), 0.),
+            gpui::linear_color_stop(hsla(ui.composer_glow_bottom), 0.6),
+        ))
+        .shadow(vec![
+            shadow(1., 2., if dark { 0.30 } else { 0.06 }),
+            shadow(12., 32., if dark { 0.40 } else { 0.12 }),
+        ])
+        .text_size(px(crate::ui_tokens::text::NAME))
+        .text_color(hsla(ui.text))
+}
+
+/// The surface's inside: the menu's fill, 4 in.
+fn menu_inside(ui: &UiColors) -> Div {
+    div()
+        .w_full()
+        .rounded(px(12.))
+        .bg(hsla(ui.composer_inner))
+        .p(px(4.))
+        .flex()
+        .flex_col()
+}
+
+/// The current row's mark (the lead designer's spec): a 2 × 14 accent bar at its left.
+fn current_bar(ui: &UiColors) -> Div {
+    div()
+        .absolute()
+        .left(px(3.))
+        .top(px((ROW_H - 14.) / 2.))
+        .w(px(2.))
+        .h(px(14.))
+        .rounded(px(1.))
+        .bg(hsla(ui.accent))
+}
+
+/// A small pill beside a row's words: filled (an effort) or a hairline tag ("recommended").
+fn row_pill(ui: &UiColors, words: impl Into<SharedString>, hairline: bool) -> Div {
+    div()
+        .flex_none()
+        .h(px(18.))
+        .px(px(7.))
+        .rounded(px(9.))
+        .flex()
+        .items_center()
+        .text_size(px(crate::ui_tokens::text::META))
+        .text_color(hsla(ui.text_dim))
+        .map(|d| {
+            if hairline {
+                d.border_1().border_color(hsla(ui.composer_edge))
+            } else {
+                d.bg(hsla(ui.composer_pill_hover))
+            }
+        })
+        .child(words.into())
+}
+
+/// A menu's section heading (the lead designer's spec): 26 tall, META, quiet; `right` (the
+/// current model) in the text colour on its right.
+fn menu_heading(ui: &UiColors, text: &'static str, right: Option<String>) -> AnyElement {
+    div()
+        .h(px(26.))
+        .px(px(10.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .text_size(px(crate::ui_tokens::text::META))
+        .text_color(hsla(ui.text_dim))
+        .child(div().flex_none().child(text))
+        .child(div().flex_1())
+        .children(right.map(|r| {
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(hsla(ui.text))
+                .child(SharedString::from(r))
+        }))
         .into_any_element()
 }
