@@ -30,6 +30,11 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — M11an added (placeholder): full-width typing line
+
+- **What:** on your word, a placeholder milestone for the composer's short first line, with the cause and two ways
+  to fix it (display re-layout, or a short prompt in card view), what each gains and costs. Note 89; roadmap.
+
 ### 2026-11-21 — Chores: the right prompt near the typing; capped pills; hanging second row
 
 - **What:** the right prompt stays cut while zsh keeps it one blank from the typing (remembered per prompt); the
