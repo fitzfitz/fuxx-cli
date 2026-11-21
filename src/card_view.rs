@@ -514,6 +514,9 @@ pub struct CardsState {
     /// The composer's top-left and width last frame (window points): its context row is
     /// placed there (rework).
     pub composer: Option<(f32, f32, f32)>,
+    /// The composer's first row as painted last frame, as text (the scenes check what shows).
+    #[cfg(feature = "ui-shots")]
+    pub typed_row: String,
 }
 
 /// Rows painted this frame that the pointer can select in (window points): the first row is

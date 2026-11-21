@@ -86,6 +86,20 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "shell-cards-prompt",
+        run: shell_cards_prompt_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/terminal_view.rs",
+            "src/card_view.rs",
+            "src/terminal.rs",
+            "src/grid.rs",
+            "src/blocks.rs",
+        ],
+    },
+    Scene {
         name: "shell-cards-running-full",
         run: shell_cards_running_full_scene,
         themes: Themes::Both,
@@ -1675,6 +1689,34 @@ fn shell_cards_select_scene() {
             0.0,
             "{n}: Rerun snaps to the bottom"
         );
+    }
+}
+
+/// `shell-cards-prompt` (rework): a two-sided prompt (`~/code/api main` on the left, `✔ 08:00` at
+/// the line's end, drawn as zsh draws them): the composer shows `❯ ls`, nothing of either side.
+fn shell_cards_prompt_scene() {
+    let dims = size(px(640.0), px(360.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let n = format!("shell-cards-prompt-{slug}");
+        let mut rig = cards_rig(theme, &blocks_text(), dims);
+        let _ = rig.frame();
+        let cols = rig.read(|v| v.shot_cards()).1.cols;
+        let left = "~/code/api main ";
+        let right = "\u{2714} 08:00";
+        // Through `shot_output`, so the view hears the marks (as it does from a real shell).
+        let text = format!(
+            "\r\n\x1b]133;A;redraw=0\x07{left}\x1b[{}G{right}\x1b[{}G\x1b]133;B\x07ls",
+            cols - right.chars().count() + 1,
+            left.len() + 1
+        );
+        let view = rig.view.clone();
+        rig.cx
+            .update(|cx| view.update(cx, |v, cx| v.shot_output(&text, cx)));
+        let shot = rig.frame();
+        save_shot("shell-cards-prompt", slug, &shot);
+        let typed = rig.read(|v| v.shot_typed_row());
+        assert_eq!(typed, "\u{276f} ls", "{n}: only what you typed");
     }
 }
 
