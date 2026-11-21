@@ -34,7 +34,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 - **What:** the inner box 3 pt in from the outer box (was 5); no ▾ on the branch or the folder; the folder shows beside
   the branch even when the shell reports none (the workspace hands each terminal the folder it finds for the branch);
-  the folder a plain label (no Finder on click, your call). Note 88 "Chores after the rework".
+  the folder a plain label (no Finder on click, your call). Note 88 "Chores after the rework"; then the folder's whole path (`~/…`) as its tooltip.
 - **Checks:** 2284 tests; clippy at the baseline; fmt; ui-shots: the 6 known display-dependent failures only.
 - **Learned:** two readers of "the terminal's folder" (the branch lookup and the context row) used different
   sources; one source, pushed together with the branch, keeps them in step.

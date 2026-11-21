@@ -1635,10 +1635,17 @@ impl TerminalView {
                 .child(icon(glyph, px(13.0), dim))
                 .child(words)
         };
-        let folder_item = folder.and_then(|path| {
-            let name = path.file_name()?.to_string_lossy().to_string();
-            Some(item(Icon::Folder, name))
-        });
+        let folder_item =
+            folder.and_then(|path| {
+                let name = path.file_name()?.to_string_lossy().to_string();
+                // Its whole path on hover, as the app writes folders (`~/…`; chores: "on folder
+                // information, give tooltip").
+                let home = crate::workspace::home_dir();
+                let tip = crate::sidebar::home_relative(&path, home.as_deref());
+                Some(item(Icon::Folder, name).id("composer-folder").tooltip(
+                    move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone().into())).into() },
+                ))
+            });
         let branch_item = self.branch.clone().map(|branch| {
             item(Icon::Branch, branch).cursor_pointer().on_mouse_down(
                 MouseButton::Left,
