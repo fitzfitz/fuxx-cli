@@ -259,6 +259,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: BOX,
     },
     Scene {
+        name: "agent-box-send-notch",
+        run: agent_box_send_notch,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: BOX,
+    },
+    Scene {
         name: "agent-box-terminal-text",
         run: agent_box_terminal_text,
         themes: Themes::One,
@@ -661,6 +669,52 @@ fn agy_conversation() -> String {
         .expect("agy-text starts a conversation")
 }
 
+/// Your words: "can you make the button on the bottom right to be like this? its outside but we
+/// play radius on the inner box on the bottom right". The designer's details: send a 34 circle
+/// 3 in from the outer box's inside right and bottom, its centre level with the controls'; the
+/// mode pill ends 11 before it; the notch stays at the bottom-right as the box grows.
+pub(super) fn agent_box_send_notch() {
+    layout_scene("agent-box-send-notch", |n, cx, window, tab| {
+        let near = |a: Pixels, b: Pixels| (a - b).abs() <= px(0.5);
+        let check = |cx: &mut VisualTestAppContext, when: &str| {
+            let (outer, send) = (part(cx, tab, n, "outer"), part(cx, tab, n, "send"));
+            let (attach, mode) = (part(cx, tab, n, "attach"), part(cx, tab, n, "mode"));
+            assert_eq!(send.size, size(px(34.), px(34.)), "{n} {when}: 34 across");
+            // (Inside the outer box's 1 px edge, 3 in.)
+            assert!(
+                near(outer.right() - send.right(), px(4.)),
+                "{n} {when}: right {outer:?} {send:?}"
+            );
+            assert!(
+                near(outer.bottom() - send.bottom(), px(4.)),
+                "{n} {when}: bottom"
+            );
+            // (Within a pixel: layout lands on whole pixels.)
+            assert!(
+                (send.center().y - attach.center().y).abs() <= px(1.),
+                "{n} {when}: level with the controls ({:?} {:?})",
+                send.center().y,
+                attach.center().y
+            );
+            assert!(
+                (send.left() - mode.right() - px(11.)).abs() <= px(1.),
+                "{n} {when}: the mode pill 11 before it ({:?} {:?})",
+                send.left(),
+                mode.right()
+            );
+        };
+        check(cx, "empty");
+        let line = "Please read src/rsvp.ts and the failing test, then explain why past dates \
+                    are accepted. ";
+        cx.simulate_input(window, &line.repeat(3));
+        let _ = frame_fresh(cx, window);
+        let (rows, _, _) = cx.read(|cx| tab.read(cx).shot_composer().read(cx).shot_rows());
+        assert!(rows > 1, "{n}: the box grew ({rows} rows)");
+        check(cx, "grown");
+        assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
+    });
+}
+
 /// Your words: "Because right now, you see the differences? also the cursor is very different"
 /// (the agent box beside the shell box). The designer's details: the typing in the terminal's
 /// font, size and cell height; the caret the terminal's cursor (the setting's shape, one cell,
@@ -670,8 +724,12 @@ pub(super) fn agent_box_terminal_text() {
     use crate::appearance::{Appearance, CursorShapeSetting};
     use crate::cursor_look::PaintShape;
     layout_scene("agent-box-terminal-text", |n, cx, window, tab| {
+        // Positions first, without motion (the glide would catch the caret mid-way).
         cx.update(|cx| {
-            cx.update_global::<Appearance, _>(|a, _| a.cursor_style = CursorShapeSetting::Block)
+            cx.update_global::<Appearance, _>(|a, _| {
+                a.cursor_style = CursorShapeSetting::Block;
+                a.animations = false;
+            })
         });
         let composer = cx.read(|cx| tab.read(cx).shot_composer());
         cx.update(|cx| composer.update(cx, |c, _| c.shot_be_key()));
@@ -730,6 +788,33 @@ pub(super) fn agent_box_terminal_text() {
             at.left(),
             text.left() + cell_w * 2.,
             "{n}: after two letters"
+        );
+        // The cursor setting changed: the box redraws with it (your words: "it doesn't respect
+        // the cursor setting").
+        cx.update(|cx| {
+            cx.update_global::<Appearance, _>(|a, _| a.cursor_style = CursorShapeSetting::Underline)
+        });
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            caret(cx).map(|c| c.0),
+            Some(PaintShape::Underline),
+            "{n}: the new setting's shape"
+        );
+        // With motion on, a typed letter glides the caret over, frame by frame, as in a pane
+        // (your words: "it doesnt glow and smooth like terminal tab").
+        cx.update(|cx| {
+            cx.update_global::<Appearance, _>(|a, _| {
+                a.animations = true;
+                a.cursor_glide = true;
+            })
+        });
+        let _ = frame_fresh(cx, window);
+        cx.simulate_input(window, "!");
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            cx.read(|cx| composer.read(cx).shot_frames()),
+            crate::cursor_look::Frames::EveryFrame,
+            "{n}: gliding"
         );
         cx.update(|cx| composer.update(cx, |c, _| c.shot_not_key()));
         cx.update_window(window, |_, w, _| w.refresh()).ok();

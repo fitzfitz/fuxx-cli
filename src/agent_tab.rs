@@ -679,6 +679,8 @@ pub struct Colors {
     /// send button, a step over the box (6 %), a little more under the pointer (10 %).
     pub control: Rgb,
     pub control_hover: Rgb,
+    /// The send circle's arrow when there's text: the accent, held to `MARK_MIN` on the box.
+    pub send_arrow: Rgb,
 }
 
 impl Colors {
@@ -724,6 +726,7 @@ impl Colors {
             pill_hover: ui.composer_pill_hover,
             control: mix(ui.composer_inner, theme.foreground, 0.06),
             control_hover: mix(ui.composer_inner, theme.foreground, 0.10),
+            send_arrow: ensure_contrast(ui.accent, ui.composer_inner, crate::ui_tokens::MARK_MIN),
         }
     }
 }
@@ -4665,6 +4668,14 @@ mod tests {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got:.2}");
             }
+            // The send circle's ready arrow, the accent on the box's colour (your words: "button
+            // background make it same as inner box background color"): a mark, so the marks'
+            // floor.
+            let got = contrast(c.send_arrow, c.box_fill);
+            assert!(
+                got >= crate::ui_tokens::MARK_MIN - 0.01,
+                "{name}: send arrow {got:.2}"
+            );
             // Raw text_dim, as the brief asks: on panel and on card.
             let ui = theme.ui();
             for (on, bg) in [("panel", ui.panel), ("card", ui.card)] {

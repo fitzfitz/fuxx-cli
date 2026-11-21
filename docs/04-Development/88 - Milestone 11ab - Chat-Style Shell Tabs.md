@@ -653,6 +653,34 @@ rule in both.
   `shell-cards-placeholder`; two older scenes given more text (the smaller cell wraps the same words into 8 rows,
   not more); clippy at the baseline; ui-shots 258 passed, the 5 known failures.
 
+### Chore: the agent caret is the terminal's cursor; send in a notch (2026-11-21)
+
+Your words: "it doesn't respect the cursor setting, and it doesnt glow and smooth like terminal tab", then "can you make
+the button on the bottom right to be like this? its outside but we play radius on the inner box on the bottom right",
+then "button background make it same as inner box background color, and add more radius on the right bottom chat box
+so the radius rounded and the button circle match".
+
+- **The caret is the terminal's own cursor code**, not a look-alike: the composer builds a small grid of its shown
+  rows and asks `CursorSettings::look` for the cursor, as a pane does, so every cursor setting applies: the shape,
+  the glide between cells, the trail or sparks (`cursor-fun`), the breathing glow, the status colour, hollow without
+  focus. Its breathing timer is the pane's (`breath_sleep`, `breath_redraw`). The terminal's cursor drawing moved into
+  `paint_cursor_under` / `paint_cursor_over` (the pane draws through them too), and its sparks into
+  `CursorMotion::spark`. A changed setting redraws the box. (The last chore's stand-in, `box_caret` and
+  `caret_rect`, is gone.)
+- **Send in a notch** (the lead designer's details): a 34 circle in the outer box's bottom-right, 3 in from its inside
+  edges; the inner box cut round it by a concave arc (radius 20 about the circle's centre) with 8 round joints where
+  its straight edges meet the cut; the cut drawn under the box's pills and text. The controls row 3 from the inner
+  box's bottom and left (its centre level with the circle's), the mode pill ending 11 before the circle; the inner
+  box's bottom-left 17. Stop takes the same circle: a 12 square (quiet while stopping, the waiting colour for Force
+  stop), its words in a tooltip.
+- **Your two follow-ups:** the circle is the inner box's colour in every state, its arrow dim when empty and in the
+  accent when there's text (`send_arrow`, held to `MARK_MIN` on the box); the outer box's bottom corners are
+  concentric with the circle (17 + 3 + the 1 px edge = 21).
+- **Checks:** 2306 tests; scenes `agent-box-terminal-text` (now also: a changed setting redraws; a typed letter glides,
+  failing with glide off) and `agent-box-send-notch` (34 across, 3 in, level with the controls, the mode pill 11
+  before it, unchanged as the box grows); clippy at the baseline; ui-shots 259 passed, the 5 known failures
+  (`file-tab-md-mermaid` failed once in a full run and passed alone twice: timing).
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·
