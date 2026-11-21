@@ -766,15 +766,7 @@ impl Workspace {
                 }
                 _ => self.mark_view(place, key, status, px(STATUS_DOT), surface, cx),
             };
-            Some(
-                div()
-                    .flex_none()
-                    .size(px(STATUS_DOT))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(mark),
-            )
+            Some(mark)
         });
         let rename_box = self
             .renaming
@@ -802,7 +794,9 @@ impl Workspace {
         };
         let close = div()
             .id(("pane-tab-close", id.0 as usize))
-            .flex_none()
+            .absolute()
+            .top_0()
+            .left_0()
             .size(px(CLOSE))
             .flex()
             .items_center()
@@ -841,7 +835,7 @@ impl Workspace {
         };
         let tab = div()
             .id(("pane-tab", id.0 as usize))
-            .group(group)
+            .group(group.clone())
             .flex_1()
             .min_w(px(0.0))
             .h_full()
@@ -857,13 +851,25 @@ impl Workspace {
             .child(tile)
             .child(part_gap())
             .child(title)
-            .children(
-                dot.map(|dot| [part_gap().into_any_element(), dot.into_any_element()])
-                    .into_iter()
-                    .flatten(),
-            )
             .child(part_gap())
-            .child(close)
+            // The mark and × share one slot (your words, 2026-11-22: the mark "looks like
+            // floating" beside the hidden ×): the mark shows, the × takes its place on hover.
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .size(px(CLOSE))
+                    .children(dot.map(|dot| {
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .group_hover(group.clone(), |s| s.invisible())
+                            .child(dot)
+                    }))
+                    .child(close),
+            )
             .on_drag(DraggedTab { tab: id }, move |dragged, at, window, cx| {
                 source.set(Some(TabGrab {
                     tab: dragged.tab,

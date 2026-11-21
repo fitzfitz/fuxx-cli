@@ -952,7 +952,18 @@ fn tab_bar_scenes() {
                     // codex: a quiet pill (chore 2026-11-20; `tab_idle` since spec B-C), no ×.
                     let (x, y) = fill_at(codex);
                     assert!(is(px_at(x, y), ui.tab_idle), "{n}: codex a quiet pill");
-                    assert!(!close_drawn(codex, ui.tab_idle), "{n}: codex's × hidden");
+                    // Its slot shows its Working mark, not the × (they share it since
+                    // 2026-11-22).
+                    let right = right_of(codex) - TAB_PAD;
+                    let marked = (2..=(CLOSE as i32 - 2)).any(|dx| {
+                        (-4..=4).any(|dy| {
+                            gap(
+                                px_at(right - dx as f32, middle + dy as f32),
+                                ui.ring_working,
+                            ) <= 40
+                        })
+                    });
+                    assert!(marked, "{n}: codex's slot shows its mark, the × hidden");
                     // The right pane's tests: shown in the unfocused pane, the neutral wash
                     // (M11al §3.3; `card_lift` among pills), in its left padding.
                     let tests_left = f32::from(api.left()) + LEFT_BAR_WIDTH + HAIRLINE;
@@ -2426,15 +2437,21 @@ fn tabs_minimal_scenes() {
                 let words = if i == 0 { ui.text } else { ui.text_faint };
                 let off = nearest(&title, words);
                 assert!(off <= 24, "{what}: its title {words:?} off by {off}");
-                // The status dot after the title, before the ×'s room.
+                // The status dot in the ×'s slot (they share it since 2026-11-22): shown, and
+                // the × in its place on the hovered tab.
                 let close = right - TAB_PAD - CLOSE;
+                let hovered = scene == "tabs-minimal-hover" && i == 2;
                 let dot = in_box(
-                    close - PART_GAP - STATUS_DOT - 1.0,
-                    close - PART_GAP + 1.0,
+                    close + CLOSE / 2.0 - STATUS_DOT / 2.0 - 1.0,
+                    close + CLOSE / 2.0 + STATUS_DOT / 2.0 + 1.0,
                     cy - STATUS_DOT / 2.0 - 1.0,
                     cy + STATUS_DOT / 2.0 + 1.0,
                 );
                 match statuses[i] {
+                    Some(mark) if hovered => {
+                        let off = nearest(&dot, mark);
+                        assert!(off > 30, "{what}: the × in its dot's place ({off} off)");
+                    }
                     Some(mark) => {
                         let off = nearest(&dot, mark);
                         assert!(off <= 30, "{what}: its dot {mark:?} off by {off}");
@@ -2456,11 +2473,12 @@ fn tabs_minimal_scenes() {
                         }
                     }
                 }
-                // × only on the hovered tab.
+                // × only on the hovered tab (a marked tab's slot holds its mark otherwise).
                 let x_box = in_box(close + 2.0, close + CLOSE - 2.0, cy - 5.0, cy + 5.0);
                 let drawn = x_box.iter().any(|&p| gap(p, fill) > 30);
-                let hovered = scene == "tabs-minimal-hover" && i == 2;
-                assert_eq!(drawn, hovered, "{what}: its ×");
+                if hovered || statuses[i].is_none() {
+                    assert_eq!(drawn, hovered, "{what}: its ×");
+                }
                 // A pill: its round ends leave the card at its corners; clear card after it (no
                 // separator line).
                 let corner_y = f32::from(place.top()) + 1.0;
@@ -2583,7 +2601,7 @@ fn tabs_minimal_scenes() {
             codex_left >= row_left - 0.5 && codex_right <= row_right + 0.5,
             "{n}: the shown tab {codex_left}–{codex_right} inside the row {row_left}–{row_right}"
         );
-        // Its icon, its working dot and its × (hovered), drawn inside it.
+        // Its icon and its × (hovered), drawn inside it.
         let tile = codex_left + TAB_PAD;
         let ink = in_box(tile, tile + TILE, cy - TILE / 2.0, cy + TILE / 2.0)
             .iter()
@@ -2592,9 +2610,10 @@ fn tabs_minimal_scenes() {
             .unwrap_or(255);
         assert!(ink <= 30, "{n}: its icon drawn ({ink} off the accent)");
         let close = codex_right - TAB_PAD - CLOSE;
+        // Hovered, its × takes its working dot's place (they share a slot since 2026-11-22).
         let dot = in_box(
             tile + TILE,
-            close,
+            close + CLOSE,
             cy - STATUS_DOT / 2.0 - 1.0,
             cy + STATUS_DOT / 2.0 + 1.0,
         );
@@ -2603,7 +2622,10 @@ fn tabs_minimal_scenes() {
             .map(|&p| gap(p, ui.ring_working))
             .min()
             .unwrap_or(255);
-        assert!(off <= 30, "{n}: the working dot is drawn ({off} off)");
+        assert!(
+            off > 30,
+            "{n}: the × in the working dot's place ({off} off)"
+        );
         let fill = ui.tab_active;
         let x_box = in_box(close + 2.0, close + CLOSE - 2.0, cy - 5.0, cy + 5.0);
         assert!(

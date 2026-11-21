@@ -647,8 +647,9 @@ impl Theme {
             side_field: mix(side, fg, 0.05),
             side_selected,
             tab_active,
-            tab_idle: mix(card, fg, 0.025),
-            tab_idle_hover: mix(card, fg, 0.045),
+            // Closer to the card (your words, 2026-11-22: "more darker/transparent").
+            tab_idle: mix(card, fg, 0.012),
+            tab_idle_hover: mix(card, fg, 0.035),
             row_selected,
             card_hover,
             card_selected,
