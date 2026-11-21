@@ -30,6 +30,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — The palette and resize work merged and pushed
+
+- **What:** branch `theme-dark-panel` (the panel darker and a quiet step below the window, no shadow, 11 pt corners,
+  the reference palette's rules, the lead designer's calls, the resize-pieces fix) merged to master and pushed on
+  your approval ("I agree with the designer agent said"). Your on-screen check: note 88's chore sections.
+
 ### 2026-11-21 — Chores after the M11ab rework: the composer's context row
 
 - **What:** the inner box 3 pt in from the outer box (was 5); no ▾ on the branch or the folder; the folder shows beside
