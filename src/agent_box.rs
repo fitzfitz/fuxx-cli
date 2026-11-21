@@ -57,12 +57,12 @@ const SEND_INSET: f32 = crate::card_view::OUTER_INSET;
 /// The cut's distance round the circle (your words: "add gap between chatbox with button"; the
 /// designer: 6, twice the box's 3 pt step), and the square it is cut with: from the outer
 /// box's inside corner to the cut's straight edges.
-const NOTCH_GAP: f32 = 6.0;
+/// 8 since your note (2026-11-22, "add more" round the circle).
+const NOTCH_GAP: f32 = 8.0;
 const NOTCH: f32 = SEND_INSET + SEND + NOTCH_GAP;
-/// The inner box's corners where it meets the cut (your words, 2026-11-22: "can we add more
-/// radius on here so it looks good?"): as large as the room before the cut, so each corner runs
-/// straight into the circle's curve — one smooth S, no straight bit, no sharp turn.
-const JOINT: f32 = SEND_INSET + SEND / 2.0 - crate::card_view::OUTER_INSET;
+/// The inner box's small corners where it meets the cut: 6 (your note, 2026-11-22: "lessen"
+/// both; at 17 their rounding square painted over the box's own text).
+const JOINT: f32 = 6.0;
 /// Round the circle with the same centre (your words: "add more radius on the right bottom chat
 /// box so the radius rounded and the button circle match"): its radius, the 3 around it, the
 /// outer box's 1 px edge.

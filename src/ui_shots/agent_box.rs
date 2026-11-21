@@ -698,8 +698,9 @@ pub(super) fn agent_box_send_notch() {
                 attach.center().y
             );
             assert!(
-                (send.left() - mode.right() - px(14.)).abs() <= px(1.),
-                "{n} {when}: the mode pill 14 before it ({:?} {:?})",
+                // 8 before the cut, which is 8 round the circle (2026-11-22): 16.
+                (send.left() - mode.right() - px(16.)).abs() <= px(1.),
+                "{n} {when}: the mode pill 16 before it ({:?} {:?})",
                 send.left(),
                 mode.right()
             );
