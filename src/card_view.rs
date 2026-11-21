@@ -411,7 +411,14 @@ pub const SURF_PAD_TOP: f32 = 8.0;
 pub const SURF_PAD_X: f32 = 12.0;
 pub const SURF_PAD_BOTTOM: f32 = 10.0;
 pub const OUT_GAP: f32 = 4.0;
-pub const CTX_ROW: f32 = 30.0;
+pub const CTX_ROW: f32 = 28.0;
+/// The folder-tab composer (the designer's details): the context pills sit in a tab that rises
+/// `TAB_RISE` above the box's top edge, `PILL_H` tall, `TAB_PAD` in from the tab's sides,
+/// `PILL_GAP` apart.
+pub const TAB_RISE: f32 = 25.0;
+pub const PILL_H: f32 = 22.0;
+pub const TAB_PAD: f32 = 3.0;
+pub const PILL_GAP: f32 = 4.0;
 pub const OUTER_INSET: f32 = 3.0;
 pub const INNER_PAD_X: f32 = 14.0;
 pub const INNER_PAD_Y: f32 = 12.0;
@@ -537,6 +544,9 @@ pub struct CardsState {
     /// The composer's top-left and width last frame (window points): its context row is
     /// placed there (rework).
     pub composer: Option<(f32, f32, f32)>,
+    /// The composer's pills as laid out last frame, their row's width (the tab is painted round
+    /// them; 0: no pills, no tab).
+    pub pills_w: f32,
     /// The composer's first row as painted last frame, as text (the scenes check what shows).
     #[cfg(feature = "ui-shots")]
     pub typed_row: String,
@@ -601,6 +611,12 @@ pub fn card_point(
 /// The running chip's words: `● npm test · 1m 15s` (whole seconds, M11q's `ran_label`).
 pub fn running_words(short: &str, elapsed: std::time::Duration) -> String {
     format!("\u{25cf} {short} \u{b7} {}", ran_label(elapsed))
+}
+
+/// The composer tab's width for a row of pills `pills_w` wide in a box `box_w` wide: its edges
+/// and `TAB_PAD` round the pills, never wider than the box less 48; none without pills.
+pub fn composer_tab(pills_w: f32, box_w: f32) -> Option<f32> {
+    (pills_w > 0.0).then(|| (2.0 * EDGE + 2.0 * TAB_PAD + pills_w).min(box_w - 48.0))
 }
 
 /// The scroll for a column that grew from `old_total` to `total` (final review #4): scrolled up,
@@ -1060,6 +1076,24 @@ mod tests {
         assert_eq!((short.hidden, short.top), (0, Line(0)));
         let open = shown((Line(0), Line(24)), true);
         assert_eq!((open.hidden, open.top), (0, Line(0)));
+    }
+
+    /// The folder-tab composer (the designer's details; your words: "can we update the design to
+    /// be more elegant?"): the context pills in a tab rising 25 above the box's top edge, 3 in
+    /// on every side; no pills, no tab; never wider than the box less 48.
+    #[test]
+    fn the_composer_tab_fits_its_pills() {
+        assert_eq!(CTX_ROW, 28.0);
+        assert_eq!(
+            (TAB_RISE, PILL_H, TAB_PAD, PILL_GAP),
+            (25.0, 22.0, 3.0, 4.0)
+        );
+        assert_eq!(composer_tab(0.0, 400.0), None);
+        assert_eq!(
+            composer_tab(120.0, 400.0),
+            Some(2.0 * EDGE + 3.0 + 120.0 + 3.0)
+        );
+        assert_eq!(composer_tab(500.0, 400.0), Some(352.0));
     }
 
     #[test]

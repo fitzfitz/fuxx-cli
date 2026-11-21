@@ -531,6 +531,26 @@ Now a focused tab decides (`Follow::of`): a terminal is followed as before, an a
 Files and Changes show it, never as SSH), a browser or file tab keeps what was followed. Test
 `an_agent_tab_is_followed_by_its_folder`; the status bar and Activity still describe the followed terminal.
 
+### Chore: the composer as a folder tab; clean window corners (2026-11-21)
+
+Your words: "can we update the design to be more elegant? like this [a rough paint] … Ask designer agent to get the
+details", then about the window: "on the very edge corner there is a slight border or shadow … happening on 4
+corners … can we make it gone so it looks clean?"
+
+- **Folder-tab composer** (the lead designer's details, as given): the box's top edge runs `TAB_RISE` (25) below a
+  tab rising at its left that holds the context as pills (22 tall, 8 in, round, on `composer_inner`, 4 apart, 3 in
+  from the tab); the tab's top corners 14, the box's 15, a concave 8 where the tab steps down; same fill and edge as
+  the box, no seam. The running command is the first pill (its dot `ring_working`, the composer's one colour); the
+  branch pill takes `composer_pill_hover` and the text colour under the pointer and opens the switcher; the folder
+  pill keeps its path tooltip and gives way first. No pills, no tab. The tab fits the pills as laid out (their row
+  measured each frame, `pills_w`), never wider than the box less 48. `CTX_ROW` 28. Tests
+  `the_composer_tab_fits_its_pills`, `the_composer_pill_hover_is_a_step_over_the_pills`.
+- **Window corners:** fuxx's one-pixel window edge followed a circular 14 pt corner; macOS's corner is a smooth
+  curve, so at the corners the two parted and a sliver of the edge showed inside macOS's rim. The edge now runs
+  along the four straight sides only, stopping short of the corners, which are macOS's own. The `status-bar` scene
+  checks a dark theme's corner diagonal (it read the edge's black before the fix).
+- **Checks:** 2300 tests; clippy at the baseline; ui-shots 254 passed, the 5 known failures.
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·

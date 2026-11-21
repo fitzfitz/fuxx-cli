@@ -115,20 +115,25 @@ pub(crate) fn window_edge_width(scale: f32) -> f32 {
     1.0 / scale.max(1.0)
 }
 
-/// The window's outermost edge: a one-pixel line in `window_edge` around the whole window,
-/// following its rounded corners, drawn over the window's content at its root, right under
-/// macOS's own light rim, which adds light over it (black on a dark theme: the rim at its
-/// darkest; part 8 of the chores, your words: "almost the same as the outer background"). Left
-/// out in full screen (no rim, no corners). It takes no clicks.
+/// The window's outermost edge: a one-pixel line in `window_edge` along the window's four
+/// straight sides, drawn over the window's content at its root, right under macOS's own light
+/// rim, which adds light over it (black on a dark theme: the rim at its darkest; part 8 of the
+/// chores, your words: "almost the same as the outer background"). It stops `WINDOW_RADIUS`
+/// short of each corner: macOS's corner is a smooth curve, not a circle, so a circular corner
+/// of it showed inside the rim as "a slight border or shadow" on the 4 corners (your report,
+/// 2026-11-21); the corners are macOS's own. Left out in full screen. It takes no clicks.
 pub fn window_edge(colors: &PaneColors, width: f32) -> Div {
+    let (r, w, ink) = (px(WINDOW_RADIUS), px(width), colors.window_edge);
+    let line = || div().absolute().bg(ink);
     div()
         .absolute()
         .top_0()
         .left_0()
         .size_full()
-        .rounded(px(WINDOW_RADIUS))
-        .border(px(width))
-        .border_color(colors.window_edge)
+        .child(line().top_0().left(r).right(r).h(w))
+        .child(line().bottom_0().left(r).right(r).h(w))
+        .child(line().left_0().top(r).bottom(r).w(w))
+        .child(line().right_0().top(r).bottom(r).w(w))
 }
 
 /// What every pane of one layout is drawn with.

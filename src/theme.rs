@@ -169,6 +169,8 @@ pub struct UiColors {
     pub composer_outer: Rgb,
     pub composer_edge: Rgb,
     pub composer_inner: Rgb,
+    /// The branch pill in the composer's tab, under the pointer: a step over `composer_inner`.
+    pub composer_pill_hover: Rgb,
     pub composer_inner_edge: Rgb,
     pub composer_inner_top: Rgb,
     /// The Changes progress bar's unfilled track, on the repo card (`card_hover`; M11al Task 9).
@@ -599,6 +601,7 @@ impl Theme {
                 SOFT_LINE_MIN,
             ),
             composer_inner,
+            composer_pill_hover: mix(composer_inner, fg, 0.05),
             composer_inner_edge,
             composer_inner_top: if dark {
                 mix(card, fg, 0.18)
@@ -1196,6 +1199,21 @@ mod tests {
                     assert!(r >= TEXT_MIN, "{name}: {r:.2}");
                 }
             }
+        }
+    }
+
+    /// The folder-tab composer: the branch pill under the pointer is a step over the pills'
+    /// `composer_inner` (5 % toward the ink), and its text still reads.
+    #[test]
+    fn the_composer_pill_hover_is_a_step_over_the_pills() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            assert_eq!(
+                ui.composer_pill_hover,
+                mix(ui.composer_inner, theme.foreground, 0.05)
+            );
+            let r = contrast(ui.text, ui.composer_pill_hover);
+            assert!(r >= TEXT_MIN, "{name}: {r:.2}");
         }
     }
 

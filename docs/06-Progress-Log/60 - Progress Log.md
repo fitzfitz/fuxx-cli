@@ -30,6 +30,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Chores: the composer as a folder tab; clean window corners
+
+- **What:** the shell composer's context became pills in a folder tab (the lead designer's details); the window's
+  one-pixel edge stops short of the corners, so no sliver shows inside macOS's rounded rim. Note 88.
+- **Checks:** 2300 tests; clippy at the baseline; ui-shots 254 passed, 5 known failures.
+
 ### 2026-11-21 — Fix: the right panel follows an agent tab
 
 - **What:** an agent tab now sets the right panel's folder (its own), as a terminal does; a browser or file tab keeps
