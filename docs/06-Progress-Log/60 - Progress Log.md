@@ -40,7 +40,10 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   seen; a usage strip in the status bar (each agent's tightest limit, % used and when it resets) opens a popover with
   every limit; one "% used" look for limits app-wide (the agent box's panel too). Pushed first: the redesign chores
   and the logos (`e87b72a..19ef2bb`). Note 91.
-- **Checks:** 2354 tests; clippy at the baseline; the full ui-shots 269 / 269; one review (see note 91).
+- **Checks:** 2357 tests; clippy at the baseline; the full ui-shots 268 / 269, the one (the box panel's usage
+  scene, expecting the new "Couldn't refresh" line) fixed and run again; one review (opus, "with fixes"): five
+  fixed test-first (the live session number on ordinary turns, the popover's close rules, no reads with the bar
+  off, old numbers), seven minors deferred (note 91).
 - **Next:** your on-screen check (note 91, 6 items); your word to push.
 
 ### 2026-11-21 — Chores: the agent tab redesigned (tool modal, top bar, live context, chat, logos); both clears fixed

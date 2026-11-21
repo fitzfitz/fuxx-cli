@@ -59,13 +59,26 @@ strip in the status bar with a popover; the lead designer's spec below).
    redraws on a usage change. Scene `status-bar-usage` (the strip, the popover open).
 5. Full ui-shots 269 / 269; one review (below); docs.
 
+## The review (opus, "with fixes") and its fix pass (`920b3fa`, `HEAD`)
+
+Fixed, each test-first: (1) on an ordinary turn Claude's line says its own window's use only in `unifiedWindows`, so
+the live **session** number was lost — now taken from there; (2) a press on the strip couldn't close the popover (its
+"outside" press runs first) — the strip toggles on the press and the popover ignores presses on it; (3) Esc now closes
+the popover (caught before the terminal, only while it is open); (4) no background reads while the status bar is
+off; (5) a limit whose reset has passed counts as unused, and kept numbers after a failed read say "Couldn't refresh ·
+updated Nm ago" in the box panel. Scene `status-bar-usage` now clicks: open, close, Esc, a press elsewhere.
+
+Deferred (minor): an agent that never read shows "…" briefly at each 5-minute retry; a tie between agents goes to the
+later one; "Updated … ago" and the strip's resets refresh only when something redraws (up to 5 min late); the
+refresh button does nothing for a reading under a minute old; the popover's open flag outlives the strip being cut
+away (narrow window); an unknown `unifiedWindows` kind is listed under its raw key; the 400 ms bar glide isn't
+built.
+
 ## Calls made without asking
 
 1. An agent whose read never worked (most likely not installed) isn't in the strip, rather than showing "–"
    forever (the spec's "–" for "couldn't read, no value").
-2. The popover doesn't close on Esc (it never takes the keyboard, so Esc stays the terminal's); a press outside it or on
-   the strip closes it.
-3. The background read runs whether or not the status bar is shown (cheap; the spec read only while it shows).
+2. The popover never takes the keyboard; Esc still closes it (caught only while it is open).
 4. A failed or running read keeps the last numbers in the box panel too (no more "Couldn't read usage" once a reading
    worked); the popover says "Couldn't refresh" beside the agent.
 5. The refresh button reads again only what is more than a minute old (the existing freshness rule).
