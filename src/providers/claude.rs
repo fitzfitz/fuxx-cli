@@ -540,6 +540,8 @@ struct ClaudeTranslator {
     pending: HashMap<String, (Value, Value)>,
     /// The model named by `system/init`, whose `modelUsage` entry sizes the context.
     model: Option<String>,
+    /// The context window the last finished turn reported (for when no model is named).
+    window: Option<u64>,
     /// The live changes asked and not answered yet, by request id (`fuxx-set-<n>`).
     asked: HashMap<String, Asked>,
     /// The last `fuxx-set-<n>` written.
@@ -721,11 +723,16 @@ fn describe_suggestion(sug: &Value) -> String {
     }
 }
 
-/// The share of the context window the last model call used, from a `result` event.
-/// The window is the session model's (`model`, from init), else the largest one reported.
-fn context_pct(result: &Value, model: Option<&str>) -> Option<u8> {
+/// Context windows learned from finished turns, by model, for every tab: a tab's first turn on a
+/// model another tab already ran is live from its first call.
+static WINDOWS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, u64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// The context window a `result` event reports: the session model's (`model`, from init), else
+/// the largest one reported.
+fn result_window(result: &Value, model: Option<&str>) -> Option<u64> {
     let usage = result["modelUsage"].as_object()?;
-    let window = model
+    model
         .and_then(|m| usage.get(m))
         .and_then(|m| m["contextWindow"].as_u64())
         .or_else(|| {
@@ -733,17 +740,32 @@ fn context_pct(result: &Value, model: Option<&str>) -> Option<u8> {
                 .values()
                 .filter_map(|m| m["contextWindow"].as_u64())
                 .max()
-        })?;
-    let last = result["usage"]["iterations"].as_array()?.last()?;
-    let used: u64 = [
+        })
+        .filter(|w| *w > 0)
+}
+
+/// The tokens a model call read: its input, cached and newly cached.
+fn tokens_in(usage: &Value) -> u64 {
+    [
         "input_tokens",
         "cache_read_input_tokens",
         "cache_creation_input_tokens",
     ]
     .iter()
-    .map(|k| last[*k].as_u64().unwrap_or(0))
-    .sum();
-    (window > 0).then(|| (used * 100 / window).min(100) as u8)
+    .map(|k| usage[*k].as_u64().unwrap_or(0))
+    .sum()
+}
+
+/// `used` as a whole percent of `window`, at most 100.
+fn share(used: u64, window: u64) -> u8 {
+    (used * 100 / window).min(100) as u8
+}
+
+/// The share of the context window the last model call used, from a `result` event.
+fn context_pct(result: &Value, model: Option<&str>) -> Option<u8> {
+    let window = result_window(result, model)?;
+    let last = result["usage"]["iterations"].as_array()?.last()?;
+    Some(share(tokens_in(last), window))
 }
 
 /// `name: N% used · resets Nov 17 at 8:09pm (UTC)` as a limit with the percent left
@@ -888,10 +910,30 @@ impl ClaudeTranslator {
         }]
     }
 
+    /// The session model's context window, as a finished turn (in any tab) reported it; with no
+    /// model named, the last turn's.
+    fn known_window(&self) -> Option<u64> {
+        match &self.model {
+            Some(m) => WINDOWS.lock().ok()?.get(m).copied(),
+            None => self.window,
+        }
+    }
+
     fn assistant(&self, v: &Value) -> Vec<Event> {
         let message = s(&v["message"]["id"]).unwrap_or_default();
         let parent = s(&v["parent_tool_use_id"]);
         let mut out = Vec::new();
+        // Each main-thread call says how much context it read: the meter moves during the turn.
+        // (A sub-agent's calls run in their own context.)
+        if parent.is_none()
+            && let Some(window) = self.known_window()
+            && v["message"]["usage"].is_object()
+        {
+            out.push(Event::Usage {
+                context_pct: Some(share(tokens_in(&v["message"]["usage"]), window)),
+                cost_usd: None,
+            });
+        }
         for item in v["message"]["content"].as_array().into_iter().flatten() {
             match item["type"].as_str() {
                 Some("text") => {
@@ -1000,7 +1042,7 @@ impl ClaudeTranslator {
         }]
     }
 
-    fn result(&self, v: &Value) -> Vec<Event> {
+    fn result(&mut self, v: &Value) -> Vec<Event> {
         let is_error = v["is_error"].as_bool().unwrap_or(false);
         let errors: Vec<&str> = v["errors"]
             .as_array()
@@ -1022,6 +1064,12 @@ impl ClaudeTranslator {
         } else if is_error && message.is_none() {
             // A failure with no text (e.g. `error_max_turns`): say which kind it was.
             message = Some(s(&v["subtype"]).unwrap_or_else(|| "The turn failed".into()));
+        }
+        if let Some(window) = result_window(v, self.model.as_deref()) {
+            self.window = Some(window);
+            if let (Some(model), Ok(mut known)) = (&self.model, WINDOWS.lock()) {
+                known.insert(model.clone(), window);
+            }
         }
         out.push(Event::Usage {
             context_pct: context_pct(v, self.model.as_deref()),
@@ -1206,8 +1254,9 @@ mod tests {
         assert_eq!(dm, fm);
         assert_eq!(dt, "Hello!");
         assert_eq!(ft, "Hello!");
-        // Usage carries the recorded cost and a context percentage from the last call.
-        let usage = ev.iter().find_map(|e| match e {
+        // The turn's last Usage carries the recorded cost and a context percentage from the
+        // last call (any before it are the live, cost-free readings).
+        let usage = ev.iter().rev().find_map(|e| match e {
             Event::Usage {
                 context_pct,
                 cost_usd,
@@ -1969,6 +2018,89 @@ mod tests {
         let mut t = CLAUDE.translator();
         t.decode(&init.replace("big", "small"));
         assert_eq!(pct(&mut t), Some(50));
+    }
+
+    /// The context share an `assistant` line reports (`None` when it reports none).
+    fn live_pct(t: &mut Box<dyn Translator>, line: &str) -> Option<u8> {
+        t.decode(line).into_iter().find_map(|e| match e {
+            Event::Usage {
+                context_pct,
+                cost_usd: None,
+            } => context_pct,
+            _ => None,
+        })
+    }
+
+    /// A main-thread `assistant` line for `model` with these input-side token counts.
+    fn assistant_usage(
+        model: &str,
+        parent: Option<&str>,
+        input: u64,
+        read: u64,
+        made: u64,
+    ) -> String {
+        json!({"type":"assistant","parent_tool_use_id":parent,"message":{"id":"m","model":model,
+            "content":[{"type":"text","text":"hi"}],
+            "usage":{"input_tokens":input,"cache_read_input_tokens":read,
+                "cache_creation_input_tokens":made,"output_tokens":5}}})
+        .to_string()
+    }
+
+    /// A finished turn that sizes `model`'s context window.
+    fn sized(model: &str, window: u64) -> String {
+        json!({"type":"result","subtype":"success","is_error":false,"result":"ok",
+            "modelUsage":{model:{"contextWindow":window}},
+            "usage":{"iterations":[{"input_tokens":1}]}})
+        .to_string()
+    }
+
+    /// Synthetic: the context moves with each model call, not only when the turn ends.
+    #[test]
+    fn context_is_live_once_the_window_is_known() {
+        let mut t = CLAUDE.translator();
+        let init = json!({"type":"system","subtype":"init","session_id":"s","model":"live-a"});
+        t.decode(&init.to_string());
+        // Before any turn has sized the window: nothing to measure against.
+        assert_eq!(
+            live_pct(&mut t, &assistant_usage("live-a", None, 2, 30_000, 10_000)),
+            None
+        );
+        t.decode(&sized("live-a", 200_000));
+        // 2 + 30k + 10k of 200k: 20 %, with no cost (that comes with the turn's end).
+        assert_eq!(
+            live_pct(&mut t, &assistant_usage("live-a", None, 2, 30_000, 10_000)),
+            Some(20)
+        );
+        assert_eq!(
+            live_pct(&mut t, &assistant_usage("live-a", None, 2, 60_000, 0)),
+            Some(30)
+        );
+    }
+
+    /// Synthetic: a sub-agent's calls run in their own context; they don't move the meter.
+    #[test]
+    fn subagent_calls_leave_the_context_alone() {
+        let mut t = CLAUDE.translator();
+        let init = json!({"type":"system","subtype":"init","session_id":"s","model":"live-b"});
+        t.decode(&init.to_string());
+        t.decode(&sized("live-b", 100_000));
+        let line = assistant_usage("live-b", Some("toolu_p"), 2, 50_000, 0);
+        assert_eq!(live_pct(&mut t, &line), None);
+    }
+
+    /// Synthetic: a model's window, once learned, holds for every tab running it.
+    #[test]
+    fn another_tab_on_the_same_model_is_live_from_its_first_call() {
+        let mut first = CLAUDE.translator();
+        let init = json!({"type":"system","subtype":"init","session_id":"s","model":"live-c"});
+        first.decode(&init.to_string());
+        first.decode(&sized("live-c", 1_000_000));
+        let mut second = CLAUDE.translator();
+        second.decode(&init.to_string());
+        assert_eq!(
+            live_pct(&mut second, &assistant_usage("live-c", None, 0, 250_000, 0)),
+            Some(25)
+        );
     }
 
     /// Synthetic: sub-agent lines carry `parent_tool_use_id` on stream and assistant lines.
