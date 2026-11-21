@@ -94,3 +94,14 @@ built.
 4. Narrow the window: the resets go first, then one agent, then the strip.
 5. The agent box's usage button: "% used" with the band colours; the same numbers as the popover.
 6. CPU: idle with the strip shown (a read every 5 min only).
+
+## Fix after M11ap: a working workspace showed ✓ (2026-11-21)
+
+Your report: "it still in progress but sidebar indicator says ✓". Cause: a sidebar row (and a tab's roll-up) shows
+its tabs' most urgent status, and the order since M7 / M11b was **Waiting > Done > Working > Idle**, so a finished
+agent tab beside a working terminal put ✓ on the row. Changed on your word to **Waiting > Working > Done > Idle**
+(`groups::urgency`): what needs you, then what still runs, then what finished — as the closed group header already
+ranked since 2026-11-17. Tests: `rolled_up_picks_the_most_urgent`, `a_working_terminal_beats_a_finished_agent_tab`,
+`rollup_is_the_most_urgent_terminal`; the `workspaces` scene. On-screen: a workspace with a working terminal and a
+finished agent tab shows the working arc on its row; it shows ✓ once nothing runs.
+

@@ -32,6 +32,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Fix: a working workspace showed ✓
+
+- **What:** your report ("it still in progress but sidebar indicator says ✓"). A row shows its tabs' most urgent
+  status, ranked Waiting > Done > Working since M7, so a finished agent tab beside a working terminal won. Now
+  Waiting > Working > Done > Idle (as the closed group header already did). Note 91.
+- **Checks:** 2358 tests; clippy at the baseline; full ui-shots 268 / 269, the one (`workspaces`, which expected the
+  old order) updated and run again.
+
 ### 2026-11-21 — M11ap: live usage (status-bar strip and popover)
 
 - **What:** on your words ("get claude and antigravity usages live without doing their command … like orca", "push
