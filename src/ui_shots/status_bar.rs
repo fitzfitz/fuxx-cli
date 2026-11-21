@@ -327,6 +327,8 @@ fn status_bar_usage_scenes() {
                         cx,
                     );
                     ws.usage_open = open;
+                    // The open shot: the list, and Claude's row hovered (its detail beside it).
+                    ws.usage_detail = open.then_some("claude");
                     ws
                 });
                 *keep.borrow_mut() = Some(ws.clone());
@@ -337,28 +339,37 @@ fn status_bar_usage_scenes() {
                 // The review's findings 2 and 3: the strip toggles the popover (a press on it
                 // never counts as outside), Esc closes it, and so does a press elsewhere.
                 if !open {
+                    // Orca-style (your word, 2026-11-22): hovering the strip opens the list,
+                    // hovering an agent's row shows its detail beside it, moving away closes it;
+                    // Esc closes it too.
                     let ws = slot.borrow().clone().expect("the workspace");
                     let is_open =
                         |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).usage_open);
+                    let detail =
+                        |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).usage_detail);
                     let strip = cx
                         .read(|cx| ws.read(cx).usage_strip_at.get())
                         .expect("the strip was drawn");
-                    let click = |cx: &mut VisualTestAppContext, at| {
-                        cx.simulate_click(window, at, gpui::Modifiers::none());
+                    let hover = |cx: &mut VisualTestAppContext, at, wait_ms: u64| {
+                        cx.simulate_mouse_move(window, at, None, gpui::Modifiers::none());
+                        cx.run_until_parked();
+                        cx.advance_clock(std::time::Duration::from_millis(wait_ms));
                         cx.run_until_parked();
                         let _ = frame_fresh(cx, window);
                     };
-                    click(cx, strip.center());
-                    assert!(is_open(cx), "{n}: the strip opens it");
-                    click(cx, strip.center());
-                    assert!(!is_open(cx), "{n}: the strip closes it");
-                    click(cx, strip.center());
+                    hover(cx, strip.center(), 300);
+                    assert!(is_open(cx), "{n}: hovering the strip opens the list");
+                    let row = cx
+                        .read(|cx| ws.read(cx).usage_rows_at.borrow().first().copied())
+                        .expect("the list's rows were drawn");
+                    hover(cx, row.1.center(), 50);
+                    assert_eq!(detail(cx), Some(row.0), "{n}: its row shows its detail");
+                    hover(cx, point(px(400.), px(200.)), 500);
+                    assert!(!is_open(cx), "{n}: moving away closes it");
+                    hover(cx, strip.center(), 300);
                     cx.simulate_keystrokes(window, "escape");
                     cx.run_until_parked();
                     assert!(!is_open(cx), "{n}: Esc closes it");
-                    click(cx, strip.center());
-                    click(cx, point(px(400.), px(200.)));
-                    assert!(!is_open(cx), "{n}: a press elsewhere closes it");
                 }
                 slot.borrow_mut().take();
             };

@@ -81,6 +81,10 @@ pub const PILL_PAD: f32 = 8.0;
 pub const USAGE_LOGO: f32 = 12.0;
 pub const USAGE_GAP: f32 = 4.0;
 pub const USAGE_AGENT_GAP: f32 = 10.0;
+/// The usage popover opens after the pointer rests on the strip this long, and closes after it
+/// has left the strip and the popover this long (Orca-style, 2026-11-22).
+pub const USAGE_OPEN_DELAY: Duration = Duration::from_millis(150);
+pub const USAGE_CLOSE_DELAY: Duration = Duration::from_millis(250);
 /// Its colours, fixed whatever the theme (M11e's blue, as asked): the fill, hovered, and its
 /// words; the version part (` · v0.3.2`) is the words' white at this opacity.
 pub(crate) const UPDATE_FILL: Rgb = Rgb {
@@ -569,13 +573,57 @@ impl Workspace {
         }
     }
 
-    /// The usage popover (M11ap, the lead designer's spec): above the strip, its right edge on
-    /// the strip's; "Usage", when it was last read and a refresh (turning while a read runs);
-    /// then each agent, always open: its logo and name, and its limits in the box panel's rows.
-    /// A press outside it closes it.
+    /// The pointer came onto or left the strip or its popover (Orca-style, your word,
+    /// 2026-11-22): on the strip a moment (`USAGE_OPEN_DELAY`) opens the list; off both a moment
+    /// (`USAGE_CLOSE_DELAY`) closes it — the gap between them never closes it on the way.
+    pub(crate) fn usage_hovered(
+        &mut self,
+        on_strip: Option<bool>,
+        on_popover: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(on) = on_strip {
+            self.usage_hover.0 = on;
+        }
+        if let Some(on) = on_popover {
+            self.usage_hover.1 = on;
+        }
+        self.usage_hover_gen += 1;
+        let generation = self.usage_hover_gen;
+        let (strip, popover) = self.usage_hover;
+        let (wait, opening) = if strip && !self.usage_open {
+            (USAGE_OPEN_DELAY, true)
+        } else if !strip && !popover && self.usage_open {
+            (USAGE_CLOSE_DELAY, false)
+        } else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            this.update(cx, |this, cx| {
+                if this.usage_hover_gen != generation {
+                    return;
+                }
+                this.usage_open = opening;
+                if !opening {
+                    this.usage_detail = None;
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The usage popover (M11ap; Orca-style since 2026-11-22): above the strip, its right edge on
+    /// the strip's. A short list — "Usage", when it was last read and a refresh (turning while a
+    /// read runs), then a row per agent: its logo, name, a small bar and the tightest limit's
+    /// percent and reset. Hovering a row shows that agent's limits beside the list, in the box
+    /// panel's rows. It closes as the pointer leaves it and the strip, on Esc, or a press outside.
     fn usage_popover(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
         use crate::agent_catalog::{Catalogs, Lookup};
         use crate::icons::{Icon, icon};
+        use crate::usage_strip::StripValue;
         use crate::usage_view::{UsageInk, heading, limit_row, quiet, top_row};
         use gpui::{
             Animation, AnimationExt, Transformation, anchored, deferred, percentage, point,
@@ -656,27 +704,42 @@ impl Workspace {
                     .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("Refresh usage".into())).into() })
                     .child(refresh_icon),
             );
-        let mut body: Vec<AnyElement> = Vec::new();
-        for (i, agent) in agents.iter().enumerate() {
-            if i > 0 {
-                body.push(
-                    div()
-                        .h(px(1.))
-                        .mx(px(4.))
-                        .my(px(4.))
-                        .bg(hsla(ui.panel_border))
-                        .into_any_element(),
-                );
-            }
-            let failed = catalogs
-                .is_some_and(|c| matches!(c.usage_last(agent.name), Some(Lookup::Failed(_))));
-            body.push(
+        // A row per agent: the tightest limit at a glance; hovering it shows the detail.
+        self.usage_rows_at.borrow_mut().clear();
+        let rows: Vec<AnyElement> = agents
+            .iter()
+            .map(|agent| {
+                let name = agent.name;
+                let (pct, reset, used) = match agent.value {
+                    StripValue::Used { used, reset_in } => (
+                        format!("{used}%"),
+                        reset_in.map(crate::usage_strip::short_reset),
+                        Some(used),
+                    ),
+                    StripValue::Reading => ("\u{2026}".into(), None, None),
+                };
+                let (bar, pct_ink) = used.map_or((ink.bar_ok, ui.text_dim), |u| ink.band(u));
+                let shown = self.usage_detail == Some(name);
+                let at = self.usage_rows_at.clone();
+                let measure = gpui::canvas(
+                    move |b, _, _| at.borrow_mut().push((name, b)),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full();
                 div()
-                    .h(px(28.))
+                    .id(SharedString::from(format!("usage-row-{name}")))
+                    .relative()
+                    .h(px(32.))
                     .px(px(8.))
+                    .rounded(px(6.))
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(px(8.))
+                    .font_features(tabular())
+                    .when(shown, |d| d.bg(hsla(hover)))
+                    .hover(move |s| s.bg(hsla(hover)))
+                    .child(measure)
                     .children(
                         agent
                             .logo
@@ -691,63 +754,145 @@ impl Workspace {
                             .text_color(hsla(ui.text))
                             .child(agent.label),
                     )
-                    .when(failed, |d| {
-                        d.child(
-                            div()
-                                .text_size(px(crate::ui_tokens::text::META))
-                                .text_color(hsla(ui.text_dim))
-                                .child("Couldn't refresh"),
-                        )
-                    })
-                    .into_any_element(),
-            );
-            let live = catalogs
-                .and_then(|c| c.live_usage(agent.name))
-                .map(Lookup::Ready);
-            let found = live
-                .as_ref()
-                .or_else(|| catalogs.and_then(|c| c.usage_last(agent.name)));
-            let limits = catalogs.map_or(&[][..], |c| c.limits(agent.name));
-            for row in crate::agent_box::usage_rows(found, limits, None, now_unix, offset) {
-                use crate::agent_box::UsageRow;
-                body.push(match row {
-                    UsageRow::Heading(name) => heading(name, &ui),
-                    UsageRow::Quiet(text) => quiet(text, &ui),
-                    UsageRow::Text(text) => match crate::agent_box::top_list(&text) {
-                        Some((title, list)) => div()
+                    .children(reset.map(|r| {
+                        div()
+                            .text_size(px(crate::ui_tokens::text::META))
+                            .text_color(hsla(ui.text_dim))
+                            .child(r)
+                    }))
+                    .children(used.map(|u| {
+                        div()
+                            .w(px(40.))
+                            .h(px(4.))
+                            .rounded(px(2.))
+                            .bg(hsla(ink.track))
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(gpui::relative(f32::from(u.min(100)) / 100.))
+                                    .rounded(px(2.))
+                                    .bg(hsla(bar)),
+                            )
+                    }))
+                    .child(
+                        div()
+                            .min_w(px(36.))
                             .flex()
-                            .flex_col()
-                            .child(heading(title, &ui))
-                            .children(list.into_iter().map(|(n, p)| top_row(n, p, &ui)))
-                            .into_any_element(),
-                        None => quiet(text, &ui),
-                    },
-                    UsageRow::Limit {
-                        name,
-                        used_pct,
-                        resets,
-                        note,
-                    } => limit_row(name, used_pct, resets, note, &ui, &ink).into_any_element(),
-                });
-            }
-        }
-        let panel = crate::overlay_panel::shell(&ui, crate::agent_box::USAGE_WIDTH)
+                            .justify_end()
+                            .text_color(hsla(pct_ink))
+                            .child(pct),
+                    )
+                    .child(icon(Icon::ChevronRight, px(12.), hsla(ui.text_dim)))
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if *hovered && this.usage_detail != Some(name) {
+                            this.usage_detail = Some(name);
+                            cx.notify();
+                        }
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let list = crate::overlay_panel::shell(&ui, crate::agent_box::USAGE_WIDTH)
             .id("usage-popover")
             .p(px(4.))
             .gap(px(0.))
             .occlude()
             .child(header)
-            .child(
-                div()
-                    .id("usage-popover-body")
-                    .flex()
-                    .flex_col()
-                    .max_h(px(crate::agent_box::USAGE_MAX_H))
-                    .overflow_y_scroll()
-                    .children(body),
-            )
+            .children(rows);
+        // The hovered agent's limits beside the list.
+        let detail = self
+            .usage_detail
+            .and_then(|name| agents.iter().find(|a| a.name == name))
+            .map(|agent| {
+                let failed = catalogs
+                    .is_some_and(|c| matches!(c.usage_last(agent.name), Some(Lookup::Failed(_))));
+                let mut body: Vec<AnyElement> = vec![
+                    div()
+                        .h(px(28.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .children(
+                            agent
+                                .logo
+                                .and_then(|l| crate::logos::image(l, 14., cx))
+                                .map(|img| gpui::img(img).size(px(14.))),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(hsla(ui.text))
+                                .child(agent.label),
+                        )
+                        .when(failed, |d| {
+                            d.child(
+                                div()
+                                    .text_size(px(crate::ui_tokens::text::META))
+                                    .text_color(hsla(ui.text_dim))
+                                    .child("Couldn't refresh"),
+                            )
+                        })
+                        .into_any_element(),
+                ];
+                let live = catalogs
+                    .and_then(|c| c.live_usage(agent.name))
+                    .map(Lookup::Ready);
+                let found = live
+                    .as_ref()
+                    .or_else(|| catalogs.and_then(|c| c.usage_last(agent.name)));
+                let limits = catalogs.map_or(&[][..], |c| c.limits(agent.name));
+                for row in crate::agent_box::usage_rows(found, limits, None, now_unix, offset) {
+                    use crate::agent_box::UsageRow;
+                    body.push(match row {
+                        UsageRow::Heading(name) => heading(name, &ui),
+                        UsageRow::Quiet(text) => quiet(text, &ui),
+                        UsageRow::Text(text) => match crate::agent_box::top_list(&text) {
+                            Some((title, list)) => div()
+                                .flex()
+                                .flex_col()
+                                .child(heading(title, &ui))
+                                .children(list.into_iter().map(|(n, p)| top_row(n, p, &ui)))
+                                .into_any_element(),
+                            None => quiet(text, &ui),
+                        },
+                        UsageRow::Limit {
+                            name,
+                            used_pct,
+                            resets,
+                            note,
+                        } => limit_row(name, used_pct, resets, note, &ui, &ink).into_any_element(),
+                    });
+                }
+                crate::overlay_panel::shell(&ui, crate::agent_box::USAGE_WIDTH)
+                    .id("usage-detail")
+                    .p(px(4.))
+                    .gap(px(0.))
+                    .occlude()
+                    .child(
+                        div()
+                            .id("usage-detail-body")
+                            .flex()
+                            .flex_col()
+                            .max_h(px(crate::agent_box::USAGE_MAX_H))
+                            .overflow_y_scroll()
+                            .children(body),
+                    )
+            });
+        let panels = div()
+            .id("usage-panels")
+            .flex()
+            .items_end()
+            .gap(px(6.))
+            .children(detail)
+            .child(list)
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                this.usage_hovered(None, Some(*hovered), cx)
+            }))
             .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                // A press on the strip is its own toggle, not "outside".
+                // A press on the strip is its own, not "outside".
                 if this
                     .usage_strip_at
                     .get()
@@ -756,6 +901,7 @@ impl Workspace {
                     return;
                 }
                 this.usage_open = false;
+                this.usage_detail = None;
                 cx.notify();
             }));
         div()
@@ -767,7 +913,7 @@ impl Workspace {
                     .anchor(gpui::Anchor::BottomRight)
                     .offset(point(px(0.), px(-6.)))
                     .snap_to_window_with_margin(px(8.))
-                    .child(panel),
+                    .child(panels),
             ))
             .into_any_element()
     }
@@ -1152,13 +1298,16 @@ impl Workspace {
                             d.child(div().text_color(hsla(ui.text_dim)).child(r))
                         })
                 }))
-                // Toggled on the press (the popover's "outside" press comes first, in the capture
-                // phase, and ignores the strip: the review's finding 2).
+                // Orca-style (2026-11-22): the pointer on it opens the list after a moment; a
+                // press opens it at once.
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    this.usage_hovered(Some(*hovered), None, cx)
+                }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        this.usage_open = !this.usage_open;
+                        this.usage_open = true;
                         cx.notify();
                     }),
                 )

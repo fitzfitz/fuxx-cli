@@ -503,6 +503,10 @@ impl Workspace {
     }
 }
 
+/// Where each agent's row of the usage list was drawn, by agent name (M11ap).
+pub(crate) type UsageRowsAt =
+    std::rc::Rc<std::cell::RefCell<Vec<(&'static str, gpui::Bounds<gpui::Pixels>)>>>;
+
 pub struct Session {
     /// Scripting id: shown to scripts as `s<id>`.
     pub id: u64,
@@ -893,6 +897,13 @@ pub struct Workspace {
     /// press there toggles it, never counts as "outside").
     pub(crate) usage_open: bool,
     pub(crate) usage_strip_at: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    /// The agent whose detail shows beside the usage list (its row hovered); where each row was
+    /// drawn (the scenes hover them); whether the pointer is on the strip and on the popover,
+    /// and a count of those changes (a delayed open or close that is out of date does nothing).
+    pub(crate) usage_detail: Option<&'static str>,
+    pub(crate) usage_rows_at: UsageRowsAt,
+    pub(crate) usage_hover: (bool, bool),
+    pub(crate) usage_hover_gen: u64,
 }
 
 impl Workspace {
@@ -1110,6 +1121,10 @@ impl Workspace {
             slide: None,
             usage_open: false,
             usage_strip_at: Default::default(),
+            usage_detail: None,
+            usage_rows_at: Default::default(),
+            usage_hover: (false, false),
+            usage_hover_gen: 0,
             right_sidebar: RightSidebarState::new(),
             places: Places::new(home_dir(), crate::git_branch::this_hostname()),
             folders_now: HashMap::new(),
