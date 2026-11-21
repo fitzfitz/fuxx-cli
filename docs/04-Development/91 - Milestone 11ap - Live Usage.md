@@ -136,3 +136,6 @@ percent, a chevron); hovering a row shows that agent's limits beside the list; i
 on the strip (a press opens it at once) and closes 250 ms after the pointer has left the strip and the popover; Esc
 and a press outside close it too. Scene `status-bar-usage` hovers: open, a row's detail, away closes, Esc.
 
+Then (2026-11-22, "why it show everything including the top skills etc? i dont need that"): Claude's "Top skills /
+subagents / plugins / MCP servers" lists after its limits are left out of the usage rows (popover and box panel).
+
