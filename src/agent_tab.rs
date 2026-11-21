@@ -85,6 +85,8 @@ const AT_LIMIT: usize = 8;
 /// A chat row's text, and the avatar's side.
 const BODY: f32 = 13.0;
 const AVATAR: f32 = 22.0;
+/// The provider's logo in the avatar's slot (spec B-A).
+const LOGO: f32 = 18.0;
 const AVATAR_GAP: f32 = 9.0;
 /// The most lines of a permission's detail shown on its card.
 const DETAIL_LINES: usize = 12;
@@ -3413,6 +3415,9 @@ struct Look {
     label: SharedString,
     badge: SharedString,
     badge_rgb: u32,
+    /// The provider's logo (spec B-A), ready to draw: the avatar draws it bare, in its own
+    /// colours.
+    logo_image: Option<Arc<gpui::RenderImage>>,
     draw: md_preview::Draw,
     diff: DiffRowColours,
     view: WeakEntity<AgentTab>,
@@ -3508,7 +3513,16 @@ impl AgentTab {
             .text_size(px(BODY))
             .line_height(relative(1.45));
         let row = if agent_side(item) {
-            let gutter = if starts_group {
+            let gutter = if starts_group && let Some(logo) = look.logo_image.clone() {
+                // Spec B-A: the logo bare, 18 pt in the 22 pt slot.
+                div()
+                    .flex_none()
+                    .size(px(AVATAR))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(gpui::img(logo).size(px(LOGO)))
+            } else if starts_group {
                 div()
                     .flex_none()
                     .size(px(AVATAR))
@@ -4638,6 +4652,9 @@ impl Render for AgentTab {
             label: self.label().to_string().into(),
             badge: info.map_or("?", |i| i.badge).into(),
             badge_rgb: info.map_or(0x6b6b6b, |i| i.badge_rgb),
+            logo_image: info
+                .and_then(|i| i.logo)
+                .and_then(|logo| crate::logos::image(logo, LOGO, cx)),
             draw: md_preview::Draw {
                 colours: md_preview::Colours::of(&theme),
                 code_font: mono.clone(),

@@ -15,6 +15,7 @@ static INFO: ProviderInfo = ProviderInfo {
     badge: "CC",
     who: ("\u{2733}", "Claude"),
     badge_rgb: 0x7a4a2a,
+    logo: Some(crate::logos::Logo::Claude),
     interrupts: true,
     modes: &[
         ModeChoice {
@@ -1213,6 +1214,17 @@ mod tests {
     fn decode_all(p: &dyn Provider, text: &str) -> Vec<Event> {
         let mut t = p.translator();
         text.lines().flat_map(|l| t.decode(l)).collect()
+    }
+
+    /// Spec B-A: the tab and the chat draw Claude's logo, not "CC".
+    #[test]
+    fn claude_and_agy_have_their_logos() {
+        use crate::logos::Logo;
+        assert_eq!(CLAUDE.info().logo, Some(Logo::Claude));
+        assert_eq!(
+            crate::providers::agy::AGY.info().logo,
+            Some(Logo::Antigravity)
+        );
     }
 
     #[test]

@@ -76,6 +76,7 @@ static INFO: ProviderInfo = ProviderInfo {
     badge: "AG",
     who: ("A", "agy"),
     badge_rgb: 0x2d4f8a,
+    logo: Some(crate::logos::Logo::Antigravity),
     // The recordings show no way to stop a turn on stdin.
     interrupts: false,
     modes: &[

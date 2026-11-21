@@ -190,6 +190,10 @@ pub struct UiColors {
     pub side_selected: Rgb,
     /// The active tab's fill: a faint wash of the accent over the card.
     pub tab_active: Rgb,
+    /// The other tabs (spec B-C): quieter than the shown one, a smaller step over the card;
+    /// a little more under the pointer.
+    pub tab_idle: Rgb,
+    pub tab_idle_hover: Rgb,
     /// The selected sidebar row's soft tint of the accent (its text keeps its own colours).
     pub row_selected: Rgb,
     /// A hovered and a selected fill on the card (tab hover, buttons, the repo card; the file
@@ -609,6 +613,8 @@ impl Theme {
             side_field: mix(side, fg, 0.05),
             side_selected,
             tab_active,
+            tab_idle: mix(card, fg, 0.025),
+            tab_idle_hover: mix(card, fg, 0.045),
             row_selected,
             card_hover,
             card_selected,
@@ -702,6 +708,8 @@ impl Theme {
             ("card_lift", ui.card_lift),
             ("drop_tab", ui.drop_tab),
             ("tab_active", ui.tab_active),
+            ("tab_idle", ui.tab_idle),
+            ("tab_idle_hover", ui.tab_idle_hover),
         ];
         let marked: Vec<_> = surfaces
             .iter()

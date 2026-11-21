@@ -70,6 +70,8 @@ pub(crate) struct AgentSlot {
     pub label: SharedString,
     pub badge: &'static str,
     pub badge_rgb: u32,
+    /// The provider's logo (spec B-A), drawn in place of the badge.
+    pub logo: Option<crate::logos::Logo>,
     /// Its provider is known: it takes a dropped command block (an error tab has nothing to
     /// send one to).
     pub attachable: bool,
@@ -527,6 +529,7 @@ impl Workspace {
                 label,
                 badge,
                 badge_rgb,
+                logo: provider.and_then(|p| p.info().logo),
                 attachable: provider.is_some(),
                 status: Status::Idle,
                 since: Instant::now(),

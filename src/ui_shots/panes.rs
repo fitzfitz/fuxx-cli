@@ -2178,8 +2178,8 @@ fn tabs_minimal_scenes() {
         AFTER, BUTTON, BUTTON_GAP, BUTTON_ICON, BUTTONS_PAD, CLOSE, PART_GAP, PLUS_GAP, STATUS_DOT,
         TAB, TAB_MIN_WIDTH, TAB_PAD, TILE,
     };
+    use crate::ui_tokens::TEXT_MIN;
     use crate::ui_tokens::size::{CARD_INSET, HAIRLINE, SIDEBAR_DEFAULT_WIDTH, TAB_BAR};
-    use crate::ui_tokens::{MARK_MIN, TEXT_MIN};
     use gpui::Modifiers;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2202,7 +2202,6 @@ fn tabs_minimal_scenes() {
         g: (v >> 8) as u8,
         b: v as u8,
     };
-    let claude_rgb = crate::workspace_agent::provider_look("claude").2;
 
     let wide = size(px(1280.0), px(600.0));
     for &(slug, name) in shot_themes() {
@@ -2335,21 +2334,24 @@ fn tabs_minimal_scenes() {
                 Some(ui.tab_active),
                 Some(ui.waiting_tint),
                 Some(if scene == "tabs-minimal-hover" {
-                    ui.card_lift
+                    ui.tab_idle_hover
                 } else {
-                    ui.card_hover
+                    ui.tab_idle
                 }),
-                Some(ui.card_hover),
-                Some(ui.card_hover),
-                Some(ui.card_hover),
-                Some(ui.card_hover),
+                Some(ui.tab_idle),
+                Some(ui.tab_idle),
+                Some(ui.tab_idle),
+                Some(ui.tab_idle),
             ];
+            // Claude's logo in its own orange (spec B-A); the others in their kinds' colours.
             let glyphs = [
                 ui.accent,
                 ui.accent,
                 ui.accent,
                 ui.accent,
-                crate::theme::readable(rgb(claude_rgb), &[ui.card_lift], MARK_MIN),
+                // Claude's logo in its own orange (spec B-A), at the inactive tab's 0.75 on a
+                // dark theme (spec B-C), over the tab's fill.
+                rgb(0xd97757),
                 ui.accent,
                 ui.text_dim,
             ];
@@ -2387,11 +2389,15 @@ fn tabs_minimal_scenes() {
                     "{what}: no tile behind the icon: {corner:?} beside {fill_there:?}"
                 );
                 let inside = in_box(tile, tile + TILE, cy - TILE / 2.0, cy + TILE / 2.0);
-                let ink = nearest(&inside, glyphs[i]);
+                // An inactive tab's icon at its opacity over its fill (spec B-C); the shown one's,
+                // and a hovered one's, whole.
+                let lit = i == 0 || (i == 2 && scene == "tabs-minimal-hover");
+                let alpha = crate::tab_bar::icon_opacity(lit, theme.is_dark());
+                let glyph = crate::theme::mix(fill, glyphs[i], alpha);
+                let ink = nearest(&inside, glyph);
                 assert!(
                     ink <= 30,
-                    "{what}: the glyph's colour {:?} off by {ink}",
-                    glyphs[i]
+                    "{what}: the glyph's colour {glyph:?} off by {ink}"
                 );
                 if i == 6 {
                     assert!(
@@ -2471,11 +2477,8 @@ fn tabs_minimal_scenes() {
                 near_by(between, ui.card, 3),
                 "{n}: nothing just past +: {between:?}"
             );
-            // The tile glyphs and dots read (their floors, as `drawn_pairs` checks).
-            assert!(
-                contrast(glyphs[4], ui.card_lift) >= MARK_MIN,
-                "{n}: the agent's glyph"
-            );
+            // The dots read (their floors, as `drawn_pairs` checks). The agent's icon is Claude's
+            // logo in its own colours, never fitted (spec B-A: ~2.6:1 on Latte, by design).
             assert!(contrast(ui.text_faint, ui.waiting_tint) >= TEXT_MIN, "{n}");
             println!("ui-shots: {}", path.display());
         }

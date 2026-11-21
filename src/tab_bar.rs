@@ -69,6 +69,8 @@ pub enum TabIcon {
     Agent {
         badge: &'static str,
         rgb: u32,
+        /// Its provider's logo (spec B-A): drawn in its own colours in place of the letters.
+        logo: Option<crate::logos::Logo>,
     },
 }
 
@@ -87,6 +89,7 @@ pub struct AgentFacts {
     pub label: SharedString,
     pub badge: &'static str,
     pub rgb: u32,
+    pub logo: Option<crate::logos::Logo>,
     pub status: Status,
     pub age: Duration,
 }
@@ -116,7 +119,8 @@ pub fn icon(kind: &TabKind) -> TabIcon {
         TabKind::File { .. } => TabIcon::File,
         TabKind::Agent { provider, .. } => {
             let (_, badge, rgb) = crate::workspace_agent::provider_look(provider);
-            TabIcon::Agent { badge, rgb }
+            let logo = crate::providers::by_name(provider).and_then(|p| p.info().logo);
+            TabIcon::Agent { badge, rgb, logo }
         }
         TabKind::Terminal(_) => TabIcon::Terminal,
     }
@@ -182,6 +186,7 @@ pub fn bar_tabs(
                 (TabKind::Agent { .. }, Some(f)) => TabIcon::Agent {
                     badge: f.badge,
                     rgb: f.rgb,
+                    logo: f.logo,
                 },
                 _ => icon(&t.kind),
             };
@@ -261,7 +266,7 @@ pub fn look(ui: &UiColors, status: Status, active: bool, pane_focused: bool) -> 
     let (fill, hover) = match (active, waiting) {
         (true, _) if pane_focused => (Some(ui.tab_active), None),
         (true, _) => (Some(ui.card_lift), None),
-        (false, false) => (Some(ui.card_hover), Some(ui.card_lift)),
+        (false, false) => (Some(ui.tab_idle), Some(ui.tab_idle_hover)),
         (false, true) => (Some(ui.waiting_tint), Some(ui.waiting_hover)),
     };
     Look {
@@ -277,6 +282,13 @@ pub fn natural_width(title: f32, dot: bool) -> f32 {
     let dot = if dot { PART_GAP + STATUS_DOT } else { 0.0 };
     (2.0 * TAB_PAD + TILE + 2.0 * PART_GAP + CLOSE + title + dot)
         .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+}
+
+/// A tab's icon's opacity (spec B-C): quieter on an inactive tab on a dark theme (0.75), whole
+/// when shown or under the pointer (`lit`), and always on a light theme (the logos are only
+/// ~2.5:1 there already).
+pub fn icon_opacity(lit: bool, dark: bool) -> f32 {
+    if lit || !dark { 1.0 } else { 0.75 }
 }
 
 /// The colour of the glyph in a tab's icon tile (M11al §4.3): a terminal's and a browser's the
@@ -299,13 +311,18 @@ pub fn tile_ink(ui: &UiColors, icon: TabIcon) -> Rgb {
 /// A tab's icon (M11al §4.3; since 2026-11-20 an outline icon of the set, no tile behind it:
 /// "find icon with outline no backgrounds"): `TILE` square, in `tile_ink`; an agent's provider
 /// letters (`TILE_GLYPH`) in its provider's colour.
-fn tile(icon: TabIcon, ui: &UiColors) -> Div {
+fn tile(icon: TabIcon, ui: &UiColors, cx: &App) -> Div {
     let ink = tile_ink(ui, icon);
     let line = |i| crate::icons::icon(i, px(TILE), hsla(ink)).into_any_element();
     let inside = match icon {
         TabIcon::Terminal => line(crate::icons::Icon::Terminal),
         TabIcon::Globe => line(crate::icons::Icon::Globe),
         TabIcon::File => line(crate::icons::Icon::File),
+        TabIcon::Agent {
+            logo: Some(logo), ..
+        } if let Some(image) = crate::logos::image(logo, TILE, cx) => {
+            gpui::img(image).size(px(TILE)).into_any_element()
+        }
         TabIcon::Agent { badge, .. } => div()
             .text_size(px(TILE_GLYPH))
             .font_weight(FontWeight::SEMIBOLD)
@@ -400,7 +417,7 @@ impl Render for TabChip {
             .border_color(hsla(ui.panel_border))
             .text_size(px(text::UI))
             .text_color(hsla(ui.text))
-            .child(tile(self.icon, &ui))
+            .child(tile(self.icon, &ui, cx))
             .child(
                 div()
                     .flex_1()
@@ -471,6 +488,7 @@ impl Workspace {
                     label: slot.label.clone(),
                     badge: slot.badge,
                     rgb: slot.badge_rgb,
+                    logo: slot.logo,
                     status: slot.status,
                     age: now.saturating_duration_since(slot.since),
                 })
@@ -809,7 +827,10 @@ impl Workspace {
         let (source, rows) = (self.tab_drag.clone(), self.sidebar.drag_source.clone());
         let (chip_title, chip_icon) = (tab.title.clone(), tab.icon);
         let attachable = self.agents.get(&id).is_some_and(|slot| slot.attachable);
-        let tile = tile(tab.icon, &ui);
+        let dark = cx.global::<crate::appearance::Appearance>().theme.is_dark();
+        let tile = tile(tab.icon, &ui, cx)
+            .opacity(icon_opacity(shown, dark))
+            .group_hover(group.clone(), |s| s.opacity(1.0));
         // The gap between two parts: `PART_GAP`, giving way (down to none) only once the title
         // is gone, so a shown tab squeezed into a narrow pane keeps its tile, dot and × whole.
         let part_gap = || {
@@ -1417,6 +1438,7 @@ mod tests {
             let agent = TabIcon::Agent {
                 badge: "CC",
                 rgb: 0x7a4a2a,
+                logo: None,
             };
             let ink = tile_ink(&ui, agent);
             let floor = crate::ui_tokens::MARK_MIN;
@@ -1475,20 +1497,56 @@ mod tests {
     #[test]
     fn look_inactive_is_a_quiet_pill_with_faint_text() {
         let ui = ui();
-        // Every tab is a pill (chore 2026-11-20): the others have the card's hover shade, a step
-        // more under the pointer, and faint text; in the focused pane or not.
+        // Every tab is a pill (chore 2026-11-20); the others quieter than the shown one (spec
+        // B-C, "inactive tabs … slightly more darker"): `tab_idle`, `tab_idle_hover` under the
+        // pointer, and faint text; in the focused pane or not.
         for focused in [true, false] {
             for status in [Status::Idle, Status::Working, Status::Done] {
                 assert_eq!(
                     look(&ui, status, false, focused),
                     Look {
-                        fill: Some(ui.card_hover),
-                        hover: Some(ui.card_lift),
+                        fill: Some(ui.tab_idle),
+                        hover: Some(ui.tab_idle_hover),
                         text: ui.text_faint,
                     },
                     "{status:?}, focused {focused}"
                 );
             }
+        }
+    }
+
+    /// Spec B-C: an inactive tab sits between the card and the shown tab, so the shown one
+    /// stands out; its icon is quieter on dark themes until it is hovered.
+    #[test]
+    fn inactive_tabs_are_quieter_than_the_shown_one() {
+        use crate::ui_tokens::{TEXT_MIN, contrast, relative_luminance};
+        for (name, theme) in crate::theme::every_theme() {
+            let ui = theme.ui();
+            let l = relative_luminance;
+            let (card, idle, hover, active) = (
+                l(ui.card),
+                l(ui.tab_idle),
+                l(ui.tab_idle_hover),
+                l(ui.tab_active),
+            );
+            let between = |x: f32| {
+                (x - card) * (active - card) >= 0.0 && (x - card).abs() < (active - card).abs()
+            };
+            assert!(
+                between(idle) && between(hover),
+                "{name}: idle {idle} hover {hover}"
+            );
+            for on in [ui.tab_idle, ui.tab_idle_hover] {
+                let got = contrast(ui.text_faint, on);
+                assert!(got >= TEXT_MIN - 0.01, "{name}: title {got:.2}");
+            }
+            let dark = theme.is_dark();
+            assert_eq!(
+                icon_opacity(false, dark),
+                if dark { 0.75 } else { 1.0 },
+                "{name}"
+            );
+            assert_eq!(icon_opacity(true, dark), 1.0, "{name}");
         }
     }
 
@@ -1744,6 +1802,7 @@ mod tests {
             label: "Claude".into(),
             badge: "CC",
             rgb: 0x7a4a2a,
+            logo: Some(crate::logos::Logo::Claude),
             status,
             age: Duration::from_secs(4 * 60),
         };
@@ -1763,7 +1822,8 @@ mod tests {
             tabs[0].icon,
             TabIcon::Agent {
                 badge: "CC",
-                rgb: 0x7a4a2a
+                rgb: 0x7a4a2a,
+                logo: Some(crate::logos::Logo::Claude),
             }
         );
         assert_eq!(tabs[0].title.as_ref(), "fix tests");

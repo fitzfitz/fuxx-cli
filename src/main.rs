@@ -73,6 +73,7 @@ mod keys;
 mod layout_model;
 mod links;
 mod live_lines;
+mod logos;
 mod mark_view;
 mod mcp;
 mod md_preview;
