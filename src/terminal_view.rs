@@ -221,6 +221,42 @@ pub fn inset(bounds: Bounds<Pixels>, split: bool) -> Bounds<Pixels> {
     )
 }
 
+/// Whether a terminal is card-capable after `mark` (M11ab ruling 3, final review #2): a known
+/// answer stands (a shell this window spawned); otherwise a real mark says yes, and a snapshot
+/// (`Unknown`) says yes only when the grid already holds a tag (`tagged`).
+fn integration_after(
+    mark: &CommandMark,
+    now: Option<bool>,
+    tagged: impl FnOnce() -> bool,
+) -> Option<bool> {
+    match (now, mark) {
+        (Some(known), _) => Some(known),
+        (None, CommandMark::Unknown) => tagged().then_some(true),
+        (None, _) => Some(true),
+    }
+}
+
+/// The terminal's size for a pane of `bounds` (M11ab): in card view the live box's inside at
+/// its tallest (`card_view::card_dims`), otherwise the cells that fit inside the padding.
+fn pane_dims(
+    cards: bool,
+    bounds: Bounds<Pixels>,
+    split: bool,
+    cell_width: Pixels,
+    line_height: Pixels,
+) -> TermDims {
+    if cards {
+        crate::card_view::card_dims(
+            bounds.size,
+            split,
+            f32::from(cell_width),
+            f32::from(line_height),
+        )
+    } else {
+        GridLayout::fit(inset(bounds, split), cell_width, line_height).dims
+    }
+}
+
 /// How many whole cells fit in `area` (at least 2 columns and 1 row).
 fn dims_for(area: Bounds<Pixels>, cell_width: Pixels, line_height: Pixels) -> TermDims {
     TermDims {
@@ -237,6 +273,26 @@ pub struct TerminalView {
     tracker: StatusTracker,
     /// The command running at the shell prompt now (M11q), from the OSC 133 marks.
     run: CommandRun,
+    /// Whether its zsh started with fuxx's marks (M11ab: it may show cards): known for a shell
+    /// this window spawned (from its env); for a background-service session, unknown until its
+    /// first mark, which makes it true (note 88, ruling 3).
+    integration: Option<bool>,
+    /// Marks seen so far (M11ab: the card cache reads the segments again when it moves).
+    marks_seen: u64,
+    /// The card view's state (M11ab), whether the last frame drew cards, and its line height
+    /// (the wheel scrolls the column in points).
+    cards: Rc<RefCell<crate::card_view::CardsState>>,
+    cards_on: Rc<Cell<bool>>,
+    card_line_h: Rc<Cell<f32>>,
+    /// The cell width and line height last measured (pointing into cards; the scenes check
+    /// the box's inside).
+    card_cell: Rc<Cell<(f32, f32)>>,
+    /// The region a selection started in (`card_view::Region::key`): it stays in that card.
+    card_region: Option<String>,
+    /// This terminal's folder's branch, pushed by the workspace (the chips above the box).
+    branch: Option<String>,
+    /// A one-second redraw is pending for the running chip's time.
+    tick_pending: bool,
     /// When the canvas last sent the pty a new size; the tracker hears of it before the next
     /// output, input or tick, so the redraw that follows isn't taken for work.
     resized_at: Rc<Cell<Option<Instant>>>,
@@ -329,7 +385,17 @@ impl TerminalView {
             // The shell reads this as typed-ahead input once it is up.
             core.write(format!("{cmd}\r").as_bytes());
         }
-        Ok(cx.new(|cx| Self::new(core, rx, cx)))
+        let integrated = crate::shell_integration::integrated_in(env);
+        Ok(cx.new(|cx| {
+            let mut view = Self::new(core, rx, cx);
+            view.integration = Some(integrated);
+            view
+        }))
+    }
+
+    /// Whether its zsh started with fuxx's marks (M11ab's card view needs them).
+    pub fn integrated(&self) -> bool {
+        self.integration == Some(true)
     }
 
     /// A view of daemon session `id` (Daemon backend). It never waits on the daemon. For a new
@@ -415,6 +481,48 @@ impl TerminalView {
     /// True when it changed (the workspace then draws the pane afresh, past its cache).
     pub fn set_split(&self, split: bool) -> bool {
         self.split.replace(split) != split
+    }
+
+    /// The scenes' `cat` stands in for a zsh with fuxx's marks (M11ab's card view needs them),
+    /// and a mark was seen (the card cache reads the segments again).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_integrated(&mut self) {
+        self.integration = Some(true);
+        self.marks_seen += 1;
+    }
+
+    /// The card view's last frame: whether it drew cards, and the terminal's size then.
+    /// Last frame's rows to point into: (key, x, y, bottom, live).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_card_regions(&self) -> Vec<(String, f32, f32, f32, bool)> {
+        self.cards
+            .borrow()
+            .regions
+            .iter()
+            .map(|r| (r.key.clone(), r.x, r.y, r.bottom, r.live))
+            .collect()
+    }
+
+    /// The column's scroll from its bottom, and a way to set it (the scenes scroll up).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_card_scroll(&self) -> f32 {
+        self.cards.borrow().scroll
+    }
+
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_scroll_cards(&mut self, by: f32) {
+        let mut cards = self.cards.borrow_mut();
+        cards.scroll = (cards.scroll + by).clamp(0.0, cards.max_scroll);
+    }
+
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_card_count(&self) -> usize {
+        self.cards.borrow().hits.len()
+    }
+
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_cards(&self) -> (bool, crate::terminal::TermDims, (f32, f32)) {
+        (self.cards_on.get(), self.core.dims(), self.card_cell.get())
     }
 
     /// Write `text` into the screen as if the program had printed it (UI screenshots).
@@ -597,6 +705,8 @@ impl TerminalView {
     fn user_typed(&mut self) {
         self.hide_chip();
         self.chosen_block = None;
+        // In card view the column goes back to its bottom, where the typing shows (M11ab).
+        self.cards.borrow_mut().typed();
     }
 
     /// Close the chip now (typing, a press or a scroll in the grid). True if it was open.
@@ -686,6 +796,14 @@ impl TerminalView {
     }
 
     /// The status of this terminal's session, for the cursor's colour; redraws on a change.
+    /// Its folder's branch (M11ab: a chip above the live box); the workspace pushes it.
+    pub fn set_branch(&mut self, branch: Option<String>, cx: &mut Context<Self>) {
+        if self.branch != branch {
+            self.branch = branch;
+            cx.notify();
+        }
+    }
+
     pub fn set_status(&mut self, status: Status, cx: &mut Context<Self>) {
         if self.status != status {
             self.status = status;
@@ -873,6 +991,15 @@ impl TerminalView {
             focus_handle,
             tracker: StatusTracker::new(),
             run: CommandRun::default(),
+            integration: None,
+            marks_seen: 0,
+            cards: Rc::default(),
+            cards_on: Rc::default(),
+            card_line_h: Rc::default(),
+            card_cell: Rc::default(),
+            card_region: None,
+            branch: None,
+            tick_pending: false,
             resized_at: Rc::new(Cell::new(None)),
             layout: Rc::new(Cell::new(None)),
             scroll: ScrollAccumulator::default(),
@@ -910,6 +1037,13 @@ impl TerminalView {
     /// its Done, so the owner settles the status knowing which command ended, and the tracker's
     /// own Done then changes nothing.
     fn command_marked(&mut self, mark: CommandMark, cx: &mut Context<Self>) {
+        // A background-service session shows it was started with the marks (ruling 3): a real
+        // mark, or at its snapshot a tag already in its grid (final review #2).
+        let core = self.core.clone();
+        self.integration = integration_after(&mark, self.integration, || {
+            core.read_term(|term, _| !crate::blocks::segments(term).is_empty())
+        });
+        self.marks_seen += 1;
         let now = Instant::now();
         let tracks = self.tracks_status();
         match self.run.on_mark(mark, now) {
@@ -1095,8 +1229,11 @@ impl TerminalView {
     }
 
     /// A mouse report (or wheel as arrows) for the program; dropped once disconnected.
-    fn report(&self, bytes: &[u8]) {
+    fn report(&mut self, bytes: &[u8]) {
         if !self.disconnected {
+            // (The scenes read the mouse reports with what was typed.)
+            #[cfg(feature = "ui-shots")]
+            self.sent.extend_from_slice(bytes);
             self.core.write(bytes);
         }
     }
@@ -1104,11 +1241,40 @@ impl TerminalView {
     /// Grid point, cell side and viewport col/row under a window position, or `None` before the
     /// first paint. Always in range: `grid_point` clamps to the painted dims and the live offset.
     fn point_at(&self, pos: gpui::Point<Pixels>) -> Option<(Point, Side, usize, usize)> {
+        if self.cards_on.get() {
+            return self.card_point_at(pos).map(|(point, side, _)| {
+                let row = point.line.0.max(0) as usize;
+                (point, side, point.column.0, row)
+            });
+        }
         let layout = self.layout.get()?;
         let display_offset = self.core.display_offset();
         let (point, side) = layout.grid_point(pos, display_offset);
         let row = (point.line.0 + display_offset as i32) as usize;
         Some((point, side, point.column.0, row))
+    }
+
+    /// In card view (M11ab): the grid point under `pos` in the rows painted last frame, the
+    /// selection's own region while selecting (so it stays in one card), and whether that
+    /// region is the live box.
+    fn card_point_at(&self, pos: gpui::Point<Pixels>) -> Option<(Point, Side, bool)> {
+        let cards = self.cards.borrow();
+        let (x, y) = (f32::from(pos.x), f32::from(pos.y));
+        // Held while a selection or the program's mouse press lasts: a drag or a release over a
+        // gap or the chips still lands in the region it started in (final review #1).
+        let held = self.selecting || self.mouse_reported;
+        let region = match (&self.card_region, held) {
+            (Some(key), true) => cards.regions.iter().find(|r| &r.key == key),
+            _ => cards.regions.iter().find(|r| y >= r.y && y < r.bottom),
+        }?;
+        let cell = self.card_cell.get();
+        let cols = self.core.dims().cols;
+        let (point, side) =
+            crate::card_view::card_point((x, y), (region.x, region.y), region.top, cell, cols);
+        // Kept to the region's own rows.
+        let rows = ((region.bottom - region.y) / cell.1).round().max(1.0) as i32;
+        let line = point.line.max(region.top).min(region.top + (rows - 1));
+        Some((Point::new(line, point.column), side, region.live))
     }
 
     fn on_scroll_wheel(
@@ -1117,17 +1283,36 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(layout) = self.layout.get() else {
+        // M11ab: in card view the wheel scrolls the column (points; up is positive), unless the
+        // program in the live box asked for the wheel and the pointer is over the box.
+        let over_live = self.cards_on.get()
+            && self
+                .card_point_at(e.position)
+                .is_some_and(|(_, _, live)| live);
+        if self.cards_on.get()
+            && !(over_live && mouse::wants_mouse(self.core.mode(), e.modifiers.shift))
+        {
+            let line_h = self.card_line_h.get();
+            if line_h > 0.0 {
+                let delta = f32::from(e.delta.pixel_delta(px(line_h)).y);
+                let mut cards = self.cards.borrow_mut();
+                cards.scroll = (cards.scroll + delta).clamp(0.0, cards.max_scroll);
+                cx.notify();
+            }
             return;
+        }
+        let line_height = match self.layout.get() {
+            Some(layout) => f32::from(layout.line_height),
+            None if self.cards_on.get() => self.card_line_h.get(),
+            None => return,
         };
-        let line_height = f32::from(layout.line_height);
         if line_height <= 0.0 {
             return;
         }
         if e.touch_phase == TouchPhase::Started {
             self.scroll.reset();
         }
-        let delta = f32::from(e.delta.pixel_delta(layout.line_height).y);
+        let delta = f32::from(e.delta.pixel_delta(px(line_height)).y);
         let lines = self.scroll.push(delta, line_height);
         if lines == 0 {
             return;
@@ -1183,6 +1368,24 @@ impl TerminalView {
         let Some((point, side, col, row)) = self.point_at(e.position) else {
             return;
         };
+        // In card view a selection stays in the region it starts in, and only the live box
+        // reports the mouse to its program (M11ab).
+        let card = self
+            .cards_on
+            .get()
+            .then(|| self.card_point_at(e.position))
+            .flatten();
+        let card_live = card.is_none_or(|(_, _, live)| live);
+        if card.is_some() {
+            let (x, y) = (f32::from(e.position.x), f32::from(e.position.y));
+            self.card_region = self
+                .cards
+                .borrow()
+                .regions
+                .iter()
+                .find(|r| y >= r.y && y < r.bottom && x >= r.x - 1.0)
+                .map(|r| r.key.clone());
+        }
         let m = &e.modifiers;
         if e.button == MouseButton::Left && m.platform {
             self.pressed_link = self.core.link_at(point);
@@ -1191,7 +1394,7 @@ impl TerminalView {
             }
         }
         let mode = self.core.mode();
-        if mouse::wants_mouse(mode, m.shift) {
+        if mouse::wants_mouse(mode, m.shift) && card_live {
             if let Some(button) = button(e.button)
                 && let Some(bytes) =
                     mouse::report(button, MouseAction::Press, mods(m), col, row, mode)
@@ -1283,6 +1486,7 @@ impl TerminalView {
             }
         }
         self.selecting = false;
+        self.card_region = None;
     }
 
     fn on_modifiers_changed(
@@ -1332,6 +1536,15 @@ impl TerminalView {
             cx.propagate();
             return;
         }
+        // In card view the column scrolls, by a view's height (final review #6).
+        if self.cards_on.get() {
+            let mut cards = self.cards.borrow_mut();
+            let up = matches!(scroll, Scroll::PageUp);
+            cards.scroll = crate::card_view::page(cards.scroll, cards.view, cards.max_scroll, up);
+            drop(cards);
+            cx.notify();
+            return;
+        }
         self.core.scroll(scroll);
         cx.notify();
     }
@@ -1345,6 +1558,152 @@ impl TerminalView {
     /// The block an action applies to (M11l §4): the chosen one, else the newest finished
     /// one. A chosen block that is gone is dropped, and nothing is done. Reads every block:
     /// on a keypress only.
+    /// ⇧⌘↑ / ⇧⌘↓ in card view (M11ab, as M11l's jump): the card before or after the chosen
+    /// one (none chosen: up picks the newest), scrolled into view; past the newest, none chosen
+    /// and the column at its bottom.
+    fn jump_card(&mut self, up: bool, cx: &mut Context<Self>) {
+        let mut cards = self.cards.borrow_mut();
+        let chosen = self
+            .chosen_block
+            .as_deref()
+            .and_then(|id| cards.order.iter().position(|(c, ..)| c == id));
+        let next = match (chosen, up) {
+            (None, true) => cards.order.len().checked_sub(1),
+            (None, false) => return,
+            (Some(i), true) => i.checked_sub(1).or(Some(i)),
+            (Some(i), false) if i + 1 < cards.order.len() => Some(i + 1),
+            (Some(_), false) => None,
+        };
+        match next {
+            Some(i) => {
+                let (id, top, height) = cards.order[i].clone();
+                cards.scroll =
+                    crate::card_view::reveal(top, height, cards.total, cards.view, cards.scroll);
+                drop(cards);
+                self.chosen_block = Some(id);
+            }
+            None => {
+                cards.typed();
+                drop(cards);
+                self.chosen_block = None;
+            }
+        }
+        cx.notify();
+    }
+
+    /// A card's Rerun (M11ab): M11l's Rerun (types it, never runs it), and the column back at
+    /// its bottom, where it types (final review).
+    pub fn rerun_card(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.rerun_block(id, cx);
+        self.cards.borrow_mut().typed();
+        cx.notify();
+    }
+
+    /// A card's elements over its painted self (M11ab), from the last frame's geometry: Copy
+    /// and Rerun at its header's right on hover, its command line as M11aa's drag handle onto
+    /// an agent tab, its fold row a button.
+    fn card_overlay(
+        &self,
+        hit: crate::card_view::CardHit,
+        (ox, oy): (f32, f32),
+        ui: &UiColors,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        use crate::card_view::HEADER_H;
+        let (x, y, w, h) = hit.card;
+        let group = SharedString::from(format!("card-{}", hit.id));
+        let button = |label: &'static str, key: &str| {
+            div()
+                .id(SharedString::from(format!("card-{label}-{key}")))
+                .px(px(6.0))
+                .rounded(px(5.0))
+                .text_size(px(crate::ui_tokens::text::META))
+                .text_color(hsla(ui.text_dim))
+                .cursor_pointer()
+                .hover(|s| s.bg(hsla(ui.panel_hover)))
+                .child(label)
+        };
+        let (copy_id, rerun_id) = (hit.id.clone(), hit.id.clone());
+        let actions = div()
+            .absolute()
+            .top_0()
+            .right_0()
+            .h(px(HEADER_H))
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .invisible()
+            .group_hover(group.clone(), |s| s.visible())
+            .child(button("Copy", &hit.id).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.copy_block(copy_id.clone(), false, cx);
+                }),
+            ))
+            .child(button("Rerun", &hit.id).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.rerun_card(&rerun_id, cx);
+                }),
+            ));
+        let (cx0, cy0, cw, ch) = hit.cmd;
+        let drag = BlockDrag {
+            id: hit.id.clone(),
+            command: hit.command.clone(),
+            outcome: hit.outcome,
+            core: self.core.clone(),
+        };
+        let words: SharedString = drag_words(&drag).into();
+        let handle = div()
+            .id(SharedString::from(format!("card-cmd-{}", hit.id)))
+            .absolute()
+            .left(px(cx0 - x))
+            .top(px(cy0 - y))
+            .w(px(cw))
+            .h(px(ch))
+            .on_drag(drag, move |_, _, window, cx| {
+                crate::tab_bar::hold_closed_hand(window, cx);
+                let words = words.clone();
+                cx.new(|_| BlockDragChip { words })
+            });
+        let fold = hit.fold.map(|(fx, fy, fw, fh)| {
+            let id = hit.id.clone();
+            div()
+                .id(SharedString::from(format!("card-fold-{}", hit.id)))
+                .absolute()
+                .left(px(fx - x))
+                .top(px(fy - y))
+                .w(px(fw))
+                .h(px(fh))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        let mut cards = this.cards.borrow_mut();
+                        if !cards.unfolded.remove(&id) {
+                            cards.unfolded.insert(id.clone());
+                        }
+                        drop(cards);
+                        cx.notify();
+                    }),
+                )
+        });
+        div()
+            .absolute()
+            .left(px(x - ox))
+            .top(px(y - oy))
+            .w(px(w))
+            .h(px(h))
+            .group(group)
+            .child(actions)
+            .child(handle)
+            .children(fold)
+            .into_any_element()
+    }
+
     fn action_block(&mut self, cx: &mut Context<Self>) -> Option<Block> {
         let blocks = self.core.blocks();
         let (chosen, gone) = chosen_index(&blocks, self.chosen_block.as_deref());
@@ -1361,6 +1720,10 @@ impl TerminalView {
     /// unless it is all in view; past the newest, back to the bottom with nothing picked.
     fn jump_to(&mut self, up: bool, cx: &mut Context<Self>) {
         if !self.blocks_active(cx) {
+            return;
+        }
+        if self.cards_on.get() {
+            self.jump_card(up, cx);
             return;
         }
         let (blocks, (top, bottom)) = self.core.blocks_and_view();
@@ -1547,6 +1910,47 @@ impl Render for TerminalView {
         let theme = self.core.theme();
         let ui = theme.ui();
         let blocks_on = appearance.command_blocks;
+        // M11ab: what card view needs that's known here; the width is known at prepaint.
+        let shell_cards = appearance.shell_cards && blocks_on;
+        let integrated = self.integrated();
+        let alt_screen = self.core.mode().contains(TermMode::ALT_SCREEN);
+        let marks_seen = self.marks_seen;
+        let utc_offset = crate::cli::local_utc_offset(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64),
+        );
+        let cards_state = self.cards.clone();
+        let cards_on = self.cards_on.clone();
+        let card_line_h = self.card_line_h.clone();
+        let card_cell = self.card_cell.clone();
+        let card_core = self.core.clone();
+        let was_cards = self.cards_on.get();
+        let chosen_card = self.chosen_block.clone();
+        let chips = {
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            let folder = self
+                .core
+                .reported_cwd()
+                .map(|cwd| crate::sidebar::home_relative(&cwd.path, home.as_deref()));
+            let running = self.run.started().map(|at| {
+                let short = self.run.running().unwrap_or(crate::command_name::NO_SHORT);
+                crate::card_view::running_words(short, at.elapsed())
+            });
+            crate::card_view::chips(folder.as_deref(), self.branch.as_deref(), running)
+        };
+        // The running chip's time moves once a second (only while one runs in card view).
+        if was_cards && self.run.started().is_some() && !self.tick_pending {
+            self.tick_pending = true;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.tick_pending = false;
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
         let cursor = CursorSettings {
             setting: appearance.cursor_style,
             focused,
@@ -1573,7 +1977,11 @@ impl Render for TerminalView {
         let gutter = self.gutter.clone();
         let chosen = self.chosen_block.clone().filter(|_| blocks_on);
         let hovered_block = self.hovered_block.clone().filter(|_| blocks_on);
-        let chip = if blocks_on { self.chip(&ui) } else { None };
+        let chip = if blocks_on && !was_cards {
+            self.chip(&ui)
+        } else {
+            None
+        };
         if chip.is_none() {
             self.chip_bounds.set(None);
         }
@@ -1591,6 +1999,20 @@ impl Render for TerminalView {
                 cx,
             )
         });
+
+        let overlays: Vec<gpui::AnyElement> = if was_cards {
+            let (hits, origin, view) = {
+                let cards = self.cards.borrow();
+                (cards.hits.clone(), cards.origin, cards.view_rect)
+            };
+            // Cut to the column's view (final review #5): nothing over the padding or the bar.
+            hits.iter()
+                .filter_map(|hit| crate::card_view::clip_hit(hit, view))
+                .map(|hit| self.card_overlay(hit, origin, &ui, cx))
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         div()
             .size_full()
@@ -1619,13 +2041,32 @@ impl Render for TerminalView {
                     // whole pane: a click in the padding lands on the nearest cell.
                     move |bounds, window, cx| {
                         let metrics = CellMetrics::measure(cx.global::<Appearance>(), window);
+                        let cards = crate::card_view::card_mode(
+                            shell_cards,
+                            integrated,
+                            alt_screen,
+                            f32::from(bounds.size.width),
+                        );
+                        cards_on.set(cards);
+                        card_line_h.set(f32::from(metrics.line_height));
+                        card_cell.set((
+                            f32::from(metrics.cell_width),
+                            f32::from(metrics.line_height),
+                        ));
                         let grid = GridLayout::fit(
                             inset(bounds, split),
                             metrics.cell_width,
                             metrics.line_height,
                         );
+                        let dims = pane_dims(
+                            cards,
+                            bounds,
+                            split,
+                            metrics.cell_width,
+                            metrics.line_height,
+                        );
                         let sent = resize_core.resize(
-                            grid.dims,
+                            dims,
                             CellPx {
                                 width: f32::from(metrics.cell_width).round() as u16,
                                 height: f32::from(metrics.line_height).round() as u16,
@@ -1638,12 +2079,48 @@ impl Render for TerminalView {
                             dims: resize_core.dims(),
                             ..grid
                         };
-                        layout.set(Some(grid));
+                        // In card view the grid isn't laid out over the pane (the cards and the
+                        // live box place their rows).
+                        layout.set((!cards).then_some(grid));
                         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-                        (metrics, grid.origin, hitbox)
+                        (metrics, grid.origin, hitbox, cards)
                     },
                     // paint: draw the current screen, set the pointer, follow the mouse.
-                    move |bounds, (metrics, origin, hitbox), window, cx| {
+                    move |bounds, (metrics, origin, hitbox, cards), window, cx| {
+                        if cards {
+                            paint_cards(
+                                CardPaint {
+                                    core: &card_core,
+                                    state: &cards_state,
+                                    marks: marks_seen,
+                                    utc_offset,
+                                    split,
+                                    theme: &theme,
+                                    ui: &ui,
+                                    chosen: chosen_card.clone(),
+                                    chips: chips.clone(),
+                                },
+                                &metrics,
+                                bounds,
+                                &cursor,
+                                &mut motion.borrow_mut(),
+                                window,
+                                cx,
+                            );
+                            let frames = motion.borrow().frames;
+                            match frames {
+                                Frames::EveryFrame => window.request_animation_frame(),
+                                Frames::Breath => {
+                                    view.update(cx, |this, cx| this.breathe(window, cx))
+                                }
+                                Frames::None => {}
+                            }
+                            window.set_cursor_style(CursorStyle::IBeam, &hitbox);
+                            // The card view drags, selects and releases as today's view does
+                            // (final review #1).
+                            follow_mouse(&view, &hitbox, window);
+                            return;
+                        }
                         // With command blocks on, the blocks in view come with the screen,
                         // under the same lock (the viewport and 8 rows below, plus the chosen
                         // block); nothing is read for them otherwise.
@@ -1731,29 +2208,13 @@ impl Render for TerminalView {
 
                         // Move/up anywhere in the window, so a drag that leaves the pane keeps
                         // going. Paint-phase registrations last for one frame.
-                        window.on_mouse_event({
-                            let view = view.clone();
-                            let hitbox = hitbox.clone();
-                            move |e: &MouseMoveEvent, phase, window, cx| {
-                                if phase == DispatchPhase::Bubble {
-                                    let over_pane = hitbox.is_hovered(window);
-                                    view.update(cx, |this, cx| {
-                                        this.on_mouse_move(e, over_pane, cx)
-                                    });
-                                }
-                            }
-                        });
-                        window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
-                            if phase == DispatchPhase::Bubble {
-                                let over_pane = hitbox.is_hovered(window);
-                                view.update(cx, |this, cx| this.on_mouse_up(e, over_pane, cx));
-                            }
-                        });
+                        follow_mouse(&view, &hitbox, window);
                     },
                 )
                 .size_full(),
             )
             .children(chip)
+            .children(overlays)
     }
 }
 
@@ -2470,90 +2931,407 @@ impl CursorMotion {
     }
 }
 
-/// Paint `snap` with its first cell at `origin`, over `bounds` (the whole pane, padding
-/// included) filled with the theme background, and `cursor` over it: its trail and glow under
-/// the text, a block under its letter (which takes the block's text colour), any other shape
-/// over the text, then the sparks. `under_text` paints over the cells' backgrounds, before the
-/// cursor and the text.
+/// Follow the mouse's moves and releases anywhere in the window this frame (a drag that leaves
+/// the pane keeps going; paint-phase registrations last one frame), for both views.
+fn follow_mouse(view: &Entity<TerminalView>, hitbox: &gpui::Hitbox, window: &mut Window) {
+    window.on_mouse_event({
+        let view = view.clone();
+        let hitbox = hitbox.clone();
+        move |e: &MouseMoveEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble {
+                let over_pane = hitbox.is_hovered(window);
+                view.update(cx, |this, cx| this.on_mouse_move(e, over_pane, cx));
+            }
+        }
+    });
+    let view = view.clone();
+    let hitbox = hitbox.clone();
+    window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
+        if phase == DispatchPhase::Bubble {
+            let over_pane = hitbox.is_hovered(window);
+            view.update(cx, |this, cx| this.on_mouse_up(e, over_pane, cx));
+        }
+    });
+}
+
+/// What `paint_cards` reads from (M11ab).
+struct CardPaint<'a> {
+    core: &'a TerminalCore,
+    state: &'a RefCell<crate::card_view::CardsState>,
+    marks: u64,
+    utc_offset: i64,
+    split: bool,
+    theme: &'a Theme,
+    ui: &'a UiColors,
+    chosen: Option<String>,
+    chips: Vec<crate::card_view::Chip>,
+}
+
+/// Paint a tab in card view (note 88): the column of earlier rows, cards and the live box,
+/// bottom-anchored in the pane's padding, only the rows in view read (under one lock).
 #[allow(clippy::too_many_arguments)]
-fn paint_grid(
-    mut snap: GridSnapshot,
-    theme: &Theme,
+fn paint_cards(
+    p: CardPaint,
     m: &CellMetrics,
     bounds: Bounds<Pixels>,
-    origin: gpui::Point<Pixels>,
-    cursor: Option<CursorLook>,
-    under_text: impl FnOnce(&mut Window),
+    cursor: &CursorSettings,
+    motion: &mut CursorMotion,
     window: &mut Window,
     cx: &mut App,
 ) {
-    // Its bottom corners rounded with the card's (M11i; `CARD_RADIUS`, 14 since M11al): the
-    // padding keeps the cells out of them, so nothing square shows past the card's edge. A
-    // pane away from the card's corners rounds too, onto the card's own colour (§3.4).
+    use crate::card_view::{
+        BOX_EDGE, BOX_PAD, CHIPS_ROW, CacheKey, CardHit, Draw, HEADER_H, Region,
+    };
     let corner = px(ui_size::CARD_RADIUS);
-    window.paint_quad(fill(bounds, hsla(theme.background)).corner_radii(Corners {
-        bottom_left: corner,
-        bottom_right: corner,
-        ..Corners::default()
-    }));
-
-    let at_cells =
-        |(x, y): (f32, f32)| point(origin.x + m.cell_width * x, origin.y + m.line_height * y);
-    let cell_origin = |row: usize, col: usize| at_cells((col as f32, row as f32));
-
-    // A block on its cell: the letter there turns the block's text colour, as much as the
-    // block shows through its breath.
-    if let Some(c) = &cursor
-        && c.shape == PaintShape::Block
-        && c.at == (c.cell.0 as f32, c.cell.1 as f32)
-        && let Some(cell) = snap
-            .lines
-            .get_mut(c.cell.1)
-            .and_then(|l| l.get_mut(c.cell.0))
-    {
-        cell.fg = mix(cell.fg, c.text, c.alpha);
+    window.paint_quad(
+        fill(bounds, hsla(p.theme.background)).corner_radii(Corners {
+            bottom_left: corner,
+            bottom_right: corner,
+            ..Corners::default()
+        }),
+    );
+    // The column keeps the terminal at its bottom: no scrolled-back screen under the cards.
+    if p.core.display_offset() > 0 {
+        p.core.scroll(Scroll::Bottom);
     }
+    let content = inset(bounds, p.split);
+    let line_h = f32::from(m.line_height);
+    let dims = p.core.dims();
+    let (frame, clears) = p.core.read_term(|term, clears| {
+        let shape = term.renderable_content().cursor.shape;
+        let shape = (shape != alacritty_terminal::vte::ansi::CursorShape::Hidden)
+            .then(|| (shape, term.cursor_style().blinking));
+        let key = CacheKey {
+            marks: p.marks,
+            clears,
+            cols: dims.cols,
+            rows: dims.rows,
+            alt: false,
+        };
+        let frame = crate::card_view::frame(
+            term,
+            &mut p.state.borrow_mut(),
+            key,
+            p.theme,
+            line_h,
+            (f32::from(content.top()), f32::from(content.size.height)),
+            p.utc_offset,
+            shape,
+        );
+        (frame, clears)
+    });
+    let left = content.left();
+    let width = content.size.width;
+    let inner = px(BOX_EDGE + BOX_PAD);
+    let ui_font = window.text_style().font();
+    // What the pointer can reach this frame (Task 6): rows to select in, cards' hit areas.
+    let mut regions: Vec<Region> = Vec::new();
+    let mut hits: Vec<CardHit> = Vec::new();
+    let region = |key: String, rows: &crate::card_view::Rows, x: f32, live: bool| Region {
+        key,
+        x,
+        y: rows.y,
+        bottom: rows.y + rows.lines.len() as f32 * line_h,
+        top: rows.top,
+        live,
+    };
+    let inner_x = f32::from(left + inner);
+    window.with_content_mask(Some(gpui::ContentMask { bounds: content }), |window| {
+        for draw in frame.draws {
+            match draw {
+                Draw::Plain(rows) => {
+                    regions.push(region(
+                        format!("rows:{}", rows.top.0),
+                        &rows,
+                        inner_x,
+                        false,
+                    ));
+                    let at = point(left + inner, px(rows.y));
+                    paint_lines(&rows.lines, p.theme, m, at, window, cx);
+                }
+                Draw::Card {
+                    id,
+                    y,
+                    height,
+                    outcome,
+                    header,
+                    cmd,
+                    panel,
+                    failed,
+                } => {
+                    let cmd_lines = match &cmd {
+                        Ok(c) => c.lines().count().max(1),
+                        Err(rows) => rows.lines.len().max(1),
+                    };
+                    let w = f32::from(width);
+                    hits.push(CardHit {
+                        id: id.clone(),
+                        card: (f32::from(left), y, w, height),
+                        cmd: (f32::from(left), y + HEADER_H, w, cmd_lines as f32 * line_h),
+                        fold: panel.as_ref().and_then(|panel| {
+                            panel.fold.as_ref().map(|_| {
+                                let pad = BOX_EDGE + BOX_PAD;
+                                (inner_x, panel.y + pad, w - 2.0 * pad, line_h)
+                            })
+                        }),
+                        command: cmd.as_ref().ok().cloned(),
+                        outcome,
+                    });
+                    // The header: when · how long · exit N (the exit in the failed colour).
+                    let all = header.words();
+                    let exit = header
+                        .exit
+                        .filter(|&x| x != 0)
+                        .map_or(0, |x| format!("exit {x}").len());
+                    paint_words(
+                        &all,
+                        &[
+                            (all.len() - exit, p.ui.text_faint),
+                            (exit, p.ui.block_failed),
+                        ],
+                        ui_font.clone(),
+                        px(crate::ui_tokens::text::META),
+                        point(left, px(y)),
+                        px(HEADER_H),
+                        window,
+                        cx,
+                    );
+                    let cmd_y = px(y + HEADER_H);
+                    match cmd {
+                        Ok(cmd) => {
+                            for (i, line) in cmd.lines().enumerate() {
+                                let mark = if i == 0 { "\u{276f} " } else { "  " };
+                                let text = format!("{mark}{line}");
+                                paint_words(
+                                    &text,
+                                    &[
+                                        (mark.len(), p.ui.text_faint),
+                                        (line.len(), p.theme.foreground),
+                                    ],
+                                    m.font.clone(),
+                                    m.font_size,
+                                    point(left, cmd_y + m.line_height * i as f32),
+                                    m.line_height,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }
+                        Err(rows) => {
+                            let at = point(left, px(rows.y));
+                            paint_lines(&rows.lines, p.theme, m, at, window, cx);
+                        }
+                    }
+                    if let Some(panel) = panel {
+                        let edge = if p.chosen.as_deref() == Some(id.as_str()) {
+                            p.ui.accent
+                        } else if failed {
+                            p.ui.block_failed
+                        } else {
+                            p.ui.card_border
+                        };
+                        regions.push(region(id.clone(), &panel.rows, inner_x, false));
+                        window.paint_quad(gpui::quad(
+                            Bounds::new(point(left, px(panel.y)), size(width, px(panel.height))),
+                            px(8.0),
+                            hsla(p.theme.background),
+                            px(BOX_EDGE),
+                            hsla(edge),
+                            gpui::BorderStyle::Solid,
+                        ));
+                        if let Some(fold) = &panel.fold {
+                            paint_words(
+                                fold,
+                                &[(fold.len(), p.ui.text_faint)],
+                                ui_font.clone(),
+                                px(crate::ui_tokens::text::META),
+                                point(left + inner, px(panel.y) + inner),
+                                m.line_height,
+                                window,
+                                cx,
+                            );
+                        }
+                        let at = point(left + inner, px(panel.rows.y));
+                        paint_lines(&panel.rows.lines, p.theme, m, at, window, cx);
+                    }
+                }
+                Draw::Live {
+                    y,
+                    height,
+                    rows,
+                    cursor: at,
+                } => {
+                    regions.push(region("live".into(), &rows, inner_x, true));
+                    // The chips: the running command, the folder, the branch (note 88 §3).
+                    let mut chip_x = left;
+                    for chip in &p.chips {
+                        let color = if chip.running {
+                            p.ui.block_running
+                        } else {
+                            p.ui.text_dim
+                        };
+                        let run = TextRun {
+                            len: chip.words.len(),
+                            font: ui_font.clone(),
+                            color: hsla(color),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        };
+                        let shaped = window.text_system().shape_line(
+                            SharedString::from(chip.words.clone()),
+                            px(crate::ui_tokens::text::META),
+                            &[run],
+                            None,
+                        );
+                        let pill = Bounds::new(
+                            point(chip_x, px(y + 3.0)),
+                            size(shaped.width + px(18.0), px(CHIPS_ROW - 8.0)),
+                        );
+                        window.paint_quad(fill(pill, hsla(p.ui.raised)).corner_radii(px(10.0)));
+                        let _ = shaped.paint(
+                            point(chip_x + px(9.0), px(y + 3.0)),
+                            px(CHIPS_ROW - 8.0),
+                            TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        );
+                        chip_x += pill.size.width + px(6.0);
+                    }
+                    let frame_box = Bounds::new(
+                        point(left, px(y + CHIPS_ROW)),
+                        size(width, px(height - CHIPS_ROW)),
+                    );
+                    window.paint_quad(gpui::quad(
+                        frame_box,
+                        px(8.0),
+                        hsla(p.theme.background),
+                        px(BOX_EDGE),
+                        hsla(p.ui.card_border),
+                        gpui::BorderStyle::Solid,
+                    ));
+                    let origin = point(left + inner, px(rows.y));
+                    let snap = GridSnapshot {
+                        cols: dims.cols,
+                        rows: rows.lines.len(),
+                        lines: rows.lines,
+                        cursor: at,
+                        alt_screen: false,
+                        display_offset: 0,
+                        clears,
+                        blocks: Vec::new(),
+                    };
+                    let look = cursor.look(&snap, p.theme, motion, Instant::now());
+                    let inside = Bounds::new(
+                        frame_box.origin + point(px(BOX_EDGE), px(BOX_EDGE)),
+                        size(
+                            frame_box.size.width - px(2.0 * BOX_EDGE),
+                            frame_box.size.height - px(2.0 * BOX_EDGE),
+                        ),
+                    );
+                    paint_grid(snap, p.theme, m, inside, origin, look, |_| {}, window, cx);
+                }
+            }
+        }
+    });
+    let mut state = p.state.borrow_mut();
+    state.regions = regions;
+    state.hits = hits;
+    state.origin = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+    state.view_rect = (
+        f32::from(content.left()),
+        f32::from(content.top()),
+        f32::from(content.size.width),
+        f32::from(content.size.height),
+    );
+}
 
-    for (row, line) in snap.lines.iter().enumerate() {
+/// `text` in `font` at `size`, its first `runs` bytes each in their colour, from `at` on a line
+/// `line_h` tall.
+#[allow(clippy::too_many_arguments)]
+fn paint_words(
+    text: &str,
+    runs: &[(usize, Rgb)],
+    font: Font,
+    size: Pixels,
+    at: gpui::Point<Pixels>,
+    line_h: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let runs: Vec<TextRun> = runs
+        .iter()
+        .filter(|(len, _)| *len > 0)
+        .map(|&(len, color)| TextRun {
+            len,
+            font: font.clone(),
+            color: hsla(color),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        })
+        .collect();
+    let shaped =
+        window
+            .text_system()
+            .shape_line(SharedString::from(text.to_string()), size, &runs, None);
+    let _ = shaped.paint(at, line_h, TextAlign::Left, None, window, cx);
+}
+
+/// M11ab: `lines` (rows of cells, top first) with their first cell at `origin`: the cells'
+/// backgrounds, then their text, with nothing under them filled and no cursor (a card's
+/// output; `paint_grid` paints the two halves around its cursor).
+fn paint_lines(
+    lines: &[Vec<grid::CellView>],
+    theme: &Theme,
+    m: &CellMetrics,
+    origin: gpui::Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    paint_line_backgrounds(lines, theme, m, origin, window);
+    paint_line_text(lines, m, origin, window, cx);
+}
+
+/// The cells' backgrounds that differ from the theme's (`grid::bg_rects`).
+fn paint_line_backgrounds(
+    lines: &[Vec<grid::CellView>],
+    theme: &Theme,
+    m: &CellMetrics,
+    origin: gpui::Point<Pixels>,
+    window: &mut Window,
+) {
+    for (row, line) in lines.iter().enumerate() {
         for rect in grid::bg_rects(line, theme.background) {
+            let at = point(
+                origin.x + m.cell_width * rect.col as f32,
+                origin.y + m.line_height * row as f32,
+            );
             let size = size(m.cell_width * rect.cells as f32, m.line_height);
-            window.paint_quad(fill(
-                Bounds::new(cell_origin(row, rect.col), size),
-                hsla(rect.color),
-            ));
+            window.paint_quad(fill(Bounds::new(at, size), hsla(rect.color)));
         }
     }
-    // Over the cells' backgrounds, under the cursor and the text (M11l's command blocks).
-    under_text(window);
+}
 
-    if let Some(c) = &cursor {
-        for &(x, y, scale, alpha) in &c.trail {
-            c.paint(
-                c.bounds(at_cells((x, y)), m, scale),
-                alpha * c.alpha,
-                window,
-            );
-        }
-        let shape = c.bounds(at_cells(c.at), m, 1.0);
-        if c.glow {
-            window.paint_drop_shadows(
-                shape,
-                Corners::default(),
-                &[BoxShadow {
-                    color: hsla(c.color).opacity(GLOW_ALPHA * c.alpha),
-                    offset: point(px(0.0), px(0.0)),
-                    blur_radius: px(GLOW_BLUR),
-                    spread_radius: px(0.0),
-                    inset: false,
-                }],
-            );
-        }
-        if c.shape == PaintShape::Block {
-            c.paint(shape, c.alpha, window);
-        }
-    }
-
-    for (row, line) in snap.lines.iter().enumerate() {
+/// The cells' text, shaped one cell per glyph (`grid::text_spans`).
+fn paint_line_text(
+    lines: &[Vec<grid::CellView>],
+    m: &CellMetrics,
+    origin: gpui::Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let cell_origin = |row: usize, col: usize| {
+        point(
+            origin.x + m.cell_width * col as f32,
+            origin.y + m.line_height * row as f32,
+        )
+    };
+    for (row, line) in lines.iter().enumerate() {
         for span in grid::text_spans(line) {
             let color = hsla(span.fg);
             let run = TextRun {
@@ -2597,6 +3375,83 @@ fn paint_grid(
             );
         }
     }
+}
+
+/// Paint `snap` with its first cell at `origin`, over `bounds` (the whole pane, padding
+/// included) filled with the theme background, and `cursor` over it: its trail and glow under
+/// the text, a block under its letter (which takes the block's text colour), any other shape
+/// over the text, then the sparks. `under_text` paints over the cells' backgrounds, before the
+/// cursor and the text.
+#[allow(clippy::too_many_arguments)]
+fn paint_grid(
+    mut snap: GridSnapshot,
+    theme: &Theme,
+    m: &CellMetrics,
+    bounds: Bounds<Pixels>,
+    origin: gpui::Point<Pixels>,
+    cursor: Option<CursorLook>,
+    under_text: impl FnOnce(&mut Window),
+    window: &mut Window,
+    cx: &mut App,
+) {
+    // Its bottom corners rounded with the card's (M11i; `CARD_RADIUS`, 14 since M11al): the
+    // padding keeps the cells out of them, so nothing square shows past the card's edge. A
+    // pane away from the card's corners rounds too, onto the card's own colour (§3.4).
+    let corner = px(ui_size::CARD_RADIUS);
+    window.paint_quad(fill(bounds, hsla(theme.background)).corner_radii(Corners {
+        bottom_left: corner,
+        bottom_right: corner,
+        ..Corners::default()
+    }));
+
+    let at_cells =
+        |(x, y): (f32, f32)| point(origin.x + m.cell_width * x, origin.y + m.line_height * y);
+
+    // A block on its cell: the letter there turns the block's text colour, as much as the
+    // block shows through its breath.
+    if let Some(c) = &cursor
+        && c.shape == PaintShape::Block
+        && c.at == (c.cell.0 as f32, c.cell.1 as f32)
+        && let Some(cell) = snap
+            .lines
+            .get_mut(c.cell.1)
+            .and_then(|l| l.get_mut(c.cell.0))
+    {
+        cell.fg = mix(cell.fg, c.text, c.alpha);
+    }
+
+    paint_line_backgrounds(&snap.lines, theme, m, origin, window);
+    // Over the cells' backgrounds, under the cursor and the text (M11l's command blocks).
+    under_text(window);
+
+    if let Some(c) = &cursor {
+        for &(x, y, scale, alpha) in &c.trail {
+            c.paint(
+                c.bounds(at_cells((x, y)), m, scale),
+                alpha * c.alpha,
+                window,
+            );
+        }
+        let shape = c.bounds(at_cells(c.at), m, 1.0);
+        if c.glow {
+            window.paint_drop_shadows(
+                shape,
+                Corners::default(),
+                &[BoxShadow {
+                    color: hsla(c.color).opacity(GLOW_ALPHA * c.alpha),
+                    offset: point(px(0.0), px(0.0)),
+                    blur_radius: px(GLOW_BLUR),
+                    spread_radius: px(0.0),
+                    inset: false,
+                }],
+            );
+        }
+        if c.shape == PaintShape::Block {
+            c.paint(shape, c.alpha, window);
+        }
+    }
+
+    paint_line_text(&snap.lines, m, origin, window, cx);
 
     if let Some(c) = &cursor {
         if c.shape != PaintShape::Block {
@@ -2815,6 +3670,48 @@ mod tests {
             b"\x1bb",
         ] {
             assert!(!is_typed_text(not), "{not:?}");
+        }
+    }
+
+    /// Final review #2: a background-service session turns card-capable only on a real mark,
+    /// or at its snapshot (`Unknown`) when its grid already holds a tag; a bash session never.
+    #[test]
+    fn only_a_real_mark_or_a_tag_makes_a_session_card_capable() {
+        use super::integration_after;
+        use crate::command_name::CommandMark;
+        assert_eq!(
+            integration_after(&CommandMark::Unknown, None, || false),
+            None
+        );
+        assert_eq!(
+            integration_after(&CommandMark::Unknown, None, || true),
+            Some(true)
+        );
+        assert_eq!(
+            integration_after(&CommandMark::Prompt, None, || false),
+            Some(true)
+        );
+        assert_eq!(
+            integration_after(&CommandMark::Prompt, Some(false), || true),
+            Some(false),
+            "a spawned shell's answer stands"
+        );
+    }
+
+    /// M11ab: in card view the terminal takes the live box's inside (`card_dims`); otherwise
+    /// today's fit inside the padding.
+    #[test]
+    fn card_mode_resizes_to_the_box() {
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(1000.0), px(700.0)));
+        for split in [false, true] {
+            assert_eq!(
+                super::pane_dims(true, bounds, split, px(8.0), px(17.0)),
+                crate::card_view::card_dims(bounds.size, split, 8.0, 17.0)
+            );
+            assert_eq!(
+                super::pane_dims(false, bounds, split, px(8.0), px(17.0)),
+                GridLayout::fit(inset(bounds, split), px(8.0), px(17.0)).dims
+            );
         }
     }
 

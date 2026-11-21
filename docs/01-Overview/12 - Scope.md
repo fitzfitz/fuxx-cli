@@ -129,8 +129,8 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   fuxx starts the agent itself in its machine-readable mode and draws replies, tool calls, diffs and permission
   prompts as a chat with buttons, each agent's wiring in its own provider file (`src/providers/`; Claude Code and
   Antigravity first). Typing `claude` in a shell stays the classic TUI. **M11ab — Chat-style shell tabs** (Part 2):
-  each command reads like a message with its output underneath; **design first, on its own** (like M11l), not
-  planned. Not in them: one mixed shell-and-agent timeline, agents on remote hosts, other providers than the first
+  each command reads like a message with its output underneath; designed on its own (like M11l) and approved
+  2026-11-20 ([[88 - Milestone 11ab - Chat-Style Shell Tabs]]), built before M11ad and M11am (your order). Not in them: one mixed shell-and-agent timeline, agents on remote hosts, other providers than the first
   two. See [[Proposal - Chat View and Agent Tabs]] and [[M11aa Plan - Agent Tabs]].
 - **Background agents** (M11ad, added 2026-11-16 by you, **right after M11aa**; design first, not planned): agent
   tabs follow the **Keep running after quit** setting — the M10a background service hosts agent processes, the tab
