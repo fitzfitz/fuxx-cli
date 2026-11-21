@@ -58,6 +58,20 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "shell-cards",
+        run: shell_cards_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/terminal_view.rs",
+            "src/card_view.rs",
+            "src/terminal.rs",
+            "src/grid.rs",
+            "src/blocks.rs",
+        ],
+    },
+    Scene {
         name: "command-blocks-alt-screen",
         run: command_blocks_alt_screen_scene,
         themes: Themes::Both,
@@ -1437,6 +1451,41 @@ fn command_blocks_alt_screen_scene() {
         assert!(
             is_colour(&back, dims, g.bar_x, g.mid(4), ui.block_failed),
             "{n}: back on the main screen, the bars are back"
+        );
+    }
+}
+
+/// `shell-cards` (M11ab): `echo hi` with 25 lines of output (folded to its last 12), an empty
+/// prompt (hidden), `false` (exit 1), a stranded `sleep 9`, and the live prompt in its box at
+/// the bottom; the terminal sized to the box.
+fn shell_cards_scene() {
+    let dims = size(px(640.0), px(520.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let n = format!("shell-cards-{slug}");
+        let mut rig = CursorRig::sized(
+            theme,
+            &blocks_text_with(24),
+            dims,
+            false,
+            (false, false, false),
+            |_| (),
+        );
+        let view = rig.view.clone();
+        rig.cx.update(|cx| {
+            view.update(cx, |v, cx| {
+                v.shot_integrated();
+                cx.notify();
+            })
+        });
+        let shot = rig.frame();
+        save_shot("shell-cards", slug, &shot);
+        let (cards, term, (cell_w, line_h)) = rig.read(|v| v.shot_cards());
+        assert!(cards, "{n}: card view");
+        assert_eq!(
+            term,
+            crate::card_view::card_dims(dims, false, cell_w, line_h),
+            "{n}: the terminal is the box's inside"
         );
     }
 }

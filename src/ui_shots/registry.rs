@@ -249,6 +249,7 @@ pub(super) const ORDER: &[&str] = &[
     "cursor-flood",
     "command-blocks",
     "command-blocks-alt-screen",
+    "shell-cards",
     "command-blocks-narrow",
     "command-blocks-rprompt",
     "command-blocks-small-font",

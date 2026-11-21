@@ -932,6 +932,13 @@ impl TerminalCore {
         }
     }
 
+    /// Read the `Term` under its lock, with the clears so far (M11ab: the card view's column and
+    /// the rows it paints, read in one go per frame).
+    pub fn read_term<R>(&self, f: impl FnOnce(&Term<Listener>, u64) -> R) -> R {
+        let shared = self.shared.lock();
+        f(&shared.term, shared.clears.count)
+    }
+
     /// `snapshot` with the command blocks to draw (M11l), under the same lock: the viewport
     /// and 8 rows below it, plus the `chosen` block wherever it is in scrollback.
     pub fn snapshot_with_blocks(&self, chosen: Option<&str>) -> GridSnapshot {
