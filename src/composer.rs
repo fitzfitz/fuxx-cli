@@ -10,20 +10,27 @@
 //! actions, IME and painting over it.
 
 use std::ops::Range;
+use std::time::Instant;
+
+use alacritty_terminal::vte::ansi::CursorShape;
 
 use gpui::{
     App, AvailableSpace, Bounds, ClipboardItem, Context, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, InspectorElementId,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ScrollWheelEvent, ShapedLine, SharedString, Style, TextAlign, TextRun, UTF16Selection,
-    UnderlineStyle, Window, actions, div, fill, point, prelude::*, px, relative, size,
+    ScrollWheelEvent, ShapedLine, SharedString, Style, Subscription, TextAlign, TextRun,
+    UTF16Selection, UnderlineStyle, Window, actions, div, fill, point, prelude::*, px, relative,
+    size,
 };
 
-use crate::appearance::Appearance;
-use crate::cursor_look::PaintShape;
+use crate::appearance::{Appearance, CursorFun};
+use crate::cursor_look::{self, Frames, PaintShape};
+use crate::grid::{CellView, CursorView, GridSnapshot};
 use crate::name_input::{next_char, prev_char, utf8_offset, utf16_offset, word_end, word_start};
+use crate::status::Status;
 use crate::terminal_view::CellMetrics;
 use crate::terminal_view::hsla;
+use crate::terminal_view::{CursorMotion, CursorSettings, breath_redraw, breath_sleep};
 
 /// Rows shown before the box scrolls.
 const MAX_ROWS: usize = 8;
@@ -476,6 +483,13 @@ pub struct Composer {
     last_placeholder: Option<(String, Bounds<Pixels>)>,
     /// Scenes' stand-in for "the window is the key window" (none: ask the window).
     key_window: Option<bool>,
+    /// The caret is the terminal's cursor (the designer; your words: "it doesn't glow and smooth
+    /// like terminal tab"): its glide, trail, sparks and breath, as a pane's.
+    motion: CursorMotion,
+    /// The breathing timer runs.
+    breathing: bool,
+    /// A changed cursor setting redraws the box.
+    _appearance: Subscription,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -515,6 +529,9 @@ impl Composer {
             last_caret: None,
             last_placeholder: None,
             key_window: None,
+            motion: CursorMotion::new(Instant::now()),
+            breathing: false,
+            _appearance: cx.observe_global::<Appearance>(|_, cx| cx.notify()),
         }
     }
 
@@ -573,6 +590,71 @@ impl Composer {
         )
     }
 
+    /// Typed text sends sparks off the caret, as in a pane (Fun = Sparks, motion on).
+    fn spark(&mut self, typed: &str, cx: &App) {
+        let a = cx.global::<Appearance>();
+        if a.cursor_fun != CursorFun::Sparks
+            || !a.animations
+            || cx.reduce_motion()
+            || typed.is_empty()
+            || typed.chars().any(char::is_control)
+        {
+            return;
+        }
+        let (cw, lh) = self.last_cell;
+        self.motion
+            .spark(f32::from(cw), f32::from(lh), Instant::now());
+    }
+
+    /// The breathing timer, as a pane's (`TerminalView::breathe`): it sleeps through the hold,
+    /// then redraws at the breath's frames while the last paint asked for them and the box has
+    /// focus in the key window; it stops when any of that ends or the breath rests.
+    fn breathe(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.breathing {
+            return;
+        }
+        self.breathing = true;
+        let mut wait = breath_sleep(self.motion.changed.elapsed());
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(wait).await;
+                let next = this
+                    .update_in(cx, |this, window, cx| {
+                        let key = this.key_window.unwrap_or_else(|| window.is_window_active());
+                        let go = this.motion.frames == Frames::Breath
+                            && this.focus_handle.is_focused(window)
+                            && key;
+                        let since = this.motion.changed.elapsed();
+                        if !go {
+                            this.breathing = false;
+                            return None;
+                        }
+                        if breath_redraw(since) {
+                            cx.notify();
+                            if cursor_look::breath_rests(since - cursor_look::HOLD) {
+                                this.breathing = false;
+                                return None;
+                            }
+                        }
+                        Some(breath_sleep(since))
+                    })
+                    .ok()
+                    .flatten();
+                match next {
+                    Some(next) => wait = next,
+                    None => break,
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The redraws the caret's last paint asked for.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_frames(&self) -> Frames {
+        self.motion.frames
+    }
+
     /// The cell's width and height as last drawn.
     #[cfg(feature = "ui-shots")]
     pub fn shot_cell(&self) -> (Pixels, Pixels) {
@@ -612,6 +694,7 @@ impl Composer {
     fn step(&mut self, f: impl FnOnce(&mut EditBuffer), cx: &mut Context<Self>) {
         self.marked = None;
         f(&mut self.buf);
+        self.motion.changed = Instant::now();
         self.follow_caret = true;
         cx.notify();
     }
@@ -853,6 +936,8 @@ impl EntityInputHandler for Composer {
         self.buf.replace(range, &new_text);
         self.marked = None;
         self.follow_caret = true;
+        self.motion.changed = Instant::now();
+        self.spark(&new_text, cx);
         if new_text == "@" && self.buf.at_word_start(start) {
             cx.emit(ComposerEvent::AtTyped);
         }
@@ -1141,7 +1226,22 @@ impl Element for ComposerText {
         let (cell_w, line_height) = (m.cell_width, m.line_height);
         let theme = appearance.theme;
         let ui = theme.ui();
-        let setting = appearance.cursor_style;
+        let settings = CursorSettings {
+            setting: appearance.cursor_style,
+            focused: false,
+            key_window: false,
+            motion: appearance.animations && !cx.reduce_motion(),
+            glide: appearance.cursor_glide,
+            glow: appearance.cursor_glow,
+            fun: appearance.cursor_fun,
+            // The box's typing is idle: the theme's cursor, or the idle status colour.
+            color: cursor_look::cursor_color(
+                Status::Idle,
+                appearance.cursor_follows_status,
+                &ui,
+                &theme,
+            ),
+        };
         let (focus_handle, caret, selection, key_window, placeholder) = {
             let input = self.input.read(cx);
             (
@@ -1178,6 +1278,51 @@ impl Element for ComposerText {
             None => bounds.left(),
         };
         let shade = ui.selection;
+        // The caret: the terminal's cursor over the shown rows, as cells from `origin` (the
+        // shape, glide, trail, glow and sparks a pane would draw; "unset" by any program, so
+        // the cursor setting's shape).
+        let origin = point(left, bounds.top());
+        let look = {
+            let text = self.input.read(cx).buf.text();
+            let blank = CellView::blank(&theme);
+            let cells: Vec<Vec<CellView>> = (0..lines.len())
+                .map(|n| {
+                    text[rows[first + n].clone()]
+                        .chars()
+                        .map(|ch| CellView { ch, ..blank })
+                        .collect()
+                })
+                .collect();
+            let cols = cells.iter().map(Vec::len).max().unwrap_or(0) + 1;
+            let cursor = caret_shown.map(|n| CursorView {
+                row: n,
+                col: text[rows[caret_row].start..caret].chars().count(),
+                shape: CursorShape::HollowBlock,
+                blinking: true,
+            });
+            let snap = GridSnapshot {
+                cols: cols.max(wrap_columns(bounds.size.width, cell_w) + 1),
+                rows: lines.len(),
+                lines: cells,
+                cursor,
+                alt_screen: false,
+                // A scroll of the box is another screen: the caret jumps, it doesn't glide.
+                display_offset: first,
+                clears: 0,
+                blocks: Vec::new(),
+            };
+            let live = CursorSettings {
+                focused: focus_handle.is_focused(window),
+                key_window,
+                ..settings
+            };
+            self.input.update(cx, |input, _| {
+                live.look(&snap, &theme, &mut input.motion, Instant::now())
+            })
+        };
+        if let Some(c) = &look {
+            crate::terminal_view::paint_cursor_under(c, origin, &m, window);
+        }
         for (n, line) in lines.iter().enumerate() {
             let range = &rows[first + n];
             let top = bounds.top() + line_height * n as f32;
@@ -1242,48 +1387,50 @@ impl Element for ComposerText {
                 ));
             }
         }
-        // The caret: the terminal's cursor (the designer): the setting's shape in the theme's
-        // cursor colour, one cell; hollow without focus in the key window; a block's letter
-        // drawn again in the cursor's text colour.
+        // A block on its cell: the letter under it in the cursor's text colour, as much as the
+        // block shows through its breath; then the other shapes and the sparks over the text.
         let mut drawn_caret = None;
-        if let Some(n) = caret_shown {
-            let live = key_window && focus_handle.is_focused(window);
-            let shape = crate::cursor_look::box_caret(setting, live);
-            let col = caret - rows[caret_row].start;
-            let x = left + lines[n].x_for_index(col);
-            let y = bounds.top() + line_height * n as f32;
-            let (dx, dy, w, h) =
-                crate::cursor_look::caret_rect(shape, f32::from(cell_w), f32::from(line_height));
-            let at = Bounds::new(point(x + px(dx), y + px(dy)), size(px(w), px(h)));
-            let color = hsla(theme.cursor.unwrap_or(theme.foreground));
-            match shape {
-                PaintShape::Hollow => {
-                    window.paint_quad(gpui::outline(at, color, gpui::BorderStyle::Solid))
-                }
-                _ => window.paint_quad(fill(at, color)),
-            }
+        if let Some(c) = &look {
+            let (col, n) = c.cell;
             let text = self.input.read(cx).buf.text();
-            let under = &text[caret..crate::name_input::next_char(text, caret)];
-            if shape == PaintShape::Block && !under.trim().is_empty() {
+            let row = &rows[first + n];
+            let under = text[row.clone()].chars().nth(col);
+            if c.shape == PaintShape::Block
+                && c.at == (col as f32, n as f32)
+                && let Some(ch) = under.filter(|ch| !ch.is_whitespace())
+            {
+                let ink = window.text_style().color;
                 let run = TextRun {
-                    len: under.len(),
+                    len: ch.len_utf8(),
                     font: m.font.clone(),
-                    color: hsla(theme.cursor_text.unwrap_or(theme.background)),
+                    color: ink.blend(hsla(c.text).opacity(c.alpha)),
                     background_color: None,
                     underline: None,
                     strikethrough: None,
                 };
                 let shaped = window.text_system().shape_line(
-                    under.to_string().into(),
+                    ch.to_string().into(),
                     m.font_size,
                     &[run],
                     None,
                 );
+                let at = point(
+                    origin.x + cell_w * col as f32,
+                    origin.y + line_height * n as f32,
+                );
                 shaped
-                    .paint(point(x, y), line_height, TextAlign::Left, None, window, cx)
+                    .paint(at, line_height, TextAlign::Left, None, window, cx)
                     .ok();
             }
-            drawn_caret = Some((shape, at));
+            crate::terminal_view::paint_cursor_over(c, origin, &m, window);
+            let at = point(origin.x + cell_w * c.at.0, origin.y + line_height * c.at.1);
+            drawn_caret = Some((c.shape, c.bounds(at, &m, 1.0)));
+        }
+        let frames = self.input.read(cx).motion.frames;
+        match frames {
+            Frames::EveryFrame => window.request_animation_frame(),
+            Frames::Breath => self.input.update(cx, |input, cx| input.breathe(window, cx)),
+            Frames::None => {}
         }
         let lines = std::mem::take(&mut shaped.lines);
         self.input.update(cx, |input, _| {

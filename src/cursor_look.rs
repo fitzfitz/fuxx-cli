@@ -29,31 +29,6 @@ pub enum PaintShape {
 /// A bar's and an underline's thickness, pixels.
 pub const BAR: f32 = 2.0;
 
-/// The agent box's caret (the designer: the terminal's cursor as the shell box shows it with
-/// zsh's defaults): the setting's shape while the box has focus in the key window, a hollow
-/// cell otherwise. No program chooses a shape there, and it doesn't breathe.
-pub fn box_caret(setting: CursorShapeSetting, live: bool) -> PaintShape {
-    if !live {
-        return PaintShape::Hollow;
-    }
-    match setting {
-        CursorShapeSetting::Bar => PaintShape::Bar,
-        CursorShapeSetting::Underline => PaintShape::Underline,
-        CursorShapeSetting::Hollow => PaintShape::Hollow,
-        CursorShapeSetting::Block => PaintShape::Block,
-    }
-}
-
-/// `shape`'s rectangle in a cell `cw` wide and `lh` tall, `(x, y, w, h)` from its top-left: a
-/// `BAR` bar at the left, a `BAR` underline at the bottom, the whole cell otherwise.
-pub fn caret_rect(shape: PaintShape, cw: f32, lh: f32) -> (f32, f32, f32, f32) {
-    match shape {
-        PaintShape::Bar => (0.0, 0.0, BAR, lh),
-        PaintShape::Underline => (0.0, lh - BAR, cw, BAR),
-        _ => (0.0, 0.0, cw, lh),
-    }
-}
-
 /// A shape to paint and whether it breathes (the blinking flag of the program's choice, or
 /// true for the user's setting; the Breathing glow setting still has the last word).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,35 +339,6 @@ pub fn needs_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The agent box's caret is the terminal's cursor as the shell box shows it with zsh's
-    /// defaults: the setting's shape while focused, a hollow cell when not (the designer).
-    #[test]
-    fn the_agent_caret_takes_the_setting_and_goes_hollow_unfocused() {
-        for (setting, shape) in [
-            (CursorShapeSetting::Bar, PaintShape::Bar),
-            (CursorShapeSetting::Underline, PaintShape::Underline),
-            (CursorShapeSetting::Hollow, PaintShape::Hollow),
-            (CursorShapeSetting::Block, PaintShape::Block),
-        ] {
-            assert_eq!(box_caret(setting, true), shape, "{setting:?}");
-            assert_eq!(box_caret(setting, false), PaintShape::Hollow, "{setting:?}");
-        }
-    }
-
-    /// A cell's cursor rectangle, `(x, y, w, h)` from the cell's top-left: a 2 px bar at the
-    /// left, a 2 px underline at the bottom, the whole cell for a block or hollow.
-    #[test]
-    fn a_cursor_shape_fills_its_part_of_the_cell() {
-        let (cw, lh) = (8.0, 18.0);
-        assert_eq!(caret_rect(PaintShape::Bar, cw, lh), (0.0, 0.0, BAR, lh));
-        assert_eq!(
-            caret_rect(PaintShape::Underline, cw, lh),
-            (0.0, lh - BAR, cw, BAR)
-        );
-        assert_eq!(caret_rect(PaintShape::Block, cw, lh), (0.0, 0.0, cw, lh));
-        assert_eq!(caret_rect(PaintShape::Hollow, cw, lh), (0.0, 0.0, cw, lh));
-    }
 
     fn style(shape: CursorShape, blinking: bool) -> CursorStyle {
         CursorStyle { shape, blinking }

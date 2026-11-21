@@ -910,25 +910,8 @@ impl TerminalView {
         let Some(layout) = self.layout.get() else {
             return;
         };
-        let mut m = self.motion.borrow_mut();
-        let Some(((x, y), shape)) = m.drawn else {
-            return;
-        };
         let (cw, lh) = (f32::from(layout.cell_width), f32::from(layout.line_height));
-        let ox = x * cw
-            + match shape {
-                PaintShape::Bar => BAR / 2.0,
-                _ => cw / 2.0,
-            };
-        let oy = y * lh
-            + match shape {
-                PaintShape::Underline => lh - BAR / 2.0,
-                _ => lh / 2.0,
-            };
-        m.seed += 1;
-        let seed = m.seed;
-        m.sparks
-            .extend(cursor_look::sparks_for_key(seed, (ox, oy), Instant::now()));
+        self.motion.borrow_mut().spark(cw, lh, Instant::now());
     }
 
     /// When the program first printed (`TerminalCore::first_output`).
@@ -2715,23 +2698,23 @@ pub fn hsla(c: Rgb) -> Hsla {
 
 /// What the canvas knows of the cursor before it paints (read in `render`).
 #[derive(Clone, Copy)]
-struct CursorSettings {
-    setting: CursorShapeSetting,
-    focused: bool,
-    key_window: bool,
+pub(crate) struct CursorSettings {
+    pub(crate) setting: CursorShapeSetting,
+    pub(crate) focused: bool,
+    pub(crate) key_window: bool,
     /// The `animations` setting on and macOS Reduce motion off.
-    motion: bool,
-    glide: bool,
-    glow: bool,
-    fun: CursorFun,
+    pub(crate) motion: bool,
+    pub(crate) glide: bool,
+    pub(crate) glow: bool,
+    pub(crate) fun: CursorFun,
     /// `cursor_look::cursor_color` for the session's status.
-    color: Rgb,
+    pub(crate) color: Rgb,
 }
 
 impl CursorSettings {
     /// The cursor to paint over `snap` at `now`, with `motion` brought up to date (where it
     /// is, its glide, its sparks, the frames it needs next). `None` when there's no cursor.
-    fn look(
+    pub(crate) fn look(
         &self,
         snap: &GridSnapshot,
         theme: &Theme,
@@ -2824,20 +2807,20 @@ impl CursorSettings {
 }
 
 /// The cursor as `paint_grid` draws it.
-struct CursorLook {
+pub(crate) struct CursorLook {
     /// The cell it is on (a block's letter there takes `text`).
-    cell: (usize, usize),
+    pub(crate) cell: (usize, usize),
     /// How many cells wide it is: 2 on a wide (CJK) character (`cursor_cells`).
     cells: usize,
     /// Where it is drawn, in cells (fractional mid-glide).
-    at: (f32, f32),
+    pub(crate) at: (f32, f32),
     /// Never `Hidden`.
-    shape: PaintShape,
+    pub(crate) shape: PaintShape,
     color: Rgb,
     /// The letter's colour under a full block.
-    text: Rgb,
+    pub(crate) text: Rgb,
     /// The breath: the cursor's opacity.
-    alpha: f32,
+    pub(crate) alpha: f32,
     glow: bool,
     /// `(column, row, scale, alpha)` copies under the cursor (`cursor_look::trail`).
     trail: Vec<(f32, f32, f32, f32)>,
@@ -2866,7 +2849,12 @@ impl CursorLook {
     /// The shape's box with its cell's top-left at `at`, scaled about its middle by `scale`
     /// (the trail's copies): a 2 px bar at the left edge, a 2 px underline at the bottom, the
     /// whole cell for a block or hollow (both halves of a wide character).
-    fn bounds(&self, at: gpui::Point<Pixels>, m: &CellMetrics, scale: f32) -> Bounds<Pixels> {
+    pub(crate) fn bounds(
+        &self,
+        at: gpui::Point<Pixels>,
+        m: &CellMetrics,
+        scale: f32,
+    ) -> Bounds<Pixels> {
         let (cw, lh) = (m.cell_width * self.cells as f32, m.line_height);
         match self.shape {
             PaintShape::Bar => Bounds::new(
@@ -2950,14 +2938,14 @@ fn cursor_cells(line: &[grid::CellView], col: usize) -> usize {
 /// Whether a breathing tick redraws: not while the breath holds at full strength after a
 /// change (`cursor_look::HOLD`; the cursor looks the same), so steady output or typing costs
 /// no idle repaints.
-fn breath_redraw(since_change: Duration) -> bool {
+pub(crate) fn breath_redraw(since_change: Duration) -> bool {
     since_change >= cursor_look::HOLD
 }
 
 /// How long the breathing timer sleeps, `since_change` after the cursor last changed: to the
 /// end of the hold while it lasts (it draws nothing new before then), else to the breath's next
 /// frame (`cursor_look::breath_wait`, on the breath's clock, which starts as the hold ends).
-fn breath_sleep(since_change: Duration) -> Duration {
+pub(crate) fn breath_sleep(since_change: Duration) -> Duration {
     match cursor_look::HOLD.checked_sub(since_change) {
         Some(left) if !left.is_zero() => left,
         _ => cursor_look::breath_wait(since_change - cursor_look::HOLD),
@@ -2967,20 +2955,20 @@ fn breath_sleep(since_change: Duration) -> Duration {
 /// The cursor's motion between paints (M11f): the cell and screen it was last painted on, its
 /// glide, when it last changed (the breath holds after), the sparks in flight and how many
 /// keystrokes sparked (each burst's seed). Shared by the view and its canvas.
-struct CursorMotion {
+pub(crate) struct CursorMotion {
     /// The cell it was last painted on; `None` while hidden.
     cell: Option<(usize, usize)>,
     /// The screen of that cell.
     screen: Screen,
     glide: Option<Glide>,
     /// When the cursor last moved, the program wrote or you typed.
-    changed: Instant,
+    pub(crate) changed: Instant,
     sparks: Vec<Spark>,
     seed: u64,
     /// Where it was last drawn (cells) and its shape, while live: where sparks start.
     drawn: Option<((f32, f32), PaintShape)>,
     /// The redraws its last paint asked for.
-    frames: Frames,
+    pub(crate) frames: Frames,
     /// Whether the last paint was focused in the key window.
     was_live: bool,
     /// Whether the last paint's glow could breathe (glow on, a blinking cursor, motion on).
@@ -2988,7 +2976,7 @@ struct CursorMotion {
 }
 
 impl CursorMotion {
-    fn new(now: Instant) -> Self {
+    pub(crate) fn new(now: Instant) -> Self {
         Self {
             cell: None,
             screen: Screen::default(),
@@ -3001,6 +2989,28 @@ impl CursorMotion {
             was_live: false,
             was_glowing: false,
         }
+    }
+
+    /// A burst of sparks off where the cursor was last drawn (cells `cw` by `lh`), for a
+    /// typed key; nothing while it isn't drawn.
+    pub(crate) fn spark(&mut self, cw: f32, lh: f32, now: Instant) {
+        let Some(((x, y), shape)) = self.drawn else {
+            return;
+        };
+        let ox = x * cw
+            + match shape {
+                PaintShape::Bar => BAR / 2.0,
+                _ => cw / 2.0,
+            };
+        let oy = y * lh
+            + match shape {
+                PaintShape::Underline => lh - BAR / 2.0,
+                _ => lh / 2.0,
+            };
+        self.seed += 1;
+        let seed = self.seed;
+        self.sparks
+            .extend(cursor_look::sparks_for_key(seed, (ox, oy), now));
     }
 
     /// Focus or the key window came back: the cursor returns solid, not mid-breath.
@@ -3727,9 +3737,6 @@ fn paint_grid(
         ..Corners::default()
     }));
 
-    let at_cells =
-        |(x, y): (f32, f32)| point(origin.x + m.cell_width * x, origin.y + m.line_height * y);
-
     // A block on its cell: the letter there turns the block's text colour, as much as the
     // block shows through its breath.
     if let Some(c) = &cursor
@@ -3748,48 +3755,72 @@ fn paint_grid(
     under_text(window);
 
     if let Some(c) = &cursor {
-        for &(x, y, scale, alpha) in &c.trail {
-            c.paint(
-                c.bounds(at_cells((x, y)), m, scale),
-                alpha * c.alpha,
-                window,
-            );
-        }
-        let shape = c.bounds(at_cells(c.at), m, 1.0);
-        if c.glow {
-            window.paint_drop_shadows(
-                shape,
-                Corners::default(),
-                &[BoxShadow {
-                    color: hsla(c.color).opacity(GLOW_ALPHA * c.alpha),
-                    offset: point(px(0.0), px(0.0)),
-                    blur_radius: px(GLOW_BLUR),
-                    spread_radius: px(0.0),
-                    inset: false,
-                }],
-            );
-        }
-        if c.shape == PaintShape::Block {
-            c.paint(shape, c.alpha, window);
-        }
+        paint_cursor_under(c, origin, m, window);
     }
 
     paint_line_text(&snap.lines, m, origin, window, cx);
 
     if let Some(c) = &cursor {
-        if c.shape != PaintShape::Block {
-            c.paint(c.bounds(at_cells(c.at), m, 1.0), c.alpha, window);
-        }
-        let dot = px(SPARK);
-        for &((x, y), alpha) in &c.sparks {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(origin.x + px(x) - dot / 2.0, origin.y + px(y) - dot / 2.0),
-                    size(dot, dot),
-                ),
-                hsla(c.color).opacity(alpha),
-            ));
-        }
+        paint_cursor_over(c, origin, m, window);
+    }
+}
+
+/// The cursor's parts under the text, on cells from `origin`: its trail, its glow and a block.
+pub(crate) fn paint_cursor_under(
+    c: &CursorLook,
+    origin: gpui::Point<Pixels>,
+    m: &CellMetrics,
+    window: &mut Window,
+) {
+    let at_cells =
+        |(x, y): (f32, f32)| point(origin.x + m.cell_width * x, origin.y + m.line_height * y);
+    for &(x, y, scale, alpha) in &c.trail {
+        c.paint(
+            c.bounds(at_cells((x, y)), m, scale),
+            alpha * c.alpha,
+            window,
+        );
+    }
+    let shape = c.bounds(at_cells(c.at), m, 1.0);
+    if c.glow {
+        window.paint_drop_shadows(
+            shape,
+            Corners::default(),
+            &[BoxShadow {
+                color: hsla(c.color).opacity(GLOW_ALPHA * c.alpha),
+                offset: point(px(0.0), px(0.0)),
+                blur_radius: px(GLOW_BLUR),
+                spread_radius: px(0.0),
+                inset: false,
+            }],
+        );
+    }
+    if c.shape == PaintShape::Block {
+        c.paint(shape, c.alpha, window);
+    }
+}
+
+/// The cursor's parts over the text: any shape but a block, and its sparks.
+pub(crate) fn paint_cursor_over(
+    c: &CursorLook,
+    origin: gpui::Point<Pixels>,
+    m: &CellMetrics,
+    window: &mut Window,
+) {
+    let at_cells =
+        |(x, y): (f32, f32)| point(origin.x + m.cell_width * x, origin.y + m.line_height * y);
+    if c.shape != PaintShape::Block {
+        c.paint(c.bounds(at_cells(c.at), m, 1.0), c.alpha, window);
+    }
+    let dot = px(SPARK);
+    for &((x, y), alpha) in &c.sparks {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(origin.x + px(x) - dot / 2.0, origin.y + px(y) - dot / 2.0),
+                size(dot, dot),
+            ),
+            hsla(c.color).opacity(alpha),
+        ));
     }
 }
 

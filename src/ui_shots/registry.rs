@@ -297,6 +297,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-box-mode-waits",
     "agent-box-shell-keys",
     "agent-box-terminal-text",
+    "agent-box-send-notch",
     "agent-box-change-restart",
     "agent-box-restart-keeps-queued-text",
     "agent-box-empty",

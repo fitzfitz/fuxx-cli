@@ -14,7 +14,7 @@ use gpui::{
 };
 
 use crate::agent_catalog::{Catalogs, Lookup};
-use crate::agent_tab::{AgentTab, AgentTabEvent, Colors, button, chip};
+use crate::agent_tab::{AgentTab, AgentTabEvent, Colors, chip};
 use crate::appearance::Appearance;
 use crate::folder_picker::{
     FolderChecks, KnownFolders, NEW_PROJECT, NO_PROJECT, PickerRow, THIS_COMPUTER,
@@ -47,7 +47,18 @@ const BOX_GAP: f32 = 10.0;
 const CHIP_H: f32 = 28.0;
 const CHIP_GAP: f32 = 6.0;
 /// The box's controls' room from its sides and bottom (the designer's details).
-const CONTROL_INSET: f32 = 8.0;
+const CONTROL_INSET: f32 = 3.0;
+/// The send circle in the box's bottom-right notch (the designer's details): its size, its
+/// inset from the outer box's inside edges, the notch's square (the circle, 3 around it), the
+/// joints' radius, the outer box's bottom corners.
+const SEND: f32 = 34.0;
+const SEND_INSET: f32 = 3.0;
+const NOTCH: f32 = 40.0;
+const JOINT: f32 = 8.0;
+/// Round the circle with the same centre (your words: "add more radius on the right bottom chat
+/// box so the radius rounded and the button circle match"): its radius, the 3 around it, the
+/// outer box's 1 px edge.
+const OUTER_BOTTOM_RADIUS: f32 = SEND / 2.0 + SEND_INSET + crate::card_view::EDGE;
 /// The `+` and send buttons' side.
 const BUTTON: f32 = 28.0;
 /// A menu: its width, and the gap between it and the chip it opens up from.
@@ -97,7 +108,7 @@ const MODE_MENU_WIDTH: f32 = 300.0;
 
 /// The warning dot on the model chip.
 const LIMIT_DOT: f32 = 6.0;
-const SEND: &str = "\u{27a4}";
+const SEND_GLYPH: &str = "\u{27a4}";
 
 /// Where each part of the box was laid out, by name (scenes read it: `shot_part`).
 #[cfg(feature = "ui-shots")]
@@ -855,7 +866,7 @@ impl AgentTab {
             branch: self.branch.as_deref().map(branch_chip_text),
             model: model.unwrap_or_default(),
             mode,
-            send: self.stop_label().unwrap_or(SEND).to_string(),
+            send: self.stop_label().unwrap_or(SEND_GLYPH).to_string(),
             usage: usage_line(
                 self.conversation.cost_usd(),
                 self.conversation.context_pct(),
@@ -1087,41 +1098,63 @@ impl AgentTab {
                     d.child(self.menu_frame(Some(self.mode_menu(cx)), None, MODE_MENU_WIDTH, cx))
                 })
         });
-        // While the box is empty, send is a quiet control (the designer's details).
+        // Send (or stop) in the box's bottom-right notch, a 34 circle (the designer's details):
+        // ready, the accent; empty, a piece of the box (no hover); while the agent works, stop's
+        // square (Stopping…: quiet and not pressable; Force stop: in the waiting colour).
         let empty = self.composer.read(cx).text().trim().is_empty();
+        let circle = |id: &'static str| {
+            div()
+                .id(id)
+                .absolute()
+                // (Placed from the outer box's outside: its 1 px edge, then 3.)
+                .right(px(SEND_INSET + crate::card_view::EDGE))
+                .bottom(px(SEND_INSET + crate::card_view::EDGE))
+                .size(px(SEND))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+        };
         let send = match self.stop_label() {
-            // (A wrapper is probed: a probe inside an edge would sit 1 px in.)
-            Some(label) => self
-                .marked(
-                    "send",
-                    div().flex_none().child(
-                        button("agent-stop", label, false, c)
-                            .text_size(px(text::META))
-                            .on_click(cx.listener(|this, _, _, cx| this.stop_pressed(cx))),
-                    ),
-                )
-                .into_any_element(),
-            None => self
-                .marked(
-                    "send",
-                    div()
-                        .id("agent-send")
-                        .flex_none()
-                        .size(px(BUTTON))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .bg(hsla(if empty { c.control } else { c.accent }))
-                        .cursor_pointer()
-                        .child(crate::icons::icon(
-                            crate::icons::Icon::ArrowUp,
-                            px(16.),
-                            hsla(if empty { c.dim } else { c.on_accent }),
-                        )),
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.send_pressed(cx)))
-                .into_any_element(),
+            Some(label) => {
+                let (square, pressable) = match label {
+                    "Stopping\u{2026}" => (c.dim, false),
+                    "Force stop" => (c.ask_edge, true),
+                    _ => (c.text, true),
+                };
+                let tip =
+                    SharedString::from(label.replace("  esc", " (esc)").replace("\u{25a0} ", ""));
+                let control = c.control;
+                self.marked("send", circle("agent-stop"))
+                    .bg(hsla(c.box_fill))
+                    .child(div().size(px(12.)).rounded(px(2.)).bg(hsla(square)))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| crate::sidebar_toggle::Tip(tip.clone())).into()
+                    })
+                    .when(pressable, |d| {
+                        d.cursor_pointer()
+                            .hover(move |s| s.bg(hsla(control)))
+                            .on_click(cx.listener(|this, _, _, cx| this.stop_pressed(cx)))
+                    })
+                    .into_any_element()
+            }
+            None => {
+                // The inner box's colour in every state (your words: "button background make it
+                // same as inner box background color"); ready, its arrow in the accent.
+                let hover = c.control;
+                self.marked("send", circle("agent-send"))
+                    .bg(hsla(c.box_fill))
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::ArrowUp,
+                        px(18.),
+                        hsla(if empty { c.dim } else { c.send_arrow }),
+                    ))
+                    .when(!empty, |d| {
+                        d.cursor_pointer().hover(move |s| s.bg(hsla(hover)))
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.send_pressed(cx)))
+                    .into_any_element()
+            }
         };
         let drop_fill = cx.global::<Appearance>().theme.ui().drop_card;
         let the_box = self.marked(
@@ -1136,7 +1169,9 @@ impl AgentTab {
                 .px(px(CONTROL_INSET))
                 .pt(px(BOX_Y))
                 .pb(px(CONTROL_INSET))
-                .rounded(px(12.))
+                // Its bottom-right cut by the send notch; the bottom-left 3 round `+`.
+                .rounded_t(px(12.))
+                .rounded_bl(px(BUTTON / 2. + CONTROL_INSET))
                 // A press on the box's own room (not a chip or button: theirs act as well)
                 // puts the keyboard in its text, as the framed text box did.
                 .on_mouse_down(
@@ -1145,6 +1180,8 @@ impl AgentTab {
                         this.composer.read(cx).focus_handle(cx).focus(window, cx)
                     }),
                 )
+                .relative()
+                .children(notch(c))
                 .bg(hsla(c.box_fill))
                 // Files dropped on it become chips (tinted while one is over it).
                 .drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hsla(drop_fill)))
@@ -1186,8 +1223,8 @@ impl AgentTab {
                         .child(model)
                         .child(div().flex_1())
                         .children(mode)
-                        .child(div().w(px(8.)))
-                        .child(send),
+                        // The mode pill ends 8 before the notch's edge.
+                        .child(div().flex_none().w(px(NOTCH + 8. - 2. * CONTROL_INSET))),
                 ),
         );
         div()
@@ -1200,7 +1237,7 @@ impl AgentTab {
             .flex_col()
             .children(self.at_list(c, mono.clone(), cx))
             .children(self.slash_list(c, mono, cx))
-            .child(self.folder_tab(folder, branch, the_box, c))
+            .child(self.folder_tab(folder, branch, the_box, send, c))
             .into_any_element()
     }
 
@@ -1213,11 +1250,13 @@ impl AgentTab {
         folder: impl IntoElement,
         branch: Option<impl IntoElement>,
         the_box: impl IntoElement,
+        send: impl IntoElement,
         c: &Colors,
     ) -> Div {
         use crate::card_view::{EDGE, OUTER_INSET, PILL_GAP, TAB_PAD, TAB_RISE};
         let (outer, edge) = (hsla(c.outer), hsla(c.outer_edge));
         let body = div()
+            .relative()
             .w_full()
             .mt(px(TAB_RISE))
             .p(px(OUTER_INSET))
@@ -1225,8 +1264,10 @@ impl AgentTab {
             .border_1()
             .border_color(edge)
             .rounded_tr(px(15.))
-            .rounded_b(px(15.))
-            .child(the_box);
+            .rounded_b(px(OUTER_BOTTOM_RADIUS))
+            .child(the_box)
+            .child(send);
+        let body = self.marked("outer", body);
         // The tab: no bottom edge, down over the body's top line (its fill hides it there).
         let tab = div()
             .flex()
@@ -1766,6 +1807,42 @@ impl AgentTab {
 }
 
 /// A chip on the box's bottom row: quiet text, no edge.
+/// The send notch (the designer's details) cut from the inner box's bottom-right, as its first
+/// children (over its fill, under its text and controls): a square of the outer colour, out to
+/// the outer box's inside corner, whose rounded top-left carves the concave curve round the
+/// send circle (radius `NOTCH / 2` about the circle's centre); and where the inner box's straight
+/// edges meet it, round joints (an outer-coloured corner under an inner-coloured quad).
+fn notch(c: &Colors) -> Vec<Div> {
+    use crate::card_view::{EDGE, OUTER_INSET};
+    let (outer, inner) = (hsla(c.outer), hsla(c.box_fill));
+    // Offsets from the inner box's edges; the notch's from the outer box's inside edges.
+    let at = |right: f32, bottom: f32, side: f32| {
+        div()
+            .absolute()
+            .right(px(right - OUTER_INSET))
+            .bottom(px(bottom - OUTER_INSET))
+            .size(px(side))
+    };
+    let joint = |right: f32, bottom: f32| {
+        [
+            at(right, bottom, JOINT).bg(outer),
+            at(right, bottom, 2. * JOINT)
+                .bg(inner)
+                .rounded_br(px(JOINT)),
+        ]
+    };
+    let mut pieces = vec![
+        at(0., 0., NOTCH)
+            .bg(outer)
+            .rounded_tl(px(NOTCH / 2.))
+            // Inside the outer box's 1 px edge.
+            .rounded_br(px(OUTER_BOTTOM_RADIUS - EDGE)),
+    ];
+    pieces.extend(joint(OUTER_INSET, NOTCH));
+    pieces.extend(joint(NOTCH, OUTER_INSET));
+    pieces
+}
+
 /// A control pill in the box's bottom row (the designer's details): `CHIP_H` tall, round, on
 /// `control`; an optional icon (14, then 6), its words at 13 in `dim`, then a chevron-down (12)
 /// 4 after them.
