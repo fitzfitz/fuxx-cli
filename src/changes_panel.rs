@@ -85,15 +85,17 @@ const CONFIRM_WIDTH: f32 = 280.0;
 /// the tooltip's gap above its button and how long the pointer rests before it shows.
 const BAR_PAD_X: f32 = 16.0;
 const BAR_PAD_Y: f32 = 14.0;
-// The bottom bar at the Git tab's sizes (your words, 2026-11-22: "also git bottom bar").
-const BAR_BUTTON: f32 = 28.0;
-const BAR_BUTTON_RADIUS: f32 = 9.0;
+// The bottom bar at the Git tab's sizes (your words, 2026-11-22: "also git bottom bar"), its
+// buttons the header's icon buttons: no edge, a fill under the pointer ("icon button shouldn't
+// be bordered and gap should be smaller").
+const BAR_BUTTON: f32 = crate::right_sidebar::HEADER_BUTTON;
+const BAR_BUTTON_RADIUS: f32 = 6.0;
 /// The branch glyph's box and the line under the name (M11al §6.6).
 const BAR_BRANCH_ICON: f32 = 12.0;
-const BAR_LINE: f32 = GIT_NAME;
-/// The bar's icons: 15 pt (part 6, as the mockup).
-const BAR_ICON: f32 = 12.0;
-const BAR_GAP: f32 = 6.0;
+const BAR_LINE: f32 = GIT_SMALL;
+/// The bar's icons: the header buttons' (15 pt).
+const BAR_ICON: f32 = crate::right_sidebar::HEADER_ICON;
+const BAR_GAP: f32 = 2.0;
 const TIP_GAP: f32 = 6.0;
 const TIP_DELAY: Duration = Duration::from_millis(400);
 /// The branch button's side padding (its hover fill); the line under it is set in as much.
@@ -1704,7 +1706,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// One bar button: `action`'s glyph in a `card_border` edge, dimmed and dead
+    /// One bar button: `action`'s glyph (as a header button: no edge), dimmed and dead
     /// while an action runs; its tooltip above it once the pointer has rested, lined up with
     /// its right edge (so the rightmost one never runs past the panel).
     fn bar_button(
@@ -1724,8 +1726,7 @@ impl Workspace {
             Action::Push(_) => Glyph::Push,
             Action::Publish => Glyph::Publish,
         };
-        // The icon in a `card_border` edge (M11al §6.6, as the mockup: both `text_dim`); the
-        // hover fill under the pointer.
+        // The icon `text_dim`, no edge; the header buttons' fill under the pointer.
         let ink = ui.text_dim;
         let shown = enabled && changes.hover == Some((which, true));
         let tip_text: SharedString = branch_sync::tip(action, branch).into();
@@ -1742,12 +1743,10 @@ impl Workspace {
             .justify_center()
             .size(px(BAR_BUTTON))
             .rounded(px(BAR_BUTTON_RADIUS))
-            .border_1()
-            .border_color(hsla(ui.card_border))
             .when(!enabled, |d| d.opacity(0.4))
             .when(enabled, |d| {
                 d.cursor_pointer()
-                    .hover(move |s| s.bg(hsla(ui.side_hover)))
+                    .hover(move |s| s.bg(hsla(ui.side_tab_hover)))
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                         this.bar_hover(which, *hovered, cx)
                     }))

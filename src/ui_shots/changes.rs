@@ -856,7 +856,7 @@ fn changes_bar_scenes() {
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
-        for (state, sync, busy, error, tip, accent) in states.clone() {
+        for (state, sync, busy, error, tip, _two_buttons) in states.clone() {
             let n = format!("changes-bar-{state}-{slug}");
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = {
@@ -930,16 +930,13 @@ fn changes_bar_scenes() {
                 .find(|&y| probe(y, ui.card_border))
                 .expect("the bar's top line");
             assert!(
-                bar_bottom - bar_top >= 63.0 - 1.0,
-                "{n}: the bar is at least 2 x 14 + 34 pt tall plus its line: {bar_top}"
+                bar_bottom - bar_top >= 2.0 * 14.0 + crate::right_sidebar::HEADER_BUTTON,
+                "{n}: the bar is at least 2 x 14 pt and a button tall: {bar_top}"
             );
-            // M11al §6.6: the buttons are 34 pt squares in a `card_border` edge, the icons
-            // `text_dim` (no accent fill any more); the one action's button is the second.
-            // Count the edges along the bar's middle: two a button, `BAR_BUTTON` apart (34, less
-            // the line's own width). The icon set's thin strokes (2026-11-20) pass through
-            // `card_border`'s shade where they cross the line, so only runs with a partner a
-            // button's width on count as edges. (Dimmed while it works: the edge blends with the
-            // fill, so it isn't counted then.)
+            // The buttons are the header's icon buttons (your words, 2026-11-22: "icon button
+            // shouldn't be bordered"): no `card_border` edge pairs a button's width apart along
+            // the bar's middle. (The icon set's thin strokes can pass through `card_border`'s
+            // shade, so only a pair a button's width apart would be an edge.)
             let mid = (bar_top + bar_bottom) / 2.0;
             let mut starts = vec![];
             let mut inside = false;
@@ -951,21 +948,12 @@ fn changes_bar_scenes() {
                 }
                 inside = on;
             }
-            let buttons: Vec<(f32, f32)> = starts
-                .iter()
-                .filter_map(|&a| {
-                    // 28 pt buttons since 2026-11-22 (the Git tab's sizes).
-                    let b = starts.iter().find(|&&b| (b - a - 27.0).abs() <= 1.0)?;
-                    Some((a, *b))
-                })
-                .collect();
-            if busy.is_none() {
-                assert_eq!(
-                    buttons.len(),
-                    if accent { 2 } else { 1 },
-                    "{n}: the buttons' edges, 28 pt apart ({starts:?})"
-                );
-            }
+            let edged = starts.iter().any(|&a| {
+                starts
+                    .iter()
+                    .any(|&b| (b - a - (crate::right_sidebar::HEADER_BUTTON - 1.0)).abs() <= 1.0)
+            });
+            assert!(!edged, "{n}: the buttons have no edge ({starts:?})");
             assert!(
                 !has(
                     sidebar_right - 100.0,
