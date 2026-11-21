@@ -30,6 +30,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Chore: the right panel redesigned, merged and pushed
+
+- **What:** the lead designer's redesign of the right panel: icon tabs like the pane tabs (no track), a plain header
+  row, a quiet filter, one divider, headers 36. Shown to you as before/after pairs on a local page, then merged to
+  master and pushed on your word ("merge it and push"). Note 88.
+- **Checks:** 2297 tests; clippy at the baseline; ui-shots 254 passed, 5 known failures.
+
 ### 2026-11-21 — Chore: no git tab outside a repo
 
 - **What:** the right sidebar's strip hides the Changes (git) tab once the followed folder is known not to be in a
