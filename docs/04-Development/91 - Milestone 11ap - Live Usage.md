@@ -105,3 +105,15 @@ ranked since 2026-11-17. Tests: `rolled_up_picks_the_most_urgent`, `a_working_te
 `rollup_is_the_most_urgent_terminal`; the `workspaces` scene. On-screen: a workspace with a working terminal and a
 finished agent tab shows the working arc on its row; it shows ✓ once nothing runs.
 
+## Chore: the chat box's feel (2026-11-21)
+
+Your reference (two screenshots of another app's box; "the idea, the looks, the FEELS"). Measured relative to the page
+in both: the outer box ~2.5 % above it with a ~7 % hairline, the inner box ~5.5 %, its edge lit from above (~14 % at
+the top fading to ~8 %), a soft shadow under it, a white send button. Applied to both boxes (agent and shell), every
+theme: `composer_outer` 2.5 %, `composer_inner` 5.5 %, `composer_edge` 7 % (dark); new `composer_glow_top` /
+`composer_glow_bottom` (a 1 pt gradient rim behind the inner box); a drop shadow (black 35 % dark, 10 % light, y 4,
+blur 12); send ready = the ink's circle with the page's arrow (white on dark, dark on light). Light themes keep their
+fills; the light still comes from above (a white top, a darker bottom). Test `the_box_steps_up_softly_and_is_lit_from_
+above`; send's contrast in the tab's test. Your bubble and queued messages follow (they use the box's colours).
+On-screen: does it feel like the reference?
+

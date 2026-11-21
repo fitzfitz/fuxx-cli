@@ -32,6 +32,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Chore: the chat box's feel
+
+- **What:** your reference ("the FEELS"): the box a whisper above the page, its edge lit from above, a soft shadow,
+  a white send button — both boxes, every theme. Note 91.
+- **Checks:** 2359 tests; clippy at the baseline; full ui-shots 269 / 269.
+
 ### 2026-11-21 — Fix: a working workspace showed ✓
 
 - **What:** your report ("it still in progress but sidebar indicator says ✓"). A row shows its tabs' most urgent
