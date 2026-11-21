@@ -1266,12 +1266,13 @@ fn changes_scenes() {
             println!("ui-shots: {}", path.display());
             let shot = render_with(&theme, dims, build, act);
             let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
-            // Tight: Latte's dim and full text colours are close.
+            // Tight: Latte's dim and full text colours are close (6 apart in a channel since the
+            // dark-panel chore, so 3).
             let has = |y0: f32, y1: f32, c: Rgb| {
                 (0..((y1 - y0) * 2.0) as usize).any(|dy| {
                     (0..400).any(|dx| {
                         let (x, y) = (sidebar_left + 2.0 + dx as f32 * 0.5, y0 + dy as f32 * 0.5);
-                        near(at(x, y), c, 6)
+                        near(at(x, y), c, 3)
                     })
                 })
             };
@@ -1921,7 +1922,7 @@ fn activity_scenes() {
                     header_top,
                     header_top + 30.0,
                     ui.text,
-                    6
+                    3
                 ),
                 header,
                 "{n}: the header {}",

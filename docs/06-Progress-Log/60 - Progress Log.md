@@ -30,6 +30,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Chore: the panel darker, the window lighter (branch `theme-dark-panel`)
+
+- **What:** your call ("It supposed to be darker in the floating panel and the window background is ligher", B):
+  each theme's canvas becomes the terminal and panel, its background the window and sidebar; everything derived
+  follows. Then from your looks: no panel shadow (the window round it is the sidebar's colour), panel corners 9 pt
+  (your pick), the composer's inner box the panel colour. Note 88 "Chore design: the panel darker".
+- **Checks:** 2289 tests; clippy at the baseline; fmt; ui-shots 253 passed, the 6 known failures.
+- **Learned:** nested corners: equal radii widen the gap, the strict parallel curve can read too tight against
+  macOS's smooth window corner; render the options and let the eye pick.
+
 ### 2026-11-21 — Chores after the M11ab rework: the composer's context row
 
 - **What:** the inner box 3 pt in from the outer box (was 5); no ▾ on the branch or the folder; the folder shows beside

@@ -262,6 +262,28 @@ impl Theme {
     /// The chrome colours. Surfaces are mixed from the theme; everything drawn on them is then
     /// pushed (hue kept) to the contrast floors in `ui_tokens`, so light themes read as well as
     /// dark ones.
+    /// The window's canvas: the theme's own `chrome-canvas`, else derived: a dark one sinks well
+    /// below the background; a light one dips toward the theme's own ink (black would turn it
+    /// grey).
+    fn window_canvas(&self) -> Rgb {
+        let (bg, fg) = (self.background, self.foreground);
+        self.chrome.canvas.unwrap_or(if self.is_dark() {
+            mix(bg, hex(0x000000), 0.42)
+        } else {
+            mix(bg, fg, 0.08)
+        })
+    }
+
+    /// The dark-panel chore (B, 2026-11-21): the floating panel (the terminal) is the darker
+    /// surface and the window the lighter: the window's canvas becomes the background and the
+    /// theme's background the canvas. `resolve` applies it once (twice would switch back).
+    pub fn with_dark_panel(mut self) -> Theme {
+        let window = self.background;
+        self.background = self.window_canvas();
+        self.chrome.canvas = Some(window);
+        self
+    }
+
     pub fn ui(&self) -> UiColors {
         // The contrast math is about 8 % of a frame and `ui()` runs many times per render, so the
         // last theme's result is kept. The key is the whole `Theme` value, not a name, so a switch,
@@ -285,15 +307,10 @@ impl Theme {
         let black = hex(0x000000);
         let white = hex(0xffffff);
         let dark = self.is_dark();
-        // The sidebar colour is the window's canvas (M11al): the darkest surface. A dark one sinks
-        // well below the terminal; a light one dips toward the theme's own ink (black would turn
-        // it grey).
+        // The sidebar colour is the window's canvas (M11al). Since the dark-panel chore a settled
+        // theme (`resolve`) carries the window here and the darker panel as its background.
         let chrome = self.chrome;
-        let canvas = chrome.canvas.unwrap_or(if dark {
-            mix(bg, black, 0.42)
-        } else {
-            mix(bg, fg, 0.08)
-        });
+        let canvas = self.window_canvas();
         // The sidebar colour before M11al. Text and selections keep mixing from it, and the
         // surfaces that were derived from it (rows, tints) are also kept as
         // "legacy" floors for text and marks, so the text hierarchy does not drift while the
@@ -537,13 +554,16 @@ impl Theme {
             card_surface: mix(bg, fg, 0.045),
             composer_outer: mix(bg, fg, 0.025),
             composer_edge: mix(bg, fg, 0.085),
-            // Where you type: the sidebar's colour (the user's call after the rework).
-            composer_inner: canvas,
+            // Where you type: the panel's colour, the darkest surface (the dark-panel chore).
+            composer_inner: card,
             composer_inner_edge: mix(bg, fg, 0.1),
             composer_inner_top: mix(bg, fg, 0.15),
             window_edge: if dark { black } else { canvas },
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
-            card_shadow_alpha: if dark { 0.45 } else { 0.12 },
+            // No shadow since the dark-panel chore (your words: "sidebar background color and the
+            // floating panel background … should be same"): the panel stands out by its colour,
+            // and a shadow darkened the 8 pt of window around it.
+            card_shadow_alpha: 0.0,
             raised,
             side,
             side_hover,
@@ -872,8 +892,18 @@ pub fn resolve(
             ),
         }
     }
+    // Your own `background` without your own `chrome-canvas`: the theme's canvas was picked for
+    // its background, not yours, so the panel is derived from yours (dark-panel chore).
+    let own = |key: &str| {
+        entries
+            .iter()
+            .any(|e| e.key == key && !e.value.trim().is_empty())
+    };
+    if own("background") && !own("chrome-canvas") {
+        theme.chrome.canvas = None;
+    }
     apply(&mut theme, entries);
-    theme
+    theme.with_dark_panel()
 }
 
 /// The folder for the user's own theme files: `{XDG_CONFIG_HOME or ~/.config}/fuxx/themes`.
@@ -932,7 +962,7 @@ pub(crate) fn every_theme() -> Vec<(&'static str, Theme)> {
             (name, t)
         })
         .collect();
-    all.push(("default", Theme::default()));
+    all.push(("default", resolve(&[], true, &|_| None)));
     all
 }
 
@@ -1059,15 +1089,57 @@ mod tests {
         }
     }
 
-    /// The composer's inner box (where you type) is the sidebar's colour, in every theme (your
-    /// words: "inner terminal chat background use the background color of this [the sidebar]. We
-    /// make it follow the palette").
+    /// The composer's inner box (where you type) is the panel's colour, the darkest surface, an
+    /// inset (the dark-panel chore replaced "the sidebar's colour").
     #[test]
-    fn the_composer_inner_box_is_the_sidebar_colour() {
+    fn the_composer_inner_box_is_the_panel() {
         for (name, theme) in every_theme() {
             let ui = theme.ui();
-            assert_eq!(ui.composer_inner, ui.sidebar_background, "{name}");
+            assert_eq!(ui.composer_inner, theme.background, "{name}");
         }
+    }
+
+    /// The dark-panel chore (your words: "It supposed to be darker in the floating panel and the
+    /// window background is ligher. Can we switch it?", then B): the panel (the terminal) is
+    /// the darker surface, the window (the sidebar) the lighter, in every theme.
+    #[test]
+    fn the_panel_is_darker_than_the_window() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            assert!(
+                luminance(theme.background) < luminance(ui.sidebar_background),
+                "{name}: panel {:?} window {:?}",
+                theme.background,
+                ui.sidebar_background
+            );
+        }
+    }
+
+    /// The switch moves the two colours as they are: the theme's own canvas becomes the panel,
+    /// its background the window.
+    #[test]
+    fn mocha_and_latte_switch_their_two_colours() {
+        let themes = every_theme();
+        let named = |name: &str| themes.iter().find(|(n, _)| *n == name).unwrap().1;
+        let mocha = named("Catppuccin Mocha");
+        assert_eq!(mocha.background, hex(0x11111b));
+        assert_eq!(mocha.ui().sidebar_background, hex(0x1e1e2e));
+        let latte = named("Catppuccin Latte");
+        assert_eq!(latte.background, hex(0xdce0e8));
+        assert_eq!(latte.ui().sidebar_background, hex(0xeff1f5));
+    }
+
+    /// A theme with no canvas of its own: the panel is today's derived canvas (dark: 42 % toward
+    /// black), the window its background.
+    #[test]
+    fn a_theme_without_a_canvas_derives_its_panel() {
+        let t = resolve(
+            &crate::settings::parse("background = #202020"),
+            true,
+            &|_| None,
+        );
+        assert_eq!(t.background, mix(hex(0x202020), hex(0x000000), 0.42));
+        assert_eq!(t.ui().sidebar_background, hex(0x202020));
     }
 
     /// M11r's coloured avatars, back in part 10 of the chores after M11q (your words: "it has
@@ -1100,10 +1172,11 @@ mod tests {
             let ui = theme.ui();
             let on_card = contrast(ui.card_border, ui.card);
             let on_canvas = contrast(ui.card_border, ui.sidebar_background);
-            assert!(on_card < 1.35, "{name}: on the card {on_card:.2}");
-            // (Before: 1.48 to 1.76; the canvas is darker than the card, so held at 1.2 on the
-            // card it stays a little more apart on the canvas.)
-            assert!(on_canvas <= 1.55, "{name}: on the canvas {on_canvas:.2}");
+            // (Before: 1.48 to 1.76.) Quiet on the lighter surface, a little more apart on the
+            // darker one: since the dark-panel chore the card is the darker (the bounds switched
+            // with the two colours).
+            assert!(on_canvas < 1.35, "{name}: on the canvas {on_canvas:.2}");
+            assert!(on_card <= 1.55, "{name}: on the card {on_card:.2}");
             for (what, on) in [
                 ("canvas", ui.sidebar_background),
                 ("card", ui.card),
@@ -1209,11 +1282,16 @@ mod tests {
     #[test]
     fn light_dark_pair_picks_by_appearance() {
         let e = entries("theme = light:Nope,dark:Catppuccin Mocha");
+        // Mocha's window is its background; its panel its canvas (the dark-panel chore).
         assert_eq!(
-            resolve(&e, true, &read).background,
-            parse_color("1e1e2e").unwrap()
+            resolve(&e, true, &read).chrome.canvas,
+            parse_color("1e1e2e")
         );
-        assert_eq!(resolve(&e, false, &read), Theme::default()); // "Nope" missing → defaults
+        // "Nope" missing → defaults
+        assert_eq!(
+            resolve(&e, false, &read),
+            Theme::default().with_dark_panel()
+        );
     }
 
     #[test]
@@ -1227,7 +1305,10 @@ mod tests {
         );
         assert_eq!(
             (t.background, t.foreground),
-            (Theme::default().background, Theme::default().foreground)
+            (
+                Theme::default().with_dark_panel().background,
+                Theme::default().foreground
+            )
         );
         assert_eq!(t.palette[2], parse_color("010203").unwrap());
         assert_eq!(t.cursor, None);
@@ -1240,7 +1321,20 @@ mod tests {
             true,
             &read,
         );
-        assert_eq!(t, Theme::default());
+        assert_eq!(t, Theme::default().with_dark_panel());
+    }
+
+    /// Your own `background` over a theme: the panel derives from it (dark: 42 % toward black),
+    /// your colour the window; the theme's canvas, picked for its own background, is dropped.
+    #[test]
+    fn your_own_background_makes_the_panel() {
+        let t = resolve(
+            &entries("theme = Catppuccin Mocha\nbackground = #303030"),
+            true,
+            &|n| builtin_theme(n).map(str::to_string),
+        );
+        assert_eq!(t.background, mix(hex(0x303030), hex(0x000000), 0.42));
+        assert_eq!(t.chrome.canvas, Some(hex(0x303030)));
     }
 
     #[test]
@@ -1405,17 +1499,20 @@ mod tests {
             ui.row_selected,
             ui.accent
         );
-        assert_eq!(ui.card_shadow_alpha, 0.45);
-        assert_eq!(named("Catppuccin Latte").ui().card_shadow_alpha, 0.12);
+        // None since the dark-panel chore: the window around the panel is the sidebar's colour.
+        assert_eq!(ui.card_shadow_alpha, 0.0);
+        assert_eq!(named("Catppuccin Latte").ui().card_shadow_alpha, 0.0);
     }
 
     #[test]
-    fn the_canvas_is_darkest_and_side_between() {
+    fn the_card_is_darkest_and_side_between() {
+        // The dark-panel chore switched M11al's order: the card (the panel) darkest, the canvas
+        // (the window) lightest, the attached sidebar between.
         for (name, theme) in every_theme() {
             let ui = theme.ui();
             let l = |c| relative_luminance_for_test(c);
             assert!(
-                l(ui.sidebar_background) < l(ui.side) && l(ui.side) < l(ui.card),
+                l(ui.card) < l(ui.side) && l(ui.side) < l(ui.sidebar_background),
                 "{name}: canvas {:?}, side {:?}, card {:?}",
                 ui.sidebar_background,
                 ui.side,
@@ -1525,14 +1622,15 @@ mod tests {
         // Read from master before M11al darkened the canvas (the text hierarchy must not drift);
         // moved on purpose 2026-11-20, when each theme got its own chrome: Mocha a step, Latte
         // three darker (its text must read on the mauve selection).
+        // Moved again by the dark-panel chore (2026-11-21): the surfaces switched, the floors held.
         let themes = every_theme();
         let named = |name: &str| themes.iter().find(|(n, _)| *n == name).unwrap().1.ui();
         let mocha = named("Catppuccin Mocha");
-        assert_eq!(mocha.text_dim, hex(0x9da2bb));
-        assert_eq!(mocha.text_faint, hex(0xa0a2b4));
+        assert_eq!(mocha.text_dim, hex(0x9da3b9));
+        assert_eq!(mocha.text_faint, hex(0x9fa3ae));
         let latte = named("Catppuccin Latte");
-        assert_eq!(latte.text_dim, hex(0x575769));
-        assert_eq!(latte.text_faint, hex(0x585863));
+        assert_eq!(latte.text_dim, hex(0x515263));
+        assert_eq!(latte.text_faint, hex(0x52525f));
     }
 
     #[test]

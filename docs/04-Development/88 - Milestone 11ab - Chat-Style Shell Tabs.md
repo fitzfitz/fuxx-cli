@@ -406,6 +406,40 @@ opens a folder window, is it a good UX? I don't think so".
   folders (`~/…`), on hover. Not in a screenshot (the scenes don't hover); yours to check.
 - **Checks:** 2284 tests; clippy at the baseline; fmt; ui-shots: the 6 known display-dependent failures only.
 
+### Chore design: the panel darker, the window lighter (2026-11-21, approved)
+
+Your words: "I just realized how bad our theme color combination is. It supposed to be darker in the floating panel
+and the window background is ligher. Can we switch it? ensure others follow the palette rules". Two ways offered: A,
+lift the window above the terminal; B, darken the panel below the theme's background. You picked **B** ("let's try
+B"), then approved this design ("approved, go ahead").
+
+- **The switch:** the terminal and the floating panel take today's window colour: each built-in theme's
+  `chrome-canvas` (Mocha `#11111b`, Latte `#dce0e8`, Nord `#242933`, Dracula `#191a21`, Gruvbox `#1d2021`,
+  TokyoNight `#15161e`), else today's derived one (dark: the background 42 % toward black; light: 8 % toward the ink);
+  the window and the sidebar take the theme's own background. Done once where a theme is settled
+  (`theme::resolve`), so everything that reads the background follows.
+- **The rest follows the rules:** what sits on the panel (cards, the composer's outer box, file and diff tabs,
+  previews, hovers, hairlines) mixes from the darker panel; what sits on the window (sidebar rows, search box, tints)
+  from the lighter one; text and marks keep their contrast floors in every theme.
+- **The composer's inner box** is the panel colour (the darkest, an inset), replacing "the sidebar's colour".
+- **Light themes** follow the same rule. A theme's ANSI colours are unchanged.
+- **Tried on a branch** (`theme-dark-panel`), screenshots in Mocha and Latte for you before it reaches master.
+
+**As built (branch `theme-dark-panel`):** `Theme::with_dark_panel` at the end of `theme::resolve` (the screenshot
+harness too); the prefs swatches show the panel colour. Along the way, from your looks at it:
+- **One window colour** ("sidebar background color and the floating panel background … should be same"): the
+  panel's drop shadow darkened the 8 pt of window round it; it's gone (`card_shadow_alpha` 0), the panel stands out by
+  its colour.
+- **Corners** ("the border radius on the floating panel, is not matching the window"): 14 (the window's own) widened
+  the gap at the corners and the strict parallel curve (6) read too tight; you picked **9 pt** from renders side by
+  side. The diff view's cards follow it.
+- **AI's calls:** a config `background = …` line without its own `chrome-canvas` drops the theme's canvas (it was
+  picked for the theme's background, not yours), so the panel derives from your colour; the pinned dim and faint
+  text values moved (Mocha `9da3b9` / `9fa3ae`, Latte `515263` / `52525f`), every contrast floor holding. **For your
+  check:** in Latte the dim text is now close to the full text (the darker panel pulls it down to stay readable).
+- **Checks:** 2289 tests; clippy at the baseline; fmt; ui-shots 253 passed, the 6 known display-dependent failures
+  (scene probes moved for the smaller corners and the missing shadow).
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·

@@ -6177,7 +6177,8 @@ fn file_diff_cards_scenes() {
         let left = g.bounds.left() + px(code::CARD_INSET);
         // Fix round 1: the last row's tint keeps inside the card's rounded bottom corners.
         let bottom = g.bounds.top() + px(code::CARD_TITLE) + g.line_height * 12.0 - g.scroll.y;
-        let corner = pixel_at(&shot, dims, f32::from(left) + 1.5, f32::from(bottom) - 1.5);
+        // The corner pixel itself: wholly outside a curve as small as the dark-panel chore's.
+        let corner = pixel_at(&shot, dims, f32::from(left) + 0.5, f32::from(bottom) - 0.5);
         assert!(
             live_near(corner, bg, 4),
             "{n}: outside the bottom-left corner's arc {corner:?}, not {bg:?}"

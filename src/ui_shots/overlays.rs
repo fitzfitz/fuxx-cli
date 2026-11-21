@@ -707,8 +707,10 @@ fn preferences_scenes() {
             let top = pixel_at(&shot, dims, x0 + nav + 20.0, y0 + 12.0);
             assert!(near(top, ui.panel, 3), "{scene}: the page's top {top:?}");
             // The section list: exactly one filled row (the shown one), right of the names.
-            let bands = (0..(ph * 2.0) as usize)
-                .map(|i| y0 + i as f32 / 2.0)
+            // (2 pt inside the dialog's edges: its 1 pt border is near `row_active` since the
+            // dark-panel chore.)
+            let bands = (0..((ph - 4.0) * 2.0) as usize)
+                .map(|i| y0 + 2.0 + i as f32 / 2.0)
                 .map(|y| near(pixel_at(&shot, dims, x0 + nav - 24.0, y), ui.row_active, 3))
                 .collect::<Vec<_>>()
                 .windows(2)

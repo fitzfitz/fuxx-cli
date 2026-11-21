@@ -1116,7 +1116,9 @@ fn card_scenes() {
         // outside its curve, where a square first tab's corner (its fill, a top line) would
         // be, the canvas shows, not the tab or the card.
         let (card_left, card_top) = (left, CARD_INSET);
-        for (dx, dy) in [(1.0, 1.0), (1.5, 1.5), (1.0, 2.0), (2.0, 1.0), (2.5, 2.5)] {
+        // (At the 6 pt `CARD_RADIUS` of the dark-panel chore the outside of the curve is 1.76 pt
+        // deep on the diagonal: the probes stay half a point clear of its smoothed edge.)
+        for (dx, dy) in [(0.5, 0.5), (1.0, 1.0), (0.5, 1.5), (1.5, 0.5)] {
             let (x, y) = (card_left + dx, card_top + dy);
             let p = at(x, y);
             // The canvas (within the shadow's reach), nearer it than the card: the bar has no
@@ -1425,11 +1427,6 @@ pub(super) fn quiet_over_line(
     count_along(shot, dims, over_card, y, x0, x1) + count_along(shot, dims, over_line, y, x0, x1)
 }
 
-/// The sum of a pixel's channels: lower is darker.
-fn brightness(p: [u8; 3]) -> u32 {
-    p.iter().map(|&c| u32::from(c)).sum()
-}
-
 /// How many device pixels down the column at `x` points, between `y0` and `y1` points, are `c`
 /// (give or take 3 per channel).
 fn count_down(
@@ -1450,8 +1447,8 @@ fn count_down(
 /// Panics unless the one card (M11al §3.1) spans `left`–`right` and `top`–`bottom` (its outer
 /// edges, in points): each edge `card_edge` half a point in and the card's fill 20 pt in
 /// (`right_fill` inside its right edge: the card's, or the right panel's `side`, §6.1), the
-/// canvas 2 pt in from each corner of its box diagonally (outside the `CARD_RADIUS` curve), and
-/// 4 pt under its bottom middle darker than the canvas (its shadow).
+/// canvas 1 pt in from each corner of its box diagonally (outside the 6 pt `CARD_RADIUS` curve),
+/// and 4 pt under its bottom middle the canvas exactly (no shadow since the dark-panel chore).
 fn check_one_card(
     shot: &Shot,
     dims: Size<Pixels>,
@@ -1487,10 +1484,10 @@ fn check_one_card(
         );
     }
     for (which, x, y) in [
-        ("top left", left + 2.0, top + 2.0),
-        ("top right", right - 2.0, top + 2.0),
-        ("bottom left", left + 2.0, bottom - 2.0),
-        ("bottom right", right - 2.0, bottom - 2.0),
+        ("top left", left + 1.0, top + 1.0),
+        ("top right", right - 1.0, top + 1.0),
+        ("bottom left", left + 1.0, bottom - 1.0),
+        ("bottom right", right - 1.0, bottom - 1.0),
     ] {
         let p = at(x, y);
         assert!(
@@ -1500,9 +1497,11 @@ fn check_one_card(
     }
     let canvas = ui.sidebar_background;
     let p = at(mid_x, bottom + 4.0);
+    // No shadow since the dark-panel chore: the window right under the card is the sidebar's
+    // colour, exactly.
     assert!(
-        is_canvas(p, ui) && brightness(p) < brightness([canvas.r, canvas.g, canvas.b]),
-        "{n}: the shadow 4 pt under the card at ({mid_x}, {}): {p:?} vs the canvas {canvas:?}",
+        near_by(p, canvas, 2),
+        "{n}: the canvas 4 pt under the card at ({mid_x}, {}): {p:?} vs the canvas {canvas:?}",
         bottom + 4.0
     );
 }
@@ -1811,17 +1810,17 @@ fn one_card_slide_scene() {
         for (what, x, y) in [
             ("right of the card", right + CARD_INSET / 2.0, y),
             ("right of the card, low", right + 2.0, bottom - 20.0),
-            ("outside the top-right curve", right - 2.0, top + 2.0),
+            ("outside the top-right curve", right - 1.0, top + 1.0),
             (
                 "outside the top-right curve, nearer",
-                right - 1.5,
-                top + 1.5,
+                right - 0.5,
+                top + 0.5,
             ),
-            ("outside the bottom-right curve", right - 2.0, bottom - 2.0),
+            ("outside the bottom-right curve", right - 1.0, bottom - 1.0),
             (
                 "outside the bottom-right curve, nearer",
-                right - 1.5,
-                bottom - 1.5,
+                right - 0.5,
+                bottom - 0.5,
             ),
         ] {
             let p = at(x, y);
