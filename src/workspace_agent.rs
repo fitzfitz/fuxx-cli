@@ -2340,4 +2340,19 @@ mod tests {
         let (label, badge, _) = provider_look("claude");
         assert_eq!((label.as_ref(), badge), ("Claude", "CC"));
     }
+
+    /// Your report (2026-11-21): a row whose terminal works beside a finished agent tab shows
+    /// the work, not the ✓ (the agent tab wins only when it needs you more).
+    #[test]
+    fn a_working_terminal_beats_a_finished_agent_tab() {
+        let tab = TabId(7);
+        assert_eq!(
+            row_winner(Some((0, Status::Working)), &[(tab, Status::Done)]),
+            Some(RowWinner::Terminal(0))
+        );
+        assert_eq!(
+            row_winner(Some((0, Status::Working)), &[(tab, Status::Waiting)]),
+            Some(RowWinner::Agent(tab))
+        );
+    }
 }

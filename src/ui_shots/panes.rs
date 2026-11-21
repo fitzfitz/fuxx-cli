@@ -677,7 +677,13 @@ fn workspace_scenes() {
                 let ring = ws
                     .rollup_session(api)
                     .map(|i| ws.sessions.items()[i].status);
-                assert_eq!(ring, Some(Status::Done), "{n}: api's ring is tests'");
+                // Its working terminal's, not the finished tests' (Waiting > Working > Done since
+                // your report, 2026-11-21).
+                assert_eq!(
+                    ring,
+                    Some(Status::Working),
+                    "{n}: api's ring is the working one"
+                );
                 assert_eq!(ws.tab_sessions().len(), 3, "{n}: three panes");
             });
             slot.borrow_mut().take();

@@ -2080,9 +2080,10 @@ mod tests {
             m.rollup(a.workspace, of([Idle, Working, Idle])),
             Some((2, Working))
         );
+        // A working terminal beats a finished one (your report, 2026-11-21).
         assert_eq!(
             m.rollup(a.workspace, of([Done, Working, Idle])),
-            Some((1, Done))
+            Some((2, Working))
         );
         assert_eq!(
             m.rollup(a.workspace, of([Done, Working, Waiting])),

@@ -101,17 +101,19 @@ pub fn insert_index(keys: &[Option<&GroupKey>], key: Option<&GroupKey>) -> usize
     }
 }
 
-/// How much a status needs you, for roll-ups: Waiting > Done > Working > Idle.
+/// How much a status needs you, for roll-ups: Waiting > Working > Done > Idle. (Your report,
+/// 2026-11-21: a workspace still working shows it, not a finished tab's ✓ beside it; was
+/// Waiting > Done > Working since M7. The closed group header already ranked so.)
 pub fn urgency(status: Status) -> u8 {
     match status {
         Status::Idle => 0,
-        Status::Working => 1,
-        Status::Done => 2,
+        Status::Done => 1,
+        Status::Working => 2,
         Status::Waiting => 3,
     }
 }
 
-/// The most urgent status of a group: Waiting > Done > Working > Idle.
+/// The most urgent status of a group: Waiting > Working > Done > Idle.
 pub fn rolled_up(statuses: impl IntoIterator<Item = Status>) -> Status {
     statuses
         .into_iter()
@@ -248,9 +250,11 @@ mod tests {
 
     #[test]
     fn rolled_up_picks_the_most_urgent() {
+        // Your report (2026-11-21): a workspace still working shows it, even beside a finished
+        // tab — Waiting > Working > Done > Idle.
         assert_eq!(
             rolled_up([Status::Working, Status::Done, Status::Idle]),
-            Status::Done
+            Status::Working
         );
         assert_eq!(rolled_up([Status::Done, Status::Waiting]), Status::Waiting);
         assert_eq!(rolled_up([Status::Idle, Status::Working]), Status::Working);
