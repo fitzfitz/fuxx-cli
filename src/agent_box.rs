@@ -480,6 +480,11 @@ pub fn usage_rows(
                     rows.push(UsageRow::Heading(group.name.clone()));
                 }
                 for limit in &group.limits {
+                    // Claude's "Top skills / subagents / plugins …" lists: not limits; left out
+                    // (your words, 2026-11-22: "i dont need that").
+                    if matches!(limit, UsageLimit::Text(text) if top_list(text).is_some()) {
+                        continue;
+                    }
                     rows.push(match limit {
                         UsageLimit::Text(text) => UsageRow::Text(text.clone()),
                         UsageLimit::Read {
@@ -2906,6 +2911,28 @@ mod tests {
             usage_rows(None, &[], Some("Claude"), 0, 0),
             quiet("Usage isn't available for Claude")
         );
+    }
+
+    /// Your words (2026-11-22): "why it show everything including the top skills etc? i dont
+    /// need that" — Claude's "Top …" lists after its limits are left out.
+    #[test]
+    fn usage_rows_leave_out_the_top_lists() {
+        let found = Lookup::Ready(vec![UsageGroup {
+            name: String::new(),
+            about: None,
+            limits: vec![
+                UsageLimit::Read {
+                    name: "Current session".into(),
+                    left_pct: 50,
+                    resets: None,
+                },
+                UsageLimit::Text("Top skills: /a 8%, /b 6%".into()),
+                UsageLimit::Text("Top plugins: x 24%".into()),
+            ],
+        }]);
+        let rows = usage_rows(Some(&found), &[], None, 0, 0);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(matches!(&rows[0], UsageRow::Limit { name, .. } if name == "Current session"));
     }
 
     #[test]
