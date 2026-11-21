@@ -697,6 +697,15 @@ impl Workspace {
     /// nothing else redrawing. True when a folder changed.
     pub(crate) fn check_folders(&mut self, cx: &mut Context<Self>) -> bool {
         let changed = self.refresh_places(cx);
+        // M11ab: each terminal's card view shows its folder's branch above its live box.
+        for s in self.sessions.items() {
+            let branch = self
+                .places
+                .folder(s.id)
+                .and_then(|f| self.places.branch(f))
+                .map(str::to_string);
+            s.view.update(cx, |v, cx| v.set_branch(branch, cx));
+        }
         if changed {
             cx.notify();
         }

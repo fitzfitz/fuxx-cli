@@ -4,14 +4,14 @@
 
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::Line;
+use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::vte::ansi::CursorShape;
 use gpui::{Pixels, Size};
 
 use crate::activity::clock_hm;
 use crate::blocks::{Block, Outcome, Segment, segments, tag_id_at};
-use crate::command_name::card_duration;
+use crate::command_name::{card_duration, ran_label};
 use crate::grid::{CellView, CursorView, lines_snapshot};
 use crate::terminal::TermDims;
 use crate::theme::Theme;
@@ -51,6 +51,8 @@ pub struct Card {
     pub cmd_rows: (Line, Line),
     pub output: Option<(Line, Line)>,
     pub failed: bool,
+    /// How it ended (M11aa's drag onto an agent tab carries it).
+    pub outcome: Outcome,
 }
 
 /// A card's header words: when it started, how long it ran, how it ended.
@@ -103,6 +105,7 @@ fn card(b: &Block, utc_offset: i64) -> Card {
         cmd_rows: (b.cmd_row, cmd_end),
         output: b.output,
         failed: matches!(b.outcome, Outcome::Failed(_)),
+        outcome: b.outcome,
     }
 }
 
@@ -385,12 +388,121 @@ pub struct CardsState {
     pub scroll: f32,
     /// The most it can scroll (the column's height less the view's), from the last frame.
     pub max_scroll: f32,
+    /// From the last frame: the rows painted (to point into, M11ab Task 6), each card's hit
+    /// areas, every card's place in the column, the column's and the view's heights.
+    pub regions: Vec<Region>,
+    pub hits: Vec<CardHit>,
+    pub order: Vec<(String, f32, f32)>,
+    pub total: f32,
+    pub view: f32,
+    /// The pane's top-left corner last frame (window points): the overlays are placed from it.
+    pub origin: (f32, f32),
+}
+
+/// Rows painted this frame that the pointer can select in (window points): the first row is
+/// grid line `top`, its first cell at (`x`, `y`), the rows span `y..bottom`. `key` names it
+/// across frames (`live`, a card's id, `rows:<top>`); a live region takes mouse reports.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Region {
+    pub key: String,
+    pub x: f32,
+    pub y: f32,
+    pub bottom: f32,
+    pub top: Line,
+    pub live: bool,
+}
+
+/// A card's hit areas this frame (window points, `x, y, width, height`): the whole card, its
+/// command line (the drag handle), its fold row; and what its drag carries.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardHit {
+    pub id: String,
+    pub card: (f32, f32, f32, f32),
+    pub cmd: (f32, f32, f32, f32),
+    pub fold: Option<(f32, f32, f32, f32)>,
+    pub command: Option<String>,
+    pub outcome: Outcome,
+}
+
+impl CardsState {
+    /// Typing goes to the live box, so the column goes back to its bottom (note 88 §1).
+    pub fn typed(&mut self) {
+        self.scroll = 0.0;
+    }
+}
+
+/// The grid point under `pos` in a region of rows whose first row is grid line `top`, with its
+/// first cell at `origin` (window points; cells `cell` = width, height): the column clamped to
+/// the grid's `cols`, the side of the cell it's on (M11ab: selecting and links in a card).
+pub fn card_point(
+    pos: (f32, f32),
+    origin: (f32, f32),
+    top: Line,
+    (cell_w, line_h): (f32, f32),
+    cols: usize,
+) -> (Point, Side) {
+    let x = (pos.0 - origin.0) / cell_w;
+    let last = cols.max(1) - 1;
+    let col = x.floor().clamp(0.0, last as f32) as usize;
+    let side = if x < 0.0 {
+        Side::Left
+    } else if x >= cols as f32 || x - x.floor() >= 0.5 {
+        Side::Right
+    } else {
+        Side::Left
+    };
+    let row = ((pos.1 - origin.1) / line_h).floor() as i32;
+    (Point::new(top + row, Column(col)), side)
+}
+
+/// The running chip's words: `● npm test · 1m 15s` (whole seconds, M11q's `ran_label`).
+pub fn running_words(short: &str, elapsed: std::time::Duration) -> String {
+    format!("\u{25cf} {short} \u{b7} {}", ran_label(elapsed))
+}
+
+/// One chip above the live box.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chip {
+    pub words: String,
+    /// The running command's (drawn in the running colour).
+    pub running: bool,
+}
+
+/// The chips above the live box (note 88 §3; ruling 1: folder and branch, no counts): the
+/// running command first, then the folder, then the branch.
+pub fn chips(folder: Option<&str>, branch: Option<&str>, running: Option<String>) -> Vec<Chip> {
+    let running = running.map(|words| Chip {
+        words,
+        running: true,
+    });
+    let folder = folder.map(|f| Chip {
+        words: f.to_string(),
+        running: false,
+    });
+    let branch = branch.map(|b| Chip {
+        words: format!("\u{2387} {b}"),
+        running: false,
+    });
+    running.into_iter().chain(folder).chain(branch).collect()
+}
+
+/// The scroll (from the column's bottom) that shows a card at `top`, `height` tall, in a
+/// column `total` tall seen through a view `view` tall, now scrolled `scroll`: unchanged when
+/// it's in view, else its top at the view's top (as far as the column goes).
+pub fn reveal(top: f32, height: f32, total: f32, view: f32, scroll: f32) -> f32 {
+    let (shown_top, shown_bottom) = (total - view - scroll, total - scroll);
+    if top >= shown_top && top + height <= shown_bottom {
+        return scroll;
+    }
+    (total - view - top).clamp(0.0, (total - view).max(0.0))
 }
 
 /// Rows of cells to paint, the first at `y` (window points).
 #[derive(Clone, Debug)]
 pub struct Rows {
     pub y: f32,
+    /// The grid line of `lines[0]`.
+    pub top: Line,
     pub lines: Vec<Vec<CellView>>,
 }
 
@@ -402,6 +514,8 @@ pub enum Draw {
     Card {
         id: String,
         y: f32,
+        height: f32,
+        outcome: Outcome,
         header: Header,
         /// `❯ cmd` when the shell reported it; else the command's rows as printed.
         cmd: Result<String, Rows>,
@@ -428,10 +542,9 @@ pub struct Panel {
     pub rows: Rows,
 }
 
-/// What a frame paints, and the column's whole height.
+/// What a frame paints (the column's height is kept in `CardsState::total`).
 pub struct CardFrame {
     pub draws: Vec<Draw>,
-    pub total: f32,
 }
 
 /// The column for `term` this frame, placed in the view from `view_top` (window points,
@@ -452,6 +565,16 @@ pub fn frame<L: EventListener>(
     let unfolded = &state.unfolded;
     let (placed, total) = layout(&items, &|id| unfolded.contains(id), line_h);
     state.max_scroll = (total - view_height).max(0.0);
+    state.order = items
+        .iter()
+        .zip(&placed)
+        .filter_map(|(item, at)| match item {
+            Item::Card(c) => Some((c.id.clone(), at.top, at.height)),
+            _ => None,
+        })
+        .collect();
+    state.total = total;
+    state.view = view_height;
     state.scroll = state.scroll.clamp(0.0, state.max_scroll);
     let base = view_top + view_height - total + state.scroll;
     let clip = (view_top, view_top + view_height);
@@ -464,6 +587,7 @@ pub fn frame<L: EventListener>(
         };
         Rows {
             y: rows_y + r.start as f32 * line_h,
+            top: top + r.start as i32,
             lines,
         }
     };
@@ -510,6 +634,8 @@ pub fn frame<L: EventListener>(
                 draws.push(Draw::Card {
                     id: card.id.clone(),
                     y,
+                    height: at.height,
+                    outcome: card.outcome,
                     header: card.header.clone(),
                     cmd,
                     panel,
@@ -539,7 +665,7 @@ pub fn frame<L: EventListener>(
             }
         }
     }
-    CardFrame { draws, total }
+    CardFrame { draws }
 }
 
 /// The chips row above the live box (folder, branch, the running command), points.
@@ -914,6 +1040,7 @@ mod tests {
             cmd_rows: (Line(1), Line(1)),
             output: output.map(|(a, b)| (Line(a), Line(b))),
             failed: false,
+            outcome: Outcome::Ok,
         }
     }
 
@@ -962,5 +1089,74 @@ mod tests {
         assert_eq!(visible_rows(0.0, 5, lh, (0.0, 600.0)), 0..5);
         assert_eq!(visible_rows(700.0, 5, lh, (0.0, 600.0)), 0..0);
         assert_eq!(visible_rows(-17.0, 5, lh, (0.0, 600.0)), 1..5);
+    }
+
+    // M11ab Task 6: pointing, typing, chips, choosing.
+
+    #[test]
+    fn card_point_maps_a_panel_pixel_to_its_grid_line() {
+        // Row 0 of the region is line -40, at (100, 200); cells 8 x 17.
+        let at = |x: f32, y: f32| card_point((x, y), (100.0, 200.0), Line(-40), (8.0, 17.0), 80);
+        let (point, side) = at(100.0 + 5.0 * 8.0 + 2.0, 200.0 + 3.0 * 17.0 + 5.0);
+        assert_eq!(
+            (point.line, point.column, side),
+            (Line(-37), Column(5), Side::Left)
+        );
+        let (point, side) = at(100.0 + 5.0 * 8.0 + 6.0, 200.0);
+        assert_eq!(
+            (point.line, point.column, side),
+            (Line(-40), Column(5), Side::Right)
+        );
+        // Past the edges: the first and last columns.
+        assert_eq!(at(10.0, 200.0).0.column, Column(0));
+        assert_eq!(at(10_000.0, 200.0).0.column, Column(79));
+    }
+
+    #[test]
+    fn typing_snaps_the_column_to_the_bottom() {
+        let mut state = CardsState {
+            scroll: 340.0,
+            max_scroll: 900.0,
+            ..CardsState::default()
+        };
+        state.typed();
+        assert_eq!(state.scroll, 0.0);
+    }
+
+    #[test]
+    fn elapsed_words() {
+        let words = running_words("npm test", std::time::Duration::from_secs(75));
+        assert_eq!(words, "\u{25cf} npm test \u{b7} 1m 15s");
+        assert_eq!(
+            running_words("make", std::time::Duration::from_millis(12_400)),
+            "\u{25cf} make \u{b7} 12s"
+        );
+    }
+
+    #[test]
+    fn branch_chip_comes_from_the_workspace() {
+        let words = |c: Vec<Chip>| c.into_iter().map(|c| c.words).collect::<Vec<_>>();
+        assert_eq!(
+            words(chips(Some("~/code/api"), Some("main"), None)),
+            ["~/code/api", "\u{2387} main"]
+        );
+        assert_eq!(words(chips(None, None, None)), Vec::<String>::new());
+        let running = chips(Some("~"), None, Some("\u{25cf} make \u{b7} 3s".into()));
+        assert!(
+            running[0].running && running[0].words.contains("make"),
+            "running first"
+        );
+        assert_eq!(running[1].words, "~");
+    }
+
+    #[test]
+    fn a_chosen_card_is_scrolled_into_view() {
+        // A 2000 pt column in a 600 pt view: a card at 400..520 needs the view's top at 400,
+        // so the column scrolls up (from its bottom) by 2000 - 600 - 400.
+        assert_eq!(reveal(400.0, 120.0, 2000.0, 600.0, 0.0), 1000.0);
+        // Already in view (the view shows 1400..2000 at scroll 0): unchanged.
+        assert_eq!(reveal(1500.0, 100.0, 2000.0, 600.0, 0.0), 0.0);
+        // Taller than the view: its top at the view's top.
+        assert_eq!(reveal(100.0, 900.0, 2000.0, 600.0, 0.0), 1300.0);
     }
 }
