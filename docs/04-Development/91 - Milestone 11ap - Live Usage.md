@@ -171,3 +171,26 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
 11, icons 12; were 32 / 13.5–14 / 12 / 16), and the Git bottom bar's text and icons 12 with 28 pt buttons (were
 12.5 / 16 / 15 / 34).
 
+## Chores and fixes (2026-11-22, late)
+
+- **Send notch**: "make it so that its fits perfectly" — the inner box's joints at the cut 6 (were 17: their rounding
+  squares painted over the box's text), 8 round the circle (was 6). Your reference since (a wide, smooth wave round
+  the button) is the next pass.
+- **Shell box**: a prompt that fills its row to the last column (powerlevel10k in a long folder) left the cursor at
+  the margin with the wrap pending; zsh types on the next row. The typing start is now that row's column 0 (it
+  showed an empty `❯` row with the right prompt under it). `blocks.rs`; test `a_prompt_filling_its_row_starts_the_typing_on_the_next`.
+- **Git bar**: "icon button shouldn't be bordered and gap should be smaller": its buttons are the header's icon
+  buttons (26 pt, 15 pt icons, no edge, a fill on hover), 2 apart; the line under the branch 11.
+- **Usage popover**: it closed under a resting pointer (each panel blocked the mouse, which hid it from the box's
+  hover; now the box blocks it). No tooltip on the strip. One usage panel: the agent box's and the status bar's
+  detail share `usage_view::agent_rows`, `limit_items`, `limits_panel`.
+- **Tabs**: a tab's mark and × share one slot (the × takes the mark's place on hover); inactive tabs quieter
+  (`tab_idle` .012, hover .035).
+- **Status bar**: it follows a focused agent tab (its status, mark, folder and branch); it kept the last terminal
+  ("Ready ~").
+- **Model menu**, the lead designer's second pass ("one list, one light"): 240 wide, 26 pt rows at 13 / 11.5, a ✓
+  column (`menu_check`), no current fill or bar, one fill (hover, or the open row), dividers (`menu_rule`), "Older
+  models" closed each time, the current model always shown (`model_groups`); its efforts hang beside the hovered row
+  (first level at the row's top, a 4 pt bridge, a 150 ms wait before swapping to another row, a scroll closes them;
+  the level a pick would use ticked quieter on another model).
+

@@ -32,6 +32,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — Chores and fixes: notch, shell box, Git bar, usage, tabs, status bar, model menu
+
+- **What:** your reports in one evening: the send notch's joints and room; the shell box's empty `❯` row (a prompt
+  filling its row); the Git bar's buttons; the usage popover closing under the pointer, its tooltip, one shared
+  usage panel; tab marks in the ×'s slot and quieter inactive tabs; the status bar following agent tabs; the model
+  menu's second design pass with efforts beside the hovered row. Note 91.
+- **Checks:** 2365 tests; clippy at the baseline; the affected ui-shots scenes (one timing flake,
+  chrome-notifications, passed on its own).
+
 ### 2026-11-21 — Chore: the chat box's feel
 
 - **What:** your reference ("the FEELS"): the box a whisper above the page, its edge lit from above, a soft shadow,
