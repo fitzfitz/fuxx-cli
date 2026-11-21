@@ -154,8 +154,9 @@ pub enum BoxMenu {
     Folder,
     Model {
         efforts_of: Option<usize>,
-        usage: bool,
     },
+    /// The usage panel, over its own button beside the model pill (your word, 2026-11-21).
+    Usage,
     Mode,
     Attach,
 }
@@ -532,8 +533,6 @@ pub enum ModelRow {
     },
     Note(&'static str),
     NewConversation,
-    Divider,
-    Usage,
 }
 
 /// The model menu's rows (§4): the heading, then the models (or `Loading…`, or that the list
@@ -572,8 +571,6 @@ pub fn model_rows(catalog: &Lookup<Catalog>, start: &Start, applies: Applies) ->
     if next {
         rows.push(ModelRow::NewConversation);
     }
-    rows.push(ModelRow::Divider);
-    rows.push(ModelRow::Usage);
     rows
 }
 
@@ -1046,21 +1043,6 @@ impl AgentTab {
                 "model",
                 control_pill("agent-model", None, texts.model.clone(), c),
             )
-            .relative()
-            .when(texts.limit_warning, |d| {
-                d.child(
-                    self.marked(
-                        "limit-warning",
-                        div()
-                            .absolute()
-                            .top(px(4.))
-                            .right(px(2.))
-                            .size(px(LIMIT_DOT))
-                            .rounded_full()
-                            .bg(hsla(warn)),
-                    ),
-                )
-            })
             .when(self.provider.is_some(), |d| {
                 d.cursor_pointer()
                     // Its words full under the pointer (the designer's details).
@@ -1080,6 +1062,67 @@ impl AgentTab {
             .when(menu_on(|m| matches!(m, BoxMenu::Model { .. })), |d| {
                 let (menu, side) = self.model_menu(cx);
                 d.child(self.menu_frame(Some(menu), side, MENU_WIDTH, cx))
+            });
+        // Usage, its own button beside the model pill (your word, 2026-11-21: "take out usage
+        // … from model popover to outside"): the gauge, round like +; its panel opens over it;
+        // the warning dot when a limit is close or reached.
+        let usage_hover = c.control_hover;
+        let usage = self
+            .marked(
+                "usage-button",
+                div()
+                    .id("agent-usage-button")
+                    .relative()
+                    .flex_none()
+                    .size(px(BUTTON))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(hsla(c.control))
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::Gauge,
+                        px(16.),
+                        hsla(c.dim),
+                    )),
+            )
+            .when(texts.limit_warning, |d| {
+                d.child(
+                    self.marked(
+                        "limit-warning",
+                        div()
+                            .absolute()
+                            .top(px(4.))
+                            .right(px(4.))
+                            .size(px(LIMIT_DOT))
+                            .rounded_full()
+                            .bg(hsla(warn)),
+                    ),
+                )
+            })
+            .tooltip(|_, cx| {
+                cx.new(|_| crate::sidebar_toggle::Tip(VIEW_USAGE.into()))
+                    .into()
+            })
+            .when(self.provider.is_some(), |d| {
+                d.cursor_pointer()
+                    .hover(move |s| s.bg(hsla(usage_hover)))
+                    .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                        let pressed = match event {
+                            ClickEvent::Mouse(click) => Some(click.down.position),
+                            _ => None,
+                        };
+                        // This press already closed the open menu (from outside it).
+                        let closed_at = this.chip_closed_at.take();
+                        if pressed.is_none() || closed_at != pressed {
+                            this.usage_clicked(cx)
+                        }
+                    }))
+            })
+            .when(menu_on(|m| matches!(m, BoxMenu::Usage)), |d| {
+                let ui = cx.global::<Appearance>().theme.ui();
+                let panel = self.usage_panel(&ui, cx);
+                d.child(self.menu_frame(None, Some(panel), USAGE_WIDTH, cx))
             });
         let mode_glyph = self.mode_now(cx).map(mode_icon);
         let mode = texts.mode.clone().map(|text| {
@@ -1226,6 +1269,8 @@ impl AgentTab {
                         .child(attach)
                         .child(div().w(px(CHIP_GAP)))
                         .child(model)
+                        .child(div().w(px(CHIP_GAP)))
+                        .child(usage)
                         .child(div().flex_1())
                         .children(mode)
                         // The mode pill ends 8 before the notch's edge.
@@ -2218,20 +2263,15 @@ mod tests {
                     ModelRow::Model { label, .. } => label.clone(),
                     ModelRow::Note(n) => n.to_string(),
                     ModelRow::NewConversation => "New conversation".into(),
-                    ModelRow::Divider => "-".into(),
-                    ModelRow::Usage => "View Usage".into(),
                 })
                 .collect()
         };
         let loading = model_rows(&Lookup::Loading, &s, Live);
-        assert_eq!(
-            words(&loading),
-            ["Model", "Loading\u{2026}", "-", "View Usage"]
-        );
+        assert_eq!(words(&loading), ["Model", "Loading\u{2026}"]);
         let failed = model_rows(&Lookup::Failed("boom".into()), &s, Live);
         assert_eq!(
             words(&failed),
-            ["Model", "Couldn't read the model list", "-", "View Usage"],
+            ["Model", "Couldn't read the model list"],
             "the reason is for logs, not made-up words"
         );
         let fallback = Catalog {
@@ -2254,7 +2294,14 @@ mod tests {
         );
         assert!(next.contains(&ModelRow::NewConversation));
         assert!(!read.contains(&ModelRow::NewConversation));
-        assert_eq!(next.last(), Some(&ModelRow::Usage));
+        // Usage has its own button beside the model pill (your word, 2026-11-21): the menu ends
+        // with its models (or the new conversation), no line, no Usage row.
+        assert_eq!(next.last(), Some(&ModelRow::NewConversation));
+        assert!(
+            matches!(read.last(), Some(ModelRow::Model { .. })),
+            "{read:?}"
+        );
+        assert!(!read.iter().any(|r| matches!(r, ModelRow::NewConversation)));
     }
 
     #[test]

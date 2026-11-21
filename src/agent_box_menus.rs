@@ -15,12 +15,15 @@ impl AgentTab {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let ui = cx.global::<Appearance>().theme.ui();
-        let panel = crate::overlay_panel::shell(&ui, width)
-            .id("agent-box-menu")
-            .p(px(4.))
-            .gap(px(0.))
-            .occlude()
-            .children(content);
+        // No content: only the panel beside it (the usage button's).
+        let panel = content.map(|content| {
+            crate::overlay_panel::shell(&ui, width)
+                .id("agent-box-menu")
+                .p(px(4.))
+                .gap(px(0.))
+                .occlude()
+                .child(content)
+        });
         div()
             .absolute()
             .top_0()
@@ -44,6 +47,7 @@ impl AgentTab {
                                         Some(
                                             BoxMenu::Folder
                                                 | BoxMenu::Model { .. }
+                                                | BoxMenu::Usage
                                                 | BoxMenu::Mode
                                                 | BoxMenu::Attach
                                         )
@@ -53,7 +57,7 @@ impl AgentTab {
                                     this.close_menu(cx)
                                 },
                             ))
-                            .child(self.marked("menu", div().child(panel)))
+                            .children(panel.map(|panel| self.marked("menu", div().child(panel))))
                             .children(side),
                     ),
             ))
@@ -405,6 +409,15 @@ impl AgentTab {
 
     /// The model chip's click: the model menu opens over it, or (open) closes. Opening asks for
     /// the model list again when it could not be read (or was never asked).
+    /// The usage button's click: its panel opens over it (read now unless fresh), or closes.
+    pub(super) fn usage_clicked(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.menu, Some(BoxMenu::Usage)) {
+            self.close_menu(cx);
+        } else {
+            self.open_usage(cx);
+        }
+    }
+
     pub(super) fn model_clicked(&mut self, cx: &mut Context<Self>) {
         if matches!(self.menu, Some(BoxMenu::Model { .. })) {
             self.close_menu(cx);
@@ -421,13 +434,7 @@ impl AgentTab {
         {
             crate::agent_catalog::load_catalog(provider, self.start.cwd.clone(), cx);
         }
-        self.open_menu(
-            BoxMenu::Model {
-                efforts_of,
-                usage: false,
-            },
-            cx,
-        );
+        self.open_menu(BoxMenu::Model { efforts_of }, cx);
     }
 
     /// Where the model the agent runs is in the model list, when it has efforts to choose
@@ -491,13 +498,12 @@ impl AgentTab {
         let applies = self
             .provider
             .map_or(Applies::Live, |p| p.applies(ChangeKind::Model));
-        let (efforts_of, usage_open) = match &self.menu {
-            Some(BoxMenu::Model { efforts_of, usage }) => (*efforts_of, *usage),
-            _ => (None, false),
+        let efforts_of = match &self.menu {
+            Some(BoxMenu::Model { efforts_of }) => *efforts_of,
+            _ => None,
         };
         let mut top = Vec::new();
         let mut list = Vec::new();
-        let mut bottom = Vec::new();
         for (i, row) in model_rows(&lookup, &shown, applies).iter().enumerate() {
             match row {
                 ModelRow::Heading => top.push(heading(MODEL_HEADING.into(), &ui)),
@@ -522,8 +528,6 @@ impl AgentTab {
                         this.keyboard_back(window, cx);
                     },
                 )),
-                ModelRow::Divider => bottom.push(divider(&ui)),
-                ModelRow::Usage => bottom.push(self.usage_menu_row(i, &ui, cx)),
             }
         }
         let menu = div()
@@ -539,10 +543,8 @@ impl AgentTab {
                     .overflow_y_scroll()
                     .children(list),
             )
-            .children(bottom)
             .into_any_element();
         let side = match (efforts_of, &lookup) {
-            _ if usage_open => Some(self.usage_panel(&ui, cx)),
             (Some(ix), Lookup::Ready(catalog)) => {
                 let items: Vec<AnyElement> = effort_rows(catalog, ix, &shown)
                     .into_iter()
@@ -777,17 +779,11 @@ impl AgentTab {
         self.marked_row(label.to_string(), row).into_any_element()
     }
 
-    /// `View Usage ▸`: the usage panel opens beside the model menu, and the agent's usage is
+    /// The usage panel opens over its button (and `/usage`), and the agent's usage is
     /// read now unless a reading under a minute old is there (or on its way). Never read while
     /// drawing. A scene tab only marks it loading: it runs no process.
     pub(crate) fn open_usage(&mut self, cx: &mut Context<Self>) {
-        self.open_menu(
-            BoxMenu::Model {
-                efforts_of: None,
-                usage: true,
-            },
-            cx,
-        );
+        self.open_menu(BoxMenu::Usage, cx);
         let Some(provider) = self.provider.filter(|p| p.usage_probe().is_some()) else {
             return;
         };
@@ -823,9 +819,9 @@ impl AgentTab {
         usage_rows(found, limits, available, now, offset)
     }
 
-    /// The View Usage panel beside the model menu (§5): per group its name, each limit's name,
+    /// The usage panel over its button (§5): per group its name, each limit's name,
     /// `N% left` with a ring and `Resets …`, what the agent said of it underneath.
-    fn usage_panel(&self, ui: &UiColors, cx: &App) -> AnyElement {
+    pub(super) fn usage_panel(&self, ui: &UiColors, cx: &App) -> AnyElement {
         // A "Top …" list once (the agent's text repeats them for the week: the session's
         // first), as a heading and up to three one-line rows (the designer's details).
         let mut tops_seen: Vec<String> = Vec::new();
@@ -1022,7 +1018,6 @@ impl AgentTab {
                 this.open_menu(
                     BoxMenu::Model {
                         efforts_of: Some(ix),
-                        usage: false,
                     },
                     cx,
                 )
@@ -1097,28 +1092,6 @@ impl AgentTab {
             _ => label,
         };
         self.marked_row(probe, row).into_any_element()
-    }
-
-    /// The model menu's last row: the gauge, "Usage", a chevron; it opens the usage view.
-    fn usage_menu_row(&self, i: usize, ui: &UiColors, cx: &mut Context<Self>) -> AnyElement {
-        use crate::icons::{Icon, icon};
-        let hover = ui.panel_hover;
-        let row = div()
-            .id(("box-model", i))
-            .h(px(ROW_H))
-            .px(px(8.))
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .rounded(px(ROW_RADIUS))
-            .cursor_pointer()
-            .hover(move |s| s.bg(hsla(hover)))
-            .child(icon(Icon::Gauge, px(14.), hsla(ui.text_dim)))
-            .child(div().flex_1().child(VIEW_USAGE))
-            .child(icon(Icon::ChevronRight, px(14.), hsla(ui.text_dim)))
-            .on_click(cx.listener(|this, _, _, cx| this.open_usage(cx)));
-        self.marked_row(VIEW_USAGE.to_string(), row)
-            .into_any_element()
     }
 
     /// `el`, and under `ui-shots` a probe that keeps where it was laid out by its `label`.

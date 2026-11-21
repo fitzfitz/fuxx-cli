@@ -1422,13 +1422,7 @@ pub(super) fn agent_box_empty() {
 
         // A menu opens upward from its chip; one at a time; Esc closes it.
         feed(cx, tab, |t, cx| {
-            t.open_menu(
-                BoxMenu::Model {
-                    efforts_of: None,
-                    usage: false,
-                },
-                cx,
-            )
+            t.open_menu(BoxMenu::Model { efforts_of: None }, cx)
         });
         let _ = frame_fresh(cx, window);
         let menu = part(cx, tab, n, "menu");
@@ -2601,10 +2595,7 @@ pub(super) fn agent_box_model_menu() {
             click_model_chip(n, cx, window, tab);
             assert_eq!(
                 menu(cx, tab),
-                Some(BoxMenu::Model {
-                    efforts_of: None,
-                    usage: false
-                }),
+                Some(BoxMenu::Model { efforts_of: None }),
                 "{n}"
             );
             let rows = model_rows_of(cx, tab);
@@ -2634,7 +2625,7 @@ pub(super) fn agent_box_model_menu() {
                 ),
                 "{n}"
             );
-            // Rows, top to bottom; View Usage last, under the divider.
+            // Rows, top to bottom; no Usage row (it is its own button beside the pill).
             let at = |l: &str| {
                 cx.read(|cx| tab.read(cx).shot_menu_row(l))
                     .unwrap_or_else(|| panic!("{n}: no row {l}"))
@@ -2644,11 +2635,13 @@ pub(super) fn agent_box_model_menu() {
                 at("Claude Example 4"),
                 at("Claude Tiny"),
             );
-            let usage = at("Usage");
             assert!(a.bottom() <= b.top() && b.bottom() <= t.top(), "{n}");
-            assert!(t.bottom() < usage.top(), "{n}: the divider between");
+            assert!(
+                cx.read(|cx| tab.read(cx).shot_menu_row("Usage")).is_none(),
+                "{n}: no Usage row in the menu"
+            );
             let menu_box = part(cx, tab, n, "menu");
-            assert!(inside(usage, menu_box), "{n}: inside the menu");
+            assert!(inside(t, menu_box), "{n}: inside the menu");
             assert!(
                 part(cx, tab, n, "model").top() >= menu_box.bottom(),
                 "{n}: upward"
@@ -2981,8 +2974,7 @@ pub(super) fn agent_box_effort_list() {
             assert_eq!(
                 menu(cx, tab),
                 Some(BoxMenu::Model {
-                    efforts_of: Some(1),
-                    usage: false
+                    efforts_of: Some(1)
                 }),
                 "{n}"
             );
@@ -3096,16 +3088,7 @@ pub(super) fn agent_box_model_loading() {
             click_model_chip(n, cx, window, tab);
             assert_eq!(
                 model_rows_of(cx, tab),
-                [
-                    ModelRow::Heading,
-                    ModelRow::Note("Loading\u{2026}"),
-                    ModelRow::Divider,
-                    ModelRow::Usage
-                ],
-                "{n}"
-            );
-            assert!(
-                cx.read(|cx| tab.read(cx).shot_menu_row("Usage")).is_some(),
+                [ModelRow::Heading, ModelRow::Note("Loading\u{2026}"),],
                 "{n}"
             );
         },
@@ -3124,8 +3107,6 @@ pub(super) fn agent_box_model_failed() {
                 [
                     ModelRow::Heading,
                     ModelRow::Note("Couldn't read the model list"),
-                    ModelRow::Divider,
-                    ModelRow::Usage
                 ],
                 "{n}"
             );
@@ -3331,23 +3312,18 @@ fn claude_usage() -> Lookup<Vec<UsageGroup>> {
     }])
 }
 
-/// Open the model menu and press `View Usage ▸` (real clicks).
+/// Press the usage button beside the model pill (a real click): its panel opens over it.
 fn open_usage(
     n: &str,
     cx: &mut VisualTestAppContext,
     window: AnyWindowHandle,
     tab: &Entity<AgentTab>,
 ) {
-    click_model_chip(n, cx, window, tab);
-    click_row(n, cx, window, tab, "Usage");
-    assert_eq!(
-        menu(cx, tab),
-        Some(BoxMenu::Model {
-            efforts_of: None,
-            usage: true
-        }),
-        "{n}"
-    );
+    let button = part(cx, tab, n, "usage-button");
+    cx.simulate_click(window, button.center(), Modifiers::none());
+    cx.run_until_parked();
+    let _ = frame_fresh(cx, window);
+    assert_eq!(menu(cx, tab), Some(BoxMenu::Usage), "{n}");
 }
 
 fn usage_rows_of(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<UsageRow> {
@@ -3366,9 +3342,10 @@ fn limit_row(name: &str, left: Option<u8>, resets: Option<&str>, note: Option<&s
 /// The usage panel is drawn beside the model menu, each of `names` has its row in it, top to
 /// bottom.
 fn assert_usage_panel(n: &str, cx: &VisualTestAppContext, tab: &Entity<AgentTab>, names: &[&str]) {
+    // Over its button, beside the model pill (your word, 2026-11-21).
     let side = part(cx, tab, n, "usage");
-    let menu_box = part(cx, tab, n, "menu");
-    assert!(side.left() >= menu_box.right(), "{n}: beside the menu");
+    let button = part(cx, tab, n, "usage-button");
+    assert!(side.bottom() <= button.top(), "{n}: over its button");
     let spots: Vec<Bounds<Pixels>> = names
         .iter()
         .map(|name| {
@@ -3425,16 +3402,13 @@ pub(super) fn agent_box_usage_claude() {
                 written(cx, tab).is_empty(),
                 "{n}: nothing sent to the agent"
             );
-            // A press on a model's `▸` swaps the panel for its efforts.
-            click_more(n, cx, window, tab, "Claude Example 4");
-            assert!(effort_row(cx, tab, "Low").is_some(), "{n}");
-            assert!(
-                cx.read(|cx| tab.read(cx).shot_menu_row("Usage \u{25b8} Current session"))
-                    .is_none(),
-                "{n}: the usage panel makes way"
-            );
+            // The button again closes it.
+            let button = part(cx, tab, n, "usage-button");
+            cx.simulate_click(window, button.center(), Modifiers::none());
+            cx.run_until_parked();
+            assert_eq!(menu(cx, tab), None, "{n}: the button closes it");
             // And the panel is back for the shot.
-            click_row(n, cx, window, tab, "Usage");
+            open_usage(n, cx, window, tab);
             assert_usage_panel(n, cx, tab, &["Current session"]);
         },
     );
@@ -3608,9 +3582,14 @@ pub(super) fn agent_box_usage_limit_close() {
             feed(cx, tab, |t, cx| t.shot_feed(said(LimitState::Close), cx));
             let _ = frame_fresh(cx, window);
             assert!(warning(cx), "{n}: close: the dot");
-            let chip = part(cx, tab, n, "model");
+            // On the usage button, where usage is now (beside the model pill).
+            let chip = part(cx, tab, n, "usage-button");
             let dot = part(cx, tab, n, "limit-warning");
-            assert!(inside(dot, chip), "{n}: on the chip {dot:?} {chip:?}");
+            assert!(inside(dot, chip), "{n}: on the button {dot:?} {chip:?}");
+            assert!(
+                chip.left() >= part(cx, tab, n, "model").right(),
+                "{n}: the button after the model pill"
+            );
             // Back to fine.
             feed(cx, tab, |t, cx| t.shot_feed(said(LimitState::Fine), cx));
             assert!(!warning(cx), "{n}: fine again");
@@ -4250,18 +4229,18 @@ pub(super) fn agent_box_slash_usage_opens_menu() {
         feed(cx, tab, |t, cx| {
             t.shot_usage(claude_usage(), Vec::new(), cx)
         });
-        let model = |efforts_of, usage| Some(BoxMenu::Model { efforts_of, usage });
+        let model = |efforts_of| Some(BoxMenu::Model { efforts_of });
         // Picked from the list.
         type_in_box(cx, window, "/model");
         press(cx, window, "enter");
-        assert_eq!(menu(cx, tab), model(None, false), "{n}: the model menu");
+        assert_eq!(menu(cx, tab), model(None), "{n}: the model menu");
         assert_eq!(box_text(cx, tab), "", "{n}: the box is clear");
         assert_eq!(slash_state(cx, tab), None, "{n}");
         press(cx, window, "escape");
         assert_eq!(menu(cx, tab), None, "{n}");
         type_in_box(cx, window, "/effort");
         press(cx, window, "enter");
-        assert_eq!(menu(cx, tab), model(Some(0), false), "{n}: the efforts");
+        assert_eq!(menu(cx, tab), model(Some(0)), "{n}: the efforts");
         assert!(
             effort_row(cx, tab, "High").is_some(),
             "{n}: its efforts are drawn"
@@ -4273,7 +4252,7 @@ pub(super) fn agent_box_slash_usage_opens_menu() {
         press(cx, window, "enter");
         assert_eq!(
             menu(cx, tab),
-            model(Some(0), false),
+            model(Some(0)),
             "{n}: sent, it opens the menu"
         );
         assert_eq!(box_text(cx, tab), "", "{n}");
@@ -4283,7 +4262,7 @@ pub(super) fn agent_box_slash_usage_opens_menu() {
         press(cx, window, "tab");
         assert_eq!(box_text(cx, tab), "/usage ", "{n}");
         press(cx, window, "enter");
-        assert_eq!(menu(cx, tab), model(None, true), "{n}: View Usage");
+        assert_eq!(menu(cx, tab), Some(BoxMenu::Usage), "{n}: the usage panel");
         assert_eq!(box_text(cx, tab), "", "{n}");
         nothing_sent(n, cx, tab);
         // A command with something after it is not one of these: it goes as text.
@@ -4313,7 +4292,7 @@ pub(super) fn agent_box_slash_usage_opens_menu() {
         // Left for the shot: View Usage, from the list.
         type_in_box(cx, window, "/usage");
         press(cx, window, "enter");
-        assert_eq!(menu(cx, tab), model(None, true), "{n}");
+        assert_eq!(menu(cx, tab), Some(BoxMenu::Usage), "{n}");
         assert_eq!(box_text(cx, tab), "", "{n}");
     });
 }
