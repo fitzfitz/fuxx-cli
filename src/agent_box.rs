@@ -1298,7 +1298,16 @@ impl AgentTab {
                                     .flex_none()
                                     .w(cells.cell_width * crate::card_view::INDENT_COLS as f32)
                                     .text_color(hsla(c.accent))
-                                    .child("\u{276f}"),
+                                    // A sparkle (your words, 2026-11-22), not `❯`: centred on
+                                    // the first line, a touch smaller than the text.
+                                    .h(cells.line_height)
+                                    .flex()
+                                    .items_center()
+                                    .child(crate::icons::icon(
+                                        crate::icons::Icon::Sparkle,
+                                        cells.font_size * 0.85,
+                                        hsla(c.accent),
+                                    )),
                             ),
                         )
                         .child(div().flex_1().min_w_0().child(self.composer.clone())),
