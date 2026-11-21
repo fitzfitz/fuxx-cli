@@ -1,6 +1,5 @@
 # fuxx's window chrome for Catppuccin Latte, from Catppuccin's Latte palette (not part of the upstream file).
-# canvas: crust; accent: mauve; working: peach; needs you: red; done: green.
-chrome-canvas = #dce0e8
+# accent: mauve; working: peach; needs you: red; done: green.
 chrome-accent = #8839ef
 chrome-working = #fe640b
 chrome-waiting = #d20f39
