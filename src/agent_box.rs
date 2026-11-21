@@ -53,7 +53,11 @@ const CONTROL_INSET: f32 = 3.0;
 /// joints' radius, the outer box's bottom corners.
 const SEND: f32 = 34.0;
 const SEND_INSET: f32 = 3.0;
-const NOTCH: f32 = 40.0;
+/// The cut's distance round the circle (your words: "add gap between chatbox with button"; the
+/// designer: 6, twice the box's 3 pt step), and the square it is cut with: from the outer
+/// box's inside corner to the cut's straight edges.
+const NOTCH_GAP: f32 = 6.0;
+const NOTCH: f32 = SEND_INSET + SEND + NOTCH_GAP;
 const JOINT: f32 = 8.0;
 /// Round the circle with the same centre (your words: "add more radius on the right bottom chat
 /// box so the radius rounded and the button circle match"): its radius, the 3 around it, the
@@ -1139,15 +1143,19 @@ impl AgentTab {
                     .into_any_element()
             }
             None => {
-                // The inner box's colour in every state (your words: "button background make it
-                // same as inner box background color"); ready, its arrow in the accent.
-                let hover = c.control;
+                // The accent (your words: "the button background should back to the first one the
+                // blue one"); empty, a dimmed accent, not yet pressable (the designer).
+                let hover = c.send_hover;
                 self.marked("send", circle("agent-send"))
-                    .bg(hsla(c.box_fill))
+                    .bg(hsla(if empty { c.send_empty } else { c.accent }))
                     .child(crate::icons::icon(
                         crate::icons::Icon::ArrowUp,
                         px(18.),
-                        hsla(if empty { c.dim } else { c.send_arrow }),
+                        hsla(if empty {
+                            c.send_empty_arrow
+                        } else {
+                            c.on_accent
+                        }),
                     ))
                     .when(!empty, |d| {
                         d.cursor_pointer().hover(move |s| s.bg(hsla(hover)))
@@ -1834,7 +1842,8 @@ fn notch(c: &Colors) -> Vec<Div> {
     let mut pieces = vec![
         at(0., 0., NOTCH)
             .bg(outer)
-            .rounded_tl(px(NOTCH / 2.))
+            // (About the circle's centre.)
+            .rounded_tl(px(SEND / 2. + NOTCH_GAP))
             // Inside the outer box's 1 px edge.
             .rounded_br(px(OUTER_BOTTOM_RADIUS - EDGE)),
     ];
