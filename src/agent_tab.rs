@@ -662,6 +662,15 @@ pub struct Colors {
     /// The send circle under the pointer, ready (the designer's details): the accent a step
     /// lighter (dark) or darker. (Empty, it is a control: `control`, its arrow `dim`.)
     pub send_hover: Rgb,
+    /// The send circle, ready (your reference, 2026-11-21): the ink's colour (white on a dark
+    /// theme), its arrow the page's — the one strong thing in the box.
+    pub send_fill: Rgb,
+    pub send_ink: Rgb,
+    /// The inner box's lit edge (`UiColors::composer_glow_*`).
+    pub glow_top: Rgb,
+    pub glow_bottom: Rgb,
+    /// The page is dark (the box's shadow is stronger there).
+    pub page_is_dark: bool,
     /// A tool row under the pointer (spec A §A): the panel a step towards the foreground.
     pub row_hover: Rgb,
     /// The context meter (spec A §C): its track, and its fill under 70 %, to 89 % and from 90 %;
@@ -696,11 +705,6 @@ pub struct Colors {
     pub error_text: Rgb,
 }
 
-const WHITE: Rgb = Rgb {
-    r: 255,
-    g: 255,
-    b: 255,
-};
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
 
 /// The top bar's height (spec A §C); the tool modal's scrim starts under it.
@@ -752,7 +756,12 @@ impl Colors {
             pill_hover: ui.composer_pill_hover,
             control: mix(ui.composer_inner, theme.foreground, 0.06),
             control_hover: mix(ui.composer_inner, theme.foreground, 0.10),
-            send_hover: mix(ui.accent, if theme.is_dark() { WHITE } else { BLACK }, 0.10),
+            send_hover: mix(ui.text, page, 0.12),
+            send_fill: ui.text,
+            send_ink: readable(page, &[ui.text, mix(ui.text, page, 0.12)], TEXT_MIN),
+            glow_top: ui.composer_glow_top,
+            glow_bottom: ui.composer_glow_bottom,
+            page_is_dark: theme.is_dark(),
             row_hover,
             meter_track,
             meter_ok: on_meter(ui.accent),
@@ -5847,7 +5856,11 @@ mod tests {
             // The send circle (the designer's details): ready, the arrow on the accent (text's
             // floor, "on accent" above) and under the pointer, a mark; empty, a control ("dim on
             // a control" above).
-            let got = contrast(c.on_accent, c.send_hover);
+            // Your reference (2026-11-21): send is the ink's circle with the page's arrow, the
+            // one strong thing in the box.
+            let got = contrast(c.send_ink, c.send_fill);
+            assert!(got >= TEXT_MIN - 0.01, "{name}: send's arrow {got:.2}");
+            let got = contrast(c.send_ink, c.send_hover);
             assert!(
                 got >= crate::ui_tokens::MARK_MIN - 0.01,
                 "{name}: send hover {got:.2}"

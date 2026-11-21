@@ -169,6 +169,10 @@ pub struct UiColors {
     pub composer_outer: Rgb,
     pub composer_edge: Rgb,
     pub composer_inner: Rgb,
+    /// The inner box's edge, lit from above (your reference, 2026-11-21): brightest along its
+    /// top, softer down its sides.
+    pub composer_glow_top: Rgb,
+    pub composer_glow_bottom: Rgb,
     /// The branch pill in the composer's tab, under the pointer: a step over `composer_inner`.
     pub composer_pill_hover: Rgb,
     /// The Changes progress bar's unfilled track, on the repo card (`card_hover`; M11al Task 9).
@@ -550,10 +554,24 @@ impl Theme {
                 .unwrap_or_else(|| ends(15.0));
             (top, bottom, readable(ink, &[top, bottom], TEXT_MIN))
         });
-        let (composer_outer, composer_inner) = if dark {
-            (mix(card, fg, 0.06), mix(card, fg, 0.09))
+        // Your reference (2026-11-21, "the FEELS"): the box a whisper above the page (2.5 %),
+        // the box you type in a step more (5.5 %), its edge lit from above (14 % along the top,
+        // 8 % down the sides). Light: toward white, the light still from above (a white top,
+        // a darker bottom).
+        let (composer_outer, composer_inner, composer_glow_top, composer_glow_bottom) = if dark {
+            (
+                mix(card, fg, 0.025),
+                mix(card, fg, 0.055),
+                mix(card, fg, 0.14),
+                mix(card, fg, 0.08),
+            )
         } else {
-            (mix(card, white, 0.40), mix(card, white, 0.80))
+            (
+                mix(card, white, 0.40),
+                mix(card, white, 0.80),
+                white,
+                mix(card, fg, 0.10),
+            )
         };
         UiColors {
             sidebar_background: canvas,
@@ -593,11 +611,13 @@ impl Theme {
             // fill on the outer's sets it apart).
             composer_outer,
             composer_edge: readable(
-                mix(card, fg, if dark { 0.11 } else { 0.10 }),
+                mix(card, fg, if dark { 0.07 } else { 0.10 }),
                 &[card, composer_outer],
                 SOFT_LINE_MIN,
             ),
             composer_inner,
+            composer_glow_top,
+            composer_glow_bottom,
             composer_pill_hover: mix(composer_inner, fg, 0.05),
             window_edge: if dark { black } else { canvas },
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
@@ -1906,5 +1926,33 @@ mod tests {
         assert_ne!(ui.text_dim, light.background);
         let l = luminance(ui.row_active);
         assert!(l > luminance(light.foreground) && l < luminance(light.background));
+    }
+
+    /// Your reference (2026-11-21, "the FEELS"): the chat box sits in the dark, a whisper above
+    /// the page; the box you type in one step more; its edge lit from above (brightest along
+    /// the top); on a light theme the light still comes from above.
+    #[test]
+    fn the_box_steps_up_softly_and_is_lit_from_above() {
+        use crate::ui_tokens::{contrast, relative_luminance as l};
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            assert!(
+                l(ui.composer_glow_top) > l(ui.composer_glow_bottom),
+                "{name}: lit from above"
+            );
+            if theme.is_dark() {
+                assert!(
+                    l(ui.card) < l(ui.composer_outer)
+                        && l(ui.composer_outer) < l(ui.composer_inner)
+                        && l(ui.composer_inner) < l(ui.composer_glow_bottom),
+                    "{name}: page < outer < inner < its edge"
+                );
+                let lift = contrast(ui.composer_outer, ui.card);
+                assert!(
+                    lift < 1.15,
+                    "{name}: the outer box a whisper above the page ({lift:.2})"
+                );
+            }
+        }
     }
 }

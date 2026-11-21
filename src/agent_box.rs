@@ -1189,13 +1189,15 @@ impl AgentTab {
                 // Ready, the accent (your words: "the button background should back to the first
                 // one the blue one"); empty, a control like `+` (the designer's review, your "go
                 // with the designer, grey when empty"): turning blue says it can send.
+                // Your reference (2026-11-21): ready, the ink's circle (white on dark) with the
+                // page's arrow, the one strong thing in the box.
                 let hover = c.send_hover;
                 self.marked("send", circle("agent-send"))
-                    .bg(hsla(if empty { c.control } else { c.accent }))
+                    .bg(hsla(if empty { c.control } else { c.send_fill }))
                     .child(crate::icons::icon(
                         crate::icons::Icon::ArrowUp,
                         px(18.),
-                        hsla(if empty { c.dim } else { c.on_accent }),
+                        hsla(if empty { c.dim } else { c.send_ink }),
                     ))
                     .when(!empty, |d| {
                         d.cursor_pointer().hover(move |s| s.bg(hsla(hover)))
@@ -1305,6 +1307,34 @@ impl AgentTab {
     ) -> Div {
         use crate::card_view::{EDGE, OUTER_INSET, PILL_GAP, TAB_PAD, TAB_RISE};
         let (outer, edge) = (hsla(c.outer), hsla(c.outer_edge));
+        // Your reference (2026-11-21, "the FEELS"): the inner box's edge lit from above — a 1 pt
+        // rim behind it, brightest along its top, fading down its sides (the send notch covers
+        // it at the bottom right); and the box resting on the page with a soft shadow.
+        let rim = div()
+            .absolute()
+            .top(px(OUTER_INSET - 1.))
+            .left(px(OUTER_INSET - 1.))
+            .right(px(OUTER_INSET - 1.))
+            .bottom(px(OUTER_INSET - 1.))
+            .rounded_t(px(13.))
+            .rounded_bl(px(BUTTON / 2. + CONTROL_INSET + 1.))
+            // Concentric with the send notch's corner, so the notch hides it there.
+            .rounded_br(px(OUTER_BOTTOM_RADIUS - EDGE - (OUTER_INSET - 1.)))
+            .bg(gpui::linear_gradient(
+                180.,
+                gpui::linear_color_stop(hsla(c.glow_top), 0.),
+                gpui::linear_color_stop(hsla(c.glow_bottom), 0.6),
+            ));
+        let shadow = gpui::BoxShadow {
+            color: gpui::Hsla {
+                a: if c.page_is_dark { 0.35 } else { 0.10 },
+                ..gpui::black()
+            },
+            offset: gpui::point(px(0.), px(4.)),
+            blur_radius: px(12.),
+            spread_radius: px(0.),
+            inset: false,
+        };
         let body = div()
             .relative()
             .w_full()
@@ -1315,6 +1345,8 @@ impl AgentTab {
             .border_color(edge)
             .rounded_tr(px(15.))
             .rounded_b(px(OUTER_BOTTOM_RADIUS))
+            .shadow(vec![shadow])
+            .child(rim)
             .child(the_box)
             .child(send);
         let body = self.marked("outer", body);

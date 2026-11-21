@@ -3371,6 +3371,23 @@ fn paint_cards(
                     );
                     let tab = crate::card_view::composer_tab(p.state.borrow().pills_w, w);
                     let (r_tab, r_body, r_step) = (px(14.0), px(15.0), px(8.0));
+                    // Your reference (2026-11-21, "the FEELS"): the box rests on the page with a
+                    // soft shadow under it.
+                    let dark = crate::ui_tokens::relative_luminance(p.ui.card) < 0.5;
+                    window.paint_drop_shadows(
+                        body,
+                        Corners::all(r_body),
+                        &[gpui::BoxShadow {
+                            color: gpui::Hsla {
+                                a: if dark { 0.35 } else { 0.10 },
+                                ..gpui::black()
+                            },
+                            offset: point(px(0.), px(4.)),
+                            blur_radius: px(12.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        }],
+                    );
                     window.paint_quad(gpui::quad(
                         body,
                         Corners {
@@ -3451,7 +3468,19 @@ fn paint_cards(
                             px(height - EDGE - CTX_ROW - OUTER_INSET - EDGE),
                         ),
                     );
-                    // No edge: its fill on the outer box sets it apart (the designer).
+                    // Its edge lit from above (your reference, 2026-11-21): a 1 pt rim behind it,
+                    // brightest along the top, fading down its sides.
+                    window.paint_quad(
+                        fill(
+                            inner.dilate(px(1.0)),
+                            gpui::linear_gradient(
+                                180.,
+                                gpui::linear_color_stop(hsla(p.ui.composer_glow_top), 0.),
+                                gpui::linear_color_stop(hsla(p.ui.composer_glow_bottom), 0.6),
+                            ),
+                        )
+                        .corner_radii(px(13.0)),
+                    );
                     window
                         .paint_quad(fill(inner, hsla(p.ui.composer_inner)).corner_radii(px(12.0)));
                     let origin_x = f32::from(inner.left()) + INNER_PAD_X;
