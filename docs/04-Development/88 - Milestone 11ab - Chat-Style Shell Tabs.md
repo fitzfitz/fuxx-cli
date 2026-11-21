@@ -676,9 +676,14 @@ so the radius rounded and the button circle match".
 - **Your two follow-ups:** the circle is the inner box's colour in every state, its arrow dim when empty and in the
   accent when there's text (`send_arrow`, held to `MARK_MIN` on the box); the outer box's bottom corners are
   concentric with the circle (17 + 3 + the 1 px edge = 21).
+- **Your next look** ("make it cleaner, add gap between chatbox with button and I think the button background should
+  back to the first one the blue one"; the designer's numbers): the cut 6 round the circle (arc radius 23, its straight
+  edges 43 in, the mode pill 51 in); the circle the accent again, `on_accent` arrow, a step lighter or darker under the
+  pointer; empty, a dimmed accent (`mix(composer_outer, accent, 0.60)`: the designer's 0.45 looked muddy on Mocha,
+  its fallback taken) with its arrow held to `MARK_MIN`. (The inner-box-coloured circle of your previous look is gone.)
 - **Checks:** 2306 tests; scenes `agent-box-terminal-text` (now also: a changed setting redraws; a typed letter glides,
   failing with glide off) and `agent-box-send-notch` (34 across, 3 in, level with the controls, the mode pill 11
-  before it, unchanged as the box grows); clippy at the baseline; ui-shots 259 passed, the 5 known failures
+  before it, 14 since the gap; unchanged as the box grows); clippy at the baseline; ui-shots 259 passed, the 5 known failures
   (`file-tab-md-mermaid` failed once in a full run and passed alone twice: timing).
 
 ## Related

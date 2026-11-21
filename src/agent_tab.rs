@@ -679,9 +679,19 @@ pub struct Colors {
     /// send button, a step over the box (6 %), a little more under the pointer (10 %).
     pub control: Rgb,
     pub control_hover: Rgb,
-    /// The send circle's arrow when there's text: the accent, held to `MARK_MIN` on the box.
-    pub send_arrow: Rgb,
+    /// The send circle (the designer's details): ready, the accent, a step lighter (dark) or
+    /// darker under the pointer; empty, a dimmed accent and its arrow held to `MARK_MIN` on it.
+    pub send_hover: Rgb,
+    pub send_empty: Rgb,
+    pub send_empty_arrow: Rgb,
 }
+
+const WHITE: Rgb = Rgb {
+    r: 255,
+    g: 255,
+    b: 255,
+};
+const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
 
 impl Colors {
     pub fn of(theme: &Theme) -> Colors {
@@ -689,6 +699,7 @@ impl Colors {
         let page = theme.background;
         let fit = |c: Rgb, on: Rgb| ensure_contrast(c, on, TEXT_MIN);
         let ask_fill = mix(page, ui.ring_waiting, 0.07);
+        let send_empty = mix(ui.composer_outer, ui.accent, 0.60);
         let code_fill = mix(page, ui.text, 0.06);
         Colors {
             page,
@@ -726,7 +737,13 @@ impl Colors {
             pill_hover: ui.composer_pill_hover,
             control: mix(ui.composer_inner, theme.foreground, 0.06),
             control_hover: mix(ui.composer_inner, theme.foreground, 0.10),
-            send_arrow: ensure_contrast(ui.accent, ui.composer_inner, crate::ui_tokens::MARK_MIN),
+            send_hover: mix(ui.accent, if theme.is_dark() { WHITE } else { BLACK }, 0.10),
+            send_empty,
+            send_empty_arrow: crate::theme::readable(
+                ui.on_accent,
+                &[send_empty],
+                crate::ui_tokens::MARK_MIN,
+            ),
         }
     }
 }
@@ -4668,14 +4685,20 @@ mod tests {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got:.2}");
             }
-            // The send circle's ready arrow, the accent on the box's colour (your words: "button
-            // background make it same as inner box background color"): a mark, so the marks'
-            // floor.
-            let got = contrast(c.send_arrow, c.box_fill);
-            assert!(
-                got >= crate::ui_tokens::MARK_MIN - 0.01,
-                "{name}: send arrow {got:.2}"
-            );
+            // The send circle (your words: "the button background should back to the first one
+            // the blue one"; the designer's details): ready, the arrow on the accent (text's
+            // floor, "on accent" above) and under the pointer; empty, a dimmed accent whose
+            // arrow, a mark, keeps the marks' floor.
+            for (what, arrow, fill) in [
+                ("send empty", c.send_empty_arrow, c.send_empty),
+                ("send hover", c.on_accent, c.send_hover),
+            ] {
+                let got = contrast(arrow, fill);
+                assert!(
+                    got >= crate::ui_tokens::MARK_MIN - 0.01,
+                    "{name}: {what} {got:.2}"
+                );
+            }
             // Raw text_dim, as the brief asks: on panel and on card.
             let ui = theme.ui();
             for (on, bg) in [("panel", ui.panel), ("card", ui.card)] {

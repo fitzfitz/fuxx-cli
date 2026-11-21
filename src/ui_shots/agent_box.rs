@@ -672,7 +672,7 @@ fn agy_conversation() -> String {
 /// Your words: "can you make the button on the bottom right to be like this? its outside but we
 /// play radius on the inner box on the bottom right". The designer's details: send a 34 circle
 /// 3 in from the outer box's inside right and bottom, its centre level with the controls'; the
-/// mode pill ends 11 before it; the notch stays at the bottom-right as the box grows.
+/// mode pill ends 14 before it (the cut 6 round the circle: "add gap between chatbox with button"); the notch stays at the bottom-right as the box grows.
 pub(super) fn agent_box_send_notch() {
     layout_scene("agent-box-send-notch", |n, cx, window, tab| {
         let near = |a: Pixels, b: Pixels| (a - b).abs() <= px(0.5);
@@ -697,8 +697,8 @@ pub(super) fn agent_box_send_notch() {
                 attach.center().y
             );
             assert!(
-                (send.left() - mode.right() - px(11.)).abs() <= px(1.),
-                "{n} {when}: the mode pill 11 before it ({:?} {:?})",
+                (send.left() - mode.right() - px(14.)).abs() <= px(1.),
+                "{n} {when}: the mode pill 14 before it ({:?} {:?})",
                 send.left(),
                 mode.right()
             );

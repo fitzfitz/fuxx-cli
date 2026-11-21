@@ -34,7 +34,8 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 - **What:** the agent box's caret runs on the pane's cursor code (shape, glide, trail, glow, colour); send and stop
   sit in a circle in a notch cut from the inner box's bottom-right, the circle in the box's colour, the outer corner
-  concentric with it (the lead designer's details, your follow-ups). Note 88.
+  concentric with it; then a 6 pt gap round the circle, and the circle blue again (a dimmed blue while empty). The
+  lead designer's details, your follow-ups. Note 88.
 - **Checks:** 2306 tests; clippy at the baseline; ui-shots 259 passed, 5 known failures.
 
 ### 2026-11-21 — Chore: the agent box and the shell box made the same
