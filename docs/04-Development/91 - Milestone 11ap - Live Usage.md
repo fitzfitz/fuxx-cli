@@ -139,3 +139,29 @@ and a press outside close it too. Scene `status-bar-usage` hovers: open, a row's
 Then (2026-11-22, "why it show everything including the top skills etc? i dont need that"): Claude's "Top skills /
 subagents / plugins / MCP servers" lists after its limits are left out of the usage rows (popover and box panel).
 
+Then (2026-11-22, "when hover the model that has effort, just directly show it on the side"): a model row's hover opens
+its effort list beside it (a model without efforts closes it). Scene `agent-box-effort-list` hovers.
+
+## Chore: the model menu redesigned (2026-11-22, building) — the lead designer's spec
+
+Your words: "about the popup model, make the popup UI great, its too boring". Spec ("quiet glass, one lit row"):
+- **Surface** in `menu_frame` (so mode, folder, attach menus share it): outer div `linear_gradient(180°, glow_top @0,
+  glow_bottom @0.6)`, p 1, r 13; inner `composer_inner`, r 12, p 4. Shadows on the outer: contact (0,1) blur 2 black
+  .30 dark / .06 Latte; ambient (0,12) blur 32 .40 / .12. Width 260; list max 360.
+- **Header** "Model" (h 26, px 10, META `text_dim`) with the current model on the right in `text` ("Haiku 5.5 · High").
+- **Rows** h 32, r 8, pl 10 / pr 6, gap 6; label split at its first space: family in `text`, version in `text_dim`;
+  hover `composer_pill_hover`; **current** row: fill `menu_current` (accent over `composer_inner` 12 % dark / 8 %
+  Latte, lowered until `text`/`text_dim` ≥ 4.5), a 2×14 accent bar at left 3, ✓ in `accent`; its effort a pill (h 18,
+  px 7, r 9, `composer_pill_hover`, META `text_dim`) before the ✓; › 12 `text_dim` on hover / current / open row.
+- **Default · recommended**: "recommended" a hairline tag (h 18, px 7, r 9, 1 px `composer_edge`, no fill); the line
+  under it replaced by a 4 px gap.
+- **Grouping** (≥ 7 models and some older): pure `group_models(labels) -> (latest, older)` — latest = each family's
+  first in catalog order; "Latest" heading (h 22, META dim); "Older  N ⌄" row (h 28) expands in place
+  (`BoxMenu::Model { older_open }`, open when the current model is older; reset on close). Else flat.
+- **Effort panel**: same surface, width 140, heading "Effort", the model-row anatomy, current as above.
+- **Motion**: open 120 ms ease-out (fade + 4 px rise); effort panel 90 ms fade; close and hover instant.
+- **Contrast**: `composer_inner`, `composer_pill_hover`, `menu_current` among `text_surfaces`; accent ≥ MARK_MIN on
+  `menu_current`; tests over every theme.
+- **Risks**: the rim may vanish on Latte (then ambient .16, no dark border); "Latest" relies on newest-first catalog
+  order per family (agy's labels: flat if odd); a long label must ellipsize before the effort pill and ✓.
+
