@@ -3333,7 +3333,7 @@ fn usage_rows_of(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<Usage
 fn limit_row(name: &str, left: Option<u8>, resets: Option<&str>, note: Option<&str>) -> UsageRow {
     UsageRow::Limit {
         name: name.into(),
-        left_pct: left,
+        used_pct: left.map(|l| 100 - l),
         resets: resets.map(String::from),
         note: note.map(String::from),
     }
@@ -3495,26 +3495,19 @@ pub(super) fn agent_box_usage_checking() {
             });
             let _ = frame_fresh(cx, window);
             assert_eq!(usage_rows_of(cx, tab).len(), 2, "{n}");
-            // A reading that failed says so.
+            // A later reading that failed keeps the numbers it had (M11ap: they never blank out;
+            // the status bar's popover says "Couldn't refresh").
             feed(cx, tab, |t, cx| {
                 t.shot_usage(Lookup::Failed("exit 1".into()), Vec::new(), cx)
             });
             let _ = frame_fresh(cx, window);
-            assert_eq!(
-                usage_rows_of(cx, tab),
-                [UsageRow::Quiet("Couldn't read usage".into())],
-                "{n}"
-            );
-            // And the shot is of the wait.
+            assert_eq!(usage_rows_of(cx, tab).len(), 2, "{n}: kept");
+            // And the shot is of it reading again: the numbers stay (M11ap), not "Checking…".
             feed(cx, tab, |t, cx| {
                 t.shot_usage(Lookup::Loading, Vec::new(), cx)
             });
             let _ = frame_fresh(cx, window);
-            assert_eq!(
-                usage_rows_of(cx, tab),
-                [UsageRow::Quiet(CHECKING.into())],
-                "{n}"
-            );
+            assert_eq!(usage_rows_of(cx, tab).len(), 2, "{n}: kept while it reads");
         },
     );
 }

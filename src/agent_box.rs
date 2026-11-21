@@ -422,7 +422,7 @@ pub enum UsageRow {
     /// resets, and what the agent said of its state.
     Limit {
         name: String,
-        left_pct: Option<u8>,
+        used_pct: Option<u8>,
         resets: Option<String>,
         note: Option<String>,
     },
@@ -491,7 +491,7 @@ pub fn usage_rows(
                             };
                             UsageRow::Limit {
                                 name: name.clone(),
-                                left_pct: Some(*left_pct),
+                                used_pct: Some(100 - (*left_pct).min(100)),
                                 resets,
                                 note: told.and_then(|l| limit_line(l, utc_offset)),
                             }
@@ -511,7 +511,7 @@ pub fn usage_rows(
         if let Some(note) = limit_line(limit, utc_offset) {
             rows.push(UsageRow::Limit {
                 name: limit.limit.clone(),
-                left_pct: None,
+                used_pct: None,
                 resets: ahead(limit).map(|at| resets_in(at - now_unix)),
                 note: Some(note),
             });
@@ -2752,7 +2752,7 @@ mod tests {
     ) -> UsageRow {
         UsageRow::Limit {
             name: name.into(),
-            left_pct: left,
+            used_pct: left.map(|l| 100 - l),
             resets: resets.map(String::from),
             note: note.map(String::from),
         }

@@ -2,6 +2,7 @@
 //! rows they share (moved out of `agent_box.rs`, which keeps the pure part and the box itself).
 
 use super::*;
+use crate::usage_view::{heading, quiet, top_row};
 
 impl AgentTab {
     /// The open menu's panel (`content` in it), hung above its chip (a child of it) and opening
@@ -806,7 +807,14 @@ impl AgentTab {
         let catalogs = cx.try_global::<Catalogs>();
         // The last reading, however old: the panel never swaps numbers for `Checking…`; a
         // reopening reads again.
-        let found = catalogs.and_then(|c| c.usage_last(agent));
+        // M11ap: the live usage (the last good reading, freshened by what the agent said since),
+        // else what the reading is doing (checking, failed).
+        let live = catalogs
+            .and_then(|c| c.live_usage(agent))
+            .map(Lookup::Ready);
+        let found = live
+            .as_ref()
+            .or_else(|| catalogs.and_then(|c| c.usage_last(agent)));
         let limits = catalogs.map_or(&[][..], |c| c.limits(agent));
         let available = provider
             .usage_probe()
@@ -850,10 +858,10 @@ impl AgentTab {
                 },
                 UsageRow::Limit {
                     name,
-                    left_pct,
+                    used_pct,
                     resets,
                     note,
-                } => items.push(self.limit_row(name, left_pct, resets, note, ui)),
+                } => items.push(self.limit_row(name, used_pct, resets, note, ui, cx)),
             }
         }
         let panel = crate::overlay_panel::shell(ui, USAGE_WIDTH)
@@ -873,70 +881,18 @@ impl AgentTab {
         self.marked("usage", div().child(panel)).into_any_element()
     }
 
-    /// One limit of the usage panel: its name, `N% left` and its ring (when the reading says),
-    /// `Resets …` under it, and what the agent said (close to, or at, its limit).
+    /// One limit of the usage panel (`usage_view::limit_row`), marked for the scenes.
     fn limit_row(
         &self,
         name: String,
-        left_pct: Option<u8>,
+        used_pct: Option<u8>,
         resets: Option<String>,
         note: Option<String>,
         ui: &UiColors,
+        cx: &App,
     ) -> AnyElement {
-        let small = |t: String, color| {
-            div()
-                .text_size(px(text::META))
-                .text_color(hsla(color))
-                .child(SharedString::from(t))
-        };
-        // The designer's details: the name and `N% left`, a full-width bar (the waiting colour at
-        // 10 % left or less), `Resets …` under it.
-        let dim = ui.text_dim;
-        let top = div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .text_size(px(13.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(SharedString::from(name.clone())),
-            )
-            .children(left_pct.map(|left| {
-                div()
-                    .flex_none()
-                    .text_color(hsla(dim))
-                    .child(SharedString::from(format!("{left}% left")))
-            }));
-        let bar = left_pct.map(|left| {
-            let fill = if left <= 10 { ui.ring_waiting } else { dim };
-            div()
-                .w_full()
-                .h(px(4.))
-                .my(px(4.))
-                .rounded(px(2.))
-                .bg(hsla(ui.panel_border))
-                .child(
-                    div()
-                        .h_full()
-                        .w(gpui::relative(f32::from(left.min(100)) / 100.))
-                        .rounded(px(2.))
-                        .bg(hsla(fill)),
-                )
-        });
-        let row = div()
-            .px(px(8.))
-            .py(px(6.))
-            .flex()
-            .flex_col()
-            .child(top)
-            .children(bar)
-            .children(resets.map(|t| small(t, dim)))
-            .children(note.map(|t| small(t, ui.ring_waiting)));
+        let ink = crate::usage_view::UsageInk::of(&cx.global::<Appearance>().theme);
+        let row = crate::usage_view::limit_row(name.clone(), used_pct, resets, note, ui, &ink);
         self.marked_row(format!("Usage \u{25b8} {name}"), row)
             .into_any_element()
     }
@@ -1120,22 +1076,6 @@ impl AgentTab {
     }
 }
 
-/// A menu's section heading: 24 tall, quiet (the designer's details).
-fn heading(text: String, ui: &UiColors) -> AnyElement {
-    div()
-        .h(px(24.))
-        .px(px(8.))
-        .flex()
-        .items_center()
-        .text_size(px(text::META))
-        .text_color(hsla(ui.text_dim))
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .text_ellipsis_start()
-        .child(SharedString::from(text))
-        .into_any_element()
-}
-
 /// A 1 px line between a menu's parts, 4 above and below.
 fn divider(ui: &UiColors) -> AnyElement {
     div()
@@ -1143,44 +1083,5 @@ fn divider(ui: &UiColors) -> AnyElement {
         .mx(px(4.))
         .my(px(4.))
         .bg(hsla(ui.panel_border))
-        .into_any_element()
-}
-
-/// One row of a usage "Top …" list: its name on one line, cut with "…", its percentage on the
-/// right.
-fn top_row(name: String, pct: String, ui: &UiColors) -> AnyElement {
-    div()
-        .h(px(24.))
-        .px(px(8.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .child(SharedString::from(name)),
-        )
-        .child(
-            div()
-                .flex_none()
-                .text_color(hsla(ui.text_dim))
-                .child(SharedString::from(pct)),
-        )
-        .into_any_element()
-}
-
-/// A quiet line in a menu's list (no row to pick).
-fn quiet(text: impl Into<SharedString>, ui: &UiColors) -> AnyElement {
-    div()
-        .h(px(ROW_H))
-        .px(px(26.))
-        .flex()
-        .items_center()
-        .text_color(hsla(ui.text_dim))
-        .child(text.into())
         .into_any_element()
 }

@@ -53,7 +53,11 @@ const UNREADABLE_USAGE: &str = "Couldn't read usage";
 
 /// A bucket as a limit: with no fraction left it is only its name (never a made-up number).
 fn usage_bucket(b: &Value) -> UsageLimit {
+    // M11ap: shown beside "N% used", so "… Remaining" would contradict it.
     let name = s(&b["name"]).unwrap_or_default();
+    let name = name
+        .strip_suffix(" Remaining")
+        .map_or(name.clone(), String::from);
     match b["remaining_fraction"].as_f64() {
         Some(f) => UsageLimit::Read {
             name,
@@ -1181,7 +1185,12 @@ mod tests {
             assert_eq!(g.limits.len(), buckets.len());
             for (limit, b) in g.limits.iter().zip(buckets) {
                 let want = UsageLimit::Read {
-                    name: b["name"].as_str().unwrap().into(),
+                    // Shown beside "N% used": agy's " Remaining" goes (M11ap).
+                    name: b["name"]
+                        .as_str()
+                        .unwrap()
+                        .trim_end_matches(" Remaining")
+                        .into(),
                     left_pct: (b["remaining_fraction"].as_f64().unwrap() * 100.0).round() as u8,
                     resets: Some(Reset::At(
                         rfc3339_unix(b["reset_time"].as_str().unwrap()).unwrap(),
@@ -1270,5 +1279,14 @@ mod tests {
     #[test]
     fn agy_knows_no_folders() {
         assert!(AGY.known_folders(Path::new("/nonexistent")).is_empty());
+    }
+
+    /// M11ap: next to "N% used", a bucket's name loses agy's trailing " Remaining".
+    #[test]
+    fn bucket_names_drop_remaining() {
+        let b = serde_json::json!({"name": "Weekly Limit Remaining", "remaining_fraction": 0.45});
+        assert!(
+            matches!(usage_bucket(&b), UsageLimit::Read { name, .. } if name == "Weekly Limit")
+        );
     }
 }
