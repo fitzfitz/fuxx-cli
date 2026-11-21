@@ -35,6 +35,10 @@ pub(super) const FILE: &str = file!();
 /// scene's own fixtures are added to its row.)
 const TAB: &[&str] = &[
     "src/agent_tab.rs",
+    "src/agent_top.rs",
+    "src/agent_chat.rs",
+    "src/agent_tool_modal.rs",
+    "src/logos.rs",
     "src/agent_conversation.rs",
     "src/agent_markdown.rs",
     "src/composer.rs",
@@ -161,6 +165,30 @@ pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "agent-tab-long",
         run: agent_tab_long,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: TAB,
+    },
+    Scene {
+        name: "agent-tab-modal",
+        run: agent_tab_modal,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: TAB,
+    },
+    Scene {
+        name: "agent-tab-bar",
+        run: agent_tab_bar,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: TAB,
+    },
+    Scene {
+        name: "agent-tab-thinking",
+        run: agent_tab_thinking,
         themes: Themes::Both,
         serial: false,
         kind: Kind::State,
@@ -612,6 +640,84 @@ pub(super) fn agent_tab_working() {
                 "{n}: Bash runs"
             );
         });
+    });
+}
+
+/// Spec A §B: an Edit's detail in the modal over the tab (motion off, so the shot is its end
+/// state): the scrim under the top bar, the header, the diff in its well.
+pub(super) fn agent_tab_modal() {
+    scene("agent-tab-modal", |n, cx, _, tab| {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let events = decode(include_str!("../providers/fixtures/claude-tools.jsonl"));
+        feed(cx, tab, |t, cx| t.send("Change alpha to beta".into(), cx));
+        play(cx, tab, events);
+        let edit = cx.read(|cx| {
+            tab.read(cx)
+                .shot_items()
+                .iter()
+                .rposition(
+                    |i| matches!(i, Item::Tool { name, ok: Some(true), .. } if name == "Edit"),
+                )
+                .expect("an Edit row")
+        });
+        feed(cx, tab, |t, cx| t.shot_open_tool(edit, cx));
+        let id = cx.read(|cx| match &tab.read(cx).shot_items()[edit] {
+            Item::Tool { id, .. } => id.clone(),
+            _ => unreachable!(),
+        });
+        assert!(
+            cx.read(|cx| tab.read(cx).shot_open(&id)),
+            "{n}: the modal shows it"
+        );
+    });
+}
+
+/// Spec A §C: the top bar after two turns — Done, the cost and what the last turn added, the
+/// context meter in its critical band (92 %).
+pub(super) fn agent_tab_bar() {
+    scene("agent-tab-bar", |n, cx, _, tab| {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let turn = |text: &str, pct: u8, usd: f64| {
+            vec![
+                Event::MessageDone {
+                    message: format!("m-{pct}"),
+                    text: text.into(),
+                    parent: None,
+                },
+                Event::Usage {
+                    context_pct: Some(pct),
+                    cost_usd: Some(usd),
+                },
+                Event::TurnDone {
+                    ok: true,
+                    message: None,
+                },
+            ]
+        };
+        feed(cx, tab, |t, cx| t.send("Look at the tests".into(), cx));
+        play(cx, tab, turn("They pass.", 40, 3.57));
+        feed(cx, tab, |t, cx| t.send("And the docs?".into(), cx));
+        play(cx, tab, turn("The docs are up to date.", 92, 3.99));
+        cx.read(|cx| assert_eq!(tab.read(cx).status(), Status::Done, "{n}"));
+    });
+}
+
+/// Spec B-B: "Thinking…" under the last row while the turn works and nothing moves (motion
+/// off: the fade's end).
+pub(super) fn agent_tab_thinking() {
+    scene("agent-tab-thinking", |n, cx, _, tab| {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        feed(cx, tab, |t, cx| t.send("Find the flaky test".into(), cx));
+        play(
+            cx,
+            tab,
+            vec![Event::MessageDone {
+                message: "m".into(),
+                text: "Let me look at the recent runs.".into(),
+                parent: None,
+            }],
+        );
+        cx.read(|cx| assert_eq!(tab.read(cx).status(), Status::Working, "{n}"));
     });
 }
 
