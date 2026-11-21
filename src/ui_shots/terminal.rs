@@ -1546,7 +1546,7 @@ fn cards_rig(theme: Theme, text: &str, dims: Size<Pixels>) -> CursorRig {
     rig.cx.update(|cx| {
         view.update(cx, |v, cx| {
             v.shot_integrated();
-            v.set_branch(Some("main".into()), cx);
+            v.set_place(Some("/w/fuxx-cli".into()), Some("main".into()), cx);
             cx.notify();
         })
     });
