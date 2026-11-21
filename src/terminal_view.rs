@@ -516,6 +516,11 @@ impl TerminalView {
     }
 
     #[cfg(feature = "ui-shots")]
+    pub fn shot_typed_row(&self) -> String {
+        self.cards.borrow().typed_row.clone()
+    }
+
+    #[cfg(feature = "ui-shots")]
     pub fn shot_card_count(&self) -> usize {
         self.cards.borrow().hits.len()
     }
@@ -3329,6 +3334,15 @@ fn paint_cards(
                             ];
                             row.extend_from_slice(typed);
                             row.resize(dims.cols.max(row.len()), blank);
+                            #[cfg(feature = "ui-shots")]
+                            {
+                                p.state.borrow_mut().typed_row = row
+                                    .iter()
+                                    .map(|c| c.ch)
+                                    .collect::<String>()
+                                    .trim_end()
+                                    .to_string();
+                            }
                             lines[0] = row;
                             if let Some(cv) = cur.as_mut().filter(|cv| cv.row == 0) {
                                 cv.col = cv.col.saturating_sub(from) + 2;
