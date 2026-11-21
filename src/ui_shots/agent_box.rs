@@ -3501,7 +3501,13 @@ pub(super) fn agent_box_usage_checking() {
                 t.shot_usage(Lookup::Failed("exit 1".into()), Vec::new(), cx)
             });
             let _ = frame_fresh(cx, window);
-            assert_eq!(usage_rows_of(cx, tab).len(), 2, "{n}: kept");
+            let rows = usage_rows_of(cx, tab);
+            assert_eq!(rows.len(), 3, "{n}: kept, and said to be old");
+            assert_eq!(
+                rows[2],
+                UsageRow::Quiet("Couldn't refresh \u{b7} updated just now".into()),
+                "{n}"
+            );
             // And the shot is of it reading again: the numbers stay (M11ap), not "Checking…".
             feed(cx, tab, |t, cx| {
                 t.shot_usage(Lookup::Loading, Vec::new(), cx)
