@@ -127,3 +127,6 @@ Then (2026-11-22, your two reports): the shell tab's box kept a 3 pt gap on top 
 send — now stroked along the inner box's outline there too (`notch_rim`: down the right edge, round the joint, along
 the cut, round the other joint, into the bottom edge).
 
+Then (2026-11-22, "can we add more radius on here so it looks good?"): the inner box's two corners where it meets the
+send cut (`JOINT`, was 8) now as large as the room before the cut (17), so each runs straight into the circle's curve.
+
