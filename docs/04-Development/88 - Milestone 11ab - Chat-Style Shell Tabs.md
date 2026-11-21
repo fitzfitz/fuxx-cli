@@ -505,6 +505,24 @@ answer is on its way the tab stays (no flicker); an SSH terminal's folder is unc
 `the_git_tab_hides_outside_a_repo`; the scene `changes-empty-norepo` now checks the two tabs and Files shown. Checks:
 2296 tests; clippy at the baseline; ui-shots the 6 known failures.
 
+### Chore: the right panel redesigned (2026-11-21)
+
+Your words: "ask the same designer agent to help me redesign this right tabs, looks so bad at the moment", then "yes
+build it, show me the screenshots in a web server" and "merge it and push". The lead designer's diagnosis: three
+stacked boxes (a track filled with the window colour reading as a hole, a lozenge pill per icon, a filled repo card,
+a filled filter). As built, its spec as given:
+
+- **Tabs** like the pane tabs: no track, 28 pt square icon tabs (16 pt icons), left-aligned 8 in, 2 apart, corners
+  8; idle unfilled in `text_dim`, hover `side_tab_hover` (4 %), shown `side_tab_selected` (8 %), names in tooltips;
+  with two tabs (no git folder) nothing stretches. The strip's empty part drags the window.
+- **Header:** a plain 36 pt row (no repo card); the folder's name and ▾ one quiet button padded 6 so its words land
+  on the 12 pt edge; collapse-all `text_dim`, `side_tab_hover` under the pointer. Changes keeps its bar (44 pt);
+  Activity's header 36 to match.
+- **Filter:** 30 pt, 8 from the sides, corners 8, `side_field` (5 %), no border, icon and placeholder `text_dim`.
+- **One divider:** the strip's bottom line.
+- **Checks:** 2297 tests; clippy at the baseline; ui-shots 254 passed, 5 known failures (`right-panel-comfortable`,
+  its checks rewritten for the new design, now passes).
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·
