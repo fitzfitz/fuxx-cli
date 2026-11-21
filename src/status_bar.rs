@@ -796,7 +796,6 @@ impl Workspace {
             .id("usage-popover")
             .p(px(4.))
             .gap(px(0.))
-            .occlude()
             .child(header)
             .children(rows);
         // The hovered agent's limits beside the list.
@@ -870,7 +869,6 @@ impl Workspace {
                     .id("usage-detail")
                     .p(px(4.))
                     .gap(px(0.))
-                    .occlude()
                     .child(
                         div()
                             .id("usage-detail-body")
@@ -881,8 +879,12 @@ impl Workspace {
                             .children(body),
                     )
             });
+        // The panels' box blocks the mouse, not each panel: a panel that did would hide the
+        // pointer from this box's hover, and the popover closed under a resting pointer (your
+        // report, 2026-11-22).
         let panels = div()
             .id("usage-panels")
+            .occlude()
             .flex()
             .items_end()
             .gap(px(6.))
@@ -1260,7 +1262,6 @@ impl Workspace {
             };
             let resets = shown.usage == UsageShown::Full;
             let open = self.usage_open;
-            let tip = crate::usage_strip::tip(&agents);
             let at = self.usage_strip_at.clone();
             let measure = gpui::canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
                 .absolute()
@@ -1310,8 +1311,8 @@ impl Workspace {
                         this.usage_open = true;
                         cx.notify();
                     }),
-                )
-                .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone().into())).into() });
+                );
+            // No tooltip: the list says it (your words, 2026-11-22: "remove the tooltip").
             div()
                 .relative()
                 .flex_none()

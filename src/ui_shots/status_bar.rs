@@ -364,6 +364,11 @@ fn status_bar_usage_scenes() {
                         .expect("the list's rows were drawn");
                     hover(cx, row.1.center(), 50);
                     assert_eq!(detail(cx), Some(row.0), "{n}: its row shows its detail");
+                    // Resting on the row past the close delay keeps it open (your report,
+                    // 2026-11-22: "the popup usage is shown then the overall popup is closed").
+                    hover(cx, row.1.center(), 500);
+                    assert!(is_open(cx), "{n}: resting on a row keeps it open");
+                    assert_eq!(detail(cx), Some(row.0), "{n}: and its detail");
                     hover(cx, point(px(400.), px(200.)), 500);
                     assert!(!is_open(cx), "{n}: moving away closes it");
                     hover(cx, strip.center(), 300);

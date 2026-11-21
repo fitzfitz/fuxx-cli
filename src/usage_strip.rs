@@ -88,23 +88,6 @@ pub fn strip_agents(catalogs: Option<&Catalogs>, now_unix: i64) -> Vec<StripAgen
         .collect()
 }
 
-/// The strip's tooltip: `Claude 77% used · resets in 1h  ·  Antigravity reading…`.
-pub fn tip(agents: &[StripAgent]) -> String {
-    agents
-        .iter()
-        .map(|a| match &a.value {
-            StripValue::Used { used, reset_in } => {
-                let reset = reset_in
-                    .map(|s| format!(" · {}", crate::agent_box::resets_in(s).to_lowercase()))
-                    .unwrap_or_default();
-                format!("{} {used}% used{reset}", a.label)
-            }
-            StripValue::Reading => format!("{} reading\u{2026}", a.label),
-        })
-        .collect::<Vec<_>>()
-        .join("  \u{b7}  ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,10 +173,6 @@ mod tests {
         c.set_usage("agy", Lookup::Loading, now);
         let agents = strip_agents(Some(&c), 1_000);
         assert_eq!(agents[1].value, StripValue::Reading);
-        assert_eq!(
-            tip(&agents),
-            "Claude 77% used · resets in 1h  ·  Antigravity reading…"
-        );
         assert!(strip_agents(None, 1_000).is_empty());
     }
 }
