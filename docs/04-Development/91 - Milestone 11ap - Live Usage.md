@@ -196,3 +196,6 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
 
 - **Box controls**: "make the background color of these pills and buttons disappear only show background when hover":
   `+`, the model pill, the usage button and the mode pill have no fill at rest; the hover fill stays.
+- **Send notch, the wave** (your reference, 2026-11-22: "pay more detail attention to the rounded part"): the cut is
+  one shape in the outer colour painted under the box's text (`notch`), with its lit edge along it; the joints 14 (as
+  round as the reference), 8 round the circle, the outer corner concentric. The old square-and-patches is gone.

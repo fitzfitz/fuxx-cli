@@ -60,9 +60,10 @@ const SEND_INSET: f32 = crate::card_view::OUTER_INSET;
 /// 8 since your note (2026-11-22, "add more" round the circle).
 const NOTCH_GAP: f32 = 8.0;
 const NOTCH: f32 = SEND_INSET + SEND + NOTCH_GAP;
-/// The inner box's small corners where it meets the cut: 6 (your note, 2026-11-22: "lessen"
-/// both; at 17 their rounding square painted over the box's own text).
-const JOINT: f32 = 6.0;
+/// The inner box's corners where it meets the cut: 14, as round as your reference's
+/// (2026-11-22: one smooth wave round the button). The cut is one shape under the box's text
+/// (`notch`), so a round joint covers nothing.
+const JOINT: f32 = 14.0;
 /// Round the circle with the same centre (your words: "add more radius on the right bottom chat
 /// box so the radius rounded and the button circle match"): its radius, the 3 around it, the
 /// outer box's 1 px edge.
@@ -1300,8 +1301,7 @@ impl AgentTab {
                     }),
                 )
                 .relative()
-                .children(notch(c))
-                .child(notch_rim(c))
+                .child(notch(c))
                 .bg(hsla(c.box_fill))
                 // Files dropped on it become chips (tinted while one is over it).
                 .drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hsla(drop_fill)))
@@ -1968,50 +1968,15 @@ impl AgentTab {
 }
 
 /// A chip on the box's bottom row: quiet text, no edge.
-/// The send notch (the designer's details) cut from the inner box's bottom-right, as its first
-/// children (over its fill, under its text and controls): a square of the outer colour, out to
-/// the outer box's inside corner, whose rounded top-left carves the concave curve round the
-/// send circle (radius `NOTCH / 2` about the circle's centre); and where the inner box's straight
-/// edges meet it, round joints (an outer-coloured corner under an inner-coloured quad).
-fn notch(c: &Colors) -> Vec<Div> {
+/// The send notch cut from the inner box's bottom-right, one shape in the outer colour painted
+/// first (under the box's text and controls): from the box's right edge round a `JOINT` corner,
+/// along the cut round the send circle (`SEND / 2 + NOTCH_GAP` about its centre), round the
+/// other `JOINT` corner into the box's bottom edge, then out to the outer box's inside corner
+/// (concentric with the circle) and back; then the inner box's lit edge along the same wave
+/// (your report, 2026-11-22: "you're losing the border on the curve"), 1 pt in the edge's
+/// lower colour, 0.5 pt outside the box.
+fn notch(c: &Colors) -> impl IntoElement {
     use crate::card_view::{EDGE, OUTER_INSET};
-    let (outer, inner) = (hsla(c.outer), hsla(c.box_fill));
-    // Offsets from the inner box's edges; the notch's from the outer box's inside edges.
-    let at = |right: f32, bottom: f32, side: f32| {
-        div()
-            .absolute()
-            .right(px(right - OUTER_INSET))
-            .bottom(px(bottom - OUTER_INSET))
-            .size(px(side))
-    };
-    let joint = |right: f32, bottom: f32| {
-        [
-            at(right, bottom, JOINT).bg(outer),
-            at(right, bottom, 2. * JOINT)
-                .bg(inner)
-                .rounded_br(px(JOINT)),
-        ]
-    };
-    let mut pieces = vec![
-        at(0., 0., NOTCH)
-            .bg(outer)
-            // (About the circle's centre.)
-            .rounded_tl(px(SEND / 2. + NOTCH_GAP))
-            // Inside the outer box's 1 px edge.
-            .rounded_br(px(OUTER_BOTTOM_RADIUS - EDGE)),
-    ];
-    pieces.extend(joint(OUTER_INSET, NOTCH));
-    pieces.extend(joint(NOTCH, OUTER_INSET));
-    pieces
-}
-
-/// The inner box's lit edge round the send notch (your report, 2026-11-22: "you're losing the
-/// border on the curve"): 1 pt in the edge's lower colour, 0.5 pt outside the box, down its
-/// right edge, round the joint, along the cut round the circle, round the other joint, into
-/// its bottom edge. The straight rim behind the box would run on under the joints: covered
-/// there first in the outer colour. Drawn over the notch's pieces, in the box's bounds.
-fn notch_rim(c: &Colors) -> impl IntoElement {
-    use crate::card_view::OUTER_INSET;
     use gpui::{PathBuilder, Point, canvas, point};
     let (outer, rim) = (hsla(c.outer), hsla(c.glow_bottom));
     canvas(
@@ -2025,38 +1990,53 @@ fn notch_rim(c: &Colors) -> impl IntoElement {
                 bottom - SEND_INSET - SEND / 2.,
             );
             let cut = SEND / 2. + NOTCH_GAP;
-            let top = bottom - NOTCH;
-            let left = cx - cut;
+            let (top, left) = (cy - cut, cx - cut);
+            let corner = OUTER_BOTTOM_RADIUS - EDGE;
             let p = |x: f32, y: f32| point(px(x), px(y));
-            let cover = |x: f32, y: f32, w: f32, h: f32, window: &mut Window| {
-                window.paint_quad(gpui::fill(
-                    gpui::Bounds::new(p(x, y), gpui::size(px(w), px(h))),
-                    outer,
-                ));
-            };
-            cover(x_r, top - JOINT, 1.5, JOINT + 1., window);
-            cover(left - JOINT, y_b, JOINT + 1., 1.5, window);
             let radii = |r: f32| -> Point<gpui::Pixels> { p(r, r) };
-            let mut path = PathBuilder::stroke(px(1.));
-            path.move_to(p(x_r + 0.5, top - JOINT));
-            path.arc_to(
+            // The cut, in the outer colour.
+            let mut shape = PathBuilder::fill();
+            shape.move_to(p(right, top - JOINT));
+            shape.line_to(p(x_r, top - JOINT));
+            shape.arc_to(radii(JOINT), px(0.), false, true, p(x_r - JOINT, top));
+            shape.line_to(p(cx, top));
+            shape.arc_to(radii(cut), px(0.), false, false, p(left, cy));
+            shape.line_to(p(left, y_b - JOINT));
+            shape.arc_to(radii(JOINT), px(0.), false, true, p(left - JOINT, y_b));
+            shape.line_to(p(left - JOINT, bottom));
+            shape.line_to(p(right - corner, bottom));
+            shape.arc_to(
+                radii(corner),
+                px(0.),
+                false,
+                false,
+                p(right, bottom - corner),
+            );
+            shape.close();
+            if let Ok(path) = shape.build() {
+                window.paint_path(path, outer);
+            }
+            // The lit edge along it, half a point outside the box.
+            let mut edge = PathBuilder::stroke(px(1.));
+            edge.move_to(p(x_r + 0.5, top - JOINT));
+            edge.arc_to(
                 radii(JOINT + 0.5),
                 px(0.),
                 false,
                 true,
                 p(x_r - JOINT, top + 0.5),
             );
-            path.line_to(p(cx, top + 0.5));
-            path.arc_to(radii(cut - 0.5), px(0.), false, false, p(left + 0.5, cy));
-            path.line_to(p(left + 0.5, y_b - JOINT));
-            path.arc_to(
+            edge.line_to(p(cx, top + 0.5));
+            edge.arc_to(radii(cut - 0.5), px(0.), false, false, p(left + 0.5, cy));
+            edge.line_to(p(left + 0.5, y_b - JOINT));
+            edge.arc_to(
                 radii(JOINT + 0.5),
                 px(0.),
                 false,
                 true,
                 p(left - JOINT, y_b + 0.5),
             );
-            if let Ok(path) = path.build() {
+            if let Ok(path) = edge.build() {
                 window.paint_path(path, rim);
             }
         },
