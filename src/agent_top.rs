@@ -170,6 +170,9 @@ impl TopState {
             self.pill_now = Some(state);
         }
         if cost != self.cost_seen {
+            if cost.is_none() {
+                self.delta = None;
+            }
             if let Some(delta) = cost_delta(self.cost_seen, cost) {
                 self.delta = Some(delta);
                 self.delta_key += 1;
@@ -357,5 +360,16 @@ mod tests {
         assert_eq!(top.pill_from, Some((Status::Idle, false)));
         top.observe(Status::Working, true, None, None);
         assert_eq!(top.pill_key, k + 2, "a stop asked is a new state too");
+    }
+
+    /// `/clear`: the cost goes, and what the last turn added with it.
+    #[test]
+    fn a_cleared_cost_takes_its_delta_with_it() {
+        let mut top = TopState::default();
+        top.observe(Status::Done, false, Some(1.0), None);
+        top.observe(Status::Done, false, Some(1.5), None);
+        assert!(top.delta.is_some());
+        top.observe(Status::Done, false, None, None);
+        assert_eq!(top.delta, None);
     }
 }

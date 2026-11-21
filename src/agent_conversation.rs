@@ -79,6 +79,12 @@ impl Conversation {
 
     pub fn apply(&mut self, event: Event) {
         match event {
+            Event::Cleared => {
+                self.items.clear();
+                self.cost_usd = None;
+                self.context_pct = None;
+                self.finished = false;
+            }
             Event::Started {
                 conversation,
                 model,
@@ -978,5 +984,27 @@ mod tests {
             message: None,
         });
         assert!(matches!(&c.items()[1], Item::Agent { done: true, .. }));
+    }
+
+    /// `/clear` (Claude's `conversation_reset`): what was said, its cost and context go; the
+    /// conversation id stays until the agent reports the new one.
+    #[test]
+    fn cleared_empties_the_conversation() {
+        let mut c = Conversation::new();
+        c.apply(Event::Started {
+            conversation: "old".into(),
+            model: Some("m".into()),
+        });
+        c.you("hello".into(), Vec::new());
+        c.apply(Event::Notice("note".into()));
+        c.apply(Event::Usage {
+            context_pct: Some(40),
+            cost_usd: Some(1.5),
+        });
+        c.apply(Event::Cleared);
+        assert!(c.items().is_empty());
+        assert_eq!(c.cost_usd(), None);
+        assert_eq!(c.context_pct(), None);
+        assert_eq!(c.conversation(), Some("old"));
     }
 }

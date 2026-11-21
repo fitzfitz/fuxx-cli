@@ -882,6 +882,8 @@ pub struct AgentTab {
     /// next draw (a click or an action has no window: `render` does it).
     modal: Option<ToolModal>,
     modals_opened: u64,
+    /// How many times the conversation was cleared (`/clear`): keys the emptied chat's fade.
+    cleared: u64,
     modal_focus: FocusHandle,
     pub(crate) modal_scroll: gpui::ScrollHandle,
     refocus: Option<Refocus>,
@@ -1295,6 +1297,7 @@ impl AgentTab {
             rows: Vec::new(),
             modal: None,
             modals_opened: 0,
+            cleared: 0,
             modal_focus: cx.focus_handle(),
             modal_scroll: gpui::ScrollHandle::new(),
             refocus: None,
@@ -1949,6 +1952,12 @@ impl AgentTab {
                 }
                 Event::ToolStarted { id, .. } => {
                     self.tool_started.insert(id.clone(), Instant::now());
+                }
+                // `/clear`: the chat empties (the conversation drops its items) and fades back in
+                // empty, keyed by how many times it was cleared.
+                Event::Cleared => {
+                    self.tool_started.clear();
+                    self.cleared += 1;
                 }
                 Event::Catalog(catalog) => {
                     self.catalog_pending = false;
@@ -4707,7 +4716,25 @@ impl Render for AgentTab {
             })
             .text_color(hsla(c.text))
             .child(self.top_line(&theme, &c, cx))
-            .child(stream)
+            .child(if self.cleared > 0 {
+                // After `/clear` the emptied chat fades in: it reads as cleared, not swapped.
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .child(stream)
+                    .with_animation(
+                        ("agent-cleared", self.cleared),
+                        Animation::new(Duration::from_millis(220))
+                            .with_easing(crate::agent_top::ease_out_cubic),
+                        |d, t| d.opacity(t),
+                    )
+                    .into_any_element()
+            } else {
+                stream
+            })
             .children(pending)
             // An error tab (no such agent) has nothing to send to.
             .when(self.provider.is_some(), |d| {

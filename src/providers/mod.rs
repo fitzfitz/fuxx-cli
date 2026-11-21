@@ -312,6 +312,9 @@ pub enum EditText {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    /// The agent cleared its conversation (Claude's `/clear`): what was said goes; a `Started`
+    /// with the new id follows.
+    Cleared,
     Started {
         conversation: String,
         model: Option<String>,

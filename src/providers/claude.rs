@@ -1132,6 +1132,8 @@ impl Translator for ClaudeTranslator {
             Some("user") => self.user(&v),
             Some("result") => self.result(&v),
             Some("rate_limit_event") => rate_limit(&v),
+            // `/clear`: then a new `system/init` under a new session id (Claude Code 2.1.330).
+            Some("conversation_reset") => vec![Event::Cleared],
             Some("control_request") if v["request"]["subtype"] == "can_use_tool" => {
                 self.permission(&v)
             }
@@ -2018,6 +2020,14 @@ mod tests {
         let mut t = CLAUDE.translator();
         t.decode(&init.replace("big", "small"));
         assert_eq!(pct(&mut t), Some(50));
+    }
+
+    /// Recorded with Claude Code 2.1.330 (`/clear` in stream-json): a `conversation_reset` line,
+    /// then hooks and a new `system/init` under a new session id. The reset empties the tab.
+    #[test]
+    fn a_conversation_reset_clears_the_tab() {
+        let line = json!({"type":"conversation_reset","session_id":"s1"}).to_string();
+        assert_eq!(CLAUDE.translator().decode(&line), vec![Event::Cleared]);
     }
 
     /// The context share an `assistant` line reports (`None` when it reports none).
