@@ -461,6 +461,23 @@ lighter than their fill and lit along the top, full text near white (`#f7f7f0`) 
 - **Checks:** 2292 tests; clippy at the baseline; fmt; ui-shots 253 passed, the 6 known failures (the file tab's
   glyph check now reads `tile_ink`, the colour the tab draws it in).
 
+### Fix: pieces of the prompt piling up after many resizes (2026-11-21)
+
+Your report: after resizing, "it still showing the older terminal slightly … the previous chat command goes up and
+create gaps"; "only happens in current tab which resized multiple times (50x at least)". Found by recording your
+own zsh and Powerlevel10k through 121 fast resizes and replaying the bytes through fuxx's grid: Powerlevel10k writes
+a redraw in two pieces (A, the left side, B; then the right side placed for the width zsh knew). A resize between
+the pieces made the second one stale: in the narrower grid its right side wrapped and the cursor ended a row lower,
+where the next redraw started, leaving the piece behind and pushing the prompt (and the cards) up a row each time.
+
+- A width change that empties the live prompt remembers its row (from the top of the scrollback, so scrolling
+  doesn't move it); the shell's next A finds the prompt there: the rows between (at most 4, never a tagged one) are
+  emptied and the redraw starts back on the prompt's row.
+- A second width change before the redraw (the prompt's tag already gone) empties the same rows again, so they
+  never reflow and the remembered row stays true (without it, a reflow above pushed it a row off and output was lost).
+- Tests: `a_resize_mid_redraw_leaves_no_pieces`, `two_resizes_before_the_redraw_keep_the_output`; your recorded
+  drag replays to the grid as it was before it.
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·
