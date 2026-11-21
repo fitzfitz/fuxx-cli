@@ -378,15 +378,31 @@ one frame.
 
 With `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`, a new zsh tab with your Powerlevel10k prompt:
 
-1. A new tab: the composer at the bottom: folder ▾ and branch ▾ in the top row, the inner box in the sidebar's
+1. A new tab: the composer at the bottom: the folder and the branch in the top row, the inner box in the sidebar's
    colour with `❯ Type a command`; neither side of your prompt shows.
 2. Type `ls`: `❯ ls`; Return: a soft card with a green dot on the rail; `false`: a red dot and `exit 1`.
 3. Type a long command until it wraps: all of it shows, nothing cut on the right.
 4. Tab-complete at a prompt on the bottom row (a list under it): the prompt stays left out.
 5. Make the window narrow so the prompt wraps: the box shows only your typing row.
 6. `ping localhost`: the box grows, only output inside it, the peach chip ticking in the context row; ⌃C: a card.
-7. Click the branch ▾: the branch switcher; the folder ▾: Finder.
+7. Click the branch: the branch switcher; the folder is a plain label (chores below).
 8. Switch the theme (Latte and a dark one): the inner box follows the sidebar's colour.
+
+### Chores after the rework (2026-11-21, on master)
+
+Your words, on a screenshot of the composer: "make the gap between command box and the outter border smaller. git
+remove the chevron. and why there's no folder information beside git branch?", then "when I click the folder, it
+opens a folder window, is it a good UX? I don't think so".
+
+- **The gap:** the inner box sits 3 pt in from the outer box (was 5); the terminal gains about a column and a row.
+- **No ▾s:** the branch has none; a click on it still opens the branch switcher. The folder has none either.
+- **The folder shows:** the row read only the folder your shell reports (OSC 7), and yours doesn't send one; the
+  workspace now hands each terminal the folder it already finds for the branch (the report, else the shell process's
+  own folder), so the folder shows whenever the branch does (`Places::place`, test
+  `a_terminal_gets_its_folder_with_its_branch`).
+- **The folder is a plain label:** a click does nothing (opening Finder from it was the AI's call in the rework, and
+  out of place in a terminal).
+- **Checks:** 2284 tests; clippy at the baseline; fmt; ui-shots: the 6 known display-dependent failures only.
 
 ## Related
 

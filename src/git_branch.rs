@@ -527,6 +527,13 @@ impl Places {
         self.branches.get(folder)?.0.as_deref()
     }
 
+    /// Terminal `id`'s folder and its branch, as last found (the composer's context row).
+    pub fn place(&self, id: u64) -> (Option<PathBuf>, Option<String>) {
+        let folder = self.folder(id);
+        let branch = folder.and_then(|f| self.branch(f)).map(str::to_string);
+        (folder.map(Path::to_path_buf), branch)
+    }
+
     /// Whether terminal `id`'s folder is looked up `now` (its row is on screen).
     pub fn folder_due(&self, id: u64, now: Instant) -> bool {
         !self.frozen && due(self.folders.get(&id).map(|(_, at)| *at), now, true)
@@ -697,14 +704,11 @@ impl Workspace {
     /// nothing else redrawing. True when a folder changed.
     pub(crate) fn check_folders(&mut self, cx: &mut Context<Self>) -> bool {
         let changed = self.refresh_places(cx);
-        // M11ab: each terminal's card view shows its folder's branch above its live box.
+        // M11ab: each terminal's card view shows its folder and branch in the composer (the
+        // folder found here: a shell's report, else the process's own).
         for s in self.sessions.items() {
-            let branch = self
-                .places
-                .folder(s.id)
-                .and_then(|f| self.places.branch(f))
-                .map(str::to_string);
-            s.view.update(cx, |v, cx| v.set_branch(branch, cx));
+            let (folder, branch) = self.places.place(s.id);
+            s.view.update(cx, |v, cx| v.set_place(folder, branch, cx));
         }
         if changed {
             cx.notify();
@@ -1070,5 +1074,21 @@ mod tests {
         assert_eq!(p.branch(Path::new("/w/api")), Some("main"));
         assert_eq!(p.branch(Path::new("/w/web")), None);
         assert_eq!(p.folder(2), None);
+    }
+
+    /// The composer's context row (M11ab chores): a terminal gets the folder the workspace
+    /// found (a shell's report, else the process's own folder) with its branch, so the folder
+    /// shows beside the branch even when the shell never reports one (your words: "why there's
+    /// no folder information beside git branch?").
+    #[test]
+    fn a_terminal_gets_its_folder_with_its_branch() {
+        let mut p = Places::default();
+        p.set_folder(1, Some("/w/api".into()), Instant::now());
+        p.set_branch(Path::new("/w/api"), Some("main".into()));
+        assert_eq!(
+            p.place(1),
+            (Some(PathBuf::from("/w/api")), Some("main".to_string()))
+        );
+        assert_eq!(p.place(2), (None, None), "a terminal with no folder yet");
     }
 }

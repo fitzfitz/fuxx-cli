@@ -289,8 +289,11 @@ pub struct TerminalView {
     card_cell: Rc<Cell<(f32, f32)>>,
     /// The region a selection started in (`card_view::Region::key`): it stays in that card.
     card_region: Option<String>,
-    /// This terminal's folder's branch, pushed by the workspace (the chips above the box).
+    /// This terminal's folder's branch, pushed by the workspace (the composer's context row).
     branch: Option<String>,
+    /// Its folder, as the workspace found it (a shell's report, else the process's own): the
+    /// composer's context row (M11ab chores).
+    folder: Option<std::path::PathBuf>,
     /// A one-second redraw is pending for the running chip's time.
     tick_pending: bool,
     /// When the canvas last sent the pty a new size; the tracker hears of it before the next
@@ -802,9 +805,15 @@ impl TerminalView {
 
     /// The status of this terminal's session, for the cursor's colour; redraws on a change.
     /// Its folder's branch (M11ab: a chip above the live box); the workspace pushes it.
-    pub fn set_branch(&mut self, branch: Option<String>, cx: &mut Context<Self>) {
-        if self.branch != branch {
+    pub fn set_place(
+        &mut self,
+        folder: Option<std::path::PathBuf>,
+        branch: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.branch != branch || self.folder != folder {
             self.branch = branch;
+            self.folder = folder;
             cx.notify();
         }
     }
@@ -1004,6 +1013,7 @@ impl TerminalView {
             card_cell: Rc::default(),
             card_region: None,
             branch: None,
+            folder: None,
             tick_pending: false,
             resized_at: Rc::new(Cell::new(None)),
             layout: Rc::new(Cell::new(None)),
@@ -1597,8 +1607,9 @@ impl TerminalView {
     }
 
     /// The composer's context row (rework), over its outer box from the last frame: the running
-    /// command (peach), the folder and the branch with the app's own icons; the folder's ▾ shows
-    /// it in Finder, the branch's opens the branch switcher. None when the box is out of view.
+    /// command (peach), the folder and the branch with the app's own icons, no ▾s (chores). The
+    /// folder is a plain label (opening Finder from it was out of place, your call); a click on
+    /// the branch opens the branch switcher. None when the box is out of view.
     fn context_row(&self, ui: &UiColors, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         use crate::card_view::CTX_ROW;
         use crate::icons::{Icon, icon};
@@ -1615,29 +1626,21 @@ impl TerminalView {
             let short = self.run.running().unwrap_or(crate::command_name::NO_SHORT);
             crate::card_view::running_words(short, at.elapsed())
         });
-        let folder = self.core.reported_cwd().map(|cwd| cwd.path);
+        let folder = self.folder.clone();
         let item = |glyph: Icon, words: String| {
             div()
                 .flex()
                 .items_center()
                 .gap(px(5.0))
-                .cursor_pointer()
                 .child(icon(glyph, px(13.0), dim))
                 .child(words)
-                .child(icon(Icon::ChevronDown, px(11.0), dim))
         };
         let folder_item = folder.and_then(|path| {
             let name = path.file_name()?.to_string_lossy().to_string();
-            Some(item(Icon::Folder, name).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |_, _: &MouseDownEvent, _, cx| {
-                    cx.stop_propagation();
-                    cx.reveal_path(&path);
-                }),
-            ))
+            Some(item(Icon::Folder, name))
         });
         let branch_item = self.branch.clone().map(|branch| {
-            item(Icon::Branch, branch).on_mouse_down(
+            item(Icon::Branch, branch).cursor_pointer().on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|_, _: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();

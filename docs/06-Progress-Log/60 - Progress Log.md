@@ -30,6 +30,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Chores after the M11ab rework: the composer's context row
+
+- **What:** the inner box 3 pt in from the outer box (was 5); no ▾ on the branch or the folder; the folder shows beside
+  the branch even when the shell reports none (the workspace hands each terminal the folder it finds for the branch);
+  the folder a plain label (no Finder on click, your call). Note 88 "Chores after the rework".
+- **Checks:** 2284 tests; clippy at the baseline; fmt; ui-shots: the 6 known display-dependent failures only.
+- **Learned:** two readers of "the terminal's folder" (the branch lookup and the context row) used different
+  sources; one source, pushed together with the branch, keeps them in step.
+
 ### 2026-11-21 — M11ab rework built: soft cards on a rail, the composer (branch `m11ab-rework`)
 
 - **What:** after your "Very ugly", redesigned with you in mockups and built in 4 tasks: soft card surfaces with a

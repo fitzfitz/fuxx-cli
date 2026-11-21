@@ -404,15 +404,15 @@ pub fn items_for<L>(
 }
 
 /// The rework's sizes (note 88 "Rework"), points: a 1 pt edge; the card surface's padding and
-/// the gap above its output; the composer: the context row, the inner box 5 pt in from the outer
-/// box's sides and bottom, its padding.
+/// the gap above its output; the composer: the context row, the inner box 3 pt in from the outer
+/// box's sides and bottom (5 until the chores after the rework), its padding.
 pub const EDGE: f32 = 1.0;
 pub const SURF_PAD_TOP: f32 = 8.0;
 pub const SURF_PAD_X: f32 = 12.0;
 pub const SURF_PAD_BOTTOM: f32 = 10.0;
 pub const OUT_GAP: f32 = 4.0;
 pub const CTX_ROW: f32 = 30.0;
-pub const OUTER_INSET: f32 = 5.0;
+pub const OUTER_INSET: f32 = 3.0;
 pub const INNER_PAD_X: f32 = 14.0;
 pub const INNER_PAD_Y: f32 = 12.0;
 /// The composer's height beside its rows: the outer box's edges, the context row, the inner
@@ -1075,7 +1075,10 @@ mod tests {
             (dims.cols, dims.rows),
             ((w / 8.0) as usize, (h / 17.0) as usize)
         );
-        assert_eq!((dims.cols, dims.rows), (112, 34));
+        // Chores: the inner box 3 pt in from the outer box (was 5; your words: "make the gap
+        // between command box and the outter border smaller").
+        assert_eq!(OUTER_INSET, 3.0);
+        assert_eq!((dims.cols, dims.rows), (113, 35));
     }
 
     // M11ab Task 5: the cache, the layout, the rows a paint reads.
