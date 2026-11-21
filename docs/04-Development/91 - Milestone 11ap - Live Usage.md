@@ -130,3 +130,9 @@ the cut, round the other joint, into the bottom edge).
 Then (2026-11-22, "can we add more radius on here so it looks good?"): the inner box's two corners where it meets the
 send cut (`JOINT`, was 8) now as large as the room before the cut (17), so each runs straight into the circle's curve.
 
+Then (2026-11-22, "make it like in orca show popover when hover to list and popover closed when move out", as a
+chore): the popover is a short list — a row per agent (logo, name, the tightest limit's reset, a small bar and its
+percent, a chevron); hovering a row shows that agent's limits beside the list; it opens 150 ms after the pointer rests
+on the strip (a press opens it at once) and closes 250 ms after the pointer has left the strip and the popover; Esc
+and a press outside close it too. Scene `status-bar-usage` hovers: open, a row's detail, away closes, Esc.
+
