@@ -208,3 +208,7 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
   button stays over the gear. Not shot yet: hover, narrow and dot scenes.
 
 **Released in v0.12.0** (2026-11-22, run 44941540508, `fuxx-0.12.0.zip`).
+- **Tool modal blink** ("when I click to show the modal, it first show blinking first then show the modal"): its open
+  animations were keyed with "fresh", so when the 180 ms fade ended a new 1 ms animation started at 0 and drew the
+  modal see-through for a frame. Now it moves only while fresh (`modal_motion`), under a stable id, and is drawn
+  plain after.

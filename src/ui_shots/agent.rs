@@ -179,6 +179,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: TAB,
     },
     Scene {
+        name: "agent-tab-modal-open",
+        run: agent_tab_modal_open,
+        themes: Themes::One,
+        serial: true,
+        kind: Kind::State,
+        sources: TAB,
+    },
+    Scene {
         name: "agent-tab-modal-guard",
         run: agent_tab_modal_guard,
         themes: Themes::Both,
@@ -676,6 +684,64 @@ pub(super) fn agent_tab_modal() {
         assert!(
             cx.read(|cx| tab.read(cx).shot_open(&id)),
             "{n}: the modal shows it"
+        );
+    });
+}
+
+/// Your report (2026-11-22: "when I click to show the modal, it first show blinking first then
+/// show the modal"): once the modal has faded in, no later frame loses it — a point on its panel
+/// keeps its colour through the open animation's end. (Real time: the open animation runs on
+/// the wall clock. A frame here takes ~90 ms, so a one-frame blink can fall between samples:
+/// `agent_tab::modal_motion`'s test pins that cause; this catches a lasting loss.)
+pub(super) fn agent_tab_modal_open() {
+    scene("agent-tab-modal-open", |n, cx, window, tab| {
+        feed(cx, tab, |t, cx| t.send("List the folder".into(), cx));
+        play(
+            cx,
+            tab,
+            vec![
+                Event::ToolStarted {
+                    id: "b1".into(),
+                    name: "Bash".into(),
+                    summary: "ls".into(),
+                    parent: None,
+                    detail: Some(crate::providers::ToolDetail::Command("ls".into())),
+                    writes: Vec::new(),
+                    texts: Vec::new(),
+                },
+                Event::ToolFinished {
+                    id: "b1".into(),
+                    ok: true,
+                    summary: "ok".into(),
+                    output: Some("a\nb".into()),
+                },
+            ],
+        );
+        feed(cx, tab, |t, cx| t.shot_open_tool(1, cx));
+        let started = std::time::Instant::now();
+        let mut seen: Vec<(u128, [u8; 3])> = Vec::new();
+        while started.elapsed() < std::time::Duration::from_millis(450) {
+            let shot = frame_fresh(cx, window);
+            if let Some(panel) = cx.read(|cx| tab.read(cx).shot_part("modal")) {
+                let at = (f32::from(panel.left()) + 6.0, f32::from(panel.top()) + 20.0);
+                let dims = cx
+                    .update_window(window, |_, w, _| w.viewport_size())
+                    .expect("the window's size");
+                let p = super::pixel_at(&shot, dims, at.0, at.1);
+                seen.push((started.elapsed().as_millis(), p));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(8));
+        }
+        let last = seen.last().expect("the modal was drawn").1;
+        let close = |p: [u8; 3]| p.iter().zip(last).all(|(a, b)| a.abs_diff(b) <= 3);
+        let shown = seen
+            .iter()
+            .position(|(_, p)| close(*p))
+            .expect("it settles");
+        let lost: Vec<_> = seen[shown..].iter().filter(|(_, p)| !close(*p)).collect();
+        assert!(
+            lost.is_empty(),
+            "{n}: the modal blinks after showing (ms, colour): {lost:?} (settled {last:?})"
         );
     });
 }

@@ -276,6 +276,13 @@ impl ProcessEnd {
 
 /// A run asked to resume a conversation ended before the agent said it had started one: the
 /// resume failed (a deleted transcript, an unknown id).
+/// The tool modal's open motion (its panel's, its scrim's) while it is fresh; none once it has
+/// settled. Never a second animation after the first: one under a new id starts again at 0 and
+/// drew the modal see-through for a frame (your report, 2026-11-22: "blinking").
+pub fn modal_motion(fresh: bool) -> Option<(Duration, Duration)> {
+    fresh.then(|| (Duration::from_millis(180), Duration::from_millis(140)))
+}
+
 pub fn resume_failed(started: bool, resume: bool) -> bool {
     resume && !started
 }
@@ -4676,19 +4683,25 @@ impl AgentTab {
             .text_color(hsla(c.panel_text))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(header)
-            .child(body)
-            .with_animation(
-                ("agent-modal-open", opened * 2 + u64::from(fresh)),
-                Animation::new(Duration::from_millis(if fresh { 180 } else { 1 }))
-                    .with_easing(crate::agent_top::ease_out_cubic),
-                |d, t| d.opacity(t).mt(px(8. * (1. - t))),
-            );
+            .child(body);
+        let motion = modal_motion(fresh);
+        let panel = self.marked("modal", panel);
+        let panel = match motion {
+            Some((open, _)) => panel
+                .with_animation(
+                    ("agent-modal-open", opened),
+                    Animation::new(open).with_easing(crate::agent_top::ease_out_cubic),
+                    |d, t| d.opacity(t).mt(px(8. * (1. - t))),
+                )
+                .into_any_element(),
+            None => panel.into_any_element(),
+        };
         let scrim = gpui::Hsla {
             a: c.scrim_alpha,
             ..hsla(c.scrim)
         };
         let close_view = view.clone();
-        div()
+        let scrim_box = div()
             .id("agent-tool-modal")
             .key_context("AgentToolModal")
             .track_focus(&self.modal_focus)
@@ -4710,19 +4723,22 @@ impl AgentTab {
                 cx.stop_propagation();
                 close_view.update(cx, |this, cx| this.close_modal(cx)).ok();
             })
-            .child(panel)
-            .with_animation(
-                ("agent-modal-scrim", opened * 2 + u64::from(fresh)),
-                Animation::new(Duration::from_millis(if fresh { 140 } else { 1 }))
-                    .with_easing(crate::agent_top::ease_out_cubic),
-                move |d, t| {
-                    d.bg(gpui::Hsla {
-                        a: scrim.a * t,
-                        ..scrim
-                    })
-                },
-            )
-            .into_any_element()
+            .child(panel);
+        match motion {
+            Some((_, fade)) => scrim_box
+                .with_animation(
+                    ("agent-modal-scrim", opened),
+                    Animation::new(fade).with_easing(crate::agent_top::ease_out_cubic),
+                    move |d, t| {
+                        d.bg(gpui::Hsla {
+                            a: scrim.a * t,
+                            ..scrim
+                        })
+                    },
+                )
+                .into_any_element(),
+            None => scrim_box.bg(scrim).into_any_element(),
+        }
     }
 
     /// Turn the top bar's mark with `clock` (the Workspace's, shared by every mark on screen, so
@@ -5206,6 +5222,18 @@ impl Render for AgentTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Your report (2026-11-22: "it first show blinking first then show the modal"): the open
+    /// motion runs only while the modal is fresh. After that nothing animates it — a new
+    /// animation (its id changed) starts again at 0 and drew the modal see-through for a frame.
+    #[test]
+    fn the_modal_moves_only_while_fresh() {
+        assert_eq!(
+            modal_motion(true),
+            Some((Duration::from_millis(180), Duration::from_millis(140)))
+        );
+        assert_eq!(modal_motion(false), None, "settled: drawn as it is");
+    }
     use crate::code_ask::CodeLines;
     use crate::providers::Picture;
     use crate::ui_tokens::contrast;
