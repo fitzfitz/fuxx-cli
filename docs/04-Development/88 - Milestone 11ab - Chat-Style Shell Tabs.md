@@ -461,6 +461,21 @@ lighter than their fill and lit along the top, full text near white (`#f7f7f0`) 
 - **Checks:** 2292 tests; clippy at the baseline; fmt; ui-shots 253 passed, the 6 known failures (the file tab's
   glyph check now reads `tile_ink`, the colour the tab draws it in).
 
+**The lead designer's review, taken as given** (your words: "ask 'lead UI/UX designer' agent and then I'd go with
+that agent suggestion"; a fresh Opus agent, read only):
+1. Command cards are the panel with a 1 px edge (held to `SOFT_LINE_MIN`), not a fill lighter than the composer.
+2. Light themes: raised is lighter, an input field: outer 40 % and inner 80 % toward white, darker hairlines (the
+   inner one at `QUIET_LINE_MIN`), no lit top line.
+3. Dark composer at the reference's step: outer 6 %, inner 9 %, edges 11 %, the inner box's top 18 %.
+4. Selection neutral: the selected sidebar row 8 % toward the text colour, hover 4 %, the shown pane tab 6 %; the
+   2 pt accent bar is the one accent mark.
+5. Faint text is dim text: two greys, rank below dim by size and place.
+6. Kept: the panel step (17 % / 5 %; if the panel edge gets lost on a dim display, 22 % on dark), the brighter
+   chrome text (if it pulls the eye off the terminal, 0.30), no shadow, the 11/14/8 pt corners.
+- **AI's call on the way:** a pressed or lifted row (`row_active`, a dragged row's copy) at 14 % on every theme, clear
+  of the 8 % selection (Latte's 10 % had met it).
+- **Checks:** 2295 tests; clippy at the baseline; fmt; ui-shots 253 passed, the 6 known failures.
+
 ### Fix: pieces of the prompt piling up after many resizes (2026-11-21)
 
 Your report: after resizing, "it still showing the older terminal slightly … the previous chat command goes up and

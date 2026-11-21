@@ -3158,13 +3158,14 @@ fn paint_cards(
                             hsla(p.ui.card_border),
                         ));
                     }
-                    // One soft surface; the chosen card's edge in the accent.
+                    // The panel with a hairline edge (the designer's call); the chosen card's edge
+                    // in the accent.
                     window.paint_quad(gpui::quad(
                         Bounds::new(point(left, px(y)), size(width, px(height))),
                         px(8.0),
                         hsla(p.ui.card_surface),
-                        px(if chosen { EDGE } else { 0.0 }),
-                        hsla(p.ui.accent),
+                        px(EDGE),
+                        hsla(if chosen { p.ui.accent } else { p.ui.card_edge }),
                         gpui::BorderStyle::Solid,
                     ));
                     // Its dot: green done, red failed, quiet when the exit wasn't reported; a ring
