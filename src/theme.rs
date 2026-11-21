@@ -164,6 +164,8 @@ pub struct UiColors {
     /// outer box a little, the inner box more, each edge a little more again, the inner box's top
     /// edge most.
     pub card_surface: Rgb,
+    /// A command card's 1 px edge (the designer's call: cards are the panel, edged).
+    pub card_edge: Rgb,
     pub composer_outer: Rgb,
     pub composer_edge: Rgb,
     pub composer_inner: Rgb,
@@ -345,7 +347,11 @@ impl Theme {
                 mix(on, fg, if dark { 0.14 } else { 0.10 }),
             )
         };
-        let (row_hover, row_active) = rows_on(canvas);
+        // A pressed or lifted row (a dragged row's copy): 14 % on every theme, clear of the
+        // neutral 8 % selection (light themes had 10 %, which met it).
+        let row_active = mix(canvas, fg, 0.14);
+        // The designer's call: a quieter hover, kept apart from the neutral selection below.
+        let row_hover = mix(canvas, fg, 0.04);
         // Nothing draws these since M11al Task 8 (no group cards, rows on the canvas); kept as
         // floors because without them Mocha's `text_faint` moves a step (9fa2b3 → 9fa2b2).
         let (legacy_hover, legacy_active) = rows_on(base);
@@ -415,7 +421,9 @@ impl Theme {
                 .find(|&s| contrast(plain_text, s) >= TEXT_MIN)
                 .unwrap_or(on)
         };
-        let row_selected = tint(canvas);
+        // The designer's call: the selected sidebar row is neutral (the reference's), its
+        // 2 pt accent bar the one accent mark.
+        let row_selected = mix(canvas, fg, 0.08);
         let legacy_selected = tint(base);
         let card_selected = tint(card);
         let side_selected = tint(side);
@@ -446,7 +454,9 @@ impl Theme {
             .map(|step| mix(base, accent, 0.30 - 0.05 * step as f32))
             .find(|&s| contrast(ink, s) >= TEXT_MIN)
             .unwrap_or(base);
-        let text_faint = text(mix(base, fg, 0.45));
+        // The designer's call: two greys, not three: faint is dim (rank below it by size and
+        // place).
+        let text_faint = text_dim;
         // Also text: the browser panel's error on the sidebar, and a waiting row's "Needs
         // input" on its tint (hovered or not) or, selected, on the selection's (M11i).
         let ring_waiting = readable(
@@ -487,11 +497,8 @@ impl Theme {
         ];
         // The active tab: the accent over the card at 10 % (8 % on light), lowered in 2 % steps
         // while the words or the tab's marks would fall below their floors. At 0 it is the card.
-        let tab_active = wash(
-            card,
-            if dark { 0.10 } else { 0.08 },
-            &[&words[..], &tab_marks[..]].concat(),
-        );
+        // The designer's call: the shown pane tab neutral too, a lift of the card.
+        let tab_active = mix(card, fg, 0.06);
         // The pane tab bars have no fill (M11al): a tab under a dragged block is washed over
         // the card.
         let drop_tab = wash(card, 0.20, &[&words[..], &tab_marks[..]].concat());
@@ -531,6 +538,16 @@ impl Theme {
                 .unwrap_or_else(|| ends(15.0));
             (top, bottom, readable(ink, &[top, bottom], TEXT_MIN))
         });
+        let (composer_outer, composer_inner) = if dark {
+            (mix(card, fg, 0.06), mix(card, fg, 0.09))
+        } else {
+            (mix(card, white, 0.40), mix(card, white, 0.80))
+        };
+        let composer_inner_edge = if dark {
+            readable(mix(card, fg, 0.11), &[composer_inner], SOFT_LINE_MIN)
+        } else {
+            readable(mix(card, fg, 0.14), &[composer_inner], QUIET_LINE_MIN)
+        };
         UiColors {
             sidebar_background: canvas,
             sidebar_border: quiet(mix(canvas, fg, 0.12), &[canvas, bg]),
@@ -560,14 +577,26 @@ impl Theme {
             avatars,
             card,
             card_border,
-            card_surface: mix(bg, fg, 0.045),
-            // Raised over the panel (the palette chore: what you work in is lighter than what it
-            // sits on, its edges lighter than its fill, its top the lightest).
-            composer_outer: mix(bg, fg, 0.035),
-            composer_edge: mix(bg, fg, 0.09),
-            composer_inner: mix(bg, fg, 0.06),
-            composer_inner_edge: mix(bg, fg, 0.10),
-            composer_inner_top: mix(bg, fg, 0.16),
+            // The designer's call: a card is the panel with a hairline edge.
+            card_surface: card,
+            card_edge: readable(mix(card, fg, 0.08), &[card], SOFT_LINE_MIN),
+            // Raised over the panel, lighter on every theme (the designer's call): dark, steps
+            // toward the ink with a lit top edge; light, toward white (an input field) with
+            // darker hairlines and no lit top. Edges held to `SOFT_LINE_MIN` (the inner one on a
+            // light theme to `QUIET_LINE_MIN`) on what they divide.
+            composer_outer,
+            composer_edge: readable(
+                mix(card, fg, if dark { 0.11 } else { 0.10 }),
+                &[card, composer_outer],
+                SOFT_LINE_MIN,
+            ),
+            composer_inner,
+            composer_inner_edge,
+            composer_inner_top: if dark {
+                mix(card, fg, 0.18)
+            } else {
+                composer_inner_edge
+            },
             window_edge: if dark { black } else { canvas },
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
             // No shadow since the dark-panel chore (your words: "sidebar background color and the
@@ -1080,12 +1109,13 @@ mod tests {
                 ("inner", ui.composer_inner, ui.composer_outer),
                 ("outer edge", ui.composer_edge, ui.composer_outer),
                 ("inner edge", ui.composer_inner_edge, ui.composer_inner),
-                ("inner top", ui.composer_inner_top, ui.composer_inner_edge),
-                ("card surface", ui.card_surface, bg),
+                ("card edge", ui.card_edge, ui.card_surface),
             ];
             for (what, c, below) in steps {
                 assert_ne!(c, below, "{name}: {what} stands apart");
             }
+            // (A dark theme's lit top: `the_composer_is_raised`; a card is the panel since the
+            // designer's call.)
             for (what, on) in [
                 ("card surface", ui.card_surface),
                 ("outer", ui.composer_outer),
@@ -1104,28 +1134,70 @@ mod tests {
     /// then its inner box; its edges lighter than its fill, the inner box's top the lightest.
     #[test]
     fn the_composer_is_raised() {
+        // The designer's call (your words: "I'd go with that agent suggestion"): raised is
+        // lighter on every theme, a light one's inner box near white like an input field; a
+        // dark one's top edge lit, a light one's top edge its plain edge (a lit line vanishes
+        // on white); its edges show on what they divide.
         for (name, theme) in every_theme() {
             let ui = theme.ui();
             let l = luminance;
-            let lifts = |a: Rgb, b: Rgb| {
-                if theme.is_dark() {
-                    l(a) > l(b)
-                } else {
-                    l(a) < l(b)
-                }
-            };
             assert!(
-                lifts(ui.composer_outer, theme.background),
+                l(ui.composer_outer) > l(theme.background),
                 "{name}: outer over the panel"
             );
             assert!(
-                lifts(ui.composer_inner, ui.composer_outer),
+                l(ui.composer_inner) > l(ui.composer_outer),
                 "{name}: inner over the outer"
             );
-            assert!(
-                lifts(ui.composer_inner_top, ui.composer_inner_edge),
-                "{name}: top-lit"
+            if theme.is_dark() {
+                assert!(
+                    l(ui.composer_inner_top) > l(ui.composer_inner_edge),
+                    "{name}: top-lit"
+                );
+            } else {
+                assert_eq!(ui.composer_inner_top, ui.composer_inner_edge, "{name}");
+            }
+            for (what, edge, on) in [
+                ("outer edge", ui.composer_edge, theme.background),
+                ("outer edge", ui.composer_edge, ui.composer_outer),
+                ("inner edge", ui.composer_inner_edge, ui.composer_inner),
+            ] {
+                let r = contrast(edge, on);
+                assert!(r >= SOFT_LINE_MIN, "{name}: {what} {r:.2}");
+            }
+        }
+    }
+
+    /// The designer's call: a command card is the panel with a hairline edge (the reference's
+    /// edged cards), not a fill lighter than the composer you type in.
+    #[test]
+    fn cards_are_edged_not_filled() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            assert_eq!(ui.card_surface, theme.background, "{name}");
+            let r = contrast(ui.card_edge, ui.card_surface);
+            assert!(r >= SOFT_LINE_MIN, "{name}: {r:.2}");
+        }
+    }
+
+    /// The designer's call: selection is neutral (the reference's), the accent kept for the
+    /// 2 pt bar at the selected row's left; faint text is dim text (two greys, rank by size).
+    #[test]
+    fn selection_is_neutral_and_faint_is_dim() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let fg = theme.foreground;
+            assert_eq!(
+                ui.row_selected,
+                mix(ui.sidebar_background, fg, 0.08),
+                "{name}"
             );
+            assert_eq!(ui.row_hover, mix(ui.sidebar_background, fg, 0.04), "{name}");
+            assert_eq!(ui.tab_active, mix(ui.card, fg, 0.06), "{name}");
+            assert_eq!(ui.text_faint, ui.text_dim, "{name}");
+            // A lifted or pressed row (a dragged row's copy) stands clear of the selection.
+            let r = contrast(ui.row_active, ui.row_selected);
+            assert!(r >= 1.05, "{name}: row_active on the selection {r:.3}");
         }
     }
 
@@ -1552,18 +1624,14 @@ mod tests {
     }
 
     #[test]
-    fn selection_is_a_tint_of_the_accent() {
+    fn the_selection_shows_and_the_card_casts_no_shadow() {
+        // (The selection was a tint of the accent until the designer's call made it neutral:
+        // `selection_is_neutral_and_faint_is_dim`.)
         let themes = every_theme();
         let named = |name: &str| themes.iter().find(|(n, _)| *n == name).unwrap().1;
         let ui = named("Catppuccin Mocha").ui();
         assert_ne!(ui.row_selected, ui.sidebar_background);
-        let d = (hue(ui.row_selected) - hue(ui.accent)).abs();
-        assert!(
-            d.min(360.0 - d) <= 15.0,
-            "row_selected {:?} is {d:.1}° from the accent {:?}",
-            ui.row_selected,
-            ui.accent
-        );
+        assert_ne!(ui.tab_active, ui.card);
         // None since the dark-panel chore: the window around the panel is the sidebar's colour.
         assert_eq!(ui.card_shadow_alpha, 0.0);
         assert_eq!(named("Catppuccin Latte").ui().card_shadow_alpha, 0.0);
@@ -1658,31 +1726,6 @@ mod tests {
     }
 
     #[test]
-    fn tab_active_keeps_the_accent_hue() {
-        // The shown tab is the accent washed over the card (10 %, 8 % on light, or less in 2 %
-        // steps): a tint of the accent, whatever hue the card leans to (a 10 % mauve wash on
-        // Mocha's blue card reads 19° off mauve's own hue, 2026-11-20; it is still mauve's).
-        for (name, theme) in every_theme() {
-            let ui = theme.ui();
-            let washes: Vec<Rgb> = (0..=5)
-                .map(|n| mix(ui.card, ui.accent, 0.10 - 0.02 * n as f32))
-                .chain((0..=4).map(|n| mix(ui.card, ui.accent, 0.08 - 0.02 * n as f32)))
-                .collect();
-            assert!(
-                washes.contains(&ui.tab_active),
-                "{name}: tab_active {:?} isn't the accent {:?} over the card",
-                ui.tab_active,
-                ui.accent
-            );
-        }
-        let (_, mocha) = every_theme()
-            .into_iter()
-            .find(|(n, _)| *n == "Catppuccin Mocha")
-            .unwrap();
-        assert_ne!(mocha.ui().tab_active, mocha.ui().card);
-    }
-
-    #[test]
     fn dim_and_faint_text_keep_todays_values() {
         // Read from master before M11al darkened the canvas (the text hierarchy must not drift);
         // moved on purpose 2026-11-20, when each theme got its own chrome: Mocha a step, Latte
@@ -1693,8 +1736,8 @@ mod tests {
         let themes = every_theme();
         let named = |name: &str| themes.iter().find(|(n, _)| *n == name).unwrap().1.ui();
         let mocha = named("Catppuccin Mocha");
-        assert_eq!(mocha.text_dim, hex(0x9fa3ad));
-        assert_eq!(mocha.text_faint, hex(0xa0a3ac));
+        assert_eq!(mocha.text_dim, hex(0x9ea2ad));
+        assert_eq!(mocha.text_faint, hex(0x9ea2ad));
         let latte = named("Catppuccin Latte");
         assert_eq!(latte.text_dim, hex(0x575761));
         assert_eq!(latte.text_faint, hex(0x575761));
