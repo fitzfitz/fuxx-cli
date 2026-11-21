@@ -172,6 +172,18 @@ pub fn column(
             }
         });
     }
+    // The box holds the screen's rows at most (the terminal is sized to its inside, Settled 4):
+    // a running command's rows already in the scrollback show as plain rows above its chips.
+    let screen_top = Line(0);
+    let live_top = if live_top < screen_top {
+        items.push(Item::Loose {
+            top: live_top,
+            bottom: screen_top - 1i32,
+        });
+        screen_top
+    } else {
+        live_top
+    };
     items.push(Item::Live {
         top: live_top,
         bottom: end.max(live_top),
@@ -775,6 +787,21 @@ mod tests {
         ];
         let items = column(&segments, Line(0), Line(40), Line(40), 0);
         assert_eq!(ids(&items), ["card ls", "live 3..40"]);
+    }
+
+    /// Settled 4: the box's frame and chips stay on screen, so a running command's rows that
+    /// scrolled off the screen (above line 0) show as plain rows above the chips.
+    #[test]
+    fn a_long_running_command_keeps_the_box_on_screen() {
+        let segments = [
+            command("ls", -50, Some((-48, -48)), Outcome::Ok),
+            command("make", -30, Some((-28, 40)), Outcome::Running),
+        ];
+        let items = column(&segments, Line(-50), Line(40), Line(40), 0);
+        assert_eq!(
+            ids(&items),
+            ["card ls", "loose -47..-31", "loose -30..-1", "live 0..40"]
+        );
     }
 
     #[test]

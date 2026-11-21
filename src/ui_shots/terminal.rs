@@ -72,6 +72,62 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "shell-cards-running-full",
+        run: shell_cards_running_full_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/terminal_view.rs",
+            "src/card_view.rs",
+            "src/terminal.rs",
+            "src/grid.rs",
+            "src/blocks.rs",
+        ],
+    },
+    Scene {
+        name: "shell-cards-alt-screen",
+        run: shell_cards_alt_screen_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/terminal_view.rs",
+            "src/card_view.rs",
+            "src/terminal.rs",
+            "src/grid.rs",
+            "src/blocks.rs",
+        ],
+    },
+    Scene {
+        name: "shell-cards-off",
+        run: shell_cards_off_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/terminal_view.rs",
+            "src/card_view.rs",
+            "src/terminal.rs",
+            "src/grid.rs",
+            "src/blocks.rs",
+        ],
+    },
+    Scene {
+        name: "shell-cards-toggle",
+        run: shell_cards_toggle_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/terminal_view.rs",
+            "src/card_view.rs",
+            "src/terminal.rs",
+            "src/grid.rs",
+            "src/blocks.rs",
+        ],
+    },
+    Scene {
         name: "command-blocks-alt-screen",
         run: command_blocks_alt_screen_scene,
         themes: Themes::Both,
@@ -1455,38 +1511,156 @@ fn command_blocks_alt_screen_scene() {
     }
 }
 
+/// A card-view rig (M11ab): `text` in a `cat` that stands in for a zsh with fuxx's marks.
+fn cards_rig(theme: Theme, text: &str, dims: Size<Pixels>) -> CursorRig {
+    let mut rig = CursorRig::sized(theme, text, dims, false, (false, false, false), |_| ());
+    let view = rig.view.clone();
+    rig.cx.update(|cx| {
+        view.update(cx, |v, cx| {
+            v.shot_integrated();
+            v.set_branch(Some("main".into()), cx);
+            cx.notify();
+        })
+    });
+    rig
+}
+
+/// The terminal's size for `dims` in today's view (the pane less its padding).
+fn plain_dims(dims: Size<Pixels>, (cell_w, line_h): (f32, f32)) -> crate::terminal::TermDims {
+    let (pad_x, pad_y) = crate::ui_tokens::size::TERMINAL_PADDING;
+    crate::terminal::TermDims {
+        cols: (((f32::from(dims.width) - 2.0 * pad_x) / cell_w).floor() as usize).max(2),
+        rows: (((f32::from(dims.height) - 2.0 * pad_y) / line_h).floor() as usize).max(1),
+    }
+}
+
 /// `shell-cards` (M11ab): `echo hi` with 25 lines of output (folded to its last 12), an empty
-/// prompt (hidden), `false` (exit 1), a stranded `sleep 9`, and the live prompt in its box at
-/// the bottom; the terminal sized to the box.
+/// prompt (hidden), `false` (exit 1, in the failed colour), a stranded `sleep 9`, the branch
+/// chip, and the live prompt in its box at the bottom; the terminal sized to the box.
 fn shell_cards_scene() {
     let dims = size(px(640.0), px(520.0));
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
+        let ui = theme.ui();
         let n = format!("shell-cards-{slug}");
-        let mut rig = CursorRig::sized(
-            theme,
-            &blocks_text_with(24),
-            dims,
-            false,
-            (false, false, false),
-            |_| (),
-        );
-        let view = rig.view.clone();
-        rig.cx.update(|cx| {
-            view.update(cx, |v, cx| {
-                v.shot_integrated();
-                cx.notify();
-            })
-        });
+        let mut rig = cards_rig(theme, &blocks_text_with(24), dims);
         let shot = rig.frame();
         save_shot("shell-cards", slug, &shot);
-        let (cards, term, (cell_w, line_h)) = rig.read(|v| v.shot_cards());
+        let (cards, term, cell) = rig.read(|v| v.shot_cards());
         assert!(cards, "{n}: card view");
         assert_eq!(
             term,
-            crate::card_view::card_dims(dims, false, cell_w, line_h),
+            crate::card_view::card_dims(dims, false, cell.0, cell.1),
             "{n}: the terminal is the box's inside"
         );
+        assert_eq!(
+            rig.read(|v| v.shot_card_count()),
+            3,
+            "{n}: three cards in view"
+        );
+        // `exit 1` in the failed colour, and the branch chip's pill, somewhere in the frame.
+        let w = f32::from(dims.width) as usize;
+        let h = f32::from(dims.height) as usize;
+        let any = |c| {
+            (0..h).step_by(2).any(|y| {
+                (0..w)
+                    .step_by(2)
+                    .any(|x| is_colour(&shot, dims, x as f32, y as f32, c))
+            })
+        };
+        assert!(any(ui.block_failed), "{n}: exit 1 in the failed colour");
+        assert!(any(ui.raised), "{n}: the chips' pills");
+    }
+}
+
+/// `shell-cards-running-full`: a command printing 200 lines runs: the live box holds it and
+/// fills the pane, no card in view.
+fn shell_cards_running_full_scene() {
+    let dims = size(px(640.0), px(420.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let n = format!("shell-cards-running-full-{slug}");
+        let text = format!(
+            "{}\x1b]133;A;redraw=0\x07$ \x1b]133;B\x07make\r\n\x1b]133;C;cmdline_url=make\x07{}",
+            blocks_text(),
+            (1..=200)
+                .map(|i| format!("building {i}\r\n"))
+                .collect::<String>()
+        );
+        let mut rig = cards_rig(theme, &text, dims);
+        let shot = rig.frame();
+        save_shot("shell-cards-running-full", slug, &shot);
+        assert!(rig.read(|v| v.shot_cards()).0, "{n}: card view");
+        assert_eq!(rig.read(|v| v.shot_card_count()), 0, "{n}: no card in view");
+    }
+}
+
+/// `shell-cards-alt-screen`: a full-screen program takes the whole pane in today's view (its
+/// full width); leaving it brings the cards back.
+fn shell_cards_alt_screen_scene() {
+    let dims = size(px(640.0), px(420.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let n = format!("shell-cards-alt-screen-{slug}");
+        let mut rig = cards_rig(theme, &blocks_text(), dims);
+        let _ = rig.frame();
+        let cell = rig.read(|v| v.shot_cards()).2;
+        rig.write("\x1b[?1049hvim, full screen\r\n");
+        let shot = rig.frame();
+        save_shot("shell-cards-alt-screen", slug, &shot);
+        let (cards, term, _) = rig.read(|v| v.shot_cards());
+        assert!(!cards, "{n}: today's view on the alternate screen");
+        assert_eq!(term, plain_dims(dims, cell), "{n}: the pane's full size");
+        rig.write("\x1b[?1049l");
+        let _ = rig.frame();
+        let (cards, term, _) = rig.read(|v| v.shot_cards());
+        assert!(cards, "{n}: cards again after it");
+        assert_eq!(
+            term,
+            crate::card_view::card_dims(dims, false, cell.0, cell.1)
+        );
+    }
+}
+
+/// `shell-cards-off`: `shell-cards = off` is today's terminal (its size, M11l's bars).
+fn shell_cards_off_scene() {
+    let dims = size(px(640.0), px(420.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let n = format!("shell-cards-off-{slug}");
+        let mut rig = cards_rig(theme, &blocks_text(), dims);
+        rig.appearance(|a| a.shell_cards = false);
+        let shot = rig.frame();
+        save_shot("shell-cards-off", slug, &shot);
+        let (cards, term, cell) = rig.read(|v| v.shot_cards());
+        assert!(!cards, "{n}: today's view");
+        assert_eq!(term, plain_dims(dims, cell), "{n}: today's size");
+    }
+}
+
+/// `shell-cards-toggle`: with a command running, the setting off then on resizes the
+/// terminal each way, and the running command stays in the live box.
+fn shell_cards_toggle_scene() {
+    let dims = size(px(640.0), px(420.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let n = format!("shell-cards-toggle-{slug}");
+        let mut rig = cards_rig(theme, &blocks_text(), dims);
+        let _ = rig.frame();
+        let (_, cards_dims, cell) = rig.read(|v| v.shot_cards());
+        rig.appearance(|a| a.shell_cards = false);
+        let _ = rig.frame();
+        assert_eq!(
+            rig.read(|v| v.shot_cards()).1,
+            plain_dims(dims, cell),
+            "{n}: off"
+        );
+        rig.appearance(|a| a.shell_cards = true);
+        let shot = rig.frame();
+        save_shot("shell-cards-toggle", slug, &shot);
+        let (cards, term, _) = rig.read(|v| v.shot_cards());
+        assert!(cards, "{n}: on again");
+        assert_eq!(term, cards_dims, "{n}: back to the box's inside");
     }
 }
 
