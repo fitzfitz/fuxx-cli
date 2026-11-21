@@ -194,3 +194,5 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
   (first level at the row's top, a 4 pt bridge, a 150 ms wait before swapping to another row, a scroll closes them;
   the level a pick would use ticked quieter on another model).
 
+- **Box controls**: "make the background color of these pills and buttons disappear only show background when hover":
+  `+`, the model pill, the usage button and the mode pill have no fill at rest; the hover fill stays.
