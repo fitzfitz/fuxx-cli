@@ -176,6 +176,13 @@ pub fn add_login_shell_env(
     env.set.extend(added);
 }
 
+/// Whether a shell started with `env` gets fuxx's marks (M11ab: its tab can show cards).
+pub(crate) fn integrated_in(env: &crate::pty::ShellEnv) -> bool {
+    env.set
+        .iter()
+        .any(|(k, v)| k == "FUXX_ZSH_MARKS" && v == "1")
+}
+
 /// A real zsh in a terminal, for the tests here and elsewhere (M11z's end-to-end plugin test).
 #[cfg(test)]
 pub(crate) mod test_zsh {
@@ -294,6 +301,25 @@ pub(crate) mod test_zsh {
 mod tests {
     use super::test_zsh::{self, run, screen_text, until};
     use super::*;
+
+    /// M11ab: a tab is card-capable when its shell was given fuxx's marks.
+    #[test]
+    fn integration_is_read_from_the_env() {
+        let env = |set: &[(&str, &str)]| crate::pty::ShellEnv {
+            base: None,
+            set: set
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            remove: Vec::new(),
+        };
+        assert!(integrated_in(&env(&[
+            ("ZDOTDIR", "/i/zsh"),
+            ("FUXX_ZSH_MARKS", "1")
+        ])));
+        assert!(!integrated_in(&env(&[("ZDOTDIR", "/i/zsh")])));
+        assert!(!integrated_in(&env(&[("FUXX_ZSH_MARKS", "0")])));
+    }
     use crate::blocks::{Block, Outcome};
     use crate::shell_marks::percent_decode;
     use crate::terminal::{TermEvent, TerminalCore};

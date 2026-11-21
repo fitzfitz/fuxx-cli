@@ -774,6 +774,7 @@ pub(super) fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         cursor_follows_status: true,
         cursor_fun: Default::default(),
         command_blocks: true,
+        shell_cards: true,
         file_wrap: false,
         sound_links: Default::default(),
         sound_on: [true; crate::sounds::SoundKey::ALL.len()],

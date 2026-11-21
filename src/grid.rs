@@ -7,7 +7,9 @@
 use alacritty_terminal::event::{EventListener, VoidListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
-use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::selection::SelectionRange;
+use alacritty_terminal::term::cell::{Cell, Flags};
+use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor, Rgb, StdSyncHandler};
 
@@ -189,6 +191,88 @@ pub fn text_lines<L: EventListener>(term: &Term<L>, scope: TextScope) -> String 
     lines[first..last].join("\n")
 }
 
+/// One cell as the view draws it: its colours resolved (dim, inverse, the selection over them),
+/// a tab or hidden text as a blank (shared by `snapshot` and M11ab's `lines_snapshot`).
+fn cell_view(
+    cell: &Cell,
+    point: Point,
+    overrides: &Colors,
+    selection: Option<SelectionRange>,
+    theme: &Theme,
+) -> CellView {
+    let flags = cell.flags;
+    let mut fg = colors::resolve(cell.fg, overrides, theme);
+    let mut bg = colors::resolve(cell.bg, overrides, theme);
+    if flags.contains(Flags::DIM) {
+        fg = colors::dim(fg);
+    }
+    if flags.contains(Flags::INVERSE) {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+    // After the inverse swap, so a selection always shows.
+    if selection.is_some_and(|range| range.contains(point)) {
+        match theme.selection_background {
+            Some(selected_bg) => {
+                bg = selected_bg;
+                if let Some(selected_fg) = theme.selection_foreground {
+                    fg = selected_fg;
+                }
+            }
+            // Unset: swap the window's colors (as Ghostty does), so gray text stays readable.
+            None => {
+                bg = theme.foreground;
+                fg = theme.selection_foreground.unwrap_or(theme.background);
+            }
+        }
+    }
+    CellView {
+        // A tab (HT leaves '\t' in the cell it starts from, for copy) draws as a blank:
+        // shaped as text it gets a tab-stop advance and pushes the rest off the grid.
+        ch: if flags.contains(Flags::HIDDEN) || cell.c == '\t' {
+            ' '
+        } else {
+            cell.c
+        },
+        fg,
+        bg,
+        bold: flags.contains(Flags::BOLD),
+        italic: flags.contains(Flags::ITALIC),
+        underline: flags.intersects(Flags::ALL_UNDERLINES),
+        spacer: flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER),
+        wide: flags.contains(Flags::WIDE_CHAR),
+    }
+}
+
+/// Grid lines `top..=bottom` (scrollback lines negative), clamped to the grid, each as the view
+/// draws it, as `snapshot` draws the screen's (M11ab: a card's output, the live box's rows).
+/// Call while holding the `Term`'s lock.
+pub fn lines_snapshot<L: EventListener>(
+    term: &Term<L>,
+    theme: &Theme,
+    top: Line,
+    bottom: Line,
+) -> Vec<Vec<CellView>> {
+    let grid = term.grid();
+    let (top, bottom) = (
+        top.max(grid.topmost_line()),
+        bottom.min(grid.bottommost_line()),
+    );
+    let content = term.renderable_content();
+    let (overrides, selection) = (content.colors, content.selection);
+    let cols = term.columns();
+    (top.0..=bottom.0)
+        .map(|l| {
+            let row = &grid[Line(l)];
+            (0..cols)
+                .map(|c| {
+                    let point = Point::new(Line(l), Column(c));
+                    cell_view(&row[Column(c)], point, overrides, selection, theme)
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// Copy the visible screen out of the `Term` (call while holding its lock, then release it).
 pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot {
     let rows = term.screen_lines();
@@ -206,48 +290,8 @@ pub fn snapshot<L: EventListener>(term: &Term<L>, theme: &Theme) -> GridSnapshot
         if row < 0 || row as usize >= rows || col >= cols {
             continue;
         }
-        let cell = indexed.cell;
-        let flags = cell.flags;
-        let mut fg = colors::resolve(cell.fg, overrides, theme);
-        let mut bg = colors::resolve(cell.bg, overrides, theme);
-        if flags.contains(Flags::DIM) {
-            fg = colors::dim(fg);
-        }
-        if flags.contains(Flags::INVERSE) {
-            std::mem::swap(&mut fg, &mut bg);
-        }
-        // After the inverse swap, so a selection always shows.
-        if selection.is_some_and(|range| range.contains(indexed.point)) {
-            match theme.selection_background {
-                Some(selected_bg) => {
-                    bg = selected_bg;
-                    if let Some(selected_fg) = theme.selection_foreground {
-                        fg = selected_fg;
-                    }
-                }
-                // Unset: swap the window's colors (as Ghostty does), so gray text stays readable.
-                None => {
-                    bg = theme.foreground;
-                    fg = theme.selection_foreground.unwrap_or(theme.background);
-                }
-            }
-        }
-        lines[row as usize][col] = CellView {
-            // A tab (HT leaves '\t' in the cell it starts from, for copy) draws as a blank:
-            // shaped as text it gets a tab-stop advance and pushes the rest off the grid.
-            ch: if flags.contains(Flags::HIDDEN) || cell.c == '\t' {
-                ' '
-            } else {
-                cell.c
-            },
-            fg,
-            bg,
-            bold: flags.contains(Flags::BOLD),
-            italic: flags.contains(Flags::ITALIC),
-            underline: flags.intersects(Flags::ALL_UNDERLINES),
-            spacer: flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER),
-            wide: flags.contains(Flags::WIDE_CHAR),
-        };
+        lines[row as usize][col] =
+            cell_view(indexed.cell, indexed.point, overrides, selection, theme);
     }
 
     let c = content.cursor;
@@ -434,6 +478,41 @@ mod tests {
     fn feed(term: &mut Term<VoidListener>, text: &str) {
         let mut processor: Processor<StdSyncHandler> = Processor::new();
         processor.advance(term, text.as_bytes());
+    }
+
+    /// M11ab: any range of grid lines reads as the screen's snapshot reads it (colours, bold,
+    /// inverse, wide characters).
+    #[test]
+    fn lines_snapshot_matches_the_viewport() {
+        let theme = Theme::default();
+        let t = term_with("\x1b[1;31mred\x1b[0m 中\r\n\x1b[7minv\x1b[0m".as_bytes());
+        let snap = snapshot(&t, &theme);
+        assert_eq!(lines_snapshot(&t, &theme, Line(0), Line(2)), snap.lines);
+    }
+
+    #[test]
+    fn lines_snapshot_reads_scrollback() {
+        let theme = Theme::default();
+        let mut t = term(10, 3);
+        feed(&mut t, "\x1b[32mfirst\x1b[0m\r\n");
+        for i in 0..30 {
+            feed(&mut t, &format!("{i}\r\n"));
+        }
+        let top = t.grid().topmost_line();
+        assert!(top.0 <= -28, "first is in the history: {top:?}");
+        let line = &lines_snapshot(&t, &theme, top, top)[0];
+        let text: String = line.iter().map(|c| c.ch).collect();
+        assert_eq!(text.trim_end(), "first");
+        assert_eq!(line[0].fg, theme.palette[2]);
+    }
+
+    #[test]
+    fn lines_snapshot_clamps_past_the_grid() {
+        let theme = Theme::default();
+        let t = term_with(b"a");
+        let lines = lines_snapshot(&t, &theme, Line(-50), Line(50));
+        assert_eq!(lines.len(), 3, "the screen only: no history yet");
+        assert_eq!(lines[0][0].ch, 'a');
     }
 
     #[test]
