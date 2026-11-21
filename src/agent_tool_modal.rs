@@ -178,10 +178,21 @@ pub fn openable(items: &[Item], ix: usize) -> bool {
         return false;
     };
     let diff = matches!(detail, Some(ToolDetail::Diff { .. }));
-    let shows_output = name != "Read" && output.is_some() && (!diff || *ok == Some(false));
     diff || matches!(detail, Some(ToolDetail::Command(_)))
-        || shows_output
+        || shows_output(name, output, detail, *ok)
         || items.iter().any(|i| parent_of(i) == Some(id.as_str()))
+}
+
+/// Whether a tool's output is worth showing: not a read's, and not an edit's (its diff says it)
+/// unless it failed.
+pub fn shows_output(
+    name: &str,
+    output: &Option<String>,
+    detail: &Option<ToolDetail>,
+    ok: Option<bool>,
+) -> bool {
+    let diff = matches!(detail, Some(ToolDetail::Diff { .. }));
+    name != "Read" && output.is_some() && (!diff || ok == Some(false))
 }
 
 /// The tool call an item belongs to (a sub-agent's), if any.

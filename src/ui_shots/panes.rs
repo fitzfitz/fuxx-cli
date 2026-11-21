@@ -733,7 +733,7 @@ const LEFT_BAR_WIDTH: f32 = (TAB_BARS_WIDTH
 ///   tab", globe); the right one with tests (done; shown in an unfocused pane: `card_hover`).
 ///   The `TAB_BAR` bars have no fill (the card) and a `card_border` line along their bottom;
 ///   their tabs are `TAB` tall pills in the middle, each as wide as its title (chore 2026-11-20).
-/// - `tab-bars-hover`: the pointer over codex (`card_lift`, × shown); `tab-bars-button`: over
+/// - `tab-bars-hover`: the pointer over codex (`tab_idle_hover`, × shown); `tab-bars-button`: over
 ///   the left bar's + (right after its last tab).
 /// - `tab-bars-more`: the left bar's ⋯ clicked: its menu (New Terminal Tab ⌘T, New Browser Tab,
 ///   Split Right ⌘D, Split Down ⇧⌘D) under it, right edges together, the ⋯ lit.

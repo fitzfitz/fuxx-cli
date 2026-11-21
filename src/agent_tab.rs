@@ -42,7 +42,7 @@ use crate::agent_box::{
 use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
-use crate::agent_tool_modal::ToolModal;
+use crate::agent_tool_modal::{ToolModal, parent_of};
 use crate::appearance::Appearance;
 use crate::block_view::BlockDrag;
 use crate::code_ask::{CodeRef, agent_path};
@@ -608,14 +608,6 @@ pub fn changed_rows(old: &[u64], new: &[u64]) -> Vec<usize> {
         .filter(|(_, (a, b))| a != b)
         .map(|(i, _)| i)
         .collect()
-}
-
-/// The tool call an item belongs to (a sub-agent's), if any.
-fn parent_of(item: &Item) -> Option<&str> {
-    match item {
-        Item::Agent { parent, .. } | Item::Tool { parent, .. } => parent.as_deref(),
-        _ => None,
-    }
 }
 
 /// The colours the tab draws with, from the theme's `UiColors` (text held to `TEXT_MIN` on what
@@ -4598,8 +4590,7 @@ impl AgentTab {
                 well().child(self.diff_block(d, look)).into_any_element(),
             ));
         }
-        let shows_output =
-            name != "Read" && output.is_some() && (diff.is_none() || *ok == Some(false));
+        let shows_output = crate::agent_tool_modal::shows_output(name, output, detail, *ok);
         if shows_output || (*running && output.is_none() && diff.is_none()) {
             let body =
                 match output.as_ref().filter(|_| shows_output) {

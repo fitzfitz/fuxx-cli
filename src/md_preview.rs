@@ -2038,7 +2038,7 @@ mod tests {
     /// Agent chat's sizes (the lead designer's spec B-B, chores after M11ab): smaller headings
     /// with more room above them, roomier lists and code.
     #[test]
-    fn chat_keeps_today_s_sizes() {
+    fn chat_sizes_are_the_designers() {
         assert_eq!(
             Sizes::CHAT,
             Sizes {

@@ -69,9 +69,6 @@ pub mod code {
     pub const NOTE_MORE_GAP: f32 = 8.0;
 }
 
-/// M11ai (Markdown reader): every size the file tab's Markdown Preview is drawn with, in points,
-/// in one place (agent chat keeps its own, `md_preview::Sizes::CHAT`). The Preview's side and top
-/// padding is `size::TERMINAL_PADDING`.
 /// The agent chat (chores after M11ab, the lead designer's spec B-B).
 pub mod chat {
     /// The conversation's column at most (avatar included), left-aligned at the tab's margin.
@@ -108,6 +105,9 @@ pub mod chat {
     pub const R_TAIL: f32 = 6.0;
 }
 
+/// M11ai (Markdown reader): every size the file tab's Markdown Preview is drawn with, in points,
+/// in one place (agent chat keeps its own, `md_preview::Sizes::CHAT`). The Preview's side and top
+/// padding is `size::TERMINAL_PADDING`.
 pub mod reader {
     /// Body text, and its line height (a multiple of the size).
     pub const BODY: f32 = 16.0;
