@@ -241,6 +241,7 @@ pub(super) const ORDER: &[&str] = &[
     "panels",
     "preferences",
     "status-bar",
+    "status-bar-usage",
     "status-bar-hidden",
     "status-bar-ports",
     "status-bar-narrow",

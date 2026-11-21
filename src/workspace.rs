@@ -889,6 +889,8 @@ pub struct Workspace {
     pub(crate) notifications: NotificationList,
     /// The 🔔's popover, while it is open: the focus it holds (so Escape closes it).
     pub(crate) notifications_popover: Option<FocusHandle>,
+    /// The status bar's usage popover is open (M11ap).
+    pub(crate) usage_open: bool,
 }
 
 impl Workspace {
@@ -930,6 +932,9 @@ impl Workspace {
             }
         }
         Self::watch_usage(cx);
+        // A usage reading or a live window redraws the status bar's strip (and its popover).
+        cx.observe_global::<crate::agent_catalog::Catalogs>(|_, cx| cx.notify())
+            .detach();
         this
     }
 
@@ -1097,6 +1102,7 @@ impl Workspace {
             rows_drawn: false,
             band_pressed: false,
             slide: None,
+            usage_open: false,
             right_sidebar: RightSidebarState::new(),
             places: Places::new(home_dir(), crate::git_branch::this_hostname()),
             folders_now: HashMap::new(),

@@ -130,6 +130,11 @@ impl Catalogs {
         true
     }
 
+    /// When the last good reading came (the popover's "Updated … ago").
+    pub fn usage_ready_at(&self, agent: &str) -> Option<Instant> {
+        self.usage_ready.get(agent).map(|(_, at)| *at)
+    }
+
     /// When the usage was last asked for or read (whatever came of it).
     pub fn usage_read_at(&self, agent: &str) -> Option<Instant> {
         self.usage.get(agent).map(|(_, at)| *at)

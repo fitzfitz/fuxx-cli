@@ -144,6 +144,7 @@ mod ui_shots;
 mod ui_tokens;
 mod update_release;
 mod updater;
+mod usage_strip;
 mod usage_view;
 mod vt_snapshot;
 mod welcome;

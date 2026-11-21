@@ -77,6 +77,10 @@ pub const PILL_RADIUS: f32 = 8.0;
 pub const PILL_ICON: f32 = 12.0;
 pub const PILL_GAP: f32 = 6.0;
 pub const PILL_PAD: f32 = 8.0;
+/// The usage strip (M11ap): an agent's logo, the gap between its parts, the gap between agents.
+pub const USAGE_LOGO: f32 = 12.0;
+pub const USAGE_GAP: f32 = 4.0;
+pub const USAGE_AGENT_GAP: f32 = 10.0;
 /// Its colours, fixed whatever the theme (M11e's blue, as asked): the fill, hovered, and its
 /// words; the version part (` · v0.3.2`) is the words' white at this opacity.
 pub(crate) const UPDATE_FILL: Rgb = Rgb {
@@ -159,6 +163,21 @@ pub struct Measured {
     /// The update pill with its version, and without.
     pub update_wide: f32,
     pub update_narrow: f32,
+    /// The usage strip (M11ap): every agent with its reset, without, and the tightest alone.
+    pub usage_full: f32,
+    pub usage_short: f32,
+    pub usage_one: f32,
+}
+
+/// The usage strip as shown (M11ap).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsageShown {
+    Full,
+    /// No resets.
+    Short,
+    /// The tightest agent alone, its percent only.
+    One,
+    Hidden,
 }
 
 /// The ports as shown.
@@ -188,6 +207,7 @@ pub struct Shown {
     pub branch: Cut,
     pub folder: Cut,
     pub status_word: bool,
+    pub usage: UsageShown,
 }
 
 /// Everything shown, nothing cut.
@@ -197,6 +217,7 @@ const ALL: Shown = Shown {
     branch: Cut::Full,
     folder: Cut::Full,
     status_word: true,
+    usage: UsageShown::Full,
 };
 
 /// How wide the bar's content is with `shown` (its end padding not included): the mark, then
@@ -231,33 +252,48 @@ pub fn needed(m: &Measured, shown: &Shown) -> f32 {
     } else {
         m.update_narrow
     };
-    let right = match (ports > 0.0, update > 0.0) {
-        (true, true) => ports + ITEM_GAP + update,
-        _ => ports + update,
+    let usage = match shown.usage {
+        UsageShown::Full => m.usage_full,
+        UsageShown::Short => m.usage_short,
+        UsageShown::One => m.usage_one,
+        UsageShown::Hidden => 0.0,
     };
+    // The right side's pieces there, `ITEM_GAP` apart: the usage strip, the ports, the update.
+    let parts = [usage, ports, update];
+    let there = parts.iter().filter(|w| **w > 0.0).count();
+    let right = parts.iter().sum::<f32>() + ITEM_GAP * there.saturating_sub(1) as f32;
     left + after(ITEM_GAP, right)
 }
 
 /// What fits in `room` (the bar's width less its end padding): everything if it can; else
 /// pieces go in this order until the rest fits: the update pill's version, the ports into one
-/// `N ports` chip, the branch cut to 8 characters, the folder's start (down to its own name),
-/// the word, the folder, the branch, and last the ports chip. The mark and the update pill (its
-/// short form) always show.
+/// `N ports` chip, the usage strip's resets (M11ap), the branch cut to 8 characters, the
+/// folder's start (down to its own name), the usage strip down to its tightest agent, the word,
+/// the folder, the branch, the usage strip, and last the ports chip. The mark and the update
+/// pill (its short form) always show.
 pub fn fit_status_bar(m: &Measured, room: f32) -> Shown {
     let mut shown = ALL;
-    let steps: [fn(&mut Shown); 8] = [
+    let steps: [fn(&mut Shown); 11] = [
         |s| s.update_wide = false,
         |s| s.ports = PortsShown::Collapsed,
+        |s| s.usage = UsageShown::Short,
         |s| s.branch = Cut::Short,
         |s| s.folder = Cut::Short,
+        |s| s.usage = UsageShown::One,
         |s| s.status_word = false,
         |s| s.folder = Cut::Hidden,
         |s| s.branch = Cut::Hidden,
+        |s| s.usage = UsageShown::Hidden,
         |s| s.ports = PortsShown::None,
     ];
-    for step in steps {
+    // With no usage strip (nothing read), its steps change nothing: skipped.
+    let usage_steps = [2, 5, 9];
+    for (i, step) in steps.into_iter().enumerate() {
         if needed(m, &shown) <= room {
             break;
+        }
+        if m.usage_full == 0.0 && usage_steps.contains(&i) {
+            continue;
         }
         step(&mut shown);
     }
@@ -533,6 +569,201 @@ impl Workspace {
         }
     }
 
+    /// The usage popover (M11ap, the lead designer's spec): above the strip, its right edge on
+    /// the strip's; "Usage", when it was last read and a refresh (turning while a read runs);
+    /// then each agent, always open: its logo and name, and its limits in the box panel's rows.
+    /// A press outside it closes it.
+    fn usage_popover(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
+        use crate::agent_catalog::{Catalogs, Lookup};
+        use crate::icons::{Icon, icon};
+        use crate::usage_view::{UsageInk, heading, limit_row, quiet, top_row};
+        use gpui::{
+            Animation, AnimationExt, Transformation, anchored, deferred, percentage, point,
+        };
+        let theme = cx.global::<crate::appearance::Appearance>().theme;
+        let ink = UsageInk::of(&theme);
+        let catalogs = cx.try_global::<Catalogs>();
+        let now_unix = crate::agent_box::now_unix();
+        let offset = crate::cli::local_utc_offset(now_unix as u64 * 1000);
+        let agents = crate::usage_strip::strip_agents(catalogs, now_unix);
+        let reading = agents.iter().any(|a| {
+            catalogs.is_some_and(|c| matches!(c.usage_last(a.name), Some(Lookup::Loading)))
+        });
+        let updated = agents
+            .iter()
+            .filter_map(|a| catalogs.and_then(|c| c.usage_ready_at(a.name)))
+            .max()
+            .map(|at| {
+                let ago = std::time::Instant::now()
+                    .saturating_duration_since(at)
+                    .as_secs();
+                if ago < 60 {
+                    "Updated just now".to_string()
+                } else {
+                    format!("Updated {}m ago", ago / 60)
+                }
+            });
+        let spin = icon(Icon::Reload, px(14.), hsla(ui.text_dim));
+        let refresh_icon: AnyElement = if reading {
+            spin.with_animation(
+                "usage-refresh-spin",
+                Animation::new(std::time::Duration::from_millis(800)).repeat(),
+                |svg, t| svg.with_transformation(Transformation::rotate(percentage(t))),
+            )
+            .into_any_element()
+        } else {
+            spin.into_any_element()
+        };
+        let hover = ui.panel_hover;
+        let header = div()
+            .h(px(28.))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(hsla(ui.text))
+                    .child("Usage"),
+            )
+            .children(updated.map(|u| {
+                div()
+                    .text_size(px(crate::ui_tokens::text::META))
+                    .text_color(hsla(ui.text_dim))
+                    .child(u)
+            }))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .id("usage-refresh")
+                    .size(px(22.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(!reading, |d| {
+                        d.cursor_pointer()
+                            .hover(move |s| s.bg(hsla(hover)))
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                let home = crate::workspace::home_dir().unwrap_or_default();
+                                for &p in crate::providers::all() {
+                                    crate::agent_catalog::load_usage(p, home.clone(), cx);
+                                }
+                            }))
+                    })
+                    .tooltip(|_, cx| -> AnyView { cx.new(|_| Tip("Refresh usage".into())).into() })
+                    .child(refresh_icon),
+            );
+        let mut body: Vec<AnyElement> = Vec::new();
+        for (i, agent) in agents.iter().enumerate() {
+            if i > 0 {
+                body.push(
+                    div()
+                        .h(px(1.))
+                        .mx(px(4.))
+                        .my(px(4.))
+                        .bg(hsla(ui.panel_border))
+                        .into_any_element(),
+                );
+            }
+            let failed = catalogs
+                .is_some_and(|c| matches!(c.usage_last(agent.name), Some(Lookup::Failed(_))));
+            body.push(
+                div()
+                    .h(px(28.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .children(
+                        agent
+                            .logo
+                            .and_then(|l| crate::logos::image(l, 14., cx))
+                            .map(|img| gpui::img(img).size(px(14.))),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(hsla(ui.text))
+                            .child(agent.label),
+                    )
+                    .when(failed, |d| {
+                        d.child(
+                            div()
+                                .text_size(px(crate::ui_tokens::text::META))
+                                .text_color(hsla(ui.text_dim))
+                                .child("Couldn't refresh"),
+                        )
+                    })
+                    .into_any_element(),
+            );
+            let live = catalogs
+                .and_then(|c| c.live_usage(agent.name))
+                .map(Lookup::Ready);
+            let found = live
+                .as_ref()
+                .or_else(|| catalogs.and_then(|c| c.usage_last(agent.name)));
+            let limits = catalogs.map_or(&[][..], |c| c.limits(agent.name));
+            for row in crate::agent_box::usage_rows(found, limits, None, now_unix, offset) {
+                use crate::agent_box::UsageRow;
+                body.push(match row {
+                    UsageRow::Heading(name) => heading(name, &ui),
+                    UsageRow::Quiet(text) => quiet(text, &ui),
+                    UsageRow::Text(text) => match crate::agent_box::top_list(&text) {
+                        Some((title, list)) => div()
+                            .flex()
+                            .flex_col()
+                            .child(heading(title, &ui))
+                            .children(list.into_iter().map(|(n, p)| top_row(n, p, &ui)))
+                            .into_any_element(),
+                        None => quiet(text, &ui),
+                    },
+                    UsageRow::Limit {
+                        name,
+                        used_pct,
+                        resets,
+                        note,
+                    } => limit_row(name, used_pct, resets, note, &ui, &ink).into_any_element(),
+                });
+            }
+        }
+        let panel = crate::overlay_panel::shell(&ui, crate::agent_box::USAGE_WIDTH)
+            .id("usage-popover")
+            .p(px(4.))
+            .gap(px(0.))
+            .occlude()
+            .child(header)
+            .child(
+                div()
+                    .id("usage-popover-body")
+                    .flex()
+                    .flex_col()
+                    .max_h(px(crate::agent_box::USAGE_MAX_H))
+                    .overflow_y_scroll()
+                    .children(body),
+            )
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.usage_open = false;
+                cx.notify();
+            }));
+        div()
+            .absolute()
+            .top_0()
+            .right_0()
+            .child(deferred(
+                anchored()
+                    .anchor(gpui::Anchor::BottomRight)
+                    .offset(point(px(0.), px(-6.)))
+                    .snap_to_window_with_margin(px(8.))
+                    .child(panel),
+            ))
+            .into_any_element()
+    }
+
     /// The status bar (see the module): 22 pt along the window's bottom, on the canvas. Each
     /// piece is measured as drawn, then fitted to the window's width (`fit_status_bar`).
     pub(crate) fn render_status_bar(
@@ -581,6 +812,52 @@ impl Workspace {
         let folder_least = folder_path
             .as_deref()
             .map(|f| crate::right_sidebar::root_path_line(f, folder_home, |_| false));
+        // The usage strip (M11ap): each agent's logo, percent and reset, measured as drawn.
+        let now_unix = crate::agent_box::now_unix();
+        let agents = crate::usage_strip::strip_agents(
+            cx.try_global::<crate::agent_catalog::Catalogs>(),
+            now_unix,
+        );
+        let texts: Vec<(String, Option<String>, Option<u8>)> = agents
+            .iter()
+            .map(|a| match a.value {
+                crate::usage_strip::StripValue::Used { used, reset_in } => (
+                    format!("{used}%"),
+                    reset_in.map(crate::usage_strip::short_reset),
+                    Some(used),
+                ),
+                crate::usage_strip::StripValue::Reading => ("\u{2026}".into(), None, None),
+            })
+            .collect();
+        let tab_w = |t: &str| text_width(t, FontWeight::NORMAL, true, window);
+        let agent_w = |(pct, reset, _): &(String, Option<String>, Option<u8>), resets: bool| {
+            USAGE_LOGO
+                + USAGE_GAP
+                + tab_w(pct)
+                + reset
+                    .as_deref()
+                    .filter(|_| resets)
+                    .map_or(0.0, |r| USAGE_GAP + tab_w(r))
+        };
+        let strip_w = |resets: bool| {
+            if texts.is_empty() {
+                return 0.0;
+            }
+            2.0 * CHIP_PAD
+                + texts.iter().map(|t| agent_w(t, resets)).sum::<f32>()
+                + USAGE_AGENT_GAP * (texts.len() - 1) as f32
+        };
+        // The tightest agent alone: its percent only.
+        let tightest_ix = texts
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, t)| t.2.unwrap_or(0))
+            .map(|(i, _)| i);
+        let usage_widths = (
+            strip_w(true),
+            strip_w(false),
+            tightest_ix.map_or(0.0, |i| 2.0 * CHIP_PAD + agent_w(&texts[i], false)),
+        );
         let m = Measured {
             status_word: facts.as_ref().map_or(0.0, |f| plain(&f.text)),
             branch: branch_text.as_deref().map_or(0.0, &branch_width),
@@ -598,6 +875,9 @@ impl Workspace {
             },
             update_wide: pill(&wide),
             update_narrow: pill(&narrow),
+            usage_full: usage_widths.0,
+            usage_short: usage_widths.1,
+            usage_one: usage_widths.2,
         };
         let bar_width = f32::from(window.viewport_size().width);
         let room = bar_width - 2.0 * PAD - SLACK;
@@ -808,11 +1088,77 @@ impl Workspace {
                 })
                 .into_any_element()
         });
+        let usage_el = (shown.usage != UsageShown::Hidden && !agents.is_empty()).then(|| {
+            let theme = cx.global::<crate::appearance::Appearance>().theme;
+            let on = [ui.sidebar_background, ui.row_hover, ui.row_active];
+            let pct_ink = |used: Option<u8>| match used.map(crate::agent_top::band) {
+                Some(crate::agent_top::Band::Caution) => {
+                    crate::theme::readable(theme.palette[3], &on, crate::ui_tokens::TEXT_MIN)
+                }
+                Some(crate::agent_top::Band::Critical) => {
+                    crate::theme::readable(theme.palette[1], &on, crate::ui_tokens::TEXT_MIN)
+                }
+                _ => ui.text_dim,
+            };
+            let shown_ix: Vec<usize> = match shown.usage {
+                UsageShown::One => tightest_ix.into_iter().collect(),
+                _ => (0..agents.len()).collect(),
+            };
+            let resets = shown.usage == UsageShown::Full;
+            let open = self.usage_open;
+            let tip = crate::usage_strip::tip(&agents);
+            let strip = div()
+                .id("status-usage")
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(USAGE_AGENT_GAP))
+                .h(px(CHIP))
+                .px(px(CHIP_PAD))
+                .rounded(px(CHIP_RADIUS))
+                .font_features(tabular())
+                .whitespace_nowrap()
+                .when(open, |d| d.bg(hsla(ui.row_active)))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hsla(if open { ui.row_active } else { ui.row_hover })))
+                .children(shown_ix.into_iter().map(|i| {
+                    let (pct, reset, used) = texts[i].clone();
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(USAGE_GAP))
+                        .children(
+                            agents[i]
+                                .logo
+                                .and_then(|l| crate::logos::image(l, USAGE_LOGO, cx))
+                                .map(|img| gpui::img(img).size(px(USAGE_LOGO))),
+                        )
+                        .child(div().text_color(hsla(pct_ink(used))).child(pct))
+                        .when_some(reset.filter(|_| resets), |d, r| {
+                            d.child(div().text_color(hsla(ui.text_dim)).child(r))
+                        })
+                }))
+                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation()
+                })
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.usage_open = !this.usage_open;
+                    cx.notify();
+                }))
+                .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone().into())).into() });
+            div()
+                .relative()
+                .flex_none()
+                .child(strip)
+                .when(open, |d| d.child(self.usage_popover(ui, cx)))
+                .into_any_element()
+        });
         let right = div()
             .flex_none()
             .flex()
             .items_center()
             .gap(px(ITEM_GAP))
+            .children(usage_el)
             .children(ports_el)
             .children(pill_el);
 
@@ -921,7 +1267,43 @@ mod tests {
         ports_collapsed: 50.0,
         update_wide: 170.0,
         update_narrow: 120.0,
+        usage_full: 0.0,
+        usage_short: 0.0,
+        usage_one: 0.0,
     };
+
+    /// M11ap: the usage strip gives way in the lead designer's order — its resets after the
+    /// ports collapse, one agent after the folder is cut, gone just before the ports.
+    #[test]
+    fn the_usage_strip_gives_way_in_its_order() {
+        let m = Measured {
+            usage_full: 200.0,
+            usage_short: 120.0,
+            usage_one: 50.0,
+            ..LONG
+        };
+        let at = |room: f32| fit_status_bar(&m, room);
+        // Everything: the strip whole, before the ports (+ 14).
+        assert_eq!(needed(&m, &ALL), 982.0 + 200.0 + 14.0);
+        assert_eq!(at(1196.0).usage, UsageShown::Full);
+        // Short of room: the version, the ports collapse, then the strip's resets.
+        let s = at(1196.0 - 50.0 - 110.0 - 1.0);
+        assert_eq!(
+            (s.update_wide, s.ports, s.usage),
+            (false, PortsShown::Collapsed, UsageShown::Short)
+        );
+        assert_eq!(s.branch, Cut::Full, "the branch waits");
+        // Much less: one agent once the folder is cut.
+        let tight = at(400.0);
+        assert!(matches!(tight.usage, UsageShown::One | UsageShown::Hidden));
+        assert_eq!(tight.folder, Cut::Hidden);
+        // Least of all: gone before the ports.
+        let least = at(10.0);
+        assert_eq!(
+            (least.usage, least.ports),
+            (UsageShown::Hidden, PortsShown::None)
+        );
+    }
 
     #[test]
     fn with_room_for_everything_everything_shows() {

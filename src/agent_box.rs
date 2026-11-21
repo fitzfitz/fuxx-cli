@@ -104,9 +104,9 @@ pub const VIEW_USAGE: &str = "Usage";
 const EFFORT_ROWS: &str = "box-effort";
 const EFFORT_WIDTH: f32 = 140.0;
 /// The usage view's width.
-const USAGE_WIDTH: f32 = 300.0;
+pub(crate) const USAGE_WIDTH: f32 = 300.0;
 /// The usage view's tallest; it scrolls past it.
-const USAGE_MAX_H: f32 = 480.0;
+pub(crate) const USAGE_MAX_H: f32 = 480.0;
 /// The mode menu's width (its rows carry a description).
 const MODE_MENU_WIDTH: f32 = 300.0;
 

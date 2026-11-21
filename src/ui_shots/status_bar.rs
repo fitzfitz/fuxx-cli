@@ -27,6 +27,20 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "status-bar-usage",
+        run: status_bar_usage_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/status_bar.rs",
+            "src/usage_strip.rs",
+            "src/usage_view.rs",
+            "src/agent_catalog.rs",
+            "src/logos.rs",
+        ],
+    },
+    Scene {
         name: "status-bar-hidden",
         run: status_bar_hidden_scenes,
         themes: Themes::Both,
@@ -239,6 +253,95 @@ fn status_bar_hidden_scenes() {
                 })
             });
             assert_eq!(faint, shown, "{n}: the bar's words along the bottom");
+        }
+    }
+}
+
+/// M11ap: the usage strip (Claude 77 % · 1h, Antigravity 98 % · 4h), then its popover open
+/// with both agents' limits as "% used" in their bands.
+fn status_bar_usage_scenes() {
+    use crate::agent_catalog::{Catalogs, Lookup};
+    use crate::providers::{Reset, UsageGroup, UsageLimit};
+    use crate::ui_tokens::size::SIDEBAR_DEFAULT_WIDTH;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(1000.0), px(760.0));
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        for open in [false, true] {
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let keep = slot.clone();
+            let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+                cx.set_global(sidebar_appearance(theme, cx));
+                let now = crate::agent_box::now_unix();
+                let read = |name: &str, left: u8, secs: i64| UsageLimit::Read {
+                    name: name.into(),
+                    left_pct: left,
+                    resets: Some(Reset::At(now + secs)),
+                };
+                let group = |name: &str, limits| UsageGroup {
+                    name: name.into(),
+                    about: None,
+                    limits,
+                };
+                let mut c = Catalogs::default();
+                let at = std::time::Instant::now();
+                c.set_usage(
+                    "claude",
+                    Lookup::Ready(vec![group(
+                        "",
+                        vec![
+                            read("Current session", 63, 3_700),
+                            read("Current week (all models)", 23, 83_000),
+                            read("Current week (Fable)", 35, 83_000),
+                        ],
+                    )]),
+                    at,
+                );
+                c.set_usage(
+                    "agy",
+                    Lookup::Ready(vec![
+                        group(
+                            "Gemini Models",
+                            vec![
+                                read("Weekly Limit", 2, 600_000),
+                                read("Five Hour Limit", 2, 16_000),
+                            ],
+                        ),
+                        group(
+                            "Claude and GPT models",
+                            vec![read("Weekly Limit", 45, 470_000)],
+                        ),
+                    ]),
+                    at,
+                );
+                cx.set_global(c);
+                let ws = cx.new(|cx| {
+                    let mut ws = bar_workspace(
+                        0,
+                        SIDEBAR_DEFAULT_WIDTH,
+                        (FUXX, "main"),
+                        &[3000],
+                        window,
+                        cx,
+                    );
+                    ws.usage_open = open;
+                    ws
+                });
+                *keep.borrow_mut() = Some(ws.clone());
+                ws.into()
+            };
+            let act = move |_: &mut VisualTestAppContext, _: AnyWindowHandle| {
+                slot.borrow_mut().take();
+            };
+            let shot = render_with(&theme, dims, build, act);
+            let scene = if open {
+                "status-bar-usage-open"
+            } else {
+                "status-bar-usage"
+            };
+            save_shot(scene, slug, &shot);
         }
     }
 }
