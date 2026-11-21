@@ -746,7 +746,15 @@ impl Workspace {
                     .overflow_y_scroll()
                     .children(body),
             )
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                // A press on the strip is its own toggle, not "outside".
+                if this
+                    .usage_strip_at
+                    .get()
+                    .is_some_and(|b| b.contains(&event.position))
+                {
+                    return;
+                }
                 this.usage_open = false;
                 cx.notify();
             }));
@@ -1107,6 +1115,10 @@ impl Workspace {
             let resets = shown.usage == UsageShown::Full;
             let open = self.usage_open;
             let tip = crate::usage_strip::tip(&agents);
+            let at = self.usage_strip_at.clone();
+            let measure = gpui::canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
+                .absolute()
+                .size_full();
             let strip = div()
                 .id("status-usage")
                 .flex_none()
@@ -1116,8 +1128,10 @@ impl Workspace {
                 .h(px(CHIP))
                 .px(px(CHIP_PAD))
                 .rounded(px(CHIP_RADIUS))
+                .relative()
                 .font_features(tabular())
                 .whitespace_nowrap()
+                .child(measure)
                 .when(open, |d| d.bg(hsla(ui.row_active)))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hsla(if open { ui.row_active } else { ui.row_hover })))
@@ -1138,13 +1152,16 @@ impl Workspace {
                             d.child(div().text_color(hsla(ui.text_dim)).child(r))
                         })
                 }))
-                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
-                    cx.stop_propagation()
-                })
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.usage_open = !this.usage_open;
-                    cx.notify();
-                }))
+                // Toggled on the press (the popover's "outside" press comes first, in the capture
+                // phase, and ignores the strip: the review's finding 2).
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.usage_open = !this.usage_open;
+                        cx.notify();
+                    }),
+                )
                 .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone().into())).into() });
             div()
                 .relative()

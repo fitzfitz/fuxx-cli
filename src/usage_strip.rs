@@ -68,7 +68,7 @@ pub fn strip_agents(catalogs: Option<&Catalogs>, now_unix: i64) -> Vec<StripAgen
         .filter(|p| p.usage_probe().is_some())
         .filter_map(|p| {
             let info = p.info();
-            let value = match c.live_usage(info.name) {
+            let value = match c.live_usage_at(info.name, now_unix) {
                 Some(groups) => {
                     let (used, reset_in) = tightest(&groups, now_unix)?;
                     StripValue::Used { used, reset_in }

@@ -889,8 +889,10 @@ pub struct Workspace {
     pub(crate) notifications: NotificationList,
     /// The 🔔's popover, while it is open: the focus it holds (so Escape closes it).
     pub(crate) notifications_popover: Option<FocusHandle>,
-    /// The status bar's usage popover is open (M11ap).
+    /// The status bar's usage popover is open (M11ap), and where its strip was last drawn (a
+    /// press there toggles it, never counts as "outside").
     pub(crate) usage_open: bool,
+    pub(crate) usage_strip_at: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
 }
 
 impl Workspace {
@@ -946,9 +948,13 @@ impl Workspace {
             loop {
                 let alive = this
                     .update(cx, |_, cx| {
-                        let seen = cx
+                        let window_seen = cx
                             .try_global::<crate::reduce_motion::WindowVisible>()
                             .is_none_or(|w| w.visible);
+                        let bar_shown = cx
+                            .try_global::<crate::appearance::Appearance>()
+                            .is_none_or(|a| a.status_bar);
+                        let seen = crate::agent_catalog::reads_wanted(window_seen, bar_shown);
                         let now = Instant::now();
                         let home = crate::workspace::home_dir().unwrap_or_default();
                         for &provider in crate::providers::all() {
@@ -1103,6 +1109,7 @@ impl Workspace {
             band_pressed: false,
             slide: None,
             usage_open: false,
+            usage_strip_at: Default::default(),
             right_sidebar: RightSidebarState::new(),
             places: Places::new(home_dir(), crate::git_branch::this_hostname()),
             folders_now: HashMap::new(),
@@ -3946,6 +3953,15 @@ impl Render for Workspace {
             // fill, over it) and nothing pokes past the window.
             .overflow_hidden()
             .key_context("Workspace")
+            // Esc closes the usage popover (M11ap, the review's finding 3), caught before the
+            // terminal (which keeps the keyboard) gets it — only while the popover is open.
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if this.usage_open && event.keystroke.key == "escape" {
+                    this.usage_open = false;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             // Esc during a tab drag cancels it, before the terminal (or a box) takes the key.
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && this.cancel_tab_drag(window, cx) {

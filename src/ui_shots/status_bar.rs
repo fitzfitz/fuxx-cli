@@ -332,7 +332,34 @@ fn status_bar_usage_scenes() {
                 *keep.borrow_mut() = Some(ws.clone());
                 ws.into()
             };
-            let act = move |_: &mut VisualTestAppContext, _: AnyWindowHandle| {
+            let n = format!("status-bar-usage-{slug}");
+            let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                // The review's findings 2 and 3: the strip toggles the popover (a press on it
+                // never counts as outside), Esc closes it, and so does a press elsewhere.
+                if !open {
+                    let ws = slot.borrow().clone().expect("the workspace");
+                    let is_open =
+                        |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).usage_open);
+                    let strip = cx
+                        .read(|cx| ws.read(cx).usage_strip_at.get())
+                        .expect("the strip was drawn");
+                    let click = |cx: &mut VisualTestAppContext, at| {
+                        cx.simulate_click(window, at, gpui::Modifiers::none());
+                        cx.run_until_parked();
+                        let _ = frame_fresh(cx, window);
+                    };
+                    click(cx, strip.center());
+                    assert!(is_open(cx), "{n}: the strip opens it");
+                    click(cx, strip.center());
+                    assert!(!is_open(cx), "{n}: the strip closes it");
+                    click(cx, strip.center());
+                    cx.simulate_keystrokes(window, "escape");
+                    cx.run_until_parked();
+                    assert!(!is_open(cx), "{n}: Esc closes it");
+                    click(cx, strip.center());
+                    click(cx, point(px(400.), px(200.)));
+                    assert!(!is_open(cx), "{n}: a press elsewhere closes it");
+                }
                 slot.borrow_mut().take();
             };
             let shot = render_with(&theme, dims, build, act);

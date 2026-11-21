@@ -813,9 +813,18 @@ fn rate_limit(v: &Value) -> Vec<Event> {
     let Some(kind) = info["rateLimitType"].as_str() else {
         return Vec::new();
     };
-    let Some(first) = window_limit(kind, info) else {
+    let Some(mut first) = window_limit(kind, info) else {
         return Vec::new();
     };
+    // An ordinary ("allowed") line says its own window's use only in `unifiedWindows` (the
+    // review's finding 1): take it, and its reset, from there.
+    if let Some(own) = info["unifiedWindows"]
+        .get(kind)
+        .and_then(|w| window_limit(kind, w))
+    {
+        first.used_pct = first.used_pct.or(own.used_pct);
+        first.resets_at = first.resets_at.or(own.resets_at);
+    }
     // M11ap: the other windows the line carries (`unifiedWindows`), each with its own status,
     // use and reset: Claude's usage, live while it works.
     let others = info["unifiedWindows"]
@@ -2707,6 +2716,34 @@ mod tests {
                 limit(session, LimitState::Fine, 1794535800, 90),
                 limit(session, LimitState::Close, 1794535800, 90),
                 limit(week, LimitState::Close, 1794754800, 78),
+            ]
+        );
+    }
+
+    /// The review's finding 1: an ordinary ("allowed") line has no top-level `utilization`;
+    /// its own window's use is in `unifiedWindows` — the live session must still come through.
+    #[test]
+    fn an_allowed_line_takes_its_own_windows_use_from_unified_windows() {
+        let line = json!({"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed", "resetsAt": 1794921000, "rateLimitType": "five_hour",
+            "unifiedWindows": {
+                "five_hour": {"utilization": 0.12, "resetsAt": 1794921000, "status": "allowed"},
+                "seven_day": {"utilization": 0.39, "resetsAt": 1795359600, "status": "allowed"}}}})
+        .to_string();
+        let used: Vec<(String, Option<u8>)> = CLAUDE
+            .translator()
+            .decode(&line)
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::RateLimit(r) => Some((r.limit, r.used_pct)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            used,
+            [
+                ("Current session".to_string(), Some(12)),
+                ("Current week (all models)".to_string(), Some(39)),
             ]
         );
     }

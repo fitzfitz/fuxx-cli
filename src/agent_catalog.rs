@@ -17,6 +17,22 @@ pub const USAGE_FRESH: Duration = Duration::from_secs(60);
 /// How often the usage is read again in the background while the window is seen (M11ap).
 pub const USAGE_REFRESH: Duration = Duration::from_secs(5 * 60);
 
+/// Whether background usage reads are wanted at all: the window seen and the status bar (which
+/// shows them) on (the review's finding 4).
+pub fn reads_wanted(window_seen: bool, bar_shown: bool) -> bool {
+    window_seen && bar_shown
+}
+
+/// The line under kept numbers whose refresh failed: `Couldn't refresh · updated 12m ago`
+/// (none when the last read worked).
+pub fn stale_note(failed: bool, ago_secs: Option<u64>) -> Option<String> {
+    let ago = ago_secs?;
+    failed.then(|| match ago {
+        0..60 => "Couldn't refresh \u{b7} updated just now".to_string(),
+        s => format!("Couldn't refresh \u{b7} updated {}m ago", s / 60),
+    })
+}
+
 /// Whether the background usage read is due: never read, or read `USAGE_REFRESH` ago, and the
 /// window is seen (a hidden window reads nothing).
 pub fn refresh_due(last: Option<Instant>, now: Instant, seen: bool) -> bool {
@@ -172,6 +188,12 @@ impl Catalogs {
     /// said since (Claude's stream) in place of its limit; with no reading yet, the live windows
     /// alone. None when there is neither.
     pub fn live_usage(&self, agent: &str) -> Option<Vec<UsageGroup>> {
+        self.live_usage_at(agent, crate::agent_box::now_unix())
+    }
+
+    /// `live_usage` at `now_unix`: a limit whose reset has passed counts as unused (its last
+    /// number is from before the reset; the review's finding 5).
+    pub fn live_usage_at(&self, agent: &str, now_unix: i64) -> Option<Vec<UsageGroup>> {
         use crate::providers::{Reset, UsageLimit};
         let (mut groups, read_at) = match self.usage_ready.get(agent) {
             Some((groups, at)) => (groups.clone(), Some(*at)),
@@ -207,6 +229,16 @@ impl Catalogs {
                         limits: vec![fresh],
                     }),
                 },
+            }
+        }
+        for limit in groups.iter_mut().flat_map(|g| g.limits.iter_mut()) {
+            if let UsageLimit::Read {
+                left_pct, resets, ..
+            } = limit
+                && matches!(resets, Some(Reset::At(at)) if *at <= now_unix)
+            {
+                *left_pct = 100;
+                *resets = None;
             }
         }
         (!groups.is_empty()).then_some(groups)
@@ -684,5 +716,60 @@ mod tests {
             !refresh_due(Some(t0), t0 + USAGE_REFRESH, false),
             "hidden: wait"
         );
+    }
+
+    /// The review's finding 4: no background reads while the status bar is off (or the window
+    /// unseen).
+    #[test]
+    fn reads_are_wanted_only_with_the_bar_shown_and_the_window_seen() {
+        assert!(reads_wanted(true, true));
+        assert!(!reads_wanted(true, false), "the status bar is off");
+        assert!(!reads_wanted(false, true), "the window is hidden");
+    }
+
+    /// The review's finding 5: a limit whose reset has passed counts as unused, not as the
+    /// last number read; kept numbers after a failed read say so.
+    #[test]
+    fn a_passed_reset_counts_as_unused_and_old_numbers_say_so() {
+        use crate::providers::{Reset, UsageLimit};
+        let mut c = Catalogs::default();
+        let limit = |left, at| UsageLimit::Read {
+            name: "Session".into(),
+            left_pct: left,
+            resets: Some(Reset::At(at)),
+        };
+        let group = |l| UsageGroup {
+            name: String::new(),
+            about: None,
+            limits: vec![l],
+        };
+        c.set_usage(
+            "claude",
+            Lookup::Ready(vec![group(limit(5, 1_000))]),
+            Instant::now(),
+        );
+        let before = c.live_usage_at("claude", 900).expect("read");
+        assert_eq!(before[0].limits[0], limit(5, 1_000), "not reset yet");
+        let after = c.live_usage_at("claude", 1_001).expect("read");
+        assert!(
+            matches!(
+                after[0].limits[0],
+                UsageLimit::Read {
+                    left_pct: 100,
+                    resets: None,
+                    ..
+                }
+            ),
+            "reset since: unused {after:?}"
+        );
+        assert_eq!(
+            stale_note(true, Some(12 * 60)).as_deref(),
+            Some("Couldn't refresh · updated 12m ago")
+        );
+        assert_eq!(
+            stale_note(true, Some(10)).as_deref(),
+            Some("Couldn't refresh · updated just now")
+        );
+        assert_eq!(stale_note(false, Some(600)), None, "it refreshed fine");
     }
 }

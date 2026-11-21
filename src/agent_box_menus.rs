@@ -824,7 +824,23 @@ impl AgentTab {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
         let offset = crate::cli::local_utc_offset(now as u64 * 1000);
-        usage_rows(found, limits, available, now, offset)
+        let mut rows = usage_rows(found, limits, available, now, offset);
+        // Kept numbers whose refresh failed say so, and how old they are (the review's 5).
+        let failed = matches!(
+            catalogs.and_then(|c| c.usage_last(agent)),
+            Some(Lookup::Failed(_))
+        );
+        let ago = catalogs.and_then(|c| c.usage_ready_at(agent)).map(|at| {
+            std::time::Instant::now()
+                .saturating_duration_since(at)
+                .as_secs()
+        });
+        if live.is_some()
+            && let Some(note) = crate::agent_catalog::stale_note(failed, ago)
+        {
+            rows.push(UsageRow::Quiet(note));
+        }
+        rows
     }
 
     /// The usage panel over its button (§5): per group its name, each limit's name,
