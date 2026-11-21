@@ -523,6 +523,12 @@ impl TerminalView {
         self.cards.borrow().typed_row.clone()
     }
 
+    /// The composer's pill row as laid out last frame, its width (UI screenshots).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_pills_w(&self) -> f32 {
+        self.cards.borrow().pills_w
+    }
+
     #[cfg(feature = "ui-shots")]
     pub fn shot_card_count(&self) -> usize {
         self.cards.borrow().hits.len()
@@ -1611,7 +1617,7 @@ impl TerminalView {
     /// folder is a plain label (opening Finder from it was out of place, your call); a click on
     /// the branch opens the branch switcher. None when the box is out of view.
     fn context_row(&self, ui: &UiColors, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        use crate::card_view::{CTX_ROW, EDGE, PILL_GAP, PILL_H, TAB_PAD};
+        use crate::card_view::{CTX_ROW, EDGE, PILL_GAP, PILL_H, PILL_MAX, TAB_PAD};
         use crate::icons::{Icon, icon};
         let (composer, (ox, oy), view) = {
             let cards = self.cards.borrow();
@@ -1659,6 +1665,7 @@ impl TerminalView {
                 pill()
                     .flex_shrink(1.0)
                     .min_w(px(0.0))
+                    .max_w(px(PILL_MAX))
                     .id("composer-folder")
                     .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone().into())).into() })
                     .child(icon(Icon::Folder, px(13.0), dim))
@@ -1668,12 +1675,18 @@ impl TerminalView {
         let branch_item = self.branch.clone().map(|branch| {
             let hover = hsla(ui.composer_pill_hover);
             let ink = hsla(ui.text);
+            // Its whole name on hover (it ends in "…" past `PILL_MAX`).
+            let tip = branch.clone();
             pill()
+                .flex_shrink(1.0)
+                .min_w(px(0.0))
+                .max_w(px(PILL_MAX))
                 .id("composer-branch")
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover).text_color(ink))
+                .tooltip(move |_, cx| -> AnyView { cx.new(|_| Tip(tip.clone().into())).into() })
                 .child(icon(Icon::Branch, px(13.0), dim))
-                .child(branch)
+                .child(div().min_w(px(0.0)).truncate().child(branch))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|_, _: &MouseDownEvent, window, cx| {
@@ -3475,6 +3488,16 @@ fn paint_cards(
                                 cv.col = cv.col.saturating_sub(from) + 2;
                                 hint = empty;
                             }
+                            // The rows under it hang under the typing, not under `❯` (your
+                            // words: "the second line is supposed to align with the first
+                            // line, the icon below should be empty").
+                            let indent = crate::card_view::INDENT_COLS;
+                            for row in lines.iter_mut().skip(1) {
+                                row.splice(0..0, std::iter::repeat_n(blank, indent));
+                            }
+                            if let Some(cv) = cur.as_mut().filter(|cv| cv.row > 0) {
+                                cv.col += indent;
+                            }
                             regions.push(Region {
                                 key: "live0".into(),
                                 x: origin_x + 2.0 * cell_w - from as f32 * cell_w,
@@ -3486,7 +3509,7 @@ fn paint_cards(
                             if rows.lines.len() > 1 {
                                 regions.push(Region {
                                     key: "live".into(),
-                                    x: origin_x,
+                                    x: origin_x + crate::card_view::INDENT_COLS as f32 * cell_w,
                                     y: rows.y + line_h,
                                     bottom: rows.y + rows.lines.len() as f32 * line_h,
                                     top: rows.top + 1i32,
@@ -3498,7 +3521,8 @@ fn paint_cards(
                     }
                     let origin = point(px(origin_x), px(rows.y));
                     let snap = GridSnapshot {
-                        cols: dims.cols,
+                        // (Its typing rows may run `INDENT_COLS` past the terminal's.)
+                        cols: lines.iter().map(Vec::len).max().unwrap_or(0).max(dims.cols),
                         rows: lines.len(),
                         lines,
                         cursor: cur,
