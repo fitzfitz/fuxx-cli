@@ -791,38 +791,16 @@ fn changes_bar_scenes() {
     };
     let branch = || Head::Branch("fix/hdw-approval-flow".into());
     let track = |ahead, behind| Upstream::Track { ahead, behind };
-    // (slug, sync, busy, error, tooltip shown, an action button beside Fetch expected)
-    let states: Vec<(&str, Sync, Option<Action>, Option<String>, bool, bool)> = vec![
-        (
-            "even",
-            at(track(0, 0), true, branch()),
-            None,
-            None,
-            false,
-            false,
-        ),
-        (
-            "behind",
-            at(track(0, 2), true, branch()),
-            None,
-            None,
-            true,
-            true,
-        ),
-        (
-            "ahead",
-            at(track(1, 0), true, branch()),
-            None,
-            None,
-            false,
-            true,
-        ),
+    // (slug, sync, busy, error, tooltip shown)
+    let states: Vec<(&str, Sync, Option<Action>, Option<String>, bool)> = vec![
+        ("even", at(track(0, 0), true, branch()), None, None, false),
+        ("behind", at(track(0, 2), true, branch()), None, None, true),
+        ("ahead", at(track(1, 0), true, branch()), None, None, false),
         (
             "diverged",
             at(track(1, 2), true, branch()),
             None,
             None,
-            false,
             false,
         ),
         (
@@ -831,7 +809,6 @@ fn changes_bar_scenes() {
             None,
             None,
             false,
-            true,
         ),
         (
             "working",
@@ -839,7 +816,6 @@ fn changes_bar_scenes() {
             Some(Action::Pull(2)),
             None,
             false,
-            true,
         ),
         (
             "failed",
@@ -850,13 +826,12 @@ fn changes_bar_scenes() {
                     .into(),
             ),
             false,
-            true,
         ),
     ];
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let ui = theme.ui();
-        for (state, sync, busy, error, tip, _two_buttons) in states.clone() {
+        for (state, sync, busy, error, tip) in states.clone() {
             let n = format!("changes-bar-{state}-{slug}");
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = {

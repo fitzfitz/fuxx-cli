@@ -1254,10 +1254,10 @@ impl AgentTab {
                 ))
             })
             .on_click(cx.listener(move |this, _, window, cx| pick(this, window, cx)));
-        // A row beside the menu (This Computer's, an effort) is probed apart from the menu's own.
+        // A row beside the menu (This Computer's) is probed apart from the menu's own (the
+        // efforts' are marked by `effort_row`).
         let probe = match id.0 {
             COMPUTER_ROWS => format!("{THIS_COMPUTER} \u{25b8} {label}"),
-            EFFORT_ROWS => format!("Effort \u{25b8} {label}"),
             _ => label,
         };
         self.marked_row(probe, row).into_any_element()
