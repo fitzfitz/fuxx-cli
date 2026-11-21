@@ -30,6 +30,11 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-21 — Fix: the right panel follows an agent tab
+
+- **What:** an agent tab now sets the right panel's folder (its own), as a terminal does; a browser or file tab keeps
+  the last. Note 88. **Checks:** 2298 tests; clippy at the baseline; the right-panel scenes pass.
+
 ### 2026-11-21 — Chore: the right panel redesigned, merged and pushed
 
 - **What:** the lead designer's redesign of the right panel: icon tabs like the pane tabs (no track), a plain header

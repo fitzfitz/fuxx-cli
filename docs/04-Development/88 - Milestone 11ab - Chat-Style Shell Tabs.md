@@ -523,6 +523,14 @@ a filled filter). As built, its spec as given:
 - **Checks:** 2297 tests; clippy at the baseline; ui-shots 254 passed, 5 known failures (`right-panel-comfortable`,
   its checks rewritten for the new design, now passes).
 
+### Fix: the right panel follows an agent tab (2026-11-21)
+
+Your report: "agent tab doesnt update the right panel" (an agent tab in one folder, the panel showing the last
+terminal's). The panel followed only terminals and treated an agent tab like a browser or file tab ("keep the last").
+Now a focused tab decides (`Follow::of`): a terminal is followed as before, an agent tab by its folder (its `cwd`;
+Files and Changes show it, never as SSH), a browser or file tab keeps what was followed. Test
+`an_agent_tab_is_followed_by_its_folder`; the status bar and Activity still describe the followed terminal.
+
 ## Related
 
 [[Proposal - Chat View and Agent Tabs]] · [[63 - Milestone 11l - Command Blocks]] ·

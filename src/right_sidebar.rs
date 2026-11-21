@@ -170,6 +170,27 @@ const SSH_NOTE: &str = "Files aren't shown for SSH terminals.";
 pub(crate) const NO_FOLDER: &str = "No terminal folder to show.";
 const NO_MATCH: &str = "No file matches.";
 
+/// What a focused tab gives the right sidebar to follow: a terminal (its folder looked up), an
+/// agent tab's folder (your report: "agent tab doesnt update the right panel"), or nothing new
+/// (a browser or file tab keeps what was followed).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Follow {
+    Terminal(u64),
+    Folder(PathBuf),
+    Keep,
+}
+
+impl Follow {
+    pub(crate) fn of(kind: &crate::layout_model::TabKind) -> Follow {
+        use crate::layout_model::TabKind;
+        match kind {
+            TabKind::Terminal(id) => Follow::Terminal(*id),
+            TabKind::Agent { cwd, .. } => Follow::Folder(cwd.clone()),
+            TabKind::Browser { .. } | TabKind::File { .. } => Follow::Keep,
+        }
+    }
+}
+
 /// A panel the right sidebar shows (M11h), chosen with the tabs in its strip.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Panel {
@@ -1087,6 +1108,9 @@ pub struct RightSidebarState {
     pub slide: Option<Slide>,
     /// The terminal it follows (`sN`): the focused one, or the last one focused.
     pub(crate) followed: Option<u64>,
+    /// An agent tab's folder, while one is focused (or was the last followed tab): Files and
+    /// Changes show it in place of the followed terminal's (`right_sidebar_folder`).
+    pub(crate) agent_folder: Option<PathBuf>,
     /// The last folder found: for which terminal, the folder (none: not found) and whether that
     /// terminal is an SSH one.
     pub(crate) found: Option<(u64, Option<PathBuf>, bool)>,
@@ -1122,6 +1146,7 @@ impl RightSidebarState {
             followed: None,
             found: None,
             looked: None,
+            agent_folder: None,
             ticking: false,
             panel: Panel::Files,
             files: FilesPanel::new(),
@@ -1241,6 +1266,10 @@ impl Workspace {
     /// asking the kernel (its report, else the folder it started in). None with no terminal
     /// followed yet, or none found.
     pub(crate) fn right_sidebar_folder(&self, cx: &App) -> Option<(PathBuf, bool)> {
+        // An agent tab followed: its folder (a local one, never SSH).
+        if let Some(folder) = &self.right_sidebar.agent_folder {
+            return Some((folder.clone(), false));
+        }
         let id = self.right_sidebar.followed?;
         if let Some((of, folder, ssh)) = &self.right_sidebar.found
             && *of == id
@@ -1283,6 +1312,28 @@ impl Workspace {
     /// so does each frame once drawn (`Workspace::render`'s deferred check), never while drawing
     /// (a redraw asked for then reaches no one).
     pub(crate) fn follow_terminal(&mut self, cx: &mut Context<Self>) {
+        // An agent tab focused: its folder; a terminal focused: back to terminals.
+        let focused = self
+            .model
+            .focused_tab()
+            .and_then(|t| self.model.tab(t))
+            .map(|t| Follow::of(&t.kind));
+        match focused {
+            Some(Follow::Folder(folder)) => {
+                if self.right_sidebar.agent_folder.as_ref() != Some(&folder) {
+                    self.right_sidebar.agent_folder = Some(folder);
+                    self.right_sidebar.refresh_now();
+                    cx.notify();
+                }
+                return;
+            }
+            Some(Follow::Terminal(_)) if self.right_sidebar.agent_folder.is_some() => {
+                self.right_sidebar.agent_folder = None;
+                self.right_sidebar.refresh_now();
+                cx.notify();
+            }
+            _ => {}
+        }
         // None followed yet (relaunched with a file or browser tab focused): the focused
         // workspace's first terminal, else the active one.
         let id = self.focused_terminal().or_else(|| {
@@ -1739,6 +1790,10 @@ impl Workspace {
 
     /// Whether the followed terminal is an SSH one.
     pub(crate) fn followed_ssh(&self) -> bool {
+        // An agent tab's folder is local.
+        if self.right_sidebar.agent_folder.is_some() {
+            return false;
+        }
         let id = self.right_sidebar.followed;
         self.sessions
             .items()
@@ -2351,6 +2406,30 @@ mod tests {
         state.load(&saved);
         assert!(!state.hidden);
         assert_eq!(state.width, 560.0);
+    }
+
+    #[test]
+    fn an_agent_tab_is_followed_by_its_folder() {
+        // Your report: "agent tab doesnt update the right panel": a terminal is followed, an agent
+        // tab by its folder, a browser or file tab keeps what was followed.
+        use crate::layout_model::{FileMode, TabKind};
+        assert_eq!(Follow::of(&TabKind::Terminal(7)), Follow::Terminal(7));
+        let agent = TabKind::Agent {
+            provider: "claude".into(),
+            cwd: PathBuf::from("/w/api"),
+            conversation: None,
+            mode: None,
+            title: None,
+            model: None,
+            effort: None,
+        };
+        assert_eq!(Follow::of(&agent), Follow::Folder(PathBuf::from("/w/api")));
+        let file = TabKind::File {
+            path: PathBuf::from("/w/api/a.rs"),
+            mode: FileMode::default(),
+        };
+        assert_eq!(Follow::of(&file), Follow::Keep);
+        assert_eq!(Follow::of(&TabKind::Browser { url: None }), Follow::Keep);
     }
 
     #[test]
