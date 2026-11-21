@@ -453,6 +453,19 @@ impl Tagger {
                     _ => (0, false),
                 };
                 let row = line_start(term.grid(), cursor.line);
+                // A prompt that fills its row leaves the cursor at the margin with the wrap
+                // pending: the typing starts on the next row, at column 0 (your powerlevel10k
+                // prompt in a long folder, 2026-11-22). On the bottom row that row comes by a
+                // scroll, which brings it to this line.
+                let wraps = term.grid().cursor.input_needs_wrap;
+                // The typing's row below the prompt's tag row (it moves with the text).
+                let below = cursor.line.0 - row.0 + i32::from(wraps);
+                let cursor = if wraps {
+                    let bottom = term.grid().bottommost_line();
+                    Point::new((cursor.line + 1i32).min(bottom), Column(0))
+                } else {
+                    cursor
+                };
                 // A B repeated with no redraw in between (a second integration) finds this
                 // prompt's tag and keeps its id. A redraw overwrites column 0, which drops the
                 // old tag, so the redrawn prompt gets a fresh id.
@@ -472,7 +485,7 @@ impl Tagger {
                     t0: None,
                     ms: None,
                     input: Some((
-                        (cursor.line.0 - row.0).clamp(0, 255) as u8,
+                        below.clamp(0, 255) as u8,
                         cursor.column.0.min(usize::from(u16::MAX)) as u16,
                     )),
                 };
@@ -2612,6 +2625,37 @@ mod tests {
         let done = done_tag(&sh.term);
         assert_eq!(done.t0, Some(1_795_000_000), "the start is kept");
         assert_eq!(done.ms, None, "no duration without the start instant");
+    }
+
+    /// A prompt that fills its row to the last column (your powerlevel10k prompt in a long
+    /// folder, 2026-11-22): the cursor waits at the margin with the wrap pending, and zsh's
+    /// typing starts on the next row at column 0, as its right-hand prompt does. Typing
+    /// starts there, not at the margin.
+    #[test]
+    fn a_prompt_filling_its_row_starts_the_typing_on_the_next() {
+        for lead in [0, 5] {
+            let mut sh = Shell::new();
+            for _ in 0..lead {
+                sh.feed(b"x\r\n");
+            }
+            // 20 cells: the whole row. Then zsh moves on: a space and a carriage return.
+            sh.feed(A)
+                .feed(b"0123456789abcdefghi>")
+                .feed(B)
+                .feed(b" \r");
+            let cursor = sh.term.grid().cursor.point;
+            assert_eq!(cursor.column, Column(0), "lead {lead}");
+            assert_eq!(
+                sh.tagger.input_start(),
+                Some(cursor),
+                "lead {lead}: the typing starts where the cursor is"
+            );
+            let Some(Segment::Prompt { row, input, .. }) = segments(&sh.term).pop() else {
+                panic!("lead {lead}: no prompt segment");
+            };
+            assert_eq!(input, Some((row + 1i32, 0)), "lead {lead}");
+            assert_eq!(row + 1i32, cursor.line, "lead {lead}");
+        }
     }
 
     #[test]
