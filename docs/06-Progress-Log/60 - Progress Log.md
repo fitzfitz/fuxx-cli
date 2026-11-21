@@ -14,6 +14,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
+- **Current milestone (2026-11-21, latest):** **M11ab — Chat-style shell tabs** 🟨 reworked after your first look (soft cards on a rail, the composer, your prompt left out; inner box in the sidebar's colour), merged to master, not pushed; waiting for your on-screen check (note 88's rework checklist, 8 items).
 - **Current milestone (2026-11-19, latest):** **M11q — Which command finished** 🟨 built, **merged to master and pushed 2026-11-20** (`f93654b`), waiting for your on-screen check (all 12 tasks, 0–11; note 68, 21 on-screen items). The whole-branch review is done, its fix wave applied and the second full ui-shots run done (244 passed, the same 8 display-dependent scenes failing); next is your on-screen check. M11ag's check is still open.
 - **Current milestone (2026-11-19, previous):** **M11ag — Ask the agent from the code** 🟨 built, **merged to master 2026-11-19** on your standing word and pushed on your word (`abe581d`), waiting for your on-screen check (all 14 tasks, each of 0–12 reviewed; the whole-branch review's fix wave in, re-reviewed clean; note 87, 15 on-screen items). M11ai's check is still open.
 - **Current milestone (2026-11-18, previous):** **M11ai — Markdown reader upgrade** 🟨 built (12 tasks, each reviewed; final-review fixes in), **merged to master and pushed 2026-11-18** (`f7707e9`); waiting for your on-screen check (note 86, 15 items). M11ag is next.
@@ -28,6 +29,18 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-21 — M11ab rework built: soft cards on a rail, the composer (branch `m11ab-rework`)
+
+- **What:** after your "Very ugly", redesigned with you in mockups and built in 4 tasks: soft card surfaces with a
+  rail of dots (no terminal columns taken), and the live prompt as a composer: an outer box with the running chip,
+  folder ▾ and branch ▾ (the app's Lucide icons), and an inner box showing only what you type (`❯ ls`; your
+  Powerlevel10k prompt's two sides left out). The inner box is the sidebar's colour in every theme (your call
+  mid-fix). An Opus whole-branch review: 3 Important (the crop lost on a scroll, a wrapped prompt not cropped, the
+  right-hand cut able to hide typed text), all fixed with failing tests first; 9 minors deferred (note 88).
+- **Checks:** 2283 tests; clippy at the baseline; fmt; ui-shots: 253 passed, the 6 known display-dependent failures.
+- **Learned:** a point the tagger keeps in screen lines goes stale on the next scroll; where the typing starts
+  belongs in the prompt's tag, relative to its row, so it moves with the text.
 
 ### 2026-11-21 — M11ab built: chat-style shell tabs (branch `m11ab-shell-cards`)
 

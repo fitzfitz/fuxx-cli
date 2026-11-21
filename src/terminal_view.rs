@@ -516,6 +516,11 @@ impl TerminalView {
     }
 
     #[cfg(feature = "ui-shots")]
+    pub fn shot_typed_row(&self) -> String {
+        self.cards.borrow().typed_row.clone()
+    }
+
+    #[cfg(feature = "ui-shots")]
     pub fn shot_card_count(&self) -> usize {
         self.cards.borrow().hits.len()
     }
@@ -1591,6 +1596,77 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// The composer's context row (rework), over its outer box from the last frame: the running
+    /// command (peach), the folder and the branch with the app's own icons; the folder's ▾ shows
+    /// it in Finder, the branch's opens the branch switcher. None when the box is out of view.
+    fn context_row(&self, ui: &UiColors, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        use crate::card_view::CTX_ROW;
+        use crate::icons::{Icon, icon};
+        let (composer, (ox, oy), view) = {
+            let cards = self.cards.borrow();
+            (cards.composer, cards.origin, cards.view_rect)
+        };
+        let (x, y, w) = composer?;
+        if y < view.1 || y + CTX_ROW > view.1 + view.3 {
+            return None;
+        }
+        let dim = hsla(ui.text_dim);
+        let running = self.run.started().map(|at| {
+            let short = self.run.running().unwrap_or(crate::command_name::NO_SHORT);
+            crate::card_view::running_words(short, at.elapsed())
+        });
+        let folder = self.core.reported_cwd().map(|cwd| cwd.path);
+        let item = |glyph: Icon, words: String| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .cursor_pointer()
+                .child(icon(glyph, px(13.0), dim))
+                .child(words)
+                .child(icon(Icon::ChevronDown, px(11.0), dim))
+        };
+        let folder_item = folder.and_then(|path| {
+            let name = path.file_name()?.to_string_lossy().to_string();
+            Some(item(Icon::Folder, name).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |_, _: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    cx.reveal_path(&path);
+                }),
+            ))
+        });
+        let branch_item = self.branch.clone().map(|branch| {
+            item(Icon::Branch, branch).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    window.dispatch_action(Box::new(crate::workspace::SwitchBranch), cx);
+                }),
+            )
+        });
+        Some(
+            div()
+                .absolute()
+                .left(px(x - ox))
+                .top(px(y - oy))
+                .w(px(w))
+                .h(px(CTX_ROW))
+                .flex()
+                .items_center()
+                .gap(px(14.0))
+                .px(px(12.0))
+                .text_size(px(crate::ui_tokens::text::META))
+                .text_color(dim)
+                .children(
+                    running.map(|words| div().text_color(hsla(ui.block_running)).child(words)),
+                )
+                .children(folder_item)
+                .children(branch_item)
+                .into_any_element(),
+        )
+    }
+
     /// A card's Rerun (M11ab): M11l's Rerun (types it, never runs it), and the column back at
     /// its bottom, where it types (final review).
     pub fn rerun_card(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -1927,18 +2003,6 @@ impl Render for TerminalView {
         let card_core = self.core.clone();
         let was_cards = self.cards_on.get();
         let chosen_card = self.chosen_block.clone();
-        let chips = {
-            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-            let folder = self
-                .core
-                .reported_cwd()
-                .map(|cwd| crate::sidebar::home_relative(&cwd.path, home.as_deref()));
-            let running = self.run.started().map(|at| {
-                let short = self.run.running().unwrap_or(crate::command_name::NO_SHORT);
-                crate::card_view::running_words(short, at.elapsed())
-            });
-            crate::card_view::chips(folder.as_deref(), self.branch.as_deref(), running)
-        };
         // The running chip's time moves once a second (only while one runs in card view).
         if was_cards && self.run.started().is_some() && !self.tick_pending {
             self.tick_pending = true;
@@ -2000,6 +2064,11 @@ impl Render for TerminalView {
             )
         });
 
+        let ctx_row = if was_cards {
+            self.context_row(&ui, cx)
+        } else {
+            None
+        };
         let overlays: Vec<gpui::AnyElement> = if was_cards {
             let (hits, origin, view) = {
                 let cards = self.cards.borrow();
@@ -2098,7 +2167,6 @@ impl Render for TerminalView {
                                     theme: &theme,
                                     ui: &ui,
                                     chosen: chosen_card.clone(),
-                                    chips: chips.clone(),
                                 },
                                 &metrics,
                                 bounds,
@@ -2215,6 +2283,7 @@ impl Render for TerminalView {
             )
             .children(chip)
             .children(overlays)
+            .children(ctx_row)
     }
 }
 
@@ -2964,7 +3033,6 @@ struct CardPaint<'a> {
     theme: &'a Theme,
     ui: &'a UiColors,
     chosen: Option<String>,
-    chips: Vec<crate::card_view::Chip>,
 }
 
 /// Paint a tab in card view (note 88): the column of earlier rows, cards and the live box,
@@ -2980,7 +3048,8 @@ fn paint_cards(
     cx: &mut App,
 ) {
     use crate::card_view::{
-        BOX_EDGE, BOX_PAD, CHIPS_ROW, CacheKey, CardHit, Draw, HEADER_H, Region,
+        CTX_ROW, CacheKey, CardHit, Draw, EDGE, HEADER_H, INNER_PAD_X, OUTER_INSET, Region,
+        SURF_PAD_TOP, SURF_PAD_X,
     };
     let corner = px(ui_size::CARD_RADIUS);
     window.paint_quad(
@@ -2996,6 +3065,7 @@ fn paint_cards(
     }
     let content = inset(bounds, p.split);
     let line_h = f32::from(m.line_height);
+    let cell_w = f32::from(m.cell_width);
     let dims = p.core.dims();
     let (frame, clears) = p.core.read_term(|term, clears| {
         let shape = term.renderable_content().cursor.shape;
@@ -3022,11 +3092,13 @@ fn paint_cards(
     });
     let left = content.left();
     let width = content.size.width;
-    let inner = px(BOX_EDGE + BOX_PAD);
+    let w = f32::from(width);
     let ui_font = window.text_style().font();
-    // What the pointer can reach this frame (Task 6): rows to select in, cards' hit areas.
+    let meta = px(crate::ui_tokens::text::META);
+    // What the pointer can reach this frame: rows to select in, cards' hit areas.
     let mut regions: Vec<Region> = Vec::new();
     let mut hits: Vec<CardHit> = Vec::new();
+    let mut composer = None;
     let region = |key: String, rows: &crate::card_view::Rows, x: f32, live: bool| Region {
         key,
         x,
@@ -3035,18 +3107,23 @@ fn paint_cards(
         top: rows.top,
         live,
     };
-    let inner_x = f32::from(left + inner);
-    window.with_content_mask(Some(gpui::ContentMask { bounds: content }), |window| {
-        for draw in frame.draws {
+    // Cards' text sits inside their surface; the rail in the pane's left padding.
+    let text_x = f32::from(left) + SURF_PAD_X;
+    let rail_x = f32::from(left) - 14.0;
+    let dot_dy = SURF_PAD_TOP + HEADER_H / 2.0;
+    let blank = grid::CellView::blank(p.theme);
+    // The rail lives left of the content: the mask takes the padding in.
+    let mask = Bounds::from_corners(
+        point(bounds.left(), content.top()),
+        point(content.right(), content.bottom()),
+    );
+    let draws = frame.draws;
+    window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
+        for (i, draw) in draws.iter().enumerate() {
             match draw {
                 Draw::Plain(rows) => {
-                    regions.push(region(
-                        format!("rows:{}", rows.top.0),
-                        &rows,
-                        inner_x,
-                        false,
-                    ));
-                    let at = point(left + inner, px(rows.y));
+                    regions.push(region(format!("rows:{}", rows.top.0), rows, text_x, false));
+                    let at = point(px(text_x), px(rows.y));
                     paint_lines(&rows.lines, p.theme, m, at, window, cx);
                 }
                 Draw::Card {
@@ -3059,24 +3136,57 @@ fn paint_cards(
                     panel,
                     failed,
                 } => {
-                    let cmd_lines = match &cmd {
-                        Ok(c) => c.lines().count().max(1),
-                        Err(rows) => rows.lines.len().max(1),
+                    let (y, height) = (*y, *height);
+                    let chosen = p.chosen.as_deref() == Some(id.as_str());
+                    // The rail down to the next card's dot.
+                    if let Some(Draw::Card { y: next, .. }) = draws.get(i + 1) {
+                        window.paint_quad(fill(
+                            Bounds::from_corners(
+                                point(px(rail_x - 0.5), px(y + dot_dy)),
+                                point(px(rail_x + 0.5), px(next + dot_dy)),
+                            ),
+                            hsla(p.ui.card_border),
+                        ));
+                    }
+                    // One soft surface; the chosen card's edge in the accent.
+                    window.paint_quad(gpui::quad(
+                        Bounds::new(point(left, px(y)), size(width, px(height))),
+                        px(8.0),
+                        hsla(p.ui.card_surface),
+                        px(if chosen { EDGE } else { 0.0 }),
+                        hsla(p.ui.accent),
+                        gpui::BorderStyle::Solid,
+                    ));
+                    // Its dot: green done, red failed, quiet when the exit wasn't reported; a ring
+                    // in the accent when chosen.
+                    let dot = match outcome {
+                        _ if *failed => p.ui.block_failed,
+                        crate::blocks::Outcome::Ok => p.ui.ring_done,
+                        _ => p.ui.text_faint,
                     };
-                    let w = f32::from(width);
-                    hits.push(CardHit {
-                        id: id.clone(),
-                        card: (f32::from(left), y, w, height),
-                        cmd: (f32::from(left), y + HEADER_H, w, cmd_lines as f32 * line_h),
-                        fold: panel.as_ref().and_then(|panel| {
-                            panel.fold.as_ref().map(|_| {
-                                let pad = BOX_EDGE + BOX_PAD;
-                                (inner_x, panel.y + pad, w - 2.0 * pad, line_h)
-                            })
-                        }),
-                        command: cmd.as_ref().ok().cloned(),
-                        outcome,
-                    });
+                    if chosen {
+                        window.paint_quad(gpui::quad(
+                            Bounds::new(
+                                point(px(rail_x - 7.0), px(y + dot_dy - 7.0)),
+                                size(px(14.0), px(14.0)),
+                            ),
+                            px(7.0),
+                            hsla(p.theme.background),
+                            px(1.5),
+                            hsla(p.ui.accent),
+                            gpui::BorderStyle::Solid,
+                        ));
+                    }
+                    window.paint_quad(
+                        fill(
+                            Bounds::new(
+                                point(px(rail_x - 4.0), px(y + dot_dy - 4.0)),
+                                size(px(8.0), px(8.0)),
+                            ),
+                            hsla(dot),
+                        )
+                        .corner_radii(px(4.0)),
+                    );
                     // The header: when · how long · exit N (the exit in the failed colour).
                     let all = header.words();
                     let exit = header
@@ -3085,22 +3195,23 @@ fn paint_cards(
                         .map_or(0, |x| format!("exit {x}").len());
                     paint_words(
                         &all,
-                        &[
-                            (all.len() - exit, p.ui.text_faint),
-                            (exit, p.ui.block_failed),
-                        ],
+                        &[(all.len() - exit, p.ui.text_dim), (exit, p.ui.block_failed)],
                         ui_font.clone(),
-                        px(crate::ui_tokens::text::META),
-                        point(left, px(y)),
+                        meta,
+                        point(px(text_x), px(y + SURF_PAD_TOP)),
                         px(HEADER_H),
                         window,
                         cx,
                     );
-                    let cmd_y = px(y + HEADER_H);
+                    let cmd_y = y + SURF_PAD_TOP + HEADER_H;
+                    let cmd_lines = match cmd {
+                        Ok(c) => c.lines().count().max(1),
+                        Err(rows) => rows.lines.len().max(1),
+                    };
                     match cmd {
                         Ok(cmd) => {
-                            for (i, line) in cmd.lines().enumerate() {
-                                let mark = if i == 0 { "\u{276f} " } else { "  " };
+                            for (n, line) in cmd.lines().enumerate() {
+                                let mark = if n == 0 { "\u{276f} " } else { "  " };
                                 let text = format!("{mark}{line}");
                                 paint_words(
                                     &text,
@@ -3110,7 +3221,7 @@ fn paint_cards(
                                     ],
                                     m.font.clone(),
                                     m.font_size,
-                                    point(left, cmd_y + m.line_height * i as f32),
+                                    point(px(text_x), px(cmd_y + line_h * n as f32)),
                                     m.line_height,
                                     window,
                                     cx,
@@ -3118,119 +3229,173 @@ fn paint_cards(
                             }
                         }
                         Err(rows) => {
-                            let at = point(left, px(rows.y));
+                            let at = point(px(text_x), px(rows.y));
                             paint_lines(&rows.lines, p.theme, m, at, window, cx);
                         }
                     }
                     if let Some(panel) = panel {
-                        let edge = if p.chosen.as_deref() == Some(id.as_str()) {
-                            p.ui.accent
-                        } else if failed {
-                            p.ui.block_failed
-                        } else {
-                            p.ui.card_border
-                        };
-                        regions.push(region(id.clone(), &panel.rows, inner_x, false));
-                        window.paint_quad(gpui::quad(
-                            Bounds::new(point(left, px(panel.y)), size(width, px(panel.height))),
-                            px(8.0),
-                            hsla(p.theme.background),
-                            px(BOX_EDGE),
-                            hsla(edge),
-                            gpui::BorderStyle::Solid,
-                        ));
                         if let Some(fold) = &panel.fold {
                             paint_words(
                                 fold,
-                                &[(fold.len(), p.ui.text_faint)],
+                                &[(fold.len(), p.ui.text_dim)],
                                 ui_font.clone(),
-                                px(crate::ui_tokens::text::META),
-                                point(left + inner, px(panel.y) + inner),
+                                meta,
+                                point(px(text_x), px(panel.y)),
                                 m.line_height,
                                 window,
                                 cx,
                             );
                         }
-                        let at = point(left + inner, px(panel.rows.y));
+                        regions.push(region(id.clone(), &panel.rows, text_x, false));
+                        let at = point(px(text_x), px(panel.rows.y));
                         paint_lines(&panel.rows.lines, p.theme, m, at, window, cx);
                     }
+                    hits.push(CardHit {
+                        id: id.clone(),
+                        card: (f32::from(left), y, w, height),
+                        cmd: (f32::from(left), cmd_y, w, cmd_lines as f32 * line_h),
+                        fold: panel.as_ref().and_then(|panel| {
+                            panel
+                                .fold
+                                .as_ref()
+                                .map(|_| (text_x, panel.y, w - 2.0 * SURF_PAD_X, line_h))
+                        }),
+                        command: cmd.as_ref().ok().cloned(),
+                        outcome: *outcome,
+                    });
                 }
                 Draw::Live {
                     y,
                     height,
                     rows,
                     cursor: at,
+                    crop,
                 } => {
-                    regions.push(region("live".into(), &rows, inner_x, true));
-                    // The chips: the running command, the folder, the branch (note 88 §3).
-                    let mut chip_x = left;
-                    for chip in &p.chips {
-                        let color = if chip.running {
-                            p.ui.block_running
-                        } else {
-                            p.ui.text_dim
-                        };
-                        let run = TextRun {
-                            len: chip.words.len(),
-                            font: ui_font.clone(),
-                            color: hsla(color),
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        let shaped = window.text_system().shape_line(
-                            SharedString::from(chip.words.clone()),
-                            px(crate::ui_tokens::text::META),
-                            &[run],
-                            None,
-                        );
-                        let pill = Bounds::new(
-                            point(chip_x, px(y + 3.0)),
-                            size(shaped.width + px(18.0), px(CHIPS_ROW - 8.0)),
-                        );
-                        window.paint_quad(fill(pill, hsla(p.ui.raised)).corner_radii(px(10.0)));
-                        let _ = shaped.paint(
-                            point(chip_x + px(9.0), px(y + 3.0)),
-                            px(CHIPS_ROW - 8.0),
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        );
-                        chip_x += pill.size.width + px(6.0);
-                    }
-                    let frame_box = Bounds::new(
-                        point(left, px(y + CHIPS_ROW)),
-                        size(width, px(height - CHIPS_ROW)),
-                    );
+                    let (y, height) = (*y, *height);
+                    // The composer: the outer box (the context row is elements over it) and,
+                    // inset, the inner box with its lightest edge along the top.
+                    let outer = Bounds::new(point(left, px(y)), size(width, px(height)));
                     window.paint_quad(gpui::quad(
-                        frame_box,
-                        px(8.0),
-                        hsla(p.theme.background),
-                        px(BOX_EDGE),
-                        hsla(p.ui.card_border),
+                        outer,
+                        px(16.0),
+                        hsla(p.ui.composer_outer),
+                        px(EDGE),
+                        hsla(p.ui.composer_edge),
                         gpui::BorderStyle::Solid,
                     ));
-                    let origin = point(left + inner, px(rows.y));
+                    composer = Some((f32::from(left), y, w));
+                    let side = EDGE + OUTER_INSET;
+                    let inner = Bounds::new(
+                        point(left + px(side), px(y + EDGE + CTX_ROW)),
+                        size(
+                            width - px(2.0 * side),
+                            px(height - EDGE - CTX_ROW - OUTER_INSET - EDGE),
+                        ),
+                    );
+                    window.paint_quad(gpui::quad(
+                        inner,
+                        px(12.0),
+                        hsla(p.ui.composer_inner),
+                        px(EDGE),
+                        hsla(p.ui.composer_inner_edge),
+                        gpui::BorderStyle::Solid,
+                    ));
+                    window.paint_quad(gpui::quad(
+                        inner,
+                        px(12.0),
+                        gpui::transparent_black(),
+                        gpui::Edges {
+                            top: px(EDGE),
+                            ..gpui::Edges::default()
+                        },
+                        hsla(p.ui.composer_inner_top),
+                        gpui::BorderStyle::Solid,
+                    ));
+                    let origin_x = f32::from(inner.left()) + EDGE + INNER_PAD_X;
+                    // Only what you type: the first row from where the typing starts to the
+                    // right-hand prompt, after a `❯` (rework); the rows under it as they are.
+                    let mut lines = rows.lines.clone();
+                    let mut cur = *at;
+                    let mut hint = false;
+                    match (crop, lines.first()) {
+                        (Some(c), Some(first)) => {
+                            let end = c.cut.unwrap_or(first.len()).min(first.len());
+                            let from = c.from.min(end);
+                            let typed = &first[from..end];
+                            let empty = typed.iter().all(|cell| cell.ch == ' ' || cell.ch == '\0');
+                            let mut row = vec![
+                                grid::CellView {
+                                    ch: '\u{276f}',
+                                    fg: p.ui.accent,
+                                    ..blank
+                                },
+                                blank,
+                            ];
+                            row.extend_from_slice(typed);
+                            row.resize(dims.cols.max(row.len()), blank);
+                            #[cfg(feature = "ui-shots")]
+                            {
+                                p.state.borrow_mut().typed_row = row
+                                    .iter()
+                                    .map(|c| c.ch)
+                                    .collect::<String>()
+                                    .trim_end()
+                                    .to_string();
+                            }
+                            lines[0] = row;
+                            if let Some(cv) = cur.as_mut().filter(|cv| cv.row == 0) {
+                                cv.col = cv.col.saturating_sub(from) + 2;
+                                hint = empty;
+                            }
+                            regions.push(Region {
+                                key: "live0".into(),
+                                x: origin_x + 2.0 * cell_w - from as f32 * cell_w,
+                                y: rows.y,
+                                bottom: rows.y + line_h,
+                                top: rows.top,
+                                live: true,
+                            });
+                            if rows.lines.len() > 1 {
+                                regions.push(Region {
+                                    key: "live".into(),
+                                    x: origin_x,
+                                    y: rows.y + line_h,
+                                    bottom: rows.y + rows.lines.len() as f32 * line_h,
+                                    top: rows.top + 1i32,
+                                    live: true,
+                                });
+                            }
+                        }
+                        _ => regions.push(region("live".into(), rows, origin_x, true)),
+                    }
+                    let origin = point(px(origin_x), px(rows.y));
                     let snap = GridSnapshot {
                         cols: dims.cols,
-                        rows: rows.lines.len(),
-                        lines: rows.lines,
-                        cursor: at,
+                        rows: lines.len(),
+                        lines,
+                        cursor: cur,
                         alt_screen: false,
                         display_offset: 0,
                         clears,
                         blocks: Vec::new(),
                     };
                     let look = cursor.look(&snap, p.theme, motion, Instant::now());
-                    let inside = Bounds::new(
-                        frame_box.origin + point(px(BOX_EDGE), px(BOX_EDGE)),
-                        size(
-                            frame_box.size.width - px(2.0 * BOX_EDGE),
-                            frame_box.size.height - px(2.0 * BOX_EDGE),
-                        ),
-                    );
-                    paint_grid(snap, p.theme, m, inside, origin, look, |_| {}, window, cx);
+                    // (No fill: the inner box shows through the cells' default background.)
+                    let none = Bounds::new(origin, size(px(0.0), px(0.0)));
+                    paint_grid(snap, p.theme, m, none, origin, look, |_| {}, window, cx);
+                    if hint {
+                        let words = "Type a command";
+                        paint_words(
+                            words,
+                            &[(words.len(), p.ui.text_dim)],
+                            ui_font.clone(),
+                            px(crate::ui_tokens::text::UI),
+                            point(px(origin_x + 3.5 * cell_w), px(rows.y)),
+                            m.line_height,
+                            window,
+                            cx,
+                        );
+                    }
                 }
             }
         }
@@ -3238,6 +3403,7 @@ fn paint_cards(
     let mut state = p.state.borrow_mut();
     state.regions = regions;
     state.hits = hits;
+    state.composer = composer;
     state.origin = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
     state.view_rect = (
         f32::from(content.left()),

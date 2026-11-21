@@ -36,8 +36,13 @@ pub enum Item {
     Card(Card),
     /// Rows after a card that belong to no command (a background job printing later).
     Loose { top: Line, bottom: Line },
-    /// The live box: the prompt shown now, or the command running now.
-    Live { top: Line, bottom: Line },
+    /// The live box: the prompt shown now, or the command running now; `typing`: at a prompt,
+    /// the column the typing starts at on its first row (the crop, rework).
+    Live {
+        top: Line,
+        bottom: Line,
+        typing: Option<usize>,
+    },
 }
 
 /// A finished command as its card shows it.
@@ -80,16 +85,15 @@ fn extent(segment: &Segment) -> (Line, Line) {
     match segment {
         Segment::Prompt { top, bottom, .. } => (*top, *bottom),
         Segment::Command(b) => {
-            let last = b.output.map_or(b.cmd_row, |(_, end)| end.max(b.cmd_row));
+            // To its output's end, or its command line's last row (a wrapped one too).
+            let last = b.output.map_or(b.cmd_end, |(_, end)| end.max(b.cmd_end));
             (b.prompt_top, last)
         }
     }
 }
 
 fn card(b: &Block, utc_offset: i64) -> Card {
-    let cmd_end = b
-        .output
-        .map_or(b.cmd_row, |(start, _)| (start - 1i32).max(b.cmd_row));
+    let cmd_end = b.cmd_end.max(b.cmd_row);
     Card {
         id: b.id.clone(),
         header: Header {
@@ -135,15 +139,34 @@ pub fn column(
         items.push(Item::Live {
             top: screen_top,
             bottom: end.max(screen_top),
+            typing: None,
         });
         return items;
     };
     // The last segment is live unless it is a finished command (its prompt not shown yet).
     let live_last = !matches!(last, Segment::Command(b) if b.outcome != Outcome::Running);
-    let (before, live_top) = if live_last {
-        (&segments[..segments.len() - 1], extent(last).0)
+    // The live box starts where the typing does (the shown prompt's B row), or at a running
+    // command's output (rework: its prompt and command rows are left out, its command is in the
+    // chip); the rows above that within the live segment are hidden, not loose.
+    let (before, seg_top, live_top, typing) = if live_last {
+        let (start, typing) = match last {
+            // Where the typing starts (from the tag: a wrapped prompt's lower row), else the
+            // tag's row.
+            Segment::Prompt { row, input, .. } => (
+                input.map_or(*row, |(line, _)| line),
+                input.map(|(_, col)| col),
+            ),
+            Segment::Command(b) => (b.output.map_or(b.cmd_end + 1i32, |(s, _)| s), None),
+        };
+        (
+            &segments[..segments.len() - 1],
+            extent(last).0,
+            start,
+            typing,
+        )
     } else {
-        (segments, extent(last).1 + 1i32)
+        let after = extent(last).1 + 1i32;
+        (segments, after, after, None)
     };
     let mut items = Vec::new();
     let mut next = first;
@@ -168,8 +191,8 @@ pub fn column(
         }
         next = next.max(bottom + 1i32);
     }
-    if live_top > next {
-        let gap = (next, live_top - 1i32);
+    if seg_top > next {
+        let gap = (next, seg_top - 1i32);
         items.push(if items.is_empty() {
             Item::Earlier {
                 top: gap.0,
@@ -185,6 +208,7 @@ pub fn column(
     // The box holds the screen's rows at most (the terminal is sized to its inside, Settled 4):
     // a running command's rows already in the scrollback show as plain rows above its chips.
     let screen_top = Line(0);
+    let typing = typing.filter(|_| live_top >= screen_top);
     let live_top = if live_top < screen_top {
         items.push(Item::Loose {
             top: live_top,
@@ -197,6 +221,7 @@ pub fn column(
     items.push(Item::Live {
         top: live_top,
         bottom: end.max(live_top),
+        typing,
     });
     items
 }
@@ -258,14 +283,23 @@ pub struct SegmentCache {
 
 fn shift(segment: &Segment, by: i32) -> Segment {
     match segment {
-        Segment::Prompt { id, top, bottom } => Segment::Prompt {
+        Segment::Prompt {
+            id,
+            row,
+            top,
+            bottom,
+            input,
+        } => Segment::Prompt {
             id: id.clone(),
+            row: *row + by,
             top: *top + by,
             bottom: *bottom + by,
+            input: input.map(|(line, col)| (line + by, col)),
         },
         Segment::Command(b) => Segment::Command(Block {
             prompt_top: b.prompt_top + by,
             cmd_row: b.cmd_row + by,
+            cmd_end: b.cmd_end + by,
             output: b.output.map(|(s, e)| (s + by, e + by)),
             ..b.clone()
         }),
@@ -369,10 +403,24 @@ pub fn items_for<L>(
     )
 }
 
+/// The rework's sizes (note 88 "Rework"), points: a 1 pt edge; the card surface's padding and
+/// the gap above its output; the composer: the context row, the inner box 5 pt in from the outer
+/// box's sides and bottom, its padding.
+pub const EDGE: f32 = 1.0;
+pub const SURF_PAD_TOP: f32 = 8.0;
+pub const SURF_PAD_X: f32 = 12.0;
+pub const SURF_PAD_BOTTOM: f32 = 10.0;
+pub const OUT_GAP: f32 = 4.0;
+pub const CTX_ROW: f32 = 30.0;
+pub const OUTER_INSET: f32 = 5.0;
+pub const INNER_PAD_X: f32 = 14.0;
+pub const INNER_PAD_Y: f32 = 12.0;
+/// The composer's height beside its rows: the outer box's edges, the context row, the inner
+/// box's edges and padding, and its inset at the bottom.
+pub const COMPOSER_FRAME: f32 = EDGE + CTX_ROW + 2.0 * (EDGE + INNER_PAD_Y) + OUTER_INSET + EDGE;
+
 /// A card's header line (UI text), points.
 pub const HEADER_H: f32 = 18.0;
-/// Between the command line and its output panel, points.
-pub const PANEL_GAP: f32 = 4.0;
 /// Between items, points.
 pub const CARD_GAP: f32 = 14.0;
 
@@ -383,12 +431,12 @@ pub fn card_height(card: &Card, unfolded: bool, line_h: f32) -> f32 {
         Some(cmd) => cmd.lines().count().max(1),
         None => (card.cmd_rows.1.0 - card.cmd_rows.0.0 + 1).max(1) as usize,
     };
-    let mut height = HEADER_H + cmd_lines as f32 * line_h;
+    let mut height = SURF_PAD_TOP + HEADER_H + cmd_lines as f32 * line_h + SURF_PAD_BOTTOM;
     if let Some(output) = card.output {
         let lines = (output.1.0 - output.0.0 + 1).max(0) as usize;
         let s = shown(output, unfolded);
         let rows = (s.bottom.0 - s.top.0 + 1).max(0) as usize + usize::from(lines > FOLD_OVER);
-        height += PANEL_GAP + 2.0 * (BOX_EDGE + BOX_PAD) + rows as f32 * line_h;
+        height += OUT_GAP + rows as f32 * line_h;
     }
     height
 }
@@ -399,7 +447,7 @@ pub fn item_height(item: &Item, unfolded: bool, line_h: f32) -> f32 {
     match item {
         Item::Card(card) => card_height(card, unfolded, line_h),
         Item::Earlier { top, bottom } | Item::Loose { top, bottom } => rows(*top, *bottom),
-        Item::Live { top, bottom } => CHIPS_ROW + 2.0 * (BOX_EDGE + BOX_PAD) + rows(*top, *bottom),
+        Item::Live { top, bottom, .. } => COMPOSER_FRAME + rows(*top, *bottom),
     }
 }
 
@@ -425,6 +473,27 @@ pub fn layout(items: &[Item], unfolded: &dyn Fn(&str) -> bool, line_h: f32) -> (
         top += height;
     }
     (placed, top)
+}
+
+/// Where the first live row is drawn from (rework): `from` the column the typing starts at (0
+/// when unknown), and `cut` where your prompt's right-hand part starts (a run after two blank
+/// cells reaching the line's end, as zsh right-aligns it), when there is one past `from`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Crop {
+    pub from: usize,
+    pub cut: Option<usize>,
+}
+
+pub fn crop(line: &[CellView], input_col: Option<usize>, cursor_col: Option<usize>) -> Crop {
+    let blank = |c: &CellView| (c.ch == ' ' || c.ch == '\0') && !c.spacer;
+    let from = input_col.unwrap_or(0).min(line.len());
+    let end = line.iter().rposition(|c| !blank(c));
+    let at_edge = end.is_some_and(|e| e + 2 >= line.len());
+    // Nothing you typed is cut (review #3): the cursor must be on this row (the typing hasn't
+    // wrapped on), and the right part start past it.
+    let cut = crate::block_view::right_run(line, blank)
+        .filter(|&start| at_edge && start > from && cursor_col.is_some_and(|c| start > c));
+    Crop { from, cut }
 }
 
 /// Which of `rows` rows (the first at `top`, `line_h` apart) touch the `clip` span (`top`,
@@ -465,6 +534,12 @@ pub struct CardsState {
     pub items_key: Option<(u64, usize, i32, i32, i64)>,
     /// The column's view last frame (window points, `x, y, w, h`): hit areas are cut to it.
     pub view_rect: (f32, f32, f32, f32),
+    /// The composer's top-left and width last frame (window points): its context row is
+    /// placed there (rework).
+    pub composer: Option<(f32, f32, f32)>,
+    /// The composer's first row as painted last frame, as text (the scenes check what shows).
+    #[cfg(feature = "ui-shots")]
+    pub typed_row: String,
 }
 
 /// Rows painted this frame that the pointer can select in (window points): the first row is
@@ -526,32 +601,6 @@ pub fn card_point(
 /// The running chip's words: `● npm test · 1m 15s` (whole seconds, M11q's `ran_label`).
 pub fn running_words(short: &str, elapsed: std::time::Duration) -> String {
     format!("\u{25cf} {short} \u{b7} {}", ran_label(elapsed))
-}
-
-/// One chip above the live box.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Chip {
-    pub words: String,
-    /// The running command's (drawn in the running colour).
-    pub running: bool,
-}
-
-/// The chips above the live box (note 88 §3; ruling 1: folder and branch, no counts): the
-/// running command first, then the folder, then the branch.
-pub fn chips(folder: Option<&str>, branch: Option<&str>, running: Option<String>) -> Vec<Chip> {
-    let running = running.map(|words| Chip {
-        words,
-        running: true,
-    });
-    let folder = folder.map(|f| Chip {
-        words: f.to_string(),
-        running: false,
-    });
-    let branch = branch.map(|b| Chip {
-        words: format!("\u{2387} {b}"),
-        running: false,
-    });
-    running.into_iter().chain(folder).chain(branch).collect()
 }
 
 /// The scroll for a column that grew from `old_total` to `total` (final review #4): scrolled up,
@@ -627,12 +676,14 @@ pub enum Draw {
         failed: bool,
     },
     Live {
-        /// The chips row's top; the box starts `CHIPS_ROW` below it.
+        /// The composer's top (its outer box; the context row, then the inner box below it).
         y: f32,
         height: f32,
         /// The rows in view, with the cursor among them (rows relative to `rows.y`).
         rows: Rows,
         cursor: Option<CursorView>,
+        /// At a prompt whose typing start is known: what of the first row to show (rework).
+        crop: Option<Crop>,
     },
 }
 
@@ -641,7 +692,6 @@ pub enum Draw {
 #[derive(Clone, Debug)]
 pub struct Panel {
     pub y: f32,
-    pub height: f32,
     pub fold: Option<String>,
     pub rows: Rows,
 }
@@ -711,7 +761,6 @@ pub fn frame<L: EventListener>(
             lines,
         }
     };
-    let inner = BOX_EDGE + BOX_PAD;
     let mut draws = Vec::new();
     for (item, at) in items.iter().zip(&placed) {
         let y = base + at.top;
@@ -725,7 +774,8 @@ pub fn frame<L: EventListener>(
             }
             Item::Card(card) => {
                 let open = unfolded.contains(&card.id);
-                let cmd_y = y + HEADER_H;
+                // Inside the card's surface (rework): its padding, the header, the command.
+                let cmd_y = y + SURF_PAD_TOP + HEADER_H;
                 let (cmd, cmd_lines) = match &card.cmd {
                     Some(c) => (Ok(c.clone()), c.lines().count().max(1)),
                     None => {
@@ -740,13 +790,12 @@ pub fn frame<L: EventListener>(
                         0 => "▾ Show less".to_string(),
                         n => format!("▸ {n} earlier lines"),
                     });
-                    let panel_y = cmd_y + cmd_lines as f32 * line_h + PANEL_GAP;
-                    let rows_y = panel_y + inner + if fold.is_some() { line_h } else { 0.0 };
+                    // The output under the command, in the same surface (no panel of its own).
+                    let panel_y = cmd_y + cmd_lines as f32 * line_h + OUT_GAP;
+                    let rows_y = panel_y + if fold.is_some() { line_h } else { 0.0 };
                     let shown_rows = count(s.top, s.bottom);
                     Panel {
                         y: panel_y,
-                        height: 2.0 * inner
-                            + (shown_rows + usize::from(fold.is_some())) as f32 * line_h,
                         fold,
                         rows: read(s.top, rows_y, shown_rows),
                     }
@@ -762,8 +811,14 @@ pub fn frame<L: EventListener>(
                     failed: card.failed,
                 });
             }
-            Item::Live { top, bottom } => {
-                let rows_y = y + CHIPS_ROW + inner;
+            Item::Live {
+                top,
+                bottom,
+                typing,
+            } => {
+                // In the composer's inner box: under the outer edge, the context row and the
+                // inner box's edge and padding.
+                let rows_y = y + EDGE + CTX_ROW + EDGE + INNER_PAD_Y;
                 let rows = read(*top, rows_y, count(*top, *bottom));
                 let first = *top + ((rows.y - rows_y) / line_h).round() as i32;
                 let point = term.grid().cursor.point;
@@ -776,11 +831,16 @@ pub fn frame<L: EventListener>(
                         shape,
                         blinking,
                     });
+                let on_first = (point.line == *top).then_some(point.column.0);
+                let cut = typing
+                    .filter(|_| rows.top == *top)
+                    .and_then(|col| rows.lines.first().map(|l| crop(l, Some(col), on_first)));
                 draws.push(Draw::Live {
                     y,
                     height: at.height,
                     rows,
                     cursor,
+                    crop: cut,
                 });
             }
         }
@@ -788,12 +848,6 @@ pub fn frame<L: EventListener>(
     state.items = items;
     CardFrame { draws }
 }
-
-/// The chips row above the live box (folder, branch, the running command), points.
-pub const CHIPS_ROW: f32 = 28.0;
-/// The live box's (and a card panel's) inner padding and edge, points.
-pub const BOX_PAD: f32 = 10.0;
-pub const BOX_EDGE: f32 = 1.0;
 
 /// The terminal's size in card view (note 88 §4, Settled 4): the live box's inside at its
 /// tallest, the pane less its padding (`terminal_view::inset`), the chips row, and the box's
@@ -804,9 +858,9 @@ pub fn card_dims(pane: Size<Pixels>, split: bool, cell_w: f32, line_h: f32) -> T
     } else {
         ui_size::TERMINAL_PADDING
     };
-    let frame = 2.0 * (BOX_EDGE + BOX_PAD);
-    let w = f32::from(pane.width) - 2.0 * pad_x - frame;
-    let h = f32::from(pane.height) - 2.0 * pad_y - CHIPS_ROW - frame;
+    let side = 2.0 * (EDGE + OUTER_INSET + EDGE + INNER_PAD_X);
+    let w = f32::from(pane.width) - 2.0 * pad_x - side;
+    let h = f32::from(pane.height) - 2.0 * pad_y - COMPOSER_FRAME;
     TermDims {
         cols: ((w / cell_w).floor().max(0.0) as usize).max(2),
         rows: ((h / line_h).floor().max(0.0) as usize).max(1),
@@ -840,6 +894,7 @@ mod tests {
             outcome,
             prompt_top: Line(top),
             cmd_row: Line(top + 1),
+            cmd_end: Line(top + 1),
             output: out.map(|(a, b)| (Line(a), Line(b))),
             cmd: Some(id.into()),
             t0: None,
@@ -848,10 +903,17 @@ mod tests {
     }
 
     fn prompt(id: &str, top: i32, bottom: i32) -> Segment {
+        prompt_at(id, top, top, bottom)
+    }
+
+    /// A prompt from `top`, its typing on `row` (a two-line prompt: `row` below `top`).
+    fn prompt_at(id: &str, top: i32, row: i32, bottom: i32) -> Segment {
         Segment::Prompt {
             id: id.into(),
+            row: Line(row),
             top: Line(top),
             bottom: Line(bottom),
+            input: None,
         }
     }
 
@@ -862,7 +924,7 @@ mod tests {
                 Item::Earlier { top, bottom } => format!("earlier {}..{}", top.0, bottom.0),
                 Item::Card(c) => format!("card {}{}", c.id, if c.failed { " failed" } else { "" }),
                 Item::Loose { top, bottom } => format!("loose {}..{}", top.0, bottom.0),
-                Item::Live { top, bottom } => format!("live {}..{}", top.0, bottom.0),
+                Item::Live { top, bottom, .. } => format!("live {}..{}", top.0, bottom.0),
             })
             .collect()
     }
@@ -900,7 +962,8 @@ mod tests {
             command("npm run dev", 3, Some((5, 40)), Outcome::Running),
         ];
         let items = column(&segments, Line(0), Line(40), Line(40), 0);
-        assert_eq!(ids(&items), ["card ls", "live 3..40"]);
+        // Rework: only its output (its command is in the chip above the box).
+        assert_eq!(ids(&items), ["card ls", "live 5..40"]);
     }
 
     /// Settled 4: the box's frame and chips stay on screen, so a running command's rows that
@@ -914,7 +977,7 @@ mod tests {
         let items = column(&segments, Line(-50), Line(40), Line(40), 0);
         assert_eq!(
             ids(&items),
-            ["card ls", "loose -47..-31", "loose -30..-1", "live 0..40"]
+            ["card ls", "loose -47..-31", "loose -28..-1", "live 0..40"]
         );
     }
 
@@ -1001,18 +1064,18 @@ mod tests {
 
     #[test]
     fn card_dims_are_the_box_inside() {
+        // Rework: the inner box's inside: less the pane's padding, the outer box's edge and
+        // inset and the inner box's edge and padding each side; the context row above.
         let pane = gpui::size(gpui::px(1000.0), gpui::px(700.0));
-        let side = 2.0 * (BOX_EDGE + BOX_PAD);
-        let (w, h) = (
-            1000.0 - 2.0 * 28.0 - side,
-            700.0 - 2.0 * 22.0 - CHIPS_ROW - side,
-        );
+        let side = 2.0 * (EDGE + OUTER_INSET + EDGE + INNER_PAD_X);
+        let tall = EDGE + CTX_ROW + 2.0 * (EDGE + INNER_PAD_Y) + OUTER_INSET + EDGE;
+        let (w, h) = (1000.0 - 2.0 * 28.0 - side, 700.0 - 2.0 * 22.0 - tall);
         let dims = card_dims(pane, false, 8.0, 17.0);
         assert_eq!(
             (dims.cols, dims.rows),
             ((w / 8.0) as usize, (h / 17.0) as usize)
         );
-        assert_eq!((dims.cols, dims.rows), (115, 35));
+        assert_eq!((dims.cols, dims.rows), (112, 34));
     }
 
     // M11ab Task 5: the cache, the layout, the rows a paint reads.
@@ -1190,13 +1253,15 @@ mod tests {
     #[test]
     fn heights_add_up() {
         let lh = 17.0;
-        let frame = PANEL_GAP + 2.0 * (BOX_EDGE + BOX_PAD);
+        // Rework: one surface, its padding around the header, the command and the output.
+        let pad = SURF_PAD_TOP + SURF_PAD_BOTTOM;
+        let frame = pad + OUT_GAP;
         let card = a_card(Some((2, 4)));
         assert_eq!(
             card_height(&card, false, lh),
             HEADER_H + lh + frame + 3.0 * lh
         );
-        assert_eq!(card_height(&a_card(None), false, lh), HEADER_H + lh);
+        assert_eq!(card_height(&a_card(None), false, lh), HEADER_H + lh + pad);
         // 25 lines folded: the last 12 and the fold row; unfolded: all 25 and "Show less".
         let long = a_card(Some((0, 24)));
         assert_eq!(
@@ -1212,15 +1277,13 @@ mod tests {
             Item::Live {
                 top: Line(5),
                 bottom: Line(6),
+                typing: None,
             },
         ];
         let (placed, total) = layout(&items, &|_| false, lh);
         assert_eq!(placed[0].top, 0.0);
         assert_eq!(placed[1].top, card_height(&card, false, lh) + CARD_GAP);
-        assert_eq!(
-            total,
-            placed[1].top + CHIPS_ROW + 2.0 * (BOX_EDGE + BOX_PAD) + 2.0 * lh
-        );
+        assert_eq!(total, placed[1].top + COMPOSER_FRAME + 2.0 * lh);
     }
 
     #[test]
@@ -1274,22 +1337,6 @@ mod tests {
             running_words("make", std::time::Duration::from_millis(12_400)),
             "\u{25cf} make \u{b7} 12s"
         );
-    }
-
-    #[test]
-    fn branch_chip_comes_from_the_workspace() {
-        let words = |c: Vec<Chip>| c.into_iter().map(|c| c.words).collect::<Vec<_>>();
-        assert_eq!(
-            words(chips(Some("~/code/api"), Some("main"), None)),
-            ["~/code/api", "\u{2387} main"]
-        );
-        assert_eq!(words(chips(None, None, None)), Vec::<String>::new());
-        let running = chips(Some("~"), None, Some("\u{25cf} make \u{b7} 3s".into()));
-        assert!(
-            running[0].running && running[0].words.contains("make"),
-            "running first"
-        );
-        assert_eq!(running[1].words, "~");
     }
 
     #[test]
@@ -1353,6 +1400,154 @@ mod tests {
         assert!(
             clip_hit(&hit, (0.0, 200.0, 400.0, 600.0)).is_none(),
             "wholly out of view"
+        );
+    }
+
+    // M11ab rework, Task 1.
+
+    /// A wrapped command line's second row is its card's (it was left between cards).
+    #[test]
+    fn a_wrapped_command_row_stays_in_its_card() {
+        let Segment::Command(mut b) = command("make", 0, None, Outcome::Ok) else {
+            unreachable!()
+        };
+        b.cmd_end = Line(2);
+        let segments = [Segment::Command(b), prompt("live", 3, 3)];
+        let items = column(&segments, Line(0), Line(3), Line(3), 0);
+        assert_eq!(ids(&items), ["card make", "live 3..3"], "no loose row 2");
+    }
+
+    /// The box starts where the typing does: a two-line prompt's upper row is left out.
+    #[test]
+    fn the_live_box_starts_at_the_typing() {
+        let segments = [
+            command("ls", 0, Some((2, 2)), Outcome::Ok),
+            prompt_at("live", 3, 4, 4),
+        ];
+        let items = column(&segments, Line(0), Line(4), Line(4), 0);
+        assert_eq!(ids(&items), ["card ls", "live 4..4"]);
+    }
+
+    /// A running command: only its output in the box (its prompt and command rows left out).
+    #[test]
+    fn a_running_command_shows_only_its_output() {
+        let segments = [command("npm run dev", 0, Some((2, 9)), Outcome::Running)];
+        let items = column(&segments, Line(0), Line(9), Line(9), 0);
+        assert_eq!(ids(&items), ["live 2..9"]);
+        // Nothing printed yet: the box is the cursor's row.
+        let segments = [command("sleep 9", 0, None, Outcome::Running)];
+        let items = column(&segments, Line(0), Line(2), Line(1), 0);
+        assert_eq!(ids(&items), ["live 2..2"]);
+    }
+
+    fn cells(text: &str, cols: usize) -> Vec<CellView> {
+        let theme = crate::theme::Theme::default();
+        let mut line: Vec<CellView> = text
+            .chars()
+            .map(|ch| CellView {
+                ch,
+                ..CellView::blank(&theme)
+            })
+            .collect();
+        line.resize(cols, CellView::blank(&theme));
+        line
+    }
+
+    /// The prompt's left part (up to where the typing starts) and its right part (a run at the
+    /// line's end after two blank cells) are left out; what you typed stays.
+    #[test]
+    fn the_prompt_and_its_right_side_are_left_out() {
+        let row = format!("{:<34}{}", "~/code/api main ls", "\u{2714} 08:00");
+        let line = cells(&row, 40);
+        assert_eq!(
+            crop(&line, Some(16), Some(18)),
+            Crop {
+                from: 16,
+                cut: Some(34)
+            }
+        );
+        // A plain `$ ` prompt: no right part.
+        assert_eq!(
+            crop(&cells("$ ls", 40), Some(2), Some(4)),
+            Crop { from: 2, cut: None }
+        );
+        // A double space typed mid-line isn't a right prompt (the run doesn't reach the edge).
+        assert_eq!(
+            crop(&cells("$ git commit -m  x", 40), Some(2), Some(18)),
+            Crop { from: 2, cut: None }
+        );
+        // Where the typing starts unknown (a reattached session): the whole row.
+        assert_eq!(
+            crop(&line, None, Some(18)),
+            Crop {
+                from: 0,
+                cut: Some(34)
+            }
+        );
+    }
+
+    // Rework review fixes.
+
+    /// #1/#2: the box starts at the row the typing is on (a wrapped prompt's second row), and
+    /// carries the typing's column for the crop.
+    #[test]
+    fn a_wrapped_prompt_starts_the_box_at_the_typing() {
+        let live = Segment::Prompt {
+            id: "live".into(),
+            row: Line(3),
+            top: Line(3),
+            bottom: Line(4),
+            input: Some((Line(4), 5)),
+        };
+        let items = column(&[live], Line(0), Line(4), Line(4), 0);
+        assert_eq!(
+            items.last(),
+            Some(&Item::Live {
+                top: Line(4),
+                bottom: Line(4),
+                typing: Some(5),
+            })
+        );
+    }
+
+    /// #1: a prompt on the screen's last row, then lines printed under it and the cursor moved
+    /// back up (a completion list): the box still starts at the typing, with its column.
+    #[test]
+    fn the_crop_survives_a_scroll() {
+        let mut sh = Sh::new(100);
+        sh.command("ls", "a\r\nb\r\nc\r\n").prompt();
+        sh.feed(b"x\r\n\r\n\r\n\x1b[3A\x1b[3C");
+        let items = items_for(&sh.term, &mut SegmentCache::default(), key(2, 0), 0);
+        let Some(Item::Live { typing, top, .. }) = items.last() else {
+            panic!("a live box")
+        };
+        assert_eq!(*typing, Some(2), "the typing's column, where B was");
+        assert!(
+            tag_id_at(&sh.term, *top).is_some(),
+            "the box starts on the tag's row"
+        );
+    }
+
+    /// #3: nothing you typed is cut: no cut at or left of the cursor, none when the cursor has
+    /// moved past the row (the typing wraps on).
+    #[test]
+    fn typed_text_is_never_cut() {
+        let row = format!("{:<34}{}", "$ git commit -m a  b", "\u{2714} 08:00");
+        let line = cells(&row, 40);
+        assert_eq!(
+            crop(&line, Some(2), Some(20)).cut,
+            Some(34),
+            "a right prompt"
+        );
+        assert_eq!(
+            crop(&line, Some(2), Some(36)).cut,
+            None,
+            "the cursor is past it"
+        );
+        assert_eq!(
+            crop(&line, Some(2), None).cut,
+            None,
+            "the typing wrapped on"
         );
     }
 }

@@ -159,6 +159,16 @@ pub struct UiColors {
     /// between panes and under bars; the card's own outer edge is the canvas colour since
     /// 2026-11-20).
     pub card_border: Rgb,
+    /// M11ab rework (note 88): a finished command's soft surface, and the composer's shades,
+    /// stepped from the terminal background toward its ink as your reference steps them: the
+    /// outer box a little, the inner box more, each edge a little more again, the inner box's top
+    /// edge most.
+    pub card_surface: Rgb,
+    pub composer_outer: Rgb,
+    pub composer_edge: Rgb,
+    pub composer_inner: Rgb,
+    pub composer_inner_edge: Rgb,
+    pub composer_inner_top: Rgb,
     /// The Changes progress bar's unfilled track, on the repo card (`card_hover`; M11al Task 9).
     pub progress_track: Rgb,
     /// The card's shadow: `shadow` at this opacity (0-1).
@@ -524,6 +534,13 @@ impl Theme {
             avatars,
             card,
             card_border,
+            card_surface: mix(bg, fg, 0.045),
+            composer_outer: mix(bg, fg, 0.025),
+            composer_edge: mix(bg, fg, 0.085),
+            // Where you type: the sidebar's colour (the user's call after the rework).
+            composer_inner: canvas,
+            composer_inner_edge: mix(bg, fg, 0.1),
+            composer_inner_top: mix(bg, fg, 0.15),
             window_edge: if dark { black } else { canvas },
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
             card_shadow_alpha: if dark { 0.45 } else { 0.12 },
@@ -1007,6 +1024,49 @@ mod tests {
                 let d = d.min(360.0 - d);
                 assert!(d >= 25.0, "{name}: the accent {d}° from {what}");
             }
+        }
+    }
+
+    /// M11ab rework: the card surface and the composer step up from the terminal background
+    /// (outer box, inner box, their edges, the inner box's top edge lightest), each apart from
+    /// the one below; text reads on every one of them, in every theme.
+    #[test]
+    fn the_composer_and_cards_step_up_and_text_reads() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let bg = theme.background;
+            let steps = [
+                ("outer", ui.composer_outer, bg),
+                ("inner", ui.composer_inner, ui.composer_outer),
+                ("outer edge", ui.composer_edge, ui.composer_outer),
+                ("inner edge", ui.composer_inner_edge, ui.composer_inner),
+                ("inner top", ui.composer_inner_top, ui.composer_inner_edge),
+                ("card surface", ui.card_surface, bg),
+            ];
+            for (what, c, below) in steps {
+                assert_ne!(c, below, "{name}: {what} stands apart");
+            }
+            for (what, on) in [
+                ("card surface", ui.card_surface),
+                ("outer", ui.composer_outer),
+                ("inner", ui.composer_inner),
+            ] {
+                for (ink, c) in [("text", ui.text), ("text_dim", ui.text_dim)] {
+                    let r = contrast(c, on);
+                    assert!(r >= TEXT_MIN, "{name}: {ink} on {what} is {r:.2}");
+                }
+            }
+        }
+    }
+
+    /// The composer's inner box (where you type) is the sidebar's colour, in every theme (your
+    /// words: "inner terminal chat background use the background color of this [the sidebar]. We
+    /// make it follow the palette").
+    #[test]
+    fn the_composer_inner_box_is_the_sidebar_colour() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            assert_eq!(ui.composer_inner, ui.sidebar_background, "{name}");
         }
     }
 
