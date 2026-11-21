@@ -1,6 +1,6 @@
 ---
 tags: [milestone, design]
-status: design
+status: built
 ---
 
 # Milestone 11ab - Chat-Style Shell Tabs (design)
@@ -246,6 +246,63 @@ settled here as the AI's call, for you to check.
 - Exact sizes and colours (panel fill, gaps between cards, the chips' look) from the existing tokens.
 - The narrow-pane threshold.
 - How the block list is kept up to date incrementally.
+
+## M11ab as built (2026-11-21)
+
+Branch `m11ab-shell-cards`, 7 tasks built in the session (executing-plans), then one whole-branch review (Opus) and one
+fix pass. Plan: [[M11ab Plan - Chat-Style Shell Tabs]].
+
+- **Tags** carry `t0` (start, Unix seconds) and `ms` (duration); `blocks::segments` lists every command and empty prompt.
+- **`card_view.rs`** (plain data, tested): the column (`column`: earlier rows, cards, loose rows, the live box), folding
+  (20 → last 12), the header (`10:42 · 3.2s · exit 1`), sizes (`card_dims`: the terminal is the box's inside), the
+  segment cache (rows from the scrollback's top; a rotation at the cap found by the newest card's tag, no full read),
+  the layout, the rows in view, pointing (`card_point`), the chips, the scroll (bottom-anchored, held while scrolled
+  up, page keys).
+- **`terminal_view.rs`** paints the column on one canvas (`paint_cards`), each card's output with today's line
+  painter; the live box with today's grid painter and cursor; Copy / Rerun on hover at the header's right, the fold
+  row, and the command line as M11aa's drag handle are real elements placed from the last frame; selection, ⌘-click
+  links and the program's mouse reports run through today's code (`point_at` maps the pointer through the rows
+  painted), a selection held to one card.
+- **Setting:** `shell-cards = on | off` (default on), Preferences → Sessions → Terminal, "Commands as cards", disabled
+  while Command blocks is off.
+- **Who gets cards:** a shell this window spawned with fuxx's marks; a background-service session once it shows a
+  real mark, or a tag in its grid at reattach (never a bash session).
+- **Checks:** 2274 tests; clippy at the pre-M11ab baseline; fmt; ui-shots 6 new scenes (`shell-cards`, `-select`,
+  `-running-full`, `-alt-screen`, `-off`, `-toggle`), both themes.
+
+### Rulings (the AI's, for your check)
+
+From the plan: no `?N` / `+N` counts on the branch chip; `card_duration` (`0.04s`, `3.2s`, `3m 12s`); no duration for a
+command started before a reattach. While building: one canvas instead of `gpui::list`; a segment cache (measured: a full
+read is 333 µs over 10,040 lines); Copy / Rerun at the header's right on hover, not under the panel; the running chip in
+whole seconds; the branch pushed on the workspace's 1 s folder check; a running command's rows that scrolled off the
+screen show as plain rows above the box (so the chips and frame stay on screen, Settled 4); ⌘-hover's underline in
+card view left for later (⌘-click opens).
+
+### Deferred (minor)
+
+Stale M11l gutter hits after a plain frame; no disabled look on card Copy / Rerun; cursor sparks off in card view; a
+card from before a DST change shows its time an hour off; a rotation with only prompt tags (after `exec bash`) isn't
+noticed; a drag that scrolls the column loses its region.
+
+## On-screen checklist (yours)
+
+With `FUXX_DAEMON_SOCKET=/tmp/fuxx-dev.sock cargo run`, a new zsh tab:
+
+1. Run `ls`, `git status`, `false`: each becomes a card (time · duration · `exit 1` in red for `false`), the prompt
+   in the box at the bottom with your folder and branch above it.
+2. Press Return on an empty prompt, and ⌃C on a half-typed line: no card, nothing left between the cards.
+3. `seq 1 40`: folded to its last 12 with `▸ 28 earlier lines`; click it to unfold, `▾ Show less` to fold back.
+4. Hover a card: Copy and Rerun at its header's right; Rerun types the command at the prompt (never runs it).
+5. Drag across a card's output: it selects, ⌘C copies; ⌘-click a link in a card opens it.
+6. `npm run dev` (or `ping localhost`): the box grows to the whole pane, the running chip ticks; scroll up while it
+   prints: what you read stays put.
+7. `claude` typed in the tab: it runs inside the box as today's terminal; quit it: its run becomes a card.
+8. `vim`: the whole pane, as today; quit: the cards are back.
+9. ⇧⌘↑ / ⇧⌘↓ move between cards (the chosen one's edge in the accent); Shift+Page Up / Down scroll.
+10. Drag a card's command line onto an agent tab: it attaches, as M11aa's chip did.
+11. Preferences → Sessions → Commands as cards off: today's terminal at once; on again: cards.
+12. A bash tab (or with Command blocks off): today's terminal, unchanged.
 
 ## Related
 
