@@ -600,7 +600,7 @@ pub(super) fn agent_tab_working() {
                 )
                 .expect("an Edit row")
         });
-        feed(cx, tab, |t, cx| t.shot_toggle(edit, cx));
+        feed(cx, tab, |t, cx| t.shot_open_tool(edit, cx));
         cx.read(|cx| {
             let t = tab.read(cx);
             assert_eq!(t.status(), Status::Working, "{n}");
@@ -1084,8 +1084,8 @@ pub(super) fn agent_tab_long() {
                 .position(|i| matches!(i, Item::Tool { id, .. } if id == "toolu_big"))
                 .expect("the big tool")
         });
-        feed(cx, tab, |t, cx| t.shot_toggle(big, cx));
-        feed(cx, tab, |t, cx| t.shot_toggle(big, cx));
+        feed(cx, tab, |t, cx| t.shot_open_tool(big, cx));
+        feed(cx, tab, |t, cx| t.shot_modal_key("escape", cx));
     });
 }
 
@@ -1796,7 +1796,7 @@ pub(super) fn agent_tab_review() {
                 cx,
             )
         });
-        feed(cx, &tab, |t, cx| t.shot_toggle(0, cx));
+        feed(cx, &tab, |t, cx| t.shot_open_tool(0, cx));
         let _ = frame_fresh(cx, window);
         // The row starts under the top line (26) and its 14 pt gap: the header is ~40–70, the
         // diff's six lines below it.

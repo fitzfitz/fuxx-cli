@@ -11,6 +11,7 @@ mod agent_detect;
 mod agent_markdown;
 mod agent_process;
 mod agent_tab;
+mod agent_tool_modal;
 mod agent_top;
 mod api;
 mod api_client;
@@ -491,6 +492,10 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
             Some("Composer"),
         ),
         // The agent tab's `@` file list and `/` list, while one is open over the composer.
+        // The tool modal (spec A §B): Esc backs out or closes, ↑/↓ walk the tools.
+        KeyBinding::new("escape", agent_tab::ModalBack, Some("AgentToolModal")),
+        KeyBinding::new("up", agent_tab::ModalPrev, Some("AgentToolModal")),
+        KeyBinding::new("down", agent_tab::ModalNext, Some("AgentToolModal")),
         KeyBinding::new("up", agent_tab::AtUp, Some("AtPopup > Composer")),
         KeyBinding::new("down", agent_tab::AtDown, Some("AtPopup > Composer")),
         KeyBinding::new("ctrl-p", agent_tab::AtUp, Some("AtPopup > Composer")),
@@ -1532,6 +1537,20 @@ mod tests {
         assert!(runs(&keymap, "cmd-k", composer).partial_eq(&OpenPalette));
         assert!(runs(&keymap, "cmd-t", composer).partial_eq(&NewTab));
         assert!(runs(&keymap, "cmd-w", composer).partial_eq(&CloseSession));
+    }
+
+    /// The tool modal (chores after M11ab, spec A §B): Esc goes back or closes it and never
+    /// stops the agent; ↑/↓ walk the tools, not the composer's history; fuxx's keys still work.
+    #[test]
+    fn the_tool_modal_keys_stay_in_the_modal() {
+        let keymap = keymap();
+        let modal: &[&str] = &["Workspace", "AgentTab", "AgentToolModal"];
+        assert!(runs(&keymap, "escape", modal).partial_eq(&crate::agent_tab::ModalBack));
+        assert!(runs(&keymap, "up", modal).partial_eq(&crate::agent_tab::ModalPrev));
+        assert!(runs(&keymap, "down", modal).partial_eq(&crate::agent_tab::ModalNext));
+        assert!(runs(&keymap, "cmd-k", modal).partial_eq(&OpenPalette));
+        assert!(runs(&keymap, "cmd-t", modal).partial_eq(&NewTab));
+        assert!(runs(&keymap, "cmd-w", modal).partial_eq(&CloseSession));
     }
 
     /// The agent composer edits like the shell's line (zsh's emacs keys and the Mac ones the

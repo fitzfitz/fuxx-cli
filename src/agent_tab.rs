@@ -42,12 +42,14 @@ use crate::agent_box::{
 use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
+use crate::agent_tool_modal::ToolModal;
 use crate::appearance::Appearance;
 use crate::block_view::BlockDrag;
 use crate::code_ask::{CodeRef, agent_path};
 use crate::composer::{Composer, ComposerEvent};
 use crate::diff_view::{RowKind, parse_diff};
 use crate::file_tab::{DiffRowColours, diff_row_colours};
+use crate::icons::{Icon, icon};
 use crate::mark_view::{MarkClock, MarkView};
 use crate::md_preview::{self, LinkTarget};
 use crate::palette_items::FileHit;
@@ -64,7 +66,7 @@ use crate::workspace_agent::Holder;
 
 // ↑ / ↓ in the `@` file list and the `/` list (bound in main.rs to "AtPopup > Composer", so they
 // reach the list, not the caret, only while it is open).
-actions!(agent_tab, [AtUp, AtDown]);
+actions!(agent_tab, [AtUp, AtDown, ModalBack, ModalPrev, ModalNext]);
 
 /// After Stop, how long the tab waits for the turn to end before offering **Force stop**
 /// (an interrupt during a running tool may not act until the tool ends: Ruling 7).
@@ -697,6 +699,9 @@ const WHITE: Rgb = Rgb {
 };
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
 
+/// The top bar's height (spec A §C); the tool modal's scrim starts under it.
+const TOP_BAR: f32 = 32.0;
+
 /// The status marks' size in the tab (the top bar's pill, the tool modal's header).
 const MARK: f32 = 12.0;
 
@@ -801,6 +806,13 @@ struct Files {
     paths: Arc<Vec<String>>,
 }
 
+/// Where the keyboard goes at the next draw (the tool modal opened or closed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refocus {
+    Modal,
+    Box,
+}
+
 /// What the emitted events last said.
 #[derive(Default)]
 struct Said {
@@ -867,8 +879,14 @@ pub struct AgentTab {
     catalog_pending: bool,
     list: ListState,
     rows: Vec<Row>,
-    /// Tool rows opened by a click (by tool id).
-    expanded: HashSet<String>,
+    /// The tool detail modal, open (spec A §B); how many times one opened (its animation's key);
+    /// its focus (key context `AgentToolModal`) and body's scroll; the keyboard to move at the
+    /// next draw (a click or an action has no window: `render` does it).
+    modal: Option<ToolModal>,
+    modals_opened: u64,
+    modal_focus: FocusHandle,
+    pub(crate) modal_scroll: gpui::ScrollHandle,
+    refocus: Option<Refocus>,
     /// The top bar (spec A §C): what its animations start from (`agent_top::TopState`), its
     /// status mark and the clock that turns it (a still one of its own until the Workspace
     /// gives it the shared one, `use_clock`), and its width as last laid out (`agent_top::trim`).
@@ -1072,10 +1090,24 @@ impl AgentTab {
         self.listen(&argv, cx);
     }
 
-    /// Open or close tool row `ix`, as its click does.
+    /// Open tool row `ix`'s detail, as its click does.
     #[cfg(feature = "ui-shots")]
-    pub fn shot_toggle(&mut self, ix: usize, cx: &mut Context<Self>) {
-        self.toggle(ix, cx);
+    pub fn shot_open_tool(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if let Some(Item::Tool { id, .. }) = self.conversation.items().get(ix) {
+            let id = id.clone();
+            self.open_tool(id, cx);
+        }
+    }
+
+    /// The tool modal's Esc, ↑ and ↓, as their keys.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_modal_key(&mut self, key: &str, cx: &mut Context<Self>) {
+        match key {
+            "escape" => self.back_out(cx),
+            "up" => self.walk(-1, cx),
+            "down" => self.walk(1, cx),
+            _ => {}
+        }
     }
 
     /// The mode `id` chosen from the box's menu, as its row's click does.
@@ -1135,10 +1167,10 @@ impl AgentTab {
         self.start.resume.clone()
     }
 
-    /// Whether tool `id`'s row is open.
+    /// Whether tool `id`'s detail is on screen.
     #[cfg(feature = "ui-shots")]
     pub fn shot_open(&self, id: &str) -> bool {
-        self.expanded.contains(id)
+        self.modal.as_ref().and_then(ToolModal::shown) == Some(id)
     }
 
     /// The Stop / Force stop button, as its click.
@@ -1260,7 +1292,11 @@ impl AgentTab {
             catalog_pending: false,
             list,
             rows: Vec::new(),
-            expanded: HashSet::new(),
+            modal: None,
+            modals_opened: 0,
+            modal_focus: cx.focus_handle(),
+            modal_scroll: gpui::ScrollHandle::new(),
+            refocus: None,
             top: crate::agent_top::TopState::default(),
             top_mark,
             bar_width: Rc::new(Cell::new(f32::MAX)),
@@ -1960,6 +1996,12 @@ impl AgentTab {
     /// After the conversation changed: rows, events, placeholder, the elapsed ticker, a redraw.
     fn after_change(&mut self, live: bool, cx: &mut Context<Self>) {
         self.sync_rows();
+        // The modal's tool gone (a restart, a new conversation): back out to what is left.
+        if let Some(modal) = &mut self.modal
+            && !modal.prune(self.conversation.items())
+        {
+            self.close_modal(cx);
+        }
         let question = self.question();
         if question != self.said.question {
             self.said.question = question.clone();
@@ -2829,16 +2871,73 @@ impl AgentTab {
         cx.notify();
     }
 
-    /// A tool row's click: open or close its detail.
-    fn toggle(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some(Item::Tool { id, .. }) = self.conversation.items().get(ix) else {
+    /// A tool row's click (spec A §B): its detail in the modal, which takes the keyboard.
+    fn open_tool(&mut self, id: String, cx: &mut Context<Self>) {
+        self.modals_opened += 1;
+        self.modal = Some(ToolModal::new(vec![id], self.modals_opened));
+        self.modal_scroll = gpui::ScrollHandle::new();
+        self.refocus = Some(Refocus::Modal);
+        cx.notify();
+    }
+
+    /// A step's click inside the modal: shown in its place, Back returns.
+    fn open_step(&mut self, id: String, cx: &mut Context<Self>) {
+        if let Some(modal) = &mut self.modal {
+            modal.stack.push(id);
+            modal.follow = true;
+            self.modal_scroll = gpui::ScrollHandle::new();
+            cx.notify();
+        }
+    }
+
+    /// ✕, a click on the scrim: closed, the keyboard back in the box.
+    fn close_modal(&mut self, cx: &mut Context<Self>) {
+        if self.modal.take().is_some() {
+            self.refocus = Some(Refocus::Box);
+            cx.notify();
+        }
+    }
+
+    /// Esc: back out of a step, else close.
+    fn back_out(&mut self, cx: &mut Context<Self>) {
+        match &mut self.modal {
+            Some(modal) if modal.stack.len() > 1 => {
+                modal.stack.pop();
+                modal.follow = true;
+                self.modal_scroll = gpui::ScrollHandle::new();
+                cx.notify();
+            }
+            _ => self.close_modal(cx),
+        }
+    }
+
+    /// ↑/↓: the level's previous or next tool, none past the ends.
+    fn walk(&mut self, dir: i8, cx: &mut Context<Self>) {
+        let Some(modal) = &self.modal else {
             return;
         };
-        if !self.expanded.remove(id) {
-            self.expanded.insert(id.clone());
+        if let Some(to) = crate::agent_tool_modal::step(self.conversation.items(), modal, dir)
+            && let Some(modal) = &mut self.modal
+        {
+            if let Some(last) = modal.stack.last_mut() {
+                *last = to;
+            }
+            modal.follow = true;
+            self.modal_scroll = gpui::ScrollHandle::new();
+            cx.notify();
         }
-        self.list.splice(ix..ix + 1, 1);
-        cx.notify();
+    }
+
+    fn modal_back(&mut self, _: &ModalBack, _: &mut Window, cx: &mut Context<Self>) {
+        self.back_out(cx);
+    }
+
+    fn modal_prev(&mut self, _: &ModalPrev, _: &mut Window, cx: &mut Context<Self>) {
+        self.walk(-1, cx);
+    }
+
+    fn modal_next(&mut self, _: &ModalNext, _: &mut Window, cx: &mut Context<Self>) {
+        self.walk(1, cx);
     }
 
     /// The process runs (a scene tab's "runs" until it ends: it has none).
@@ -3470,7 +3569,7 @@ impl AgentTab {
                     .child(md_preview::column(&blocks, ix, &look.draw))
                     .into_any_element()
             }
-            Item::Tool { .. } => self.tool(ix, item, depth, look),
+            Item::Tool { .. } => self.tool(ix, item, look),
             Item::Todo(list) => div()
                 .w_full()
                 .px(px(10.))
@@ -3569,7 +3668,7 @@ impl AgentTab {
 
     /// A tool call's row: name, target, result at the right (a spinner and the time while it
     /// runs); a click opens its diff, its command and output, or its sub-agent's steps.
-    fn tool(&self, ix: usize, item: &Item, depth: usize, look: &Look) -> AnyElement {
+    fn tool(&self, ix: usize, item: &Item, look: &Look) -> AnyElement {
         let Item::Tool {
             id,
             name,
@@ -3579,7 +3678,6 @@ impl AgentTab {
             result,
             detail,
             output,
-            dropped_lines,
             ..
         } = item
         else {
@@ -3597,15 +3695,7 @@ impl AgentTab {
             Some(ToolDetail::Diff { unified, .. }) => Some(parse_diff(unified)),
             _ => None,
         };
-        // A read expands to nothing (AI's call); an edit to its diff (its "updated" line says
-        // nothing more), unless it failed.
-        let shows_output =
-            name != "Read" && output.is_some() && (diff.is_none() || *ok == Some(false));
-        let openable = diff.is_some()
-            || matches!(detail, Some(ToolDetail::Command(_)))
-            || shows_output
-            || !children.is_empty();
-        let open = openable && self.expanded.contains(id);
+        let openable = crate::agent_tool_modal::openable(items, ix);
         let right: (String, Rgb) = if *running {
             let since = self
                 .tool_started
@@ -3625,6 +3715,16 @@ impl AgentTab {
             (result.clone(), c.panel_dim)
         };
         let steps = (!children.is_empty()).then(|| format!("{} steps", children.len()));
+        let chevron_slot = div()
+            .flex_none()
+            .size(px(crate::right_sidebar::CHEVRON))
+            .when(openable, |d| {
+                let (rest, hover) = (hsla(c.panel_dim), hsla(c.panel_text));
+                d.child(
+                    icon(Icon::ChevronRight, px(crate::right_sidebar::CHEVRON), rest)
+                        .group_hover("agent-tool-row", move |s| s.text_color(hover)),
+                )
+            });
         let head = div()
             .flex()
             .flex_row()
@@ -3662,16 +3762,11 @@ impl AgentTab {
                     .text_color(hsla(right.1))
                     .child(SharedString::from(right.0)),
             )
-            .when(openable, |d| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .text_color(hsla(c.panel_dim))
-                        .child(if open { "▾" } else { "▸" }),
-                )
-            });
-        let mut tool = div()
+            .child(chevron_slot);
+        let row_hover = hsla(c.row_hover);
+        let tool = div()
             .id(("agent-tool", ix))
+            .group("agent-tool-row")
             .w_full()
             .px(px(10.))
             .py(px(6.))
@@ -3680,74 +3775,21 @@ impl AgentTab {
             .border_1()
             .border_color(hsla(c.panel_border))
             .text_size(px(BODY - 1.))
-            .flex()
-            .flex_col()
-            .gap(px(6.));
-        // Only the header toggles: a click in the diff or the output (to select it) doesn't.
-        let head = if openable {
+            .child(head);
+        // The whole row opens the tool's detail (spec A §A): a modal, never inline.
+        let tool = if openable {
             let view = look.view.clone();
-            head.cursor_pointer()
+            let id = id.clone();
+            tool.cursor_pointer()
+                .hover(move |s| s.bg(row_hover))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
-                    view.update(cx, |this, cx| this.toggle(ix, cx)).ok();
+                    let id = id.clone();
+                    view.update(cx, |this, cx| this.open_tool(id, cx)).ok();
                 })
         } else {
-            head
+            tool
         };
-        tool = tool.child(head);
-        if open {
-            if let Some(d) = &diff {
-                tool = tool.child(self.diff_block(d, look));
-            }
-            if let Some(ToolDetail::Command(command)) = detail {
-                tool = tool.child(
-                    div()
-                        .font_family(look.mono.clone())
-                        .text_color(hsla(c.panel_dim))
-                        .child(SharedString::from(format!("$ {command}"))),
-                );
-            }
-            if shows_output && let Some(out) = output {
-                tool = tool.child(
-                    div()
-                        .w_full()
-                        .px(px(10.))
-                        .py(px(6.))
-                        .rounded(px(5.))
-                        .bg(hsla(c.code_fill))
-                        .font_family(look.mono.clone())
-                        .text_size(px(BODY - 1.5))
-                        .flex()
-                        .flex_col()
-                        .when(*dropped_lines > 0, |d| {
-                            d.child(div().text_color(hsla(c.code_dim)).child(SharedString::from(
-                                format!("… {dropped_lines} earlier lines"),
-                            )))
-                        })
-                        .child(
-                            div()
-                                .text_color(hsla(c.code_text))
-                                .child(SharedString::from(out.clone())),
-                        ),
-                );
-            }
-            if !children.is_empty() {
-                tool = tool.child(
-                    div()
-                        .pl(px(10.))
-                        .border_l_1()
-                        .border_color(hsla(c.panel_border))
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.))
-                        .children(
-                            children
-                                .iter()
-                                .map(|&i| self.item_body(i, &items[i], depth + 1, look)),
-                        ),
-                );
-            }
-        }
         tool.into_any_element()
     }
 
@@ -3890,6 +3932,21 @@ impl AgentTab {
             (false, _) if self.status() == Status::Working => Some("■ Stop  esc"),
             _ => None,
         }
+    }
+
+    /// The tool modal's layer over the tab below its top bar (spec A §B): it holds the keyboard
+    /// (key context `AgentToolModal`: Esc, ↑, ↓).
+    fn modal_layer(&self, _c: &Colors, _cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("agent-tool-modal")
+            .key_context("AgentToolModal")
+            .track_focus(&self.modal_focus)
+            .absolute()
+            .top(px(TOP_BAR))
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .into_any_element()
     }
 
     /// Turn the top bar's mark with `clock` (the Workspace's, shared by every mark on screen, so
@@ -4095,7 +4152,7 @@ impl AgentTab {
             .relative()
             .flex_none()
             .w_full()
-            .h(px(32.))
+            .h(px(TOP_BAR))
             .px(px(AREA_X))
             .flex()
             .items_center()
@@ -4231,10 +4288,23 @@ impl Render for AgentTab {
         // A command block dragged over the tab tints it (GPUI's element-local style: nothing
         // else changes during a drag-over); dropped, the Workspace attaches it (Task 11).
         let drop_fill = theme.ui().drop_card;
+        // The keyboard moves where a click or an action asked (they have no window).
+        match self.refocus.take() {
+            Some(Refocus::Modal) => window.focus(&self.modal_focus, cx),
+            Some(Refocus::Box) => {
+                let to = self.composer.read(cx).focus_handle(cx);
+                window.focus(&to, cx);
+            }
+            None => {}
+        }
+        let modal = self.modal.is_some().then(|| self.modal_layer(&c, cx));
         div()
             .key_context("AgentTab")
             .on_action(cx.listener(Self::at_up))
             .on_action(cx.listener(Self::at_down))
+            .on_action(cx.listener(Self::modal_back))
+            .on_action(cx.listener(Self::modal_prev))
+            .on_action(cx.listener(Self::modal_next))
             .size_full()
             .flex()
             .flex_col()
@@ -4256,6 +4326,7 @@ impl Render for AgentTab {
             .when(self.provider.is_some(), |d| {
                 d.child(self.box_area(&c, mono, window, cx))
             })
+            .children(modal)
     }
 }
 
