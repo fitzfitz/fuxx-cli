@@ -674,6 +674,12 @@ pub struct Colors {
     pub box_focus: Rgb,
     pub box_dim: Rgb,
     pub box_hover: Rgb,
+    /// The folder-tab composer (chores: as the shell tab's): its outer box and edge, its pills
+    /// and a pill under the pointer (`page` is behind it: the tab's concave corner).
+    pub outer: Rgb,
+    pub outer_edge: Rgb,
+    pub pill: Rgb,
+    pub pill_hover: Rgb,
 }
 
 impl Colors {
@@ -710,12 +716,17 @@ impl Colors {
             code_fill,
             code_text: fit(ui.text, code_fill),
             code_dim: fit(ui.text_dim, code_fill),
-            // The fill the box's text field always had.
-            box_fill: ui.sidebar_background,
-            box_edge: ui.panel_border,
+            // The shell composer's palette (chores: "more likely in terminal tab"): the box you
+            // type in is its inner box, raised over its outer box.
+            box_fill: ui.composer_inner,
+            box_edge: ui.composer_inner_edge,
             box_focus: ui.focus_ring,
-            box_dim: fit(ui.text_dim, ui.sidebar_background),
-            box_hover: ui.panel_hover,
+            box_dim: fit(ui.text_dim, ui.composer_inner),
+            box_hover: ui.composer_pill_hover,
+            outer: ui.composer_outer,
+            outer_edge: ui.composer_edge,
+            pill: ui.composer_inner,
+            pill_hover: ui.composer_pill_hover,
         }
     }
 }

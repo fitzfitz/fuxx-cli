@@ -73,6 +73,11 @@ impl AgentTab {
     /// run it reads the folders the agent knows and the agent's version (whether it can move a
     /// conversation; a failed read is tried again); a scene tab reads neither.
     pub fn open_folder_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Fixed once you have spoken (your words: "when we already make a prompt, disabled the
+        // change project/folder").
+        if !super::folder_changeable(self.provider.is_some(), self.spoken()) {
+            return;
+        }
         let Some(provider) = self.provider else {
             return;
         };
