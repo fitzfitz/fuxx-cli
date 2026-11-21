@@ -661,7 +661,6 @@ pub struct Colors {
     /// Code (what a tool runs, its output) on the page.
     pub code_fill: Rgb,
     pub code_text: Rgb,
-    pub code_dim: Rgb,
     /// The agent box you type in (M11ak; the folder tab's inner box since the chores).
     pub box_fill: Rgb,
     /// The folder-tab composer (chores: as the shell tab's): its outer box and edge, its pills
@@ -741,7 +740,6 @@ impl Colors {
             todo_active: fit(ui.ring_working, ui.panel),
             code_fill,
             code_text: fit(ui.text, code_fill),
-            code_dim: fit(ui.text_dim, code_fill),
             // The shell composer's palette (chores: "more likely in terminal tab"): the box you
             // type in is its inner box, raised over its outer box.
             box_fill: ui.composer_inner,
@@ -892,6 +890,8 @@ pub struct AgentTab {
     /// gives it the shared one, `use_clock`), and its width as last laid out (`agent_top::trim`).
     top: crate::agent_top::TopState,
     top_mark: Entity<MarkView>,
+    /// The tool modal's header mark while its tool runs.
+    modal_mark: Entity<MarkView>,
     bar_width: Rc<Cell<f32>>,
     /// When each running tool started (for its elapsed time).
     tool_started: std::collections::HashMap<String, Instant>,
@@ -1269,6 +1269,7 @@ impl AgentTab {
         ];
         let clock = cx.new(|_| MarkClock { phase: 0.0 });
         let top_mark = cx.new(|cx| MarkView::new(&clock, Status::Idle, px(MARK), BLACK, cx));
+        let modal_mark = cx.new(|cx| MarkView::new(&clock, Status::Working, px(MARK), BLACK, cx));
         Self {
             provider,
             provider_name,
@@ -1299,6 +1300,7 @@ impl AgentTab {
             refocus: None,
             top: crate::agent_top::TopState::default(),
             top_mark,
+            modal_mark,
             bar_width: Rc::new(Cell::new(f32::MAX)),
             tool_started: std::collections::HashMap::new(),
             open_edits: HashSet::new(),
@@ -2873,6 +2875,16 @@ impl AgentTab {
 
     /// A tool row's click (spec A §B): its detail in the modal, which takes the keyboard.
     fn open_tool(&mut self, id: String, cx: &mut Context<Self>) {
+        // A step's row inside the modal: it opens in the modal's place.
+        let items = self.conversation.items();
+        let parent = crate::agent_tool_modal::index_of(items, &id)
+            .and_then(|ix| crate::agent_tool_modal::parent_of(&items[ix]).map(String::from));
+        if let (Some(modal), Some(parent)) = (&self.modal, parent)
+            && modal.shown() == Some(parent.as_str())
+        {
+            self.open_step(id, cx);
+            return;
+        }
         self.modals_opened += 1;
         self.modal = Some(ToolModal::new(vec![id], self.modals_opened));
         self.modal_scroll = gpui::ScrollHandle::new();
@@ -2884,7 +2896,7 @@ impl AgentTab {
     fn open_step(&mut self, id: String, cx: &mut Context<Self>) {
         if let Some(modal) = &mut self.modal {
             modal.stack.push(id);
-            modal.follow = true;
+            modal.switched();
             self.modal_scroll = gpui::ScrollHandle::new();
             cx.notify();
         }
@@ -2903,7 +2915,7 @@ impl AgentTab {
         match &mut self.modal {
             Some(modal) if modal.stack.len() > 1 => {
                 modal.stack.pop();
-                modal.follow = true;
+                modal.switched();
                 self.modal_scroll = gpui::ScrollHandle::new();
                 cx.notify();
             }
@@ -2922,7 +2934,7 @@ impl AgentTab {
             if let Some(last) = modal.stack.last_mut() {
                 *last = to;
             }
-            modal.follow = true;
+            modal.switched();
             self.modal_scroll = gpui::ScrollHandle::new();
             cx.notify();
         }
@@ -3934,9 +3946,362 @@ impl AgentTab {
         }
     }
 
-    /// The tool modal's layer over the tab below its top bar (spec A §B): it holds the keyboard
-    /// (key context `AgentToolModal`: Esc, ↑, ↓).
-    fn modal_layer(&self, _c: &Colors, _cx: &mut Context<Self>) -> AnyElement {
+    /// The tool modal (spec A §B): a scrim over the tab below its top bar (a click on it closes),
+    /// and the shown tool's detail — its header, then its command, changes, output and steps,
+    /// in one scroll. It holds the keyboard (key context `AgentToolModal`: Esc, ↑, ↓).
+    fn modal_layer(&mut self, look: &Rc<Look>, cx: &mut Context<Self>) -> AnyElement {
+        use crate::agent_tool_modal::{
+            Right, follows, index_of, modal_width, near_bottom, parent_of as parent_id, right_of,
+        };
+        let c = look.c;
+        let items = self.conversation.items();
+        let Some(modal) = self.modal.as_mut() else {
+            return div().into_any_element();
+        };
+        let Some(ix) = modal.shown().and_then(|id| index_of(items, id)) else {
+            return div().into_any_element();
+        };
+        let Item::Tool {
+            id,
+            name,
+            summary,
+            running,
+            ok,
+            result,
+            detail,
+            output,
+            dropped_lines,
+            ..
+        } = &items[ix]
+        else {
+            return div().into_any_element();
+        };
+        modal.saw(*running);
+        let (opened, finished, in_step) = (modal.opened, modal.finished, modal.stack.len() > 1);
+        // Output growing keeps the body at its bottom while it follows (spec A §B).
+        let (offset, max) = (
+            f32::from(self.modal_scroll.offset().y),
+            f32::from(self.modal_scroll.max_offset().y),
+        );
+        let grew = max > modal.last_max + 0.5;
+        modal.follow = follows(modal.follow, grew, near_bottom(offset, modal.last_max));
+        modal.last_max = max;
+        if modal.follow && grew {
+            self.modal_scroll.scroll_to_bottom();
+        }
+        let parent_name = parent_id(&items[ix])
+            .and_then(|p| index_of(items, p))
+            .and_then(|p| match &items[p] {
+                Item::Tool { name, .. } => Some(name.clone()),
+                _ => None,
+            });
+        let diff = match detail {
+            Some(ToolDetail::Diff { unified, .. }) => Some(parse_diff(unified)),
+            _ => None,
+        };
+        let counts = diff.as_ref().map(|d| {
+            let n = |k| d.rows.iter().filter(|r| r.kind == k).count();
+            (n(RowKind::Added), n(RowKind::Removed))
+        });
+        let elapsed = self.tool_started.get(id).map_or(String::new(), |t| {
+            elapsed_label(look.now.saturating_duration_since(*t))
+        });
+        let children: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| parent_id(i) == Some(id.as_str()))
+            .map(|(i, _)| i)
+            .collect();
+        let view = look.view.clone();
+
+        // The header's mark: running, the Working arc; done, the muted check (popping once if
+        // it finished while open); failed, the octagon.
+        let mark: AnyElement = if *running {
+            self.modal_mark
+                .update(cx, |m, _| m.set(Status::Working, px(MARK), c.panel));
+            self.modal_mark.clone().into_any_element()
+        } else if *ok == Some(false) {
+            icon(Icon::Octagon, px(MARK), hsla(c.failed_panel)).into_any_element()
+        } else {
+            let ink = c.panel_dim;
+            let slot = div()
+                .flex_none()
+                .size(px(MARK))
+                .flex()
+                .items_center()
+                .justify_center();
+            if finished > 0 {
+                slot.with_animation(
+                    ("agent-modal-done", finished),
+                    Animation::new(status_mark::POP),
+                    move |slot, t| {
+                        slot.child(status_mark::done_check(
+                            ink,
+                            px(MARK * status_mark::pop_curve(t)),
+                        ))
+                    },
+                )
+                .into_any_element()
+            } else {
+                slot.child(status_mark::done_check(ink, px(MARK)))
+                    .into_any_element()
+            }
+        };
+        let right: AnyElement = match right_of(*running, *ok, result, counts, &elapsed) {
+            Right::Elapsed(t) | Right::Plain(t) => div()
+                .text_color(hsla(c.panel_dim))
+                .child(SharedString::from(t))
+                .into_any_element(),
+            Right::Failed(t) => div()
+                .text_color(hsla(c.failed_panel))
+                .child(SharedString::from(t))
+                .into_any_element(),
+            Right::Diff(a, r) => div()
+                .flex()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .text_color(hsla(look.diff.added_ink))
+                        .child(SharedString::from(format!("+{a}"))),
+                )
+                .child(
+                    div()
+                        .text_color(hsla(look.diff.removed_ink))
+                        .child(SharedString::from(format!("−{r}"))),
+                )
+                .into_any_element(),
+        };
+        let square = |id: &'static str, glyph: Icon, size: f32, ink: Rgb| {
+            let (hover_fill, hover_ink) = (hsla(c.panel_hover), hsla(c.panel_text));
+            div()
+                .id(id)
+                .flex_none()
+                .size(px(28.))
+                .rounded(px(8.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .group(id)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover_fill))
+                .child(
+                    icon(glyph, px(size), hsla(ink))
+                        .group_hover(id, move |s| s.text_color(hover_ink)),
+                )
+        };
+        let back = in_step.then(|| {
+            let view = view.clone();
+            square("agent-modal-back", Icon::Back, 14., c.panel_dim).on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                view.update(cx, |this, cx| this.back_out(cx)).ok();
+            })
+        });
+        let close = {
+            let view = view.clone();
+            square("agent-modal-close", Icon::Stop, 15., c.panel_dim).on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                view.update(cx, |this, cx| this.close_modal(cx)).ok();
+            })
+        };
+        let steps = (!children.is_empty()).then(|| format!("{} steps", children.len()));
+        let header = div()
+            .flex_none()
+            .h(px(44.))
+            .pl(px(14.))
+            .pr(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .border_b_1()
+            .border_color(hsla(c.panel_border))
+            .text_size(px(text::UI))
+            .children(back)
+            .child(mark)
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(hsla(c.tool_name))
+                    .child(SharedString::from(name.clone())),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .truncate()
+                    .text_color(hsla(c.panel_text))
+                    .when_some(parent_name.filter(|_| in_step), |d, p| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_color(hsla(c.panel_dim))
+                                .child(SharedString::from(format!("{p} › "))),
+                        )
+                    })
+                    .child(SharedString::from(summary.clone())),
+            )
+            .when_some(steps, |d, s| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_color(hsla(c.panel_dim))
+                        .child(SharedString::from(s)),
+                )
+            })
+            .child(
+                div()
+                    .flex_none()
+                    .max_w(relative(0.35))
+                    .truncate()
+                    .text_size(px(text::META))
+                    .font_features(crate::sidebar::tabular())
+                    .child(right),
+            )
+            .child(close);
+
+        // The sections, each in a labelled well on the page's colour (spec A §B).
+        let well = || {
+            div()
+                .w_full()
+                .rounded(px(8.))
+                .border_1()
+                .border_color(hsla(c.panel_border))
+                .bg(hsla(c.page))
+                .font_family(look.mono.clone())
+                .text_size(px(12.))
+                .line_height(relative(1.45))
+                .overflow_hidden()
+        };
+        let section = |label: &'static str, body: AnyElement| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .text_size(px(text::KEYS))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(hsla(c.panel_dim))
+                        .child(label),
+                )
+                .child(body)
+                .into_any_element()
+        };
+        let mut sections: Vec<AnyElement> = Vec::new();
+        if let Some(ToolDetail::Command(command)) = detail {
+            sections.push(section(
+                "Command",
+                well()
+                    .px(px(12.))
+                    .py(px(10.))
+                    .flex()
+                    .child(div().flex_none().text_color(hsla(c.dim)).child("$ "))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_color(hsla(c.text))
+                            .child(SharedString::from(command.clone())),
+                    )
+                    .into_any_element(),
+            ));
+        }
+        if let Some(d) = &diff {
+            sections.push(section(
+                "Changes",
+                well().child(self.diff_block(d, look)).into_any_element(),
+            ));
+        }
+        let shows_output =
+            name != "Read" && output.is_some() && (diff.is_none() || *ok == Some(false));
+        if shows_output || (*running && output.is_none() && diff.is_none()) {
+            let body =
+                match output.as_ref().filter(|_| shows_output) {
+                    Some(out) => well()
+                        .px(px(12.))
+                        .py(px(10.))
+                        .flex()
+                        .flex_col()
+                        .when(*dropped_lines > 0, |d| {
+                            d.child(div().text_color(hsla(c.dim)).child(SharedString::from(
+                                format!("… {dropped_lines} earlier lines"),
+                            )))
+                        })
+                        .child(
+                            div()
+                                .text_color(hsla(c.text))
+                                .child(SharedString::from(out.clone())),
+                        ),
+                    None => well()
+                        .px(px(12.))
+                        .py(px(10.))
+                        .text_color(hsla(c.dim))
+                        .child("No output yet"),
+                };
+            sections.push(section("Output", body.into_any_element()));
+        }
+        if !children.is_empty() {
+            sections.push(section(
+                "Steps",
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .font_family(look.mono.clone())
+                    .children(
+                        children
+                            .iter()
+                            .map(|&i| self.item_body(i, &items[i], 1, look)),
+                    )
+                    .into_any_element(),
+            ));
+        }
+        let body = div()
+            .id(("agent-modal-body", opened))
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .track_scroll(&self.modal_scroll)
+            .p(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .children(sections);
+        let panel = div()
+            .id("agent-modal-panel")
+            .w(px(modal_width(self.bar_width.get())))
+            .max_h_full()
+            .flex()
+            .flex_col()
+            .rounded(px(12.))
+            .bg(hsla(c.panel))
+            .border_1()
+            .border_color(hsla(c.panel_border))
+            .shadow(vec![gpui::BoxShadow {
+                color: gpui::Hsla {
+                    a: 0.3,
+                    ..hsla(c.scrim)
+                },
+                offset: gpui::point(px(0.), px(8.)),
+                blur_radius: px(24.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+            .text_color(hsla(c.panel_text))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(header)
+            .child(body)
+            .with_animation(
+                ("agent-modal-open", opened),
+                Animation::new(Duration::from_millis(180))
+                    .with_easing(crate::agent_top::ease_out_cubic),
+                |d, t| d.opacity(t).mt(px(8. * (1. - t))),
+            );
+        let scrim = gpui::Hsla {
+            a: c.scrim_alpha,
+            ..hsla(c.scrim)
+        };
+        let close_view = view.clone();
         div()
             .id("agent-tool-modal")
             .key_context("AgentToolModal")
@@ -3946,6 +4311,27 @@ impl AgentTab {
             .left_0()
             .right_0()
             .bottom_0()
+            .rounded_b(px(crate::ui_tokens::size::CARD_RADIUS))
+            .pt(px(16.))
+            .pb(px(24.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                close_view.update(cx, |this, cx| this.close_modal(cx)).ok();
+            })
+            .child(panel)
+            .with_animation(
+                ("agent-modal-scrim", opened),
+                Animation::new(Duration::from_millis(140))
+                    .with_easing(crate::agent_top::ease_out_cubic),
+                move |d, t| {
+                    d.bg(gpui::Hsla {
+                        a: scrim.a * t,
+                        ..scrim
+                    })
+                },
+            )
             .into_any_element()
     }
 
@@ -3953,6 +4339,7 @@ impl AgentTab {
     /// they all turn together and only the marks redraw on its ticks).
     pub fn use_clock(&mut self, clock: &Entity<MarkClock>, cx: &mut Context<Self>) {
         self.top_mark = cx.new(|cx| MarkView::new(clock, Status::Idle, px(MARK), BLACK, cx));
+        self.modal_mark = cx.new(|cx| MarkView::new(clock, Status::Working, px(MARK), BLACK, cx));
     }
 
     /// The pane's top bar (spec A §C): the status pill on the left; on the right what the
@@ -4297,7 +4684,7 @@ impl Render for AgentTab {
             }
             None => {}
         }
-        let modal = self.modal.is_some().then(|| self.modal_layer(&c, cx));
+        let modal = self.modal.is_some().then(|| self.modal_layer(&look, cx));
         div()
             .key_context("AgentTab")
             .on_action(cx.listener(Self::at_up))
@@ -4959,7 +5346,6 @@ mod tests {
                 ("ask dim", c.ask_dim, c.ask_fill),
                 ("on accent", c.on_accent, c.accent),
                 ("code", c.code_text, c.code_fill),
-                ("code dim", c.code_dim, c.code_fill),
                 ("todo active", c.todo_active, c.panel),
                 // The composer's controls and pills (the designer's details): their words in
                 // `dim` on the control and pill fills.

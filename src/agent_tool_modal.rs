@@ -12,6 +12,12 @@ pub struct ToolModal {
     pub stack: Vec<String>,
     pub opened: u64,
     pub follow: bool,
+    /// The shown tool was running at the last draw; `finished` counts its finishes seen while
+    /// open (the header's check pops once, keyed by it).
+    was_running: Option<bool>,
+    pub finished: u64,
+    /// The body's height to scroll, at the last draw (output growing keeps it at the bottom).
+    pub last_max: f32,
 }
 
 impl ToolModal {
@@ -20,7 +26,27 @@ impl ToolModal {
             stack,
             opened,
             follow: true,
+            was_running: None,
+            finished: 0,
+            last_max: 0.0,
         }
+    }
+
+    /// The shown tool is `running` at this draw: whether it just finished (it ran at the last).
+    pub fn saw(&mut self, running: bool) -> bool {
+        let finished = self.was_running == Some(true) && !running;
+        self.was_running = Some(running);
+        if finished {
+            self.finished += 1;
+        }
+        finished
+    }
+
+    /// Another tool on screen (↑/↓, a step, Back): it follows its bottom, nothing to pop.
+    pub fn switched(&mut self) {
+        self.follow = true;
+        self.was_running = None;
+        self.last_max = 0.0;
     }
 
     /// The tool on screen.
@@ -46,6 +72,64 @@ impl ToolModal {
             .count();
         self.stack.resize(kept, String::new());
         !self.stack.is_empty()
+    }
+}
+
+/// The modal's width in a pane `pane_w` wide (spec A §B): 24 px in from each side up to 720;
+/// 8 in a pane under 360.
+pub fn modal_width(pane_w: f32) -> f32 {
+    if pane_w < 360.0 {
+        (pane_w - 16.0).max(0.0)
+    } else {
+        (pane_w - 48.0).min(720.0)
+    }
+}
+
+/// How close to the bottom still counts as at it.
+const FOLLOW_SLACK: f32 = 24.0;
+
+/// Whether a body scrolled to `offset_y` (0 to −`max_y`) is at its bottom.
+pub fn near_bottom(offset_y: f32, max_y: f32) -> bool {
+    max_y + offset_y <= FOLLOW_SLACK
+}
+
+/// Whether the body follows its bottom now: through growth it keeps what it did (`was`); else it
+/// does while it is near the bottom (scrolled up, it stops; back down, it follows again).
+pub fn follows(was: bool, grew: bool, near: bool) -> bool {
+    if grew { was } else { near }
+}
+
+/// The header's right side (spec A §B).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Right {
+    /// Running: how long, tabular.
+    Elapsed(String),
+    /// An edit: lines added and removed.
+    Diff(usize, usize),
+    /// Failed: the result, without the row's "✗".
+    Failed(String),
+    Plain(String),
+}
+
+/// The header's right side for a tool `running`, finished `ok`, with this `result` (the row's),
+/// `diff` counts (added, removed) and `elapsed` label.
+pub fn right_of(
+    running: bool,
+    ok: Option<bool>,
+    result: &str,
+    diff: Option<(usize, usize)>,
+    elapsed: &str,
+) -> Right {
+    if running {
+        return Right::Elapsed(elapsed.into());
+    }
+    if ok == Some(false) {
+        let bare = result.trim_start_matches('✗').trim_start();
+        return Right::Failed(bare.into());
+    }
+    match diff {
+        Some((a, r)) => Right::Diff(a, r),
+        None => Right::Plain(result.into()),
     }
 }
 
@@ -193,5 +277,55 @@ mod tests {
 
     fn is(item: &Item, id: &str) -> bool {
         matches!(item, Item::Tool { id: i, .. } if i == id)
+    }
+
+    #[test]
+    fn the_modal_is_720_wide_at_most_and_hugs_narrow_panes() {
+        assert_eq!(modal_width(1000.0), 720.0);
+        assert_eq!(modal_width(600.0), 552.0);
+        assert_eq!(modal_width(340.0), 324.0);
+    }
+
+    #[test]
+    fn the_body_follows_the_bottom_until_you_scroll_up() {
+        // Output grew: it keeps following if it was.
+        assert!(follows(true, true, false));
+        assert!(!follows(false, true, false));
+        // Nothing grew: following is being near the bottom (24 px).
+        assert!(!follows(true, false, false));
+        assert!(follows(false, false, true));
+        assert!(near_bottom(-100.0, 110.0));
+        assert!(!near_bottom(-50.0, 110.0));
+    }
+
+    #[test]
+    fn the_header_says_elapsed_lines_changed_or_the_failure() {
+        assert_eq!(
+            right_of(true, None, "", None, "31s"),
+            Right::Elapsed("31s".into())
+        );
+        assert_eq!(
+            right_of(false, Some(true), "updated", Some((12, 3)), ""),
+            Right::Diff(12, 3)
+        );
+        assert_eq!(
+            right_of(false, Some(false), "✗ exit 1", Some((1, 1)), ""),
+            Right::Failed("exit 1".into()),
+            "a failure says so, without the ✗ (the mark carries it)"
+        );
+        assert_eq!(
+            right_of(false, Some(true), "ok", None, ""),
+            Right::Plain("ok".into())
+        );
+    }
+
+    #[test]
+    fn a_tool_finishing_while_shown_pops_once() {
+        let mut m = open(&["a"]);
+        assert!(!m.saw(true), "running");
+        assert!(m.saw(false), "it finished while open");
+        assert!(!m.saw(false), "only once");
+        let mut done = open(&["b"]);
+        assert!(!done.saw(false), "opened finished: no pop");
     }
 }

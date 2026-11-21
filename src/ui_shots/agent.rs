@@ -1764,7 +1764,8 @@ pub(super) fn agent_tab_review() {
         });
         keep.borrow_mut().take();
     });
-    // Minor 4: only the header toggles a tool row; a click in its diff doesn't.
+    // Minor 4, since the redesign: a tool row's click opens the modal; a click in it keeps it, the
+    // scrim closes it.
     let slot: Slot = Rc::default();
     let keep = slot.clone();
     render_with(&theme, dims, build(theme, slot), move |cx, window| {
@@ -1796,21 +1797,29 @@ pub(super) fn agent_tab_review() {
                 cx,
             )
         });
-        feed(cx, &tab, |t, cx| t.shot_open_tool(0, cx));
         let _ = frame_fresh(cx, window);
-        // The row starts under the top line (26) and its 14 pt gap: the header is ~40–70, the
-        // diff's six lines below it.
-        cx.simulate_click(window, point(px(300.), px(120.)), Modifiers::none());
+        // The row starts under the top bar (32) and its 14 pt gap: a click on it opens the
+        // tool's detail in the modal (spec A §B), not inline.
+        cx.simulate_click(window, point(px(300.), px(60.)), Modifiers::none());
         cx.run_until_parked();
         assert!(
             cx.read(|cx| tab.read(cx).shot_open("e1")),
-            "{n}: a click in the diff keeps it open"
+            "{n}: the row's click opens the modal"
         );
-        cx.simulate_click(window, point(px(300.), px(55.)), Modifiers::none());
+        let _ = frame_fresh(cx, window);
+        // In the panel (its header at 48–92, the diff below): it stays open.
+        cx.simulate_click(window, point(px(DIMS.0 / 2.), px(130.)), Modifiers::none());
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| tab.read(cx).shot_open("e1")),
+            "{n}: a click in the modal keeps it open"
+        );
+        // On the scrim, beside the panel: closed.
+        cx.simulate_click(window, point(px(8.), px(DIMS.1 - 40.)), Modifiers::none());
         cx.run_until_parked();
         assert!(
             !cx.read(|cx| tab.read(cx).shot_open("e1")),
-            "{n}: the header closes it"
+            "{n}: the scrim closes it"
         );
         keep.borrow_mut().take();
     });
