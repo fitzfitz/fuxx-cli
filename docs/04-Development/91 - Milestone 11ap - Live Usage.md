@@ -4,7 +4,7 @@ tags: [milestone, m11ap]
 
 # 91 - Milestone 11ap - Live Usage
 
-**Status:** 🟨 building (2026-11-21). Added on your words: "is it possible to get claude and antigravity usages
+**Status:** 🟨 built (2026-11-21), on master, not pushed; waiting for your on-screen check. Added on your words: "is it possible to get claude and antigravity usages
 live without doing their command … in orca they have something like this and its cool", then "push then we do
 this, this should be fast" (my recommendation: Claude's live stream + a background `/usage` read, an Orca-style
 strip in the status bar with a popover; the lead designer's spec below).
@@ -52,9 +52,32 @@ strip in the status bar with a popover; the lead designer's spec below).
 1. **Data** ✅ (`ad7f394`): Claude's every window with its use (`RateLimit.used_pct`); `Catalogs::live_usage` (the
    last good reading, kept while the next is read, with newer live windows over it); `refresh_due` and the
    Workspace's background read every 5 min while the window is seen.
-2. **One look for limits:** `src/usage_view.rs`, "% used" with band colours, `UsageInk`, agy's names; the box
-   panel uses it and `live_usage`.
-3. **The strip:** pure summary (tightest limit, short reset, states, tooltip) and its place in `fit_status_bar`;
-   drawn in the status bar.
-4. **The popover:** header, refresh with its spinner, per-agent sections; close rules.
-5. Scenes, the full ui-shots run, one review, docs.
+2. **One look for limits** ✅ (`122e1fb`): `src/usage_view.rs` ("% used", band colours, `UsageInk`), agy's names
+   without " Remaining"; the box panel uses it and `live_usage` (it keeps its numbers through a failed or running read).
+3. **The strip** and 4. **the popover** ✅ (`2cd4866`): `src/usage_strip.rs` (the tightest limit, the short reset, which
+   agents show, the tooltip); `status_bar.rs` measures, fits and draws the strip and `usage_popover`; the Workspace
+   redraws on a usage change. Scene `status-bar-usage` (the strip, the popover open).
+5. Full ui-shots 269 / 269; one review (below); docs.
+
+## Calls made without asking
+
+1. An agent whose read never worked (most likely not installed) isn't in the strip, rather than showing "–"
+   forever (the spec's "–" for "couldn't read, no value").
+2. The popover doesn't close on Esc (it never takes the keyboard, so Esc stays the terminal's); a press outside it or on
+   the strip closes it.
+3. The background read runs whether or not the status bar is shown (cheap; the spec read only while it shows).
+4. A failed or running read keeps the last numbers in the box panel too (no more "Couldn't read usage" once a reading
+   worked); the popover says "Couldn't refresh" beside the agent.
+5. The refresh button reads again only what is more than a minute old (the existing freshness rule).
+6. Each Claude read runs `claude -p /usage`, which starts a short Claude process every 5 min and runs your
+   SessionStart hooks.
+
+## On-screen check
+
+1. Start fuxx: within a few seconds the strip shows Claude (and Antigravity, if installed) with a percent and a reset.
+2. Run a Claude turn in an agent tab: the strip's Claude percent follows the stream (its session/week windows).
+3. Click the strip: the popover opens above it; each agent's limits as "% used"; "Updated … ago"; the refresh turns
+   while it reads; a click outside or on the strip closes it.
+4. Narrow the window: the resets go first, then one agent, then the strip.
+5. The agent box's usage button: "% used" with the band colours; the same numbers as the popover.
+6. CPU: idle with the strip shown (a read every 5 min only).

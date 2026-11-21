@@ -14,7 +14,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Latest (2026-11-21):** the agent tab redesign chores 🟨 built and reviewed on master (14 commits, `5ec0b41`…`3f82e6c`), not pushed: waiting for your OK on the brand logos, then your on-screen check (note 88, 14 items).
+- **Latest (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
 - **Released (2026-11-21):** **v0.11.0** (run 44910715796, `fuxx-0.11.0.zip`), M11y through M11al and M11ab.
 - **Current milestone (2026-11-21, latest):** **M11ab — Chat-style shell tabs** 🟨 reworked after your first look (soft cards on a rail, the composer, your prompt left out; inner box in the sidebar's colour), merged to master and pushed (`07395eb`); waiting for your on-screen check (note 88's rework checklist, 8 items).
 - **Current milestone (2026-11-19, latest):** **M11q — Which command finished** 🟨 built, **merged to master and pushed 2026-11-20** (`f93654b`), waiting for your on-screen check (all 12 tasks, 0–11; note 68, 21 on-screen items). The whole-branch review is done, its fix wave applied and the second full ui-shots run done (244 passed, the same 8 display-dependent scenes failing); next is your on-screen check. M11ag's check is still open.
@@ -31,6 +31,17 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-21 — M11ap: live usage (status-bar strip and popover)
+
+- **What:** on your words ("get claude and antigravity usages live without doing their command … like orca", "push
+  then we do this, this should be fast"). Claude's usage now comes live from its stream while it works
+  (`rate_limit_event`'s `unifiedWindows`); both agents' `/usage` are read quietly every 5 minutes while the window is
+  seen; a usage strip in the status bar (each agent's tightest limit, % used and when it resets) opens a popover with
+  every limit; one "% used" look for limits app-wide (the agent box's panel too). Pushed first: the redesign chores
+  and the logos (`e87b72a..19ef2bb`). Note 91.
+- **Checks:** 2354 tests; clippy at the baseline; the full ui-shots 269 / 269; one review (see note 91).
+- **Next:** your on-screen check (note 91, 6 items); your word to push.
 
 ### 2026-11-21 — Chores: the agent tab redesigned (tool modal, top bar, live context, chat, logos); both clears fixed
 

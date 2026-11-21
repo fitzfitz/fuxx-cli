@@ -691,7 +691,7 @@ so the radius rounded and the button circle match".
   before it, 14 since the gap; unchanged as the box grows); clippy at the baseline; ui-shots 259 passed, the 5 known failures
   (`file-tab-md-mermaid` failed once in a full run and passed alone twice: timing).
 
-### Chores: the agent tab redesign — tool modal, top bar, live context, chat, logos, both clears (2026-11-21, 🟨 built, reviewed)
+### Chores: the agent tab redesign — tool modal, top bar, live context, chat, logos, both clears (2026-11-21, 🟨 built, reviewed, pushed `19ef2bb`)
 
 Your words: "each action accordion arrow, change to chevron. when its clicked change it into a modal instead on
 dropdown"; "agent top status bar, make it excellent, the color, gaps, animation, is the price and context live?";
