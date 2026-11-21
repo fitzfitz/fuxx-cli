@@ -221,6 +221,27 @@ pub fn inset(bounds: Bounds<Pixels>, split: bool) -> Bounds<Pixels> {
     )
 }
 
+/// The terminal's size for a pane of `bounds` (M11ab): in card view the live box's inside at
+/// its tallest (`card_view::card_dims`), otherwise the cells that fit inside the padding.
+fn pane_dims(
+    cards: bool,
+    bounds: Bounds<Pixels>,
+    split: bool,
+    cell_width: Pixels,
+    line_height: Pixels,
+) -> TermDims {
+    if cards {
+        crate::card_view::card_dims(
+            bounds.size,
+            split,
+            f32::from(cell_width),
+            f32::from(line_height),
+        )
+    } else {
+        GridLayout::fit(inset(bounds, split), cell_width, line_height).dims
+    }
+}
+
 /// How many whole cells fit in `area` (at least 2 columns and 1 row).
 fn dims_for(area: Bounds<Pixels>, cell_width: Pixels, line_height: Pixels) -> TermDims {
     TermDims {
@@ -241,6 +262,16 @@ pub struct TerminalView {
     /// this window spawned (from its env); for a background-service session, unknown until its
     /// first mark, which makes it true (note 88, ruling 3).
     integration: Option<bool>,
+    /// Marks seen so far (M11ab: the card cache reads the segments again when it moves).
+    marks_seen: u64,
+    /// The card view's state (M11ab), whether the last frame drew cards, and its line height
+    /// (the wheel scrolls the column in points).
+    cards: Rc<RefCell<crate::card_view::CardsState>>,
+    cards_on: Rc<Cell<bool>>,
+    card_line_h: Rc<Cell<f32>>,
+    /// The cell width and line height last measured (the scenes check the box's inside).
+    #[cfg(feature = "ui-shots")]
+    card_cell: Rc<Cell<(f32, f32)>>,
     /// When the canvas last sent the pty a new size; the tracker hears of it before the next
     /// output, input or tick, so the redraw that follows isn't taken for work.
     resized_at: Rc<Cell<Option<Instant>>>,
@@ -429,6 +460,20 @@ impl TerminalView {
     /// True when it changed (the workspace then draws the pane afresh, past its cache).
     pub fn set_split(&self, split: bool) -> bool {
         self.split.replace(split) != split
+    }
+
+    /// The scenes' `cat` stands in for a zsh with fuxx's marks (M11ab's card view needs them),
+    /// and a mark was seen (the card cache reads the segments again).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_integrated(&mut self) {
+        self.integration = Some(true);
+        self.marks_seen += 1;
+    }
+
+    /// The card view's last frame: whether it drew cards, and the terminal's size then.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_cards(&self) -> (bool, crate::terminal::TermDims, (f32, f32)) {
+        (self.cards_on.get(), self.core.dims(), self.card_cell.get())
     }
 
     /// Write `text` into the screen as if the program had printed it (UI screenshots).
@@ -888,6 +933,12 @@ impl TerminalView {
             tracker: StatusTracker::new(),
             run: CommandRun::default(),
             integration: None,
+            marks_seen: 0,
+            cards: Rc::default(),
+            cards_on: Rc::default(),
+            card_line_h: Rc::default(),
+            #[cfg(feature = "ui-shots")]
+            card_cell: Rc::default(),
             resized_at: Rc::new(Cell::new(None)),
             layout: Rc::new(Cell::new(None)),
             scroll: ScrollAccumulator::default(),
@@ -927,6 +978,7 @@ impl TerminalView {
     fn command_marked(&mut self, mark: CommandMark, cx: &mut Context<Self>) {
         // A background-service session shows it was started with the marks (ruling 3).
         self.integration.get_or_insert(true);
+        self.marks_seen += 1;
         let now = Instant::now();
         let tracks = self.tracks_status();
         match self.run.on_mark(mark, now) {
@@ -1134,6 +1186,17 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // M11ab: in card view the wheel scrolls the column (points; up is positive).
+        if self.cards_on.get() {
+            let line_h = self.card_line_h.get();
+            if line_h > 0.0 {
+                let delta = f32::from(e.delta.pixel_delta(px(line_h)).y);
+                let mut cards = self.cards.borrow_mut();
+                cards.scroll = (cards.scroll + delta).clamp(0.0, cards.max_scroll);
+                cx.notify();
+            }
+            return;
+        }
         let Some(layout) = self.layout.get() else {
             return;
         };
@@ -1564,6 +1627,23 @@ impl Render for TerminalView {
         let theme = self.core.theme();
         let ui = theme.ui();
         let blocks_on = appearance.command_blocks;
+        // M11ab: what card view needs that's known here; the width is known at prepaint.
+        let shell_cards = appearance.shell_cards && blocks_on;
+        let integrated = self.integrated();
+        let alt_screen = self.core.mode().contains(TermMode::ALT_SCREEN);
+        let marks_seen = self.marks_seen;
+        let utc_offset = crate::cli::local_utc_offset(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64),
+        );
+        let cards_state = self.cards.clone();
+        let cards_on = self.cards_on.clone();
+        let card_line_h = self.card_line_h.clone();
+        #[cfg(feature = "ui-shots")]
+        let card_cell = self.card_cell.clone();
+        let card_core = self.core.clone();
+        let was_cards = self.cards_on.get();
         let cursor = CursorSettings {
             setting: appearance.cursor_style,
             focused,
@@ -1590,7 +1670,11 @@ impl Render for TerminalView {
         let gutter = self.gutter.clone();
         let chosen = self.chosen_block.clone().filter(|_| blocks_on);
         let hovered_block = self.hovered_block.clone().filter(|_| blocks_on);
-        let chip = if blocks_on { self.chip(&ui) } else { None };
+        let chip = if blocks_on && !was_cards {
+            self.chip(&ui)
+        } else {
+            None
+        };
         if chip.is_none() {
             self.chip_bounds.set(None);
         }
@@ -1636,13 +1720,33 @@ impl Render for TerminalView {
                     // whole pane: a click in the padding lands on the nearest cell.
                     move |bounds, window, cx| {
                         let metrics = CellMetrics::measure(cx.global::<Appearance>(), window);
+                        let cards = crate::card_view::card_mode(
+                            shell_cards,
+                            integrated,
+                            alt_screen,
+                            f32::from(bounds.size.width),
+                        );
+                        cards_on.set(cards);
+                        card_line_h.set(f32::from(metrics.line_height));
+                        #[cfg(feature = "ui-shots")]
+                        card_cell.set((
+                            f32::from(metrics.cell_width),
+                            f32::from(metrics.line_height),
+                        ));
                         let grid = GridLayout::fit(
                             inset(bounds, split),
                             metrics.cell_width,
                             metrics.line_height,
                         );
+                        let dims = pane_dims(
+                            cards,
+                            bounds,
+                            split,
+                            metrics.cell_width,
+                            metrics.line_height,
+                        );
                         let sent = resize_core.resize(
-                            grid.dims,
+                            dims,
                             CellPx {
                                 width: f32::from(metrics.cell_width).round() as u16,
                                 height: f32::from(metrics.line_height).round() as u16,
@@ -1655,12 +1759,43 @@ impl Render for TerminalView {
                             dims: resize_core.dims(),
                             ..grid
                         };
-                        layout.set(Some(grid));
+                        // In card view the grid isn't laid out over the pane (the cards and the
+                        // live box place their rows).
+                        layout.set((!cards).then_some(grid));
                         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-                        (metrics, grid.origin, hitbox)
+                        (metrics, grid.origin, hitbox, cards)
                     },
                     // paint: draw the current screen, set the pointer, follow the mouse.
-                    move |bounds, (metrics, origin, hitbox), window, cx| {
+                    move |bounds, (metrics, origin, hitbox, cards), window, cx| {
+                        if cards {
+                            paint_cards(
+                                CardPaint {
+                                    core: &card_core,
+                                    state: &cards_state,
+                                    marks: marks_seen,
+                                    utc_offset,
+                                    split,
+                                    theme: &theme,
+                                    ui: &ui,
+                                },
+                                &metrics,
+                                bounds,
+                                &cursor,
+                                &mut motion.borrow_mut(),
+                                window,
+                                cx,
+                            );
+                            let frames = motion.borrow().frames;
+                            match frames {
+                                Frames::EveryFrame => window.request_animation_frame(),
+                                Frames::Breath => {
+                                    view.update(cx, |this, cx| this.breathe(window, cx))
+                                }
+                                Frames::None => {}
+                            }
+                            window.set_cursor_style(CursorStyle::IBeam, &hitbox);
+                            return;
+                        }
                         // With command blocks on, the blocks in view come with the screen,
                         // under the same lock (the viewport and 8 rows below, plus the chosen
                         // block); nothing is read for them otherwise.
@@ -2487,6 +2622,241 @@ impl CursorMotion {
     }
 }
 
+/// What `paint_cards` reads from (M11ab).
+struct CardPaint<'a> {
+    core: &'a TerminalCore,
+    state: &'a RefCell<crate::card_view::CardsState>,
+    marks: u64,
+    utc_offset: i64,
+    split: bool,
+    theme: &'a Theme,
+    ui: &'a UiColors,
+}
+
+/// Paint a tab in card view (note 88): the column of earlier rows, cards and the live box,
+/// bottom-anchored in the pane's padding, only the rows in view read (under one lock).
+#[allow(clippy::too_many_arguments)]
+fn paint_cards(
+    p: CardPaint,
+    m: &CellMetrics,
+    bounds: Bounds<Pixels>,
+    cursor: &CursorSettings,
+    motion: &mut CursorMotion,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    use crate::card_view::{BOX_EDGE, BOX_PAD, CHIPS_ROW, CacheKey, Draw, HEADER_H};
+    let corner = px(ui_size::CARD_RADIUS);
+    window.paint_quad(
+        fill(bounds, hsla(p.theme.background)).corner_radii(Corners {
+            bottom_left: corner,
+            bottom_right: corner,
+            ..Corners::default()
+        }),
+    );
+    // The column keeps the terminal at its bottom: no scrolled-back screen under the cards.
+    if p.core.display_offset() > 0 {
+        p.core.scroll(Scroll::Bottom);
+    }
+    let content = inset(bounds, p.split);
+    let line_h = f32::from(m.line_height);
+    let dims = p.core.dims();
+    let (frame, clears) = p.core.read_term(|term, clears| {
+        let shape = term.renderable_content().cursor.shape;
+        let shape = (shape != alacritty_terminal::vte::ansi::CursorShape::Hidden)
+            .then(|| (shape, term.cursor_style().blinking));
+        let key = CacheKey {
+            marks: p.marks,
+            clears,
+            cols: dims.cols,
+            rows: dims.rows,
+            alt: false,
+        };
+        let frame = crate::card_view::frame(
+            term,
+            &mut p.state.borrow_mut(),
+            key,
+            p.theme,
+            line_h,
+            (f32::from(content.top()), f32::from(content.size.height)),
+            p.utc_offset,
+            shape,
+        );
+        (frame, clears)
+    });
+    let left = content.left();
+    let width = content.size.width;
+    let inner = px(BOX_EDGE + BOX_PAD);
+    let ui_font = window.text_style().font();
+    window.with_content_mask(Some(gpui::ContentMask { bounds: content }), |window| {
+        for draw in frame.draws {
+            match draw {
+                Draw::Plain(rows) => {
+                    let at = point(left + inner, px(rows.y));
+                    paint_lines(&rows.lines, p.theme, m, at, window, cx);
+                }
+                Draw::Card {
+                    y,
+                    header,
+                    cmd,
+                    panel,
+                    failed,
+                    ..
+                } => {
+                    // The header: when · how long · exit N (the exit in the failed colour).
+                    let all = header.words();
+                    let exit = header
+                        .exit
+                        .filter(|&x| x != 0)
+                        .map_or(0, |x| format!("exit {x}").len());
+                    paint_words(
+                        &all,
+                        &[
+                            (all.len() - exit, p.ui.text_faint),
+                            (exit, p.ui.block_failed),
+                        ],
+                        ui_font.clone(),
+                        px(crate::ui_tokens::text::META),
+                        point(left, px(y)),
+                        px(HEADER_H),
+                        window,
+                        cx,
+                    );
+                    let cmd_y = px(y + HEADER_H);
+                    match cmd {
+                        Ok(cmd) => {
+                            for (i, line) in cmd.lines().enumerate() {
+                                let mark = if i == 0 { "\u{276f} " } else { "  " };
+                                let text = format!("{mark}{line}");
+                                paint_words(
+                                    &text,
+                                    &[
+                                        (mark.len(), p.ui.text_faint),
+                                        (line.len(), p.theme.foreground),
+                                    ],
+                                    m.font.clone(),
+                                    m.font_size,
+                                    point(left, cmd_y + m.line_height * i as f32),
+                                    m.line_height,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }
+                        Err(rows) => {
+                            let at = point(left, px(rows.y));
+                            paint_lines(&rows.lines, p.theme, m, at, window, cx);
+                        }
+                    }
+                    if let Some(panel) = panel {
+                        let edge = if failed {
+                            p.ui.block_failed
+                        } else {
+                            p.ui.card_border
+                        };
+                        window.paint_quad(gpui::quad(
+                            Bounds::new(point(left, px(panel.y)), size(width, px(panel.height))),
+                            px(8.0),
+                            hsla(p.theme.background),
+                            px(BOX_EDGE),
+                            hsla(edge),
+                            gpui::BorderStyle::Solid,
+                        ));
+                        if let Some(fold) = &panel.fold {
+                            paint_words(
+                                fold,
+                                &[(fold.len(), p.ui.text_faint)],
+                                ui_font.clone(),
+                                px(crate::ui_tokens::text::META),
+                                point(left + inner, px(panel.y) + inner),
+                                m.line_height,
+                                window,
+                                cx,
+                            );
+                        }
+                        let at = point(left + inner, px(panel.rows.y));
+                        paint_lines(&panel.rows.lines, p.theme, m, at, window, cx);
+                    }
+                }
+                Draw::Live {
+                    y,
+                    height,
+                    rows,
+                    cursor: at,
+                } => {
+                    let frame_box = Bounds::new(
+                        point(left, px(y + CHIPS_ROW)),
+                        size(width, px(height - CHIPS_ROW)),
+                    );
+                    window.paint_quad(gpui::quad(
+                        frame_box,
+                        px(8.0),
+                        hsla(p.theme.background),
+                        px(BOX_EDGE),
+                        hsla(p.ui.card_border),
+                        gpui::BorderStyle::Solid,
+                    ));
+                    let origin = point(left + inner, px(rows.y));
+                    let snap = GridSnapshot {
+                        cols: dims.cols,
+                        rows: rows.lines.len(),
+                        lines: rows.lines,
+                        cursor: at,
+                        alt_screen: false,
+                        display_offset: 0,
+                        clears,
+                        blocks: Vec::new(),
+                    };
+                    let look = cursor.look(&snap, p.theme, motion, Instant::now());
+                    let inside = Bounds::new(
+                        frame_box.origin + point(px(BOX_EDGE), px(BOX_EDGE)),
+                        size(
+                            frame_box.size.width - px(2.0 * BOX_EDGE),
+                            frame_box.size.height - px(2.0 * BOX_EDGE),
+                        ),
+                    );
+                    paint_grid(snap, p.theme, m, inside, origin, look, |_| {}, window, cx);
+                }
+            }
+        }
+    });
+}
+
+/// `text` in `font` at `size`, its first `runs` bytes each in their colour, from `at` on a line
+/// `line_h` tall.
+#[allow(clippy::too_many_arguments)]
+fn paint_words(
+    text: &str,
+    runs: &[(usize, Rgb)],
+    font: Font,
+    size: Pixels,
+    at: gpui::Point<Pixels>,
+    line_h: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let runs: Vec<TextRun> = runs
+        .iter()
+        .filter(|(len, _)| *len > 0)
+        .map(|&(len, color)| TextRun {
+            len,
+            font: font.clone(),
+            color: hsla(color),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        })
+        .collect();
+    let shaped =
+        window
+            .text_system()
+            .shape_line(SharedString::from(text.to_string()), size, &runs, None);
+    let _ = shaped.paint(at, line_h, TextAlign::Left, None, window, cx);
+}
+
 /// M11ab: `lines` (rows of cells, top first) with their first cell at `origin`: the cells'
 /// backgrounds, then their text, with nothing under them filled and no cursor (a card's
 /// output; `paint_grid` paints the two halves around its cursor).
@@ -2875,6 +3245,23 @@ mod tests {
             b"\x1bb",
         ] {
             assert!(!is_typed_text(not), "{not:?}");
+        }
+    }
+
+    /// M11ab: in card view the terminal takes the live box's inside (`card_dims`); otherwise
+    /// today's fit inside the padding.
+    #[test]
+    fn card_mode_resizes_to_the_box() {
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(1000.0), px(700.0)));
+        for split in [false, true] {
+            assert_eq!(
+                super::pane_dims(true, bounds, split, px(8.0), px(17.0)),
+                crate::card_view::card_dims(bounds.size, split, 8.0, 17.0)
+            );
+            assert_eq!(
+                super::pane_dims(false, bounds, split, px(8.0), px(17.0)),
+                GridLayout::fit(inset(bounds, split), px(8.0), px(17.0)).dims
+            );
         }
     }
 

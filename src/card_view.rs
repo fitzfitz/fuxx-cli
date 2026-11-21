@@ -2,13 +2,19 @@
 //! their grid lines, the live terminal in a framed box at the bottom. Plain data here; the
 //! terminal view paints and hit-tests with it.
 
+use alacritty_terminal::event::EventListener;
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Line;
+use alacritty_terminal::term::Term;
+use alacritty_terminal::vte::ansi::CursorShape;
 use gpui::{Pixels, Size};
 
 use crate::activity::clock_hm;
-use crate::blocks::{Block, Outcome, Segment};
+use crate::blocks::{Block, Outcome, Segment, segments, tag_id_at};
 use crate::command_name::card_duration;
+use crate::grid::{CellView, CursorView, lines_snapshot};
 use crate::terminal::TermDims;
+use crate::theme::Theme;
 use crate::ui_tokens::size as ui_size;
 
 /// Below this pane width a tab keeps today's terminal (the card's panel needs room).
@@ -198,6 +204,342 @@ pub fn shown(output: (Line, Line), unfolded: bool) -> Shown {
         top: bottom - (FOLD_KEEP as i32 - 1),
         bottom,
     }
+}
+
+/// What decides that the segments must be read again: a mark arrived, the screen was cleared,
+/// the size or the screen changed. Plain scrolling doesn't (rows are kept from the scrollback's
+/// top); the scrollback cap rotating does, found by the newest card's tag moving.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CacheKey {
+    pub marks: u64,
+    pub clears: u64,
+    pub cols: usize,
+    pub rows: usize,
+    pub alt: bool,
+}
+
+/// The segments last read (note 88's constraint: no scrollback walk per frame).
+#[derive(Default)]
+pub struct SegmentCache {
+    key: Option<CacheKey>,
+    /// Rows counted from the scrollback's top (`line + history`), stable while it scrolls.
+    from_top: Vec<Segment>,
+    /// The newest command's id and its tag's row from the top: if the tag isn't there any
+    /// more, the scrollback rotated.
+    check: Option<(String, i64)>,
+}
+
+fn shift(segment: &Segment, by: i32) -> Segment {
+    match segment {
+        Segment::Prompt { id, top, bottom } => Segment::Prompt {
+            id: id.clone(),
+            top: *top + by,
+            bottom: *bottom + by,
+        },
+        Segment::Command(b) => Segment::Command(Block {
+            prompt_top: b.prompt_top + by,
+            cmd_row: b.cmd_row + by,
+            output: b.output.map(|(s, e)| (s + by, e + by)),
+            ..b.clone()
+        }),
+    }
+}
+
+impl SegmentCache {
+    /// The grid's segments (rows as the grid numbers them now), read again only when `key`
+    /// changed or the scrollback rotated; and whether it read them.
+    pub fn segments<L>(&mut self, term: &Term<L>, key: CacheKey) -> (Vec<Segment>, bool) {
+        let history = term.grid().history_size() as i64;
+        let still = self.key == Some(key)
+            && self.check.as_ref().is_none_or(|(id, from_top)| {
+                let row = Line((from_top - history) as i32);
+                tag_id_at(term, row).as_deref() == Some(id.as_str())
+            });
+        let rebuilt = !still;
+        if rebuilt {
+            let segments = segments(term);
+            self.check = segments.iter().rev().find_map(|s| match s {
+                Segment::Command(b) => Some((b.id.clone(), i64::from(b.cmd_row.0) + history)),
+                Segment::Prompt { .. } => None,
+            });
+            self.from_top = segments.iter().map(|s| shift(s, history as i32)).collect();
+            self.key = Some(key);
+        }
+        let now = self
+            .from_top
+            .iter()
+            .map(|s| shift(s, -(history as i32)))
+            .collect();
+        (now, rebuilt)
+    }
+}
+
+/// The column for `term` now (the segments from `cache`, the cursor and the last row with text
+/// on the screen).
+pub fn items_for<L>(
+    term: &Term<L>,
+    cache: &mut SegmentCache,
+    key: CacheKey,
+    utc_offset: i64,
+) -> Vec<Item> {
+    let (segments, _) = cache.segments(term, key);
+    let grid = term.grid();
+    let cursor = grid.cursor.point.line;
+    let last_text = (0..term.screen_lines() as i32)
+        .rev()
+        .map(Line)
+        .find(|&row| {
+            (0..term.columns()).any(|c| {
+                let ch = grid[row][alacritty_terminal::index::Column(c)].c;
+                ch != ' ' && ch != '\0'
+            })
+        })
+        .unwrap_or(Line(0));
+    column(
+        &segments,
+        grid.topmost_line(),
+        cursor,
+        last_text,
+        utc_offset,
+    )
+}
+
+/// A card's header line (UI text), points.
+pub const HEADER_H: f32 = 18.0;
+/// Between the command line and its output panel, points.
+pub const PANEL_GAP: f32 = 4.0;
+/// Between items, points.
+pub const CARD_GAP: f32 = 14.0;
+
+/// A card's height: its header, its command's lines, and its panel (the rows shown, the fold
+/// row when the output is long enough to fold, its padding and edge).
+pub fn card_height(card: &Card, unfolded: bool, line_h: f32) -> f32 {
+    let cmd_lines = match &card.cmd {
+        Some(cmd) => cmd.lines().count().max(1),
+        None => (card.cmd_rows.1.0 - card.cmd_rows.0.0 + 1).max(1) as usize,
+    };
+    let mut height = HEADER_H + cmd_lines as f32 * line_h;
+    if let Some(output) = card.output {
+        let lines = (output.1.0 - output.0.0 + 1).max(0) as usize;
+        let s = shown(output, unfolded);
+        let rows = (s.bottom.0 - s.top.0 + 1).max(0) as usize + usize::from(lines > FOLD_OVER);
+        height += PANEL_GAP + 2.0 * (BOX_EDGE + BOX_PAD) + rows as f32 * line_h;
+    }
+    height
+}
+
+/// An item's height.
+pub fn item_height(item: &Item, unfolded: bool, line_h: f32) -> f32 {
+    let rows = |top: Line, bottom: Line| (bottom.0 - top.0 + 1).max(0) as f32 * line_h;
+    match item {
+        Item::Card(card) => card_height(card, unfolded, line_h),
+        Item::Earlier { top, bottom } | Item::Loose { top, bottom } => rows(*top, *bottom),
+        Item::Live { top, bottom } => CHIPS_ROW + 2.0 * (BOX_EDGE + BOX_PAD) + rows(*top, *bottom),
+    }
+}
+
+/// An item placed in the column: its top from the column's top, and its height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placed {
+    pub top: f32,
+    pub height: f32,
+}
+
+/// Every item placed top to bottom, `CARD_GAP` apart (`unfolded`: a card id is unfolded), and
+/// the column's whole height.
+pub fn layout(items: &[Item], unfolded: &dyn Fn(&str) -> bool, line_h: f32) -> (Vec<Placed>, f32) {
+    let mut top = 0.0;
+    let mut placed = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            top += CARD_GAP;
+        }
+        let open = matches!(item, Item::Card(c) if unfolded(&c.id));
+        let height = item_height(item, open, line_h);
+        placed.push(Placed { top, height });
+        top += height;
+    }
+    (placed, top)
+}
+
+/// Which of `rows` rows (the first at `top`, `line_h` apart) touch the `clip` span (`top`,
+/// `bottom`): only those are read and painted.
+pub fn visible_rows(
+    top: f32,
+    rows: usize,
+    line_h: f32,
+    clip: (f32, f32),
+) -> std::ops::Range<usize> {
+    let first = ((clip.0 - top) / line_h).floor().max(0.0) as usize;
+    let end = ((clip.1 - top) / line_h).ceil().max(0.0) as usize;
+    first.min(rows)..end.min(rows)
+}
+
+/// What a tab in card view keeps between frames.
+#[derive(Default)]
+pub struct CardsState {
+    pub cache: SegmentCache,
+    /// The cards unfolded (by id), while the tab is open.
+    pub unfolded: std::collections::HashSet<String>,
+    /// How far the column is scrolled up from its bottom, points (0: stuck to the bottom).
+    pub scroll: f32,
+    /// The most it can scroll (the column's height less the view's), from the last frame.
+    pub max_scroll: f32,
+}
+
+/// Rows of cells to paint, the first at `y` (window points).
+#[derive(Clone, Debug)]
+pub struct Rows {
+    pub y: f32,
+    pub lines: Vec<Vec<CellView>>,
+}
+
+/// One item as the view paints it this frame (window points).
+#[derive(Clone, Debug)]
+pub enum Draw {
+    /// Earlier or loose rows.
+    Plain(Rows),
+    Card {
+        id: String,
+        y: f32,
+        header: Header,
+        /// `❯ cmd` when the shell reported it; else the command's rows as printed.
+        cmd: Result<String, Rows>,
+        panel: Option<Panel>,
+        failed: bool,
+    },
+    Live {
+        /// The chips row's top; the box starts `CHIPS_ROW` below it.
+        y: f32,
+        height: f32,
+        /// The rows in view, with the cursor among them (rows relative to `rows.y`).
+        rows: Rows,
+        cursor: Option<CursorView>,
+    },
+}
+
+/// A card's output panel: its box, the fold row's words (none when not long enough to fold),
+/// and the rows in view.
+#[derive(Clone, Debug)]
+pub struct Panel {
+    pub y: f32,
+    pub height: f32,
+    pub fold: Option<String>,
+    pub rows: Rows,
+}
+
+/// What a frame paints, and the column's whole height.
+pub struct CardFrame {
+    pub draws: Vec<Draw>,
+    pub total: f32,
+}
+
+/// The column for `term` this frame, placed in the view from `view_top` (window points,
+/// `view_height` tall): bottom-anchored, scrolled up by `state.scroll` (clamped here), and only
+/// the rows in view read.
+#[allow(clippy::too_many_arguments)]
+pub fn frame<L: EventListener>(
+    term: &Term<L>,
+    state: &mut CardsState,
+    key: CacheKey,
+    theme: &Theme,
+    line_h: f32,
+    (view_top, view_height): (f32, f32),
+    utc_offset: i64,
+    cursor_shape: Option<(CursorShape, bool)>,
+) -> CardFrame {
+    let items = items_for(term, &mut state.cache, key, utc_offset);
+    let unfolded = &state.unfolded;
+    let (placed, total) = layout(&items, &|id| unfolded.contains(id), line_h);
+    state.max_scroll = (total - view_height).max(0.0);
+    state.scroll = state.scroll.clamp(0.0, state.max_scroll);
+    let base = view_top + view_height - total + state.scroll;
+    let clip = (view_top, view_top + view_height);
+    let read = |top: Line, rows_y: f32, count: usize| -> Rows {
+        let r = visible_rows(rows_y, count, line_h, clip);
+        let lines = if r.is_empty() {
+            Vec::new()
+        } else {
+            lines_snapshot(term, theme, top + r.start as i32, top + (r.end as i32 - 1))
+        };
+        Rows {
+            y: rows_y + r.start as f32 * line_h,
+            lines,
+        }
+    };
+    let inner = BOX_EDGE + BOX_PAD;
+    let mut draws = Vec::new();
+    for (item, at) in items.iter().zip(&placed) {
+        let y = base + at.top;
+        if y >= clip.1 || y + at.height <= clip.0 {
+            continue;
+        }
+        let count = |top: Line, bottom: Line| (bottom.0 - top.0 + 1).max(0) as usize;
+        match item {
+            Item::Earlier { top, bottom } | Item::Loose { top, bottom } => {
+                draws.push(Draw::Plain(read(*top, y, count(*top, *bottom))));
+            }
+            Item::Card(card) => {
+                let open = unfolded.contains(&card.id);
+                let cmd_y = y + HEADER_H;
+                let (cmd, cmd_lines) = match &card.cmd {
+                    Some(c) => (Ok(c.clone()), c.lines().count().max(1)),
+                    None => {
+                        let (a, b) = card.cmd_rows;
+                        (Err(read(a, cmd_y, count(a, b))), count(a, b).max(1))
+                    }
+                };
+                let panel = card.output.map(|output| {
+                    let lines = count(output.0, output.1);
+                    let s = shown(output, open);
+                    let fold = (lines > FOLD_OVER).then(|| match s.hidden {
+                        0 => "▾ Show less".to_string(),
+                        n => format!("▸ {n} earlier lines"),
+                    });
+                    let panel_y = cmd_y + cmd_lines as f32 * line_h + PANEL_GAP;
+                    let rows_y = panel_y + inner + if fold.is_some() { line_h } else { 0.0 };
+                    let shown_rows = count(s.top, s.bottom);
+                    Panel {
+                        y: panel_y,
+                        height: 2.0 * inner
+                            + (shown_rows + usize::from(fold.is_some())) as f32 * line_h,
+                        fold,
+                        rows: read(s.top, rows_y, shown_rows),
+                    }
+                });
+                draws.push(Draw::Card {
+                    id: card.id.clone(),
+                    y,
+                    header: card.header.clone(),
+                    cmd,
+                    panel,
+                    failed: card.failed,
+                });
+            }
+            Item::Live { top, bottom } => {
+                let rows_y = y + CHIPS_ROW + inner;
+                let rows = read(*top, rows_y, count(*top, *bottom));
+                let first = *top + ((rows.y - rows_y) / line_h).round() as i32;
+                let point = term.grid().cursor.point;
+                let row = point.line.0 - first.0;
+                let cursor = cursor_shape
+                    .filter(|_| row >= 0 && (row as usize) < rows.lines.len())
+                    .map(|(shape, blinking)| CursorView {
+                        row: row as usize,
+                        col: point.column.0,
+                        shape,
+                        blinking,
+                    });
+                draws.push(Draw::Live {
+                    y,
+                    height: at.height,
+                    rows,
+                    cursor,
+                });
+            }
+        }
+    }
+    CardFrame { draws, total }
 }
 
 /// The chips row above the live box (folder, branch, the running command), points.
@@ -404,5 +746,221 @@ mod tests {
             ((w / 8.0) as usize, (h / 17.0) as usize)
         );
         assert_eq!((dims.cols, dims.rows), (115, 35));
+    }
+
+    // M11ab Task 5: the cache, the layout, the rows a paint reads.
+
+    use crate::blocks::{Tagger, advance, tag_id_at};
+    use crate::shell_marks::MarkScanner;
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::term::{Config, Term};
+    use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+
+    /// A 20 x 6 terminal with `history` lines of scrollback, fed through `advance`.
+    struct Sh {
+        term: Term<VoidListener>,
+        processor: Processor<StdSyncHandler>,
+        tagger: Tagger,
+        scanner: MarkScanner,
+    }
+
+    impl Sh {
+        fn new(history: usize) -> Self {
+            let config = Config {
+                scrolling_history: history,
+                ..crate::terminal::term_config()
+            };
+            Sh {
+                term: Term::new(config, &TermDims { cols: 20, rows: 6 }, VoidListener),
+                processor: Processor::new(),
+                tagger: Tagger::new(),
+                scanner: MarkScanner::new(),
+            }
+        }
+
+        fn feed(&mut self, bytes: &[u8]) -> &mut Self {
+            advance(
+                &mut self.processor,
+                &mut self.term,
+                &mut self.tagger,
+                &mut self.scanner,
+                bytes,
+            );
+            self
+        }
+
+        fn prompt(&mut self) -> &mut Self {
+            self.feed(b"\x1b]133;A\x07$ \x1b]133;B\x1b\\")
+        }
+
+        fn run(&mut self, cmd: &str) -> &mut Self {
+            self.prompt()
+                .feed(cmd.as_bytes())
+                .feed(b"\r\n")
+                .feed(format!("\x1b]133;C;cmdline_url={cmd}\x07").as_bytes())
+        }
+
+        fn command(&mut self, cmd: &str, output: &str) -> &mut Self {
+            self.run(cmd)
+                .feed(output.as_bytes())
+                .feed(b"\x1b]133;D;0\x07")
+        }
+    }
+
+    fn key(marks: u64, clears: u64) -> CacheKey {
+        CacheKey {
+            marks,
+            clears,
+            cols: 20,
+            rows: 6,
+            alt: false,
+        }
+    }
+
+    fn card_ids(items: &[Item]) -> Vec<String> {
+        items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Card(c) => Some(c.id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cards_rebuild_after_a_clear() {
+        let mut sh = Sh::new(100);
+        sh.command("ls", "a\r\n").command("pwd", "/\r\n").prompt();
+        let mut cache = SegmentCache::default();
+        assert_eq!(
+            card_ids(&items_for(&sh.term, &mut cache, key(1, 0), 0)).len(),
+            2
+        );
+        // `clear`: home, erase the screen, erase the scrollback; then the next prompt.
+        sh.feed(b"\x1b[H\x1b[2J\x1b[3J").prompt();
+        let items = items_for(&sh.term, &mut cache, key(2, 1), 0);
+        assert!(
+            matches!(items.as_slice(), [Item::Live { .. }]),
+            "only the live box: {items:?}"
+        );
+    }
+
+    #[test]
+    fn the_cache_keeps_cards_as_output_scrolls() {
+        let mut sh = Sh::new(100);
+        sh.command("ls", "a\r\n")
+            .command("pwd", "/\r\n")
+            .run("make");
+        let mut cache = SegmentCache::default();
+        let (_, rebuilt) = cache.segments(&sh.term, key(1, 0));
+        assert!(rebuilt);
+        for i in 0..30 {
+            sh.feed(format!("out {i}\r\n").as_bytes());
+        }
+        // No new mark: the same key, and the cards are still where their tags are.
+        let (segments, rebuilt) = cache.segments(&sh.term, key(1, 0));
+        assert!(!rebuilt, "scrolling alone doesn't rebuild");
+        for segment in &segments {
+            if let Segment::Command(b) = segment {
+                assert_eq!(
+                    tag_id_at(&sh.term, b.cmd_row).as_deref(),
+                    Some(b.id.as_str())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_cache_rebuilds_when_the_scrollback_rotates() {
+        let mut sh = Sh::new(10);
+        sh.command("ls", "a\r\n")
+            .command("pwd", "/\r\n")
+            .run("make");
+        let mut cache = SegmentCache::default();
+        let _ = cache.segments(&sh.term, key(1, 0));
+        // Past the 10-line cap (8 rows so far, 16 fit): 11 more drop the 3 oldest rows and move
+        // every row up, `pwd`'s card still in the grid.
+        for i in 0..11 {
+            sh.feed(format!("out {i}\r\n").as_bytes());
+        }
+        assert_eq!(sh.term.grid().history_size(), 10, "at the cap");
+        let (segments, rebuilt) = cache.segments(&sh.term, key(1, 0));
+        assert!(rebuilt, "rotation rebuilds");
+        assert!(
+            segments
+                .iter()
+                .any(|s| matches!(s, Segment::Command(b) if b.cmd.as_deref() == Some("pwd"))),
+            "pwd's card is still read: {segments:?}"
+        );
+        for segment in &segments {
+            if let Segment::Command(b) = segment {
+                assert_eq!(
+                    tag_id_at(&sh.term, b.cmd_row).as_deref(),
+                    Some(b.id.as_str())
+                );
+            }
+        }
+    }
+
+    fn a_card(output: Option<(i32, i32)>) -> Card {
+        Card {
+            id: "c".into(),
+            header: Header {
+                start: None,
+                took: None,
+                exit: Some(0),
+            },
+            cmd: Some("ls".into()),
+            cmd_rows: (Line(1), Line(1)),
+            output: output.map(|(a, b)| (Line(a), Line(b))),
+            failed: false,
+        }
+    }
+
+    #[test]
+    fn heights_add_up() {
+        let lh = 17.0;
+        let frame = PANEL_GAP + 2.0 * (BOX_EDGE + BOX_PAD);
+        let card = a_card(Some((2, 4)));
+        assert_eq!(
+            card_height(&card, false, lh),
+            HEADER_H + lh + frame + 3.0 * lh
+        );
+        assert_eq!(card_height(&a_card(None), false, lh), HEADER_H + lh);
+        // 25 lines folded: the last 12 and the fold row; unfolded: all 25 and "Show less".
+        let long = a_card(Some((0, 24)));
+        assert_eq!(
+            card_height(&long, false, lh),
+            HEADER_H + lh + frame + 13.0 * lh
+        );
+        assert_eq!(
+            card_height(&long, true, lh),
+            HEADER_H + lh + frame + 26.0 * lh
+        );
+        let items = [
+            Item::Card(card.clone()),
+            Item::Live {
+                top: Line(5),
+                bottom: Line(6),
+            },
+        ];
+        let (placed, total) = layout(&items, &|_| false, lh);
+        assert_eq!(placed[0].top, 0.0);
+        assert_eq!(placed[1].top, card_height(&card, false, lh) + CARD_GAP);
+        assert_eq!(
+            total,
+            placed[1].top + CHIPS_ROW + 2.0 * (BOX_EDGE + BOX_PAD) + 2.0 * lh
+        );
+    }
+
+    #[test]
+    fn only_visible_rows_are_read() {
+        let lh = 17.0;
+        let rows = visible_rows(-100_000.0, 10_000, lh, (0.0, 600.0));
+        assert!(rows.len() <= (600.0 / lh) as usize + 2, "{rows:?}");
+        assert!(!rows.is_empty());
+        assert_eq!(visible_rows(0.0, 5, lh, (0.0, 600.0)), 0..5);
+        assert_eq!(visible_rows(700.0, 5, lh, (0.0, 600.0)), 0..0);
+        assert_eq!(visible_rows(-17.0, 5, lh, (0.0, 600.0)), 1..5);
     }
 }

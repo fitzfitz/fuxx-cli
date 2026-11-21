@@ -905,6 +905,16 @@ fn block(grid: &Grid<Cell>, row: Line, tag: Tag, cursor: Line, bounds: Bounds) -
     (block, cmd_end)
 }
 
+/// The id of the tag on `row` (none off the grid or untagged): M11ab's card cache checks its
+/// newest card is still where it was (the scrollback cap moves every row when it rotates).
+pub fn tag_id_at<L>(term: &Term<L>, row: Line) -> Option<String> {
+    let grid = term.grid();
+    if row < grid.topmost_line() || row > grid.bottommost_line() {
+        return None;
+    }
+    tag_at(grid, row).map(|t| t.id)
+}
+
 /// The tag on column 0 of `row`, if any.
 fn tag_at(grid: &Grid<Cell>, row: Line) -> Option<Tag> {
     decode(&grid[row][Column(0)].hyperlink()?)
