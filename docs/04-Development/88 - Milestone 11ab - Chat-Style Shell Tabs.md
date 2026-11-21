@@ -432,7 +432,8 @@ harness too); the prefs swatches show the panel colour. Along the way, from your
   its colour.
 - **Corners** ("the border radius on the floating panel, is not matching the window"): 14 (the window's own) widened
   the gap at the corners and the strict parallel curve (6) read too tight; you picked **9 pt** from renders side by
-  side. The diff view's cards follow it.
+  side, then **11 pt** ("add more border radius on floating, now it doesn't match the outter"). The diff view's
+  cards follow it.
 - **AI's calls:** a config `background = …` line without its own `chrome-canvas` drops the theme's canvas (it was
   picked for the theme's background, not yours), so the panel derives from your colour; the pinned dim and faint
   text values moved (Mocha `9da3b9` / `9fa3ae`, Latte `515263` / `52525f`), every contrast floor holding. **For your
