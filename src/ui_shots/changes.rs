@@ -1984,7 +1984,8 @@ fn activity_scenes() {
 /// M11aq (note 92): the commit line above the branch bar, while the repo has changes —
 /// `changes-commit-rest`: the field's placeholder, ✓2 dim (no message yet); `-typed`: a message,
 /// ✓ lit; `-failed`: a failed commit's line with its output shown under the field; `-writing`:
-/// ✦ in the accent while an agent writes; `-note`: ✦'s "Couldn't write a message".
+/// a stop square in the accent while an agent writes, the field's hint saying so;
+/// `-note`: ✦'s "Couldn't write a message · Try again".
 fn changes_commit_scenes() {
     use crate::git_status::{Change, ChangeList, Counts, Mark};
     use crate::right_sidebar::Panel;
@@ -2199,12 +2200,28 @@ fn changes_commit_scenes() {
                     .unwrap_or_else(|| panic!("{n}: ✦"));
                 assert!(
                     has_ink(write, ui.accent, 40),
-                    "{n}: ✦ in the accent while it writes"
+                    "{n}: the stop square in the accent while it writes"
                 );
                 assert!(parts.contains_key("stop"), "{n}: ✦ stops it when pressed");
             }
+            // The empty field says what's happening while an agent writes (its words in the
+            // field's hint, not in the button: the plain-hints pass, 2026-11-22).
+            if state == "writing" {
+                let hint = parts
+                    .get("hint")
+                    .copied()
+                    .unwrap_or_else(|| panic!("{n}: the field's hint"));
+                assert!(has_ink(hint, ui.text_faint, 40), "{n}: the hint reads");
+                assert!(
+                    !parts.contains_key("busy"),
+                    "{n}: no busy word with an empty field"
+                );
+            }
+            if state == "rest" {
+                assert!(parts.contains_key("hint"), "{n}: the empty field's hint");
+            }
             // The review's Important 3: the busy word shows whatever the field holds.
-            if matches!(state, "committing" | "writing") {
+            if state == "committing" {
                 let busy = parts
                     .get("busy")
                     .copied()
@@ -2217,6 +2234,10 @@ fn changes_commit_scenes() {
                     .copied()
                     .unwrap_or_else(|| panic!("{n}: the note"));
                 assert!(note.top() >= button.bottom(), "{n}: under the field");
+                assert!(
+                    parts.contains_key("retry"),
+                    "{n}: ✦'s failure offers Try again"
+                );
             }
             if state == "failed" {
                 let output = parts
@@ -2224,6 +2245,7 @@ fn changes_commit_scenes() {
                     .copied()
                     .unwrap_or_else(|| panic!("{n}: the output shown"));
                 assert!(output.top() >= button.bottom(), "{n}: under the field");
+                assert!(parts.contains_key("fix-hint"), "{n}: what to do about it");
             } else {
                 assert!(
                     !parts.contains_key("output") || state == "failed",

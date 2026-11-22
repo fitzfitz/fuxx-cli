@@ -31,7 +31,15 @@ gpui::actions!(commit_line, [CommitStaged]);
 const WRITE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 /// The line's room: its height, its sides (as the bar's), the output block's tallest.
 const LINE_H: f32 = 36.0;
-const SIDE: f32 = 16.0;
+/// The line's left inset, less the field's own padding: its text starts under the branch bar's
+/// branch icon (`BAR_PAD_X` + `BRANCH_PAD`).
+const SIDE: f32 = crate::changes_panel::BAR_PAD_X + crate::changes_panel::BRANCH_PAD - FIELD_PAD;
+/// The field's inner padding (its hover fill reaches past the text by this much).
+const FIELD_PAD: f32 = 6.0;
+/// ✦'s note when it fails; the line adds "Try again".
+pub(crate) const WRITE_FAILED: &str = "Couldn't write a message";
+/// Enter in the field (it doesn't commit): how to.
+pub(crate) const ENTER_NOTE: &str = "Press ⌘↵ to commit";
 const OUTPUT_MAX_H: f32 = 8.0 * 15.0;
 
 /// What the line is doing for a repo: committing, or an agent writing its message (the flag
@@ -194,12 +202,44 @@ pub fn commit_blocked(staged: usize, message: &str, in_progress: Option<&str>) -
         return Some(format!("Finish {what} first"));
     }
     if staged == 0 {
-        return Some("Stage files to commit".into());
+        return Some("Stage files to commit: tick them above".into());
     }
     if message.trim().is_empty() {
         return Some("Write a message".into());
     }
     None
+}
+
+/// What the empty field says: what's happening, else what to write (short: a narrow panel holds
+/// it beside ✦ and "Commit 2"; ⌘↵ is in Commit's tooltip and Enter's note).
+pub fn field_hint(busy: Option<&Busy>, agent: Option<&str>) -> String {
+    match busy {
+        Some(Busy::Committing) => "Committing…".into(),
+        Some(Busy::Writing(_)) => format!("{} is writing…", agent.unwrap_or("The agent")),
+        None => "Describe your change".into(),
+    }
+}
+
+/// The faint line under the field: what stops a commit, in plain words (the designers' review,
+/// 2026-11-22: the reason was only in Commit's tooltip). None while busy or ready.
+pub fn reason_line(
+    busy: Option<&Busy>,
+    staged: usize,
+    in_progress: Option<&str>,
+) -> Option<String> {
+    match busy {
+        Some(_) => None,
+        None => commit_blocked(staged, "message", in_progress),
+    }
+}
+
+/// ✓'s words: the action, and how many it commits (none at 0).
+pub fn commit_label(staged: usize) -> String {
+    if staged == 0 {
+        "Commit".into()
+    } else {
+        format!("Commit {staged}")
+    }
 }
 
 /// The agent that writes the message (✦): the followed agent tab's, if it can run; else Claude,
@@ -234,11 +274,24 @@ impl Workspace {
             // Esc (the field still focused; a blur also says Cancel): leave the field, and stop
             // an agent writing.
             let keys = cx.subscribe_in(&input, window, |this, input, event, window, cx| {
-                if matches!(event, NameInputEvent::Cancel)
-                    && input.focus_handle(cx).is_focused(window)
-                {
-                    window.blur();
-                    this.stop_writing(cx);
+                if !input.focus_handle(cx).is_focused(window) {
+                    return;
+                }
+                match event {
+                    NameInputEvent::Cancel => {
+                        window.blur();
+                        this.stop_writing(cx);
+                    }
+                    // Enter doesn't commit (⌘↵ does): say so, under the field.
+                    NameInputEvent::Confirm(_) => {
+                        let changes = &mut this.right_sidebar.changes;
+                        if let Some(root) = changes.repo_root()
+                            && changes.commit.busy.is_none()
+                        {
+                            changes.commit.note = Some((root, ENTER_NOTE));
+                            cx.notify();
+                        }
+                    }
                 }
             });
             // Typing redraws the line (✓ dims and lights with the message).
@@ -433,7 +486,7 @@ impl Workspace {
                         let running = matches!(&commit.busy, Some((r, Busy::Writing(f))) if r == &root && Arc::ptr_eq(f, &flag));
                         if running {
                             commit.busy = None;
-                            commit.note = Some((root, "Couldn't write a message"));
+                            commit.note = Some((root, WRITE_FAILED));
                         }
                     }
                 }
@@ -487,18 +540,31 @@ impl Workspace {
         }
         let message = input.read(cx).text().to_string();
         let staged = changes.staged_count();
+        let stops = commit.in_progress_for(&root);
         let blocked = match &busy {
             Some(Busy::Committing) => Some("Committing…".to_string()),
             Some(Busy::Writing(_)) => Some("Writing the message…".to_string()),
-            None => commit_blocked(staged, &message, commit.in_progress_for(&root)),
-        };
-        let placeholder = match &busy {
-            Some(Busy::Committing) => "Committing…",
-            Some(Busy::Writing(_)) => "Writing…",
-            None => "Message (⌘↵ to commit)",
+            None => commit_blocked(staged, &message, stops),
         };
         let agents = commit.agents.clone().unwrap_or_default();
         let writer = message_agent(self.followed_agent_name(cx), |name| agents.contains(&name));
+        // The empty field says what to do next (the designers' review, 2026-11-22).
+        let placeholder = field_hint(busy.as_ref(), writer.map(|p| p.info().label));
+        // Under the field, unless a failure or a note says something there already.
+        let reason = reason_line(busy.as_ref(), staged, stops)
+            .filter(|_| error.is_none() && note.is_none())
+            .map(|reason| {
+                drawn(
+                    commit,
+                    "reason",
+                    div()
+                        .pb(px(8.0))
+                        .pl(px(FIELD_PAD))
+                        .text_size(px(crate::changes_panel::GIT_SMALL))
+                        .text_color(hsla(ui.text_faint))
+                        .child(SharedString::from(reason)),
+                )
+            });
         let tip = |text: String| {
             move |_: &mut Window, cx: &mut gpui::App| -> AnyView {
                 cx.new(|_| crate::sidebar_toggle::Tip(text.clone().into()))
@@ -515,7 +581,10 @@ impl Workspace {
                 .relative()
                 .flex_1()
                 .min_w(px(0.0))
-                .h(px(LINE_H))
+                .h(px(LINE_H - 8.0))
+                .px(px(FIELD_PAD))
+                .rounded(px(6.0))
+                .hover(move |s| s.bg(hsla(ui.side_field)))
                 .flex()
                 .items_center()
                 .text_size(px(crate::changes_panel::GIT_NAME))
@@ -523,13 +592,19 @@ impl Workspace {
                 .text_color(hsla(ui.text))
                 .cursor_text()
                 .when(message.is_empty(), |d| {
-                    d.child(
+                    d.child(drawn(
+                        commit,
+                        "hint",
                         div()
                             .absolute()
-                            .left_0()
+                            .left(px(FIELD_PAD))
+                            .right(px(FIELD_PAD))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
                             .text_color(hsla(ui.text_faint))
                             .child(placeholder),
-                    )
+                    ))
                 })
                 .child(input),
         );
@@ -549,16 +624,24 @@ impl Workspace {
                     .justify_center()
                     .rounded(px(6.0))
                     .text_size(px(14.0))
-                    .text_color(hsla(if writing { ui.accent } else { ui.text_dim }))
-                    .child("✦")
+                    .text_color(hsla(ui.text_dim))
+                    // Writing: a stop square in the accent (pressing it stops), else ✦.
+                    .map(|d| {
+                        if writing {
+                            // The agent box's stop: a small rounded square.
+                            d.child(div().size(px(9.0)).rounded(px(2.0)).bg(hsla(ui.accent)))
+                        } else {
+                            d.child("✦")
+                        }
+                    })
                     .tooltip(tip(if writing {
                         "Stop writing (Esc)".to_string()
                     } else if staged == 0 {
-                        "Stage files for the agent to describe".to_string()
+                        "Stage files first, then let the agent describe them".to_string()
                     } else {
-                        format!("Write the message with {label}")
+                        format!("Let {label} write the commit message")
                     }))
-                    .when(!enabled && !writing, |d| d.opacity(0.4))
+                    .when(!enabled && !writing, |d| d.opacity(0.6))
                     .when(enabled, |d| {
                         d.cursor_pointer()
                             .hover(move |s| s.bg(hsla(ui.side_tab_hover)))
@@ -597,29 +680,35 @@ impl Workspace {
                 .rounded(px(6.0))
                 .text_size(px(crate::changes_panel::GIT_NAME))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(hsla(ui.text_dim))
-                // Busy: its word in ✓N's place, whatever the field holds (the review's
-                // Important 3: a message hid the placeholder that said it).
+                .text_color(hsla(if can { ui.text } else { ui.text_dim }))
+                // Busy: its word in the button's place while the field holds text (empty, the
+                // field's hint says it: the review's Important 3).
                 .map(|d| match &busy {
-                    Some(work) => d.child(drawn(
-                        commit,
-                        "busy",
-                        div().child(match work {
-                            Busy::Committing => "Committing…",
-                            Busy::Writing(_) => "Writing…",
-                        }),
-                    )),
-                    None => d
+                    Some(work) if matches!(work, Busy::Committing) || !message.is_empty() => d
+                        .child(drawn(
+                            commit,
+                            "busy",
+                            div().child(match work {
+                                Busy::Committing => "Committing…",
+                                Busy::Writing(_) => "Writing…",
+                            }),
+                        )),
+                    _ => d
                         .child(icon(
                             Icon::Check,
                             px(crate::right_sidebar::HEADER_ICON),
-                            hsla(ui.text_dim),
+                            hsla(if can { ui.ring_done } else { ui.text_dim }),
                         ))
-                        .child(SharedString::from(staged.to_string())),
+                        .child(SharedString::from(commit_label(staged))),
                 })
-                .tooltip(tip(blocked.clone().unwrap_or_else(|| "Commit (⌘↵)".into())))
+                .tooltip(tip(blocked.clone().unwrap_or_else(|| {
+                    format!(
+                        "Commit {} with this message (⌘↵)",
+                        crate::git_stage::files(staged)
+                    )
+                })))
                 // Dim when it can't commit; its busy word reads whole.
-                .when(!can && busy.is_none(), |d| d.opacity(0.4))
+                .when(!can && busy.is_none(), |d| d.opacity(0.6))
                 .when(can, |d| {
                     d.cursor_pointer()
                         .hover(move |s| s.bg(hsla(ui.side_tab_hover)).text_color(hsla(ui.text)))
@@ -632,6 +721,7 @@ impl Workspace {
                 .flex_col()
                 .gap(px(4.0))
                 .pb(px(8.0))
+                .pl(px(FIELD_PAD))
                 .text_size(px(crate::changes_panel::GIT_SMALL))
                 .child(
                     div()
@@ -658,6 +748,14 @@ impl Workspace {
                                 })),
                         ),
                 )
+                // What to do about it, in plain words.
+                .child(drawn(
+                    commit,
+                    "fix-hint",
+                    div()
+                        .text_color(hsla(ui.text_faint))
+                        .child("Ask your agent to fix what it says, then commit again."),
+                ))
                 .when(shown, |d| {
                     d.child(drawn(
                         commit,
@@ -687,9 +785,29 @@ impl Workspace {
                 "note",
                 div()
                     .pb(px(8.0))
+                    .pl(px(FIELD_PAD))
+                    .flex()
+                    .gap(px(6.0))
                     .text_size(px(crate::changes_panel::GIT_SMALL))
                     .text_color(hsla(ui.text_faint))
-                    .child(note),
+                    .child(note)
+                    // ✦ failed: try again from here.
+                    .when(note == WRITE_FAILED, |d| {
+                        d.child("·").child(drawn(
+                            commit,
+                            "retry",
+                            div()
+                                .id("commit-write-retry")
+                                .cursor_pointer()
+                                .text_color(hsla(ui.text_dim))
+                                .hover(move |s| s.text_color(hsla(ui.text)))
+                                .child("Try again")
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.write_message(cx);
+                                    this.focus_commit_field(window, cx);
+                                })),
+                        ))
+                    }),
             )
         });
         Some(
@@ -700,7 +818,8 @@ impl Workspace {
                     .id("commit-line")
                     .flex_none()
                     .w_full()
-                    .px(px(SIDE))
+                    .pl(px(SIDE))
+                    .pr(px(crate::changes_panel::BAR_PAD_X))
                     .border_t_1()
                     .border_color(hsla(ui.card_border))
                     .flex()
@@ -714,6 +833,7 @@ impl Workspace {
                             .children(write)
                             .child(button),
                     )
+                    .children(reason)
                     .children(failure)
                     .children(quiet),
             )
@@ -726,6 +846,45 @@ impl Workspace {
 mod tests {
     use super::*;
 
+    /// The designers' review (2026-11-22, your call B: the git words kept, each step taught in
+    /// plain words): the empty field says what to do next.
+    #[test]
+    fn the_empty_field_says_what_to_do() {
+        // Short enough for a narrow panel (✦ and "Commit 2" beside it).
+        assert_eq!(field_hint(None, None), "Describe your change");
+        assert_eq!(field_hint(Some(&Busy::Committing), None), "Committing…");
+        let writing = Busy::Writing(Arc::new(AtomicBool::new(false)));
+        assert_eq!(
+            field_hint(Some(&writing), Some("Claude")),
+            "Claude is writing…"
+        );
+    }
+
+    #[test]
+    fn what_stops_a_commit_is_said_under_the_field() {
+        assert_eq!(
+            reason_line(None, 0, None).as_deref(),
+            Some("Stage files to commit: tick them above")
+        );
+        assert_eq!(
+            reason_line(None, 2, Some("a merge")).as_deref(),
+            Some("Finish a merge first")
+        );
+        assert_eq!(reason_line(None, 2, None), None, "ready: no line");
+        assert_eq!(
+            reason_line(Some(&Busy::Committing), 0, None),
+            None,
+            "busy: the field says it"
+        );
+    }
+
+    /// ✓ reads as the action, with how many it commits.
+    #[test]
+    fn the_button_says_commit() {
+        assert_eq!(commit_label(2), "Commit 2");
+        assert_eq!(commit_label(0), "Commit", "no count at 0");
+    }
+
     #[test]
     fn a_commit_says_what_stops_it() {
         assert_eq!(
@@ -734,7 +893,7 @@ mod tests {
         );
         assert_eq!(
             commit_blocked(0, "Fix it", None).as_deref(),
-            Some("Stage files to commit")
+            Some("Stage files to commit: tick them above")
         );
         assert_eq!(
             commit_blocked(2, "   ", None).as_deref(),

@@ -42,7 +42,7 @@ pub fn verb(work: &FileWork) -> &'static str {
 }
 
 /// `1 file`, `2 files`.
-fn files(n: usize) -> String {
+pub(crate) fn files(n: usize) -> String {
     if n == 1 {
         "1 file".to_string()
     } else {

@@ -156,11 +156,13 @@ pub fn line(sync: &Sync, now: SystemTime) -> (String, Tone) {
             ahead: 0,
             behind: 0,
         } => (fetched("\u{2713} Up to date".into()), Tone::Good),
+        // "to pull" / "to push": the button's word, so the line says what to press (the
+        // designers' review, 2026-11-22: "ahead" assumed git).
         Upstream::Track { ahead: 0, behind } => {
-            (fetched(format!("\u{2193}{behind} behind")), Tone::Faint)
+            (fetched(format!("\u{2193}{behind} to pull")), Tone::Faint)
         }
         Upstream::Track { ahead, behind: 0 } => {
-            (fetched(format!("\u{2191}{ahead} ahead")), Tone::Faint)
+            (fetched(format!("\u{2191}{ahead} to push")), Tone::Faint)
         }
         Upstream::Track { ahead, behind } => (
             format!(
@@ -191,13 +193,24 @@ fn commits(n: u32) -> String {
     }
 }
 
-/// A button's tooltip: what a click does.
+/// A button's tooltip: what a click does — the git words, then what they mean in plain words
+/// (your call, 2026-11-22: non-developers "need to learn as well").
 pub fn tip(action: Action, branch: &str) -> String {
+    let them = |n: u32| if n == 1 { "it" } else { "them" };
     match action {
-        Action::Fetch => "Fetch from origin".into(),
-        Action::Pull(n) => format!("Pull {} from origin", commits(n)),
-        Action::Push(n) => format!("Push {} to origin", commits(n)),
-        Action::Publish => format!("Publish {branch} to origin"),
+        Action::Fetch => "Fetch from origin (check for new commits)".into(),
+        Action::Pull(n) => format!(
+            "Pull {} from origin (bring {} down here)",
+            commits(n),
+            them(n)
+        ),
+        Action::Push(n) => format!(
+            "Push {} to origin (send {} up so others can see {})",
+            commits(n),
+            them(n),
+            them(n)
+        ),
+        Action::Publish => format!("Publish {branch} to origin (put the branch up for others)"),
     }
 }
 
@@ -495,14 +508,14 @@ mod tests {
         assert_eq!(
             l(sync(track(0, 2))),
             (
-                "\u{2193}2 behind \u{b7} fetched 3 min ago".into(),
+                "\u{2193}2 to pull \u{b7} fetched 3 min ago".into(),
                 Tone::Faint
             )
         );
         assert_eq!(
             l(sync(track(1, 0))),
             (
-                "\u{2191}1 ahead \u{b7} fetched 3 min ago".into(),
+                "\u{2191}1 to push \u{b7} fetched 3 min ago".into(),
                 Tone::Faint
             )
         );
@@ -545,7 +558,7 @@ mod tests {
                 fetched: None,
                 ..sync(track(0, 2))
             }),
-            ("\u{2193}2 behind".into(), Tone::Faint)
+            ("\u{2193}2 to pull".into(), Tone::Faint)
         );
     }
 
@@ -564,12 +577,32 @@ mod tests {
 
     #[test]
     fn tips_and_working_words() {
-        assert_eq!(tip(Action::Fetch, "x"), "Fetch from origin");
-        assert_eq!(tip(Action::Pull(1), "x"), "Pull 1 commit from origin");
-        assert_eq!(tip(Action::Pull(2), "x"), "Pull 2 commits from origin");
-        assert_eq!(tip(Action::Push(1), "x"), "Push 1 commit to origin");
-        assert_eq!(tip(Action::Push(2), "x"), "Push 2 commits to origin");
-        assert_eq!(tip(Action::Publish, "feat/x"), "Publish feat/x to origin");
+        // The git words kept, each with what it does in plain words (your call, 2026-11-22:
+        // "even tho non-developers, they need to learn as well").
+        assert_eq!(
+            tip(Action::Fetch, "x"),
+            "Fetch from origin (check for new commits)"
+        );
+        assert_eq!(
+            tip(Action::Pull(1), "x"),
+            "Pull 1 commit from origin (bring it down here)"
+        );
+        assert_eq!(
+            tip(Action::Pull(2), "x"),
+            "Pull 2 commits from origin (bring them down here)"
+        );
+        assert_eq!(
+            tip(Action::Push(1), "x"),
+            "Push 1 commit to origin (send it up so others can see it)"
+        );
+        assert_eq!(
+            tip(Action::Push(2), "x"),
+            "Push 2 commits to origin (send them up so others can see them)"
+        );
+        assert_eq!(
+            tip(Action::Publish, "feat/x"),
+            "Publish feat/x to origin (put the branch up for others)"
+        );
         assert_eq!(working_text(Action::Fetch), "Fetching\u{2026}");
         assert_eq!(working_text(Action::Pull(2)), "Pulling 2 commits\u{2026}");
         assert_eq!(working_text(Action::Push(1)), "Pushing 1 commit\u{2026}");

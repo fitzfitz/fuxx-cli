@@ -35,6 +35,18 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — M11aq polish: plain hints for the commit flow
+
+- **What:** the UI/UX and UX designers reviewed the commit flow for non-developers; your call "B. because even tho
+  non-developers, they need to learn as well": the git words stay (commit, push, pull, staged), with plain hints
+  beside them. The field says "Describe your change"; a faint line under it says what stops a commit ("Stage files to
+  commit: tick them above", "Finish a merge first"); the button reads "Commit 2", lit green when it can commit; ✦'s
+  tooltip "Let Claude write the commit message", a stop square while it writes, "Couldn't write a message · Try
+  again"; Enter says "Press ⌘↵ to commit"; a failed commit adds "Ask your agent to fix what it says, then commit
+  again."; the branch line says "↑1 to push" / "↓2 to pull"; the bar's tooltips have two lines (the git words, then
+  what they mean). Not done: "save all when nothing is ticked" (a plan change, not approved).
+- **Checks:** 2395 tests; clippy unchanged; scenes `changes-*` 6/6.
+
 ### 2026-11-22 — M11aq Commit built (on branch `m11aq-commit`)
 
 - **What:** your words ("enrich our git workspace", the Lead UI/UX Designer's suggestions, "let's do this",

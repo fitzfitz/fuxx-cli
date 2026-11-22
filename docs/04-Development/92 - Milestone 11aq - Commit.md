@@ -95,5 +95,11 @@ Esc); tests for the commit path on real temporary repos (`git_stage`'s style), a
   Deferred minors: closing quotes/backticks stripped by `clean_message`; ✓/✦ looking enabled in another repo while one
   repo's work runs; text typed during a commit cleared on success; the failure line staying until the next tab commit;
   `is_secret` missing `.npmrc`/`.netrc`/`.pgpass`/keystores/`*.tfvars`/`.htpasswd`; no scripted ✦ scene.
+- **Plain hints** (after the build: the two designers' review for non-developers, your call "B": keep the git words,
+  teach them): the field's hint "Describe your change" (short, for a narrow panel), what stops a commit on a faint
+  line under the field, "Commit N" with a green ✓ when it can commit, ✦ "Let {agent} write the commit message" and a
+  stop square while it writes, "Couldn't write a message · Try again", Enter's "Press ⌘↵ to commit", a failed
+  commit's "Ask your agent to fix what it says, then commit again.", "↑N to push" / "↓N to pull" on the branch line,
+  the bar's tooltips in two lines (git words, then plain words). The field's text lines up with the branch icon.
 - Also on this branch (a chore): Stop's circle is reddish while the agent works (`stop_fill`).
 - Checks: 2391 tests; clippy at the baseline; scene `changes-commit` (6 states × 2 themes); the full ui-shots run 272/272 (before and after the fix pass).

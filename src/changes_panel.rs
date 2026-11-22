@@ -83,7 +83,7 @@ const REPO_META: f32 = GIT_SMALL;
 const CONFIRM_WIDTH: f32 = 280.0;
 /// The branch bar (M11v): its padding, its buttons' size and corner, the gap between them,
 /// the tooltip's gap above its button and how long the pointer rests before it shows.
-const BAR_PAD_X: f32 = 16.0;
+pub(crate) const BAR_PAD_X: f32 = 16.0;
 const BAR_PAD_Y: f32 = 14.0;
 // The bottom bar at the Git tab's sizes (your words, 2026-11-22: "also git bottom bar"), its
 // buttons the header's icon buttons: no edge, a fill under the pointer ("icon button shouldn't
@@ -99,7 +99,7 @@ const BAR_GAP: f32 = 2.0;
 const TIP_GAP: f32 = 6.0;
 const TIP_DELAY: Duration = Duration::from_millis(400);
 /// The branch button's side padding (its hover fill); the line under it is set in as much.
-const BRANCH_PAD: f32 = 4.0;
+pub(crate) const BRANCH_PAD: f32 = 4.0;
 
 /// The Changes panel: the list last shown and what it was made from, its scroll, and the
 /// background work under way.
@@ -1744,7 +1744,11 @@ impl Workspace {
         // The icon `text_dim`, no edge; the header buttons' fill under the pointer.
         let ink = ui.text_dim;
         let shown = enabled && changes.hover == Some((which, true));
-        let tip_text: SharedString = branch_sync::tip(action, branch).into();
+        // Two lines: the git words, then what they mean (fainter), so the tooltip stays narrow.
+        let tip_full = branch_sync::tip(action, branch);
+        let (tip_head, tip_meaning) = tip_lines(&tip_full);
+        let (tip_head, tip_meaning): (SharedString, Option<SharedString>) =
+            (tip_head.to_string().into(), tip_meaning.map(Into::into));
         let id = match which {
             BarButton::Fetch => "changes-bar-fetch",
             BarButton::Action => "changes-bar-action",
@@ -1782,7 +1786,12 @@ impl Workspace {
                             anchored()
                                 .anchor(Anchor::BottomRight)
                                 .snap_to_window_with_margin(px(4.0))
-                                .child(tip_box(tip_text, &ui)),
+                                .child(
+                                    tip_box(tip_head, &ui).flex().flex_col().children(
+                                        tip_meaning
+                                            .map(|m| div().text_color(hsla(ui.text_dim)).child(m)),
+                                    ),
+                                ),
                         )),
                 )
             })
@@ -1979,8 +1988,33 @@ impl Workspace {
     }
 }
 
+/// A bar tooltip's two lines: "Pull 2 commits from origin (bring them down here)" is
+/// "Pull 2 commits from origin" and "Bring them down here".
+fn tip_lines(tip: &str) -> (&str, Option<String>) {
+    match tip.strip_suffix(')').and_then(|t| t.split_once(" (")) {
+        Some((head, meaning)) => {
+            let mut chars = meaning.chars();
+            let first = chars.next().map(|c| c.to_uppercase().collect::<String>());
+            (head, first.map(|f| f + chars.as_str()))
+        }
+        None => (tip, None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_bar_tip_splits_into_its_two_lines() {
+        assert_eq!(
+            super::tip_lines("Pull 2 commits from origin (bring them down here)"),
+            (
+                "Pull 2 commits from origin",
+                Some("Bring them down here".to_string())
+            )
+        );
+        assert_eq!(super::tip_lines("Fetching…"), ("Fetching…", None));
+    }
+
     use super::*;
     use crate::branch_sync::Upstream;
     use crate::ui_tokens::contrast;
