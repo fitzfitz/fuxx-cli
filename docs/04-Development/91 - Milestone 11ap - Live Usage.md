@@ -250,3 +250,10 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
   default). `agent_sweep.rs`; scene `agent-box-sweep` (the trigger rules).
 - **Inactive tab titles quieter** ("inactive tab make the text more transparent"): `tab_idle_text`, a third of the
   way from faint text to the tab's fill, held to 3:1 (a mark's floor; was text's 4.5:1); a waiting tab keeps faint text.
+- **Sweep, fixed and stronger** ("when I go back, it doesnt animate … make it great!"): it was ended at once by any
+  redraw of the box (the composer is observed on every notify: its caret's breath, the keyboard coming back), so it
+  only played the first time; now only a change of the box's text ends it. Stronger: a 30 % tail (28 strokes, 2 pt),
+  a round glowing head (three soft circles), and a landing — the whole rim lights once over the lap's last quarter.
+- **First `/clear` after a restart** ("the second `/clear` really clears it"): a resumed run whose first message is
+  `/clear` resets, then starts under a new id — read as "Couldn't resume". A reset now settles the resume; scene
+  `agent-tab-runs-resumed-clear`.

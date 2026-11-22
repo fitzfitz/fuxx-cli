@@ -2274,6 +2274,17 @@ pub(super) fn agent_box_sweep() {
             });
             settle_frames(cx, window);
             assert_eq!(sweeps(cx), 2, "{n}: back: one more");
+            // The box redrawing (its caret breathing, the keyboard back in it) doesn't end it;
+            // typing does (your report, 2026-11-22: "when I go back, it doesnt animate").
+            let running =
+                |cx: &mut VisualTestAppContext| cx.read(|cx| view.read(cx).sweep_at.is_some());
+            let composer = cx.read(|cx| view.read(cx).composer.clone());
+            cx.update(|cx| composer.update(cx, |_, cx| cx.notify()));
+            settle_frames(cx, window);
+            assert!(running(cx), "{n}: a redraw of the box keeps it");
+            cx.update(|cx| composer.update(cx, |c, cx| c.set_text("hi".into(), cx)));
+            settle_frames(cx, window);
+            assert!(!running(cx), "{n}: typing ends it");
             // The shot: part way round (wall clock; to look at, not checked).
             cx.update(|cx| view.update(cx, |t, cx| t.shown(cx)));
             let _ = frame_fresh(cx, window);
@@ -3156,6 +3167,30 @@ pub(super) fn agent_tab_runs() {
                 told.borrow().last().map(String::as_str),
                 Some(CLEARED),
                 "{n}"
+            );
+        },
+    );
+
+    // Your report (2026-11-22: "when I `/clear` claude first time it happens like this, the
+    // second `/clear` really clears it"): a resumed run whose first message is `/clear` — the
+    // agent resets, then starts under a new id. That is the clear, not a failed resume.
+    run_scene(
+        "agent-tab-runs-resumed-clear",
+        resumed.clone(),
+        |n, cx, tab, _| {
+            feed(cx, tab, |t, cx| t.send("/clear".into(), cx));
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(vec![Event::Cleared, started(CLEARED)], cx)
+            });
+            assert_eq!(
+                notices(cx, tab, BAD_RESUME_NOTICE),
+                0,
+                "{n}: cleared, not a failed resume"
+            );
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).resume_id()).as_deref(),
+                Some(CLEARED),
+                "{n}: follows the cleared conversation"
             );
         },
     );

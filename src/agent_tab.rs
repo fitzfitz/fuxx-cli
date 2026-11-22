@@ -955,6 +955,9 @@ pub struct AgentTab {
     /// and how many have been (each its own animation).
     pub(crate) sweep_at: Option<Instant>,
     pub(crate) sweeps: u64,
+    /// The box's text when the sweep started: it ends only when that changes (the composer
+    /// is observed on every redraw: its caret's breath, the keyboard coming back).
+    sweep_text: String,
     pub(crate) effort_panel_at: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// The top bar (spec A §C): what its animations start from (`agent_top::TopState`), its
     /// status mark and the clock that turns it (a still one of its own until the Workspace
@@ -1388,6 +1391,7 @@ impl AgentTab {
             effort_switch: None,
             sweep_at: None,
             sweeps: 0,
+            sweep_text: String::new(),
             effort_panel_at: Default::default(),
             top: crate::agent_top::TopState::default(),
             top_mark,
@@ -2047,6 +2051,10 @@ impl AgentTab {
                 // `/clear`: the chat empties (the conversation drops its items) and fades back in
                 // empty, keyed by how many times it was cleared.
                 Event::Cleared => {
+                    // The reset settles a resume: the new id after it is the cleared conversation
+                    // going on, not a failed resume (your report, 2026-11-22: the first `/clear`
+                    // after a restart said "Couldn't resume…").
+                    self.run.resume = None;
                     self.tool_started.clear();
                     self.cleared += 1;
                     self.cleared_at = Some(Instant::now());
@@ -2650,8 +2658,12 @@ impl AgentTab {
 
     /// The composer changed: the `@` list follows its query, or closes.
     fn composer_changed(&mut self, cx: &mut Context<Self>) {
-        // Typing ends the box's sweep (the designer's spec: it never runs while you type).
-        self.sweep_at = None;
+        // Typing ends the box's sweep (the designer's spec: it never runs while you type); a
+        // redraw of the box (its caret, focus) doesn't (your report, 2026-11-22: going back to
+        // the tab, it was ended at once).
+        if self.sweep_at.is_some() && self.composer.read(cx).text() != self.sweep_text {
+            self.sweep_at = None;
+        }
         self.slash_follow(cx);
         let Some(at) = &self.at else {
             return;
@@ -4776,6 +4788,7 @@ impl AgentTab {
             return;
         }
         self.sweep_at = Some(Instant::now());
+        self.sweep_text = self.composer.read(cx).text().to_string();
         self.sweeps += 1;
         cx.notify();
     }

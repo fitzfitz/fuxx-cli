@@ -14,20 +14,25 @@ pub const LAP_MS: f32 = 1200.0;
 /// Its fades: in over the lap's first 150 ms, out over its last 350.
 const FADE_IN_MS: f32 = 150.0;
 const FADE_OUT_FROM_MS: f32 = 850.0;
-/// The tail's length (a share of the rim) and how many pieces it is painted in (a path each).
-pub const TAIL: f32 = 0.22;
-pub const PIECES: usize = 24;
-/// The glow under the head: the share of the tail it covers.
-pub const BLOOM: f32 = 0.10;
+/// The tail's length (a share of the rim) and how many pieces it is painted in (a path each):
+/// longer since your words (2026-11-22: "the effect is not too outstanding … make it great").
+pub const TAIL: f32 = 0.30;
+pub const PIECES: usize = 28;
+/// The head's glow: round layers about it, each its radius and opacity (dark, light), the widest
+/// and faintest first (round, so no square ends show).
+pub const GLOW: [(f32, f32, f32); 3] = [(7.0, 0.10, 0.07), (4.5, 0.22, 0.16), (2.0, 0.95, 0.9)];
+/// The landing: over the lap's last quarter the whole rim lights once and fades.
+pub const LANDING_FROM: f32 = 0.75;
 /// With reduce motion: nothing moves; the rim tints and fades back over this long.
 pub const STILL_MS: f32 = 500.0;
 
-/// One frame of the pass: how far round the head is (0 to 1 of the rim, eased) and how much of
-/// the comet shows (its fades).
+/// One frame of the pass: how far round the head is (0 to 1 of the rim, eased), how much of
+/// the comet shows (its fades), and how much the whole rim lights (its landing, 0 to 1).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frame {
     pub head: f32,
     pub fade: f32,
+    pub landing: f32,
 }
 
 /// The frame `ms` after the pass was asked for; none once it is over (nothing is drawn then).
@@ -37,15 +42,18 @@ pub fn frame(ms: f32) -> Option<Frame> {
         return (lap < 0.0).then_some(Frame {
             head: 0.0,
             fade: 0.0,
+            landing: 0.0,
         });
     }
     let head = crate::agent_top::ease_out_cubic(lap / LAP_MS);
     let fade_in = (lap / FADE_IN_MS).min(1.0);
     let out = ((lap - FADE_OUT_FROM_MS) / (LAP_MS - FADE_OUT_FROM_MS)).clamp(0.0, 1.0);
     let fade_out = 1.0 - out * out;
+    let late = ((lap / LAP_MS - LANDING_FROM) / (1.0 - LANDING_FROM)).clamp(0.0, 1.0);
     Some(Frame {
         head,
         fade: fade_in.min(fade_out),
+        landing: (late * std::f32::consts::PI).sin(),
     })
 }
 
@@ -54,7 +62,7 @@ pub fn frame(ms: f32) -> Option<Frame> {
 pub fn ink(t: f32, dark: bool, accent: Rgb, glow_top: Rgb) -> (Rgb, f32) {
     let t = t.clamp(0.0, 1.0);
     let lerp = |a: f32, b: f32, k: f32| a + (b - a) * k;
-    let (near, mid) = if dark { (0.9, 0.35) } else { (0.8, 0.3) };
+    let (near, mid) = if dark { (0.95, 0.5) } else { (0.9, 0.45) };
     let alpha = if t < 0.12 {
         lerp(1.0, near, t / 0.12)
     } else if t < 0.5 {
@@ -70,7 +78,7 @@ pub fn ink(t: f32, dark: bool, accent: Rgb, glow_top: Rgb) -> (Rgb, f32) {
                 g: 255,
                 b: 255,
             },
-            0.35,
+            0.5,
         );
         if t < 0.12 {
             mix(head, accent, t / 0.12)
@@ -255,7 +263,13 @@ mod tests {
             "waiting: nothing shows"
         );
         let start = frame(DELAY_MS).expect("starts");
-        assert_eq!((start.head, start.fade), (0.0, 0.0));
+        assert_eq!((start.head, start.fade, start.landing), (0.0, 0.0, 0.0));
+        // The landing: dark until the last quarter, lit in its middle, gone at the end.
+        assert_eq!(frame(DELAY_MS + 600.0).map(|f| f.landing), Some(0.0));
+        let lit = frame(DELAY_MS + LAP_MS * 0.875).expect("landing");
+        assert!(lit.landing > 0.99, "{lit:?}");
+        let end = frame(DELAY_MS + LAP_MS).expect("the last frame");
+        assert!(end.landing < 0.01, "{end:?}");
         let mid = frame(DELAY_MS + 600.0).expect("runs");
         assert!(mid.fade > 0.99 && mid.head > 0.8, "{mid:?}");
         let near = frame(DELAY_MS + LAP_MS - 1.0).expect("still on");

@@ -2112,7 +2112,7 @@ fn paint_sweep(
     still: bool,
     ink: SweepInk,
 ) {
-    use crate::agent_sweep::{BLOOM, Notch, PIECES, STILL_MS, Shape, TAIL, frame, outline};
+    use crate::agent_sweep::{GLOW, Notch, PIECES, STILL_MS, Shape, TAIL, frame, outline};
     use crate::card_view::OUTER_INSET;
     let (x0, y0) = (f32::from(bounds.left()), f32::from(bounds.top()));
     let (x1, y1) = (f32::from(bounds.right()), f32::from(bounds.bottom()));
@@ -2165,7 +2165,17 @@ fn paint_sweep(
         return;
     };
     let (head, tail) = (f.head * length, TAIL * length);
-    let width = if ink.dark { 1.5 } else { 1.25 };
+    // The landing: the whole rim lights once as the comet comes home.
+    if f.landing > 0. {
+        let lit = if ink.dark { 0.45 } else { 0.35 };
+        stroke(
+            window,
+            &rim.span(0., length),
+            1.5,
+            hsla(ink.accent).opacity(lit * f.landing),
+        );
+    }
+    let width = if ink.dark { 2.0 } else { 1.75 };
     for k in 0..PIECES {
         let (near, far) = (k as f32 / PIECES as f32, (k + 1) as f32 / PIECES as f32);
         let (a, b) = (head - tail * far, head - tail * near);
@@ -2181,13 +2191,37 @@ fn paint_sweep(
             hsla(color).opacity(alpha * f.fade),
         );
     }
-    let glow = if ink.dark { 0.18 } else { 0.12 };
-    stroke(
-        window,
-        &rim.span(head - tail * BLOOM, head),
-        4.,
-        hsla(ink.accent).opacity(glow * f.fade),
-    );
+    // The head: a glowing point, round layers (the brightest in the head's own colour).
+    let (hx, hy) = rim.at(head);
+    let (head_ink, _) = crate::agent_sweep::ink(0., ink.dark, ink.accent, ink.glow);
+    for (i, &(r, dark_a, light_a)) in GLOW.iter().enumerate() {
+        let color = if i + 1 == GLOW.len() {
+            head_ink
+        } else {
+            ink.accent
+        };
+        let a = if ink.dark { dark_a } else { light_a } * f.fade;
+        let mut dot = gpui::PathBuilder::fill();
+        dot.move_to(point(px(hx + r), px(hy)));
+        dot.arc_to(
+            point(px(r), px(r)),
+            px(0.),
+            false,
+            true,
+            point(px(hx - r), px(hy)),
+        );
+        dot.arc_to(
+            point(px(r), px(r)),
+            px(0.),
+            false,
+            true,
+            point(px(hx + r), px(hy)),
+        );
+        dot.close();
+        if let Ok(path) = dot.build() {
+            window.paint_path(path, hsla(color).opacity(a));
+        }
+    }
 }
 
 /// A control pill in the box's bottom row (the designer's details): `CHIP_H` tall, round, on
