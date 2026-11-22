@@ -115,4 +115,4 @@ Esc); tests for the commit path on real temporary repos (`git_stage`'s style), a
   and can we make the name like "Image #1", Image #2, and so on?"): a pasted image is "Image #N" in the order pasted in
   the tab (a file keeps its name); an image chip, in the box or in a sent message, opens the image in a viewer over
   the tab (the tool modal's scrim, the image fitted whole, its name and ×; Esc, × or a click outside closes). The tab
-  keeps its images in memory only, for its life. Scene `agent-box-image-view`.
+  keeps its images in memory only, for its life. Scene `agent-box-image-view`. Released in v0.12.5.

@@ -35,6 +35,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — v0.12.5 released (v0.12.4's tag run failed)
+
+- **What:** your words ("deploy patch.. and go write it"): pasted images named "Image #N" and a viewer for image chips.
+- **v0.12.4:** its tag run (45021952652) failed one test, `attaching_to_a_busy_session_matches_the_daemon`: its
+  20,000-line loop finished before the attach on CI ("attached too late"); the master run of the same commit passed.
+  Fixed so it can't race (the loop runs until the test releases it), `f8cb32c`. Moving the tag was refused as
+  destructive, so the patch went out as 0.12.5; the `v0.12.4` tag stays, with no release.
+- **Release:** commit `f2149c7`, tag `v0.12.5`, run 45022712600 (all green), asset `fuxx-0.12.5.zip` at
+  https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.12.5.
+
 ### 2026-11-22 — Chore: pasted images "Image #N" and a viewer; M11ar design approved
 
 - **What:** your words ("I want it to be viewable (modal to view the image) and can we make the name like "Image #1",
