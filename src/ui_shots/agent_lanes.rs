@@ -79,6 +79,14 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "agent-lanes-background",
+        run: agent_lanes_background,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: SOURCES,
+    },
+    Scene {
         name: "agent-lanes-states",
         run: agent_lanes_states,
         themes: Themes::Both,
@@ -469,4 +477,50 @@ pub(super) fn agent_lanes_agy() {
         );
         println!("ui-shots: {}", path.display());
     }
+}
+
+/// Main finished but a subagent runs on (your report, 2026-11-22: "it says done … but in
+/// reality there are subagents running"): the tab shows Working and the pill "1 subagent
+/// running" until it ends; then Done.
+pub(super) fn agent_lanes_background() {
+    use crate::status::Status;
+    scene_sized(
+        "agent-lanes-background",
+        (1100.0, 640.0),
+        |n, cx, window, tab| {
+            feed(cx, tab, |t, cx| {
+                t.send("Review it in the background".into(), cx)
+            });
+            let mut events = started("bg", "Review the branch");
+            events.push(Event::TurnDone {
+                ok: true,
+                message: None,
+            });
+            feed(cx, tab, |t, cx| t.shot_feed(events, cx));
+            let shown = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| (tab.read(cx).status(), tab.read(cx).shown_status()))
+            };
+            assert_eq!(
+                shown(cx),
+                (Status::Done, Status::Working),
+                "{n}: Main done, the tab still working"
+            );
+            // Ended: Done everywhere (checked, then back to the running picture).
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(
+                    vec![Event::SubagentEnded {
+                        id: "bg".into(),
+                        end: LaneEnd::Done,
+                    }],
+                    cx,
+                )
+            });
+            assert_eq!(shown(cx), (Status::Done, Status::Done), "{n}: all finished");
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(started("bg2", "Watch the tests"), cx)
+            });
+            let _ = super::frame_fresh(cx, window);
+            assert_eq!(shown(cx).1, Status::Working, "{n}");
+        },
+    );
 }

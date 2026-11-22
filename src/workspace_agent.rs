@@ -711,7 +711,7 @@ impl Workspace {
     pub(crate) fn agent_busy(&self, tab: TabId, cx: &App) -> bool {
         self.agents.get(&tab).is_some_and(|slot| {
             matches!(
-                slot.view.read(cx).status(),
+                slot.view.read(cx).shown_status(),
                 Status::Working | Status::Waiting
             )
         })

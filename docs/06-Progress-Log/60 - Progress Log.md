@@ -35,7 +35,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
-### 2026-11-22 — M11ar Subagents built (on branch `m11ar-subagents`)
+### 2026-11-22 — Chore: the tab works while its subagents do
+
+- **What:** your words ("it says done … but in reality there are subagents running"): Working (and "1 subagent
+  running") while a subagent outlives Main's turn (note 93, chores). M11ar merged to master first.
+- **Checks:** 2449 tests; clippy at the baseline; the agent scenes pass, `agent-lanes-background` new.
+
+### 2026-11-22 — M11ar Subagents built (merged to master)
 
 - **What:** your words ("can we switch chat view between subagents?", "I want the full power of both claude and agy",
   "go with A", "go with yours", "But above is approved!", "cool let's go ahead", and the three leads' picks): a lane

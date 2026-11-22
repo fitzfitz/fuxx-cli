@@ -1226,7 +1226,7 @@ impl AgentTab {
                     .failed_to_start(&format!("No agent called {name}"));
                 this.sync_rows();
                 // Not news: what the tab shows from the start.
-                this.said.status = Some(this.conversation.status());
+                this.said.status = Some(this.shown_status());
             }
             Some(provider) => {
                 this.booting = true;
@@ -1611,6 +1611,13 @@ impl AgentTab {
 
     pub fn status(&self) -> Status {
         self.conversation.status()
+    }
+
+    /// What the tab shows (its mark, the sidebar, the status pill, closing's question): Working
+    /// while a subagent still runs after Main finished. `status` stays Main's own (Stop, the
+    /// box's notes, sending).
+    pub fn shown_status(&self) -> Status {
+        crate::agent_lanes::shown_status(self.status(), self.conversation.lanes())
     }
 
     /// "⟨Label⟩ wants to run: ⟨what⟩" while a permission waits.
@@ -2323,7 +2330,7 @@ impl AgentTab {
             self.said.question = question.clone();
             cx.emit(AgentTabEvent::Question(question));
         }
-        let status = self.conversation.status();
+        let status = self.shown_status();
         if self.said.status != Some(status) {
             self.said.status = Some(status);
             cx.emit(AgentTabEvent::Status { status, live });
@@ -4454,7 +4461,7 @@ impl AgentTab {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         use crate::agent_top::{PillMark, animating, ease_out_cubic, pill};
-        let (status, stopping) = (self.status(), self.stopping.is_some());
+        let (status, stopping) = (self.shown_status(), self.stopping.is_some());
         if status == Status::Idle && !stopping {
             return None;
         }
@@ -4514,7 +4521,16 @@ impl AgentTab {
             .font_weight(FontWeight::MEDIUM)
             .text_color(hsla(to_ink))
             .child(mark)
-            .child(SharedString::from(now.word));
+            .child(SharedString::from(
+                // Main finished, its subagents haven't: say so (not "Cultivating…").
+                match (
+                    self.status(),
+                    crate::agent_lanes::running_word(self.conversation.lanes()),
+                ) {
+                    (Status::Done | Status::Idle, Some(word)) if !stopping => word,
+                    _ => now.word.to_string(),
+                },
+            ));
         let el = match from_ink {
             Some(from) => el
                 .with_animation(
@@ -4537,7 +4553,7 @@ impl AgentTab {
         };
         let clock_now = Instant::now();
         let ms = Duration::from_millis;
-        let status = self.status();
+        let status = self.shown_status();
         let stopping = self.stopping.is_some();
         let cost = self.conversation.cost_usd();
         let context = self.conversation.context_pct();

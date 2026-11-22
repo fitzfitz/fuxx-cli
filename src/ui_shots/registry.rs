@@ -284,6 +284,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-lanes-ask",
     "agent-lanes-narrow",
     "agent-lanes-agy",
+    "agent-lanes-background",
     "agent-lanes-states",
     "agent-tab-failed",
     "agent-tab-bad-resume",

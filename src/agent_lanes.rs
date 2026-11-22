@@ -114,6 +114,27 @@ pub fn stamp_ends(
     }
 }
 
+/// What the tab shows (its mark, the sidebar, the status pill): Main's status — but Working
+/// while a subagent still runs after Main finished (your words, 2026-11-22: "it says done …
+/// but in reality there are subagents running under the hood").
+pub fn shown_status(main: crate::status::Status, lanes: &[Lane]) -> crate::status::Status {
+    use crate::status::Status;
+    match main {
+        Status::Done | Status::Idle if lanes.iter().any(|l| l.status.live()) => Status::Working,
+        other => other,
+    }
+}
+
+/// The status pill's word while only subagents run: "1 subagent running", "2 subagents
+/// running"; none when none does.
+pub fn running_word(lanes: &[Lane]) -> Option<String> {
+    match lanes.iter().filter(|l| l.status.live()).count() {
+        0 => None,
+        1 => Some("1 subagent running".into()),
+        n => Some(format!("{n} subagents running")),
+    }
+}
+
 /// Whether a lane's header offers Stop: it is still going and its agent can stop it alone.
 pub fn shows_stop(lane: &Lane) -> bool {
     lane.controls.stop && lane.status.live()
@@ -211,6 +232,42 @@ mod tests {
             now + Duration::from_secs(9),
         );
         assert_eq!(times["gone"].1, Some(now));
+    }
+
+    #[test]
+    fn subagents_still_running_keep_the_tab_working() {
+        // Your report (2026-11-22): "it says done … but in reality there are subagents running".
+        use crate::status::Status;
+        let running = lane("a", "A");
+        let mut done = lane("b", "B");
+        done.status = LaneStatus::Done;
+        assert_eq!(
+            shown_status(Status::Done, &[done.clone(), running.clone()]),
+            Status::Working
+        );
+        assert_eq!(
+            shown_status(Status::Idle, &[running.clone()]),
+            Status::Working
+        );
+        assert_eq!(
+            shown_status(Status::Done, &[done.clone()]),
+            Status::Done,
+            "all finished"
+        );
+        assert_eq!(
+            shown_status(Status::Waiting, &[running.clone()]),
+            Status::Waiting,
+            "a question wins"
+        );
+        assert_eq!(
+            running_word(&[running.clone()]),
+            Some("1 subagent running".into())
+        );
+        assert_eq!(
+            running_word(&[running.clone(), lane("c", "C")]),
+            Some("2 subagents running".into())
+        );
+        assert_eq!(running_word(&[done]), None);
     }
 
     #[test]

@@ -204,3 +204,11 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   lanes; small wording and state nits (the plan's ledger lists them).
 - **Checks:** 2,448 tests; clippy at the baseline; 7 new scenes (`agent-lanes-strip`, `-overflow`, `-view`, `-ask`,
   `-narrow`, `-agy`, `-states`); the full ui-shots run before and after the fix pass.
+
+## Chores after M11ar
+
+- **Working while subagents run** (your words, 2026-11-22: "the status indicator is false. it says done … but in
+  reality there are subagents running under the hood"): the tab shows Working — its mark, the sidebar, the status
+  pill ("1 subagent running"), and closing asks first — while any subagent still runs after Main finished
+  (`AgentTab::shown_status`; Main's own `status` still drives Stop, notes and sending). Scene
+  `agent-lanes-background`.
