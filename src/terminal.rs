@@ -2553,15 +2553,48 @@ mod daemon_tests {
         );
     }
 
+    /// A file whose appearance ends a test's shell loop: made by `release`, or on drop (a failed
+    /// test never leaves the loop running); removed on drop.
+    struct Release(std::path::PathBuf);
+
+    impl Release {
+        fn release(&self) {
+            let _ = std::fs::write(&self.0, "");
+        }
+    }
+
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.release();
+            // The loop checks between lines: give it a moment to see the file before it goes.
+            std::thread::sleep(Duration::from_millis(200));
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     #[test]
     fn attaching_to_a_busy_session_matches_the_daemon() {
         let (_d, path) = daemon("t-busy");
         let client = DaemonClient::connect(&path).unwrap();
         let id = client.create(sh_create(50, 8)).unwrap();
+        // The loop prints until the test says stop (a file appears), so the session is busy
+        // while it attaches however fast the machine is: a 20,000-line loop once finished
+        // before the attach on CI ("attached too late", the v0.12.4 tag run).
+        let stop = Release(std::env::temp_dir().join(format!(
+            "fuxx-busy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        )));
         // DO''NE: the echoed command line doesn't match a line that is just DONE.
         client.input(
             id,
-            b"i=0; while [ $i -lt 20000 ]; do i=$((i+1)); echo line$i; done; echo DO''NE\r",
+            format!(
+                "i=0; while [ ! -e '{}' ]; do i=$((i+1)); echo line$i; done; echo DO''NE\r",
+                stop.0.display()
+            )
+            .as_bytes(),
         );
         assert!(eventually(|| client
             .read_text(id, "screen")
@@ -2571,6 +2604,7 @@ mod daemon_tests {
         let core = TerminalCore::attach_daemon(client.clone(), id, tx, Theme::default()).unwrap();
         let busy = client.read_text(id, "screen").unwrap();
         assert!(!busy.lines().any(|l| l == "DONE"), "attached too late");
+        stop.release();
         assert!(eventually(|| screen_lines(&core)
             .iter()
             .any(|l| l == "DONE")));
