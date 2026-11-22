@@ -516,11 +516,15 @@ pub(super) fn agent_lanes_background() {
                 )
             });
             assert_eq!(shown(cx), (Status::Done, Status::Done), "{n}: all finished");
-            feed(cx, tab, |t, cx| {
-                t.shot_feed(started("bg2", "Watch the tests"), cx)
+            // Main starts another in its turn, and finishes: "Divining…" (your words, 2026-11-22).
+            let mut again = started("bg2", "Watch the tests");
+            again.push(Event::TurnDone {
+                ok: true,
+                message: None,
             });
+            feed(cx, tab, |t, cx| t.shot_feed(again, cx));
             let _ = super::frame_fresh(cx, window);
-            assert_eq!(shown(cx).1, Status::Working, "{n}");
+            assert_eq!(shown(cx), (Status::Done, Status::Working), "{n}");
         },
     );
 }

@@ -207,12 +207,17 @@ impl AgentTab {
         let labels = crate::agent_lanes::pill_labels(lanes, max);
         // Pill widths, estimated: a mark, the label in the meta size, the padding.
         let pill_w = |label: &str| MARK + 5.0 + label.chars().count() as f32 * 6.6 + 16.0;
+        // Main, then the lanes newest first: strip place `n` (1…) is lane `order[n - 1]`.
+        let order = crate::agent_lanes::shown_order(lanes);
         let mut widths = vec![pill_w("Main")];
-        widths.extend(labels.iter().map(|l| pill_w(l)));
+        widths.extend(order.iter().map(|&i| pill_w(&labels[i])));
         let avail = (width - 2.0 * AREA_X).min(crate::ui_tokens::chat::COLUMN_MAX);
         let active = match &self.view {
             View::Main => 0,
-            View::Lane(id) => lanes.iter().position(|l| &l.id == id).map_or(0, |i| i + 1),
+            View::Lane(id) => order
+                .iter()
+                .position(|&i| &lanes[i].id == id)
+                .map_or(0, |p| p + 1),
         };
         let (shown, hidden) = crate::agent_lanes::fit(&widths, avail, active);
         let neutral = mix(c.page, c.text, 0.06);
@@ -266,11 +271,11 @@ impl AgentTab {
                 ));
                 continue;
             }
-            let lane = &lanes[n - 1];
+            let lane = &lanes[order[n - 1]];
             pills.push(pill(
                 n,
                 self.lane_mark(lane, &c),
-                labels[n - 1].clone(),
+                labels[order[n - 1]].clone(),
                 View::Lane(lane.id.clone()),
                 lane.status == LaneStatus::Waiting,
                 self.lane_tip(lane),
@@ -281,7 +286,7 @@ impl AgentTab {
                 let rows: Vec<AnyElement> = (1..widths.len())
                     .filter(|n| !shown.contains(n))
                     .map(|n| {
-                        let lane = &lanes[n - 1];
+                        let lane = &lanes[order[n - 1]];
                         let to = View::Lane(lane.id.clone());
                         let time = self.lane_elapsed(&lane.id).map(crate::agent_lanes::clock);
                         div()
@@ -301,7 +306,7 @@ impl AgentTab {
                             .child(
                                 div()
                                     .flex_1()
-                                    .child(SharedString::from(labels[n - 1].clone())),
+                                    .child(SharedString::from(labels[order[n - 1]].clone())),
                             )
                             .children(time.map(|t| {
                                 div()

@@ -234,3 +234,8 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
 - **Inactive tabs' marks faint** (your words, 2026-11-22: "inactive tab status indicator, should be almost transparent
   (0.20)"): a tab not shown draws its status mark at 0.2 (`tab_bar::INACTIVE_MARK`); the shown tab's is whole, and a
   waiting tab keeps its tint. Scene `tabs-minimal`.
+- **"Divining…", newest first** (your words, 2026-11-22: "if subagents are working, change cultivating to divining
+  … if main is working while subagents working as well, cultivating wins … for subagents list on top, make sure it
+  sorts by newest"): the status word is "Divining…" while only subagents work (Main's own work says
+  "Cultivating…"); the pills after Main go newest first (`agent_lanes::shown_order`), as do ⌥⌘[ / ⌥⌘] and the "+N"
+  list (the oldest fold away first). Scene `agent-lanes-background` shows "Divining…".

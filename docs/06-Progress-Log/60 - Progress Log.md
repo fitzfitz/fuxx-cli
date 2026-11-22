@@ -61,6 +61,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Next:** your on-screen check (note 94); merge (renumber if M11au collides), then fuxx-completes' M1c can declare
   its four settings.
 
+### 2026-11-22 — Chore: "Divining…", subagent pills newest first
+
+- **What:** your words (note 93, chores): "Divining…" while only subagents work, "Cultivating…" when Main does;
+  the pills newest first.
+- **Checks:** 2481 tests; clippy at the baseline; the agent scenes pass.
+
 ### 2026-11-22 — Chore: inactive tabs' marks at 0.2
 
 - **What:** your words ("inactive tab status indicator, should be almost transparent (0.20)") (note 93, chores).

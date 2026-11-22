@@ -40,20 +40,21 @@ pub fn pill_labels(lanes: &[Lane], max: usize) -> Vec<String> {
         .collect()
 }
 
-/// The view `dir` pills from `view` (Main first, then the lanes; no wrap). A lane no longer
-/// there goes back to Main.
+/// The view `dir` pills from `view` (Main first, then the lanes newest first: `shown_order`;
+/// no wrap). A lane no longer there goes back to Main.
 pub fn step(view: &View, lanes: &[Lane], dir: i32) -> View {
+    let order = shown_order(lanes);
     let at = match view {
         View::Main => 0,
-        View::Lane(id) => match lanes.iter().position(|l| &l.id == id) {
-            Some(i) => i + 1,
+        View::Lane(id) => match order.iter().position(|&i| &lanes[i].id == id) {
+            Some(p) => p + 1,
             None => return View::Main,
         },
     };
-    let to = (at as i64 + dir as i64).clamp(0, lanes.len() as i64) as usize;
+    let to = (at as i64 + dir as i64).clamp(0, order.len() as i64) as usize;
     match to {
         0 => View::Main,
-        n => View::Lane(lanes[n - 1].id.clone()),
+        p => View::Lane(lanes[order[p - 1]].id.clone()),
     }
 }
 
@@ -127,14 +128,20 @@ pub fn shown_status(main: crate::status::Status, lanes: &[Lane]) -> crate::statu
     }
 }
 
-/// The status pill's word while only subagents run: "1 subagent running", "2 subagents
-/// running"; none when none does.
+/// The status pill's word while only subagents run (your words, 2026-11-22: "if subagents are
+/// working, change cultivating to divining … if main is working while subagents working as
+/// well, cultivating wins"): "Divining…"; none when none does.
 pub fn running_word(lanes: &[Lane]) -> Option<String> {
-    match lanes.iter().filter(|l| l.status.live()).count() {
-        0 => None,
-        1 => Some("1 subagent running".into()),
-        n => Some(format!("{n} subagents running")),
-    }
+    lanes
+        .iter()
+        .any(|l| l.status.live())
+        .then(|| "Divining…".to_string())
+}
+
+/// The lanes' places in the strip, after Main: newest first (your words, 2026-11-22: "make
+/// sure it sorts by newest"). Indexes into `lanes` (start order).
+pub fn shown_order(lanes: &[Lane]) -> Vec<usize> {
+    (0..lanes.len()).rev().collect()
 }
 
 /// How often a lane's followed file is read: often while it works, rarely once it ended (a
@@ -270,13 +277,14 @@ mod tests {
             Status::Waiting,
             "a question wins"
         );
+        // Your words (2026-11-22): "if subagents are working, change cultivating to divining".
         assert_eq!(
             running_word(std::slice::from_ref(&running)),
-            Some("1 subagent running".into())
+            Some("Divining…".into())
         );
         assert_eq!(
             running_word(&[running.clone(), lane("c", "C")]),
-            Some("2 subagents running".into())
+            Some("Divining…".into())
         );
         assert_eq!(running_word(&[done]), None);
     }
@@ -344,13 +352,24 @@ mod tests {
 
     #[test]
     fn stepping_goes_through_main_then_the_lanes() {
+        // Pills newest first after Main (your words, 2026-11-22: "make sure it sorts by
+        // newest"): `b` started after `a`.
         let lanes = [lane("a", "A"), lane("b", "B")];
-        assert_eq!(step(&View::Main, &lanes, 1), View::Lane("a".into()));
+        assert_eq!(shown_order(&lanes), [1, 0]);
+        assert_eq!(
+            step(&View::Main, &lanes, 1),
+            View::Lane("b".into()),
+            "the newest"
+        );
         assert_eq!(step(&View::Main, &lanes, -1), View::Main, "Main is first");
-        assert_eq!(step(&View::Lane("a".into()), &lanes, -1), View::Main);
+        assert_eq!(step(&View::Lane("b".into()), &lanes, -1), View::Main);
         assert_eq!(
             step(&View::Lane("b".into()), &lanes, 1),
-            View::Lane("b".into()),
+            View::Lane("a".into())
+        );
+        assert_eq!(
+            step(&View::Lane("a".into()), &lanes, 1),
+            View::Lane("a".into()),
             "no wrap"
         );
         assert_eq!(step(&View::Main, &[], 1), View::Main, "no lanes");
