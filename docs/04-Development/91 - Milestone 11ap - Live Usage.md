@@ -257,3 +257,5 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
 - **First `/clear` after a restart** ("the second `/clear` really clears it"): a resumed run whose first message is
   `/clear` resets, then starts under a new id — read as "Couldn't resume". A reset now settles the resume; scene
   `agent-tab-runs-resumed-clear`.
+
+**These released in v0.12.2** (2026-11-22, run 45007594771, `fuxx-0.12.2.zip`).

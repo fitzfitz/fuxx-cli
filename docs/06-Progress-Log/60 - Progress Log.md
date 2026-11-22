@@ -15,6 +15,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ## Current status snapshot
 
 - **Latest (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
+- **Released (2026-11-22):** **v0.12.2** (run 45007594771, `fuxx-0.12.2.zip`): the agent box's sweep and the evening's fixes.
 - **Released (2026-11-22):** **v0.12.1** (run 44965749641, `fuxx-0.12.1.zip`): the tool modal blink fixed.
 - **Released (2026-11-22):** **v0.12.0** (run 44941540508, `fuxx-0.12.0.zip`): M11ap and the chores since v0.11.0.
 - **Released (2026-11-21):** **v0.11.0** (run 44910715796, `fuxx-0.11.0.zip`), M11y through M11al and M11ab.
@@ -33,6 +34,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-22 — v0.12.2 released
+
+- **What:** on your word ("first we go push everything then we go release patch"): the agent box's sweep (off in
+  Settings), the designer's review fixes, a darker outer box and a light theme's visible top edge, the sparkle
+  removed, the text cursor and the placeholder on the cursor in the boxes, the shell box's tab following it, tab pills
+  with no fill and the agent's status in the box's tab, quieter inactive tab titles, and the first `/clear` after a
+  restart. (A patch number on your word, though it has a feature.) Note 91.
+- **Release:** pushed `514532d..1b4ff6c`; commit `47246c8` (`chore(release): 0.12.2`), tag `v0.12.2`, run
+  45007594771 (green), asset `fuxx-0.12.2.zip` (29.7 MB) at https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.12.2.
 
 ### 2026-11-22 — v0.12.1 released
 
