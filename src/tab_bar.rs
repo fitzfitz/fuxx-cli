@@ -457,6 +457,8 @@ const TILE_GLYPH: f32 = 11.0;
 /// A tab's status mark (your words, 2026-11-22: "the loading and the checklist is too tiny"):
 /// the size of the box's own marks, in the × slot (`CLOSE`).
 pub(crate) const STATUS_DOT: f32 = 12.0;
+/// An inactive tab's status mark's opacity.
+pub(crate) const INACTIVE_MARK: f32 = 0.2;
 pub(crate) const CLOSE: f32 = 16.0;
 /// A bar button, its glyph (drawn with the title area's line width) and the gap between
 /// buttons and around them.
@@ -885,6 +887,10 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .justify_center()
+                            // An inactive tab's mark is almost clear (your words, 2026-11-22:
+                            // "should be almost transparent (0.20)"); a waiting tab still has
+                            // its tint.
+                            .when(!tab.active, |d| d.opacity(INACTIVE_MARK))
                             .group_hover(group.clone(), |s| s.invisible())
                             .child(dot)
                     }))

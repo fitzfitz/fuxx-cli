@@ -2461,9 +2461,19 @@ fn tabs_minimal_scenes() {
                         assert!(off > 30, "{what}: the × in its dot's place ({off} off)");
                     }
                     Some(mark) => {
-                        let off = nearest(&dot, mark);
-                        assert!(off <= 30, "{what}: its dot {mark:?} off by {off}");
-                        // Done (i == 3): the check on a green disc (your words, 2026-11-22).
+                        // An inactive tab's mark at 0.2 on its fill (your words, 2026-11-22);
+                        // the shown one's whole. Done (i == 3): the check on a green disc.
+                        let want = if i == 0 {
+                            mark
+                        } else {
+                            crate::theme::mix(fill, mark, crate::tab_bar::INACTIVE_MARK)
+                        };
+                        let off = nearest(&dot, want);
+                        assert!(off <= 12, "{what}: its dot {want:?} off by {off}");
+                        assert!(
+                            i == 0 || nearest(&dot, mark) > 30,
+                            "{what}: an inactive tab's mark is faint"
+                        );
                     }
                     // Idle: no dot. (api's short title leaves the box empty; a longer idle
                     // title runs on into it, so there only no status colour is checked.)

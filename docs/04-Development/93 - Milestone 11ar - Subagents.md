@@ -231,3 +231,6 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   number stays on a cut label ("Workspace… 2"); a refused stop says "Couldn't stop the subagent: …"; the box's hint
   after `/clear`; gone lanes' lists dropped; tokens on the Done line ("✓ Done in 1:42 · 18.2k tokens").
 - **The detached-daemon test** waits 10 s for its fake daemon (it raced the app's 2 s under the full suite's load).
+- **Inactive tabs' marks faint** (your words, 2026-11-22: "inactive tab status indicator, should be almost transparent
+  (0.20)"): a tab not shown draws its status mark at 0.2 (`tab_bar::INACTIVE_MARK`); the shown tab's is whole, and a
+  waiting tab keeps its tint. Scene `tabs-minimal`.

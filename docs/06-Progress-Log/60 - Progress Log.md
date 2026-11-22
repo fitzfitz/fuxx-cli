@@ -61,6 +61,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Next:** your on-screen check (note 94); merge (renumber if M11au collides), then fuxx-completes' M1c can declare
   its four settings.
 
+### 2026-11-22 — Chore: inactive tabs' marks at 0.2
+
+- **What:** your words ("inactive tab status indicator, should be almost transparent (0.20)") (note 93, chores).
+- **Checks:** tests and clippy at the baseline; `tabs-minimal` passes (the other tab-filter failures are the 1×
+  machine's).
+
 ### 2026-11-22 — Fixes: Claude's stuck "Cultivating…", the deferred minors
 
 - **What:** your reports ("still loading when no background task is running", "esc … stuck on stoping"; agy was
