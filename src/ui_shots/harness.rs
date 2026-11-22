@@ -760,6 +760,7 @@ pub(super) fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         user_theme_dir: None,
         plugin_folders: None,
         plugin_themes: Vec::new(),
+        plugin_values: Vec::new(),
         presets: Vec::new(),
         restore: RestoreMode::default(),
         scripting: false,

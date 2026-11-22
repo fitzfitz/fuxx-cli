@@ -11,6 +11,7 @@ use gpui::{AnyWindowHandle, App, Global, PromptLevel, Window};
 use crate::appearance::{self, Appearance};
 use crate::plugin_fetch::{self, Curl, Staged};
 use crate::plugin_manifest::{self, CODE_ALLOWED, Manifest};
+use crate::plugin_settings;
 use crate::plugin_shell;
 use crate::plugin_source::{self, Installed, LINK_HINT, Repo};
 use crate::plugin_store::{self, Folders, Record};
@@ -502,8 +503,8 @@ pub fn update(id: &str, window: &mut Window, cx: &mut App) {
     );
 }
 
-/// Uninstall plugin `id` after a yes: its folder and data go, and so does a `theme` line in the
-/// config that names one of its themes.
+/// Uninstall plugin `id` after a yes: its folder and data go, and so do a `theme` line in the
+/// config that names one of its themes and its stored setting values.
 pub fn uninstall(id: &str, window: &mut Window, cx: &mut App) {
     if !can_start(cx.global::<Plugins>()) {
         return;
@@ -562,7 +563,7 @@ fn remove(record: Record, cx: &mut App) {
         plugin_store::uninstall(&f, &id)?;
         if let Some(path) = config
             && let Ok(text) = std::fs::read_to_string(&path)
-            && let Some(text) = plugin_themes::config_without_theme(&text, &themes)
+            && let Some(text) = config_after_uninstall(&text, &themes, &id)
         {
             settings::write_atomic(&path, &text)
                 .map_err(|e| format!("Couldn't update your config: {e}"))?;
@@ -585,6 +586,14 @@ fn remove(record: Record, cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// The settings file after uninstalling plugin `id`: without a `theme` line naming one of its
+/// `themes`, and without its stored setting values (M11au). `None` when neither is there.
+fn config_after_uninstall(config: &str, themes: &[String], id: &str) -> Option<String> {
+    let themed = plugin_themes::config_without_theme(config, themes);
+    let text = themed.as_deref().unwrap_or(config);
+    plugin_settings::config_without_plugin(text, id).or(themed)
 }
 
 /// Turn plugin `id` On or Off. Only its record changes, so it's quick, but it still runs off
@@ -769,6 +778,31 @@ mod tests {
         assert_eq!(
             success_text("Helper", &Done::Off, true, true),
             format!("Helper is off.{more}")
+        );
+    }
+
+    #[test]
+    fn uninstall_drops_the_theme_line_and_the_plugins_values() {
+        let themes = ["Sunset".to_string()];
+        let config = "theme = Sunset\nplugin.fc.list = off\nplugin.other.list = off\n";
+        assert_eq!(
+            config_after_uninstall(config, &themes, "fc").as_deref(),
+            Some("plugin.other.list = off\n")
+        );
+        // Only values: the theme line stays.
+        assert_eq!(
+            config_after_uninstall("theme = Mine\nplugin.fc.a = 1\n", &themes, "fc").as_deref(),
+            Some("theme = Mine\n")
+        );
+        // Only the theme.
+        assert_eq!(
+            config_after_uninstall("theme = Sunset\nfont-size = 14\n", &themes, "fc").as_deref(),
+            Some("font-size = 14\n")
+        );
+        // Nothing of it: no write.
+        assert_eq!(
+            config_after_uninstall("theme = Mine\n", &themes, "fc"),
+            None
         );
     }
 }

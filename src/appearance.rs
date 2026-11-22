@@ -30,6 +30,8 @@ pub struct Appearance {
     pub plugin_folders: Option<Folders>,
     /// The themes installed plugins bring, for the theme list and `read_theme_text`.
     pub plugin_themes: Vec<PluginTheme>,
+    /// The values chosen for plugins' declared settings: the `plugin.<id>.<name>` lines (M11au).
+    pub plugin_values: Vec<Entry>,
     /// The agent presets: built-ins plus `agent-preset` lines.
     pub presets: Vec<Preset>,
     pub restore: RestoreMode,
@@ -494,6 +496,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         user_theme_dir: user_dir,
         plugin_folders,
         plugin_themes,
+        plugin_values: crate::plugin_settings::plugin_values(&entries),
         presets,
         restore,
         scripting,
