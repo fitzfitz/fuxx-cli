@@ -1063,6 +1063,11 @@ pub(crate) mod tests {
         assert!(respawnable(&refused), "{refused:?}");
     }
 
+    /// The test's wait for the fake daemon to start: the app's `SPAWN_WAIT` (2 s) is too tight
+    /// when the whole suite loads the machine (starting a shell script took longer once, on
+    /// 2026-11-22: "the daemon was never started"). The test checks what happens, not how fast.
+    const TEST_SPAWN_WAIT: Duration = Duration::from_secs(10);
+
     #[test]
     fn nothing_listening_starts_the_daemon_detached_then_connects() {
         let path = temp_sock("spawn");
@@ -1086,7 +1091,7 @@ pub(crate) mod tests {
         let starter = {
             let (marker, path) = (marker.clone(), path.clone());
             std::thread::spawn(move || {
-                let deadline = Instant::now() + SPAWN_WAIT;
+                let deadline = Instant::now() + TEST_SPAWN_WAIT;
                 while !marker.exists() {
                     assert!(Instant::now() < deadline, "the daemon was never started");
                     std::thread::sleep(Duration::from_millis(10));
@@ -1094,7 +1099,8 @@ pub(crate) mod tests {
                 daemon::start(&path, daemon::IDLE_EXIT).unwrap()
             })
         };
-        let client = DaemonClient::connect_or_spawn_with(&path, &exe, &log, SPAWN_WAIT).unwrap();
+        let client =
+            DaemonClient::connect_or_spawn_with(&path, &exe, &log, TEST_SPAWN_WAIT).unwrap();
         let _running = starter.join().unwrap();
         assert!(client.list().unwrap().is_empty());
         let started = std::fs::read_to_string(&marker).unwrap();
