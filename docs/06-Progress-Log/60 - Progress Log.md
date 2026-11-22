@@ -15,6 +15,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ## Current status snapshot
 
 - **Latest (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
+- **Released (2026-11-22):** **v0.12.1** (run 44965749641, `fuxx-0.12.1.zip`): the tool modal blink fixed.
 - **Released (2026-11-22):** **v0.12.0** (run 44941540508, `fuxx-0.12.0.zip`): M11ap and the chores since v0.11.0.
 - **Released (2026-11-21):** **v0.11.0** (run 44910715796, `fuxx-0.11.0.zip`), M11y through M11al and M11ab.
 - **Current milestone (2026-11-21, latest):** **M11ab — Chat-style shell tabs** 🟨 reworked after your first look (soft cards on a rail, the composer, your prompt left out; inner box in the sidebar's colour), merged to master and pushed (`07395eb`); waiting for your on-screen check (note 88's rework checklist, 8 items).
@@ -32,6 +33,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-22 — v0.12.1 released
+
+- **What:** on your word ("push then release patch"): the tool modal no longer blinks as it opens (its open animation
+  restarted under a new id when the fade ended; now one motion under a stable id, none after). Note 91.
+- **Release:** pushed `78f92b6..78297b5`; commit `9c4f2be` (`chore(release): 0.12.1`), tag `v0.12.1`, run
+  44965749641 (green), asset `fuxx-0.12.1.zip` (29.7 MB) at https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.12.1.
+- **Also:** note 55's Watch step says how to pick the tag's run and watch with a deadline (macOS has no `timeout`).
 
 ### 2026-11-22 — v0.12.0 released
 

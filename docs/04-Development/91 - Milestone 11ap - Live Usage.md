@@ -212,3 +212,5 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
   animations were keyed with "fresh", so when the 180 ms fade ended a new 1 ms animation started at 0 and drew the
   modal see-through for a frame. Now it moves only while fresh (`modal_motion`), under a stable id, and is drawn
   plain after.
+
+**The modal fix released in v0.12.1** (2026-11-22, run 44965749641, `fuxx-0.12.1.zip`).
