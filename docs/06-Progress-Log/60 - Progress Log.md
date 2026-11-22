@@ -35,6 +35,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — Chore: bigger tab marks, a green Done
+
+- **What:** your words ("the loading and the checklist is too tiny … green background"): 12 pt marks, Done on a green
+  disc (note 93, chores).
+- **Checks:** 2449 tests; clippy at the baseline; the tab scenes pass (two failures are the machine's, below).
+- **Found:** 7 scenes in other areas (sidebar-band, card-split, file-code-bars, file-tab-md-reader-column,
+  file-tab-header-narrow, sidebar-button, title-bar) now fail on every commit, also on this morning's (272/272 then):
+  this machine's rendering changed (`sidebar-selection` 4352 cells, not 3740). Not code; to look at with you.
+
 ### 2026-11-22 — Chore: the tab works while its subagents do
 
 - **What:** your words ("it says done … but in reality there are subagents running"): Working (and "1 subagent

@@ -212,3 +212,7 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   pill ("1 subagent running"), and closing asks first — while any subagent still runs after Main finished
   (`AgentTab::shown_status`; Main's own `status` still drives Stop, notes and sending). Scene
   `agent-lanes-background`.
+- **Bigger tab marks, a green Done** (your words, 2026-11-22: "the loading and the checklist is too tiny and make the
+  checklist have backgrounds (green background)"): a tab's status mark is 12 pt (was 8) in the ×'s slot; Done is the
+  check on a `ring_done` disc, cut out in the tab's fill. Tab widths unchanged (the old room kept). Scenes
+  `tabs-minimal` (Done now green) and `tab-drag` (its chip check samples clear of the mark under it).

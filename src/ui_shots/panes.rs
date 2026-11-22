@@ -1437,7 +1437,10 @@ fn tab_drag_scenes() {
                     // The chip is where api was taken: its left edge at the pointer less the
                     // grab, level with the tabs (not under them).
                     assert_eq!(chip_y, top, "{n}: the chip's top is the tabs'");
-                    let inside = px_at(chip_x + 3.0, top + 10.0);
+                    // Past its rounded corner and above the slid tab's status mark under it
+                    // (12 pt since 2026-11-22): the chip is a shade see-through, and the mark
+                    // would tint it.
+                    let inside = px_at(chip_x + 6.0, top + 7.0);
                     assert!(
                         is(inside, ui.panel),
                         "{n}: the chip's left edge: {inside:?}"
@@ -2344,7 +2347,7 @@ fn tabs_minimal_scenes() {
                     None,
                     Some(ui.ring_waiting),
                     Some(ui.ring_working),
-                    Some(ui.text_dim),
+                    Some(ui.ring_done),
                     None,
                     None,
                     None,
@@ -2460,10 +2463,7 @@ fn tabs_minimal_scenes() {
                     Some(mark) => {
                         let off = nearest(&dot, mark);
                         assert!(off <= 30, "{what}: its dot {mark:?} off by {off}");
-                        if i == 3 {
-                            let green = nearest(&dot, ui.ring_done);
-                            assert!(green > 30, "{what}: Done is muted, not {:?}", ui.ring_done);
-                        }
+                        // Done (i == 3): the check on a green disc (your words, 2026-11-22).
                     }
                     // Idle: no dot. (api's short title leaves the box empty; a longer idle
                     // title runs on into it, so there only no status colour is checked.)

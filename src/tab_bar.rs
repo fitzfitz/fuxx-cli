@@ -285,7 +285,10 @@ pub fn look(ui: &UiColors, status: Status, active: bool, pane_focused: bool) -> 
 /// A tab's width for a title `title` wide (with a status dot after it or not): its tile, title
 /// and ×, `PART_GAP` apart, inside `TAB_PAD`; held between `TAB_MIN_WIDTH` and `TAB_MAX_WIDTH`.
 pub fn natural_width(title: f32, dot: bool) -> f32 {
-    let dot = if dot { PART_GAP + STATUS_DOT } else { 0.0 };
+    // The room a status mark kept before it moved into the ×'s slot; kept as it was so the
+    // tabs' widths don't move with the mark's size (it is drawn in the `CLOSE` slot now).
+    const DOT_ROOM: f32 = 8.0;
+    let dot = if dot { PART_GAP + DOT_ROOM } else { 0.0 };
     (2.0 * TAB_PAD + TILE + 2.0 * PART_GAP + CLOSE + title + dot)
         .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
 }
@@ -451,7 +454,9 @@ pub(crate) const AFTER: f32 = 4.0;
 pub(crate) const PLUS_GAP: f32 = 2.0;
 pub(crate) const TILE: f32 = 14.0;
 const TILE_GLYPH: f32 = 11.0;
-pub(crate) const STATUS_DOT: f32 = 8.0;
+/// A tab's status mark (your words, 2026-11-22: "the loading and the checklist is too tiny"):
+/// the size of the box's own marks, in the × slot (`CLOSE`).
+pub(crate) const STATUS_DOT: f32 = 12.0;
 pub(crate) const CLOSE: f32 = 16.0;
 /// A bar button, its glyph (drawn with the title area's line width) and the gap between
 /// buttons and around them.
@@ -767,9 +772,18 @@ impl Workspace {
         let dot = marked.and_then(|(place, key, status)| {
             let mark = match status {
                 Status::Idle => return None,
-                Status::Done => {
-                    status_mark::done_check(ui.text_dim, px(STATUS_DOT)).into_any_element()
-                }
+                // Done: the check on a green disc (your words, 2026-11-22: "make the checklist
+                // have backgrounds (green background)"), cut out in the tab's own fill.
+                Status::Done => div()
+                    .flex_none()
+                    .size(px(STATUS_DOT))
+                    .rounded_full()
+                    .bg(hsla(ui.ring_done))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(status_mark::done_check(surface, px(STATUS_DOT - 2.0)))
+                    .into_any_element(),
                 _ => self.mark_view(place, key, status, px(STATUS_DOT), surface, cx),
             };
             Some(mark)
@@ -1584,10 +1598,7 @@ mod tests {
         let parts = 2.0 * TAB_PAD + TILE + 2.0 * PART_GAP + CLOSE;
         assert_eq!(natural_width(60.0, false), parts + 60.0);
         // A status dot takes its own gap.
-        assert_eq!(
-            natural_width(60.0, true),
-            parts + 60.0 + PART_GAP + STATUS_DOT
-        );
+        assert_eq!(natural_width(60.0, true), parts + 60.0 + PART_GAP + 8.0);
         // Never narrower than the least, nor wider than the most.
         assert_eq!(natural_width(1.0, false), TAB_MIN_WIDTH);
         assert_eq!(natural_width(900.0, true), TAB_MAX_WIDTH);
