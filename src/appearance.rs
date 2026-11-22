@@ -45,6 +45,9 @@ pub struct Appearance {
     pub browser_address_bar: bool,
     /// `status-bar = on|off`: the bar at the window's bottom (M11v part 3; default on).
     pub status_bar: bool,
+    /// `agent-sweep = on|off`: a light runs once round the agent box when its tab is shown
+    /// (2026-11-22; default on).
+    pub agent_sweep: bool,
     /// `browser-keep-data = on|off`: browser windows opened from now on keep cookies, logins and
     /// site data on disk between runs (default off: each run starts from nothing).
     pub browser_keep_data: bool,
@@ -238,6 +241,11 @@ fn browser_address_bar_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
 /// `status-bar`, on by default (see `switch_from_entries`).
 fn status_bar_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
     switch_from_entries(entries, "status-bar", true)
+}
+
+/// `agent-sweep`, on by default (see `switch_from_entries`).
+fn agent_sweep_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    switch_from_entries(entries, "agent-sweep", true)
 }
 
 /// `browser-keep-data`, off by default (see `switch_from_entries`).
@@ -440,6 +448,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
     let (animations, animations_warnings) = animations_from_entries(&entries);
     let (browser_address_bar, address_bar_warnings) = browser_address_bar_from_entries(&entries);
     let (status_bar, status_bar_warnings) = status_bar_from_entries(&entries);
+    let (agent_sweep, agent_sweep_warnings) = agent_sweep_from_entries(&entries);
     let (browser_keep_data, keep_data_warnings) = browser_keep_data_from_entries(&entries);
     let (check_updates, check_updates_warnings) = check_updates_from_entries(&entries);
     let (cursor_style, cursor_style_warnings) = cursor_style_from_entries(&entries);
@@ -459,6 +468,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         .chain(&animations_warnings)
         .chain(&address_bar_warnings)
         .chain(&status_bar_warnings)
+        .chain(&agent_sweep_warnings)
         .chain(&keep_data_warnings)
         .chain(&check_updates_warnings)
         .chain(&cursor_style_warnings)
@@ -491,6 +501,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         animations,
         browser_address_bar,
         status_bar,
+        agent_sweep,
         browser_keep_data,
         check_updates,
         cursor_style,

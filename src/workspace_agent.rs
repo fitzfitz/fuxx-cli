@@ -1241,6 +1241,33 @@ impl Workspace {
 
     /// The agent tabs of the shown panes, in layout then bar order: each tab, its `aN` and its
     /// status (their marks, R2).
+    /// The agent tabs on screen: each shown pane's active tab that is one.
+    pub(crate) fn agents_on_screen(&self) -> std::collections::HashSet<TabId> {
+        let Some(tree) = self.shown_layout() else {
+            return Default::default();
+        };
+        tree.leaves()
+            .into_iter()
+            .filter_map(|pane| self.model.pane(pane))
+            .map(|p| p.active)
+            .filter(|tab| self.agents.contains_key(tab))
+            .collect()
+    }
+
+    /// After a frame: an agent tab on screen now that wasn't last frame was just shown (first
+    /// shown, back from another tab or workspace, in a new split) — its box's sweep runs once.
+    /// A redraw, a focus change between panes on screen, typing or the window's focus shows
+    /// nothing new, so starts nothing.
+    pub(crate) fn note_agents_shown(&mut self, cx: &mut Context<Self>) {
+        let now = self.agents_on_screen();
+        for tab in now.difference(&self.agents_shown) {
+            if let Some(slot) = self.agents.get(tab) {
+                slot.view.update(cx, |t, cx| t.shown(cx));
+            }
+        }
+        self.agents_shown = now;
+    }
+
     pub(crate) fn tab_agents(&self) -> Vec<(TabId, u64, Status)> {
         let Some(tree) = self.shown_layout() else {
             return Vec::new();

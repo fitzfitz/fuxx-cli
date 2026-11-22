@@ -125,6 +125,11 @@ pub fn status_bar_values(on: bool) -> Vec<String> {
     if on { vec![] } else { vec!["off".to_string()] }
 }
 
+/// `agent-sweep` values to write: nothing when on (the default, so no line), `off` otherwise.
+pub fn agent_sweep_values(on: bool) -> Vec<String> {
+    if on { vec![] } else { vec!["off".to_string()] }
+}
+
 /// `browser-keep-data` values to write: `on`, or nothing (off is the default, so no line).
 pub fn browser_keep_data_values(on: bool) -> Vec<String> {
     if on { vec!["on".to_string()] } else { vec![] }

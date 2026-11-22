@@ -240,3 +240,11 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
 - **Placeholder against the cursor** ("the placeholder and input cursor is supposed to not have gap. if underline, box,
   should be on first letter, if vertical line, supposed to right beside the first letter"): both boxes draw it from
   the cursor's own cell (was one cell after); under a full block its first letter takes the cursor's letter colour.
+- **The agent box's sweep** (your words: "a Rotating Conic-Gradient animation every time user visit the tab", "make
+  sure it can be turned off in setting"; the lead designer's spec): one accent comet runs once, clockwise, round the
+  inner box's rim from its top-left corner (1.2 s after a 60 ms wait, eased out; fades in 150 ms, out over the last
+  350), its tail 22 % of the rim in 24 strokes coloured by distance behind the head, a soft glow under the head.
+  Shown again on each visit (`Workspace::note_agents_shown`: a tab newly on screen); never on a redraw, typing (it
+  ends), focus between panes on screen or the window's focus. Reduce motion or Animations off: the rim tints and fades
+  back (500 ms). Nothing drawn or asked for once over. Settings › General › "Agent box sweep" (`agent-sweep`, on by
+  default). `agent_sweep.rs`; scene `agent-box-sweep` (the trigger rules).

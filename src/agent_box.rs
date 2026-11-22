@@ -1312,6 +1312,8 @@ impl AgentTab {
                 )
                 .relative()
                 .child(notch(c))
+                // Once each time the tab is shown: a light round the rim (`agent_sweep`).
+                .children(self.sweep_layer(c, cx))
                 .bg(hsla(c.box_fill))
                 // Files dropped on it become chips (tinted while one is over it).
                 .drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hsla(drop_fill)))
@@ -2044,6 +2046,148 @@ fn notch(c: &Colors) -> impl IntoElement {
     .top_0()
     .left_0()
     .size_full()
+}
+
+impl AgentTab {
+    /// The box's sweep while it runs (the lead designer's spec, 2026-11-22): one comet of the
+    /// accent round the inner box's rim, or (reduce motion, or Animations off) the rim tinted
+    /// and fading back. Built only while it runs: once over, nothing is drawn or asked for.
+    fn sweep_layer(&self, c: &Colors, cx: &App) -> Option<AnyElement> {
+        use crate::agent_sweep::{DELAY_MS, LAP_MS, STILL_MS};
+        use gpui::{Animation, AnimationExt};
+        let at = self.sweep_at?;
+        let still = cx.reduce_motion() || !cx.global::<Appearance>().animations;
+        let total = if still { STILL_MS } else { DELAY_MS + LAP_MS };
+        if at.elapsed().as_secs_f32() * 1000. > total {
+            return None;
+        }
+        let ink = SweepInk {
+            accent: c.accent,
+            glow: c.glow_top,
+            dark: c.page_is_dark,
+        };
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .with_animation(
+                    ("agent-sweep", self.sweeps),
+                    Animation::new(std::time::Duration::from_millis(total as u64)),
+                    move |d, t| {
+                        let ms = t * total;
+                        d.child(
+                            gpui::canvas(
+                                |_, _, _| (),
+                                move |bounds, _, window, _| {
+                                    paint_sweep(window, bounds, ms, still, ink)
+                                },
+                            )
+                            .size_full(),
+                        )
+                    },
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+/// The sweep's colours: the accent, the rim's top (a light theme's tail fades toward it), and
+/// whether the page is dark.
+#[derive(Clone, Copy)]
+struct SweepInk {
+    accent: alacritty_terminal::vte::ansi::Rgb,
+    glow: alacritty_terminal::vte::ansi::Rgb,
+    dark: bool,
+}
+
+/// One frame of the sweep `ms` in, over the inner box (`bounds`): the comet's tail in
+/// `agent_sweep::PIECES` strokes along the rim, coloured by how far behind the head each is, a
+/// soft glow under the head; or, `still`, the whole rim tinted and fading.
+fn paint_sweep(
+    window: &mut Window,
+    bounds: gpui::Bounds<gpui::Pixels>,
+    ms: f32,
+    still: bool,
+    ink: SweepInk,
+) {
+    use crate::agent_sweep::{BLOOM, Notch, PIECES, STILL_MS, Shape, TAIL, frame, outline};
+    use crate::card_view::OUTER_INSET;
+    let (x0, y0) = (f32::from(bounds.left()), f32::from(bounds.top()));
+    let (x1, y1) = (f32::from(bounds.right()), f32::from(bounds.bottom()));
+    let (right, bottom) = (x1 + OUTER_INSET, y1 + OUTER_INSET);
+    let rim = outline(
+        x0,
+        y0,
+        x1,
+        y1,
+        Shape {
+            top_left: 12.,
+            top_right: 12.,
+            bottom_left: BUTTON / 2. + CONTROL_INSET,
+            notch: Notch {
+                centre: (
+                    right - SEND_INSET - SEND / 2.,
+                    bottom - SEND_INSET - SEND / 2.,
+                ),
+                cut: SEND / 2. + NOTCH_GAP,
+                joint: JOINT,
+            },
+        },
+    );
+    let length = rim.length();
+    let stroke = |window: &mut Window, pts: &[(f32, f32)], width: f32, color: gpui::Hsla| {
+        let mut path = gpui::PathBuilder::stroke(px(width));
+        let mut pts = pts.iter();
+        let Some(&(x, y)) = pts.next() else {
+            return;
+        };
+        path.move_to(point(px(x), px(y)));
+        for &(x, y) in pts {
+            path.line_to(point(px(x), px(y)));
+        }
+        if let Ok(path) = path.build() {
+            window.paint_path(path, color);
+        }
+    };
+    if still {
+        let alpha = 0.45 * (1. - ms / STILL_MS).max(0.);
+        stroke(
+            window,
+            &rim.span(0., length),
+            1.,
+            hsla(ink.accent).opacity(alpha),
+        );
+        return;
+    }
+    let Some(f) = frame(ms).filter(|f| f.fade > 0.) else {
+        return;
+    };
+    let (head, tail) = (f.head * length, TAIL * length);
+    let width = if ink.dark { 1.5 } else { 1.25 };
+    for k in 0..PIECES {
+        let (near, far) = (k as f32 / PIECES as f32, (k + 1) as f32 / PIECES as f32);
+        let (a, b) = (head - tail * far, head - tail * near);
+        if b <= 0. {
+            break;
+        }
+        let (color, alpha) =
+            crate::agent_sweep::ink((near + far) / 2., ink.dark, ink.accent, ink.glow);
+        stroke(
+            window,
+            &rim.span(a, b),
+            width,
+            hsla(color).opacity(alpha * f.fade),
+        );
+    }
+    let glow = if ink.dark { 0.18 } else { 0.12 };
+    stroke(
+        window,
+        &rim.span(head - tail * BLOOM, head),
+        4.,
+        hsla(ink.accent).opacity(glow * f.fade),
+    );
 }
 
 /// A control pill in the box's bottom row (the designer's details): `CHIP_H` tall, round, on

@@ -159,6 +159,7 @@ impl Section {
                     title: "Interface",
                     rows: &[
                         Switch(OnOff::Animations),
+                        Switch(OnOff::AgentSweep),
                         Switch(OnOff::StatusBar),
                         TipsCard,
                     ],
@@ -315,6 +316,7 @@ impl Control {
             Control::PluginInstall => "Install a plugin",
             Control::PluginList => "Installed plugins",
             Control::Switch(OnOff::Animations) => "Animations",
+            Control::Switch(OnOff::AgentSweep) => "Agent box sweep",
             Control::Switch(OnOff::StatusBar) => "Status Bar",
             Control::Switch(OnOff::CheckUpdates) => "Check for updates",
             Control::Switch(OnOff::KeepRunning) => "Keep running after quit",
@@ -348,6 +350,9 @@ impl Control {
             Control::PluginInstall => "Paste a repo link and press Enter.",
             Control::PluginList => "",
             Control::Switch(OnOff::Animations) => ANIMATIONS_NOTE,
+            Control::Switch(OnOff::AgentSweep) => {
+                "A light runs once round the agent box when you open its tab."
+            }
             Control::Switch(OnOff::StatusBar) => "The line along the window's foot.",
             Control::Switch(OnOff::CheckUpdates) => CHECK_UPDATES_NOTE,
             Control::Switch(OnOff::KeepRunning) => KEEP_NOTE,
@@ -418,6 +423,8 @@ impl Control {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OnOff {
     Animations,
+    /// `agent-sweep`: a light runs once round the agent box when its tab is shown.
+    AgentSweep,
     /// `status-bar`: the bar at the window's bottom (M11v part 3).
     StatusBar,
     CheckUpdates,
@@ -439,6 +446,7 @@ impl OnOff {
     fn key(self) -> &'static str {
         match self {
             OnOff::Animations => "animations",
+            OnOff::AgentSweep => "agent-sweep",
             OnOff::StatusBar => "status-bar",
             OnOff::CheckUpdates => "check-updates",
             OnOff::KeepRunning => "persistent-sessions",
@@ -456,6 +464,7 @@ impl OnOff {
     fn values(self, on: bool) -> Vec<String> {
         match self {
             OnOff::Animations => prefs::animations_values(on),
+            OnOff::AgentSweep => prefs::agent_sweep_values(on),
             OnOff::StatusBar => prefs::status_bar_values(on),
             OnOff::CheckUpdates => prefs::check_updates_values(on),
             OnOff::KeepRunning => prefs::persistence_values(on),
@@ -473,6 +482,7 @@ impl OnOff {
     fn current(self, a: &Appearance) -> bool {
         match self {
             OnOff::Animations => a.animations,
+            OnOff::AgentSweep => a.agent_sweep,
             OnOff::StatusBar => a.status_bar,
             OnOff::CheckUpdates => a.check_updates,
             OnOff::KeepRunning => a.persistent,
@@ -1982,12 +1992,12 @@ mod tests {
     #[test]
     fn palette_settings_cover_every_control() {
         let all = palette_settings();
-        // 24 since M11ab's "Commands as cards".
-        assert_eq!(all.len(), 24);
+        // 25 since the agent box sweep (2026-11-22; 24 since M11ab's "Commands as cards").
+        assert_eq!(all.len(), 25);
         let mut names: Vec<&str> = all.iter().map(|s| s.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 24, "names unique");
+        assert_eq!(names.len(), 25, "names unique");
         let order = |s: Section| Section::ALL.iter().position(|&x| x == s);
         assert!(
             all.windows(2)
@@ -2001,9 +2011,10 @@ mod tests {
         assert!(glow.keywords.contains(&"cursor-glow"));
         assert!(all.iter().all(|s| s.name != "Cursor"));
         assert_eq!(all[0].name, "Animations");
-        assert_eq!(all[1].name, "Status Bar");
-        // (One later than before M11ab: "Commands as cards" comes before Browser's.)
-        assert_eq!(all[18].name, "Keep history and data");
+        assert_eq!(all[1].name, "Agent box sweep");
+        assert_eq!(all[2].name, "Status Bar");
+        // (Two later than before M11ab: "Commands as cards" and the sweep come before it.)
+        assert_eq!(all[19].name, "Keep history and data");
         for section in Section::ALL {
             for control in section.controls() {
                 if let Control::Switch(switch) = control {
@@ -2178,6 +2189,10 @@ mod tests {
                         "Interface",
                         vec![
                             ("Animations", "Also off when macOS Reduce motion is on."),
+                            (
+                                "Agent box sweep",
+                                "A light runs once round the agent box when you open its tab."
+                            ),
                             ("Status Bar", "The line along the window's foot."),
                             ("Tips card", "The welcome tips in the sidebar."),
                         ]
@@ -2357,6 +2372,7 @@ mod tests {
             Section::General.controls(),
             [
                 Switch(OnOff::Animations),
+                Switch(OnOff::AgentSweep),
                 Switch(OnOff::StatusBar),
                 TipsCard,
                 Switch(OnOff::CheckUpdates)
@@ -2410,6 +2426,7 @@ mod tests {
             CursorStyle,
             CursorFun,
             Switch(OnOff::Animations),
+            Switch(OnOff::AgentSweep),
             Switch(OnOff::StatusBar),
             Switch(OnOff::CheckUpdates),
             Switch(OnOff::KeepRunning),

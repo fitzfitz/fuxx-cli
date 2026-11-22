@@ -11,6 +11,7 @@ mod agent_conversation;
 mod agent_detect;
 mod agent_markdown;
 mod agent_process;
+mod agent_sweep;
 mod agent_tab;
 mod agent_tool_modal;
 mod agent_top;

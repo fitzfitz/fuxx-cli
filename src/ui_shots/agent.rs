@@ -171,6 +171,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: TAB,
     },
     Scene {
+        name: "agent-box-sweep",
+        run: agent_box_sweep,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: TAB,
+    },
+    Scene {
         name: "agent-tab-modal",
         run: agent_tab_modal,
         themes: Themes::Both,
@@ -2199,6 +2207,81 @@ pub(super) fn agent_workspace_split() {
         );
         println!("ui-shots: {n}: {}", path.display());
     }
+}
+
+/// The box's sweep (2026-11-22, the lead designer's spec): it runs once when the agent tab is
+/// shown — first shown, and back from another workspace — and never on a redraw or when focus
+/// moves between panes already on screen.
+pub(super) fn agent_box_sweep() {
+    let n = "agent-box-sweep";
+    let (slug, theme_name) = shot_themes()[0];
+    let theme = shot_theme(theme_name);
+    let slot: Rc<RefCell<Option<Entity<crate::workspace::Workspace>>>> = Rc::default();
+    let build = agent_workspace(theme, slot.clone(), |ws, window, cx| {
+        cx.update_global::<crate::appearance::Appearance, _>(|a, _| a.agent_sweep = true);
+        let my_app = std::path::Path::new("/Users/me/code/my-app");
+        let id = ws.open_unnamed_shot_session(Some(my_app), super::SHELL_TEXT, window, cx);
+        ws.agent_beside(id, "claude", window, cx);
+    });
+    let path = shoot_with(
+        n,
+        slug,
+        &theme,
+        size(px(1100.0), px(640.0)),
+        build,
+        |cx, window| {
+            let ws = slot.borrow_mut().take().expect("the workspace");
+            settle_frames(cx, window);
+            let (_, view) = cx
+                .read(|cx| ws.read(cx).focused_agent_tab())
+                .expect("the agent tab");
+            let sweeps = |cx: &mut VisualTestAppContext| cx.read(|cx| view.read(cx).shot_sweeps());
+            assert_eq!(sweeps(cx), 1, "{n}: shown: one sweep");
+            // A redraw shows nothing new.
+            cx.update(|cx| ws.update(cx, |_, cx| cx.notify()));
+            settle_frames(cx, window);
+            assert_eq!(sweeps(cx), 1, "{n}: a redraw: none");
+            // Focus to the shell beside it: both still on screen.
+            let shell_pane = cx.read(|cx| {
+                let ws = ws.read(cx);
+                let w = ws.model.focused_workspace().expect("a workspace");
+                ws.model.workspace(w).expect("it").panes[0].id
+            });
+            cx.update(|cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.model.focus_pane(shell_pane);
+                    cx.notify();
+                })
+            });
+            settle_frames(cx, window);
+            assert_eq!(sweeps(cx), 1, "{n}: focus between panes on screen: none");
+            // Another workspace, then back: shown again.
+            let here = cx.read(|cx| ws.read(cx).model.focused_workspace().expect("a workspace"));
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let api = std::path::Path::new("/Users/me/code/api");
+                    ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
+                })
+            })
+            .unwrap();
+            settle_frames(cx, window);
+            assert_eq!(sweeps(cx), 1, "{n}: hidden: none");
+            cx.update(|cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.model.focus_workspace(here);
+                    cx.notify();
+                })
+            });
+            settle_frames(cx, window);
+            assert_eq!(sweeps(cx), 2, "{n}: back: one more");
+            // The shot: part way round (wall clock; to look at, not checked).
+            cx.update(|cx| view.update(cx, |t, cx| t.shown(cx)));
+            let _ = frame_fresh(cx, window);
+            std::thread::sleep(std::time::Duration::from_millis(330));
+            let _ = frame_fresh(cx, window);
+        },
+    );
+    println!("ui-shots: {n}: {}", path.display());
 }
 
 /// The sidebar's + menu: each preset fuxx runs as an agent tab (`claude`, `agy`) has its

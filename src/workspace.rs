@@ -703,6 +703,9 @@ pub struct Workspace {
     /// (`workspace_agent::AgentSlot`, R1), made by `ensure_agent_tabs`. `sync` drops those whose
     /// tab has gone (dropping the view ends its process); closing a tab ends it first.
     pub(crate) agents: HashMap<TabId, AgentSlot>,
+    /// The agent tabs on screen last frame: one newly shown runs its box's sweep
+    /// (`note_agents_shown`).
+    pub(crate) agents_shown: std::collections::HashSet<TabId>,
     /// The agent tab that last had the focus in each workspace (M11ag: Ask goes there first);
     /// never saved.
     pub(crate) last_agent: HashMap<WorkspaceId, TabId>,
@@ -1046,6 +1049,7 @@ impl Workspace {
             browser_tabs: HashMap::new(),
             file_tabs: HashMap::new(),
             agents: HashMap::new(),
+            agents_shown: std::collections::HashSet::new(),
             last_agent: HashMap::new(),
             last_agent_provider: None,
             pending_chips: HashMap::new(),
@@ -3814,6 +3818,7 @@ impl Render for Workspace {
         // window shows changed.
         cx.defer_in(window, |this, _, cx| {
             this.follow_terminal(cx);
+            this.note_agents_shown(cx);
             if this.refresh_ports(cx) {
                 cx.notify();
             }

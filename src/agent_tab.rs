@@ -951,6 +951,10 @@ pub struct AgentTab {
     /// `EFFORT_SWITCH_DELAY`; dropped to cancel), and the panel's bounds as last drawn (a press
     /// there is a pick, not outside the menu).
     pub(crate) effort_switch: Option<gpui::Task<()>>,
+    /// The box's sweep (`agent_sweep`): when the last one was asked for (none once you type),
+    /// and how many have been (each its own animation).
+    pub(crate) sweep_at: Option<Instant>,
+    pub(crate) sweeps: u64,
     pub(crate) effort_panel_at: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// The top bar (spec A §C): what its animations start from (`agent_top::TopState`), its
     /// status mark and the clock that turns it (a still one of its own until the Workspace
@@ -1382,6 +1386,8 @@ impl AgentTab {
             refocus: None,
             models_older_open: None,
             effort_switch: None,
+            sweep_at: None,
+            sweeps: 0,
             effort_panel_at: Default::default(),
             top: crate::agent_top::TopState::default(),
             top_mark,
@@ -2644,6 +2650,8 @@ impl AgentTab {
 
     /// The composer changed: the `@` list follows its query, or closes.
     fn composer_changed(&mut self, cx: &mut Context<Self>) {
+        // Typing ends the box's sweep (the designer's spec: it never runs while you type).
+        self.sweep_at = None;
         self.slash_follow(cx);
         let Some(at) = &self.at else {
             return;
@@ -4761,6 +4769,23 @@ impl AgentTab {
 
     /// The pane's top bar (spec A §C): the status pill on the left; on the right what the
     /// conversation cost (and what its last turn added) and how full its context is, live.
+    /// The tab was just shown (the Workspace tells it: first shown, back from another tab, in a
+    /// new split): the box's sweep runs once, unless Settings turns it off (`agent-sweep`).
+    pub(crate) fn shown(&mut self, cx: &mut Context<Self>) {
+        if !cx.global::<Appearance>().agent_sweep {
+            return;
+        }
+        self.sweep_at = Some(Instant::now());
+        self.sweeps += 1;
+        cx.notify();
+    }
+
+    /// How many sweeps the tab has run (UI screenshots).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_sweeps(&self) -> u64 {
+        self.sweeps
+    }
+
     /// The agent's status in the box's tab, before the folder, as a shell's running command is
     /// (your words, 2026-11-22: "like terminal when doing like npm run dev (in process)"): its
     /// mark and word, no fill (the tab's pills have none), the word's colour blending on a

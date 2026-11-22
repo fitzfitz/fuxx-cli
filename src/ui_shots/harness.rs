@@ -767,6 +767,8 @@ pub(super) fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         animations: true,
         browser_address_bar: true,
         status_bar: true,
+        // Still in the shots (its own scene turns it on).
+        agent_sweep: false,
         browser_keep_data: false,
         check_updates: true,
         cursor_style: Default::default(),
