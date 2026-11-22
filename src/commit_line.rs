@@ -509,28 +509,34 @@ impl Workspace {
             let label = provider.info().label;
             let writing = matches!(busy, Some(Busy::Writing(_)));
             let enabled = busy.is_none() && staged > 0;
-            div()
-                .id("commit-write")
-                .flex_none()
-                .size(px(crate::right_sidebar::HEADER_BUTTON))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(6.0))
-                .text_size(px(14.0))
-                .text_color(hsla(if writing { ui.accent } else { ui.text_dim }))
-                .child("✦")
-                .tooltip(tip(if staged == 0 {
-                    "Stage files for the agent to describe".to_string()
-                } else {
-                    format!("Write the message with {label}")
-                }))
-                .when(!enabled && !writing, |d| d.opacity(0.4))
-                .when(enabled, |d| {
-                    d.cursor_pointer()
-                        .hover(move |s| s.bg(hsla(ui.side_tab_hover)))
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.write_message(cx)))
-                })
+            drawn(
+                commit,
+                "write",
+                div()
+                    .id("commit-write")
+                    .flex_none()
+                    .size(px(crate::right_sidebar::HEADER_BUTTON))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .text_size(px(14.0))
+                    .text_color(hsla(if writing { ui.accent } else { ui.text_dim }))
+                    .child("✦")
+                    .tooltip(tip(if staged == 0 {
+                        "Stage files for the agent to describe".to_string()
+                    } else {
+                        format!("Write the message with {label}")
+                    }))
+                    .when(!enabled && !writing, |d| d.opacity(0.4))
+                    .when(enabled, |d| {
+                        d.cursor_pointer()
+                            .hover(move |s| s.bg(hsla(ui.side_tab_hover)))
+                            .on_click(
+                                cx.listener(|this, _: &ClickEvent, _, cx| this.write_message(cx)),
+                            )
+                    }),
+            )
         });
         let can = blocked.is_none();
         let button = drawn(
@@ -618,11 +624,15 @@ impl Workspace {
                 })
         });
         let quiet = note.map(|note| {
-            div()
-                .pb(px(8.0))
-                .text_size(px(crate::changes_panel::GIT_SMALL))
-                .text_color(hsla(ui.text_faint))
-                .child(note)
+            drawn(
+                commit,
+                "note",
+                div()
+                    .pb(px(8.0))
+                    .text_size(px(crate::changes_panel::GIT_SMALL))
+                    .text_color(hsla(ui.text_faint))
+                    .child(note),
+            )
         });
         Some(
             drawn(

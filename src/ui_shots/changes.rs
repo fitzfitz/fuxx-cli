@@ -1983,7 +1983,8 @@ fn activity_scenes() {
 
 /// M11aq (note 92): the commit line above the branch bar, while the repo has changes —
 /// `changes-commit-rest`: the field's placeholder, ✓2 dim (no message yet); `-typed`: a message,
-/// ✓ lit; `-failed`: a failed commit's line with its output shown under the field.
+/// ✓ lit; `-failed`: a failed commit's line with its output shown under the field; `-writing`:
+/// ✦ in the accent while an agent writes; `-note`: ✦'s "Couldn't write a message".
 fn changes_commit_scenes() {
     use crate::git_status::{Change, ChangeList, Counts, Mark};
     use crate::right_sidebar::Panel;
@@ -2017,7 +2018,7 @@ fn changes_commit_scenes() {
         let ui = theme.ui();
         // How strongly ✓ is inked over the panel in each state (dim when it can't commit).
         let mut ink = std::collections::HashMap::new();
-        for state in ["rest", "typed", "failed"] {
+        for state in ["rest", "typed", "failed", "writing", "note"] {
             let n = format!("changes-commit-{state}-{slug}");
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = {
@@ -2051,6 +2052,24 @@ fn changes_commit_scenes() {
                         "typed" => cx.update(|cx| {
                             input.update(cx, |i, cx| {
                                 i.set_text("Commit from the Git tab".into());
+                                cx.notify();
+                            })
+                        }),
+                        // ✦ shows only where an agent can run: named here, not looked up.
+                        "writing" | "note" => cx.update(|cx| {
+                            ws.update(cx, |ws, cx| {
+                                let commit = &mut ws.right_sidebar.changes.commit;
+                                commit.agents = Some(vec!["claude"]);
+                                if state == "writing" {
+                                    commit.busy = Some((
+                                        root.clone(),
+                                        crate::commit_line::Busy::Writing(std::sync::Arc::new(
+                                            std::sync::atomic::AtomicBool::new(false),
+                                        )),
+                                    ));
+                                } else {
+                                    commit.note = Some((root.clone(), "Couldn't write a message"));
+                                }
                                 cx.notify();
                             })
                         }),
@@ -2147,6 +2166,36 @@ fn changes_commit_scenes() {
                         gap(p, ui.text) <= 40
                     });
                 assert!(reads, "{n}: the message in the text colour");
+            }
+            let has_ink = |b: gpui::Bounds<Pixels>, c, by: u8| {
+                (0..(f32::from(b.size.width) as usize)).any(|dx| {
+                    (0..(f32::from(b.size.height) as usize)).any(|dy| {
+                        let p = pixel_at(
+                            &shot,
+                            dims,
+                            f32::from(b.left()) + dx as f32,
+                            f32::from(b.top()) + dy as f32,
+                        );
+                        gap(p, c) <= by
+                    })
+                })
+            };
+            if state == "writing" {
+                let write = parts
+                    .get("write")
+                    .copied()
+                    .unwrap_or_else(|| panic!("{n}: ✦"));
+                assert!(
+                    has_ink(write, ui.accent, 40),
+                    "{n}: ✦ in the accent while it writes"
+                );
+            }
+            if state == "note" {
+                let note = parts
+                    .get("note")
+                    .copied()
+                    .unwrap_or_else(|| panic!("{n}: the note"));
+                assert!(note.top() >= button.bottom(), "{n}: under the field");
             }
             if state == "failed" {
                 let output = parts
