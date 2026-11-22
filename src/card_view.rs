@@ -576,6 +576,9 @@ pub struct CardsState {
     /// The placeholder as drawn and its left edge (none: not drawn).
     #[cfg(feature = "ui-shots")]
     pub hint: Option<(String, f32)>,
+    /// The composer's pill row's top left as laid out this frame (window points).
+    #[cfg(feature = "ui-shots")]
+    pub pills_at: Option<(f32, f32)>,
 }
 
 /// Rows painted this frame that the pointer can select in (window points): the first row is

@@ -537,6 +537,14 @@ impl TerminalView {
         self.cards.borrow().pills_w
     }
 
+    /// Where the pill row was laid out, and the composer's top left, in the last frame (window
+    /// points; UI screenshots).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_pills_and_composer(&self) -> (Option<Spot>, Option<Spot>) {
+        let cards = self.cards.borrow();
+        (cards.pills_at, cards.composer.map(|(x, y, _)| (x, y)))
+    }
+
     #[cfg(feature = "ui-shots")]
     pub fn shot_card_count(&self) -> usize {
         self.cards.borrow().hits.len()
@@ -1692,6 +1700,10 @@ impl TerminalView {
             move |bounds, window, _| {
                 let width = f32::from(bounds.size.width);
                 let mut state = cards.borrow_mut();
+                #[cfg(feature = "ui-shots")]
+                {
+                    state.pills_at = Some((f32::from(bounds.left()), f32::from(bounds.top())));
+                }
                 if (state.pills_w - width).abs() > 0.5 {
                     state.pills_w = width;
                     window.request_animation_frame();
@@ -1704,7 +1716,7 @@ impl TerminalView {
         .left_0()
         .size_full();
         let inset = EDGE + TAB_PAD;
-        Some(
+        let row = Some(
             div()
                 .absolute()
                 .left(px(x - ox + inset))
@@ -1722,7 +1734,17 @@ impl TerminalView {
                 .children(branch_item)
                 .child(measure)
                 .into_any_element(),
-        )
+        );
+        // Placed where the box was when built, moved to where it is this frame as it is laid
+        // out (`FollowComposer`).
+        row.map(|child| {
+            FollowComposer {
+                child,
+                base: (x, y),
+                state: self.cards.clone(),
+            }
+            .into_any_element()
+        })
     }
 
     /// A card's Rerun (M11ab): M11l's Rerun (types it, never runs it), and the column back at
@@ -2059,6 +2081,9 @@ impl Render for TerminalView {
         let card_line_h = self.card_line_h.clone();
         let card_cell = self.card_cell.clone();
         let card_core = self.core.clone();
+        let layout_core = self.core.clone();
+        let layout_state = self.cards.clone();
+        let layout_theme = theme;
         let was_cards = self.cards_on.get();
         let chosen_card = self.chosen_block.clone();
         // The running chip's time moves once a second (only while one runs in card view).
@@ -2210,22 +2235,35 @@ impl Render for TerminalView {
                         // live box place their rows).
                         layout.set((!cards).then_some(grid));
                         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-                        (metrics, grid.origin, hitbox, cards)
+                        // The column laid out now (its composer's place before the pills over
+                        // it are placed: `FollowComposer`).
+                        let laid = cards.then(|| {
+                            layout_cards(
+                                &layout_core,
+                                &layout_state,
+                                marks_seen,
+                                utc_offset,
+                                split,
+                                &layout_theme,
+                                &metrics,
+                                bounds,
+                            )
+                        });
+                        (metrics, grid.origin, hitbox, laid)
                     },
                     // paint: draw the current screen, set the pointer, follow the mouse.
-                    move |bounds, (metrics, origin, hitbox, cards), window, cx| {
-                        if cards {
+                    move |bounds, (metrics, origin, hitbox, laid), window, cx| {
+                        if let Some(laid) = laid {
                             paint_cards(
                                 CardPaint {
                                     core: &card_core,
                                     state: &cards_state,
-                                    marks: marks_seen,
-                                    utc_offset,
                                     split,
                                     theme: &theme,
                                     ui: &ui,
                                     chosen: chosen_card.clone(),
                                 },
+                                laid,
                                 &metrics,
                                 bounds,
                                 &cursor,
@@ -3112,12 +3150,143 @@ fn follow_mouse(view: &Entity<TerminalView>, hitbox: &gpui::Hitbox, window: &mut
 struct CardPaint<'a> {
     core: &'a TerminalCore,
     state: &'a RefCell<crate::card_view::CardsState>,
-    marks: u64,
-    utc_offset: i64,
     split: bool,
     theme: &'a Theme,
     ui: &'a UiColors,
     chosen: Option<String>,
+}
+
+/// A top left corner, window points (`shot_pills_and_composer`).
+#[cfg(feature = "ui-shots")]
+pub type Spot = (f32, f32);
+
+/// The composer's pills, built where the box was last frame (`base`) and moved, as they are laid
+/// out, to where it is this frame (`CardsState::composer`, noted by the cards' prepaint, which
+/// runs first): they follow the box as it grows, in the same frame (your report, 2026-11-22).
+struct FollowComposer {
+    child: gpui::AnyElement,
+    base: (f32, f32),
+    state: Rc<RefCell<crate::card_view::CardsState>>,
+}
+
+impl IntoElement for FollowComposer {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for FollowComposer {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let moved = self
+            .state
+            .borrow()
+            .composer
+            .map_or(point(px(0.), px(0.)), |(x, y, _)| {
+                point(px(x - self.base.0), px(y - self.base.1))
+            });
+        window.with_element_offset(moved, |window| {
+            self.child.prepaint(window, cx);
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
+/// Lay a tab's card column out for this frame (prepaint, before the elements over it are
+/// placed): the column kept at the terminal's bottom, the frame read under one lock, and the
+/// composer's place noted at once, so its pills follow it in the same frame (your report,
+/// 2026-11-22: typing onto a second line, the folder tab was "jumpy, not directly follow").
+#[allow(clippy::too_many_arguments)]
+fn layout_cards(
+    core: &TerminalCore,
+    state: &RefCell<crate::card_view::CardsState>,
+    marks: u64,
+    utc_offset: i64,
+    split: bool,
+    theme: &Theme,
+    m: &CellMetrics,
+    bounds: Bounds<Pixels>,
+) -> (crate::card_view::CardFrame, u64) {
+    use crate::card_view::{CacheKey, Draw};
+    // The column keeps the terminal at its bottom: no scrolled-back screen under the cards.
+    if core.display_offset() > 0 {
+        core.scroll(Scroll::Bottom);
+    }
+    let content = inset(bounds, split);
+    let line_h = f32::from(m.line_height);
+    let dims = core.dims();
+    let laid = core.read_term(|term, clears| {
+        let shape = term.renderable_content().cursor.shape;
+        let shape = (shape != alacritty_terminal::vte::ansi::CursorShape::Hidden)
+            .then(|| (shape, term.cursor_style().blinking));
+        let key = CacheKey {
+            marks,
+            clears,
+            cols: dims.cols,
+            rows: dims.rows,
+            alt: false,
+        };
+        let frame = crate::card_view::frame(
+            term,
+            &mut state.borrow_mut(),
+            key,
+            theme,
+            line_h,
+            (f32::from(content.top()), f32::from(content.size.height)),
+            utc_offset,
+            shape,
+        );
+        (frame, clears)
+    });
+    let live = laid.0.draws.iter().find_map(|d| match d {
+        Draw::Live { y, .. } => Some(*y),
+        _ => None,
+    });
+    state.borrow_mut().composer =
+        live.map(|y| (f32::from(content.left()), y, f32::from(content.size.width)));
+    laid
 }
 
 /// Paint a tab in card view (note 88): the column of earlier rows, cards and the live box,
@@ -3125,6 +3294,7 @@ struct CardPaint<'a> {
 #[allow(clippy::too_many_arguments)]
 fn paint_cards(
     p: CardPaint,
+    laid: (crate::card_view::CardFrame, u64),
     m: &CellMetrics,
     bounds: Bounds<Pixels>,
     cursor: &CursorSettings,
@@ -3133,8 +3303,8 @@ fn paint_cards(
     cx: &mut App,
 ) {
     use crate::card_view::{
-        CTX_ROW, CacheKey, CardHit, Draw, EDGE, HEADER_H, INNER_PAD_X, OUTER_INSET, Region,
-        SURF_PAD_TOP, SURF_PAD_X, TAB_RISE,
+        CTX_ROW, CardHit, Draw, EDGE, HEADER_H, INNER_PAD_X, OUTER_INSET, Region, SURF_PAD_TOP,
+        SURF_PAD_X, TAB_RISE,
     };
     let corner = px(ui_size::CARD_RADIUS);
     window.paint_quad(
@@ -3144,37 +3314,11 @@ fn paint_cards(
             ..Corners::default()
         }),
     );
-    // The column keeps the terminal at its bottom: no scrolled-back screen under the cards.
-    if p.core.display_offset() > 0 {
-        p.core.scroll(Scroll::Bottom);
-    }
     let content = inset(bounds, p.split);
     let line_h = f32::from(m.line_height);
     let cell_w = f32::from(m.cell_width);
     let dims = p.core.dims();
-    let (frame, clears) = p.core.read_term(|term, clears| {
-        let shape = term.renderable_content().cursor.shape;
-        let shape = (shape != alacritty_terminal::vte::ansi::CursorShape::Hidden)
-            .then(|| (shape, term.cursor_style().blinking));
-        let key = CacheKey {
-            marks: p.marks,
-            clears,
-            cols: dims.cols,
-            rows: dims.rows,
-            alt: false,
-        };
-        let frame = crate::card_view::frame(
-            term,
-            &mut p.state.borrow_mut(),
-            key,
-            p.theme,
-            line_h,
-            (f32::from(content.top()), f32::from(content.size.height)),
-            p.utc_offset,
-            shape,
-        );
-        (frame, clears)
-    });
+    let (frame, clears) = laid;
     let left = content.left();
     let width = content.size.width;
     let w = f32::from(width);

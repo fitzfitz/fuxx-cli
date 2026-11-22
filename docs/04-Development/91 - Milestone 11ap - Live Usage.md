@@ -214,3 +214,7 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
   plain after.
 
 **The modal fix released in v0.12.1** (2026-11-22, run 44965749641, `fuxx-0.12.1.zip`).
+- **Shell box tab follows** ("when I type and it goes to line 2 … jumpy, not directly follow and stick"): the pills
+  were placed from where the box was the frame before (it was noted in paint). Now the column is laid out in the
+  canvas's prepaint (`layout_cards`) and the pills move to the box's place in their own prepaint, the same frame
+  (`FollowComposer`). `shell-cards-wrap` checks it (with the follow off: 17 pt behind).

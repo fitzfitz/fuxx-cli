@@ -1814,6 +1814,22 @@ fn shell_cards_wrap_scene() {
             pills > 0.0 && pills <= 2.0 * PILL_MAX + PILL_GAP + 0.5,
             "{n}: the pills {pills} wide"
         );
+        // Typing onto one more row grows the box: its pills follow it in that same frame (your
+        // report, 2026-11-22: "jumpy, not directly follow and stick").
+        let more: String = "q".repeat(dims_t.cols);
+        rig.cx
+            .update(|cx| view.update(cx, |v, cx| v.shot_output(&more, cx)));
+        let _ = rig.frame();
+        let (pills_at, composer) = rig.read(|v| v.shot_pills_and_composer());
+        let ((_, pills_top), (_, box_top)) = (
+            pills_at.expect("the pills were laid out"),
+            composer.expect("the box was laid out"),
+        );
+        let want = box_top + crate::card_view::TAB_PAD;
+        assert!(
+            (pills_top - want).abs() < 0.5,
+            "{n}: the pills at {pills_top}, the box's tab at {want} (same frame)"
+        );
     }
 }
 
