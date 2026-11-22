@@ -153,6 +153,15 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
+    /// Removes a test's repo when the test ends (pass or fail), so runs leave nothing behind.
+    struct Gone(PathBuf);
+
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn temp(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("fuxx-git-commit-{name}-{}", std::process::id()));
@@ -176,8 +185,9 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
-    /// A repo with `a.txt` committed, its own identity and no signing (as yours might sign).
-    fn repo(name: &str, git: &Path) -> PathBuf {
+    /// A repo with `a.txt` committed, its own identity and no signing (as yours might sign),
+    /// and the guard that removes it.
+    fn repo(name: &str, git: &Path) -> (PathBuf, Gone) {
         let root = temp(name);
         git_in(git, &root, &["init", "-q", "-b", "main"]);
         for (k, v) in [
@@ -191,7 +201,8 @@ mod tests {
         fs::write(root.join("a.txt"), "1\n").unwrap();
         git_in(git, &root, &["add", "-A"]);
         git_in(git, &root, &["commit", "-q", "-m", "first"]);
-        root
+        let gone = Gone(root.clone());
+        (root, gone)
     }
 
     fn last_message(git: &Path, root: &Path) -> String {
@@ -205,7 +216,7 @@ mod tests {
         let Some(git) = crate::git_branch::find_git() else {
             return;
         };
-        let root = repo("staged", &git);
+        let (root, _gone) = repo("staged", &git);
         fs::write(root.join("a.txt"), "1\n2\n").unwrap();
         fs::write(root.join("b.txt"), "b\n").unwrap();
         git_in(&git, &root, &["add", "--", "b.txt"]);
@@ -222,7 +233,7 @@ mod tests {
         let Some(git) = crate::git_branch::find_git() else {
             return;
         };
-        let root = repo("quotes", &git);
+        let (root, _gone) = repo("quotes", &git);
         fs::write(root.join("a.txt"), "2\n").unwrap();
         git_in(&git, &root, &["add", "-A"]);
         let message = "-x \"quoted\" 'and' $HOME\nsecond line";
@@ -235,7 +246,7 @@ mod tests {
         let Some(git) = crate::git_branch::find_git() else {
             return;
         };
-        let root = repo("hook", &git);
+        let (root, _gone) = repo("hook", &git);
         let hook = root.join(".git/hooks/pre-commit");
         fs::write(&hook, "#!/bin/sh\necho nope-from-the-hook\nexit 1\n").unwrap();
         Command::new("chmod").arg("+x").arg(&hook).status().unwrap();
@@ -251,7 +262,7 @@ mod tests {
         let Some(git) = crate::git_branch::find_git() else {
             return;
         };
-        let root = repo("empty", &git);
+        let (root, _gone) = repo("empty", &git);
         let err = commit(&git, &root, "nothing").expect_err("nothing to commit");
         assert!(!err.trim().is_empty(), "says why");
     }
@@ -261,7 +272,7 @@ mod tests {
         let Some(git) = crate::git_branch::find_git() else {
             return;
         };
-        let root = repo("merge", &git);
+        let (root, _gone) = repo("merge", &git);
         assert_eq!(in_progress(&git, &root), None, "a clean repo");
         git_in(&git, &root, &["checkout", "-q", "-b", "side"]);
         fs::write(root.join("a.txt"), "side\n").unwrap();
@@ -285,7 +296,7 @@ mod tests {
         let Some(git) = crate::git_branch::find_git() else {
             return;
         };
-        let root = repo("merge-commit", &git);
+        let (root, _gone) = repo("merge-commit", &git);
         git_in(&git, &root, &["checkout", "-q", "-b", "side"]);
         fs::write(root.join("a.txt"), "side\n").unwrap();
         git_in(&git, &root, &["commit", "-q", "-am", "side"]);
@@ -310,7 +321,7 @@ mod tests {
         let Some(git) = crate::git_branch::find_git() else {
             return;
         };
-        let root = repo("diff", &git);
+        let (root, _gone) = repo("diff", &git);
         fs::write(root.join("a.txt"), "1\nchanged\n").unwrap();
         fs::write(root.join(".env"), "TOKEN=abc\n").unwrap();
         git_in(&git, &root, &["add", "-A"]);
