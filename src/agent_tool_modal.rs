@@ -218,7 +218,10 @@ pub fn siblings(items: &[Item], parent: Option<&str>) -> Vec<String> {
 /// The tool ↑ (`dir` −1) or ↓ (+1) of the shown one, among its level's; none past the ends.
 pub fn step(items: &[Item], modal: &ToolModal, dir: i8) -> Option<String> {
     let shown = modal.shown()?;
-    let level = siblings(items, modal.parent());
+    // The shown tool's own level: its parent call (a step opened from a lane's view has no
+    // parent in the stack), else the stack's.
+    let own = index_of(items, shown).and_then(|ix| parent_of(&items[ix]));
+    let level = siblings(items, own.or(modal.parent()));
     let at = level.iter().position(|id| id == shown)?;
     let to = at.checked_add_signed(isize::from(dir))?;
     level.get(to).cloned()
@@ -290,6 +293,15 @@ mod tests {
         let items = items();
         assert_eq!(siblings(&items, None), ["a", "b", "task", "c"]);
         assert_eq!(siblings(&items, Some("task")), ["t1", "t2"]);
+    }
+
+    #[test]
+    fn a_lane_steps_window_walks_its_own_steps() {
+        // M11ar review: a step opened from a lane's view (its stack is just the step) walks the
+        // lane's steps, not Main's tools.
+        let items = items();
+        assert_eq!(step(&items, &open(&["t1"]), 1).as_deref(), Some("t2"));
+        assert_eq!(step(&items, &open(&["t2"]), -1).as_deref(), Some("t1"));
     }
 
     #[test]
