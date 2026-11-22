@@ -1326,6 +1326,9 @@ impl AgentTab {
                         })
                         .w_full()
                         .pl(px(BOX_X - CONTROL_INSET))
+                        // The text cursor over where you type (your report, 2026-11-22: "the
+                        // cursor is still arrow"); the controls under it keep theirs.
+                        .cursor_text()
                         .flex()
                         .font_family(mono.clone())
                         .text_size(cells.font_size)

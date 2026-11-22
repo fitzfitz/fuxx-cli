@@ -235,3 +235,5 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
   near-white box; now a plain line that shows (the designer's earlier call), tested in every theme.
 - **No mark in the agent box** ("I don't think we need the icon, remove it and remove it from library as well"): the
   sparkle is gone, its file and `Icon::Sparkle` too; the typing starts 14 in, `+`'s glyph on its left edge.
+- **Text cursor in the agent box** ("when hove in chatbox (the input part not the bottom buttons) the cursor is still
+  arrow"): its text row asks for the I-beam (`cursor_text`); the controls keep theirs.
