@@ -11,12 +11,9 @@ const STRIP_H: f32 = 32.0;
 /// A tab narrower than this cuts labels shorter.
 const NARROW: f32 = 480.0;
 
-/// How often a followed transcript is read.
-const FOLLOW_EVERY: Duration = Duration::from_millis(500);
-
 impl AgentTab {
-    /// `Event::Follow`: read `path`'s new lines as lane `lane`'s, every `FOLLOW_EVERY`, off the
-    /// UI thread, through the translator. It lives as long as the process (a woken subagent
+    /// `Event::Follow`: read `path`'s new lines as lane `lane`'s (`agent_lanes::follow_every`:
+    /// often while it works, rarely once done), off the UI thread, through the translator. It lives as long as the process (a woken subagent
     /// writes again after its report); a file that shrinks ends it.
     pub(super) fn follow(&mut self, lane: String, path: PathBuf, cx: &mut Context<Self>) {
         let task = cx.spawn({
@@ -24,7 +21,12 @@ impl AgentTab {
             async move |this, cx| {
                 let mut tail = crate::lane_follow::Tail::default();
                 loop {
-                    cx.background_executor().timer(FOLLOW_EVERY).await;
+                    let Ok(every) = this.update(cx, |this, _| {
+                        crate::agent_lanes::follow_every(this.conversation.lane(&lane))
+                    }) else {
+                        break;
+                    };
+                    cx.background_executor().timer(every).await;
                     let (at, file) = (tail.offset, path.clone());
                     let read = cx
                         .background_executor()

@@ -135,6 +135,15 @@ pub fn running_word(lanes: &[Lane]) -> Option<String> {
     }
 }
 
+/// How often a lane's followed file is read: often while it works, rarely once it ended (a
+/// woken subagent still shows up), so a long session's finished lanes cost next to nothing.
+pub fn follow_every(lane: Option<&Lane>) -> std::time::Duration {
+    match lane {
+        Some(l) if l.status.live() => std::time::Duration::from_millis(500),
+        _ => std::time::Duration::from_secs(5),
+    }
+}
+
 /// Whether a lane's header offers Stop: it is still going and its agent can stop it alone.
 pub fn shows_stop(lane: &Lane) -> bool {
     lane.controls.stop && lane.status.live()
@@ -268,6 +277,15 @@ mod tests {
             Some("2 subagents running".into())
         );
         assert_eq!(running_word(&[done]), None);
+    }
+
+    #[test]
+    fn a_finished_lanes_file_is_read_less_often() {
+        let mut l = lane("a", "A");
+        assert_eq!(follow_every(Some(&l)), Duration::from_millis(500), "working");
+        l.status = LaneStatus::Done;
+        assert_eq!(follow_every(Some(&l)), Duration::from_secs(5), "done: a woken one still shows");
+        assert_eq!(follow_every(None), Duration::from_secs(5), "gone");
     }
 
     #[test]
