@@ -953,14 +953,17 @@ fn tab_bar_scenes() {
                     let (x, y) = fill_at(codex);
                     assert!(is(px_at(x, y), ui.tab_idle), "{n}: codex a quiet pill");
                     // Its slot shows its Working mark, not the × (they share it since
-                    // 2026-11-22).
+                    // 2026-11-22) — faint, at 0.2 on its pill, as it isn't the shown tab.
                     let right = right_of(codex) - TAB_PAD;
+                    let faint = crate::theme::mix(
+                        ui.tab_idle,
+                        ui.ring_working,
+                        crate::tab_bar::INACTIVE_MARK,
+                    );
                     let marked = (2..=(CLOSE as i32 - 2)).any(|dx| {
                         (-4..=4).any(|dy| {
-                            gap(
-                                px_at(right - dx as f32, middle + dy as f32),
-                                ui.ring_working,
-                            ) <= 40
+                            gap(px_at(right - dx as f32, middle + dy as f32), faint) <= 8
+                                && !is(px_at(right - dx as f32, middle + dy as f32), ui.tab_idle)
                         })
                     });
                     assert!(marked, "{n}: codex's slot shows its mark, the × hidden");
