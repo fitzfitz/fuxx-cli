@@ -1270,7 +1270,7 @@ impl AgentTab {
                 // one strong thing in the box; empty, a quiet control.
                 let hover = c.send_hover;
                 self.marked("send", circle("agent-send"))
-                    .bg(hsla(if empty { c.control } else { c.send_fill }))
+                    .bg(hsla(if empty { c.send_empty } else { c.send_fill }))
                     .child(crate::icons::icon(
                         crate::icons::Icon::ArrowUp,
                         px(18.),
@@ -1296,9 +1296,12 @@ impl AgentTab {
                 .px(px(CONTROL_INSET))
                 .pt(px(BOX_Y))
                 .pb(px(CONTROL_INSET))
-                // Its bottom-right cut by the send notch; the bottom-left 3 round `+`.
+                // Its bottom-right cut by the send notch (its corner round about the send
+                // circle's centre, so it never pokes past the outer box's round corner); the
+                // bottom-left 3 round `+`.
                 .rounded_t(px(12.))
                 .rounded_bl(px(BUTTON / 2. + CONTROL_INSET))
+                .rounded_br(px(SEND / 2. + SEND_INSET - crate::card_view::OUTER_INSET))
                 // A press on the box's own room (not a chip or button: theirs act as well)
                 // puts the keyboard in its text, as the framed text box did.
                 .on_mouse_down(
@@ -1327,26 +1330,8 @@ impl AgentTab {
                         .font_family(mono.clone())
                         .text_size(cells.font_size)
                         .line_height(cells.line_height)
-                        .child(
-                            self.marked(
-                                "mark",
-                                div()
-                                    .relative()
-                                    .flex_none()
-                                    .w(cells.cell_width * crate::card_view::INDENT_COLS as f32)
-                                    .text_color(hsla(c.accent))
-                                    // A sparkle (your words, 2026-11-22), not `❯`: centred on
-                                    // the first line, a touch smaller than the text.
-                                    .h(cells.line_height)
-                                    .flex()
-                                    .items_center()
-                                    .child(crate::icons::icon(
-                                        crate::icons::Icon::Sparkle,
-                                        cells.font_size * 0.85,
-                                        hsla(c.accent),
-                                    )),
-                            ),
-                        )
+                        // No mark before the typing (your words, 2026-11-22: "I don't think we
+                        // need the icon … so that the chat box loosen").
                         .child(div().flex_1().min_w_0().child(self.composer.clone())),
                 )
                 .child(
@@ -1354,9 +1339,9 @@ impl AgentTab {
                         .w_full()
                         .flex()
                         .items_center()
-                        // Clean with no fills (your words, 2026-11-22: "make it clean!"): `+`
-                        // under the ✦, then 12 between what shows (the buttons' and pills' own
-                        // room, no gap between them).
+                        // Clean with no fills (your words, 2026-11-22: "make it clean!"): `+`'s
+                        // glyph on the typing's left edge, then 12 between what shows (the
+                        // buttons' and pills' own room, no gap between them).
                         .pl(px(BOX_X - CONTROL_INSET - (BUTTON - CONTROL_ICON) / 2.))
                         .child(attach)
                         .child(model)
@@ -1459,20 +1444,23 @@ impl AgentTab {
             .children(branch);
         // The step: the box's fill under a page-coloured square whose rounded corner (its left
         // and bottom edges drawn) carves the concave curve; 1 pt over the tab's right edge.
-        let step = div()
-            .flex_none()
-            .ml(px(-EDGE))
-            .size(px(16.))
-            .bg(outer)
-            .child(
-                div()
-                    .size_full()
-                    .bg(hsla(c.page))
-                    .border_l_1()
-                    .border_b_1()
-                    .border_color(edge)
-                    .rounded_bl(px(8.)),
-            );
+        // The concave corner where the tab steps down: only the wedge inside the curve and its
+        // edge (`terminal_view::paint_tab_step`), so the box's shadow beside it falls freely.
+        let step = div().flex_none().ml(px(-EDGE)).size(px(16.)).child(
+            gpui::canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    crate::terminal_view::paint_tab_step(
+                        window,
+                        (f32::from(bounds.left()), f32::from(bounds.bottom())),
+                        8.,
+                        outer,
+                        edge,
+                    )
+                },
+            )
+            .size_full(),
+        );
         div().relative().w_full().child(body).child(
             div()
                 .absolute()
@@ -1982,12 +1970,12 @@ impl AgentTab {
 /// The send notch cut from the inner box's bottom-right, one shape in the outer colour painted
 /// first (under the box's text and controls): from the box's right edge round a `JOINT` corner,
 /// along the cut round the send circle (`SEND / 2 + NOTCH_GAP` about its centre), round the
-/// other `JOINT` corner into the box's bottom edge, then out to the outer box's inside corner
-/// (concentric with the circle) and back; then the inner box's lit edge along the same wave
+/// other `JOINT` corner into the box's bottom edge, then out 2 pt past the box (over its lit
+/// edge) and back; then the inner box's lit edge along the same wave
 /// (your report, 2026-11-22: "you're losing the border on the curve"), 1 pt in the edge's
 /// lower colour, 0.5 pt outside the box.
 fn notch(c: &Colors) -> impl IntoElement {
-    use crate::card_view::{EDGE, OUTER_INSET};
+    use crate::card_view::OUTER_INSET;
     use gpui::{PathBuilder, Point, canvas, point};
     let (outer, rim) = (hsla(c.outer), hsla(c.glow_bottom));
     canvas(
@@ -2002,27 +1990,24 @@ fn notch(c: &Colors) -> impl IntoElement {
             );
             let cut = SEND / 2. + NOTCH_GAP;
             let (top, left) = (cy - cut, cx - cut);
-            let corner = OUTER_BOTTOM_RADIUS - EDGE;
             let p = |x: f32, y: f32| point(px(x), px(y));
             let radii = |r: f32| -> Point<gpui::Pixels> { p(r, r) };
-            // The cut, in the outer colour.
+            // The cut, in the outer colour: out to 2 pt past the box (over its 1 pt lit edge),
+            // its far corner round about the circle's centre, inside the outer box's border (the
+            // lead designer's review, 2026-11-22: the box's square corner poked out past it).
+            let (rr, bb) = (x_r + 2., y_b + 2.);
+            let far = bb - cy;
             let mut shape = PathBuilder::fill();
-            shape.move_to(p(right, top - JOINT));
+            shape.move_to(p(rr, top - JOINT));
             shape.line_to(p(x_r, top - JOINT));
             shape.arc_to(radii(JOINT), px(0.), false, true, p(x_r - JOINT, top));
             shape.line_to(p(cx, top));
             shape.arc_to(radii(cut), px(0.), false, false, p(left, cy));
             shape.line_to(p(left, y_b - JOINT));
             shape.arc_to(radii(JOINT), px(0.), false, true, p(left - JOINT, y_b));
-            shape.line_to(p(left - JOINT, bottom));
-            shape.line_to(p(right - corner, bottom));
-            shape.arc_to(
-                radii(corner),
-                px(0.),
-                false,
-                false,
-                p(right, bottom - corner),
-            );
+            shape.line_to(p(left - JOINT, bb));
+            shape.line_to(p(cx, bb));
+            shape.arc_to(radii(far), px(0.), false, false, p(rr, cy));
             shape.close();
             if let Ok(path) = shape.build() {
                 window.paint_path(path, outer);

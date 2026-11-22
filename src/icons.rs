@@ -67,14 +67,11 @@ pub enum Icon {
     Circle,
     CircleDot,
     Paperclip,
-    /// The agent box's mark before your typing (your words, 2026-11-22): a four-pointed
-    /// sparkle, filled (fuxx's own, `assets/icons/fuxx/sparkle.svg`).
-    Sparkle,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 52] = [
+    pub const ALL: [Icon; 51] = [
         Icon::Terminal,
         Icon::Globe,
         Icon::File,
@@ -126,7 +123,6 @@ impl Icon {
         Icon::Circle,
         Icon::CircleDot,
         Icon::Paperclip,
-        Icon::Sparkle,
     ];
 
     /// Its asset path.
@@ -183,17 +179,12 @@ impl Icon {
             Icon::Circle => "icons/lucide/circle.svg",
             Icon::CircleDot => "icons/lucide/circle-dot.svg",
             Icon::Paperclip => "icons/lucide/paperclip.svg",
-            Icon::Sparkle => "icons/fuxx/sparkle.svg",
         }
     }
 }
 
 /// The embedded files, by asset path.
-const FILES: [(&str, &[u8]); 50] = [
-    (
-        "icons/fuxx/sparkle.svg",
-        include_bytes!("../assets/icons/fuxx/sparkle.svg"),
-    ),
+const FILES: [(&str, &[u8]); 49] = [
     (
         "icons/lucide/circle.svg",
         include_bytes!("../assets/icons/lucide/circle.svg"),
@@ -431,12 +422,7 @@ mod tests {
             let bytes = Assets.load(i.path()).expect("loads").expect("present");
             let text = std::str::from_utf8(&bytes).expect("text");
             assert!(text.contains("<svg"), "{i:?}: an svg");
-            // Lucide's: outline (no fill, stroked in the colour it's drawn in). fuxx's own
-            // (`icons/fuxx/`, the agent box's sparkle, your reference 2026-11-22): filled in it.
-            if i.path().starts_with("icons/fuxx/") {
-                assert!(text.contains(r#"fill="currentColor""#), "{i:?}: filled");
-                continue;
-            }
+            // Lucide's: outline (no fill, stroked in the colour it's drawn in).
             assert!(text.contains(r#"fill="none""#), "{i:?}: no fill");
             assert!(text.contains(r#"stroke="currentColor""#), "{i:?}: stroked");
         }

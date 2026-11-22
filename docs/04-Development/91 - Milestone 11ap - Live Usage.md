@@ -223,3 +223,15 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
 - **Agent status in the tab** ("move the left agent status on the left beside folder name … like terminal when doing
   like npm run dev"): the status (Cultivating…, Needs input, Stopping…, Done) is a pill before the folder in the box's
   tab, its mark and word, no fill; nothing while idle (`status_pill`). The top bar keeps the cost and context.
+- **The lead designer's review, fixed** (your "yes fix them"): the empty send circle its own grey over the outer
+  ring (`send_empty`; as a control it vanished in Latte); the usage popover's hover as light as the menus'; the folder
+  tab's shoulder only the wedge inside its curve and its edge (`paint_tab_step`, both boxes: a page-coloured square cut
+  the shadow with a hard step); the shell box's shadow no longer cut square (its clip reaches the pane's edges down and
+  right); the send corner's nub (the inner box's square corner poked past the outer box's round one: now round about
+  the send circle's centre, and the cut's far corner too).
+- **Outer box darker** ("make the outter background … slighly darker", every theme): 1.2 % over the page dark (was
+  2.5), 20 % toward white light (was 40).
+- **Light top edge** ("on light mode, inner box on chat, the top border is not showing"): it was white on the
+  near-white box; now a plain line that shows (the designer's earlier call), tested in every theme.
+- **No mark in the agent box** ("I don't think we need the icon, remove it and remove it from library as well"): the
+  sparkle is gone, its file and `Icon::Sparkle` too; the typing starts 14 in, `+`'s glyph on its left edge.

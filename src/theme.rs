@@ -566,20 +566,22 @@ impl Theme {
         // the box you type in a step more (5.5 %), its edge lit from above (14 % along the top,
         // 8 % down the sides). Light: toward white, the light still from above (a white top,
         // a darker bottom).
+        // The outer box a step darker since your words (2026-11-22: "make the outter background
+        // … slighly darker", every theme): 1.2 % over the page dark (was 2.5), 20 % toward white
+        // light (was 40). A light theme's top edge a plain line that shows on the near-white box
+        // (your report the same day: it had vanished as white; the designer's call), its
+        // bottom a step darker (still lit from above).
         let (composer_outer, composer_inner, composer_glow_top, composer_glow_bottom) = if dark {
             (
-                mix(card, fg, 0.025),
+                mix(card, fg, 0.012),
                 mix(card, fg, 0.055),
                 mix(card, fg, 0.14),
                 mix(card, fg, 0.08),
             )
         } else {
-            (
-                mix(card, white, 0.40),
-                mix(card, white, 0.80),
-                white,
-                mix(card, fg, 0.10),
-            )
+            let inner = mix(card, white, 0.80);
+            let top = readable(mix(card, fg, 0.06), &[inner], SOFT_LINE_MIN);
+            (mix(card, white, 0.20), inner, top, mix(top, fg, 0.06))
         };
         UiColors {
             sidebar_background: canvas,
@@ -1956,6 +1958,22 @@ mod tests {
         assert_ne!(ui.text_dim, light.background);
         let l = luminance(ui.row_active);
         assert!(l > luminance(light.foreground) && l < luminance(light.background));
+    }
+
+    /// Your report (2026-11-22: "on light mode, inner box on chat, the top border is not
+    /// showing"): the inner box's top edge shows on it in every theme (the lead designer's call:
+    /// a lit line vanishes on white, so a light theme's is a plain edge).
+    #[test]
+    fn the_inner_box_s_top_edge_shows() {
+        use crate::ui_tokens::{SOFT_LINE_MIN, contrast};
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let got = contrast(ui.composer_glow_top, ui.composer_inner);
+            assert!(
+                got >= SOFT_LINE_MIN - 0.01,
+                "{name}: the top edge on the box {got:.2}"
+            );
+        }
     }
 
     /// Your reference (2026-11-21, "the FEELS"): the chat box sits in the dark, a whisper above

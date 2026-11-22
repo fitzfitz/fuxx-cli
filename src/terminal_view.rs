@@ -3161,6 +3161,39 @@ struct CardPaint<'a> {
 #[cfg(feature = "ui-shots")]
 pub type Spot = (f32, f32);
 
+/// The concave corner where a composer's folder tab steps down to its box, from the corner
+/// `(x, y)` (the tab's right edge's left side, the box's top edge's bottom side), radius
+/// `radius`: only the wedge inside the curve in the box's colour (it covers the tab's and the
+/// box's straight edges there) and the curved edge. Nothing outside the curve is painted, so
+/// the box's shadow there shows as it falls (the lead designer's review, 2026-11-22: a
+/// page-coloured square cut it with a hard step). Both boxes draw it.
+pub(crate) fn paint_tab_step(
+    window: &mut Window,
+    (x, y): (f32, f32),
+    radius: f32,
+    fill: gpui::Hsla,
+    edge: gpui::Hsla,
+) {
+    use gpui::PathBuilder;
+    let p = |px_: f32, py: f32| point(px(px_), px(py));
+    let r = radius;
+    let mut wedge = PathBuilder::fill();
+    wedge.move_to(p(x, y - r));
+    wedge.line_to(p(x, y));
+    wedge.line_to(p(x + r, y));
+    wedge.arc_to(p(r, r), px(0.), false, true, p(x, y - r));
+    wedge.close();
+    if let Ok(path) = wedge.build() {
+        window.paint_path(path, fill);
+    }
+    let mut line = PathBuilder::stroke(px(1.));
+    line.move_to(p(x + 0.5, y - r));
+    line.arc_to(p(r - 0.5, r - 0.5), px(0.), false, false, p(x + r, y - 0.5));
+    if let Ok(path) = line.build() {
+        window.paint_path(path, edge);
+    }
+}
+
 /// The composer's pills, built where the box was last frame (`base`) and moved, as they are laid
 /// out, to where it is this frame (`CardsState::composer`, noted by the cards' prepaint, which
 /// runs first): they follow the box as it grows, in the same frame (your report, 2026-11-22).
@@ -3342,10 +3375,14 @@ fn paint_cards(
     let rail_x = f32::from(left) - 14.0;
     let dot_dy = SURF_PAD_TOP + HEADER_H / 2.0;
     let blank = grid::CellView::blank(p.theme);
-    // The rail lives left of the content: the mask takes the padding in.
+    // The rail lives left of the content: the mask takes the padding in. Down and right it
+    // reaches the pane's edges, so the composer's shadow falls into the padding with its round
+    // corners (the lead designer's review, 2026-11-22: cut at the content it showed square; it
+    // reaches 12 aside and 16 down, clear of the pane's 11 pt corners). The top still cuts the
+    // column scrolled under it.
     let mask = Bounds::from_corners(
         point(bounds.left(), content.top()),
-        point(content.right(), content.bottom()),
+        point(bounds.right(), bounds.bottom()),
     );
     let draws = frame.draws;
     window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
@@ -3575,34 +3612,14 @@ fn paint_cards(
                             ),
                             outer_fill,
                         ));
-                        // The concave corner where the tab steps down: the box's fill under a
-                        // panel-coloured quad whose rounded corner (its left and bottom edges
-                        // drawn) carves the curve.
-                        window.paint_quad(fill(
-                            Bounds::from_corners(
-                                point(tab_right - px(EDGE), px(body_top - 8.0)),
-                                point(tab_right + px(8.0), px(body_top + EDGE)),
-                            ),
+                        // The concave corner where the tab steps down (`paint_tab_step`).
+                        paint_tab_step(
+                            window,
+                            (f32::from(tab_right) - EDGE, body_top + EDGE),
+                            f32::from(r_step),
                             outer_fill,
-                        ));
-                        window.paint_quad(gpui::quad(
-                            Bounds::new(
-                                point(tab_right - px(EDGE), px(body_top + EDGE - 16.0)),
-                                size(px(16.0), px(16.0)),
-                            ),
-                            Corners {
-                                bottom_left: r_step,
-                                ..Corners::default()
-                            },
-                            hsla(p.theme.background),
-                            gpui::Edges {
-                                left: px(EDGE),
-                                bottom: px(EDGE),
-                                ..gpui::Edges::default()
-                            },
                             edge_ink,
-                            gpui::BorderStyle::Solid,
-                        ));
+                        );
                     }
                     composer = Some((f32::from(left), y, w));
                     let side = EDGE + OUTER_INSET;

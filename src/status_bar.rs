@@ -688,7 +688,9 @@ impl Workspace {
         } else {
             spin.into_any_element()
         };
-        let hover = ui.panel_hover;
+        // A light hover, as the menus' (the lead designer's review, 2026-11-22: `panel_hover`
+        // was much heavier in Latte, against "one light").
+        let hover = crate::theme::mix(ui.panel, theme.foreground, 0.04);
         let header = div()
             .h(px(28.))
             .px(px(8.))

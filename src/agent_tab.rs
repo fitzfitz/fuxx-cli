@@ -658,6 +658,9 @@ pub struct Colors {
     /// send button, a step over the box (6 %), a little more under the pointer (10 %).
     pub control: Rgb,
     pub control_hover: Rgb,
+    /// The send circle, empty: a step over the outer ring it sits in (the lead designer's review,
+    /// 2026-11-22: as a control it matched the ring in Latte and vanished).
+    pub send_empty: Rgb,
     /// The send circle under the pointer, ready (the designer's details): the accent a step
     /// lighter (dark) or darker. (Empty, it is a control: `control`, its arrow `dim`.)
     pub send_hover: Rgb,
@@ -754,6 +757,11 @@ impl Colors {
             pill_hover: ui.composer_pill_hover,
             control: mix(ui.composer_inner, theme.foreground, 0.06),
             control_hover: mix(ui.composer_inner, theme.foreground, 0.10),
+            send_empty: crate::theme::readable(
+                mix(ui.composer_outer, theme.foreground, 0.08),
+                &[ui.composer_outer],
+                crate::ui_tokens::SOFT_LINE_MIN,
+            ),
             // Your reference (2026-11-22): the accent's circle, its arrow on it.
             send_hover: mix(
                 ui.accent,
@@ -5893,6 +5901,18 @@ mod tests {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got:.2}");
             }
+            // The empty send circle shows on the ring it sits in, its arrow on it (the lead
+            // designer's review, 2026-11-22).
+            let ring = contrast(c.send_empty, c.outer);
+            assert!(
+                ring >= crate::ui_tokens::SOFT_LINE_MIN - 0.01,
+                "{name}: the empty send on its ring {ring:.2}"
+            );
+            let arrow = contrast(c.dim, c.send_empty);
+            assert!(
+                arrow >= crate::ui_tokens::MARK_MIN - 0.01,
+                "{name}: the empty send's arrow {arrow:.2}"
+            );
             // The chat (spec B-B): your bubble and its chips, a queued one, an error card's text;
             // a failed result on a hovered row.
             for (what, fg, on) in [

@@ -769,15 +769,17 @@ pub(super) fn agent_box_terminal_text() {
             text.left() + cell_w,
             "{n}: one cell after the caret"
         );
-        let (mark, the_box) = (part(cx, tab, n, "mark"), part(cx, tab, n, "box"));
-        assert_eq!(mark.left() - the_box.left(), px(14.), "{n}: the mark 14 in");
+        // No mark before the typing (your words, 2026-11-22: "I don't think we need the icon,
+        // remove it … so that the chat box loosen"): the typing 14 in.
+        let the_box = part(cx, tab, n, "box");
+        assert!(
+            cx.read(|cx| tab.read(cx).shot_part("mark")).is_none(),
+            "{n}: no mark"
+        );
         // (Layout lands on whole pixels; the cells are fractional.)
         let near = |a: Pixels, b: Pixels| (a - b).abs() <= px(0.5);
-        let gap = text.left() - mark.left();
-        assert!(
-            near(gap, cell_w * 2.),
-            "{n}: the typing two cells after ({gap:?})"
-        );
+        let inset = text.left() - the_box.left();
+        assert!(near(inset, px(14.)), "{n}: the typing 14 in ({inset:?})");
         assert_eq!(
             text.top() - the_box.top(),
             px(12.),
