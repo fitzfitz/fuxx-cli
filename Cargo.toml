@@ -44,3 +44,17 @@ two-face = { version = "0.5", default-features = false, features = ["syntect-fan
 # Off-screen screenshots of UI scenes (M11): `cargo run --features ui-shots -- __ui-shots [filter]`.
 # Pulls GPUI's test support, so it is never part of a normal build.
 ui-shots = ["gpui/test-support", "gpui_platform/test-support"]
+
+# Dev builds keep only line tables (a panic still names its file and line) and none for
+# dependencies: smaller object files, faster links, a target folder that grows far slower
+# (cargo's build-performance guide). `--profile debugging` brings full debug info back for the
+# debugger. Release builds are unchanged.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = true

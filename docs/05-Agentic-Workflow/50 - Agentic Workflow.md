@@ -59,6 +59,11 @@ the next milestone"). Applies from the milestone after M11q.
    the most capable model available reads the whole branch against the design and the plan; one fix wave;
    a short re-check of the fixes; the full screenshot run again. Then the milestone note, the Roadmap and
    the Progress Log, and the merge.
+4. **Keep the build folder small** (your call, 2026-11-23). `scripts/ui-shots.sh` ends by running
+   `scripts/prune-target.sh` (it deletes the object files no current fuxx binary uses; each rebuild otherwise
+   leaves a set on macOS); run it after a gate too. At a milestone's end, if `du -sh target` is over 30 GB,
+   `cargo clean`. Dev builds keep only line tables (`[profile.dev]` in `Cargo.toml`); `--profile debugging`
+   gives the debugger full info.
 
 The trade: no independent review until the end, and a broken look is found at the end rather than at the
 task that broke it.

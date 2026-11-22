@@ -249,3 +249,11 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   when nothing running"): the stuck-"Cultivating…" fix counted the agent's start-up (`Started`) as Main working, and
   agy says `init` as soon as it launches, before anything is sent (recorded: one `init` line, nothing else, with no
   message). Main now counts as working only from what was sent, its echo, and its own words and tools.
+- **A smaller build folder** (your call, 2026-11-23: "go with your pick"; `target/debug` had grown to 74 GB in a day
+  and a half): on macOS a dev build keeps its debug info in the compiler's object files, so every rebuild left a new
+  set of 256 beside the binary (123,000 of them). `[profile.dev]` now keeps only line tables (none for
+  dependencies; `--profile debugging` brings full debug info back), and `scripts/prune-target.sh` — run at the end
+  of `scripts/ui-shots.sh` and after a gate — deletes the object files no current binary uses. Measured from clean:
+  a full build's folder 2.9 → 1.9 GB, one set of object files 193 → 124 MB, a rebuild after an edit 4–5 → 3–4 s,
+  the full build unchanged (66 s); after pruning a panic's backtrace still shows file and line, and the next build
+  is "Fresh". At a milestone's end, `cargo clean` if `target` is over 30 GB (note 50).

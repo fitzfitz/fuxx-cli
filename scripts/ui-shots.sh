@@ -218,6 +218,8 @@ fingerprints=$(cat "$tmp"/out.* 2>/dev/null | awk '
         }
     }')
 rm -rf "$tmp"
+# The build's stale object files (each rebuild leaves a set; found 2026-11-23).
+scripts/prune-target.sh
 
 results=$(cat "$out"/timings.*.tsv 2>/dev/null)
 passed=$(printf '%s\n' "$results" | awk -F'\t' '$3 == "ok"' | wc -l | tr -d ' ')

@@ -62,6 +62,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Next:** your on-screen check (note 94); merge (renumber if M11au collides), then fuxx-completes' M1c can declare
   its four settings.
 
+### 2026-11-23 — Chore: a smaller build folder; the old temp folders deleted
+
+- **What:** your words ("can you do cleanups?", then "go with your pick"). The 193,000 old test folders in
+  `$TMPDIR` deleted (11.8 GB). `target/` (74 GB) cleaned once (75 GB of disk back); dev builds keep only line
+  tables; `scripts/prune-target.sh` deletes stale object files, run by `scripts/ui-shots.sh` and after a gate;
+  `cargo clean` at a milestone's end when `target` is over 30 GB (note 50).
+- **Checks:** before/after from clean: folder 2.9 → 1.9 GB, one object set 193 → 124 MB, edit rebuild 4–5 → 3–4 s;
+  a prune left 256 objects per binary, the next build "Fresh", a panic's backtrace with file and line; 2486 tests;
+  clippy at the baseline (14 / 28); `cargo fmt --check` clean; `scripts/ui-shots.sh agent-lanes` 8 passed.
+
 ### 2026-11-23 — v0.12.6 released
 
 - **What:** your words ("push and deploy patch"): M11ar Subagents, M11au Plugin settings and the chores since
