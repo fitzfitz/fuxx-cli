@@ -1,0 +1,79 @@
+---
+tags: [milestone, git, design]
+updated: 2026-11-22
+---
+
+# 92 - Milestone 11aq - Commit
+
+**Status:** 🟨 design written, waiting for your approval (2026-11-22).
+
+## Why
+
+Your words (2026-11-22): "now I want to add more feature to our git tab. give me suggestions to enrich our git
+workspace", the Lead UI/UX Designer's ranked suggestions, then "let's do this" for its first milestone. fuxx is where
+agents change your code and you review it — but every review ends with a trip to a shell to commit. This closes that
+loop in the Git tab, and lets the agent that is already here write the message.
+
+## Goals
+
+- **Commit from the Git tab**: a message field and a Commit button, ⌘↵.
+- **✦ Write the message**: the workspace's agent writes one from the staged changes, into the field, for you to edit.
+- Quiet: one new line at rest, only while there are changes.
+
+## Not in it (and why)
+
+- Amend, undo a commit (needs `git reset`, which fuxx never does), commit-and-push in one step, sign-off.
+- Stage or revert single hunks; PR status; conflicts; "who changed it"; stash — the designer's next milestones, in
+  that order (hunks first), each its own decision.
+- Never: `--no-verify`, `--amend`, force, committing during a merge or rebase.
+
+## Approaches
+
+- **A. A field above the branch bar (chosen, the designer's pick):** review at the top, ship at the bottom, the
+  field right over Push; one line at rest.
+- B. A commit button that opens a modal for the message: one more step every time, and the message hides the list.
+- C. Commit from a palette command only: nothing to see, hard to find.
+
+## The design (the Lead UI/UX Designer's spec, 2026-11-22)
+
+```
+ ⌄ STAGED  2   ✓ A notes.md                 +119
+ ⌄ CHANGES 4   ○ M changes_panel.rs     +544 −20
+ › GRAPH
+ ───────────────────────────────────────────────
+  Message (⌘↵ to commit)                  ✦   ✓2
+ ⑂ main                                    ⟳  ↑
+   ↑1 ahead · fetched 3 min ago
+```
+
+- **The field**, just above the branch bar, shown only while the repo has changes: a placeholder "Message (⌘↵ to
+  commit)", no fill and no border at rest (the bar's hairline above it), one line that grows to four.
+- **Commit**: a borderless ✓ with the staged count (`✓2`), disabled with a tooltip saying why when nothing is staged,
+  the message is empty, or a merge/rebase is in progress. ⌘↵ commits; Esc leaves the field; ⌘⇧C puts the keyboard in
+  it. After a commit the field clears and the bar shows ↑N (Push lights). `git commit -m` with the message as you
+  wrote it; staged files only.
+- **A failed commit** (a hook, nothing staged after all): one red line under the field — "Commit failed · Show
+  output" (the output in a read-only tab) — and the message is kept.
+- **The draft** is kept per repo for the run (switching tabs or repos doesn't lose it; not saved to disk).
+- **✦ Write the message**: borderless, inside the field, shown only when an agent can run (Claude or Antigravity
+  installed). It runs that agent once (`claude -p` / `agy -p`, the provider's one-shot form, in the repo's folder) on
+  the **staged diff only** (capped, files that look like secrets — `.env*`, keys — left out with a note), asking for a
+  short conventional message. While it works the placeholder says "Writing…" and the field shows the agent box's sweep;
+  Esc cancels. The text arrives selected, to edit or replace. It never commits. Failure: a faint "Couldn't write a
+  message", the field untouched. Which agent: the one the right panel follows (an agent tab's provider), else Claude,
+  else Antigravity. Provider details in `src/providers/<agent>.rs`.
+- **Privacy**: ✦ sends staged code to that agent's provider — you press it each time; nothing is sent otherwise.
+
+## Left to the builder
+
+Exact sizes and colours from the panel's tokens (`GIT_*`, `changes_panel` constants); the diff cap (a size that keeps
+the run quick); the prompt's wording; how the one-shot run is spawned and cancelled (off the UI thread, killed on
+Esc); tests for the commit path on real temporary repos (`git_stage`'s style), and scenes for the field's states.
+
+## Checklist for you (once built)
+
+1. Type a message, ⌘↵: it commits the staged files only; Push lights up.
+2. Nothing staged / empty message: Commit is dim and says why.
+3. A failing pre-commit hook: the red line, Show output, the message kept.
+4. ✦ with staged changes: a message appears selected; Esc while it writes cancels.
+5. Switch repos and back: the draft is still there.
