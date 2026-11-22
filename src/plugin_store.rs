@@ -88,11 +88,19 @@ const DAMAGED: &str =
 fn load_checked(f: &Folders) -> Result<Vec<Record>, Damaged> {
     match std::fs::read_to_string(f.records()) {
         Ok(t) => serde_json::from_str::<Table>(&t)
-            .map(|t| t.plugins)
+            .map(|t| t.plugins.into_iter().map(known_settings).collect())
             .map_err(|_| Damaged),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
         Err(_) => Err(Damaged),
     }
+}
+
+/// `r` without the settings of a kind this fuxx doesn't know (a newer fuxx wrote the file):
+/// they are neither shown nor exported, and the rest of the plugin still works.
+fn known_settings(mut r: Record) -> Record {
+    r.settings
+        .retain(|s| s.kind != crate::plugin_settings::Kind::Unknown);
+    r
 }
 
 /// The installed plugins. A missing or damaged file means none.
@@ -768,6 +776,30 @@ mod tests {
         assert!(!records[0].runs_code());
         // From before M11au: no declared settings.
         assert!(records[0].settings.is_empty());
+    }
+
+    #[test]
+    fn a_setting_kind_from_a_newer_fuxx_is_skipped_not_fatal() {
+        use crate::plugin_settings::Kind;
+        let (_h, f) = folders("future-kind");
+        std::fs::write(
+            f.records(),
+            r#"{"plugins":[{"id":"helper","name":"Helper","version":"1.0","description":null,
+            "repo":"o/b","installed":{"tag":"v1"},"themes":[],"installed_at":5,"zsh":["a.zsh"],
+            "settings":[
+              {"name":"mode","kind":"choice","default":"a","label":"Mode"},
+              {"name":"list","kind":"bool","default":"on","label":"Show a list"}]}]}"#,
+        )
+        .unwrap();
+        let records = load_checked(&f).ok().expect("the file still reads");
+        assert_eq!(records.len(), 1);
+        let names: Vec<&str> = records[0]
+            .settings
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, ["list"]);
+        assert_eq!(records[0].settings[0].kind, Kind::Bool);
     }
 
     #[test]

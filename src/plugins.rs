@@ -605,6 +605,18 @@ fn config_after_uninstall(config: &str, themes: &[String], id: &str) -> Option<S
 
 /// Keep `value` for plugin `id`'s declared setting `s` in the settings file (its default removes
 /// the line), then rewrite `plugins.zsh`, so terminals opened from now on get it (M11au).
+/// Installed plugin `id`'s declared setting `name`, as its record has it now.
+pub fn declared_setting(cx: &App, id: &str, name: &str) -> Option<plugin_settings::Setting> {
+    cx.try_global::<Plugins>()?
+        .records
+        .iter()
+        .find(|r| r.id == id)?
+        .settings
+        .iter()
+        .find(|s| s.name == name)
+        .cloned()
+}
+
 pub fn set_setting(id: &str, s: &plugin_settings::Setting, value: &str, cx: &mut App) {
     let key = plugin_settings::config_key(id, &s.name);
     crate::preferences::apply(cx, &key, &plugin_settings::values_for(s, value));

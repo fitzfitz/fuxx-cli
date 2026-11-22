@@ -14,6 +14,10 @@ pub enum Kind {
     Bool,
     /// A plain decimal: `3`, `0.5`, `-1`.
     Number,
+    /// A kind this fuxx doesn't know, from a records file a newer fuxx wrote. Never shown or
+    /// exported: `plugin_store` drops it when it reads the file, and no value fits it.
+    #[serde(other)]
+    Unknown,
 }
 
 /// One declared setting.
@@ -58,6 +62,7 @@ pub fn fits(kind: Kind, value: &str) -> bool {
     match kind {
         Kind::Bool => value == "on" || value == "off",
         Kind::Number => is_number(value),
+        Kind::Unknown => false,
     }
 }
 
@@ -69,6 +74,7 @@ pub fn same(kind: Kind, a: &str, b: &str) -> bool {
             (Ok(x), Ok(y)) => x == y,
             _ => a == b,
         },
+        Kind::Unknown => a == b,
     }
 }
 
@@ -144,10 +150,13 @@ pub fn current(values: &[Entry], id: &str, s: &Setting) -> String {
 }
 
 /// What `plugins.zsh` exports for plugin `id`: `(env name, value)` for each declared setting whose
-/// stored value fits its kind and differs from the default, in declaration order.
+/// stored value fits its kind and differs from the default, in declaration order. A name the
+/// manifest reader would refuse is skipped: the records file can be edited by hand, and the
+/// names go into the generated zsh bare.
 pub fn changed(values: &[Entry], id: &str, declared: &[Setting]) -> Vec<(String, String)> {
     declared
         .iter()
+        .filter(|s| valid_name(&s.name))
         .filter_map(|s| {
             let v = stored(values, id, s)?;
             (!same(s.kind, v, &s.default)).then(|| (env_name(&s.name), v.to_string()))
@@ -349,6 +358,27 @@ mod tests {
             )]
         );
         assert!(changed(&[], "fc", &declared).is_empty());
+    }
+
+    #[test]
+    fn a_name_the_manifest_would_refuse_is_never_exported() {
+        // The records file can be edited by hand; its names reach generated zsh.
+        let declared = [
+            setting("x;rm -rf ~", Kind::Bool, "on"),
+            setting("A", Kind::Bool, "on"),
+            setting("", Kind::Bool, "on"),
+            setting("list", Kind::Bool, "on"),
+        ];
+        let values = [
+            entry("plugin.fc.x;rm -rf ~", "off"),
+            entry("plugin.fc.A", "off"),
+            entry("plugin.fc.", "off"),
+            entry("plugin.fc.list", "off"),
+        ];
+        assert_eq!(
+            changed(&values, "fc", &declared),
+            [("FUXX_PLUGIN_SETTING_LIST".to_string(), "off".to_string())]
+        );
     }
 
     #[test]

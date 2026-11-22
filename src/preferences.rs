@@ -643,6 +643,8 @@ struct PluginField {
     plugin: String,
     name: String,
     input: gpui::Entity<NameInput>,
+    /// The text the page last put in the field: leaving it unchanged saves nothing.
+    shown: String,
     _save: Subscription,
 }
 
@@ -797,8 +799,9 @@ impl PreferencesView {
     }
 
     /// Make a field for each installed plugin's number setting that has none, and drop the fields
-    /// of settings that are gone. Enter, or leaving the field, keeps a new number; anything else
-    /// (and Escape) puts the kept value back.
+    /// of settings that are gone. A field the user isn't in takes a kept value that changed (a
+    /// plugin update can move a default). Enter, or leaving a field whose text the user changed,
+    /// keeps a new number; anything else (and Escape) puts the kept value back.
     fn sync_plugin_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let wanted: Vec<(String, plugin_settings::Setting)> = cx
             .try_global::<plugins::Plugins>()
@@ -820,41 +823,76 @@ impl PreferencesView {
                 .any(|(plugin, s)| *plugin == f.plugin && s.name == f.name)
         });
         for (plugin, setting) in wanted {
-            if self.plugin_field(&plugin, &setting.name).is_some() {
+            let now = plugin_settings::current(
+                &cx.global::<Appearance>().plugin_values,
+                &plugin,
+                &setting,
+            );
+            if let Some(field) = self
+                .plugin_fields
+                .iter_mut()
+                .find(|f| f.plugin == plugin && f.name == setting.name)
+            {
+                let focused =
+                    gpui::Focusable::focus_handle(field.input.read(cx), cx).is_focused(window);
+                if let Some(text) = preferences_plugins::field_refresh(&field.shown, &now, focused)
+                {
+                    field.input.update(cx, |input, cx| {
+                        input.set_text(text.clone());
+                        cx.notify();
+                    });
+                    field.shown = text;
+                }
                 continue;
             }
-            let values = &cx.global::<Appearance>().plugin_values;
-            let text = plugin_settings::current(values, &plugin, &setting);
-            let input = cx.new(|cx| NameInput::new(text, window, cx));
-            let (id, s) = (plugin.clone(), setting.clone());
-            let save = cx.subscribe_in(&input, window, move |_, input, event, window, cx| {
+            let input = cx.new(|cx| NameInput::new(now.clone(), window, cx));
+            let (id, name) = (plugin.clone(), setting.name.clone());
+            let save = cx.subscribe_in(&input, window, move |this, input, event, window, cx| {
+                // The setting as installed now, not as it was when the field was made.
+                let Some(s) = plugins::declared_setting(cx, &id, &name) else {
+                    return;
+                };
                 let kept =
                     plugin_settings::current(&cx.global::<Appearance>().plugin_values, &id, &s);
-                let typed = match event {
-                    NameInputEvent::Confirm(text) => text.clone(),
+                let Some(field) = this
+                    .plugin_fields
+                    .iter_mut()
+                    .find(|f| f.plugin == id && f.name == name)
+                else {
+                    return;
+                };
+                let edit = match event {
+                    NameInputEvent::Confirm(text) => preferences_plugins::number_edit(text, &kept),
                     // Escape (the box still has focus): back to what was kept.
                     NameInputEvent::Cancel
                         if gpui::Focusable::focus_handle(input.read(cx), cx).is_focused(window) =>
                     {
-                        String::new()
+                        preferences_plugins::NumberEdit::Revert
                     }
-                    // Left: as Enter.
-                    NameInputEvent::Cancel => input.read(cx).text().to_string(),
+                    // Left: as Enter, if the user typed anything.
+                    NameInputEvent::Cancel => {
+                        preferences_plugins::number_left(input.read(cx).text(), &field.shown, &kept)
+                    }
                 };
-                match preferences_plugins::number_edit(&typed, &kept) {
+                match edit {
                     preferences_plugins::NumberEdit::Save(value) => {
+                        field.shown = value.clone();
                         plugins::set_setting(&id, &s, &value, cx)
                     }
-                    _ => input.update(cx, |input, cx| {
-                        input.set_text(kept);
-                        cx.notify();
-                    }),
+                    _ => {
+                        field.shown = kept.clone();
+                        input.update(cx, |input, cx| {
+                            input.set_text(kept);
+                            cx.notify();
+                        })
+                    }
                 }
             });
             self.plugin_fields.push(PluginField {
                 plugin,
                 name: setting.name,
                 input,
+                shown: now,
                 _save: save,
             });
         }

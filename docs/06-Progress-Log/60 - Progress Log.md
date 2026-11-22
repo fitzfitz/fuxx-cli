@@ -35,6 +35,17 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — M11au review fixes (in the worktree, by an agent)
+
+- **What:** the whole-branch review's three fixes on `plugin-settings`: a number field no longer saves a stale value
+  after a plugin update moves its default (the page remembers the text it set, refreshes unfocused fields, saves on
+  leaving only when you typed); a setting kind from a newer fuxx is skipped instead of making `plugins.json` read
+  as damaged; setting names from `plugins.json` are checked again before they reach the generated zsh. The other
+  minors are listed under "Deferred" in [[94 - Milestone 11au - Plugin Settings]]. Rebased onto master.
+- **Checks:** 2,423 tests (5 new, each watched failing first); both clippy runs with no warnings in the touched
+  files; `cargo fmt --check` clean.
+- **Next:** your on-screen check (note 94), then the merge.
+
 ### 2026-11-22 — M11au Plugin settings built (in a worktree, by an agent)
 
 - **What:** your approval of fuxx-completes' suggestion-list design (§4.4, §6), built in a worktree on branch

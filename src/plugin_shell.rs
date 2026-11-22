@@ -33,7 +33,8 @@ pub fn script(f: &Folders, records: &[Record], values: &[Entry]) -> String {
         if r.zsh.is_empty() {
             continue;
         }
-        // Names are checked when the manifest is read (`a-z`, `0-9`, `_`), so they go in bare.
+        // Names are checked when the manifest is read (`a-z`, `0-9`, `_`), and again by
+        // `changed` (the records file can be edited by hand), so they go in bare.
         let changed = plugin_settings::changed(values, &r.id, &r.settings);
         let exports: String = changed
             .iter()

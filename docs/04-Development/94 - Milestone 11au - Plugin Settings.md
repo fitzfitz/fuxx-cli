@@ -91,6 +91,32 @@ for any plugin. It doesn't wait for fuxx-completes' M1c, and M1c doesn't wait fo
 
 [[M11au Plan - Plugin Settings]] (4 tasks).
 
+## Review and fixes (2026-11-22)
+
+A whole-branch review found three things worth fixing; each got a test that failed first:
+
+- **A stale number field saved a value you never chose.** A field got its text once; after a plugin update moved
+  a default (3 → 4) with the page open, clicking into the field and out again wrote `3`. Now the page remembers
+  the text it last put in each field, refreshes a field you aren't in when the kept value changes, and leaving a
+  field whose text you didn't change saves nothing. The field's save also reads the setting as installed now, not
+  as it was when the field was made. Tests `leaving_an_untouched_field_saves_nothing`,
+  `a_field_takes_a_changed_value_unless_it_has_focus` (`preferences_plugins`).
+- **A setting kind from a newer fuxx made every plugin vanish.** `plugins.json` with, say, `"kind":"choice"` failed
+  to read as a whole, so fuxx treated the list as damaged. Unknown kinds now read as `Unknown` and are dropped when
+  the file is read: not shown, not exported; the plugin and its other settings work. Test
+  `a_setting_kind_from_a_newer_fuxx_is_skipped_not_fatal` (`plugin_store`).
+- **Setting names from `plugins.json` reached the generated zsh unchecked** (the file can be edited by hand).
+  `changed` now skips any name the manifest reader would refuse (a `;` or a space, upper case, empty), so such a
+  name exports nothing. Test `a_name_the_manifest_would_refuse_is_never_exported` (`plugin_settings`).
+
+### Deferred (the review's other minors, left as they are)
+
+- A number field can still be edited while a plugin is busy (install/update running); the save then races it.
+- A plugin with settings but no zsh scripts still shows its settings, which nothing reads.
+- A `FUXX_PLUGIN_SETTING_<NAME>` already in the environment (from `.zshrc`) is seen by the plugin when you didn't
+  change that setting, and is unset after loading.
+- The README doesn't say that hand edits to `plugin.<id>.<name>` lines are honoured only when they fit the type.
+
 ## Your on-screen check
 
 On branch `plugin-settings` (`cargo run`), with a plugin that declares settings (fuxx-completes once its M1c

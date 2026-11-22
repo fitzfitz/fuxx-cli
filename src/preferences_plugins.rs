@@ -91,6 +91,23 @@ pub fn number_edit(typed: &str, current: &str) -> NumberEdit {
     }
 }
 
+/// What leaving a number field does. `shown` is the text the page last put in it: while the
+/// field still holds that, the user chose nothing, so nothing is saved, even when `current` has
+/// changed meanwhile (a plugin update moved the default); the field then shows `current`.
+pub fn number_left(typed: &str, shown: &str, current: &str) -> NumberEdit {
+    if typed.trim() == shown.trim() {
+        NumberEdit::Keep
+    } else {
+        number_edit(typed, current)
+    }
+}
+
+/// The text to put in a number field showing `shown` once the kept value is `current`: none
+/// when they match, or while the field has focus (the user may be typing).
+pub fn field_refresh(shown: &str, current: &str, focused: bool) -> Option<String> {
+    (!focused && shown != current).then(|| current.to_string())
+}
+
 /// A switch's value after a click.
 pub fn flipped(value: &str) -> &'static str {
     if value == "on" { "off" } else { "on" }
@@ -106,7 +123,7 @@ fn settings_rows(
     cx: &Context<PreferencesView>,
 ) -> Div {
     let values = &cx.global::<Appearance>().plugin_values;
-    let rows = record.settings.iter().map(|s| {
+    let rows = record.settings.iter().filter_map(|s| {
         let current = plugin_settings::current(values, &record.id, s);
         let control = match s.kind {
             Kind::Bool => {
@@ -139,20 +156,24 @@ fn settings_rows(
                     .child(current)
                     .into_any_element(),
             },
+            // Dropped when the records file is read; never drawn.
+            Kind::Unknown => return None,
         };
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap(px(16.0))
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(px(NOTE_SIZE))
-                    .text_color(hsla(ui.text))
-                    .child(s.label.clone()),
-            )
-            .child(control)
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(16.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(NOTE_SIZE))
+                        .text_color(hsla(ui.text))
+                        .child(s.label.clone()),
+                )
+                .child(control),
+        )
     });
     div()
         .w_full()
@@ -483,6 +504,24 @@ mod tests {
         assert_eq!(number_edit("abc", "3"), NumberEdit::Revert);
         assert_eq!(number_edit("", "3"), NumberEdit::Revert);
         assert_eq!(number_edit("1e3", "3"), NumberEdit::Revert);
+    }
+
+    #[test]
+    fn leaving_an_untouched_field_saves_nothing() {
+        // The page put `3` in the field; a plugin update made the default 4 meanwhile.
+        assert_eq!(number_left("3", "3", "4"), NumberEdit::Keep);
+        assert_eq!(number_left(" 3 ", "3", "4"), NumberEdit::Keep);
+        // Typed something: as Enter.
+        assert_eq!(number_left("2", "3", "4"), NumberEdit::Save("2".into()));
+        assert_eq!(number_left("4", "3", "4"), NumberEdit::Keep);
+        assert_eq!(number_left("x", "3", "4"), NumberEdit::Revert);
+    }
+
+    #[test]
+    fn a_field_takes_a_changed_value_unless_it_has_focus() {
+        assert_eq!(field_refresh("3", "4", false), Some("4".to_string()));
+        assert_eq!(field_refresh("3", "4", true), None);
+        assert_eq!(field_refresh("3", "3", false), None);
     }
 
     #[test]
