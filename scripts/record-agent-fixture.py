@@ -348,8 +348,9 @@ class Run:
 SCENARIOS = {
     "claude": {"text", "tools", "permission-allow", "permission-deny", "permission-always", "interrupt",
                "interrupt-text", "queue", "resume", "slash", "bad-resume",
-               "initialize", "set-model", "set-effort", "set-mode", "image", "move"},
-    "agy": {"text", "tools", "resume", "bad-resume", "restart-flags", "move", "image"},
+               "initialize", "set-model", "set-effort", "set-mode", "image", "move",
+               "subagents", "subagent-stop", "subagent-ask"},
+    "agy": {"text", "tools", "resume", "bad-resume", "restart-flags", "move", "image", "subagents"},
 }
 TOOL_PROMPT = ("Do these four things in order, using the matching tools: 1) Read the file notes.txt "
                "2) Edit notes.txt, changing 'alpha' to 'beta' 3) run `ls` with Bash "
@@ -363,9 +364,40 @@ RED_PNG = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMB
 SLEEP = "Run `python3 -c 'import time; time.sleep({n})'` with the Bash tool in the foreground (do not background it), then say done."
 
 
+# M11ar: subagents (two in parallel; one stopped alone; one whose tool asks).
+SUBAGENTS = ("Use the Agent tool twice in one message, so two subagents run in parallel: the first "
+             "reads a.txt and reports what it says, the second reads b.txt and reports what it says. "
+             "Then tell me both in one line.")
+AGY_SUBAGENTS = ("Start two flash subagents in parallel: the first reads a.txt and reports what it says, "
+                 "the second reads b.txt and reports what it says. Then tell me both in one line.")
+SUBAGENT_STOP = ("Use the Agent tool once: the subagent runs `python3 -c 'import time; time.sleep(60)'` "
+                 "with the Bash tool in the foreground, then reports. Then say done.")
+SUBAGENT_ASK = ("Use the Agent tool once: the subagent creates a file named hello.txt containing the word "
+                "hi, using the Write tool, then reports. Then say done.")
+
+
 def play(r, scenario):
     """Send the scenario's messages and wait for what it needs. Raises on a stuck scenario."""
-    if scenario in ("text", "bad-resume"):
+    if scenario == "subagents":
+        r.send(user(AGY_SUBAGENTS if IS_AGY else SUBAGENTS))
+        r.expect_result()
+    elif scenario == "subagent-ask":
+        r.send(user(SUBAGENT_ASK))
+        r.expect_result()
+    elif scenario == "subagent-stop":
+        r.send(user(SUBAGENT_STOP))
+        started = r.pump(lambda e: e.get("type") == "system" and e.get("subtype") == "task_started"
+                         and e.get("task_type") == "local_agent")
+        if started is None:
+            raise RuntimeError("no subagent started")
+        # Its sleep is running once the subagent's own Bash task starts (its permission is
+        # answered by `pump`).
+        if r.pump(lambda e: e.get("subtype") == "task_started" and e.get("task_type") == "local_bash") is None:
+            raise RuntimeError("the subagent's Bash never started")
+        r.send({"type": "control_request", "request_id": "fuxx-stop-task",
+                "request": {"subtype": "stop_task", "task_id": started["task_id"]}})
+        r.expect_result(120)
+    elif scenario in ("text", "bad-resume"):
         r.send(user("Say hello in one word"))
         r.result()
     elif scenario == "tools":
@@ -566,6 +598,28 @@ def scrub_jsonl(text, workdirs):
     return "\n".join(out)
 
 
+def copy_subagent_transcripts(r, out):
+    """agy (M11ar): each subagent's own transcript (its `log_uri`), scrubbed, beside <out> as
+    <out minus .jsonl>-transcript-<a|b|…>.jsonl."""
+    from urllib.parse import unquote, urlparse
+    uris = []
+    for e in r.lines:
+        info = e.get("step_update", {}).get("subagent_info", {}) if isinstance(e, dict) else {}
+        for sub in info.get("subagents", []):
+            uri = sub.get("log_uri")
+            if uri and uri not in uris:
+                uris.append(uri)
+    base = out[:-len(".jsonl")] if out.endswith(".jsonl") else out
+    for n, uri in enumerate(uris):
+        path = unquote(urlparse(uri).path)
+        if not os.path.exists(path):
+            print(f"no transcript at {scrub_text(path, (r.workdir,))}")
+            continue
+        dest = f"{base}-transcript-{chr(ord('a') + n)}.jsonl"
+        open(dest, "w").write(scrub_jsonl(open(path).read(), (r.workdir, r.raw_workdir)))
+        print(f"transcript {chr(ord('a') + n)}: {dest}")
+
+
 def main():
     global TRIM, IS_AGY
     if sys.argv[1:2] == ["--scrub-file"]:
@@ -616,6 +670,11 @@ def main():
         sys.exit("restart-flags needs a model id (from `agy models`) as the 5th argument")
     if scenario == "tools":
         open(os.path.join(workdir, "notes.txt"), "w").write("alpha\n")
+    if scenario.startswith("subagent"):
+        open(os.path.join(workdir, "a.txt"), "w").write("apples\n")
+        open(os.path.join(workdir, "b.txt"), "w").write("bananas\n")
+        if claude:
+            argv += ["--model", "haiku"]
     if scenario == "image" and not claude:
         open(os.path.join(workdir, "red.png"), "wb").write(base64.b64decode(RED_PNG))
     # `set-mode` denies any tool prompt: an ExitPlanMode allowed would leave plan mode and write.
@@ -663,6 +722,8 @@ def main():
             r.kill()
     if r is None:
         raise failure
+    if not claude and scenario == "subagents":
+        copy_subagent_transcripts(r, out)
     if claude and scenario == "text" and failure is None:
         copy_transcript(r, os.path.join(os.path.dirname(out) or ".", "claude-transcript.jsonl"))
     print(f"{agent} {scenario}: exit={code} prompts={r.prompts} out={out}")

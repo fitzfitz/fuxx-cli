@@ -809,6 +809,25 @@ mod commit_message_tests {
     }
 
     #[test]
+    fn no_fixture_names_a_real_home() {
+        // Recordings are scrubbed (`scripts/record-agent-fixture.py`): a home folder shows as
+        // `~` or `/Users/me`, never someone's.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/providers/fixtures");
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            for (i, _) in text.match_indices("/Users/") {
+                let rest = &text[i + "/Users/".len()..];
+                assert!(
+                    rest.starts_with("me/") || rest.starts_with("me\"") || rest.starts_with("me "),
+                    "{}: a real home folder at byte {i}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_program_is_found_on_the_path() {
         assert!(on_path("sh", Some("/usr/bin:/bin")));
         assert!(!on_path("fuxx-no-such-program", Some("/usr/bin:/bin")));

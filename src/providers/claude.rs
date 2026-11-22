@@ -3,7 +3,7 @@
 
 use super::*;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub struct Claude;
@@ -479,6 +479,8 @@ pub fn transcript_path(home: &Path, cwd: &Path, id: &str) -> PathBuf {
 pub fn transcript_events(text: &str) -> Vec<Past> {
     let translator = ClaudeTranslator::default();
     let mut out = Vec::new();
+    // Past subagents (M11ar): each Agent call is a lane, ended by its result.
+    let mut agents: HashSet<String> = HashSet::new();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -494,11 +496,37 @@ pub fn transcript_events(text: &str) -> Vec<Past> {
                     .is_some_and(|a| a.iter().any(|i| i["type"] == "tool_result"));
                 if results {
                     out.extend(translator.user(&v).into_iter().map(Past::Event));
+                    for r in content.as_array().into_iter().flatten() {
+                        if let Some(id) = r["tool_use_id"].as_str()
+                            && agents.remove(id)
+                        {
+                            let end = if r["is_error"] == true {
+                                LaneEnd::Failed("It failed".into())
+                            } else {
+                                LaneEnd::Done
+                            };
+                            out.push(Past::Event(Event::SubagentEnded {
+                                id: id.to_string(),
+                                end,
+                            }));
+                        }
+                    }
                 } else if let Some(past) = said_text(content).as_deref().and_then(user_said) {
                     out.push(past);
                 }
             }
-            Some("assistant") => out.extend(translator.assistant(&v).into_iter().map(Past::Event)),
+            Some("assistant") => {
+                out.extend(translator.assistant(&v).into_iter().map(Past::Event));
+                for b in v["message"]["content"].as_array().into_iter().flatten() {
+                    if b["type"] == "tool_use"
+                        && matches!(b["name"].as_str(), Some("Agent" | "Task"))
+                        && let Some(id) = b["id"].as_str()
+                    {
+                        agents.insert(id.to_string());
+                        out.push(Past::Event(past_lane(id, &b["input"])));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -570,6 +598,36 @@ struct ClaudeTranslator {
     asked: HashMap<String, Asked>,
     /// The last `fuxx-set-<n>` written.
     sets: u32,
+    /// Subagents (M11ar): Claude's task id → the lane (its Agent call's id), and back.
+    lanes: HashMap<String, String>,
+    tasks: HashMap<String, String>,
+}
+
+/// Claude's own subagent types: a description names one of these better than its type does.
+const BUILT_IN_AGENTS: [&str; 3] = ["general-purpose", "Explore", "Plan"];
+
+/// A subagent's label: its custom type, else what it was asked to do.
+fn lane_label(kind: &str, description: &str) -> String {
+    if kind.is_empty() || BUILT_IN_AGENTS.contains(&kind) {
+        description.to_string()
+    } else {
+        kind.to_string()
+    }
+}
+
+/// A past Agent call (a resumed conversation's) as a lane, by the live rule.
+fn past_lane(id: &str, input: &Value) -> Event {
+    let kind = input["subagent_type"].as_str().unwrap_or("");
+    let description = input["description"].as_str().unwrap_or("");
+    Event::SubagentStarted {
+        id: id.to_string(),
+        parent: None,
+        label: lane_label(kind, description),
+        kind: kind.to_string(),
+        task: input["prompt"].as_str().unwrap_or(description).to_string(),
+        model: None,
+        controls: LaneControls::default(),
+    }
 }
 
 /// A live change asked of Claude (Task 0's requests), and what was asked for.
@@ -1068,6 +1126,51 @@ impl ClaudeTranslator {
                 .map(Event::Mode)
                 .into_iter()
                 .collect(),
+            // Subagents (M11ar): a `local_agent` task is one (a subagent's own Bash is a
+            // `local_bash` task: not a lane).
+            Some("task_started") if v["task_type"] == "local_agent" => {
+                let (Some(task), Some(lane)) = (s(&v["task_id"]), s(&v["tool_use_id"])) else {
+                    return Vec::new();
+                };
+                self.lanes.insert(task.clone(), lane.clone());
+                self.tasks.insert(lane.clone(), task);
+                let kind = s(&v["subagent_type"]).unwrap_or_default();
+                let description = s(&v["description"]).unwrap_or_default();
+                vec![Event::SubagentStarted {
+                    id: lane,
+                    parent: s(&v["parent_task_id"]).and_then(|p| self.lanes.get(&p).cloned()),
+                    label: lane_label(&kind, &description),
+                    kind,
+                    task: s(&v["prompt"]).unwrap_or(description),
+                    model: None,
+                    controls: LaneControls { stop: true },
+                }]
+            }
+            Some("task_progress") => match s(&v["task_id"]).and_then(|t| self.lanes.get(&t)) {
+                Some(lane) => vec![Event::SubagentProgress {
+                    id: lane.clone(),
+                    tokens: v["usage"]["total_tokens"].as_u64(),
+                    tools: v["usage"]["tool_uses"].as_u64().map(|n| n as u32),
+                    last_tool: s(&v["last_tool_name"]),
+                }],
+                None => Vec::new(),
+            },
+            Some("task_notification") => match s(&v["task_id"]).and_then(|t| self.lanes.get(&t)) {
+                Some(lane) => {
+                    let end = match v["status"].as_str() {
+                        Some("failed") => {
+                            LaneEnd::Failed(s(&v["summary"]).unwrap_or_else(|| "It failed".into()))
+                        }
+                        Some("killed") | Some("stopped") => LaneEnd::Stopped,
+                        _ => LaneEnd::Done,
+                    };
+                    vec![Event::SubagentEnded {
+                        id: lane.clone(),
+                        end,
+                    }]
+                }
+                None => Vec::new(),
+            },
             Some("permission_denied") => s(&v["message"])
                 .or_else(|| s(&v["tool_name"]).map(|t| format!("{t} was denied")))
                 .map(Event::Notice)
@@ -1166,7 +1269,8 @@ impl ClaudeTranslator {
                 .as_array()
                 .and_then(|a| a.first())
                 .map(describe_suggestion),
-            by: None,
+            // A subagent's request names it (`agent_id` is its task id).
+            by: s(&req["agent_id"]).and_then(|a| self.lanes.get(&a).cloned()),
         };
         self.pending.insert(id, (input, suggestions));
         vec![event]
@@ -1204,8 +1308,15 @@ impl Translator for ClaudeTranslator {
 
     fn encode(&mut self, action: &Action) -> Vec<String> {
         match action {
-            // Task 2 (M11ar) writes `stop_task` for it.
-            Action::StopSubagent { .. } => Vec::new(),
+            // One subagent alone (M11ar), by its task id.
+            Action::StopSubagent { lane } => match self.tasks.get(lane) {
+                Some(task) => vec![
+                    json!({"type": "control_request", "request_id": format!("fuxx-stop-{task}"),
+                    "request": {"subtype": "stop_task", "task_id": task}})
+                    .to_string(),
+                ],
+                None => Vec::new(),
+            },
             Action::Send { text, images } => vec![
                 json!({"type": "user",
                 "message": {"role": "user", "content": content(text, images)}})
@@ -1276,6 +1387,251 @@ mod tests {
     fn decode_all(p: &dyn Provider, text: &str) -> Vec<Event> {
         let mut t = p.translator();
         text.lines().flat_map(|l| t.decode(l)).collect()
+    }
+
+    // ---- M11ar: subagents ----
+
+    const SUBAGENTS: &str = include_str!("fixtures/claude-subagents.jsonl");
+    const SUB_STOP: &str = include_str!("fixtures/claude-subagent-stop.jsonl");
+    const SUB_ASK: &str = include_str!("fixtures/claude-subagent-ask.jsonl");
+
+    fn started_of(ev: &[Event]) -> Vec<(String, String, String, String, bool)> {
+        ev.iter()
+            .filter_map(|e| match e {
+                Event::SubagentStarted {
+                    id,
+                    label,
+                    kind,
+                    task,
+                    controls,
+                    ..
+                } => Some((
+                    id.clone(),
+                    label.clone(),
+                    kind.clone(),
+                    task.clone(),
+                    controls.stop,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn conversation_of(text: &str) -> crate::agent_conversation::Conversation {
+        let mut c = crate::agent_conversation::Conversation::new();
+        c.you("go".into(), Vec::new());
+        for e in decode_all(&CLAUDE, text) {
+            c.apply(e);
+        }
+        c
+    }
+
+    #[test]
+    fn task_started_becomes_a_lane() {
+        let started = started_of(&decode_all(&CLAUDE, SUBAGENTS));
+        assert_eq!(started.len(), 2, "two subagents: {started:?}");
+        let (id, label, kind, task, stop) = &started[0];
+        assert_eq!(
+            id, "toolu_01A6dTWvtAdh452CDXHMraUZ",
+            "keyed by the Agent call"
+        );
+        // A built-in type isn't a name: the description is.
+        assert_eq!(label, "Read a.txt and report contents");
+        assert_eq!(kind, "general-purpose");
+        assert!(task.contains("a.txt"), "the task is its prompt: {task}");
+        assert!(stop, "Claude can stop one");
+        // A custom type is the name.
+        let line = json!({"type":"system","subtype":"task_started","task_id":"t9",
+            "tool_use_id":"toolu_x","description":"Review the diff","subagent_type":"code-reviewer",
+            "task_type":"local_agent","prompt":"Review it"})
+        .to_string();
+        let ev = CLAUDE.translator().decode(&line);
+        assert_eq!(started_of(&ev)[0].1, "code-reviewer");
+        // A subagent's own Bash task (`local_bash`) is no lane.
+        assert_eq!(started_of(&decode_all(&CLAUDE, SUB_STOP)).len(), 1);
+    }
+
+    #[test]
+    fn task_progress_becomes_progress() {
+        let ev = decode_all(&CLAUDE, SUBAGENTS);
+        let first = ev.iter().find_map(|e| match e {
+            Event::SubagentProgress {
+                id,
+                tokens,
+                tools,
+                last_tool,
+            } if id == "toolu_01A6dTWvtAdh452CDXHMraUZ" => {
+                Some((*tokens, *tools, last_tool.clone()))
+            }
+            _ => None,
+        });
+        assert_eq!(first, Some((Some(25_997), Some(1), Some("Read".into()))));
+    }
+
+    #[test]
+    fn task_notification_ends_the_lane() {
+        let end = |status: &str| {
+            let mut t = CLAUDE.translator();
+            t.decode(
+                &json!({"type":"system","subtype":"task_started","task_id":"t1",
+                "tool_use_id":"toolu_1","description":"d","subagent_type":"general-purpose",
+                "task_type":"local_agent","prompt":"p"})
+                .to_string(),
+            );
+            t.decode(
+                &json!({"type":"system","subtype":"task_notification","task_id":"t1",
+                "tool_use_id":"toolu_1","status":status,"summary":"no such file"})
+                .to_string(),
+            )
+            .into_iter()
+            .find_map(|e| match e {
+                Event::SubagentEnded { id, end } if id == "toolu_1" => Some(end),
+                _ => None,
+            })
+        };
+        assert_eq!(end("completed"), Some(LaneEnd::Done));
+        assert_eq!(end("failed"), Some(LaneEnd::Failed("no such file".into())));
+        assert_eq!(end("killed"), Some(LaneEnd::Stopped));
+        assert_eq!(end("stopped"), Some(LaneEnd::Stopped));
+    }
+
+    #[test]
+    fn two_subagents_keep_their_own_steps() {
+        let c = conversation_of(SUBAGENTS);
+        let lanes = c.lanes();
+        assert_eq!(lanes.len(), 2);
+        for lane in lanes {
+            assert_eq!(
+                c.lane_steps(&lane.id),
+                1,
+                "{}: its own Read only",
+                lane.label
+            );
+            assert_eq!(
+                lane.status,
+                crate::agent_conversation::LaneStatus::Done,
+                "{}",
+                lane.label
+            );
+        }
+    }
+
+    #[test]
+    fn a_background_lane_ends_after_the_turn() {
+        use crate::agent_conversation::LaneStatus;
+        let mut c = crate::agent_conversation::Conversation::new();
+        let mut t = CLAUDE.translator();
+        let feed = |t: &mut Box<dyn Translator>,
+                    c: &mut crate::agent_conversation::Conversation,
+                    v: Value| {
+            for e in t.decode(&v.to_string()) {
+                c.apply(e);
+            }
+        };
+        feed(
+            &mut t,
+            &mut c,
+            json!({"type":"system","subtype":"task_started","task_id":"bg1",
+            "tool_use_id":"toolu_bg","description":"Watch the build","subagent_type":"general-purpose",
+            "task_type":"local_agent","is_backgrounded":true,"prompt":"watch"}),
+        );
+        feed(
+            &mut t,
+            &mut c,
+            json!({"type":"result","subtype":"success","is_error":false,
+            "result":"ok","session_id":"s"}),
+        );
+        assert_eq!(c.lane("toolu_bg").unwrap().status, LaneStatus::Working);
+        feed(
+            &mut t,
+            &mut c,
+            json!({"type":"system","subtype":"task_notification","task_id":"bg1",
+            "tool_use_id":"toolu_bg","status":"completed","summary":"built"}),
+        );
+        assert_eq!(c.lane("toolu_bg").unwrap().status, LaneStatus::Done);
+    }
+
+    #[test]
+    fn a_subagents_permission_says_who() {
+        let ev = decode_all(&CLAUDE, SUB_ASK);
+        let lane = started_of(&ev)[0].0.clone();
+        let by = ev.iter().find_map(|e| match e {
+            Event::Permission { by, .. } => Some(by.clone()),
+            _ => None,
+        });
+        assert_eq!(by, Some(Some(lane)), "agent_id is the lane's task_id");
+    }
+
+    #[test]
+    fn stop_subagent_writes_stop_task() {
+        let mut t = CLAUDE.translator();
+        let mut lane = None;
+        for l in SUBAGENTS.lines() {
+            for e in t.decode(l) {
+                if let Event::SubagentStarted { id, .. } = e {
+                    lane.get_or_insert(id);
+                }
+            }
+        }
+        let out = t.encode(&Action::StopSubagent {
+            lane: lane.unwrap(),
+        });
+        assert_eq!(out.len(), 1);
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(v["type"], "control_request");
+        assert_eq!(v["request"]["subtype"], "stop_task");
+        assert_eq!(v["request"]["task_id"], "a4dfa9abed5c81e02");
+        assert!(
+            t.encode(&Action::StopSubagent {
+                lane: "unknown".into()
+            })
+            .is_empty(),
+            "an unknown lane writes nothing"
+        );
+    }
+
+    #[test]
+    fn the_stop_fixture_ends_one_lane_only() {
+        use crate::agent_conversation::LaneStatus;
+        let c = conversation_of(SUB_STOP);
+        assert_eq!(c.lanes().len(), 1);
+        assert_eq!(c.lanes()[0].status, LaneStatus::Stopped);
+        assert!(
+            c.items().iter().any(|i| matches!(
+                i,
+                crate::agent_conversation::Item::Agent { parent: None, .. }
+            )),
+            "Main went on and answered"
+        );
+    }
+
+    #[test]
+    fn history_restores_lanes_by_the_live_rule() {
+        let agent = json!({"type":"assistant","message":{"id":"m1","role":"assistant","content":[
+            {"type":"tool_use","id":"toolu_a","name":"Agent","input":{
+                "description":"Find the config loader","subagent_type":"Explore",
+                "prompt":"Find where config is loaded"}}]}});
+        let side = json!({"type":"assistant","isSidechain":true,"message":{"id":"m2",
+            "role":"assistant","content":[{"type":"text","text":"inside"}]}});
+        let done = json!({"type":"user","message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"toolu_a","content":"found it"}]}});
+        let text = [agent, side, done]
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut c = crate::agent_conversation::Conversation::new();
+        c.past(transcript_events(&text));
+        let lanes = c.lanes();
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].id, "toolu_a");
+        assert_eq!(
+            lanes[0].label, "Find the config loader",
+            "Explore is a built-in"
+        );
+        assert_eq!(lanes[0].kind, "Explore");
+        assert_eq!(lanes[0].task, "Find where config is loaded");
+        assert_eq!(lanes[0].status, crate::agent_conversation::LaneStatus::Done);
     }
 
     /// Spec B-A: the tab and the chat draw Claude's logo, not "CC".
