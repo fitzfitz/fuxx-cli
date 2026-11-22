@@ -206,6 +206,9 @@ pub struct UiColors {
     /// a little more under the pointer.
     pub tab_idle: Rgb,
     pub tab_idle_hover: Rgb,
+    /// An inactive tab's title (your words, 2026-11-22: "inactive tab make the text more
+    /// transparent"): a third of the way from faint text to its fill, held to a mark's floor.
+    pub tab_idle_text: Rgb,
     /// The selected sidebar row's soft tint of the accent (its text keeps its own colours).
     pub row_selected: Rgb,
     /// A hovered and a selected fill on the card (tab hover, buttons, the repo card; the file
@@ -667,6 +670,14 @@ impl Theme {
             // Closer to the card (your words, 2026-11-22: "more darker/transparent").
             tab_idle: mix(card, fg, 0.012),
             tab_idle_hover: mix(card, fg, 0.035),
+            tab_idle_text: {
+                let idle = mix(card, fg, 0.012);
+                readable(
+                    mix(text_faint, idle, 0.33),
+                    &[idle, mix(card, fg, 0.035)],
+                    MARK_MIN,
+                )
+            },
             row_selected,
             card_hover,
             card_selected,

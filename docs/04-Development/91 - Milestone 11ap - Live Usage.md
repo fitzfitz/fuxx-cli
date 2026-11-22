@@ -248,3 +248,5 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
   ends), focus between panes on screen or the window's focus. Reduce motion or Animations off: the rim tints and fades
   back (500 ms). Nothing drawn or asked for once over. Settings › General › "Agent box sweep" (`agent-sweep`, on by
   default). `agent_sweep.rs`; scene `agent-box-sweep` (the trigger rules).
+- **Inactive tab titles quieter** ("inactive tab make the text more transparent"): `tab_idle_text`, a third of the
+  way from faint text to the tab's fill, held to 3:1 (a mark's floor; was text's 4.5:1); a waiting tab keeps faint text.

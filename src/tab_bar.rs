@@ -272,7 +272,13 @@ pub fn look(ui: &UiColors, status: Status, active: bool, pane_focused: bool) -> 
     Look {
         fill,
         hover,
-        text: if active { ui.text } else { ui.text_faint },
+        // Inactive: quieter text (your words, 2026-11-22); a waiting one keeps faint text, it
+        // asks for you.
+        text: match (active, waiting) {
+            (true, _) => ui.text,
+            (false, false) => ui.tab_idle_text,
+            (false, true) => ui.text_faint,
+        },
     }
 }
 
@@ -1513,7 +1519,7 @@ mod tests {
                     Look {
                         fill: Some(ui.tab_idle),
                         hover: Some(ui.tab_idle_hover),
-                        text: ui.text_faint,
+                        text: ui.tab_idle_text,
                     },
                     "{status:?}, focused {focused}"
                 );
@@ -1542,9 +1548,18 @@ mod tests {
                 between(idle) && between(hover),
                 "{name}: idle {idle} hover {hover}"
             );
+            // Its title quieter than faint text (your words, 2026-11-22: "inactive tab make the
+            // text more transparent"), still a mark's floor on its fill.
             for on in [ui.tab_idle, ui.tab_idle_hover] {
-                let got = contrast(ui.text_faint, on);
-                assert!(got >= TEXT_MIN - 0.01, "{name}: title {got:.2}");
+                let got = contrast(ui.tab_idle_text, on);
+                assert!(
+                    got >= crate::ui_tokens::MARK_MIN - 0.01,
+                    "{name}: title {got:.2}"
+                );
+                assert!(
+                    got < contrast(ui.text_faint, on),
+                    "{name}: quieter than faint ({got:.2})"
+                );
             }
             let dark = theme.is_dark();
             assert_eq!(

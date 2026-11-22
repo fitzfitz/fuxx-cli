@@ -2189,7 +2189,7 @@ fn browser_tab_scenes() {
 /// title (the working arc, the waiting dot, Done's muted ✓ in `text_dim`, nothing when idle);
 /// each tab is a pill (round ends, clear card after it, no separator; chore 2026-11-20); the
 /// shown tab has the `tab_active` wash, the others `tab_idle` (a waiting one its tint), the
-/// shown one's title in `text` and the others' in `text_faint`; notes.md is a preview; a
+/// shown one's title in `text`, a waiting one's in `text_faint`, the others' in `tab_idle_text`; notes.md is a preview; a
 /// hovered tab is `card_lift` with its ×; + is drawn right after the last tab; and,
 /// overflowing, each tab keeps at least `TAB_MIN_WIDTH`, the row scrolls, and ＋ ⋯ ▥ stay
 /// inside each pane, drawn.
@@ -2427,14 +2427,19 @@ fn tabs_minimal_scenes() {
                         "{what}: no accent on a file"
                     );
                 }
-                // The title: the shown tab's in `text`, the others' in `text_faint`.
+                // The title: the shown tab's in `text`, a waiting one's in `text_faint`, the others'
+                // quieter (`tab_idle_text`, 2026-11-22).
                 let title = in_box(
                     tile + TILE + PART_GAP,
                     tile + TILE + PART_GAP + 24.0,
                     cy - 6.0,
                     cy + 6.0,
                 );
-                let words = if i == 0 { ui.text } else { ui.text_faint };
+                let words = match i {
+                    0 => ui.text,
+                    1 => ui.text_faint,
+                    _ => ui.tab_idle_text,
+                };
                 let off = nearest(&title, words);
                 assert!(off <= 24, "{what}: its title {words:?} off by {off}");
                 // The status dot in the ×'s slot (they share it since 2026-11-22): shown, and
