@@ -261,7 +261,6 @@ pub trait Provider: Sync {
     /// None: the agent has no usage command.
     /// The command that asks the agent, once, for a commit message from `prompt` (M11aq's ✦),
     /// its answer on stdout as text; none for an agent that can't.
-    #[allow(dead_code)] // M11aq Task 4 (✦) calls it
     fn message_probe(&self, _prompt: &str) -> Option<Probe> {
         None
     }
@@ -624,7 +623,6 @@ pub fn by_name(name: &str) -> Option<&'static dyn Provider> {
 
 /// The prompt for a commit message from the staged `diff` (M11aq's ✦): one imperative summary
 /// line, the reply nothing but that line; what was left out (secret-looking files) or cut said.
-#[allow(dead_code)] // M11aq Task 4 (✦) calls it
 pub fn commit_message_prompt(diff: &crate::git_commit::StagedDiff) -> String {
     let mut prompt = String::from(
         "Write a git commit message for the staged changes below. Reply with only the message: \
@@ -647,7 +645,6 @@ pub fn commit_message_prompt(diff: &crate::git_commit::StagedDiff) -> String {
 
 /// The message in an agent's answer: its first line with text, out of any code fence, without
 /// quotes or a "Commit message:" label; none when nothing is left.
-#[allow(dead_code)] // M11aq Task 4 (✦) calls it
 pub fn clean_message(raw: &str) -> Option<String> {
     let line = raw
         .lines()
@@ -665,7 +662,6 @@ pub fn clean_message(raw: &str) -> Option<String> {
 }
 
 /// Whether `command` is a program on `path_env` (the login PATH; none: this process's).
-#[allow(dead_code)] // M11aq Task 4 (✦) calls it
 pub fn on_path(command: &str, path_env: Option<&str>) -> bool {
     let path = match path_env {
         Some(p) => p.to_string(),

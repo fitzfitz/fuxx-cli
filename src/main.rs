@@ -41,6 +41,7 @@ mod code_ask;
 mod code_outline;
 mod colors;
 mod command_name;
+mod commit_line;
 mod composer;
 mod cursor_look;
 mod daemon;
@@ -354,6 +355,8 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("backspace", name_input::Backspace, Some("NameInput")),
         KeyBinding::new("cmd-backspace", name_input::Clear, Some("NameInput")),
         KeyBinding::new("enter", name_input::Confirm, Some("NameInput")),
+        // M11aq: ⌘↵ in the Changes tab's commit field commits (Enter alone does nothing there).
+        KeyBinding::new("cmd-enter", commit_line::CommitStaged, Some("CommitInput")),
         // The caret (2026-11-10): ← → by character, ⌥ by word, ⌘ (or Home / End) to an end,
         // ⇧ selecting; ⌦ erases forward, ⌘A selects all.
         KeyBinding::new("left", name_input::MoveLeft, Some("NameInput")),

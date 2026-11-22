@@ -203,6 +203,7 @@ pub(super) const ORDER: &[&str] = &[
     "changes",
     "changes-bar",
     "changes-staging",
+    "changes-commit",
     "changes-graph",
     "changes-sticky",
     "activity",

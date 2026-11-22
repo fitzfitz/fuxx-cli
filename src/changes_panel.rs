@@ -138,6 +138,8 @@ pub(crate) struct ChangesPanel {
     hover: Option<(BarButton, bool)>,
     /// The root the automatic fetch last ran for.
     auto_fetched: Option<PathBuf>,
+    /// The commit line above the bar (M11aq).
+    pub(crate) commit: crate::commit_line::CommitState,
 }
 
 /// A git write under way on a repo (M11v): the bar's, or the rows' (part 2).
@@ -332,7 +334,20 @@ impl ChangesPanel {
             error: None,
             hover: None,
             auto_fetched: None,
+            commit: crate::commit_line::CommitState::default(),
         }
+    }
+
+    /// How many of the listed files are staged (M11aq's ✓N).
+    pub(crate) fn staged_count(&self) -> usize {
+        self.list
+            .as_ref()
+            .map_or(0, |l| l.entries.iter().filter(|c| c.staged).count())
+    }
+
+    /// Whether the repo has changes listed (the commit line shows then).
+    pub(crate) fn has_changes(&self) -> bool {
+        self.list.as_ref().is_some_and(|l| !l.entries.is_empty())
     }
 
     /// A read of where `root`'s branch stands (none: git failed; the last stays). False, and
@@ -1957,6 +1972,7 @@ impl Workspace {
             .relative()
             .children(header)
             .child(room)
+            .children(self.render_commit_line(ui, cx))
             .children(bar)
             .children(confirm)
             .into_any_element()

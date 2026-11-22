@@ -3825,6 +3825,8 @@ impl Render for Workspace {
         });
         // The followed terminal's folder looked up where due, for the right sidebar.
         self.refresh_right_sidebar(cx);
+        // The Changes tab's commit line: its field made once, moved to the panel's repo (M11aq).
+        self.prepare_commit_line(window, cx);
         self.tick_right_sidebar(cx);
         self.tick_ports(cx);
         let title = self

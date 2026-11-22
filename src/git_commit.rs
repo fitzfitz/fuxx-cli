@@ -5,9 +5,6 @@
 //! Never `--no-verify`, `--amend` or force: a hook that refuses is the commit refused, its output
 //! kept for you.
 
-// Wired in by M11aq Task 3 (the commit line) and Task 4 (✦); until then only the tests call it.
-#![allow(dead_code)]
-
 use std::path::Path;
 use std::time::Duration;
 

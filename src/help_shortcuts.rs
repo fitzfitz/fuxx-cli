@@ -146,7 +146,9 @@ pub fn describe(action: &str) -> Describe {
         | "file_tab::CloseFind"
         // M11ag: a file tab's ⌘↵ (Ask), named on its selection bar's button; no help row or
         // palette command is in the plan.
-        | "file_tab::AskAgent" => Unlisted,
+        | "file_tab::AskAgent"
+        // M11aq: the commit field's ⌘↵, named in its placeholder ("Message (⌘↵ to commit)").
+        | "commit_line::CommitStaged" => Unlisted,
         other if other.starts_with("name_input::") => Unlisted,
         other if other.starts_with("composer::") => Unlisted,
         // The agent tab's `@` file list's arrows (while it is open only).

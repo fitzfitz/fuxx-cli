@@ -334,7 +334,7 @@ pub fn run_probe_stoppable(
 }
 
 /// The login `PATH`, as a tab's boot reads it. Blocks the first time: background only.
-fn login_path() -> Option<String> {
+pub(crate) fn login_path() -> Option<String> {
     crate::workspace_ssh::login_env().and_then(|env| {
         env.iter()
             .find(|(k, _)| k == "PATH")

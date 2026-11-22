@@ -54,6 +54,19 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "changes-commit",
+        run: changes_commit_scenes,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/commit_line.rs",
+            "src/git_commit.rs",
+            "src/changes_panel.rs",
+            "src/name_input.rs",
+        ],
+    },
+    Scene {
         name: "changes-graph",
         run: changes_graph_scenes,
         themes: Themes::Both,
@@ -1965,5 +1978,194 @@ fn activity_scenes() {
             render_with(&theme, dims, build, act);
             println!("ui-shots: {n} ok");
         }
+    }
+}
+
+/// M11aq (note 92): the commit line above the branch bar, while the repo has changes —
+/// `changes-commit-rest`: the field's placeholder, ✓2 dim (no message yet); `-typed`: a message,
+/// ✓ lit; `-failed`: a failed commit's line with its output shown under the field.
+fn changes_commit_scenes() {
+    use crate::git_status::{Change, ChangeList, Counts, Mark};
+    use crate::right_sidebar::Panel;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let dims = size(px(1100.0), px(560.0));
+    let root = files_fixture();
+    let entry = |path: &str, staged| Change {
+        path: PathBuf::from(path),
+        mark: Mark::Modified,
+        counts: Counts::Lines {
+            added: 4,
+            removed: 1,
+        },
+        folder: false,
+        staged,
+        untracked: false,
+    };
+    let list = ChangeList {
+        entries: vec![
+            entry("src/commit_line.rs", true),
+            entry("src/git_commit.rs", true),
+            entry("src/main.rs", false),
+        ],
+        more: 0,
+        counts_failed: false,
+    };
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        // How strongly ✓ is inked over the panel in each state (dim when it can't commit).
+        let mut ink = std::collections::HashMap::new();
+        for state in ["rest", "typed", "failed"] {
+            let n = format!("changes-commit-{state}-{slug}");
+            let slot: Slot = Rc::new(RefCell::new(None));
+            let build = {
+                let (root, list) = (root.clone(), list.clone());
+                right_panel_workspace(
+                    theme,
+                    root.clone(),
+                    300.0,
+                    Panel::Changes,
+                    slot.clone(),
+                    move |ws| {
+                        ws.right_sidebar.changes.show_for_shots(
+                            root.clone(),
+                            true,
+                            Some(list.clone()),
+                        );
+                    },
+                )
+            };
+            let parts: Rc<RefCell<std::collections::HashMap<&'static str, gpui::Bounds<Pixels>>>> =
+                Rc::default();
+            let act = {
+                let (slot, parts, root, n) = (slot.clone(), parts.clone(), root.clone(), n.clone());
+                move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+                    let _ = frame_fresh(cx, window);
+                    let ws = slotted(&slot);
+                    let input = cx
+                        .read(|cx| ws.read(cx).right_sidebar.changes.commit.input.clone())
+                        .unwrap_or_else(|| panic!("{n}: the field was made"));
+                    match state {
+                        "typed" => cx.update(|cx| {
+                            input.update(cx, |i, cx| {
+                                i.set_text("Commit from the Git tab".into());
+                                cx.notify();
+                            })
+                        }),
+                        "failed" => cx.update(|cx| {
+                            ws.update(cx, |ws, cx| {
+                                ws.right_sidebar.changes.commit.error = Some((
+                                    root.clone(),
+                                    "nope-from-the-hook\nlint failed on src/main.rs".into(),
+                                    true,
+                                ));
+                                cx.notify();
+                            })
+                        }),
+                        _ => {}
+                    }
+                    let _ = frame_fresh(cx, window);
+                    *parts.borrow_mut() = cx.read(|cx| {
+                        ws.read(cx)
+                            .right_sidebar
+                            .changes
+                            .commit
+                            .drawn
+                            .borrow()
+                            .clone()
+                    });
+                    slot.borrow_mut().take();
+                }
+            };
+            let path = shoot_with(
+                "changes-commit",
+                &format!("{state}-{slug}"),
+                &theme,
+                dims,
+                build.clone(),
+                act.clone(),
+            );
+            println!("ui-shots: {}", path.display());
+            let shot = render_with(&theme, dims, build, act);
+            let parts = parts.borrow().clone();
+            let line = parts
+                .get("line")
+                .copied()
+                .unwrap_or_else(|| panic!("{n}: the line drawn"));
+            let button = parts
+                .get("button")
+                .copied()
+                .unwrap_or_else(|| panic!("{n}: ✓ drawn"));
+            assert!(
+                button.top() >= line.top() && button.bottom() <= line.bottom(),
+                "{n}: ✓ in the line"
+            );
+            // At the panel's foot, under the GRAPH (no branch read here, so no bar under it).
+            let h = f32::from(dims.height);
+            assert!(
+                f32::from(line.top()) > h * 0.6 && f32::from(line.bottom()) <= h - 8.0,
+                "{n}: at the panel's foot ({line:?})"
+            );
+            // ✓'s ink: its pixels' farthest step from the panel's fill.
+            let strongest = (0..(f32::from(button.size.width) as usize))
+                .flat_map(|dx| {
+                    (0..(f32::from(button.size.height) as usize)).map(move |dy| (dx, dy))
+                })
+                .map(|(dx, dy)| {
+                    let p = pixel_at(
+                        &shot,
+                        dims,
+                        f32::from(button.left()) + dx as f32,
+                        f32::from(button.top()) + dy as f32,
+                    );
+                    gap(p, ui.side)
+                })
+                .max()
+                .unwrap_or(0);
+            ink.insert(state, strongest);
+            // A typed message reads: the field holds the theme's text colour (the bare field
+            // once took none and drew it black).
+            if state == "typed" {
+                let field = parts
+                    .get("field")
+                    .copied()
+                    .unwrap_or_else(|| panic!("{n}: field"));
+                let reads = (0..(f32::from(field.size.width) as usize))
+                    .step_by(1)
+                    .flat_map(|dx| {
+                        (0..(f32::from(field.size.height) as usize)).map(move |dy| (dx, dy))
+                    })
+                    .any(|(dx, dy)| {
+                        let p = pixel_at(
+                            &shot,
+                            dims,
+                            f32::from(field.left()) + dx as f32,
+                            f32::from(field.top()) + dy as f32,
+                        );
+                        gap(p, ui.text) <= 40
+                    });
+                assert!(reads, "{n}: the message in the text colour");
+            }
+            if state == "failed" {
+                let output = parts
+                    .get("output")
+                    .copied()
+                    .unwrap_or_else(|| panic!("{n}: the output shown"));
+                assert!(output.top() >= button.bottom(), "{n}: under the field");
+            } else {
+                assert!(
+                    !parts.contains_key("output") || state == "failed",
+                    "{n}: no output"
+                );
+            }
+        }
+        assert!(
+            ink["typed"] > ink["rest"] + 20,
+            "{slug}: ✓ lit with a message ({} vs {})",
+            ink["typed"],
+            ink["rest"]
+        );
     }
 }
