@@ -5,9 +5,28 @@ updated: 2026-11-22
 
 # 94 - Milestone 11au - Plugin Settings
 
-**Status:** 📝 planned 2026-11-22, being built on branch `plugin-settings` (a worktree, by an agent, while M11aq's
-branch is worked on in the main checkout). *The number and letter were the next free ones on master when it was
-written; if they collide at merge they are renumbered.*
+**Status:** 🟨 built 2026-11-22 on branch `plugin-settings` (a worktree, by an agent, while M11aq's branch is worked
+on in the main checkout; all 4 plan tasks, 2,419 tests, both clippy runs at baseline, `preferences` ui-shots passed
+with a new `preferences-plugins-settings-<theme>` shot). Not merged, not pushed. Waiting for your on-screen check
+(below). *The number and letter were the next free ones on master when it was written (M11ar is Subagents; M11as
+and M11at are named on the Roadmap); if they collide at merge they are renumbered.*
+
+## What was built
+
+- `src/plugin_settings.rs` (new, pure): the `setting.*` line, the `plugin.<id>.<name>` values, what counts as
+  changed, the env names, removing a plugin's lines.
+- `Manifest.settings` and `Record.settings` (old `plugins.json` files still read); install and update copy them.
+- `plugin_shell::script` adds `FUXX_PLUGIN_SETTING_<NAME>=…` to the plugin's `export` line and the same names to its
+  `unset` line; the values are read from the settings file inside the write's turn. A plugin without settings, or
+  with none changed, gets the same block as before.
+- `Appearance.plugin_values` (the `plugin.*` lines), `plugins::set_setting` (writes the line, rewrites
+  `plugins.zsh`), uninstall removes the plugin's lines with its `theme` line.
+- Settings → Plugins: the rows under the card (switches; number fields that save on Enter or leaving and go back on
+  Escape or a non-number), with "New terminals get these settings." under them. README "Making a plugin" →
+  "Settings".
+- **Not checked by eye in the real app** (an agent can't see the window): the off-screen shot shows the four rows
+  under the plugin's card (a switch off, one on, fields 1.5 and 5, the note), but typing in the field, leaving it
+  and a new tab's environment need your check.
 
 ## Why
 

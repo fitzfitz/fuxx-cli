@@ -35,6 +35,21 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — M11au Plugin settings built (in a worktree, by an agent)
+
+- **What:** your approval of fuxx-completes' suggestion-list design (§4.4, §6), built in a worktree on branch
+  `plugin-settings` while M11aq's branch is worked on in the main checkout: a plugin declares settings in
+  `fuxx-plugin.conf` (`setting.<name> = bool|number <default> <label>`); Settings → Plugins shows a switch or a
+  number field for each; values live in `~/.config/fuxx/config` as `plugin.<id>.<name>`; only changed ones are
+  exported as `FUXX_PLUGIN_SETTING_<NAME>` while the plugin's zsh scripts load, then unset; uninstall removes them.
+  Scope line, note [[94 - Milestone 11au - Plugin Settings]], Roadmap row, plan [[M11au Plan - Plugin Settings]],
+  README "Making a plugin" → "Settings".
+- **Checks:** 2,419 tests (a real zsh sees the changed values while loading and none after); both clippy runs at
+  baseline; `cargo fmt --check` clean; `scripts/ui-shots.sh preferences` passed, new shot
+  `preferences-plugins-settings-<theme>`.
+- **Next:** your on-screen check (note 94); merge (renumber if M11au collides), then fuxx-completes' M1c can declare
+  its four settings.
+
 ### 2026-11-22 — Chore: the commit box, redone
 
 - **What:** your words ("commit box looks very bad, make it 100x better!"), the Lead UI/UX Designer's spec: a card

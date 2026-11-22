@@ -26,19 +26,19 @@ the declared settings; `plugin_shell::script` takes the stored values and adds t
 
 ## Tasks
 
-- [ ] **Task 1 — Declared settings in the manifest and the record.** `plugin_settings::{Setting, Kind, parse}`;
+- [x] **Task 1 — Declared settings in the manifest and the record.** `plugin_settings::{Setting, Kind, parse}`;
   `Manifest.settings` (from `setting.*` keys, in file order, last duplicate wins, malformed ignored);
   `Record.settings` (`serde(default)`, copied at install and update). Tests: the four example lines, each malformed
   form, duplicates, a manifest with settings stays valid, an old `plugins.json` without the field loads.
-- [ ] **Task 2 — Values in the settings file.** `config_key`, `current` (stored-or-default for the page),
+- [x] **Task 2 — Values in the settings file.** `config_key`, `current` (stored-or-default for the page),
   `changed` (valid, declared, ≠ default), `values_for` (what to write: nothing for the default),
   `config_without_plugin` (drops `plugin.<id>.*`); `Appearance.plugin_values`; uninstall removes the lines.
   Tests: each rule, numbers compared as numbers, another plugin's lines untouched.
-- [ ] **Task 3 — Export while loading.** `plugin_shell::script(f, records, values)`; `write`/`write_from` carry
+- [x] **Task 3 — Export while loading.** `plugin_shell::script(f, records, values)`; `write`/`write_from` carry
   the values read from the settings file inside the write's turn. Tests: the exact block with two changed values,
   unchanged values not exported, a plugin without settings byte-identical, a real zsh sees the values while loading
   and not after.
-- [ ] **Task 4 — Settings → Plugins rows, docs.** A row per declared setting on the card: the label, a switch or a
+- [x] **Task 4 — Settings → Plugins rows, docs.** A row per declared setting on the card: the label, a switch or a
   number field (a `NameInput` per number setting, kept in step with the records; Enter or blur saves; a bad number
   goes back). Saving writes the settings file (`preferences::apply`) and regenerates `plugins.zsh`. The
   `preferences-plugins-installed` scene gains a helper with settings and asserts a changed value changes the page.
