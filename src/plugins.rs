@@ -603,6 +603,16 @@ fn config_after_uninstall(config: &str, themes: &[String], id: &str) -> Option<S
     plugin_settings::config_without_plugin(text, id).or(themed)
 }
 
+/// Keep `value` for plugin `id`'s declared setting `s` in the settings file (its default removes
+/// the line), then rewrite `plugins.zsh`, so terminals opened from now on get it (M11au).
+pub fn set_setting(id: &str, s: &plugin_settings::Setting, value: &str, cx: &mut App) {
+    let key = plugin_settings::config_key(id, &s.name);
+    crate::preferences::apply(cx, &key, &plugin_settings::values_for(s, value));
+    if let Some(f) = folders(cx) {
+        regenerate(f, cx);
+    }
+}
+
 /// Turn plugin `id` On or Off. Only its record changes, so it's quick, but it still runs off
 /// the UI thread like the rest.
 pub fn set_enabled(id: &str, on: bool, cx: &mut App) {

@@ -907,23 +907,65 @@ fn preferences_scenes() {
 /// Two helper plugins that run code are listed too, with the second on in one render and off in
 /// another.
 ///
-/// Panics unless the page draws, the waiting update changes it (the Update button is there) and
-/// so does switching the second helper off (its On/Off switch is there).
+/// The second helper declares fuxx-completes' four settings (M11au): two switches and two number
+/// fields under its card, below the fold, so two more renders scroll to the page's foot, one with
+/// two of them changed (`preferences-plugins-settings-<theme>`).
+///
+/// Panics unless the page draws, the waiting update changes it (the Update button is there), so
+/// does switching the second helper off (its On/Off switch is there), and so do changed settings
+/// (the setting rows are there).
 fn preferences_plugins_scene() {
+    use crate::plugin_settings::{Kind, Setting};
     use crate::plugin_source::Installed;
     use crate::plugin_store::Record;
     use crate::plugins::Plugins;
     use crate::preferences::Section;
+    use crate::settings::Entry;
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    let declared = || {
+        let s = |name: &str, kind, default: &str, label: &str| Setting {
+            name: name.into(),
+            kind,
+            default: default.into(),
+            label: label.into(),
+        };
+        vec![
+            s(
+                "list",
+                Kind::Bool,
+                "on",
+                "Show a suggestion list when you pause",
+            ),
+            s(
+                "list_empty",
+                Kind::Bool,
+                "on",
+                "Show the list on an empty line too",
+            ),
+            s(
+                "list_delay",
+                Kind::Number,
+                "3",
+                "Seconds of pause before the list shows",
+            ),
+            s("list_size", Kind::Number, "5", "Items in the list (1–5)"),
+        ]
+    };
     let dims = size(px(1400.0), px(900.0));
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);
         let mut shots = Vec::new();
-        // (a newer version waiting, the second helper on)
-        for (with_update, second_on) in [(false, true), (true, true), (false, false), (true, false)]
-        {
+        // (a newer version waiting, the second helper on, its settings changed, at the foot)
+        for (with_update, second_on, changed, at_foot) in [
+            (false, true, false, false),
+            (true, true, false, false),
+            (false, false, false, false),
+            (true, false, false, false),
+            (false, true, false, true),
+            (false, true, true, true),
+        ] {
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = palette_build(theme, slot.clone());
             let act = {
@@ -967,9 +1009,25 @@ fn preferences_plugins_scene() {
                                     settings: vec![],
                                 },
                                 helper("tidy", "Tidy", true),
-                                helper("sparkle", "Sparkle", second_on),
+                                Record {
+                                    settings: declared(),
+                                    ..helper("sparkle", "Sparkle", second_on)
+                                },
                             ],
                             ..Plugins::default()
+                        };
+                        let value = |key: &str, value: &str| Entry {
+                            key: key.into(),
+                            value: value.into(),
+                        };
+                        cx.global_mut::<crate::appearance::Appearance>()
+                            .plugin_values = if changed {
+                            vec![
+                                value("plugin.sparkle.list", "off"),
+                                value("plugin.sparkle.list_delay", "1.5"),
+                            ]
+                        } else {
+                            Vec::new()
                         };
                         if with_update {
                             plugins
@@ -983,9 +1041,33 @@ fn preferences_plugins_scene() {
                         cx.set_global(plugins);
                     });
                     open_preferences_on(cx, window, &ws, Section::Plugins, true);
+                    if at_foot {
+                        let scroll = cx.update(|cx| {
+                            ws.read(cx)
+                                .preferences
+                                .as_ref()
+                                .map(|p| p.read(cx).scroll_for_shots())
+                                .expect("open")
+                        });
+                        scroll.set_offset(gpui::point(px(0.0), -scroll.max_offset().y));
+                        cx.update_window(window, |_, window, _| window.refresh())
+                            .expect("redraw");
+                        settle(cx, window);
+                    }
                     slot.borrow_mut().take();
                 }
             };
+            if changed {
+                let path = shoot_with(
+                    "preferences",
+                    &format!("plugins-settings-{slug}"),
+                    &theme,
+                    dims,
+                    build.clone(),
+                    act.clone(),
+                );
+                println!("ui-shots: {}", path.display());
+            }
             if with_update && !second_on {
                 let path = shoot_with(
                     "preferences",
@@ -1006,6 +1088,10 @@ fn preferences_plugins_scene() {
         assert_ne!(
             shots[0].rgba, shots[2].rgba,
             "preferences-plugins-installed-{slug}: switching a helper off doesn't change the page"
+        );
+        assert_ne!(
+            shots[4].rgba, shots[5].rgba,
+            "preferences-plugins-settings-{slug}: changed plugin settings don't change the page"
         );
     }
 }

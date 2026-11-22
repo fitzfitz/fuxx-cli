@@ -28,6 +28,7 @@ use crate::appearance::{self, Appearance, CursorFun, CursorShapeSetting};
 use crate::fonts;
 use crate::grid::{self, GridSnapshot};
 use crate::name_input::{NameInput, NameInputEvent};
+use crate::plugin_settings;
 use crate::plugins;
 use crate::preferences_plugins;
 use crate::prefs::{self, DEFAULT_CHOICE};
@@ -632,6 +633,17 @@ pub struct PreferencesView {
     pub(crate) plugin_link: gpui::Entity<NameInput>,
     /// Enter in the link field; the Plugins global changing redraws and rebuilds the theme lists.
     _plugins: Vec<Subscription>,
+    /// A field for each number setting of the installed plugins (M11au), made as the Plugins
+    /// page draws and dropped when its plugin or setting goes.
+    plugin_fields: Vec<PluginField>,
+}
+
+/// One plugin number setting's field and what saves it.
+struct PluginField {
+    plugin: String,
+    name: String,
+    input: gpui::Entity<NameInput>,
+    _save: Subscription,
 }
 
 impl EventEmitter<DismissEvent> for PreferencesView {}
@@ -772,6 +784,79 @@ impl PreferencesView {
             _sounds: sound_subs,
             plugin_link,
             _plugins: plugin_subs,
+            plugin_fields: Vec::new(),
+        }
+    }
+
+    /// The field of plugin `plugin`'s number setting `name`, once the page has made it.
+    pub(crate) fn plugin_field(&self, plugin: &str, name: &str) -> Option<gpui::Entity<NameInput>> {
+        self.plugin_fields
+            .iter()
+            .find(|f| f.plugin == plugin && f.name == name)
+            .map(|f| f.input.clone())
+    }
+
+    /// Make a field for each installed plugin's number setting that has none, and drop the fields
+    /// of settings that are gone. Enter, or leaving the field, keeps a new number; anything else
+    /// (and Escape) puts the kept value back.
+    fn sync_plugin_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted: Vec<(String, plugin_settings::Setting)> = cx
+            .try_global::<plugins::Plugins>()
+            .map(|p| {
+                p.records
+                    .iter()
+                    .flat_map(|r| {
+                        r.settings
+                            .iter()
+                            .filter(|s| s.kind == plugin_settings::Kind::Number)
+                            .map(|s| (r.id.clone(), s.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.plugin_fields.retain(|f| {
+            wanted
+                .iter()
+                .any(|(plugin, s)| *plugin == f.plugin && s.name == f.name)
+        });
+        for (plugin, setting) in wanted {
+            if self.plugin_field(&plugin, &setting.name).is_some() {
+                continue;
+            }
+            let values = &cx.global::<Appearance>().plugin_values;
+            let text = plugin_settings::current(values, &plugin, &setting);
+            let input = cx.new(|cx| NameInput::new(text, window, cx));
+            let (id, s) = (plugin.clone(), setting.clone());
+            let save = cx.subscribe_in(&input, window, move |_, input, event, window, cx| {
+                let kept =
+                    plugin_settings::current(&cx.global::<Appearance>().plugin_values, &id, &s);
+                let typed = match event {
+                    NameInputEvent::Confirm(text) => text.clone(),
+                    // Escape (the box still has focus): back to what was kept.
+                    NameInputEvent::Cancel
+                        if gpui::Focusable::focus_handle(input.read(cx), cx).is_focused(window) =>
+                    {
+                        String::new()
+                    }
+                    // Left: as Enter.
+                    NameInputEvent::Cancel => input.read(cx).text().to_string(),
+                };
+                match preferences_plugins::number_edit(&typed, &kept) {
+                    preferences_plugins::NumberEdit::Save(value) => {
+                        plugins::set_setting(&id, &s, &value, cx)
+                    }
+                    _ => input.update(cx, |input, cx| {
+                        input.set_text(kept);
+                        cx.notify();
+                    }),
+                }
+            });
+            self.plugin_fields.push(PluginField {
+                plugin,
+                name: setting.name,
+                input,
+                _save: save,
+            });
         }
     }
 
@@ -828,6 +913,7 @@ impl PreferencesView {
         self.sound_inputs
             .iter()
             .chain(std::iter::once(&self.plugin_link))
+            .chain(self.plugin_fields.iter().map(|f| &f.input))
             .any(|input| input.focus_handle(cx).contains_focused(window, cx))
     }
 
@@ -1013,7 +1099,7 @@ impl PreferencesView {
     fn row(&self, control: Control, ui: UiColors, cx: &Context<Self>) -> Div {
         // The list draws its own rows, each with its buttons.
         if control == Control::PluginList {
-            return preferences_plugins::plugin_cards(ui, cx);
+            return preferences_plugins::plugin_cards(self, ui, cx);
         }
         let problem = match control {
             Control::Sound(key) => sounds::problem(key, cx),
@@ -1433,7 +1519,10 @@ fn raised(ui: UiColors) -> BoxShadow {
 }
 
 impl Render for PreferencesView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.section == Section::Plugins {
+            self.sync_plugin_fields(window, cx);
+        }
         let theme = cx.global::<Appearance>().theme;
         let ui = theme.ui();
         let close = div()

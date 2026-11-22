@@ -205,6 +205,27 @@ zsh = shell/hello.zsh
   `fuxx-plugin-macos-arm64.zip` or `fuxx-plugin-macos-x86_64.zip`, or one universal `fuxx-plugin-macos.zip`.
 - If one plugin's script fails, the others still load.
 - `exec zsh` or a zsh started inside a fuxx terminal starts without plugins; open a new terminal instead.
+
+### Settings
+
+A helper plugin can declare settings. fuxx shows each one on the plugin's card in **Settings → Plugins**: a switch
+for `bool`, a number field for `number`. One line each, `setting.<name> = <type> <default> <label>`:
+
+```ini
+setting.list       = bool on    Show a suggestion list when you pause
+setting.list_delay = number 3   Seconds of pause before the list shows
+```
+
+- `<name>` is `a-z`, `0-9` and `_`, starting with a letter. A `bool` is `on` or `off`; a `number` is a plain decimal
+  like `3`, `0.5` or `-1`. The label is the rest of the line.
+- While your scripts load, every setting the user **changed** is set as `FUXX_PLUGIN_SETTING_<NAME>` (the name in
+  capitals, e.g. `$FUXX_PLUGIN_SETTING_LIST_DELAY`), next to `$FUXX_PLUGIN_DIR`, and unset afterwards. A setting
+  left at its default isn't set, so your script decides what happens then (your own default, or a variable the
+  user set in `.zshrc`).
+- fuxx keeps the values in its settings file (`plugin.<id>.<name> = <value>`); a change reaches new terminals.
+  Uninstalling removes them.
+- A setting line fuxx can't read is skipped; the rest of the plugin still installs. fuxx doesn't check ranges, so
+  say the range in the label and keep your script to it.
 - Installing, updating, switching off or removing a helper changes new terminals; terminals already open keep
   what they had until you close them.
 

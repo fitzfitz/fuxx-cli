@@ -3,9 +3,14 @@
 
 use gpui::StatefulInteractiveElement;
 use gpui::prelude::FluentBuilder;
-use gpui::{ClickEvent, Context, Div, InteractiveElement, ParentElement, Styled, div, px};
+use gpui::{
+    ClickEvent, Context, Div, InteractiveElement, IntoElement, ParentElement, Styled, div, px,
+};
 
+use crate::appearance::Appearance;
+use crate::plugin_settings::{self, Kind};
 use crate::plugin_source::{Installed, parse_link};
+use crate::plugin_store::Record;
 use crate::plugins::{self, Busy, Plugins};
 use crate::preferences::PreferencesView;
 use crate::preferences::toggle;
@@ -56,6 +61,114 @@ pub fn version_text(version: &str, installed: &Installed) -> String {
     } else {
         format!("{version} ({label})")
     }
+}
+
+/// The line under a plugin's settings (M11au): a change reaches new terminals only.
+pub const SETTINGS_NOTE: &str = "New terminals get these settings.";
+
+const NUMBER_FIELD_WIDTH: f32 = 72.0;
+
+/// What a number field's text does when Enter is pressed or it is left.
+#[derive(Debug, PartialEq)]
+pub enum NumberEdit {
+    /// A new number: keep it.
+    Save(String),
+    /// The number already kept.
+    Keep,
+    /// Not a number: the field goes back to the kept value.
+    Revert,
+}
+
+/// What `typed` does to a number setting whose value is `current`.
+pub fn number_edit(typed: &str, current: &str) -> NumberEdit {
+    let typed = typed.trim();
+    if !plugin_settings::is_number(typed) {
+        NumberEdit::Revert
+    } else if plugin_settings::same(Kind::Number, typed, current) {
+        NumberEdit::Keep
+    } else {
+        NumberEdit::Save(typed.to_string())
+    }
+}
+
+/// A switch's value after a click.
+pub fn flipped(value: &str) -> &'static str {
+    if value == "on" { "off" } else { "on" }
+}
+
+/// A plugin's declared settings (M11au): a row each, its label at the left and a switch or a
+/// number field at the right, then `SETTINGS_NOTE`. Dead and faint while `free` is false.
+fn settings_rows(
+    view: &PreferencesView,
+    record: &Record,
+    free: bool,
+    ui: UiColors,
+    cx: &Context<PreferencesView>,
+) -> Div {
+    let values = &cx.global::<Appearance>().plugin_values;
+    let rows = record.settings.iter().map(|s| {
+        let current = plugin_settings::current(values, &record.id, s);
+        let control = match s.kind {
+            Kind::Bool => {
+                let id = gpui::ElementId::Name(
+                    format!("plugin-setting-{}-{}", record.id, s.name).into(),
+                );
+                let mut switch = toggle(id, current == "on", ui);
+                if free {
+                    let (plugin, setting) = (record.id.clone(), s.clone());
+                    switch = switch.on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                        plugins::set_setting(&plugin, &setting, flipped(&current), cx)
+                    }));
+                } else {
+                    switch = switch.opacity(0.45).cursor_default();
+                }
+                switch.into_any_element()
+            }
+            Kind::Number => match view.plugin_field(&record.id, &s.name) {
+                Some(input) => div()
+                    .w(px(NUMBER_FIELD_WIDTH))
+                    .h(px(CONTROL_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .text_size(px(NOTE_SIZE))
+                    .child(input)
+                    .into_any_element(),
+                // Not made yet (the page makes the fields as it draws): the value, plain.
+                None => div()
+                    .text_size(px(NOTE_SIZE))
+                    .child(current)
+                    .into_any_element(),
+            },
+        };
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(16.0))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(NOTE_SIZE))
+                    .text_color(hsla(ui.text))
+                    .child(s.label.clone()),
+            )
+            .child(control)
+    });
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .pt(px(10.0))
+        .border_t_1()
+        .border_color(hsla(ui.divider))
+        .children(rows)
+        .child(
+            div()
+                .text_size(px(NOTE_SIZE))
+                .text_color(hsla(ui.text_faint))
+                .child(SETTINGS_NOTE),
+        )
 }
 
 /// A button that does something while `enabled`; faint, with no hover and no click, otherwise.
@@ -160,7 +273,13 @@ pub(crate) fn install_card(
 }
 
 /// One installed plugin: what it is at the left, Update and Uninstall at the right.
-fn plugin_card(index: usize, state: &Plugins, ui: UiColors, cx: &Context<PreferencesView>) -> Div {
+fn plugin_card(
+    view: &PreferencesView,
+    index: usize,
+    state: &Plugins,
+    ui: UiColors,
+    cx: &Context<PreferencesView>,
+) -> Div {
     let record = &state.records[index];
     let free = plugins::can_start(state);
     let repo = parse_link(&record.repo);
@@ -292,10 +411,18 @@ fn plugin_card(index: usize, state: &Plugins, ui: UiColors, cx: &Context<Prefere
         .py(px(12.0))
         .child(words)
         .child(buttons)
+        // Its settings on their own line under the rest; a plugin without any looks as before.
+        .when(!record.settings.is_empty(), |card| {
+            card.child(settings_rows(view, record, free, ui, cx))
+        })
 }
 
 /// The installed plugins, split by hairlines; or, with none, how to get one.
-pub(crate) fn plugin_cards(ui: UiColors, cx: &Context<PreferencesView>) -> Div {
+pub(crate) fn plugin_cards(
+    view: &PreferencesView,
+    ui: UiColors,
+    cx: &Context<PreferencesView>,
+) -> Div {
     let empty = Plugins::default();
     let state = cx.try_global::<Plugins>().unwrap_or(&empty);
     if state.records.is_empty() {
@@ -325,7 +452,7 @@ pub(crate) fn plugin_cards(ui: UiColors, cx: &Context<PreferencesView>) -> Div {
         .flex()
         .flex_col()
         .children((0..state.records.len()).map(|i| {
-            plugin_card(i, state, ui, cx)
+            plugin_card(view, i, state, ui, cx)
                 .when(i > 0, |c| c.border_t_1().border_color(hsla(ui.divider)))
         }))
 }
@@ -344,6 +471,24 @@ mod tests {
             version_text("1.0.0", &Installed::Commit("abcdef0123".into())),
             "1.0.0 (abcdef0)"
         );
+    }
+
+    #[test]
+    fn a_number_field_saves_numbers_and_puts_back_the_rest() {
+        assert_eq!(number_edit("1.5", "3"), NumberEdit::Save("1.5".into()));
+        assert_eq!(number_edit(" 2 ", "3"), NumberEdit::Save("2".into()));
+        assert_eq!(number_edit("3", "3"), NumberEdit::Keep);
+        // The same number written another way changes nothing either.
+        assert_eq!(number_edit("3.0", "3"), NumberEdit::Keep);
+        assert_eq!(number_edit("abc", "3"), NumberEdit::Revert);
+        assert_eq!(number_edit("", "3"), NumberEdit::Revert);
+        assert_eq!(number_edit("1e3", "3"), NumberEdit::Revert);
+    }
+
+    #[test]
+    fn a_switch_flips_on_and_off() {
+        assert_eq!(flipped("on"), "off");
+        assert_eq!(flipped("off"), "on");
     }
 
     #[test]

@@ -62,7 +62,7 @@ pub fn fits(kind: Kind, value: &str) -> bool {
 }
 
 /// True when `a` and `b` are the same value of `kind` (numbers as numbers: `3.0` is `3`).
-fn same(kind: Kind, a: &str, b: &str) -> bool {
+pub fn same(kind: Kind, a: &str, b: &str) -> bool {
     match kind {
         Kind::Bool => a == b,
         Kind::Number => match (a.parse::<f64>(), b.parse::<f64>()) {
