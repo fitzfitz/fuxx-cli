@@ -654,9 +654,8 @@ pub struct Colors {
     pub outer: Rgb,
     pub outer_edge: Rgb,
     pub pill_hover: Rgb,
-    /// The box's controls (the designer's details): `+`, the model and mode pills and an idle
-    /// send button, a step over the box (6 %), a little more under the pointer (10 %).
-    pub control: Rgb,
+    /// The box's controls under the pointer (`+`, the model and mode pills; no fill at rest
+    /// since 2026-11-22): a step over the box (10 %).
     pub control_hover: Rgb,
     /// Stop's circle while the agent works (your words, 2026-11-22: "make the background
     /// redish"): the theme's red over the outer ring, as strong as keeps its square showing; a
@@ -760,7 +759,6 @@ impl Colors {
             outer: ui.composer_outer,
             outer_edge: ui.composer_edge,
             pill_hover: ui.composer_pill_hover,
-            control: mix(ui.composer_inner, theme.foreground, 0.06),
             control_hover: mix(ui.composer_inner, theme.foreground, 0.10),
             stop_fill: {
                 let red = theme.palette[1];
@@ -5948,7 +5946,7 @@ mod tests {
                 ("todo active", c.todo_active, c.panel),
                 // The composer's controls and pills (the designer's details): their words in
                 // `dim` on the control and pill fills.
-                ("dim on a control", c.dim, c.control),
+                ("dim on a control under the pointer", c.dim, c.control_hover),
                 (
                     "text on a control under the pointer",
                     c.text,
