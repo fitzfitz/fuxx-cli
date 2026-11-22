@@ -97,7 +97,7 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   *Part 2 (2026-11-11, by you: "group this by staged and changes … revert and add … include it in M11v" → "C with
   R1, go ahead"):* the list in STAGED and CHANGES groups with check circles to stage and unstage, `N of M staged`
   with a bar, and ↺ to revert (a new file: delete) behind a confirmation every time. Not in it: committing,
-  hunks, stash, a staged-only diff. *Part 3 (by you, "Part of M11v"):* Settings → General → **Status Bar** On/Off.
+  hunks, stash, a staged-only diff. *(Committing moved into scope 2026-11-22 by you — M11aq below.)* *Part 3 (by you, "Part of M11v"):* Settings → General → **Status Bar** On/Off.
 - **A Graph in Changes** (M11w, asked for 2026-11-12 by you: "add more accordion below changes called "Graph"" →
   "I want something like this like in cursor/IDE" → "commit and push, then start M11w"): the commit history with
   coloured lanes, branch pills, a hover card (author, date, message, files changed, hash, Open on GitHub) and header
@@ -170,3 +170,10 @@ the multi-agent ring layer first; everything cmux-extra is post-core.
 ## Related
 
 - [[10 - What Is fuxx]] · [[40 - Roadmap]]
+
+- **Commit from the Git tab** (M11aq, added 2026-11-22 by you: "let's do this", after the Lead UI/UX Designer's
+  suggestions for the Git tab): a message field above the branch bar, ⌘↵ / ✓N to commit the staged files, a failed
+  hook's output kept, the draft per repo for the run; ✦ has the workspace's agent write the message from the staged
+  diff (never commits on its own). Never amend, force, `--no-verify`, or commit during a merge or rebase; no undo
+  (that needs `reset`). Not in it: hunks, stash, PR status, conflicts, "who changed it". See
+  [[92 - Milestone 11aq - Commit]].
