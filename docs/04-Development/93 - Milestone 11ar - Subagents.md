@@ -1,0 +1,173 @@
+---
+tags: [milestone, agents, design]
+updated: 2026-11-22
+---
+
+# 93 - Milestone 11ar - Subagents
+
+**Status:** 📝 design, waiting for your approval. Milestone 1 of 3 in the plan you chose ("go with A"): **M11ar
+Subagents**, then M11as Agent browser, then M11at Browser testing (each designed on its own, later).
+
+## Why
+
+Your words (2026-11-22): "can we switch chat view between subagents?", "I want the full power of both claude and
+agy", "I want future proof, scallable, easy to code and integrate if we want to add more features/tools", then "go
+with A" and "go with yours" (the subagent's chat **replaces** the main one, switched by pills). Agents now hand work
+to subagents all the time; today fuxx hides a Claude subagent's steps inside a tool modal and drops agy's subagents
+entirely, so you can't see who is doing what.
+
+## Goals
+
+- **See every subagent** of Claude and agy: a row in the main chat with its name, task and live state.
+- **Switch the chat view** to one subagent and watch its conversation live, then back to Main.
+- **Control where the agent allows it:** stop one subagent (Claude); a Claude subagent's permission request says who
+  asks.
+- **Built to grow:** one shared subagent model; each agent's file translates its own signals and says what it can do;
+  the screen shows only what the agent supports. A new agent, or a later agy (a stop, ACP subagents), is a change in
+  that agent's file, not on screen.
+
+## Not in it (and why)
+
+- Typing to a subagent, a box per subagent, per-subagent model or mode (neither agent lets the host talk to a
+  subagent; you talk to Main).
+- Stopping one agy subagent (agy has no way for the host to do it; Stop stops the whole turn, as today).
+- Answering agy subagents' questions (agy's headless mode skips them).
+- agy swarms (`/swarm`, a preview), split view, auto-switching, toasts or sidebar badges for subagents, closing,
+  pinning or reordering pills, a tree of nested subagents (they are flat pills in start order).
+- Browser work: M11as and M11at.
+
+## Approaches
+
+- **A. One shared subagent model, a translator per agent (chosen, "go with A").** Each provider file turns its own
+  signals into the same events (started, step, done) and declares capabilities; the UI reads only those. Scales to new
+  agents and new abilities without UI changes.
+- B. Move both agents to ACP now: the standard, but agy's ACP (1.5.14) shows less than its stream-json (a subagent is
+  one opaque call; its permission request never arrived) and Claude has no native ACP. Revisit when agy implements
+  ACP's draft subagents.
+- C. Claude first, agy later: quicker, but not "both".
+
+## What the agents give (researched 2026-11-22, real runs; Claude 2.1.330, agy 1.5.14)
+
+| | Claude (`claude -p` stream-json) | agy (`agy -p` stream-json) |
+|---|---|---|
+| Started | `system` `task_started` (task_id, tool_use_id, description, subagent_type, is_backgrounded, prompt) | `step_update` `step_type: "subagent"`, `subagent_info.subagents[]` (type_name, role, initial_prompt; on DONE conversation_id, log_uri) — one step per subagent |
+| Its steps | whole `assistant`/`user` messages with `parent_tool_use_id` = the Agent call (no typing stream) | not in the stream: its `transcript.jsonl` (at `log_uri`) grows one finished step per line while it runs |
+| Progress / done | `task_progress` (tokens, tool count, last tool), `task_notification` (completed/failed/killed, usage) | its transcript stops; its report arrives in the parent as a `system_message` step (content only in the parent's transcript) |
+| Stop one | control request `stop_task {task_id}` | none (the parent model's `manage_subagents` kill only) |
+| Permission | `can_use_tool` carries `agent_id` | skipped in headless |
+| Message it | via Main only | via Main only, after the turn |
+
+The builder records fixtures from real runs (both agents) before parsing.
+
+**agy, the timings that matter** (a recorded run): the `subagent` step goes DONE about 1.5 s after it starts, when
+the subagent is **spawned**, not finished, and that DONE already carries `conversation_id` and `log_uri`; the
+transcript then grew from 1 line (1 s later) to 16 (32 s later). So the live view follows the file from that DONE. The
+parent's own transcript (the same place, under the stream's `conversation_id`) gets a `SYSTEM_MESSAGE` line
+`[Message] … sender=<subagent conversation id>` when a subagent reports; a killed subagent's transcript just stops (no
+end marker).
+
+## Rulings (made while writing this; yours to overrule)
+
+- **The label** (my call): agy: its `role` ("Workspace File Reader"); its `type_name` is the type. Claude: a custom
+  `subagent_type` (anything but the built-ins `general-purpose`, `Explore`, `Plan`), else the call's `description`
+  (Claude keeps it to a few words); `subagent_type` is the type. The mockups' "Reader" is only an example.
+- **How an agy subagent ends** (my call): **done** when its report reaches the parent (the parent transcript's
+  `sender=` matches the lane's conversation id — the key for parallel subagents); **stopped** when the turn is stopped,
+  the process ends (Force stop, a restart for a model or mode change — agy kills its subagents with it, verified), or
+  the parent's turn ends while it still runs without a report. agy lanes don't show "failed" (agy gives no such
+  signal); Claude lanes do (`task_notification`).
+- **When the process ends or restarts** (my call): any working lane of that process becomes **stopped** and its
+  follower stops. Claude's background subagents outlive the turn inside the same process: fuxx keeps reading after the
+  turn's `result`, and their `task_notification` ends them.
+- **Order** (my call): on your approval this note goes on the [[40 - Roadmap]] and into [[12 - Scope]] as M11ar;
+  M11aq's on-screen check stays pending alongside, as earlier milestones' checks do (batched), not blocking the plan.
+
+## The design (the Lead UI/UX Designer's spec, 2026-11-22)
+
+### The model (provider-neutral)
+
+- A **lane** per subagent: id, label, kind (type), task, status (working · waiting on you · done · failed · stopped),
+  started, stats (tokens, tools, last tool) if the agent reports them, its items (the same `Item`s as Main's).
+- The view: **Main** or **a lane**.
+- Each provider declares three capabilities: `stop_subagent`, `subagent_asks`, `subagent_stats` (Claude: all three;
+  agy: none). The UI shows Stop, the "wants to run" heading, and stats only when they're on.
+- Provider files own the translation (Claude from its stream; agy by following the subagent's transcript file from
+  `log_uri`), per "provider code in provider files".
+
+### The pill row
+
+```
+                       $0.36  Context ▮▯▯ 4%       <- top bar, unchanged
+   [Main ✓]  [◜ Reader]  [◉ Tester]  [✓ Lint]  +3    <- 32-tall strip, sticky
+   ─ the column (≤ 760, centred), left edges aligned ─
+```
+
+- Its own strip under the top bar, aligned to the column's left edge; doesn't scroll. Shows once the first subagent
+  exists (also on resume) and stays after they finish.
+- Pill: a status mark in the tool row's 12 pt slot, then the label — the agent's custom type if named
+  (`code-reviewer`), else the task description, ≤ 20 characters with an ellipsis; a repeat gets " 2". Tooltip: type,
+  task, elapsed. Height and radius of the top bar's status pill, `text::META`.
+- Marks (the tool row's, the shared clock): working arc `ring_working`; waiting mark plus the pill tinted like "Needs
+  input"; done check `ring_done`; failed dot `failed_panel`; stopped hollow ring `text_dim`.
+- Active pill: the top pill's neutral fill with `text` ink; others no fill, `text_dim`, `side_tab_hover` on hover.
+  Main first (the main agent's mark), the rest in start order.
+- Overflow on one line: "+N" opens a tab-menu popup (mark, label, elapsed); the active pill always in view.
+- Keys: ⌥⌘[ / ⌥⌘] previous / next pill (agent tab context). Esc stays Stop.
+
+### In Main's chat
+
+```
+ ◜ Reader  Find the config loader      Read src/cfg.rs · 1:02 ›
+ ✓ Tester  Run the test suite                    14 steps · 2:10 ›
+```
+
+- The subagent's tool row: label (`tool_name`), task (`panel_text`, truncates), the last tool while running or "N
+  steps" when done (`panel_dim`), elapsed. Click or › switches to its view (replacing the modal for subagent rows; the
+  modal's sub-agent steps section goes; other tools keep their modal). agy's subagent rows are new (today dropped).
+
+### The subagent view (replaces Main's column; the pill row stays)
+
+```
+ Reader · Explore · Sonnet           1:02 · 18.2k tok · 12 tools  [Stop]
+                         ╭ from Main ────────────────────────────╮
+                         │ Find where config is loaded and ...   │
+                         ╰───────────────────────────────────────╯
+ ✳ I'll start with the entry point.
+ ┃● Read  src/main.rs                                    210 lines
+ ┃◜ Grep  load_config                                         0:03
+   Thinking…
+ ✓ Done in 1:42 · 18.2k tokens · Back to Main ›
+```
+
+- Header: label SEMIBOLD `text`, type and model `text_dim`; elapsed, tokens, tools at the right (`text_faint`,
+  tabular), each only if reported. **Stop** (the existing chip) only with `stop_subagent`.
+- The task prompt as the first bubble, captioned "from Main". Then the same rows as Main; new steps append (Claude's
+  whole messages, agy's finished steps); "Thinking…" between steps while it runs.
+- End: "✓ Done in … · Back to Main ›" (to its row in Main) · "✕ Failed · reason" (`failed_panel`) · "Stopped".
+- **The agent box** stays (its status is Main's). Placeholder "Message Main — it can pass this to Reader". **Sending
+  switches the view to Main** so your bubble shows. ■ / Esc stop the whole turn.
+- **A Claude subagent's permission request:** today's permission card, headed "Reader wants to run Bash", at the end
+  of whichever view is active (Enter = Allow works); Reader's pill takes the waiting tint; Main's notch "Needs input".
+  The view never switches by itself.
+- Background subagents that outlive the turn keep their pills working; Main shows Done.
+
+### Sizes and themes
+
+- Wide: strip and header inside the centred 760 column. Under ~480: labels ≤ 12 characters, "+N" sooner, the header
+  keeps elapsed and Stop only. Light vs dark: only the waiting tint's strength (as today).
+
+## Left to the builder
+
+The exact event and struct names; how agy's transcript is followed (a watcher or a poll, off the UI thread, stopping
+when the subagent ends or the tab closes); recorded fixtures for both agents (subagent runs, parallel subagents, a
+stop, a permission request); what a resumed conversation restores (lanes from Claude's history and agy's
+transcripts); scenes for the strip, the rows, the view, the card, narrow and wide, both themes.
+
+## Checklist for you (once built)
+
+1. Ask Claude to use two subagents: two pills appear, each working; their rows show in Main.
+2. Click a pill: its chat shows live; Back to Main or ⌥⌘[ returns.
+3. Stop on a Claude subagent: only it stops; Main goes on.
+4. A Claude subagent asks to run a command: the card names it; Allow works from any view.
+5. The same with agy: pills, rows and live views appear; no Stop on its pills.
+6. Type while viewing a subagent: the view returns to Main with your message.
