@@ -1,6 +1,6 @@
 ---
 tags: [workflow, release, checklist]
-updated: 2026-11-10
+updated: 2026-11-22
 ---
 
 # 55 - Releasing
