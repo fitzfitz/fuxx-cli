@@ -109,7 +109,7 @@ pub struct Conversation {
     outstanding: u32,
     /// The agent says when it reads a message (a `Taken` has come).
     echoes: bool,
-    /// Main's own activity (its words, its tools, a turn starting) since the last `TurnDone`;
+    /// Main's own activity (its words, its tools, reading a message) since the last `TurnDone`;
     /// a subagent's steps don't count.
     busy: bool,
     ended: bool,
@@ -123,11 +123,11 @@ impl Conversation {
     }
 
     pub fn apply(&mut self, event: Event) {
-        // Main working: a turn starting, its own words or tools (not a subagent's).
+        // Main working: its own words or tools (not a subagent's). Not `Started`: agy says
+        // `init` as it starts up, before anything is sent; a turn is counted by what was sent.
         if matches!(
             &event,
-            Event::Started { .. }
-                | Event::TextDelta { parent: None, .. }
+            Event::TextDelta { parent: None, .. }
                 | Event::MessageDone { parent: None, .. }
                 | Event::ToolStarted { parent: None, .. }
         ) {
@@ -1119,6 +1119,20 @@ mod tests {
         assert_eq!(c.model(), Some("m"));
         assert_eq!(c.context_pct(), Some(12));
         assert_eq!(c.cost_usd(), Some(0.5));
+    }
+
+    /// agy says `init` the moment it starts, before anything is sent (your report, 2026-11-23:
+    /// a new agent tab read "Cultivating…" with nothing running).
+    #[test]
+    fn an_agent_starting_up_is_idle_until_something_is_sent() {
+        let mut c = Conversation::new();
+        c.apply(Event::Started {
+            conversation: "abc".into(),
+            model: None,
+        });
+        assert_eq!(c.status(), Status::Idle);
+        c.you("hi".into(), vec![]);
+        assert_eq!(c.status(), Status::Working);
     }
 
     #[test]

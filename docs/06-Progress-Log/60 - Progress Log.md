@@ -61,6 +61,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Next:** your on-screen check (note 94); merge (renumber if M11au collides), then fuxx-completes' M1c can declare
   its four settings.
 
+### 2026-11-23 — Fix: a new agent tab no longer reads "Cultivating…"
+
+- **What:** your report (note 93, chores): a new agent tab said "Cultivating…" with nothing running. agy sends
+  `init` the moment it launches, and the stuck-"Cultivating…" fix had counted that as Main working; it no longer does.
+- **Checks:** 2486 tests (the new one watched failing first); clippy at the baseline (14 / 28); `cargo fmt --check`
+  clean; `scripts/ui-shots.sh agent` 91 passed.
+
 ### 2026-11-22 — Chore: tests clean up their temp folders
 
 - **What:** your words (note 93, chores): "make the tests clean up their temp folders". Every test and ui-shots scene

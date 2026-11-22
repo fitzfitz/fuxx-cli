@@ -245,3 +245,7 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   exits (only by the process that made it, not a forked child); a run that was killed leaves its folder for the next
   run to sweep. A test fails if any other file names the system temp folder (the app's pasted-image folder and a few
   paths nothing is made in are allowed). The old folders are not touched: delete them by hand.
+- **A new agent tab read "Cultivating…"** (your report, 2026-11-23: "the status on new agent tab is cultivating even
+  when nothing running"): the stuck-"Cultivating…" fix counted the agent's start-up (`Started`) as Main working, and
+  agy says `init` as soon as it launches, before anything is sent (recorded: one `init` line, nothing else, with no
+  message). Main now counts as working only from what was sent, its echo, and its own words and tools.
