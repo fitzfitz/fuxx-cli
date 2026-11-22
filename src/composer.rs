@@ -1356,13 +1356,14 @@ impl Element for ComposerText {
             )
             .ok();
         }
-        // The placeholder (the shell box's style): one cell after the caret's, dim, "…" when
-        // it doesn't fit.
+        // The placeholder (the shell box's style): from the caret's own cell, no gap (your
+        // words, 2026-11-22: a beam right beside its first letter, an underline or a block on
+        // it), dim, "…" when it doesn't fit.
         let mut drawn_placeholder = None;
         if let Some(words) = placeholder {
-            let cols = ((bounds.size.width / cell_w).floor() as usize).saturating_sub(1);
+            let cols = (bounds.size.width / cell_w).floor() as usize;
             let words = crate::card_view::fit_words(&words, cols);
-            let at = point(bounds.left() + cell_w, bounds.top());
+            let at = point(bounds.left(), bounds.top());
             if !words.is_empty() {
                 let run = TextRun {
                     len: words.len(),
@@ -1394,12 +1395,21 @@ impl Element for ComposerText {
             let (col, n) = c.cell;
             let text = self.input.read(cx).buf.text();
             let row = &rows[first + n];
-            let under = text[row.clone()].chars().nth(col);
+            // The letter under it: what you typed, else (nothing typed) the placeholder's first.
+            let (under, ink) = match text[row.clone()].chars().nth(col) {
+                Some(ch) => (Some(ch), window.text_style().color),
+                None if text.is_empty() => (
+                    drawn_placeholder
+                        .as_ref()
+                        .and_then(|(words, _): &(String, _)| words.chars().next()),
+                    hsla(ui.text_dim),
+                ),
+                None => (None, window.text_style().color),
+            };
             if c.shape == PaintShape::Block
                 && c.at == (col as f32, n as f32)
                 && let Some(ch) = under.filter(|ch| !ch.is_whitespace())
             {
-                let ink = window.text_style().color;
                 let run = TextRun {
                     len: ch.len_utf8(),
                     font: m.font.clone(),

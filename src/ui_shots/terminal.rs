@@ -1709,8 +1709,8 @@ fn shell_cards_select_scene() {
 }
 
 /// `shell-cards-placeholder` (your words: "you see the differences?"): an empty prompt shows
-/// "Type a command" in the terminal's font, one cell after the cursor's (three cells after the
-/// typing's start: `❯`, a blank, the cursor); typing takes it away. (Cut with "…" when the
+/// "Type a command" in the terminal's font, from the cursor's own cell (your words, 2026-11-22:
+/// "the placeholder and input cursor is supposed to not have gap"); typing takes it away. (Cut with "…" when the
 /// box is narrower than it: `card_view::fit_words`, unit-tested; the card view's box is wider.)
 fn shell_cards_placeholder_scene() {
     use crate::terminal_view::PLACEHOLDER;
@@ -1724,10 +1724,23 @@ fn shell_cards_placeholder_scene() {
         .update(|cx| view.update(cx, |v, cx| v.shot_output(text, cx)));
     let shot = rig.frame();
     save_shot("shell-cards-placeholder", slug, &shot);
-    let (words, _) = rig
+    let (words, from) = rig
         .read(|v| v.shot_hint())
         .unwrap_or_else(|| panic!("{n}: no placeholder"));
     assert_eq!(words, PLACEHOLDER, "{n}");
+    // The cursor's cell: the typing's start ("~/code/api main " is 16 cells) on the first row.
+    let (_, _, (cell_w, _)) = rig.read(|v| v.shot_cards());
+    let row = rig
+        .read(|v| v.shot_card_regions())
+        .into_iter()
+        .find(|r| r.0 == "live0")
+        .unwrap_or_else(|| panic!("{n}: no first row"))
+        .1;
+    let caret = row + 16.0 * cell_w;
+    assert!(
+        (from - caret).abs() < 0.5,
+        "{n}: the placeholder from the cursor's cell ({from} vs {caret})"
+    );
     rig.cx
         .update(|cx| view.update(cx, |v, cx| v.shot_output("ls", cx)));
     let _ = rig.frame();

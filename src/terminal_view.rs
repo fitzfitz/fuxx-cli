@@ -3725,6 +3725,12 @@ fn paint_cards(
                         blocks: Vec::new(),
                     };
                     let look = cursor.look(&snap, p.theme, motion, Instant::now());
+                    // A full block on the cursor's cell: the placeholder's first letter under it
+                    // takes its letter colour (as a typed one does).
+                    let block = look
+                        .as_ref()
+                        .filter(|c| c.shape == crate::cursor_look::PaintShape::Block)
+                        .map(|c| (c.text, c.alpha, c.at));
                     // (No fill: the inner box shows through the cells' default background.)
                     let none = Bounds::new(origin, size(px(0.0), px(0.0)));
                     paint_grid(snap, p.theme, m, none, origin, look, |_| {}, window, cx);
@@ -3734,8 +3740,9 @@ fn paint_cards(
                     }
                     if hint {
                         // The agent box's style (the designer): the terminal's font and size,
-                        // dim, one cell after the cursor's, "…" when it doesn't fit.
-                        let from = origin_x + 3.0 * cell_w;
+                        // dim, from the cursor's own cell after `❯ ` (no gap: your words,
+                        // 2026-11-22), "…" when it doesn't fit.
+                        let from = origin_x + crate::card_view::INDENT_COLS as f32 * cell_w;
                         let room = f32::from(inner.right()) - INNER_PAD_X - from;
                         let cols = (room / cell_w).floor().max(0.0) as usize;
                         let words = crate::card_view::fit_words(PLACEHOLDER, cols);
@@ -3749,6 +3756,23 @@ fn paint_cards(
                             window,
                             cx,
                         );
+                        if let Some((ink, alpha, at)) = block
+                            && at == (crate::card_view::INDENT_COLS as f32, 0.0)
+                            && let Some(first) = words.chars().next()
+                        {
+                            let letter = crate::theme::mix(p.ui.text_dim, ink, alpha);
+                            let first = first.to_string();
+                            paint_words(
+                                &first,
+                                &[(first.len(), letter)],
+                                m.font.clone(),
+                                m.font_size,
+                                point(px(from), px(rows.y)),
+                                m.line_height,
+                                window,
+                                cx,
+                            );
+                        }
                         #[cfg(feature = "ui-shots")]
                         {
                             p.state.borrow_mut().hint = Some((words.clone(), from));

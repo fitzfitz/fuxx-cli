@@ -237,3 +237,6 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
   sparkle is gone, its file and `Icon::Sparkle` too; the typing starts 14 in, `+`'s glyph on its left edge.
 - **Text cursor in the agent box** ("when hove in chatbox (the input part not the bottom buttons) the cursor is still
   arrow"): its text row asks for the I-beam (`cursor_text`); the controls keep theirs.
+- **Placeholder against the cursor** ("the placeholder and input cursor is supposed to not have gap. if underline, box,
+  should be on first letter, if vertical line, supposed to right beside the first letter"): both boxes draw it from
+  the cursor's own cell (was one cell after); under a full block its first letter takes the cursor's letter colour.

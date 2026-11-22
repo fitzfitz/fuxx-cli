@@ -721,7 +721,7 @@ pub(super) fn agent_box_send_notch() {
 /// (the agent box beside the shell box). The designer's details: the typing in the terminal's
 /// font, size and cell height; the caret the terminal's cursor (the setting's shape, one cell,
 /// hollow without focus); a `❯` 14 in from the box's left, the typing two cells after it, the
-/// first line 12 down; the placeholder one cell after the caret's cell.
+/// first line 12 down; the placeholder from the caret's own cell (no gap: your words, 2026-11-22).
 pub(super) fn agent_box_terminal_text() {
     use crate::appearance::{Appearance, CursorShapeSetting};
     use crate::cursor_look::PaintShape;
@@ -764,11 +764,7 @@ pub(super) fn agent_box_terminal_text() {
             PLACEHOLDER.starts_with(words.trim_end_matches('\u{2026}')),
             "{n}: {words}"
         );
-        assert_eq!(
-            spot.left(),
-            text.left() + cell_w,
-            "{n}: one cell after the caret"
-        );
+        assert_eq!(spot.left(), text.left(), "{n}: from the caret's cell");
         // No mark before the typing (your words, 2026-11-22: "I don't think we need the icon,
         // remove it … so that the chat box loosen"): the typing 14 in.
         let the_box = part(cx, tab, n, "box");
