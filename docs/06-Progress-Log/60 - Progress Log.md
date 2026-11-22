@@ -15,6 +15,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ## Current status snapshot
 
 - **Latest (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
+- **Released (2026-11-23):** **v0.12.6** (run 45070831970, `fuxx-0.12.6.zip`): M11ar, M11au and the chores since v0.12.5.
 - **Released (2026-11-22):** **v0.12.2** (run 45007594771, `fuxx-0.12.2.zip`): the agent box's sweep and the evening's fixes.
 - **Released (2026-11-22):** **v0.12.1** (run 44965749641, `fuxx-0.12.1.zip`): the tool modal blink fixed.
 - **Released (2026-11-22):** **v0.12.0** (run 44941540508, `fuxx-0.12.0.zip`): M11ap and the chores since v0.11.0.
@@ -60,6 +61,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   `preferences-plugins-settings-<theme>`.
 - **Next:** your on-screen check (note 94); merge (renumber if M11au collides), then fuxx-completes' M1c can declare
   its four settings.
+
+### 2026-11-23 — v0.12.6 released
+
+- **What:** your words ("push and deploy patch"): M11ar Subagents, M11au Plugin settings and the chores since
+  v0.12.5 — "Divining…" while only subagents work, a new agent tab idle until you send, Claude's stuck
+  "Cultivating…" and "Stopping…" fixed, the commit box redone, bigger tab marks with a green Done, faint marks on
+  inactive tabs, a welcome in an empty shell tab, pasted images as pills, tests clean up their temp folders.
+- **Release:** commit `d00500c`, tag `v0.12.6`, run 45070831970 (both slices, test, release: success),
+  `https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.12.6` with `fuxx-0.12.6.zip`.
+- **Next:** your on-screen checks (notes 88, 91, 92, 93, 94).
 
 ### 2026-11-23 — Fix: a new agent tab no longer reads "Cultivating…"
 

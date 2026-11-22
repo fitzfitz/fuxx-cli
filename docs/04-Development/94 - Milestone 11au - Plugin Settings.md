@@ -7,7 +7,7 @@ updated: 2026-11-22
 
 **Status:** 🟨 built 2026-11-22 on branch `plugin-settings` (a worktree, by an agent, while M11aq's branch is worked
 on in the main checkout; all 4 plan tasks, 2,419 tests, both clippy runs at baseline, `preferences` ui-shots passed
-with a new `preferences-plugins-settings-<theme>` shot). Not merged, not pushed. Waiting for your on-screen check
+with a new `preferences-plugins-settings-<theme>` shot). Merged to master and **released in v0.12.6** (2026-11-23, run 45070831970). Waiting for your on-screen check
 (below). *The number and letter were the next free ones on master when it was written (M11ar is Subagents; M11as
 and M11at are named on the Roadmap); if they collide at merge they are renumbered.*
 

@@ -5,8 +5,8 @@ updated: 2026-11-22
 
 # 93 - Milestone 11ar - Subagents
 
-**Status:** 🟨 built 2026-11-22 on branch `m11ar-subagents` (8 tasks, one whole-branch review and its fix pass),
-waiting for your on-screen check (the checklist below). Plan: [[M11ar Plan - Subagents]] (revised on the three leads'
+**Status:** 🟨 built 2026-11-22 (8 tasks, one whole-branch review and its fix pass), merged to master and **released
+in v0.12.6** (2026-11-23, run 45070831970) with the chores below; waiting for your on-screen check (the checklist below). Plan: [[M11ar Plan - Subagents]] (revised on the three leads'
 picks).
 Subagents**, then M11as Agent browser, then M11at Browser testing (each designed on its own, later).
 
