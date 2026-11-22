@@ -168,6 +168,9 @@ impl Provider for Claude {
             "stream-json",
             "--verbose",
             "--include-partial-messages",
+            // Each message echoed when Claude reads it (`Event::Taken`): a note sent mid-turn
+            // is read in that turn, with no `result` of its own (your report, 2026-11-22).
+            "--replay-user-messages",
             "--permission-prompt-tool",
             "stdio",
         ]
@@ -1322,6 +1325,12 @@ impl Translator for ClaudeTranslator {
             Some("control_response") => self.answered(&v),
             Some("stream_event") => self.stream_event(&v),
             Some("assistant") => self.assistant(&v),
+            // An echo of a message of yours (`--replay-user-messages`): it was read.
+            Some("user")
+                if v["isReplay"] == true && said_text(&v["message"]["content"]).is_some() =>
+            {
+                vec![Event::Taken]
+            }
             Some("user") => self.user(&v),
             Some("result") => self.result(&v),
             Some("rate_limit_event") => rate_limit(&v),
@@ -1618,6 +1627,36 @@ mod tests {
             _ => None,
         });
         assert_eq!(by, Some(Some(lane)), "agent_id is the lane's task_id");
+    }
+
+    #[test]
+    fn a_message_read_is_taken() {
+        // `--replay-user-messages`: Claude echoes each message when it reads it (recorded
+        // 2026-11-22: a note sent mid-turn came back inside that turn, one `result` for both).
+        let start = Start {
+            cwd: PathBuf::from("/tmp/fx"),
+            resume: None,
+            new_id: None,
+            mode: None,
+            extra_args: Vec::new(),
+            model: None,
+            effort: None,
+        };
+        assert!(
+            CLAUDE
+                .argv(&start)
+                .iter()
+                .any(|a| a == "--replay-user-messages")
+        );
+        let echo = json!({"type":"user","isReplay":true,
+            "message":{"role":"user","content":"Also: what is 2+2?"},"session_id":"s"})
+        .to_string();
+        assert_eq!(CLAUDE.translator().decode(&echo), [Event::Taken]);
+        // A tool's result isn't a message of yours.
+        let result = json!({"type":"user","message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"t","content":"ok"}]}})
+        .to_string();
+        assert!(!CLAUDE.translator().decode(&result).contains(&Event::Taken));
     }
 
     #[test]

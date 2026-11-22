@@ -411,6 +411,9 @@ pub enum Event {
         id: String,
         end: LaneEnd,
     },
+    /// The agent read one of your messages (Claude's `--replay-user-messages` echo): in the
+    /// turn running, or starting its own.
+    Taken,
     /// Read this file's new lines as subagent `id`'s, through the translator's
     /// `decode_followed` (agy writes a subagent's steps to its own transcript).
     Follow {

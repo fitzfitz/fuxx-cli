@@ -102,9 +102,16 @@ pub struct Conversation {
     model: Option<String>,
     cost_usd: Option<f64>,
     context_pct: Option<u8>,
-    /// Sends not yet answered by a `TurnDone`: Claude queues a message sent mid-turn and
-    /// answers each with its own `result`.
+    /// Messages sent and not yet read. Claude says when it reads one (`Taken`, its echo): a
+    /// note sent mid-turn may be read in that same turn, with no `result` of its own (your
+    /// report, 2026-11-22: Main stayed "Cultivating…" and Esc stuck on "Stopping…"). An agent
+    /// that doesn't say (agy) answers each with its own turn: a `TurnDone` counts one.
     outstanding: u32,
+    /// The agent says when it reads a message (a `Taken` has come).
+    echoes: bool,
+    /// Main's own activity (its words, its tools, a turn starting) since the last `TurnDone`;
+    /// a subagent's steps don't count.
+    busy: bool,
     ended: bool,
     /// A turn has finished since the last `you`.
     finished: bool,
@@ -116,6 +123,16 @@ impl Conversation {
     }
 
     pub fn apply(&mut self, event: Event) {
+        // Main working: a turn starting, its own words or tools (not a subagent's).
+        if matches!(
+            &event,
+            Event::Started { .. }
+                | Event::TextDelta { parent: None, .. }
+                | Event::MessageDone { parent: None, .. }
+                | Event::ToolStarted { parent: None, .. }
+        ) {
+            self.busy = true;
+        }
         match event {
             Event::Cleared => {
                 self.items.clear();
@@ -329,6 +346,12 @@ impl Conversation {
             }
             // The tab follows the file; nothing to show yet.
             Event::Follow { .. } => {}
+            // The agent read one of your messages (in this turn, or starting its own).
+            Event::Taken => {
+                self.echoes = true;
+                self.outstanding = self.outstanding.saturating_sub(1);
+                self.busy = true;
+            }
             Event::Usage {
                 context_pct,
                 cost_usd,
@@ -341,13 +364,17 @@ impl Conversation {
                 }
             }
             Event::TurnDone { ok, message } => {
-                // One finished turn answers one send; a failed or stopped turn drops what was
-                // queued behind it (an interrupt cancels queued messages).
-                self.outstanding = if ok {
-                    self.outstanding.saturating_sub(1)
-                } else {
+                // An agent that says when it reads each message (`Taken`: Claude's echo) has
+                // counted already; one that doesn't answers each with its own turn (agy). A
+                // failed or stopped turn drops what was queued behind it.
+                self.outstanding = if !ok {
                     0
+                } else if self.echoes {
+                    self.outstanding
+                } else {
+                    self.outstanding.saturating_sub(1)
                 };
+                self.busy = false;
                 self.finished = true;
                 self.settle();
                 if !ok && let Some(text) = message {
@@ -394,6 +421,7 @@ impl Conversation {
             }
         }
         self.outstanding = 0;
+        self.busy = false;
         // A subagent with no end in the history was cut off (the app quit mid-run).
         self.stop_lanes();
         self.settle();
@@ -403,6 +431,7 @@ impl Conversation {
     pub fn failed_to_start(&mut self, message: &str) {
         self.ended = true;
         self.outstanding = 0;
+        self.busy = false;
         self.stop_lanes();
         self.settle();
         self.items.push(Item::Error(message.to_string()));
@@ -414,6 +443,7 @@ impl Conversation {
         self.items.truncate(len);
         self.lanes.clear();
         self.outstanding = 0;
+        self.busy = false;
         self.ended = false;
         self.settle();
     }
@@ -535,6 +565,7 @@ impl Conversation {
     pub fn process_ended(&mut self, code: Option<i32>, stderr_tail: &str) {
         self.ended = true;
         self.outstanding = 0;
+        self.busy = false;
         self.stop_lanes();
         self.settle();
         let tail = stderr_tail.trim();
@@ -563,6 +594,7 @@ impl Conversation {
     pub fn paused_with(&mut self, notice: &str) {
         self.ended = true;
         self.outstanding = 0;
+        self.busy = false;
         self.stop_lanes();
         self.settle();
         self.items.push(Item::Notice(notice.into()));
@@ -607,7 +639,7 @@ impl Conversation {
             Status::Done
         } else if self.pending_permission().is_some() {
             Status::Waiting
-        } else if self.outstanding > 0 {
+        } else if self.outstanding > 0 || self.busy {
             Status::Working
         } else if self.finished || !self.items.is_empty() {
             // Anything said (even replayed history) with no turn running reads Done.
@@ -970,10 +1002,17 @@ mod tests {
     }
 
     #[test]
-    fn replayed_history_reads_done_and_a_new_turn_revives() {
+    fn a_turn_main_starts_itself_works_until_its_result() {
+        // A turn the agent starts on its own (a background subagent waking it) works until its
+        // `result`; history replays through `past`, which settles.
         let mut c = Conversation::new();
         assert_eq!(c.status(), Status::Idle);
         c.apply(delta("m", "old"));
+        assert_eq!(c.status(), Status::Working);
+        c.apply(Event::TurnDone {
+            ok: true,
+            message: None,
+        });
         assert_eq!(c.status(), Status::Done);
         c.process_ended(Some(1), "bye");
         c.you("again".into(), vec![]);
@@ -1105,7 +1144,8 @@ mod tests {
 
     #[test]
     fn a_queued_second_message_keeps_working_until_its_own_result() {
-        // claude-queue.jsonl: two messages sent mid-turn, two `result`s.
+        // claude-queue.jsonl (recorded without Claude's echo): two messages sent mid-turn, two
+        // `result`s — each `TurnDone` counts one.
         let mut c = Conversation::new();
         c.you("A".into(), vec![]);
         c.you("B".into(), vec![]);
@@ -1397,6 +1437,62 @@ mod tests {
         let mut c = Conversation::new();
         c.past(vec![Past::Event(started("t1", "Reader"))]);
         assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Stopped);
+    }
+
+    fn said(text: &str) -> Event {
+        Event::TextDelta {
+            message: "m2".into(),
+            text: text.into(),
+            parent: None,
+        }
+    }
+
+    fn turn_done() -> Event {
+        Event::TurnDone {
+            ok: true,
+            message: None,
+        }
+    }
+
+    #[test]
+    fn a_note_read_in_the_same_turn_leaves_main_done() {
+        // Your report (2026-11-22): a message sent mid-turn read in that same turn ("Claude
+        // reads it after this step") gets no `result` of its own: Main must not stay Working.
+        let mut c = Conversation::new();
+        c.you("first".into(), Vec::new());
+        c.apply(Event::Taken);
+        c.you("a note".into(), Vec::new());
+        c.apply(Event::Taken);
+        c.apply(turn_done());
+        assert_eq!(c.status(), Status::Done);
+    }
+
+    #[test]
+    fn a_queued_message_works_again_when_its_turn_starts() {
+        let mut c = Conversation::new();
+        c.you("first".into(), Vec::new());
+        c.apply(Event::Taken);
+        c.you("queued".into(), Vec::new());
+        c.apply(turn_done());
+        assert_eq!(
+            c.status(),
+            Status::Working,
+            "not read yet: its turn is to come"
+        );
+        c.apply(Event::Taken);
+        c.apply(said("on it"));
+        c.apply(turn_done());
+        assert_eq!(c.status(), Status::Done);
+    }
+
+    #[test]
+    fn a_lanes_steps_after_main_finished_dont_make_main_work() {
+        let mut c = Conversation::new();
+        c.you("go".into(), Vec::new());
+        c.apply(started("bg", "Watch"));
+        c.apply(turn_done());
+        c.apply(sub_tool("r1", "bg"));
+        assert_eq!(c.status(), Status::Done, "Main's own status");
     }
 
     #[test]
