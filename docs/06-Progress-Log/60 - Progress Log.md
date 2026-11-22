@@ -61,6 +61,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Next:** your on-screen check (note 94); merge (renumber if M11au collides), then fuxx-completes' M1c can declare
   its four settings.
 
+### 2026-11-22 — Chore: a welcome in an empty shell tab
+
+- **What:** your words ("on empty terminal … add sentences and icons on top on the middle like in claude/agy"): the
+  terminal's mark, "Run a command", the folder (note 93, chores).
+- **Checks:** tests and clippy at the baseline; the shell card scenes pass, `shell-cards-empty` new.
+
 ### 2026-11-22 — Chore: the commit box, redone
 
 - **What:** your words ("commit box looks very bad, make it 100x better!"), the Lead UI/UX Designer's spec: a card

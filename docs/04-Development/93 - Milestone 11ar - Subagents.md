@@ -216,3 +216,7 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   checklist have backgrounds (green background)"): a tab's status mark is 12 pt (was 8) in the ×'s slot; Done is the
   check on a `ring_done` disc, cut out in the tab's fill. Tab widths unchanged (the old room kept). Scenes
   `tabs-minimal` (Done now green) and `tab-drag` (its chip check samples clear of the mark under it).
+- **A welcome in an empty shell tab** (your words, 2026-11-22: "on empty terminal (cleared or new terminal tab) can
+  you add sentences and icons on top on the middle like in claude/agy on empty"): while the card view's column holds
+  only the prompt (`card_view::is_empty_column`), its middle shows the terminal's mark, "Run a command" and the
+  folder, as the agent tab's empty state; it takes no clicks. Scene `shell-cards-empty`.

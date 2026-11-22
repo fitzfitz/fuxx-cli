@@ -525,6 +525,12 @@ impl TerminalView {
         self.cards.borrow().typed_row.clone()
     }
 
+    /// Whether the empty column's welcome shows (the last frame drew cards, only the prompt).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_welcome(&self) -> bool {
+        self.cards_on.get() && crate::card_view::is_empty_column(&self.cards.borrow().items)
+    }
+
     /// The card view's placeholder as drawn and its left edge (none: not drawn).
     #[cfg(feature = "ui-shots")]
     pub fn shot_hint(&self) -> Option<(String, f32)> {
@@ -1615,6 +1621,72 @@ impl TerminalView {
     /// command (peach), the folder and the branch with the app's own icons, no ▾s (chores). The
     /// folder is a plain label (opening Finder from it was out of place, your call); a click on
     /// the branch opens the branch switcher. None when the box is out of view.
+    /// An empty column (a new tab, or after `clear`): a welcome in its middle, as the agent
+    /// tab's — the terminal's mark, "Run a command", and the folder it runs in (your words,
+    /// 2026-11-22: "add sentences and icons on top on the middle like in claude/agy on empty").
+    /// It takes no clicks (the column under it keeps them).
+    fn welcome(&self, ui: &UiColors, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let ((ox, oy), (x, y, w, h)) = {
+            let cards = self.cards.borrow();
+            if !crate::card_view::is_empty_column(&cards.items) {
+                return None;
+            }
+            (cards.origin, cards.view_rect)
+        };
+        if w <= 0.0 || h <= 0.0 {
+            return None;
+        }
+        let home = crate::workspace::home_dir();
+        let place = self
+            .folder
+            .as_deref()
+            .map(|f| crate::sidebar::home_relative(f, home.as_deref()));
+        let mono = cx.global::<Appearance>().font.family.clone();
+        let mark = div()
+            .size(px(40.0))
+            .rounded(px(10.0))
+            .bg(hsla(ui.side_field))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(crate::icons::icon(
+                crate::icons::Icon::Terminal,
+                px(20.0),
+                hsla(ui.text_dim),
+            ));
+        Some(
+            div()
+                .absolute()
+                .left(px(x - ox))
+                .top(px(y - oy))
+                .w(px(w))
+                .h(px(h))
+                .pb(px(48.0))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .child(mark)
+                .child(
+                    div()
+                        .mt(px(16.0))
+                        .text_size(px(15.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(hsla(ui.text))
+                        .child("Run a command"),
+                )
+                .children(place.map(|place| {
+                    div()
+                        .mt(px(6.0))
+                        .font_family(mono)
+                        .text_size(px(12.5))
+                        .text_color(hsla(ui.text_dim))
+                        .child(gpui::SharedString::from(place))
+                }))
+                .into_any_element(),
+        )
+    }
+
     fn context_row(&self, ui: &UiColors, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         use crate::card_view::{CTX_ROW, EDGE, PILL_GAP, PILL_H, PILL_MAX, TAB_PAD};
         use crate::icons::{Icon, icon};
@@ -2153,6 +2225,11 @@ impl Render for TerminalView {
         } else {
             None
         };
+        let welcome = if was_cards {
+            self.welcome(&ui, cx)
+        } else {
+            None
+        };
         let overlays: Vec<gpui::AnyElement> = if was_cards {
             let (hits, origin, view) = {
                 let cards = self.cards.borrow();
@@ -2379,6 +2456,7 @@ impl Render for TerminalView {
                 .size_full(),
             )
             .children(chip)
+            .children(welcome)
             .children(overlays)
             .children(ctx_row)
     }

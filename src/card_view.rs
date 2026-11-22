@@ -403,6 +403,23 @@ pub fn items_for<L>(
     )
 }
 
+/// Whether the column holds only the prompt (a new tab, or after `clear`): no card, no rows
+/// before or between, nothing running — the shell tab then shows its welcome (your words,
+/// 2026-11-22: "on empty terminal … add sentences and icons on top on the middle like in
+/// claude/agy on empty").
+pub fn is_empty_column(items: &[Item]) -> bool {
+    !items.is_empty()
+        && items.iter().all(|i| {
+            matches!(
+                i,
+                Item::Live {
+                    typing: Some(_),
+                    ..
+                }
+            )
+        })
+}
+
 /// A placeholder in `cols` cells (fuxx's own words, one cell a character): whole when it fits,
 /// else cut with "…" in the last cell.
 pub fn fit_words(words: &str, cols: usize) -> String {
@@ -954,6 +971,33 @@ pub fn card_dims(pane: Size<Pixels>, split: bool, cell_w: f32, line_h: f32) -> T
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_column_with_only_the_prompt_is_empty() {
+        use super::{Item, is_empty_column};
+        use alacritty_terminal::index::Line;
+        let live = |typing| Item::Live {
+            top: Line(0),
+            bottom: Line(0),
+            typing,
+        };
+        assert!(
+            is_empty_column(&[live(Some(2))]),
+            "a new tab, or after clear"
+        );
+        assert!(!is_empty_column(&[live(None)]), "a command running");
+        assert!(
+            !is_empty_column(&[
+                Item::Earlier {
+                    top: Line(0),
+                    bottom: Line(1)
+                },
+                live(Some(2))
+            ]),
+            "a login message above"
+        );
+        assert!(!is_empty_column(&[]), "nothing laid out yet");
+    }
+
     /// A placeholder in `cols` cells: whole when it fits, else cut with "…" in the last cell;
     /// nothing when there's no room.
     #[test]

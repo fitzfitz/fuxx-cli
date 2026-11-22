@@ -257,6 +257,7 @@ pub(super) const ORDER: &[&str] = &[
     "shell-cards-wrap",
     "shell-cards-prompt",
     "shell-cards-placeholder",
+    "shell-cards-empty",
     "shell-cards-running-full",
     "shell-cards-alt-screen",
     "shell-cards-off",

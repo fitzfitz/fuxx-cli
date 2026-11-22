@@ -102,6 +102,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: &["src/terminal_view.rs", "src/card_view.rs"],
     },
     Scene {
+        name: "shell-cards-empty",
+        run: shell_cards_empty_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &["src/terminal_view.rs", "src/card_view.rs"],
+    },
+    Scene {
         name: "shell-cards-prompt",
         run: shell_cards_prompt_scene,
         themes: Themes::Both,
@@ -1712,6 +1720,28 @@ fn shell_cards_select_scene() {
 /// "Type a command" in the terminal's font, from the cursor's own cell (your words, 2026-11-22:
 /// "the placeholder and input cursor is supposed to not have gap"); typing takes it away. (Cut with "…" when the
 /// box is narrower than it: `card_view::fit_words`, unit-tested; the card view's box is wider.)
+/// A new shell tab (only the prompt): the welcome in the column's middle — the terminal's mark,
+/// "Run a command", the folder (your words, 2026-11-22: "like in claude/agy on empty"); a column
+/// with a command in it has none.
+fn shell_cards_empty_scene() {
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let n = format!("shell-cards-empty-{slug}");
+        let mut rig = cards_rig(theme, "", size(px(900.0), px(520.0)));
+        let text = "\x1b]133;A;redraw=0\x07~/code/api main \x1b]133;B\x07";
+        let view = rig.view.clone();
+        rig.cx
+            .update(|cx| view.update(cx, |v, cx| v.shot_output(text, cx)));
+        let shot = rig.frame();
+        save_shot("shell-cards-empty", slug, &shot);
+        assert!(rig.read(|v| v.shot_welcome()), "{n}: the welcome shows");
+        // With a command's card in it: none.
+        let mut busy = cards_rig(theme, &blocks_text(), size(px(900.0), px(520.0)));
+        let _ = busy.frame();
+        assert!(!busy.read(|v| v.shot_welcome()), "{n}: none over cards");
+    }
+}
+
 fn shell_cards_placeholder_scene() {
     use crate::terminal_view::PLACEHOLDER;
     let (slug, name) = shot_themes()[0];
