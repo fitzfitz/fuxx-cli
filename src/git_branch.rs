@@ -238,7 +238,7 @@ pub(crate) fn run_capped_bytes(
 
 /// `run_capped_bytes`, optionally keeping stderr too (`capture_stderr`; else it is dropped and
 /// the second stream is empty). The one kill loop every capped command goes through.
-fn run_capped_streams(
+pub(crate) fn run_capped_streams(
     mut command: Command,
     input: Option<&[u8]>,
     cap: Duration,

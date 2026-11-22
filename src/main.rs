@@ -57,6 +57,7 @@ mod file_tree;
 mod folder_picker;
 mod fonts;
 mod git_branch;
+mod git_commit;
 mod git_graph;
 mod git_stage;
 mod git_status;
