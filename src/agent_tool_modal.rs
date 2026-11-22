@@ -164,10 +164,10 @@ pub fn index_of(items: &[Item], id: &str) -> Option<usize> {
 }
 
 /// Whether the tool at `ix` has anything more to show (its row's chevron): a diff, a command,
-/// output (not a read's, and not an edit's unless it failed), or a sub-agent's steps.
+/// output (not a read's, and not an edit's unless it failed). A sub-agent's steps are its
+/// lane's (M11ar): its row opens the lane.
 pub fn openable(items: &[Item], ix: usize) -> bool {
     let Some(Item::Tool {
-        id,
         name,
         ok,
         detail,
@@ -180,7 +180,6 @@ pub fn openable(items: &[Item], ix: usize) -> bool {
     let diff = matches!(detail, Some(ToolDetail::Diff { .. }));
     diff || matches!(detail, Some(ToolDetail::Command(_)))
         || shows_output(name, output, detail, *ok)
-        || items.iter().any(|i| parent_of(i) == Some(id.as_str()))
 }
 
 /// Whether a tool's output is worth showing: not a read's, and not an edit's (its diff says it)
@@ -272,7 +271,18 @@ mod tests {
         let items = items();
         assert!(!openable(&items, 0), "a read shows nothing more");
         assert!(openable(&items, 1));
-        assert!(openable(&items, 3), "a task with steps");
+        assert!(openable(&items, 3), "a task with output");
+    }
+
+    #[test]
+    fn a_subagent_row_opens_its_lane_not_the_modal() {
+        // M11ar: a task's steps are its lane's (its row opens the lane), not the modal's.
+        let mut task = tool("task", "Agent", None, None);
+        if let Item::Tool { output, .. } = &mut task {
+            *output = None;
+        }
+        let items = vec![task, bash("t1", Some("task"))];
+        assert!(!openable(&items, 0));
     }
 
     #[test]

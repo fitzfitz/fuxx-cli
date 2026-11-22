@@ -5,8 +5,9 @@ updated: 2026-11-22
 
 # 93 - Milestone 11ar - Subagents
 
-**Status:** ✅ design **approved 2026-11-22** ("But above is approved!"); plan written:
-[[M11ar Plan - Subagents]] (6 tasks), waiting for your review. Milestone 1 of 3 in the plan you chose ("go with A"): **M11ar
+**Status:** 🟨 built 2026-11-22 on branch `m11ar-subagents` (8 tasks, one whole-branch review and its fix pass),
+waiting for your on-screen check (the checklist below). Plan: [[M11ar Plan - Subagents]] (revised on the three leads'
+picks).
 Subagents**, then M11as Agent browser, then M11at Browser testing (each designed on its own, later).
 
 ## Why
@@ -172,3 +173,34 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
 4. A Claude subagent asks to run a command: the card names it; Allow works from any view.
 5. The same with agy: pills, rows and live views appear; no Stop on its pills.
 6. Type while viewing a subagent: the view returns to Main with your message.
+
+## As built (2026-11-22)
+
+- **The model** (`agent_conversation`, `providers/mod.rs`): a lane per subagent, keyed by the call that started it;
+  events `SubagentStarted` (with per-lane `LaneControls { stop }`), `SubagentProgress`, `SubagentEnded`, `Follow`;
+  `Permission.by`; `Action::StopSubagent { lane }`; `Translator::decode_followed`. A turn's settling leaves a live
+  lane's steps and questions alone; a gone process (exit, Force stop, a restart) stops its lanes.
+- **Claude** (`providers/claude.rs`): `task_started` (only `local_agent` tasks: a subagent's own Bash is a
+  `local_bash` task), `task_progress`, `task_notification`; `can_use_tool.agent_id` (= the task id) names who asks;
+  `stop_task` stops one; a foreground lane still open at `result` ends Stopped, a background one goes on; resumed
+  conversations get their lanes back from the Agent calls in the transcript (label by the live rule).
+- **agy** (`providers/agy.rs`, `lane_follow.rs`, `agent_lanes_view.rs`): its `subagent` step is a row and a lane
+  (`<step id>#<n>`); spawned, its transcript is followed (a GPUI task per lane, 500 ms, for the process's life) and
+  decoded by agy's translator; its report (`send_message` to this conversation) ends it; at `result` an unreported one
+  is Stopped. No Stop (agy offers none).
+- **The tab** (`agent_tab.rs`, `agent_rows.rs` — the row drawing moved out first, `agent_lanes_view.rs`,
+  `agent_chat.rs`): a list per view (`rows_of`), the pill strip (Main, then lanes in start order; marks; waiting tint;
+  "+N" list; ⌥⌘[ / ⌥⌘]), Main's subagent rows from their lanes (label, task, last tool or "N steps", time; a click
+  opens the lane; the tool modal's Steps section is gone), the lane view (header with kind, model, time, tokens, tools
+  and Stop; "from Main"; its steps; "✓ Done in … · Back to Main ›", "✕ Failed · why", "Stopped"), a question in every
+  view at its end, headed by who asks, the box's "Message Main — it can pass this to …", sending returns to Main.
+- **Fixtures** (recorded, scrubbed by `scripts/record-agent-fixture.py`'s new scenarios): `claude-subagents`,
+  `claude-subagent-stop`, `claude-subagent-ask`, `agy-subagents` and its two transcripts; a test keeps any real home
+  folder out of the fixtures.
+- **The review** (one whole-branch review, Opus): fixed a Critical (Force stop or a restart left lanes working — and a
+  question open forever) and six Important (resumed lanes without a result, stopped lanes revived by late lines,
+  clocks after a stop, Claude's foreground lanes at the turn's end, a question at the end of the shown lane, steps
+  with no lane staying in Main). Deferred minors: ↑/↓ in a modal opened from a lane step; followers polling finished
+  lanes; small wording and state nits (the plan's ledger lists them).
+- **Checks:** 2,448 tests; clippy at the baseline; 7 new scenes (`agent-lanes-strip`, `-overflow`, `-view`, `-ask`,
+  `-narrow`, `-agy`, `-states`); the full ui-shots run before and after the fix pass.

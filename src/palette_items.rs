@@ -674,6 +674,9 @@ pub const NOT_IN_PALETTE: &[&str] = &[
     // M11ah: the keys fold where the current line is; the palette has Fold All / Unfold All.
     "file_tab::FoldHere",
     "file_tab::UnfoldHere",
+    // M11ar: they step through an agent tab's pills; the pills are the way in.
+    "agent_tab::PrevLane",
+    "agent_tab::NextLane",
 ];
 
 /// ⋯ menu items (`pane_actions`) the palette lists under another name: the same action.

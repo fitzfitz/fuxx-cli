@@ -489,7 +489,7 @@ pub(super) const SCENES: &[Scene] = &[
     },
 ];
 
-type Slot = Rc<RefCell<Option<Entity<AgentTab>>>>;
+pub(super) type Slot = Rc<RefCell<Option<Entity<AgentTab>>>>;
 
 const DIMS: (f32, f32) = (720.0, 640.0);
 
@@ -500,7 +500,7 @@ fn cwd() -> PathBuf {
         .join("code/my-app")
 }
 
-fn start() -> Start {
+pub(super) fn start() -> Start {
     Start {
         cwd: cwd(),
         resume: None,
@@ -513,12 +513,12 @@ fn start() -> Start {
 }
 
 /// A fixture's lines, decoded as the process's would be.
-fn decode(fixture: &str) -> Vec<Event> {
+pub(super) fn decode(fixture: &str) -> Vec<Event> {
     let mut t = CLAUDE.translator();
     fixture.lines().flat_map(|l| t.decode(l)).collect()
 }
 
-fn tab_of(slot: &Slot) -> Entity<AgentTab> {
+pub(super) fn tab_of(slot: &Slot) -> Entity<AgentTab> {
     slot.borrow().clone().expect("the agent tab")
 }
 
@@ -537,7 +537,7 @@ fn build_in(
 }
 
 /// `build_in`, a tab of `provider`.
-fn build_with(
+pub(super) fn build_with(
     provider: &'static dyn Provider,
     theme: crate::theme::Theme,
     slot: Slot,
@@ -555,7 +555,7 @@ fn build_with(
 }
 
 /// `act` on the tab, then let it settle (as the app would get its frames).
-fn feed(
+pub(super) fn feed(
     cx: &mut VisualTestAppContext,
     tab: &Entity<AgentTab>,
     f: impl FnOnce(&mut AgentTab, &mut Context<AgentTab>),
@@ -566,7 +566,7 @@ fn feed(
 
 /// `events` fed one by one as the process would bring them, each permission allowed as you
 /// would (the recording's own answers aren't in its stdout).
-fn play(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, events: Vec<Event>) {
+pub(super) fn play(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, events: Vec<Event>) {
     for event in events {
         let ask = matches!(event, Event::Permission { .. });
         feed(cx, tab, |t, cx| t.shot_feed(vec![event], cx));
@@ -587,7 +587,7 @@ fn scene(
 }
 
 /// `scene` in a window of `dims`.
-fn scene_sized(
+pub(super) fn scene_sized(
     name: &str,
     dims: (f32, f32),
     act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + Clone,
@@ -1543,6 +1543,7 @@ pub(super) fn agent_tab_cached_current() {
                     what: "git commit -m \"fix rsvp\"".into(),
                     detail: String::new(),
                     always: Some("Always allow Bash(git commit:*)".into()),
+                    by: None,
                 }],
             ),
         ];
@@ -2566,6 +2567,7 @@ pub(super) fn agent_sidebar_waiting() {
                                 what: "npm test".into(),
                                 detail: "npm test".into(),
                                 always: None,
+                                by: None,
                             }],
                             cx,
                         );

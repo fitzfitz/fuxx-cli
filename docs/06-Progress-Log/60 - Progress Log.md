@@ -35,6 +35,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — M11ar Subagents built (on branch `m11ar-subagents`)
+
+- **What:** your words ("can we switch chat view between subagents?", "I want the full power of both claude and agy",
+  "go with A", "go with yours", "But above is approved!", "cool let's go ahead", and the three leads' picks): a lane
+  per subagent for Claude and agy, a pill strip to switch the chat to one, its own chat live (agy's from its
+  transcript), Stop on Claude's, who asks on a permission card, the box talking to Main. Note 93, plan
+  [[M11ar Plan - Subagents]].
+- **Review:** one whole-branch review (Opus): a Critical and six Important fixed (see note 93); minors deferred.
+- **Checks:** 2,448 tests; clippy at the baseline; 7 new scenes; full ui-shots before and after the fixes.
+
 ### 2026-11-22 — Chore: pasted images as pills in the text
 
 - **What:** your words ("make it pill inside the chat along with the prompt where you pasted it", "yes"): `[Image #N]`

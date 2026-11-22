@@ -1,7 +1,7 @@
 //! The conversation model (M11aa): folds a provider's `Event`s into chat items and a status.
 //! Pure and GPUI-free.
 
-use crate::providers::{Event, Past, TodoItem, ToolDetail};
+use crate::providers::{Event, LaneControls, LaneEnd, Past, TodoItem, ToolDetail};
 use crate::status::Status;
 
 pub const OUTPUT_KEEP_LINES: usize = 2_000;
@@ -52,14 +52,52 @@ pub enum Item {
         detail: String,
         always: Option<String>,
         answer: Option<Answer>,
+        /// The subagent (lane id) that asks; `None`: the main agent.
+        by: Option<String>,
     },
     Notice(String),
     Error(String),
 }
 
+/// A subagent (M11ar): its steps are the items whose `parent` is its `id`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lane {
+    pub id: String,
+    /// The lane that started it, when nested (drawn flat for now).
+    pub parent: Option<String>,
+    pub label: String,
+    pub kind: String,
+    pub task: String,
+    pub model: Option<String>,
+    pub status: LaneStatus,
+    pub tokens: Option<u64>,
+    pub tools: Option<u32>,
+    pub last_tool: Option<String>,
+    pub controls: LaneControls,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum LaneStatus {
+    Working,
+    /// It asked you something (a permission) and waits.
+    Waiting,
+    Done,
+    Failed(String),
+    Stopped,
+}
+
+impl LaneStatus {
+    /// Still going (working or waiting on you).
+    pub fn live(&self) -> bool {
+        matches!(self, LaneStatus::Working | LaneStatus::Waiting)
+    }
+}
+
 #[derive(Default)]
 pub struct Conversation {
     items: Vec<Item>,
+    /// The subagents, in start order.
+    lanes: Vec<Lane>,
     conversation: Option<String>,
     model: Option<String>,
     cost_usd: Option<f64>,
@@ -81,6 +119,7 @@ impl Conversation {
         match event {
             Event::Cleared => {
                 self.items.clear();
+                self.lanes.clear();
                 self.cost_usd = None;
                 self.context_pct = None;
                 self.finished = false;
@@ -154,18 +193,21 @@ impl Conversation {
                 detail,
                 writes: _,
                 texts: _,
-            } => self.items.push(Item::Tool {
-                id,
-                name,
-                summary,
-                parent,
-                running: true,
-                ok: None,
-                result: String::new(),
-                detail,
-                output: None,
-                dropped_lines: 0,
-            }),
+            } => {
+                self.reopen(parent.as_deref());
+                self.items.push(Item::Tool {
+                    id,
+                    name,
+                    summary,
+                    parent,
+                    running: true,
+                    ok: None,
+                    result: String::new(),
+                    detail,
+                    output: None,
+                    dropped_lines: 0,
+                })
+            }
             Event::ToolFinished {
                 id,
                 ok,
@@ -210,14 +252,83 @@ impl Conversation {
                 what,
                 detail,
                 always,
-            } => self.items.push(Item::Permission {
+                by,
+            } => {
+                if let Some(lane) = by.as_deref().and_then(|b| self.lane_mut(b)) {
+                    lane.status = LaneStatus::Waiting;
+                }
+                self.items.push(Item::Permission {
+                    id,
+                    tool,
+                    what,
+                    detail,
+                    always,
+                    answer: None,
+                    by,
+                })
+            }
+            Event::SubagentStarted {
                 id,
-                tool,
-                what,
-                detail,
-                always,
-                answer: None,
-            }),
+                parent,
+                label,
+                kind,
+                task,
+                model,
+                controls,
+            } => {
+                let lane = Lane {
+                    id: id.clone(),
+                    parent,
+                    label,
+                    kind,
+                    task,
+                    model,
+                    status: LaneStatus::Working,
+                    tokens: None,
+                    tools: None,
+                    last_tool: None,
+                    controls,
+                };
+                match self.lane_mut(&id) {
+                    Some(old) => *old = lane,
+                    None => self.lanes.push(lane),
+                }
+            }
+            Event::SubagentProgress {
+                id,
+                tokens,
+                tools,
+                last_tool,
+            } => {
+                if let Some(lane) = self.lane_mut(&id) {
+                    if tokens.is_some() {
+                        lane.tokens = tokens;
+                    }
+                    if tools.is_some() {
+                        lane.tools = tools;
+                    }
+                    if last_tool.is_some() {
+                        lane.last_tool = last_tool;
+                    }
+                }
+            }
+            Event::SubagentEnded { id, end } => {
+                if let Some(lane) = self.lane_mut(&id) {
+                    // A late report wins over a stop (agy's transcript can lag a poll).
+                    let keep = matches!(lane.status, LaneStatus::Done | LaneStatus::Failed(_))
+                        && end == LaneEnd::Stopped;
+                    if !keep {
+                        lane.status = match end {
+                            LaneEnd::Done => LaneStatus::Done,
+                            LaneEnd::Failed(why) => LaneStatus::Failed(why),
+                            LaneEnd::Stopped => LaneStatus::Stopped,
+                        };
+                    }
+                    self.settle_lane(&id);
+                }
+            }
+            // The tab follows the file; nothing to show yet.
+            Event::Follow { .. } => {}
             Event::Usage {
                 context_pct,
                 cost_usd,
@@ -283,6 +394,8 @@ impl Conversation {
             }
         }
         self.outstanding = 0;
+        // A subagent with no end in the history was cut off (the app quit mid-run).
+        self.stop_lanes();
         self.settle();
     }
 
@@ -290,6 +403,7 @@ impl Conversation {
     pub fn failed_to_start(&mut self, message: &str) {
         self.ended = true;
         self.outstanding = 0;
+        self.stop_lanes();
         self.settle();
         self.items.push(Item::Error(message.to_string()));
     }
@@ -298,6 +412,7 @@ impl Conversation {
     /// new conversation follows what came before). Nothing is left running or waiting.
     pub fn keep_first(&mut self, len: usize) {
         self.items.truncate(len);
+        self.lanes.clear();
         self.outstanding = 0;
         self.ended = false;
         self.settle();
@@ -317,14 +432,95 @@ impl Conversation {
     }
 
     pub fn answered(&mut self, id: &str, answer: Answer) {
+        let mut asker = None;
         for item in &mut self.items {
             if let Item::Permission {
-                id: pid, answer: a, ..
+                id: pid,
+                answer: a,
+                by,
+                ..
             } = item
                 && pid == id
             {
                 *a = Some(answer);
-                return;
+                asker = by.clone();
+                break;
+            }
+        }
+        if let Some(lane) = asker.as_deref().and_then(|b| self.lane_mut(b))
+            && lane.status == LaneStatus::Waiting
+        {
+            lane.status = LaneStatus::Working;
+        }
+    }
+
+    /// The subagents, in start order.
+    pub fn lanes(&self) -> &[Lane] {
+        &self.lanes
+    }
+
+    pub fn lane(&self, id: &str) -> Option<&Lane> {
+        self.lanes.iter().find(|l| l.id == id)
+    }
+
+    fn lane_mut(&mut self, id: &str) -> Option<&mut Lane> {
+        self.lanes.iter_mut().find(|l| l.id == id)
+    }
+
+    /// How many tool calls lane `id` has made.
+    pub fn lane_steps(&self, id: &str) -> usize {
+        self.items
+            .iter()
+            .filter(|i| matches!(i, Item::Tool { parent: Some(p), .. } if p == id))
+            .count()
+    }
+
+    /// A step under a done lane: it works again (a woken subagent). A stopped or failed one
+    /// stays so (its lagging lines don't revive it).
+    fn reopen(&mut self, parent: Option<&str>) {
+        if let Some(lane) = parent.and_then(|p| self.lane_mut(p))
+            && lane.status == LaneStatus::Done
+        {
+            lane.status = LaneStatus::Working;
+        }
+    }
+
+    /// Lane `id` ended: its steps stop running and its questions expire.
+    fn settle_lane(&mut self, id: &str) {
+        for item in &mut self.items {
+            match item {
+                Item::Tool {
+                    running,
+                    parent: Some(p),
+                    ..
+                } if p == id => *running = false,
+                Item::Agent {
+                    done,
+                    parent: Some(p),
+                    ..
+                } if p == id => *done = true,
+                Item::Permission {
+                    answer,
+                    by: Some(b),
+                    ..
+                } if b == id && answer.is_none() => *answer = Some(Answer::Expired),
+                _ => {}
+            }
+        }
+    }
+
+    /// The process was ended from here (Force stop, a restart for a change): its subagents
+    /// stop, and nothing of theirs runs or waits on (no `process_ended` follows).
+    pub fn process_gone(&mut self) {
+        self.stop_lanes();
+        self.settle();
+    }
+
+    /// The process is gone: every lane still going stops.
+    fn stop_lanes(&mut self) {
+        for lane in &mut self.lanes {
+            if lane.status.live() {
+                lane.status = LaneStatus::Stopped;
             }
         }
     }
@@ -332,6 +528,7 @@ impl Conversation {
     pub fn process_ended(&mut self, code: Option<i32>, stderr_tail: &str) {
         self.ended = true;
         self.outstanding = 0;
+        self.stop_lanes();
         self.settle();
         let tail = stderr_tail.trim();
         let what = match code {
@@ -359,17 +556,28 @@ impl Conversation {
     pub fn paused_with(&mut self, notice: &str) {
         self.ended = true;
         self.outstanding = 0;
+        self.stop_lanes();
         self.settle();
         self.items.push(Item::Notice(notice.into()));
     }
 
-    /// A turn is over: nothing is still running and no question is still open.
+    /// A turn is over: nothing is still running and no question is still open — except under
+    /// a lane still going (a background subagent outlives Main's turn; its own end settles it).
     fn settle(&mut self) {
+        let live: Vec<String> = self
+            .lanes
+            .iter()
+            .filter(|l| l.status.live())
+            .map(|l| l.id.clone())
+            .collect();
+        let under_live = |p: &Option<String>| p.as_ref().is_some_and(|p| live.contains(p));
         for item in &mut self.items {
             match item {
-                Item::Tool { running, .. } => *running = false,
-                Item::Agent { done, .. } => *done = true,
-                Item::Permission { answer, .. } if answer.is_none() => {
+                Item::Tool {
+                    running, parent, ..
+                } if !under_live(parent) => *running = false,
+                Item::Agent { done, parent, .. } if !under_live(parent) => *done = true,
+                Item::Permission { answer, by, .. } if answer.is_none() && !under_live(by) => {
                     *answer = Some(Answer::Expired)
                 }
                 _ => {}
@@ -473,6 +681,7 @@ mod tests {
             what: "run ls".into(),
             detail: "ls".into(),
             always: None,
+            by: None,
         }
     }
 
@@ -932,6 +1141,268 @@ mod tests {
             message: None,
         });
         assert_eq!(d.status(), Status::Done);
+    }
+
+    fn started(id: &str, label: &str) -> Event {
+        Event::SubagentStarted {
+            id: id.into(),
+            parent: None,
+            label: label.into(),
+            kind: "Explore".into(),
+            task: "Find the config loader".into(),
+            model: None,
+            controls: LaneControls { stop: true },
+        }
+    }
+
+    fn sub_tool(id: &str, parent: &str) -> Event {
+        Event::ToolStarted {
+            id: id.into(),
+            name: "Read".into(),
+            summary: "src/cfg.rs".into(),
+            parent: Some(parent.into()),
+            detail: None,
+            writes: Vec::new(),
+            texts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_subagent_becomes_a_lane() {
+        let mut c = Conversation::new();
+        c.apply(started("t1", "Reader"));
+        c.apply(started("t2", "Tester"));
+        let lanes = c.lanes();
+        assert_eq!(lanes.len(), 2, "in start order");
+        assert_eq!(lanes[0].id, "t1");
+        assert_eq!(lanes[0].label, "Reader");
+        assert_eq!(lanes[0].kind, "Explore");
+        assert_eq!(lanes[0].task, "Find the config loader");
+        assert!(lanes[0].controls.stop);
+        assert_eq!(lanes[0].status, LaneStatus::Working);
+        assert_eq!(c.lane("t2").map(|l| l.label.as_str()), Some("Tester"));
+        // Started again (a resend): still one lane.
+        c.apply(started("t1", "Reader"));
+        assert_eq!(c.lanes().len(), 2);
+    }
+
+    #[test]
+    fn progress_fills_the_lanes_stats() {
+        let mut c = Conversation::new();
+        c.apply(started("t1", "Reader"));
+        c.apply(Event::SubagentProgress {
+            id: "t1".into(),
+            tokens: Some(18_200),
+            tools: Some(12),
+            last_tool: Some("Grep".into()),
+        });
+        let lane = c.lane("t1").unwrap();
+        assert_eq!(lane.tokens, Some(18_200));
+        assert_eq!(lane.tools, Some(12));
+        assert_eq!(lane.last_tool.as_deref(), Some("Grep"));
+    }
+
+    #[test]
+    fn lane_steps_counts_its_tools() {
+        let mut c = Conversation::new();
+        c.apply(started("t1", "Reader"));
+        c.apply(sub_tool("r1", "t1"));
+        c.apply(sub_tool("r2", "t1"));
+        c.apply(sub_tool("r3", "other"));
+        assert_eq!(c.lane_steps("t1"), 2);
+        assert_eq!(c.lane_steps("nobody"), 0);
+    }
+
+    #[test]
+    fn a_late_done_replaces_stopped() {
+        let mut c = Conversation::new();
+        c.apply(started("t1", "Reader"));
+        c.apply(Event::SubagentEnded {
+            id: "t1".into(),
+            end: LaneEnd::Stopped,
+        });
+        c.apply(Event::SubagentEnded {
+            id: "t1".into(),
+            end: LaneEnd::Done,
+        });
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Done);
+    }
+
+    #[test]
+    fn clearing_drops_the_lanes() {
+        let mut c = Conversation::new();
+        c.apply(started("t1", "Reader"));
+        c.apply(Event::Cleared);
+        assert!(c.lanes().is_empty(), "/clear");
+        c.apply(started("t2", "Tester"));
+        c.keep_first(0);
+        assert!(c.lanes().is_empty(), "a failed resume");
+    }
+
+    #[test]
+    fn settling_a_turn_leaves_a_working_lanes_steps() {
+        let mut c = Conversation::new();
+        c.you("go".into(), Vec::new());
+        c.apply(started("t1", "Reader"));
+        c.apply(sub_tool("r1", "t1"));
+        c.apply(Event::Permission {
+            id: "p1".into(),
+            tool: "Bash".into(),
+            what: "ls".into(),
+            detail: String::new(),
+            always: None,
+            by: Some("t1".into()),
+        });
+        c.apply(Event::TurnDone {
+            ok: true,
+            message: None,
+        });
+        let running = |c: &Conversation| {
+            c.items()
+                .iter()
+                .any(|i| matches!(i, Item::Tool { id, running: true, .. } if id == "r1"))
+        };
+        let open = |c: &Conversation| {
+            c.items()
+                .iter()
+                .any(|i| matches!(i, Item::Permission { answer: None, .. }))
+        };
+        assert!(
+            running(&c),
+            "a background lane's step goes on after Main's turn"
+        );
+        assert!(open(&c), "and its question stays open");
+        c.apply(Event::SubagentEnded {
+            id: "t1".into(),
+            end: LaneEnd::Done,
+        });
+        assert!(!running(&c) && !open(&c), "they settle when the lane ends");
+    }
+
+    #[test]
+    fn an_end_sets_done_failed_or_stopped() {
+        let mut c = Conversation::new();
+        for id in ["a", "b", "c"] {
+            c.apply(started(id, id));
+        }
+        c.apply(Event::SubagentEnded {
+            id: "a".into(),
+            end: LaneEnd::Done,
+        });
+        c.apply(Event::SubagentEnded {
+            id: "b".into(),
+            end: LaneEnd::Failed("no such file".into()),
+        });
+        c.apply(Event::SubagentEnded {
+            id: "c".into(),
+            end: LaneEnd::Stopped,
+        });
+        assert_eq!(c.lane("a").unwrap().status, LaneStatus::Done);
+        assert_eq!(
+            c.lane("b").unwrap().status,
+            LaneStatus::Failed("no such file".into())
+        );
+        assert_eq!(c.lane("c").unwrap().status, LaneStatus::Stopped);
+    }
+
+    #[test]
+    fn a_lanes_permission_makes_it_waiting() {
+        let mut c = Conversation::new();
+        c.apply(started("t1", "Reader"));
+        c.apply(Event::Permission {
+            id: "p1".into(),
+            tool: "Bash".into(),
+            what: "ls".into(),
+            detail: String::new(),
+            always: None,
+            by: Some("t1".into()),
+        });
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Waiting);
+        assert!(
+            matches!(c.items().last(), Some(Item::Permission { by: Some(b), .. }) if b == "t1"),
+            "the card knows who asks"
+        );
+        c.answered("p1", Answer::Allowed);
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Working);
+    }
+
+    #[test]
+    fn a_step_after_done_reopens_the_lane() {
+        let mut c = Conversation::new();
+        c.apply(started("t1", "Reader"));
+        c.apply(Event::SubagentEnded {
+            id: "t1".into(),
+            end: LaneEnd::Done,
+        });
+        c.apply(sub_tool("r1", "t1"));
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Working);
+    }
+
+    #[test]
+    fn process_end_stops_working_lanes() {
+        for end in 0..3 {
+            let mut c = Conversation::new();
+            c.apply(started("w", "Working"));
+            c.apply(started("d", "Done"));
+            c.apply(Event::SubagentEnded {
+                id: "d".into(),
+                end: LaneEnd::Done,
+            });
+            match end {
+                0 => c.process_ended(Some(1), ""),
+                1 => c.paused(),
+                _ => c.paused_with("held"),
+            }
+            assert_eq!(c.lane("w").unwrap().status, LaneStatus::Stopped, "{end}");
+            assert_eq!(c.lane("d").unwrap().status, LaneStatus::Done, "{end}");
+        }
+    }
+
+    #[test]
+    fn a_gone_process_stops_its_lanes_and_settles_them() {
+        // Review 1: Force stop or a restart (no `process_ended`): nothing of its lanes spins or
+        // waits on.
+        let mut c = Conversation::new();
+        c.you("go".into(), Vec::new());
+        c.apply(started("t1", "Reader"));
+        c.apply(sub_tool("r1", "t1"));
+        c.apply(Event::Permission {
+            id: "p1".into(),
+            tool: "Bash".into(),
+            what: "ls".into(),
+            detail: String::new(),
+            always: None,
+            by: Some("t1".into()),
+        });
+        c.process_gone();
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Stopped);
+        assert!(c.pending_permission().is_none(), "its question expired");
+        assert!(
+            !c.items()
+                .iter()
+                .any(|i| matches!(i, Item::Tool { running: true, .. }))
+        );
+    }
+
+    #[test]
+    fn a_resumed_lane_without_its_result_is_stopped() {
+        // Review 2: the app quit mid-subagent: no result in the transcript.
+        let mut c = Conversation::new();
+        c.past(vec![Past::Event(started("t1", "Reader"))]);
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Stopped);
+    }
+
+    #[test]
+    fn a_late_step_doesnt_revive_a_stopped_lane() {
+        // Review 3: a stopped lane's lagging lines; a done one woken again does reopen.
+        let mut c = Conversation::new();
+        c.apply(started("t1", "Reader"));
+        c.apply(Event::SubagentEnded {
+            id: "t1".into(),
+            end: LaneEnd::Stopped,
+        });
+        c.apply(sub_tool("late", "t1"));
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Stopped);
     }
 
     #[test]

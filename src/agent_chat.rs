@@ -5,23 +5,50 @@
 use std::hash::{Hash, Hasher};
 
 use crate::agent_conversation::Item;
-use crate::agent_tool_modal::{index_of, parent_of};
+use crate::agent_lanes::View;
+use crate::agent_tool_modal::parent_of;
 pub use crate::ui_tokens::chat;
 
-/// Whether item `ix` is a row of its own (a sub-agent's items are inside their tool's).
-pub fn is_row(items: &[Item], ix: usize) -> bool {
-    items
-        .get(ix)
-        .is_some_and(|i| parent_of(i).is_none_or(|p| index_of(items, p).is_none()))
-}
-
-/// The row before `ix`, and after it.
-fn prev_row(items: &[Item], ix: usize) -> Option<usize> {
-    (0..ix).rev().find(|&i| is_row(items, i))
-}
-
-fn next_row(items: &[Item], ix: usize) -> Option<usize> {
-    (ix + 1..items.len()).find(|&i| is_row(items, i))
+/// The items drawn as rows in `view`, in order (M11ar): Main's — everything but a lane's steps
+/// (a step whose lane's call is gone stays) — or a lane's own steps. One pass.
+pub fn rows_of(items: &[Item], view: &View, lanes: &[&str]) -> Vec<usize> {
+    let tools: std::collections::HashSet<&str> = items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Tool { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    // A step is its lane's only when that lane exists (a Task whose subagent never became a
+    // lane keeps its steps in Main).
+    let lane_of = |p: &str| tools.contains(p) && lanes.contains(&p);
+    let mut rows: Vec<usize> = Vec::new();
+    let mut asks: Vec<usize> = Vec::new();
+    for (ix, item) in items.iter().enumerate() {
+        match (view, item) {
+            // A question waits in whichever view is shown, at its end (M11ar: Enter answers it
+            // there); once answered it stays in Main's and its own lane's.
+            (View::Lane(lane), Item::Permission { answer, by, .. }) => {
+                if by.as_deref() == Some(lane.as_str()) {
+                    rows.push(ix);
+                } else if answer.is_none() {
+                    asks.push(ix);
+                }
+            }
+            (View::Main, item) => {
+                if parent_of(item).is_none_or(|p| !lane_of(p)) {
+                    rows.push(ix);
+                }
+            }
+            (View::Lane(lane), item) => {
+                if parent_of(item) == Some(lane.as_str()) {
+                    rows.push(ix);
+                }
+            }
+        }
+    }
+    rows.extend(asks);
+    rows
 }
 
 /// An item said by the agent (its avatar's column), not you or the tab.
@@ -45,27 +72,29 @@ pub enum Shape {
     Last,
 }
 
-pub fn group_shape(items: &[Item], ix: usize) -> Option<Shape> {
-    let is_tool = |i: Option<usize>| i.is_some_and(|i| matches!(items[i], Item::Tool { .. }));
-    if !is_row(items, ix) || !is_tool(Some(ix)) {
+/// Row `k` of `rows` (item indexes) in its run of tool rows.
+pub fn group_shape_at(items: &[Item], rows: &[usize], k: usize) -> Option<Shape> {
+    let is_tool = |k: Option<usize>| {
+        k.and_then(|k| rows.get(k))
+            .is_some_and(|&i| matches!(items[i], Item::Tool { .. }))
+    };
+    if !is_tool(Some(k)) {
         return None;
     }
-    Some(
-        match (is_tool(prev_row(items, ix)), is_tool(next_row(items, ix))) {
-            (false, false) => Shape::Solo,
-            (false, true) => Shape::First,
-            (true, true) => Shape::Middle,
-            (true, false) => Shape::Last,
-        },
-    )
+    Some(match (is_tool(k.checked_sub(1)), is_tool(Some(k + 1))) {
+        (false, false) => Shape::Solo,
+        (false, true) => Shape::First,
+        (true, true) => Shape::Middle,
+        (true, false) => Shape::Last,
+    })
 }
 
-/// The gap above row `ix`, from the row before it (spec B-B's table).
-pub fn gap_before(items: &[Item], ix: usize) -> f32 {
-    let Some(prev) = prev_row(items, ix).map(|p| &items[p]) else {
+/// The gap above row `k`, from the row before it (spec B-B's table).
+pub fn gap_before_at(items: &[Item], rows: &[usize], k: usize) -> f32 {
+    let Some(prev) = k.checked_sub(1).map(|p| &items[rows[p]]) else {
         return chat::FIRST_TOP;
     };
-    let item = &items[ix];
+    let item = &items[rows[k]];
     let text = |i: &Item| matches!(i, Item::Agent { .. });
     let tool = |i: &Item| matches!(i, Item::Tool { .. });
     match (prev, item) {
@@ -78,9 +107,69 @@ pub fn gap_before(items: &[Item], ix: usize) -> f32 {
     }
 }
 
+/// Whether row `k` carries the avatar: the first of a run of the agent's rows.
+pub fn shows_avatar_at(items: &[Item], rows: &[usize], k: usize) -> bool {
+    agent_side(&items[rows[k]])
+        && !k
+            .checked_sub(1)
+            .is_some_and(|p| agent_side(&items[rows[p]]))
+}
+
+/// Row `k`'s print: its item and which item it is, its shape, whether it is the last row and
+/// carries the thinking line — what makes it laid out again (`agent_tab::sync_rows`).
+pub fn row_print_at(items: &[Item], rows: &[usize], k: usize, thinking: bool) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    rows[k].hash(&mut h);
+    crate::agent_tab::fingerprint(&items[rows[k]]).hash(&mut h);
+    group_shape_at(items, rows, k).hash(&mut h);
+    let last = k + 1 == rows.len();
+    last.hash(&mut h);
+    (last && thinking).hash(&mut h);
+    h.finish()
+}
+
+/// Whether the "Thinking…" line shows under the last of `rows`: the turn works and nothing
+/// else there moves (no text streaming, no tool running, no question waiting).
+pub fn shows_thinking_in(working: bool, items: &[Item], rows: &[usize]) -> bool {
+    let Some(&last) = rows.last() else {
+        return false;
+    };
+    working
+        && !rows
+            .iter()
+            .any(|&i| matches!(items[i], Item::Tool { running: true, .. }))
+        && !matches!(
+            items[last],
+            Item::Agent { done: false, .. } | Item::Permission { answer: None, .. }
+        )
+}
+
+/// Main's rows (the helpers below as before M11ar, for the tests and callers by item index).
+fn main_rows(items: &[Item]) -> Vec<usize> {
+    rows_of(items, &View::Main, &[])
+}
+
+pub fn group_shape(items: &[Item], ix: usize) -> Option<Shape> {
+    let rows = main_rows(items);
+    group_shape_at(items, &rows, rows.iter().position(|&r| r == ix)?)
+}
+
+/// The gap above row `ix`, from the row before it (spec B-B's table).
+#[cfg(test)]
+pub fn gap_before(items: &[Item], ix: usize) -> f32 {
+    let rows = main_rows(items);
+    rows.iter()
+        .position(|&r| r == ix)
+        .map_or(chat::FIRST_TOP, |k| gap_before_at(items, &rows, k))
+}
+
 /// Whether row `ix` carries the avatar: the first of a run of the agent's rows.
+#[cfg(test)]
 pub fn shows_avatar(items: &[Item], ix: usize) -> bool {
-    agent_side(&items[ix]) && !prev_row(items, ix).is_some_and(|p| agent_side(&items[p]))
+    let rows = main_rows(items);
+    rows.iter()
+        .position(|&r| r == ix)
+        .is_some_and(|k| shows_avatar_at(items, &rows, k))
 }
 
 /// How far down the avatar sits, so it centres on the item's first line.
@@ -93,10 +182,10 @@ pub fn avatar_top(item: &Item) -> f32 {
     }
 }
 
-/// Whether the "Thinking…" line shows under the last row: the turn works and nothing else on
-/// screen moves (no text streaming, no tool running, no question waiting).
+/// Whether the "Thinking…" line shows under Main's last row (all tools count, as before).
 pub fn shows_thinking(working: bool, items: &[Item]) -> bool {
-    let Some(last) = (0..items.len()).rev().find(|&i| is_row(items, i)) else {
+    let rows = main_rows(items);
+    let Some(&last) = rows.last() else {
         return false;
     };
     working
@@ -114,16 +203,14 @@ pub fn summary_shown(name: &str, summary: &str) -> bool {
     !summary.is_empty() && summary != name
 }
 
-/// Row `ix`'s print: its item's, its shape, whether it is the last row and carries the
-/// thinking line — what makes it laid out again (`agent_tab::sync_rows`).
+/// Row `ix`'s print in Main.
+#[cfg(test)]
 pub fn row_print(items: &[Item], ix: usize, thinking: bool) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    crate::agent_tab::fingerprint(&items[ix]).hash(&mut h);
-    group_shape(items, ix).hash(&mut h);
-    let last = next_row(items, ix).is_none();
-    last.hash(&mut h);
-    (last && thinking).hash(&mut h);
-    h.finish()
+    let rows = main_rows(items);
+    match rows.iter().position(|&r| r == ix) {
+        Some(k) => row_print_at(items, &rows, k, thinking),
+        None => 0,
+    }
 }
 
 #[cfg(test)]
@@ -170,7 +257,53 @@ mod tests {
             detail: String::new(),
             always: None,
             answer: answered.then_some(Answer::Allowed),
+            by: None,
         }
+    }
+
+    #[test]
+    fn each_view_has_its_own_rows() {
+        use crate::agent_lanes::View;
+        let items = [
+            you(),
+            tool("agent1", None, true),
+            tool("r1", Some("agent1"), false),
+            said(true),
+            tool("r2", Some("agent1"), true),
+            tool("orphan", Some("gone"), false),
+        ];
+        assert_eq!(
+            rows_of(&items, &View::Main, &["agent1"]),
+            [0, 1, 3, 5],
+            "a lane's steps aren't Main's rows; a step whose parent is gone is"
+        );
+        // Review 8: a Task whose subagent never became a lane keeps its steps in Main.
+        assert_eq!(rows_of(&items, &View::Main, &[]), [0, 1, 2, 3, 4, 5]);
+        // Review 6: a question from elsewhere sits at the end of the shown lane.
+        let mut with_ask = items.to_vec();
+        with_ask.insert(3, asking(false));
+        assert_eq!(
+            rows_of(&with_ask, &View::Lane("agent1".into()), &["agent1"]),
+            [2, 5, 3],
+            "the open question last"
+        );
+        assert_eq!(
+            rows_of(&items, &View::Lane("agent1".into()), &["agent1"]),
+            [2, 4]
+        );
+        assert!(rows_of(&items, &View::Lane("nobody".into()), &["agent1"]).is_empty());
+        // The helpers read the view's rows: in the lane, r2 follows r1 as one group.
+        let lane = rows_of(&items, &View::Lane("agent1".into()), &["agent1"]);
+        assert_eq!(group_shape_at(&items, &lane, 0), Some(Shape::First));
+        assert_eq!(group_shape_at(&items, &lane, 1), Some(Shape::Last));
+        assert_eq!(gap_before_at(&items, &lane, 0), chat::FIRST_TOP);
+        assert!(shows_avatar_at(&items, &lane, 0));
+        // A row's print knows which item it draws.
+        let main = rows_of(&items, &View::Main, &["agent1"]);
+        assert_ne!(
+            row_print_at(&items, &main, 1, false),
+            row_print_at(&items, &main, 2, false)
+        );
     }
 
     #[test]

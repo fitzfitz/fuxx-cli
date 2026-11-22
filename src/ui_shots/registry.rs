@@ -14,9 +14,9 @@
 //! `--changed` follows.
 
 use super::{
-    Scene, agent, agent_box, ask, branch, changes, chrome, chrome_parts, command, file_tab,
-    file_tab_md, file_tab_md_reader, naming, notes, overlays, palette, panes, right_sidebar,
-    sidebar, status_bar, terminal, welcome, window,
+    Scene, agent, agent_box, agent_lanes, ask, branch, changes, chrome, chrome_parts, command,
+    file_tab, file_tab_md, file_tab_md_reader, naming, notes, overlays, palette, panes,
+    right_sidebar, sidebar, status_bar, terminal, welcome, window,
 };
 
 /// Files that run or declare the suite but change no scene's picture: an edit to one of these
@@ -52,6 +52,7 @@ pub(super) const AREAS: &[(&str, &[Scene])] = &[
     (command::FILE, command::SCENES),
     (agent::FILE, agent::SCENES),
     (agent_box::FILE, agent_box::SCENES),
+    (agent_lanes::FILE, agent_lanes::SCENES),
     (ask::FILE, ask::SCENES),
     (notes::FILE, notes::SCENES),
 ];
@@ -277,6 +278,13 @@ pub(super) const ORDER: &[&str] = &[
     "agent-tab-permission",
     "agent-tab-done",
     "agent-tab-wide",
+    "agent-lanes-strip",
+    "agent-lanes-overflow",
+    "agent-lanes-view",
+    "agent-lanes-ask",
+    "agent-lanes-narrow",
+    "agent-lanes-agy",
+    "agent-lanes-states",
     "agent-tab-failed",
     "agent-tab-bad-resume",
     "agent-tab-long",
