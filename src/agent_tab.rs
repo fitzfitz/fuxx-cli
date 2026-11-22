@@ -42,6 +42,9 @@ use crate::agent_box::{
 #[path = "agent_rows.rs"]
 mod rows;
 
+#[path = "agent_lanes_view.rs"]
+mod lanes_view;
+
 use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
@@ -1014,6 +1017,8 @@ pub struct AgentTab {
     started: Vec<Arc<AgentProcess>>,
     /// Reads the process's events; dropped to stop listening (a replaced or ended process).
     pump: Option<Task<()>>,
+    /// The subagent transcripts being followed, by lane (M11ar; dropped with the process).
+    followers: HashMap<String, Task<()>>,
     end: ProcessEnd,
     /// The process has ended (a send starts a new one).
     exited: bool,
@@ -1486,6 +1491,7 @@ impl AgentTab {
             process: None,
             started: Vec::new(),
             pump: None,
+            followers: HashMap::new(),
             end: ProcessEnd::default(),
             exited: false,
             booting: false,
@@ -1937,6 +1943,7 @@ impl AgentTab {
     /// Stop listening to the process and end it (its group is signalled; `Drop` would too).
     fn end_process(&mut self) {
         self.pump = None;
+        self.followers.clear();
         self.end_timer = None;
         if let Some(process) = self.process.take() {
             process.kill();
@@ -2064,6 +2071,7 @@ impl AgentTab {
         self.ending = false;
         self.process = None;
         self.pump = None;
+        self.followers.clear();
         self.stopping = None;
         self.abandon_edits(cx);
         // What the run said on its way out: its stderr tail and its error rows.
@@ -2172,6 +2180,7 @@ impl AgentTab {
                 Event::ToolStarted { id, .. } => {
                     self.tool_started.insert(id.clone(), Instant::now());
                 }
+                Event::Follow { id, path } => self.follow(id.clone(), path.clone(), cx),
                 // `/clear`: the chat empties (the conversation drops its items) and fades back in
                 // empty, keyed by how many times it was cleared.
                 Event::Cleared => {
@@ -2180,6 +2189,7 @@ impl AgentTab {
                     // after a restart said "Couldn't resume…").
                     self.run.resume = None;
                     self.tool_started.clear();
+                    self.followers.clear();
                     self.cleared += 1;
                     self.cleared_at = Some(Instant::now());
                 }

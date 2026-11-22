@@ -75,6 +75,7 @@ mod highlight;
 mod host_picker;
 mod icons;
 mod keys;
+mod lane_follow;
 mod layout_model;
 mod links;
 mod live_lines;

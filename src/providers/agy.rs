@@ -404,6 +404,44 @@ struct AgyTranslator {
     running: HashSet<String>,
     /// The error rows of this turn (a `result` repeating one adds none).
     errors: Vec<String>,
+    /// This conversation's id (a subagent reports to it).
+    conversation: Option<String>,
+    /// Subagents (M11ar) started and not yet reported, by lane id.
+    unreported: HashSet<String>,
+    /// Each lane's tool calls waiting for their result (a transcript's `GENERIC` line).
+    calls: HashMap<String, Vec<String>>,
+}
+
+/// The file a subagent's `log_uri` names, if it is a local `file://` one (percent-decoded).
+pub fn followed_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    if rest.is_empty() {
+        return None;
+    }
+    let bytes = rest.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(b) = u8::from_str_radix(&rest[i + 1..i + 3], 16)
+        {
+            out.push(b);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    Some(PathBuf::from(String::from_utf8_lossy(&out).into_owned()))
+}
+
+/// A transcript's tool argument: agy writes each as JSON text (`"\"a.txt\""`); its value.
+fn arg(v: &Value) -> Value {
+    match v.as_str().map(serde_json::from_str::<Value>) {
+        Some(Ok(decoded)) => decoded,
+        _ => v.clone(),
+    }
 }
 
 fn s(v: &Value) -> Option<String> {
@@ -460,8 +498,12 @@ fn command_output(output: &str) -> (String, Option<bool>) {
 impl AgyTranslator {
     fn step(&mut self, step: &Value) -> Vec<Event> {
         let done = step["state"] == "DONE";
+        if let Some(c) = s(&step["conversation_id"]) {
+            self.conversation = Some(c);
+        }
         match step["step_type"].as_str() {
             Some("agent_response") => self.response(step, done),
+            Some("subagent") => self.subagent(step, done),
             Some("tool") => self.tool(step, done),
             Some("error_message") => {
                 // The recordings' error steps carry no text: the `result` brings it.
@@ -547,6 +589,52 @@ impl AgyTranslator {
         out
     }
 
+    /// A `subagent` step (M11ar): per entry a row and a lane (`<step id>#<n>`); `DONE` means
+    /// spawned — the row finishes and its transcript is followed (it runs on, in the
+    /// background, and reports to this conversation).
+    fn subagent(&mut self, step: &Value, done: bool) -> Vec<Event> {
+        let mut out = Vec::new();
+        let subs = step["subagent_info"]["subagents"].as_array();
+        for (n, sub) in subs.into_iter().flatten().enumerate() {
+            let lane = format!("{}#{n}", step_id(step));
+            let role = s(&sub["role"]).unwrap_or_else(|| "Subagent".into());
+            if self.running.insert(lane.clone()) {
+                self.unreported.insert(lane.clone());
+                out.push(Event::ToolStarted {
+                    id: lane.clone(),
+                    name: "Subagent".into(),
+                    summary: role.clone(),
+                    parent: None,
+                    detail: None,
+                    writes: Vec::new(),
+                    texts: Vec::new(),
+                });
+                out.push(Event::SubagentStarted {
+                    id: lane.clone(),
+                    parent: None,
+                    label: role,
+                    kind: s(&sub["type_name"]).unwrap_or_default(),
+                    task: s(&sub["initial_prompt"]).unwrap_or_default(),
+                    model: None,
+                    controls: LaneControls::default(),
+                });
+            }
+            if done {
+                self.running.remove(&lane);
+                out.push(Event::ToolFinished {
+                    id: lane.clone(),
+                    ok: true,
+                    summary: String::new(),
+                    output: None,
+                });
+                if let Some(path) = sub["log_uri"].as_str().and_then(followed_path) {
+                    out.push(Event::Follow { id: lane, path });
+                }
+            }
+        }
+        out
+    }
+
     fn error(&mut self, text: String) -> Vec<Event> {
         if self.errors.contains(&text) {
             return Vec::new();
@@ -574,6 +662,13 @@ impl AgyTranslator {
         self.errors.clear();
         self.said.clear();
         self.running.clear();
+        // `-p` waits for its subagents: one that hasn't reported by now was cut off.
+        for lane in std::mem::take(&mut self.unreported) {
+            out.push(Event::SubagentEnded {
+                id: lane,
+                end: LaneEnd::Stopped,
+            });
+        }
         out.push(Event::Usage {
             context_pct: None,
             cost_usd: None,
@@ -604,6 +699,81 @@ impl Translator for AgyTranslator {
         }
     }
 
+    /// A line of a subagent's transcript (M11ar): its words, its tool calls, their results, and
+    /// its report to this conversation (which ends it).
+    fn decode_followed(&mut self, lane: &str, line: &str) -> Vec<Event> {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            return Vec::new();
+        };
+        let at = &v["step_index"];
+        let mut out = Vec::new();
+        match v["type"].as_str() {
+            Some("PLANNER_RESPONSE") => {
+                if let Some(text) = s(&v["content"]).filter(|t| !t.trim().is_empty()) {
+                    out.push(Event::MessageDone {
+                        message: format!("{lane}-{at}"),
+                        text: text.trim_end().to_string(),
+                        parent: Some(lane.to_string()),
+                    });
+                }
+                for (n, call) in v["tool_calls"].as_array().into_iter().flatten().enumerate() {
+                    let name = s(&call["name"]).unwrap_or_default();
+                    let args: serde_json::Map<String, Value> = call["args"]
+                        .as_object()
+                        .map(|m| m.iter().map(|(k, a)| (k.clone(), arg(a))).collect())
+                        .unwrap_or_default();
+                    let args = Value::Object(args);
+                    let id = format!("{lane}-{at}-{n}");
+                    self.calls
+                        .entry(lane.to_string())
+                        .or_default()
+                        .push(id.clone());
+                    out.push(Event::ToolStarted {
+                        id,
+                        summary: tool_summary(&name, &args),
+                        detail: args["CommandLine"]
+                            .as_str()
+                            .map(|c| ToolDetail::Command(c.to_string())),
+                        parent: Some(lane.to_string()),
+                        writes: Vec::new(),
+                        texts: Vec::new(),
+                        name: name.clone(),
+                    });
+                    let to_us = self
+                        .conversation
+                        .as_deref()
+                        .is_some_and(|c| args["Recipient"].as_str() == Some(c));
+                    if name == "send_message" && to_us {
+                        self.unreported.remove(lane);
+                        out.push(Event::SubagentEnded {
+                            id: lane.to_string(),
+                            end: LaneEnd::Done,
+                        });
+                    }
+                }
+            }
+            // A tool's result: it finishes the calls the step before made.
+            Some("GENERIC") => {
+                let output = s(&v["content"]).unwrap_or_default();
+                let output: String = output
+                    .lines()
+                    .filter(|l| !l.starts_with("Created At:") && !l.starts_with("Completed At:"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                for id in self.calls.remove(lane).unwrap_or_default() {
+                    out.push(Event::ToolFinished {
+                        id,
+                        ok: true,
+                        summary: short(output.trim(), 60),
+                        output: (!output.trim().is_empty()).then(|| output.clone()),
+                    });
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
     /// Each turn is one `{"event":"user"}` line (no `role`: agy rejects it). agy asks fuxx
     /// nothing (its prompts are not routed), so there is nothing to answer; and the recordings
     /// show no way to stop a turn, so `Interrupt` writes nothing (the tab's Force stop ends the
@@ -632,6 +802,227 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
     use std::path::PathBuf;
+
+    // ---- M11ar: subagents ----
+
+    const SUBS: &str = include_str!("fixtures/agy-subagents.jsonl");
+    const SUB_A: &str = include_str!("fixtures/agy-subagents-transcript-a.jsonl");
+    const SUB_B: &str = include_str!("fixtures/agy-subagents-transcript-b.jsonl");
+
+    /// The parent's stream through one translator; then each lane's transcript through it.
+    fn with_transcripts() -> (Box<dyn Translator>, Vec<Event>) {
+        let mut t = AGY.translator();
+        let mut out: Vec<Event> = SUBS.lines().flat_map(|l| t.decode(l)).collect();
+        let lanes: Vec<String> = out
+            .iter()
+            .filter_map(|e| match e {
+                Event::Follow { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        for (lane, file) in lanes.iter().zip([SUB_A, SUB_B]) {
+            for line in file.lines() {
+                out.extend(t.decode_followed(lane, line));
+            }
+        }
+        (t, out)
+    }
+
+    #[test]
+    fn a_subagent_step_is_a_row_and_a_lane() {
+        let ev = decode_all(SUBS);
+        let started: Vec<_> = ev
+            .iter()
+            .filter_map(|e| match e {
+                Event::SubagentStarted {
+                    id,
+                    label,
+                    kind,
+                    task,
+                    controls,
+                    ..
+                } => Some((
+                    id.clone(),
+                    label.clone(),
+                    kind.clone(),
+                    task.clone(),
+                    *controls,
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started.len(), 2, "two subagents, two lanes");
+        let (id, label, kind, task, controls) = &started[0];
+        assert!(id.ends_with(":2#0"), "the step's id and its place: {id}");
+        assert_eq!(label, "a.txt Reader", "its role");
+        assert_eq!(kind, "research");
+        assert!(task.contains("a.txt"));
+        assert_eq!(*controls, LaneControls::default(), "agy offers no control");
+        // Its row: an ordinary tool row, started and finished.
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, Event::ToolStarted { id: t, name, .. }
+            if t == id && name == "Subagent"))
+        );
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, Event::ToolFinished { id: t, .. } if t == id))
+        );
+    }
+
+    #[test]
+    fn spawned_starts_following() {
+        let ev = decode_all(SUBS);
+        let follows: Vec<_> = ev
+            .iter()
+            .filter_map(|e| match e {
+                Event::Follow { id, path } => Some((id.clone(), path.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(follows.len(), 2);
+        assert!(
+            follows[0]
+                .1
+                .ends_with(".system_generated/logs/transcript.jsonl")
+        );
+        assert!(
+            follows[0].1.to_string_lossy().contains("60e6d6ec"),
+            "its own file"
+        );
+    }
+
+    #[test]
+    fn two_subagents_are_two_lanes() {
+        let (_, ev) = with_transcripts();
+        let mut c = crate::agent_conversation::Conversation::new();
+        c.you("go".into(), Vec::new());
+        for e in ev {
+            c.apply(e);
+        }
+        assert_eq!(c.lanes().len(), 2);
+        for lane in c.lanes() {
+            assert_eq!(
+                c.lane_steps(&lane.id),
+                2,
+                "{}: read_file, send_message",
+                lane.label
+            );
+        }
+    }
+
+    #[test]
+    fn a_transcript_line_becomes_the_lanes_steps() {
+        let (_, ev) = with_transcripts();
+        let lane = ev
+            .iter()
+            .find_map(|e| match e {
+                Event::Follow { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let read = ev.iter().find_map(|e| match e {
+            Event::ToolStarted {
+                name,
+                summary,
+                parent: Some(p),
+                ..
+            } if *p == lane && name == "read_file" => Some(summary.clone()),
+            _ => None,
+        });
+        assert_eq!(read.as_deref(), Some("a.txt"), "its args decoded");
+        assert!(
+            ev.iter().any(|e| matches!(e, Event::ToolFinished { id, .. }
+            if id.starts_with(&format!("{lane}-1-")))),
+            "its result finishes it"
+        );
+        assert!(
+            ev.iter().any(
+                |e| matches!(e, Event::MessageDone { text, parent: Some(p), .. }
+            if *p == lane && text.contains("Reported"))
+            ),
+            "its words"
+        );
+    }
+
+    #[test]
+    fn the_report_to_the_parent_ends_the_lane() {
+        let (_, ev) = with_transcripts();
+        let done = ev
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Event::SubagentEnded {
+                        end: LaneEnd::Done,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(done, 2, "each reported to the parent");
+    }
+
+    #[test]
+    fn a_bad_line_is_skipped() {
+        let mut t = AGY.translator();
+        assert!(t.decode_followed("l", "not json").is_empty());
+        assert!(
+            t.decode_followed("l", "{\"type\":\"SYSTEM_MESSAGE\"}")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_turns_end_stops_unreported_lanes() {
+        // The parent's stream alone (no transcript read): at its `result` both are cut off.
+        let ev = decode_all(SUBS);
+        let stopped = ev
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Event::SubagentEnded {
+                        end: LaneEnd::Stopped,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(stopped, 2);
+        // With their reports read first, none is.
+        let mut t = AGY.translator();
+        let lines: Vec<&str> = SUBS.lines().collect();
+        let (body, last) = lines.split_at(lines.len() - 1);
+        let mut lanes = Vec::new();
+        for l in body {
+            for e in t.decode(l) {
+                if let Event::Follow { id, .. } = e {
+                    lanes.push(id);
+                }
+            }
+        }
+        for (lane, file) in lanes.iter().zip([SUB_A, SUB_B]) {
+            for line in file.lines() {
+                t.decode_followed(lane, line);
+            }
+        }
+        let end = t.decode(last[0]);
+        assert!(
+            !end.iter().any(|e| matches!(e, Event::SubagentEnded { .. })),
+            "{end:?}"
+        );
+    }
+
+    #[test]
+    fn only_file_uris_are_followed() {
+        assert_eq!(
+            followed_path("file:///Users/me/.gemini/a%20b/transcript.jsonl"),
+            Some(PathBuf::from("/Users/me/.gemini/a b/transcript.jsonl"))
+        );
+        assert_eq!(followed_path("https://example.com/t.jsonl"), None);
+        assert_eq!(followed_path(""), None);
+    }
 
     const TEXT: &str = include_str!("fixtures/agy-text.jsonl");
     const TOOLS: &str = include_str!("fixtures/agy-tools.jsonl");
