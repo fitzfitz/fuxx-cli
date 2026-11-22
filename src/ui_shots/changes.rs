@@ -2136,8 +2136,10 @@ fn changes_commit_scenes() {
             );
             // At the panel's foot, under the GRAPH (no branch read here, so no bar under it).
             let h = f32::from(dims.height);
+            // (A failure with its output open grows the box up into the lists.)
             assert!(
-                f32::from(line.top()) > h * 0.6 && f32::from(line.bottom()) <= h - 8.0,
+                (state == "failed" || f32::from(line.top()) > h * 0.6)
+                    && f32::from(line.bottom()) <= h - 8.0,
                 "{n}: at the panel's foot ({line:?})"
             );
             // ✓'s ink: its pixels' farthest step from the panel's fill.

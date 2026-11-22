@@ -35,6 +35,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — Chore: the commit box, redone
+
+- **What:** your words ("commit box looks very bad, make it 100x better!"), the Lead UI/UX Designer's spec: a card
+  like the agent box, ✦ bottom left, Commit an accent pill when it can commit (note 92, chores).
+- **Checks:** 2449 tests; clippy at the baseline; the Git scenes 6/6.
+- **Found:** the 7 scenes failing elsewhere are the screenshots rendering at 1× now (560 px tall, was 1120 at 2×):
+  this Mac is on a non-Retina display; they'll pass back on a 2× screen.
+
 ### 2026-11-22 — Chore: bigger tab marks, a green Done
 
 - **What:** your words ("the loading and the checklist is too tiny … green background"): 12 pt marks, Done on a green

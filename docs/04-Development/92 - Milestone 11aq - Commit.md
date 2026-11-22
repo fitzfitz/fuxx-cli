@@ -123,3 +123,11 @@ Esc); tests for the commit path on real temporary repos (`git_stage`'s style), a
   (click opens the viewer); Claude gets each picture right after a `[Image #N]` text block, so the text's markers name
   them; agy gets `[Image #N]: <path>` after the text. A pill deleted before sending: that image isn't sent. Dropped or
   chosen image files stay chips (a file's name). Scene `agent-box-image-view` (two pills sent, a third in the box).
+- **The commit box, redone** (your words, 2026-11-22: "commit box looks very bad, make it 100x better!"; the Lead
+  UI/UX Designer's spec): a small agent box — a card (`composer_inner`, `composer_edge`, radius 10, inset 10 from the
+  panel) with the message on top (its text under the branch icon, x = 20) and the controls under it: ✦ at the bottom
+  left, Commit at the bottom right — the accent pill (the agent box's send colours) when it can commit, quiet
+  `text_faint` when it can't (no more dimming), the quiet fill with "Committing…" (its width kept). A press anywhere
+  on the card puts the keyboard in the field. What stops a commit, a failure and ✦'s note sit under the card; the
+  output spans the card's width. Left out of the spec here: the edge stepping up while the field has the keyboard
+  (the line is drawn without the window), and 240-wide / focused scenes. Scene `changes-commit` (6 states × 2 themes).

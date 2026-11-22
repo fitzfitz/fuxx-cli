@@ -29,17 +29,22 @@ gpui::actions!(commit_line, [CommitStaged]);
 
 /// How long ✦'s agent may take.
 const WRITE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
-/// The line's room: its height, its sides (as the bar's), the output block's tallest.
-const LINE_H: f32 = 36.0;
-/// The line's left inset, less the field's own padding: its text starts under the branch bar's
-/// branch icon (`BAR_PAD_X` + `BRANCH_PAD`).
-const SIDE: f32 = crate::changes_panel::BAR_PAD_X + crate::changes_panel::BRANCH_PAD - FIELD_PAD;
-/// The field's inner padding (its hover fill reaches past the text by this much).
-const FIELD_PAD: f32 = 6.0;
+/// The card (the Lead UI/UX Designer's spec, 2026-11-22): its inset from the panel's sides,
+/// its padding (inset + padding put the text under the branch bar's branch icon, x = 20), its
+/// corners, the field's height, and the controls' height and corners (the card's less 4).
+const CARD_INSET: f32 = crate::changes_panel::BAR_PAD_X - 6.0;
+const CARD_PAD: f32 = 10.0;
+const CARD_R: f32 = 10.0;
+const FIELD_H: f32 = 18.0;
+const CONTROL_H: f32 = 26.0;
+const CONTROL_R: f32 = 6.0;
+/// Where the lines under the card start: the text's x.
+const UNDER_X: f32 = CARD_INSET + CARD_PAD;
 /// ✦'s note when it fails; the line adds "Try again".
 pub(crate) const WRITE_FAILED: &str = "Couldn't write a message";
 /// Enter in the field (it doesn't commit): how to.
 pub(crate) const ENTER_NOTE: &str = "Press ⌘↵ to commit";
+/// The output block's tallest.
 const OUTPUT_MAX_H: f32 = 8.0 * 15.0;
 
 /// What the line is doing for a repo: committing, or an agent writing its message (the flag
@@ -516,9 +521,11 @@ impl Workspace {
         }
     }
 
-    /// The line above the branch bar, while the repo has changes (or a commit, a write or a
-    /// failure is its own): the field, ✦ when an agent can write, ✓N; under it a failure's line
-    /// (its output on request) or ✦'s note.
+    /// The commit box above the branch bar, while the repo has changes (or a commit, a write or
+    /// a failure is its own) — a small agent box (the Lead UI/UX Designer's spec, your words
+    /// 2026-11-22: "make it 100x better!"): a card with the message on top, ✦ at its bottom
+    /// left and Commit at its bottom right (the accent pill when it can commit); under the card
+    /// what stops a commit, a failure (its output on request) or ✦'s note.
     pub(crate) fn render_commit_line(
         &self,
         ui: UiColors,
@@ -538,6 +545,10 @@ impl Workspace {
         if !changes.has_changes() && busy.is_none() && error.is_none() {
             return None;
         }
+        let appearance = cx.global::<crate::appearance::Appearance>();
+        let mono = appearance.font.family.clone();
+        // The agent box's own send colours, so Commit matches its send button.
+        let box_colors = crate::agent_tab::Colors::of(&appearance.theme);
         let message = input.read(cx).text().to_string();
         let staged = changes.staged_count();
         let stops = commit.in_progress_for(&root);
@@ -550,17 +561,20 @@ impl Workspace {
         let writer = message_agent(self.followed_agent_name(cx), |name| agents.contains(&name));
         // The empty field says what to do next (the designers' review, 2026-11-22).
         let placeholder = field_hint(busy.as_ref(), writer.map(|p| p.info().label));
-        // Under the field, unless a failure or a note says something there already.
+        let under = |d: gpui::Div| {
+            d.pl(px(UNDER_X))
+                .pr(px(CARD_INSET))
+                .pt(px(6.0))
+                .text_size(px(crate::changes_panel::GIT_SMALL))
+        };
+        // Under the card, unless a failure or a note says something there already.
         let reason = reason_line(busy.as_ref(), staged, stops)
             .filter(|_| error.is_none() && note.is_none())
             .map(|reason| {
                 drawn(
                     commit,
                     "reason",
-                    div()
-                        .pb(px(8.0))
-                        .pl(px(FIELD_PAD))
-                        .text_size(px(crate::changes_panel::GIT_SMALL))
+                    under(div())
                         .text_color(hsla(ui.text_faint))
                         .child(SharedString::from(reason)),
                 )
@@ -571,6 +585,7 @@ impl Workspace {
                     .into()
             }
         };
+        let committing = matches!(busy, Some(Busy::Committing));
         let field = drawn(
             commit,
             "field",
@@ -579,17 +594,13 @@ impl Workspace {
                 .key_context("CommitInput")
                 .on_action(cx.listener(|this, _: &CommitStaged, _, cx| this.commit_now(cx)))
                 .relative()
-                .flex_1()
-                .min_w(px(0.0))
-                .h(px(LINE_H - 8.0))
-                .px(px(FIELD_PAD))
-                .rounded(px(6.0))
-                .hover(move |s| s.bg(hsla(ui.side_field)))
+                .w_full()
+                .h(px(FIELD_H))
                 .flex()
                 .items_center()
                 .text_size(px(crate::changes_panel::GIT_NAME))
                 // The bare field takes its ink from here (it sets none itself).
-                .text_color(hsla(ui.text))
+                .text_color(hsla(if committing { ui.text_dim } else { ui.text }))
                 .cursor_text()
                 .when(message.is_empty(), |d| {
                     d.child(drawn(
@@ -597,8 +608,8 @@ impl Workspace {
                         "hint",
                         div()
                             .absolute()
-                            .left(px(FIELD_PAD))
-                            .right(px(FIELD_PAD))
+                            .left_0()
+                            .right_0()
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
@@ -608,6 +619,7 @@ impl Workspace {
                 })
                 .child(input),
         );
+        let pill_hover = box_colors.pill_hover;
         let write = writer.map(|provider| {
             let label = provider.info().label;
             let writing = matches!(busy, Some(Busy::Writing(_)));
@@ -618,13 +630,17 @@ impl Workspace {
                 div()
                     .id("commit-write")
                     .flex_none()
-                    .size(px(crate::right_sidebar::HEADER_BUTTON))
+                    .size(px(CONTROL_H))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(6.0))
+                    .rounded(px(CONTROL_R))
                     .text_size(px(14.0))
-                    .text_color(hsla(ui.text_dim))
+                    .text_color(hsla(if enabled || writing {
+                        ui.text_dim
+                    } else {
+                        ui.text_faint
+                    }))
                     // Writing: a stop square in the accent (pressing it stops), else ✦.
                     .map(|d| {
                         if writing {
@@ -641,10 +657,9 @@ impl Workspace {
                     } else {
                         format!("Let {label} write the commit message")
                     }))
-                    .when(!enabled && !writing, |d| d.opacity(0.6))
                     .when(enabled, |d| {
                         d.cursor_pointer()
-                            .hover(move |s| s.bg(hsla(ui.side_tab_hover)))
+                            .hover(move |s| s.bg(hsla(pill_hover)))
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.write_message(cx);
                                 this.focus_commit_field(window, cx);
@@ -653,7 +668,7 @@ impl Workspace {
                     // Writing: pressed again, it stops (Esc does too).
                     .when(writing, |d| {
                         d.cursor_pointer()
-                            .hover(move |s| s.bg(hsla(ui.side_tab_hover)))
+                            .hover(move |s| s.bg(hsla(pill_hover)))
                             .on_click(
                                 cx.listener(|this, _: &ClickEvent, _, cx| this.stop_writing(cx)),
                             )
@@ -666,21 +681,37 @@ impl Workspace {
             write
         };
         let can = blocked.is_none();
+        let ready = commit_label(staged);
+        // Committing keeps the pill's width (nothing jumps): the ready label's, estimated.
+        let ready_w = 10.0 * 2.0 + 14.0 + 4.0 + ready.chars().count() as f32 * 7.2;
+        let (send_fill, send_ink, send_hover) = (
+            box_colors.send_fill,
+            box_colors.send_ink,
+            box_colors.send_hover,
+        );
         let button = drawn(
             commit,
             "button",
             div()
                 .id("commit-button")
                 .flex_none()
-                .h(px(crate::right_sidebar::HEADER_BUTTON))
-                .px(px(6.0))
+                .h(px(CONTROL_H))
+                .min_w(px(ready_w))
+                .px(px(10.0))
                 .flex()
                 .items_center()
+                .justify_center()
                 .gap(px(4.0))
-                .rounded(px(6.0))
+                .rounded(px(CONTROL_R))
                 .text_size(px(crate::changes_panel::GIT_NAME))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(hsla(if can { ui.text } else { ui.text_dim }))
+                .text_color(hsla(if can { send_ink } else { ui.text_faint }))
+                .when(can, |d| d.bg(hsla(send_fill)))
+                // Busy with its word showing (committing, or writing over a message): the quiet
+                // fill; writing into an empty field: the can't-commit look.
+                .when(committing || (busy.is_some() && !message.is_empty()), |d| {
+                    d.bg(hsla(pill_hover))
+                })
                 // Busy: its word in the button's place while the field holds text (empty, the
                 // field's hint says it: the review's Important 3).
                 .map(|d| match &busy {
@@ -688,7 +719,7 @@ impl Workspace {
                         .child(drawn(
                             commit,
                             "busy",
-                            div().child(match work {
+                            div().text_color(hsla(ui.text_dim)).child(match work {
                                 Busy::Committing => "Committing…",
                                 Busy::Writing(_) => "Writing…",
                             }),
@@ -697,9 +728,9 @@ impl Workspace {
                         .child(icon(
                             Icon::Check,
                             px(crate::right_sidebar::HEADER_ICON),
-                            hsla(if can { ui.ring_done } else { ui.text_dim }),
+                            hsla(if can { send_ink } else { ui.text_faint }),
                         ))
-                        .child(SharedString::from(commit_label(staged))),
+                        .child(SharedString::from(ready.clone())),
                 })
                 .tooltip(tip(blocked.clone().unwrap_or_else(|| {
                     format!(
@@ -707,22 +738,18 @@ impl Workspace {
                         crate::git_stage::files(staged)
                     )
                 })))
-                // Dim when it can't commit; its busy word reads whole.
-                .when(!can && busy.is_none(), |d| d.opacity(0.6))
                 .when(can, |d| {
                     d.cursor_pointer()
-                        .hover(move |s| s.bg(hsla(ui.side_tab_hover)).text_color(hsla(ui.text)))
+                        .hover(move |s| s.bg(hsla(send_hover)))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.commit_now(cx)))
                 }),
         );
-        let failure = error.map(|(_, output, shown)| {
-            div()
+        let failure = error.as_ref().map(|(_, _, shown)| {
+            let shown = *shown;
+            under(div())
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .pb(px(8.0))
-                .pl(px(FIELD_PAD))
-                .text_size(px(crate::changes_panel::GIT_SMALL))
                 .child(
                     div()
                         .id("commit-failed")
@@ -756,39 +783,35 @@ impl Workspace {
                         .text_color(hsla(ui.text_faint))
                         .child("Ask your agent to fix what it says, then commit again."),
                 ))
-                .when(shown, |d| {
-                    d.child(drawn(
-                        commit,
-                        "output",
-                        div()
-                            .id("commit-output")
-                            .max_h(px(OUTPUT_MAX_H))
-                            .overflow_y_scroll()
-                            .px(px(8.0))
-                            .py(px(6.0))
-                            .rounded(px(6.0))
-                            .bg(hsla(ui.side_field))
-                            .font_family(
-                                cx.global::<crate::appearance::Appearance>()
-                                    .font
-                                    .family
-                                    .clone(),
-                            )
-                            .text_color(hsla(ui.text_dim))
-                            .child(SharedString::from(output)),
-                    ))
-                })
+        });
+        // The output spans the card's width, under its lines.
+        let output = error.filter(|(_, _, shown)| *shown).map(|(_, output, _)| {
+            drawn(
+                commit,
+                "output",
+                div()
+                    .id("commit-output")
+                    .mx(px(CARD_INSET))
+                    .mt(px(6.0))
+                    .max_h(px(OUTPUT_MAX_H))
+                    .overflow_y_scroll()
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .rounded(px(8.0))
+                    .bg(hsla(ui.side_field))
+                    .font_family(mono.clone())
+                    .text_size(px(crate::changes_panel::GIT_SMALL))
+                    .text_color(hsla(ui.text_dim))
+                    .child(SharedString::from(output)),
+            )
         });
         let quiet = note.map(|note| {
             drawn(
                 commit,
                 "note",
-                div()
-                    .pb(px(8.0))
-                    .pl(px(FIELD_PAD))
+                under(div())
                     .flex()
                     .gap(px(6.0))
-                    .text_size(px(crate::changes_panel::GIT_SMALL))
                     .text_color(hsla(ui.text_faint))
                     .child(note)
                     // ✦ failed: try again from here.
@@ -810,6 +833,33 @@ impl Workspace {
                     }),
             )
         });
+        let card = div()
+            .id("commit-card")
+            .mx(px(CARD_INSET))
+            .rounded(px(CARD_R))
+            .bg(hsla(ui.composer_inner))
+            .border_1()
+            .border_color(hsla(ui.composer_edge))
+            .flex()
+            .flex_col()
+            // A press anywhere on the card puts the keyboard in the field (as the agent box).
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.focus_commit_field(window, cx)),
+            )
+            .child(div().px(px(CARD_PAD)).pt(px(CARD_PAD)).child(field))
+            .child(
+                div()
+                    .mt(px(4.0))
+                    .mx(px(4.0))
+                    .mb(px(4.0))
+                    .h(px(CONTROL_H))
+                    .flex()
+                    .items_center()
+                    .children(write)
+                    .child(div().flex_1())
+                    .child(button),
+            );
         Some(
             drawn(
                 commit,
@@ -818,23 +868,14 @@ impl Workspace {
                     .id("commit-line")
                     .flex_none()
                     .w_full()
-                    .pl(px(SIDE))
-                    .pr(px(crate::changes_panel::BAR_PAD_X))
-                    .border_t_1()
-                    .border_color(hsla(ui.card_border))
+                    .pt(px(8.0))
+                    .pb(px(10.0))
                     .flex()
                     .flex_col()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(2.0))
-                            .child(field)
-                            .children(write)
-                            .child(button),
-                    )
+                    .child(card)
                     .children(reason)
                     .children(failure)
+                    .children(output)
                     .children(quiet),
             )
             .into_any_element(),
