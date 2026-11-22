@@ -35,6 +35,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — v0.12.3 released
+
+- **What:** your words ("push and dploy patch what we have now"): M11aq Commit (commit from the Git tab, ✦ writes the
+  message) with its plain hints, the agent tab centred on a wide screen, the reddish stop.
+- **Release:** commit `dd380b9` (`chore(release): 0.12.3 …`), tag `v0.12.3`, run 45018833033 (test, both slices,
+  release: all green), asset `fuxx-0.12.3.zip` at https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.12.3.
+
 ### 2026-11-22 — Chore: the agent tab centred on a wide screen
 
 - **What:** your words ("the chatbox doesn't full width on larger screen", "or make it like this but put it at

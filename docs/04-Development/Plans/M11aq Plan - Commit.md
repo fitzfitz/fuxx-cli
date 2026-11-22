@@ -13,7 +13,7 @@ agent) on real repos, off the UI thread. Providers gain a one-shot "write a comm
 
 **Tech Stack:** Rust, GPUI (pinned rev), `git` via `git_branch::run_git*`, the agents' CLIs (`claude -p`, `agy -p`).
 
-**Spec:** [[92 - Milestone 11aq - Commit]] (approved 2026-11-22: "Approved").
+**Spec:** [[92 - Milestone 11aq - Commit]] (approved 2026-11-22: "Approved"). **Released in v0.12.3.**
 
 ## Global Constraints
 

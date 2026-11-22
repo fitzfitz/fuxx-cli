@@ -5,7 +5,7 @@ updated: 2026-11-22
 
 # 92 - Milestone 11aq - Commit
 
-**Status:** 🟨 built 2026-11-22 on branch `m11aq-commit` (5 tasks, a whole-branch review and its fix pass), waiting for your on-screen check (the checklist below).
+**Status:** 🟨 built 2026-11-22 (5 tasks, a whole-branch review and its fix pass), merged, **released in v0.12.3**, waiting for your on-screen check (the checklist below).
 
 ## Why
 
