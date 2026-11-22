@@ -942,7 +942,7 @@ mod tests {
         let si = dir.join("si");
         crate::shell_integration::install(&si).unwrap();
         let load = || {
-            crate::plugin_shell::write(&si, &folders, &plugin_store::load(&folders)).unwrap();
+            crate::plugin_shell::write(&si, &folders, &plugin_store::load(&folders), &[]).unwrap();
             let (core, _rx) = spawn(&home, None, &si, true, true);
             // Short output: the screen wraps at 80 columns.
             run(
@@ -965,7 +965,7 @@ mod tests {
         );
 
         plugin_store::uninstall(&folders, "hello-helper").unwrap();
-        crate::plugin_shell::write(&si, &folders, &plugin_store::load(&folders)).unwrap();
+        crate::plugin_shell::write(&si, &folders, &plugin_store::load(&folders), &[]).unwrap();
         let script = std::fs::read_to_string(si.join("zsh/plugins.zsh")).unwrap();
         assert_eq!(script.lines().count(), 1, "only the header: {script}");
         assert!(!folders.plugin("hello-helper").exists());

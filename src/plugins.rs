@@ -129,17 +129,23 @@ pub fn update_needs_a_prompt(record: &Record, m: &Manifest) -> bool {
     m.runs_code() && !record.runs_code()
 }
 
-/// Rewrite `plugins.zsh` from the list as it is on disk, off the UI thread, so terminals
-/// opened from now on see it. Quiet when fuxx has nowhere to keep it.
+/// Rewrite `plugins.zsh` from the list and the settings file as they are on disk, off the UI
+/// thread, so terminals opened from now on see it. Quiet when fuxx has nowhere to keep it.
 fn regenerate(f: Folders, cx: &mut App) {
     let Some(dir) = shell_integration::integration_dir() else {
         return;
     };
+    let config = cx.global::<Appearance>().settings_path.clone();
     cx.background_executor()
         .spawn(async move {
-            // The list is read inside the write's turn, so an older, slower rewrite can't land
-            // after a newer one with stale On/Off state.
-            if let Err(err) = plugin_shell::write_from(&dir, &f, || plugin_store::load(&f)) {
+            // The list and the values are read inside the write's turn, so an older, slower
+            // rewrite can't land after a newer one with stale On/Off state or values.
+            if let Err(err) = plugin_shell::write_from(&dir, &f, || {
+                (
+                    plugin_store::load(&f),
+                    plugin_shell::values_on_disk(config.as_deref()),
+                )
+            }) {
                 eprintln!("[fuxx] plugins: could not write plugins.zsh: {err}");
             }
         })
@@ -240,11 +246,12 @@ pub fn init(cx: &mut App) {
     if let Some(f) = f {
         // Mending can delete big folders, so it runs off the UI thread; the list is read again after.
         let dir = shell_integration::integration_dir();
+        let values = cx.global::<Appearance>().plugin_values.clone();
         let mend = cx.background_executor().spawn(async move {
             plugin_store::launch_cleanup(&f);
             let records = plugin_store::load(&f);
             if let Some(dir) = dir
-                && let Err(err) = plugin_shell::write(&dir, &f, &records)
+                && let Err(err) = plugin_shell::write(&dir, &f, &records, &values)
             {
                 eprintln!("[fuxx] plugins: could not write plugins.zsh: {err}");
             }
@@ -555,7 +562,7 @@ fn remove(record: Record, cx: &mut App) {
             && let Err(err) = plugin_shell::write_from(&dir, &f, || {
                 let mut records = plugin_store::load(&f);
                 records.retain(|r| r.id != id);
-                records
+                (records, plugin_shell::values_on_disk(config.as_deref()))
             })
         {
             eprintln!("[fuxx] plugins: could not write plugins.zsh: {err}");
