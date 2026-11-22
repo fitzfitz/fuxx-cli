@@ -2019,7 +2019,18 @@ fn changes_commit_scenes() {
         let ui = theme.ui();
         // How strongly ✓ is inked over the panel in each state (dim when it can't commit).
         let mut ink = std::collections::HashMap::new();
-        for state in ["rest", "typed", "failed", "writing", "note", "committing"] {
+        for state in [
+            "rest",
+            "typed",
+            "failed",
+            "writing",
+            "note",
+            "committing",
+            "focused",
+            "narrow",
+        ] {
+            // `narrow`: the panel at 240 pt (the designer's narrowest).
+            let panel_w = if state == "narrow" { 240.0 } else { 300.0 };
             let n = format!("changes-commit-{state}-{slug}");
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = {
@@ -2027,7 +2038,7 @@ fn changes_commit_scenes() {
                 right_panel_workspace(
                     theme,
                     root.clone(),
-                    300.0,
+                    panel_w,
                     Panel::Changes,
                     slot.clone(),
                     move |ws| {
@@ -2068,6 +2079,13 @@ fn changes_commit_scenes() {
                                 cx.notify();
                             })
                         }),
+                        // The keyboard in the field: the card's edge lights.
+                        "focused" => {
+                            cx.update_window(window, |_, window, cx| {
+                                gpui::Focusable::focus_handle(input.read(cx), cx).focus(window, cx)
+                            })
+                            .ok();
+                        }
                         // ✦ shows only where an agent can run: named here, not looked up.
                         "writing" | "note" => cx.update(|cx| {
                             ws.update(cx, |ws, cx| {
@@ -2229,6 +2247,39 @@ fn changes_commit_scenes() {
                     .copied()
                     .unwrap_or_else(|| panic!("{n}: the busy word"));
                 assert!(has_ink(busy, ui.text_dim, 40), "{n}: the busy word reads");
+            }
+            if state == "focused" {
+                let card = parts
+                    .get("card")
+                    .copied()
+                    .unwrap_or_else(|| panic!("{n}: the card"));
+                // The top edge's row (whichever scale the shot was drawn at).
+                let x = f32::from(card.left() + card.size.width / 2.0);
+                let nearest = [-1.0, -0.5, 0.0, 0.5, 1.0, 1.5]
+                    .iter()
+                    .map(|dy| {
+                        gap(
+                            pixel_at(&shot, dims, x, f32::from(card.top()) + dy),
+                            ui.composer_glow_top,
+                        )
+                    })
+                    .min()
+                    .unwrap_or(u8::MAX);
+                assert!(
+                    nearest <= 24,
+                    "{n}: the card's edge lit (nearest {nearest} from {:?})",
+                    ui.composer_glow_top
+                );
+            }
+            if state == "narrow" {
+                let field = parts
+                    .get("field")
+                    .copied()
+                    .unwrap_or_else(|| panic!("{n}: field"));
+                assert!(
+                    f32::from(field.size.width) >= 180.0,
+                    "{n}: room to type at 240 pt ({field:?})"
+                );
             }
             if state == "note" {
                 let note = parts

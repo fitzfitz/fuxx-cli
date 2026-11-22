@@ -1609,7 +1609,7 @@ impl Workspace {
             .shown_as(self.right_sidebar.changes.repo_known())
         {
             Panel::Files => self.render_files_panel(ui, width, cx),
-            Panel::Changes => self.render_changes_panel(ui, width, cx),
+            Panel::Changes => self.render_changes_panel(ui, width, window, cx),
             Panel::Activity => self.render_activity_panel(ui, width, cx),
         };
         let panel = div()

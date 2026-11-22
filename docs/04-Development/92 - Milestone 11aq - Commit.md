@@ -129,5 +129,5 @@ Esc); tests for the commit path on real temporary repos (`git_stage`'s style), a
   left, Commit at the bottom right — the accent pill (the agent box's send colours) when it can commit, quiet
   `text_faint` when it can't (no more dimming), the quiet fill with "Committing…" (its width kept). A press anywhere
   on the card puts the keyboard in the field. What stops a commit, a failure and ✦'s note sit under the card; the
-  output spans the card's width. Left out of the spec here: the edge stepping up while the field has the keyboard
-  (the line is drawn without the window), and 240-wide / focused scenes. Scene `changes-commit` (6 states × 2 themes).
+  output spans the card's width; the card's edge lights (`composer_glow_top`) while the field has the keyboard.
+  Scene `changes-commit` (8 states × 2 themes: the 6, focused, and a 240 pt panel).

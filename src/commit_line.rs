@@ -529,6 +529,7 @@ impl Workspace {
     pub(crate) fn render_commit_line(
         &self,
         ui: UiColors,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let changes = &self.right_sidebar.changes;
@@ -550,6 +551,8 @@ impl Workspace {
         // The agent box's own send colours, so Commit matches its send button.
         let box_colors = crate::agent_tab::Colors::of(&appearance.theme);
         let message = input.read(cx).text().to_string();
+        // The card's edge lights while the field has the keyboard (the designer's spec).
+        let typing = input.read(cx).focus_handle(cx).is_focused(window);
         let staged = changes.staged_count();
         let stops = commit.in_progress_for(&root);
         let blocked = match &busy {
@@ -833,13 +836,17 @@ impl Workspace {
                     }),
             )
         });
-        let card = div()
+        let card = drawn(commit, "card", div())
             .id("commit-card")
             .mx(px(CARD_INSET))
             .rounded(px(CARD_R))
             .bg(hsla(ui.composer_inner))
             .border_1()
-            .border_color(hsla(ui.composer_edge))
+            .border_color(hsla(if typing {
+                ui.composer_glow_top
+            } else {
+                ui.composer_edge
+            }))
             .flex()
             .flex_col()
             // A press anywhere on the card puts the keyboard in the field (as the agent box).

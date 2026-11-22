@@ -61,6 +61,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Next:** your on-screen check (note 94); merge (renumber if M11au collides), then fuxx-completes' M1c can declare
   its four settings.
 
+### 2026-11-22 — Fixes: Claude's stuck "Cultivating…", the deferred minors
+
+- **What:** your reports ("still loading when no background task is running", "esc … stuck on stoping"; agy was
+  fine) and "go" on the open list: Claude's messages count as read on its echo (`--replay-user-messages`), the
+  subagent minors, the commit box's lit edge and its focused / 240 pt scenes, the daemon test's race (notes 92, 93).
+  The screenshot script was fine: its "exit 0" came from a `| tail` in my command.
+- **Checks:** 2481 tests; clippy at the baseline; the agent (91) and Git (6) scenes pass.
+
 ### 2026-11-22 — Chore: a welcome in an empty shell tab
 
 - **What:** your words ("on empty terminal … add sentences and icons on top on the middle like in claude/agy"): the

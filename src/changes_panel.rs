@@ -1834,6 +1834,7 @@ impl Workspace {
         &self,
         ui: UiColors,
         _width: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let changes = &self.right_sidebar.changes;
@@ -1981,7 +1982,7 @@ impl Workspace {
             .relative()
             .children(header)
             .child(room)
-            .children(self.render_commit_line(ui, cx))
+            .children(self.render_commit_line(ui, window, cx))
             .children(bar)
             .children(confirm)
             .into_any_element()

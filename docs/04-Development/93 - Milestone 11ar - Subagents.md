@@ -220,3 +220,14 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   you add sentences and icons on top on the middle like in claude/agy on empty"): while the card view's column holds
   only the prompt (`card_view::is_empty_column`), its middle shows the terminal's mark, "Run a command" and the
   folder, as the agent tab's empty state; it takes no clicks. Scene `shell-cards-empty`.
+- **Claude's tab stuck on "Cultivating…"** (your report, 2026-11-22: "still loading when no background task is
+  running … when I esc the status stuck on stoping"; Antigravity was fine): a note sent mid-turn is read by Claude in
+  that same turn — one `result` for two messages (recorded: its echo inside the turn, one result) — so a message
+  stayed counted as unanswered and Main read Working; Esc then waited on a turn that wasn't running. Claude now runs
+  with `--replay-user-messages`: each message counts as read on its echo (`Event::Taken`); an agent with no echo
+  (agy, which queues each as its own turn) still counts one per `result`.
+- **The deferred minors, done** ("go"): ↑/↓ in a tool window opened from a subagent step walk its steps; a finished
+  subagent's file is read every 5 s (500 ms while it works); a lane with another open question still waits; the
+  number stays on a cut label ("Workspace… 2"); a refused stop says "Couldn't stop the subagent: …"; the box's hint
+  after `/clear`; gone lanes' lists dropped; tokens on the Done line ("✓ Done in 1:42 · 18.2k tokens").
+- **The detached-daemon test** waits 10 s for its fake daemon (it raced the app's 2 s under the full suite's load).
