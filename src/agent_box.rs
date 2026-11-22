@@ -1248,9 +1248,10 @@ impl AgentTab {
                 };
                 let tip =
                     SharedString::from(label.replace("  esc", " (esc)").replace("\u{25a0} ", ""));
-                let control = c.control;
+                // Reddish while the agent works (your words, 2026-11-22).
+                let control = c.stop_hover;
                 self.marked("send", circle("agent-stop"))
-                    .bg(hsla(c.box_fill))
+                    .bg(hsla(c.stop_fill))
                     .child(div().size(px(12.)).rounded(px(2.)).bg(hsla(square)))
                     .tooltip(move |_, cx| {
                         cx.new(|_| crate::sidebar_toggle::Tip(tip.clone())).into()

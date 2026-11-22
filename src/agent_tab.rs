@@ -658,6 +658,11 @@ pub struct Colors {
     /// send button, a step over the box (6 %), a little more under the pointer (10 %).
     pub control: Rgb,
     pub control_hover: Rgb,
+    /// Stop's circle while the agent works (your words, 2026-11-22: "make the background
+    /// redish"): the theme's red over the outer ring, as strong as keeps its square showing; a
+    /// step more under the pointer.
+    pub stop_fill: Rgb,
+    pub stop_hover: Rgb,
     /// The send circle, empty: a step over the outer ring it sits in (the lead designer's review,
     /// 2026-11-22: as a control it matched the ring in Latte and vanished).
     pub send_empty: Rgb,
@@ -757,6 +762,23 @@ impl Colors {
             pill_hover: ui.composer_pill_hover,
             control: mix(ui.composer_inner, theme.foreground, 0.06),
             control_hover: mix(ui.composer_inner, theme.foreground, 0.10),
+            stop_fill: {
+                let red = theme.palette[1];
+                let dim = ui.text_dim;
+                (0..=10)
+                    .map(|k| mix(ui.composer_outer, red, 0.32 - 0.02 * k as f32))
+                    .find(|&fill| {
+                        crate::ui_tokens::contrast(dim, fill) >= crate::ui_tokens::MARK_MIN
+                            && crate::ui_tokens::contrast(ui.text, fill)
+                                >= crate::ui_tokens::MARK_MIN
+                    })
+                    .unwrap_or_else(|| mix(ui.composer_outer, red, 0.12))
+            },
+            stop_hover: mix(
+                mix(ui.composer_outer, theme.palette[1], 0.32),
+                theme.palette[1],
+                0.10,
+            ),
             send_empty: crate::theme::readable(
                 mix(ui.composer_outer, theme.foreground, 0.08),
                 &[ui.composer_outer],
@@ -5938,6 +5960,25 @@ mod tests {
             ] {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got:.2}");
+            }
+            // Stop's circle reddish while the agent works (your words, 2026-11-22: "make the
+            // background redish"): it reads apart from its ring, and its square on it.
+            assert!(
+                c.stop_fill.r > c.stop_fill.g && c.stop_fill.r > c.stop_fill.b,
+                "{name}: reddish {:?}",
+                c.stop_fill
+            );
+            let ring = contrast(c.stop_fill, c.outer);
+            assert!(
+                ring >= crate::ui_tokens::SOFT_LINE_MIN - 0.01,
+                "{name}: stop on its ring {ring:.2}"
+            );
+            for (what, square) in [("text", c.text), ("dim", c.dim)] {
+                let got = contrast(square, c.stop_fill);
+                assert!(
+                    got >= crate::ui_tokens::MARK_MIN - 0.01,
+                    "{name}: stop's {what} square {got:.2}"
+                );
             }
             // The empty send circle shows on the ring it sits in, its arrow on it (the lead
             // designer's review, 2026-11-22).
