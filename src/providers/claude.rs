@@ -1305,6 +1305,20 @@ impl Translator for ClaudeTranslator {
             Some("control_response") if is_init_answer(&v) => {
                 vec![Event::Catalog(catalog_of(&v["response"]["response"]))]
             }
+            // A refused stop of one subagent (M11ar): said, not swallowed.
+            Some("control_response")
+                if v["response"]["request_id"]
+                    .as_str()
+                    .is_some_and(|r| r.starts_with("fuxx-stop-")) =>
+            {
+                match v["response"]["subtype"].as_str() {
+                    Some("error") => vec![Event::Notice(format!(
+                        "Couldn't stop the subagent: {}",
+                        s(&v["response"]["error"]).unwrap_or_else(|| "no reason given".into())
+                    ))],
+                    _ => Vec::new(),
+                }
+            }
             Some("control_response") => self.answered(&v),
             Some("stream_event") => self.stream_event(&v),
             Some("assistant") => self.assistant(&v),
@@ -1604,6 +1618,22 @@ mod tests {
             _ => None,
         });
         assert_eq!(by, Some(Some(lane)), "agent_id is the lane's task_id");
+    }
+
+    #[test]
+    fn a_refused_stop_says_so() {
+        let mut t = CLAUDE.translator();
+        let ev = t.decode(
+            &json!({"type":"control_response","response":{"subtype":"error",
+            "request_id":"fuxx-stop-a4dfa9abed5c81e02","error":"No such task"}})
+            .to_string(),
+        );
+        assert_eq!(
+            ev,
+            [Event::Notice(
+                "Couldn't stop the subagent: No such task".into()
+            )]
+        );
     }
 
     #[test]

@@ -447,7 +447,14 @@ impl Conversation {
                 break;
             }
         }
-        if let Some(lane) = asker.as_deref().and_then(|b| self.lane_mut(b))
+        // It works again once none of its questions is open.
+        let still_asks = asker.as_deref().is_some_and(|b| {
+            self.items
+                .iter()
+                .any(|i| matches!(i, Item::Permission { answer: None, by: Some(x), .. } if x == b))
+        });
+        if !still_asks
+            && let Some(lane) = asker.as_deref().and_then(|b| self.lane_mut(b))
             && lane.status == LaneStatus::Waiting
         {
             lane.status = LaneStatus::Working;
@@ -1390,6 +1397,30 @@ mod tests {
         let mut c = Conversation::new();
         c.past(vec![Past::Event(started("t1", "Reader"))]);
         assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Stopped);
+    }
+
+    #[test]
+    fn a_lane_with_another_open_question_still_waits() {
+        let mut c = Conversation::new();
+        c.apply(started("t1", "Reader"));
+        for id in ["p1", "p2"] {
+            c.apply(Event::Permission {
+                id: id.into(),
+                tool: "Bash".into(),
+                what: "ls".into(),
+                detail: String::new(),
+                always: None,
+                by: Some("t1".into()),
+            });
+        }
+        c.answered("p1", Answer::Allowed);
+        assert_eq!(
+            c.lane("t1").unwrap().status,
+            LaneStatus::Waiting,
+            "p2 still open"
+        );
+        c.answered("p2", Answer::Allowed);
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Working);
     }
 
     #[test]

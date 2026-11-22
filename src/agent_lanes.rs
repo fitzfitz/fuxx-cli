@@ -28,12 +28,14 @@ pub fn pill_labels(lanes: &[Lane], max: usize) -> Vec<String> {
         .map(|l| {
             let n = seen.entry(l.label.clone()).or_insert(0);
             *n += 1;
-            let label = if *n == 1 {
-                l.label.clone()
+            if *n == 1 {
+                pill_label(&l.label, max)
             } else {
-                format!("{} {n}", l.label)
-            };
-            pill_label(&label, max)
+                // The number stays when the label is cut (it tells them apart).
+                let suffix = format!(" {n}");
+                let room = max.saturating_sub(suffix.chars().count()).max(2);
+                format!("{}{suffix}", pill_label(&l.label, room))
+            }
         })
         .collect()
 }
@@ -282,9 +284,17 @@ mod tests {
     #[test]
     fn a_finished_lanes_file_is_read_less_often() {
         let mut l = lane("a", "A");
-        assert_eq!(follow_every(Some(&l)), Duration::from_millis(500), "working");
+        assert_eq!(
+            follow_every(Some(&l)),
+            Duration::from_millis(500),
+            "working"
+        );
         l.status = LaneStatus::Done;
-        assert_eq!(follow_every(Some(&l)), Duration::from_secs(5), "done: a woken one still shows");
+        assert_eq!(
+            follow_every(Some(&l)),
+            Duration::from_secs(5),
+            "done: a woken one still shows"
+        );
         assert_eq!(follow_every(None), Duration::from_secs(5), "gone");
     }
 
@@ -324,6 +334,12 @@ mod tests {
             lane("c", "Tester"),
         ];
         assert_eq!(pill_labels(&lanes, 20), ["Reader", "Reader 2", "Tester"]);
+        // Cut short, the number stays (it tells them apart).
+        let long = [
+            lane("a", "Workspace File Reader"),
+            lane("b", "Workspace File Reader"),
+        ];
+        assert_eq!(pill_labels(&long, 12), ["Workspace F…", "Workspace… 2"]);
     }
 
     #[test]

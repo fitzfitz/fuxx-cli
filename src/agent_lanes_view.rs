@@ -98,11 +98,13 @@ impl AgentTab {
     /// view back to Main.
     pub(super) fn sync_lane_marks(&mut self, cx: &mut Context<Self>) {
         let lanes = self.conversation.lanes();
-        if let View::Lane(id) = &self.view
-            && !lanes.iter().any(|l| &l.id == id)
-        {
-            self.view = View::Main;
-        }
+        let back_to_main =
+            matches!(&self.view, View::Lane(id) if !lanes.iter().any(|l| &l.id == id));
+        // Lists of lanes that went (`/clear`, a new conversation) go too.
+        self.panes.retain(|view, _| match view {
+            View::Main => true,
+            View::Lane(id) => lanes.iter().any(|l| &l.id == id),
+        });
         let live: Vec<(String, Status)> = lanes
             .iter()
             .filter_map(|l| match l.status {
@@ -122,6 +124,11 @@ impl AgentTab {
                 .entry(id)
                 .or_insert_with(|| cx.new(|cx| MarkView::new(&clock, status, px(MARK), BLACK, cx)));
             mark.update(cx, |m, _| m.set(status, px(MARK), BLACK));
+        }
+        if back_to_main {
+            // Its box talks to Main again, and says so.
+            self.view = View::Main;
+            self.update_placeholder(cx);
         }
         if empty {
             self.main_mark = None;
@@ -533,11 +540,20 @@ impl AgentTab {
         };
         let c = look.c;
         let (word, ink): (String, Rgb) = match &lane.status {
+            // "✓ Done in 1:42 · 18.2k tokens", each part when known.
             LaneStatus::Done => (
-                match self.lane_elapsed(&lane.id) {
-                    Some(d) => format!("\u{2713} Done in {}", crate::agent_lanes::clock(d)),
-                    None => "\u{2713} Done".into(),
-                },
+                [
+                    Some(match self.lane_elapsed(&lane.id) {
+                        Some(d) => format!("\u{2713} Done in {}", crate::agent_lanes::clock(d)),
+                        None => "\u{2713} Done".into(),
+                    }),
+                    lane.tokens
+                        .map(|t| format!("{:.1}k tokens", t as f32 / 1000.0)),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" \u{b7} "),
                 c.tool_ok,
             ),
             LaneStatus::Failed(why) => (format!("\u{2715} Failed \u{b7} {why}"), c.failed_panel),
