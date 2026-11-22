@@ -20,11 +20,14 @@ pub fn rows_of(items: &[Item], view: &View) -> Vec<usize> {
         })
         .collect();
     (0..items.len())
-        .filter(|&ix| match (view, parent_of(&items[ix])) {
-            (View::Main, None) => true,
-            (View::Main, Some(p)) => !tools.contains(p),
-            (View::Lane(lane), Some(p)) => p == lane,
-            (View::Lane(_), None) => false,
+        .filter(|&ix| match (view, &items[ix]) {
+            // A question waits in whichever view is shown (M11ar): Enter answers it there; once
+            // answered it stays in Main's and its own lane's.
+            (View::Lane(lane), Item::Permission { answer, by, .. }) => {
+                answer.is_none() || by.as_deref() == Some(lane.as_str())
+            }
+            (View::Main, item) => parent_of(item).is_none_or(|p| !tools.contains(p)),
+            (View::Lane(lane), item) => parent_of(item) == Some(lane.as_str()),
         })
         .collect()
 }

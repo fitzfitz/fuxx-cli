@@ -2489,9 +2489,14 @@ impl AgentTab {
         }));
     }
 
-    fn update_placeholder(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn update_placeholder(&mut self, cx: &mut Context<Self>) {
         let label = self.label().to_string();
-        let text: SharedString = if self.conversation.pending_permission().is_some() {
+        let text: SharedString = if let Some(lane) = self.shown_lane()
+            && self.conversation.pending_permission().is_none()
+        {
+            // In a lane the box still talks to Main (M11ar).
+            format!("Message Main \u{2014} it can pass this to {}", lane.label).into()
+        } else if self.conversation.pending_permission().is_some() {
             "Deny and say why… (optional)".into()
         } else if self.status() == Status::Working {
             format!("Add a note. {label} reads it after this step…").into()
@@ -2509,6 +2514,10 @@ impl AgentTab {
         if self.provider.is_none() || (text.trim().is_empty() && attachments.is_empty()) {
             self.attachments = attachments;
             return;
+        }
+        // The box talks to Main: your message shows there (M11ar).
+        if self.view != crate::agent_lanes::View::Main {
+            self.show_view(crate::agent_lanes::View::Main, cx);
         }
         if self.paused {
             // The Workspace decides (R13): `resume_after_classic`.

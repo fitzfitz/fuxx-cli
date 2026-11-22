@@ -48,6 +48,37 @@ pub(super) const SCENES: &[Scene] = &[
         sources: SOURCES,
     },
     Scene {
+        name: "agent-lanes-ask",
+        run: agent_lanes_ask,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: SOURCES,
+    },
+    Scene {
+        name: "agent-lanes-narrow",
+        run: agent_lanes_narrow,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: SOURCES,
+    },
+    Scene {
+        name: "agent-lanes-agy",
+        run: agent_lanes_agy,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/agent_lanes_view.rs",
+            "src/agent_tab.rs",
+            "src/providers/agy.rs",
+            "src/providers/fixtures/agy-subagents.jsonl",
+            "src/providers/fixtures/agy-subagents-transcript-a.jsonl",
+            "src/providers/fixtures/agy-subagents-transcript-b.jsonl",
+        ],
+    },
+    Scene {
         name: "agent-lanes-states",
         run: agent_lanes_states,
         themes: Themes::Both,
@@ -292,4 +323,150 @@ pub(super) fn agent_lanes_view() {
             "{n}: from Main first, the end last"
         );
     });
+}
+
+const SUB_ASK: &str = include_str!("../providers/fixtures/claude-subagent-ask.jsonl");
+
+/// A subagent asks while you look at another: the card shows in the shown view (Enter answers
+/// it there), headed by who asks; the asking lane's pill is tinted, Main reads "Needs input".
+pub(super) fn agent_lanes_ask() {
+    scene_sized("agent-lanes-ask", (1100.0, 640.0), |n, cx, window, tab| {
+        feed(cx, tab, |t, cx| {
+            t.send("Make hello.txt with a subagent".into(), cx)
+        });
+        let mut events = decode(SUB_ASK);
+        let ask = events
+            .iter()
+            .position(|e| matches!(e, Event::Permission { .. }))
+            .expect("the subagent asks");
+        events.truncate(ask + 1);
+        events.extend(started("other", "Lint the code"));
+        feed(cx, tab, |t, cx| t.shot_feed(events, cx));
+        let lanes = lanes_of(cx, tab);
+        assert_eq!(lanes[0].2, LaneStatus::Waiting, "{n}: the asking lane");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).status()),
+            crate::status::Status::Waiting,
+            "{n}: Main needs input"
+        );
+        feed(cx, tab, |t, cx| t.show_view(View::Lane("other".into()), cx));
+        let rows = cx.read(|cx| tab.read(cx).shot_list().item_count());
+        // from Main, the question (no steps of its own yet).
+        assert_eq!(rows, 2, "{n}: the question shows in the other lane's view");
+        let _ = super::frame_fresh(cx, window);
+        let _ = part(cx, tab, n, "strip");
+    });
+}
+
+/// A 420 pt tab: labels cut short, the lane header keeps its time and Stop; and sending from a
+/// lane goes to Main (the box's placeholder said so).
+pub(super) fn agent_lanes_narrow() {
+    scene_sized(
+        "agent-lanes-narrow",
+        (420.0, 640.0),
+        |n, cx, window, tab| {
+            feed(cx, tab, |t, cx| t.send("Fan out".into(), cx));
+            let mut events = started("one", "Find the config loader");
+            events.extend(started("two", "Run the whole test suite"));
+            events.push(Event::SubagentProgress {
+                id: "one".into(),
+                tokens: Some(18_200),
+                tools: Some(12),
+                last_tool: Some("Grep".into()),
+            });
+            feed(cx, tab, |t, cx| t.shot_feed(events, cx));
+            feed(cx, tab, |t, cx| t.show_view(View::Lane("one".into()), cx));
+            let placeholder = cx.read(|cx| {
+                tab.read(cx)
+                    .shot_composer()
+                    .read(cx)
+                    .placeholder()
+                    .to_string()
+            });
+            assert_eq!(
+                placeholder, "Message Main \u{2014} it can pass this to Find the config loader",
+                "{n}"
+            );
+            feed(cx, tab, |t, cx| t.send("and the docs too".into(), cx));
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).view.clone()),
+                View::Main,
+                "{n}: sending_from_a_lane_returns_to_main"
+            );
+            feed(cx, tab, |t, cx| t.show_view(View::Lane("one".into()), cx));
+            let _ = super::frame_fresh(cx, window);
+            let _ = part(cx, tab, n, "lane-stop");
+            let header = part(cx, tab, n, "lane-header");
+            assert!(
+                f32::from(header.size.width) <= 420.0,
+                "{n}: the header fits ({header:?})"
+            );
+        },
+    );
+}
+
+/// agy's two subagents (its recording, through the tab's own translator), then their
+/// transcripts as the follower reads them: two pills, each lane's steps, both done — and no
+/// Stop (agy can't stop one alone).
+pub(super) fn agent_lanes_agy() {
+    use super::agent::{Slot, build_with, start, tab_of};
+    use crate::agent_process::ProcessEvent;
+    use crate::providers::agy::AGY;
+    use std::rc::Rc;
+    const SUBS: &str = include_str!("../providers/fixtures/agy-subagents.jsonl");
+    const A: &str = include_str!("../providers/fixtures/agy-subagents-transcript-a.jsonl");
+    const B: &str = include_str!("../providers/fixtures/agy-subagents-transcript-b.jsonl");
+    let name = "agent-lanes-agy";
+    for &(slug, theme_name) in super::shot_themes() {
+        let theme = super::shot_theme(theme_name);
+        let slot: Slot = Rc::default();
+        let keep = slot.clone();
+        let n = format!("{name}-{slug}");
+        let path = super::shoot_with(
+            name,
+            slug,
+            &theme,
+            gpui::size(px(1100.0), px(640.0)),
+            build_with(&AGY, theme, slot, start()),
+            move |cx, window| {
+                let tab = tab_of(&keep);
+                feed(cx, &tab, |t, cx| t.send("Read a.txt and b.txt".into(), cx));
+                let lines: Vec<&str> = SUBS.lines().collect();
+                let (body, last) = lines.split_at(lines.len() - 1);
+                for l in body {
+                    let line = l.to_string();
+                    feed(cx, &tab, |t, cx| {
+                        t.shot_process(ProcessEvent::Line(line), cx)
+                    });
+                }
+                let lanes = lanes_of(cx, &tab);
+                assert_eq!(lanes.len(), 2, "{n}");
+                for ((id, _, _), file) in lanes.iter().zip([A, B]) {
+                    let lines: Vec<String> = file.lines().map(str::to_string).collect();
+                    feed(cx, &tab, |t, cx| t.shot_followed(id, lines, cx));
+                }
+                let line = last[0].to_string();
+                feed(cx, &tab, |t, cx| {
+                    t.shot_process(ProcessEvent::Line(line), cx)
+                });
+                let lanes = lanes_of(cx, &tab);
+                assert!(
+                    lanes.iter().all(|l| l.2 == LaneStatus::Done),
+                    "{n}: both reported: {lanes:?}"
+                );
+                let first = lanes[0].0.clone();
+                let steps = cx.read(|cx| tab.read(cx).shot_lane_steps(&first));
+                assert_eq!(steps, 2, "{n}: read_file, send_message");
+                feed(cx, &tab, |t, cx| t.show_view(View::Lane(first.clone()), cx));
+                cx.read(|cx| tab.read(cx).shot_forget(&["lane-stop"]));
+                let _ = super::frame_fresh(cx, window);
+                assert!(
+                    !cx.read(|cx| tab.read(cx).shot_part_now("lane-stop")),
+                    "{n}: no Stop for agy"
+                );
+                keep.borrow_mut().take();
+            },
+        );
+        println!("ui-shots: {}", path.display());
+    }
 }

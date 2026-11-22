@@ -69,7 +69,16 @@ impl AgentTab {
         if self.view != view {
             self.view = view;
             self.sync_rows();
+            self.update_placeholder(cx);
         }
+        cx.notify();
+    }
+
+    /// Stop lane `id` alone (its agent's own stop: `Action::StopSubagent`).
+    pub(crate) fn stop_lane(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.write(&Action::StopSubagent {
+            lane: id.to_string(),
+        });
         cx.notify();
     }
 
@@ -446,7 +455,17 @@ impl AgentTab {
                                     .font_features(crate::sidebar::tabular())
                                     .text_color(hsla(c.panel_dim))
                                     .child(SharedString::from(stats)),
-                            ),
+                            )
+                            .when(crate::agent_lanes::shows_stop(lane), |d| {
+                                let view = look.view.clone();
+                                let id = lane.id.clone();
+                                d.child(self.marked(
+                                    "lane-stop",
+                                    div().child(button("lane-stop", "Stop", false, &c).on_click(
+                                        on_tab(&view, move |this, cx| this.stop_lane(&id, cx)),
+                                    )),
+                                ))
+                            }),
                     ),
                 )
                 .into_any_element(),
@@ -583,6 +602,12 @@ impl AgentTab {
     #[cfg(feature = "ui-shots")]
     pub fn shot_forget(&self, parts: &[&str]) {
         self.parts.borrow_mut().retain(|k, _| !parts.contains(k));
+    }
+
+    /// Scenes: a followed file's lines for `lane`, into the same path the follower takes.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_followed(&mut self, lane: &str, lines: Vec<String>, cx: &mut Context<Self>) {
+        self.on_followed(lane, lines, cx);
     }
 
     /// Scenes: open or close the "+N" list.

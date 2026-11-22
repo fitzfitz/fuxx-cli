@@ -100,6 +100,11 @@ pub fn elapsed(
     Some(ended.unwrap_or(now).saturating_duration_since(start))
 }
 
+/// Whether a lane's header offers Stop: it is still going and its agent can stop it alone.
+pub fn shows_stop(lane: &Lane) -> bool {
+    lane.controls.stop && lane.status.live()
+}
+
 /// "1 step", "14 steps".
 pub fn steps_label(n: usize) -> String {
     match n {
@@ -167,6 +172,20 @@ mod tests {
         assert_eq!(elapsed(None, None, later), None, "no start: no time");
         assert_eq!(clock(Duration::from_secs(62)), "1:02");
         assert_eq!(clock(Duration::from_secs(5)), "0:05");
+    }
+
+    #[test]
+    fn stop_shows_only_when_the_lane_can() {
+        let mut working = lane("a", "A");
+        working.controls.stop = true;
+        assert!(shows_stop(&working), "Claude's, working");
+        let mut waiting = working.clone();
+        waiting.status = LaneStatus::Waiting;
+        assert!(shows_stop(&waiting));
+        let mut done = working.clone();
+        done.status = LaneStatus::Done;
+        assert!(!shows_stop(&done), "nothing to stop");
+        assert!(!shows_stop(&lane("b", "B")), "agy's: no control");
     }
 
     #[test]

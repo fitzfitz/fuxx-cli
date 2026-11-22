@@ -329,6 +329,7 @@ impl AgentTab {
                 detail,
                 always,
                 answer,
+                by,
                 ..
             } => {
                 match answer {
@@ -357,7 +358,14 @@ impl AgentTab {
                             ))
                             .into_any_element()
                     }
-                    None => self.permission_card(tool, what, detail, always.as_deref(), look),
+                    None => self.permission_card(
+                        tool,
+                        what,
+                        detail,
+                        always.as_deref(),
+                        by.as_deref(),
+                        look,
+                    ),
                 }
             }
             // A notice (spec B-B): an info mark and the words, quiet, on the text's column.
@@ -725,6 +733,7 @@ impl AgentTab {
         what: &str,
         detail: &str,
         always: Option<&str>,
+        by: Option<&str>,
         look: &Look,
     ) -> AnyElement {
         let c = &look.c;
@@ -732,7 +741,11 @@ impl AgentTab {
         if detail.lines().count() > DETAIL_LINES {
             shown.push("…");
         }
-        let label = look.label.clone();
+        // A subagent's request names it (M11ar): "Reader wants to run Bash".
+        let label: SharedString = match by.and_then(|b| self.conversation.lane(b)) {
+            Some(lane) => lane.label.clone().into(),
+            None => look.label.clone(),
+        };
         // Spec B-B: a card (r12), a shield before its heading, the command in a well.
         div()
             .w_full()
