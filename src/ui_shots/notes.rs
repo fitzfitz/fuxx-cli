@@ -135,8 +135,7 @@ const CHANGED: [&str; 3] = [
 /// A made-up `src/workspace.rs` under a scratch folder named `fuxx-cli`, one per scene (scenes
 /// run side by side): its canonical path, as notes and the ledger are keyed.
 fn scratch(scene: &str) -> PathBuf {
-    let src = std::env::temp_dir()
-        .join("fuxx-ui-shots-notes")
+    let src = crate::test_temp::dir("fuxx-ui-shots-notes")
         .join(scene)
         .join("fuxx-cli")
         .join("src");

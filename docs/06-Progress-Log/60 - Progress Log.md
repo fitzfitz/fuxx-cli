@@ -61,6 +61,17 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Next:** your on-screen check (note 94); merge (renumber if M11au collides), then fuxx-completes' M1c can declare
   its four settings.
 
+### 2026-11-22 — Chore: tests clean up their temp folders
+
+- **What:** your words (note 93, chores): "make the tests clean up their temp folders". Every test and ui-shots scene
+  makes its scratch through `test_temp::dir`, in `$TMPDIR/fuxx-t/<pid>`, removed when the run exits; a killed run's
+  folder is swept by the next run. A test fails if any other file names the system temp folder. The ~98,000 old
+  folders stay until you delete them.
+- **Checks:** 2485 tests, and `$TMPDIR` gained no `fuxx*` folder over the run; clippy at the baseline (14 / 28);
+  `cargo fmt --check` clean. Full ui-shots run: no new folder, no new pasted image; the scenes that failed beyond the
+  known 1× ones (`fuxx-ui-shots-files` clashed with its own temp file once the pid left the name) fixed and re-run
+  (12 passed).
+
 ### 2026-11-22 — Chore: "Divining…", subagent pills newest first
 
 - **What:** your words (note 93, chores): "Divining…" while only subagents work, "Cultivating…" when Main does;

@@ -2660,7 +2660,7 @@ mod tests {
         // On by default: only off is written.
         assert!(OnOff::CommandBlocks.values(true).is_empty());
         assert_eq!(OnOff::CommandBlocks.values(false), ["off"]);
-        let dir = std::env::temp_dir().join(format!("fuxx-blocks-values-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-blocks-values");
         let path = dir.join("config");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "theme = Nord\n").unwrap();
@@ -2725,7 +2725,7 @@ mod tests {
         assert_eq!(OnOff::CursorGlow.values(false), ["off"]);
         assert_eq!(OnOff::CursorColor.values(false), ["theme"]);
         // Through the file: only that key's line changes, and the default removes it.
-        let dir = std::env::temp_dir().join(format!("fuxx-cursor-values-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-cursor-values");
         let path = dir.join("config");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "theme = Nord\n").unwrap();
@@ -2818,7 +2818,7 @@ mod tests {
              after the change."
         );
         // Through the file: only that key's line changes.
-        let dir = std::env::temp_dir().join(format!("fuxx-browser-values-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-browser-values");
         let path = dir.join("config");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "theme = Nord\n").unwrap();
@@ -2838,7 +2838,7 @@ mod tests {
 
     #[test]
     fn font_size_steps_write_the_setting() {
-        let dir = std::env::temp_dir().join(format!("fuxx-font-step-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-font-step");
         let path = dir.join("config");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "# mine\ntheme = Nord\nfont-size = 14\n").unwrap();

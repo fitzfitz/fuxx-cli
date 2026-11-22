@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn a_folder_is_listed_once_checked_off_the_ui_thread() {
-        let dir = std::env::temp_dir().join(format!("fuxx-test-there-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-test-there");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let gone = dir.join("gone");

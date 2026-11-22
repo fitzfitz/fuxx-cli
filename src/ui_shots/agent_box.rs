@@ -1639,7 +1639,7 @@ struct Files(PathBuf);
 
 impl Files {
     fn new(scene: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("fuxx-shots-{scene}-{}", std::process::id()));
+        let dir = crate::test_temp::dir(&format!("fuxx-shots-{scene}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("the scene's folder");
         Files(dir)
@@ -3894,8 +3894,7 @@ pub(super) fn agent_box_branch_opens_switcher() {
         println!("ui-shots: {n} skipped (no git on this Mac)");
         return;
     };
-    let base =
-        std::env::temp_dir().join(format!("fuxx-ui-shots-box-branch-{}", std::process::id()));
+    let base = crate::test_temp::dir("fuxx-ui-shots-box-branch");
     let _ = std::fs::remove_dir_all(&base);
     let repo = base.join("my-app");
     std::fs::create_dir_all(&repo).expect("make the repo");

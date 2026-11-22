@@ -1150,9 +1150,7 @@ fn cursor_flood_scene() {
     let n = format!("cursor-flood-{slug}");
     // The flood waits for `go` to exist, so it starts only once the scene is watching. The
     // child stays alive after `END`, so no exit repaints the screen either.
-    let go = RemovedOnDrop(
-        std::env::temp_dir().join(format!("fuxx-ui-shots-{}-flood-go", std::process::id())),
-    );
+    let go = RemovedOnDrop(crate::test_temp::dir("fuxx-ui-shots-flood-go"));
     let _ = std::fs::remove_file(&go.0);
     let program = vec![
         "/bin/sh".into(),

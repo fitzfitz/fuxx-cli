@@ -143,6 +143,8 @@ mod tab_color;
 mod tab_menu;
 mod terminal;
 mod terminal_view;
+#[cfg(any(test, feature = "ui-shots"))]
+mod test_temp;
 mod theme;
 mod title_area;
 #[cfg(feature = "ui-shots")]

@@ -136,8 +136,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn scratch(name: &str) -> PathBuf {
-        let d =
-            std::env::temp_dir().join(format!("fuxx-agent-detect-{name}-{}", std::process::id()));
+        let d = crate::test_temp::dir(&format!("fuxx-agent-detect-{name}"));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

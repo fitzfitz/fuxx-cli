@@ -360,8 +360,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p =
-            std::env::temp_dir().join(format!("fuxx-fetch-{tag}-{}-{nanos}", std::process::id()));
+        let p = crate::test_temp::dir(&format!("fuxx-fetch-{tag}-{nanos}"));
         std::fs::create_dir_all(&p).unwrap();
         p
     }

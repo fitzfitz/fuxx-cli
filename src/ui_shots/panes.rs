@@ -2219,8 +2219,7 @@ fn tabs_minimal_scenes() {
     let buttons = PLUS_GAP + BUTTON + pinned;
     let bar_top = CARD_INSET + HAIRLINE;
     let cy = bar_top + TAB_BAR / 2.0;
-    let dir =
-        std::env::temp_dir().join(format!("fuxx-ui-shots-tabs-minimal-{}", std::process::id()));
+    let dir = crate::test_temp::dir("fuxx-ui-shots-tabs-minimal");
     std::fs::create_dir_all(&dir).expect("the scene's folder");
     let notes = dir.join("notes.md");
     std::fs::write(&notes, "# Notes\n\n- one\n- two\n").expect("notes.md");

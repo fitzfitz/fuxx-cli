@@ -5537,7 +5537,7 @@ mod tests {
 
     #[test]
     fn an_image_file_is_read_up_to_the_limit_only() {
-        let dir = std::env::temp_dir().join(format!("fuxx-test-read-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-test-read");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let make = |name: &str, len: usize| {
@@ -5569,7 +5569,7 @@ mod tests {
 
     #[test]
     fn old_pasted_images_are_removed_and_new_ones_kept() {
-        let dir = std::env::temp_dir().join(format!("fuxx-test-clean-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-test-clean");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let old = dir.join("old.png");
@@ -5599,7 +5599,7 @@ mod tests {
 
     #[test]
     fn a_pasted_image_goes_to_a_new_file_in_the_temp_folder() {
-        let dir = std::env::temp_dir().join(format!("fuxx-test-paste-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-test-paste");
         let _ = std::fs::remove_dir_all(&dir);
         let picture = Picture::new("image/png", b"png bytes".to_vec());
         let a = write_pasted(&dir, &picture, "png").expect("written");

@@ -807,7 +807,7 @@ pub(crate) mod tests {
 
     /// A fresh socket path in its own temp folder.
     pub(crate) fn temp_sock(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("fuxxc-{name}-{}", std::process::id()));
+        let dir = crate::test_temp::dir(&format!("fuxxc-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("d.sock")

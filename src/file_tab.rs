@@ -10191,7 +10191,7 @@ mod tests {
 
     #[test]
     fn the_read_makes_the_outline_and_the_colours_name_it() {
-        let dir = std::env::temp_dir().join(format!("fuxx-outline-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-outline");
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("session.rs");
         std::fs::write(&file, "impl S {\n    fn r() {\n        x();\n    }\n}\n").unwrap();
@@ -10244,7 +10244,7 @@ mod tests {
 
     #[test]
     fn a_fifo_is_refused_without_blocking() {
-        let dir = std::env::temp_dir().join(format!("fuxx-fifo-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-fifo");
         let _ = std::fs::create_dir_all(&dir);
         let fifo = dir.join("pipe");
         let _ = std::fs::remove_file(&fifo);
@@ -10722,7 +10722,7 @@ mod tests {
         let Some(git) = find_git() else {
             return eprintln!("skipped: no git");
         };
-        let dir = std::env::temp_dir().join(format!("fuxx-git-place-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-git-place");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let ok = std::process::Command::new(&git)
@@ -10750,7 +10750,7 @@ mod tests {
             .expect("a gone folder in a repo");
         assert_eq!(deep.rel, PathBuf::from("nowhere/deeper/x.rs"));
         // Outside any repo: git says so, for a gone folder too.
-        let plain = std::env::temp_dir().join(format!("fuxx-no-repo-{}", std::process::id()));
+        let plain = crate::test_temp::dir("fuxx-no-repo");
         std::fs::create_dir_all(&plain).unwrap();
         assert_eq!(git_place(&plain.join("x.rs")), Some(None));
         assert_eq!(git_place(&plain.join("gone/x.rs")), Some(None));
@@ -10775,7 +10775,7 @@ mod tests {
         let Some(git) = find_git() else {
             return eprintln!("skipped: no git");
         };
-        let dir = std::env::temp_dir().join(format!("fuxx-git-mv-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-git-mv");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("old/inner")).unwrap();
         assert!(git_ok(&git, &dir, &["init", "-q"]));

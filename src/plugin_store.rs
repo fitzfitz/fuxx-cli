@@ -382,8 +382,7 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     fn tmp(tag: &str) -> PathBuf {
-        let d =
-            std::env::temp_dir().join(format!("fuxx-plugin-store-{tag}-{}", std::process::id()));
+        let d = crate::test_temp::dir(&format!("fuxx-plugin-store-{tag}"));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

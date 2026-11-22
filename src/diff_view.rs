@@ -467,8 +467,7 @@ mod tests {
     }
 
     fn temp(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("fuxx-diff-view-{name}-{}", std::process::id()));
+        let dir = crate::test_temp::dir(&format!("fuxx-diff-view-{name}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

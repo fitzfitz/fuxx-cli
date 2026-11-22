@@ -239,3 +239,9 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   sorts by newest"): the status word is "Divining…" while only subagents work (Main's own work says
   "Cultivating…"); the pills after Main go newest first (`agent_lanes::shown_order`), as do ⌥⌘[ / ⌥⌘] and the "+N"
   list (the oldest fold away first). Scene `agent-lanes-background` shows "Divining…".
+- **Tests clean up their temp folders** (your words, 2026-11-22: "make the tests clean up their temp folders"; about
+  98,000 old `fuxx-*`, `fuxxc-*` and `fuxxd-*` folders had piled up in `$TMPDIR`): every test and ui-shots scene makes
+  its scratch through `test_temp::dir`, inside the run's own folder `$TMPDIR/fuxx-t/<pid>`, removed when the run
+  exits (only by the process that made it, not a forked child); a run that was killed leaves its folder for the next
+  run to sweep. A test fails if any other file names the system temp folder (the app's pasted-image folder and a few
+  paths nothing is made in are allowed). The old folders are not touched: delete them by hand.

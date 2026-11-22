@@ -251,8 +251,7 @@ mod tests {
     }
 
     fn repo(name: &str, git: &Path) -> PathBuf {
-        let root =
-            std::env::temp_dir().join(format!("fuxx-git-graph-{name}-{}", std::process::id()));
+        let root = crate::test_temp::dir(&format!("fuxx-git-graph-{name}"));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         git_in(git, &root, &["init", "-q", "-b", "main"]);

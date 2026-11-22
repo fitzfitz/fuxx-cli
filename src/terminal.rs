@@ -2580,9 +2580,8 @@ mod daemon_tests {
         // The loop prints until the test says stop (a file appears), so the session is busy
         // while it attaches however fast the machine is: a 20,000-line loop once finished
         // before the attach on CI ("attached too late", the v0.12.4 tag run).
-        let stop = Release(std::env::temp_dir().join(format!(
-            "fuxx-busy-{}-{}",
-            std::process::id(),
+        let stop = Release(crate::test_temp::dir(&format!(
+            "fuxx-busy-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos())

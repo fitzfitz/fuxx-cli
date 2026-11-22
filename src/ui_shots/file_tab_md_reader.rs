@@ -288,7 +288,7 @@ fn file_tab_md_reader_column_scenes() {
     use std::collections::BTreeMap;
     use std::rc::Rc;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-md-reader");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let guide = dir.join("SETUP.md");
@@ -607,7 +607,7 @@ fn file_tab_md_reader_code_scenes() {
     use std::rc::Rc;
     use std::time::Duration;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-code");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-md-reader-code");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let guide = dir.join("SETUP.md");
@@ -846,7 +846,7 @@ fn file_tab_md_reader_callout_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-callouts");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-md-reader-callouts");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let guide = dir.join("SETUP.md");
@@ -1032,7 +1032,7 @@ fn file_tab_md_reader_github_scenes() {
     use std::fmt::Write as _;
     use std::rc::Rc;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-github");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-md-reader-github");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let guide = dir.join("SETUP.md");
@@ -1429,7 +1429,7 @@ fn file_tab_md_reader_anchor_scenes() {
     use std::rc::Rc;
     use std::time::Duration;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-anchors");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-md-reader-anchors");
     let _ = std::fs::remove_dir_all(&dir);
     let docs = dir.join("docs");
     std::fs::create_dir_all(&docs).expect("the fixture folder");
@@ -1846,7 +1846,7 @@ fn file_tab_md_reader_outline_scenes() {
     use std::rc::Rc;
     use std::time::Duration;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-outline");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-md-reader-outline");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let guide = dir.join("GUIDE.md");
@@ -2265,7 +2265,7 @@ fn reader_entry_rows(
 /// The fixtures of Task 9's scenes: GUIDE.md (`outline_fixture()`) and ONE.md (fits a 600 pt
 /// Preview).
 fn reader_task_9_fixtures(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(name);
+    let dir = crate::test_temp::dir(name);
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let guide = dir.join("GUIDE.md");
@@ -2844,7 +2844,7 @@ fn file_tab_md_reader_reload_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-reload");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-md-reader-reload");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     type TabSlot = Rc<RefCell<Option<Entity<FileTab>>>>;
@@ -3135,7 +3135,7 @@ fn file_tab_md_reader_big_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-md-reader-big");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-md-reader-big");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let big = dir.join("BIG.md");

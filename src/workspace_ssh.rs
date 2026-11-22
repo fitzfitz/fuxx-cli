@@ -910,7 +910,7 @@ mod tests {
 
     #[test]
     fn the_login_environment_comes_from_the_shell() {
-        let dir = std::env::temp_dir().join(format!("fuxx-login-env-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-login-env");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let script = |name: &str, body: &str| {

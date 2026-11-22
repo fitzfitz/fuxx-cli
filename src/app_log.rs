@@ -87,7 +87,7 @@ mod tests {
     use std::fs;
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("fuxx-app-log-{name}-{}", std::process::id()));
+        let dir = crate::test_temp::dir(&format!("fuxx-app-log-{name}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

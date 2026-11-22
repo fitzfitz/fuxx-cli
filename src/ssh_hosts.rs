@@ -257,7 +257,7 @@ mod tests {
     use std::time::Instant;
 
     fn temp(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("fuxx-ssh-hosts-{tag}-{}", std::process::id()));
+        let dir = crate::test_temp::dir(&format!("fuxx-ssh-hosts-{tag}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".ssh")).unwrap();
         dir

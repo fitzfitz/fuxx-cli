@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn a_probe_past_its_deadline_is_killed_and_fails() {
-        let pidfile = std::env::temp_dir().join(format!("fuxx-probe-pid-{}", std::process::id()));
+        let pidfile = crate::test_temp::dir("fuxx-probe-pid");
         let probe = sh(&format!("echo $$ > {}; exec sleep 60", pidfile.display()));
         let started = Instant::now();
         let out = run_probe(&probe, Path::new("/"), None, Duration::from_millis(300));

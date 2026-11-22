@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn a_bin_needs_a_program_for_this_mac() {
-        let root = std::env::temp_dir().join(format!("fuxx-manifest-chip-{}", std::process::id()));
+        let root = crate::test_temp::dir("fuxx-manifest-chip");
         let _ = std::fs::remove_dir_all(&root);
         let check = |name: &str, fill: &dyn Fn(&Path)| {
             let dir = root.join(name);
@@ -478,19 +478,17 @@ mod tests {
 
     #[test]
     fn files_must_exist_inside_the_folder() {
-        let root = std::env::temp_dir().join(format!("fuxx-manifest-files-{}", std::process::id()));
+        let root = crate::test_temp::dir("fuxx-manifest-files");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("themes")).unwrap();
         std::fs::create_dir_all(root.join("tools")).unwrap();
         std::fs::write(root.join("themes/Sunset"), "background = 000000\n").unwrap();
         std::fs::write(root.join("a.zsh"), "").unwrap();
         put_executable(&root.join("tools/run"), b"#!/bin/sh\n");
-        let outside =
-            std::env::temp_dir().join(format!("fuxx-manifest-out-{}", std::process::id()));
+        let outside = crate::test_temp::dir("fuxx-manifest-out");
         std::fs::write(&outside, "x").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("themes/Link")).unwrap();
-        let outside_dir =
-            std::env::temp_dir().join(format!("fuxx-manifest-outdir-{}", std::process::id()));
+        let outside_dir = crate::test_temp::dir("fuxx-manifest-outdir");
         std::fs::create_dir_all(&outside_dir).unwrap();
         std::fs::write(outside_dir.join("Sunset"), "x").unwrap();
         std::os::unix::fs::symlink(&outside_dir, root.join("linked")).unwrap();

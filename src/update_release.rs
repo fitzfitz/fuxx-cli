@@ -687,8 +687,7 @@ mod tests {
 
     /// A fresh folder for one swap test, with a space and a quote in its name (as `~/My Apps`).
     fn swap_dir(name: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("fuxx swap 'test' {name}-{}", std::process::id()));
+        let dir = crate::test_temp::dir(&format!("fuxx swap 'test' {name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

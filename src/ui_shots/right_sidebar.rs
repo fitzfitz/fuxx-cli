@@ -455,7 +455,7 @@ fn right_sidebar_scenes() {
 /// age is then the fixture's (`changes-click` and `files-follow` show it).
 pub(super) fn files_fixture() -> PathBuf {
     const TEXT: &str = "fn main() {}\n";
-    let root = std::env::temp_dir().join("fuxx-ui-shots-files");
+    let root = crate::test_temp::dir("fuxx-ui-shots-files");
     for folder in ["docs", "src/util"] {
         std::fs::create_dir_all(root.join(folder)).expect("the fixture's folders");
     }
@@ -475,8 +475,7 @@ pub(super) fn files_fixture() -> PathBuf {
         if std::fs::read_to_string(&path).is_ok_and(|text| text == TEXT) {
             continue;
         }
-        let fresh =
-            std::env::temp_dir().join(format!("fuxx-ui-shots-files-{}", std::process::id()));
+        let fresh = crate::test_temp::dir("fuxx-ui-shots-files-fresh");
         std::fs::write(&fresh, TEXT).expect("the fixture's files");
         std::fs::rename(&fresh, &path).expect("the fixture's files");
     }
@@ -1701,7 +1700,7 @@ fn files_follow_scenes() {
 
     let dims = size(px(1100.0), px(560.0));
     let root = files_fixture();
-    let outside = std::env::temp_dir().join("fuxx-ui-shots-outside.md");
+    let outside = crate::test_temp::dir("fuxx-ui-shots-outside.md");
     std::fs::write(&outside, "# elsewhere\n").expect("the outside file");
     for &(slug, name) in shot_themes() {
         let theme = shot_theme(name);

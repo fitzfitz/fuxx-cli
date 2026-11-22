@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn write_atomic_replaces_the_file() {
-        let dir = std::env::temp_dir().join(format!("fuxx-write-atomic-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-write-atomic");
         let path = dir.join("sub/config");
         write_atomic(&path, "a = 1\n").unwrap();
         write_atomic(&path, "a = 2\n").unwrap();
@@ -320,7 +320,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn write_atomic_follows_a_symlink() {
-        let dir = std::env::temp_dir().join(format!("fuxx-write-symlink-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-write-symlink");
         std::fs::create_dir_all(dir.join("real")).unwrap();
         std::fs::create_dir_all(dir.join("link")).unwrap();
         std::fs::write(dir.join("real/config"), "a = 1\n").unwrap();

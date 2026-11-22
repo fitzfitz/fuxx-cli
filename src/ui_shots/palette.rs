@@ -706,7 +706,7 @@ fn palette_run_scene() {
 
     let dims = size(px(960.0), px(600.0));
     // Its own name (another run's can't clash), removed at the end.
-    let dir = std::env::temp_dir().join(format!("fuxx-ui-shots-palette-{}", std::process::id()));
+    let dir = crate::test_temp::dir("fuxx-ui-shots-palette");
     std::fs::create_dir_all(&dir).expect("make the folder");
     let file = dir.join("notes.rs");
     std::fs::write(&file, "fn main() {\n    let found = 1;\n}\n").expect("write the file");
@@ -1439,10 +1439,7 @@ fn palette_relist_scene() {
     let dims = size(px(960.0), px(600.0));
     let folder = |name: &str| {
         // Its own name (another run's can't clash), removed at the end.
-        let dir = std::env::temp_dir().join(format!(
-            "fuxx-ui-shots-relist-{}-{name}",
-            std::process::id()
-        ));
+        let dir = crate::test_temp::dir(&format!("fuxx-ui-shots-relist-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("make the folder");
         std::fs::write(dir.join(format!("{name}.txt")), name).expect("write a file");

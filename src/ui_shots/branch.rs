@@ -399,8 +399,7 @@ fn branch_switcher_open_scene() {
         println!("ui-shots: branch-switcher-open skipped (no git on this Mac)");
         return;
     };
-    let base =
-        std::env::temp_dir().join(format!("fuxx-ui-shots-branch-open-{}", std::process::id()));
+    let base = crate::test_temp::dir("fuxx-ui-shots-branch-open");
     let _ = std::fs::remove_dir_all(&base);
     let repo = base.join("repo");
     std::fs::create_dir_all(&repo).expect("make the repo");
@@ -1008,8 +1007,7 @@ fn branch_switcher_real_scene() {
         println!("ui-shots: branch-switcher-real skipped (no git on this Mac)");
         return;
     };
-    let base =
-        std::env::temp_dir().join(format!("fuxx-ui-shots-branch-real-{}", std::process::id()));
+    let base = crate::test_temp::dir("fuxx-ui-shots-branch-real");
     let _ = std::fs::remove_dir_all(&base);
     let origin = base.join("origin");
     let clone = base.join("clone");

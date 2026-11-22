@@ -95,7 +95,7 @@ fn file_tab_md_scenes() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-md");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-md");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let readme = dir.join("README.md");
@@ -560,7 +560,7 @@ fn file_tab_md_mermaid_scenes() {
 
     const CHILD: &str = "FUXX_SHOTS_WEBKIT";
     let child = std::env::var_os(CHILD).is_some();
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-mermaid");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-mermaid");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let readme = dir.join("README.md");
     std::fs::write(&readme, MERMAID_FIXTURE).expect("README.md");

@@ -112,9 +112,7 @@ fn scratch_doc() -> (PathBuf, PathBuf) {
 /// A made-up `src/<name>` of `lines` lines (`fn main() {`, `lines` numbered lines, `}`) under the
 /// scratch folder named `fuxx-cli`.
 fn scratch_file(name: &str, lines: usize) -> (PathBuf, PathBuf) {
-    let root = std::env::temp_dir()
-        .join("fuxx-ui-shots-ask")
-        .join("fuxx-cli");
+    let root = crate::test_temp::dir("fuxx-ui-shots-ask").join("fuxx-cli");
     let dir = root.join("src");
     std::fs::create_dir_all(&dir).expect("the scratch folder");
     let root = std::fs::canonicalize(&root).unwrap_or(root);

@@ -529,7 +529,7 @@ fn file_drag_select_scenes() {
     use std::rc::Rc;
     use std::time::Duration;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-file-tab-drag-select");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-file-tab-drag-select");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let long = dir.join("long.rs");
@@ -840,7 +840,7 @@ fn file_header_scenes() {
         println!("ui-shots: file-tab-header skipped (no git on this Mac)");
         return;
     };
-    let base = std::env::temp_dir().join(format!("fuxx-ui-shots-header-{}", std::process::id()));
+    let base = crate::test_temp::dir("fuxx-ui-shots-header");
     let _ = std::fs::remove_dir_all(&base);
     let repo = base.join("header-repo");
     std::fs::create_dir_all(repo.join("src")).expect("make the repo");
@@ -1248,7 +1248,7 @@ fn file_view_scenes() {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-file-tab");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-file-tab");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let view_rs = dir.join("view.rs");
@@ -1893,7 +1893,7 @@ fn file_tab_scrollbar_scenes() {
     use std::rc::Rc;
     use std::time::Duration;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-file-tab-scrollbar");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-file-tab-scrollbar");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let lines =
@@ -2175,7 +2175,7 @@ fn file_diff_scenes() {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-file-diff");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-file-diff");
     std::fs::create_dir_all(dir.join("src")).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let view_rs = dir.join("src/view.rs");
@@ -2903,7 +2903,7 @@ fn live_frame(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
 
 /// The fixture folder, with `name` written as `text`.
 fn live_file(name: &str, text: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("fuxx-ui-shots-file-live");
+    let dir = crate::test_temp::dir("fuxx-ui-shots-file-live");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let path = dir.join(name);

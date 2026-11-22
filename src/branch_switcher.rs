@@ -1911,7 +1911,7 @@ mod tests {
 
     #[test]
     fn a_folder_is_in_the_repo_by_its_path_or_its_real_path() {
-        let base = std::env::temp_dir().join(format!("fuxx-in-repo-{}", std::process::id()));
+        let base = crate::test_temp::dir("fuxx-in-repo");
         let _ = std::fs::remove_dir_all(&base);
         let root = base.join("repo");
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -1947,7 +1947,7 @@ mod tests {
 
     #[test]
     fn running_folders_resolve_to_real_paths() {
-        let base = std::env::temp_dir().join(format!("fuxx-resolved-{}", std::process::id()));
+        let base = crate::test_temp::dir("fuxx-resolved");
         let _ = std::fs::remove_dir_all(&base);
         let root = base.join("repo");
         std::fs::create_dir_all(&root).unwrap();

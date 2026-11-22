@@ -721,7 +721,7 @@ pub(super) fn chrome_places_programs_ports() {
     use crate::workspace::{At, PROGRAMS_REFRESH};
 
     let n = "chrome-places-programs-ports";
-    let dir = std::env::temp_dir().join(format!("fuxx-{n}-{}", std::process::id()));
+    let dir = crate::test_temp::dir(&format!("fuxx-{n}"));
     let _ = std::fs::remove_dir_all(&dir);
     for sub in ["a", "b"] {
         std::fs::create_dir_all(dir.join(sub)).expect("the fixture's folders");
@@ -3210,7 +3210,7 @@ pub(super) fn chrome_file_tab_toolbar() {
     use crate::layout_model::FileMode;
 
     let n = "chrome-file-tab-toolbar";
-    let dir = std::env::temp_dir().join(format!("fuxx-ui-shots-{n}-{}", std::process::id()));
+    let dir = crate::test_temp::dir(&format!("fuxx-ui-shots-{n}"));
     std::fs::create_dir_all(&dir).expect("the scene's folder");
     let (readme, notes) = (dir.join("README.md"), dir.join("notes.md"));
     std::fs::write(&readme, "# Read me\n\nSome *words*.\n").expect("README.md");

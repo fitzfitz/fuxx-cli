@@ -3550,8 +3550,7 @@ mod tests {
 
     /// An empty made-up home folder for one test.
     fn scratch_home(name: &str) -> PathBuf {
-        let home =
-            std::env::temp_dir().join(format!("fuxx-claude-home-{name}-{}", std::process::id()));
+        let home = crate::test_temp::dir(&format!("fuxx-claude-home-{name}"));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         home

@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn theme_lookup_order() {
-        let dir = std::env::temp_dir().join(format!("fuxx-theme-lookup-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-theme-lookup");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("user")).unwrap();
         std::fs::create_dir_all(dir.join("plug")).unwrap();

@@ -944,7 +944,7 @@ mod tests {
     #[test]
     fn the_cap_ends_the_whole_process_group() {
         // A child (as a hook or fsmonitor would be) that keeps stdout open past the cap.
-        let pidfile = std::env::temp_dir().join(format!("fuxx-capped-{}", std::process::id()));
+        let pidfile = crate::test_temp::dir("fuxx-capped");
         let _ = std::fs::remove_file(&pidfile);
         let mut sh = Command::new("/bin/sh");
         sh.arg("-c")
@@ -974,7 +974,7 @@ mod tests {
     /// A repo in a fresh folder with one commit, its branch `trunk`; none without git.
     fn repo(name: &str) -> Option<(PathBuf, PathBuf)> {
         let git = find_git()?;
-        let dir = std::env::temp_dir().join(format!("fuxx-git-{name}-{}", std::process::id()));
+        let dir = crate::test_temp::dir(&format!("fuxx-git-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let run = |args: &[&str]| {
@@ -1005,7 +1005,7 @@ mod tests {
         run_git(&git, &dir, &["checkout", "-q", "--detach"]).unwrap();
         assert_eq!(branch_at(&git, &dir), short_sha(&sha));
         // Not a repo: nothing.
-        let outside = std::env::temp_dir().join(format!("fuxx-nogit-{}", std::process::id()));
+        let outside = crate::test_temp::dir("fuxx-nogit");
         std::fs::create_dir_all(&outside).unwrap();
         assert_eq!(branch_at(&git, &outside), None);
         let _ = std::fs::remove_dir_all(&dir);

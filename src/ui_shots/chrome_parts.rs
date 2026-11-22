@@ -1253,7 +1253,7 @@ fn chrome_folder_polled() {
     use crate::sidebar::SidebarRow;
 
     let n = "chrome-folder-polled";
-    let dir = std::env::temp_dir().join(format!("fuxx-{n}-{}", std::process::id()));
+    let dir = crate::test_temp::dir(&format!("fuxx-{n}"));
     let _ = std::fs::remove_dir_all(&dir);
     for sub in ["a", "b"] {
         std::fs::create_dir_all(dir.join(sub)).expect("the fixture's folders");

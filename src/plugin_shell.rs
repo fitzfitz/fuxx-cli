@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn write_is_atomic_and_0644() {
-        let dir = std::env::temp_dir().join(format!("fuxx-ps-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-ps");
         let _ = fs::remove_dir_all(&dir);
         let records = [rec("on", true, Some("bin"), &[])];
         write(&dir, &folders(), &records, &[]).unwrap();
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn write_from_reads_the_list_when_it_has_its_turn() {
-        let dir = std::env::temp_dir().join(format!("fuxx-ps-from-{}", std::process::id()));
+        let dir = crate::test_temp::dir("fuxx-ps-from");
         let _ = fs::remove_dir_all(&dir);
         write_from(&dir, &folders(), || {
             (vec![rec("on", true, Some("bin"), &[])], vec![])
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn hostile_paths_are_quoted_and_never_run() {
-        let root = std::env::temp_dir().join(format!("fuxx-ps-evil-{}", std::process::id()));
+        let root = crate::test_temp::dir("fuxx-ps-evil");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let f = Folders {
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn plugins_load_under_odd_zsh_options_and_aliases() {
         use crate::shell_integration::test_zsh::{run, screen_text, spawn};
-        let root = std::env::temp_dir().join(format!("fuxx-ps-odd-{}", std::process::id()));
+        let root = crate::test_temp::dir("fuxx-ps-odd");
         let _ = fs::remove_dir_all(&root);
         let (plugins, data, si, home) = (
             root.join("plugins"),
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn a_broken_plugin_does_not_stop_the_next() {
         use crate::shell_integration::test_zsh::{run, screen_text, spawn};
-        let root = std::env::temp_dir().join(format!("fuxx-ps-broken-{}", std::process::id()));
+        let root = crate::test_temp::dir("fuxx-ps-broken");
         let _ = fs::remove_dir_all(&root);
         let (plugins, data, si, home) = (
             root.join("plugins"),
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn values_on_disk_are_the_plugin_lines() {
-        let root = std::env::temp_dir().join(format!("fuxx-ps-values-{}", std::process::id()));
+        let root = crate::test_temp::dir("fuxx-ps-values");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let config = root.join("config");
@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn a_plugin_sees_its_changed_settings_only_while_it_loads() {
         use crate::shell_integration::test_zsh::{run, screen_text, spawn};
-        let root = std::env::temp_dir().join(format!("fuxx-ps-settings-{}", std::process::id()));
+        let root = crate::test_temp::dir("fuxx-ps-settings");
         let _ = fs::remove_dir_all(&root);
         let (plugins, data, si, home) = (
             root.join("plugins"),

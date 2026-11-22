@@ -64,7 +64,7 @@ mod tests {
     }
 
     fn temp(name: &str) -> Gone {
-        Gone(std::env::temp_dir().join(format!("fuxx-lane-follow-{}-{name}", std::process::id())))
+        Gone(crate::test_temp::dir(&format!("fuxx-lane-follow-{name}")))
     }
 
     fn append(path: &Path, s: &str) {
