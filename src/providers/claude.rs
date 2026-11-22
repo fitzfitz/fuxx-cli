@@ -601,6 +601,8 @@ struct ClaudeTranslator {
     /// Subagents (M11ar): Claude's task id → the lane (its Agent call's id), and back.
     lanes: HashMap<String, String>,
     tasks: HashMap<String, String>,
+    /// The foreground subagents still going (a background one may outlive the turn).
+    foreground: HashSet<String>,
 }
 
 /// Claude's own subagent types: a description names one of these better than its type does.
@@ -1134,6 +1136,9 @@ impl ClaudeTranslator {
                 };
                 self.lanes.insert(task.clone(), lane.clone());
                 self.tasks.insert(lane.clone(), task);
+                if v["is_backgrounded"] != true {
+                    self.foreground.insert(lane.clone());
+                }
                 let kind = s(&v["subagent_type"]).unwrap_or_default();
                 let description = s(&v["description"]).unwrap_or_default();
                 vec![Event::SubagentStarted {
@@ -1157,6 +1162,7 @@ impl ClaudeTranslator {
             },
             Some("task_notification") => match s(&v["task_id"]).and_then(|t| self.lanes.get(&t)) {
                 Some(lane) => {
+                    self.foreground.remove(lane);
                     let end = match v["status"].as_str() {
                         Some("failed") => {
                             LaneEnd::Failed(s(&v["summary"]).unwrap_or_else(|| "It failed".into()))
@@ -1238,6 +1244,14 @@ impl ClaudeTranslator {
             context_pct: context_pct(v, self.model.as_deref()),
             cost_usd: v["total_cost_usd"].as_f64(),
         });
+        // A foreground subagent can't outlive the turn: one still open was cut off (an
+        // interrupt). A background one goes on to its own `task_notification`.
+        let mut cut: Vec<String> = self.foreground.drain().collect();
+        cut.sort();
+        out.extend(cut.into_iter().map(|id| Event::SubagentEnded {
+            id,
+            end: LaneEnd::Stopped,
+        }));
         out.push(Event::TurnDone {
             ok: !is_error,
             message,
@@ -1549,6 +1563,36 @@ mod tests {
             "tool_use_id":"toolu_bg","status":"completed","summary":"built"}),
         );
         assert_eq!(c.lane("toolu_bg").unwrap().status, LaneStatus::Done);
+    }
+
+    #[test]
+    fn a_foreground_lane_ends_with_the_turn() {
+        // Review 5: a foreground subagent can't outlive Main's `result`; a background one can.
+        let mut t = CLAUDE.translator();
+        for (task, lane, bg) in [("f1", "toolu_f", false), ("b1", "toolu_b", true)] {
+            t.decode(
+                &json!({"type":"system","subtype":"task_started","task_id":task,
+                "tool_use_id":lane,"description":"d","subagent_type":"general-purpose",
+                "task_type":"local_agent","is_backgrounded":bg,"prompt":"p"})
+                .to_string(),
+            );
+        }
+        let ev = t.decode(
+            &json!({"type":"result","subtype":"error_during_execution","is_error":true,
+            "session_id":"s"})
+            .to_string(),
+        );
+        let ended: Vec<&str> = ev
+            .iter()
+            .filter_map(|e| match e {
+                Event::SubagentEnded {
+                    id,
+                    end: LaneEnd::Stopped,
+                } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ended, ["toolu_f"]);
     }
 
     #[test]

@@ -11,7 +11,7 @@ pub use crate::ui_tokens::chat;
 
 /// The items drawn as rows in `view`, in order (M11ar): Main's — everything but a lane's steps
 /// (a step whose lane's call is gone stays) — or a lane's own steps. One pass.
-pub fn rows_of(items: &[Item], view: &View) -> Vec<usize> {
+pub fn rows_of(items: &[Item], view: &View, lanes: &[&str]) -> Vec<usize> {
     let tools: std::collections::HashSet<&str> = items
         .iter()
         .filter_map(|i| match i {
@@ -19,17 +19,36 @@ pub fn rows_of(items: &[Item], view: &View) -> Vec<usize> {
             _ => None,
         })
         .collect();
-    (0..items.len())
-        .filter(|&ix| match (view, &items[ix]) {
-            // A question waits in whichever view is shown (M11ar): Enter answers it there; once
-            // answered it stays in Main's and its own lane's.
+    // A step is its lane's only when that lane exists (a Task whose subagent never became a
+    // lane keeps its steps in Main).
+    let lane_of = |p: &str| tools.contains(p) && lanes.contains(&p);
+    let mut rows: Vec<usize> = Vec::new();
+    let mut asks: Vec<usize> = Vec::new();
+    for (ix, item) in items.iter().enumerate() {
+        match (view, item) {
+            // A question waits in whichever view is shown, at its end (M11ar: Enter answers it
+            // there); once answered it stays in Main's and its own lane's.
             (View::Lane(lane), Item::Permission { answer, by, .. }) => {
-                answer.is_none() || by.as_deref() == Some(lane.as_str())
+                if by.as_deref() == Some(lane.as_str()) {
+                    rows.push(ix);
+                } else if answer.is_none() {
+                    asks.push(ix);
+                }
             }
-            (View::Main, item) => parent_of(item).is_none_or(|p| !tools.contains(p)),
-            (View::Lane(lane), item) => parent_of(item) == Some(lane.as_str()),
-        })
-        .collect()
+            (View::Main, item) => {
+                if parent_of(item).is_none_or(|p| !lane_of(p)) {
+                    rows.push(ix);
+                }
+            }
+            (View::Lane(lane), item) => {
+                if parent_of(item) == Some(lane.as_str()) {
+                    rows.push(ix);
+                }
+            }
+        }
+    }
+    rows.extend(asks);
+    rows
 }
 
 /// An item said by the agent (its avatar's column), not you or the tab.
@@ -127,7 +146,7 @@ pub fn shows_thinking_in(working: bool, items: &[Item], rows: &[usize]) -> bool 
 
 /// Main's rows (the helpers below as before M11ar, for the tests and callers by item index).
 fn main_rows(items: &[Item]) -> Vec<usize> {
-    rows_of(items, &View::Main)
+    rows_of(items, &View::Main, &[])
 }
 
 pub fn group_shape(items: &[Item], ix: usize) -> Option<Shape> {
@@ -254,20 +273,33 @@ mod tests {
             tool("orphan", Some("gone"), false),
         ];
         assert_eq!(
-            rows_of(&items, &View::Main),
+            rows_of(&items, &View::Main, &["agent1"]),
             [0, 1, 3, 5],
             "a lane's steps aren't Main's rows; a step whose parent is gone is"
         );
-        assert_eq!(rows_of(&items, &View::Lane("agent1".into())), [2, 4]);
-        assert!(rows_of(&items, &View::Lane("nobody".into())).is_empty());
+        // Review 8: a Task whose subagent never became a lane keeps its steps in Main.
+        assert_eq!(rows_of(&items, &View::Main, &[]), [0, 1, 2, 3, 4, 5]);
+        // Review 6: a question from elsewhere sits at the end of the shown lane.
+        let mut with_ask = items.to_vec();
+        with_ask.insert(3, asking(false));
+        assert_eq!(
+            rows_of(&with_ask, &View::Lane("agent1".into()), &["agent1"]),
+            [2, 5, 3],
+            "the open question last"
+        );
+        assert_eq!(
+            rows_of(&items, &View::Lane("agent1".into()), &["agent1"]),
+            [2, 4]
+        );
+        assert!(rows_of(&items, &View::Lane("nobody".into()), &["agent1"]).is_empty());
         // The helpers read the view's rows: in the lane, r2 follows r1 as one group.
-        let lane = rows_of(&items, &View::Lane("agent1".into()));
+        let lane = rows_of(&items, &View::Lane("agent1".into()), &["agent1"]);
         assert_eq!(group_shape_at(&items, &lane, 0), Some(Shape::First));
         assert_eq!(group_shape_at(&items, &lane, 1), Some(Shape::Last));
         assert_eq!(gap_before_at(&items, &lane, 0), chat::FIRST_TOP);
         assert!(shows_avatar_at(&items, &lane, 0));
         // A row's print knows which item it draws.
-        let main = rows_of(&items, &View::Main);
+        let main = rows_of(&items, &View::Main, &["agent1"]);
         assert_ne!(
             row_print_at(&items, &main, 1, false),
             row_print_at(&items, &main, 2, false)

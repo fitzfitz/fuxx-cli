@@ -394,6 +394,8 @@ impl Conversation {
             }
         }
         self.outstanding = 0;
+        // A subagent with no end in the history was cut off (the app quit mid-run).
+        self.stop_lanes();
         self.settle();
     }
 
@@ -401,6 +403,7 @@ impl Conversation {
     pub fn failed_to_start(&mut self, message: &str) {
         self.ended = true;
         self.outstanding = 0;
+        self.stop_lanes();
         self.settle();
         self.items.push(Item::Error(message.to_string()));
     }
@@ -472,10 +475,11 @@ impl Conversation {
             .count()
     }
 
-    /// A step under a finished lane: it works again (a woken subagent).
+    /// A step under a done lane: it works again (a woken subagent). A stopped or failed one
+    /// stays so (its lagging lines don't revive it).
     fn reopen(&mut self, parent: Option<&str>) {
         if let Some(lane) = parent.and_then(|p| self.lane_mut(p))
-            && !lane.status.live()
+            && lane.status == LaneStatus::Done
         {
             lane.status = LaneStatus::Working;
         }
@@ -503,6 +507,13 @@ impl Conversation {
                 _ => {}
             }
         }
+    }
+
+    /// The process was ended from here (Force stop, a restart for a change): its subagents
+    /// stop, and nothing of theirs runs or waits on (no `process_ended` follows).
+    pub fn process_gone(&mut self) {
+        self.stop_lanes();
+        self.settle();
     }
 
     /// The process is gone: every lane still going stops.
@@ -1345,6 +1356,53 @@ mod tests {
             assert_eq!(c.lane("w").unwrap().status, LaneStatus::Stopped, "{end}");
             assert_eq!(c.lane("d").unwrap().status, LaneStatus::Done, "{end}");
         }
+    }
+
+    #[test]
+    fn a_gone_process_stops_its_lanes_and_settles_them() {
+        // Review 1: Force stop or a restart (no `process_ended`): nothing of its lanes spins or
+        // waits on.
+        let mut c = Conversation::new();
+        c.you("go".into(), Vec::new());
+        c.apply(started("t1", "Reader"));
+        c.apply(sub_tool("r1", "t1"));
+        c.apply(Event::Permission {
+            id: "p1".into(),
+            tool: "Bash".into(),
+            what: "ls".into(),
+            detail: String::new(),
+            always: None,
+            by: Some("t1".into()),
+        });
+        c.process_gone();
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Stopped);
+        assert!(c.pending_permission().is_none(), "its question expired");
+        assert!(
+            !c.items()
+                .iter()
+                .any(|i| matches!(i, Item::Tool { running: true, .. }))
+        );
+    }
+
+    #[test]
+    fn a_resumed_lane_without_its_result_is_stopped() {
+        // Review 2: the app quit mid-subagent: no result in the transcript.
+        let mut c = Conversation::new();
+        c.past(vec![Past::Event(started("t1", "Reader"))]);
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Stopped);
+    }
+
+    #[test]
+    fn a_late_step_doesnt_revive_a_stopped_lane() {
+        // Review 3: a stopped lane's lagging lines; a done one woken again does reopen.
+        let mut c = Conversation::new();
+        c.apply(started("t1", "Reader"));
+        c.apply(Event::SubagentEnded {
+            id: "t1".into(),
+            end: LaneEnd::Stopped,
+        });
+        c.apply(sub_tool("late", "t1"));
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Stopped);
     }
 
     #[test]

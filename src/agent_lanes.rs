@@ -100,6 +100,20 @@ pub fn elapsed(
     Some(ended.unwrap_or(now).saturating_duration_since(start))
 }
 
+/// Each lane no longer going gets its end time (once), so its clock stops — also one stopped by
+/// its process ending, which sends no `SubagentEnded`.
+pub fn stamp_ends(
+    times: &mut std::collections::HashMap<String, (std::time::Instant, Option<std::time::Instant>)>,
+    lanes: &[Lane],
+    now: std::time::Instant,
+) {
+    for lane in lanes.iter().filter(|l| !l.status.live()) {
+        if let Some((_, end)) = times.get_mut(&lane.id) {
+            end.get_or_insert(now);
+        }
+    }
+}
+
 /// Whether a lane's header offers Stop: it is still going and its agent can stop it alone.
 pub fn shows_stop(lane: &Lane) -> bool {
     lane.controls.stop && lane.status.live()
@@ -172,6 +186,31 @@ mod tests {
         assert_eq!(elapsed(None, None, later), None, "no start: no time");
         assert_eq!(clock(Duration::from_secs(62)), "1:02");
         assert_eq!(clock(Duration::from_secs(5)), "0:05");
+    }
+
+    #[test]
+    fn a_lane_that_stopped_without_an_event_stops_its_clock() {
+        // Review 4: a lane stopped by the process ending gets its end stamped.
+        let t0 = Instant::now();
+        let mut times = std::collections::HashMap::from([
+            ("live".to_string(), (t0, None)),
+            ("gone".to_string(), (t0, None)),
+        ]);
+        let mut live = lane("live", "A");
+        live.status = LaneStatus::Working;
+        let mut gone = lane("gone", "B");
+        gone.status = LaneStatus::Stopped;
+        let now = t0 + Duration::from_secs(5);
+        stamp_ends(&mut times, &[live, gone], now);
+        assert_eq!(times["live"].1, None);
+        assert_eq!(times["gone"].1, Some(now));
+        // Stamped once: a later pass keeps the first end.
+        stamp_ends(
+            &mut times,
+            &[lane("gone", "B")],
+            now + Duration::from_secs(9),
+        );
+        assert_eq!(times["gone"].1, Some(now));
     }
 
     #[test]

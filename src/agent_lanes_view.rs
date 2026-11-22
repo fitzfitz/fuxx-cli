@@ -110,6 +110,7 @@ impl AgentTab {
             })
             .collect();
         let empty = lanes.is_empty();
+        crate::agent_lanes::stamp_ends(&mut self.lane_times, lanes, Instant::now());
         self.lane_marks
             .retain(|id, _| live.iter().any(|(l, _)| l == id));
         for (id, status) in live {

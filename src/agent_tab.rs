@@ -1987,6 +1987,8 @@ impl AgentTab {
         self.end_timer = None;
         if let Some(process) = self.process.take() {
             process.kill();
+            // Its subagents go with it (no `process_ended` comes for a process ended here).
+            self.conversation.process_gone();
         }
     }
 
@@ -2349,7 +2351,13 @@ impl AgentTab {
         use crate::agent_lanes::View;
         let view = self.view.clone();
         let items = self.conversation.items();
-        let order = crate::agent_chat::rows_of(items, &view);
+        let lanes: Vec<&str> = self
+            .conversation
+            .lanes()
+            .iter()
+            .map(|l| l.id.as_str())
+            .collect();
+        let order = crate::agent_chat::rows_of(items, &view, &lanes);
         let lane = match &view {
             View::Lane(id) => self.conversation.lane(id).cloned(),
             View::Main => None,
