@@ -421,6 +421,9 @@ pub struct Picture {
     pub media_type: &'static str,
     pub bytes: Arc<[u8]>,
     pub data: Arc<str>,
+    /// The marker the message's text names it by (`[Image #1]`, a pasted image), sent just
+    /// before it so the agent knows which picture the text means; none for a file's.
+    pub label: Option<Arc<str>>,
 }
 
 impl Picture {
@@ -430,6 +433,7 @@ impl Picture {
             media_type,
             bytes: Arc::from(bytes),
             data,
+            label: None,
         }
     }
 }

@@ -1747,77 +1747,86 @@ impl AgentTab {
     /// What goes with your next message (a dropped command block), on top inside the box until
     /// it is sent; each chip's × takes it off.
     fn attachment_chips(&self, c: &Colors, cx: &mut Context<Self>) -> Option<Div> {
-        if self.attachments.is_empty() {
+        // A pasted image is a pill in the text, not a chip.
+        let shows = |a: &crate::agent_tab::Attachment| {
+            !matches!(a, crate::agent_tab::Attachment::Image { inline: true, .. })
+        };
+        if !self.attachments.iter().any(shows) {
             return None;
         }
-        let chips = self.attachments.iter().enumerate().map(|(i, a)| {
-            let (dim, text, hover) = (c.panel_dim, c.panel_text, c.panel_hover);
-            let remove = div()
-                .id(("attachment-remove", i))
-                .size(px(14.))
+        let chips = self
+            .attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| shows(a))
+            .map(|(i, a)| {
+                let (dim, text, hover) = (c.panel_dim, c.panel_text, c.panel_hover);
+                let remove = div()
+                    .id(("attachment-remove", i))
+                    .size(px(14.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(3.))
+                    .text_color(hsla(dim))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hsla(hover)).text_color(hsla(text)))
+                    .child("\u{d7}")
+                    .tooltip(|_, cx| -> gpui::AnyView {
+                        cx.new(|_| crate::sidebar_toggle::Tip("Remove".into()))
+                            .into()
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        // Only the ×: the chip under it opens an image.
+                        cx.stop_propagation();
+                        this.remove_attachment_at(i, cx)
+                    }));
+                #[cfg(feature = "ui-shots")]
+                let remove = {
+                    let removes = self.removes.clone();
+                    removes.borrow_mut().resize(self.attachments.len(), None);
+                    remove.child(
+                        gpui::canvas(
+                            move |b, _, _| {
+                                if let Some(slot) = removes.borrow_mut().get_mut(i) {
+                                    *slot = Some(b);
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                    )
+                };
+                let label = a.label();
+                let tip = a.tip();
+                // An image chip opens the image in the viewer (your words, 2026-11-22).
+                let image =
+                    matches!(a, crate::agent_tab::Attachment::Image { .. }).then(|| label.clone());
+                chip(
+                    format!("{} {}", a.glyph(), label.lines().next().unwrap_or("")),
+                    true,
+                    c,
+                )
+                .id(("attachment", i))
+                .when_some(image, |d, name| {
+                    d.cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| this.view_image(&name, cx)))
+                })
+                .when_some(tip, |d, tip| {
+                    d.tooltip(move |_, cx| -> gpui::AnyView {
+                        cx.new(|_| crate::sidebar_toggle::Tip(tip.clone().into()))
+                            .into()
+                    })
+                })
+                .pr(px(4.))
                 .flex()
                 .items_center()
-                .justify_center()
-                .rounded(px(3.))
-                .text_color(hsla(dim))
-                .cursor_pointer()
-                .hover(move |s| s.bg(hsla(hover)).text_color(hsla(text)))
-                .child("\u{d7}")
-                .tooltip(|_, cx| -> gpui::AnyView {
-                    cx.new(|_| crate::sidebar_toggle::Tip("Remove".into()))
-                        .into()
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    // Only the ×: the chip under it opens an image.
-                    cx.stop_propagation();
-                    this.remove_attachment_at(i, cx)
-                }));
-            #[cfg(feature = "ui-shots")]
-            let remove = {
-                let removes = self.removes.clone();
-                removes.borrow_mut().resize(self.attachments.len(), None);
-                remove.child(
-                    gpui::canvas(
-                        move |b, _, _| {
-                            if let Some(slot) = removes.borrow_mut().get_mut(i) {
-                                *slot = Some(b);
-                            }
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full(),
-                )
-            };
-            let label = a.label();
-            let tip = a.tip();
-            // An image chip opens the image in the viewer (your words, 2026-11-22).
-            let image =
-                matches!(a, crate::agent_tab::Attachment::Image { .. }).then(|| label.clone());
-            chip(
-                format!("{} {}", a.glyph(), label.lines().next().unwrap_or("")),
-                true,
-                c,
-            )
-            .id(("attachment", i))
-            .when_some(image, |d, name| {
-                d.cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| this.view_image(&name, cx)))
-            })
-            .when_some(tip, |d, tip| {
-                d.tooltip(move |_, cx| -> gpui::AnyView {
-                    cx.new(|_| crate::sidebar_toggle::Tip(tip.clone().into()))
-                        .into()
-                })
-            })
-            .pr(px(4.))
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .child(remove)
-        });
+                .gap(px(4.))
+                .child(remove)
+            });
         Some(self.marked(
             "attachments",
             div().flex().flex_wrap().gap(px(6.)).children(chips),

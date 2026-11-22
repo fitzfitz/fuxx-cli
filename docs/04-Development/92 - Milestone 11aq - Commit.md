@@ -116,3 +116,10 @@ Esc); tests for the commit path on real temporary repos (`git_stage`'s style), a
   the tab (a file keeps its name); an image chip, in the box or in a sent message, opens the image in a viewer over
   the tab (the tool modal's scrim, the image fitted whole, its name and ×; Esc, × or a click outside closes). The tab
   keeps its images in memory only, for its life. Scene `agent-box-image-view`. Released in v0.12.5.
+- **Pasted images as pills in the text** (your words, 2026-11-22: "pasted image goes to as part of chat, make it
+  pill inside the chat along with the prompt where you pasted it … will it get the context if it's like this?",
+  "yes"): a pasted image goes into the text at the caret as `[Image #N]`, drawn as a pill that edits as one (the caret
+  steps over it, ⌫/⌦ take it whole, a click opens the image); no chip for it. Sent: your message shows the pills
+  (click opens the viewer); Claude gets each picture right after a `[Image #N]` text block, so the text's markers name
+  them; agy gets `[Image #N]: <path>` after the text. A pill deleted before sending: that image isn't sent. Dropped or
+  chosen image files stay chips (a file's name). Scene `agent-box-image-view` (two pills sent, a third in the box).

@@ -35,6 +35,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — Chore: pasted images as pills in the text
+
+- **What:** your words ("make it pill inside the chat along with the prompt where you pasted it", "yes"): `[Image #N]`
+  pills in the box and in your sent message, sent with their markers so the agent knows which picture the text means
+  (note 92, chores).
+- **Checks:** 2400 tests; clippy unchanged; the agent scenes 83/83.
+
 ### 2026-11-22 — v0.12.5 released (v0.12.4's tag run failed)
 
 - **What:** your words ("deploy patch.. and go write it"): pasted images named "Image #N" and a viewer for image chips.

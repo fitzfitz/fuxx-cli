@@ -1905,24 +1905,73 @@ pub(super) fn agent_box_code_chip() {
 /// §8: an image from `Image\u{2026}`, pasted, or dropped is a chip, `\u{1f5bc} name`. Claude takes
 /// them in the message: image blocks (base64) before the text, no path in the text; the
 /// conversation lists their names.
-/// Pasted images are "Image #1", "Image #2" (your words, 2026-11-22), and a chip opens its image
-/// in the viewer over the tab (a 1024 px logo, fitted whole, under the top bar); Esc's action
-/// closes it, and a sent message's chip opens it again.
+/// Pasted images are "Image #1", "Image #2" (your words, 2026-11-22), pills in the text where
+/// they were pasted ("make it pill inside the chat along with the prompt"), sent with their
+/// markers; a pill (in the box or your sent message) opens its image in the viewer over the tab
+/// (a 1024 px logo, fitted whole, under the top bar). The picture: your message with two pills
+/// above, the box with a third.
 pub(super) fn agent_box_image_view() {
     layout_scene("agent-box-image-view", |n, cx, window, tab| {
         const LOGO: &[u8] = include_bytes!("../../assets/logo/3d-cyber/fuxx-logo-large.png");
-        for _ in 0..2 {
+        let paste = |cx: &mut VisualTestAppContext| {
             let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, LOGO.to_vec());
             feed(cx, tab, |t, cx| t.attach_pasted_image(image, cx));
-        }
-        settle_until(n, cx, window, "two pasted chips", |cx| {
+        };
+        let typed = |cx: &mut VisualTestAppContext, s: &'static str| {
+            feed(cx, tab, |t, cx| {
+                t.shot_composer().update(cx, |c, cx| c.insert(s, cx))
+            });
+        };
+        typed(cx, "Compare ");
+        paste(cx);
+        settle_until(n, cx, window, "the first pill", |cx| {
+            chips(cx, tab).len() == 1
+        });
+        typed(cx, " with ");
+        paste(cx);
+        settle_until(n, cx, window, "the second pill", |cx| {
             chips(cx, tab).len() == 2
         });
         assert_eq!(
-            chips(cx, tab),
-            ["\u{1f5bc} Image #1", "\u{1f5bc} Image #2"],
-            "{n}: numbered in the order pasted"
+            box_text(cx, tab),
+            "Compare [Image #1] with [Image #2]",
+            "{n}: numbered in the order pasted, where the caret was"
         );
+        // Drawn as pills: no chip row in the box.
+        assert!(
+            cx.read(|cx| tab.read(cx).shot_part("attachments"))
+                .is_none(),
+            "{n}: no chips for pasted images"
+        );
+        let text = box_text(cx, tab);
+        feed(cx, tab, |t, cx| t.send(text.clone(), cx));
+        let sent = last_user(cx, tab);
+        let blocks = sent["message"]["content"].as_array().expect("blocks");
+        assert_eq!(
+            blocks[0],
+            serde_json::json!({"type":"text","text":"[Image #1]"}),
+            "{n}: each picture after its marker"
+        );
+        assert_eq!(blocks[1]["type"], "image", "{n}");
+        assert_eq!(
+            blocks[2],
+            serde_json::json!({"type":"text","text":"[Image #2]"}),
+            "{n}"
+        );
+        assert_eq!(
+            blocks[4],
+            serde_json::json!({"type":"text","text":"Compare [Image #1] with [Image #2]"}),
+            "{n}"
+        );
+        feed(cx, tab, |t, cx| {
+            t.shot_composer()
+                .update(cx, |c, cx| c.set_text(String::new(), cx))
+        });
+        typed(cx, "and ");
+        paste(cx);
+        settle_until(n, cx, window, "the third pill", |cx| {
+            box_text(cx, tab).contains("[Image #3]")
+        });
         feed(cx, tab, |t, cx| t.view_image("nothing by that name", cx));
         assert!(
             cx.read(|cx| tab.read(cx).image_view.is_none()),
@@ -1954,7 +2003,6 @@ pub(super) fn agent_box_image_view() {
             cx.read(|cx| tab.read(cx).images.contains_key("Image #2")),
             "{n}: kept for a sent message's chip"
         );
-        feed(cx, tab, |t, cx| t.view_image("Image #1", cx));
         super::settle_frames(cx, window);
     });
 }
@@ -1996,6 +2044,7 @@ pub(super) fn agent_box_image_chip() {
                     name,
                     picture,
                     path,
+                    ..
                 } = a
                 else {
                     panic!("{n}: {a:?}");
@@ -2010,14 +2059,21 @@ pub(super) fn agent_box_image_chip() {
                 }
             }
         });
-        feed(cx, tab, |t, cx| t.send("What are these?".into(), cx));
+        feed(cx, tab, |t, cx| {
+            t.send("What are these? [Image #1]".into(), cx)
+        });
         let sent = last_user(cx, tab);
         let blocks = sent["message"]["content"].as_array().expect("blocks");
-        assert_eq!(blocks.len(), 4, "{n}: three images, then the text");
-        for b in &blocks[..3] {
+        assert_eq!(
+            blocks.len(),
+            5,
+            "{n}: three images (the pasted one after its marker), then the text"
+        );
+        for b in [&blocks[0], &blocks[1], &blocks[3]] {
             assert_eq!(b["type"], "image", "{n}");
             assert_eq!(b["source"]["type"], "base64", "{n}");
         }
+        assert_eq!(blocks[2]["text"], "[Image #1]", "{n}");
         assert_eq!(blocks[0]["source"]["media_type"], "image/png", "{n}");
         assert_eq!(
             blocks[0]["source"]["data"],
@@ -2025,8 +2081,8 @@ pub(super) fn agent_box_image_chip() {
             "{n}"
         );
         assert_eq!(
-            blocks[3],
-            serde_json::json!({"type":"text","text":"What are these?"}),
+            blocks[4],
+            serde_json::json!({"type":"text","text":"What are these? [Image #1]"}),
             "{n}"
         );
         assert!(chips(cx, tab).is_empty(), "{n}: the box has none left");
@@ -2076,12 +2132,16 @@ pub(super) fn agent_box_image_agy() {
                 b"pasted bytes",
                 "{n}"
             );
-            feed(cx, tab, |t, cx| t.send("Look".into(), cx));
+            feed(cx, tab, |t, cx| t.send("Look at [Image #1]".into(), cx));
             let sent = last_user(cx, tab);
             assert_eq!(
                 sent["message"]["content"],
-                format!("Look\n\n{}\n\n{}", diagram.display(), pasted.display()),
-                "{n}"
+                format!(
+                    "Look at [Image #1]\n\n{}\n\n[Image #1]: {}",
+                    diagram.display(),
+                    pasted.display()
+                ),
+                "{n}: the marker names the pasted image's file"
             );
             let _ = std::fs::remove_file(&pasted);
         },

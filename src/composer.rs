@@ -84,6 +84,8 @@ pub enum ComposerEvent {
     Complete,
     /// Paste with an image (and no text) on the clipboard: the box makes it an attachment.
     PasteImage(gpui::Image),
+    /// A click on an atom's pill (a pasted image's `[Image #1]`): its text, to open.
+    OpenAtom(String),
 }
 
 /// The pure editing core: text, a caret and an anchor (the selection is between them), all byte
@@ -97,6 +99,9 @@ pub struct EditBuffer {
     /// Lines wrap at this many characters (the box's width in its font's widest cell); none:
     /// a row is a whole line.
     wrap: Option<usize>,
+    /// Pieces of text that edit as one (a pasted image's `[Image #1]`, drawn as a pill): the
+    /// caret never stops inside one, and ⌫ / ⌦ take it whole.
+    atoms: Vec<String>,
 }
 
 impl EditBuffer {
@@ -108,6 +113,55 @@ impl EditBuffer {
             anchor: text.len(),
             goal: None,
             wrap: None,
+            atoms: Vec::new(),
+        }
+    }
+
+    /// The pieces that edit as one (see `atoms`).
+    pub fn set_atoms(&mut self, atoms: Vec<String>) {
+        self.atoms = atoms;
+    }
+
+    /// Where the atoms are in the text, in order, none overlapping.
+    pub fn atom_ranges(&self) -> Vec<Range<usize>> {
+        let mut found: Vec<Range<usize>> = self
+            .atoms
+            .iter()
+            .filter(|a| !a.is_empty())
+            .flat_map(|a| {
+                self.text
+                    .match_indices(a.as_str())
+                    .map(|(i, m)| i..i + m.len())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        found.sort_by_key(|r| r.start);
+        let mut out: Vec<Range<usize>> = Vec::new();
+        for r in found {
+            if out.last().is_none_or(|l| r.start >= l.end) {
+                out.push(r);
+            }
+        }
+        out
+    }
+
+    /// The atom `i` is strictly inside, if any.
+    pub fn atom_around(&self, i: usize) -> Option<Range<usize>> {
+        self.atom_ranges()
+            .into_iter()
+            .find(|r| r.start < i && i < r.end)
+    }
+
+    /// `i` out of an atom: to its start (`left`), its end, or (`None`) the nearer edge.
+    fn out_of_atom(&self, i: usize, left: Option<bool>) -> usize {
+        match self.atom_around(i) {
+            Some(r) => match left {
+                Some(true) => r.start,
+                Some(false) => r.end,
+                None if i - r.start <= r.end - i => r.start,
+                None => r.end,
+            },
+            None => i,
         }
     }
 
@@ -146,7 +200,7 @@ impl EditBuffer {
 
     /// The caret to `at`: alone, or (`extend`) taking the selection with it from the anchor.
     pub fn move_to(&mut self, at: usize, extend: bool) {
-        self.cursor = self.snap(at);
+        self.cursor = self.out_of_atom(self.snap(at), None);
         if !extend {
             self.anchor = self.cursor;
         }
@@ -170,6 +224,7 @@ impl EditBuffer {
     pub fn set_text(&mut self, text: &str) {
         *self = Self {
             wrap: self.wrap,
+            atoms: std::mem::take(&mut self.atoms),
             ..Self::new(text)
         };
     }
@@ -195,7 +250,16 @@ impl EditBuffer {
     pub fn backspace(&mut self) {
         let sel = self.selection();
         if sel.is_empty() {
-            self.replace(prev_char(&self.text, self.cursor)..self.cursor, "");
+            // An atom just before the caret goes whole.
+            let from = match self
+                .atom_ranges()
+                .into_iter()
+                .find(|r| r.end == self.cursor)
+            {
+                Some(r) => r.start,
+                None => prev_char(&self.text, self.cursor),
+            };
+            self.replace(from..self.cursor, "");
         } else {
             self.replace(sel, "");
         }
@@ -205,7 +269,15 @@ impl EditBuffer {
     pub fn delete(&mut self) {
         let sel = self.selection();
         if sel.is_empty() {
-            self.replace(self.cursor..next_char(&self.text, self.cursor), "");
+            let to = match self
+                .atom_ranges()
+                .into_iter()
+                .find(|r| r.start == self.cursor)
+            {
+                Some(r) => r.end,
+                None => next_char(&self.text, self.cursor),
+            };
+            self.replace(self.cursor..to, "");
         } else {
             self.replace(sel, "");
         }
@@ -257,7 +329,8 @@ impl EditBuffer {
         let at = if !extend && !sel.is_empty() {
             if left { sel.start } else { sel.end }
         } else {
-            to(&self.text, self.cursor)
+            // Over an atom in one step, the way it went.
+            self.out_of_atom(to(&self.text, self.cursor), Some(left))
         };
         self.move_to(at, extend);
     }
@@ -563,6 +636,12 @@ impl Composer {
     }
 
     /// The caret's byte offset.
+    /// The pieces that edit as one and draw as pills (the tab's pasted images' `[Image #N]`).
+    pub fn set_atoms(&mut self, atoms: Vec<String>, cx: &mut Context<Self>) {
+        self.buf.set_atoms(atoms);
+        cx.notify();
+    }
+
     pub fn cursor(&self) -> usize {
         self.buf.cursor()
     }
@@ -826,6 +905,17 @@ impl Composer {
         cx.stop_propagation();
         window.focus(&self.focus_handle, cx);
         self.marked = None;
+        // A click on a pill opens what it stands for (a pasted image), the caret staying put.
+        if e.click_count == 1
+            && !e.modifiers.shift
+            && let Some(at) = self.index_at(e.position)
+            && let Some(atom) = self.buf.atom_around(at)
+        {
+            let name = self.buf.text()[atom].to_string();
+            cx.emit(ComposerEvent::OpenAtom(name));
+            cx.notify();
+            return;
+        }
         if e.click_count >= 2 {
             self.buf.select_all();
         } else if let Some(at) = self.index_at(e.position) {
@@ -1065,6 +1155,51 @@ impl Render for Composer {
     }
 }
 
+/// `runs` (of the row `row`) with each atom's first and last character (its brackets) drawn
+/// clear, so the atom reads as its name on a pill.
+fn hide_brackets(runs: Vec<TextRun>, row: &Range<usize>, atoms: &[Range<usize>]) -> Vec<TextRun> {
+    // The row-relative bytes to hide: each bracket is one byte (`[` / `]`).
+    let hidden: Vec<usize> = atoms
+        .iter()
+        .flat_map(|a| [a.start, a.end - 1])
+        .filter(|&i| row.start <= i && i < row.end)
+        .map(|i| i - row.start)
+        .collect();
+    if hidden.is_empty() {
+        return runs;
+    }
+    let mut out = Vec::new();
+    let mut at = 0;
+    for run in runs {
+        let end = at + run.len;
+        let mut from = at;
+        let mut cuts: Vec<usize> = hidden
+            .iter()
+            .flat_map(|&h| [h, h + 1])
+            .filter(|&c| at < c && c < end)
+            .collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        cuts.push(end);
+        for to in cuts {
+            let clear = hidden.contains(&from);
+            out.push(TextRun {
+                len: to - from,
+                color: if clear {
+                    gpui::Hsla { a: 0., ..run.color }
+                } else {
+                    run.color
+                },
+                ..run.clone()
+            });
+            from = to;
+        }
+        at = end;
+    }
+    out.retain(|r| r.len > 0);
+    out
+}
+
 /// The marked text's underline, as macOS expects, cut to the row `range`.
 fn runs_for(range: &Range<usize>, marked: Option<&Range<usize>>, base: &TextRun) -> Vec<TextRun> {
     let len = range.len();
@@ -1114,6 +1249,8 @@ pub struct Shaped {
     rows: Vec<Range<usize>>,
     first: usize,
     lines: Vec<ShapedLine>,
+    /// Where the atoms are (drawn as pills).
+    atoms: Vec<Range<usize>>,
 }
 
 impl Element for ComposerText {
@@ -1196,10 +1333,12 @@ impl Element for ComposerText {
         };
         let font_size = m.font_size;
         let text = input.buf.text();
+        let atoms = input.buf.atom_ranges();
         let lines = rows[first..first + shown]
             .iter()
             .map(|range| {
-                let runs = runs_for(range, input.marked.as_ref(), &base);
+                let runs =
+                    hide_brackets(runs_for(range, input.marked.as_ref(), &base), range, &atoms);
                 window.text_system().shape_line(
                     text[range.clone()].to_string().into(),
                     font_size,
@@ -1208,7 +1347,12 @@ impl Element for ComposerText {
                 )
             })
             .collect();
-        Shaped { rows, first, lines }
+        Shaped {
+            rows,
+            first,
+            lines,
+            atoms,
+        }
     }
 
     fn paint(
@@ -1345,6 +1489,27 @@ impl Element for ComposerText {
                         hsla(shade),
                     ));
                 }
+            }
+            // An atom is a pill behind its text (its brackets drawn clear: the pill's padding).
+            for atom in &shaped.atoms {
+                if atom.end <= range.start || atom.start >= range.end {
+                    continue;
+                }
+                let s = atom.start.max(range.start) - range.start;
+                let e = atom.end.min(range.end) - range.start;
+                window.paint_quad(
+                    fill(
+                        Bounds::from_corners(
+                            point(left + line.x_for_index(s) + px(1.), top + px(2.)),
+                            point(
+                                left + line.x_for_index(e) - px(1.),
+                                top + line_height - px(2.),
+                            ),
+                        ),
+                        hsla(crate::theme::mix(ui.composer_inner, theme.foreground, 0.12)),
+                    )
+                    .corner_radii(px(4.)),
+                );
             }
             line.paint(
                 point(left, top),
@@ -1564,6 +1729,44 @@ mod tests {
         b.down();
         b.down();
         assert_eq!(b.cursor(), 5);
+    }
+
+    #[test]
+    fn an_atom_edits_as_one() {
+        let mut b = EditBuffer::new("see [Image #1] here");
+        b.set_atoms(vec!["[Image #1]".into()]);
+        assert_eq!(b.atom_ranges(), vec![4..14]);
+        // ← from after it jumps to its start; → from its start to its end.
+        b.set_cursor(14);
+        b.left(false);
+        assert_eq!(b.cursor(), 4);
+        b.right(false);
+        assert_eq!(b.cursor(), 14);
+        // A click inside lands on the nearer edge.
+        b.move_to(6, false);
+        assert_eq!(b.cursor(), 4);
+        b.move_to(12, false);
+        assert_eq!(b.cursor(), 14);
+        // ⌫ after it takes it whole; ⌦ before it too.
+        b.backspace();
+        assert_eq!(b.text(), "see  here");
+        let mut b = EditBuffer::new("[Image #2]!");
+        b.set_atoms(vec!["[Image #2]".into()]);
+        b.set_cursor(0);
+        b.delete();
+        assert_eq!(b.text(), "!");
+        // Text that isn't an atom edits as before.
+        let mut b = EditBuffer::new("[Image #3]");
+        b.backspace();
+        assert_eq!(b.text(), "[Image #3");
+    }
+
+    #[test]
+    fn atoms_survive_set_text() {
+        let mut b = EditBuffer::new("");
+        b.set_atoms(vec!["[Image #1]".into()]);
+        b.set_text("a [Image #1]");
+        assert_eq!(b.atom_ranges(), vec![2..12]);
     }
 
     #[test]

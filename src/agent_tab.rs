@@ -373,6 +373,8 @@ pub enum Attachment {
         /// Where the image is: its file, or the temp file a pasted one was written to when
         /// the agent can't take it in the message (it is told this path instead).
         path: Option<PathBuf>,
+        /// A pasted one: it sits in the text as `[name]` (a pill), not as a chip.
+        inline: bool,
     },
 }
 
@@ -563,7 +565,11 @@ pub fn wire_text(
             Attachment::Text(text) => text.clone(),
             Attachment::File(path) => path.to_string_lossy().into_owned(),
             Attachment::Code(code) => code.text(&agent_path(&code.path, code.real.as_deref(), cwd)),
-            Attachment::Image { path, .. } if !images_inline => match path {
+            Attachment::Image {
+                path, inline, name, ..
+            } if !images_inline => match path {
+                // A pasted one: its marker, so "[Image #1]" in the text finds its file.
+                Some(path) if *inline => format!("{}: {}", marker(name), path.to_string_lossy()),
                 Some(path) => path.to_string_lossy().into_owned(),
                 None => continue,
             },
@@ -589,7 +595,12 @@ pub(crate) fn attachable(list: &[Attachment], new: &Attachment) -> bool {
 
 /// What the conversation's row for a message lists of its attachments.
 fn labels(attachments: &[Attachment]) -> Vec<String> {
-    attachments.iter().map(Attachment::label).collect()
+    // A pasted image is a pill in the text, not a chip under it.
+    attachments
+        .iter()
+        .filter(|a| !matches!(a, Attachment::Image { inline: true, .. }))
+        .map(Attachment::label)
+        .collect()
 }
 
 /// The images among `attachments`, for an agent that takes them in the message.
@@ -597,8 +608,53 @@ fn pictures(attachments: &[Attachment]) -> Vec<Picture> {
     attachments
         .iter()
         .filter_map(|a| match a {
-            Attachment::Image { picture, .. } => Some(picture.clone()),
+            Attachment::Image {
+                picture,
+                inline,
+                name,
+                ..
+            } => Some(Picture {
+                label: inline.then(|| Arc::from(marker(name))),
+                ..picture.clone()
+            }),
             _ => None,
+        })
+        .collect()
+}
+
+/// Where `text` names the pasted images in `names` (`[Image #1]` …), in order, with each name.
+pub fn marker_ranges<'a>(
+    text: &str,
+    names: impl IntoIterator<Item = &'a String>,
+) -> Vec<(std::ops::Range<usize>, String)> {
+    let mut found: Vec<(std::ops::Range<usize>, String)> = names
+        .into_iter()
+        .flat_map(|name| {
+            let mark = marker(name);
+            text.match_indices(mark.as_str())
+                .map(|(i, m)| (i..i + m.len(), name.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    found.sort_by_key(|(r, _)| r.start);
+    found
+}
+
+/// How a pasted image sits in the text: `[Image #1]` (drawn as a pill).
+pub fn marker(name: &str) -> String {
+    format!("[{name}]")
+}
+
+/// The attachments a message really takes: a pasted image whose pill was deleted from `text`
+/// goes (you took it out).
+pub fn kept(text: &str, attachments: Vec<Attachment>) -> Vec<Attachment> {
+    attachments
+        .into_iter()
+        .filter(|a| match a {
+            Attachment::Image {
+                inline: true, name, ..
+            } => text.contains(&marker(name)),
+            _ => true,
         })
         .collect()
 }
@@ -996,6 +1052,8 @@ pub struct AgentTab {
     refocus: Option<Refocus>,
     /// How many images were pasted in this tab (they are named "Image #N").
     pasted: usize,
+    /// Their markers (`[Image #1]` …): the box draws them as pills that edit as one.
+    pills: Vec<String>,
     /// Every image attached in this tab, by its chip's name, so a chip (in the box or in a sent
     /// message) opens it in the viewer. Kept for the tab's life only.
     pub(crate) images: std::collections::HashMap<String, Picture>,
@@ -1446,6 +1504,7 @@ impl AgentTab {
             modal_scroll: gpui::ScrollHandle::new(),
             refocus: None,
             pasted: 0,
+            pills: Vec::new(),
             images: std::collections::HashMap::new(),
             image_view: None,
             models_older_open: None,
@@ -1732,6 +1791,7 @@ impl AgentTab {
     /// conversation started under an id fuxx chose makes that id the tab's conversation at once
     /// (told, so saved: a process left running by a crash is found holding it, R13).
     fn say(&mut self, text: String, attachments: Vec<Attachment>) {
+        let attachments = kept(&text, attachments);
         if let Some(id) = self.run.fresh.clone()
             && !self.run.started
             && self.conversation.conversation() != Some(id.as_str())
@@ -2365,8 +2425,24 @@ impl AgentTab {
         if !attachable(&self.attachments, &attachment) {
             return;
         }
-        if let Attachment::Image { name, picture, .. } = &attachment {
+        if let Attachment::Image {
+            name,
+            picture,
+            inline,
+            ..
+        } = &attachment
+        {
             self.images.insert(name.clone(), picture.clone());
+            // A pasted image goes into the text where the caret is, as a pill.
+            if *inline {
+                let mark = marker(name);
+                self.pills.push(mark.clone());
+                let pills = self.pills.clone();
+                self.composer.update(cx, |c, cx| {
+                    c.set_atoms(pills, cx);
+                    c.insert(&mark, cx);
+                });
+            }
         }
         self.attachments.push(attachment);
         cx.notify();
@@ -2454,6 +2530,8 @@ impl AgentTab {
         let by_path = !provider.sends_images();
         let (limit, label) = (provider.image_limit(), provider.info().label);
         let dir = std::env::temp_dir().join(PASTED_DIR);
+        // A pasted one goes into the text as a pill.
+        let inline = matches!(from, ImageFrom::Clipboard(_));
         let job = cx.background_spawn(async move {
             let (bytes, path) = match from {
                 ImageFrom::File(path) => {
@@ -2475,6 +2553,7 @@ impl AgentTab {
                 name,
                 picture,
                 path,
+                inline,
             })
         });
         cx.spawn(async move |this, cx| {
@@ -2640,6 +2719,13 @@ impl AgentTab {
             ComposerEvent::AtTyped => self.open_at(cx),
             ComposerEvent::Complete => self.complete_slash(cx),
             ComposerEvent::PasteImage(image) => self.attach_pasted_image(image.clone(), cx),
+            ComposerEvent::OpenAtom(mark) => {
+                let name = mark
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .to_string();
+                self.view_image(&name, cx);
+            }
         }
     }
 
@@ -3855,7 +3941,7 @@ impl AgentTab {
                             .flex()
                             .flex_col()
                             .gap(px(6.))
-                            .child(SharedString::from(text.clone()))
+                            .child(self.you_text(ix, text, look))
                             .when(!attachments.is_empty(), |d| {
                                 d.child(div().flex().flex_wrap().gap(px(6.)).children(
                                     attachments.iter().enumerate().map(|(j, a)| {
@@ -4458,6 +4544,47 @@ impl AgentTab {
             (false, _) if self.status() == Status::Working => Some("■ Stop  esc"),
             _ => None,
         }
+    }
+
+    /// Your message's text, its pasted images' markers drawn as pills (the brackets clear, the
+    /// name on the chip fill) that open the image when clicked.
+    fn you_text(&self, ix: usize, text: &str, look: &Look) -> AnyElement {
+        let c = &look.c;
+        let marks = marker_ranges(text, self.images.keys());
+        if marks.is_empty() {
+            return div()
+                .child(SharedString::from(text.to_string()))
+                .into_any_element();
+        }
+        // Each marker on the chip fill, its brackets drawn as spaces (the pill's padding; the
+        // same length, so the ranges hold).
+        let pill = gpui::HighlightStyle {
+            color: Some(hsla(c.you_text)),
+            background_color: Some(hsla(c.chip_fill)),
+            ..Default::default()
+        };
+        let highlights: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> =
+            marks.iter().map(|(r, _)| (r.clone(), pill)).collect();
+        let mut shown = text.to_string();
+        for (r, _) in &marks {
+            shown.replace_range(r.start..r.start + 1, " ");
+            shown.replace_range(r.end - 1..r.end, " ");
+        }
+        let names: Vec<String> = marks.iter().map(|(_, n)| n.clone()).collect();
+        let view = look.view.clone();
+        gpui::InteractiveText::new(
+            ("you-text", ix),
+            gpui::StyledText::new(shown).with_highlights(highlights),
+        )
+        .on_click(
+            marks.into_iter().map(|(r, _)| r).collect(),
+            move |i, _, cx| {
+                if let Some(name) = names.get(i).cloned() {
+                    view.update(cx, |this, cx| this.view_image(&name, cx)).ok();
+                }
+            },
+        )
+        .into_any_element()
     }
 
     /// The image viewer (your words, 2026-11-22: "I want it to be viewable (modal to view the
@@ -5897,11 +6024,57 @@ mod tests {
         assert_eq!(Attachment::Text("x".into()).tip(), None);
     }
 
+    fn pasted(n: usize, path: Option<&str>) -> Attachment {
+        Attachment::Image {
+            name: pasted_name(n),
+            picture: Picture::new("image/png", b"x".to_vec()),
+            path: path.map(PathBuf::from),
+            inline: true,
+        }
+    }
+
+    #[test]
+    fn a_pasted_image_is_its_marker_in_the_text() {
+        assert_eq!(marker("Image #1"), "[Image #1]");
+        let text = "compare [Image #1] with [Image #2]";
+        let names = vec!["Image #2".to_string(), "Image #1".to_string()];
+        assert_eq!(
+            marker_ranges(text, &names),
+            vec![
+                (8..18, "Image #1".to_string()),
+                (24..34, "Image #2".to_string())
+            ]
+        );
+        // A pill deleted from the text: that image isn't sent; a file's chip still is.
+        let sent = kept(
+            "only [Image #2]",
+            vec![pasted(1, None), pasted(2, None), image("a.png", None)],
+        );
+        let names: Vec<String> = sent.iter().map(Attachment::label).collect();
+        assert_eq!(names, ["Image #2", "a.png"]);
+        // No chip under your message for it: it's in the text.
+        assert_eq!(labels(&sent), ["a.png"]);
+        // Claude: the picture carries its marker; agy: the text names its file by it.
+        assert_eq!(pictures(&sent)[0].label.as_deref(), Some("[Image #2]"));
+        assert_eq!(pictures(&sent)[1].label, None);
+        let agy = wire_text(
+            "look at [Image #1]",
+            &[pasted(1, Some("/tmp/fuxx-images/a.png"))],
+            false,
+            Path::new("/"),
+        );
+        assert_eq!(
+            agy,
+            "look at [Image #1]\n\n[Image #1]: /tmp/fuxx-images/a.png"
+        );
+    }
+
     fn image(name: &str, path: Option<&str>) -> Attachment {
         Attachment::Image {
             name: name.into(),
             picture: Picture::new("image/png", b"x".to_vec()),
             path: path.map(PathBuf::from),
+            inline: false,
         }
     }
 

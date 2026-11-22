@@ -886,11 +886,16 @@ fn content(text: &str, images: &[Picture]) -> Value {
     if images.is_empty() {
         return json!(text);
     }
+    // A pasted image's marker just before it: "[Image #1]" in the text means this picture.
     let mut blocks: Vec<Value> = images
         .iter()
-        .map(|p| {
-            json!({"type": "image",
-            "source": {"type": "base64", "media_type": p.media_type, "data": &*p.data}})
+        .flat_map(|p| {
+            let label = p
+                .label
+                .as_deref()
+                .map(|l| json!({"type": "text", "text": l}));
+            label.into_iter().chain([json!({"type": "image",
+            "source": {"type": "base64", "media_type": p.media_type, "data": &*p.data}})])
         })
         .collect();
     if !text.is_empty() {
@@ -1927,6 +1932,26 @@ mod tests {
     }
 
     #[test]
+    fn a_pasted_images_marker_goes_just_before_it() {
+        let picture = Picture {
+            label: Some(Arc::from("[Image #1]")),
+            ..Picture::new("image/png", b"x".to_vec())
+        };
+        let out = CLAUDE.translator().encode(&Action::Send {
+            text: "what is in [Image #1]?".into(),
+            images: vec![picture],
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        let blocks = v["message"]["content"].as_array().unwrap();
+        assert_eq!(blocks[0], json!({"type": "text", "text": "[Image #1]"}));
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(
+            blocks[2],
+            json!({"type": "text", "text": "what is in [Image #1]?"})
+        );
+    }
+
+    #[test]
     fn encode_uses_the_pictures_data_as_it_is() {
         // The base64 is made once, off the UI thread, when the picture is built; `encode`
         // (on the UI thread) only copies it.
@@ -1934,6 +1959,7 @@ mod tests {
             media_type: "image/png",
             bytes: Arc::from(&b"foo"[..]),
             data: Arc::from("VERBATIM"),
+            label: None,
         };
         let out = CLAUDE.translator().encode(&Action::Send {
             text: String::new(),
