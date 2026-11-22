@@ -257,13 +257,13 @@ pub trait Provider: Sync {
     fn own_command(&self, _typed: &str) -> Option<BoxCommand> {
         None
     }
-    /// The short process that prints the agent's usage limits ($0, outside any conversation).
-    /// None: the agent has no usage command.
     /// The command that asks the agent, once, for a commit message from `prompt` (M11aq's ✦),
     /// its answer on stdout as text; none for an agent that can't.
     fn message_probe(&self, _prompt: &str) -> Option<Probe> {
         None
     }
+    /// The short process that prints the agent's usage limits ($0, outside any conversation).
+    /// None: the agent has no usage command.
     fn usage_probe(&self) -> Option<Probe> {
         None
     }
@@ -693,8 +693,11 @@ mod commit_message_tests {
                 "text",
                 "--model",
                 "haiku",
-                "--no-session-persistence"
-            ]
+                "--no-session-persistence",
+                "--tools",
+                ""
+            ],
+            "no tools: it only writes (the review: it never commits)"
         );
         let agy = agy::AGY.message_probe("say it").expect("agy writes");
         assert_eq!(agy.argv, ["agy", "-p", "say it", "--output-format", "text"]);

@@ -46,6 +46,16 @@ pub fn commit(git: &Path, root: &Path, message: &str) -> Result<(), String> {
     }
 }
 
+/// `commit`, refused first (nothing run) when a merge, rebase, cherry-pick or revert is in
+/// progress — checked at the commit itself, as one may have started since the panel looked (the
+/// review's Important 2).
+pub fn commit_checked(git: &Path, root: &Path, message: &str) -> Result<(), String> {
+    match in_progress(git, root) {
+        Some(what) => Err(format!("Finish {what} first")),
+        None => commit(git, root, message),
+    }
+}
+
 /// What stops a commit now: a merge, rebase, cherry-pick or revert in progress (its name).
 pub fn in_progress(git: &Path, root: &Path) -> Option<&'static str> {
     [
@@ -102,14 +112,24 @@ pub fn staged_diff(git: &Path, root: &Path, cap: usize) -> Result<StagedDiff, St
         .success()
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .ok_or("git could not read the staged changes")?;
-    if text.len() > cap {
-        let end = text[..cap].rfind('\n').map_or(0, |i| i + 1);
-        diff.text = text[..end].to_string();
-        diff.cut = true;
-    } else {
-        diff.text = text;
-    }
+    let (kept, cut) = cut_at_line(&text, cap);
+    diff.text = kept.to_string();
+    diff.cut = cut;
     Ok(diff)
+}
+
+/// `text` within `cap` bytes, cut after its last line end there (and whether it was cut). Found
+/// on bytes: a `\n` byte is always a character boundary, so a multibyte character at the cap
+/// never splits (the review's Critical: slicing at the cap panicked).
+pub fn cut_at_line(text: &str, cap: usize) -> (&str, bool) {
+    if text.len() <= cap {
+        return (text, false);
+    }
+    let end = text.as_bytes()[..cap]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |i| i + 1);
+    (&text[..end], true)
 }
 
 /// Whether `path` looks like a file of secrets (never sent to an agent).
@@ -258,6 +278,33 @@ mod tests {
         assert_eq!(in_progress(&git, &root), Some("a merge"));
     }
 
+    /// The review's Important 2: a merge started elsewhere after the panel last looked is
+    /// caught at the commit itself: refused, nothing committed.
+    #[test]
+    fn a_commit_during_a_merge_is_refused() {
+        let Some(git) = crate::git_branch::find_git() else {
+            return;
+        };
+        let root = repo("merge-commit", &git);
+        git_in(&git, &root, &["checkout", "-q", "-b", "side"]);
+        fs::write(root.join("a.txt"), "side\n").unwrap();
+        git_in(&git, &root, &["commit", "-q", "-am", "side"]);
+        git_in(&git, &root, &["checkout", "-q", "main"]);
+        fs::write(root.join("a.txt"), "main\n").unwrap();
+        git_in(&git, &root, &["commit", "-q", "-am", "main"]);
+        let _ = Command::new(&git)
+            .arg("-C")
+            .arg(&root)
+            .args(["merge", "side"])
+            .output();
+        // Resolved and staged, as a merge waits to be concluded.
+        fs::write(root.join("a.txt"), "both\n").unwrap();
+        git_in(&git, &root, &["add", "a.txt"]);
+        let err = commit_checked(&git, &root, "concluded by the tab").expect_err("refused");
+        assert_eq!(err, "Finish a merge first");
+        assert_eq!(last_message(&git, &root), "main", "nothing committed");
+    }
+
     #[test]
     fn the_staged_diff_leaves_secrets_out_and_is_capped() {
         let Some(git) = crate::git_branch::find_git() else {
@@ -277,6 +324,27 @@ mod tests {
         assert!(
             small.text.is_empty() || small.text.ends_with('\n'),
             "on a line end"
+        );
+    }
+
+    /// The review's Critical: a cap inside a multibyte character (this repo's diffs are full of
+    /// `✦ ↑ ·`) cut a `String` mid-character and panicked — in a background task, which aborts
+    /// the app. The cut is found on bytes, at a line end.
+    #[test]
+    fn a_cap_inside_a_multibyte_character_cuts_at_the_line_before() {
+        let text = "ab\n✦✦✦\nc\n";
+        // Byte 5 is inside the second ✦ (bytes 3–5 are the first).
+        let (cut, was_cut) = cut_at_line(text, 5);
+        assert_eq!((cut, was_cut), ("ab\n", true));
+        assert_eq!(
+            cut_at_line(text, 100),
+            (text, false),
+            "under the cap: whole"
+        );
+        assert_eq!(
+            cut_at_line("✦✦", 2),
+            ("", true),
+            "no line end before the cap: nothing"
         );
     }
 

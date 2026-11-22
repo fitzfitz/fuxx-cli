@@ -58,8 +58,8 @@ pub(crate) struct CommitState {
     pub(crate) note: Option<(PathBuf, &'static str)>,
     /// The agents that can run here (on the login PATH), once looked up.
     pub(crate) agents: Option<Vec<&'static str>>,
-    /// What stops a commit in a repo (a merge, a rebase …), as last read for it.
-    pub(crate) in_progress: Option<(PathBuf, Option<&'static str>)>,
+    /// What stops a commit in each repo (a merge, a rebase …), as last read for it.
+    pub(crate) in_progress: HashMap<PathBuf, Option<&'static str>>,
     /// The field's own subscriptions.
     pub(crate) subs: Vec<Subscription>,
     /// Where its parts were drawn last frame (the UI screenshots: `line`, `button`, `output`).
@@ -96,10 +96,25 @@ fn drawn<E: ParentElement>(state: &CommitState, name: &'static str, el: E) -> E 
 impl CommitState {
     /// What stops a commit in `root` now, as last read.
     pub(crate) fn in_progress_for(&self, root: &Path) -> Option<&'static str> {
-        self.in_progress
-            .as_ref()
-            .filter(|(r, _)| r == root)
-            .and_then(|(_, w)| *w)
+        self.in_progress.get(root).copied().flatten()
+    }
+
+    /// What stops a commit in `root`, as just read (each repo its own).
+    pub(crate) fn note_in_progress(&mut self, root: PathBuf, what: Option<&'static str>) {
+        self.in_progress.insert(root, what);
+    }
+
+    /// Stop `root`'s writing (✦'s Esc, or ✦ pressed again): its flag set, its answer dropped
+    /// when it comes. False when `root` has nothing writing (another repo's run goes on).
+    pub(crate) fn stop(&mut self, root: &Path) -> bool {
+        match &self.busy {
+            Some((r, Busy::Writing(flag))) if r == root => {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.busy = None;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// What runs for `root`.
@@ -284,7 +299,10 @@ impl Workspace {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.right_sidebar.changes.commit.in_progress = Some((root, what));
+                this.right_sidebar
+                    .changes
+                    .commit
+                    .note_in_progress(root, what);
                 cx.notify();
             })
             .ok();
@@ -320,7 +338,8 @@ impl Workspace {
                 .background_executor()
                 .spawn(async move {
                     match find_git() {
-                        Some(git) => crate::git_commit::commit(&git, &at, &message),
+                        // Checked again at the commit: a rebase may have started in a terminal.
+                        Some(git) => crate::git_commit::commit_checked(&git, &at, &message),
                         None => Err("git not found".to_string()),
                     }
                 })
@@ -427,11 +446,20 @@ impl Workspace {
 
     /// Esc while an agent writes: it is stopped (its process killed), its answer dropped.
     pub(crate) fn stop_writing(&mut self, cx: &mut Context<Self>) {
-        let commit = &mut self.right_sidebar.changes.commit;
-        if let Some((_, Busy::Writing(flag))) = &commit.busy {
-            flag.store(true, std::sync::atomic::Ordering::Relaxed);
-            commit.busy = None;
+        // The shown repo's run only (another repo's goes on: the review's Important 4).
+        let Some(root) = self.right_sidebar.changes.repo_root() else {
+            return;
+        };
+        if self.right_sidebar.changes.commit.stop(&root) {
             cx.notify();
+        }
+    }
+
+    /// ✦ pressed: the keyboard into the field, so Esc reaches it (not a terminal's or an agent
+    /// tab's Esc: the review's Important 4).
+    fn focus_commit_field(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(input) = self.right_sidebar.changes.commit.input.clone() {
+            input.read(cx).focus_handle(cx).focus(window, cx);
         }
     }
 
@@ -523,7 +551,9 @@ impl Workspace {
                     .text_size(px(14.0))
                     .text_color(hsla(if writing { ui.accent } else { ui.text_dim }))
                     .child("✦")
-                    .tooltip(tip(if staged == 0 {
+                    .tooltip(tip(if writing {
+                        "Stop writing (Esc)".to_string()
+                    } else if staged == 0 {
                         "Stage files for the agent to describe".to_string()
                     } else {
                         format!("Write the message with {label}")
@@ -532,12 +562,26 @@ impl Workspace {
                     .when(enabled, |d| {
                         d.cursor_pointer()
                             .hover(move |s| s.bg(hsla(ui.side_tab_hover)))
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.write_message(cx);
+                                this.focus_commit_field(window, cx);
+                            }))
+                    })
+                    // Writing: pressed again, it stops (Esc does too).
+                    .when(writing, |d| {
+                        d.cursor_pointer()
+                            .hover(move |s| s.bg(hsla(ui.side_tab_hover)))
                             .on_click(
-                                cx.listener(|this, _: &ClickEvent, _, cx| this.write_message(cx)),
+                                cx.listener(|this, _: &ClickEvent, _, cx| this.stop_writing(cx)),
                             )
                     }),
             )
         });
+        let write = if matches!(busy, Some(Busy::Writing(_))) {
+            write.map(|w| drawn(commit, "stop", w))
+        } else {
+            write
+        };
         let can = blocked.is_none();
         let button = drawn(
             commit,
@@ -554,14 +598,28 @@ impl Workspace {
                 .text_size(px(crate::changes_panel::GIT_NAME))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(hsla(ui.text_dim))
-                .child(icon(
-                    Icon::Check,
-                    px(crate::right_sidebar::HEADER_ICON),
-                    hsla(ui.text_dim),
-                ))
-                .child(SharedString::from(staged.to_string()))
+                // Busy: its word in ✓N's place, whatever the field holds (the review's
+                // Important 3: a message hid the placeholder that said it).
+                .map(|d| match &busy {
+                    Some(work) => d.child(drawn(
+                        commit,
+                        "busy",
+                        div().child(match work {
+                            Busy::Committing => "Committing…",
+                            Busy::Writing(_) => "Writing…",
+                        }),
+                    )),
+                    None => d
+                        .child(icon(
+                            Icon::Check,
+                            px(crate::right_sidebar::HEADER_ICON),
+                            hsla(ui.text_dim),
+                        ))
+                        .child(SharedString::from(staged.to_string())),
+                })
                 .tooltip(tip(blocked.clone().unwrap_or_else(|| "Commit (⌘↵)".into())))
-                .when(!can, |d| d.opacity(0.4))
+                // Dim when it can't commit; its busy word reads whole.
+                .when(!can && busy.is_none(), |d| d.opacity(0.4))
                 .when(can, |d| {
                     d.cursor_pointer()
                         .hover(move |s| s.bg(hsla(ui.side_tab_hover)).text_color(hsla(ui.text)))
@@ -728,6 +786,38 @@ mod tests {
         assert_eq!(s.committed(a, Err("nope".into())), None);
         assert!(matches!(&s.error, Some((r, o, false)) if r == a && o == "nope"));
         assert!(s.busy.is_none());
+    }
+
+    /// The review's Important 4: stopping ✦ stops the shown repo's run only; another repo's
+    /// goes on (its answer waits as that repo's draft).
+    #[test]
+    fn stopping_stops_only_this_repos_writing() {
+        let mut s = CommitState::default();
+        let (a, b) = (Path::new("/a"), Path::new("/b"));
+        let flag = Arc::new(AtomicBool::new(false));
+        s.busy = Some((a.to_path_buf(), Busy::Writing(flag.clone())));
+        assert!(!s.stop(b), "b has nothing writing");
+        assert!(
+            !flag.load(std::sync::atomic::Ordering::Relaxed),
+            "a's goes on"
+        );
+        assert!(s.stop(a), "a's stops");
+        assert!(flag.load(std::sync::atomic::Ordering::Relaxed) && s.busy.is_none());
+    }
+
+    /// The review's Important 2: each repo keeps its own reading of what stops a commit.
+    #[test]
+    fn each_repo_keeps_what_stops_it() {
+        let mut s = CommitState::default();
+        let (a, b) = (Path::new("/a"), Path::new("/b"));
+        s.note_in_progress(a.to_path_buf(), Some("a merge"));
+        s.note_in_progress(b.to_path_buf(), None);
+        assert_eq!(
+            s.in_progress_for(a),
+            Some("a merge"),
+            "b's reading leaves a's"
+        );
+        assert_eq!(s.in_progress_for(b), None);
     }
 
     #[test]

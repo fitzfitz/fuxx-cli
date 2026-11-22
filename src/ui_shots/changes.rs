@@ -2018,7 +2018,7 @@ fn changes_commit_scenes() {
         let ui = theme.ui();
         // How strongly ✓ is inked over the panel in each state (dim when it can't commit).
         let mut ink = std::collections::HashMap::new();
-        for state in ["rest", "typed", "failed", "writing", "note"] {
+        for state in ["rest", "typed", "failed", "writing", "note", "committing"] {
             let n = format!("changes-commit-{state}-{slug}");
             let slot: Slot = Rc::new(RefCell::new(None));
             let build = {
@@ -2049,6 +2049,18 @@ fn changes_commit_scenes() {
                         .read(|cx| ws.read(cx).right_sidebar.changes.commit.input.clone())
                         .unwrap_or_else(|| panic!("{n}: the field was made"));
                     match state {
+                        // A long hook runs: the message stays in the field, the line says so.
+                        "committing" => cx.update(|cx| {
+                            input.update(cx, |i, cx| {
+                                i.set_text("Commit from the Git tab".into());
+                                cx.notify();
+                            });
+                            ws.update(cx, |ws, cx| {
+                                ws.right_sidebar.changes.commit.busy =
+                                    Some((root.clone(), crate::commit_line::Busy::Committing));
+                                cx.notify();
+                            })
+                        }),
                         "typed" => cx.update(|cx| {
                             input.update(cx, |i, cx| {
                                 i.set_text("Commit from the Git tab".into());
@@ -2189,6 +2201,15 @@ fn changes_commit_scenes() {
                     has_ink(write, ui.accent, 40),
                     "{n}: ✦ in the accent while it writes"
                 );
+                assert!(parts.contains_key("stop"), "{n}: ✦ stops it when pressed");
+            }
+            // The review's Important 3: the busy word shows whatever the field holds.
+            if matches!(state, "committing" | "writing") {
+                let busy = parts
+                    .get("busy")
+                    .copied()
+                    .unwrap_or_else(|| panic!("{n}: the busy word"));
+                assert!(has_ink(busy, ui.text_dim, 40), "{n}: the busy word reads");
             }
             if state == "note" {
                 let note = parts
