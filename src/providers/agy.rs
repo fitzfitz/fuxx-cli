@@ -610,6 +610,8 @@ impl Translator for AgyTranslator {
     /// process).
     fn encode(&mut self, action: &Action) -> Vec<String> {
         match action {
+            // agy can't stop one subagent from outside (its lanes never offer it).
+            Action::StopSubagent { .. } => Vec::new(),
             // Its images reach it as paths in `text` (`sends_images` is false).
             Action::Send { text, .. } => {
                 vec![json!({"event": "user", "message": {"content": text}}).to_string()]

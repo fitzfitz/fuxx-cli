@@ -9,6 +9,7 @@ mod agent_catalog;
 mod agent_chat;
 mod agent_conversation;
 mod agent_detect;
+mod agent_lanes;
 mod agent_markdown;
 mod agent_process;
 mod agent_sweep;

@@ -295,6 +295,27 @@ pub trait Translator: Send {
     fn decode(&mut self, line: &str) -> Vec<Event>;
     /// One action to the lines to write.
     fn encode(&mut self, action: &Action) -> Vec<String>;
+    /// One line of a file the translator asked to have followed (`Event::Follow`) for subagent
+    /// `lane`, to events (M11ar: agy's subagent transcripts). None by default.
+    fn decode_followed(&mut self, _lane: &str, _line: &str) -> Vec<Event> {
+        Vec::new()
+    }
+}
+
+/// What the host can do to one subagent, as its agent says when it starts (M11ar). More
+/// controls (message it, resume it) join here as the agents allow them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LaneControls {
+    /// Stop this subagent alone (`Action::StopSubagent`).
+    pub stop: bool,
+}
+
+/// How a subagent ended.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LaneEnd {
+    Done,
+    Failed(String),
+    Stopped,
 }
 
 /// One piece of a resumed conversation's history: something you said, or an event of the agent's.
@@ -365,6 +386,36 @@ pub enum Event {
         what: String,
         detail: String,
         always: Option<String>,
+        /// The subagent (lane id) that asks; `None`: the main agent.
+        by: Option<String>,
+    },
+    /// A subagent started (M11ar), its steps hanging under the tool call `id` (their `parent`);
+    /// `parent`: the lane that started it, when nested.
+    SubagentStarted {
+        id: String,
+        parent: Option<String>,
+        label: String,
+        kind: String,
+        task: String,
+        model: Option<String>,
+        controls: LaneControls,
+    },
+    /// What a subagent has done so far, as far as its agent says.
+    SubagentProgress {
+        id: String,
+        tokens: Option<u64>,
+        tools: Option<u32>,
+        last_tool: Option<String>,
+    },
+    SubagentEnded {
+        id: String,
+        end: LaneEnd,
+    },
+    /// Read this file's new lines as subagent `id`'s, through the translator's
+    /// `decode_followed` (agy writes a subagent's steps to its own transcript).
+    Follow {
+        id: String,
+        path: PathBuf,
     },
     Usage {
         context_pct: Option<u8>,
@@ -519,6 +570,10 @@ pub enum Action {
         reason: Option<String>,
     },
     Interrupt,
+    /// Stop subagent `lane` alone (a lane whose `controls.stop` is on).
+    StopSubagent {
+        lane: String,
+    },
     /// Live changes (`Applies::Live`); a provider that can't take one writes nothing.
     SetModel {
         model: String,

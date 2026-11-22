@@ -170,6 +170,7 @@ mod tests {
             detail: String::new(),
             always: None,
             answer: answered.then_some(Answer::Allowed),
+            by: None,
         }
     }
 

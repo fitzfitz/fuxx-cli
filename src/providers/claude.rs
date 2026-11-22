@@ -1166,6 +1166,7 @@ impl ClaudeTranslator {
                 .as_array()
                 .and_then(|a| a.first())
                 .map(describe_suggestion),
+            by: None,
         };
         self.pending.insert(id, (input, suggestions));
         vec![event]
@@ -1203,6 +1204,8 @@ impl Translator for ClaudeTranslator {
 
     fn encode(&mut self, action: &Action) -> Vec<String> {
         match action {
+            // Task 2 (M11ar) writes `stop_task` for it.
+            Action::StopSubagent { .. } => Vec::new(),
             Action::Send { text, images } => vec![
                 json!({"type": "user",
                 "message": {"role": "user", "content": content(text, images)}})
@@ -1619,6 +1622,7 @@ mod tests {
             what,
             detail,
             always,
+            ..
         } = &ev[0]
         else {
             panic!("not a Permission: {ev:?}");
