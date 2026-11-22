@@ -187,6 +187,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: ATTACH,
     },
     Scene {
+        name: "agent-box-image-view",
+        run: agent_box_image_view,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: ATTACH,
+    },
+    Scene {
         name: "agent-box-image-agy",
         run: agent_box_image_agy,
         themes: Themes::One,
@@ -1897,6 +1905,60 @@ pub(super) fn agent_box_code_chip() {
 /// §8: an image from `Image\u{2026}`, pasted, or dropped is a chip, `\u{1f5bc} name`. Claude takes
 /// them in the message: image blocks (base64) before the text, no path in the text; the
 /// conversation lists their names.
+/// Pasted images are "Image #1", "Image #2" (your words, 2026-11-22), and a chip opens its image
+/// in the viewer over the tab (a 1024 px logo, fitted whole, under the top bar); Esc's action
+/// closes it, and a sent message's chip opens it again.
+pub(super) fn agent_box_image_view() {
+    layout_scene("agent-box-image-view", |n, cx, window, tab| {
+        const LOGO: &[u8] = include_bytes!("../../assets/logo/3d-cyber/fuxx-logo-large.png");
+        for _ in 0..2 {
+            let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, LOGO.to_vec());
+            feed(cx, tab, |t, cx| t.attach_pasted_image(image, cx));
+        }
+        settle_until(n, cx, window, "two pasted chips", |cx| {
+            chips(cx, tab).len() == 2
+        });
+        assert_eq!(
+            chips(cx, tab),
+            ["\u{1f5bc} Image #1", "\u{1f5bc} Image #2"],
+            "{n}: numbered in the order pasted"
+        );
+        feed(cx, tab, |t, cx| t.view_image("nothing by that name", cx));
+        assert!(
+            cx.read(|cx| tab.read(cx).image_view.is_none()),
+            "{n}: an unknown name opens nothing"
+        );
+        feed(cx, tab, |t, cx| t.close_image(cx));
+        feed(cx, tab, |t, cx| t.view_image("Image #1", cx));
+        super::settle_frames(cx, window);
+        let shown = cx.read(|cx| {
+            tab.read(cx)
+                .image_view
+                .as_ref()
+                .map(|(name, _)| name.clone())
+        });
+        assert_eq!(shown.as_deref(), Some("Image #1"), "{n}: open");
+        let view = part(cx, tab, n, "image-view");
+        let box_ = part(cx, tab, n, "box");
+        assert!(
+            view.top() > px(0.0) && view.bottom() >= box_.top(),
+            "{n}: over the tab, under its top bar ({view:?})"
+        );
+        // Closed, then opened again from the sent message's chip (the name is kept for the tab).
+        feed(cx, tab, |t, cx| t.close_image(cx));
+        assert!(
+            cx.read(|cx| tab.read(cx).image_view.is_none()),
+            "{n}: closed"
+        );
+        assert!(
+            cx.read(|cx| tab.read(cx).images.contains_key("Image #2")),
+            "{n}: kept for a sent message's chip"
+        );
+        feed(cx, tab, |t, cx| t.view_image("Image #1", cx));
+        super::settle_frames(cx, window);
+    });
+}
+
 pub(super) fn agent_box_image_chip() {
     layout_scene("agent-box-image-chip", |n, cx, window, tab| {
         let files = Files::new("image-chip");
@@ -1914,8 +1976,8 @@ pub(super) fn agent_box_image_chip() {
         assert_eq!(
             got,
             [
+                "\u{1f5bc} Image #1",
                 "\u{1f5bc} diagram.png",
-                "\u{1f5bc} pasted-image.png",
                 "\u{1f5bc} photo.JPG"
             ],
             "{n}"
@@ -1997,9 +2059,7 @@ pub(super) fn agent_box_image_agy() {
                     .shot_attachments()
                     .iter()
                     .find_map(|a| match a {
-                        Attachment::Image { name, path, .. } if name == "pasted-image.png" => {
-                            path.clone()
-                        }
+                        Attachment::Image { name, path, .. } if name == "Image #1" => path.clone(),
                         _ => None,
                     })
             });
@@ -2053,8 +2113,8 @@ pub(super) fn agent_box_image_too_big() {
         assert_eq!(
             got,
             [
-                "Image too big for Claude (3.75 MB max): big-scan.png",
-                "Image too big for Claude (3.75 MB max): pasted-image.png"
+                "Image too big for Claude (3.75 MB max): Image #1",
+                "Image too big for Claude (3.75 MB max): big-scan.png"
             ],
             "{n}"
         );

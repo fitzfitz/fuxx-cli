@@ -35,6 +35,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — Chore: pasted images "Image #N" and a viewer; M11ar design approved
+
+- **What:** your words ("I want it to be viewable (modal to view the image) and can we make the name like "Image #1",
+  Image #2"): pasted images are numbered per tab; an image chip (box or sent message) opens a viewer over the tab
+  (note 92, chores). And "But above is approved!": M11ar Subagents' design ([[93 - Milestone 11ar - Subagents]]) is
+  approved, on the Roadmap and in Scope; its plan is next.
+- **Checks:** 2396 tests; clippy unchanged; the agent scenes 83/83 with the new `agent-box-image-view`.
+
 ### 2026-11-22 — v0.12.3 released
 
 - **What:** your words ("push and dploy patch what we have now"): M11aq Commit (commit from the Git tab, ✦ writes the

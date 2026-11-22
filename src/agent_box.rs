@@ -1767,7 +1767,11 @@ impl AgentTab {
                     cx.new(|_| crate::sidebar_toggle::Tip("Remove".into()))
                         .into()
                 })
-                .on_click(cx.listener(move |this, _, _, cx| this.remove_attachment_at(i, cx)));
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    // Only the ×: the chip under it opens an image.
+                    cx.stop_propagation();
+                    this.remove_attachment_at(i, cx)
+                }));
             #[cfg(feature = "ui-shots")]
             let remove = {
                 let removes = self.removes.clone();
@@ -1789,12 +1793,19 @@ impl AgentTab {
             };
             let label = a.label();
             let tip = a.tip();
+            // An image chip opens the image in the viewer (your words, 2026-11-22).
+            let image =
+                matches!(a, crate::agent_tab::Attachment::Image { .. }).then(|| label.clone());
             chip(
                 format!("{} {}", a.glyph(), label.lines().next().unwrap_or("")),
                 true,
                 c,
             )
             .id(("attachment", i))
+            .when_some(image, |d, name| {
+                d.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| this.view_image(&name, cx)))
+            })
             .when_some(tip, |d, tip| {
                 d.tooltip(move |_, cx| -> gpui::AnyView {
                     cx.new(|_| crate::sidebar_toggle::Tip(tip.clone().into()))

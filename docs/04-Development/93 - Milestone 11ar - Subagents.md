@@ -5,7 +5,7 @@ updated: 2026-11-22
 
 # 93 - Milestone 11ar - Subagents
 
-**Status:** 📝 design, waiting for your approval. Milestone 1 of 3 in the plan you chose ("go with A"): **M11ar
+**Status:** ✅ design **approved 2026-11-22** ("But above is approved!"); the plan is next. Milestone 1 of 3 in the plan you chose ("go with A"): **M11ar
 Subagents**, then M11as Agent browser, then M11at Browser testing (each designed on its own, later).
 
 ## Why

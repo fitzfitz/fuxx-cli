@@ -503,6 +503,7 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         // The agent tab's `@` file list and `/` list, while one is open over the composer.
         // The tool modal (spec A §B): Esc backs out or closes, ↑/↓ walk the tools.
         KeyBinding::new("escape", agent_tab::ModalBack, Some("AgentToolModal")),
+        KeyBinding::new("escape", agent_tab::CloseImage, Some("AgentImageView")),
         KeyBinding::new("up", agent_tab::ModalPrev, Some("AgentToolModal")),
         KeyBinding::new("down", agent_tab::ModalNext, Some("AgentToolModal")),
         KeyBinding::new("up", agent_tab::AtUp, Some("AtPopup > Composer")),
@@ -1557,6 +1558,11 @@ mod tests {
         assert!(runs(&keymap, "escape", modal).partial_eq(&crate::agent_tab::ModalBack));
         assert!(runs(&keymap, "up", modal).partial_eq(&crate::agent_tab::ModalPrev));
         assert!(runs(&keymap, "down", modal).partial_eq(&crate::agent_tab::ModalNext));
+        let image: &[&str] = &["Workspace", "AgentTab", "AgentImageView"];
+        assert!(
+            runs(&keymap, "escape", image).partial_eq(&crate::agent_tab::CloseImage),
+            "Esc closes the image viewer, never stops the agent"
+        );
         assert!(runs(&keymap, "cmd-k", modal).partial_eq(&OpenPalette));
         assert!(runs(&keymap, "cmd-t", modal).partial_eq(&NewTab));
         assert!(runs(&keymap, "cmd-w", modal).partial_eq(&CloseSession));

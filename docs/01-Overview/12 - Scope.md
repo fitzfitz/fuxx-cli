@@ -177,3 +177,8 @@ the multi-agent ring layer first; everything cmux-extra is post-core.
   diff (never commits on its own). Never amend, force, `--no-verify`, or commit during a merge or rebase; no undo
   (that needs `reset`). Not in it: hunks, stash, PR status, conflicts, "who changed it". See
   [[92 - Milestone 11aq - Commit]].
+- **Subagents** (M11ar, added 2026-11-22 by you: "I want the full power of both claude and agy", "go with A"): see
+  each Claude and agy subagent, switch the chat view to one (pills) and follow it live, stop one where the agent
+  allows; one shared model, a translator per agent. Not in it: typing to a subagent, agy swarms. Next, each its own
+  decision: **M11as Agent browser** (fuxx's browser tools in every agent tab) and **M11at Browser testing**. See
+  [[93 - Milestone 11ar - Subagents]].

@@ -154,7 +154,8 @@ pub fn describe(action: &str) -> Describe {
         // The agent tab's `@` file list's arrows (while it is open only).
         "agent_tab::AtUp" | "agent_tab::AtDown" => Unlisted,
         // The tool modal's own Esc and ↑/↓ (spec A §B), as the @ list's.
-        "agent_tab::ModalBack" | "agent_tab::ModalPrev" | "agent_tab::ModalNext" => Unlisted,
+        "agent_tab::ModalBack" | "agent_tab::ModalPrev" | "agent_tab::ModalNext"
+        | "agent_tab::CloseImage" => Unlisted,
         other if other.starts_with("host_picker::") => Unlisted,
         other if other.starts_with("palette::") => Unlisted,
         // The branch switcher's arrows (in its panel only).

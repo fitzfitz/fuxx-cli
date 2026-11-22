@@ -316,6 +316,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-box-file-chip",
     "agent-box-code-chip",
     "agent-box-image-chip",
+    "agent-box-image-view",
     "agent-box-image-agy",
     "agent-box-image-too-big",
     "agent-box-long-text",

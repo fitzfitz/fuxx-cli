@@ -111,3 +111,8 @@ Esc); tests for the commit path on real temporary repos (`git_stage`'s style), a
   and the agent box under it is as wide as the column and centred too (it ran the full width under a column at the
   left). Scene `agent-tab-wide` (1600 wide: the box centred, as wide as the column at most, the column starting where
   the box does).
+- **Pasted images named and viewable** (your words, 2026-11-22: "I want it to be viewable (modal to view the image)
+  and can we make the name like "Image #1", Image #2, and so on?"): a pasted image is "Image #N" in the order pasted in
+  the tab (a file keeps its name); an image chip, in the box or in a sent message, opens the image in a viewer over
+  the tab (the tool modal's scrim, the image fitted whole, its name and ×; Esc, × or a click outside closes). The tab
+  keeps its images in memory only, for its life. Scene `agent-box-image-view`.

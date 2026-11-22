@@ -66,7 +66,10 @@ use crate::workspace_agent::Holder;
 
 // ↑ / ↓ in the `@` file list and the `/` list (bound in main.rs to "AtPopup > Composer", so they
 // reach the list, not the caret, only while it is open).
-actions!(agent_tab, [AtUp, AtDown, ModalBack, ModalPrev, ModalNext]);
+actions!(
+    agent_tab,
+    [AtUp, AtDown, ModalBack, ModalPrev, ModalNext, CloseImage]
+);
 
 /// After Stop, how long the tab waits for the turn to end before offering **Force stop**
 /// (an interrupt during a running tool may not act until the tool ends: Ruling 7).
@@ -420,6 +423,33 @@ pub fn media_type_for(path: &Path) -> Option<&'static str> {
         "gif" => Some("image/gif"),
         "webp" => Some("image/webp"),
         _ => None,
+    }
+}
+
+/// A pasted image's name: "Image #1", "Image #2" … in the order pasted in this tab (your words,
+/// 2026-11-22: "can we make the name like "Image #1", Image #2, and so on?").
+pub fn pasted_name(n: usize) -> String {
+    format!("Image #{n}")
+}
+
+/// The file extension for an image of `media_type` (a pasted one written for an agent that is
+/// told a path).
+pub fn ext_for(media_type: &str) -> &'static str {
+    match media_type {
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "png",
+    }
+}
+
+/// GPUI's format for an image of `media_type` (the viewer draws its bytes).
+pub fn image_format(media_type: &str) -> gpui::ImageFormat {
+    match media_type {
+        "image/jpeg" => gpui::ImageFormat::Jpeg,
+        "image/gif" => gpui::ImageFormat::Gif,
+        "image/webp" => gpui::ImageFormat::Webp,
+        _ => gpui::ImageFormat::Png,
     }
 }
 
@@ -964,6 +994,13 @@ pub struct AgentTab {
     modal_focus: FocusHandle,
     pub(crate) modal_scroll: gpui::ScrollHandle,
     refocus: Option<Refocus>,
+    /// How many images were pasted in this tab (they are named "Image #N").
+    pasted: usize,
+    /// Every image attached in this tab, by its chip's name, so a chip (in the box or in a sent
+    /// message) opens it in the viewer. Kept for the tab's life only.
+    pub(crate) images: std::collections::HashMap<String, Picture>,
+    /// The image open in the viewer: its name and its bytes as GPUI draws them.
+    pub(crate) image_view: Option<(String, Arc<gpui::Image>)>,
     /// The model menu's "Older" group, opened (None: as it starts, closed; reset when the
     /// menu closes).
     pub(crate) models_older_open: Option<bool>,
@@ -1058,7 +1095,8 @@ impl Focusable for AgentTab {
     /// a Workspace giving the tab the keyboard back (after the palette, a tab switch) never
     /// puts Esc in the box, where it stops the agent (the review's finding 2).
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        if self.modal.is_some() {
+        // The image viewer holds it too (it shares the modal's handle: they never show together).
+        if self.modal.is_some() || self.image_view.is_some() {
             return self.modal_focus.clone();
         }
         self.composer.read(cx).focus_handle(cx)
@@ -1407,6 +1445,9 @@ impl AgentTab {
             modal_focus: cx.focus_handle(),
             modal_scroll: gpui::ScrollHandle::new(),
             refocus: None,
+            pasted: 0,
+            images: std::collections::HashMap::new(),
+            image_view: None,
             models_older_open: None,
             effort_switch: None,
             sweep_at: None,
@@ -2324,8 +2365,37 @@ impl AgentTab {
         if !attachable(&self.attachments, &attachment) {
             return;
         }
+        if let Attachment::Image { name, picture, .. } = &attachment {
+            self.images.insert(name.clone(), picture.clone());
+        }
         self.attachments.push(attachment);
         cx.notify();
+    }
+
+    /// An image chip pressed (in the box or a sent message): the image in the viewer, over the
+    /// tab, with the keyboard (Esc closes). Not one this tab has: nothing.
+    pub fn view_image(&mut self, name: &str, cx: &mut Context<Self>) {
+        let Some(picture) = self.images.get(name) else {
+            return;
+        };
+        let image =
+            gpui::Image::from_bytes(image_format(picture.media_type), picture.bytes.to_vec());
+        self.modal = None;
+        self.image_view = Some((name.to_string(), Arc::new(image)));
+        self.refocus = Some(Refocus::Modal);
+        cx.notify();
+    }
+
+    /// Esc, ×, a click on the scrim: the viewer closes, the keyboard back in the box.
+    pub fn close_image(&mut self, cx: &mut Context<Self>) {
+        if self.image_view.take().is_some() {
+            self.refocus = Some(Refocus::Box);
+            cx.notify();
+        }
+    }
+
+    fn close_image_action(&mut self, _: &CloseImage, _: &mut Window, cx: &mut Context<Self>) {
+        self.close_image(cx);
     }
 
     /// `paths` (from `File…`) as file chips: each is sent as its path, for the agent to read.
@@ -2363,7 +2433,8 @@ impl AgentTab {
             gpui::ImageFormat::Webp => "image/webp",
             _ => return,
         };
-        let name = format!("pasted-image.{}", image.format.extension());
+        self.pasted += 1;
+        let name = pasted_name(self.pasted);
         self.add_image(name, media_type, ImageFrom::Clipboard(image.bytes), cx);
     }
 
@@ -2394,13 +2465,10 @@ impl AgentTab {
             let picture = picture(&name, media_type, bytes, limit, label)?;
             let path = match path {
                 Some(path) => Some(path),
-                None if by_path => {
-                    let ext = name.rsplit('.').next().unwrap_or("png");
-                    Some(
-                        write_pasted(&dir, &picture, ext)
-                            .map_err(|e| format!("Couldn't attach {name}: {e}"))?,
-                    )
-                }
+                None if by_path => Some(
+                    write_pasted(&dir, &picture, ext_for(media_type))
+                        .map_err(|e| format!("Couldn't attach {name}: {e}"))?,
+                ),
                 None => None,
             };
             Ok(Attachment::Image {
@@ -3790,8 +3858,19 @@ impl AgentTab {
                             .child(SharedString::from(text.clone()))
                             .when(!attachments.is_empty(), |d| {
                                 d.child(div().flex().flex_wrap().gap(px(6.)).children(
-                                    attachments.iter().map(|a| {
+                                    attachments.iter().enumerate().map(|(j, a)| {
+                                        // An image this tab has opens in the viewer.
+                                        let image = self.images.contains_key(a).then(|| a.clone());
                                         div()
+                                            .id(SharedString::from(format!("you-chip-{ix}-{j}")))
+                                            .when_some(image, |d, name| {
+                                                d.cursor_pointer()
+                                                    .hover(move |s| s.text_color(hsla(c.you_text)))
+                                                    .on_click(on_tab(
+                                                        &look.view,
+                                                        move |this, cx| this.view_image(&name, cx),
+                                                    ))
+                                            })
                                             .h(px(22.))
                                             .px(px(8.))
                                             .rounded(px(chat::R_CHIP))
@@ -4379,6 +4458,99 @@ impl AgentTab {
             (false, _) if self.status() == Status::Working => Some("■ Stop  esc"),
             _ => None,
         }
+    }
+
+    /// The image viewer (your words, 2026-11-22: "I want it to be viewable (modal to view the
+    /// image)"): the tool modal's scrim below the top bar, the image fitted in it whole, its name
+    /// and × above it. A click on the scrim, ×, or Esc closes it.
+    fn image_layer(&self, look: &Look) -> Option<AnyElement> {
+        let (name, image) = self.image_view.clone()?;
+        let c = look.c;
+        let view = look.view.clone();
+        let close = view.clone();
+        let header = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .pb(px(8.))
+            .text_size(px(text::META))
+            .text_color(hsla(c.panel_text))
+            .child(div().flex_1().child(SharedString::from(name)))
+            .child(
+                div()
+                    .id("agent-image-close")
+                    .size(px(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .text_color(hsla(c.panel_dim))
+                    .hover(move |s| s.bg(hsla(c.panel_hover)).text_color(hsla(c.panel_text)))
+                    .child("\u{d7}")
+                    .on_click(on_tab(&view, |this, cx| this.close_image(cx))),
+            );
+        let picture = div()
+            .flex_1()
+            .min_h(px(0.))
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                gpui::img(image)
+                    .max_w_full()
+                    .max_h_full()
+                    .object_fit(gpui::ObjectFit::Contain)
+                    .rounded(px(6.)),
+            );
+        let panel = self.marked(
+            "image-view",
+            div()
+                .id("agent-image-panel")
+                .w_full()
+                .max_w(px(crate::ui_tokens::chat::COLUMN_MAX + 160.))
+                .h_full()
+                .flex()
+                .flex_col()
+                .p(px(12.))
+                .rounded(px(12.))
+                .bg(hsla(c.panel))
+                .border_1()
+                .border_color(hsla(c.panel_border))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(header)
+                .child(picture),
+        );
+        let scrim = gpui::Hsla {
+            a: c.scrim_alpha,
+            ..hsla(c.scrim)
+        };
+        Some(
+            div()
+                .id("agent-image-view")
+                .key_context("AgentImageView")
+                .track_focus(&self.modal_focus)
+                .absolute()
+                .top(px(TOP_BAR))
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .rounded_b(px(crate::ui_tokens::size::CARD_RADIUS))
+                .p(px(24.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .bg(scrim)
+                .occlude()
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    close.update(cx, |this, cx| this.close_image(cx)).ok();
+                })
+                .child(panel)
+                .into_any_element(),
+        )
     }
 
     /// The tool modal (spec A §B): a scrim over the tab below its top bar (a click on it closes),
@@ -5253,6 +5425,7 @@ impl Render for AgentTab {
             None => {}
         }
         let modal = self.modal.is_some().then(|| self.modal_layer(&look, cx));
+        let image_view = self.image_layer(&look);
         div()
             .key_context("AgentTab")
             .on_action(cx.listener(Self::at_up))
@@ -5260,6 +5433,7 @@ impl Render for AgentTab {
             .on_action(cx.listener(Self::modal_back))
             .on_action(cx.listener(Self::modal_prev))
             .on_action(cx.listener(Self::modal_next))
+            .on_action(cx.listener(Self::close_image_action))
             .size_full()
             .flex()
             .flex_col()
@@ -5306,12 +5480,24 @@ impl Render for AgentTab {
                 d.child(self.box_area(&c, mono, window, cx))
             })
             .children(modal)
+            .children(image_view)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pasted_images_are_numbered_and_drawn_as_they_are() {
+        assert_eq!(pasted_name(1), "Image #1");
+        assert_eq!(pasted_name(12), "Image #12");
+        assert_eq!(ext_for("image/jpeg"), "jpg", "a pasted JPEG's file for agy");
+        assert_eq!(ext_for("image/webp"), "webp");
+        assert_eq!(ext_for("image/png"), "png");
+        assert!(matches!(image_format("image/gif"), gpui::ImageFormat::Gif));
+        assert!(matches!(image_format("image/png"), gpui::ImageFormat::Png));
+    }
 
     /// Your report (2026-11-22: "it first show blinking first then show the modal"): the open
     /// motion runs only while the modal is fresh. After that nothing animates it — a new
