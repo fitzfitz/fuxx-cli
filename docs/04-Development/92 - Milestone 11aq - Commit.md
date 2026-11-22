@@ -5,7 +5,7 @@ updated: 2026-11-22
 
 # 92 - Milestone 11aq - Commit
 
-**Status:** 🟨 design written, waiting for your approval (2026-11-22).
+**Status:** 🟨 built 2026-11-22 on branch `m11aq-commit` (5 tasks, a whole-branch review and its fix pass), waiting for your on-screen check (the checklist below).
 
 ## Why
 
@@ -77,3 +77,23 @@ Esc); tests for the commit path on real temporary repos (`git_stage`'s style), a
 3. A failing pre-commit hook: the red line, Show output, the message kept.
 4. ✦ with staged changes: a message appears selected; Esc while it writes cancels.
 5. Switch repos and back: the draft is still there.
+
+## As built (2026-11-22)
+
+- `git_commit` (commit, `commit_checked` — refused during a merge, rebase, cherry-pick or revert at the commit itself —
+  what's in progress, the staged diff without secret-looking files, cut on bytes at a line end), providers'
+  `message_probe` (Claude: `-p … --output-format text --model haiku --no-session-persistence --tools ""`, no tools: it
+  only writes; agy: `-p … --output-format text`), `commit_message_prompt`, `clean_message`, `on_path`,
+  `agent_catalog::run_probe_stoppable`; `commit_line` (state, the line, ✦, ⌘↵).
+- **Rulings** (against this design; the plan's ledger has them all): one-line field (no multi-line box yet; ✦ writes
+  the summary line); "Show output" expands under the field (no text-in-a-tab yet); ⌘⇧C dropped (Copy Command Output in
+  terminals); Enter does nothing in the field (only ⌘↵ commits); while ✦ writes, "Writing…" shows in ✓'s place and ✦
+  stops it when pressed (the sweep on the field not built).
+- **The review** (one whole-branch review): fixed a crash (the diff's cut inside a multibyte character panicked in a
+  background task, which aborts the app), a commit possible during a merge started elsewhere, "Committing…" never
+  showing with a message in the field, Esc going to the terminal instead of stopping ✦; Claude's ✦ run made tool-less.
+  Deferred minors: closing quotes/backticks stripped by `clean_message`; ✓/✦ looking enabled in another repo while one
+  repo's work runs; text typed during a commit cleared on success; the failure line staying until the next tab commit;
+  `is_secret` missing `.npmrc`/`.netrc`/`.pgpass`/keystores/`*.tfvars`/`.htpasswd`; no scripted ✦ scene.
+- Also on this branch (a chore): Stop's circle is reddish while the agent works (`stop_fill`).
+- Checks: 2391 tests; clippy at the baseline; scene `changes-commit` (6 states × 2 themes); the full ui-shots run 272/272 (before and after the fix pass).

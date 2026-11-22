@@ -35,6 +35,17 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — M11aq Commit built (on branch `m11aq-commit`)
+
+- **What:** your words ("enrich our git workspace", the Lead UI/UX Designer's suggestions, "let's do this",
+  "Approved", "go ahead"): commit from the Git tab — a message field above the branch bar, ⌘↵ or ✓N, a failed hook's
+  output kept, drafts per repo — and ✦, the agent writing the message from the staged diff (secrets left out, never
+  commits). Plan [[M11aq Plan - Commit]], note 92. Also: Stop's circle reddish while the agent works.
+- **Review:** one whole-branch review; fixed a crash (a multibyte cut in a background task), a commit during a merge,
+  the busy word, Esc for ✦, a tool-less Claude run; minors deferred (note 92).
+- **Checks:** 2391 tests; clippy at the baseline; full ui-shots 272/272.
+- **Next:** your on-screen check (note 92's checklist), then merge to master.
+
 ### 2026-11-22 — v0.12.2 released
 
 - **What:** on your word ("first we go push everything then we go release patch"): the agent box's sweep (off in
