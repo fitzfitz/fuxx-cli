@@ -35,6 +35,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-22 — Chore: the agent tab centred on a wide screen
+
+- **What:** your words ("the chatbox doesn't full width on larger screen", "or make it like this but put it at
+  center"): the conversation's column and the agent box centred, the box as wide as the column (note 92, chores).
+- **Checks:** 2395 tests; clippy unchanged; the agent scenes and the new `agent-tab-wide` pass.
+
 ### 2026-11-22 — M11aq polish: plain hints for the commit flow
 
 - **What:** the UI/UX and UX designers reviewed the commit flow for non-developers; your call "B. because even tho

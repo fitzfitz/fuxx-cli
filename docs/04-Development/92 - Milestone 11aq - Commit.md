@@ -103,3 +103,11 @@ Esc); tests for the commit path on real temporary repos (`git_stage`'s style), a
   the bar's tooltips in two lines (git words, then plain words). The field's text lines up with the branch icon.
 - Also on this branch (a chore): Stop's circle is reddish while the agent works (`stop_fill`).
 - Checks: 2391 tests; clippy at the baseline; scene `changes-commit` (6 states × 2 themes); the full ui-shots run 272/272 (before and after the fix pass).
+
+## Chores after M11aq
+
+- **The agent tab centred on a wide screen** (your words, 2026-11-22: "the chatbox doesn't full width on larger
+  screen … or make it like this but put it at center"): the conversation's column (760 at most) is centred in the tab,
+  and the agent box under it is as wide as the column and centred too (it ran the full width under a column at the
+  left). Scene `agent-tab-wide` (1600 wide: the box centred, as wide as the column at most, the column starting where
+  the box does).

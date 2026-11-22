@@ -71,7 +71,8 @@ pub mod code {
 
 /// The agent chat (chores after M11ab, the lead designer's spec B-B).
 pub mod chat {
-    /// The conversation's column at most (avatar included), left-aligned at the tab's margin.
+    /// The conversation's column at most (avatar included), centred in the tab; the agent box
+    /// under it as wide (centred since 2026-11-22, your words: "put it at center").
     pub const COLUMN_MAX: f32 = 760.0;
     pub const AVATAR: f32 = 22.0;
     pub const LOGO: f32 = 18.0;

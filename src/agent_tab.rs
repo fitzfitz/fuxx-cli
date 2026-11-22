@@ -3718,6 +3718,10 @@ impl AgentTab {
             .px(px(AREA_X))
             .pt(px(gap_before(items, ix)))
             .when(last, |d| d.pb(px(chat::LAST_BOTTOM)))
+            // The column centred in the tab (the box under it too: `box_area`).
+            .flex()
+            .flex_col()
+            .items_center()
             .text_size(px(chat::BODY))
             .line_height(relative(chat::BODY_LINE))
             .child(column)

@@ -1358,6 +1358,9 @@ impl AgentTab {
                         .child(div().flex_none().w(px(NOTCH + 8. - 2. * CONTROL_INSET))),
                 ),
         );
+        // As wide as the conversation's column and centred under it (your words, 2026-11-22:
+        // "make it like this but put it at center" — on a wide screen the box ran the full width
+        // under a narrow column at the left).
         div()
             .flex_none()
             .w_full()
@@ -1366,9 +1369,17 @@ impl AgentTab {
             .pb(px(AREA_BOTTOM))
             .flex()
             .flex_col()
-            .children(self.at_list(c, mono.clone(), cx))
-            .children(self.slash_list(c, mono, cx))
-            .child(self.folder_tab(status, folder, branch, the_box, send, c))
+            .items_center()
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(crate::ui_tokens::chat::COLUMN_MAX))
+                    .flex()
+                    .flex_col()
+                    .children(self.at_list(c, mono.clone(), cx))
+                    .children(self.slash_list(c, mono, cx))
+                    .child(self.folder_tab(status, folder, branch, the_box, send, c)),
+            )
             .into_any_element()
     }
 

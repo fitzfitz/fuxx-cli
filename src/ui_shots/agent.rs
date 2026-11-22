@@ -122,6 +122,19 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "agent-tab-wide",
+        run: agent_tab_wide,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/agent_tab.rs",
+            "src/agent_box.rs",
+            "src/ui_tokens.rs",
+            "src/providers/fixtures/claude-text.jsonl",
+        ],
+    },
+    Scene {
         name: "agent-tab-failed",
         run: agent_tab_failed,
         themes: Themes::Both,
@@ -570,6 +583,15 @@ fn scene(
     name: &str,
     act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + Clone,
 ) {
+    scene_sized(name, DIMS, act)
+}
+
+/// `scene` in a window of `dims`.
+fn scene_sized(
+    name: &str,
+    dims: (f32, f32),
+    act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + Clone,
+) {
     for &(slug, theme_name) in shot_themes() {
         let theme = shot_theme(theme_name);
         let slot: Slot = Rc::default();
@@ -580,7 +602,7 @@ fn scene(
             name,
             slug,
             &theme,
-            size(px(DIMS.0), px(DIMS.1)),
+            size(px(dims.0), px(dims.1)),
             build(theme, slot),
             move |cx, window| {
                 let tab = tab_of(&keep);
@@ -979,6 +1001,41 @@ pub(super) fn agent_tab_done() {
                     .iter()
                     .all(|i| !matches!(i, Item::Tool { running: true, .. })),
                 "{n}"
+            );
+        });
+    });
+}
+
+/// A wide window (your words, 2026-11-22: "put it at center"): the conversation's column and the
+/// box under it centred, and the box as wide as the column (it ran the full width before).
+pub(super) fn agent_tab_wide() {
+    const W: f32 = 1600.0;
+    scene_sized("agent-tab-wide", (W, 640.0), |n, cx, window, tab| {
+        let events = decode(include_str!("../providers/fixtures/claude-text.jsonl"));
+        feed(cx, tab, |t, cx| t.send("Say hello in one word".into(), cx));
+        feed(cx, tab, |t, cx| t.shot_feed(events, cx));
+        let _ = frame_fresh(cx, window);
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            let outer = t
+                .shot_part("outer")
+                .unwrap_or_else(|| panic!("{n}: the box"));
+            let gutter = t
+                .shot_part("column")
+                .unwrap_or_else(|| panic!("{n}: the reply's avatar column"));
+            let (l, r) = (f32::from(outer.left()), f32::from(outer.right()));
+            assert!(
+                r - l <= crate::ui_tokens::chat::COLUMN_MAX + 1.0,
+                "{n}: the box as wide as the column at most ({l}..{r})"
+            );
+            assert!(
+                ((l + r) / 2.0 - W / 2.0).abs() <= 2.0,
+                "{n}: the box centred ({l}..{r})"
+            );
+            assert!(
+                (f32::from(gutter.left()) - l).abs() <= 2.0,
+                "{n}: the column starts where the box does ({:?} vs {l})",
+                gutter.left()
             );
         });
     });
