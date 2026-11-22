@@ -55,11 +55,63 @@ pub fn step(view: &View, lanes: &[Lane], dir: i32) -> View {
     }
 }
 
+/// The gap between pills, and the "+N" pill's width.
+pub const PILL_GAP: f32 = 8.0;
+pub const MORE_W: f32 = 26.0;
+
+/// Which pills (by index, in order) fit in `avail` with these `widths`, and how many are left
+/// behind "+N". Main (index 0) and the `active` pill always show when anything is hidden.
+pub fn fit(widths: &[f32], avail: f32, active: usize) -> (Vec<usize>, usize) {
+    let n = widths.len();
+    let total: f32 = widths.iter().sum::<f32>() + PILL_GAP * n.saturating_sub(1) as f32;
+    if total <= avail {
+        return ((0..n).collect(), 0);
+    }
+    let room = |shown: &[usize], plus: Option<usize>| {
+        let pills: f32 = shown.iter().chain(plus.iter()).map(|&i| widths[i]).sum();
+        let count = shown.len() + plus.iter().count();
+        pills + PILL_GAP * count as f32 + MORE_W <= avail
+    };
+    let mut shown: Vec<usize> = Vec::new();
+    for i in 0..n {
+        if !room(&shown, Some(i)) {
+            break;
+        }
+        shown.push(i);
+    }
+    if active < n && !shown.contains(&active) {
+        while shown.len() > 1 && !room(&shown, Some(active)) {
+            shown.pop();
+        }
+        shown.push(active);
+    }
+    shown.sort_unstable();
+    let hidden = n - shown.len();
+    (shown, hidden)
+}
+
+/// How long a lane has run: to its end, else to `now`; none without a start (a resumed lane).
+pub fn elapsed(
+    started: Option<std::time::Instant>,
+    ended: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> Option<std::time::Duration> {
+    let start = started?;
+    Some(ended.unwrap_or(now).saturating_duration_since(start))
+}
+
+/// `1:02`.
+pub fn clock(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent_conversation::{Lane, LaneStatus};
     use crate::providers::LaneControls;
+    use std::time::{Duration, Instant};
 
     fn lane(id: &str, label: &str) -> Lane {
         Lane {
@@ -75,6 +127,37 @@ mod tests {
             last_tool: None,
             controls: LaneControls::default(),
         }
+    }
+
+    #[test]
+    fn pills_that_fit_show_the_rest_behind_plus_n() {
+        // Main (60) and three lanes (50 each), 8 apart; "+N" takes 32.
+        let widths = [60.0, 50.0, 50.0, 50.0];
+        assert_eq!(fit(&widths, 400.0, 0), (vec![0, 1, 2, 3], 0), "all fit");
+        let (shown, hidden) = fit(&widths, 210.0, 0);
+        assert_eq!(shown, [0, 1, 2], "as many as fit with room for +N");
+        assert_eq!(hidden, 1);
+        // The active pill is always shown (in place of the last that fit).
+        let (shown, hidden) = fit(&widths, 210.0, 3);
+        assert!(shown.contains(&3) && shown.contains(&0), "{shown:?}");
+        assert_eq!(hidden, 1);
+        assert_eq!(fit(&[], 100.0, 0), (vec![], 0));
+    }
+
+    #[test]
+    fn elapsed_stops_when_the_lane_ends() {
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(62);
+        let later = t1 + Duration::from_secs(100);
+        assert_eq!(elapsed(Some(t0), None, t1), Some(Duration::from_secs(62)));
+        assert_eq!(
+            elapsed(Some(t0), Some(t1), later),
+            Some(Duration::from_secs(62)),
+            "it stops at the end"
+        );
+        assert_eq!(elapsed(None, None, later), None, "no start: no time");
+        assert_eq!(clock(Duration::from_secs(62)), "1:02");
+        assert_eq!(clock(Duration::from_secs(5)), "0:05");
     }
 
     #[test]

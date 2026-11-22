@@ -4,20 +4,22 @@
 use super::*;
 
 impl AgentTab {
-    /// Item `ix`'s row of the list.
-    pub(super) fn item_row(&self, ix: usize, look: &Look) -> AnyElement {
+    /// Row `k` of the shown view's list (M11ar: each view has its own rows: `agent_chat::rows_of`).
+    pub(super) fn item_row(&self, k: usize, look: &Look) -> AnyElement {
         use crate::agent_chat::{
-            agent_side, avatar_top, chat, gap_before, is_row, shows_avatar, shows_thinking,
+            agent_side, avatar_top, chat, gap_before_at, shows_avatar_at, shows_thinking,
         };
         let items = self.conversation.items();
-        // A sub-agent's items are drawn in their tool's detail (the modal), not as rows.
-        if !is_row(items, ix) {
+        let order = &self.pane().order;
+        let Some(&ix) = order.get(k) else {
             return div().into_any_element();
-        }
+        };
         let item = &items[ix];
         let c = &look.c;
-        let last = (ix + 1..items.len()).all(|i| !is_row(items, i));
-        let thinking = last && shows_thinking(self.status() == Status::Working, items);
+        let last = k + 1 == order.len();
+        let thinking = last
+            && self.view == crate::agent_lanes::View::Main
+            && shows_thinking(self.status() == Status::Working, items);
         let body = self.item_body(ix, item, 0, look);
         let text_column = chat::AVATAR + chat::AVATAR_GAP;
         let column = div().w_full().max_w(px(chat::COLUMN_MAX));
@@ -25,7 +27,7 @@ impl AgentTab {
             let gutter = div()
                 .flex_none()
                 .w(px(chat::AVATAR))
-                .when(shows_avatar(items, ix), |d| {
+                .when(shows_avatar_at(items, order, k), |d| {
                     d.pt(px(avatar_top(item))).child(self.avatar(look))
                 });
             column
@@ -86,7 +88,7 @@ impl AgentTab {
         div()
             .w_full()
             .px(px(AREA_X))
-            .pt(px(gap_before(items, ix)))
+            .pt(px(gap_before_at(items, order, k)))
             .when(last, |d| d.pb(px(chat::LAST_BOTTOM)))
             // The column centred in the tab (the box under it too: `box_area`).
             .flex()
@@ -199,11 +201,7 @@ impl AgentTab {
                 )
                 .into_any_element(),
             Item::Agent { .. } => {
-                let blocks = self
-                    .rows
-                    .get(ix)
-                    .and_then(|r| r.blocks.clone())
-                    .unwrap_or_default();
+                let blocks = self.blocks_at(ix).unwrap_or_default();
                 div()
                     .w_full()
                     .max_w(px(chat::COLUMN_MAX - 32.))
@@ -523,7 +521,13 @@ impl AgentTab {
                         .group_hover("agent-tool-row", move |s| s.text_color(hover)),
                 )
             });
-        let shape = group_shape(items, ix).unwrap_or(Shape::Solo);
+        let order = &self.pane().order;
+        let shape = order
+            .iter()
+            .position(|&i| i == ix)
+            .and_then(|k| crate::agent_chat::group_shape_at(items, order, k))
+            .or_else(|| group_shape(items, ix))
+            .unwrap_or(Shape::Solo);
         let (top, bottom) = match shape {
             Shape::Solo => (true, true),
             Shape::First => (true, false),

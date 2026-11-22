@@ -74,7 +74,9 @@ use crate::workspace_agent::Holder;
 // reach the list, not the caret, only while it is open).
 actions!(
     agent_tab,
-    [AtUp, AtDown, ModalBack, ModalPrev, ModalNext, CloseImage]
+    [
+        AtUp, AtDown, ModalBack, ModalPrev, ModalNext, CloseImage, PrevLane, NextLane
+    ]
 );
 
 /// After Stop, how long the tab waits for the turn to end before offering **Force stop**
@@ -935,6 +937,26 @@ struct Row {
     blocks: Option<Rc<Vec<Md>>>,
 }
 
+/// One view's list (M11ar: Main and each lane keep their own, so each keeps its scroll): its
+/// rows and the item each row draws.
+struct Pane {
+    list: ListState,
+    rows: Vec<Row>,
+    order: Vec<usize>,
+}
+
+impl Pane {
+    fn new() -> Self {
+        let list = ListState::new(0, ListAlignment::Top, px(200.));
+        list.set_follow_mode(gpui::FollowMode::Tail);
+        Pane {
+            list,
+            rows: Vec::new(),
+            order: Vec::new(),
+        }
+    }
+}
+
 /// This run of the process: what it was asked to resume (until the agent says it started it),
 /// the id fuxx chose for it (a new conversation: `Provider::fresh_conversation_id`), whether it
 /// said it started, where its rows begin, and what was sent during it (sent again if the resume
@@ -1019,6 +1041,13 @@ pub struct AgentTab {
     pump: Option<Task<()>>,
     /// The subagent transcripts being followed, by lane (M11ar; dropped with the process).
     followers: HashMap<String, Task<()>>,
+    /// Each live lane's mark (the Working arc, or Waiting), and Main's pill's.
+    lane_marks: HashMap<String, Entity<MarkView>>,
+    main_mark: Option<Entity<MarkView>>,
+    /// When each lane was first seen and when it ended (its elapsed time stops there).
+    lane_times: HashMap<String, (Instant, Option<Instant>)>,
+    /// The "+N" list of the pills that don't fit, open.
+    lanes_menu: bool,
     end: ProcessEnd,
     /// The process has ended (a send starts a new one).
     exited: bool,
@@ -1042,8 +1071,9 @@ pub struct AgentTab {
     /// This tab's own process is to answer the catalog (`Event::Catalog`): the cache says
     /// "loading" until it does, and failed if the process ends first.
     catalog_pending: bool,
-    list: ListState,
-    rows: Vec<Row>,
+    /// Each view's list; `view` is the one shown (M11ar).
+    panes: HashMap<crate::agent_lanes::View, Pane>,
+    pub(crate) view: crate::agent_lanes::View,
     /// The tool detail modal, open (spec A §B); how many times one opened (its animation's key);
     /// its focus (key context `AgentToolModal`) and body's scroll; the keyboard to move at the
     /// next draw (a click or an action has no window: `render` does it).
@@ -1331,7 +1361,7 @@ impl AgentTab {
 
     #[cfg(feature = "ui-shots")]
     pub fn shot_list(&self) -> ListState {
-        self.list.clone()
+        self.pane().list.clone()
     }
 
     #[cfg(feature = "ui-shots")]
@@ -1449,8 +1479,7 @@ impl AgentTab {
             composer.set_bare(true, cx);
             composer
         });
-        let list = ListState::new(0, ListAlignment::Top, px(200.));
-        list.set_follow_mode(gpui::FollowMode::Tail);
+        let panes = HashMap::from([(crate::agent_lanes::View::Main, Pane::new())]);
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::on_composer),
             cx.observe(&composer, |this, _, cx| this.composer_changed(cx)),
@@ -1492,6 +1521,10 @@ impl AgentTab {
             started: Vec::new(),
             pump: None,
             followers: HashMap::new(),
+            lane_marks: HashMap::new(),
+            main_mark: None,
+            lane_times: HashMap::new(),
+            lanes_menu: false,
             end: ProcessEnd::default(),
             exited: false,
             booting: false,
@@ -1502,8 +1535,8 @@ impl AgentTab {
             unconfirmed: None,
             no_process: false,
             catalog_pending: false,
-            list,
-            rows: Vec::new(),
+            panes,
+            view: crate::agent_lanes::View::Main,
             modal: None,
             modals_opened: 0,
             cleared: 0,
@@ -2181,6 +2214,14 @@ impl AgentTab {
                     self.tool_started.insert(id.clone(), Instant::now());
                 }
                 Event::Follow { id, path } => self.follow(id.clone(), path.clone(), cx),
+                Event::SubagentStarted { id, .. } => {
+                    self.lane_times.insert(id.clone(), (Instant::now(), None));
+                }
+                Event::SubagentEnded { id, .. } => {
+                    if let Some((_, ended)) = self.lane_times.get_mut(id) {
+                        ended.get_or_insert_with(Instant::now);
+                    }
+                }
                 // `/clear`: the chat empties (the conversation drops its items) and fades back in
                 // empty, keyed by how many times it was cleared.
                 Event::Cleared => {
@@ -2190,6 +2231,7 @@ impl AgentTab {
                     self.run.resume = None;
                     self.tool_started.clear();
                     self.followers.clear();
+                    self.lane_times.clear();
                     self.cleared += 1;
                     self.cleared_at = Some(Instant::now());
                 }
@@ -2259,6 +2301,7 @@ impl AgentTab {
                 cx.new(|cx| MarkView::new(&clock, Status::Working, px(MARK), BLACK, cx))
             });
         }
+        self.sync_lane_marks(cx);
         self.sync_rows();
         // The modal's tool gone (a restart, a new conversation): back out to what is left.
         if let Some(modal) = &mut self.modal
@@ -2296,50 +2339,72 @@ impl AgentTab {
     /// Lay out again the rows whose items changed (and a sub-agent's parent row), add the new
     /// ones at the end, drop any gone from it.
     fn sync_rows(&mut self) {
+        let view = self.view.clone();
         let items = self.conversation.items();
-        // A row's print holds its shape in its tool group and whether it carries the thinking
-        // line (spec B-B): a neighbour arriving lays it out again.
-        let thinking = crate::agent_chat::shows_thinking(self.status() == Status::Working, items);
-        let new: Vec<u64> = (0..items.len())
-            .map(|i| crate::agent_chat::row_print(items, i, thinking))
+        let order = crate::agent_chat::rows_of(items, &view);
+        // A row's print holds its item, its shape in its tool group and whether it carries the
+        // thinking line (spec B-B): a neighbour arriving lays it out again.
+        let thinking = view == crate::agent_lanes::View::Main
+            && crate::agent_chat::shows_thinking(self.status() == Status::Working, items);
+        let new: Vec<u64> = (0..order.len())
+            .map(|k| crate::agent_chat::row_print_at(items, &order, k, thinking))
             .collect();
-        let old: Vec<u64> = self.rows.iter().map(|r| r.print).collect();
+        let pane = self.panes.entry(view).or_insert_with(Pane::new);
+        let old: Vec<u64> = pane.rows.iter().map(|r| r.print).collect();
         let mut dirty = changed_rows(&old, &new);
-        // A sub-agent's item is drawn inside its parent's row.
-        let touched: Vec<usize> = dirty.iter().copied().chain(old.len()..new.len()).collect();
-        for i in touched {
-            if let Some(parent) = items.get(i).and_then(parent_of)
-                && let Some(p) = items
+        // A tool row draws its sub-agent's steps in its detail: a step arriving lays it out.
+        let seen = pane.order.last().map_or(0, |&l| l + 1).min(items.len());
+        for (k, &i) in order.iter().enumerate().take(old.len().min(new.len())) {
+            if let Item::Tool { id, .. } = &items[i]
+                && !dirty.contains(&k)
+                && items[seen..]
                     .iter()
-                    .position(|t| matches!(t, Item::Tool { id, .. } if id == parent))
-                && p < old.len().min(new.len())
-                && !dirty.contains(&p)
+                    .any(|t| parent_of(t) == Some(id.as_str()))
             {
-                dirty.push(p);
+                dirty.push(k);
             }
         }
         if new.len() < old.len() {
-            self.list.splice(new.len()..old.len(), 0);
-            self.rows.drain(new.len()..);
+            pane.list.splice(new.len()..old.len(), 0);
+            pane.rows.drain(new.len()..);
         }
-        for &i in &dirty {
-            if i < new.len() {
-                self.list.splice(i..i + 1, 1);
-                self.rows[i] = Row {
-                    print: new[i],
-                    blocks: blocks_of(&items[i]),
+        for &k in &dirty {
+            if k < new.len() {
+                pane.list.splice(k..k + 1, 1);
+                pane.rows[k] = Row {
+                    print: new[k],
+                    blocks: blocks_of(&items[order[k]]),
                 };
             }
         }
         if new.len() > old.len() {
-            self.list
+            pane.list
                 .splice(old.len()..old.len(), new.len() - old.len());
-            for i in old.len()..new.len() {
-                self.rows.push(Row {
-                    print: new[i],
-                    blocks: blocks_of(&items[i]),
+            for k in old.len()..new.len() {
+                pane.rows.push(Row {
+                    print: new[k],
+                    blocks: blocks_of(&items[order[k]]),
                 });
             }
+        }
+        pane.order = order;
+    }
+
+    /// The shown view's list.
+    fn pane(&self) -> &Pane {
+        self.panes
+            .get(&self.view)
+            .or_else(|| self.panes.get(&crate::agent_lanes::View::Main))
+            .expect("Main's pane is made with the tab")
+    }
+
+    /// Item `ix`'s parsed text, from its row in the shown view (else parsed now: a step drawn in
+    /// a tool's detail).
+    pub(super) fn blocks_at(&self, ix: usize) -> Option<Rc<Vec<Md>>> {
+        let pane = self.pane();
+        match pane.order.iter().position(|&i| i == ix) {
+            Some(k) => pane.rows.get(k).and_then(|r| r.blocks.clone()),
+            None => blocks_of(&self.conversation.items()[ix]),
         }
     }
 
@@ -2362,11 +2427,15 @@ impl AgentTab {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let more = this
                     .update(cx, |this, cx| {
-                        let mut any = false;
-                        for (i, item) in this.conversation.items().iter().enumerate() {
-                            if matches!(item, Item::Tool { running: true, .. }) {
-                                this.list.splice(i..i + 1, 1);
-                                any = true;
+                        let items = this.conversation.items();
+                        let any = items
+                            .iter()
+                            .any(|i| matches!(i, Item::Tool { running: true, .. }));
+                        // The shown view's running rows say their time again.
+                        let pane = this.pane();
+                        for (k, &i) in pane.order.iter().enumerate() {
+                            if matches!(items[i], Item::Tool { running: true, .. }) {
+                                pane.list.splice(k..k + 1, 1);
                             }
                         }
                         if any {
@@ -4738,7 +4807,7 @@ impl Render for AgentTab {
                 .min_h(px(0.))
                 .w_full()
                 .child(
-                    list(self.list.clone(), move |ix, _, cx| {
+                    list(self.pane().list.clone(), move |ix, _, cx| {
                         #[cfg(feature = "ui-shots")]
                         built.set(built.get() + 1);
                         match view.upgrade() {
@@ -4775,6 +4844,8 @@ impl Render for AgentTab {
             .on_action(cx.listener(Self::modal_prev))
             .on_action(cx.listener(Self::modal_next))
             .on_action(cx.listener(Self::close_image_action))
+            .on_action(cx.listener(Self::prev_lane))
+            .on_action(cx.listener(Self::next_lane))
             .size_full()
             .flex()
             .flex_col()
@@ -4790,6 +4861,7 @@ impl Render for AgentTab {
             })
             .text_color(hsla(c.text))
             .child(self.top_line(&c))
+            .children(self.lane_strip(&look, cx))
             .child(
                 if crate::agent_top::animating(
                     self.cleared_at,

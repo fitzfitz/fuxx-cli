@@ -505,6 +505,9 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         // The agent tab's `@` file list and `/` list, while one is open over the composer.
         // The tool modal (spec A §B): Esc backs out or closes, ↑/↓ walk the tools.
         KeyBinding::new("escape", agent_tab::ModalBack, Some("AgentToolModal")),
+        // M11ar: step between Main and the subagents' pills.
+        KeyBinding::new("alt-cmd-[", agent_tab::PrevLane, Some("AgentTab")),
+        KeyBinding::new("alt-cmd-]", agent_tab::NextLane, Some("AgentTab")),
         KeyBinding::new("escape", agent_tab::CloseImage, Some("AgentImageView")),
         KeyBinding::new("up", agent_tab::ModalPrev, Some("AgentToolModal")),
         KeyBinding::new("down", agent_tab::ModalNext, Some("AgentToolModal")),
@@ -1549,6 +1552,15 @@ mod tests {
         assert!(runs(&keymap, "cmd-k", composer).partial_eq(&OpenPalette));
         assert!(runs(&keymap, "cmd-t", composer).partial_eq(&NewTab));
         assert!(runs(&keymap, "cmd-w", composer).partial_eq(&CloseSession));
+    }
+
+    /// The subagent pills (M11ar): ⌥⌘[ / ⌥⌘] step between Main and the lanes in an agent tab.
+    #[test]
+    fn the_lane_keys_are_bound_in_the_agent_tab() {
+        let keymap = keymap();
+        let tab: &[&str] = &["Workspace", "AgentTab"];
+        assert!(runs(&keymap, "alt-cmd-[", tab).partial_eq(&crate::agent_tab::PrevLane));
+        assert!(runs(&keymap, "alt-cmd-]", tab).partial_eq(&crate::agent_tab::NextLane));
     }
 
     /// The tool modal (chores after M11ab, spec A §B): Esc goes back or closes it and never

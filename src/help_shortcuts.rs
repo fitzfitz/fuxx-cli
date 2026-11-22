@@ -85,6 +85,8 @@ pub fn describe(action: &str) -> Describe {
         "workspace::CloseSession" => Listed(Tabs, "Close Tab"),
         "workspace::NextTab" => Listed(Tabs, "Next tab"),
         "workspace::PrevTab" => Listed(Tabs, "Previous tab"),
+        "agent_tab::PrevLane" => Listed(Tabs, "Previous Subagent"),
+        "agent_tab::NextLane" => Listed(Tabs, "Next Subagent"),
         "file_tab::Find" => Listed(Tabs, "Find in File\u{2026}"),
         "file_tab::FindNext" => Listed(Tabs, "Find Next"),
         "file_tab::FindPrev" => Listed(Tabs, "Find Previous"),
