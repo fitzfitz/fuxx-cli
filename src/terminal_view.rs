@@ -1637,7 +1637,8 @@ impl TerminalView {
                 .h(px(PILL_H))
                 .px(px(8.0))
                 .rounded(px(PILL_H / 2.0))
-                .bg(hsla(ui.composer_inner))
+            // No fill at rest (your words, 2026-11-22: "remove background for these pills as
+            // well"); the branch's hover fill stays.
         };
         // The running command first: its dot the composer's one colour.
         let running = self.run.started().map(|at| {

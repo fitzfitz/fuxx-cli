@@ -648,11 +648,11 @@ pub struct Colors {
     pub code_text: Rgb,
     /// The agent box you type in (M11ak; the folder tab's inner box since the chores).
     pub box_fill: Rgb,
-    /// The folder-tab composer (chores: as the shell tab's): its outer box and edge, its pills
-    /// and a pill under the pointer (`page` is behind it: the tab's concave corner).
+    /// The folder-tab composer (chores: as the shell tab's): its outer box and edge, and a pill
+    /// under the pointer (the pills have no fill at rest; `page` is behind it: the tab's
+    /// concave corner).
     pub outer: Rgb,
     pub outer_edge: Rgb,
-    pub pill: Rgb,
     pub pill_hover: Rgb,
     /// The box's controls (the designer's details): `+`, the model and mode pills and an idle
     /// send button, a step over the box (6 %), a little more under the pointer (10 %).
@@ -751,7 +751,6 @@ impl Colors {
             box_fill: ui.composer_inner,
             outer: ui.composer_outer,
             outer_edge: ui.composer_edge,
-            pill: ui.composer_inner,
             pill_hover: ui.composer_pill_hover,
             control: mix(ui.composer_inner, theme.foreground, 0.06),
             control_hover: mix(ui.composer_inner, theme.foreground, 0.10),
@@ -4754,35 +4753,42 @@ impl AgentTab {
 
     /// The pane's top bar (spec A §C): the status pill on the left; on the right what the
     /// conversation cost (and what its last turn added) and how full its context is, live.
-    fn top_line(&mut self, theme: &Theme, c: &Colors, cx: &mut Context<Self>) -> AnyElement {
-        use crate::agent_top::{
-            Band, METER_H, METER_W, PillMark, animating, band, ease_out_cubic, meter_fill, pill,
-            trim,
-        };
+    /// The agent's status in the box's tab, before the folder, as a shell's running command is
+    /// (your words, 2026-11-22: "like terminal when doing like npm run dev (in process)"): its
+    /// mark and word, no fill (the tab's pills have none), the word's colour blending on a
+    /// change; nothing while idle. Reads `self.top`, which `top_line` brought up to date this
+    /// frame (it is drawn first).
+    pub(crate) fn status_pill(
+        &self,
+        theme: &Theme,
+        c: &Colors,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        use crate::agent_top::{PillMark, animating, ease_out_cubic, pill};
+        let (status, stopping) = (self.status(), self.stopping.is_some());
+        if status == Status::Idle && !stopping {
+            return None;
+        }
         let clock_now = Instant::now();
-        let ms = Duration::from_millis;
-        let status = self.status();
-        let stopping = self.stopping.is_some();
-        let cost = self.conversation.cost_usd();
-        let context = self.conversation.context_pct();
-        self.top.observe(status, stopping, cost, context);
         let top = self.top.clone();
+        let on = c.outer;
+        let ink = |p: &crate::agent_top::Pill| {
+            crate::ui_tokens::ensure_contrast(p.word_ink, on, crate::ui_tokens::TEXT_MIN)
+        };
         let now = pill(status, stopping, theme);
-        let from = top.pill_from.map(|(s, st)| pill(s, st, theme));
-        let fill_of = |p: &crate::agent_top::Pill| p.fill.unwrap_or(c.page);
-        // Each change plays its animation once, while it is new (the review's finding 4).
-        let blend = from
-            .filter(|_| animating(self.top.pill_at, clock_now, ms(200)))
-            .map(|f| (fill_of(&f), f.word_ink));
-        let (to_fill, to_ink) = (fill_of(&now), now.word_ink);
+        let to_ink = ink(&now);
+        let from_ink = top
+            .pill_from
+            .map(|(s, st)| ink(&pill(s, st, theme)))
+            .filter(|_| animating(top.pill_at, clock_now, Duration::from_millis(200)));
         let mark: AnyElement = match now.mark {
             PillMark::Status(s) => {
-                let fill = to_fill;
-                self.top_mark.update(cx, |m, _| m.set(s, px(MARK), fill));
+                self.top_mark.update(cx, |m, _| m.set(s, px(MARK), on));
                 self.top_mark.clone().into_any_element()
             }
             PillMark::DoneCheck => {
-                let ink = now.mark_ink;
+                let check =
+                    crate::ui_tokens::ensure_contrast(now.mark_ink, on, crate::ui_tokens::MARK_MIN);
                 let slot = div()
                     .flex_none()
                     .size(px(MARK))
@@ -4795,46 +4801,59 @@ impl AgentTab {
                         Animation::new(status_mark::POP),
                         move |slot, t| {
                             slot.child(status_mark::done_check(
-                                ink,
+                                check,
                                 px(MARK * status_mark::pop_curve(t)),
                             ))
                         },
                     )
                     .into_any_element()
                 } else {
-                    slot.child(status_mark::done_check(ink, px(MARK)))
+                    slot.child(status_mark::done_check(check, px(MARK)))
                         .into_any_element()
                 }
             }
         };
-        let pill_el = div()
-            .flex_none()
-            .h(px(22.))
-            .ml(px(-8.))
-            .pl(px(8.))
-            .pr(px(10.))
-            .rounded(px(11.))
+        let el = div()
+            .id("agent-status")
             .flex()
+            .flex_none()
             .items_center()
-            .gap(px(6.))
+            .gap(px(5.))
+            .h(px(crate::card_view::PILL_H))
+            .px(px(8.))
+            .text_size(px(12.))
             .font_weight(FontWeight::MEDIUM)
-            .bg(hsla(to_fill))
             .text_color(hsla(to_ink))
             .child(mark)
             .child(SharedString::from(now.word));
-        let pill_el = match blend {
-            Some((from_fill, from_ink)) => pill_el
+        let el = match from_ink {
+            Some(from) => el
                 .with_animation(
                     ("agent-pill", top.pill_key),
                     Animation::new(Duration::from_millis(200)).with_easing(ease_out_cubic),
-                    move |d, t| {
-                        d.bg(hsla(mix(from_fill, to_fill, t)))
-                            .text_color(hsla(mix(from_ink, to_ink, t)))
-                    },
+                    move |d, t| d.text_color(hsla(mix(from, to_ink, t))),
                 )
                 .into_any_element(),
-            None => pill_el.into_any_element(),
+            None => el.into_any_element(),
         };
+        Some(
+            self.marked("status", div().flex_none().child(el))
+                .into_any_element(),
+        )
+    }
+
+    fn top_line(&mut self, c: &Colors) -> AnyElement {
+        use crate::agent_top::{
+            Band, METER_H, METER_W, animating, band, ease_out_cubic, meter_fill, trim,
+        };
+        let clock_now = Instant::now();
+        let ms = Duration::from_millis;
+        let status = self.status();
+        let stopping = self.stopping.is_some();
+        let cost = self.conversation.cost_usd();
+        let context = self.conversation.context_pct();
+        self.top.observe(status, stopping, cost, context);
+        let top = self.top.clone();
         let shown = trim(self.bar_width.get());
         let cost_group = cost.map(|usd| {
             let fresh = animating(top.delta_at, clock_now, ms(200));
@@ -4972,7 +4991,8 @@ impl AgentTab {
             .font_features(crate::sidebar::tabular())
             .text_color(hsla(c.dim))
             .child(measure)
-            .child(self.marked("status", div().flex_none().child(pill_el)))
+            // The status moved to the box's tab, before the folder (your words, 2026-11-22: "like
+            // terminal when doing like npm run dev"): `status_pill`.
             .child(div().flex_1())
             .children(cost_group)
             .when(cost.is_some() && context.is_some(), |d| {
@@ -5184,7 +5204,7 @@ impl Render for AgentTab {
                     }))
             })
             .text_color(hsla(c.text))
-            .child(self.top_line(&theme, &c, cx))
+            .child(self.top_line(&c))
             .child(
                 if crate::agent_top::animating(
                     self.cleared_at,
@@ -5866,7 +5886,9 @@ mod tests {
                     c.text,
                     c.control_hover,
                 ),
-                ("dim on a pill", c.dim, c.pill),
+                // The tab's pills have no fill (2026-11-22): their words on the tab.
+                ("dim on the tab", c.dim, c.outer),
+                ("text on a pill under the pointer", c.text, c.pill_hover),
             ] {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got:.2}");

@@ -218,3 +218,8 @@ activity, also git bottom bar": the right panel's shared sizes are the Git tab's
   were placed from where the box was the frame before (it was noted in paint). Now the column is laid out in the
   canvas's prepaint (`layout_cards`) and the pills move to the box's place in their own prepaint, the same frame
   (`FollowComposer`). `shell-cards-wrap` checks it (with the follow off: 17 pt behind).
+- **Tab pills, no fill** ("can you remove bakground for these pills as well?"): the folder, branch and running pills in
+  both boxes' tabs have no fill at rest; the ones you press keep their hover fill.
+- **Agent status in the tab** ("move the left agent status on the left beside folder name … like terminal when doing
+  like npm run dev"): the status (Cultivating…, Needs input, Stopping…, Done) is a pill before the folder in the box's
+  tab, its mark and word, no fill; nothing while idle (`status_pill`). The top bar keeps the cost and context.

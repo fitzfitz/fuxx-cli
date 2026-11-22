@@ -1014,7 +1014,8 @@ impl AgentTab {
                 .h(px(PILL_H))
                 .px(px(8.))
                 .rounded(px(PILL_H / 2.))
-                .bg(hsla(c.pill))
+                // No fill at rest (your words, 2026-11-22: "remove background for these pills
+                // as well"); the hover fill stays on the ones you can press.
                 .text_size(px(12.))
                 .text_color(hsla(c.dim))
                 .child(icon(glyph, px(13.), hsla(c.dim)))
@@ -1057,6 +1058,9 @@ impl AgentTab {
                 let (menu, side) = self.folder_menu(cx);
                 d.child(self.menu_frame(Some(menu), side, MENU_WIDTH, cx))
             });
+        // The agent's status before the folder, as a shell's running command (`status_pill`).
+        let theme = cx.global::<Appearance>().theme;
+        let status = self.status_pill(&theme, c, cx);
         let branch = texts.branch.clone().map(|text| {
             let tip = text.clone();
             self.marked("branch", pill("agent-branch", Icon::Branch, text))
@@ -1373,7 +1377,7 @@ impl AgentTab {
             .flex_col()
             .children(self.at_list(c, mono.clone(), cx))
             .children(self.slash_list(c, mono, cx))
-            .child(self.folder_tab(folder, branch, the_box, send, c))
+            .child(self.folder_tab(status, folder, branch, the_box, send, c))
             .into_any_element()
     }
 
@@ -1383,6 +1387,7 @@ impl AgentTab {
     /// you type in `OUTER_INSET` in.
     fn folder_tab(
         &self,
+        status: Option<AnyElement>,
         folder: impl IntoElement,
         branch: Option<impl IntoElement>,
         the_box: impl IntoElement,
@@ -1449,6 +1454,7 @@ impl AgentTab {
             .border_r_1()
             .border_color(edge)
             .rounded_t(px(14.))
+            .children(status)
             .child(folder)
             .children(branch);
         // The step: the box's fill under a page-coloured square whose rounded corner (its left
