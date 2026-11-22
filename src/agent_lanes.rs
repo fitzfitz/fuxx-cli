@@ -246,7 +246,7 @@ mod tests {
             Status::Working
         );
         assert_eq!(
-            shown_status(Status::Idle, &[running.clone()]),
+            shown_status(Status::Idle, std::slice::from_ref(&running)),
             Status::Working
         );
         assert_eq!(
@@ -255,12 +255,12 @@ mod tests {
             "all finished"
         );
         assert_eq!(
-            shown_status(Status::Waiting, &[running.clone()]),
+            shown_status(Status::Waiting, std::slice::from_ref(&running)),
             Status::Waiting,
             "a question wins"
         );
         assert_eq!(
-            running_word(&[running.clone()]),
+            running_word(std::slice::from_ref(&running)),
             Some("1 subagent running".into())
         );
         assert_eq!(
