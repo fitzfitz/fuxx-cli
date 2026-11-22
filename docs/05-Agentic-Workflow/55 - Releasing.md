@@ -32,6 +32,12 @@ fixes or tiny changes raises `y` (0.4.0 → 0.4.1). Past releases: `git log --on
 5. **Watch** the run: `gh run list --workflow release.yml --limit 1`, then `gh run watch <id> --exit-status`.
    When it is green the release is at `https://github.com/fitzfitz/fuxx-cli/releases/tag/v<version>` with
    `fuxx-<version>.zip`.
+   - The tag's run is the one whose branch is `v<version>` (a master run starts beside it): pick it by
+     `gh run list --workflow release.yml --limit 2 --json databaseId,headBranch`.
+   - macOS has no `timeout` (it exits 127, so a `timeout … gh run watch` watches nothing; found 2026-11-22). To
+     watch with a deadline, poll in a loop:
+     `end=$((SECONDS+1500)); while [ $SECONDS -lt $end ]; do [ "$(gh run view <id> --json status --jq .status)" = completed ] && break; sleep 30; done`,
+     then `gh run view <id> --json conclusion,jobs` and `gh release view v<version>`.
 6. **Docs** (part of the release): the milestone notes and their plans say "released in v<version>"; the
    [[40 - Roadmap]] and [[00 - Plan Tracker (Start Here)]] lines; a [[60 - Progress Log]] entry with the release
    commit, the tag, the run id and the asset link. Commit and push those as `docs: … released in v<version>`.
