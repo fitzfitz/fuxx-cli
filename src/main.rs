@@ -104,6 +104,7 @@ mod pane_tab_menu;
 mod panes;
 mod plugin_fetch;
 mod plugin_manifest;
+mod plugin_settings;
 mod plugin_shell;
 mod plugin_source;
 mod plugin_store;

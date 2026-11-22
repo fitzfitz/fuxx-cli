@@ -5069,6 +5069,7 @@ mod tests {
             enabled: true,
             bin: Some("bin".into()),
             zsh: vec!["a.zsh".into()],
+            settings: vec![],
         };
         let p = crate::plugins::Plugins {
             records: vec![helper],

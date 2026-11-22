@@ -105,6 +105,7 @@ mod tests {
             enabled,
             bin: bin.map(String::from),
             zsh: zsh.iter().map(|s| s.to_string()).collect(),
+            settings: vec![],
         }
     }
 

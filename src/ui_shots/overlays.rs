@@ -948,6 +948,7 @@ fn preferences_plugins_scene() {
                             enabled,
                             bin: Some("bin".into()),
                             zsh: vec!["init.zsh".into()],
+                            settings: vec![],
                         };
                         let mut plugins = Plugins {
                             records: vec![
@@ -963,6 +964,7 @@ fn preferences_plugins_scene() {
                                     enabled: true,
                                     bin: None,
                                     zsh: vec![],
+                                    settings: vec![],
                                 },
                                 helper("tidy", "Tidy", true),
                                 helper("sparkle", "Sparkle", second_on),

@@ -56,6 +56,9 @@ pub struct Record {
     /// Shell scripts to load, from the manifest.
     #[serde(default)]
     pub zsh: Vec<String>,
+    /// Declared settings, from the manifest (M11au). The values live in fuxx's settings file.
+    #[serde(default)]
+    pub settings: Vec<crate::plugin_settings::Setting>,
 }
 
 fn on() -> bool {
@@ -212,6 +215,7 @@ pub fn commit(
         enabled,
         bin: m.bin.clone(),
         zsh: m.zsh.clone(),
+        settings: m.settings.clone(),
     };
     // An update keeps its place: theme names are suffixed in record order.
     match records.iter().position(|r| r.id == m.id) {
@@ -393,6 +397,7 @@ mod tests {
             themes: vec!["themes/Sunset".into()],
             bin: None,
             zsh: vec![],
+            settings: vec![],
         }
     }
     fn repo(o: &str, n: &str) -> Repo {
@@ -761,6 +766,34 @@ mod tests {
         assert_eq!(records[0].bin, None);
         assert!(records[0].zsh.is_empty());
         assert!(!records[0].runs_code());
+        // From before M11au: no declared settings.
+        assert!(records[0].settings.is_empty());
+    }
+
+    #[test]
+    fn install_and_update_take_the_declared_settings() {
+        use crate::plugin_settings::{Kind, Setting};
+        let (_h, f) = folders("settings");
+        let mut helper = manifest("helper");
+        helper.zsh = vec!["a.zsh".into()];
+        let list = Setting {
+            name: "list".into(),
+            kind: Kind::Bool,
+            default: "on".into(),
+            label: "Show a list".into(),
+        };
+        helper.settings = vec![list.clone()];
+        let staged = stage(&f, "1-a", "a.zsh");
+        let r = commit(&f, &staged, &helper, &repo("o", "b"), &tag("v1"), 1).unwrap();
+        assert_eq!(r.settings, std::slice::from_ref(&list));
+        assert_eq!(load(&f)[0].settings, [list]);
+
+        // An update that drops them drops them from the record.
+        helper.settings = vec![];
+        let staged = stage(&f, "2-a", "a.zsh");
+        let r = commit(&f, &staged, &helper, &repo("o", "b"), &tag("v2"), 2).unwrap();
+        assert!(r.settings.is_empty());
+        assert!(load(&f)[0].settings.is_empty());
     }
 
     #[test]

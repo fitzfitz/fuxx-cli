@@ -706,6 +706,7 @@ mod tests {
             enabled: true,
             bin: None,
             zsh: zsh.iter().map(|s| s.to_string()).collect(),
+            settings: vec![],
         }
     }
 

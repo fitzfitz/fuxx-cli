@@ -28,6 +28,8 @@ pub struct Manifest {
     pub bin: Option<String>,
     /// Shell scripts to load.
     pub zsh: Vec<String>,
+    /// Declared settings (`setting.<name> = …`, M11au), in file order; malformed lines are left out.
+    pub settings: Vec<crate::plugin_settings::Setting>,
 }
 
 impl Manifest {
@@ -134,6 +136,7 @@ pub fn parse(text: &str) -> Result<Manifest, ManifestError> {
         themes: all("theme"),
         bin: last("bin"),
         zsh: all("zsh"),
+        settings: crate::plugin_settings::parse(&entries),
     })
 }
 
@@ -313,6 +316,19 @@ mod tests {
         assert!(!valid_id("Ab"));
         assert!(!valid_id("a/b"));
         assert!(!valid_id(".."));
+    }
+
+    #[test]
+    fn declared_settings_keep_the_manifest_valid() {
+        let m = manifest_with(
+            "zsh = a.zsh\nsetting.list = bool on  Show a suggestion list when you pause\n\
+             setting.list_delay = number 3 Seconds of pause\nsetting.bad = colour red Nope\n",
+        );
+        let names: Vec<&str> = m.settings.iter().map(|s| s.name.as_str()).collect();
+        // The malformed line is skipped; the plugin still parses.
+        assert_eq!(names, ["list", "list_delay"]);
+        assert_eq!(m.settings[1].kind, crate::plugin_settings::Kind::Number);
+        assert!(manifest_with("").settings.is_empty());
     }
 
     #[test]

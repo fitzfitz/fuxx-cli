@@ -89,6 +89,7 @@ mod tests {
             enabled: true,
             bin: None,
             zsh: vec![],
+            settings: vec![],
         }
     }
 
