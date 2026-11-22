@@ -280,6 +280,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-tab-wide",
     "agent-lanes-strip",
     "agent-lanes-overflow",
+    "agent-lanes-view",
     "agent-lanes-states",
     "agent-tab-failed",
     "agent-tab-bad-resume",

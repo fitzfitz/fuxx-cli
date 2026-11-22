@@ -6,15 +6,8 @@ use std::hash::{Hash, Hasher};
 
 use crate::agent_conversation::Item;
 use crate::agent_lanes::View;
-use crate::agent_tool_modal::{index_of, parent_of};
+use crate::agent_tool_modal::parent_of;
 pub use crate::ui_tokens::chat;
-
-/// Whether item `ix` is a row of its own in Main (a sub-agent's items are its lane's).
-pub fn is_row(items: &[Item], ix: usize) -> bool {
-    items
-        .get(ix)
-        .is_some_and(|i| parent_of(i).is_none_or(|p| index_of(items, p).is_none()))
-}
 
 /// The items drawn as rows in `view`, in order (M11ar): Main's — everything but a lane's steps
 /// (a step whose lane's call is gone stays) — or a lane's own steps. One pass.
@@ -140,6 +133,7 @@ pub fn group_shape(items: &[Item], ix: usize) -> Option<Shape> {
 }
 
 /// The gap above row `ix`, from the row before it (spec B-B's table).
+#[cfg(test)]
 pub fn gap_before(items: &[Item], ix: usize) -> f32 {
     let rows = main_rows(items);
     rows.iter()
@@ -148,6 +142,7 @@ pub fn gap_before(items: &[Item], ix: usize) -> f32 {
 }
 
 /// Whether row `ix` carries the avatar: the first of a run of the agent's rows.
+#[cfg(test)]
 pub fn shows_avatar(items: &[Item], ix: usize) -> bool {
     let rows = main_rows(items);
     rows.iter()
@@ -187,6 +182,7 @@ pub fn summary_shown(name: &str, summary: &str) -> bool {
 }
 
 /// Row `ix`'s print in Main.
+#[cfg(test)]
 pub fn row_print(items: &[Item], ix: usize, thinking: bool) -> u64 {
     let rows = main_rows(items);
     match rows.iter().position(|&r| r == ix) {

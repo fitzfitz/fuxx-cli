@@ -357,6 +357,211 @@ impl AgentTab {
         )
     }
 
+    /// The shown lane, if the view is one.
+    pub(crate) fn shown_lane(&self) -> Option<&Lane> {
+        match &self.view {
+            View::Lane(id) => self.conversation.lane(id),
+            View::Main => None,
+        }
+    }
+
+    /// Back to Main, its list brought to the lane's row ("Back to Main ›").
+    pub(crate) fn back_to_main(&mut self, lane: &str, cx: &mut Context<Self>) {
+        self.show_view(View::Main, cx);
+        let items = self.conversation.items();
+        let pane = self.pane();
+        if let Some(k) = pane
+            .order
+            .iter()
+            .position(|&i| matches!(&items[i], Item::Tool { id, .. } if id == lane))
+        {
+            pane.list.scroll_to_reveal_item(k);
+        }
+    }
+
+    /// A lane's header (the Lead UI/UX Designer's spec), over its list: its name, its kind and
+    /// model, and on the right its time, tokens and tools as far as the agent says (a narrow tab
+    /// keeps the time).
+    pub(super) fn lane_header(&self, look: &Look, _cx: &mut Context<Self>) -> Option<AnyElement> {
+        let lane = self.shown_lane()?;
+        let c = look.c;
+        let narrow = self.bar_width.get() < NARROW;
+        let kind = [Some(lane.kind.clone()), lane.model.clone()]
+            .into_iter()
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let stats = [
+            self.lane_elapsed(&lane.id).map(crate::agent_lanes::clock),
+            lane.tokens
+                .filter(|_| !narrow)
+                .map(|t| format!("{:.1}k tok", t as f32 / 1000.0)),
+            lane.tools.filter(|_| !narrow).map(|n| match n {
+                1 => "1 tool".to_string(),
+                n => format!("{n} tools"),
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+        Some(
+            div()
+                .flex_none()
+                .w_full()
+                .px(px(AREA_X))
+                .pb(px(4.))
+                .flex()
+                .justify_center()
+                .child(
+                    self.marked(
+                        "lane-header",
+                        div()
+                            .w_full()
+                            .max_w(px(crate::ui_tokens::chat::COLUMN_MAX))
+                            .h(px(crate::card_view::PILL_H))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .text_size(px(text::META))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(hsla(c.text))
+                                    .child(SharedString::from(lane.label.clone())),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .text_color(hsla(c.dim))
+                                    .child(SharedString::from(kind)),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_features(crate::sidebar::tabular())
+                                    .text_color(hsla(c.panel_dim))
+                                    .child(SharedString::from(stats)),
+                            ),
+                    ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// A lane's first row: what Main asked it, as your bubble is drawn, captioned "from Main".
+    pub(super) fn lane_head_row(&self, look: &Look) -> AnyElement {
+        let Some(lane) = self.shown_lane() else {
+            return div().into_any_element();
+        };
+        let c = look.c;
+        let task = lane.task.trim().to_string();
+        div()
+            .w_full()
+            .px(px(AREA_X))
+            .pt(px(crate::ui_tokens::chat::FIRST_TOP))
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(
+                self.marked(
+                    "lane-task",
+                    div()
+                        .w_full()
+                        .max_w(px(crate::ui_tokens::chat::COLUMN_MAX))
+                        .flex()
+                        .flex_col()
+                        .items_end()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .text_size(px(text::META))
+                                .text_color(hsla(c.dim))
+                                .child("from Main"),
+                        )
+                        .child(
+                            div()
+                                .max_w(px(520.))
+                                .px(px(14.))
+                                .py(px(9.))
+                                .rounded(px(crate::ui_tokens::chat::R_BUBBLE))
+                                .rounded_tr(px(crate::ui_tokens::chat::R_TAIL))
+                                .bg(hsla(c.you_fill))
+                                .border_1()
+                                .border_color(hsla(c.you_edge))
+                                .text_size(px(crate::ui_tokens::chat::BODY))
+                                .line_height(relative(crate::ui_tokens::chat::BODY_LINE))
+                                .text_color(hsla(c.you_text))
+                                .child(SharedString::from(task)),
+                        ),
+                ),
+            )
+            .into_any_element()
+    }
+
+    /// A lane's last row once it ended: "✓ Done in 1:42 · Back to Main ›", "✕ Failed · why",
+    /// "Stopped".
+    pub(super) fn lane_end_row(&self, look: &Look) -> AnyElement {
+        let Some(lane) = self.shown_lane() else {
+            return div().into_any_element();
+        };
+        let c = look.c;
+        let (word, ink): (String, Rgb) = match &lane.status {
+            LaneStatus::Done => (
+                match self.lane_elapsed(&lane.id) {
+                    Some(d) => format!("\u{2713} Done in {}", crate::agent_lanes::clock(d)),
+                    None => "\u{2713} Done".into(),
+                },
+                c.tool_ok,
+            ),
+            LaneStatus::Failed(why) => (format!("\u{2715} Failed \u{b7} {why}"), c.failed_panel),
+            _ => ("Stopped".into(), c.panel_dim),
+        };
+        let view = look.view.clone();
+        let id = lane.id.clone();
+        div()
+            .w_full()
+            .px(px(AREA_X))
+            .pt(px(crate::ui_tokens::chat::GAP_NOTICE))
+            .pb(px(crate::ui_tokens::chat::LAST_BOTTOM))
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(
+                self.marked(
+                    "lane-end",
+                    div()
+                        .w_full()
+                        .max_w(px(crate::ui_tokens::chat::COLUMN_MAX))
+                        .pl(px(
+                            crate::ui_tokens::chat::AVATAR + crate::ui_tokens::chat::AVATAR_GAP
+                        ))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .text_size(px(text::META))
+                        .child(div().text_color(hsla(ink)).child(SharedString::from(word)))
+                        .child(div().text_color(hsla(c.panel_dim)).child("\u{b7}"))
+                        .child(
+                            div()
+                                .id("lane-back")
+                                .cursor_pointer()
+                                .text_color(hsla(c.dim))
+                                .hover(move |s| s.text_color(hsla(c.text)))
+                                .child("Back to Main \u{203a}")
+                                .on_click(on_tab(&view, move |this, cx| {
+                                    this.back_to_main(&id, cx)
+                                })),
+                        ),
+                ),
+            )
+            .into_any_element()
+    }
+
     /// Scenes: the lanes, and a lane's step count.
     #[cfg(feature = "ui-shots")]
     pub fn shot_lanes(&self) -> &[Lane] {
@@ -366,6 +571,18 @@ impl AgentTab {
     #[cfg(feature = "ui-shots")]
     pub fn shot_lane_steps(&self, id: &str) -> usize {
         self.conversation.lane_steps(id)
+    }
+
+    /// Scenes: whether `part` has been drawn (since `shot_forget`).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_part_now(&self, part: &str) -> bool {
+        self.shot_part(part).is_some()
+    }
+
+    /// Scenes: forget where `parts` were drawn (the next frame says again).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_forget(&self, parts: &[&str]) {
+        self.parts.borrow_mut().retain(|k, _| !parts.contains(k));
     }
 
     /// Scenes: open or close the "+N" list.

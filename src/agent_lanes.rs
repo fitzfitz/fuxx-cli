@@ -100,6 +100,15 @@ pub fn elapsed(
     Some(ended.unwrap_or(now).saturating_duration_since(start))
 }
 
+/// "1 step", "14 steps".
+pub fn steps_label(n: usize) -> String {
+    match n {
+        0 => "No steps".into(),
+        1 => "1 step".into(),
+        n => format!("{n} steps"),
+    }
+}
+
 /// `1:02`.
 pub fn clock(d: std::time::Duration) -> String {
     let s = d.as_secs();
@@ -158,6 +167,13 @@ mod tests {
         assert_eq!(elapsed(None, None, later), None, "no start: no time");
         assert_eq!(clock(Duration::from_secs(62)), "1:02");
         assert_eq!(clock(Duration::from_secs(5)), "0:05");
+    }
+
+    #[test]
+    fn steps_say_one_or_many() {
+        assert_eq!(steps_label(1), "1 step");
+        assert_eq!(steps_label(14), "14 steps");
+        assert_eq!(steps_label(0), "No steps");
     }
 
     #[test]

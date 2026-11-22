@@ -10,16 +10,28 @@ impl AgentTab {
             agent_side, avatar_top, chat, gap_before_at, shows_avatar_at, shows_thinking,
         };
         let items = self.conversation.items();
-        let order = &self.pane().order;
+        let pane = self.pane();
+        // A lane's view: its task first ("from Main"), how it ended last (M11ar).
+        if pane.head && k == 0 {
+            return self.lane_head_row(look);
+        }
+        let k = k - pane.head as usize;
+        let order = &pane.order;
         let Some(&ix) = order.get(k) else {
-            return div().into_any_element();
+            return self.lane_end_row(look);
         };
         let item = &items[ix];
         let c = &look.c;
         let last = k + 1 == order.len();
         let thinking = last
-            && self.view == crate::agent_lanes::View::Main
-            && shows_thinking(self.status() == Status::Working, items);
+            && match &self.view {
+                crate::agent_lanes::View::Main => {
+                    shows_thinking(self.status() == Status::Working, items)
+                }
+                crate::agent_lanes::View::Lane(id) => self.conversation.lane(id).is_some_and(|l| {
+                    crate::agent_chat::shows_thinking_in(l.status.live(), items, order)
+                }),
+            };
         let body = self.item_body(ix, item, 0, look);
         let text_column = chat::AVATAR + chat::AVATAR_GAP;
         let column = div().w_full().max_w(px(chat::COLUMN_MAX));
@@ -462,6 +474,8 @@ impl AgentTab {
         };
         let c = &look.c;
         let items = self.conversation.items();
+        // A subagent's row (M11ar) reads from its lane: its name, its task, its state.
+        let lane = self.conversation.lane(id).cloned();
         let steps = items
             .iter()
             .filter(|i| parent_of(i) == Some(id.as_str()))
@@ -470,8 +484,31 @@ impl AgentTab {
             Some(ToolDetail::Diff { unified, .. }) => Some(parse_diff(unified)),
             _ => None,
         };
-        let openable = crate::agent_tool_modal::openable(items, ix);
-        let right: (String, Rgb) = if *running {
+        let openable = lane.is_some() || crate::agent_tool_modal::openable(items, ix);
+        let (name, summary) = match &lane {
+            Some(l) => (&l.label, &l.task.lines().next().unwrap_or("").to_string()),
+            None => (name, summary),
+        };
+        let right: (String, Rgb) = if let Some(l) = &lane {
+            // While it runs its last tool, then its step count; and its time when known.
+            let what = if l.status.live() {
+                l.last_tool.clone().unwrap_or_default()
+            } else {
+                crate::agent_lanes::steps_label(self.conversation.lane_steps(id))
+            };
+            let time = self.lane_elapsed(id).map(crate::agent_lanes::clock);
+            let words = [Some(what), time]
+                .into_iter()
+                .flatten()
+                .filter(|w| !w.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let ink = match l.status {
+                crate::agent_conversation::LaneStatus::Failed(_) => c.failed_panel,
+                _ => c.panel_dim,
+            };
+            (words, ink)
+        } else if *running {
             let since = self
                 .tool_started
                 .get(id)
@@ -497,14 +534,15 @@ impl AgentTab {
                 .bg(hsla(fill))
                 .into_any_element()
         };
-        let status: AnyElement = match (running, ok) {
-            (true, _) => match self.tool_marks.get(id) {
+        let status: AnyElement = match (&lane, running, ok) {
+            (Some(l), _, _) => self.lane_mark(l, c),
+            (None, true, _) => match self.tool_marks.get(id) {
                 Some(mark) => mark.clone().into_any_element(),
                 None => dot(c.todo_active),
             },
-            (false, Some(true)) => dot(c.tool_ok),
-            (false, Some(false)) => dot(c.failed_panel),
-            (false, None) => div()
+            (None, false, Some(true)) => dot(c.tool_ok),
+            (None, false, Some(false)) => dot(c.failed_panel),
+            (None, false, None) => div()
                 .size(px(chat::TOOL_DOT))
                 .rounded_full()
                 .border_1()
@@ -578,7 +616,7 @@ impl AgentTab {
                         d.child(SharedString::from(summary.clone()))
                     }),
             )
-            .when(steps > 0, |d| {
+            .when(steps > 0 && lane.is_none(), |d| {
                 d.child(
                     div()
                         .flex_none()
@@ -608,6 +646,20 @@ impl AgentTab {
                         .bg(hsla(c.tool_divider)),
                 )
             });
+        // A subagent's row opens its lane (M11ar).
+        if lane.is_some() {
+            let view = look.view.clone();
+            let to = crate::agent_lanes::View::Lane(id.clone());
+            return tool
+                .cursor_pointer()
+                .hover(move |s| s.bg(row_hover))
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    let to = to.clone();
+                    view.update(cx, |this, cx| this.show_view(to, cx)).ok();
+                })
+                .into_any_element();
+        }
         // The whole row opens the tool's detail (spec A §A): a modal, never inline.
         let tool = if openable {
             let view = look.view.clone();

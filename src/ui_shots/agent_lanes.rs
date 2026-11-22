@@ -40,6 +40,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: SOURCES,
     },
     Scene {
+        name: "agent-lanes-view",
+        run: agent_lanes_view,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: SOURCES,
+    },
+    Scene {
         name: "agent-lanes-states",
         run: agent_lanes_states,
         themes: Themes::Both,
@@ -144,10 +152,10 @@ pub(super) fn agent_lanes_strip() {
             let lane_rows = cx.read(|cx| tab.read(cx).shot_list().item_count());
             let steps = cx.read(|cx| tab.read(cx).shot_lane_steps(&first));
             assert_eq!(
-                lane_rows, steps,
-                "{n}: the lane's own steps ({lane_rows} rows)"
+                lane_rows,
+                steps + 2,
+                "{n}: from Main, the lane's own steps, its end ({lane_rows} rows)"
             );
-            assert!(lane_rows > 0 && lane_rows < main_rows, "{n}");
             feed(cx, tab, |t, cx| t.show_view(View::Main, cx));
             assert_eq!(
                 cx.read(|cx| tab.read(cx).shot_list().item_count()),
@@ -228,4 +236,60 @@ pub(super) fn agent_lanes_states() {
             let _ = part(cx, tab, n, "strip");
         },
     );
+}
+
+/// The chat switched to a subagent: its header, what Main asked it ("from Main"), its steps, and
+/// how it ended — done (with Back to Main), failed (its reason), stopped; a working one has no
+/// end line. The picture: the done lane.
+pub(super) fn agent_lanes_view() {
+    scene_sized("agent-lanes-view", (1100.0, 640.0), |n, cx, window, tab| {
+        feed(cx, tab, |t, cx| {
+            t.send("Read a.txt and b.txt with two subagents".into(), cx)
+        });
+        let mut events = decode(SUBAGENTS);
+        events.extend(started("failed", "Check the build"));
+        events.push(Event::SubagentEnded {
+            id: "failed".into(),
+            end: LaneEnd::Failed("no such file".into()),
+        });
+        events.extend(started("stopped", "Watch the tests"));
+        events.push(Event::SubagentEnded {
+            id: "stopped".into(),
+            end: LaneEnd::Stopped,
+        });
+        events.extend(started("working", "Lint the code"));
+        feed(cx, tab, |t, cx| t.shot_feed(events, cx));
+        let lanes = lanes_of(cx, tab);
+        let has = |cx: &mut VisualTestAppContext, name: &str| {
+            cx.read(|cx| tab.read(cx).shot_part_now(name))
+        };
+        for (id, end) in [
+            ("working", false),
+            ("failed", true),
+            ("stopped", true),
+            (lanes[0].0.as_str(), true),
+        ] {
+            let to = View::Lane(id.to_string());
+            cx.read(|cx| {
+                tab.read(cx)
+                    .shot_forget(&["lane-header", "lane-task", "lane-end"])
+            });
+            feed(cx, tab, |t, cx| t.show_view(to.clone(), cx));
+            let _ = super::frame_fresh(cx, window);
+            assert!(has(cx, "lane-header"), "{n}: {id}'s header");
+            assert!(has(cx, "lane-task"), "{n}: {id}: from Main");
+            assert_eq!(has(cx, "lane-end"), end, "{n}: {id}'s end line");
+        }
+        let header = part(cx, tab, n, "lane-header");
+        let task = part(cx, tab, n, "lane-task");
+        let end = part(cx, tab, n, "lane-end");
+        assert!(
+            header.bottom() <= task.top(),
+            "{n}: the header over the list"
+        );
+        assert!(
+            task.bottom() <= end.top(),
+            "{n}: from Main first, the end last"
+        );
+    });
 }
