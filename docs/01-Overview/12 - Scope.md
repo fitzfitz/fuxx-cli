@@ -182,3 +182,11 @@ the multi-agent ring layer first; everything cmux-extra is post-core.
   allows; one shared model, a translator per agent. Not in it: typing to a subagent, agy swarms. Next, each its own
   decision: **M11as Agent browser** (fuxx's browser tools in every agent tab) and **M11at Browser testing**. See
   [[93 - Milestone 11ar - Subagents]].
+- **Declared plugin settings** (M11au, added 2026-11-22 by you, approving fuxx-completes' suggestion-list design
+  §4.4 and §6, "built in a worktree by an agent"): a plugin's `fuxx-plugin.conf` may declare settings
+  (`setting.<name> = <bool|number> <default> <label>`); Settings → Plugins shows a switch or a number field for each,
+  keeps your values in fuxx's own settings file, and exports only the ones you changed as
+  `FUXX_PLUGIN_SETTING_<NAME>` while the plugin's zsh scripts load. New tabs only (no live reload). Uninstalling
+  removes the values. This changes note 76's "Not in it: plugin settings pages inside Preferences" for declared
+  settings only. Not in it: text, choice or range settings, live reload, settings for theme-only plugins' themes, a
+  page of its own per plugin. See [[94 - Milestone 11au - Plugin Settings]].

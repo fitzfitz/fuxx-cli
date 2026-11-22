@@ -301,7 +301,9 @@ This replaces its design's "fuxx links the crates directly" (§2 goal 6, §4, §
 - Private repos, GitHub sign-in, sources other than GitHub.
 - Automatic updates, update timers, a plugin store or search, ratings.
 - Sandboxing or a permission system for helper programs.
-- Plugin settings pages inside Preferences (a plugin keeps its own settings).
+- Plugin settings pages inside Preferences (a plugin keeps its own settings). *(Changed 2026-11-22 by you: a plugin
+  may **declare** settings in its manifest, shown on its card in Settings → Plugins — M11au,
+  [[94 - Milestone 11au - Plugin Settings]].)*
 - bash and fish hooks.
 - An "Export as plugin" button.
 
