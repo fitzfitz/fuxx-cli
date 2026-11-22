@@ -242,6 +242,26 @@ impl Provider for Claude {
 
     /// `/usage` in print mode ($0, no turn); `--no-session-persistence` keeps it from leaving a
     /// transcript behind (Task 0).
+    /// ✦ (M11aq): once, as text, on the quick model, not kept as a session.
+    fn message_probe(&self, prompt: &str) -> Option<Probe> {
+        Some(Probe {
+            argv: [
+                "claude",
+                "-p",
+                prompt,
+                "--output-format",
+                "text",
+                "--model",
+                "haiku",
+                "--no-session-persistence",
+            ]
+            .map(String::from)
+            .to_vec(),
+            stdin: Vec::new(),
+            until: None,
+        })
+    }
+
     fn usage_probe(&self) -> Option<Probe> {
         Some(Probe {
             argv: [

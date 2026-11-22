@@ -176,6 +176,17 @@ impl Provider for Agy {
     }
 
     /// `/usage` in print mode: about three seconds, no turn, no cost.
+    /// ✦ (M11aq): once, as text.
+    fn message_probe(&self, prompt: &str) -> Option<Probe> {
+        Some(Probe {
+            argv: ["agy", "-p", prompt, "--output-format", "text"]
+                .map(String::from)
+                .to_vec(),
+            stdin: Vec::new(),
+            until: None,
+        })
+    }
+
     fn usage_probe(&self) -> Option<Probe> {
         Some(Probe {
             argv: ["agy", "-p", "/usage", "--output-format", "json"]

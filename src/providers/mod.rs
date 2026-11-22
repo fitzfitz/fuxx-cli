@@ -259,6 +259,12 @@ pub trait Provider: Sync {
     }
     /// The short process that prints the agent's usage limits ($0, outside any conversation).
     /// None: the agent has no usage command.
+    /// The command that asks the agent, once, for a commit message from `prompt` (M11aq's ✦),
+    /// its answer on stdout as text; none for an agent that can't.
+    #[allow(dead_code)] // M11aq Task 4 (✦) calls it
+    fn message_probe(&self, _prompt: &str) -> Option<Probe> {
+        None
+    }
     fn usage_probe(&self) -> Option<Probe> {
         None
     }
@@ -614,6 +620,142 @@ pub fn all() -> &'static [&'static dyn Provider] {
 
 pub fn by_name(name: &str) -> Option<&'static dyn Provider> {
     all().iter().copied().find(|p| p.info().name == name)
+}
+
+/// The prompt for a commit message from the staged `diff` (M11aq's ✦): one imperative summary
+/// line, the reply nothing but that line; what was left out (secret-looking files) or cut said.
+#[allow(dead_code)] // M11aq Task 4 (✦) calls it
+pub fn commit_message_prompt(diff: &crate::git_commit::StagedDiff) -> String {
+    let mut prompt = String::from(
+        "Write a git commit message for the staged changes below. Reply with only the message: \
+         one summary line in the imperative mood, at most 72 characters, no quotes, no code \
+         fences, no explanation.\n",
+    );
+    if !diff.skipped.is_empty() {
+        prompt.push_str(&format!(
+            "(Also staged but not shown, as they may hold secrets: {}.)\n",
+            diff.skipped.join(", ")
+        ));
+    }
+    if diff.cut {
+        prompt.push_str("(The diff was cut to fit; summarise what is shown.)\n");
+    }
+    prompt.push('\n');
+    prompt.push_str(&diff.text);
+    prompt
+}
+
+/// The message in an agent's answer: its first line with text, out of any code fence, without
+/// quotes or a "Commit message:" label; none when nothing is left.
+#[allow(dead_code)] // M11aq Task 4 (✦) calls it
+pub fn clean_message(raw: &str) -> Option<String> {
+    let line = raw
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with("```"))?;
+    let line = line
+        .strip_prefix("Commit message:")
+        .or_else(|| line.strip_prefix("commit message:"))
+        .unwrap_or(line)
+        .trim();
+    let line = line
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`')
+        .trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+/// Whether `command` is a program on `path_env` (the login PATH; none: this process's).
+#[allow(dead_code)] // M11aq Task 4 (✦) calls it
+pub fn on_path(command: &str, path_env: Option<&str>) -> bool {
+    let path = match path_env {
+        Some(p) => p.to_string(),
+        None => std::env::var("PATH").unwrap_or_default(),
+    };
+    std::env::split_paths(&path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .any(|dir| dir.join(command).is_file())
+}
+
+/// M11aq: the commit message an agent is asked for (✦), and what fuxx keeps of its answer.
+#[cfg(test)]
+mod commit_message_tests {
+    use super::*;
+    use crate::git_commit::StagedDiff;
+
+    #[test]
+    fn each_agent_writes_a_message_once_in_text() {
+        let claude = claude::CLAUDE
+            .message_probe("say it")
+            .expect("claude writes");
+        assert_eq!(
+            claude.argv,
+            [
+                "claude",
+                "-p",
+                "say it",
+                "--output-format",
+                "text",
+                "--model",
+                "haiku",
+                "--no-session-persistence"
+            ]
+        );
+        let agy = agy::AGY.message_probe("say it").expect("agy writes");
+        assert_eq!(agy.argv, ["agy", "-p", "say it", "--output-format", "text"]);
+    }
+
+    #[test]
+    fn the_prompt_carries_the_diff_and_says_what_was_left_out() {
+        let diff = StagedDiff {
+            text: "+changed\n".into(),
+            skipped: vec![".env".into()],
+            cut: true,
+        };
+        let prompt = commit_message_prompt(&diff);
+        assert!(prompt.contains("+changed"), "{prompt}");
+        assert!(prompt.contains(".env"), "names what was left out: {prompt}");
+        assert!(prompt.contains("72"), "one short line: {prompt}");
+        assert!(
+            prompt.to_lowercase().contains("cut"),
+            "says it was cut: {prompt}"
+        );
+    }
+
+    #[test]
+    fn only_the_message_line_is_kept() {
+        assert_eq!(
+            clean_message("Add commit field\n").as_deref(),
+            Some("Add commit field")
+        );
+        assert_eq!(
+            clean_message("```\nFix the bar\n```").as_deref(),
+            Some("Fix the bar"),
+            "out of a fence"
+        );
+        assert_eq!(
+            clean_message("\"Fix it\"").as_deref(),
+            Some("Fix it"),
+            "unquoted"
+        );
+        assert_eq!(
+            clean_message("Commit message: Fix it").as_deref(),
+            Some("Fix it"),
+            "no label"
+        );
+        assert_eq!(
+            clean_message("\n\nFirst line\n\nA body").as_deref(),
+            Some("First line"),
+            "the first line"
+        );
+        assert_eq!(clean_message("  \n```\n```\n"), None, "nothing");
+    }
+
+    #[test]
+    fn a_program_is_found_on_the_path() {
+        assert!(on_path("sh", Some("/usr/bin:/bin")));
+        assert!(!on_path("fuxx-no-such-program", Some("/usr/bin:/bin")));
+        assert!(!on_path("sh", Some("")), "nowhere to look");
+    }
 }
 
 #[cfg(test)]

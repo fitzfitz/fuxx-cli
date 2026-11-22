@@ -263,6 +263,24 @@ pub fn run_probe(
     path_env: Option<&str>,
     deadline: Duration,
 ) -> Result<String, String> {
+    run_probe_stoppable(
+        probe,
+        cwd,
+        path_env,
+        deadline,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+}
+
+/// `run_probe`, stopped (its process group killed) as soon as `stop` is set: Err("stopped")
+/// (M11aq: ✦'s Esc).
+pub fn run_probe_stoppable(
+    probe: &Probe,
+    cwd: &Path,
+    path_env: Option<&str>,
+    deadline: Duration,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<String, String> {
     let (tx, mut rx) = mpsc::unbounded();
     let process = agent_process::spawn(&probe.argv, cwd, path_env, tx);
     for line in &probe.stdin {
@@ -271,6 +289,9 @@ pub fn run_probe(
     let started = Instant::now();
     let mut lines: Vec<String> = Vec::new();
     let finish = loop {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            break Err("stopped".to_string());
+        }
         if started.elapsed() >= deadline {
             break Err("it took too long".to_string());
         }
@@ -623,6 +644,22 @@ mod tests {
             .unwrap()
             .success();
         assert!(!alive, "the probe's process is gone");
+    }
+
+    /// M11aq: a probe stopped (✦'s Esc) is killed at once and says so.
+    #[test]
+    fn a_stopped_probe_is_killed_and_says_so() {
+        let stop = std::sync::atomic::AtomicBool::new(true);
+        let started = Instant::now();
+        let out = run_probe_stoppable(
+            &sh("exec sleep 60"),
+            Path::new("/"),
+            None,
+            Duration::from_secs(30),
+            &stop,
+        );
+        assert_eq!(out, Err("stopped".to_string()));
+        assert!(started.elapsed() < Duration::from_secs(3), "at once");
     }
 
     #[test]
