@@ -283,6 +283,12 @@ impl Provider for Claude {
         }
     }
 
+    /// A message not read yet goes back with `cancel_async_message` (Claude Code 2.1.330's
+    /// print mode; batch 3, wave 3).
+    fn cancels_queued(&self) -> bool {
+        true
+    }
+
     /// The `uuid` of a stream-json `user` line is fuxx's to choose: the echo and the transcript
     /// carry it (batch 3, chore 2).
     fn fresh_message_id(&self) -> Option<String> {
@@ -721,6 +727,8 @@ struct ClaudeTranslator {
     /// File rewinds asked and not answered yet (batch 3, chore 2), by request id
     /// (`fuxx-rewind-<n>`): the message and whether it was a dry run.
     rewinds: HashMap<String, (String, bool)>,
+    /// `cancel_async_message` requests asked and not yet answered: request id → message id.
+    cancels: HashMap<String, String>,
     /// Subagents (M11ar): Claude's task id → the lane (its Agent call's id), and back.
     lanes: HashMap<String, String>,
     tasks: HashMap<String, String>,
@@ -1486,6 +1494,22 @@ impl Translator for ClaudeTranslator {
             {
                 self.rewound(&v)
             }
+            // The answer to a cancel fuxx asked: `{cancelled, message_uuid?}`; an error (an
+            // older Claude) is not cancelled.
+            Some("control_response")
+                if v["response"]["request_id"]
+                    .as_str()
+                    .is_some_and(|r| self.cancels.contains_key(r)) =>
+            {
+                let response = &v["response"];
+                let rid = response["request_id"].as_str().unwrap_or_default();
+                let Some(id) = self.cancels.remove(rid) else {
+                    return Vec::new();
+                };
+                let cancelled =
+                    response["subtype"] == "success" && response["response"]["cancelled"] == true;
+                vec![Event::QueuedCancelled { id, cancelled }]
+            }
             Some("control_response") => self.answered(&v),
             Some("stream_event") => self.stream_event(&v),
             Some("assistant") => self.assistant(&v),
@@ -1547,6 +1571,16 @@ impl Translator for ClaudeTranslator {
                 vec![
                     json!({"type": "control_request", "request_id": rid, "request": request})
                         .to_string(),
+                ]
+            }
+            Action::CancelQueued { id } => {
+                self.sets += 1;
+                let rid = format!("fuxx-cancel-{}", self.sets);
+                self.cancels.insert(rid.clone(), id.clone());
+                vec![
+                    json!({"type": "control_request", "request_id": rid,
+                    "request": {"subtype": "cancel_async_message", "message_uuid": id}})
+                    .to_string(),
                 ]
             }
             Action::Interrupt => vec![
@@ -4125,6 +4159,64 @@ mod branch_tests {
         );
         assert_eq!(CLAUDE.process_env(false), std::slice::from_ref(&on));
         assert_eq!(CLAUDE.process_env(true), [on, suggest]);
+    }
+
+    /// Batch 3, wave 3: × on a message Claude hasn't read asks it to drop it from its queue
+    /// (`cancel_async_message`, Claude Code 2.1.330); its answer says whether it went.
+    #[test]
+    fn cancelling_a_queued_message_asks_claude_and_its_answer_decodes() {
+        let mut t = CLAUDE.translator();
+        let out = t.encode(&Action::CancelQueued { id: U.into() });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(v["type"], "control_request");
+        assert_eq!(
+            v["request"],
+            json!({"subtype":"cancel_async_message","message_uuid":U})
+        );
+        let rid = v["request_id"].as_str().unwrap().to_string();
+        assert!(rid.starts_with("fuxx-cancel-"), "{rid}");
+        let gone = json!({"type":"control_response","response":{"subtype":"success",
+            "request_id":rid,"response":{"cancelled":true,"message_uuid":U}}})
+        .to_string();
+        assert_eq!(
+            t.decode(&gone),
+            [Event::QueuedCancelled {
+                id: U.into(),
+                cancelled: true
+            }]
+        );
+        assert!(t.decode(&gone).is_empty(), "answered once");
+        // Already taken in: not cancelled. A refusal (an older Claude) is not either.
+        let out = t.encode(&Action::CancelQueued { id: U.into() });
+        let rid = serde_json::from_str::<Value>(&out[0]).unwrap()["request_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let taken = json!({"type":"control_response","response":{"subtype":"success",
+            "request_id":rid,"response":{"cancelled":false}}})
+        .to_string();
+        assert_eq!(
+            t.decode(&taken),
+            [Event::QueuedCancelled {
+                id: U.into(),
+                cancelled: false
+            }]
+        );
+        let out = t.encode(&Action::CancelQueued { id: U.into() });
+        let rid = serde_json::from_str::<Value>(&out[0]).unwrap()["request_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let refused = json!({"type":"control_response","response":{"subtype":"error",
+            "request_id":rid,"error":"Unsupported control request subtype"}})
+        .to_string();
+        assert_eq!(
+            t.decode(&refused),
+            [Event::QueuedCancelled {
+                id: U.into(),
+                cancelled: false
+            }]
+        );
     }
 
     #[test]

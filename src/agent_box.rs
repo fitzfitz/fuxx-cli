@@ -14,6 +14,7 @@ use gpui::{
 };
 
 use crate::agent_catalog::{Catalogs, Lookup};
+use crate::agent_tab::pills::{DraggedPaths, DropPaths};
 use crate::agent_tab::{AgentTab, AgentTabEvent, Colors, chip};
 use crate::appearance::Appearance;
 use crate::folder_picker::{
@@ -1324,11 +1325,33 @@ impl AgentTab {
                 // Once each time the tab is shown: a light round the rim (`agent_sweep`).
                 .children(self.sweep_layer(c, cx))
                 .bg(hsla(c.box_fill))
-                // Files dropped on it become chips (tinted while one is over it).
+                // Files dropped on it become pills (batch 3, chore 5; tinted while one is
+                // over it); while files are over the tab, its edge is ringed (drawn over it:
+                // nothing moves).
                 .drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hsla(drop_fill)))
-                .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
-                    this.attach_dropped(paths.paths().to_vec(), cx)
+                .drag_over::<DraggedPaths>(move |s, _, _, _| s.bg(hsla(drop_fill)))
+                .on_drop(
+                    cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
+                        this.drop_on_tab(DropPaths::External(paths.paths().to_vec()), window, cx)
+                    }),
+                )
+                .on_drop(cx.listener(|this, drag: &DraggedPaths, window, cx| {
+                    this.drop_on_tab(DropPaths::Tree(drag.paths.clone()), window, cx)
                 }))
+                .when(self.dropping(cx), |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .rounded_t(px(12.))
+                            .rounded_bl(px(BUTTON / 2. + CONTROL_INSET))
+                            .rounded_br(px(SEND / 2. + SEND_INSET - crate::card_view::OUTER_INSET))
+                            .border_2()
+                            .border_color(hsla(c.focus_ring)),
+                    )
+                })
                 .children(self.attachment_chips(c, cx))
                 .child(
                     div()

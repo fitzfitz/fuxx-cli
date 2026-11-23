@@ -33,6 +33,8 @@ pub(crate) enum Hover {
     Fork,
     /// Your text back in the box, the chat left as it is (an agent that can't go back).
     Edit,
+    /// × on a message the agent hasn't read yet (batch 3, wave 3): taken back.
+    Cancel,
 }
 
 /// Message `item`'s id when it can be rewound or forked from: yours, read by the agent, named.
@@ -80,6 +82,7 @@ pub(crate) fn hover_tip(h: Hover, files: bool, edit: Option<&str>) -> String {
         Hover::Edit => edit
             .unwrap_or("Put this message back in the box")
             .to_string(),
+        Hover::Cancel => super::cancel::CANCEL_TIP.into(),
     }
 }
 
@@ -397,10 +400,15 @@ impl AgentTab {
                 }
             }
         }
-        self.attachments = attachments;
-        let pills = self.pills.clone();
+        // Its path pills (batch 3, chore 5) back as pills, not chips.
+        self.restore_pills(&attachments);
+        self.attachments = attachments
+            .into_iter()
+            .filter(|a| !matches!(a, Attachment::PathPill { .. }))
+            .collect();
+        let atoms = self.box_atoms();
         self.composer.update(cx, |c, cx| {
-            c.set_atoms(pills, cx);
+            c.set_atoms(atoms, cx);
             c.set_text(text, cx);
         });
         cx.notify();
@@ -998,10 +1006,14 @@ impl AgentTab {
         }
         let b = self.branching();
         // A tab paused for its classic view can't rewind (that process holds the conversation).
-        let actions: Vec<Hover> = hover_actions(item, b)
+        let mut actions: Vec<Hover> = hover_actions(item, b)
             .into_iter()
             .filter(|h| !(self.paused && *h == Hover::Rewind))
             .collect();
+        // × while the agent hasn't read it and can take it back (batch 3, wave 3).
+        if self.cancel_offered(item) {
+            actions.push(Hover::Cancel);
+        }
         if actions.is_empty() {
             return None;
         }
@@ -1016,6 +1028,7 @@ impl AgentTab {
                     Hover::Rewind => (Icon::Revert, "rewind"),
                     Hover::Fork => (Icon::Fork, "fork"),
                     Hover::Edit => (Icon::FilePen, "edit"),
+                    Hover::Cancel => (Icon::Stop, "cancel"),
                 };
                 let group = SharedString::from(format!("you-act-{name}-{ix}"));
                 let tip = SharedString::from(hover_tip(h, b.files, edit));
@@ -1040,13 +1053,23 @@ impl AgentTab {
                             Hover::Rewind => this.rewind_to(ix, window, cx),
                             Hover::Fork => this.fork_from(ix, cx),
                             Hover::Edit => this.edit_message(ix, cx),
+                            Hover::Cancel => this.cancel_message(ix, cx),
                         })
                         .ok();
                     })
-                    .child(
+                    .child(if h == Hover::Cancel {
+                        // A × (the set has no cross icon), drawn as the chips' × are.
+                        div()
+                            .text_size(px(14.))
+                            .text_color(hsla(c.dim))
+                            .group_hover(group, move |s| s.text_color(hsla(c.text)))
+                            .child("\u{d7}")
+                            .into_any_element()
+                    } else {
                         icon(glyph, px(14.), hsla(c.dim))
-                            .group_hover(group, move |s| s.text_color(hsla(c.text))),
-                    );
+                            .group_hover(group, move |s| s.text_color(hsla(c.text)))
+                            .into_any_element()
+                    });
                 self.shot_marked(format!("{name}:{ix}"), button)
                     .into_any_element()
             })

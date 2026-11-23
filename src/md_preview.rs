@@ -567,10 +567,25 @@ fn selectable(
     layout: gpui::TextLayout,
     child: AnyElement,
 ) -> AnyElement {
+    selectable_linked(draw, text, layout, child, None)
+}
+
+/// As `selectable`, with the text's links registered for the right-click menu (wave 3).
+fn selectable_linked(
+    draw: &Draw,
+    text: SharedString,
+    layout: gpui::TextLayout,
+    child: AnyElement,
+    links: Option<crate::chat_select::Links>,
+) -> AnyElement {
     match &draw.select {
         Some((state, wash)) => {
-            crate::chat_select::SelectableText::new(state.clone(), text, layout, child, *wash)
-                .into_any_element()
+            let piece =
+                crate::chat_select::SelectableText::new(state.clone(), text, layout, child, *wash);
+            match links {
+                Some(links) => piece.links(links).into_any_element(),
+                None => piece.into_any_element(),
+            }
         }
         None => child,
     }
@@ -1690,6 +1705,7 @@ fn text_on(spans: &[Span], draw: &Draw, on_stripe: bool) -> AnyElement {
     let n = draw.links.get();
     draw.links.set(n + 1);
     let tips = Rc::new(laid.links.clone());
+    let menu_links = tips.clone();
     let (ranges, urls): (Vec<Range<usize>>, Vec<String>) = laid.links.into_iter().unzip();
     let on_link = draw.on_link.clone();
     let linked = InteractiveText::new(("md-links", n), styled)
@@ -1709,7 +1725,13 @@ fn text_on(spans: &[Span], draw: &Draw, on_stripe: bool) -> AnyElement {
         .into_any_element();
     div()
         .w_full()
-        .child(selectable(draw, shown, layout, linked))
+        .child(selectable_linked(
+            draw,
+            shown,
+            layout,
+            linked,
+            Some(menu_links),
+        ))
         .into_any_element()
 }
 

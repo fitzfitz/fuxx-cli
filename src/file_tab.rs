@@ -4392,6 +4392,8 @@ pub enum FileTabEvent {
         at: Point<Pixels>,
         selection: String,
         code: Option<CodeRef>,
+        /// The web or mail link under the pointer (the Preview's, wave 3).
+        link: Option<String>,
     },
 }
 
@@ -4637,6 +4639,11 @@ pub struct FileTab {
     /// blocks and reader plan).
     preview: bool,
     preview_list: ListState,
+    /// The Preview's text selection (batch 3, wave 3), as the agent chat's: its links register
+    /// with it for the right-click menu.
+    preview_select: Rc<crate::chat_select::ChatSelect>,
+    /// A press in the Preview's text is being dragged.
+    preview_selecting: bool,
     parsed: Option<(u64, Rc<md_preview::ReaderDoc>)>,
     /// M11ai: the Preview's rows as last drawn (the scenes' probe).
     #[cfg(feature = "ui-shots")]
@@ -4860,6 +4867,8 @@ impl FileTab {
             age: None,
             preview: false,
             preview_list: preview_list_of(0, cx.entity().downgrade(), track_armed.clone()),
+            preview_select: Rc::default(),
+            preview_selecting: false,
             parsed: None,
             #[cfg(feature = "ui-shots")]
             reader_drawn: Rc::default(),
@@ -7205,12 +7214,31 @@ impl FileTab {
         self.show_at_top(Some(line), cx);
     }
 
-    /// Ask for fuxx's menu at `at`; the selection stays.
+    /// Ask for fuxx's menu at `at`; the selection stays. In the Preview (wave 3): its own
+    /// selection, and the web or mail link under the pointer.
     fn open_menu(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        if self.preview_shown() {
+            let base = self.path.parent().unwrap_or(Path::new("/")).to_path_buf();
+            let link =
+                self.preview_select
+                    .link_at(at)
+                    .and_then(|url| match link_target(&base, &url) {
+                        LinkTarget::Web(url) => Some(url),
+                        _ => None,
+                    });
+            cx.emit(FileTabEvent::ContextMenu {
+                at,
+                selection: self.preview_select.copied().unwrap_or_default(),
+                code: None,
+                link,
+            });
+            return;
+        }
         cx.emit(FileTabEvent::ContextMenu {
             at,
             selection: self.selected_text(),
             code: self.code_ref(),
+            link: None,
         });
     }
 
@@ -7236,7 +7264,12 @@ impl FileTab {
     }
 
     fn copy(&mut self, cx: &mut Context<Self>) {
-        let text = self.selected_text();
+        // The Preview's own selection (wave 3).
+        let text = if self.preview_shown() {
+            self.preview_select.copied().unwrap_or_default()
+        } else {
+            self.selected_text()
+        };
         if !text.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
@@ -8992,6 +9025,22 @@ impl FileTab {
         }
     }
 
+    /// The Preview's text painted last frame (wave 3): each piece's text and box.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_preview_boxes(&self) -> Vec<(String, Bounds<Pixels>)> {
+        let select = &self.preview_select;
+        select
+            .painted_boxes()
+            .into_iter()
+            .map(|(k, b)| {
+                (
+                    select.text_of(k).map(|t| t.to_string()).unwrap_or_default(),
+                    b,
+                )
+            })
+            .collect()
+    }
+
     /// The Preview segment's click handler, or File's for off (M11p's chrome scenes call it
     /// without the mouse).
     pub fn choose_preview_for_shots(
@@ -9592,6 +9641,7 @@ impl Workspace {
                     at,
                     selection,
                     code,
+                    link,
                 } => {
                     let target = this
                         .model
@@ -9600,8 +9650,11 @@ impl Workspace {
                             crate::workspace_menu::add_target_label(this.ask_target(ws, cx))
                         })
                         .filter(|_| code.is_some());
-                    let entries =
-                        crate::context_menu::text_menu(!selection.is_empty(), None, target);
+                    let entries = crate::context_menu::text_menu(
+                        !selection.is_empty(),
+                        link.as_deref(),
+                        target,
+                    );
                     let from = crate::workspace_menu::MenuFrom::FileTab {
                         tab,
                         selection: selection.clone(),

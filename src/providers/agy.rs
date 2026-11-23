@@ -804,8 +804,10 @@ impl Translator for AgyTranslator {
             | Action::SetModel { .. }
             | Action::SetEffort { .. }
             | Action::SetMode { .. }
-            // Headless agy can't rewind (batch 3, chore 2: `branching` says so).
-            | Action::RewindFiles { .. } => Vec::new(),
+            // Headless agy can't rewind (batch 3, chore 2: `branching` says so), nor take back
+            // a message it was given (wave 3: `cancels_queued` says so).
+            | Action::RewindFiles { .. }
+            | Action::CancelQueued { .. } => Vec::new(),
         }
     }
 }

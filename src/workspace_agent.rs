@@ -1027,6 +1027,23 @@ impl Workspace {
             }
             AgentTabEvent::BlockDropped(drag) => self.attach_block(tab, drag, cx),
             AgentTabEvent::Fork(seed) => self.open_fork(tab, seed, window, cx),
+            // Batch 3, wave 3: the chat's and the box's menus, its links, its pills' files.
+            AgentTabEvent::ContextMenu {
+                at,
+                selection,
+                link,
+            } => self.open_chat_menu(tab, *at, selection.clone(), link.clone(), window, cx),
+            AgentTabEvent::BoxMenu { at, has_sel } => {
+                self.open_box_menu(tab, *at, *has_sel, window, cx)
+            }
+            AgentTabEvent::OpenLink(url) => self.open_link(tab, url, window, cx),
+            AgentTabEvent::OpenFile(path) => self.open_file_tab(
+                path.clone(),
+                crate::layout_model::FileMode::Plain,
+                window,
+                cx,
+            ),
+            AgentTabEvent::RevealInFiles(path) => self.reveal_in_files(path, window, cx),
             AgentTabEvent::ShowForkSource => {
                 if let Some(&(source, _)) = self.fork_origins.get(&tab)
                     && self.agents.contains_key(&source)
@@ -1724,7 +1741,7 @@ impl Workspace {
     }
 
     /// The provider of agent tab `tab`, when fuxx knows it.
-    fn agent_provider(&self, tab: TabId) -> Option<&'static str> {
+    pub(crate) fn agent_provider(&self, tab: TabId) -> Option<&'static str> {
         match &self.model.tab(tab)?.kind {
             TabKind::Agent { provider, .. } => providers::by_name(provider).map(|p| p.info().name),
             _ => None,
@@ -1851,6 +1868,22 @@ impl Workspace {
         self.model.select_tab(tab);
         self.sync();
         self.activate(window, cx);
+    }
+
+    /// Paths dropped on agent tab `tab`'s pill in a bar (batch 3, chore 5): the tab is shown,
+    /// and they go into its box as pills (at the end: the box hasn't the keyboard yet).
+    pub(crate) fn drop_on_agent_tab(
+        &mut self,
+        tab: TabId,
+        drop: crate::agent_tab::pills::DropPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_tab(tab, window, cx);
+        if let Some(slot) = self.agents.get(&tab) {
+            let view = slot.view.clone();
+            view.update(cx, |view, cx| view.drop_on_tab(drop, window, cx));
+        }
     }
 
     /// Whether workspace `ws` runs on another host (any terminal of it is an SSH session's):

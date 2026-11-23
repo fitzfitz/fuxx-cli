@@ -1817,7 +1817,7 @@ pub(super) fn agent_box_attach_menu() {
     });
 }
 
-/// §8: files (from `File\u{2026}`, or dropped on the box) are chips, `\u{1f4ce} name`, in the box above the
+/// §8: files (from `File\u{2026}`; batch 3 made Finder drops pills) are chips, `\u{1f4ce} name`, in the box above the
 /// text; a dropped image file is an image chip instead. A message sends each file as its path
 /// after the text, and the conversation lists their names; the \u{d7} takes one off.
 pub(super) fn agent_box_file_chip() {
@@ -1828,7 +1828,7 @@ pub(super) fn agent_box_file_chip() {
         let log = files.make("build.log", b"made-up");
         feed(cx, tab, |t, cx| t.attach_files(vec![notes.clone()], cx));
         feed(cx, tab, |t, cx| {
-            t.attach_dropped(vec![todo.clone(), log.clone()], cx)
+            t.attach_files(vec![todo.clone(), log.clone()], cx)
         });
         let _ = frame_fresh(cx, window);
         assert_eq!(
@@ -2062,7 +2062,7 @@ pub(super) fn agent_box_image_chip() {
         let diagram = files.make("diagram.png", PNG);
         let photo = files.make("photo.JPG", b"made-up jpeg");
         feed(cx, tab, |t, cx| t.attach_images(vec![diagram.clone()], cx));
-        feed(cx, tab, |t, cx| t.attach_dropped(vec![photo.clone()], cx));
+        feed(cx, tab, |t, cx| t.attach_images(vec![photo.clone()], cx));
         let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, b"pasted bytes".to_vec());
         feed(cx, tab, |t, cx| t.attach_pasted_image(image, cx));
         settle_until(n, cx, window, "three image chips", |cx| {

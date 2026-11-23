@@ -499,6 +499,9 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(MENU_KEY, workspace_menu::ShowMenu, Some("Terminal")),
         KeyBinding::new(MENU_KEY, workspace_menu::ShowMenu, Some("FileTab")),
         KeyBinding::new(MENU_KEY, workspace_menu::ShowMenu, Some("FileTree")),
+        // Wave 3: the agent tab's box (its Cut / Copy / Paste / Select All menu at the caret).
+        KeyBinding::new("shift-f10", workspace_menu::ShowMenu, Some("Composer")),
+        KeyBinding::new(MENU_KEY, workspace_menu::ShowMenu, Some("Composer")),
         // The browser's address box: its box is a NameInput too; an address is pasted.
         KeyBinding::new("cmd-v", name_input::Paste, Some("AddressBox > NameInput")),
         // Settings' boxes (the Sound links, M11s).
@@ -1805,7 +1808,9 @@ mod tests {
         let keymap = keymap();
         let file_tab: &[&str] = &["Workspace", "FileTab"];
         let tree: &[&str] = &["Workspace", "FileTree"];
-        for stack in [TERMINAL, file_tab, tree] {
+        // Wave 3: the agent tab's box too.
+        let agent_box: &[&str] = &["Workspace", "AgentTab", "Composer"];
+        for stack in [TERMINAL, file_tab, tree, agent_box] {
             for key in ["shift-f10", super::MENU_KEY] {
                 assert!(
                     runs(&keymap, key, stack).partial_eq(&ShowMenu),

@@ -207,6 +207,15 @@ impl AgentTab {
                                                         .images
                                                         .contains_key(a)
                                                         .then(|| a.clone());
+                                                    // A path pill's chip (batch 3, chore 5): the
+                                                    // file icon; its file opens, its path is its
+                                                    // tooltip.
+                                                    let pill = self.sent_pill(a).cloned();
+                                                    let glyph = if pill.is_some() {
+                                                        Icon::File
+                                                    } else {
+                                                        Icon::Paperclip
+                                                    };
                                                     div()
                                                         .id(SharedString::from(format!(
                                                             "you-chip-{ix}-{j}"
@@ -223,6 +232,34 @@ impl AgentTab {
                                                                     },
                                                                 ))
                                                         })
+                                                        .when_some(pill, |d, pill| {
+                                                            let tip: SharedString = pill
+                                                                .path
+                                                                .display()
+                                                                .to_string()
+                                                                .into();
+                                                            d.cursor_pointer()
+                                                                .hover(move |s| {
+                                                                    s.text_color(hsla(c.you_text))
+                                                                })
+                                                                .tooltip(move |_, cx| {
+                                                                    cx.new(|_| {
+                                                                        crate::sidebar_toggle::Tip(
+                                                                            tip.clone(),
+                                                                        )
+                                                                    })
+                                                                    .into()
+                                                                })
+                                                                .on_click(on_tab(
+                                                                    &look.view,
+                                                                    move |this, cx| {
+                                                                        this.open_pill(
+                                                                            pill.clone(),
+                                                                            cx,
+                                                                        )
+                                                                    },
+                                                                ))
+                                                        })
                                                         .h(px(22.))
                                                         .px(px(8.))
                                                         .rounded(px(chat::R_CHIP))
@@ -233,7 +270,7 @@ impl AgentTab {
                                                         .text_size(px(text::META))
                                                         .text_color(hsla(c.you_dim))
                                                         .child(icon(
-                                                            Icon::Paperclip,
+                                                            glyph,
                                                             px(12.),
                                                             hsla(c.you_dim),
                                                         ))

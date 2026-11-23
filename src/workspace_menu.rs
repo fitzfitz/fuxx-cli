@@ -51,6 +51,13 @@ pub(crate) enum MenuFrom {
     },
     /// A Files row (chore 7): its path from the tree's root.
     FileTree { rel: PathBuf, is_dir: bool },
+    /// An agent tab's chat (wave 3): its selection as text.
+    AgentChat {
+        tab: TabId,
+        selection: Option<String>,
+    },
+    /// An agent tab's message box (wave 3).
+    AgentBox { tab: TabId },
 }
 
 /// The open menu.
@@ -108,6 +115,44 @@ impl Workspace {
         if link.is_some() {
             self.menu_underline = Some(session);
         }
+    }
+
+    /// An agent tab's chat right-clicked (wave 3): the link's items, Copy, Add to Chat (a
+    /// quote chip in its own box) and, with nothing selected, Select All.
+    pub(crate) fn open_chat_menu(
+        &mut self,
+        tab: TabId,
+        at: Point<Pixels>,
+        selection: Option<String>,
+        link: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let label = self
+            .agent_provider(tab)
+            .and_then(|name| add_target_label(AskTo::Agent(name)))
+            .unwrap_or("Agent");
+        let entries = context_menu::chat_menu(selection.is_some(), link.as_deref(), label);
+        self.open_context_menu(
+            MenuFrom::AgentChat { tab, selection },
+            entries,
+            at,
+            window,
+            cx,
+        );
+    }
+
+    /// An agent tab's box right-clicked (or ⇧F10 in it): Cut, Copy, Paste, Select All.
+    pub(crate) fn open_box_menu(
+        &mut self,
+        tab: TabId,
+        at: Point<Pixels>,
+        has_sel: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entries = context_menu::editable_menu(has_sel);
+        self.open_context_menu(MenuFrom::AgentBox { tab }, entries, at, window, cx);
     }
 
     /// Open the menu of `entries` for `from` at window point `at` (the pointer; flipped where
@@ -233,6 +278,7 @@ impl Workspace {
             MenuFrom::Terminal { session, .. } => self.model.terminal_tab(*session),
             MenuFrom::FileTab { tab, .. } => Some(*tab),
             MenuFrom::FileTree { .. } => self.model.focused_tab(),
+            MenuFrom::AgentChat { tab, .. } | MenuFrom::AgentBox { tab } => Some(*tab),
         };
         match (action, from) {
             (MenuAction::OpenLink(url), _) => {
@@ -297,6 +343,41 @@ impl Workspace {
             ) => self.ask_code(tab, code, window, cx),
             (action, MenuFrom::FileTree { rel, is_dir }) => {
                 self.files_menu_action(&rel, is_dir, action, window, cx);
+            }
+            (
+                MenuAction::Copy,
+                MenuFrom::AgentChat {
+                    selection: Some(text),
+                    ..
+                },
+            ) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+            (
+                MenuAction::AddToChat,
+                MenuFrom::AgentChat {
+                    tab,
+                    selection: Some(text),
+                },
+            ) => {
+                // Quoted from its agent ("Quoted from Claude").
+                let from = self
+                    .agent_provider(tab)
+                    .and_then(|name| add_target_label(AskTo::Agent(name)))
+                    .unwrap_or("the chat")
+                    .to_string();
+                let chip = crate::agent_tab::Attachment::Quote { text, from };
+                self.attach_to_agent(tab, chip, window, cx);
+            }
+            (MenuAction::SelectAll, MenuFrom::AgentChat { tab, .. }) => {
+                if let Some(slot) = self.agents.get(&tab) {
+                    let view = slot.view.clone();
+                    view.update(cx, |view, cx| view.select_all_in_chat(cx));
+                }
+            }
+            (action, MenuFrom::AgentBox { tab }) => {
+                if let Some(slot) = self.agents.get(&tab) {
+                    let view = slot.view.clone();
+                    view.update(cx, |view, cx| view.box_menu_action(action, cx));
+                }
             }
             _ => {}
         }

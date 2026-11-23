@@ -382,6 +382,12 @@ pub trait Provider: Sync {
     fn rewind_files_probe(&self, _start: &Start, _message: &str) -> Option<Probe> {
         None
     }
+    /// Whether it can take back a message of yours it hasn't read yet (batch 3, wave 3:
+    /// `Action::CancelQueued`, answered by `Event::QueuedCancelled`). Default: it can't (a
+    /// message fuxx still holds can always be dropped).
+    fn cancels_queued(&self) -> bool {
+        false
+    }
     /// The Edit hover action's tooltip on your message, for an agent that can't go back from
     /// fuxx (batch 3, chore 2): where its own rewind is. None: the generic words.
     fn edit_tip(&self) -> Option<&'static str> {
@@ -528,6 +534,12 @@ pub enum Event {
     /// turn running, or starting its own. `id`: the message's (`Action::Send`'s), when it says.
     Taken {
         id: Option<String>,
+    },
+    /// The answer to `Action::CancelQueued` for message `id` (batch 3, wave 3): whether it
+    /// went (false: the agent had taken it in already, or refused).
+    QueuedCancelled {
+        id: String,
+        cancelled: bool,
     },
     /// The answer to `Action::RewindFiles` for message `message` (batch 3, chore 2).
     FilesRewound {
@@ -719,6 +731,11 @@ pub enum Action {
     RewindFiles {
         message: String,
         dry_run: bool,
+    },
+    /// Take back message `id`, sent but not read yet (batch 3, wave 3; a provider that
+    /// `cancels_queued`); answered by `Event::QueuedCancelled`.
+    CancelQueued {
+        id: String,
     },
 }
 
@@ -1082,6 +1099,14 @@ mod tests {
 
     /// Batch 3, chore 2: a provider that says nothing can't branch, mints no message ids, sets
     /// no environment and has no one-off file rewind.
+    /// Batch 3, wave 3: only a provider that says so can take back a message it hasn't read.
+    #[test]
+    fn a_provider_cant_cancel_a_queued_message_unless_it_says() {
+        assert!(!Plain.cancels_queued());
+        assert!(!agy::AGY.cancels_queued());
+        assert!(claude::CLAUDE.cancels_queued());
+    }
+
     #[test]
     fn a_provider_cant_branch_unless_it_says() {
         assert_eq!(Plain.branching(), Branching::default());

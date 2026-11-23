@@ -6,7 +6,7 @@
 //! same `TerminalEvent`s either way.
 
 use std::cell::{Cell, RefCell};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1698,6 +1698,17 @@ impl TerminalView {
         self.paste(&text, cx);
     }
 
+    /// Paths dropped on the terminal (batch 3, chore 5): typed, shell-escaped, space apart, as
+    /// what you type (it snaps to the bottom).
+    pub fn drop_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        let text = crate::agent_tab::pills::typed_paths(paths);
+        if text.is_empty() {
+            return;
+        }
+        self.user_typed();
+        self.paste(&text, cx);
+    }
+
     /// The menu's Select All: the history and the screen.
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
         self.core.select_all();
@@ -2430,6 +2441,17 @@ impl Render for TerminalView {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
+            // Batch 3, chore 5: files dropped on it (from Finder or the Files tree) are typed
+            // as their shell-escaped paths, as macOS terminals do.
+            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
+                this.drop_paths(paths.paths(), cx)
+            }))
+            .on_drop(cx.listener(
+                |this, drag: &crate::agent_tab::pills::DraggedPaths, _, cx| {
+                    let paths: Vec<PathBuf> = drag.paths.iter().map(|p| p.path.clone()).collect();
+                    this.drop_paths(&paths, cx)
+                },
+            ))
             .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::show_menu))

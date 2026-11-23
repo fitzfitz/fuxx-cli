@@ -1,5 +1,6 @@
 //! Batch 3 (wave 2a): the shared right-click menu on a terminal and a file tab (chore 4), links
-//! opening where "Open links in" says (chore 6), and the Files tree's menu (chore 7).
+//! opening where "Open links in" says (chore 6), and the Files tree's menu (chore 7). Wave 3:
+//! the agent chat's and its box's menus, and the Markdown Preview's.
 
 use super::*;
 use crate::context_menu::{self, Entry};
@@ -51,7 +52,89 @@ pub(super) const SCENES: &[Scene] = &[
             "src/context_menu.rs",
             "src/workspace_menu.rs",
             "src/file_tab.rs",
+            "src/file_tab_preview.rs",
+            "src/chat_select.rs",
             "src/workspace_agent.rs",
+        ],
+    },
+    Scene {
+        name: "context-menu-chat",
+        run: context_menu_chat,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/context_menu.rs",
+            "src/workspace_menu.rs",
+            "src/chat_select.rs",
+            "src/agent_tab.rs",
+            "src/md_preview.rs",
+            "src/link_route.rs",
+        ],
+    },
+    Scene {
+        name: "context-menu-composer",
+        run: context_menu_composer,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/context_menu.rs",
+            "src/workspace_menu.rs",
+            "src/composer.rs",
+            "src/agent_tab.rs",
+        ],
+    },
+    Scene {
+        name: "files-drag-pill",
+        run: files_drag_pill,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/agent_pills.rs",
+            "src/agent_tab.rs",
+            "src/agent_box.rs",
+            "src/agent_rows.rs",
+            "src/composer.rs",
+            "src/right_sidebar.rs",
+            "src/files_menu.rs",
+            "src/tab_bar.rs",
+        ],
+    },
+    Scene {
+        name: "agent-box-finder-drop",
+        run: agent_box_finder_drop,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/agent_pills.rs",
+            "src/agent_tab.rs",
+            "src/agent_box.rs",
+            "src/composer.rs",
+        ],
+    },
+    Scene {
+        name: "terminal-drop-paths",
+        run: terminal_drop_paths,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &["src/agent_pills.rs", "src/terminal_view.rs"],
+    },
+    Scene {
+        name: "agent-queued-cancel",
+        run: agent_queued_cancel,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/agent_cancel.rs",
+            "src/agent_rewind.rs",
+            "src/agent_tab.rs",
+            "src/agent_conversation.rs",
+            "src/providers/claude.rs",
         ],
     },
     Scene {
@@ -420,6 +503,12 @@ fn context_menu_file_tab() {
     std::fs::create_dir_all(&dir).expect("the folder");
     let path = dir.join("lib.rs");
     std::fs::write(&path, "fn one() {}\nfn two() {}\nfn three() {}\n").expect("the file");
+    let md = dir.join("README.md");
+    std::fs::write(
+        &md,
+        "# Guide\n\n[the guide](https://example.com/guide) says it all.\n\nSecond paragraph here.\n",
+    )
+    .expect("the README");
     let theme = shot_theme(shot_themes()[0].1);
     let slot: Slot = Rc::new(RefCell::new(None));
     let build = {
@@ -504,10 +593,798 @@ fn context_menu_file_tab() {
             Some(vec!["lib.rs:1\u{2013}2".to_string()]),
             "{n}: the code chip"
         );
+        // Wave 3: the Markdown Preview. A right-click on a link offers its items and Copy
+        // (nothing selected: disabled); a double-click selects a word, and Copy copies it.
+        let readme = md.clone();
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_file_tab(readme.clone(), FileMode::Plain, window, cx)
+            })
+        })
+        .expect("the README");
+        frames(cx, window);
+        let preview = cx.read(|cx| {
+            let ws = ws.read(cx);
+            ws.file_tabs[&ws.model.focused_tab().expect("it")].clone()
+        });
+        cx.update_window(window, |_, window, cx| {
+            preview.update(cx, |v, cx| v.choose_preview_for_shots(true, window, cx))
+        })
+        .expect("Preview on");
+        frames(cx, window);
+        frames(cx, window);
+        let boxes = cx.read(|cx| preview.read(cx).shot_preview_boxes());
+        let (_, para) = boxes
+            .iter()
+            .find(|(t, _)| t.starts_with("the guide"))
+            .cloned()
+            .unwrap_or_else(|| panic!("{n}: the paragraph drawn: {boxes:?}"));
+        let on_link = point(para.left() + px(12.0), para.top() + px(8.0));
+        cx.simulate_mouse_down(window, on_link, MouseButton::Right, Modifiers::none());
+        frames(cx, window);
+        assert_eq!(
+            menu_labels(cx, &ws),
+            Some(labels(&context_menu::text_menu(
+                false,
+                Some("https://example.com/guide"),
+                None
+            ))),
+            "{n}: the Preview's link menu"
+        );
+        choose(cx, window, &ws, "Copy Link");
+        let clip = cx.read_from_clipboard().and_then(|c| c.text());
+        assert_eq!(
+            clip.as_deref(),
+            Some("https://example.com/guide"),
+            "{n}: Copy Link"
+        );
+        let (_, second) = boxes
+            .iter()
+            .find(|(t, _)| t.starts_with("Second"))
+            .cloned()
+            .expect("the second paragraph");
+        let word = point(second.left() + px(10.0), second.top() + px(8.0));
+        cx.simulate_event(
+            window,
+            gpui::MouseDownEvent {
+                button: MouseButton::Left,
+                position: word,
+                modifiers: Modifiers::none(),
+                click_count: 2,
+                first_mouse: false,
+            },
+        );
+        cx.simulate_mouse_up(window, word, MouseButton::Left, Modifiers::none());
+        frames(cx, window);
+        cx.simulate_mouse_down(window, word, MouseButton::Right, Modifiers::none());
+        frames(cx, window);
+        let copy_on = cx.read(|cx| {
+            let menu = ws.read(cx).context_menu.as_ref().expect("a menu");
+            matches!(&menu.entries[0], Entry::Item(i) if i.label == "Copy" && i.enabled)
+        });
+        assert!(copy_on, "{n}: Copy works in the Preview");
+        choose(cx, window, &ws, "Copy");
+        let clip = cx.read_from_clipboard().and_then(|c| c.text());
+        assert_eq!(clip.as_deref(), Some("Second"), "{n}: the word copied");
         slot.borrow_mut().take();
     };
     render_with(&theme, dims(), build, act);
     println!("ui-shots: context-menu-file-tab ok");
+}
+
+/// A workspace with a shell and a Claude tab beside it (no process: the scene feeds it).
+fn agent_beside_shell(
+    theme: Theme,
+    slot: Slot,
+) -> impl FnOnce(&mut Window, &mut App) -> AnyView + 'static {
+    super::agent::agent_workspace(theme, slot, |ws, window, cx| {
+        let my_app = Path::new("/Users/me/code/my-app");
+        let id = ws.open_unnamed_shot_session(Some(my_app), super::SHELL_TEXT, window, cx);
+        ws.agent_beside(id, "claude", window, cx);
+    })
+}
+
+/// Your message `text` sent, read and answered with `reply` (one turn).
+fn talk(
+    cx: &mut VisualTestAppContext,
+    view: &Entity<crate::agent_tab::AgentTab>,
+    text: &str,
+    reply: &str,
+) {
+    use crate::providers::Event;
+    super::agent::feed(cx, view, |t, cx| t.shot_history(Vec::new(), cx));
+    super::agent::feed(cx, view, |t, cx| t.send(text.into(), cx));
+    let reply = reply.to_string();
+    super::agent::feed(cx, view, |t, cx| {
+        t.shot_feed(
+            vec![
+                Event::Started {
+                    conversation: "3f0e9a52-1b7c-4d2e-8a61-0c9b7e4d5a11".into(),
+                    model: None,
+                },
+                Event::Taken { id: None },
+                Event::TextDelta {
+                    message: "m1".into(),
+                    text: reply.clone(),
+                    parent: None,
+                },
+                Event::MessageDone {
+                    message: "m1".into(),
+                    text: reply,
+                    parent: None,
+                },
+                Event::TurnDone {
+                    ok: true,
+                    message: None,
+                },
+            ],
+            cx,
+        )
+    });
+}
+
+const CHAT_URL: &str = "https://example.com/docs";
+
+/// `context-menu-chat` (both themes): an agent reply with a link. A right-click on it (nothing
+/// selected) opens the link's items, Copy (disabled) and Select All; Copy Link copies it; a
+/// plain click opens it where "Open links in" says (a browser split, your focus kept); Select
+/// All, then Copy, copies the chat; Add to Claude Chat makes a quote chip in the same tab.
+/// Shot: the menu open on the link.
+fn context_menu_chat() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    for (k, &(slug, name)) in shot_themes().iter().enumerate() {
+        let theme = shot_theme(name);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = agent_beside_shell(theme, slot.clone());
+        let full = k == 0;
+        let n = format!("context-menu-chat-{slug}");
+        let path = shoot_with(
+            "context-menu-chat",
+            slug,
+            &theme,
+            // Wide enough that the agent's pane takes a split for its links.
+            size(px(1600.0), px(640.0)),
+            build,
+            move |cx, window| {
+                let ws = slotted(&slot);
+                frames(cx, window);
+                let (tab, view) = cx
+                    .read(|cx| ws.read(cx).focused_agent_tab())
+                    .expect("the agent tab");
+                talk(
+                    cx,
+                    &view,
+                    "Where are the docs?",
+                    &format!("[The docs]({CHAT_URL}) explain the parser."),
+                );
+                frames(cx, window);
+                let link_at = |cx: &mut VisualTestAppContext| {
+                    let boxes = cx.read(|cx| view.read(cx).shot_text_boxes());
+                    let (_, b) = boxes
+                        .into_iter()
+                        .find(|(t, _)| t.starts_with("The docs"))
+                        .expect("the reply drawn");
+                    point(b.left() + px(12.0), b.top() + px(8.0))
+                };
+                let on_link = link_at(cx);
+                let nothing = labels(&context_menu::chat_menu(false, Some(CHAT_URL), "Claude"));
+                if full {
+                    cx.simulate_mouse_down(window, on_link, MouseButton::Right, Modifiers::none());
+                    frames(cx, window);
+                    assert_eq!(menu_labels(cx, &ws), Some(nothing.clone()), "{n}");
+                    choose(cx, window, &ws, "Copy Link");
+                    let clip = cx.read_from_clipboard().and_then(|c| c.text());
+                    assert_eq!(clip.as_deref(), Some(CHAT_URL), "{n}: Copy Link");
+                    // A plain click: a browser split on the right, the agent tab keeps focus.
+                    cx.simulate_click(window, on_link, Modifiers::none());
+                    frames(cx, window);
+                    let opened = cx.read(|cx| {
+                        let ws = ws.read(cx);
+                        let id = ws.model.focused_workspace().expect("a workspace");
+                        ws.model
+                            .workspace(id)
+                            .expect("it")
+                            .panes
+                            .iter()
+                            .flat_map(|p| p.tabs.iter())
+                            .any(|t| {
+                                matches!(&t.kind, TabKind::Browser { url: Some(u) } if u == CHAT_URL)
+                            })
+                    });
+                    assert!(opened, "{n}: the link opened in a browser tab");
+                    let focused = cx.read(|cx| ws.read(cx).model.focused_tab());
+                    assert_eq!(focused, Some(tab), "{n}: your focus stays");
+                    // Select All, then Copy and Add to Chat.
+                    cx.simulate_mouse_down(window, on_link, MouseButton::Right, Modifiers::none());
+                    frames(cx, window);
+                    choose(cx, window, &ws, "Select All");
+                    cx.simulate_mouse_down(window, on_link, MouseButton::Right, Modifiers::none());
+                    frames(cx, window);
+                    assert_eq!(
+                        menu_labels(cx, &ws),
+                        Some(labels(&context_menu::chat_menu(
+                            true,
+                            Some(CHAT_URL),
+                            "Claude"
+                        ))),
+                        "{n}: with a selection"
+                    );
+                    choose(cx, window, &ws, "Copy");
+                    let clip = cx
+                        .read_from_clipboard()
+                        .and_then(|c| c.text())
+                        .unwrap_or_default();
+                    assert!(
+                        clip.contains("Where are the docs?") && clip.contains("explain the parser"),
+                        "{n}: the chat copied: {clip:?}"
+                    );
+                    cx.simulate_mouse_down(window, on_link, MouseButton::Right, Modifiers::none());
+                    frames(cx, window);
+                    choose(cx, window, &ws, "Add to Claude Chat");
+                    let quote = cx.read(|cx| {
+                        view.read(cx)
+                            .shot_attachments()
+                            .iter()
+                            .find_map(|a| match a {
+                                crate::agent_tab::Attachment::Quote { from, .. } => {
+                                    Some(from.clone())
+                                }
+                                _ => None,
+                            })
+                    });
+                    assert_eq!(quote.as_deref(), Some("Claude"), "{n}: a quote chip, here");
+                    let focused = cx.read(|cx| ws.read(cx).model.focused_tab());
+                    assert_eq!(focused, Some(tab), "{n}: the same tab");
+                    // The selection goes with a press off the text.
+                    let off = link_at(cx) + point(px(0.0), px(60.0));
+                    cx.simulate_mouse_down(window, off, MouseButton::Left, Modifiers::none());
+                    cx.simulate_mouse_up(window, off, MouseButton::Left, Modifiers::none());
+                    frames(cx, window);
+                }
+                // The shot: the menu open on the link, nothing selected.
+                let on_link = link_at(cx);
+                cx.simulate_mouse_down(window, on_link, MouseButton::Right, Modifiers::none());
+                frames(cx, window);
+                assert_eq!(menu_labels(cx, &ws), Some(nothing), "{n}: shot");
+            },
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// `context-menu-composer`: the agent tab's box. A right-click with nothing selected offers
+/// Cut and Copy disabled, Paste and Select All; Select All, then Copy and Cut (the box empty),
+/// then Paste (back); ⇧F10 in the box opens it at the caret.
+fn context_menu_composer() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let theme = shot_theme(shot_themes()[0].1);
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let build = agent_beside_shell(theme, slot.clone());
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let n = "context-menu-composer";
+        let ws = slotted(&slot);
+        frames(cx, window);
+        let (_, view) = cx
+            .read(|cx| ws.read(cx).focused_agent_tab())
+            .expect("the agent tab");
+        let composer = cx.read(|cx| view.read(cx).shot_composer());
+        cx.update(|cx| composer.update(cx, |c, cx| c.set_text("hello world".into(), cx)));
+        frames(cx, window);
+        let caret = |cx: &mut VisualTestAppContext| {
+            cx.read(|cx| composer.read(cx).shot_caret())
+                .map(|(_, b)| b.center())
+                .expect("the caret drawn")
+        };
+        let text =
+            |cx: &mut VisualTestAppContext| cx.read(|cx| composer.read(cx).text().to_string());
+        let at = caret(cx);
+        cx.simulate_mouse_down(window, at, MouseButton::Right, Modifiers::none());
+        frames(cx, window);
+        assert_eq!(
+            menu_labels(cx, &ws),
+            Some(labels(&context_menu::editable_menu(false))),
+            "{n}: nothing selected"
+        );
+        choose(cx, window, &ws, "Select All");
+        let at = caret(cx);
+        cx.simulate_mouse_down(window, at, MouseButton::Right, Modifiers::none());
+        frames(cx, window);
+        assert_eq!(
+            menu_labels(cx, &ws),
+            Some(labels(&context_menu::editable_menu(true))),
+            "{n}: all selected"
+        );
+        choose(cx, window, &ws, "Copy");
+        let clip = cx.read_from_clipboard().and_then(|c| c.text());
+        assert_eq!(clip.as_deref(), Some("hello world"), "{n}: Copy");
+        press_keys(cx, window, "shift-f10");
+        assert_eq!(
+            menu_labels(cx, &ws),
+            Some(labels(&context_menu::editable_menu(true))),
+            "{n}: ⇧F10 in the box"
+        );
+        choose(cx, window, &ws, "Cut");
+        assert_eq!(text(cx), "", "{n}: Cut empties the box");
+        let at = caret(cx);
+        cx.simulate_mouse_down(window, at, MouseButton::Right, Modifiers::none());
+        frames(cx, window);
+        choose(cx, window, &ws, "Paste");
+        assert_eq!(text(cx), "hello world", "{n}: Paste puts it back");
+        slot.borrow_mut().take();
+    };
+    render_with(&theme, dims(), build, act);
+    println!("ui-shots: context-menu-composer ok");
+}
+
+/// A scene folder of its own for the Files tree (never the repo or yours).
+fn drag_root(slug: &str) -> PathBuf {
+    let root = crate::test_temp::dir(&format!("fuxx-ui-shots-drag-pill-{slug}"));
+    std::fs::create_dir_all(root.join("src")).expect("the folders");
+    for file in ["src/main.rs", "src/lib.rs", "README.md"] {
+        std::fs::write(root.join(file), "fn main() {}\n").expect("the files");
+    }
+    std::fs::canonicalize(&root).unwrap_or(root)
+}
+
+/// Drag from `from` to `to` with the left button, released there unless `hold`.
+fn drag_to(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    from: Point<Pixels>,
+    to: Point<Pixels>,
+    hold: bool,
+) {
+    let left = Some(MouseButton::Left);
+    cx.simulate_mouse_down(window, from, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        window,
+        from + point(px(8.0), px(4.0)),
+        left,
+        Modifiers::none(),
+    );
+    frames(cx, window);
+    cx.simulate_mouse_move(
+        window,
+        to - point(px(6.0), px(0.0)),
+        left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_move(window, to, left, Modifiers::none());
+    frames(cx, window);
+    if !hold {
+        cx.simulate_mouse_up(window, to, MouseButton::Left, Modifiers::none());
+        frames(cx, window);
+    }
+}
+
+/// `files-drag-pill` (both themes; a folder of the scene's own): a Files row dragged to the
+/// agent tab tints its page, rings its box and says "Drop to add to your message"; dropped,
+/// it is a path pill (`src/main.rs `) in the box; a folder dropped on the tab's pill is
+/// `src/`; the tree menu's Add to Claude Chat adds `README.md`; a pill's click opens its file
+/// tab; sent, the message lists them as file chips and the agent reads the paths in the text.
+/// Shot: a row held over the page.
+fn files_drag_pill() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    for (k, &(slug, name)) in shot_themes().iter().enumerate() {
+        let theme = shot_theme(name);
+        let root = drag_root(slug);
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let build = {
+            let (root, slot) = (root.clone(), slot.clone());
+            move |window: &mut Window, cx: &mut App| -> AnyView {
+                // No status bar: it would say the scene's temporary folder, another each run.
+                let mut appearance = shot_appearance(theme, cx);
+                appearance.status_bar = false;
+                cx.set_global(appearance);
+                cx.bind_keys(crate::key_bindings());
+                let ws = cx.new(|cx| {
+                    let mut ws = Workspace::for_shots(window, cx);
+                    ws.sidebar.hint_dismissed = true;
+                    ws.right_sidebar.hidden = false;
+                    let id = ws.open_unnamed_shot_session(Some(&root), "", window, cx);
+                    ws.agent_beside(id, "claude", window, cx);
+                    ws.right_sidebar
+                        .files
+                        .show_for_shots(files_menu_tree(&root));
+                    ws
+                });
+                *slot.borrow_mut() = Some(ws.clone());
+                ws.into()
+            }
+        };
+        let full = k == 0;
+        let n = format!("files-drag-pill-{slug}");
+        let path = shoot_with(
+            "files-drag-pill",
+            slug,
+            &theme,
+            size(px(1600.0), px(640.0)),
+            build,
+            move |cx, window| {
+                let ws = slotted(&slot);
+                frames(cx, window);
+                let (agent, view) = cx
+                    .read(|cx| ws.read(cx).focused_agent_tab())
+                    .expect("the agent tab");
+                let composer = cx.read(|cx| view.read(cx).shot_composer());
+                let text = |cx: &mut VisualTestAppContext| {
+                    cx.read(|cx| composer.read(cx).text().to_string())
+                };
+                let page = |cx: &mut VisualTestAppContext| {
+                    let b = cx
+                        .read(|cx| composer.read(cx).shot_rows().2)
+                        .expect("the box drawn");
+                    point(b.center().x, b.top() - px(160.0))
+                };
+                if full {
+                    // A file onto the page: its drop states, then the pill.
+                    let (from, to) = (row_point(cx, &ws, "src/main.rs"), page(cx));
+                    drag_to(cx, window, from, to, true);
+                    let (dropping, words) = cx.read(|cx| {
+                        let v = view.read(cx);
+                        (
+                            v.dropping(cx),
+                            v.shot_composer().read(cx).placeholder().to_string(),
+                        )
+                    });
+                    assert!(dropping, "{n}: its drop states");
+                    assert_eq!(words, crate::agent_tab::pills::DROP_PLACEHOLDER, "{n}");
+                    cx.simulate_mouse_up(window, to, MouseButton::Left, Modifiers::none());
+                    frames(cx, window);
+                    assert_eq!(text(cx), "src/main.rs ", "{n}: the pill");
+                    assert!(
+                        !cx.read(|cx| view.read(cx).dropping(cx)),
+                        "{n}: states gone"
+                    );
+                    let pills = cx.read(|cx| composer.read(cx).shot_pills().len());
+                    assert_eq!(pills, 1, "{n}: drawn as a pill");
+                    // A folder onto the tab's pill in its bar.
+                    let pane = cx.read(|cx| ws.read(cx).model.locate(agent).expect("it").1);
+                    let pill = super::tab_bounds(cx, &ws, pane, 0).expect("the tab laid out");
+                    let from = row_point(cx, &ws, "src");
+                    drag_to(cx, window, from, pill.center(), false);
+                    assert_eq!(text(cx), "src/main.rs src/ ", "{n}: a folder's pill");
+                    // The tree menu's Add to Claude Chat.
+                    let at = row_point(cx, &ws, "README.md");
+                    cx.simulate_mouse_down(window, at, MouseButton::Right, Modifiers::none());
+                    frames(cx, window);
+                    choose(cx, window, &ws, "Add to Claude Chat");
+                    assert_eq!(text(cx), "src/main.rs src/ README.md ", "{n}: Add to Chat");
+                    // A pill's click opens its file tab.
+                    let first = cx.read(|cx| composer.read(cx).shot_pills()[0]);
+                    cx.simulate_click(window, first.center(), Modifiers::none());
+                    frames(cx, window);
+                    let opened = cx.read(|cx| {
+                        let ws = ws.read(cx);
+                        let tab = ws.model.focused_tab().expect("a tab");
+                        ws.file_tabs.get(&tab).map(|v| v.read(cx).path.clone())
+                    });
+                    assert_eq!(opened, Some(root.join("src/main.rs")), "{n}: its file tab");
+                    select(cx, window, &ws, agent);
+                    // Sent: file chips under it, the paths in what the agent reads.
+                    super::agent::feed(cx, &view, |t, cx| t.shot_history(Vec::new(), cx));
+                    let typed = text(cx);
+                    super::agent::feed(cx, &view, |t, cx| t.send(typed.clone(), cx));
+                    let chips = cx.read(|cx| {
+                        view.read(cx)
+                            .shot_items()
+                            .iter()
+                            .rev()
+                            .find_map(|i| match i {
+                                crate::agent_conversation::Item::You { attachments, .. } => {
+                                    Some(attachments.clone())
+                                }
+                                _ => None,
+                            })
+                    });
+                    assert_eq!(
+                        chips,
+                        Some(vec![
+                            "main.rs".to_string(),
+                            "src/".to_string(),
+                            "README.md".to_string()
+                        ]),
+                        "{n}: file chips"
+                    );
+                    let wire = cx.read(|cx| view.read(cx).shot_written());
+                    assert!(
+                        wire.iter()
+                            .any(|l| l.contains("src/main.rs src/ README.md")),
+                        "{n}: the paths in the text: {wire:?}"
+                    );
+                    // Read and answered (no spinner in the shot).
+                    super::agent::feed(cx, &view, |t, cx| {
+                        use crate::providers::Event;
+                        t.shot_feed(
+                            vec![
+                                Event::Started {
+                                    conversation: "3f0e9a52-1b7c-4d2e-8a61-0c9b7e4d5a13".into(),
+                                    model: None,
+                                },
+                                Event::Taken { id: None },
+                                Event::TurnDone {
+                                    ok: true,
+                                    message: None,
+                                },
+                            ],
+                            cx,
+                        )
+                    });
+                    frames(cx, window);
+                }
+                // The shot: a row held over the page.
+                let (from, to) = (row_point(cx, &ws, "src/lib.rs"), page(cx));
+                drag_to(cx, window, from, to, true);
+                assert!(
+                    cx.read(|cx| view.read(cx).dropping(cx)),
+                    "{n}: held over it"
+                );
+            },
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// `agent-box-finder-drop`: files dragged in from Finder (`ExternalPaths`) onto the agent tab:
+/// while over it, its drop states; dropped, a file and a folder are path pills (whole: they are
+/// outside the agent's folder) and an image an image pill, as a pasted one.
+fn agent_box_finder_drop() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let theme = shot_theme(shot_themes()[0].1);
+    let dir = crate::test_temp::dir("fuxx-ui-shots-finder-drop");
+    std::fs::create_dir_all(dir.join("docs")).expect("the folder");
+    let notes = dir.join("notes.txt");
+    std::fs::write(&notes, "made-up").expect("a file");
+    let shot = dir.join("shot.png");
+    std::fs::write(&shot, b"\x89PNG\r\n\x1a\nmade-up").expect("an image");
+    let docs = dir.join("docs");
+    let slot: super::agent::Slot = Rc::new(RefCell::new(None));
+    let keep = slot.clone();
+    let build = super::agent::build_with(
+        &crate::providers::claude::CLAUDE,
+        theme,
+        slot,
+        super::agent::start(),
+    );
+    render_with(
+        &theme,
+        size(px(720.0), px(640.0)),
+        build,
+        move |cx, window| {
+            let n = "agent-box-finder-drop";
+            let tab = super::agent::tab_of(&keep);
+            frames(cx, window);
+            let composer = cx.read(|cx| tab.read(cx).shot_composer());
+            let b = cx
+                .read(|cx| composer.read(cx).shot_rows().2)
+                .expect("the box drawn");
+            let over = point(b.center().x, b.top() - px(200.0));
+            let paths = gpui::ExternalPaths(vec![notes.clone(), docs.clone(), shot.clone()].into());
+            cx.simulate_event(
+                window,
+                gpui::FileDropEvent::Entered {
+                    position: over,
+                    paths,
+                },
+            );
+            cx.simulate_event(window, gpui::FileDropEvent::Pending { position: over });
+            frames(cx, window);
+            assert!(cx.read(|cx| tab.read(cx).dropping(cx)), "{n}: drop states");
+            cx.simulate_event(window, gpui::FileDropEvent::Submit { position: over });
+            let want = format!("{} {}/ [Image #1]", notes.display(), docs.display());
+            let start = std::time::Instant::now();
+            while cx.read(|cx| composer.read(cx).text().to_string()) != want
+                && start.elapsed() < std::time::Duration::from_secs(5)
+            {
+                frames(cx, window);
+            }
+            assert_eq!(
+                cx.read(|cx| composer.read(cx).text().to_string()),
+                want,
+                "{n}: path pills and an image pill"
+            );
+            assert!(!cx.read(|cx| tab.read(cx).dropping(cx)), "{n}: states gone");
+            let pills = cx.read(|cx| composer.read(cx).shot_pills().len());
+            // (A long path wraps: its pill is drawn on each of its rows.)
+            assert!(pills >= 3, "{n}: three pills, drawn: {pills}");
+            keep.borrow_mut().take();
+        },
+    );
+    println!("ui-shots: agent-box-finder-drop ok");
+}
+
+/// `terminal-drop-paths`: files dropped on a terminal (from Finder, then a Files row) are typed
+/// as their shell-escaped paths, apart by spaces, a space after.
+fn terminal_drop_paths() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let theme = shot_theme(shot_themes()[0].1);
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let build = one_terminal(theme, "$ ".into(), slot.clone());
+    render_with(&theme, dims(), build, move |cx, window| {
+        let n = "terminal-drop-paths";
+        let ws = slotted(&slot);
+        frames(cx, window);
+        let view = terminal(cx, &ws);
+        cx.update(|cx| view.update(cx, |v, _| v.take_sent()));
+        let at = cell(cx, &ws, 4, 2).center();
+        let paths = gpui::ExternalPaths(
+            vec![
+                PathBuf::from("/tmp/My Notes (1).txt"),
+                PathBuf::from("/tmp/it's.md"),
+            ]
+            .into(),
+        );
+        cx.simulate_event(
+            window,
+            gpui::FileDropEvent::Entered {
+                position: at,
+                paths,
+            },
+        );
+        cx.simulate_event(window, gpui::FileDropEvent::Pending { position: at });
+        cx.simulate_event(window, gpui::FileDropEvent::Submit { position: at });
+        frames(cx, window);
+        let sent = cx.update(|cx| view.update(cx, |v, _| v.take_sent()));
+        assert_eq!(
+            String::from_utf8_lossy(&sent),
+            "/tmp/My\\ Notes\\ \\(1\\).txt /tmp/it\\'s.md ",
+            "{n}: typed, escaped"
+        );
+        slot.borrow_mut().take();
+    });
+    println!("ui-shots: terminal-drop-paths ok");
+}
+
+/// `agent-queued-cancel`: × on a message Claude hasn't read asks it to drop it
+/// (`cancel_async_message` with its id); dropped, it leaves the chat and no turn is waited on;
+/// one already read stays, with a note; a message fuxx still holds (the agent not there yet)
+/// goes before it is ever written.
+fn agent_queued_cancel() {
+    use crate::agent_conversation::Item;
+    use crate::providers::Event;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let theme = shot_theme(shot_themes()[0].1);
+    let slot: super::agent::Slot = Rc::new(RefCell::new(None));
+    let keep = slot.clone();
+    let build = super::agent::build_with(
+        &crate::providers::claude::CLAUDE,
+        theme,
+        slot,
+        super::agent::start(),
+    );
+    render_with(
+        &theme,
+        size(px(720.0), px(640.0)),
+        build,
+        move |cx, window| {
+            use super::agent::feed;
+            let n = "agent-queued-cancel";
+            let tab = super::agent::tab_of(&keep);
+            // Held before the agent is there (it boots): × drops it, never written.
+            cx.update(|cx| tab.update(cx, |t, _| t.shot_boot()));
+            feed(cx, &tab, |t, cx| t.send("held".into(), cx));
+            assert_eq!(cx.read(|cx| tab.read(cx).shot_pending()), 1, "{n}: held");
+            feed(cx, &tab, |t, cx| t.cancel_held(0, cx));
+            assert_eq!(cx.read(|cx| tab.read(cx).shot_pending()), 0, "{n}: dropped");
+            feed(cx, &tab, |t, cx| t.shot_history(Vec::new(), cx));
+            assert!(
+                !cx.read(|cx| tab.read(cx).shot_written())
+                    .iter()
+                    .any(|l| l.contains("held")),
+                "{n}: never written"
+            );
+            // A turn running, then a note it hasn't read.
+            feed(cx, &tab, |t, cx| t.send("Fix the parser".into(), cx));
+            let id = |cx: &mut VisualTestAppContext, text: &str| {
+                cx.read(|cx| {
+                    tab.read(cx).shot_items().iter().find_map(|i| match i {
+                        Item::You {
+                            text: t,
+                            id: Some(id),
+                            ..
+                        } if t == text => Some(id.clone()),
+                        _ => None,
+                    })
+                })
+            };
+            let first = id(cx, "Fix the parser").expect("an id");
+            feed(cx, &tab, |t, cx| {
+                t.shot_feed(
+                    vec![
+                        Event::Started {
+                            conversation: "3f0e9a52-1b7c-4d2e-8a61-0c9b7e4d5a12".into(),
+                            model: None,
+                        },
+                        Event::Taken {
+                            id: Some(first.clone()),
+                        },
+                    ],
+                    cx,
+                )
+            });
+            feed(cx, &tab, |t, cx| t.send("also add a test".into(), cx));
+            frames(cx, window);
+            let ix = cx.read(|cx| {
+                tab.read(cx)
+                    .shot_items()
+                    .iter()
+                    .position(|i| matches!(i, Item::You { text, .. } if text == "also add a test"))
+                    .expect("the note")
+            });
+            let note = id(cx, "also add a test").expect("its id");
+            let button = cx
+                .read(|cx| {
+                    tab.read(cx)
+                        .rw
+                        .shot_buttons
+                        .borrow()
+                        .get(&format!("cancel:{ix}"))
+                        .copied()
+                })
+                .expect("× on the unread note");
+            cx.simulate_mouse_move(window, button.center(), None, Modifiers::none());
+            frames(cx, window);
+            cx.simulate_click(window, button.center(), Modifiers::none());
+            frames(cx, window);
+            let asked = cx
+                .read(|cx| tab.read(cx).shot_written())
+                .iter()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .any(|v| {
+                    v["request"]["subtype"] == "cancel_async_message"
+                        && v["request"]["message_uuid"] == note.as_str()
+                });
+            assert!(asked, "{n}: Claude asked to drop it");
+            let none_read = cx.read(|cx| {
+                tab.read(cx)
+                    .rw
+                    .shot_buttons
+                    .borrow()
+                    .contains_key("cancel:0")
+            });
+            assert!(!none_read, "{n}: no × on a read message");
+            feed(cx, &tab, |t, cx| {
+                t.shot_feed(
+                    vec![Event::QueuedCancelled {
+                        id: note.clone(),
+                        cancelled: true,
+                    }],
+                    cx,
+                )
+            });
+            assert!(id(cx, "also add a test").is_none(), "{n}: it left the chat");
+            // Another, already taken in when asked: it stays, with a note.
+            feed(cx, &tab, |t, cx| t.send("and the docs".into(), cx));
+            let late = id(cx, "and the docs").expect("its id");
+            let ix = cx.read(|cx| tab.read(cx).shot_items().len() - 1);
+            feed(cx, &tab, |t, cx| t.cancel_message(ix, cx));
+            feed(cx, &tab, |t, cx| {
+                t.shot_feed(
+                    vec![Event::QueuedCancelled {
+                        id: late.clone(),
+                        cancelled: false,
+                    }],
+                    cx,
+                )
+            });
+            assert!(id(cx, "and the docs").is_some(), "{n}: it stays");
+            let noted = cx.read(|cx| {
+                tab.read(cx)
+                    .shot_items()
+                    .iter()
+                    .any(|i| matches!(i, Item::Notice(t) if t == crate::agent_tab::CANCEL_LATE))
+            });
+            assert!(noted, "{n}: the note says why");
+            keep.borrow_mut().take();
+        },
+    );
+    println!("ui-shots: agent-queued-cancel ok");
 }
 
 /// `link-opens-split`: ⌘-clicked links in a terminal. The first splits a browser pane to the
@@ -796,7 +1673,11 @@ fn files_menu() {
                 );
                 assert_eq!(
                     menu_labels(cx, &ws),
-                    Some(labels(&context_menu::file_tree_menu(false, None, true))),
+                    Some(labels(&context_menu::file_tree_menu(
+                        false,
+                        Some("Claude"),
+                        true
+                    ))),
                     "{n}: a marked file's menu"
                 );
                 if full {
@@ -815,7 +1696,11 @@ fn files_menu() {
                     press_keys(cx, window, "shift-f10");
                     assert_eq!(
                         menu_labels(cx, &ws),
-                        Some(labels(&context_menu::file_tree_menu(false, None, true))),
+                        Some(labels(&context_menu::file_tree_menu(
+                            false,
+                            Some("Claude"),
+                            true
+                        ))),
                         "{n}: ⇧F10 on the selected row"
                     );
                     choose(cx, window, &ws, "Reveal in Finder");
@@ -826,7 +1711,11 @@ fn files_menu() {
                     right(cx, "src");
                     assert_eq!(
                         menu_labels(cx, &ws),
-                        Some(labels(&context_menu::file_tree_menu(true, None, false))),
+                        Some(labels(&context_menu::file_tree_menu(
+                            true,
+                            Some("Claude"),
+                            false
+                        ))),
                         "{n}: a folder's menu"
                     );
                     press_keys(cx, window, "escape");

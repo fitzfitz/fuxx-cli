@@ -399,6 +399,8 @@ impl Conversation {
             }
             // The tab acts on a file rewind's answer (batch 3, chore 2); nothing to show here.
             Event::FilesRewound { .. } => {}
+            // The tab acts on it (`cancel_unread`).
+            Event::QueuedCancelled { .. } => {}
             Event::Usage {
                 context_pct,
                 cost_usd,
@@ -467,6 +469,31 @@ impl Conversation {
         self.outstanding += 1;
         self.ended = false;
         self.finished = false;
+    }
+
+    /// Your message `id`, not read yet, cancelled (batch 3, wave 3: the agent dropped it from
+    /// its queue, or fuxx never wrote it): it goes, and no turn is waited on for it. False (and
+    /// nothing changes) when there is no such unread message.
+    pub fn cancel_unread(&mut self, id: &str) -> bool {
+        let Some(ix) = self
+            .items
+            .iter()
+            .rposition(|i| matches!(i, Item::You { id: Some(x), taken: false, .. } if x == id))
+        else {
+            return false;
+        };
+        self.items.remove(ix);
+        for at in &mut self.lane_starts {
+            if *at > ix {
+                *at -= 1;
+            }
+        }
+        self.latest_you = self
+            .items
+            .iter()
+            .rposition(|i| matches!(i, Item::You { .. }));
+        self.outstanding = self.outstanding.saturating_sub(1);
+        true
     }
 
     /// Your message `id` was read (none said: the oldest not read yet). Looked for from the
@@ -1688,6 +1715,35 @@ mod tests {
             writes: Vec::new(),
             texts: Vec::new(),
         }
+    }
+
+    /// Batch 3, wave 3: a message not yet read can be cancelled: it goes (counted no more:
+    /// the turn it would have started never comes); a read one, or one by another id, stays.
+    #[test]
+    fn an_unread_message_can_be_cancelled_and_a_read_one_cannot() {
+        let mut c = Conversation::new();
+        c.you_as("one".into(), Vec::new(), Some("u1".into()));
+        c.apply(Event::Taken {
+            id: Some("u1".into()),
+        });
+        c.apply(said("working"));
+        c.you_as("note".into(), Vec::new(), Some("u2".into()));
+        c.apply(said("still working"));
+        assert!(!c.cancel_unread("u1"), "already read");
+        assert!(!c.cancel_unread("nobody"));
+        let before = c.items().len();
+        assert!(c.cancel_unread("u2"));
+        assert_eq!(c.items().len(), before - 1);
+        assert!(
+            !c.items()
+                .iter()
+                .any(|i| matches!(i, Item::You { text, .. } if text == "note"))
+        );
+        assert_eq!(c.latest_you(), Some(0));
+        // Its turn never comes: the first one's end leaves nothing waiting.
+        c.apply(turn_done());
+        assert_eq!(c.status(), Status::Done);
+        assert!(!c.cancel_unread("u2"), "once");
     }
 
     /// Batch 3, chore 2: Rewind cuts the conversation before one of your messages: it and all

@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AppContext, ClipboardItem, Context, Entity, Focusable, Pixels, Point, PromptLevel, Window,
+    App, AppContext, ClipboardItem, Context, Entity, Focusable, Pixels, Point, PromptLevel, Window,
 };
 
 use crate::context_menu::{self, MenuAction};
@@ -156,14 +156,17 @@ impl Workspace {
         }
         let files = &self.right_sidebar.files;
         let marked = !is_dir && files.rows.iter().any(|r| r.rel == rel && r.mark.is_some());
-        let entries = context_menu::file_tree_menu(is_dir, self.files_add_target(), marked);
+        let entries = context_menu::file_tree_menu(is_dir, self.files_add_target(cx), marked);
         self.open_context_menu(MenuFrom::FileTree { rel, is_dir }, entries, at, window, cx);
     }
 
-    /// Who the Files menu's Add to Chat would add to. None until path pills come (batch 3, wave
-    /// 3: a pill in `ask_pick`'s agent tab), which leaves the item out.
-    fn files_add_target(&self) -> Option<&'static str> {
-        None
+    /// Who the Files menu's Add to Chat would add to (wave 3: a path pill in the focused
+    /// workspace's `ask_pick` agent tab, else a new one, as Ask does): its agent's label. None
+    /// with no focused tab, or on another host: the item is left out.
+    fn files_add_target(&self, cx: &App) -> Option<&'static str> {
+        let tab = self.model.focused_tab()?;
+        let (ws, _) = self.model.locate(tab)?;
+        crate::workspace_menu::add_target_label(self.ask_target(ws, cx))
     }
 
     /// ⇧F10 in the tree: the selected row's menu, at its row as last drawn.
@@ -273,7 +276,17 @@ impl Workspace {
             }
             MenuAction::OpenInTerminal => self.terminal_in_folder(path, window, cx),
             MenuAction::Trash => self.confirm_trash(rel.to_path_buf(), window, cx),
-            // Wave 3 (path pills): the item isn't offered yet.
+            // Wave 3: a path pill in the agent tab Ask would go to.
+            MenuAction::AddToChat => {
+                if let Some(from) = self.model.focused_tab() {
+                    let chip = crate::agent_tab::Attachment::PathPill {
+                        path,
+                        is_dir,
+                        label: String::new(),
+                    };
+                    self.attach_to_agent(from, chip, window, cx);
+                }
+            }
             _ => {}
         }
     }
@@ -310,6 +323,37 @@ impl Workspace {
         self.ensure_file_tabs(window, cx);
         self.save();
         self.activate(window, cx);
+        cx.notify();
+    }
+
+    /// A folder's path pill (or its sent chip) clicked (batch 3, chore 5): the right sidebar
+    /// shows Files, the folder selected there and its parents opened (when it is under the
+    /// tree's root; the ones not listed yet are listed off the UI thread).
+    pub(crate) fn reveal_in_files(
+        &mut self,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.right_sidebar.hidden {
+            self.toggle_right_sidebar(window, cx);
+        }
+        self.show_right_panel(crate::right_sidebar::Panel::Files, window, cx);
+        let files = &mut self.right_sidebar.files;
+        let Some(tree) = files.tree.as_mut() else {
+            return;
+        };
+        let before = tree.expanded_set().expanded;
+        if !tree.reveal_file(path) {
+            return;
+        }
+        let list: Vec<PathBuf> = tree
+            .wanted()
+            .into_iter()
+            .filter(|f| !before.contains(f) && !f.as_os_str().is_empty())
+            .collect();
+        files.reveal = Some(gpui::ScrollStrategy::Nearest);
+        self.files_list(list, cx);
         cx.notify();
     }
 

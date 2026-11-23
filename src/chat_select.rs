@@ -8,7 +8,10 @@
 //! handlers hit-test. A piece is named by a [`Key`] (its chat row, then its order in the row), so
 //! a selection holds across frames and across rows scrolled out of sight.
 //!
-//! `Sel`, `selected_text`, `word_at`, `hit`, `nearest` and `wash` are the pure model.
+//! A piece's links (wave 3) register with it, so a right-click finds the link under the
+//! pointer (`link_at`): `InteractiveText`'s clicks are the left button's only.
+//!
+//! `Sel`, `selected_text`, `word_at`, `hit`, `nearest`, `wash` and `link_at` are the pure model.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -200,11 +203,21 @@ pub fn wash(
     out
 }
 
-/// A painted piece: its key, layout and where it was drawn.
+/// A piece's links: each one's bytes and its address.
+pub type Links = Rc<Vec<(Range<usize>, String)>>;
+
+/// The address of the link at `pos`, among the pieces' `links` (wave 3: the chat's and the
+/// Preview's right-click menu).
+pub fn link_at(links: &BTreeMap<Key, Links>, pos: Pos) -> Option<&str> {
+    crate::md_preview::link_under(links.get(&pos.key)?, pos.ix)
+}
+
+/// A painted piece: its key, layout, where it was drawn and its links.
 struct Painted {
     key: Key,
     layout: TextLayout,
     bounds: Bounds<Pixels>,
+    links: Option<Links>,
 }
 
 /// An agent tab's selection and the chat text painted this frame (shared with what draws it).
@@ -256,7 +269,7 @@ impl ChatSelect {
         self.texts.borrow_mut().retain(|k, _| k.row < row);
     }
 
-    fn register(&self, key: Key, layout: TextLayout, text: SharedString) {
+    fn register(&self, key: Key, layout: TextLayout, text: SharedString, links: Option<Links>) {
         let bounds = layout.bounds();
         let mut painted = self.painted.borrow_mut();
         painted.retain(|p| p.key != key);
@@ -264,6 +277,7 @@ impl ChatSelect {
             key,
             layout,
             bounds,
+            links,
         });
         self.texts.borrow_mut().insert(key, text);
     }
@@ -282,6 +296,18 @@ impl ChatSelect {
             Ok(ix) | Err(ix) => ix,
         };
         Some(Pos { key: piece.key, ix })
+    }
+
+    /// The address of the link right under `p` (on text painted last frame), if any.
+    pub fn link_at(&self, p: Point<Pixels>) -> Option<String> {
+        let pos = self.pos_at(p, true)?;
+        let painted = self.painted.borrow();
+        let links: BTreeMap<Key, Links> = painted
+            .iter()
+            .filter(|q| q.key == pos.key)
+            .filter_map(|q| Some((q.key, q.links.clone()?)))
+            .collect();
+        link_at(&links, pos).map(str::to_string)
     }
 
     /// The pieces painted last frame and where (for the ui-shots scenes).
@@ -337,6 +363,7 @@ pub struct SelectableText {
     child: AnyElement,
     state: Rc<ChatSelect>,
     wash: Hsla,
+    links: Option<Links>,
 }
 
 impl SelectableText {
@@ -355,7 +382,14 @@ impl SelectableText {
             child,
             state,
             wash,
+            links: None,
         }
+    }
+
+    /// Its links (each one's bytes and address), for the right-click menu.
+    pub fn links(mut self, links: Links) -> Self {
+        self.links = Some(links);
+        self
     }
 }
 
@@ -431,8 +465,12 @@ impl Element for SelectableText {
             }
         }
         self.child.paint(window, cx);
-        self.state
-            .register(self.key, self.layout.clone(), self.text.clone());
+        self.state.register(
+            self.key,
+            self.layout.clone(),
+            self.text.clone(),
+            self.links.clone(),
+        );
     }
 }
 
@@ -563,6 +601,24 @@ mod tests {
             "below it all"
         );
         assert_eq!(nearest(&[], point(px(0.0), px(0.0))), None);
+    }
+
+    #[test]
+    fn link_at_finds_the_link_under_a_place() {
+        let mut links: BTreeMap<Key, Links> = BTreeMap::new();
+        links.insert(
+            k(2, 1),
+            Rc::new(vec![
+                (4..12, "https://a.dev/docs".to_string()),
+                (20..25, "src/main.rs".to_string()),
+            ]),
+        );
+        assert_eq!(link_at(&links, at(2, 1, 4)), Some("https://a.dev/docs"));
+        assert_eq!(link_at(&links, at(2, 1, 11)), Some("https://a.dev/docs"));
+        assert_eq!(link_at(&links, at(2, 1, 12)), None, "just past it");
+        assert_eq!(link_at(&links, at(2, 1, 22)), Some("src/main.rs"));
+        assert_eq!(link_at(&links, at(2, 0, 5)), None, "another piece");
+        assert_eq!(link_at(&links, at(3, 1, 5)), None, "a piece with no links");
     }
 
     #[test]

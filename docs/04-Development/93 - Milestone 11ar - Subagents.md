@@ -541,8 +541,23 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     makes (path and lines). A right-click elsewhere while the menu is open: the menu closes and, two frames on (once
     the window is drawn without its backdrop), the press goes to what is under the pointer. The old tab menus stay as
     they were. The menu key's character (`NSMenuFunctionKey`) is bound as GPUI passes it through; no Mac keyboard has
-    one, so it is untested. **Wave 3 adds** the chat's and the message box's menus (Select All in the chat, Cut/Paste in
-    the box) and a link's menu in the Markdown Preview (today the Preview offers Copy, disabled).
+    one, so it is untested. **Wave 3 built** the rest: in an agent tab's chat a right-click (or ⌃-click) opens the
+    menu on what you selected and the link under the pointer (Open Link · Open in Default Browser · Copy Link, then
+    Copy and Add to ⟨Agent⟩ Chat, which quotes the selection as a chip in that same tab's box, "Quoted from Claude");
+    with nothing selected, Copy (disabled) and Select All ⌘A. The message box's right-click or ⇧F10 is Cut ⌘X · Copy ⌘C
+    · Paste ⌘V · ─ · Select All ⌘A (Cut and Copy disabled with nothing selected; Paste takes an image as ⌘V does). The
+    Markdown Preview's text can now be selected as the chat's is (drag, double-click a word, triple-click a
+    paragraph), so its Copy and ⌘C work, and a right-click on a link offers the link's items. New `chat_menu` and
+    `editable_menu`; `chat_select` keeps each piece's links (`link_at`, since `InteractiveText`'s clicks are the left
+    button's only); `AgentTabEvent::ContextMenu` / `BoxMenu`, `ComposerEvent::ContextMenu`. AI's calls: a file link
+    in the chat or the Preview offers no link items (a click opens it); ⇧F10 in the agent tab opens the box's menu
+    (the chat has no caret to open at); the right-clicked chat link isn't underlined while the menu is open (the
+    terminal's is). Checks: `the_chat_menu_adds_select_all_with_nothing_selected`,
+    `the_box_menu_is_cut_copy_paste_and_select_all`, `link_at_finds_the_link_under_a_place`, the keymap (⇧F10 and the
+    menu key in the box), each watched failing first; scenes `context-menu-chat` (both themes, shot with the menu on
+    a link: Copy Link, a plain click opening the link in a split with your focus kept, Select All, Copy, Add to Claude
+    Chat), `context-menu-composer` (Cut, Copy, Paste, Select All, ⇧F10) and `context-menu-file-tab` (now also the
+    Preview's link menu and a double-clicked word copied).
   - **Checks:** unit tests for the item sets (text, terminal, file and folder rows), the arrows skipping separators and
     disabled items, the height and the placement's flips, `opens_menu` (right, ⌃, ⇧ with mouse reporting), the
     terminal's `select_all`, `menu_danger` on every theme, and the keymap (⇧F10 and the menu key in the terminal, file
@@ -572,8 +587,10 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     path in an SSH session's output opens nothing (the path is the host's); the file opens in the terminal's pane (not
     where links go), its line at the top and current; bare-URL linking is the agent chat's only (the Preview keeps
     CommonMark's `<…>` and `[…](…)`); the terminal's ⌘-underline stays its hover signal (no tooltip there: the link's
-    text is its address unless the program wrote an OSC 8 link). **Wave 3 adds** the agent chat's links routed through
-    `open_link` (today they open in your default browser, and its file links do nothing).
+    text is its address unless the program wrote an OSC 8 link). **Wave 3 built** the agent chat's links through
+    `open_link` (`AgentTabEvent::OpenLink`): a web or mail link goes where "Open links in" says, and a link to a file
+    (from the agent's folder, or a whole path) opens a file tab when it is one (`AgentTabEvent::OpenFile`). Scene
+    `context-menu-chat` clicks one into a split.
   - **Checks:** unit tests for `link_place` (mail and the default browser to the OS; the first link splits, a narrow
     pane takes a tab; the next goes to the last link pane, the same URL selects, a closed one is found again by its
     browser; the most recently used browser pane, never the source; "a tab in this pane" reusing its own tab),
@@ -600,9 +617,10 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     `trashItemAtURL`, which says where the item went, for ⌘Z), off the UI thread, and ⌘Z never puts it back over
     something now at its place; the clash check reads the tree's own listing, the renaming and making happen off the
     UI thread (a name taken meanwhile still says so); a made or renamed entry is selected and its folder listed again;
-    a new file is made empty and not opened; no permanent Delete. **Wave 3 adds** Add to Chat (a path pill in the
-    `ask_pick` agent tab): the item is built (`file_tree_menu`'s target) but left out until pills come
-    (`files_add_target` is the seam).
+    a new file is made empty and not opened; no permanent Delete. **Wave 3 built** Add to ⟨Agent⟩ Chat after Open to
+    the Side (a file) or Open in Terminal (a folder): a path pill in the agent tab Ask would go to (`ask_pick` from the
+    focused tab's workspace, else a new one; left out on another host). Scene `files-menu` now lists it (its
+    reference is to refresh on the 1× display: one more row).
   - **Checks:** unit tests for the menus, the stem (`main` of `main.rs`, `archive.tar` of `archive.tar.gz`, a dot-file
     and a folder whole), the name problems, where the New box's row goes, the trash and put back (kept apart, never over
     a new one; in a temp folder), the sheet's words, `FileTree::has_entry` / `is_open`, and the tree's keys (in the tree,
@@ -612,3 +630,54 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     folder's, Copy Path, ⌥⇧⌘C, ⇧F10 on the selected row, Reveal, Rename on disk (the stem replaced), a clash under the
     box and Esc, New File, New Folder, Move to Trash and ⌘Z, Open in Terminal, Open to the Side; shot with Move to
     Trash lit in `menu_danger`.
+- **Files as pills in the agent chat** (batch 3, chore 5, wave 3; your words, 2026-11-23: "on file tree, I can drag
+  and drop it to put to agent chat as a phill (same as image)"): drag a Files row onto an agent tab (its page, its
+  box or its tab's pill in a bar) and it becomes a pill in the box: the path as the `@` list would insert it (from
+  the agent's folder, else whole; a folder ends in "/"), editing as one (⌫ takes it whole), at the caret when the box
+  has the keyboard, else at the end, with a space after. While files are over the page it is tinted, the box ringed
+  in `focus_ring` and an empty box says "Drop to add to your message"; the dragged row follows the pointer as a
+  28 pt chip with its icon and name, with the copy cursor. A pill's click opens its file tab (a folder's shows it in
+  the Files tree). Sent, the message lists them as chips with the file icon (its name; two with the same name show
+  their parent), each opening its file, its path the tooltip; the agent reads the paths where you put them in the
+  text. **UX gaps built:** files dropped from Finder become path pills, images inline image pills as pasted ones
+  (several files, several pills); files dropped on a terminal are typed as their shell-escaped paths, apart by spaces,
+  as macOS terminals do. The tree menu's Add to Chat (above) adds one too. `composer::atom_ranges` now matches only on
+  word edges (`src/main.rs` is not a pill inside `code/src/main.rs` or `src/main.rs.bak`), of two starting together
+  the longer. New `src/agent_pills.rs` (`DraggedPaths`, `PathsChip`, `pill_text`, `pill_labels`, `spaced`,
+  `pills_in`, `shell_escaped`, `typed_paths`), `Attachment::PathPill`.
+  - **AI's calls:** the box shows the pill's whole inserted path, not the name only: the box draws its text as typed
+    (a pill is a highlight over the text, as `[Image #1]` is with its brackets drawn clear), and showing other words
+    than the text would mean a second text model under the caret and the IME; the name-only words and the parent on a
+    clash are the sent chip's. The pill in the box has no tooltip (its path is in it). The copy cursor shows for the
+    whole drag, not only over a target. A Finder drop's "is it a folder" is asked off the UI thread; dropped on a
+    tab's pill the tab is shown first and the pills go at the end. A pasted image's brackets are still drawn clear; a
+    path pill keeps every character. Finder drops on the box used to make file and image chips; they make pills now
+    (the File… and Image… menu items still make chips). A rewound message's path pills come back as pills.
+  - **Checks:** unit tests `an_atom_matches_only_on_word_edges`, `only_a_bracketed_atom_hides_its_brackets`,
+    `a_pill_says_the_path_as_the_at_list_would`, `chips_say_the_name_and_a_parent_where_two_names_clash`,
+    `pills_go_in_with_spaces_around_them`, `the_pills_in_a_text_are_found_on_word_edges_once_each`,
+    `a_dropped_path_is_typed_shell_escaped` and `a_sent_path_pill_is_in_the_text_and_listed_as_a_chip`, each watched
+    failing first. Scenes `files-drag-pill` (both themes, on a folder of its own; shot with a row held over the page:
+    the tint, the ring, the words, the chip; checks: a file dropped on the page, a folder on the tab's pill, the
+    menu's Add to Claude Chat, a pill's click opening its file tab, the sent message's three file chips and the paths
+    in what Claude reads), `agent-box-finder-drop` (a file, a folder and an image from Finder: two path pills and an
+    image pill) and `terminal-drop-paths` (the typed, escaped paths). Not yet seen in the real window.
+- **Taking back a message the agent hasn't read** (batch 3, wave 3's UX gap; from "I want all the UX
+  recommendations"): a message you sent while Claude works waits until it reads it; × beside its bubble (with Copy,
+  while you point at it) takes it back. Claude Code 2.1.330 has the control request for it (`cancel_async_message`
+  with the message's id, found in its binary; no model called): asked, Claude drops it from its queue and the bubble
+  leaves the chat (no turn is waited on for it); if Claude had already taken it in, the bubble stays and a note says
+  "Already read: it can't be cancelled". A message fuxx itself still holds (the agent not started yet, shown under the
+  chat as "Starting Claude…") has a × too and goes before it is ever written, for any agent. agy can't take one back
+  (its print mode has no such request), so its sent messages have no ×. Provider capability `cancels_queued()`
+  (default false), `Action::CancelQueued`, `Event::QueuedCancelled`; `Conversation::cancel_unread`; new
+  `src/agent_cancel.rs`.
+  - **AI's calls:** the × is one of the bubble's hover actions (transparent at rest, as Copy is) and a "×" glyph (the
+    icon set has no cross); a cancelled message's words don't come back into the box; an error answer (an older
+    Claude) counts as not cancelled.
+  - **Checks:** unit tests `an_unread_message_can_be_cancelled_and_a_read_one_cannot`,
+    `a_provider_cant_cancel_a_queued_message_unless_it_says`,
+    `cancelling_a_queued_message_asks_claude_and_its_answer_decodes` and
+    `only_an_unread_named_message_can_be_taken_back_and_only_by_an_agent_that_can`, each watched failing first. Scene
+    `agent-queued-cancel` (a held message dropped and never written; × on an unread note asks Claude with its id, the
+    answer takes it out; a late one stays with the note; no × on a read message). Not yet seen in the real window.

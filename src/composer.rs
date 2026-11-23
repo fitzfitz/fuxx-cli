@@ -85,8 +85,37 @@ pub enum ComposerEvent {
     Complete,
     /// Paste with an image (and no text) on the clipboard: the box makes it an attachment.
     PasteImage(gpui::Image),
-    /// A click on an atom's pill (a pasted image's `[Image #1]`): its text, to open.
+    /// A click on an atom's pill (a pasted image's `[Image #1]`, a path pill): its text, to
+    /// open.
     OpenAtom(String),
+    /// A right-click, ⌃-click or ⇧F10 (batch 3, chore 4): fuxx's menu at window point `at`;
+    /// `has_sel`: something is selected in the box (Cut and Copy apply).
+    ContextMenu { at: Point<Pixels>, has_sel: bool },
+}
+
+/// A character that goes on a word or a path (`src/main.rs`, `~/code`).
+fn joins(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '-' | '/' | '.' | '~' | '@')
+}
+
+/// Whether `text[r]` stands on its own: no word or path character goes on from either edge
+/// (where its own edge character is one). A `.` after it ends a sentence unless more follows.
+fn on_word_edges(text: &str, r: Range<usize>) -> bool {
+    let piece = &text[r.clone()];
+    let (Some(first), Some(last)) = (piece.chars().next(), piece.chars().next_back()) else {
+        return false;
+    };
+    let before = text[..r.start].chars().next_back();
+    let mut after = text[r.end..].chars();
+    let next = after.next();
+    let goes_on_after = match next {
+        Some('.') => after.next().is_some_and(joins),
+        Some(c) => joins(c),
+        None => false,
+    };
+    let left = !(joins(first) && before.is_some_and(joins));
+    let right = !(joins(last) && goes_on_after);
+    left && right
 }
 
 /// The pure editing core: text, a caret and an anchor (the selection is between them), all byte
@@ -123,20 +152,23 @@ impl EditBuffer {
         self.atoms = atoms;
     }
 
-    /// Where the atoms are in the text, in order, none overlapping.
+    /// Where the atoms are in the text, in order, none overlapping: each only on word edges
+    /// (batch 3, chore 5: a path pill's `src/main.rs` is not inside `code/src/main.rs` or
+    /// `src/main.rs.bak`); of two starting together, the longer.
     pub fn atom_ranges(&self) -> Vec<Range<usize>> {
+        let text = self.text.as_str();
         let mut found: Vec<Range<usize>> = self
             .atoms
             .iter()
             .filter(|a| !a.is_empty())
             .flat_map(|a| {
-                self.text
-                    .match_indices(a.as_str())
+                text.match_indices(a.as_str())
                     .map(|(i, m)| i..i + m.len())
+                    .filter(|r| on_word_edges(text, r.clone()))
                     .collect::<Vec<_>>()
             })
             .collect();
-        found.sort_by_key(|r| r.start);
+        found.sort_by_key(|r| (r.start, std::cmp::Reverse(r.end)));
         let mut out: Vec<Range<usize>> = Vec::new();
         for r in found {
             if out.last().is_none_or(|l| r.start >= l.end) {
@@ -961,13 +993,67 @@ impl Composer {
     }
 
     fn cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
+        self.cut_selection(cx);
+    }
+
+    fn cut_selection(&mut self, cx: &mut Context<Self>) {
         self.copy_selection(cx);
         if !self.buf.selection().is_empty() {
             self.step(|b| b.backspace(), cx);
         }
     }
 
+    /// The right-click menu's items (batch 3, chore 4), as their keys do in the box.
+    pub fn menu_cut(&mut self, cx: &mut Context<Self>) {
+        self.cut_selection(cx);
+    }
+
+    pub fn menu_copy(&mut self, cx: &mut Context<Self>) {
+        self.copy_selection(cx);
+    }
+
+    pub fn menu_paste(&mut self, cx: &mut Context<Self>) {
+        self.paste_clipboard(cx);
+    }
+
+    pub fn menu_select_all(&mut self, cx: &mut Context<Self>) {
+        self.step(|b| b.select_all(), cx);
+    }
+
+    /// Ask for fuxx's menu at `at` (the selection stays).
+    fn open_menu(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        cx.emit(ComposerEvent::ContextMenu {
+            at,
+            has_sel: self.has_selection(),
+        });
+    }
+
+    /// ⇧F10: the menu under the caret as last drawn (else near the box's top-left).
+    fn show_menu(
+        &mut self,
+        _: &crate::workspace_menu::ShowMenu,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let at = match (self.last_caret, self.last_bounds) {
+            (Some((_, caret)), _) => caret.bottom_left() + point(px(0.), px(4.)),
+            (None, bounds) => crate::workspace_menu::keyboard_at(bounds),
+        };
+        self.open_menu(at, cx);
+    }
+
+    /// A right mouse-down (or ⌃-click): the keyboard comes to the box, the menu opens.
+    fn right_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        window.focus(&self.focus_handle, cx);
+        self.open_menu(e.position, cx);
+    }
+
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
+        self.paste_clipboard(cx);
+    }
+
+    fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
@@ -1011,6 +1097,11 @@ impl Composer {
     /// A click puts the caret there (⇧: selects to there); a double-click selects it all; a
     /// drag selects.
     fn mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // ⌃-click is a right-click on a Mac.
+        if e.modifiers.control {
+            self.right_down(e, window, cx);
+            return;
+        }
         cx.stop_propagation();
         window.focus(&self.focus_handle, cx);
         self.marked = None;
@@ -1241,6 +1332,7 @@ impl Render for Composer {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::show_character_palette))
+            .on_action(cx.listener(Self::show_menu))
             .on_action(cx.listener(Self::move_left))
             .on_action(cx.listener(Self::move_right))
             .on_action(cx.listener(Self::up_pressed))
@@ -1258,11 +1350,25 @@ impl Render for Composer {
             .on_action(cx.listener(Self::select_to_start))
             .on_action(cx.listener(Self::select_to_end))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::right_down))
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_scroll_wheel(cx.listener(Self::scroll))
             .child(ComposerText { input: cx.entity() })
     }
+}
+
+/// The atoms among `atoms` written in brackets (`[Image #1]`): only theirs are drawn clear; a
+/// path pill (batch 3, chore 5) shows every character.
+fn bracketed(text: &str, atoms: &[Range<usize>]) -> Vec<Range<usize>> {
+    atoms
+        .iter()
+        .filter(|r| {
+            text.get((*r).clone())
+                .is_some_and(|t| t.len() >= 2 && t.starts_with('[') && t.ends_with(']'))
+        })
+        .cloned()
+        .collect()
 }
 
 /// `runs` (of the row `row`) with each atom's first and last character (its brackets) drawn
@@ -1451,11 +1557,15 @@ impl Element for ComposerText {
         let font_size = m.font_size;
         let text = input.buf.text();
         let atoms = input.buf.atom_ranges();
+        let hidden = bracketed(text, &atoms);
         let lines = rows[first..first + shown]
             .iter()
             .map(|range| {
-                let runs =
-                    hide_brackets(runs_for(range, input.marked.as_ref(), &base), range, &atoms);
+                let runs = hide_brackets(
+                    runs_for(range, input.marked.as_ref(), &base),
+                    range,
+                    &hidden,
+                );
                 window.text_system().shape_line(
                     text[range.clone()].to_string().into(),
                     font_size,
@@ -2014,6 +2124,34 @@ mod tests {
         let mut b = EditBuffer::new("[Image #3]");
         b.backspace();
         assert_eq!(b.text(), "[Image #3");
+    }
+
+    #[test]
+    fn an_atom_matches_only_on_word_edges() {
+        // A path pill's text inside a longer path, or a folder's inside its file's: not it.
+        let mut b = EditBuffer::new("see src/main.rs, not code/src/main.rs or src/main.rs.bak");
+        b.set_atoms(vec!["src/main.rs".into()]);
+        assert_eq!(b.atom_ranges(), vec![4..15]);
+        let mut b = EditBuffer::new("src/ and src/main.rs");
+        b.set_atoms(vec!["src/".into()]);
+        assert_eq!(b.atom_ranges(), vec![0..4]);
+        // At a sentence's end it still is; an image's marker beside a word too.
+        let mut b = EditBuffer::new("open src/main.rs. x[Image #1]y");
+        b.set_atoms(vec!["src/main.rs".into(), "[Image #1]".into()]);
+        assert_eq!(b.atom_ranges(), vec![5..16, 19..29]);
+        // Where two start together, the longer wins.
+        let mut b = EditBuffer::new("a src/ b");
+        b.set_atoms(vec!["src".into(), "src/".into()]);
+        assert_eq!(b.atom_ranges(), vec![2..6]);
+    }
+
+    #[test]
+    fn only_a_bracketed_atom_hides_its_brackets() {
+        // An image's marker draws as its name on the pill; a path pill (batch 3, chore 5) keeps
+        // every character.
+        let text = "see [Image #1] and src/main.rs";
+        let atoms = [4..14, 19..30];
+        assert_eq!(super::bracketed(text, &atoms), vec![4..14]);
     }
 
     #[test]

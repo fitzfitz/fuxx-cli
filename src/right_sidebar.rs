@@ -529,6 +529,7 @@ fn file_row(
     row: &Row,
     selected: Option<&Path>,
     rename: Option<RowBox>,
+    root: Option<&Path>,
     inks: &RowInks,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
@@ -595,6 +596,16 @@ fn file_row(
     let (rel, is_dir) = (row.rel.clone(), row.is_dir);
     let hover = ui.side_hover;
     let (menu_rel, ctrl_rel) = (rel.clone(), rel.clone());
+    // Batch 3, chore 5: dragged to an agent tab, it becomes a path pill (to a terminal, its
+    // path typed). Not while it is being renamed.
+    let drag =
+        root.filter(|_| rename.is_none())
+            .map(|root| crate::agent_tab::pills::DraggedPaths {
+                paths: vec![crate::agent_tab::pills::PillPath {
+                    path: root.join(&rel),
+                    is_dir,
+                }],
+            });
     // Batch 3, chore 7: renaming this row: its box in place of the name.
     let name: AnyElement = match rename {
         Some((input, problem)) => div()
@@ -634,6 +645,12 @@ fn file_row(
                     .text_color(hsla(ink))
                     .child(tail)
             }))
+            .when_some(drag, |row, drag| {
+                row.on_drag(drag, |dragged, _, window, cx| {
+                    crate::agent_tab::pills::hold_drag_copy(window, cx);
+                    cx.new(|_| crate::agent_tab::pills::PathsChip::of(dragged))
+                })
+            })
             // Batch 3, chore 7: its menu (the row selected), on a right-click or a ⌃-click.
             .on_mouse_down(
                 MouseButton::Right,
@@ -2442,6 +2459,7 @@ impl Workspace {
         use crate::files_menu::EditKind;
         let files = &self.right_sidebar.files;
         let selected = files.tree.as_ref().and_then(|t| t.selected());
+        let root = files.tree.as_ref().map(|t| t.root().to_path_buf());
         let edit = files.edit.as_ref();
         let new_at = edit.and_then(|e| match &e.kind {
             EditKind::New { parent, is_dir } => {
@@ -2479,7 +2497,15 @@ impl Workspace {
             let rename = renaming
                 .filter(|(rel, _)| row.more.is_none() && row.rel == *rel)
                 .map(|(_, b)| b);
-            out.push(file_row(row_i, row, selected, rename, inks, cx));
+            out.push(file_row(
+                row_i,
+                row,
+                selected,
+                rename,
+                root.as_deref(),
+                inks,
+                cx,
+            ));
         }
         out
     }

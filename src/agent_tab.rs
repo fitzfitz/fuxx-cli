@@ -50,6 +50,14 @@ mod latest;
 
 #[path = "agent_rewind.rs"]
 mod rewind;
+
+#[path = "agent_pills.rs"]
+pub(crate) mod pills;
+
+#[path = "agent_cancel.rs"]
+mod cancel;
+#[cfg(feature = "ui-shots")]
+pub(crate) use cancel::CANCEL_LATE;
 #[cfg(feature = "ui-shots")]
 pub(crate) use latest::STRIP_TIP;
 #[cfg(feature = "ui-shots")]
@@ -191,6 +199,24 @@ pub enum AgentTabEvent {
     Fork(Seed),
     /// A fork's first row: its source's name clicked (show that tab).
     ShowForkSource,
+    /// A right-click (or ⌃-click) in the chat (batch 3, chore 4): fuxx's menu at window point
+    /// `at`, for the chat's selection and the link under the pointer.
+    ContextMenu {
+        at: gpui::Point<gpui::Pixels>,
+        selection: Option<String>,
+        link: Option<String>,
+    },
+    /// The box's right-click or ⇧F10: its Cut / Copy / Paste / Select All menu at `at`.
+    BoxMenu {
+        at: gpui::Point<gpui::Pixels>,
+        has_sel: bool,
+    },
+    /// A web or mail link clicked in the chat (wave 3): opened where "Open links in" says.
+    OpenLink(String),
+    /// A file to open in a file tab: a link to it in the chat, a path pill or its sent chip.
+    OpenFile(PathBuf),
+    /// A folder's pill or chip: shown in the Files tree.
+    RevealInFiles(PathBuf),
 }
 
 /// What the tab remembers to tell why an edit was made: the turn's last text per speaker
@@ -426,6 +452,14 @@ pub enum Attachment {
         text: String,
         from: String,
     },
+    /// A path pill (batch 3, chore 5). Attached (the Files menu's Add to Chat), it goes into
+    /// the text as a pill, never a chip; sent, it is in the text already, and its message's row
+    /// lists it as a chip by `label` (its name, its parent too when two names clash).
+    PathPill {
+        path: PathBuf,
+        is_dir: bool,
+        label: String,
+    },
 }
 
 impl Attachment {
@@ -439,6 +473,7 @@ impl Attachment {
             Attachment::Code(code) => code.label(),
             Attachment::Image { name, .. } => name.clone(),
             Attachment::Quote { text, .. } => quote_label(text),
+            Attachment::PathPill { label, .. } => label.clone(),
         }
     }
 
@@ -447,6 +482,7 @@ impl Attachment {
         match self {
             Attachment::Code(code) => Some(code.path.display().to_string()),
             Attachment::Quote { from, .. } => Some(format!("Quoted from {from}")),
+            Attachment::PathPill { path, .. } => Some(path.display().to_string()),
             _ => None,
         }
     }
@@ -658,6 +694,8 @@ pub fn wire_text(
                 None => continue,
             },
             Attachment::Image { .. } => continue,
+            // In the text already, as the box showed it.
+            Attachment::PathPill { .. } => continue,
         };
         if !out.is_empty() {
             out.push_str("\n\n");
@@ -1251,6 +1289,14 @@ pub struct AgentTab {
     pasted: usize,
     /// Their markers (`[Image #1]` …): the box draws them as pills that edit as one.
     pills: Vec<String>,
+    /// The path pills in the box (batch 3, chore 5), by the text each sits in it as.
+    file_pills: HashMap<String, pills::PillPath>,
+    /// The path pills sent, by their chips' words: a chip clicked opens its file.
+    sent_pills: HashMap<String, pills::PillPath>,
+    /// Paths are being dragged over the tab's page (its drop states show).
+    drop_over: bool,
+    /// Messages the agent was asked to take back (batch 3, wave 3), not answered yet.
+    cancelling: HashSet<String>,
     /// Every image attached in this tab, by its chip's name, so a chip (in the box or in a sent
     /// message) opens it in the viewer. Kept for the tab's life only.
     pub(crate) images: std::collections::HashMap<String, Picture>,
@@ -1370,8 +1416,18 @@ impl AgentTab {
     /// A press in the chat (chore after M11ar): on text, a selection starts there (a double-click
     /// takes the word, a triple-click the paragraph, ⇧ extends the one there is); anywhere else,
     /// the selection goes. The box's own selection goes too, so ⌘C copies what you just picked.
-    fn chat_press(&mut self, e: &gpui::MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn chat_press(
+        &mut self,
+        e: &gpui::MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use crate::chat_select::{Pos, Sel, word_at};
+        // ⌃-click is a right-click on a Mac.
+        if e.modifiers.control {
+            self.chat_menu(e, window, cx);
+            return;
+        }
         let select = self.pane().select.clone();
         let Some(at) = select.pos_at(e.position, true) else {
             if select.sel().is_some() {
@@ -1498,6 +1554,46 @@ impl AgentTab {
     fn select_all_chat(&mut self, cx: &mut Context<Self>) {
         self.pane().select.select_all();
         cx.notify();
+    }
+
+    /// The chat menu's Select All (wave 3).
+    pub(crate) fn select_all_in_chat(&mut self, cx: &mut Context<Self>) {
+        self.select_all_chat(cx);
+    }
+
+    /// A right-click (or ⌃-click) in the chat (batch 3, chore 4): fuxx's menu, for the chat's
+    /// selection (kept) and the link under the pointer.
+    fn chat_menu(&mut self, e: &gpui::MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let select = self.pane().select.clone();
+        // A web or mail link's items only (a file link is opened by a click).
+        let link = select.link_at(e.position).and_then(|url| {
+            match md_preview::link_target(&self.start.cwd, &url) {
+                LinkTarget::Web(url) => Some(url),
+                _ => None,
+            }
+        });
+        let selection = select.copied();
+        cx.emit(AgentTabEvent::ContextMenu {
+            at: e.position,
+            selection,
+            link,
+        });
+    }
+
+    /// The box menu's choice (wave 3), as its keys do in the box.
+    pub(crate) fn box_menu_action(
+        &mut self,
+        action: crate::context_menu::MenuAction,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::context_menu::MenuAction;
+        self.composer.update(cx, |c, cx| match action {
+            MenuAction::Cut => c.menu_cut(cx),
+            MenuAction::Copy => c.menu_copy(cx),
+            MenuAction::Paste => c.menu_paste(cx),
+            MenuAction::SelectAll => c.menu_select_all(cx),
+            _ => {}
+        });
     }
 
     /// A tab for `provider` (None: no agent by that name; the tab shows one error row). Starts
@@ -1884,6 +1980,10 @@ impl AgentTab {
             refocus: None,
             pasted: 0,
             pills: Vec::new(),
+            file_pills: HashMap::new(),
+            sent_pills: HashMap::new(),
+            drop_over: false,
+            cancelling: HashSet::new(),
             images: std::collections::HashMap::new(),
             image_view: None,
             models_older_open: None,
@@ -2602,6 +2702,10 @@ impl AgentTab {
                     self.tool_started.insert(id.clone(), Instant::now());
                 }
                 Event::Follow { id, path } => self.follow(id.clone(), path.clone(), cx),
+                // Batch 3, wave 3: the answer to × on a message not read yet.
+                Event::QueuedCancelled { id, cancelled } => {
+                    self.queued_cancelled(id, *cancelled, cx)
+                }
                 Event::SubagentStarted { id, .. } => {
                     self.lane_times.insert(id.clone(), (Instant::now(), None));
                 }
@@ -2907,6 +3011,9 @@ impl AgentTab {
         {
             // In a lane the box still talks to Main (M11ar).
             format!("Message Main \u{2014} it can pass this to {}", lane.label).into()
+        } else if self.drop_over {
+            // Files dragged over the tab (batch 3, chore 5).
+            pills::DROP_PLACEHOLDER.into()
         } else if self.conversation.pending_permission().is_some() {
             "Deny and say why… (optional)".into()
         } else if self.status() == Status::Working {
@@ -2955,6 +3062,10 @@ impl AgentTab {
             cx.emit(AgentTabEvent::ResumeAsked(text));
             return;
         }
+        // Its path pills, as chips under it (batch 3, chore 5).
+        let mut attachments = attachments;
+        attachments.extend(self.take_sent_pills(&text));
+        self.sync_box_atoms(cx);
         // Kept for ↑ in this folder's boxes: what goes to the agent (a message, a note, a
         // command it runs), never a command fuxx answers itself.
         if self.provider.and_then(|p| p.own_command(&text)).is_none() {
@@ -2987,6 +3098,11 @@ impl AgentTab {
         if self.provider.is_none() {
             return;
         }
+        // A path pill goes into the text (batch 3, chore 5), never a chip.
+        if let Attachment::PathPill { path, is_dir, .. } = attachment {
+            self.add_path_pills(vec![pills::PillPath { path, is_dir }], false, cx);
+            return;
+        }
         if !attachable(&self.attachments, &attachment) {
             return;
         }
@@ -3002,9 +3118,9 @@ impl AgentTab {
             if *inline {
                 let mark = marker(name);
                 self.pills.push(mark.clone());
-                let pills = self.pills.clone();
+                let atoms = self.box_atoms();
                 self.composer.update(cx, |c, cx| {
-                    c.set_atoms(pills, cx);
+                    c.set_atoms(atoms, cx);
                     c.insert(&mark, cx);
                 });
             }
@@ -3052,16 +3168,9 @@ impl AgentTab {
         for path in paths {
             if let Some(media_type) = media_type_for(&path) {
                 let name = file_name(&path);
-                self.add_image(name, media_type, ImageFrom::File(path), cx);
+                self.add_image(name, media_type, ImageFrom::File(path), false, cx);
             }
         }
-    }
-
-    /// Files dropped on the box: an image file becomes an image chip, any other a file chip.
-    pub fn attach_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        let (images, files) = paths.into_iter().partition(|p| media_type_for(p).is_some());
-        self.attach_images(images, cx);
-        self.attach_files(files, cx);
     }
 
     /// An image pasted from the clipboard, as an image chip. A format the agents don't take
@@ -3076,7 +3185,24 @@ impl AgentTab {
         };
         self.pasted += 1;
         let name = pasted_name(self.pasted);
-        self.add_image(name, media_type, ImageFrom::Clipboard(image.bytes), cx);
+        self.add_image(
+            name,
+            media_type,
+            ImageFrom::Clipboard(image.bytes),
+            true,
+            cx,
+        );
+    }
+
+    /// An image file dropped from Finder (batch 3, chore 5): an image pill in the text, as a
+    /// pasted one, read from its file.
+    pub(crate) fn add_inline_image(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let Some(media_type) = media_type_for(&path) else {
+            return;
+        };
+        self.pasted += 1;
+        let name = pasted_name(self.pasted);
+        self.add_image(name, media_type, ImageFrom::File(path), true, cx);
     }
 
     /// An image chip once its bytes are in: they are read, checked against the provider's
@@ -3087,6 +3213,7 @@ impl AgentTab {
         name: String,
         media_type: &'static str,
         from: ImageFrom,
+        inline: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(provider) = self.provider else {
@@ -3095,8 +3222,7 @@ impl AgentTab {
         let by_path = !provider.sends_images();
         let (limit, label) = (provider.image_limit(), provider.info().label);
         let dir = std::env::temp_dir().join(PASTED_DIR);
-        // A pasted one goes into the text as a pill.
-        let inline = matches!(from, ImageFrom::Clipboard(_));
+        // A pasted (or Finder-dropped) one goes into the text as a pill.
         let job = cx.background_spawn(async move {
             let (bytes, path) = match from {
                 ImageFrom::File(path) => {
@@ -3285,12 +3411,21 @@ impl AgentTab {
             ComposerEvent::Complete => self.complete_slash(cx),
             ComposerEvent::PasteImage(image) => self.attach_pasted_image(image.clone(), cx),
             ComposerEvent::OpenAtom(mark) => {
+                // A path pill opens its file (or shows its folder); a pasted image its viewer.
+                if let Some(pill) = self.file_pills.get(mark).cloned() {
+                    self.open_pill(pill, cx);
+                    return;
+                }
                 let name = mark
                     .trim_start_matches('[')
                     .trim_end_matches(']')
                     .to_string();
                 self.view_image(&name, cx);
             }
+            ComposerEvent::ContextMenu { at, has_sel } => cx.emit(AgentTabEvent::BoxMenu {
+                at: *at,
+                has_sel: *has_sel,
+            }),
         }
     }
 
@@ -4362,10 +4497,14 @@ impl AgentTab {
         }
     }
 
-    /// A link in a message: the web opens in the browser; anything else does nothing.
+    /// A link in a message (wave 3): the web and mail go where "Open links in" says (the
+    /// workspace's `open_link`); a file in the agent's folder (or a whole path) opens in a
+    /// file tab, if it is one; anything else does nothing.
     fn follow_link(&mut self, url: &str, cx: &mut Context<Self>) {
-        if let LinkTarget::Web(url) = md_preview::link_target(&self.start.cwd, url) {
-            cx.open_url(&url);
+        match md_preview::link_target(&self.start.cwd, url) {
+            LinkTarget::Web(url) => cx.emit(AgentTabEvent::OpenLink(url)),
+            LinkTarget::File(path, _) if path.is_file() => cx.emit(AgentTabEvent::OpenFile(path)),
+            _ => {}
         }
     }
 }
@@ -5232,7 +5371,7 @@ impl AgentTab {
     }
 
     /// Messages waiting for the process, under the conversation, and why they wait.
-    fn pending(&self, c: &Colors) -> Option<AnyElement> {
+    fn pending(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.queued.is_empty() {
             return None;
         }
@@ -5247,19 +5386,53 @@ impl AgentTab {
                 .items_end()
                 .gap(px(6.))
                 .text_size(px(BODY))
-                // Spec B-B: your bubble, quieter (the box's outer fill), waiting to go.
-                .children(self.queued.iter().map(|(text, _)| {
+                // Spec B-B: your bubble, quieter (the box's outer fill), waiting to go; × left of
+                // it takes it back before it is ever written (batch 3, wave 3).
+                .children(self.queued.iter().enumerate().map(|(i, (text, _))| {
+                    let (dim, ink, hover) = (c.dim, c.text, c.card_hover);
                     div()
                         .max_w(relative(0.78))
-                        .px(px(14.))
-                        .py(px(9.))
-                        .rounded(px(crate::agent_chat::chat::R_BUBBLE))
-                        .rounded_br(px(crate::agent_chat::chat::R_TAIL))
-                        .bg(hsla(c.queued_fill))
-                        .border_1()
-                        .border_color(hsla(c.you_edge))
-                        .text_color(hsla(c.queued_text))
-                        .child(SharedString::from(text.clone()))
+                        .flex()
+                        .flex_row()
+                        .items_end()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .id(("queued-cancel", i))
+                                .flex_none()
+                                .size(px(24.))
+                                .rounded(px(crate::agent_chat::chat::R_CHIP))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .text_size(px(14.))
+                                .text_color(hsla(dim))
+                                .hover(move |s| s.bg(hsla(hover)).text_color(hsla(ink)))
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| {
+                                        crate::sidebar_toggle::Tip(cancel::CANCEL_TIP.into())
+                                    })
+                                    .into()
+                                })
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.cancel_held(i, cx)),
+                                )
+                                .child("\u{d7}"),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .px(px(14.))
+                                .py(px(9.))
+                                .rounded(px(crate::agent_chat::chat::R_BUBBLE))
+                                .rounded_br(px(crate::agent_chat::chat::R_TAIL))
+                                .bg(hsla(c.queued_fill))
+                                .border_1()
+                                .border_color(hsla(c.you_edge))
+                                .text_color(hsla(c.queued_text))
+                                .child(SharedString::from(text.clone())),
+                        )
                 }))
                 .child(
                     div()
@@ -5388,7 +5561,7 @@ impl Render for AgentTab {
         });
         #[cfg(feature = "ui-shots")]
         let built = self.rows_built.clone();
-        let pending = self.pending(&c);
+        let pending = self.pending(&c, cx);
         // Your latest message pinned over the chat while it is scrolled above (chore after
         // M11ar).
         let latest = if empty {
@@ -5410,6 +5583,7 @@ impl Render for AgentTab {
                 .w_full()
                 .relative()
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::chat_press))
+                .on_mouse_down(MouseButton::Right, cx.listener(Self::chat_menu))
                 .child(
                     list(self.pane().list.clone(), move |ix, _, cx| {
                         #[cfg(feature = "ui-shots")]
@@ -5453,6 +5627,12 @@ impl Render for AgentTab {
         // A command block dragged over the tab tints it (GPUI's element-local style: nothing
         // else changes during a drag-over); dropped, the Workspace attaches it (Task 11).
         let drop_fill = theme.ui().drop_card;
+        // A drag that ended elsewhere (or was given up) leaves no drop state behind.
+        if self.drop_over && !cx.has_active_drag() {
+            self.drop_over = false;
+            self.update_placeholder(cx);
+        }
+        let dropping = self.dropping(cx);
         // The keyboard moves where a click or an action asked (they have no window).
         match self.refocus.take() {
             Some(Refocus::Modal) => window.focus(&self.modal_focus, cx),
@@ -5516,6 +5696,28 @@ impl Render for AgentTab {
                     .on_drop(cx.listener(|_, drag: &BlockDrag, _, cx| {
                         cx.emit(AgentTabEvent::BlockDropped(drag.clone()))
                     }))
+                    // Files from the tree or Finder (batch 3, chore 5): pills in the box. While
+                    // they are over the page it is tinted, the box ringed.
+                    .when(dropping, |d| d.bg(hsla(drop_fill)))
+                    .on_drag_move(cx.listener(
+                        |this, e: &gpui::DragMoveEvent<pills::DraggedPaths>, _, cx| {
+                            this.set_drop_over(e.bounds.contains(&e.event.position), cx)
+                        },
+                    ))
+                    .on_drag_move(cx.listener(
+                        |this, e: &gpui::DragMoveEvent<gpui::ExternalPaths>, _, cx| {
+                            this.set_drop_over(e.bounds.contains(&e.event.position), cx)
+                        },
+                    ))
+                    .on_drop(cx.listener(|this, drag: &pills::DraggedPaths, window, cx| {
+                        this.drop_on_tab(pills::DropPaths::Tree(drag.paths.clone()), window, cx)
+                    }))
+                    .on_drop(
+                        cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
+                            let paths = paths.paths().to_vec();
+                            this.drop_on_tab(pills::DropPaths::External(paths), window, cx)
+                        }),
+                    )
             })
             .text_color(hsla(c.text))
             .child(self.top_line(&c))
@@ -6124,6 +6326,28 @@ mod tests {
             wire_text("hi", &[image("a.png", None)], false, Path::new(CWD_STR)),
             "hi"
         );
+    }
+
+    /// Batch 3, chore 5: a sent path pill is already in the text (as typed), so the wire adds
+    /// nothing for it; the message's row lists it as a chip by its words.
+    #[test]
+    fn a_sent_path_pill_is_in_the_text_and_listed_as_a_chip() {
+        let pill = Attachment::PathPill {
+            path: PathBuf::from("/p/my-app/src/main.rs"),
+            is_dir: false,
+            label: "main.rs".into(),
+        };
+        assert_eq!(
+            wire_text(
+                "look at src/main.rs",
+                std::slice::from_ref(&pill),
+                false,
+                Path::new(CWD_STR)
+            ),
+            "look at src/main.rs"
+        );
+        assert_eq!(labels(std::slice::from_ref(&pill)), ["main.rs"]);
+        assert_eq!(pill.tip().as_deref(), Some("/p/my-app/src/main.rs"));
     }
 
     #[test]

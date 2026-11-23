@@ -40,6 +40,61 @@ impl FileTab {
         }
     }
 
+    /// A press in the Preview (wave 3): on text, a selection starts there (a double-click takes
+    /// the word, a triple-click the paragraph, ⇧ extends the one there is); anywhere else, the
+    /// selection goes.
+    fn preview_select_press(&mut self, e: &MouseDownEvent, cx: &mut Context<Self>) {
+        use crate::chat_select::{Pos, Sel, word_at};
+        let select = self.preview_select.clone();
+        let Some(at) = select.pos_at(e.position, true) else {
+            if select.sel().is_some() {
+                select.set(None);
+                cx.notify();
+            }
+            return;
+        };
+        let whole = |r: std::ops::Range<usize>| {
+            Sel::new(
+                Pos {
+                    key: at.key,
+                    ix: r.start,
+                },
+                Pos {
+                    key: at.key,
+                    ix: r.end,
+                },
+            )
+        };
+        let sel = match e.click_count {
+            2 => select.text_of(at.key).map(|t| whole(word_at(&t, at.ix))),
+            n if n >= 3 => select.text_of(at.key).map(|t| whole(0..t.len())),
+            _ if e.modifiers.shift => select.sel().map(|s| Sel::new(s.anchor, at)),
+            _ => None,
+        }
+        .unwrap_or(Sel::new(at, at));
+        select.set(Some(sel));
+        self.preview_selecting = e.click_count <= 1;
+        cx.notify();
+    }
+
+    /// The pointer moved over the Preview while selecting: the selection's end follows it.
+    fn preview_select_drag(&mut self, e: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if !self.preview_selecting {
+            return;
+        }
+        if e.pressed_button != Some(MouseButton::Left) {
+            self.preview_selecting = false;
+            return;
+        }
+        let select = self.preview_select.clone();
+        if let (Some(s), Some(head)) = (select.sel(), select.pos_at(e.position, false))
+            && s.head != head
+        {
+            select.set(Some(crate::chat_select::Sel::new(s.anchor, head)));
+            cx.notify();
+        }
+    }
+
     /// Preview on, at heading `anchor` (M11ai: a link to it from another file; the workspace
     /// saves the Preview): the jump is made now if the file as it is has been read, else where
     /// it is read (`preview_body`, plan-time call 5). An unknown heading: the top.
@@ -332,6 +387,8 @@ impl FileTab {
             self.outline_drawn.borrow_mut().clear();
         }
         let view = cx.entity().downgrade();
+        let select = self.preview_select.clone();
+        select.begin_frame();
         let draw = md_preview::Draw {
             colours: md_preview::Colours::of(&theme),
             code_font: cx.global::<Appearance>().font.family.clone(),
@@ -341,7 +398,9 @@ impl FileTab {
             links: Cell::new(0),
             mermaid,
             sizes: md_preview::Sizes::reader(),
-            select: None,
+            // Batch 3, wave 3: its text selectable (Copy works) and its links found by a
+            // right-click.
+            select: Some((select.clone(), hsla(theme.ui().selection))),
             reader: Some(md_preview::ReaderDraw {
                 doc: read,
                 measure: crate::ui_tokens::reader::MEASURE,
@@ -454,9 +513,40 @@ impl FileTab {
             .w_full()
             .child(
                 list(self.preview_list.clone(), move |row, _, _| {
+                    if let Some((select, _)) = &draw.select {
+                        select.begin_row(row);
+                    }
                     md_preview::reader_row(row, &draw)
                 })
                 .size_full(),
+            )
+            // Its text selected as the chat's is (wave 3): a press starts it (two take the
+            // word, three the paragraph, ⇧ extends), a drag moves its end; a right-click (or
+            // ⌃-click) opens the menu.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                    this.focus.focus(window, cx);
+                    if e.modifiers.control {
+                        this.open_menu(e.position, cx);
+                    } else {
+                        this.preview_select_press(e, cx);
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                    this.focus.focus(window, cx);
+                    this.open_menu(e.position, cx)
+                }),
+            )
+            .on_mouse_move(
+                cx.listener(|this, e: &MouseMoveEvent, _, cx| this.preview_select_drag(e, cx)),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, _| this.preview_selecting = false),
             )
             .children(column)
             .children(button)

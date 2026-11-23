@@ -1013,6 +1013,26 @@ impl Workspace {
                         this.attach_block(id, drag, cx);
                         this.select_tab(id, window, cx);
                     }))
+                    // Batch 3, chore 5: files from the tree or Finder, as path pills in its box;
+                    // the tab is shown.
+                    .drag_over::<crate::agent_tab::pills::DraggedPaths>(move |s, _, _, _| {
+                        s.bg(hsla(ui.drop_tab))
+                    })
+                    .drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hsla(ui.drop_tab)))
+                    .on_drop(cx.listener(
+                        move |this, drag: &crate::agent_tab::pills::DraggedPaths, window, cx| {
+                            let drop = crate::agent_tab::pills::DropPaths::Tree(drag.paths.clone());
+                            this.drop_on_agent_tab(id, drop, window, cx);
+                        },
+                    ))
+                    .on_drop(
+                        cx.listener(move |this, paths: &gpui::ExternalPaths, window, cx| {
+                            let drop = crate::agent_tab::pills::DropPaths::External(
+                                paths.paths().to_vec(),
+                            );
+                            this.drop_on_agent_tab(id, drop, window, cx);
+                        }),
+                    )
             })
             // A middle-click closes it, like its ×.
             .on_aux_click(cx.listener(move |this, event: &ClickEvent, window, cx| {

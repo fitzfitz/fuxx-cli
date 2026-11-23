@@ -1,5 +1,6 @@
 //! The one right-click menu every surface shares (batch 3, chore 4): the terminal, a file tab's
-//! text and the Files tree (chore 7) build their items here, and the workspace opens and acts
+//! text (and its Preview), the Files tree (chore 7), and (wave 3) the agent chat and its box
+//! build their items here, and the workspace opens and acts
 //! on them (`workspace_menu`). Pure: the items, the light that ↑/↓ move, the menu's size and
 //! where it opens.
 //!
@@ -26,6 +27,7 @@ pub enum MenuAction {
     OpenLink(String),
     OpenInBrowser(String),
     CopyLink(String),
+    Cut,
     Copy,
     Paste,
     SelectAll,
@@ -111,12 +113,40 @@ fn copy_group(selection: bool, add_target: Option<&str>) -> Vec<Entry> {
     out
 }
 
-/// A selection or a link in text (a file tab; the chat in wave 3): the link's items, a line,
+/// A selection or a link in text (a file tab, its Preview): the link's items, a line,
 /// then Copy and, with something selected and an agent to add it to, Add to Chat.
 pub fn text_menu(selection: bool, link: Option<&str>, add_target: Option<&str>) -> Vec<Entry> {
     let mut out = link.map(link_group).unwrap_or_default();
     out.extend(copy_group(selection, add_target));
     out
+}
+
+/// The agent chat's (wave 3): as `text_menu`, Add to Chat going to its own tab (`target`, its
+/// agent's label); with nothing selected, a line and Select All ⌘A.
+pub fn chat_menu(selection: bool, link: Option<&str>, target: &str) -> Vec<Entry> {
+    let mut out = text_menu(selection, link, Some(target));
+    if !selection {
+        out.push(Entry::Separator);
+        out.push(item(
+            "Select All",
+            Some("\u{2318}A"),
+            true,
+            MenuAction::SelectAll,
+        ));
+    }
+    out
+}
+
+/// A box you type in (the agent tab's message box, wave 3): Cut and Copy (with a selection),
+/// Paste, a line, Select All.
+pub fn editable_menu(has_sel: bool) -> Vec<Entry> {
+    vec![
+        item("Cut", Some("\u{2318}X"), has_sel, MenuAction::Cut),
+        item("Copy", Some("\u{2318}C"), has_sel, MenuAction::Copy),
+        item("Paste", Some("\u{2318}V"), true, MenuAction::Paste),
+        Entry::Separator,
+        item("Select All", Some("\u{2318}A"), true, MenuAction::SelectAll),
+    ]
 }
 
 /// The terminal's: the link's items and a line, then Copy (Add to Chat with a selection and a
@@ -130,8 +160,8 @@ pub fn terminal_menu(selection: bool, link: Option<&str>, add_target: Option<&st
 }
 
 /// A Files row's (chore 7): a file's or a folder's. `add_target` is the agent Add to Chat
-/// would go to (none until path pills come, wave 3: the item is left out); `marked`: the file
-/// has changes, so Show Changes is offered.
+/// would go to (wave 3: a path pill; none, as on another host: the item is left out);
+/// `marked`: the file has changes, so Show Changes is offered.
 pub fn file_tree_menu(is_dir: bool, add_target: Option<&str>, marked: bool) -> Vec<Entry> {
     let add = add_target.map(|t| item(&add_label(t), None, true, MenuAction::AddToChat));
     let mut out = Vec::new();
@@ -295,6 +325,46 @@ mod tests {
         let m = text_menu(true, None, None);
         assert_eq!(labels(&m), ["Copy"]);
         assert!(found(&m, "Copy").enabled);
+    }
+
+    #[test]
+    fn the_chat_menu_adds_select_all_with_nothing_selected() {
+        // Nothing selected, no link: Copy (disabled) and Select All.
+        let m = chat_menu(false, None, "Claude");
+        assert_eq!(labels(&m), ["Copy", "-", "Select All"]);
+        assert!(!found(&m, "Copy").enabled);
+        assert_eq!(found(&m, "Select All").keys, Some("\u{2318}A"));
+        assert_eq!(found(&m, "Select All").action, MenuAction::SelectAll);
+        // A selection: Copy and Add to Chat (its own tab), no Select All.
+        let m = chat_menu(true, None, "Claude");
+        assert_eq!(labels(&m), ["Copy", "Add to Claude Chat"]);
+        // On a link with nothing selected: the link's group first.
+        let m = chat_menu(false, Some("https://a.dev"), "Agy");
+        assert_eq!(
+            labels(&m),
+            [
+                "Open Link",
+                "Open in Default Browser",
+                "Copy Link",
+                "-",
+                "Copy",
+                "-",
+                "Select All"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_box_menu_is_cut_copy_paste_and_select_all() {
+        let m = editable_menu(false);
+        assert_eq!(labels(&m), ["Cut", "Copy", "Paste", "-", "Select All"]);
+        assert!(!found(&m, "Cut").enabled && !found(&m, "Copy").enabled);
+        assert!(found(&m, "Paste").enabled && found(&m, "Select All").enabled);
+        assert_eq!(found(&m, "Cut").keys, Some("\u{2318}X"));
+        assert_eq!(found(&m, "Cut").action, MenuAction::Cut);
+        assert_eq!(found(&m, "Select All").keys, Some("\u{2318}A"));
+        let m = editable_menu(true);
+        assert!(found(&m, "Cut").enabled && found(&m, "Copy").enabled);
     }
 
     #[test]

@@ -37,6 +37,30 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Chores batch 3, wave 3: chat and box menus, files as pills, taking back a queued message
+
+- **What:** under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]]: chore 4 finished, chore 5, chore 6's
+  agent-chat links, chore 7's Add to Chat, and the queued-message UX gap. ("On text, I can right click it and has
+  "Copy" on it. On agent tab, add more option "Add to chat"") The agent chat's right-click: a link's items, Copy, Add
+  to ⟨Agent⟩ Chat (a quote chip in the same tab), Select All with nothing selected; the message box's Cut / Copy /
+  Paste / Select All (right-click or ⇧F10); the Markdown Preview's text selectable, its Copy working and a link's menu
+  there. The chat's links go where "Open links in" says; a link to a file opens a file tab. ("on file tree, I can drag
+  and drop it to put to agent chat as a phill (same as image)") A Files row dragged onto an agent tab (its page, box
+  or tab pill) is a path pill in the box (the `@` list's path, a folder's ending in "/"), with the page tinted, the
+  box ringed and "Drop to add to your message" while over it; a pill's click opens its file; sent, file chips under
+  the message. Finder drops: path pills, images as image pills; drops on a terminal type the escaped paths; the tree
+  menu's Add to Chat. `composer::atom_ranges` matches on word edges. × on a message Claude hasn't read takes it back
+  (`cancel_async_message`, found in Claude Code 2.1.330's binary, no model called); a message fuxx still holds goes
+  before it's written; agy has no ×. New `src/agent_pills.rs`, `src/agent_cancel.rs`. The question picker is wave 4.
+- **Checks:** 2608 → 2623 tests (15 new, each watched failing first; the ⇧F10 keymap test extended to the box, also
+  watched failing); clippy 14/29 and 18/33 (unchanged, none on a changed line); `cargo fmt --check` clean; full
+  `scripts/ui-shots.sh` 306 passed, 0 failed (the five display-dependent scenes passed this time: the Mac's built-in
+  Retina display was attached, so the shots were 2×, and most fingerprints "look different" for that reason; no
+  reference was rewritten). New scenes `context-menu-chat` and `files-drag-pill` (both themes; their references and
+  `files-menu`'s, which gains the Add to Chat row on purpose, still to write on the 1× display),
+  `context-menu-composer`, `agent-box-finder-drop`, `terminal-drop-paths` and `agent-queued-cancel`;
+  `context-menu-file-tab` covers the Preview. Not yet seen in the real window.
+
 ### 2026-11-23 — Chores batch 3, wave 2b: Rewind and Fork from your messages
 
 - **What:** chore 2's UI under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]] (its wave 1 bullet replaced
