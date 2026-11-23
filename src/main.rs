@@ -594,6 +594,26 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-p", agent_tab::AtUp, Some("AtPopup > Composer")),
         KeyBinding::new("ctrl-n", agent_tab::AtDown, Some("AtPopup > Composer")),
         KeyBinding::new("tab", composer::Complete, Some("AtPopup > Composer")),
+        // The rewind pick (batch 3, chore 2: Esc Esc in the empty box), after the box's keys so
+        // they win while it is on.
+        KeyBinding::new("up", agent_tab::PickUp, Some("RewindPick > Composer")),
+        KeyBinding::new("down", agent_tab::PickDown, Some("RewindPick > Composer")),
+        KeyBinding::new(
+            "enter",
+            agent_tab::PickRewind,
+            Some("RewindPick > Composer"),
+        ),
+        KeyBinding::new(
+            "cmd-enter",
+            agent_tab::PickFork,
+            Some("RewindPick > Composer"),
+        ),
+        KeyBinding::new("cmd-c", agent_tab::PickCopy, Some("RewindPick > Composer")),
+        KeyBinding::new(
+            "escape",
+            agent_tab::PickLeave,
+            Some("RewindPick > Composer"),
+        ),
     ];
     bindings.extend(browser_tab::page_bindings());
     bindings
@@ -1700,6 +1720,30 @@ mod tests {
         let composer: &[&str] = &["Workspace", "AgentTab", "Composer"];
         assert!(runs(&keymap, "shift-tab", tab).partial_eq(&crate::agent_tab::CycleMode));
         assert!(runs(&keymap, "shift-tab", composer).partial_eq(&crate::agent_tab::CycleMode));
+    }
+
+    /// The rewind pick (batch 3, chore 2: Esc Esc in the empty box): ↑/↓ move between your
+    /// messages, ↩ rewinds, ⌘↩ forks, ⌘C copies, Esc leaves; the box's own keys otherwise.
+    #[test]
+    fn the_rewind_pick_keys_win_in_the_box_while_picking() {
+        use crate::agent_tab::{PickCopy, PickDown, PickFork, PickLeave, PickRewind, PickUp};
+        let keymap = keymap();
+        let pick: &[&str] = &["Workspace", "AgentTab RewindPick", "Composer"];
+        let keys: [(&str, Box<dyn Action>); 6] = [
+            ("up", Box::new(PickUp)),
+            ("down", Box::new(PickDown)),
+            ("enter", Box::new(PickRewind)),
+            ("cmd-enter", Box::new(PickFork)),
+            ("cmd-c", Box::new(PickCopy)),
+            ("escape", Box::new(PickLeave)),
+        ];
+        for (key, action) in keys {
+            let got = runs(&keymap, key, pick);
+            assert!(got.partial_eq(&*action), "{key}: {}", got.name());
+        }
+        let composer: &[&str] = &["Workspace", "AgentTab", "Composer"];
+        assert!(runs(&keymap, "escape", composer).partial_eq(&crate::composer::Stop));
+        assert!(runs(&keymap, "enter", composer).partial_eq(&crate::composer::Send));
     }
 
     /// The tool modal (chores after M11ab, spec A §B): Esc goes back or closes it and never

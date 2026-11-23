@@ -2467,7 +2467,7 @@ pub(super) fn agent_tab_review() {
 
 /// M11aa Task 8: a Workspace the agent-workspace scenes draw (the sidebar's presets, no hint
 /// card), built by `build`, kept in `slot`.
-fn agent_workspace(
+pub(super) fn agent_workspace(
     theme: crate::theme::Theme,
     slot: Rc<RefCell<Option<Entity<crate::workspace::Workspace>>>>,
     build: impl FnOnce(

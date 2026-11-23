@@ -69,11 +69,13 @@ pub enum Icon {
     Circle,
     CircleDot,
     Paperclip,
+    /// Fork from one of your messages into a new tab (batch 3, chore 2).
+    Fork,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 52] = [
+    pub const ALL: [Icon; 53] = [
         Icon::Terminal,
         Icon::Globe,
         Icon::File,
@@ -126,6 +128,7 @@ impl Icon {
         Icon::Circle,
         Icon::CircleDot,
         Icon::Paperclip,
+        Icon::Fork,
     ];
 
     /// Its asset path.
@@ -183,12 +186,13 @@ impl Icon {
             Icon::Circle => "icons/lucide/circle.svg",
             Icon::CircleDot => "icons/lucide/circle-dot.svg",
             Icon::Paperclip => "icons/lucide/paperclip.svg",
+            Icon::Fork => "icons/lucide/git-fork.svg",
         }
     }
 }
 
 /// The embedded files, by asset path.
-const FILES: [(&str, &[u8]); 50] = [
+const FILES: [(&str, &[u8]); 51] = [
     (
         "icons/lucide/circle.svg",
         include_bytes!("../assets/icons/lucide/circle.svg"),
@@ -312,6 +316,10 @@ const FILES: [(&str, &[u8]); 50] = [
     (
         "icons/lucide/git-branch.svg",
         include_bytes!("../assets/icons/lucide/git-branch.svg"),
+    ),
+    (
+        "icons/lucide/git-fork.svg",
+        include_bytes!("../assets/icons/lucide/git-fork.svg"),
     ),
     (
         "icons/lucide/git-compare.svg",

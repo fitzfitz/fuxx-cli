@@ -162,6 +162,13 @@ pub fn describe(action: &str) -> Describe {
         other if other.starts_with("composer::") => Unlisted,
         // The agent tab's `@` file list's arrows (while it is open only).
         "agent_tab::AtUp" | "agent_tab::AtDown" => Unlisted,
+        // The rewind pick's keys (batch 3, chore 2): only while it is on (Esc Esc in the box).
+        "agent_tab::PickUp"
+        | "agent_tab::PickDown"
+        | "agent_tab::PickRewind"
+        | "agent_tab::PickFork"
+        | "agent_tab::PickCopy"
+        | "agent_tab::PickLeave" => Unlisted,
         // The tool modal's own Esc and ↑/↓ (spec A §B), as the @ list's.
         "agent_tab::ModalBack" | "agent_tab::ModalPrev" | "agent_tab::ModalNext"
         | "agent_tab::CloseImage" => Unlisted,

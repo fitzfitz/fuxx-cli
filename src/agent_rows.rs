@@ -99,6 +99,10 @@ impl AgentTab {
                 )
         });
         div()
+            // Your message's hover actions show over its whole row (batch 3, chore 2).
+            .when(matches!(item, Item::You { .. }), |d| {
+                d.group(rewind::YOU_ROW)
+            })
             .w_full()
             .px(px(AREA_X))
             .pt(px(gap_before_at(items, order, k)))
@@ -167,66 +171,86 @@ impl AgentTab {
                 .justify_end()
                 .child(
                     div().w(relative(0.78)).flex().justify_end().child(
-                        self.flashed_you(
-                            div()
-                                .max_w(px(520.))
-                                .px(px(14.))
-                                .py(px(9.))
-                                .rounded(px(chat::R_BUBBLE))
-                                .rounded_br(px(chat::R_TAIL))
-                                .bg(hsla(c.you_fill))
-                                .border_1()
-                                .border_color(hsla(c.you_edge))
-                                .text_color(hsla(c.you_text))
-                                .flex()
-                                .flex_col()
-                                .gap(px(6.))
-                                .child(self.you_text(ix, text, look))
-                                .when(!attachments.is_empty(), |d| {
-                                    d.child(div().flex().flex_wrap().gap(px(6.)).children(
-                                        attachments.iter().enumerate().map(|(j, a)| {
-                                            // An image this tab has opens in the viewer.
-                                            let image =
-                                                self.images.contains_key(a).then(|| a.clone());
-                                            div()
-                                                .id(SharedString::from(format!(
-                                                    "you-chip-{ix}-{j}"
-                                                )))
-                                                .when_some(image, |d, name| {
-                                                    d.cursor_pointer()
-                                                        .hover(move |s| {
-                                                            s.text_color(hsla(c.you_text))
+                        div()
+                            .relative()
+                            .flex()
+                            .max_w(px(520.))
+                            .child(
+                                self.flashed_you(
+                                    div()
+                                        .max_w(px(520.))
+                                        .px(px(14.))
+                                        .py(px(9.))
+                                        .rounded(px(chat::R_BUBBLE))
+                                        .rounded_br(px(chat::R_TAIL))
+                                        .bg(hsla(c.you_fill))
+                                        .border_1()
+                                        .border_color(hsla(c.you_edge))
+                                        // The rewind pick's message (batch 3, chore 2): a 2 px focus
+                                        // ring, its padding a point less so nothing moves.
+                                        .when(self.picked(ix), |d| {
+                                            d.border_2()
+                                                .border_color(hsla(c.focus_ring))
+                                                .px(px(13.))
+                                                .py(px(8.))
+                                        })
+                                        .text_color(hsla(c.you_text))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(6.))
+                                        .child(self.you_text(ix, text, look))
+                                        .when(!attachments.is_empty(), |d| {
+                                            d.child(div().flex().flex_wrap().gap(px(6.)).children(
+                                                attachments.iter().enumerate().map(|(j, a)| {
+                                                    // An image this tab has opens in the viewer.
+                                                    let image = self
+                                                        .images
+                                                        .contains_key(a)
+                                                        .then(|| a.clone());
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "you-chip-{ix}-{j}"
+                                                        )))
+                                                        .when_some(image, |d, name| {
+                                                            d.cursor_pointer()
+                                                                .hover(move |s| {
+                                                                    s.text_color(hsla(c.you_text))
+                                                                })
+                                                                .on_click(on_tab(
+                                                                    &look.view,
+                                                                    move |this, cx| {
+                                                                        this.view_image(&name, cx)
+                                                                    },
+                                                                ))
                                                         })
-                                                        .on_click(on_tab(
-                                                            &look.view,
-                                                            move |this, cx| {
-                                                                this.view_image(&name, cx)
-                                                            },
+                                                        .h(px(22.))
+                                                        .px(px(8.))
+                                                        .rounded(px(chat::R_CHIP))
+                                                        .bg(hsla(c.chip_fill))
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(4.))
+                                                        .text_size(px(text::META))
+                                                        .text_color(hsla(c.you_dim))
+                                                        .child(icon(
+                                                            Icon::Paperclip,
+                                                            px(12.),
+                                                            hsla(c.you_dim),
                                                         ))
-                                                })
-                                                .h(px(22.))
-                                                .px(px(8.))
-                                                .rounded(px(chat::R_CHIP))
-                                                .bg(hsla(c.chip_fill))
-                                                .flex()
-                                                .items_center()
-                                                .gap(px(4.))
-                                                .text_size(px(text::META))
-                                                .text_color(hsla(c.you_dim))
-                                                .child(icon(
-                                                    Icon::Paperclip,
-                                                    px(12.),
-                                                    hsla(c.you_dim),
-                                                ))
-                                                .child(SharedString::from(
-                                                    a.lines().next().unwrap_or("").to_string(),
-                                                ))
+                                                        .child(SharedString::from(
+                                                            a.lines()
+                                                                .next()
+                                                                .unwrap_or("")
+                                                                .to_string(),
+                                                        ))
+                                                }),
+                                            ))
                                         }),
-                                    ))
-                                }),
-                            ix,
-                            c,
-                        ),
+                                    ix,
+                                    c,
+                                ),
+                            )
+                            .children(self.you_actions(ix, item, look)),
                     ),
                 )
                 .into_any_element(),
@@ -386,6 +410,10 @@ impl AgentTab {
                     ),
                 }
             }
+            // A fork's first row (batch 3, chore 2).
+            Item::Notice(t) if self.fork_row(ix, t, look).is_some() => self
+                .fork_row(ix, t, look)
+                .unwrap_or_else(|| div().into_any_element()),
             // A notice (spec B-B): an info mark and the words, quiet, on the text's column.
             Item::Notice(t) => div()
                 .w_full()
@@ -401,12 +429,22 @@ impl AgentTab {
                         .items_center()
                         .child(icon(Icon::Info, px(12.), hsla(c.dim))),
                 )
-                .child(
-                    div()
+                .child(match self.notice_action(ix, t, look) {
+                    // "Stopped · Rewind to edit your message", "Rewound · Undo" (batch 3, chore 2).
+                    Some(action) => div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap(px(4.))
+                        .child(SharedString::from(t.clone()))
+                        .child(action),
+                    None => div()
                         .flex_1()
                         .min_w(px(0.))
                         .child(SharedString::from(t.clone())),
-                )
+                })
                 .into_any_element(),
             Item::Error(t) => {
                 let classic = self.provider.is_some() && self.conversation_id().is_some();

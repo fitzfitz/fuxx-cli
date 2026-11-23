@@ -511,6 +511,10 @@ impl Workspace {
             this.on_agent_event(tab, event, window, cx)
         })
         .detach();
+        // A fork's seed (batch 3, chore 2): before its history is read and its process starts.
+        if let Some((seed, source)) = self.pending_forks.remove(&tab) {
+            view.update(cx, |view, cx| view.seed_fork(seed, source, cx));
+        }
         // Code chips Ask left while the view was not made yet (`attach` keeps one chip per place).
         if let Some(chips) = self.pending_chips.remove(&tab) {
             view.update(cx, |view, cx| {
@@ -626,6 +630,53 @@ impl Workspace {
     ) -> Option<TabId> {
         let kind = self.new_agent_kind(provider, Some(cwd), model, effort);
         self.add_agent_tab(pane, kind, None, cx)
+    }
+
+    /// Fork (batch 3, chore 2): a new agent tab right after `source` in its pane, of the same
+    /// agent, folder and settings, titled "⟨source⟩ (fork)", shown and focused, starting from
+    /// `seed` (the chat before the message, the message in its box unsent). `source` is left as
+    /// it is.
+    fn open_fork(
+        &mut self,
+        source: TabId,
+        seed: &crate::agent_tab::Seed,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(seed) = seed.0.borrow_mut().take() else {
+            return;
+        };
+        let Some(TabKind::Agent {
+            provider,
+            cwd,
+            mode,
+            model,
+            effort,
+            ..
+        }) = self.model.tab(source).map(|t| t.kind.clone())
+        else {
+            return;
+        };
+        let Some((_, pane)) = self.model.locate(source) else {
+            return;
+        };
+        let name = self.agent_title(source).to_string();
+        let kind = TabKind::Agent {
+            provider,
+            cwd,
+            conversation: None,
+            mode,
+            title: Some(crate::agent_tab::fork_title(&name)),
+            model,
+            effort,
+        };
+        let tip = crate::agent_tab::fork_tip(&name, &seed.text);
+        let Some(tab) = self.add_agent_tab(pane, kind, Some(source), cx) else {
+            return;
+        };
+        self.fork_origins.insert(tab, (source, tip));
+        self.pending_forks.insert(tab, (seed, name));
+        self.ensure_agent_tabs(window, cx);
     }
 
     /// `kind` (a new agent tab) in `pane`: after tab `after`, else at the end of its bar; its
@@ -779,6 +830,18 @@ impl Workspace {
             })
             .detach();
             return;
+        }
+        // Its forks' first rows name it no more as a link (batch 3, chore 2).
+        let forks: Vec<TabId> = self
+            .fork_origins
+            .iter()
+            .filter(|(_, (source, _))| *source == tab)
+            .map(|(fork, _)| *fork)
+            .collect();
+        for fork in forks {
+            if let Some(slot) = self.agents.get(&fork) {
+                slot.view.update(cx, |view, cx| view.fork_source_closed(cx));
+            }
         }
         if let Some(slot) = self.agents.get(&tab) {
             // Its open edits end as not ok, and it stops working.
@@ -963,6 +1026,14 @@ impl Workspace {
                 }
             }
             AgentTabEvent::BlockDropped(drag) => self.attach_block(tab, drag, cx),
+            AgentTabEvent::Fork(seed) => self.open_fork(tab, seed, window, cx),
+            AgentTabEvent::ShowForkSource => {
+                if let Some(&(source, _)) = self.fork_origins.get(&tab)
+                    && self.agents.contains_key(&source)
+                {
+                    self.select_tab(source, window, cx);
+                }
+            }
             AgentTabEvent::Edit { call, paths } => {
                 if let Some((id, mark)) = self.agent_ledger_who(tab) {
                     let (call, paths) = (format!("a{id}:{call}"), paths.clone());

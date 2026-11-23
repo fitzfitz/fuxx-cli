@@ -93,6 +93,8 @@ pub struct AgentFacts {
     pub logo: Option<crate::logos::Logo>,
     pub status: Status,
     pub age: Duration,
+    /// A fork's line under its title in the tooltip (batch 3, chore 2): "Forked from …".
+    pub forked: Option<String>,
 }
 
 /// One tab as the bar draws it.
@@ -180,6 +182,13 @@ pub fn bar_tabs(
             };
             let tip = match &t.kind {
                 TabKind::File { path, .. } => path.display().to_string(),
+                TabKind::Agent { .. } => {
+                    let line = tip(&title, osc.as_deref(), status, age);
+                    match agent(t.id).and_then(|f| f.forked) {
+                        Some(forked) => format!("{line}\n{forked}"),
+                        None => line,
+                    }
+                }
                 _ => tip(&title, osc.as_deref(), status, age),
             };
             // An agent tab's badge: its slot's (the provider's).
@@ -553,6 +562,7 @@ impl Workspace {
                     logo: slot.logo,
                     status: slot.status,
                     age: now.saturating_duration_since(slot.since),
+                    forked: self.fork_origins.get(&tab).map(|(_, tip)| tip.clone()),
                 })
             },
         )
@@ -1954,17 +1964,21 @@ mod tests {
             logo: Some(crate::logos::Logo::Claude),
             status,
             age: Duration::from_secs(4 * 60),
+            forked: None,
         };
         let tabs = bar_tabs(
             &pane,
             |_| None,
             |_| None,
             |tab| {
-                Some(facts(if tab == TabId(20) {
-                    Status::Waiting
+                Some(if tab == TabId(20) {
+                    facts(Status::Waiting)
                 } else {
-                    Status::Idle
-                }))
+                    AgentFacts {
+                        forked: Some("Forked from fix tests at \u{201c}go\u{201d}".into()),
+                        ..facts(Status::Idle)
+                    }
+                })
             },
         );
         assert_eq!(
@@ -1979,8 +1993,11 @@ mod tests {
         assert_eq!(tabs[0].tip, "fix tests — waiting 4m");
         assert_eq!(tabs[0].status, Status::Waiting);
         assert_eq!(tabs[0].terminal, None);
-        // Untitled: its provider's label.
+        // Untitled: its provider's label; a fork says where it came from under it.
         assert_eq!(tabs[1].title.as_ref(), "Claude");
-        assert_eq!(tabs[1].tip, "Claude");
+        assert_eq!(
+            tabs[1].tip,
+            "Claude\nForked from fix tests at \u{201c}go\u{201d}"
+        );
     }
 }

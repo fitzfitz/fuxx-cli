@@ -471,16 +471,54 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     (the grid) and `selected_text_takes_its_ink_only_inside_the_selection` (the file tab), each watched failing
     first. New scene `selection-colors` (both themes: a terminal drag and the rename box, each in `ui.selection`,
     the grey selected text in `text`). The screenshot themes now come from `theme::resolve`, as your config's do.
-- **Rewind and Fork: the provider and conversation core** (batch 3, chore 2; your words, 2026-11-23: "when I just
-  prompt and suddenly stop it, I want to have the rewind/fork feaeture like in antigravity IDE/claude code"). Core
-  only, UI in wave 2: each message goes with an id fuxx mints (Claude's `uuid`, `Action::Send{id}`), its echo marks it
-  read (`Event::Taken{id}`, `Item::You{id, taken}`), a resumed conversation's messages keep theirs (`Past::You`);
-  `Start.branch` starts Claude with `--resume S --resume-session-at P --fork-session --session-id N` (the old
-  transcript untouched); `Provider::branch_point` reads P (the message's `parentUuid`) off the UI thread;
-  `Conversation::cut_before` / `restore` cut and put back; Claude runs with
-  `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true` (`Provider::process_env`, which replaces `suggestion_env`);
-  `Action::RewindFiles` / `Event::FilesRewound` and the one-off `rewind_files_probe`; `Attachment::Quote` for wave 3;
-  agy reports no branching. 14 unit tests, each watched failing first. Nothing on screen yet.
+- **Rewind and Fork from your messages** (batch 3, chore 2; core in wave 1, the UI in wave 2b; your words, 2026-11-23:
+  "when I just prompt and suddenly stop it, I want to have the rewind/fork feaeture like in antigravity IDE/claude
+  code"): hovering one of your messages shows **Copy**, **Rewind** and **Fork** left of its bubble (Copy only until
+  the agent has read it). **Rewind** goes back to before it: a turn running stops first ("Stopping…", forced after
+  10 s), the chat is cut there, its text and attachments come back in the box, and Claude goes on in a branch of the
+  conversation (`--resume S --resume-session-at P --fork-session --session-id N`; the old transcript is never
+  touched). If no file changed after it (Claude's dry run says), that is one click and "Rewound · **Undo**" (Undo, until
+  your next send, puts the chat back on the old conversation). If files changed, a native sheet asks: "Rewind to this
+  message?", "The agent changed 2 files after it (+12 −4). Undo those changes too, or keep them and rewind only the
+  chat.", **Rewind and Undo Changes** · Rewind Chat Only · Cancel; the files go back through Claude's own checkpoints,
+  never fuxx's ledger. If the agent can't undo them, the sheet says so ("… can't undo file changes from fuxx, so they
+  stay as they are. You can revert them in Changes.", Rewind Chat · Cancel). **After a stop** the notice reads
+  "Stopped · **Rewind to edit your message**", that message's actions stay shown until you send, and the empty box
+  says "Esc twice to rewind". **Esc Esc** (box empty, Main idle) rings your newest message: ↑/↓ move, ↩ rewinds, ⌘↩
+  forks, ⌘C copies, Esc leaves. The palette has **Rewind Last Prompt**. **Fork** opens a new tab right after the
+  source, shown and focused, titled "⟨source⟩ (fork)" ("(fork 2)" for a fork's fork), with the chat before the
+  message, the message unsent in its box, and a first row "Forked from **⟨source⟩**" (the name shows that tab while it
+  is open) over "Shares the folder with ⟨source⟩: both agents can edit the same files."; its tooltip's second line
+  says "Forked from ⟨source⟩ at “…”". The source goes on untouched. **agy** (no rewind or fork headless) gets
+  **Edit** only: the text back in the box, the chat as it is, the tooltip pointing at `/rewind` in Open in Classic
+  View. New `src/agent_rewind.rs`; `Icon::Fork` (lucide 0.460.0 `git-fork.svg`).
+  - **AI's calls:** the actions are transparent at rest, not hidden (GPUI registers no group hover on a hidden
+    element, so they would never appear); 24 pt buttons, 14 pt icons, 2 apart, 6 from the bubble, `card_hover` under
+    the pointer; Edit's icon is `file-pen`. The pick's ring is 2 pt `focus_ring` with the padding a point less, so
+    nothing moves. Without a process to ask (it ended), the sheet says the files "may have" changed and the undo is
+    Claude's one-off `--rewind-files`; a dry run unanswered within 10 s, or one that can't tell and lists nothing, is
+    one click (chat only). A file undo that fails still rewinds the chat, with "Couldn't undo the file changes: …".
+    Undo Rewind puts the chat back only (files undone stay undone). Until your next send the tab's saved conversation
+    is still the old one (quitting first reopens the whole chat). A branch that ends before Claude says it started
+    puts the old conversation back with "Couldn't rewind: …" and what you sent back in the box, never a fresh one.
+    Task 0 is not done (your OK is still needed): if Claude names the branch another id than fuxx's, the tab takes
+    Claude's. The fork's first row and tooltip line live for the session only (after a restart it is an ordinary tab
+    on its own conversation), and name the source by its title at the fork. Rewind is hidden in a tab paused for its
+    classic view. The first Esc in an empty idle box no longer reaches Stop (there was nothing to stop). The pick's
+    keys are left out of Help's list (they work only while picking). `Conversation::restore` drops what came after the
+    cut (the "Rewound" notice, a failed send) and the lanes started since. The latest-prompt strip's quick action
+    ("can carry", in the spec) is not built.
+  - **Checks:** unit tests for the hover actions (read, unread, no id, agy's Edit), their tooltips, the stopped link,
+    the fork's title and tooltip and warning, the confirm rule (no change, changes it can undo, can't undo, no process,
+    no answer), the pick's steps, Esc twice within 400 ms, `restore` after something was added, `forked_before`, the
+    pick's keymap, agy's `edit_tip`, the palette's Rewind Last Prompt (an agent tab only), the fork's tooltip line, and
+    `Icon::Fork`, each watched failing first (agy's default `edit_tip` passed at once). Scenes `agent-rewind` (both
+    themes, shot after a stop: the link, the kept actions, the hovered ones, the placeholder; checks: the link's
+    one-click rewind with the flags, Undo, the files sheet's words and the undo request, the next send taking the
+    branch, Claude's own id adopted, a failed branch back to the old conversation, Esc Esc ↑ Esc ↩, the palette
+    command, a rewind mid-turn stopping first), `agent-fork` (both themes: beside the source, focused, titled, the
+    first row, the box, the flags, the tooltip, the source untouched, the name showing the source) and
+    `agent-rewind-agy` (Copy and Edit only, Edit not cutting, no pick). Not yet seen in the real window.
 - **One right-click menu, on the terminal and in file tabs** (batch 3, chore 4, wave 2a; your words, 2026-11-23: "on
   chatbox or terminal or whenever when its an hyperlink I can right click it and add option "Copy Link". On text, I can
   right click it and has "Copy" on it. On agent tab, add more option "Add to chat""): a right-click (or ⌃-click) in a

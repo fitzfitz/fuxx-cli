@@ -37,6 +37,28 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Chores batch 3, wave 2b: Rewind and Fork from your messages
+
+- **What:** chore 2's UI under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]] (its wave 1 bullet replaced
+  by the full one). ("when I just prompt and suddenly stop it, I want to have the rewind/fork feaeture like in
+  antigravity IDE/claude code") Hovering your message shows Copy, Rewind and Fork (Copy only until the agent read
+  it). Rewind stops a running turn first, cuts the chat before the message, puts its text and attachments back in the
+  box and starts Claude on a branch of the conversation; no file changed → one click and "Rewound · Undo" (until your
+  next send); files changed → a native sheet (Rewind and Undo Changes · Rewind Chat Only · Cancel), the files undone
+  through Claude's own checkpoints; the honest words when it can't undo them. After a stop: "Stopped · Rewind to edit
+  your message", the actions kept shown, "Esc twice to rewind" in the box; Esc Esc picks a message (↑/↓, ↩, ⌘↩, ⌘C,
+  Esc); the palette's Rewind Last Prompt. Fork opens "⟨source⟩ (fork)" right after the source, focused, the message
+  unsent in its box, "Forked from ⟨source⟩" and the shared-folder warning as its first row, a tooltip line. agy gets
+  Edit only. New `src/agent_rewind.rs`, `Icon::Fork`. A branch that fails before it started goes back to the old
+  conversation; Claude's own id for a branch is adopted (Task 0 not done: it needs your OK). The latest-prompt strip's
+  quick action is not built.
+- **Checks:** 2592 → 2608 tests (16 new, each watched failing first but agy's default `edit_tip`, which passed at
+  once); clippy 14/29 and 18/33 (unchanged, none on a changed line); `cargo fmt --check` clean; full
+  `scripts/ui-shots.sh` 295 passed, 5 failed: `file-tab`, `card-split`, `file-tab-md-reader-column`, `sidebar-band` and
+  `file-code-bars`, the five that fail on this 1× display on the old commit too. New scenes `agent-rewind` and
+  `agent-fork` (both themes, references added) and `agent-rewind-agy`. The scenes read a transcript from a folder of
+  their own (never yours) and answer the sheet themselves; no agent runs. Not yet seen in the real window.
+
 ### 2026-11-23 — Chores batch 3, wave 2a: one right-click menu, links where you choose, the Files menu
 
 - **What:** three chores under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]], wave 2a of the batch 3

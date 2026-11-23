@@ -271,6 +271,14 @@ impl Provider for Agy {
         Applies::Restart
     }
 
+    /// Headless agy can't rewind or fork (its TUI's `/rewind` only; batch 3, chore 2's research).
+    fn edit_tip(&self) -> Option<&'static str> {
+        Some(
+            "Put this message back in the box (to rewind the chat, type /rewind in Open in \
+             Classic View)",
+        )
+    }
+
     fn classic_argv(&self, conversation: &str) -> Vec<String> {
         ["agy", "--conversation", conversation]
             .map(String::from)
@@ -807,6 +815,16 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
     use std::path::PathBuf;
+
+    /// Batch 3, chore 2: agy can't go back from fuxx (its rewind is its own terminal UI's): no
+    /// branching, and Edit's tooltip points at `/rewind` there.
+    #[test]
+    fn agy_cannot_branch_and_points_edit_at_its_own_rewind() {
+        assert!(!AGY.branching().any());
+        let tip = AGY.edit_tip().expect("its own words");
+        assert!(tip.contains("/rewind"), "{tip}");
+        assert!(tip.contains("Classic View"), "{tip}");
+    }
 
     // ---- M11ar: subagents ----
 

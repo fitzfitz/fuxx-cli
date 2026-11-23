@@ -382,6 +382,11 @@ pub trait Provider: Sync {
     fn rewind_files_probe(&self, _start: &Start, _message: &str) -> Option<Probe> {
         None
     }
+    /// The Edit hover action's tooltip on your message, for an agent that can't go back from
+    /// fuxx (batch 3, chore 2): where its own rewind is. None: the generic words.
+    fn edit_tip(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 pub trait Translator: Send {
@@ -1095,6 +1100,7 @@ mod tests {
         };
         assert!(Plain.branch_point(Path::new("/tmp"), &start, "m").is_err());
         assert!(Plain.rewind_files_probe(&start, "m").is_none());
+        assert_eq!(Plain.edit_tip(), None);
     }
 
     #[test]

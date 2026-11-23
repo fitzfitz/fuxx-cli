@@ -179,6 +179,8 @@ pub enum Place {
     Persistent,
     /// A terminal in front whose folder is in a git repo here (not over SSH).
     TerminalInRepo,
+    /// An agent tab in front (batch 3, chore 2: Rewind Last Prompt).
+    Agent,
 }
 
 /// The kind of tab that had the focus when the palette opened.
@@ -202,6 +204,7 @@ pub fn applies(place: Place, focused: Focused, persistent: bool, in_repo: bool) 
         Place::TerminalOrFile => matches!(focused, Focused::Terminal | Focused::File),
         Place::Persistent => persistent,
         Place::TerminalInRepo => focused == Focused::Terminal && in_repo,
+        Place::Agent => focused == Focused::Agent,
     }
 }
 
@@ -353,6 +356,13 @@ pub static COMMANDS: &[Command] = {
         cmd("Close Tab", Tabs, "", A, Run::Action(act::<CloseSession>)),
         cmd("Next Tab", Tabs, "", A, Run::Action(act::<NextTab>)),
         cmd("Previous Tab", Tabs, "", A, Run::Action(act::<PrevTab>)),
+        cmd(
+            "Rewind Last Prompt",
+            Tabs,
+            "agent undo edit message back",
+            Place::Agent,
+            Run::Action(act::<crate::agent_tab::RewindLastPrompt>),
+        ),
         cmd(
             "Find in File\u{2026}",
             Tabs,
@@ -686,6 +696,13 @@ pub const NOT_IN_PALETTE: &[&str] = &[
     "composer::TakeSuggestion",
     "agent_tab::HistoryUp",
     "agent_tab::HistoryDown",
+    // Batch 3, chore 2: the rewind pick's keys (Esc Esc in the box is the way in).
+    "agent_tab::PickUp",
+    "agent_tab::PickDown",
+    "agent_tab::PickRewind",
+    "agent_tab::PickFork",
+    "agent_tab::PickCopy",
+    "agent_tab::PickLeave",
 ];
 
 /// One New ⟨Label⟩ Tab row per agent provider as palette rows, right after New Browser Tab;
@@ -1441,10 +1458,18 @@ mod tests {
         let mut rows = action_rows(Focused::Terminal, false, true, &[], &pairs);
         add_agent_rows(&mut rows, false);
         assert!(!rows.iter().any(|r| matches!(r.key, Key::NewAgent(_))));
-        // A focused agent tab gets no terminal's, file's or browser's actions.
+        // A focused agent tab gets no terminal's, file's or browser's actions: only its own
+        // (batch 3, chore 2: Rewind Last Prompt).
         let agent = action_rows(Focused::Agent, true, true, &[], &pairs);
         let nothing = action_rows(Focused::Nothing, true, true, &[], &pairs);
-        assert_eq!(names(&agent), names(&nothing));
+        let own: Vec<&str> = names(&agent)
+            .into_iter()
+            .filter(|n| !names(&nothing).contains(n))
+            .collect();
+        assert_eq!(own, ["Rewind Last Prompt"]);
+        assert_eq!(names(&agent).len(), names(&nothing).len() + 1);
+        let terminal = action_rows(Focused::Terminal, true, true, &[], &pairs);
+        assert!(!names(&terminal).contains(&"Rewind Last Prompt"));
     }
 
     fn names(rows: &[ActionRow]) -> Vec<&str> {

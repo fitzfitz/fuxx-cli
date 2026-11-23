@@ -730,6 +730,10 @@ pub struct Workspace {
     pub(crate) last_agent_provider: Option<&'static str>,
     /// Code chips waiting for a new agent tab's view (made on the next frame), by tab.
     pub(crate) pending_chips: HashMap<TabId, Vec<crate::agent_tab::Attachment>>,
+    /// A fork's seed waiting for its new tab's view, with its source's name (batch 3, chore 2).
+    pub(crate) pending_forks: HashMap<TabId, (crate::agent_tab::ForkSeed, String)>,
+    /// Each fork tab's source tab and its tooltip line; never saved.
+    pub(crate) fork_origins: HashMap<TabId, (TabId, String)>,
     /// The number the next agent tab gets (`aN`, from 1); never reused.
     pub(crate) next_agent_id: u64,
     /// The `aN` of agent tabs `sync` dropped since the last `check_waits`, which passes them as
@@ -1078,6 +1082,8 @@ impl Workspace {
             last_agent: HashMap::new(),
             last_agent_provider: None,
             pending_chips: HashMap::new(),
+            pending_forks: HashMap::new(),
+            fork_origins: HashMap::new(),
             next_agent_id: 1,
             agents_closed: Vec::new(),
             agents_ended: Vec::new(),
@@ -2064,6 +2070,8 @@ impl Workspace {
         self.resume_checks.retain(is_agent);
         // Chips waiting for the view of a tab that went: dropped with it.
         self.pending_chips.retain(|tab, _| is_agent(tab));
+        self.pending_forks.retain(|tab, _| is_agent(tab));
+        self.fork_origins.retain(|tab, _| is_agent(tab));
         self.last_agent.retain(|_, tab| is_agent(tab));
         let agents: Vec<u64> = self.agents.values().map(|slot| slot.id).collect();
         self.marks

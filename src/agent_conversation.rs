@@ -99,7 +99,7 @@ impl LaneStatus {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Conversation {
     items: Vec<Item>,
     /// Your latest message's index (the chat's latest-prompt strip, chore after M11ar): kept as
@@ -134,6 +134,8 @@ pub struct Conversation {
 #[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
 pub struct Cut {
+    /// Where it was cut (`restore` drops what came after it first).
+    at: usize,
     items: Vec<Item>,
     lanes: Vec<Lane>,
     lane_starts: Vec<usize>,
@@ -551,6 +553,7 @@ impl Conversation {
         // your message at `ix` was added.
         let keep = self.lane_starts.iter().take_while(|&&at| at <= ix).count();
         let cut = Cut {
+            at: ix,
             items: self.items.split_off(ix),
             lanes: self.lanes.split_off(keep),
             lane_starts: self.lane_starts.split_off(keep),
@@ -569,10 +572,35 @@ impl Conversation {
         Some(cut)
     }
 
-    /// Undo Rewind: what `cut_before` cut, back after what it kept (nothing may have been added
-    /// since: the tab keeps a cut only until the next send).
-    #[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+    /// Fork (batch 3, chore 2): a copy of this conversation cut before your message at `ix`,
+    /// with `head` as its first row and no conversation id of its own (the fork's comes when it
+    /// starts). None unless `ix` is a message of yours. This one is left as it is.
+    pub fn forked_before(&self, ix: usize, head: Item) -> Option<Conversation> {
+        let mut fork = self.clone();
+        fork.cut_before(ix)?;
+        fork.items.insert(0, head);
+        for at in &mut fork.lane_starts {
+            *at += 1;
+        }
+        fork.latest_you = fork.latest_you.map(|i| i + 1);
+        fork.conversation = None;
+        fork.cost_usd = None;
+        fork.context_pct = None;
+        Some(fork)
+    }
+
+    /// Undo Rewind (or a rewind that failed): what `cut_before` cut, back after what it kept;
+    /// what was added since the cut (its "Rewound" notice, a send that failed) goes first. Lanes
+    /// started since go too.
     pub fn restore(&mut self, cut: Cut) {
+        self.items.truncate(cut.at);
+        let keep = self
+            .lane_starts
+            .iter()
+            .take_while(|&&at| at <= cut.at)
+            .count();
+        self.lanes.truncate(keep);
+        self.lane_starts.truncate(keep);
         self.items.extend(cut.items);
         self.lanes.extend(cut.lanes);
         self.lane_starts.extend(cut.lane_starts);
@@ -1705,6 +1733,58 @@ mod tests {
         let _ = c.cut_before(0).expect("one");
         assert!(c.items().is_empty() && c.lanes().is_empty());
         assert_eq!((c.latest_you(), c.status()), (None, Status::Idle));
+    }
+
+    /// Undo Rewind (and a rewind that failed) after something was added since the cut (the
+    /// "Rewound" notice, a send that failed): what came after the cut goes, the cut comes back.
+    #[test]
+    fn restore_drops_what_came_after_the_cut() {
+        let mut c = Conversation::new();
+        c.you_as("one".into(), Vec::new(), Some("u1".into()));
+        c.apply(turn_done());
+        c.you_as("two".into(), Vec::new(), Some("u2".into()));
+        c.apply(said("on it"));
+        let whole = c.items().to_vec();
+        let cut = c.cut_before(1).expect("two");
+        c.apply(Event::Notice("Rewound".into()));
+        c.you_as("again".into(), Vec::new(), Some("u3".into()));
+        c.restore(cut);
+        assert_eq!(c.items(), &whole[..]);
+        assert_eq!(c.latest_you(), Some(1));
+    }
+
+    /// Fork (batch 3, chore 2): a copy of the conversation before your message, with no id of its
+    /// own (the fork's comes when it starts), `head` as its first row, the source untouched.
+    #[test]
+    fn forked_before_copies_what_came_before_under_a_head() {
+        let mut c = Conversation::new();
+        c.apply(Event::Started {
+            conversation: "S".into(),
+            model: Some("m".into()),
+        });
+        c.you_as("one".into(), Vec::new(), Some("u1".into()));
+        c.apply(agent_call("t1"));
+        c.apply(started("t1", "Reader"));
+        c.apply(turn_done());
+        c.you_as("two".into(), Vec::new(), Some("u2".into()));
+        c.apply(said("working"));
+        let whole = c.items().to_vec();
+        assert!(matches!(&whole[2], Item::You { text, .. } if text == "two"));
+        let f = c
+            .forked_before(2, Item::Notice("Forked".into()))
+            .expect("a message of yours");
+        assert_eq!(c.items(), &whole[..], "the source untouched");
+        assert_eq!(f.items()[0], Item::Notice("Forked".into()));
+        assert_eq!(&f.items()[1..], &whole[..2]);
+        assert_eq!(f.latest_you(), Some(1));
+        assert_eq!(f.conversation(), None);
+        assert_eq!(f.lanes().len(), 1);
+        assert_eq!(f.status(), Status::Done);
+        // The lane's start moved with the head: a cut before "one" drops it.
+        let mut f = f;
+        let _ = f.cut_before(1).expect("one");
+        assert!(f.lanes().is_empty());
+        assert!(c.forked_before(1, Item::Notice("x".into())).is_none());
     }
 
     fn said(text: &str) -> Event {

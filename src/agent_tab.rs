@@ -47,8 +47,15 @@ mod lanes_view;
 
 #[path = "agent_latest.rs"]
 mod latest;
+
+#[path = "agent_rewind.rs"]
+mod rewind;
 #[cfg(feature = "ui-shots")]
 pub(crate) use latest::STRIP_TIP;
+#[cfg(feature = "ui-shots")]
+pub(crate) use rewind::STOPPED_NOTICE;
+pub use rewind::{ForkSeed, Seed};
+pub(crate) use rewind::{fork_tip, fork_title};
 
 use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, link_bare_urls, parse};
@@ -90,7 +97,16 @@ actions!(
         NextLane,
         CycleMode,
         HistoryUp,
-        HistoryDown
+        HistoryDown,
+        // The rewind pick (batch 3, chore 2; bound in main.rs to "RewindPick > Composer").
+        PickUp,
+        PickDown,
+        PickRewind,
+        PickFork,
+        PickCopy,
+        PickLeave,
+        // The palette's "Rewind Last Prompt".
+        RewindLastPrompt
     ]
 );
 
@@ -171,6 +187,10 @@ pub enum AgentTabEvent {
     /// A command block dropped on the tab's body (Task 11): the Workspace reads its output and
     /// attaches it (`attach_block`), as for a drop on the tab in a bar.
     BlockDropped(BlockDrag),
+    /// Fork (batch 3, chore 2): open a new tab beside this one from this seed.
+    Fork(Seed),
+    /// A fork's first row: its source's name clicked (show that tab).
+    ShowForkSource,
 }
 
 /// What the tab remembers to tell why an edit was made: the turn's last text per speaker
@@ -902,6 +922,10 @@ pub struct Colors {
     /// its bubble, and its leading mark, on the panel (and its hover).
     pub strip_text: Rgb,
     pub strip_mark: Rgb,
+    /// Your message's hover actions under the pointer (batch 3, chore 2), and the rewind pick's
+    /// ring.
+    pub card_hover: Rgb,
+    pub focus_ring: Rgb,
 }
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
@@ -1031,6 +1055,8 @@ impl Colors {
                 TEXT_MIN,
             ),
             strip_mark: readable(ui.text_dim, &[ui.panel, ui.panel_hover], MARK_MIN),
+            card_hover: ui.card_hover,
+            focus_ring: ui.focus_ring,
         }
     }
 }
@@ -1084,6 +1110,8 @@ impl Pane {
 struct Run {
     resume: Option<String>,
     fresh: Option<String>,
+    /// It starts a branch of another conversation (batch 3, chore 2: `Start::branch`).
+    branched: bool,
     started: bool,
     first_item: usize,
     sends: Vec<(String, Vec<Attachment>)>,
@@ -1319,6 +1347,8 @@ pub struct AgentTab {
     /// The latest-prompt strip (chore after M11ar): whether the last draw showed it, the jump's
     /// glide while it runs, and the jumped-to message's highlight.
     strip: latest::Strip,
+    /// Rewind and Fork (batch 3, chore 2).
+    pub(crate) rw: rewind::State,
 }
 
 impl EventEmitter<AgentTabEvent> for AgentTab {}
@@ -1909,6 +1939,7 @@ impl AgentTab {
             #[cfg(feature = "ui-shots")]
             menu_rows: Rc::default(),
             strip: latest::Strip::default(),
+            rw: rewind::State::default(),
         }
     }
 
@@ -2170,6 +2201,7 @@ impl AgentTab {
         };
         // Its id, when the agent takes one (batch 3, chore 2): Rewind and Fork name it by it.
         let id = self.provider.and_then(|p| p.fresh_message_id());
+        self.rewind_sent(id.as_deref(), &attachments);
         self.conversation
             .you_as(text.clone(), labels(&attachments), id.clone());
         self.run.sends.push((text, attachments));
@@ -2201,7 +2233,11 @@ impl AgentTab {
         // sends go to this one.
         self.ending = false;
         // A chosen id the agent never said it took may never have been made: a new one again.
-        let resume = resume.filter(|id| self.unconfirmed.as_ref() != Some(id));
+        // A branch (Rewind, Fork: batch 3, chore 2) starts a new conversation off an old one.
+        let branch = self.rw.branch_next.take();
+        let resume = resume
+            .filter(|id| self.unconfirmed.as_ref() != Some(id))
+            .filter(|_| branch.is_none());
         let fresh = match (&resume, self.provider) {
             (None, Some(provider)) => provider.fresh_conversation_id(),
             _ => None,
@@ -2209,6 +2245,7 @@ impl AgentTab {
         self.run = Run {
             resume: resume.clone(),
             fresh: fresh.clone(),
+            branched: branch.is_some(),
             started: false,
             first_item: self.conversation.items().len(),
             sends: Vec::new(),
@@ -2223,6 +2260,7 @@ impl AgentTab {
         let start = Start {
             resume,
             new_id: fresh,
+            branch,
             ..self.start.clone()
         };
         // "Prompt suggestions" (on by default), read at each start: a change applies to agents
@@ -2466,7 +2504,20 @@ impl AgentTab {
             .provider
             .is_some_and(|p| said.iter().any(|s| p.unknown_conversation(s)));
         let failed_resume = resume_failed(self.run.started, self.run.resume.is_some());
-        if failed_resume && !unknown {
+        let last_words = said
+            .iter()
+            .rev()
+            .map(|s| s.trim())
+            .find(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| match code {
+                Some(c) => format!("it exited (code {c})"),
+                None => "it was terminated".into(),
+            });
+        if self.rewind_failed(&last_words, cx) {
+            // A rewind's branch that never started: the old conversation is back (never a fresh
+            // one: batch 3, chore 2).
+        } else if failed_resume && !unknown {
             // It couldn't start (login, network, a crash): the conversation is still there, and
             // the tab keeps its id. One error row says why.
             let sends = std::mem::take(&mut self.run.sends);
@@ -2474,18 +2525,8 @@ impl AgentTab {
             for (text, attachments) in sends {
                 self.conversation.you(text, labels(&attachments));
             }
-            let why = said
-                .iter()
-                .rev()
-                .map(|s| s.trim())
-                .find(|s| !s.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| match code {
-                    Some(c) => format!("it exited (code {c})"),
-                    None => "it was terminated".into(),
-                });
             let label = self.label().to_string();
-            let why = format!("Couldn't start {label}: {why}");
+            let why = format!("Couldn't start {label}: {last_words}");
             self.conversation.failed_to_start(&why);
             cx.emit(AgentTabEvent::Failed(why));
             // What waited for this run goes back into the box: you send it again.
@@ -2541,6 +2582,7 @@ impl AgentTab {
             ) {
                 cx.emit(told);
             }
+            self.rewind_event(&event);
             match &event {
                 Event::Started { conversation, .. } => {
                     self.run.started = true;
@@ -2869,6 +2911,15 @@ impl AgentTab {
             "Deny and say why… (optional)".into()
         } else if self.status() == Status::Working {
             format!("Add a note. {label} reads it after this step…").into()
+        } else if rewind::stopped_link(
+            self.conversation.items(),
+            self.conversation.latest_you(),
+            self.branching(),
+        )
+        .is_some()
+        {
+            // After a stop (batch 3, chore 2).
+            rewind::PICK_PLACEHOLDER.into()
         } else {
             PLACEHOLDER.into()
         };
@@ -3226,7 +3277,7 @@ impl AgentTab {
                 } else if self.slash.take().is_some() {
                     self.slash_dismissed = true;
                     cx.notify();
-                } else {
+                } else if !self.esc_rewind(cx) {
                     self.stop(cx);
                 }
             }
@@ -3353,6 +3404,7 @@ impl AgentTab {
         if self.sweep_at.is_some() && self.composer.read(cx).text() != self.sweep_text {
             self.sweep_at = None;
         }
+        self.pick_typed(cx);
         self.slash_follow(cx);
         let Some(at) = &self.at else {
             return;
@@ -5292,6 +5344,9 @@ impl Render for AgentTab {
         let info = self.provider.map(|p| p.info());
         let view = cx.entity().downgrade();
         let link_view = view.clone();
+        // The hover actions and notice links are laid out again (scenes find them by name).
+        #[cfg(feature = "ui-shots")]
+        self.rw.shot_buttons.borrow_mut().clear();
         // Chat text registers again as it paints (chore after M11ar).
         let select = self.pane().select.clone();
         select.begin_frame();
@@ -5413,7 +5468,12 @@ impl Render for AgentTab {
         let modal = self.modal.is_some().then(|| self.modal_layer(&look, cx));
         let image_view = self.image_layer(&look);
         div()
-            .key_context("AgentTab")
+            // The rewind pick's keys win in the box while it is on (batch 3, chore 2).
+            .key_context(if self.rw.pick.is_some() {
+                "AgentTab RewindPick"
+            } else {
+                "AgentTab"
+            })
             .on_action(cx.listener(Self::at_up))
             .on_action(cx.listener(Self::at_down))
             .on_action(cx.listener(Self::modal_back))
@@ -5425,6 +5485,13 @@ impl Render for AgentTab {
             .on_action(cx.listener(Self::cycle_mode))
             .on_action(cx.listener(Self::history_up))
             .on_action(cx.listener(Self::history_down))
+            .on_action(cx.listener(Self::pick_up))
+            .on_action(cx.listener(Self::pick_down))
+            .on_action(cx.listener(Self::pick_rewind))
+            .on_action(cx.listener(Self::pick_fork))
+            .on_action(cx.listener(Self::pick_copy))
+            .on_action(cx.listener(Self::pick_leave))
+            .on_action(cx.listener(Self::rewind_last))
             // ⌘C / ⌘A reach here when the box has nothing to copy or select (chore after M11ar).
             .on_action(cx.listener(|this, _: &crate::composer::Copy, _, cx| this.copy_chat(cx)))
             .on_action(cx.listener(|this, _: &crate::terminal_view::Copy, _, cx| {
