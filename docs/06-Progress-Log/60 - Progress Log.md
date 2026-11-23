@@ -36,6 +36,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Chore: the flaky chrome-agent scenes fixed
+
+- **What:** your word ("try the failed … again"). `chrome-agent-tabs` / `chrome-agent-status` were stale by a few
+  ±1 pixels in the "Cultivating…" row: the cached agent tab could keep its fade-in's next-to-last frame. The fade
+  now lands exactly on full for its last few percent (`agent_chat::thinking_opacity`). Under "Chores after M11ar"
+  in [[93 - Milestone 11ar - Subagents]].
+- **Checks:** before 1 pass in 6 runs, after 10 in 10; 2493 tests (1 new, watched failing first); clippy at the
+  baseline (31 / 33); `cargo fmt --check` clean; `scripts/ui-shots.sh agent` 92 passed.
+
 ### 2026-11-23 — Chore: chat text can be selected and copied
 
 - **What:** your report ("I cannot block texts then do a copy…"). Drag, double-click, triple-click and ⇧-click

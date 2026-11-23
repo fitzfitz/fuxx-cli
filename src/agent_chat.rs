@@ -155,6 +155,15 @@ pub fn group_shape(items: &[Item], ix: usize) -> Option<Shape> {
 }
 
 /// The gap above row `ix`, from the row before it (spec B-B's table).
+/// The thinking line's opacity at `t` (0..1) of its fade: nothing while short gaps pass
+/// (`THINKING_HOLD`), then eased in, and exactly full for its last few percent, so a cached view
+/// that keeps a frame from the fade's tail shows what a full redraw does.
+pub fn thinking_opacity(t: f32) -> f32 {
+    let t = ((t - chat::THINKING_HOLD) / (1. - chat::THINKING_HOLD)).clamp(0., 1.);
+    let o = crate::agent_top::ease_out_cubic(t);
+    if o >= 0.99 { 1.0 } else { o }
+}
+
 #[cfg(test)]
 pub fn gap_before(items: &[Item], ix: usize) -> f32 {
     let rows = main_rows(items);
@@ -215,6 +224,21 @@ pub fn row_print(items: &[Item], ix: usize, thinking: bool) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_thinking_line_fades_in_late_and_lands_on_full() {
+        assert_eq!(thinking_opacity(0.0), 0.0);
+        assert_eq!(
+            thinking_opacity(chat::THINKING_HOLD * 0.9),
+            0.0,
+            "held while short gaps pass"
+        );
+        let mid = thinking_opacity(0.7);
+        assert!(mid > 0.0 && mid < 1.0, "easing in: {mid}");
+        // The fade's tail is exactly full: a frame kept from it (a cached view) equals the last.
+        assert_eq!(thinking_opacity(0.95), 1.0);
+        assert_eq!(thinking_opacity(1.0), 1.0);
+    }
+
     use super::*;
     use crate::agent_conversation::{Answer, Item};
 

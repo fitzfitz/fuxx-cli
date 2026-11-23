@@ -95,10 +95,7 @@ impl AgentTab {
                 .with_animation(
                     ("agent-thinking", ix),
                     Animation::new(Duration::from_millis(chat::THINKING_FADE_MS)),
-                    |d, t| {
-                        let t = ((t - chat::THINKING_HOLD) / (1. - chat::THINKING_HOLD)).max(0.);
-                        d.opacity(crate::agent_top::ease_out_cubic(t))
-                    },
+                    |d, t| d.opacity(crate::agent_chat::thinking_opacity(t)),
                 )
         });
         div()

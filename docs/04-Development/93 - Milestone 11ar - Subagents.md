@@ -282,6 +282,10 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   - **On screen:** drag across a reply → wash, ⌘C, paste elsewhere; double-click a word; ⌘A in an empty box; type
     in the box, ⌘A/⌘C there still act on the box; a link in a reply still opens.
   - **Checks:** 6 new unit tests (`chat_select`), a new ui-shots scene `agent-select` (double-click word, ⌘A,
-    clear, drag across heading and paragraph, the box's own ⌘C), watched failing with the hook off;
-    `chrome-agent-tabs` and `chrome-agent-status` fail with a few stale bytes on master too (ticking ages; not this
-    change).
+    clear, drag across heading and paragraph, the box's own ⌘C), watched failing with the hook off.
+- **`chrome-agent-tabs` / `chrome-agent-status` were flaky** (your word, 2026-11-23: "try the failed … again"): they
+  failed 5 runs in 6 with 3–28 bytes "stale". The differing pixels were all ±1 in one channel, inside the
+  "Cultivating…" row (the avatar and the word): its fade-in's last frame. The agent tab is drawn cached, and it can
+  keep the frame just before the fade ends (≈ 99.7 % opacity) while a full redraw draws 100 %. The fade
+  (`agent_chat::thinking_opacity`, tested) now lands exactly on full for its last few percent, so any frame kept
+  from its tail equals the last one: 10 runs in 10 pass, and all 92 `agent` scenes.
