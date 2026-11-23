@@ -37,6 +37,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — v0.12.8 released
+
+- **What:** your word ("commit and push it and make patch release"). `Cargo.toml` 0.12.7 → 0.12.8 (`367acc2`), tag
+  `v0.12.8`; the Release workflow (run 45121209208: test, both slices, release) published
+  `https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.12.8` with `fuxx-0.12.8.zip`. In it since v0.12.7: ⇧Tab
+  changes the agent mode. The in-app updater offers it.
+- **Checks:** `cargo test` 2495 passed locally before tagging; the tag matched `Cargo.toml`
+  (`scripts/check-release-tag.sh`); all four jobs green.
+
 ### 2026-11-23 — Chore: ⇧Tab changes the agent mode
 
 - **What:** your word ("on agent tab, I want to add shortcut shift+tab to change agent mode"). ⇧Tab in an agent tab
