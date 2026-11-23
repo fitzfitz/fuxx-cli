@@ -13,9 +13,9 @@
 
 use super::*;
 use crate::agent_ask::{
-    AskKey, AskUi, CardLayout, DockKind, Effect, asks_line, card_width, chip_of, dock_kind,
-    dock_shows, header_of, layout_for, preview_lines, recommended, shown_label, strip_covers_card,
-    summary_spans,
+    AskKey, AskUi, CardLayout, DockKind, Effect, answer_message, asked_line, asks_line, card_width,
+    chip_of, dock_kind, dock_shows, header_of, layout_for, preview_lines, recommended, shown_label,
+    strip_covers_card, summary_spans,
 };
 use crate::agent_conversation::Reply;
 use crate::providers::{QAnswer, Question};
@@ -145,7 +145,15 @@ impl AgentTab {
         self.ask.focus = true;
         self.ask.step = 0;
         self.ask.step_at = None;
-        let clock = self.clock.clone();
+        // A question the agent didn't wait on (2026-11-24): its Waiting mark doesn't breathe
+        // (a clock of its own that never ticks holds it still).
+        let clock = if self.conversation.questions_by_message() {
+            cx.new(|_| MarkClock {
+                phase: crate::status_mark::STILL_PHASE,
+            })
+        } else {
+            self.clock.clone()
+        };
         let mut mark = || cx.new(|cx| MarkView::new(&clock, Status::Waiting, px(MARK), BLACK, cx));
         self.ask.marks = Some((mark(), mark()));
         self.relayout_ask();
@@ -222,8 +230,16 @@ impl AgentTab {
     /// subagent's says its label).
     pub(super) fn ask_question_line(&self) -> Option<String> {
         let (ix, _, questions) = self.ask_target()?;
+        if self.conversation.questions_by_message() {
+            return Some(asked_line(self.who(), questions));
+        }
         let label = self.asker_label(ix);
         Some(asks_line(&label, questions))
+    }
+
+    /// The agent's short name ("agy"), as a question it didn't wait on says it.
+    fn who(&self) -> &str {
+        self.provider.map_or(self.label(), |p| p.info().who.1)
     }
 
     /// Who asks question `ix`: its lane's subagent type (its task after it, when that says
@@ -425,6 +441,27 @@ impl AgentTab {
             ui.cursor,
             ui.skip_armed(Instant::now()),
         );
+        // A question the agent didn't wait on (agy, 2026-11-24): your picks go as an ordinary
+        // message, through the normal send (your bubble shows; mid-turn it queues); Skip only
+        // closes the card.
+        if self.conversation.questions_by_message() {
+            match effect {
+                Effect::Send(answers) => {
+                    let Some(text) = answer_message(&ui.questions, &answers) else {
+                        return;
+                    };
+                    self.conversation.reply(&id, Reply::Answered(answers));
+                    self.send(text, cx);
+                    return;
+                }
+                Effect::Skip => {
+                    self.conversation.reply(&id, Reply::Skipped);
+                    self.after_change(true, cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
         match effect {
             Effect::None => {}
             Effect::Moved => {
@@ -744,8 +781,16 @@ impl AgentTab {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(c.ask_head))
                     .child({
-                        // A lane's task after who waits, quiet (the design review).
-                        let waits = format!("{label} is waiting for your answer");
+                        // A lane's task after who waits, quiet (the design review). One the
+                        // agent didn't wait on says so (2026-11-24).
+                        let waits = if self.conversation.questions_by_message() {
+                            format!(
+                                "{} asked \u{2014} it couldn't wait for your answer",
+                                self.who()
+                            )
+                        } else {
+                            format!("{label} is waiting for your answer")
+                        };
                         let at = waits.len();
                         let whole = match &task {
                             Some(t) => format!("{waits} \u{b7} {t}"),
@@ -818,11 +863,23 @@ impl AgentTab {
                 }
                 _ => body,
             };
+            // Why the agent went on, and where your picks go (its own words; not in the
+            // compact dock).
+            let note = self
+                .provider
+                .filter(|_| self.conversation.questions_by_message() && !compact)
+                .and_then(|p| p.question_note());
             card.when(ui.questions.len() >= 2, |d| {
                 d.child(self.ask_steps(ui, layout, tag, look))
             })
             .child(body)
             .child(self.ask_footer(ui, layout, tag, look))
+            .children(note.map(|n| {
+                div()
+                    .text_size(px(text::META))
+                    .text_color(hsla(c.ask_dim))
+                    .child(n)
+            }))
         };
         let shadow = |y: f32, blur: f32, a: f32| gpui::BoxShadow {
             color: gpui::Hsla { a, ..gpui::black() },
@@ -1327,11 +1384,20 @@ impl AgentTab {
     ) -> AnyElement {
         let c = &look.c;
         let n = ui.questions.len();
+        // A question the agent didn't wait on: the answers go back as a message (2026-11-24).
+        let by_message = self.conversation.questions_by_message();
+        let send = if by_message {
+            "Send as message  \u{23ce}"
+        } else {
+            "Send answers  \u{23ce}"
+        };
         let (primary, hint) = match ui.current() {
             None if ui.send_anyway() => ("Send anyway  \u{23ce}", "space or click to change"),
-            None => ("Send answers  \u{23ce}", "space or click to change"),
+            None => (send, "space or click to change"),
             Some(q) => {
-                let primary = if n == 1 {
+                let primary = if n == 1 && by_message {
+                    send
+                } else if n == 1 {
                     "Answer  \u{23ce}"
                 } else if ui.step + 1 == n {
                     "Review  \u{23ce}"
@@ -1347,10 +1413,14 @@ impl AgentTab {
                 (primary, hint)
             }
         };
-        // A multi-select with nothing checked and the box empty: the primary waits.
-        let waiting = ui.current().is_some_and(|q| q.multi)
+        // A multi-select with nothing checked and the box empty: the primary waits. So does a
+        // review with nothing answered when the answers go as a message (there is none).
+        let nothing =
+            by_message && ui.on_review() && answer_message(&ui.questions, &ui.answers()).is_none();
+        let waiting = (ui.current().is_some_and(|q| q.multi)
             && !ui.answered(ui.step)
-            && self.ask.mirrored.trim().is_empty();
+            && self.ask.mirrored.trim().is_empty())
+            || nothing;
         let primary = button(
             SharedString::from(format!("ask-primary-{tag}")),
             primary,
@@ -1358,12 +1428,13 @@ impl AgentTab {
             c,
         )
         .when(waiting, |d| {
-            d.text_color(hsla(c.ask_dim)).tooltip(|_, cx| {
-                cx.new(|_| {
-                    crate::sidebar_toggle::Tip("Check at least one, or type an answer below".into())
-                })
-                .into()
-            })
+            let tip = if nothing {
+                "Answer at least one question first"
+            } else {
+                "Check at least one, or type an answer below"
+            };
+            d.text_color(hsla(c.ask_dim))
+                .tooltip(move |_, cx| cx.new(|_| crate::sidebar_toggle::Tip(tip.into())).into())
         })
         .on_click(on_tab(&look.view, |this, cx| this.ask_enter_pressed(cx)));
         let armed = ui.skip_armed(look.now);
@@ -1450,9 +1521,7 @@ impl AgentTab {
         let key = id.to_string();
         let tip = match (open, reply) {
             (true, _) => "Hide the questions".to_string(),
-            (false, Reply::Expired) => {
-                format!("{} stopped waiting before you answered.", look.label)
-            }
+            (false, Reply::Expired) => self.expired_words(look),
             (false, _) => "Show the questions".to_string(),
         };
         let hover_fill = c.card_hover;
@@ -1603,10 +1672,7 @@ impl AgentTab {
         });
         let footer = match reply {
             Reply::Skipped => Some("You skipped these questions.".to_string()),
-            Reply::Expired => Some(format!(
-                "{} stopped waiting before you answered.",
-                look.label
-            )),
+            Reply::Expired => Some(self.expired_words(look)),
             Reply::Answered(_) => None,
         };
         div()
@@ -1629,6 +1695,16 @@ impl AgentTab {
                     .child(SharedString::from(f))
             }))
             .into_any_element()
+    }
+
+    /// Why a question closed unanswered: the agent stopped waiting, or (one it didn't wait on)
+    /// you sent another message instead.
+    fn expired_words(&self, look: &Look) -> String {
+        if self.conversation.questions_by_message() {
+            "You sent another message instead.".to_string()
+        } else {
+            format!("{} stopped waiting before you answered.", look.label)
+        }
     }
 
     /// Scenes: the open card's state.

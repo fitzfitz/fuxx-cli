@@ -486,12 +486,34 @@ pub fn oldest<T: Copy>(asks: &[(T, Instant)]) -> Option<T> {
     asks.iter().min_by_key(|(_, at)| *at).map(|(t, _)| *t)
 }
 
-/// `label` without Claude's " (Recommended)" suffix, when it has one.
+/// `label` without its "(Recommended)" mark, when it has one: Claude's " (Recommended)" after
+/// it, or agy's "(Recommended) " before it.
 pub fn recommended(label: &str) -> Option<&str> {
     label
         .strip_suffix("(Recommended)")
         .map(str::trim_end)
+        .or_else(|| label.strip_prefix("(Recommended)").map(str::trim_start))
         .filter(|l| !l.is_empty())
+}
+
+/// Your answers as the message an agent that `questions_by_message` gets (agy, 2026-11-24;
+/// the line it took in the recording): "My answers to your questions:" and a line per answered
+/// question, "- ⟨its words⟩ → ⟨the labels, your own words⟩", the Recommended mark left out. An
+/// unanswered question is left out; none answered: None (nothing to send).
+pub fn answer_message(questions: &[Question], answers: &[QAnswer]) -> Option<String> {
+    let lines: Vec<String> = questions
+        .iter()
+        .zip(answers)
+        .filter(|(_, a)| !a.is_empty())
+        .map(|(q, a)| {
+            let mut parts: Vec<&str> = a.labels.iter().map(|l| shown_label(l)).collect();
+            if let Some(o) = a.other.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+                parts.push(o);
+            }
+            format!("- {} \u{2192} {}", q.text.trim(), parts.join(", "))
+        })
+        .collect();
+    (!lines.is_empty()).then(|| format!("My answers to your questions:\n{}", lines.join("\n")))
 }
 
 /// An option's label as the card shows it: without " (Recommended)" (a tag says it instead).
@@ -610,6 +632,16 @@ pub fn asks_line(label: &str, questions: &[Question]) -> String {
     match questions.len() {
         0 | 1 => format!("{label} asks: {first}"),
         n => format!("{label} asks: {first} (+{} more)", n - 1),
+    }
+}
+
+/// "⟨who⟩ asked: ⟨the first question⟩", and " (+N more)" with more: a question the agent
+/// didn't wait on (`questions_by_message`), for the banner and the sidebar's line two.
+pub fn asked_line(who: &str, questions: &[Question]) -> String {
+    let first = questions.first().map_or("", |q| q.text.trim());
+    match questions.len() {
+        0 | 1 => format!("{who} asked: {first}"),
+        n => format!("{who} asked: {first} (+{} more)", n - 1),
     }
 }
 
@@ -1415,5 +1447,96 @@ mod tests {
             &format!("short\n{}", "x".repeat(fits + 1)),
             wide.well_text_w
         ));
+    }
+
+    // ---- 2026-11-24: agy's questions, answered by a message ----
+
+    fn q(text: &str, labels: &[&str], multi: bool) -> Question {
+        Question {
+            text: text.into(),
+            ..question("", labels, multi)
+        }
+    }
+
+    #[test]
+    fn answer_message_says_each_answer_on_its_line() {
+        let runner = q(
+            "Which test runner should code/my-app use?",
+            &["(Recommended) Vitest", "Jest"],
+            false,
+        );
+        // The exact line agy took in the recording.
+        assert_eq!(
+            answer_message(
+                std::slice::from_ref(&runner),
+                &[one(&["(Recommended) Vitest"])]
+            )
+            .as_deref(),
+            Some(
+                "My answers to your questions:\n- Which test runner should code/my-app use? \u{2192} Vitest"
+            )
+        );
+        let checks = q(
+            "Which checks?",
+            &["Lint", "Format (Recommended)", "Test"],
+            true,
+        );
+        let other = QAnswer {
+            labels: Vec::new(),
+            other: Some("  Mocha  ".into()),
+        };
+        let both = QAnswer {
+            labels: vec!["Lint".into(), "Format (Recommended)".into()],
+            other: Some("and docs".into()),
+        };
+        let qs = [runner.clone(), checks.clone()];
+        // Multi: the labels joined; Other: your own words; Recommended left out either way.
+        assert_eq!(
+            answer_message(&qs, &[other.clone(), both]).as_deref(),
+            Some(
+                "My answers to your questions:\n\
+                 - Which test runner should code/my-app use? \u{2192} Mocha\n\
+                 - Which checks? \u{2192} Lint, Format, and docs"
+            )
+        );
+        // An unanswered question is left out; none answered: nothing to send.
+        assert_eq!(
+            answer_message(&qs, &[QAnswer::default(), one(&["Test"])]).as_deref(),
+            Some("My answers to your questions:\n- Which checks? \u{2192} Test")
+        );
+        assert_eq!(
+            answer_message(&qs, &[QAnswer::default(), QAnswer::default()]),
+            None
+        );
+        let blank = QAnswer {
+            labels: Vec::new(),
+            other: Some("   ".into()),
+        };
+        assert_eq!(answer_message(&qs[..1], &[blank]), None);
+    }
+
+    #[test]
+    fn a_leading_recommended_mark_is_a_tag_too() {
+        assert_eq!(recommended("(Recommended) Vitest"), Some("Vitest"));
+        assert_eq!(recommended("Vitest (Recommended)"), Some("Vitest"));
+        assert_eq!(recommended("(Recommended)"), None);
+        assert_eq!(shown_label("(Recommended) Vitest"), "Vitest");
+        // The cursor starts on it.
+        let ui = AskUi::new(
+            "q".into(),
+            vec![q("Which?", &["Jest", "(Recommended) Vitest"], false)],
+            Instant::now(),
+        );
+        assert_eq!(ui.cursor, 1);
+    }
+
+    #[test]
+    fn a_question_not_waited_on_says_it_was_asked() {
+        let qs = [
+            q("Which runner?", &["a"], false),
+            q("Which checks?", &["b"], true),
+        ];
+        assert_eq!(asked_line("agy", &qs[..1]), "agy asked: Which runner?");
+        assert_eq!(asked_line("agy", &qs), "agy asked: Which runner? (+1 more)");
     }
 }

@@ -194,6 +194,10 @@ pub struct Conversation {
     finished: bool,
     /// Main's tool calls that delivered a relay, and the lane each went to (the lanes chore).
     passed_on: std::collections::HashMap<String, String>,
+    /// The agent's questions are answered by a message (`Provider::questions_by_message`:
+    /// agy, 2026-11-24): it went on without waiting, so an open one waits on nothing, and
+    /// only you close it (an answer, a skip, another message).
+    by_message: bool,
 }
 
 /// What `Conversation::cut_before` cut (batch 3, chore 2): kept for Undo Rewind until the next
@@ -225,6 +229,35 @@ impl Cut {
 impl Conversation {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The agent's questions are answered by a message (`by_message`).
+    pub fn set_questions_by_message(&mut self, on: bool) {
+        self.by_message = on;
+    }
+
+    /// The open questions are answered by a message (the card sends your picks as one).
+    pub fn questions_by_message(&self) -> bool {
+        self.by_message
+    }
+
+    /// Your message (not the card's) while a question the agent didn't wait on is open: it is
+    /// left not answered (`Reply::Expired`).
+    fn passed_over(&mut self) {
+        if !self.by_message {
+            return;
+        }
+        let open: Vec<String> = self
+            .open_asks
+            .iter()
+            .filter_map(|&ix| match &self.items[ix] {
+                Item::Question { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        for id in open {
+            self.reply(&id, Reply::Expired);
+        }
     }
 
     pub fn apply(&mut self, event: Event) {
@@ -596,7 +629,8 @@ impl Conversation {
             | Event::Suggestion(_)
             | Event::Skills(_)
             | Event::RateLimit(_)
-            | Event::Mode(_) => {}
+            | Event::Mode(_)
+            | Event::ModeRefused { .. } => {}
             // A live model switch the agent confirmed: the id it now runs.
             Event::Applied {
                 kind: crate::providers::ChangeKind::Model,
@@ -636,6 +670,7 @@ impl Conversation {
         id: Option<String>,
         to: Option<Relay>,
     ) {
+        self.passed_over();
         self.latest_you = Some(self.items.len());
         self.items.push(Item::You {
             text,
@@ -1089,6 +1124,7 @@ impl Conversation {
             .map(|l| l.id.clone())
             .collect();
         let under_live = |p: &Option<String>| p.as_ref().is_some_and(|p| live.contains(p));
+        let by_message = self.by_message;
         for item in &mut self.items {
             match item {
                 Item::Tool {
@@ -1098,7 +1134,10 @@ impl Conversation {
                 Item::Permission { answer, by, .. } if answer.is_none() && !under_live(by) => {
                     *answer = Some(Answer::Expired)
                 }
-                Item::Question { reply, by, .. } if reply.is_none() && !under_live(by) => {
+                // One the agent didn't wait on stays open: only you close it.
+                Item::Question { reply, by, .. }
+                    if reply.is_none() && !under_live(by) && !by_message =>
+                {
                     *reply = Some(Reply::Expired)
                 }
                 _ => {}
@@ -1143,7 +1182,9 @@ impl Conversation {
     pub fn status(&self) -> Status {
         if self.ended {
             Status::Done
-        } else if !self.open_asks.is_empty() || self.pending_permission().is_some() {
+        } else if (!self.open_asks.is_empty() && !self.by_message)
+            || self.pending_permission().is_some()
+        {
             Status::Waiting
         } else if self.outstanding > 0 || self.busy {
             Status::Working
@@ -2658,6 +2699,46 @@ mod tests {
             labels: vec![label.into()],
             other: None,
         }
+    }
+
+    /// 2026-11-24: agy's question came after it went on (print mode skips it): the tab doesn't
+    /// wait on it, the turn's end leaves it open, and only you close it — your answer, a skip,
+    /// or another message (not answered).
+    #[test]
+    fn a_question_answered_by_message_waits_on_nothing() {
+        let mut c = Conversation::new();
+        c.set_questions_by_message(true);
+        assert!(c.questions_by_message());
+        c.you("set up tests".into(), Vec::new());
+        c.apply(Event::TurnDone {
+            ok: true,
+            message: None,
+        });
+        c.apply(ask("q1", None));
+        assert_eq!(c.status(), Status::Done, "agy isn't blocked");
+        assert_eq!(c.oldest_ask(), Some(1), "the card is still the box's");
+        c.apply(Event::TurnDone {
+            ok: true,
+            message: None,
+        });
+        c.process_ended(Some(0), "");
+        assert_eq!(reply_of(&c, "q1"), None, "only you close it");
+        // The card's own message: answered first, then sent.
+        c.reply("q1", Reply::Answered(vec![picked("Vitest")]));
+        c.you("My answers to your questions: …".into(), Vec::new());
+        assert!(matches!(reply_of(&c, "q1"), Some(Reply::Answered(_))));
+        // Another message while one is open: not answered.
+        c.apply(ask("q2", None));
+        c.you("never mind, use Jest".into(), Vec::new());
+        assert_eq!(reply_of(&c, "q2"), Some(Reply::Expired));
+        assert_eq!(c.oldest_ask(), None);
+        // Claude's questions are unchanged: they wait, and the turn's end expires them.
+        let mut c = Conversation::new();
+        c.you("go".into(), Vec::new());
+        c.apply(ask("q1", None));
+        c.you("more".into(), Vec::new());
+        assert_eq!(reply_of(&c, "q1"), None, "a note mid-ask leaves it open");
+        assert_eq!(c.status(), Status::Waiting);
     }
 
     #[test]

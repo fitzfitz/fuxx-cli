@@ -43,8 +43,8 @@ const HALO_MAX: f32 = 0.45;
 /// The beat's phase at which the moving marks look as they do drawn still (Reduce motion):
 /// Working's arc from the top (four turns a beat: a whole turn) and Waiting's halo halfway
 /// (three breaths a beat: three-quarters of one, where the breath is at its middle). (The
-/// Activity panel drew its still marks at it until M11v part 4 gave it dots; the tests keep it.)
-#[cfg(test)]
+/// Activity panel drew its still marks at it until M11v part 4 gave it dots; the tests keep it;
+/// a question the agent didn't wait on draws its Waiting mark still at it, 2026-11-24.)
 pub const STILL_PHASE: f32 = 0.25;
 /// How long the Done pop lasts.
 pub const POP: Duration = Duration::from_millis(350);

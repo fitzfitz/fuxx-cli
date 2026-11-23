@@ -3,7 +3,8 @@
 
 use super::*;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::OsStr;
 use std::path::Path;
 
 /// An RFC 3339 time (`2026-11-22T14:59:00Z`, `…+07:00`, fractions allowed) as unix seconds.
@@ -69,6 +70,137 @@ fn usage_bucket(b: &Value) -> UsageLimit {
         },
         None => UsageLimit::Text(name),
     }
+}
+
+/// The id agy's main transcript is followed by (`Event::Follow` with `main`): its questions
+/// are only there (stdout shows an `ask_question` step as a bare `step_type: "unknown"`).
+pub const MAIN_FOLLOW: &str = "agy-main";
+
+/// The mode agy runs in when it refuses the one asked ("continuing in the default mode"
+/// names none): Accept edits, the closest of the modes fuxx offers to agy's own default (its
+/// `init` says `request-review`: it edits, and asks before anything riskier).
+const DEFAULT_RUNNING: &str = "accept-edits";
+
+/// Where agy keeps its data: `$ANTIGRAVITY_GEMINI_DIR` (`env`), else `~/.gemini`.
+pub fn gemini_dir(env: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
+    match env.filter(|e| !e.is_empty()) {
+        Some(dir) => Some(PathBuf::from(dir)),
+        None => home
+            .filter(|h| !h.is_empty())
+            .map(|h| Path::new(h).join(".gemini")),
+    }
+}
+
+/// Conversation `conversation`'s main transcript under agy's data folder: the same layout as a
+/// subagent's `log_uri`.
+pub fn transcript_path(gemini_dir: &Path, conversation: &str) -> PathBuf {
+    gemini_dir
+        .join("antigravity-cli/brain")
+        .join(conversation)
+        .join(".system_generated/logs/transcript.jsonl")
+}
+
+/// This process's agy data folder (agy inherits fuxx's environment). Tests and scenes never
+/// read your own: a scrubbed home (`/Users/me`, as the fixtures' paths) stands in.
+fn here_gemini_dir() -> Option<PathBuf> {
+    if cfg!(any(test, feature = "ui-shots")) {
+        return gemini_dir(None, Some(OsStr::new("/Users/me")));
+    }
+    gemini_dir(
+        std::env::var_os("ANTIGRAVITY_GEMINI_DIR").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+}
+
+/// agy refusing a mode for this account ("--mode auto is not available … continuing in the
+/// default mode"): the mode asked, and the one it runs in instead (one of agy's modes it
+/// names after "continuing in", else `DEFAULT_RUNNING`). None for any other line.
+pub fn mode_refusal(line: &str) -> Option<(String, String)> {
+    let known = |w: &str| INFO.modes.iter().any(|m| m.id == w);
+    let at = line.find("--mode")?;
+    let rest = &line[at + "--mode".len()..];
+    if !rest.contains("not available") {
+        return None;
+    }
+    let asked: String = rest
+        .trim_start_matches([' ', '=', '"', '\''])
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    if !known(&asked) {
+        return None;
+    }
+    let running = line
+        .split_once("continuing in")
+        .and_then(|(_, after)| {
+            after
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .find(|w| known(w) && *w != asked)
+        })
+        .unwrap_or(DEFAULT_RUNNING);
+    Some((asked, running.to_string()))
+}
+
+/// An `ask_question` call's questions: `args.questions` is JSON text (`arg`); an entry with no
+/// question is left out, and an option is a string or a `{label, description}` object.
+fn read_questions(args: &Value) -> Vec<Question> {
+    let list = arg(&args["questions"]);
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|q| {
+            let text = s(&q["question"]).filter(|t| !t.trim().is_empty())?;
+            let options = q["options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|o| match o {
+                    Value::String(label) => Some(QOption {
+                        label: label.clone(),
+                        description: String::new(),
+                        preview: None,
+                    }),
+                    Value::Object(_) => Some(QOption {
+                        label: s(&o["label"]).filter(|l| !l.trim().is_empty())?,
+                        description: s(&o["description"]).unwrap_or_default(),
+                        preview: None,
+                    }),
+                    _ => None,
+                })
+                .collect();
+            Some(Question {
+                header: String::new(),
+                text,
+                options,
+                multi: q["is_multi_select"].as_bool().unwrap_or(false),
+            })
+        })
+        .collect()
+}
+
+/// A tool result's answer lines (`A1: Vitest`, `A2: User Skipped`): whether there are any,
+/// and whether one says you skipped.
+fn answer_lines(content: &str) -> (bool, bool) {
+    let answers: Vec<&str> = content
+        .lines()
+        .filter_map(|l| {
+            let rest = l.strip_prefix('A')?;
+            let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            (digits > 0)
+                .then(|| rest[digits..].strip_prefix(": "))
+                .flatten()
+        })
+        .collect();
+    let skipped = answers.iter().any(|a| a.trim() == "User Skipped");
+    (!answers.is_empty(), skipped)
+}
+
+/// One `ask_question` call read from the main transcript: its step, its card's id and its
+/// questions.
+struct Ask {
+    step: i64,
+    id: String,
+    questions: Vec<Question>,
 }
 
 pub struct Agy;
@@ -303,7 +435,23 @@ impl Provider for Agy {
     }
 
     fn translator(&self) -> Box<dyn Translator> {
-        Box::new(AgyTranslator::default())
+        Box::new(AgyTranslator {
+            gemini_dir: here_gemini_dir(),
+            ..AgyTranslator::default()
+        })
+    }
+
+    /// Print mode skips `ask_question` ("User Skipped") and goes on: the question is read from
+    /// the main transcript, and answered by a message (2026-11-24, tested: agy takes it).
+    fn questions_by_message(&self) -> bool {
+        true
+    }
+
+    fn question_note(&self) -> Option<&'static str> {
+        Some(
+            "agy's print mode skips questions, so it went on without one. Your picks go back as \
+             a new message.",
+        )
     }
 
     /// Given a conversation it doesn't have, agy warns `conversation "<id>" not found` on
@@ -421,6 +569,22 @@ struct AgyTranslator {
     unreported: HashSet<String>,
     /// Each lane's tool calls waiting for their result (a transcript's `GENERIC` line).
     calls: HashMap<String, Vec<String>>,
+    /// agy's data folder (`gemini_dir`): where the main transcript is; None: not followed.
+    gemini_dir: Option<PathBuf>,
+    /// The conversation whose main transcript is followed (a new one, after `/clear`, gets
+    /// its own `Follow`).
+    followed: Option<String>,
+    /// The step index of the first stdout `step_update` this process saw: the transcript's
+    /// older steps (a resumed conversation's) never ask again.
+    first_step: Option<i64>,
+    /// The main transcript's `ask_question` calls waiting for their result, oldest first.
+    asks: VecDeque<Ask>,
+    /// Skipped asks read before the first step said where this run starts.
+    held: Vec<Ask>,
+    /// The question cards sent, so none shows twice.
+    shown: HashSet<String>,
+    /// A mode refusal was reported (it is said once).
+    refused: bool,
 }
 
 /// The file a subagent's `log_uri` names, if it is a local `file://` one (percent-decoded).
@@ -643,11 +807,121 @@ impl AgyTranslator {
                     output: None,
                 });
                 if let Some(path) = sub["log_uri"].as_str().and_then(followed_path) {
-                    out.push(Event::Follow { id: lane, path });
+                    out.push(Event::Follow {
+                        id: lane,
+                        path,
+                        main: false,
+                    });
                 }
             }
         }
         out
+    }
+
+    /// `init` (2026-11-24): follow the conversation's main transcript, once per conversation
+    /// id; a new id (`/clear`) is a new transcript whose steps count from its own start.
+    fn follow_main(&mut self, conversation: &str) -> Vec<Event> {
+        if self.followed.as_deref() == Some(conversation) || !uuid_shaped(conversation) {
+            return Vec::new();
+        }
+        let Some(dir) = &self.gemini_dir else {
+            return Vec::new();
+        };
+        let path = transcript_path(dir, conversation);
+        self.followed = Some(conversation.to_string());
+        self.first_step = None;
+        self.asks.clear();
+        self.held.clear();
+        vec![Event::Follow {
+            id: MAIN_FOLLOW.to_string(),
+            path,
+            main: true,
+        }]
+    }
+
+    /// A stdout step: the first says where this run starts; the skipped asks held until then
+    /// show if they are this run's.
+    fn note_step(&mut self, step: &Value) -> Vec<Event> {
+        let Some(at) = step["step_index"].as_i64() else {
+            return Vec::new();
+        };
+        if self.first_step.is_some() {
+            return Vec::new();
+        }
+        self.first_step = Some(at);
+        std::mem::take(&mut self.held)
+            .into_iter()
+            .flat_map(|ask| self.show(ask))
+            .collect()
+    }
+
+    /// A skipped ask's card, if it is this run's and not shown yet; held while the run's
+    /// first step isn't known.
+    fn show(&mut self, ask: Ask) -> Vec<Event> {
+        let Some(first) = self.first_step else {
+            self.held.push(ask);
+            return Vec::new();
+        };
+        if ask.step < first || ask.questions.is_empty() || !self.shown.insert(ask.id.clone()) {
+            return Vec::new();
+        }
+        vec![Event::Question {
+            id: ask.id,
+            questions: ask.questions,
+            by: None,
+        }]
+    }
+
+    /// A line of the main transcript: only question cards (stdout gives the rows). An
+    /// `ask_question` call waits for its result; a result with answer lines settles the oldest,
+    /// and one you skipped (print mode always does) becomes its card.
+    fn main_line(&mut self, line: &str) -> Vec<Event> {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            return Vec::new();
+        };
+        let Some(step) = v["step_index"].as_i64() else {
+            return Vec::new();
+        };
+        match v["type"].as_str() {
+            Some("PLANNER_RESPONSE") => {
+                let conversation = self.followed.clone().unwrap_or_default();
+                for (n, call) in v["tool_calls"].as_array().into_iter().flatten().enumerate() {
+                    if call["name"] == "ask_question" {
+                        self.asks.push_back(Ask {
+                            step,
+                            id: format!("ask:{conversation}:{step}:{n}"),
+                            questions: read_questions(&call["args"]),
+                        });
+                    }
+                }
+                Vec::new()
+            }
+            Some("GENERIC") => {
+                let (answered, skipped) = answer_lines(v["content"].as_str().unwrap_or(""));
+                if !answered {
+                    return Vec::new();
+                }
+                match self.asks.pop_front() {
+                    Some(ask) if skipped => self.show(ask),
+                    _ => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// agy refused a mode (said once).
+    fn refusal(&mut self, line: &str) -> Vec<Event> {
+        if self.refused {
+            return Vec::new();
+        }
+        match mode_refusal(line) {
+            Some((asked, running)) => {
+                self.refused = true;
+                vec![Event::ModeRefused { asked, running }]
+            }
+            None => Vec::new(),
+        }
     }
 
     fn error(&mut self, text: String) -> Vec<Event> {
@@ -701,14 +975,24 @@ impl Translator for AgyTranslator {
 
     fn decode(&mut self, line: &str) -> Vec<Event> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
-            return Vec::new();
+            // agy's words outside its events (a refused mode may come this way too).
+            return self.refusal(line);
         };
         match v["event"].as_str() {
-            Some("init") => vec![Event::Started {
-                conversation: s(&v["conversation_id"]).unwrap_or_default(),
-                model: None,
-            }],
-            Some("step_update") if v["step_update"].is_object() => self.step(&v["step_update"]),
+            Some("init") => {
+                let conversation = s(&v["conversation_id"]).unwrap_or_default();
+                let mut out = vec![Event::Started {
+                    conversation: conversation.clone(),
+                    model: None,
+                }];
+                out.extend(self.follow_main(&conversation));
+                out
+            }
+            Some("step_update") if v["step_update"].is_object() => {
+                let mut out = self.step(&v["step_update"]);
+                out.extend(self.note_step(&v["step_update"]));
+                out
+            }
             Some("result") if v["result"].is_object() => self.result(&v["result"]),
             _ => Vec::new(),
         }
@@ -717,6 +1001,9 @@ impl Translator for AgyTranslator {
     /// A line of a subagent's transcript (M11ar): its words, its tool calls, their results, and
     /// its report to this conversation (which ends it).
     fn decode_followed(&mut self, lane: &str, line: &str) -> Vec<Event> {
+        if lane == MAIN_FOLLOW {
+            return self.main_line(line);
+        }
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             return Vec::new();
         };
@@ -789,6 +1076,11 @@ impl Translator for AgyTranslator {
         out
     }
 
+    /// agy warns on stderr (a refused mode).
+    fn decode_stderr(&mut self, line: &str) -> Vec<Event> {
+        self.refusal(line)
+    }
+
     /// Each turn is one `{"event":"user"}` line (no `role`: agy rejects it). agy asks fuxx
     /// nothing (its prompts are not routed), so there is nothing to answer; and the recordings
     /// show no way to stop a turn, so `Interrupt` writes nothing (the tab's Force stop ends the
@@ -805,7 +1097,7 @@ impl Translator for AgyTranslator {
             | Action::AlwaysAllow { .. }
             | Action::Deny { .. }
             // Print mode answers its own `ask_question` (skipped) and has no channel for
-            // yours (batch 3, chore 8): it never sends `Event::Question`.
+            // yours: its cards are answered by an ordinary message (`questions_by_message`).
             | Action::Answer { .. }
             | Action::Interrupt
             | Action::SetModel { .. }
@@ -851,7 +1143,9 @@ mod tests {
         let lanes: Vec<String> = out
             .iter()
             .filter_map(|e| match e {
-                Event::Follow { id, .. } => Some(id.clone()),
+                Event::Follow {
+                    id, main: false, ..
+                } => Some(id.clone()),
                 _ => None,
             })
             .collect();
@@ -937,7 +1231,11 @@ mod tests {
         let follows: Vec<_> = ev
             .iter()
             .filter_map(|e| match e {
-                Event::Follow { id, path } => Some((id.clone(), path.clone())),
+                Event::Follow {
+                    id,
+                    path,
+                    main: false,
+                } => Some((id.clone(), path.clone())),
                 _ => None,
             })
             .collect();
@@ -978,7 +1276,9 @@ mod tests {
         let lane = ev
             .iter()
             .find_map(|e| match e {
-                Event::Follow { id, .. } => Some(id.clone()),
+                Event::Follow {
+                    id, main: false, ..
+                } => Some(id.clone()),
                 _ => None,
             })
             .unwrap();
@@ -1058,7 +1358,10 @@ mod tests {
         let mut lanes = Vec::new();
         for l in body {
             for e in t.decode(l) {
-                if let Event::Follow { id, .. } = e {
+                if let Event::Follow {
+                    id, main: false, ..
+                } = e
+                {
                     lanes.push(id);
                 }
             }
@@ -1752,5 +2055,289 @@ mod tests {
         assert!(
             matches!(usage_bucket(&b), UsageLimit::Read { name, .. } if name == "Weekly Limit")
         );
+    }
+
+    // ---- 2026-11-24: agy's skipped questions, answered by a message ----
+
+    const ASK: &str = include_str!("fixtures/agy-ask.jsonl");
+    const ASK_TRANSCRIPT: &str = include_str!("fixtures/agy-ask-transcript.jsonl");
+    const ASK_CONVERSATION: &str = "00000000-0000-0000-0000-000000000000";
+
+    /// A translator reading agy's data under `dir`.
+    fn translator_in(dir: &str) -> AgyTranslator {
+        AgyTranslator {
+            gemini_dir: Some(PathBuf::from(dir)),
+            ..AgyTranslator::default()
+        }
+    }
+
+    /// The first turn of the ask recording: its stdout, then (as the follower reads it later)
+    /// its main transcript's lines up to that turn's end.
+    fn asked_once(t: &mut AgyTranslator) -> Vec<Event> {
+        let mut out: Vec<Event> = ASK.lines().flat_map(|l| t.decode(l)).collect();
+        for line in ASK_TRANSCRIPT.lines().take(7) {
+            out.extend(t.decode_followed(MAIN_FOLLOW, line));
+        }
+        out
+    }
+
+    fn questions_of(ev: &[Event]) -> Vec<(String, Vec<Question>)> {
+        ev.iter()
+            .filter_map(|e| match e {
+                Event::Question { id, questions, by } => {
+                    assert_eq!(*by, None, "Main asks");
+                    Some((id.clone(), questions.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn agy_init_follows_the_main_transcript() {
+        let mut t = translator_in("/Users/me/.gemini");
+        let init = ASK.lines().next().unwrap();
+        let ev = t.decode(init);
+        assert!(matches!(&ev[0], Event::Started { conversation, .. }
+            if conversation == ASK_CONVERSATION));
+        assert_eq!(
+            ev[1],
+            Event::Follow {
+                id: MAIN_FOLLOW.into(),
+                path: PathBuf::from(format!(
+                    "/Users/me/.gemini/antigravity-cli/brain/{ASK_CONVERSATION}/\
+                     .system_generated/logs/transcript.jsonl"
+                )),
+                main: true,
+            }
+        );
+        // Once per conversation: the same id again (a restart's init) follows nothing new.
+        assert_eq!(t.decode(init).len(), 1);
+        // A new id (`/clear`): its own transcript.
+        let other = init.replace(ASK_CONVERSATION, "6a1c234d-7469-40ef-b093-c74ad8006c28");
+        assert!(t.decode(&other).iter().any(|e| matches!(e,
+            Event::Follow { path, main: true, .. }
+                if path.to_string_lossy().contains("6a1c234d"))));
+        // An id that isn't a UUID is never made into a path.
+        let mut t = translator_in("/Users/me/.gemini");
+        let odd = init.replace(ASK_CONVERSATION, "../../etc");
+        assert_eq!(t.decode(&odd).len(), 1);
+        // Where agy keeps its data: `$ANTIGRAVITY_GEMINI_DIR`, else `~/.gemini`.
+        assert_eq!(
+            gemini_dir(Some(OsStr::new("/tmp/g")), Some(OsStr::new("/Users/me"))),
+            Some(PathBuf::from("/tmp/g"))
+        );
+        assert_eq!(
+            gemini_dir(Some(OsStr::new("")), Some(OsStr::new("/Users/me"))),
+            Some(PathBuf::from("/Users/me/.gemini"))
+        );
+        assert_eq!(gemini_dir(None, None), None);
+        assert_eq!(
+            transcript_path(Path::new("/tmp/g"), "c"),
+            PathBuf::from("/tmp/g/antigravity-cli/brain/c/.system_generated/logs/transcript.jsonl")
+        );
+        // Tests never point at your own data.
+        let mut t = AGY.translator();
+        assert!(t.decode(init).iter().any(|e| matches!(e,
+            Event::Follow { path, .. } if path.starts_with("/Users/me/.gemini"))));
+    }
+
+    #[test]
+    fn agy_skipped_ask_question_becomes_a_question_card() {
+        let mut t = translator_in("/Users/me/.gemini");
+        let asked = questions_of(&asked_once(&mut t));
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        let (id, questions) = &asked[0];
+        assert_eq!(id, &format!("ask:{ASK_CONVERSATION}:3:0"));
+        assert_eq!(
+            questions,
+            &[Question {
+                header: String::new(),
+                text: "Which test runner should code/my-app use?".into(),
+                options: [
+                    "(Recommended) Vitest",
+                    "Jest",
+                    "Node.js built-in test runner (node:test)"
+                ]
+                .map(|l| QOption {
+                    label: l.into(),
+                    description: String::new(),
+                    preview: None,
+                })
+                .to_vec(),
+                multi: false,
+            }]
+        );
+        // Read again (a follower started over): never twice.
+        for line in ASK_TRANSCRIPT.lines().take(7) {
+            assert!(questions_of(&t.decode_followed(MAIN_FOLLOW, line)).is_empty());
+        }
+        // agy answers nothing for it: the answer is a message.
+        assert!(AGY.questions_by_message());
+        assert!(
+            AGY.question_note()
+                .is_some_and(|n| n.contains("new message"))
+        );
+        let answer = Action::Answer {
+            id: id.clone(),
+            answers: Vec::new(),
+        };
+        assert!(t.encode(&answer).is_empty());
+    }
+
+    #[test]
+    fn agy_main_transcript_adds_no_rows() {
+        let mut t = translator_in("/Users/me/.gemini");
+        ASK.lines().for_each(|l| {
+            t.decode(l);
+        });
+        for line in ASK_TRANSCRIPT.lines() {
+            for e in t.decode_followed(MAIN_FOLLOW, line) {
+                assert!(matches!(e, Event::Question { .. }), "{e:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn agy_resumed_run_ignores_old_questions() {
+        // A resumed run (`--conversation`): its first stdout step is the 7th; the transcript's
+        // older ask was the last run's.
+        let mut t = translator_in("/Users/me/.gemini");
+        t.decode(ASK.lines().next().unwrap());
+        // The follower may read the old lines before the run's first step comes.
+        let mut ev = Vec::new();
+        for line in ASK_TRANSCRIPT.lines().take(7) {
+            ev.extend(t.decode_followed(MAIN_FOLLOW, line));
+        }
+        let step = json!({"event": "step_update", "step_update": {"conversation_id":
+            ASK_CONVERSATION, "step_index": 7, "state": "DONE", "step_type": "user_input"}});
+        ev.extend(t.decode(&step.to_string()));
+        for line in ASK_TRANSCRIPT.lines().skip(7) {
+            ev.extend(t.decode_followed(MAIN_FOLLOW, line));
+        }
+        assert!(questions_of(&ev).is_empty(), "{ev:?}");
+        // Held the other way round, this run's own ask still shows once its step is known.
+        let mut t = translator_in("/Users/me/.gemini");
+        t.decode(ASK.lines().next().unwrap());
+        let mut ev = Vec::new();
+        for line in ASK_TRANSCRIPT.lines().take(7) {
+            ev.extend(t.decode_followed(MAIN_FOLLOW, line));
+        }
+        assert!(
+            questions_of(&ev).is_empty(),
+            "held until the run's first step"
+        );
+        let first = ASK.lines().nth(1).unwrap();
+        assert_eq!(questions_of(&t.decode(first)).len(), 1);
+    }
+
+    #[test]
+    fn agy_answered_ask_shows_no_card() {
+        let mut t = translator_in("/Users/me/.gemini");
+        ASK.lines().for_each(|l| {
+            t.decode(l);
+        });
+        let lines: Vec<String> = ASK_TRANSCRIPT
+            .lines()
+            .take(7)
+            .map(|l| l.replace("A1: User Skipped", "A1: Vitest"))
+            .collect();
+        for line in &lines {
+            assert!(questions_of(&t.decode_followed(MAIN_FOLLOW, line)).is_empty());
+        }
+        // A tool result without answer lines settles no ask.
+        let (any, skipped) = answer_lines("Created At: x\nCommand exited with code 0.");
+        assert!(!any && !skipped);
+        assert_eq!(answer_lines("A1: Vitest\nA2: User Skipped"), (true, true));
+        assert_eq!(answer_lines("Q1: x\nA: y\nAx: z"), (false, false));
+    }
+
+    #[test]
+    fn agy_multi_select_and_option_objects() {
+        let questions = json!([
+            {"is_multi_select": true, "question": "Which checks?",
+             "options": [{"label": "Lint", "description": "clippy"}, "Format", 7, {"x": 1}]},
+            {"question": "  ", "options": ["a"]},
+        ])
+        .to_string();
+        let mut t = translator_in("/Users/me/.gemini");
+        t.decode(ASK.lines().next().unwrap());
+        t.decode(ASK.lines().nth(1).unwrap());
+        let call = json!({"step_index": 3, "type": "PLANNER_RESPONSE", "tool_calls": [
+            {"name": "run_command", "args": {}},
+            {"name": "ask_question", "args": {"questions": questions}}]});
+        let result = json!({"step_index": 4, "type": "GENERIC",
+            "content": "Created At: x\nA1: User Skipped"});
+        assert!(t.decode_followed(MAIN_FOLLOW, &call.to_string()).is_empty());
+        let asked = questions_of(&t.decode_followed(MAIN_FOLLOW, &result.to_string()));
+        assert_eq!(asked.len(), 1);
+        let (id, q) = &asked[0];
+        assert!(id.ends_with(":3:1"), "the call's place in its step: {id}");
+        assert_eq!(q.len(), 1, "the empty question is left out");
+        assert!(q[0].multi);
+        assert_eq!(
+            q[0].options
+                .iter()
+                .map(|o| (o.label.as_str(), o.description.as_str()))
+                .collect::<Vec<_>>(),
+            [("Lint", "clippy"), ("Format", "")]
+        );
+    }
+
+    #[test]
+    fn agy_answers_questions_by_message() {
+        // The card's message, sent as an ordinary turn: the line agy took in the recording.
+        let mut t = translator_in("/Users/me/.gemini");
+        let (_, questions) = questions_of(&asked_once(&mut t)).remove(0);
+        let text = crate::agent_ask::answer_message(
+            &questions,
+            &[QAnswer {
+                labels: vec!["(Recommended) Vitest".into()],
+                other: None,
+            }],
+        )
+        .expect("an answer");
+        let said = serde_json::from_str::<Value>(ASK_TRANSCRIPT.lines().nth(7).unwrap()).unwrap();
+        let said = said["content"].as_str().unwrap();
+        assert!(said.contains(&text), "{text:?} in {said:?}");
+        let sent = t.encode(&Action::Send {
+            text: text.clone(),
+            images: Vec::new(),
+            id: None,
+        });
+        assert_eq!(
+            serde_json::from_str::<Value>(&sent[0]).unwrap(),
+            json!({"event": "user", "message": {"content": text}})
+        );
+    }
+
+    #[test]
+    fn agy_refused_mode_is_its_real_mode() {
+        let line = "warning: --mode auto is not available for this account; continuing in the \
+                    default mode";
+        assert_eq!(
+            mode_refusal(line),
+            Some(("auto".into(), "accept-edits".into()))
+        );
+        assert_eq!(
+            mode_refusal("--mode=auto is not available, continuing in plan mode"),
+            Some(("auto".into(), "plan".into()))
+        );
+        assert_eq!(mode_refusal("--mode yolo is not available"), None);
+        assert_eq!(mode_refusal("warning: conversation \"x\" not found"), None);
+        // On stderr, or as a line of its own on stdout; said once.
+        let mut t = AGY.translator();
+        assert_eq!(
+            t.decode_stderr(line),
+            [Event::ModeRefused {
+                asked: "auto".into(),
+                running: "accept-edits".into()
+            }]
+        );
+        assert!(t.decode_stderr(line).is_empty());
+        assert!(t.decode(line).is_empty());
+        let mut t = AGY.translator();
+        assert_eq!(t.decode(line).len(), 1);
+        assert!(t.decode_stderr("anything else").is_empty());
     }
 }

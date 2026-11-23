@@ -318,7 +318,7 @@ pub fn run_probe_stoppable(
                 }
                 break Ok(());
             }
-            Ok(ProcessEvent::Ended { .. }) => {}
+            Ok(ProcessEvent::Ended { .. } | ProcessEvent::ErrLine(_)) => {}
             Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(5)),
             Err(_) => break Ok(()),
         }

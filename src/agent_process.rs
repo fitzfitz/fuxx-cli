@@ -16,6 +16,11 @@ pub const MAX_LINE: usize = 8 * 1024 * 1024;
 const OVERLONG_MARKER: &str = r#"{"type":"fuxx_overlong"}"#;
 /// How much of the end of stderr is kept for `Exited`.
 const STDERR_TAIL: usize = 4 * 1024;
+/// How many stderr lines are sent one by one (`ErrLine`); a chatty agent's later ones only
+/// reach the tail.
+const ERR_LINES: usize = 64;
+/// The longest stderr line sent; a longer one is cut.
+const ERR_LINE_MAX: usize = 1024;
 /// How long a process group gets after SIGTERM before SIGKILL.
 pub(crate) const TERM_GRACE: Duration = Duration::from_secs(2);
 
@@ -84,6 +89,10 @@ pub enum ProcessEvent {
     },
     /// The process couldn't be started.
     SpawnFailed(String),
+    /// One stderr line (without its newline), as it comes: the first `ERR_LINES` of them, each
+    /// cut to `ERR_LINE_MAX` bytes (agy warns there that it refused a mode; the tail still
+    /// comes with `Exited`).
+    ErrLine(String),
 }
 
 pub struct AgentProcess {
@@ -353,9 +362,10 @@ fn run(
             .spawn(move || read_lines(stdout, &events))
     });
     let err_reader = child.stderr.take().map(|stderr| {
+        let events = events.clone();
         std::thread::Builder::new()
             .name("fuxx-agent-stderr".into())
-            .spawn(move || read_tail(stderr))
+            .spawn(move || read_tail(stderr, &events))
     });
     let status = child.wait(); // reaps
     let was_killed = killed.load(Ordering::SeqCst);
@@ -377,14 +387,31 @@ fn run(
     let _ = events.unbounded_send(ProcessEvent::Exited { code, stderr_tail });
 }
 
-/// The last `STDERR_TAIL` bytes of `stderr`, as text.
-fn read_tail(mut stderr: impl Read) -> String {
+/// The last `STDERR_TAIL` bytes of `stderr`, as text; its first `ERR_LINES` lines are sent as
+/// they come (`ErrLine`).
+fn read_tail(mut stderr: impl Read, events: &UnboundedSender<ProcessEvent>) -> String {
     let mut tail: Vec<u8> = Vec::new();
     let mut buf = [0u8; 4096];
+    let mut line: Vec<u8> = Vec::new();
+    let mut sent = 0;
     loop {
         match stderr.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                for &b in &buf[..n] {
+                    if sent >= ERR_LINES {
+                        break;
+                    }
+                    if b == b'\n' {
+                        let text = String::from_utf8_lossy(&line);
+                        let _ = events
+                            .unbounded_send(ProcessEvent::ErrLine(text.trim_end().to_string()));
+                        line.clear();
+                        sent += 1;
+                    } else if line.len() < ERR_LINE_MAX {
+                        line.push(b);
+                    }
+                }
                 tail.extend_from_slice(&buf[..n]);
                 if tail.len() > STDERR_TAIL {
                     tail.drain(..tail.len() - STDERR_TAIL);
@@ -464,7 +491,7 @@ mod tests {
     fn next(rx: &mut UnboundedReceiver<ProcessEvent>) -> ProcessEvent {
         loop {
             match next_raw(rx) {
-                ProcessEvent::Ended { .. } => {}
+                ProcessEvent::Ended { .. } | ProcessEvent::ErrLine(_) => {}
                 event => return event,
             }
         }
@@ -531,6 +558,23 @@ mod tests {
             next(&mut rx),
             ProcessEvent::Exited { code: Some(0), .. }
         ));
+    }
+
+    /// 2026-11-24: stderr lines come as they are written (agy's refused mode), before the
+    /// end, and still in the tail.
+    #[test]
+    fn stderr_lines_come_one_by_one() {
+        let (_process, mut rx) = start(&argv("echo warn one >&2; echo warn two >&2; exit 0"));
+        let mut lines = Vec::new();
+        let tail = loop {
+            match next_raw(&mut rx) {
+                ProcessEvent::ErrLine(l) => lines.push(l),
+                ProcessEvent::Exited { stderr_tail, .. } => break stderr_tail,
+                _ => {}
+            }
+        };
+        assert_eq!(lines, ["warn one", "warn two"]);
+        assert!(tail.contains("warn two"), "{tail:?}");
     }
 
     #[test]
@@ -619,10 +663,13 @@ mod tests {
         );
         assert_eq!(next(&mut rx), line("a"));
         assert_eq!(next(&mut rx), line("b"));
-        let tail = read_tail(InterruptedOnce {
-            data: b"oops",
-            interrupted: false,
-        });
+        let tail = read_tail(
+            InterruptedOnce {
+                data: b"oops",
+                interrupted: false,
+            },
+            &tx,
+        );
         assert_eq!(tail, "oops");
     }
 

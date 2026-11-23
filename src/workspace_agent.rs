@@ -653,7 +653,7 @@ impl Workspace {
                 .and_then(|s| s.project.clone())
                 .or_else(|| self.active_project()),
         );
-        let kind = self.new_agent_kind(provider, folder, None, None);
+        let kind = self.new_agent_kind(provider, folder, None, None, cx);
         self.add_agent_tab(pane, kind, None, cx)
     }
 
@@ -669,7 +669,7 @@ impl Workspace {
         effort: Option<String>,
         cx: &mut Context<Self>,
     ) -> Option<TabId> {
-        let kind = self.new_agent_kind(provider, Some(cwd), model, effort);
+        let kind = self.new_agent_kind(provider, Some(cwd), model, effort, cx);
         self.add_agent_tab(pane, kind, None, cx)
     }
 
@@ -771,7 +771,7 @@ impl Workspace {
             self.active_folder_now(),
             session.and_then(|s| s.project.clone()),
         );
-        let kind = self.new_agent_kind(provider, folder, None, None);
+        let kind = self.new_agent_kind(provider, folder, None, None, cx);
         let TabKind::Agent { cwd, .. } = &kind else {
             return;
         };
@@ -793,14 +793,16 @@ impl Workspace {
         folder: Option<PathBuf>,
         model: Option<String>,
         effort: Option<String>,
+        cx: &App,
     ) -> TabKind {
         let cwd = folder
             .or_else(|| self.places.home.clone())
             .or_else(crate::workspace::home_dir)
             .unwrap_or_else(|| PathBuf::from("/"));
-        let mode = providers::by_name(provider)
-            .and_then(|p| p.info().default_mode)
-            .map(str::to_string);
+        // Its default mode, unless this Mac remembers the agent refusing it (2026-11-24: agy's
+        // account has no Auto): then the mode it ran in instead, with no warning.
+        let default = providers::by_name(provider).and_then(|p| p.info().default_mode);
+        let mode = crate::mode_memory::start_mode_in(cx, provider, default);
         TabKind::Agent {
             provider: provider.to_string(),
             cwd,
@@ -1033,8 +1035,13 @@ impl Workspace {
                     _ => None,
                 };
                 if let (Some(provider), Some((_, pane))) = (provider, self.model.locate(tab)) {
-                    let kind =
-                        self.new_agent_kind(provider.info().name, Some(folder.clone()), None, None);
+                    let kind = self.new_agent_kind(
+                        provider.info().name,
+                        Some(folder.clone()),
+                        None,
+                        None,
+                        cx,
+                    );
                     self.add_agent_tab(pane, kind, Some(tab), cx);
                 }
             }
@@ -1049,11 +1056,32 @@ impl Workspace {
             // Before a `Status` (which notifies); a new question while it already waits (a
             // second permission) has no `Status` after it, so it notifies itself.
             AgentTabEvent::Question(question) => {
+                let mut asked = None;
                 if let Some(slot) = self.agents.get_mut(&tab) {
+                    let new = question.is_some() && slot.question != *question;
                     slot.question = question.clone();
                     if slot.status == Status::Waiting {
                         cx.notify();
+                    } else if new && slot.view.read(cx).questions_by_message() {
+                        // A question the agent didn't wait on (agy, 2026-11-24): no Waiting
+                        // follows, so it notifies itself ("agy asked: …").
+                        asked = question.clone().map(|q| (q, slot.label.to_string()));
                     }
+                }
+                let looking = self.model.focused_tab() == Some(tab) && self.window_active;
+                if let Some((question, agent)) = asked.filter(|_| !looking) {
+                    let ws = self.model.locate(tab).map(|(ws, _)| ws);
+                    self.notify_agent(
+                        tab,
+                        ws,
+                        &agent,
+                        Status::Waiting,
+                        Some(&question),
+                        None,
+                        None,
+                        cx,
+                    );
+                    cx.notify();
                 }
             }
             AgentTabEvent::Status { status, live } => {

@@ -91,6 +91,7 @@ mod md_preview;
 mod md_reader;
 mod mermaid;
 mod mermaid_render;
+mod mode_memory;
 mod mouse;
 #[allow(dead_code)] // used by the daemon and client from M10a Task 3/4
 mod mux_proto;

@@ -12,12 +12,13 @@ use serde_json::{Value, json};
 
 use super::agent::{Slot, build_with, feed, scene_sized, start, tab_of};
 use super::chrome::settle_frames;
-use super::{Kind, Scene, Themes, render_with, shot_theme};
+use super::{Kind, Scene, Themes, render_with, shoot_with, shot_theme, shot_themes};
 use crate::agent_conversation::{Item, Reply};
 use crate::agent_process::ProcessEvent;
 use crate::agent_tab::AgentTab;
+use crate::providers::agy::AGY;
 use crate::providers::claude::CLAUDE;
-use crate::providers::{Event, Past};
+use crate::providers::{Event, Past, Provider, QAnswer, Start};
 use crate::status::Status;
 
 pub(super) const FILE: &str = file!();
@@ -44,6 +45,30 @@ const fn visual(name: &'static str, run: fn()) -> Scene {
         serial: false,
         kind: Kind::Visual,
         sources: SOURCES,
+    }
+}
+
+/// agy's questions, answered by a message, and its refused mode (2026-11-24).
+const AGY_SOURCES: &[&str] = &[
+    "src/agent_ask.rs",
+    "src/agent_ask_view.rs",
+    "src/agent_tab.rs",
+    "src/agent_box.rs",
+    "src/agent_chat.rs",
+    "src/agent_conversation.rs",
+    "src/mode_memory.rs",
+    "src/providers/mod.rs",
+    "src/providers/agy.rs",
+];
+
+const fn visual_agy(name: &'static str, run: fn()) -> Scene {
+    Scene {
+        name,
+        run,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: AGY_SOURCES,
     }
 }
 
@@ -88,6 +113,23 @@ pub(super) const SCENES: &[Scene] = &[
         "agent-tab-question-head-clear",
         agent_tab_question_head_clear,
     ),
+    visual_agy("agent-tab-question-agy", agent_tab_question_agy),
+    visual_agy("agent-tab-agy-mode-refused", agent_tab_agy_mode_refused),
+    Scene {
+        name: "agent-question-agy-anywhere",
+        run: agent_question_agy_anywhere,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/agent_ask_view.rs",
+            "src/agent_tab.rs",
+            "src/mode_memory.rs",
+            "src/providers/agy.rs",
+            "src/workspace.rs",
+            "src/workspace_agent.rs",
+        ],
+    },
     Scene {
         name: "agent-question-anywhere",
         run: agent_question_anywhere,
@@ -1181,4 +1223,357 @@ pub(super) fn agent_tab_question_head_clear() {
             assert!(ask_of(cx, tab).lit, "{n}: back");
         },
     );
+}
+
+// ---- 2026-11-24: agy's skipped questions, answered by a message ----
+
+const AGY_ASK: &str = include_str!("../providers/fixtures/agy-ask.jsonl");
+const AGY_ASK_TRANSCRIPT: &str = include_str!("../providers/fixtures/agy-ask-transcript.jsonl");
+const AGY_ASKED: &str = "agy asked: Which test runner should code/my-app use?";
+/// The message agy took in the recording.
+const AGY_ANSWER: &str =
+    "My answers to your questions:\n- Which test runner should code/my-app use? \u{2192} Vitest";
+
+/// An agy tab in its default mode.
+fn agy_start() -> Start {
+    Start {
+        mode: AGY.info().default_mode.map(String::from),
+        ..start()
+    }
+}
+
+/// Scene `name` in both themes with an agy tab.
+fn agy_scene(
+    name: &str,
+    act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + Clone,
+) {
+    for &(slug, theme_name) in shot_themes() {
+        let theme = shot_theme(theme_name);
+        let slot: Slot = Rc::default();
+        let keep = slot.clone();
+        let n = format!("{name}-{slug}");
+        let act = act.clone();
+        let path = shoot_with(
+            name,
+            slug,
+            &theme,
+            size(px(DIMS.0), px(DIMS.1)),
+            build_with(&AGY, theme, slot, agy_start()),
+            move |cx, window| {
+                let tab = tab_of(&keep);
+                act(&n, cx, window, &tab);
+                keep.borrow_mut().take();
+            },
+        );
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// `once` with an agy tab.
+fn agy_once(
+    n: &'static str,
+    act: impl FnOnce(&mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + 'static,
+) {
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = Rc::default();
+    let keep = slot.clone();
+    render_with(
+        &theme,
+        size(px(DIMS.0), px(DIMS.1)),
+        build_with(&AGY, theme, slot, agy_start()),
+        move |cx, window| {
+            let tab = tab_of(&keep);
+            act(cx, window, &tab);
+            keep.borrow_mut().take();
+        },
+    );
+    println!("ui-shots: {n}");
+}
+
+/// A message sent, agy's stdout for the turn (its ask is a bare `unknown` step there), then
+/// its main transcript as the follower reads it: the skipped ask becomes the card.
+fn agy_asks(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>) {
+    be_key(cx, tab);
+    feed(cx, tab, |t, cx| {
+        t.send(
+            "Ask me one multiple-choice question about which test runner code/my-app should use"
+                .into(),
+            cx,
+        )
+    });
+    for line in AGY_ASK.lines() {
+        feed(cx, tab, |t, cx| {
+            t.shot_process(ProcessEvent::Line(line.into()), cx)
+        });
+    }
+    let lines: Vec<String> = AGY_ASK_TRANSCRIPT
+        .lines()
+        .take(7)
+        .map(String::from)
+        .collect();
+    feed(cx, tab, |t, cx| {
+        t.shot_followed(crate::providers::agy::MAIN_FOLLOW, lines, cx)
+    });
+}
+
+/// The last thing you said, as its bubble shows it.
+fn last_you(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Option<String> {
+    cx.read(|cx| {
+        tab.read(cx)
+            .shot_items()
+            .iter()
+            .rev()
+            .find_map(|i| match i {
+                Item::You { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+    })
+}
+
+/// The `user` lines written to agy, their text.
+fn agy_said(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<String> {
+    cx.read(|cx| tab.read(cx).shot_written())
+        .iter()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["event"] == "user")
+        .filter_map(|v| v["message"]["content"].as_str().map(String::from))
+        .collect()
+}
+
+/// The user's words (2026-11-24): "it doesn't want to show the popup, it says it skips it".
+/// agy's print mode skipped its own question and went on; the card shows it anyway, saying
+/// agy couldn't wait (a Waiting mark that doesn't breathe), why, and that your picks go back as
+/// a new message. The tab isn't Waiting; the banner line says "agy asked: …". Picking sends
+/// the message through the normal send (the bubble); Skip only closes the card; another
+/// message leaves it not answered.
+pub(super) fn agent_tab_question_agy() {
+    agy_scene("agent-tab-question-agy", |n, cx, window, tab| {
+        agy_asks(cx, tab);
+        settle_frames(cx, window);
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            assert!(t.questions_by_message(), "{n}");
+            assert_ne!(t.status(), Status::Waiting, "{n}: agy isn't blocked");
+            assert_eq!(t.question().as_deref(), Some(AGY_ASKED), "{n}");
+            assert!(t.asking(), "{n}: the box and Enter answer it");
+            assert!(t.waiting_ask_since().is_some(), "{n}: ⇧⌘A reaches it");
+            assert!(t.shot_part("ask-card").is_some(), "{n}: the card is drawn");
+            let tools = t
+                .shot_items()
+                .iter()
+                .filter(|i| matches!(i, Item::Tool { .. }))
+                .count();
+            assert_eq!(
+                tools, 1,
+                "{n}: stdout's run_command; the transcript adds no rows"
+            );
+        });
+        let ask = ask_of(cx, tab);
+        assert_eq!(ask.cursor, 0, "{n}: on the recommended option");
+        assert!(ask.focus && ask.keys_on, "{n}: the card has the keys");
+    });
+    agy_once(
+        "agent-tab-question-agy: picking sends",
+        |cx, window, tab| {
+            let n = "agent-tab-question-agy";
+            agy_asks(cx, tab);
+            let before = agy_said(cx, tab).len();
+            past_guard();
+            keys(cx, window, "enter");
+            assert_eq!(
+                last_you(cx, tab).as_deref(),
+                Some(AGY_ANSWER),
+                "{n}: the bubble"
+            );
+            let said = agy_said(cx, tab);
+            assert_eq!(said.len(), before + 1, "{n}: one message");
+            assert_eq!(said.last().map(String::as_str), Some(AGY_ANSWER), "{n}");
+            assert_eq!(
+                reply_of(cx, tab),
+                Some(Reply::Answered(vec![QAnswer {
+                    labels: vec!["(Recommended) Vitest".into()],
+                    other: None,
+                }])),
+                "{n}"
+            );
+            assert!(cx.read(|cx| tab.read(cx).shot_ask(cx)).is_none(), "{n}");
+        },
+    );
+    agy_once("agent-tab-question-agy: skip", |cx, window, tab| {
+        let n = "agent-tab-question-agy: skip";
+        agy_asks(cx, tab);
+        let before = cx.read(|cx| tab.read(cx).shot_written()).len();
+        past_guard();
+        keys(cx, window, "escape escape");
+        assert_eq!(reply_of(cx, tab), Some(Reply::Skipped), "{n}");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).shot_written()).len(),
+            before,
+            "{n}: closed here, nothing sent"
+        );
+    });
+    agy_once("agent-tab-question-agy: another message", |cx, _, tab| {
+        let n = "agent-tab-question-agy: another message";
+        agy_asks(cx, tab);
+        feed(cx, tab, |t, cx| t.send("Never mind, use Jest".into(), cx));
+        assert_eq!(reply_of(cx, tab), Some(Reply::Expired), "{n}: not answered");
+        assert_eq!(last_you(cx, tab).as_deref(), Some("Never mind, use Jest"));
+    });
+}
+
+/// agy's account has no Auto (2026-11-24): agy says so on stderr and runs in its default mode.
+/// The chip follows it, one quiet notice says so, and this Mac's new agy tabs start in Accept
+/// edits from now on.
+pub(super) fn agent_tab_agy_mode_refused() {
+    const REFUSED: &str =
+        "warning: --mode auto is not available for this account; continuing in the default mode";
+    agy_scene("agent-tab-agy-mode-refused", |n, cx, window, tab| {
+        be_key(cx, tab);
+        assert_eq!(
+            cx.read(|cx| crate::mode_memory::start_mode_in(cx, "agy", Some("auto"))),
+            Some("auto".to_string()),
+            "{n}: nothing refused yet"
+        );
+        for _ in 0..2 {
+            feed(cx, tab, |t, cx| {
+                t.shot_process(ProcessEvent::ErrLine(REFUSED.into()), cx)
+            });
+        }
+        feed(cx, tab, |t, cx| t.send("Say hello in one word".into(), cx));
+        for line in include_str!("../providers/fixtures/agy-text.jsonl").lines() {
+            feed(cx, tab, |t, cx| {
+                t.shot_process(ProcessEvent::Line(line.into()), cx)
+            });
+        }
+        settle_frames(cx, window);
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            assert_eq!(t.mode(), Some("accept-edits"), "{n}: agy's real mode");
+            assert_eq!(
+                t.shot_box(cx).mode.as_deref(),
+                Some("Accept edits"),
+                "{n}: the chip shows it"
+            );
+            let notices: Vec<&str> = t
+                .shot_items()
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Notice(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                notices,
+                ["Auto isn't available on this agy account \u{2014} running in Accept edits"],
+                "{n}: said once"
+            );
+            assert_eq!(
+                crate::mode_memory::start_mode_in(cx, "agy", Some("auto")).as_deref(),
+                Some("accept-edits"),
+                "{n}: new agy tabs start there"
+            );
+        });
+    });
+}
+
+/// In a workspace (2026-11-24): agy's question in a tab not in front makes a banner saying
+/// "agy asked: …" though the tab never waits, and ⌘⇧A lands on its card. After agy refused
+/// Auto, a new agy tab starts in Accept edits.
+pub(super) fn agent_question_agy_anywhere() {
+    use super::agent::agent_workspace;
+    use crate::layout_model::TabKind;
+    let n = "agent-question-agy-anywhere";
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Rc<RefCell<Option<Entity<crate::workspace::Workspace>>>> = Rc::default();
+    let keep = slot.clone();
+    let build = agent_workspace(theme, slot, |ws, window, cx| {
+        let my_app = std::path::Path::new("/Users/me/code/my-app");
+        let a = ws.open_unnamed_shot_session(Some(my_app), super::SHELL_TEXT, window, cx);
+        ws.agent_beside(a, "agy", window, cx);
+        let cli = std::path::Path::new("/Users/me/fuxx-cli/src");
+        let b = ws.open_unnamed_shot_session(Some(cli), super::SHELL_TEXT, window, cx);
+        ws.agent_beside(b, "agy", window, cx);
+    });
+    render_with(
+        &theme,
+        size(px(1100.), px(700.)),
+        build,
+        move |cx, window| {
+            let ws = keep.borrow_mut().take().expect("the workspace");
+            settle_frames(cx, window);
+            let tabs: Vec<(crate::layout_model::TabId, Entity<AgentTab>)> = cx.read(|cx| {
+                ws.read(cx)
+                    .agents
+                    .iter()
+                    .map(|(t, s)| (*t, s.view.clone()))
+                    .collect()
+            });
+            assert_eq!(tabs.len(), 2, "{n}: two agy tabs");
+            let mode_of = |cx: &VisualTestAppContext, tab| {
+                cx.read(
+                    |cx| match ws.read(cx).model.tab(tab).map(|t| t.kind.clone()) {
+                        Some(TabKind::Agent { mode, .. }) => mode,
+                        _ => None,
+                    },
+                )
+            };
+            assert_eq!(mode_of(cx, tabs[0].0).as_deref(), Some("auto"), "{n}");
+            let focused = cx.read(|cx| ws.read(cx).focused_agent_tab().map(|(t, _)| t));
+            let (behind, _) = tabs
+                .iter()
+                .find(|(t, _)| Some(*t) != focused)
+                .cloned()
+                .expect("a tab not in front");
+            let view = tabs.iter().find(|(t, _)| *t == behind).unwrap().1.clone();
+            agy_asks(cx, &view);
+            settle_frames(cx, window);
+            assert_ne!(
+                cx.read(|cx| view.read(cx).shown_status()),
+                Status::Waiting,
+                "{n}: the tab doesn't wait"
+            );
+            let banners = cx.read(|cx| ws.read(cx).shot_banners.clone());
+            assert!(
+                banners.iter().any(|(_, _, body)| body == AGY_ASKED),
+                "{n}: the banner says agy asked: {banners:?}"
+            );
+            cx.simulate_keystrokes(window, "cmd-shift-a");
+            settle_frames(cx, window);
+            let now = cx.read(|cx| ws.read(cx).focused_agent_tab().map(|(t, _)| t));
+            assert_eq!(now, Some(behind), "{n}: ⌘⇧A shows its tab");
+            assert!(ask_of(cx, &view).keys_on, "{n}: the keys on its card");
+            // agy refused Auto in that tab: a new agy tab starts in Accept edits.
+            feed(cx, &view, |t, cx| {
+                t.shot_process(
+                    ProcessEvent::ErrLine(
+                        "--mode auto is not available; continuing in the default mode".into(),
+                    ),
+                    cx,
+                )
+            });
+            let before: Vec<_> = tabs.iter().map(|(t, _)| *t).collect();
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let s = ws.open_unnamed_shot_session(None, super::SHELL_TEXT, window, cx);
+                    ws.agent_beside(s, "agy", window, cx);
+                })
+            })
+            .unwrap();
+            settle_frames(cx, window);
+            let new = cx.read(|cx| {
+                ws.read(cx)
+                    .agents
+                    .keys()
+                    .copied()
+                    .find(|t| !before.contains(t))
+            });
+            let new = new.expect("the new agy tab");
+            assert_eq!(
+                mode_of(cx, new).as_deref(),
+                Some("accept-edits"),
+                "{n}: remembered on this Mac"
+            );
+        },
+    );
+    println!("ui-shots: {n}");
 }

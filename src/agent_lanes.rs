@@ -153,8 +153,11 @@ pub fn shown_order(lanes: &[Lane]) -> Vec<usize> {
 
 /// How often a lane's followed file is read: often while it works, rarely once it ended (a
 /// woken subagent still shows up), so a long session's finished lanes cost next to nothing.
-pub fn follow_every(lane: Option<&Lane>) -> std::time::Duration {
+/// The main conversation's own record (`main`: agy's questions are only there) is read as
+/// often as a working lane's.
+pub fn follow_every(lane: Option<&Lane>, main: bool) -> std::time::Duration {
     match lane {
+        _ if main => std::time::Duration::from_millis(500),
         Some(l) if l.status.live() => std::time::Duration::from_millis(500),
         _ => std::time::Duration::from_secs(5),
     }
@@ -532,17 +535,19 @@ mod tests {
     fn a_finished_lanes_file_is_read_less_often() {
         let mut l = lane("a", "A");
         assert_eq!(
-            follow_every(Some(&l)),
+            follow_every(Some(&l), false),
             Duration::from_millis(500),
             "working"
         );
         l.status = LaneStatus::Done;
         assert_eq!(
-            follow_every(Some(&l)),
+            follow_every(Some(&l), false),
             Duration::from_secs(5),
             "done: a woken one still shows"
         );
-        assert_eq!(follow_every(None), Duration::from_secs(5), "gone");
+        assert_eq!(follow_every(None, false), Duration::from_secs(5), "gone");
+        // agy's main transcript (2026-11-24): a question shows within half a second.
+        assert_eq!(follow_every(None, true), Duration::from_millis(500), "main");
     }
 
     #[test]

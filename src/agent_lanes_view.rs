@@ -19,16 +19,23 @@ const NARROW: f32 = 480.0;
 
 impl AgentTab {
     /// `Event::Follow`: read `path`'s new lines as lane `lane`'s (`agent_lanes::follow_every`:
-    /// often while it works, rarely once done), off the UI thread, through the translator. It lives as long as the process (a woken subagent
+    /// often while it works, rarely once done; the main record, `main`, often), off the UI
+    /// thread, through the translator. It lives as long as the process (a woken subagent
     /// writes again after its report); a file that shrinks ends it.
-    pub(super) fn follow(&mut self, lane: String, path: PathBuf, cx: &mut Context<Self>) {
+    pub(super) fn follow(
+        &mut self,
+        lane: String,
+        path: PathBuf,
+        main: bool,
+        cx: &mut Context<Self>,
+    ) {
         let task = cx.spawn({
             let lane = lane.clone();
             async move |this, cx| {
                 let mut tail = crate::lane_follow::Tail::default();
                 loop {
                     let Ok(every) = this.update(cx, |this, _| {
-                        crate::agent_lanes::follow_every(this.conversation.lane(&lane))
+                        crate::agent_lanes::follow_every(this.conversation.lane(&lane), main)
                     }) else {
                         break;
                     };

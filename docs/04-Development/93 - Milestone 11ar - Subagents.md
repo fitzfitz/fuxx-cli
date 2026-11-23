@@ -907,3 +907,50 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     relay's other attachments go in its text, images can't; a message for a lane held while Main restarts waits as
     any message does; the pills' width estimate is 7 pt a character (6.6 ran short once "+N" grew its mark).
   - **On screen:** not yet seen in the real window (see the Progress Log).
+- **agy's skipped questions, answered by a message** (2026-11-24; your words: "can you take a look at agy, it doesn't
+  want to show the popup, it says it skips it. but claude is done great" … "give me the nearest solutions first for
+  this without ACP. We will have our milestone later for ACP integration, because this is big" — that milestone is
+  "ACP client" in the roadmap). agy's print mode answers its own `ask_question` with "User Skipped" and goes on; its
+  stdout shows only a bare `step_type: "unknown"` step. The question is in the conversation's main transcript
+  (`<gemini dir>/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`, the gemini dir
+  `$ANTIGRAVITY_GEMINI_DIR` or `~/.gemini`), so agy's `init` now follows it (`Event::Follow` with `main`, read every
+  0.5 s like a working lane; once per conversation id, again after a new id) and `decode_followed` turns a skipped
+  `ask_question` of this run (its step at or after the run's first stdout step) into `Event::Question`, never twice;
+  an answered one shows nothing, and the transcript adds no rows. The card is Claude's card with three labels: the
+  head "agy asked — it couldn't wait for your answer" (its Waiting mark still), the footer line "agy's print mode
+  skips questions, so it went on without one. Your picks go back as a new message." and "Send as message ⏎". Your
+  picks go through the normal send as "My answers to your questions:\n- ⟨question⟩ → ⟨answer⟩" (the line agy took in
+  the recording; unanswered left out, the Recommended mark dropped; nothing answered: the button waits); Skip closes
+  it here; another message while it is open leaves it not answered. The tab never shows Waiting for it; the banner
+  says "agy asked: …", and ⇧⌘A and the palette reach it. A generic `Provider::questions_by_message` (agy only) and
+  `question_note` carry it; Claude's card is unchanged. The card's Recommended tag also reads agy's leading
+  "(Recommended) ".
+  - **agy's real mode:** an account without Auto makes agy say "--mode auto is not available … continuing in the
+    default mode". Stderr lines now reach the translator as they come (`ProcessEvent::ErrLine`, the first 64;
+    `Translator::decode_stderr`; a plain stdout line is checked too), agy's parser turns it into
+    `Event::ModeRefused`, and the tab's mode and chip follow agy's real mode, with one quiet notice "Auto isn't
+    available on this agy account — running in Accept edits". `auto` stays agy's default as asked, but this Mac
+    remembers the refusal (`mode_memory.rs`, `~/Library/Application Support/fuxx/agent-modes.json`, `-dev` for a test
+    build) and starts later agy tabs in Accept edits, with no warning.
+  - **AI's calls:** "the default mode" names no mode, so it reads as Accept edits (the closest of fuxx's three to agy's
+    own default, `request-review` in its `init`); a mode named after "continuing in" wins. Where agy prints the
+    warning wasn't recorded: stderr is assumed (as its "conversation … not found" warning), and a non-JSON stdout line
+    is read too. A by-message question survives the turn's end and the process ending (only you close it); "not
+    answered" is the existing Expired summary, its words "You sent another message instead." The banner for it is
+    the Waiting banner (its title "Needs your input"), sent only when you aren't looking at the tab. Tests and scenes
+    read agy's data under `/Users/me/.gemini` (never yours) and never touch the mode file.
+  - **Checks:** fixtures `agy-ask.jsonl` (stdout) and `agy-ask-transcript.jsonl` (both turns), scrubbed; tests
+    `agy_init_follows_the_main_transcript` (with the env dir), `agy_skipped_ask_question_becomes_a_question_card`,
+    `agy_main_transcript_adds_no_rows`, `agy_resumed_run_ignores_old_questions` (first step 7),
+    `agy_answered_ask_shows_no_card`, `agy_multi_select_and_option_objects`, `agy_answers_questions_by_message`,
+    `agy_refused_mode_is_its_real_mode`, `answer_message_says_each_answer_on_its_line` (single, multi, Other,
+    unanswered left out, empty → None, Recommended stripped, the exact tested string),
+    `a_leading_recommended_mark_is_a_tag_too`, `a_question_not_waited_on_says_it_was_asked`,
+    `a_question_answered_by_message_waits_on_nothing`, `stderr_lines_come_one_by_one`, the mode memory's two, and
+    `a_finished_lanes_file_is_read_less_often` (the main follow's rate); scenes `agent-tab-question-agy` (both
+    themes: the head, the footer line, "Send as message"; Enter sends the bubble text agy took, Skip sends nothing,
+    another message leaves it not answered), `agent-tab-agy-mode-refused` (both themes: the notice once, the chip
+    on Accept edits, new agy tabs start there) and `agent-question-agy-anywhere` (in a workspace: the banner says
+    "agy asked: …" though the tab never waits, ⌘⇧A lands on the card, a new agy tab after the refusal starts in
+    Accept edits).
+  - **On screen:** not yet seen in the real window; no real agy was run (the fixtures are the recorded calls).

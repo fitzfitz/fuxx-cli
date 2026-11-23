@@ -2085,7 +2085,11 @@ impl AgentTab {
             provider_name,
             start,
             composer,
-            conversation: Conversation::new(),
+            conversation: {
+                let mut c = Conversation::new();
+                c.set_questions_by_message(provider.is_some_and(|p| p.questions_by_message()));
+                c
+            },
             path: None,
             translator: None,
             process: None,
@@ -2220,6 +2224,12 @@ impl AgentTab {
             }
             _ => None,
         }
+    }
+
+    /// Its agent's questions are answered by a message (`Provider::questions_by_message`): an
+    /// open one doesn't make the tab wait.
+    pub fn questions_by_message(&self) -> bool {
+        self.conversation.questions_by_message()
     }
 
     /// The mode the agent starts with: chosen, or the one it last reported (R9).
@@ -2715,6 +2725,15 @@ impl AgentTab {
                     self.on_events(events, cx);
                 }
             }
+            ProcessEvent::ErrLine(line) => {
+                let events = match self.translator.as_mut() {
+                    Some(t) => t.decode_stderr(&line),
+                    None => Vec::new(),
+                };
+                if !events.is_empty() {
+                    self.on_events(events, cx);
+                }
+            }
             ProcessEvent::Ended { code } => {
                 // The process is gone: nothing more can be written to it; a message sent now
                 // waits for the end to be reported and goes to the restarted process.
@@ -2877,7 +2896,10 @@ impl AgentTab {
                 Event::ToolStarted { id, .. } => {
                     self.tool_started.insert(id.clone(), Instant::now());
                 }
-                Event::Follow { id, path } => self.follow(id.clone(), path.clone(), cx),
+                Event::Follow { id, path, main } => {
+                    self.follow(id.clone(), path.clone(), *main, cx)
+                }
+                Event::ModeRefused { asked, running } => self.mode_refused(asked, running, cx),
                 // Batch 3, wave 3: the answer to × on a message not read yet.
                 Event::QueuedCancelled { id, cancelled } => {
                     self.queued_cancelled(id, *cancelled, cx)
@@ -4702,6 +4724,26 @@ impl AgentTab {
         let before = self.settings();
         self.start.mode = Some(mode.to_string());
         self.tell_settings(before, cx);
+    }
+
+    /// The agent refused mode `asked` for this account and runs in `running` (agy,
+    /// 2026-11-24): the chip follows `running`, a quiet notice says so, and this Mac's new tabs
+    /// of the agent start in `running` from now on (`mode_memory`).
+    fn mode_refused(&mut self, asked: &str, running: &str, cx: &mut Context<Self>) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        self.reported_mode(running, cx);
+        let info = provider.info();
+        let label = |id: &str| {
+            info.modes
+                .iter()
+                .find(|m| m.id == id)
+                .map_or_else(|| id.to_string(), |m| m.label.to_string())
+        };
+        let notice = crate::mode_memory::refused_notice(&label(asked), info.who.1, &label(running));
+        self.conversation.apply(Event::Notice(notice));
+        crate::mode_memory::remember(cx, info.name, asked, running);
     }
 
     /// You have sent a message in this tab.

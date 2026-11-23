@@ -37,6 +37,28 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-24 — agy's skipped questions as the card, answered by a message; agy's real mode
+
+- **What:** a bullet under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]] ("agy's skipped questions,
+  answered by a message"), on your words ("can you take a look at agy, it doesn't want to show the popup, it says it
+  skips it" … "give me the nearest solutions first for this without ACP"). agy's print mode skips its own
+  `ask_question`; fuxx now follows the conversation's main transcript, turns a skipped question of this run into
+  Claude's question card (head "agy asked — it couldn't wait for your answer", a still Waiting mark, a footer line
+  saying why, "Send as message ⏎"), and sends your picks as an ordinary message ("My answers to your questions: …",
+  the line agy took in the recording). The tab never waits on it; the banner says "agy asked: …"; ⇧⌘A reaches it.
+  An account without Auto: agy's stderr warning now sets the tab's mode and chip to agy's real mode (Accept edits),
+  says so once, and this Mac starts later agy tabs in Accept edits (`mode_memory.rs`). Claude's card is unchanged.
+  The roadmap has a new planned-later milestone, **ACP client** ("We will have our milestone later for ACP
+  integration, because this is big"): after the existing plan unless you reorder it.
+- **Checks:** 2705 → 2720 tests (`--features ui-shots`: 2755 → 2770); clippy 14/29 and 18/33 (unchanged, none on a
+  changed line); `cargo fmt --check` clean. Full `scripts/ui-shots.sh`: 344 passed, 0 failed (3 new scenes:
+  `agent-tab-question-agy` and `agent-tab-agy-mode-refused`, both themes, references written;
+  `agent-question-agy-anywhere`, a state scene); fingerprints 693 same, 31 look different, 0 differ in size, 0
+  without a reference — the animation-heavy set that varies run to run (`agent-box-mode-agy-after-message`, one of
+  them, read 0.509 then 0.034 on a rerun). No agy was run: the fixtures are the two recorded calls, scrubbed.
+- **Not yet seen in the real window.** Where agy prints the Auto warning (stderr assumed; a plain stdout line is read
+  too) and what "the default mode" is (read as Accept edits) are unrecorded.
+
 ### 2026-11-24 — Subagent lanes: the resume fix, the relay, the closing bar
 
 - **What:** three bullets under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]] ("The lanes chore"), and

@@ -398,6 +398,18 @@ pub trait Provider: Sync {
     fn relays_to_subagents(&self) -> bool {
         false
     }
+    /// Whether the agent's questions (`Event::Question`) are answered by an ordinary message
+    /// rather than `Action::Answer`: it asked, didn't wait, and went on (agy's print mode skips
+    /// its own `ask_question`; 2026-11-24). The card then sends your picks as a message, the tab
+    /// doesn't wait on it, and Skip only closes it. Default: it waits for `Action::Answer`.
+    fn questions_by_message(&self) -> bool {
+        false
+    }
+    /// The card's footer line in that mode: why the agent went on, in its own words. None: no
+    /// line.
+    fn question_note(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 pub trait Translator: Send {
@@ -410,6 +422,11 @@ pub trait Translator: Send {
     /// One line of a file the translator asked to have followed (`Event::Follow`) for subagent
     /// `lane`, to events (M11ar: agy's subagent transcripts). None by default.
     fn decode_followed(&mut self, _lane: &str, _line: &str) -> Vec<Event> {
+        Vec::new()
+    }
+    /// One stderr line of the agent's process, to events (agy says there that it refused a
+    /// mode: `Event::ModeRefused`). None by default.
+    fn decode_stderr(&mut self, _line: &str) -> Vec<Event> {
         Vec::new()
     }
 }
@@ -608,10 +625,13 @@ pub enum Event {
         outcome: FileRewind,
     },
     /// Read this file's new lines as subagent `id`'s, through the translator's
-    /// `decode_followed` (agy writes a subagent's steps to its own transcript).
+    /// `decode_followed` (agy writes a subagent's steps to its own transcript). `main`: the
+    /// main conversation's own record (agy's questions are only there), read as often as a
+    /// working lane's; `id` then names no lane.
     Follow {
         id: String,
         path: PathBuf,
+        main: bool,
     },
     Usage {
         context_pct: Option<u8>,
@@ -635,6 +655,13 @@ pub enum Event {
     /// The permission mode the agent says it runs in now, also one it changed to itself (a
     /// plan approved leaves plan mode): the tab follows it unless a change of yours is pending.
     Mode(String),
+    /// The agent refused mode `asked` for this account and runs in `running` instead (agy:
+    /// "--mode auto is not available … continuing in the default mode"): the tab follows
+    /// `running`, says so once, and new tabs of this agent start in `running` from then on.
+    ModeRefused {
+        asked: String,
+        running: String,
+    },
     /// The agent answered a live change (`Action::SetModel` …): `ok` with the value it now
     /// uses, else not, `value` saying why.
     Applied {
