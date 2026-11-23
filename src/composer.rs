@@ -809,7 +809,6 @@ impl Composer {
         delete_word_left: DeleteWordLeft => |b| b.delete_word_left();
         delete_to_line_end: DeleteToLineEnd => |b| b.delete_to_line_end();
         newline: Newline => |b| b.newline();
-        select_all: SelectAll => |b| b.select_all();
         move_left: MoveLeft => |b| b.left(false);
         move_right: MoveRight => |b| b.right(false);
         move_up: MoveUp => |b| b.up();
@@ -847,8 +846,37 @@ impl Composer {
         }
     }
 
+    /// ⌘C: the box's selection; with none, the chat's (the agent tab takes it on).
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        if self.buf.selection().is_empty() {
+            cx.propagate();
+            return;
+        }
         self.copy_selection(cx);
+    }
+
+    /// ⌘A: all you typed; with nothing typed, the whole chat (the agent tab takes it on).
+    fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        if self.buf.text().is_empty() {
+            cx.propagate();
+            return;
+        }
+        self.step(|b| b.select_all(), cx);
+    }
+
+    /// The text selected in the box, if any.
+    pub fn selected_text(&self) -> Option<String> {
+        let sel = self.buf.selection();
+        (!sel.is_empty()).then(|| self.buf.text()[sel].to_string())
+    }
+
+    /// Drop the box's selection, the caret where it is (a selection began in the chat).
+    pub fn collapse_selection(&mut self, cx: &mut Context<Self>) {
+        if !self.buf.selection().is_empty() {
+            let at = self.buf.cursor();
+            self.buf.move_to(at, false);
+            cx.notify();
+        }
     }
 
     fn cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {

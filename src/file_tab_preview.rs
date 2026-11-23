@@ -341,6 +341,7 @@ impl FileTab {
             links: Cell::new(0),
             mermaid,
             sizes: md_preview::Sizes::reader(),
+            select: None,
             reader: Some(md_preview::ReaderDraw {
                 doc: read,
                 measure: crate::ui_tokens::reader::MEASURE,

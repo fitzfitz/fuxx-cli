@@ -32,6 +32,10 @@ impl AgentTab {
                     crate::agent_chat::shows_thinking_in(l.status.live(), items, order)
                 }),
             };
+        // Its text's pieces are keyed by this row (chat selection, chore after M11ar).
+        if let Some((select, _)) = &look.draw.select {
+            select.begin_row(k);
+        }
         let body = self.item_body(ix, item, 0, look);
         let text_column = chat::AVATAR + chat::AVATAR_GAP;
         let column = div().w_full().max_w(px(chat::COLUMN_MAX));
@@ -843,8 +847,11 @@ impl AgentTab {
         let c = &look.c;
         let marks = marker_ranges(text, self.images.keys());
         if marks.is_empty() {
+            let shown = SharedString::from(text.to_string());
+            let styled = gpui::StyledText::new(shown.clone());
+            let layout = styled.layout().clone();
             return div()
-                .child(SharedString::from(text.to_string()))
+                .child(selectable(look, shown, layout, styled.into_any_element()))
                 .into_any_element();
         }
         // Each marker on the chip fill, its brackets drawn as spaces (the pill's padding; the
@@ -863,18 +870,35 @@ impl AgentTab {
         }
         let names: Vec<String> = marks.iter().map(|(_, n)| n.clone()).collect();
         let view = look.view.clone();
-        gpui::InteractiveText::new(
-            ("you-text", ix),
-            gpui::StyledText::new(shown).with_highlights(highlights),
-        )
-        .on_click(
-            marks.into_iter().map(|(r, _)| r).collect(),
-            move |i, _, cx| {
-                if let Some(name) = names.get(i).cloned() {
-                    view.update(cx, |this, cx| this.view_image(&name, cx)).ok();
-                }
-            },
-        )
-        .into_any_element()
+        let shown = SharedString::from(shown);
+        let styled = gpui::StyledText::new(shown.clone()).with_highlights(highlights);
+        let layout = styled.layout().clone();
+        let pills = gpui::InteractiveText::new(("you-text", ix), styled)
+            .on_click(
+                marks.into_iter().map(|(r, _)| r).collect(),
+                move |i, _, cx| {
+                    if let Some(name) = names.get(i).cloned() {
+                        view.update(cx, |this, cx| this.view_image(&name, cx)).ok();
+                    }
+                },
+            )
+            .into_any_element();
+        selectable(look, shown, layout, pills)
+    }
+}
+
+/// Your message's text made selectable (chore after M11ar), as the agent's is in `md_preview`.
+fn selectable(
+    look: &Look,
+    text: SharedString,
+    layout: gpui::TextLayout,
+    child: AnyElement,
+) -> AnyElement {
+    match &look.draw.select {
+        Some((state, wash)) => {
+            crate::chat_select::SelectableText::new(state.clone(), text, layout, child, *wash)
+                .into_any_element()
+        }
+        None => child,
     }
 }

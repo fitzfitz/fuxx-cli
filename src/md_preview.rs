@@ -546,6 +546,25 @@ pub struct Draw {
     pub mermaid: Rc<Vec<Option<Shown>>>,
     pub sizes: Sizes,
     pub reader: Option<ReaderDraw>,
+    /// Chat's text is selectable (chore after M11ar): its selection and the wash to paint it
+    /// with. The reader's is not (`None`).
+    pub select: Option<(Rc<crate::chat_select::ChatSelect>, gpui::Hsla)>,
+}
+
+/// `child`, which draws `text` laid out by `layout`, made selectable when `draw` asks for it.
+fn selectable(
+    draw: &Draw,
+    text: SharedString,
+    layout: gpui::TextLayout,
+    child: AnyElement,
+) -> AnyElement {
+    match &draw.select {
+        Some((state, wash)) => {
+            crate::chat_select::SelectableText::new(state.clone(), text, layout, child, *wash)
+                .into_any_element()
+        }
+        None => child,
+    }
 }
 
 impl Draw {
@@ -1462,7 +1481,12 @@ fn block(md: &Md, draw: &Draw) -> AnyElement {
                 .text_size(px(s.code))
                 .line_height(relative(s.code_line))
                 .text_color(hsla(c.code_text))
-                .child(SharedString::from(shown.join("\n")))
+                .child({
+                    let code: SharedString = shown.join("\n").into();
+                    let styled = StyledText::new(code.clone());
+                    let layout = styled.layout().clone();
+                    selectable(draw, code, layout, styled.into_any_element())
+                })
                 .into_any_element()
         }
         Md::Quote(inner) => div()
@@ -1643,26 +1667,31 @@ fn text_on(spans: &[Span], draw: &Draw, on_stripe: bool) -> AnyElement {
         .filter(|(_, look)| *look == Look::Code)
         .map(|(range, _)| (range.clone(), draw.code_font.clone()))
         .collect();
-    let styled = StyledText::new(laid.text)
+    let shown: SharedString = laid.text.into();
+    let styled = StyledText::new(shown.clone())
         .with_highlights(highlights.collect::<Vec<_>>())
         .with_font_family_overrides(code);
+    let layout = styled.layout().clone();
     if laid.links.is_empty() {
-        return div().w_full().child(styled).into_any_element();
+        return div()
+            .w_full()
+            .child(selectable(draw, shown, layout, styled.into_any_element()))
+            .into_any_element();
     }
     let n = draw.links.get();
     draw.links.set(n + 1);
     let (ranges, urls): (Vec<Range<usize>>, Vec<String>) = laid.links.into_iter().unzip();
     let on_link = draw.on_link.clone();
+    let linked = InteractiveText::new(("md-links", n), styled)
+        .on_click(ranges, move |i, window, cx| {
+            if let Some(url) = urls.get(i) {
+                on_link(url.clone(), window, cx);
+            }
+        })
+        .into_any_element();
     div()
         .w_full()
-        .child(InteractiveText::new(("md-links", n), styled).on_click(
-            ranges,
-            move |i, window, cx| {
-                if let Some(url) = urls.get(i) {
-                    on_link(url.clone(), window, cx);
-                }
-            },
-        ))
+        .child(selectable(draw, shown, layout, linked))
         .into_any_element()
 }
 
@@ -1918,6 +1947,7 @@ mod tests {
             mermaid: Rc::new(Vec::new()),
             sizes: Sizes::CHAT,
             reader: None,
+            select: None,
         };
         let blocks = crate::agent_markdown::parse(
             "See [the docs](https://e.x) and [more](https://f.x).\n\n- [a](https://g.x)",

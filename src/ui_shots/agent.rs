@@ -33,6 +33,15 @@ pub(super) const FILE: &str = file!();
 /// Markdown its replies are drawn with, the diff rows of its edits (and their colours, from the
 /// file tab), the `@` list's ranking, and the provider whose fixture events it is fed. (A
 /// scene's own fixtures are added to its row.)
+/// The chat selection's files (chore after M11ar), on top of the tab's.
+const SELECT: &[&str] = &[
+    "src/agent_tab.rs",
+    "src/agent_rows.rs",
+    "src/chat_select.rs",
+    "src/md_preview.rs",
+    "src/composer.rs",
+];
+
 const TAB: &[&str] = &[
     "src/agent_tab.rs",
     "src/agent_top.rs",
@@ -238,6 +247,14 @@ pub(super) const SCENES: &[Scene] = &[
         serial: false,
         kind: Kind::State,
         sources: TAB,
+    },
+    Scene {
+        name: "agent-select",
+        run: agent_select,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: SELECT,
     },
     Scene {
         name: "agent-tab-cached-current",
@@ -1444,6 +1461,114 @@ pub(super) fn agent_tab_markdown() {
             )
         });
         cx.read(|cx| assert_eq!(tab.read(cx).status(), Status::Done, "{n}"));
+    });
+}
+
+/// Selecting chat text (chore after M11ar): a double-click takes a word, ⌘A with an empty box
+/// the whole chat, a press on no text clears, and a drag from the reply's heading into its
+/// paragraph selects across pieces; ⌘C (the box has nothing selected) copies each. The picture
+/// keeps the drag's selection.
+pub(super) fn agent_select() {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, point};
+    const REPLY: &str = "## What changed\n\nThe test expects past dates to be rejected; \
+`isPastDate` compared **strings**.\n\n- Parse dates before comparing\n\n\
+```ts\nconst d = parseDate(date)\n```\n";
+    scene("agent-select", |n, cx, window, tab| {
+        feed(cx, tab, |t, cx| t.send("Explain the fix".into(), cx));
+        feed(cx, tab, |t, cx| {
+            t.shot_feed(
+                vec![
+                    Event::MessageDone {
+                        message: "msg_sel".into(),
+                        text: REPLY.into(),
+                        parent: None,
+                    },
+                    Event::TurnDone {
+                        ok: true,
+                        message: None,
+                    },
+                ],
+                cx,
+            )
+        });
+        let _ = frame_fresh(cx, window);
+        let boxes = cx.read(|cx| tab.read(cx).shot_text_boxes());
+        let find = |start: &str| {
+            boxes
+                .iter()
+                .find(|(t, _)| t.starts_with(start))
+                .map(|(_, b)| *b)
+                .unwrap_or_else(|| panic!("{n}: no painted text starting {start:?} in {boxes:?}"))
+        };
+        let heading = find("What changed");
+        let para = find("The test expects");
+        find("Explain the fix");
+        find("const d");
+        let copied = |cx: &mut VisualTestAppContext| {
+            cx.simulate_keystrokes(window, "cmd-c");
+            cx.read_from_clipboard()
+                .and_then(|i| i.text())
+                .unwrap_or_default()
+        };
+        // A double-click on "changed" takes the word.
+        let on_changed = point(
+            heading.left() + heading.size.width * 0.8,
+            heading.center().y,
+        );
+        cx.simulate_event(
+            window,
+            MouseDownEvent {
+                position: on_changed,
+                modifiers: Modifiers::none(),
+                button: MouseButton::Left,
+                click_count: 2,
+                first_mouse: false,
+            },
+        );
+        cx.simulate_mouse_up(window, on_changed, MouseButton::Left, Modifiers::none());
+        let _ = frame_fresh(cx, window);
+        assert_eq!(copied(cx), "changed", "{n}: a double-click takes the word");
+        // ⌘A with nothing typed: the whole chat, your message to the reply's code.
+        cx.simulate_keystrokes(window, "cmd-a");
+        let _ = frame_fresh(cx, window);
+        let all = copied(cx);
+        assert!(
+            all.starts_with("Explain the fix\n\nWhat changed\n")
+                && all.ends_with("const d = parseDate(date)"),
+            "{n}: ⌘A selects the whole chat: {all:?}"
+        );
+        // A press on no text (left of your bubble) clears: ⌘C leaves the clipboard as it was.
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("untouched".into()));
+        let empty = point(heading.left() + px(4.), heading.top() - px(40.));
+        cx.simulate_click(window, empty, Modifiers::none());
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            copied(cx),
+            "untouched",
+            "{n}: a press on no text clears the selection"
+        );
+        // A drag from the heading's start into the paragraph selects across the two.
+        let from = point(heading.left() + px(1.), heading.center().y);
+        let to = point(para.left() + para.size.width * 0.3, para.top() + px(6.));
+        cx.simulate_mouse_down(window, from, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(window, to, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(window, to, MouseButton::Left, Modifiers::none());
+        let _ = frame_fresh(cx, window);
+        let dragged = copied(cx);
+        assert!(
+            dragged.starts_with("What changed\nThe test") && !dragged.contains("Explain"),
+            "{n}: the drag selects from the heading into the paragraph: {dragged:?}"
+        );
+        // Typing in the box still works, and its own selection wins ⌘C again.
+        cx.simulate_input(window, "next");
+        cx.simulate_keystrokes(window, "cmd-a");
+        assert_eq!(
+            copied(cx),
+            "next",
+            "{n}: the box's own selection is what ⌘C copies"
+        );
+        cx.simulate_keystrokes(window, "cmd-backspace");
+        let _ = frame_fresh(cx, window);
     });
 }
 

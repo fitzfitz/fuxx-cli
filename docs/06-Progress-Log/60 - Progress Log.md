@@ -36,6 +36,17 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Chore: chat text can be selected and copied
+
+- **What:** your report ("I cannot block texts then do a copy…"). Drag, double-click, triple-click and ⇧-click
+  select chat text (your messages and the agent's replies, all Markdown pieces and code), with auto-scroll; ⌘C /
+  Edit → Copy copy it, ⌘A with an empty box selects the whole chat; the text cursor over text. New
+  `src/chat_select.rs`; details and AI's calls under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]].
+- **Checks:** 2492 tests (6 new, watched failing first); clippy at the baseline (31 / 33); `cargo fmt --check`
+  clean; `scripts/ui-shots.sh --changed origin/master` 277 passed, 7 failed: the five display-dependent scenes
+  plus `chrome-agent-tabs` / `chrome-agent-status`, which fail the same way on master (stale ages, not this
+  change); the new `agent-select` scene passes in both themes and failed with the selection hook switched off.
+
 ### 2026-11-23 — Chore: the graph screenshot's real names replaced
 
 - **What:** your word ("go for it"). The `changes-graph` ui-shots fixture used a real author's name and real work

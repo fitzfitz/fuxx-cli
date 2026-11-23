@@ -263,3 +263,25 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   `v0.4.0`), and so is the name in [[74 - Milestone 11w - Graph]]'s example. The six fingerprints were rewritten
   (`changes-graph`, `-card`, `-closed`, both themes). The old strings are still in the pushed history: rewriting
   that needs a force-push, so it waits for your word.
+- **Chat text can be selected and copied** (your report, 2026-11-23: "on agent chatbox, I cannot block texts then
+  do a copy or any other stuff that can be done to any texts normally"): the chat is drawn with GPUI's
+  `StyledText`, which has no selection, and the chat never had one of its own (the terminal, file tabs and shell
+  cards each built theirs). New `src/chat_select.rs`: every piece of chat text (your messages, and the agent's
+  paragraphs, headings, list items, table cells, quotes and code) is wrapped in a `SelectableText` that paints the
+  selection's wash (`ui.selection`, as the box's) behind it and, once painted, registers its layout for the tab's
+  mouse to hit. What you get: drag to select across messages (the chat scrolls on its own above or below it);
+  double-click a word, triple-click a paragraph, ⇧-click to extend; a press on no text clears; the text cursor over
+  text (a link keeps its pointer); ⌘C and Edit → Copy copy it; ⌘A with an empty box selects the whole chat. ⌘C
+  and ⌘A still act on the box when it has a selection or text (the box hands them on only when it has nothing to
+  act on), and a selection begun in the chat drops the box's, so ⌘C copies what you just picked. Each view (Main,
+  each subagent) keeps its own selection.
+  - **AI's calls:** pieces of one message copy one per line, messages apart by a blank line; tool rows, the todo
+    card, notices and the tool modal are not selectable (not prose); no right-click menu (fuxx's menus are workspace
+    overlays and the terminal has none either); the Markdown reader in file tabs is unchanged (`select: None`); a
+    selection reaching rows that never came into sight copies only what was drawn.
+  - **On screen:** drag across a reply → wash, ⌘C, paste elsewhere; double-click a word; ⌘A in an empty box; type
+    in the box, ⌘A/⌘C there still act on the box; a link in a reply still opens.
+  - **Checks:** 6 new unit tests (`chat_select`), a new ui-shots scene `agent-select` (double-click word, ⌘A,
+    clear, drag across heading and paragraph, the box's own ⌘C), watched failing with the hook off;
+    `chrome-agent-tabs` and `chrome-agent-status` fail with a few stale bytes on master too (ticking ages; not this
+    change).

@@ -948,6 +948,8 @@ struct Pane {
     /// last.
     head: bool,
     tail: bool,
+    /// Its chat text's selection (chore after M11ar): each view keeps its own.
+    select: Rc<crate::chat_select::ChatSelect>,
 }
 
 impl Pane {
@@ -958,6 +960,7 @@ impl Pane {
             list,
             rows: Vec::new(),
             order: Vec::new(),
+            select: Rc::default(),
             head: false,
             tail: false,
         }
@@ -1093,6 +1096,12 @@ pub struct AgentTab {
     /// When the modal last opened: its open animation plays only then.
     modal_opened_at: Option<Instant>,
     modal_focus: FocusHandle,
+    /// Chat selection (chore after M11ar): a drag is selecting, where the pointer last was, an
+    /// auto-scroll running (the pointer above or below the chat), the chat's box as drawn.
+    chat_selecting: bool,
+    chat_drag_at: Option<gpui::Point<gpui::Pixels>>,
+    chat_autoscrolling: bool,
+    chat_bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) modal_scroll: gpui::ScrollHandle,
     refocus: Option<Refocus>,
     /// How many images were pasted in this tab (they are named "Image #N").
@@ -1207,6 +1216,139 @@ impl Focusable for AgentTab {
 }
 
 impl AgentTab {
+    /// A press in the chat (chore after M11ar): on text, a selection starts there (a double-click
+    /// takes the word, a triple-click the paragraph, ⇧ extends the one there is); anywhere else,
+    /// the selection goes. The box's own selection goes too, so ⌘C copies what you just picked.
+    fn chat_press(&mut self, e: &gpui::MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        use crate::chat_select::{Pos, Sel, word_at};
+        let select = self.pane().select.clone();
+        let Some(at) = select.pos_at(e.position, true) else {
+            if select.sel().is_some() {
+                select.set(None);
+                cx.notify();
+            }
+            return;
+        };
+        self.composer.update(cx, |c, cx| c.collapse_selection(cx));
+        let whole = |r: std::ops::Range<usize>| {
+            Sel::new(
+                Pos {
+                    key: at.key,
+                    ix: r.start,
+                },
+                Pos {
+                    key: at.key,
+                    ix: r.end,
+                },
+            )
+        };
+        let sel = match e.click_count {
+            2 => select.text_of(at.key).map(|t| whole(word_at(&t, at.ix))),
+            n if n >= 3 => select.text_of(at.key).map(|t| whole(0..t.len())),
+            _ if e.modifiers.shift => select.sel().map(|s| Sel::new(s.anchor, at)),
+            _ => None,
+        }
+        .unwrap_or(Sel::new(at, at));
+        select.set(Some(sel));
+        self.chat_selecting = e.click_count <= 1;
+        cx.notify();
+    }
+
+    /// The pointer moved anywhere in the window: a selection's head follows it (held inside the
+    /// chat's height); above or below the chat, the chat scrolls on its own.
+    fn chat_drag(&mut self, e: &gpui::MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.chat_selecting {
+            return;
+        }
+        if e.pressed_button != Some(MouseButton::Left) {
+            self.chat_selecting = false;
+            return;
+        }
+        self.chat_drag_at = Some(e.position);
+        self.chat_head(e.position, cx);
+        let out = self
+            .chat_bounds
+            .get()
+            .is_some_and(|b| e.position.y < b.top() || e.position.y > b.bottom());
+        if out && !self.chat_autoscrolling {
+            self.chat_autoscroll(window, cx);
+        }
+    }
+
+    /// The selection's head to the text nearest `p` (held inside the chat's height).
+    fn chat_head(&mut self, p: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        let select = self.pane().select.clone();
+        let p = match self.chat_bounds.get() {
+            Some(b) => gpui::point(p.x, p.y.clamp(b.top() + px(1.), b.bottom() - px(1.))),
+            None => p,
+        };
+        if let (Some(s), Some(head)) = (select.sel(), select.pos_at(p, false))
+            && s.head != head
+        {
+            select.set(Some(crate::chat_select::Sel::new(s.anchor, head)));
+            cx.notify();
+        }
+    }
+
+    /// Selecting with the pointer above or below the chat: it scrolls every frame towards the
+    /// pointer (faster the farther it is) until the drag ends, the pointer comes back, or the
+    /// chat's end is reached. One task at a time.
+    fn chat_autoscroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.chat_autoscrolling = true;
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let go =
+                    cx.update(|_, cx| this.update(cx, |this, cx| this.chat_autoscroll_step(cx)));
+                if !matches!(go, Ok(Ok(true))) {
+                    break;
+                }
+            }
+            cx.update(|_, cx| this.update(cx, |this, _| this.chat_autoscrolling = false))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn chat_autoscroll_step(&mut self, cx: &mut Context<Self>) -> bool {
+        let (true, Some(p), Some(b)) = (
+            self.chat_selecting,
+            self.chat_drag_at,
+            self.chat_bounds.get(),
+        ) else {
+            return false;
+        };
+        let push = if p.y < b.top() {
+            -(b.top() - p.y).clamp(px(4.), px(40.))
+        } else if p.y > b.bottom() {
+            (p.y - b.bottom()).clamp(px(4.), px(40.))
+        } else {
+            return false;
+        };
+        let list = self.pane().list.clone();
+        let before = list.logical_scroll_top();
+        list.scroll_by(push);
+        let after = list.logical_scroll_top();
+        self.chat_head(p, cx);
+        cx.notify();
+        before.item_ix != after.item_ix || before.offset_in_item != after.offset_in_item
+    }
+
+    /// ⌘C with nothing selected in the box: the chat's selection.
+    fn copy_chat(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = self.pane().select.copied() {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        }
+    }
+
+    /// ⌘A with nothing typed: the whole chat (as far as it has been drawn).
+    fn select_all_chat(&mut self, cx: &mut Context<Self>) {
+        self.pane().select.select_all();
+        cx.notify();
+    }
+
     /// A tab for `provider` (None: no agent by that name; the tab shows one error row). Starts
     /// reading the history and then the process on a task; emits nothing (R8). A conversation
     /// to resume is checked first against `classic` (its classic view, from before a restart).
@@ -1364,6 +1506,22 @@ impl AgentTab {
     #[cfg(feature = "ui-shots")]
     pub fn shot_items(&self) -> &[Item] {
         self.conversation.items()
+    }
+
+    /// The chat text painted last frame: each piece's text and box (chore after M11ar).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_text_boxes(&self) -> Vec<(String, gpui::Bounds<gpui::Pixels>)> {
+        let select = &self.pane().select;
+        select
+            .painted_boxes()
+            .into_iter()
+            .map(|(k, b)| {
+                (
+                    select.text_of(k).map(|t| t.to_string()).unwrap_or_default(),
+                    b,
+                )
+            })
+            .collect()
     }
 
     #[cfg(feature = "ui-shots")]
@@ -1550,6 +1708,10 @@ impl AgentTab {
             cleared_at: None,
             modal_opened_at: None,
             modal_focus: cx.focus_handle(),
+            chat_selecting: false,
+            chat_drag_at: None,
+            chat_autoscrolling: false,
+            chat_bounds: Rc::default(),
             modal_scroll: gpui::ScrollHandle::new(),
             refocus: None,
             pasted: 0,
@@ -4820,6 +4982,18 @@ impl Render for AgentTab {
         let info = self.provider.map(|p| p.info());
         let view = cx.entity().downgrade();
         let link_view = view.clone();
+        // Chat text registers again as it paints (chore after M11ar).
+        let select = self.pane().select.clone();
+        select.begin_frame();
+        // Rows a `/clear` (or a restart) took away: what they showed, and a selection in them, go.
+        let rows = self.pane().list.item_count();
+        select.forget_from(rows);
+        if select
+            .sel()
+            .is_some_and(|s| s.anchor.key.row >= rows || s.head.key.row >= rows)
+        {
+            select.set(None);
+        }
         let look = Rc::new(Look {
             c,
             mono: mono.clone(),
@@ -4841,6 +5015,7 @@ impl Render for AgentTab {
                 mermaid: Rc::new(Vec::new()),
                 sizes: md_preview::Sizes::CHAT,
                 reader: None,
+                select: Some((select.clone(), hsla(theme.ui().selection))),
             },
             diff: diff_row_colours(&theme, theme.background),
             view: view.clone(),
@@ -4855,10 +5030,14 @@ impl Render for AgentTab {
             div().flex_1().into_any_element()
         } else {
             let look = look.clone();
+            let chat_view = cx.entity().downgrade();
+            let chat_bounds = self.chat_bounds.clone();
             div()
                 .flex_1()
                 .min_h(px(0.))
                 .w_full()
+                .relative()
+                .on_mouse_down(MouseButton::Left, cx.listener(Self::chat_press))
                 .child(
                     list(self.pane().list.clone(), move |ix, _, cx| {
                         #[cfg(feature = "ui-shots")]
@@ -4868,6 +5047,32 @@ impl Render for AgentTab {
                             None => div().into_any_element(),
                         }
                     })
+                    .size_full(),
+                )
+                // A selection's drag keeps going outside the chat; registered for this frame.
+                .child(
+                    gpui::canvas(
+                        move |b, _, _| chat_bounds.set(Some(b)),
+                        move |_, _, window, _| {
+                            let v = chat_view.clone();
+                            window.on_mouse_event(
+                                move |e: &gpui::MouseMoveEvent, phase, window, cx| {
+                                    if phase == gpui::DispatchPhase::Bubble {
+                                        v.update(cx, |this, cx| this.chat_drag(e, window, cx)).ok();
+                                    }
+                                },
+                            );
+                            let v = chat_view.clone();
+                            window.on_mouse_event(move |_: &gpui::MouseUpEvent, phase, _, cx| {
+                                if phase == gpui::DispatchPhase::Bubble {
+                                    v.update(cx, |this, _| this.chat_selecting = false).ok();
+                                }
+                            });
+                        },
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
                     .size_full(),
                 )
                 .into_any_element()
@@ -4899,6 +5104,18 @@ impl Render for AgentTab {
             .on_action(cx.listener(Self::close_image_action))
             .on_action(cx.listener(Self::prev_lane))
             .on_action(cx.listener(Self::next_lane))
+            // ⌘C / ⌘A reach here when the box has nothing to copy or select (chore after M11ar).
+            .on_action(cx.listener(|this, _: &crate::composer::Copy, _, cx| this.copy_chat(cx)))
+            .on_action(cx.listener(|this, _: &crate::terminal_view::Copy, _, cx| {
+                match this.composer.read(cx).selected_text() {
+                    Some(t) => cx.write_to_clipboard(gpui::ClipboardItem::new_string(t)),
+                    None => this.copy_chat(cx),
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::composer::SelectAll, _, cx| this.select_all_chat(cx)),
+            )
+            .on_action(cx.listener(|this, _: &crate::SelectAll, _, cx| this.select_all_chat(cx)))
             .size_full()
             .flex()
             .flex_col()

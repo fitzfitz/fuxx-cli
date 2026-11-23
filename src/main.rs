@@ -36,6 +36,7 @@ mod browser_tab;
 mod browser_url;
 mod card_view;
 mod changes_panel;
+mod chat_select;
 mod chrome_cache;
 mod cli;
 mod code_ask;
