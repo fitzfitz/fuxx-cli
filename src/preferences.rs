@@ -24,7 +24,7 @@ use gpui::{
     anchored, canvas, deferred, div, font, point, prelude::*, px,
 };
 
-use crate::appearance::{self, Appearance, CursorFun, CursorShapeSetting};
+use crate::appearance::{self, Appearance, CursorFun, CursorShapeSetting, OpenLinksIn};
 use crate::fonts;
 use crate::grid::{self, GridSnapshot};
 use crate::name_input::{NameInput, NameInputEvent};
@@ -203,7 +203,11 @@ impl Section {
             ],
             Section::Browser => &[Group {
                 title: "Browsing",
-                rows: &[Switch(OnOff::AddressBar), Switch(OnOff::KeepData)],
+                rows: &[
+                    OpenLinks,
+                    Switch(OnOff::AddressBar),
+                    Switch(OnOff::KeepData),
+                ],
             }],
             Section::Sound => &[
                 Group {
@@ -294,6 +298,8 @@ pub(crate) enum Control {
     CursorStyle,
     /// Off, Trail or Sparks (`cursor-fun`).
     CursorFun,
+    /// Where a clicked link opens (`open-links-in`; batch 3, chore 6).
+    OpenLinks,
     Switch(OnOff),
     /// A key's sound link (M11s): a field, ▶, and the problem under it.
     Sound(SoundKey),
@@ -314,6 +320,7 @@ impl Control {
             Control::TipsCard => "Tips card",
             Control::CursorStyle => "Style",
             Control::CursorFun => "Fun",
+            Control::OpenLinks => "Open links in",
             Control::Sound(key) => key.label(),
             Control::PluginInstall => "Install a plugin",
             Control::PluginList => "Installed plugins",
@@ -345,6 +352,7 @@ impl Control {
             Control::TipsCard => "The welcome tips in the sidebar.",
             Control::CursorStyle => CURSOR_NOTE,
             Control::CursorFun => "A little extra as you type.",
+            Control::OpenLinks => "Links you click in terminals, files and the agent chat.",
             Control::Sound(SoundKey::Enter) => "When you press Enter in a terminal.",
             Control::Sound(SoundKey::CtrlC) => "When you press Ctrl + C in a terminal.",
             Control::Sound(SoundKey::Banner) => {
@@ -413,6 +421,7 @@ impl Control {
             Control::TipsCard => (None, &["tips", "welcome"]),
             Control::CursorStyle => (None, &["cursor-style", "bar", "block", "underline"]),
             Control::CursorFun => (None, &["cursor-fun", "trail", "sparks"]),
+            Control::OpenLinks => (None, &["open-links-in", "link", "url", "split"]),
             Control::PluginInstall => (None, &["plugin", "github", "theme", "install"]),
             Control::PluginList => (None, &["plugin", "uninstall", "update"]),
             Control::Sound(SoundKey::Banner) => (
@@ -1187,6 +1196,7 @@ impl PreferencesView {
             Control::TipsCard => self.tips_card_button(ui, cx).into_any_element(),
             Control::CursorStyle => cursor_style_switch(ui, cx).into_any_element(),
             Control::CursorFun => cursor_fun_switch(ui, cx).into_any_element(),
+            Control::OpenLinks => open_links_switch(ui, cx).into_any_element(),
             Control::Switch(s) => on_off_switch(s, ui, cx).into_any_element(),
             Control::Sound(key) => self.sound_control(key, ui, cx).into_any_element(),
             Control::PluginInstall => {
@@ -1743,6 +1753,20 @@ fn cursor_fun_switch(ui: UiColors, cx: &Context<PreferencesView>) -> Div {
     }))
 }
 
+/// Where a clicked link opens: a split on the right, a tab in this pane, the default browser.
+fn open_links_switch(ui: UiColors, cx: &Context<PreferencesView>) -> Div {
+    let now = cx.global::<Appearance>().open_links_in;
+    switch(ui).children(OpenLinksIn::ALL.into_iter().enumerate().map(|(i, choice)| {
+        option(("open-links-in", i), choice == now, ui)
+            .child(choice.label())
+            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                if cx.global::<Appearance>().open_links_in != choice {
+                    apply(cx, "open-links-in", &prefs::open_links_values(choice));
+                }
+            }))
+    }))
+}
+
 /// An on / off switch for `setting` (M11x): a click turns it the other way.
 fn on_off_switch(setting: OnOff, ui: UiColors, cx: &Context<PreferencesView>) -> Stateful<Div> {
     let a = cx.global::<Appearance>();
@@ -2129,13 +2153,13 @@ mod tests {
     #[test]
     fn palette_settings_cover_every_control() {
         let all = palette_settings();
-        // 26 since prompt suggestions (2026-11-23; 25 since the agent box sweep, 24 since
-        // M11ab's "Commands as cards").
-        assert_eq!(all.len(), 26);
+        // 27 since "Open links in" (batch 3, chore 6; 26 since prompt suggestions, 25 since the
+        // agent box sweep, 24 since M11ab's "Commands as cards").
+        assert_eq!(all.len(), 27);
         let mut names: Vec<&str> = all.iter().map(|s| s.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 26, "names unique");
+        assert_eq!(names.len(), 27, "names unique");
         let order = |s: Section| Section::ALL.iter().position(|&x| x == s);
         assert!(
             all.windows(2)
@@ -2152,9 +2176,9 @@ mod tests {
         assert_eq!(all[1].name, "Agent box sweep");
         assert_eq!(all[2].name, "Prompt suggestions");
         assert_eq!(all[3].name, "Status Bar");
-        // (Three later than before M11ab: "Commands as cards", the sweep and the suggestions
-        // come before it.)
-        assert_eq!(all[20].name, "Keep history and data");
+        // (Four later than before M11ab: "Commands as cards", the sweep, the suggestions and
+        // "Open links in" come before it.)
+        assert_eq!(all[21].name, "Keep history and data");
         for section in Section::ALL {
             for control in section.controls() {
                 if let Control::Switch(switch) = control {
@@ -2426,6 +2450,10 @@ mod tests {
                     "Browsing",
                     vec![
                         (
+                            "Open links in",
+                            "Links you click in terminals, files and the agent chat."
+                        ),
+                        (
                             "Show address bar",
                             "The bar with the address, back and reload above each page."
                         ),
@@ -2548,7 +2576,11 @@ mod tests {
         );
         assert_eq!(
             Section::Browser.controls(),
-            [Switch(OnOff::AddressBar), Switch(OnOff::KeepData)]
+            [
+                OpenLinks,
+                Switch(OnOff::AddressBar),
+                Switch(OnOff::KeepData)
+            ]
         );
         // Key sounds (M11s): Enter, then Ctrl + C.
         assert_eq!(
@@ -2588,6 +2620,7 @@ mod tests {
             Sound(SoundKey::Banner),
             PluginInstall,
             PluginList,
+            OpenLinks,
         ];
         let listed: Vec<Control> = Section::ALL.iter().flat_map(|s| s.controls()).collect();
         for control in every {

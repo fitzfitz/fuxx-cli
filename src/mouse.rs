@@ -185,9 +185,35 @@ pub fn wants_mouse(mode: TermMode, shift: bool) -> bool {
     mode.intersects(TermMode::MOUSE_MODE) && !shift
 }
 
+/// Whether a press opens fuxx's right-click menu (batch 3, chore 4): a right press unless the
+/// program takes the mouse (⇧ bypasses it, so ⇧-right-click still opens it), or a ⌃-left press
+/// while the program has no mouse reporting on.
+pub fn opens_menu(button: Button, control: bool, shift: bool, mode: TermMode) -> bool {
+    match button {
+        Button::Right => !wants_mouse(mode, shift),
+        Button::Left => control && !mode.intersects(TermMode::MOUSE_MODE),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_right_or_control_click_opens_the_menu_unless_the_program_takes_the_mouse() {
+        let none = TermMode::empty();
+        assert!(opens_menu(Button::Right, false, false, none));
+        assert!(opens_menu(Button::Left, true, false, none));
+        assert!(!opens_menu(Button::Left, false, false, none));
+        assert!(!opens_menu(Button::Middle, true, false, none));
+        // Mouse reporting on: the right press is the program's, ⇧ brings the menu back; ⌃-click
+        // is the program's even with ⇧.
+        assert!(!opens_menu(Button::Right, false, false, SGR));
+        assert!(opens_menu(Button::Right, false, true, SGR));
+        assert!(!opens_menu(Button::Left, true, false, SGR));
+        assert!(!opens_menu(Button::Left, true, true, SGR));
+    }
 
     const D: TermDims = TermDims { cols: 80, rows: 24 };
     const SGR: TermMode = TermMode::MOUSE_REPORT_CLICK.union(TermMode::SGR_MOUSE);

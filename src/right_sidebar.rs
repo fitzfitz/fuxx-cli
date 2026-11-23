@@ -94,7 +94,13 @@ actions!(
         ExpandSelected,
         CollapseSelected,
         OpenSelected,
-        BackToPane
+        BackToPane,
+        /// Batch 3, chore 7: the selected row's path (⌥⌘C), from the root (⌥⇧⌘C), to the Trash
+        /// (⌘⌫), and the last one trashed put back (⌘Z).
+        CopyPath,
+        CopyRelativePath,
+        TrashSelected,
+        PutBack
     ]
 );
 
@@ -466,10 +472,63 @@ fn mark_letter(mark: Mark) -> &'static str {
 /// (`mark_look`: a file's letter, its name in the mark's colour, struck through when deleted;
 /// a folder's dot); filled while `selected`, else on hover. A click on it is `files_click` (a
 /// folder opens or closes). A `… N more` row is only its text (and its guides).
+/// An inline box drawn in a Files row (batch 3, chore 7): the box, and what is wrong with its
+/// name (shown floating under the row).
+type RowBox<'a> = (&'a Entity<NameInput>, Option<&'a str>);
+
+/// What is wrong with a box's name, floating just under its row (the rows below keep their
+/// places), in the danger colour.
+fn box_problem(problem: Option<&str>, ui: &UiColors) -> Option<AnyElement> {
+    let problem = problem?.to_string();
+    let ink = ui.menu_danger;
+    let tip = crate::sidebar_toggle::tip_box(problem.into(), ui).text_color(hsla(ink));
+    Some(
+        div()
+            .absolute()
+            .left(px(0.0))
+            .bottom(px(0.0))
+            .size(px(0.0))
+            .child(gpui::deferred(gpui::anchored().snap_to_window().child(tip)))
+            .into_any_element(),
+    )
+}
+
+/// The New File / New Folder box's row (batch 3, chore 7): at `depth`, its icon, the box.
+fn new_entry_row(depth: usize, is_dir: bool, edit: RowBox, ui: &UiColors) -> AnyElement {
+    let left = PILL_PAD + depth as f32 * INDENT;
+    let glyph = if is_dir { Glyph::Folder } else { Glyph::File };
+    div()
+        .h(px(ROW))
+        .w_full()
+        .px(px(PILL_INSET))
+        .child(
+            div()
+                .relative()
+                .flex()
+                .items_center()
+                .h_full()
+                .w_full()
+                .pl(px(left))
+                .pr(px(PILL_PAD))
+                .text_size(px(NAME))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(ICON))
+                        .mr(px(ICON_GAP))
+                        .child(tab_bar::footer_glyph(glyph, ui.text_faint, ICON)),
+                )
+                .child(div().flex_1().min_w(px(0.0)).child(edit.0.clone()))
+                .children(box_problem(edit.1, ui)),
+        )
+        .into_any_element()
+}
+
 fn file_row(
     i: usize,
     row: &Row,
     selected: Option<&Path>,
+    rename: Option<RowBox>,
     inks: &RowInks,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
@@ -535,6 +594,25 @@ fn file_row(
     };
     let (rel, is_dir) = (row.rel.clone(), row.is_dir);
     let hover = ui.side_hover;
+    let (menu_rel, ctrl_rel) = (rel.clone(), rel.clone());
+    // Batch 3, chore 7: renaming this row: its box in place of the name.
+    let name: AnyElement = match rename {
+        Some((input, problem)) => div()
+            .relative()
+            .flex_1()
+            .min_w(px(0.0))
+            .child(input.clone())
+            .children(box_problem(problem, &ui))
+            .into_any_element(),
+        None => div()
+            .flex_1()
+            .min_w(px(0.0))
+            .truncate()
+            .text_color(hsla(name_ink))
+            .when(look.struck, |n| n.line_through())
+            .child(name)
+            .into_any_element(),
+    };
     place(
         pill.when(chosen, |r| r.bg(hsla(ui.side_selected)))
             .when(!chosen, |r| r.hover(move |s| s.bg(hsla(hover))))
@@ -546,15 +624,7 @@ fn file_row(
                     .mr(px(ICON_GAP))
                     .child(tab_bar::footer_glyph(kind, ui.text_faint, ICON)),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .truncate()
-                    .text_color(hsla(name_ink))
-                    .when(look.struck, |n| n.line_through())
-                    .child(name),
-            )
+            .child(name)
             .children(look.tail.zip(mark_ink).map(|(tail, ink)| {
                 div()
                     .flex_none()
@@ -564,7 +634,27 @@ fn file_row(
                     .text_color(hsla(ink))
                     .child(tail)
             }))
+            // Batch 3, chore 7: its menu (the row selected), on a right-click or a ⌃-click.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.files_row_menu(menu_rel.clone(), is_dir, e.position, window, cx)
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    if e.modifiers.control {
+                        cx.stop_propagation();
+                        this.files_row_menu(ctrl_rel.clone(), is_dir, e.position, window, cx)
+                    }
+                }),
+            )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if event.modifiers().control {
+                    return; // its press opened the menu
+                }
                 // A folder's double-click: the terminal goes there (its first click opened it). A
                 // file's single click previews it, its double click opens it for good (M11t).
                 let double = event.click_count() == 2;
@@ -695,7 +785,7 @@ pub(crate) struct FilesPanel {
     query: String,
     scroll: UniformListScrollHandle,
     /// Scroll the selected row into view once it's drawn (a new tree, a key).
-    reveal: Option<ScrollStrategy>,
+    pub(crate) reveal: Option<ScrollStrategy>,
     /// The tree root and file last followed (M11ac: the focused pane's file tab); none while
     /// no file tab has the focus.
     followed_file: Option<(PathBuf, PathBuf)>,
@@ -703,6 +793,17 @@ pub(crate) struct FilesPanel {
     /// the focused tab without `note_active`).
     #[cfg(feature = "ui-shots")]
     pub(crate) late_follows: Cell<usize>,
+    /// The inline Rename or New box (batch 3, chore 7), while it is open.
+    pub(crate) edit: Option<crate::files_menu::TreeEdit>,
+    /// What Move to Trash moved this session (where it was, where it went), the last on top:
+    /// ⌘Z puts it back.
+    pub(crate) trashed: Vec<(PathBuf, PathBuf)>,
+    /// The scenes: "the Trash" is this folder (your own Trash is never touched), and what
+    /// Reveal in Finder was asked to show.
+    #[cfg(feature = "ui-shots")]
+    pub(crate) fake_trash: Option<PathBuf>,
+    #[cfg(feature = "ui-shots")]
+    pub(crate) shot_revealed: Vec<PathBuf>,
     /// A root lookup, a refresh, and folders being listed, under way.
     rooting: bool,
     refreshing: bool,
@@ -733,6 +834,12 @@ impl FilesPanel {
             followed_file: None,
             #[cfg(feature = "ui-shots")]
             late_follows: Cell::new(0),
+            edit: None,
+            trashed: Vec::new(),
+            #[cfg(feature = "ui-shots")]
+            fake_trash: None,
+            #[cfg(feature = "ui-shots")]
+            shot_revealed: Vec::new(),
             rooting: false,
             refreshing: false,
             listing: HashSet::new(),
@@ -740,6 +847,16 @@ impl FilesPanel {
             wait: REFRESH,
             _subscriptions: Vec::new(),
         }
+    }
+
+    /// Where row `i` of the list was last drawn: a point at its foot, a little in (⇧F10's menu
+    /// goes there); none off screen or before the first frame.
+    pub(crate) fn row_place(&self, i: usize) -> Option<gpui::Point<gpui::Pixels>> {
+        let state = self.scroll.0.borrow();
+        let b = state.base_handle.bounds();
+        let y = b.top() + px(LIST_TOP) + state.base_handle.offset().y + px(ROW * (i as f32 + 1.0));
+        (b.size.height > px(0.0) && y >= b.top() && y <= b.bottom())
+            .then(|| gpui::point(b.left() + px(24.0), y))
     }
 
     /// The UI screenshots: show `tree` (listed, marked) as made for a terminal in a folder
@@ -1920,7 +2037,7 @@ impl Workspace {
 
     /// List folders `rels` of the tree (just opened), off the UI thread; one already being
     /// listed isn't asked for again.
-    fn files_list(&mut self, rels: Vec<PathBuf>, cx: &mut Context<Self>) {
+    pub(crate) fn files_list(&mut self, rels: Vec<PathBuf>, cx: &mut Context<Self>) {
         let files = &mut self.right_sidebar.files;
         let Some(tree) = files.tree.as_ref() else {
             return;
@@ -2007,7 +2124,7 @@ impl Workspace {
     }
 
     /// A click on a row: it's selected; a folder opens or closes, a file opens in a tab.
-    fn files_click(
+    pub(crate) fn files_click(
         &mut self,
         rel: &Path,
         is_dir: bool,
@@ -2163,17 +2280,17 @@ impl Workspace {
         } else if files.rows.is_empty() && !files.query.trim().is_empty() {
             Some(note(NO_MATCH))
         } else {
+            // Batch 3, chore 7: the New box is a row of its own under its folder.
+            let extra = usize::from(matches!(
+                files.edit.as_ref().map(|e| &e.kind),
+                Some(crate::files_menu::EditKind::New { .. })
+            ));
             let list = uniform_list(
                 "file-rows",
-                files.rows.len(),
+                files.rows.len() + extra,
                 cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
                     let inks = RowInks::of(&cx.global::<Appearance>().theme);
-                    let files = &this.right_sidebar.files;
-                    let selected = files.tree.as_ref().and_then(|t| t.selected());
-                    range
-                        .filter_map(|i| files.rows.get(i).map(|row| (i, row)))
-                        .map(|(i, row)| file_row(i, row, selected, &inks, cx))
-                        .collect::<Vec<_>>()
+                    this.file_rows(range, &inks, cx)
                 }),
             )
             .track_scroll(&files.scroll)
@@ -2285,6 +2402,26 @@ impl Workspace {
             .on_action(
                 cx.listener(|this, _: &BackToPane, window, cx| this.focus_active(window, cx)),
             )
+            // Batch 3, chore 7: the menu's keys, on the selected row.
+            .on_action(cx.listener(|this, _: &CopyPath, window, cx| {
+                this.files_key_action(crate::context_menu::MenuAction::CopyPath, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CopyRelativePath, window, cx| {
+                this.files_key_action(
+                    crate::context_menu::MenuAction::CopyRelativePath,
+                    window,
+                    cx,
+                )
+            }))
+            .on_action(cx.listener(|this, _: &TrashSelected, window, cx| {
+                this.files_key_action(crate::context_menu::MenuAction::Trash, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PutBack, _, cx| this.put_back_trashed(cx)))
+            .on_action(
+                cx.listener(|this, _: &crate::workspace_menu::ShowMenu, window, cx| {
+                    this.files_show_menu(window, cx)
+                }),
+            )
             .children(header)
             .children(filter)
             .child(div().flex_1().min_h(px(0.0)).w_full().children(body));
@@ -2292,6 +2429,59 @@ impl Workspace {
             Some(focus) => panel.track_focus(focus).into_any_element(),
             None => panel.into_any_element(),
         }
+    }
+
+    /// The Files list's rows `range` (batch 3, chore 7: with the New box's row under its
+    /// folder, and the Rename box in its row).
+    fn file_rows(
+        &self,
+        range: std::ops::Range<usize>,
+        inks: &RowInks,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        use crate::files_menu::EditKind;
+        let files = &self.right_sidebar.files;
+        let selected = files.tree.as_ref().and_then(|t| t.selected());
+        let edit = files.edit.as_ref();
+        let new_at = edit.and_then(|e| match &e.kind {
+            EditKind::New { parent, is_dir } => {
+                let at = crate::files_menu::new_row_at(&files.rows, parent);
+                let depth = match at.checked_sub(1).and_then(|i| files.rows.get(i)) {
+                    Some(r) if !parent.as_os_str().is_empty() => r.depth + 1,
+                    _ => 0,
+                };
+                Some((at, depth, *is_dir, e))
+            }
+            EditKind::Rename { .. } => None,
+        });
+        let renaming = edit.and_then(|e| match &e.kind {
+            EditKind::Rename { rel, .. } => Some((rel.as_path(), (&e.input, e.problem.as_deref()))),
+            EditKind::New { .. } => None,
+        });
+        let mut out = Vec::new();
+        for i in range {
+            let row_i = match new_at {
+                Some((at, depth, is_dir, e)) if i == at => {
+                    out.push(new_entry_row(
+                        depth,
+                        is_dir,
+                        (&e.input, e.problem.as_deref()),
+                        &inks.ui,
+                    ));
+                    continue;
+                }
+                Some((at, ..)) if i > at => i - 1,
+                _ => i,
+            };
+            let Some(row) = files.rows.get(row_i) else {
+                continue;
+            };
+            let rename = renaming
+                .filter(|(rel, _)| row.more.is_none() && row.rel == *rel)
+                .map(|(_, b)| b);
+            out.push(file_row(row_i, row, selected, rename, inks, cx));
+        }
+        out
     }
 
     /// The 6 pt grab strip centred on the hairline left of the right sidebar, the card's full

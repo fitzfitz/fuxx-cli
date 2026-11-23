@@ -481,3 +481,96 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true` (`Provider::process_env`, which replaces `suggestion_env`);
   `Action::RewindFiles` / `Event::FilesRewound` and the one-off `rewind_files_probe`; `Attachment::Quote` for wave 3;
   agy reports no branching. 14 unit tests, each watched failing first. Nothing on screen yet.
+- **One right-click menu, on the terminal and in file tabs** (batch 3, chore 4, wave 2a; your words, 2026-11-23: "on
+  chatbox or terminal or whenever when its an hyperlink I can right click it and add option "Copy Link". On text, I can
+  right click it and has "Copy" on it. On agent tab, add more option "Add to chat""): a right-click (or ⌃-click) in a
+  terminal or a file tab's text opens fuxx's own menu at the pointer, flipped up or left where it wouldn't fit, 8 pt
+  from the window's edges. On a link: Open Link · Open in Default Browser · Copy Link, a line, then the rest. A
+  terminal's: Copy ⌘C (and Add to ⟨Agent⟩ Chat with a selection) · Paste ⌘V · ─ · Select All; a file tab's: Copy ⌘C
+  and, with a selection, Add to ⟨Agent⟩ Chat. The selection stays, and the link right-clicked stays underlined while
+  the menu is open. ↑/↓ and the pointer move one light (nothing is lit on open), ↩ chooses, Esc or a click outside
+  closes it, and a right-click elsewhere opens it again there. **Keyboard access** (a UX gap): ⇧F10, or a PC
+  keyboard's menu key, opens it at the terminal's selection or caret, under a file tab's selection or current line, or
+  on the Files tree's selected row. New `src/context_menu.rs` (the items, the light, the size and placement: pure),
+  `src/workspace_menu.rs` (one overlay, `Overlay::ContextMenu`, in `Overlays`, so browser pages hide under it).
+  - **AI's calls:** standard edit items show disabled when they don't apply (Copy with nothing selected), context items
+    (a link's, Add to Chat) are left out; the menu is the panel's surface, 220 wide, items 26 tall, no icons; Move to
+    Trash's colour is a new `menu_danger` (the waiting colour held to read on the menu and its lit row). In a program
+    that takes the mouse (vim, htop), a right-click is the program's and ⇧-right-click opens fuxx's; ⌃-click is the
+    program's there. Add to Chat names the agent the selection would go to (`ask_pick`: the last-used agent tab in the
+    workspace, else the first; none opens a Claude tab, as Ask does) and is left out in an SSH workspace; from a
+    terminal it is a quote chip (`Attachment::Quote`, "Quoted from Terminal api"), from a file tab the code chip Ask
+    makes (path and lines). A right-click elsewhere while the menu is open: the menu closes and, two frames on (once
+    the window is drawn without its backdrop), the press goes to what is under the pointer. The old tab menus stay as
+    they were. The menu key's character (`NSMenuFunctionKey`) is bound as GPUI passes it through; no Mac keyboard has
+    one, so it is untested. **Wave 3 adds** the chat's and the message box's menus (Select All in the chat, Cut/Paste in
+    the box) and a link's menu in the Markdown Preview (today the Preview offers Copy, disabled).
+  - **Checks:** unit tests for the item sets (text, terminal, file and folder rows), the arrows skipping separators and
+    disabled items, the height and the placement's flips, `opens_menu` (right, ⌃, ⇧ with mouse reporting), the
+    terminal's `select_all`, `menu_danger` on every theme, and the keymap (⇧F10 and the menu key in the terminal, file
+    tab and tree; ↑↓↩Esc in the menu), each watched failing first but the keymap test (written with its bindings).
+    Scenes `context-menu-terminal` (both themes: the
+    selection kept by a right-click on a link, the link's menu, its underline, ↓ lights, Esc gives the keys back,
+    ⇧F10, ⌃-click, a right-click elsewhere opens it there, Copy, Copy Link, Select All; then Add to Claude Chat makes a
+    Claude tab with the quote chip) and `context-menu-file-tab` (Copy disabled with nothing selected, Copy and Add to
+    Claude Chat with a selection, ⇧F10, the code chip); `overlays` opens it among the other boxes.
+- **Links open in a browser split on the right, as Preferences says** (batch 3, chore 6, wave 2a; your words,
+  2026-11-23: "when link is clicked on fuxx-cli, it will open a new browser tab on split pane on right", then "open
+  link to browser, make it configurable on settings"): Preferences → Browser → "Open links in": **Split on the right**
+  (the default) · Tab in this pane · Default browser (`open-links-in = split|tab|browser`). It applies to ⌘-clicked
+  terminal links, the file tab's Preview links and the menu's Open Link. A split: the first link splits a browser pane
+  to the right of the pane you clicked in; the next ones are new tabs in that pane (the workspace's last link pane,
+  else its most recently used browser pane, else a right neighbour holding a browser); a URL already open there shows
+  its tab. Your focus stays where you clicked, and a reused pane's new or found tab pill flashes once (0.6 s; none with
+  reduce motion or Animations off). `mailto:` goes to the OS (Mail). New `src/link_route.rs` (`link_place`, pure;
+  `Workspace::open_link`). **UX gaps built:** bare `http(s)://…` addresses and `localhost:port` in an agent's replies
+  are links (not in code); file paths in a terminal's output (`src/main.rs:42`, an absolute one, `~/…`) are
+  ⌘-clickable into a file tab at that line, resolved against the terminal's folder, only when the file is there
+  (looked up off the UI thread, at most 256 answers kept), underlined with ⌘ held once known to be a file; hovering a
+  Markdown link (the chat, the Preview) shows where it goes in a tooltip after the usual delay.
+  - **AI's calls:** a pane under 560 pt isn't split (the link opens as a tab in it); "the same URL" ignores a trailing
+    `/`; only http, https and mailto ever open (`links::allowed`), as before; the chosen tab's page loads without
+    taking the keyboard; SSH workspaces behave the same, and `fuxx browser open`'s own `browser_place` is unchanged; a
+    path in an SSH session's output opens nothing (the path is the host's); the file opens in the terminal's pane (not
+    where links go), its line at the top and current; bare-URL linking is the agent chat's only (the Preview keeps
+    CommonMark's `<…>` and `[…](…)`); the terminal's ⌘-underline stays its hover signal (no tooltip there: the link's
+    text is its address unless the program wrote an OSC 8 link). **Wave 3 adds** the agent chat's links routed through
+    `open_link` (today they open in your default browser, and its file links do nothing).
+  - **Checks:** unit tests for `link_place` (mail and the default browser to the OS; the first link splits, a narrow
+    pane takes a tab; the next goes to the last link pane, the same URL selects, a closed one is found again by its
+    browser; the most recently used browser pane, never the source; "a tab in this pane" reusing its own tab),
+    `same_url`, the setting and its values, the path finder (`path_ref` with line and column and trailing punctuation,
+    `resolve_path`, a path found under a grid point), the bare-URL pass (prose, a list, a quote; code spans, code
+    blocks, written links and non-addresses left alone) and `link_under` (a link's tooltip), each watched failing first
+    (the setting's written values were tested with their code; the path tests by disabling the functions after).
+    Scene `link-opens-split` (⌘-clicks: the split on the right with your focus kept, a tab in it for the next, the same
+    URL shown and flashing, mail to the OS, a path to a file tab at line 42, "Tab in this pane", "Default browser").
+    The `preferences` pages show the new row (its reference not refreshed: no scene shoots the Browser page).
+- **Right-click in the Files tree** (batch 3, chore 7, wave 2a; your words, 2026-11-23: "add right click on each item
+  on file explorer"): a row's right-click (or ⌃-click) selects it, gives the tree the keyboard and opens the shared
+  menu. A file: Open ↩ · Open to the Side · Show Changes (a changed file only) · ─ · Reveal in Finder · Copy Path ⌥⌘C ·
+  Copy Relative Path ⌥⇧⌘C · ─ · Rename… · ─ · Move to Trash ⌘⌫. A folder: New File… · New Folder… · ─ · Open in Terminal
+  · Reveal in Finder · Copy Path · Copy Relative Path · ─ · Rename… · ─ · Move to Trash. Rename and New are a box in the
+  row (Rename selects the name without its extension; ↩ makes it, Esc leaves it; a clash, a `/` or an empty name says
+  so under the box). Move to Trash asks first in a native sheet ("Move “main.rs” to the Trash?", "You can put it back
+  with ⌘Z or from the Trash in Finder.", Move to Trash · Cancel); **⌘Z in the tree** puts the last item trashed this
+  session back (a UX gap). The keys work while the tree has the keyboard (not in its filter or Rename box). New
+  `src/files_menu.rs`.
+  - **AI's calls:** Open to the Side uses the focused pane's right neighbour (its tab of the file, else a new one), else a
+    new split on the right, shown and focused; Show Changes opens the file's Diff; Open in Terminal is a terminal tab in
+    the focused pane; Reveal runs `open -R` off the UI thread; the trash is Finder's own (`NSFileManager`
+    `trashItemAtURL`, which says where the item went, for ⌘Z), off the UI thread, and ⌘Z never puts it back over
+    something now at its place; the clash check reads the tree's own listing, the renaming and making happen off the
+    UI thread (a name taken meanwhile still says so); a made or renamed entry is selected and its folder listed again;
+    a new file is made empty and not opened; no permanent Delete. **Wave 3 adds** Add to Chat (a path pill in the
+    `ask_pick` agent tab): the item is built (`file_tree_menu`'s target) but left out until pills come
+    (`files_add_target` is the seam).
+  - **Checks:** unit tests for the menus, the stem (`main` of `main.rs`, `archive.tar` of `archive.tar.gz`, a dot-file
+    and a folder whole), the name problems, where the New box's row goes, the trash and put back (kept apart, never over
+    a new one; in a temp folder), the sheet's words, `FileTree::has_entry` / `is_open`, and the tree's keys (in the tree,
+    not in its boxes), each watched failing first but the sheet's words and the keys' test (written with their code).
+    Scene `files-menu` (both themes, on a folder of its own; never the
+    repo or yours; its "Trash" is a folder of the scene's, so your Trash is never touched): a marked file's menu and a
+    folder's, Copy Path, ⌥⇧⌘C, ⇧F10 on the selected row, Reveal, Rename on disk (the stem replaced), a clash under the
+    box and Esc, New File, New Folder, Move to Trash and ⌘Z, Open in Terminal, Open to the Side; shot with Move to
+    Trash lit in `menu_danger`.

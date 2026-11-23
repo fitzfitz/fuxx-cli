@@ -1729,13 +1729,28 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((ws, pane)) = self.model.locate(file_tab) else {
+        self.attach_to_agent(file_tab, Attachment::Code(code), window, cx);
+    }
+
+    /// `chip` in the box of the agent tab Ask picks for tab `from`'s workspace (a new one in
+    /// `from`'s pane when the workspace has none; `from` itself when it is an agent tab), that
+    /// tab shown with the keyboard in its box (M11ag's Ask; batch 3's Add to Chat). Never
+    /// sends. Nothing on another host.
+    pub(crate) fn attach_to_agent(
+        &mut self,
+        from: TabId,
+        chip: Attachment,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((ws, pane)) = self.model.locate(from) else {
             return;
         };
         if self.workspace_is_ssh(ws) {
             return;
         }
-        let tab = match self.ask_pick(ws) {
+        let own = self.agents.contains_key(&from).then_some(from);
+        let tab = match own.or_else(|| self.ask_pick(ws)) {
             Some(tab) => tab,
             None => {
                 let provider = ask_agent(None, self.last_agent_provider);
@@ -1745,7 +1760,6 @@ impl Workspace {
                 tab
             }
         };
-        let chip = Attachment::Code(code);
         match self.agents.get(&tab) {
             Some(slot) => {
                 let view = slot.view.clone();

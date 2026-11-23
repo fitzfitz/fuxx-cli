@@ -27,6 +27,7 @@ pub(super) const SCENES: &[Scene] = &[
             "src/pane_tab_menu.rs",
             "src/tab_menu.rs",
             "src/new_tab_menu.rs",
+            "src/workspace_menu.rs",
             "src/title_area.rs",
             "src/preferences.rs",
         ],
@@ -213,6 +214,11 @@ fn overlays() {
                         Overlay::NewTabMenu => {
                             let pane = ws.model.focused_pane().expect("a focused pane");
                             ws.toggle_new_tab_menu(pane, at, window, cx)
+                        }
+                        Overlay::ContextMenu => {
+                            let tab = ws.model.focused_tab().expect("a focused tab");
+                            let session = ws.terminal_of(tab).expect("a terminal tab");
+                            ws.open_terminal_menu(session, at, None, None, window, cx)
                         }
                         Overlay::Notifications => ws.open_notifications(window, cx),
                         Overlay::Help => {

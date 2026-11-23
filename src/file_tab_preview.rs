@@ -22,7 +22,7 @@ impl FileTab {
         match link_target(base, url) {
             #[cfg(feature = "ui-shots")]
             LinkTarget::Web(_) if self.frozen => {}
-            LinkTarget::Web(url) => cx.open_url(&url),
+            LinkTarget::Web(url) => cx.emit(FileTabEvent::OpenLink(url)),
             LinkTarget::File(path, part) if path.is_file() => {
                 let part = part.filter(|_| is_markdown(&path));
                 cx.emit(FileTabEvent::OpenFile(path, part))

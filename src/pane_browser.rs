@@ -89,6 +89,8 @@ pub struct Overlays {
     pub tab_menu: bool,
     /// A pane bar's + menu (chore 2026-11-23).
     pub new_tab_menu: bool,
+    /// The shared right-click menu (batch 3, chore 4).
+    pub context_menu: bool,
     /// The sidebar footer's "+ New" menu.
     pub new_menu: bool,
     /// A browser tab's address suggestions.
@@ -114,6 +116,7 @@ impl Overlays {
             row_menu,
             tab_menu,
             new_tab_menu,
+            context_menu,
             new_menu,
             suggestions,
             notifications,
@@ -129,6 +132,7 @@ impl Overlays {
             || row_menu
             || tab_menu
             || new_tab_menu
+            || context_menu
             || new_menu
             || suggestions
             || notifications
@@ -590,6 +594,10 @@ mod tests {
             },
             Overlays {
                 new_tab_menu: true,
+                ..none
+            },
+            Overlays {
+                context_menu: true,
                 ..none
             },
             Overlays {

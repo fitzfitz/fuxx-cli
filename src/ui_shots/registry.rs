@@ -15,7 +15,7 @@
 
 use super::{
     Scene, agent, agent_box, agent_lanes, ask, branch, changes, chrome, chrome_parts, command,
-    file_tab, file_tab_md, file_tab_md_reader, naming, notes, overlays, palette, panes,
+    file_tab, file_tab_md, file_tab_md_reader, menus, naming, notes, overlays, palette, panes,
     right_sidebar, sidebar, status_bar, terminal, welcome, window,
 };
 
@@ -55,6 +55,7 @@ pub(super) const AREAS: &[(&str, &[Scene])] = &[
     (agent_lanes::FILE, agent_lanes::SCENES),
     (ask::FILE, ask::SCENES),
     (notes::FILE, notes::SCENES),
+    (menus::FILE, menus::SCENES),
 ];
 
 /// The scenes with their own area file added to `sources`, as `--changed` reads them, so an edit
@@ -258,6 +259,10 @@ pub(super) const ORDER: &[&str] = &[
     "shell-cards",
     "shell-cards-select",
     "selection-colors",
+    "context-menu-terminal",
+    "context-menu-file-tab",
+    "link-opens-split",
+    "files-menu",
     "shell-cards-wrap",
     "shell-cards-prompt",
     "shell-cards-placeholder",

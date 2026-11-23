@@ -120,6 +120,21 @@ impl NameInput {
         self.caret_to_end();
     }
 
+    /// Select byte range `range` of the text (clamped to it, on character edges), the caret at
+    /// its end: the Files tree's Rename selects a name's stem (batch 3, chore 7).
+    pub fn select_range(&mut self, range: std::ops::Range<usize>) {
+        let fit = |i: usize| {
+            let mut i = i.min(self.text.len());
+            while !self.text.is_char_boundary(i) {
+                i -= 1;
+            }
+            i
+        };
+        self.marked = None;
+        self.reversed = false;
+        self.selected = fit(range.start)..fit(range.end.max(range.start));
+    }
+
     /// Select the whole text: typing (or pasting) replaces it, Backspace erases it.
     pub fn select_all(&mut self) {
         self.marked = None;

@@ -354,6 +354,7 @@ impl Workspace {
             row_menu: self.sidebar.tab_menu.is_some(),
             tab_menu: self.pane_tab_menu.is_some(),
             new_tab_menu: self.new_tab_menu.is_some(),
+            context_menu: self.context_menu.is_some(),
             new_menu: self.sidebar.new_menu,
             suggestions: self
                 .browser_tabs
@@ -519,7 +520,7 @@ impl Workspace {
     }
 
     /// Tab `tab` was just used (shown, or an agent's command): an agent's open picks it first.
-    fn use_browser_tab(&mut self, tab: TabId, cx: &App) {
+    pub(crate) fn use_browser_tab(&mut self, tab: TabId, cx: &App) {
         if let Some(view) = self.browser_tabs.get(&tab) {
             self.browser_clock += 1;
             view.read(cx).last_used.set(self.browser_clock);
@@ -527,7 +528,7 @@ impl Workspace {
     }
 
     /// When tab `tab` was last used (0: never).
-    fn browser_used(&self, tab: TabId, cx: &App) -> u64 {
+    pub(crate) fn browser_used(&self, tab: TabId, cx: &App) -> u64 {
         self.browser_tabs
             .get(&tab)
             .map_or(0, |v| v.read(cx).last_used.get())

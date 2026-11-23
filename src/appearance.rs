@@ -71,6 +71,8 @@ pub struct Appearance {
     pub cursor_follows_status: bool,
     /// `cursor-fun = off|trail|sparks`: an optional effect on the cursor (default off).
     pub cursor_fun: CursorFun,
+    /// `open-links-in = split|tab|browser`: where a clicked link opens (batch 3, chore 6).
+    pub open_links_in: OpenLinksIn,
     /// `command-blocks = on|off`: new terminals' zsh gets fuxx's integration, and the window
     /// draws command blocks (default on, M11l).
     pub command_blocks: bool,
@@ -158,6 +160,56 @@ impl CursorFun {
             CursorFun::Sparks => "Sparks",
         }
     }
+}
+
+/// `open-links-in = split|tab|browser` (batch 3, chore 6): where a clicked link opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OpenLinksIn {
+    /// A browser split on the right (reused once there).
+    #[default]
+    Split,
+    /// A new tab in the pane you clicked in.
+    ThisPane,
+    /// Your default browser.
+    Browser,
+}
+
+impl OpenLinksIn {
+    /// In Preferences' order.
+    pub const ALL: [OpenLinksIn; 3] = [
+        OpenLinksIn::Split,
+        OpenLinksIn::ThisPane,
+        OpenLinksIn::Browser,
+    ];
+
+    /// As written in the settings file.
+    pub fn value(self) -> &'static str {
+        match self {
+            OpenLinksIn::Split => "split",
+            OpenLinksIn::ThisPane => "tab",
+            OpenLinksIn::Browser => "browser",
+        }
+    }
+
+    /// As Preferences shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            OpenLinksIn::Split => "Split on the right",
+            OpenLinksIn::ThisPane => "Tab in this pane",
+            OpenLinksIn::Browser => "Default browser",
+        }
+    }
+}
+
+/// `open-links-in`, a browser split by default (see `choice_from_entries`).
+fn open_links_from_entries(entries: &[Entry]) -> (OpenLinksIn, Vec<String>) {
+    choice_from_entries(
+        entries,
+        "open-links-in",
+        OpenLinksIn::default(),
+        &OpenLinksIn::ALL,
+        OpenLinksIn::value,
+    )
 }
 
 /// An environment variable as a path; unset or empty counts as absent.
@@ -467,6 +519,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
     let (cursor_glow, cursor_glow_warnings) = cursor_glow_from_entries(&entries);
     let (cursor_follows_status, cursor_color_warnings) = cursor_color_from_entries(&entries);
     let (cursor_fun, cursor_fun_warnings) = cursor_fun_from_entries(&entries);
+    let (open_links_in, open_links_warnings) = open_links_from_entries(&entries);
     let (command_blocks, command_blocks_warnings) = command_blocks_from_entries(&entries);
     let (shell_cards, shell_cards_warnings) = shell_cards_from_entries(&entries);
     let (file_wrap, file_wrap_warnings) = file_wrap_from_entries(&entries);
@@ -488,6 +541,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         .chain(&cursor_glow_warnings)
         .chain(&cursor_color_warnings)
         .chain(&cursor_fun_warnings)
+        .chain(&open_links_warnings)
         .chain(&command_blocks_warnings)
         .chain(&shell_cards_warnings)
         .chain(&file_wrap_warnings)
@@ -523,6 +577,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         cursor_glow,
         cursor_follows_status,
         cursor_fun,
+        open_links_in,
         command_blocks,
         shell_cards,
         file_wrap,
@@ -761,6 +816,26 @@ mod tests {
     }
 
     /// Prompt suggestions (a chore after M11ar): on unless turned off.
+    #[test]
+    fn open_links_in_defaults_to_a_split_and_reads_its_three_values() {
+        let links = |v: &str| open_links_from_entries(&[entry("open-links-in", v)]);
+        assert_eq!(open_links_from_entries(&[]), (OpenLinksIn::Split, vec![]));
+        assert_eq!(links("split").0, OpenLinksIn::Split);
+        assert_eq!(links("Tab").0, OpenLinksIn::ThisPane);
+        assert_eq!(links("browser").0, OpenLinksIn::Browser);
+        assert_eq!(
+            links("window"),
+            (
+                OpenLinksIn::Split,
+                vec!["open-links-in \"window\": expected split, tab or browser".to_string()]
+            )
+        );
+        assert_eq!(
+            OpenLinksIn::ALL.map(OpenLinksIn::label),
+            ["Split on the right", "Tab in this pane", "Default browser"]
+        );
+    }
+
     #[test]
     fn agent_suggestions_setting_defaults_on() {
         let sug = |v: &str| entry("agent-suggestions", v);

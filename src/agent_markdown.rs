@@ -572,6 +572,99 @@ fn linked_image(rest: &str) -> Option<(Span, usize)> {
     ))
 }
 
+/// Batch 3, chore 6: bare `http(s)://…` addresses and `localhost:port` in an agent's words
+/// become links (as `<…>` would), in every block's text; code (spans and blocks), bold and
+/// italic stay as they are. The file tab's Preview doesn't call it.
+pub fn link_bare_urls(blocks: &mut [Md]) {
+    for block in blocks {
+        match block {
+            Md::Para(spans)
+            | Md::Heading(_, spans)
+            | Md::Bullet(spans)
+            | Md::Numbered(_, spans)
+            | Md::Task(_, spans) => link_spans(spans),
+            Md::Nested(_, inner) => link_bare_urls(std::slice::from_mut(inner.as_mut())),
+            Md::Quote(inner) => link_bare_urls(inner),
+            Md::Table { head, rows, .. } => {
+                for cell in head.iter_mut().chain(rows.iter_mut().flatten()) {
+                    link_spans(cell);
+                }
+            }
+            Md::Code { .. } | Md::Rule => {}
+        }
+    }
+}
+
+/// Each plain-text span's bare addresses as links (`bare_links`).
+fn link_spans(spans: &mut Vec<Span>) {
+    if !spans
+        .iter()
+        .any(|s| matches!(s, Span::Text(t) if t.contains("http") || t.contains("localhost:")))
+    {
+        return;
+    }
+    *spans = std::mem::take(spans)
+        .into_iter()
+        .flat_map(|span| match span {
+            Span::Text(text) => bare_links(&text),
+            other => vec![other],
+        })
+        .collect();
+}
+
+/// `text` cut into plain text and links at its bare addresses: `http://` or `https://` with a
+/// host, or `localhost:` and a port, each starting a word and running to a space (or a quote or
+/// angle bracket), trailing punctuation left out as a terminal's link is.
+fn bare_links(text: &str) -> Vec<Span> {
+    let mut out = Vec::new();
+    let mut plain_from = 0;
+    let mut i = 0;
+    while i < text.len() {
+        let rest = &text[i..];
+        let starts_word = text[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|p| !p.is_alphanumeric() && p != '/' && p != '.');
+        let scheme = ["https://", "http://", "localhost:"]
+            .into_iter()
+            .find(|s| rest.starts_with(s));
+        if let Some(scheme) = scheme.filter(|_| starts_word) {
+            let end = rest
+                .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '`'))
+                .unwrap_or(rest.len());
+            let url = crate::links::trim_url(&rest[..end]);
+            let after = &url[scheme.len()..];
+            let ok = if scheme == "localhost:" {
+                after.starts_with(|c: char| c.is_ascii_digit())
+            } else {
+                after.starts_with(|c: char| c.is_alphanumeric() || c == '[')
+            };
+            if ok {
+                if plain_from < i {
+                    out.push(Span::Text(text[plain_from..i].to_string()));
+                }
+                let target = if scheme == "localhost:" {
+                    format!("http://{url}")
+                } else {
+                    url.to_string()
+                };
+                out.push(Span::Link {
+                    text: url.to_string(),
+                    url: target,
+                });
+                i += url.len();
+                plain_from = i;
+                continue;
+            }
+        }
+        i += rest.chars().next().map_or(1, char::len_utf8);
+    }
+    if plain_from < text.len() {
+        out.push(Span::Text(text[plain_from..].to_string()));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +702,73 @@ mod tests {
 
     fn t(s: &str) -> Span {
         Span::Text(s.into())
+    }
+
+    fn linked(text: &str) -> Vec<Md> {
+        let mut blocks = parse(text);
+        link_bare_urls(&mut blocks);
+        blocks
+    }
+
+    fn l(text: &str, url: &str) -> Span {
+        Span::Link {
+            text: text.into(),
+            url: url.into(),
+        }
+    }
+
+    #[test]
+    fn bare_urls_in_an_agents_words_become_links() {
+        assert_eq!(
+            linked("See https://example.com/a. Then go."),
+            vec![Md::Para(vec![
+                t("See "),
+                l("https://example.com/a", "https://example.com/a"),
+                t(". Then go.")
+            ])]
+        );
+        assert_eq!(
+            linked("- served on localhost:3000/app now"),
+            vec![Md::Bullet(vec![
+                t("served on "),
+                l("localhost:3000/app", "http://localhost:3000/app"),
+                t(" now")
+            ])]
+        );
+        // In a quote and a table cell too.
+        assert_eq!(
+            linked("> (http://a.dev)"),
+            vec![Md::Quote(vec![Md::Para(vec![
+                t("("),
+                l("http://a.dev", "http://a.dev"),
+                t(")")
+            ])])]
+        );
+    }
+
+    #[test]
+    fn code_written_links_and_non_urls_stay_as_they_are() {
+        assert_eq!(
+            linked("`https://in.code` and [x](https://y.dev)"),
+            vec![Md::Para(vec![
+                Span::Code("https://in.code".into()),
+                t(" and "),
+                l("x", "https://y.dev")
+            ])]
+        );
+        assert_eq!(
+            linked("```\nhttps://a.dev\n```"),
+            parse("```\nhttps://a.dev\n```")
+        );
+        // Not an address: no host, a word before it, a port with no digits.
+        for plain in [
+            "https:// nothing",
+            "xhttps://a.dev",
+            "localhost:abc",
+            "mylocalhost:3000",
+        ] {
+            assert_eq!(linked(plain), parse(plain), "{plain}");
+        }
     }
 
     #[test]

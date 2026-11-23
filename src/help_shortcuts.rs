@@ -141,6 +141,8 @@ pub fn describe(action: &str) -> Describe {
         "view::ActualSize" => Listed(WindowAndApp, "Actual Size"),
         "help::ShowShortcuts" => Listed(WindowAndApp, "Keyboard Shortcuts"),
         "workspace::OpenPalette" => Listed(WindowAndApp, "Command Palette\u{2026}"),
+        // Batch 3, chore 4: the right-click menu from the keyboard.
+        "context_menu::ShowMenu" => Listed(WindowAndApp, "Show Context Menu"),
 
         "browser_tab::SuggestPrev"
         | "browser_tab::SuggestNext"
@@ -165,6 +167,11 @@ pub fn describe(action: &str) -> Describe {
         | "agent_tab::CloseImage" => Unlisted,
         other if other.starts_with("host_picker::") => Unlisted,
         other if other.starts_with("palette::") => Unlisted,
+        // The right-click menu's own ↑↓, ↩ and Esc (while it is open only).
+        "context_menu::MenuUp"
+        | "context_menu::MenuDown"
+        | "context_menu::MenuChoose"
+        | "context_menu::MenuDismiss" => Unlisted,
         // The + menu's own ↑↓←→ (its box's keys, as the palette's).
         other if other.starts_with("new_tab_menu::") => Unlisted,
         // The branch switcher's arrows (in its panel only).

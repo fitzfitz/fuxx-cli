@@ -4,7 +4,7 @@
 
 use alacritty_terminal::vte::ansi::Rgb;
 
-use crate::appearance::{CursorFun, CursorShapeSetting};
+use crate::appearance::{CursorFun, CursorShapeSetting, OpenLinksIn};
 use crate::fonts;
 use crate::settings::Entry;
 use crate::theme::{self, BUILTIN_THEMES, Theme};
@@ -193,6 +193,16 @@ pub fn cursor_fun_values(fun: CursorFun) -> Vec<String> {
         vec![]
     } else {
         vec![fun.value().to_string()]
+    }
+}
+
+/// `open-links-in` values to write: nothing for a split (the default, so no line), else its
+/// name.
+pub fn open_links_values(choice: OpenLinksIn) -> Vec<String> {
+    if choice == OpenLinksIn::default() {
+        vec![]
+    } else {
+        vec![choice.value().to_string()]
     }
 }
 
@@ -414,6 +424,9 @@ mod tests {
         // Following the status is the default (`status`): only `theme` is written.
         assert!(cursor_color_values(true).is_empty());
         assert_eq!(cursor_color_values(false), ["theme"]);
+        assert!(open_links_values(OpenLinksIn::Split).is_empty());
+        assert_eq!(open_links_values(OpenLinksIn::ThisPane), ["tab"]);
+        assert_eq!(open_links_values(OpenLinksIn::Browser), ["browser"]);
         assert!(cursor_fun_values(CursorFun::Off).is_empty());
         assert_eq!(cursor_fun_values(CursorFun::Trail), ["trail"]);
         assert_eq!(cursor_fun_values(CursorFun::Sparks), ["sparks"]);

@@ -262,6 +262,25 @@ impl FileTree {
         }
     }
 
+    /// Whether folder `rel`'s listing (as last read) has an entry called `name`: the Rename and
+    /// New boxes' clash check (batch 3, chore 7), from what the tree holds, not the disk.
+    pub fn has_entry(&self, rel: &Path, name: &str) -> bool {
+        let name = nfc(name);
+        self.listings
+            .get(&key(rel))
+            .is_some_and(|l| l.entries.iter().any(|e| e.name == name))
+    }
+
+    /// Whether folder `rel` shows its children (the root does unless folded away).
+    pub fn is_open(&self, rel: &Path) -> bool {
+        let rel = key(rel);
+        if rel.as_os_str().is_empty() {
+            !self.root_collapsed
+        } else {
+            self.expanded.contains(&rel)
+        }
+    }
+
     /// Close folder `rel`; its listing is kept for opening it again.
     pub fn collapse(&mut self, rel: &Path) {
         if self.expanded.remove(&key(rel)) {
@@ -697,6 +716,25 @@ mod tests {
     }
 
     /// A memory of these folders open, the root open.
+    #[test]
+    fn a_folders_entries_are_known_for_the_clash_check() {
+        let mut t = FileTree::new(p("/w"), None);
+        t.expand(p(""), vec![dir("src"), file("main.rs")], 0);
+        t.expand(p("src"), vec![file("lib.rs")], 0);
+        assert!(t.has_entry(Path::new(""), "main.rs"));
+        assert!(t.has_entry(Path::new("src"), "lib.rs"));
+        assert!(!t.has_entry(Path::new("src"), "main.rs"));
+        assert!(
+            !t.has_entry(Path::new("docs"), "a.md"),
+            "a folder not listed"
+        );
+        assert!(t.is_open(Path::new("")) && t.is_open(Path::new("src")));
+        t.collapse(Path::new("src"));
+        assert!(!t.is_open(Path::new("src")));
+        t.set_root_collapsed(true);
+        assert!(!t.is_open(Path::new("")));
+    }
+
     fn memory_of(folders: &[&str]) -> TreeMemory {
         TreeMemory {
             expanded: folders.iter().map(|f| p(f)).collect(),

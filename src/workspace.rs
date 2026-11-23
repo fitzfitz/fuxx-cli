@@ -586,6 +586,7 @@ overlays!(
     TabMenu,
     PaneTabMenu,
     NewTabMenu,
+    ContextMenu,
     Notifications,
     Help,
     Welcome,
@@ -662,6 +663,18 @@ pub struct Workspace {
     pub(crate) pane_tab_menu: Option<PaneTabMenu>,
     /// A pane bar's + menu, while it is open (chore 2026-11-23).
     pub(crate) new_tab_menu: Option<crate::new_tab_menu::OpenNewTabMenu>,
+    /// The shared right-click menu, while it is open (batch 3, chore 4).
+    pub(crate) context_menu: Option<crate::workspace_menu::OpenMenu>,
+    /// The terminal whose link the open menu was opened on (drawn underlined until it closes).
+    pub(crate) menu_underline: Option<u64>,
+    /// Each workspace's pane the last link opened in (batch 3, chore 6: the next goes there).
+    pub(crate) link_panes: HashMap<WorkspaceId, PaneId>,
+    /// The tab pill flashing after a link opened into its pane, its animation's number and when.
+    pub(crate) link_flash: Option<(TabId, u64, Instant)>,
+    pub(crate) flash_seq: u64,
+    /// The scenes: URLs handed to the OS (the default browser, Mail) instead of opened.
+    #[cfg(feature = "ui-shots")]
+    pub(crate) shot_opened_outside: Vec<String>,
     /// The agent presets' PATH answers the + menu shows (asked off the UI thread on open).
     pub(crate) agents_found: Option<crate::new_tab_menu::AgentsFound>,
     /// The browser history is being read for the + menu (off the UI thread).
@@ -1036,6 +1049,13 @@ impl Workspace {
             renaming: None,
             pane_tab_menu: None,
             new_tab_menu: None,
+            context_menu: None,
+            menu_underline: None,
+            link_panes: HashMap::new(),
+            link_flash: None,
+            flash_seq: 0,
+            #[cfg(feature = "ui-shots")]
+            shot_opened_outside: Vec::new(),
             agents_found: None,
             history_loading: false,
             tab_scroll: RefCell::new(HashMap::new()),
@@ -2527,6 +2547,37 @@ impl Workspace {
             TerminalEvent::Reconnect => self.reconnect_ssh(index, false, window, cx),
             TerminalEvent::DaemonLost => self.daemon_lost(index, window, cx),
             TerminalEvent::Command(change) => self.command_changed(index, change, cx),
+            TerminalEvent::OpenLink(url) => {
+                let id = self.sessions.items()[index].id;
+                if let Some(tab) = self.model.terminal_tab(id) {
+                    self.open_link(tab, url, window, cx);
+                }
+            }
+            // A path in the output: this Mac's file only (an SSH session's paths are the
+            // host's), in a file tab in the terminal's pane, at its line.
+            TerminalEvent::OpenFile { path, line } => {
+                if self.sessions.items()[index].ssh.is_some() {
+                    return;
+                }
+                let id = self.sessions.items()[index].id;
+                if let Some(tab) = self.model.terminal_tab(id) {
+                    self.model.select_tab(tab);
+                }
+                self.open_file_tab(path.clone(), layout_model::FileMode::Plain, window, cx);
+                if let Some(line) = *line
+                    && let Some(view) = self.focused_file_tab().cloned()
+                {
+                    view.update(cx, |view, cx| view.go_to_line(line, cx));
+                }
+            }
+            TerminalEvent::ContextMenu {
+                at,
+                selection,
+                link,
+            } => {
+                let session = self.sessions.items()[index].id;
+                self.open_terminal_menu(session, *at, selection.clone(), link.clone(), window, cx);
+            }
         }
     }
 
@@ -3057,6 +3108,7 @@ impl Workspace {
         self.sidebar.tab_menu = None;
         self.pane_tab_menu = None;
         self.new_tab_menu = None;
+        self.context_menu = None;
         self.notifications_popover = None;
         self.sidebar.new_menu = false;
     }
@@ -3120,6 +3172,9 @@ impl Workspace {
         }
         if keep != Overlay::NewTabMenu {
             self.new_tab_menu = None;
+        }
+        if keep != Overlay::ContextMenu {
+            self.context_menu = None;
         }
         if keep != Overlay::Notifications {
             self.notifications_popover = None;
@@ -3983,6 +4038,8 @@ impl Render for Workspace {
         let tab_menu = self.render_tab_menu(ui, cx);
         let pane_tab_menu = self.render_pane_tab_menu(ui, cx);
         let new_tab_menu = self.render_new_tab_menu(cx);
+        self.end_menu_underline(false, cx);
+        let context_menu = self.render_context_menu(ui, cx);
         let preferences = self
             .preferences
             .clone()
@@ -4265,6 +4322,7 @@ impl Render for Workspace {
             .children(tab_menu)
             .children(pane_tab_menu)
             .children(new_tab_menu)
+            .children(context_menu)
             .children(notifications)
             // Preferences (M11x): over everything, the whole window dimmed behind it.
             .children(preferences)

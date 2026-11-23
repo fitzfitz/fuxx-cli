@@ -4383,6 +4383,16 @@ pub enum FileTabEvent {
     OpenFile(PathBuf, Option<String>),
     /// M11ag: Ask (the selection bar's button, ⌘↵): the selection's code, for an agent tab's box.
     Ask(CodeRef),
+    /// A web or mail link clicked in the Preview (batch 3, chore 6): opened where "Open links
+    /// in" says.
+    OpenLink(String),
+    /// A right-click or ⇧F10 (batch 3, chore 4): fuxx's menu at window point `at`, for the
+    /// selection as text and as code (Add to Chat's chip).
+    ContextMenu {
+        at: Point<Pixels>,
+        selection: String,
+        code: Option<CodeRef>,
+    },
 }
 
 /// The find bar: its box and what it found.
@@ -4654,6 +4664,8 @@ pub struct FileTab {
     /// M11ai: the heading to jump to once the Preview has read the file (a link to it from
     /// another file, `show_anchor`).
     pending_anchor: Option<String>,
+    /// A line to show once the text is read (`go_to_line` before it was).
+    pending_line: Option<usize>,
     /// M11ai: "On this page" (Task 8): whether the Preview is wide enough for its column and
     /// the Preview's width, both as last laid out (decided in the Preview canvas's prepaint, a
     /// layout cache: a change of the fit draws the tab again once); the current entry (worked
@@ -4862,6 +4874,7 @@ impl FileTab {
             copied: None,
             copy_gen: 0,
             pending_anchor: None,
+            pending_line: None,
             outline_fits: Rc::default(),
             preview_width: Rc::default(),
             outline_current: None,
@@ -5737,6 +5750,7 @@ impl FileTab {
                 self.colour(cx);
                 self.look_up_changes(cx);
                 self.follow_latest(cx);
+                self.apply_pending_line(cx);
             }
         }
         // M11ag: the notes for the new text (none without one).
@@ -7166,6 +7180,61 @@ impl FileTab {
         go
     }
 
+    /// Show line `line` (1-based, as a compiler writes it) at the top, current (batch 3, chore 6:
+    /// a ⌘-clicked `src/main.rs:42`); a file still loading goes there once it is read.
+    pub fn go_to_line(&mut self, line: usize, cx: &mut Context<Self>) {
+        self.pending_line = Some(line.saturating_sub(1));
+        self.apply_pending_line(cx);
+    }
+
+    /// The line `go_to_line` asked for, once the text is read (it is current then) and drawn
+    /// once (it is scrolled to the top then, and done).
+    fn apply_pending_line(&mut self, cx: &mut Context<Self>) {
+        let Some(line) = self.pending_line else {
+            return;
+        };
+        let Some(last) = self.shown_doc().map(|d| d.lines.len().saturating_sub(1)) else {
+            return;
+        };
+        let line = line.min(last);
+        if self.geom.get().is_none() {
+            self.set_current(Some(line), cx);
+            return;
+        }
+        self.pending_line = None;
+        self.show_at_top(Some(line), cx);
+    }
+
+    /// Ask for fuxx's menu at `at`; the selection stays.
+    fn open_menu(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        cx.emit(FileTabEvent::ContextMenu {
+            at,
+            selection: self.selected_text(),
+            code: self.code_ref(),
+        });
+    }
+
+    /// ⇧F10: the menu under the selection's moving end, else the current line, else near the
+    /// text's top.
+    fn menu_point(&self, cx: &App) -> Point<Pixels> {
+        let Some(g) = self.geom.get() else {
+            return crate::workspace_menu::keyboard_at(None);
+        };
+        let line = self.selection.map(|(_, b)| b.line).or(self.current);
+        let y = line
+            .filter(|_| !self.preview_shown())
+            .and_then(|l| {
+                let map = self.map_now(cx)?;
+                let row = map.first_row(l)?;
+                Some(g.bounds.top() + px(map.top(row) + map.row_h()) - g.scroll.y)
+            })
+            .filter(|&y| y > g.bounds.top() && y < g.bounds.bottom());
+        point(
+            g.bounds.left() + g.text_left + px(24.0),
+            y.unwrap_or(g.bounds.top() + px(16.0)),
+        )
+    }
+
     fn copy(&mut self, cx: &mut Context<Self>) {
         let text = self.selected_text();
         if !text.is_empty() {
@@ -8377,7 +8446,22 @@ impl FileTab {
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, cx| this.wheel(e, cx)))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, e: &MouseDownEvent, window, cx| this.mouse_down(e, window, cx)),
+                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                    // ⌃-click is a right-click on a Mac.
+                    if e.modifiers.control {
+                        this.focus.focus(window, cx);
+                        this.open_menu(e.position, cx);
+                    } else {
+                        this.mouse_down(e, window, cx)
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                    this.focus.focus(window, cx);
+                    this.open_menu(e.position, cx)
+                }),
             )
             .child(
                 text.child(
@@ -9155,6 +9239,11 @@ impl FileTab {
         cx.notify();
     }
 
+    /// The current line (batch 3, chore 6: a ⌘-clicked path's line).
+    pub fn current_line_for_shots(&self) -> Option<usize> {
+        self.current
+    }
+
     /// M11ah: the current line set (as a press there would).
     pub fn set_current_for_shots(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
         self.set_current(line, cx);
@@ -9272,6 +9361,8 @@ impl Render for FileTab {
         if std::mem::take(&mut self.refocus) {
             self.focus.focus(window, cx);
         }
+        // Batch 3, chore 6: a ⌘-clicked path's line, once the text has been drawn.
+        self.apply_pending_line(cx);
         let theme = cx.global::<Appearance>().theme;
         let ui = theme.ui();
         self.reveal_diff(window, cx);
@@ -9319,6 +9410,12 @@ impl Render for FileTab {
                 }
             }))
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))
+            .on_action(
+                cx.listener(|this, _: &crate::workspace_menu::ShowMenu, _, cx| {
+                    let at = this.menu_point(cx);
+                    this.open_menu(at, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &AskAgent, _, cx| this.ask(cx)))
             .child(toolbar)
             .children(find_bar)
@@ -9490,6 +9587,28 @@ impl Workspace {
                 }
                 // M11ag: the selection's code, a chip in an agent tab's box.
                 FileTabEvent::Ask(code) => this.ask_code(tab, code.clone(), window, cx),
+                FileTabEvent::OpenLink(url) => this.open_link(tab, url, window, cx),
+                FileTabEvent::ContextMenu {
+                    at,
+                    selection,
+                    code,
+                } => {
+                    let target = this
+                        .model
+                        .locate(tab)
+                        .and_then(|(ws, _)| {
+                            crate::workspace_menu::add_target_label(this.ask_target(ws, cx))
+                        })
+                        .filter(|_| code.is_some());
+                    let entries =
+                        crate::context_menu::text_menu(!selection.is_empty(), None, target);
+                    let from = crate::workspace_menu::MenuFrom::FileTab {
+                        tab,
+                        selection: selection.clone(),
+                        code: code.clone(),
+                    };
+                    this.open_context_menu(from, entries, *at, window, cx);
+                }
                 FileTabEvent::OpenFile(path, part) => {
                     this.open_file_tab(path.clone(), FileMode::Plain, window, cx);
                     // M11ai: a Markdown file's heading: its Preview on (saved, as by hand),

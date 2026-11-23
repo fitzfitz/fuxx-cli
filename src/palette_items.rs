@@ -679,6 +679,9 @@ pub const NOT_IN_PALETTE: &[&str] = &[
     "agent_tab::NextLane",
     // ⇧Tab moves an agent tab to its next mode; the mode chip is the way in.
     "agent_tab::CycleMode",
+    // Batch 3, chore 4: ⇧F10 opens the focused surface's right-click menu where you are; the
+    // palette has the focus then, so it would open nowhere.
+    "context_menu::ShowMenu",
     // The agent box's own keys (chores after M11ar): they act on the box's text.
     "composer::TakeSuggestion",
     "agent_tab::HistoryUp",
@@ -1843,8 +1846,8 @@ mod tests {
         );
         assert_eq!(
             keys(&settings).len(),
-            26,
-            "M11x: Banner sound too; M11y: two plugin controls; M11ab: Commands as cards; the agent box sweep; prompt suggestions"
+            27,
+            "M11x: Banner sound too; M11y: two plugin controls; M11ab: Commands as cards; the agent box sweep; prompt suggestions; Open links in"
         );
 
         let root = Path::new("/w/fuxx-cli");

@@ -45,6 +45,7 @@ mod colors;
 mod command_name;
 mod commit_line;
 mod composer;
+mod context_menu;
 mod cursor_look;
 mod daemon;
 mod daemon_client;
@@ -57,6 +58,7 @@ mod edit_ledger;
 mod edit_notes;
 mod file_tab;
 mod file_tree;
+mod files_menu;
 mod folder_picker;
 mod fonts;
 mod git_branch;
@@ -78,6 +80,7 @@ mod icons;
 mod keys;
 mod lane_follow;
 mod layout_model;
+mod link_route;
 mod links;
 mod live_lines;
 mod logos;
@@ -165,6 +168,7 @@ mod workspace_api;
 mod workspace_browser;
 mod workspace_command;
 mod workspace_daemon;
+mod workspace_menu;
 mod workspace_ssh;
 
 use std::io::{IsTerminal, Read, Write};
@@ -260,6 +264,10 @@ pub(crate) fn new_bindings() -> [KeyBinding; 3] {
 /// Every key binding but ⌘T / ⌘N (`new_bindings`). Order matters where two bindings of a key
 /// are equally deep in the focused element's key contexts: the later one wins. So a browser
 /// tab's page keys come after fuxx's own.
+/// The PC keyboard's context-menu key as macOS names it (`NSMenuFunctionKey`): GPUI passes its
+/// character through as the key, having no name of its own for it.
+const MENU_KEY: &str = "\u{f735}";
+
 pub(crate) fn key_bindings() -> Vec<KeyBinding> {
     let mut bindings = vec![
         KeyBinding::new("cmd-q", Quit, None),
@@ -455,9 +463,42 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
             Some("FileTree && !NameInput"),
         ),
         KeyBinding::new("enter", right_sidebar::OpenSelected, Some("FileTree")),
+        // Batch 3, chore 7: the Files menu's keys, in the tree (not its boxes).
+        KeyBinding::new(
+            "alt-cmd-c",
+            right_sidebar::CopyPath,
+            Some("FileTree && !NameInput"),
+        ),
+        KeyBinding::new(
+            "alt-shift-cmd-c",
+            right_sidebar::CopyRelativePath,
+            Some("FileTree && !NameInput"),
+        ),
+        KeyBinding::new(
+            "cmd-backspace",
+            right_sidebar::TrashSelected,
+            Some("FileTree && !NameInput"),
+        ),
+        KeyBinding::new(
+            "cmd-z",
+            right_sidebar::PutBack,
+            Some("FileTree && !NameInput"),
+        ),
         KeyBinding::new("escape", right_sidebar::BackToPane, Some("FileTree")),
         // A sidebar row's tab menu: Escape closes it.
         KeyBinding::new("escape", tab_menu::Dismiss, Some("TabMenu")),
+        // The shared right-click menu (batch 3, chore 4): ↑↓ move its light, ↩ chooses, Esc
+        // closes; ⇧F10 (or the context-menu key) opens it from the keyboard where you are.
+        KeyBinding::new("up", workspace_menu::MenuUp, Some("ContextMenu")),
+        KeyBinding::new("down", workspace_menu::MenuDown, Some("ContextMenu")),
+        KeyBinding::new("enter", workspace_menu::MenuChoose, Some("ContextMenu")),
+        KeyBinding::new("escape", workspace_menu::MenuDismiss, Some("ContextMenu")),
+        KeyBinding::new("shift-f10", workspace_menu::ShowMenu, Some("Terminal")),
+        KeyBinding::new("shift-f10", workspace_menu::ShowMenu, Some("FileTab")),
+        KeyBinding::new("shift-f10", workspace_menu::ShowMenu, Some("FileTree")),
+        KeyBinding::new(MENU_KEY, workspace_menu::ShowMenu, Some("Terminal")),
+        KeyBinding::new(MENU_KEY, workspace_menu::ShowMenu, Some("FileTab")),
+        KeyBinding::new(MENU_KEY, workspace_menu::ShowMenu, Some("FileTree")),
         // The browser's address box: its box is a NameInput too; an address is pasted.
         KeyBinding::new("cmd-v", name_input::Paste, Some("AddressBox > NameInput")),
         // Settings' boxes (the Sound links, M11s).
@@ -1715,6 +1756,47 @@ mod tests {
     /// The + menu's keys in its box: ↑↓ move the light; ←→ move it along the icon row only
     /// while that row is lit, else they stay the caret's.
     #[test]
+    fn the_context_menu_opens_from_the_keyboard_and_takes_its_arrows() {
+        use crate::workspace_menu::{MenuChoose, MenuDismiss, MenuDown, MenuUp, ShowMenu};
+        let keymap = keymap();
+        let file_tab: &[&str] = &["Workspace", "FileTab"];
+        let tree: &[&str] = &["Workspace", "FileTree"];
+        for stack in [TERMINAL, file_tab, tree] {
+            for key in ["shift-f10", super::MENU_KEY] {
+                assert!(
+                    runs(&keymap, key, stack).partial_eq(&ShowMenu),
+                    "{key} in {stack:?}"
+                );
+            }
+        }
+        let menu: &[&str] = &["Workspace", "ContextMenu"];
+        assert!(runs(&keymap, "up", menu).partial_eq(&MenuUp));
+        assert!(runs(&keymap, "down", menu).partial_eq(&MenuDown));
+        assert!(runs(&keymap, "enter", menu).partial_eq(&MenuChoose));
+        assert!(runs(&keymap, "escape", menu).partial_eq(&MenuDismiss));
+    }
+
+    #[test]
+    fn the_files_menu_keys_work_in_the_tree_but_not_in_its_boxes() {
+        use crate::right_sidebar::{CopyPath, CopyRelativePath, PutBack, TrashSelected};
+        let keymap = keymap();
+        let tree: &[&str] = &["Workspace", "FileTree"];
+        let in_box: &[&str] = &["Workspace", "FileTree", "NameInput"];
+        let keys: [(&str, Box<dyn Action>); 4] = [
+            ("alt-cmd-c", Box::new(CopyPath)),
+            ("alt-shift-cmd-c", Box::new(CopyRelativePath)),
+            ("cmd-backspace", Box::new(TrashSelected)),
+            ("cmd-z", Box::new(PutBack)),
+        ];
+        for (key, action) in keys {
+            assert!(runs(&keymap, key, tree).partial_eq(&*action), "{key}");
+        }
+        // In the filter or Rename box, ⌘⌫ clears the box and ↩ confirms it.
+        assert!(runs(&keymap, "cmd-backspace", in_box).partial_eq(&crate::name_input::Clear));
+        assert!(runs(&keymap, "enter", in_box).partial_eq(&crate::name_input::Confirm));
+    }
+
+    #[test]
     fn the_new_tab_menus_keys_work_in_its_box() {
         use crate::new_tab_menu::{IconNext, IconPrev, SelectNext, SelectPrev};
         let keymap = keymap();
@@ -1812,7 +1894,7 @@ mod tests {
         // opens the selected row, or gives the keyboard back to the pane).
         assert!(runs(&keymap, "up", filter_box).partial_eq(&SelectPrev));
         assert!(runs(&keymap, "down", filter_box).partial_eq(&SelectNext));
-        assert!(runs(&keymap, "enter", filter_box).partial_eq(&name_input::Confirm));
+        assert!(runs(&keymap, "enter", filter_box).partial_eq(&crate::name_input::Confirm));
         assert!(runs(&keymap, "escape", filter_box).partial_eq(&name_input::Cancel));
         let bound = |key: &str, stack: &[&str]| {
             let contexts: Vec<KeyContext> = stack

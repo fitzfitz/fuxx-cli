@@ -27,9 +27,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AnyView, App, Bounds, ClickEvent, Context, CursorStyle, Div, DragMoveEvent,
-    Focusable, FontWeight, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle, SharedString,
-    Window, canvas, div, prelude::*, px, relative,
+    Animation, AnimationExt, AnyElement, AnyView, App, Bounds, ClickEvent, Context, CursorStyle,
+    Div, DragMoveEvent, Focusable, FontWeight, MouseButton, MouseDownEvent, Pixels, Point,
+    ScrollHandle, SharedString, Window, canvas, div, prelude::*, px, relative,
 };
 
 use crate::appearance::Appearance;
@@ -504,6 +504,8 @@ const TILE_GLYPH: f32 = 11.0;
 pub(crate) const STATUS_DOT: f32 = 12.0;
 /// An inactive tab's status mark's opacity.
 pub(crate) const INACTIVE_MARK: f32 = 0.2;
+/// How strong a tab pill's flash is at its height (batch 3, chore 6), over its fill.
+const LINK_FLASH: f32 = 0.35;
 pub(crate) const CLOSE: f32 = 16.0;
 /// A bar button, its glyph (drawn with the title area's line width) and the gap between
 /// buttons and around them.
@@ -901,9 +903,30 @@ impl Workspace {
                 .flex_shrink_1()
                 .min_w(px(0.0))
         };
+        // Batch 3, chore 6: a link opened into this tab's pane (it was there already): its pill
+        // flashes once in the accent.
+        let flash = self
+            .flashing_tab()
+            .filter(|(t, _)| *t == id)
+            .map(|(_, seq)| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .rounded(px(TAB_RADIUS))
+                    .bg(hsla(ui.accent))
+                    .with_animation(
+                        ("pane-tab-flash", seq as usize),
+                        Animation::new(Duration::from_millis(crate::link_route::FLASH_MS)),
+                        |d, t| d.opacity(LINK_FLASH * crate::agent_chat::flash_strength(t)),
+                    )
+            });
         let tab = div()
             .id(("pane-tab", id.0 as usize))
             .group(group.clone())
+            .relative()
+            .children(flash)
             .flex_1()
             .min_w(px(0.0))
             .h_full()

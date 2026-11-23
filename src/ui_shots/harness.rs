@@ -773,6 +773,7 @@ pub(super) fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         // Still in the shots (its own scene turns it on).
         agent_sweep: false,
         agent_suggestions: true,
+        open_links_in: Default::default(),
         browser_keep_data: false,
         check_updates: true,
         cursor_style: Default::default(),

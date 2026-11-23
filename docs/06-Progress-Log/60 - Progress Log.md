@@ -37,6 +37,30 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Chores batch 3, wave 2a: one right-click menu, links where you choose, the Files menu
+
+- **What:** three chores under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]], wave 2a of the batch 3
+  spec. ("on chatbox or terminal or whenever when its an hyperlink I can right click it and add option "Copy Link"…")
+  One shared right-click menu (`src/context_menu.rs`, `src/workspace_menu.rs`; `Overlay::ContextMenu`, so pages hide)
+  on terminals and file tabs: a link's Open Link / Open in Default Browser / Copy Link, Copy, Paste, Select All, and
+  Add to ⟨Agent⟩ Chat (a quote chip from a terminal, the code chip from a file tab); ↑↓↩Esc, ⌃-click, ⇧F10 and the
+  menu key. ("open link to browser, make it configurable on settings") Preferences → Browser → "Open links in" (a
+  split on the right by default, a tab in this pane, your default browser): ⌘-clicked terminal links, the Preview's
+  links and Open Link go where it says, your focus stays, a reused pane's tab pill flashes, mail goes to the OS
+  (`src/link_route.rs`); bare URLs in agent replies are links, file paths in terminal output (`src/main.rs:42`) open a
+  file tab at that line, a Markdown link's tooltip says where it goes. ("add right click on each item on file
+  explorer") The Files tree's menu: Open, Open to the Side, Show Changes, Reveal in Finder, Copy Path, Copy Relative
+  Path, Rename and New in the row, Move to Trash with its sheet, ⌘Z puts it back (`src/files_menu.rs`). Chat and box
+  menus, the agent chat's links through the router, path pills (the tree's Add to Chat) and the rest are wave 3.
+- **Checks:** 2559 → 2592 tests (33 new; the keymap tests, the trash sheet's words and the setting's written values
+  were written with their code, the rest watched failing first); clippy 14/29 and 18/33 (unchanged, none on a changed
+  line); `cargo fmt --check` clean; full `scripts/ui-shots.sh` 292 passed, 5 failed: `sidebar-band`, `card-split`,
+  `file-code-bars`, `file-tab-md-reader-column` and `file-tab`, the five that fail on this 1× display on the old commit
+  too. New scenes `context-menu-terminal` and `files-menu` (both themes, references added), `context-menu-file-tab`
+  and `link-opens-split`; `overlays` opens the menu too. The Files scene works in a folder of its own with a "Trash" of
+  its own: no repo file, no file of yours and not your Trash is touched. Objective-C's `NSFileManager` feature of
+  `objc2-foundation` (already a dependency) is turned on for the trash. Not yet seen in the real window.
+
 ### 2026-11-23 — Chores batch 3, wave 1: split buttons, one selection colour, Rewind/Fork core
 
 - **What:** three chores under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]], wave 1 of the batch 3

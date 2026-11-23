@@ -181,6 +181,9 @@ pub struct UiColors {
     /// accent held to show on the menu and on a hovered row.
     pub menu_rule: Rgb,
     pub menu_check: Rgb,
+    /// The right-click menu's danger item (Move to Trash; batch 3, chore 4): the waiting colour
+    /// held to read on the menu and on its lit row.
+    pub menu_danger: Rgb,
     /// The branch pill in the composer's tab, under the pointer: a step over `composer_inner`.
     pub composer_pill_hover: Rgb,
     /// The Changes progress bar's unfilled track, on the repo card (`card_hover`; M11al Task 9).
@@ -734,6 +737,7 @@ impl Theme {
                 &[composer_inner, mix(composer_inner, fg, 0.05)],
                 MARK_MIN,
             ),
+            menu_danger: readable(ring_waiting, &[panel, panel_hover], TEXT_MIN),
             window_edge: if dark { black } else { canvas },
             progress_track: quiet(mix(card_hover, fg, 0.12), &[card_hover]),
             // No shadow since the dark-panel chore (your words: "sidebar background color and the
@@ -1181,6 +1185,23 @@ mod tests {
     }
     fn read(name: &str) -> Option<String> {
         (name == "Catppuccin Mocha").then(|| MOCHA.to_string())
+    }
+
+    /// Batch 3, chore 4: the menu's Move to Trash reads on the menu and on its lit row, on every
+    /// theme, and is the waiting colour's family (not the text).
+    #[test]
+    fn the_menus_danger_reads_on_the_menu_and_its_lit_row_on_every_theme() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            for on in [ui.panel, ui.panel_hover] {
+                assert!(
+                    contrast(ui.menu_danger, on) >= TEXT_MIN,
+                    "{name}: {:?} on {on:?}",
+                    ui.menu_danger
+                );
+            }
+            assert_ne!(ui.menu_danger, ui.text, "{name}");
+        }
     }
 
     /// Chore 2026-11-20 (your call: "give each theme its own chrome colours"): a theme sets its

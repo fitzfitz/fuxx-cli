@@ -36,7 +36,7 @@ use crate::command_name::CommandMark;
 use crate::daemon_client::{DaemonClient, SessionStream};
 use crate::detector::{CwdReport, CwdReports, OscDetector};
 use crate::grid::{self, GridSnapshot};
-use crate::links::{Link, LinkFinder};
+use crate::links::{Link, LinkFinder, PathFinder};
 use crate::mux_proto::{Frame, SetMeta};
 use crate::pty::{self, Pty};
 use crate::shell_marks::MarkScanner;
@@ -453,6 +453,8 @@ pub struct TerminalCore {
     dims: Arc<Mutex<(TermDims, CellPx)>>,
     /// Built once: compiling the URL regex is not free.
     links: Arc<Mutex<LinkFinder>>,
+    /// File paths in the output (batch 3, chore 6: ⌘-click opens them in a file tab).
+    paths: Arc<Mutex<PathFinder>>,
     /// Shared by every clone, so a theme change reaches them all.
     theme: Arc<Mutex<Theme>>,
     /// The working folder the program last reported (OSC 7) and the host it named, kept by
@@ -538,6 +540,7 @@ impl TerminalCore {
             },
             dims: Arc::new(Mutex::new((dims, CellPx::default()))),
             links: Arc::new(Mutex::new(LinkFinder::new())),
+            paths: Arc::new(Mutex::new(PathFinder::new())),
             theme: Arc::new(Mutex::new(theme)),
             cwd,
         })
@@ -656,6 +659,7 @@ impl TerminalCore {
             backend: Backend::Daemon(link),
             dims: Arc::new(Mutex::new(asked)),
             links: Arc::new(Mutex::new(LinkFinder::new())),
+            paths: Arc::new(Mutex::new(PathFinder::new())),
             theme: Arc::new(Mutex::new(theme)),
             cwd,
         })
@@ -748,6 +752,14 @@ impl TerminalCore {
         self.links.lock().unwrap().find(term, point)
     }
 
+    /// The file-path-looking text under `point`, if any (whether the file exists is the
+    /// caller's to check, off the UI thread). Clamped as `link_at` is.
+    pub fn path_at(&self, point: Point) -> Option<Link> {
+        let term = &self.shared.lock().term;
+        let point = point.grid_clamp(term, Boundary::Grid);
+        self.paths.lock().unwrap().find(term, point)
+    }
+
     /// Queue bytes for the child (query replies, mouse reports). Never blocks. On Daemon these
     /// don't count as typing; `input` does.
     pub fn write(&self, bytes: &[u8]) {
@@ -834,6 +846,39 @@ impl TerminalCore {
             Some(sel) => sel.update(point, side),
             None => term.selection = Some(Selection::new(SelectionType::Simple, point, side)),
         }
+    }
+
+    /// Select everything: the history and the screen (the right-click menu's Select All).
+    pub fn select_all(&self) {
+        let term = &mut self.shared.lock().term;
+        let (top, bottom) = (term.topmost_line(), term.bottommost_line());
+        let mut sel = Selection::new(
+            SelectionType::Lines,
+            Point::new(top, alacritty_terminal::index::Column(0)),
+            Side::Left,
+        );
+        sel.update(Point::new(bottom, term.last_column()), Side::Right);
+        term.selection = Some(sel);
+    }
+
+    /// Where a menu opened from the keyboard goes (⇧F10): the selection's end while it is on
+    /// screen, else the cursor; a cell of the screen as (column, row).
+    pub fn menu_cell(&self) -> (usize, usize) {
+        let term = &self.shared.lock().term;
+        let offset = term.grid().display_offset() as i32;
+        let rows = term.screen_lines() as i32;
+        let on_screen = |p: Point| {
+            let row = p.line.0 + offset;
+            (0..rows)
+                .contains(&row)
+                .then_some((p.column.0, row as usize))
+        };
+        term.selection
+            .as_ref()
+            .and_then(|s| s.to_range(term))
+            .and_then(|r| on_screen(r.end))
+            .or_else(|| on_screen(term.grid().cursor.point))
+            .unwrap_or((0, 0))
     }
 
     /// The selected text, or `None` when nothing is selected.
@@ -2390,6 +2435,22 @@ mod tests {
         assert_eq!(core.selection_text().as_deref(), Some("world"));
         core.input(b"x");
         assert_eq!(core.selection_text(), None);
+    }
+
+    #[test]
+    fn select_all_takes_the_history_and_the_screen() {
+        let (tx, mut rx) = unbounded();
+        let core = TerminalCore::spawn(
+            sh("printf 'one\\ntwo\\nthree\\nfour'; sleep 2"),
+            TermDims { cols: 20, rows: 2 },
+            tx,
+            Theme::default(),
+        )
+        .unwrap();
+        assert!(wait_for(&mut rx, |_| screen_text(&core).contains("four")));
+        core.select_all();
+        let all = core.selection_text().unwrap_or_default();
+        assert!(all.contains("one") && all.contains("four"), "{all:?}");
     }
 
     #[test]

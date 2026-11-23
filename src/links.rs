@@ -12,6 +12,8 @@ use alacritty_terminal::index::{Boundary, Direction, Point};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 
+use std::path::{Path, PathBuf};
+
 use crate::blocks::URI_PREFIX;
 
 /// Zed's `URL_REGEX`, narrowed to the allowed schemes.
@@ -109,8 +111,93 @@ impl LinkFinder {
     }
 }
 
+/// A file path in a terminal's output (batch 3, chore 6), maybe with a line and a column
+/// (`src/main.rs:42:7`): a path with a `/` or a name with an extension.
+const PATH_REGEX: &str = "[~.A-Za-z0-9_+@-]*(/[A-Za-z0-9_.+@-]+)+(:[0-9]+){0,2}|[A-Za-z0-9_+@-][A-Za-z0-9_.+@-]*[.][A-Za-z0-9]+(:[0-9]+){0,2}";
+
+/// A path someone might ⌘-click: its text, and its line and column if it gave them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PathRef {
+    pub path: String,
+    pub line: Option<usize>,
+    pub col: Option<usize>,
+}
+
+/// `text` (as matched in the output) as a path with its line and column: trailing punctuation
+/// dropped (`src/a.rs:4:` from a compiler, `(src/a.rs)` in a sentence); none when nothing of
+/// a path is left.
+pub fn path_ref(text: &str) -> Option<PathRef> {
+    let text = trim_url(text.trim_start_matches(['(', '[', '<', '"', '\'']));
+    let text = text.trim_end_matches([')', ']', '>', '"', '\'']);
+    let mut parts = text.splitn(3, ':');
+    let path = parts.next()?.trim_end_matches('.');
+    let number = |p: Option<&str>| p.and_then(|n| n.parse::<usize>().ok());
+    let (line, col) = (number(parts.next()), number(parts.next()));
+    let named = path.chars().any(|c| c.is_ascii_alphanumeric());
+    named.then(|| PathRef {
+        path: path.to_string(),
+        line,
+        col: col.filter(|_| line.is_some()),
+    })
+}
+
+/// Where path `text` points from folder `cwd`: `~/` is the home folder, an absolute path is
+/// itself, anything else is under `cwd`. None for a relative path with no folder known.
+pub fn resolve_path(text: &str, cwd: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(rest) = text.strip_prefix("~/") {
+        return Some(home?.join(rest));
+    }
+    let path = Path::new(text);
+    if path.is_absolute() {
+        return Some(path.to_path_buf());
+    }
+    Some(cwd?.join(path))
+}
+
+/// Finds the file path under a grid point (plain text only: OSC 8 links are `LinkFinder`'s).
+pub struct PathFinder {
+    regex: RegexSearch,
+}
+
+impl PathFinder {
+    pub fn new() -> Self {
+        Self {
+            regex: RegexSearch::new(PATH_REGEX).expect("path regex is valid"),
+        }
+    }
+
+    /// The path-looking text under `point`, its trailing punctuation dropped; `url` is that
+    /// text (`path_ref` reads it). Whether the file exists is the caller's to check.
+    pub fn find<L: EventListener>(&mut self, term: &Term<L>, point: Point) -> Option<Link> {
+        let found = RegexIter::new(
+            term.line_search_left(point),
+            term.line_search_right(point),
+            Direction::Right,
+            term,
+            &mut self.regex,
+        )
+        .find(|m| m.contains(&point))?;
+        let (start, mut end) = (*found.start(), *found.end());
+        let text = term.bounds_to_string(start, end);
+        let kept = trim_url(&text);
+        path_ref(kept)?;
+        let trimmed = text.chars().count() - kept.chars().count();
+        if trimmed > 0 {
+            end = end.sub(term, Boundary::Grid, trimmed);
+        }
+        if point > end {
+            return None;
+        }
+        Some(Link {
+            url: kept.to_string(),
+            start,
+            end,
+        })
+    }
+}
+
 /// Trim trailing `. , : ; (` and unbalanced `)` (Zed's `sanitize_url_punctuation`).
-fn trim_url(text: &str) -> &str {
+pub(crate) fn trim_url(text: &str) -> &str {
     let mut url = text;
     loop {
         let Some(last) = url.chars().last() else {
@@ -181,6 +268,56 @@ mod tests {
                 && !allowed("javascript:x")
                 && !allowed("ssh://h")
         );
+    }
+
+    #[test]
+    fn a_path_keeps_its_line_and_column_and_loses_trailing_punctuation() {
+        let r = |path: &str, line, col| {
+            Some(PathRef {
+                path: path.into(),
+                line,
+                col,
+            })
+        };
+        assert_eq!(path_ref("src/main.rs:42"), r("src/main.rs", Some(42), None));
+        assert_eq!(
+            path_ref("src/main.rs:42:7:"),
+            r("src/main.rs", Some(42), Some(7))
+        );
+        assert_eq!(path_ref("./a/b.txt."), r("./a/b.txt", None, None));
+        assert_eq!(path_ref("main.rs,"), r("main.rs", None, None));
+        assert_eq!(path_ref("(src/lib.rs)"), r("src/lib.rs", None, None));
+        assert_eq!(path_ref("..."), None);
+        assert_eq!(path_ref(""), None);
+    }
+
+    #[test]
+    fn a_path_resolves_against_the_folder_and_home() {
+        let cwd = Path::new("/code/my-app");
+        let home = Path::new("/Users/me");
+        assert_eq!(
+            resolve_path("src/main.rs", Some(cwd), Some(home)),
+            Some(PathBuf::from("/code/my-app/src/main.rs"))
+        );
+        assert_eq!(
+            resolve_path("/etc/hosts", None, None),
+            Some(PathBuf::from("/etc/hosts"))
+        );
+        assert_eq!(
+            resolve_path("~/notes.md", Some(cwd), Some(home)),
+            Some(PathBuf::from("/Users/me/notes.md"))
+        );
+        assert_eq!(resolve_path("src/main.rs", None, Some(home)), None);
+    }
+
+    #[test]
+    fn a_path_in_the_output_is_found_under_the_point() {
+        let term = term_with(b"error at src/main.rs:42:7: oops", 40);
+        let mut finder = PathFinder::new();
+        let link = finder.find(&term, Point::new(Line(0), Column(12))).unwrap();
+        assert_eq!(link.url, "src/main.rs:42:7");
+        assert_eq!((link.start.column.0, link.end.column.0), (9, 24));
+        assert_eq!(finder.find(&term, Point::new(Line(0), Column(1))), None);
     }
 
     #[test]

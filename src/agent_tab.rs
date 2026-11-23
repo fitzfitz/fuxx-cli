@@ -51,7 +51,7 @@ mod latest;
 pub(crate) use latest::STRIP_TIP;
 
 use crate::agent_conversation::{Answer, Conversation, Item};
-use crate::agent_markdown::{Md, parse};
+use crate::agent_markdown::{Md, link_bare_urls, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
 use crate::agent_tool_modal::{ToolModal, parent_of};
 use crate::appearance::Appearance;
@@ -402,7 +402,6 @@ pub enum Attachment {
     /// Text quoted from elsewhere (batch 3: wave 3's Add to Chat), with where it came from
     /// (`from`: "Terminal api", "Claude"): sent as a Markdown block quote under a line naming
     /// its source.
-    #[allow(dead_code)] // Batch 3 wave 3 (Add to Chat) makes it.
     Quote {
         text: String,
         from: String,
@@ -4322,7 +4321,12 @@ impl AgentTab {
 /// An agent message's blocks.
 fn blocks_of(item: &Item) -> Option<Rc<Vec<Md>>> {
     match item {
-        Item::Agent { text, .. } => Some(Rc::new(parse(text))),
+        // Batch 3, chore 6: its bare addresses are links too.
+        Item::Agent { text, .. } => {
+            let mut blocks = parse(text);
+            link_bare_urls(&mut blocks);
+            Some(Rc::new(blocks))
+        }
         _ => None,
     }
 }

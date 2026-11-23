@@ -284,6 +284,15 @@ pub fn inline_with(spans: &[Span], badges: bool) -> Inline {
     out
 }
 
+/// The address of the link holding character `ix` (a byte of the laid text), for its tooltip
+/// (batch 3, chore 6: hovering a link shows where it goes).
+pub fn link_under(links: &[(Range<usize>, String)], ix: usize) -> Option<&str> {
+    links
+        .iter()
+        .find(|(range, _)| range.contains(&ix))
+        .map(|(_, url)| url.as_str())
+}
+
 /// A badge's alt text as a sentence shows it: trimmed, `badge` when empty.
 fn badge_alt(alt: &str) -> &str {
     match alt.trim() {
@@ -1680,6 +1689,7 @@ fn text_on(spans: &[Span], draw: &Draw, on_stripe: bool) -> AnyElement {
     }
     let n = draw.links.get();
     draw.links.set(n + 1);
+    let tips = Rc::new(laid.links.clone());
     let (ranges, urls): (Vec<Range<usize>>, Vec<String>) = laid.links.into_iter().unzip();
     let on_link = draw.on_link.clone();
     let linked = InteractiveText::new(("md-links", n), styled)
@@ -1687,6 +1697,14 @@ fn text_on(spans: &[Span], draw: &Draw, on_stripe: bool) -> AnyElement {
             if let Some(url) = urls.get(i) {
                 on_link(url.clone(), window, cx);
             }
+        })
+        // Batch 3, chore 6: where a link goes, after the usual delay.
+        .tooltip(move |ix, _, cx| {
+            let url = link_under(&tips, ix)?;
+            Some(
+                cx.new(|_| crate::sidebar_toggle::Tip(url.to_string().into()))
+                    .into(),
+            )
         })
         .into_any_element();
     div()
@@ -1698,6 +1716,22 @@ fn text_on(spans: &[Span], draw: &Draw, on_stripe: bool) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_links_tooltip_is_its_address() {
+        let i = inline(&[
+            Span::Text("see ".into()),
+            Span::Link {
+                text: "the docs".into(),
+                url: "https://a.dev/docs".into(),
+            },
+            Span::Text(" now".into()),
+        ]);
+        assert_eq!(link_under(&i.links, 5), Some("https://a.dev/docs"));
+        assert_eq!(link_under(&i.links, 11), Some("https://a.dev/docs"));
+        assert_eq!(link_under(&i.links, 12), None);
+        assert_eq!(link_under(&i.links, 1), None);
+    }
 
     #[test]
     fn a_linked_image_reads_as_its_alt_linked() {

@@ -98,6 +98,21 @@ pub enum TerminalEvent {
     FolderMoved,
     /// What runs at the shell prompt changed (OSC 133 marks): only its short form is in it.
     Command(Change),
+    /// A ⌘-clicked web or mail link (batch 3, chore 6): opened where "Open links in" says.
+    OpenLink(String),
+    /// A ⌘-clicked file path in the output, found on disk (batch 3, chore 6): a file tab, at
+    /// its line if it gave one.
+    OpenFile {
+        path: std::path::PathBuf,
+        line: Option<usize>,
+    },
+    /// A right-click, ⌃-click or ⇧F10 (batch 3, chore 4): fuxx's menu at window point `at`,
+    /// for this selection and the link under the pointer.
+    ContextMenu {
+        at: gpui::Point<Pixels>,
+        selection: Option<String>,
+        link: Option<String>,
+    },
 }
 
 /// Where the grid was last painted, for turning mouse positions into grid points.
@@ -309,6 +324,13 @@ pub struct TerminalView {
     hovered: Option<Link>,
     /// The link a cmd-click went down on; opened if the button comes up on the same link.
     pressed_link: Option<Link>,
+    /// The link fuxx's menu was opened on: underlined while the menu is open.
+    menu_link: Option<Link>,
+    /// File paths under the pointer with ⌘ held, as looked up off the UI thread: whether each
+    /// is a file (batch 3, chore 6). Only a path known to be one is underlined.
+    files_seen: std::collections::HashMap<std::path::PathBuf, bool>,
+    /// The path a ⌘-click went down on (its file and line).
+    pressed_file: Option<(std::path::PathBuf, Option<usize>)>,
     /// A left press started a local selection; drags extend it until the button comes up.
     selecting: bool,
     /// A press was reported to the program, so drags and the release are reported too.
@@ -1030,6 +1052,9 @@ impl TerminalView {
             layout: Rc::new(Cell::new(None)),
             scroll: ScrollAccumulator::default(),
             hovered: None,
+            menu_link: None,
+            files_seen: std::collections::HashMap::new(),
+            pressed_file: None,
             pressed_link: None,
             selecting: false,
             mouse_reported: false,
@@ -1391,6 +1416,18 @@ impl TerminalView {
         if self.hide_chip() | self.chosen_block.take().is_some() {
             cx.notify();
         }
+        // Batch 3, chore 4: a right-click (⇧ while the program takes the mouse) or a ⌃-click
+        // opens fuxx's menu; the selection stays.
+        let m = &e.modifiers;
+        if let Some(b) = button(e.button)
+            && mouse::opens_menu(b, m.control, m.shift, self.core.mode())
+        {
+            let link = self
+                .point_at(e.position)
+                .and_then(|(p, ..)| self.core.link_at(p));
+            self.open_menu(e.position, link, cx);
+            return;
+        }
         let Some((point, side, col, row)) = self.point_at(e.position) else {
             return;
         };
@@ -1415,6 +1452,13 @@ impl TerminalView {
         let m = &e.modifiers;
         if e.button == MouseButton::Left && m.platform {
             self.pressed_link = self.core.link_at(point);
+            self.pressed_file = None;
+            if self.pressed_link.is_none()
+                && let Some((link, file)) = self.file_under(point)
+            {
+                self.pressed_link = Some(link);
+                self.pressed_file = Some(file);
+            }
             if self.pressed_link.is_some() {
                 return;
             }
@@ -1472,7 +1516,9 @@ impl TerminalView {
             }
         }
         let hovered = if e.modifiers.platform && over_pane {
-            self.core.link_at(point)
+            self.core
+                .link_at(point)
+                .or_else(|| self.known_file_under(point, cx))
         } else {
             None
         };
@@ -1486,14 +1532,35 @@ impl TerminalView {
     /// Window-wide (registered in paint), so a release outside the pane still ends a drag.
     fn on_mouse_up(&mut self, e: &MouseUpEvent, over_pane: bool, cx: &mut Context<Self>) {
         let at = self.point_at(e.position);
+        let file = self.pressed_file.take();
         if let Some(link) = self.pressed_link.take()
             && over_pane
             && let Some((point, ..)) = at
-            // Compare by url: a link's grid lines shift when new output scrolls the screen.
-            && self.core.link_at(point).is_some_and(|under| under.url == link.url)
         {
-            // `link_at` only returns http/https/mailto. Opened by the OS, never through a shell.
-            cx.open_url(&link.url);
+            match file {
+                // A path: the same text under the release, then a file on disk (checked off the
+                // UI thread), opens in a file tab.
+                Some((path, line)) => {
+                    if self
+                        .core
+                        .path_at(point)
+                        .is_some_and(|under| under.url == link.url)
+                    {
+                        self.open_file_if_there(path, line, cx);
+                    }
+                }
+                // Compare by url: a link's grid lines shift when new output scrolls the screen.
+                // `link_at` only returns http/https/mailto; the workspace routes it (chore 6).
+                None => {
+                    if self
+                        .core
+                        .link_at(point)
+                        .is_some_and(|under| under.url == link.url)
+                    {
+                        cx.emit(TerminalEvent::OpenLink(link.url));
+                    }
+                }
+            }
         }
         if self.mouse_reported {
             self.mouse_reported = false;
@@ -1525,6 +1592,116 @@ impl TerminalView {
             self.hovered = None;
             cx.notify();
         }
+    }
+
+    /// The file path under `point` (its text as a link, and the file with its line), resolved
+    /// against this terminal's folder; whether it exists is not checked here.
+    fn file_under(&self, point: Point) -> Option<(Link, (std::path::PathBuf, Option<usize>))> {
+        let link = self.core.path_at(point)?;
+        let r = crate::links::path_ref(&link.url)?;
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let path = crate::links::resolve_path(&r.path, self.folder.as_deref(), home.as_deref())?;
+        Some((link, (path, r.line)))
+    }
+
+    /// The file path under `point` while ⌘ is held, if it is known to be a file; an unknown one
+    /// is looked up off the UI thread (at most 256 kept), and drawn on the next move.
+    fn known_file_under(&mut self, point: Point, cx: &mut Context<Self>) -> Option<Link> {
+        let (link, (path, _)) = self.file_under(point)?;
+        match self.files_seen.get(&path) {
+            Some(true) => Some(link),
+            Some(false) => None,
+            None => {
+                if self.files_seen.len() >= 256 {
+                    self.files_seen.clear();
+                }
+                // Asked once: a second move before the answer doesn't ask again.
+                self.files_seen.insert(path.clone(), false);
+                let check = path.clone();
+                let found = cx.background_spawn(async move { check.is_file() });
+                cx.spawn(async move |this, cx| {
+                    let is_file = found.await;
+                    this.update(cx, |this, cx| {
+                        this.files_seen.insert(path, is_file);
+                        if is_file {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+                None
+            }
+        }
+    }
+
+    /// A ⌘-clicked path: once found to be a file (off the UI thread), the workspace opens it.
+    fn open_file_if_there(
+        &mut self,
+        path: std::path::PathBuf,
+        line: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        let check = path.clone();
+        let found = cx.background_spawn(async move { check.is_file() });
+        cx.spawn(async move |this, cx| {
+            if found.await {
+                this.update(cx, |_, cx| cx.emit(TerminalEvent::OpenFile { path, line }))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Ask for fuxx's menu at `at`, the link under it kept underlined while it is open.
+    fn open_menu(&mut self, at: gpui::Point<Pixels>, link: Option<Link>, cx: &mut Context<Self>) {
+        self.menu_link = link.clone();
+        cx.emit(TerminalEvent::ContextMenu {
+            at,
+            selection: self.core.selection_text(),
+            link: link.map(|l| l.url),
+        });
+        cx.notify();
+    }
+
+    /// ⇧F10: the menu at the selection's end, else the cursor.
+    fn show_menu(
+        &mut self,
+        _: &crate::workspace_menu::ShowMenu,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(l) = self.layout.get() else {
+            return;
+        };
+        let (col, row) = self.core.menu_cell();
+        let at = point(
+            l.origin.x + l.cell_width * (col + 1) as f32,
+            l.origin.y + l.line_height * (row + 1) as f32,
+        );
+        self.open_menu(at, None, cx);
+    }
+
+    /// fuxx's menu closed: its link is no longer underlined.
+    pub fn menu_closed(&mut self, cx: &mut Context<Self>) {
+        if self.menu_link.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The menu's Paste: as ⌘V.
+    pub fn paste_from_clipboard(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        self.user_typed();
+        self.paste(&text, cx);
+    }
+
+    /// The menu's Select All: the history and the screen.
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        self.core.select_all();
+        cx.notify();
     }
 
     /// cmd-c: copy the selection; it stays selected.
@@ -2191,7 +2368,7 @@ impl Render for TerminalView {
         let resized_at = self.resized_at.clone();
         let paint_core = self.core.clone();
         let layout = self.layout.clone();
-        let hovered = self.hovered.clone();
+        let hovered = self.hovered.clone().or_else(|| self.menu_link.clone());
         let split = self.split.get();
         let view = cx.entity();
         let gutter = self.gutter.clone();
@@ -2255,6 +2432,7 @@ impl Render for TerminalView {
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
             .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::show_menu))
             .on_action(cx.listener(Self::paste_clipboard))
             .on_action(cx.listener(Self::scroll_page_up))
             .on_action(cx.listener(Self::scroll_page_down))
