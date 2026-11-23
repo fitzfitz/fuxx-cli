@@ -257,3 +257,9 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   a full build's folder 2.9 → 1.9 GB, one set of object files 193 → 124 MB, a rebuild after an edit 4–5 → 3–4 s,
   the full build unchanged (66 s); after pruning a panic's backtrace still shows file and line, and the next build
   is "Fresh". At a milestone's end, `cargo clean` if `target` is over 30 GB (note 50).
+- **The graph screenshot's made-up history was real** (your word, 2026-11-23: "go for it", after I found it while
+  building the landing site): the `changes-graph` scenes' commits (since M11w) carried a real author's name and real
+  commit messages copied from a work repository. They are made up now (author "Sam Lee", neutral messages, tag
+  `v0.4.0`), and so is the name in [[74 - Milestone 11w - Graph]]'s example. The six fingerprints were rewritten
+  (`changes-graph`, `-card`, `-closed`, both themes). The old strings are still in the pushed history: rewriting
+  that needs a force-push, so it waits for your word.

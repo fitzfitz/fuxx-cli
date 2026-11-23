@@ -36,6 +36,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Chore: the graph screenshot's real names replaced
+
+- **What:** your word ("go for it"). The `changes-graph` ui-shots fixture used a real author's name and real work
+  commit messages; both are made up now, as is the name in note 74's example. Recorded under "Chores after M11ar"
+  in [[93 - Milestone 11ar - Subagents]]. The old strings remain in pushed history until you decide on a rewrite.
+- **Checks:** 2486 tests; clippy at the baseline (31 / 33 lines, the one `changes.rs` warning was already there);
+  `cargo fmt --check` clean; `scripts/ui-shots.sh changes-graph --update-refs` 1 passed, 6 fingerprints written.
+
 ### 2026-11-22 — M11au review fixes (in the worktree, by an agent)
 
 - **What:** the whole-branch review's three fixes on `plugin-settings`: a number field no longer saves a stale value
