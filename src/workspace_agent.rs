@@ -587,6 +587,31 @@ impl Workspace {
     }
 
     /// The agent tab the focused pane shows, if it shows one.
+    /// "Answer Waiting Question" (⌘⇧A, the palette, a banner; batch 3, chore 8): the oldest
+    /// question an agent tab waits on, its tab shown and the keys on its card. False when none
+    /// waits.
+    pub(crate) fn answer_waiting_question(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let asks: Vec<(TabId, Instant)> = self
+            .agents
+            .iter()
+            .filter_map(|(tab, slot)| Some((*tab, slot.view.read(cx).waiting_ask_since()?)))
+            .collect();
+        let Some(tab) = crate::agent_ask::oldest(&asks) else {
+            return false;
+        };
+        self.select_tab(tab, window, cx);
+        self.close_menus();
+        self.focus_active(window, cx);
+        if let Some(slot) = self.agents.get(&tab) {
+            slot.view.update(cx, |t, cx| t.land_on_ask(cx));
+        }
+        true
+    }
+
     pub(crate) fn focused_agent_tab(&self) -> Option<(TabId, Entity<AgentTab>)> {
         let tab = self.model.focused_tab()?;
         Some((tab, self.agents.get(&tab)?.view.clone()))

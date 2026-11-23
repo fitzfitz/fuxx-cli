@@ -1,7 +1,9 @@
 //! The conversation model (M11aa): folds a provider's `Event`s into chat items and a status.
 //! Pure and GPUI-free.
 
-use crate::providers::{Event, LaneControls, LaneEnd, Past, TodoItem, ToolDetail};
+use crate::providers::{
+    Event, LaneControls, LaneEnd, Past, QAnswer, Question, TodoItem, ToolDetail,
+};
 use crate::status::Status;
 
 pub const OUTPUT_KEEP_LINES: usize = 2_000;
@@ -16,6 +18,16 @@ pub enum Answer {
     AlwaysAllowed,
     Denied(Option<String>),
     /// The turn ended (or the process died) before you answered.
+    Expired,
+}
+
+/// How a question of the agent's ended (batch 3, chore 8).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Reply {
+    /// Your answers, one per question (empty: answered elsewhere, or in a past session).
+    Answered(Vec<QAnswer>),
+    Skipped,
+    /// The turn ended (or the process died, or its tool failed) before you answered.
     Expired,
 }
 
@@ -58,6 +70,14 @@ pub enum Item {
         detail: String,
         always: Option<String>,
         answer: Option<Answer>,
+        /// The subagent (lane id) that asks; `None`: the main agent.
+        by: Option<String>,
+    },
+    /// The agent asks you to choose (batch 3, chore 8): open while `reply` is None.
+    Question {
+        id: String,
+        questions: Vec<Question>,
+        reply: Option<Reply>,
         /// The subagent (lane id) that asks; `None`: the main agent.
         by: Option<String>,
     },
@@ -105,6 +125,9 @@ pub struct Conversation {
     /// Your latest message's index (the chat's latest-prompt strip, chore after M11ar): kept as
     /// items come, so nothing scans the conversation for it.
     latest_you: Option<usize>,
+    /// The open questions' indexes, oldest first (batch 3, chore 8): kept as items come and
+    /// rebuilt after anything moves them, so `status` scans nothing for them.
+    open_asks: Vec<usize>,
     /// The subagents, in start order.
     lanes: Vec<Lane>,
     /// Where each lane started (`items.len()` then), by the lanes' order: a cut keeps the lanes
@@ -174,6 +197,7 @@ impl Conversation {
         match event {
             Event::Cleared => {
                 self.items.clear();
+                self.open_asks.clear();
                 self.latest_you = None;
                 self.lanes.clear();
                 self.lane_starts.clear();
@@ -295,8 +319,20 @@ impl Conversation {
                         };
                         *tout = kept;
                         *dropped_lines = dropped;
-                        break;
+                        return;
                     }
+                }
+                // A question's own tool (batch 3, chore 8) has no row: its result closes it.
+                let asked = self.open_asks.iter().copied().find(
+                    |&ix| matches!(&self.items[ix], Item::Question { id: q, .. } if *q == id),
+                );
+                if asked.is_some() {
+                    let reply = if ok {
+                        Reply::Answered(Vec::new())
+                    } else {
+                        Reply::Expired
+                    };
+                    self.reply(&id, reply);
                 }
             }
             Event::Todo(list) => match self.items.iter_mut().find(|i| matches!(i, Item::Todo(_))) {
@@ -386,6 +422,18 @@ impl Conversation {
                     }
                     self.settle_lane(&id);
                 }
+            }
+            Event::Question { id, questions, by } => {
+                if let Some(lane) = by.as_deref().and_then(|b| self.lane_mut(b)) {
+                    lane.status = LaneStatus::Waiting;
+                }
+                self.open_asks.push(self.items.len());
+                self.items.push(Item::Question {
+                    id,
+                    questions,
+                    reply: None,
+                    by,
+                })
             }
             // The tab follows the file; nothing to show yet.
             Event::Follow { .. } => {}
@@ -488,6 +536,7 @@ impl Conversation {
                 *at -= 1;
             }
         }
+        self.rebuild_asks();
         self.latest_you = self
             .items
             .iter()
@@ -609,6 +658,7 @@ impl Conversation {
         for at in &mut fork.lane_starts {
             *at += 1;
         }
+        fork.rebuild_asks();
         fork.latest_you = fork.latest_you.map(|i| i + 1);
         fork.conversation = None;
         fork.cost_usd = None;
@@ -632,6 +682,7 @@ impl Conversation {
         self.lanes.extend(cut.lanes);
         self.lane_starts.extend(cut.lane_starts);
         self.latest_you = cut.latest_you;
+        self.rebuild_asks();
     }
 
     /// Notice `old` (its last one) says `new` instead, in its place; without one, `new` is added.
@@ -663,18 +714,64 @@ impl Conversation {
                 break;
             }
         }
-        // It works again once none of its questions is open.
-        let still_asks = asker.as_deref().is_some_and(|b| {
-            self.items
-                .iter()
-                .any(|i| matches!(i, Item::Permission { answer: None, by: Some(x), .. } if x == b))
+        self.wake(asker.as_deref());
+    }
+
+    /// Question `id` answered, skipped or expired (batch 3, chore 8); one already closed keeps
+    /// its reply.
+    pub fn reply(&mut self, id: &str, reply: Reply) {
+        let Some(k) = self
+            .open_asks
+            .iter()
+            .position(|&ix| matches!(&self.items[ix], Item::Question { id: q, .. } if q == id))
+        else {
+            return;
+        };
+        let ix = self.open_asks.remove(k);
+        let mut asker = None;
+        if let Item::Question { reply: r, by, .. } = &mut self.items[ix] {
+            *r = Some(reply);
+            asker = by.clone();
+        }
+        self.wake(asker.as_deref());
+    }
+
+    /// Subagent `asker` works again once none of its questions (permissions or the agent's own
+    /// questions) is open.
+    fn wake(&mut self, asker: Option<&str>) {
+        let Some(b) = asker else {
+            return;
+        };
+        let still_asks = self.items.iter().any(|i| match i {
+            Item::Permission {
+                answer: None,
+                by: Some(x),
+                ..
+            }
+            | Item::Question {
+                reply: None,
+                by: Some(x),
+                ..
+            } => x == b,
+            _ => false,
         });
         if !still_asks
-            && let Some(lane) = asker.as_deref().and_then(|b| self.lane_mut(b))
+            && let Some(lane) = self.lane_mut(b)
             && lane.status == LaneStatus::Waiting
         {
             lane.status = LaneStatus::Working;
         }
+    }
+
+    /// The open questions' indexes, from a scan: after anything moves items (rare).
+    fn rebuild_asks(&mut self) {
+        self.open_asks = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| matches!(i, Item::Question { reply: None, .. }))
+            .map(|(ix, _)| ix)
+            .collect();
     }
 
     /// The subagents, in start order.
@@ -727,9 +824,13 @@ impl Conversation {
                     by: Some(b),
                     ..
                 } if b == id && answer.is_none() => *answer = Some(Answer::Expired),
+                Item::Question {
+                    reply, by: Some(b), ..
+                } if b == id && reply.is_none() => *reply = Some(Reply::Expired),
                 _ => {}
             }
         }
+        self.rebuild_asks();
     }
 
     /// The process was ended from here (Force stop, a restart for a change): its subagents
@@ -805,9 +906,13 @@ impl Conversation {
                 Item::Permission { answer, by, .. } if answer.is_none() && !under_live(by) => {
                     *answer = Some(Answer::Expired)
                 }
+                Item::Question { reply, by, .. } if reply.is_none() && !under_live(by) => {
+                    *reply = Some(Reply::Expired)
+                }
                 _ => {}
             }
         }
+        self.rebuild_asks();
     }
 
     pub fn items(&self) -> &[Item] {
@@ -825,10 +930,28 @@ impl Conversation {
             .find(|i| matches!(i, Item::Permission { answer: None, .. }))
     }
 
+    /// The oldest open question's index (batch 3, chore 8).
+    pub fn pending_ask(&self) -> Option<usize> {
+        self.open_asks.first().copied()
+    }
+
+    /// The oldest open ask of either kind (a permission or a question): the one the box and
+    /// Enter answer.
+    pub fn oldest_ask(&self) -> Option<usize> {
+        let permission = self
+            .items
+            .iter()
+            .position(|i| matches!(i, Item::Permission { answer: None, .. }));
+        match (permission, self.pending_ask()) {
+            (Some(p), Some(q)) => Some(p.min(q)),
+            (p, q) => p.or(q),
+        }
+    }
+
     pub fn status(&self) -> Status {
         if self.ended {
             Status::Done
-        } else if self.pending_permission().is_some() {
+        } else if !self.open_asks.is_empty() || self.pending_permission().is_some() {
             Status::Waiting
         } else if self.outstanding > 0 || self.busy {
             Status::Working
@@ -2035,5 +2158,223 @@ mod tests {
         assert_eq!(c.latest_you(), Some(2));
         c.apply(Event::Cleared);
         assert_eq!(c.latest_you(), None, "`/clear` takes it with the rest");
+    }
+
+    // ---- Batch 3, chore 8: the agent's question picker ----
+
+    fn ask(id: &str, by: Option<&str>) -> Event {
+        Event::Question {
+            id: id.into(),
+            questions: vec![crate::providers::Question {
+                header: "Test runner".into(),
+                text: "Which test runner?".into(),
+                options: vec![crate::providers::QOption {
+                    label: "Vitest".into(),
+                    description: String::new(),
+                    preview: None,
+                }],
+                multi: false,
+            }],
+            by: by.map(String::from),
+        }
+    }
+
+    fn reply_of(c: &Conversation, id: &str) -> Option<Reply> {
+        c.items().iter().find_map(|i| match i {
+            Item::Question { id: q, reply, .. } if q == id => Some(reply.clone()),
+            _ => None,
+        })?
+    }
+
+    fn picked(label: &str) -> QAnswer {
+        QAnswer {
+            labels: vec![label.into()],
+            other: None,
+        }
+    }
+
+    #[test]
+    fn a_question_waits_and_answering_works_again() {
+        let mut c = Conversation::new();
+        c.you("set up tests".into(), Vec::new());
+        c.apply(ask("q1", None));
+        assert_eq!(c.status(), Status::Waiting);
+        assert_eq!(c.pending_ask(), Some(1));
+        assert_eq!(c.oldest_ask(), Some(1));
+        c.reply("q1", Reply::Answered(vec![picked("Vitest")]));
+        assert_eq!(c.status(), Status::Working, "the turn goes on");
+        assert_eq!(c.pending_ask(), None);
+        assert_eq!(
+            reply_of(&c, "q1"),
+            Some(Reply::Answered(vec![picked("Vitest")]))
+        );
+        // Answered once: a second reply changes nothing.
+        c.reply("q1", Reply::Skipped);
+        assert!(matches!(reply_of(&c, "q1"), Some(Reply::Answered(_))));
+    }
+
+    #[test]
+    fn a_subagents_question_makes_its_lane_wait() {
+        let mut c = Conversation::new();
+        c.you("go".into(), Vec::new());
+        c.apply(started("t1", "Reader"));
+        c.apply(ask("q1", Some("t1")));
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Waiting);
+        assert_eq!(c.status(), Status::Waiting);
+        // A permission of its own as well: it waits until both are answered.
+        c.apply(Event::Permission {
+            id: "p1".into(),
+            tool: "Bash".into(),
+            what: "ls".into(),
+            detail: String::new(),
+            always: None,
+            by: Some("t1".into()),
+        });
+        c.reply("q1", Reply::Skipped);
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Waiting);
+        c.answered("p1", Answer::Allowed);
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Working);
+        // And the other way round: a permission answered while its question waits.
+        c.apply(ask("q2", Some("t1")));
+        c.apply(Event::Permission {
+            id: "p2".into(),
+            tool: "Bash".into(),
+            what: "ls".into(),
+            detail: String::new(),
+            always: None,
+            by: Some("t1".into()),
+        });
+        c.answered("p2", Answer::Allowed);
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Waiting);
+        // Its lane's end expires it.
+        c.apply(Event::SubagentEnded {
+            id: "t1".into(),
+            end: LaneEnd::Done,
+        });
+        assert_eq!(reply_of(&c, "q2"), Some(Reply::Expired));
+        assert_eq!(c.pending_ask(), None);
+    }
+
+    #[test]
+    fn turn_end_and_process_end_expire_it() {
+        for end in 0..4 {
+            let mut c = Conversation::new();
+            c.you("x".into(), vec![]);
+            c.apply(ask("q1", None));
+            match end {
+                0 => c.apply(turn_done()),
+                1 => c.process_ended(Some(1), ""),
+                2 => c.process_gone(),
+                _ => c.paused(),
+            }
+            assert_eq!(reply_of(&c, "q1"), Some(Reply::Expired), "{end}");
+            assert_eq!(c.pending_ask(), None, "{end}");
+            assert_ne!(c.status(), Status::Waiting, "{end}");
+        }
+    }
+
+    #[test]
+    fn its_tool_result_closes_it() {
+        let finished = |ok| Event::ToolFinished {
+            id: "q1".into(),
+            ok,
+            summary: String::new(),
+            output: None,
+        };
+        let mut c = Conversation::new();
+        c.you("x".into(), vec![]);
+        c.apply(ask("q1", None));
+        c.apply(finished(true));
+        assert_eq!(reply_of(&c, "q1"), Some(Reply::Answered(Vec::new())));
+        assert_eq!(c.pending_ask(), None);
+        // A failed result (an interrupt) leaves it not answered.
+        let mut c = Conversation::new();
+        c.apply(ask("q1", None));
+        c.apply(finished(false));
+        assert_eq!(reply_of(&c, "q1"), Some(Reply::Expired));
+        // Answered here first: its result keeps what you chose.
+        let mut c = Conversation::new();
+        c.apply(ask("q1", None));
+        c.reply("q1", Reply::Skipped);
+        c.apply(finished(false));
+        assert_eq!(reply_of(&c, "q1"), Some(Reply::Skipped));
+    }
+
+    #[test]
+    fn history_never_leaves_one_open() {
+        let mut c = Conversation::new();
+        c.past(vec![
+            Past::you("set up tests"),
+            Past::Event(ask("q1", None)),
+            Past::Event(Event::ToolFinished {
+                id: "q1".into(),
+                ok: true,
+                summary: String::new(),
+                output: None,
+            }),
+            Past::you("again"),
+            Past::Event(ask("q2", None)),
+        ]);
+        assert_eq!(reply_of(&c, "q1"), Some(Reply::Answered(Vec::new())));
+        assert_eq!(reply_of(&c, "q2"), Some(Reply::Expired));
+        assert_eq!(c.pending_ask(), None);
+        assert_eq!(c.status(), Status::Done);
+    }
+
+    #[test]
+    fn oldest_open_ask_wins() {
+        let mut c = Conversation::new();
+        c.you("x".into(), vec![]);
+        c.apply(ask("q1", None));
+        c.apply(ask("q2", None));
+        assert_eq!(c.pending_ask(), Some(1));
+        c.reply("q1", Reply::Skipped);
+        assert_eq!(c.pending_ask(), Some(2));
+        // A permission asked before the question goes first.
+        let mut c = Conversation::new();
+        c.apply(permission("p1"));
+        c.apply(ask("q1", None));
+        assert_eq!(c.oldest_ask(), Some(0));
+        c.answered("p1", Answer::Allowed);
+        assert_eq!(c.oldest_ask(), Some(1));
+    }
+
+    /// The cache is what a full scan finds, after every way items move.
+    #[test]
+    fn open_asks_matches_a_full_scan() {
+        fn scan(c: &Conversation) -> Vec<usize> {
+            c.items()
+                .iter()
+                .enumerate()
+                .filter(|(_, i)| matches!(i, Item::Question { reply: None, .. }))
+                .map(|(ix, _)| ix)
+                .collect()
+        }
+        let check = |c: &Conversation, what: &str| assert_eq!(c.open_asks, scan(c), "{what}");
+        let mut c = Conversation::new();
+        c.past(vec![Past::You {
+            text: "one".into(),
+            id: Some("m1".into()),
+        }]);
+        c.apply(ask("q1", None));
+        check(&c, "asked");
+        c.you_as("two".into(), Vec::new(), Some("m2".into()));
+        c.you_as("three".into(), Vec::new(), Some("m3".into()));
+        c.apply(ask("q2", None));
+        check(&c, "asked again");
+        assert!(c.cancel_unread("m2"));
+        check(&c, "a message before it taken back");
+        let cut = c.cut_before(2).expect("a message of yours");
+        check(&c, "cut");
+        c.restore(cut);
+        check(&c, "restored");
+        let fork = c.forked_before(2, Item::Notice("fork".into())).unwrap();
+        check(&fork, "forked");
+        c.keep_first(2);
+        check(&c, "kept the first two");
+        c.apply(ask("q3", None));
+        c.apply(Event::Cleared);
+        check(&c, "cleared");
+        assert!(c.open_asks.is_empty());
     }
 }

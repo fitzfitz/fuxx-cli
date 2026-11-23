@@ -338,6 +338,13 @@ pub static COMMANDS: &[Command] = {
             Run::Action(act::<NextNeedingYou>),
         ),
         cmd(
+            ANSWER_WAITING,
+            Workspaces,
+            "agent ask choose reply question waiting",
+            A,
+            Run::Action(act::<AnswerWaitingQuestion>),
+        ),
+        cmd(
             OPEN_BROWSER,
             Workspaces,
             "web url address",
@@ -708,6 +715,16 @@ pub const NOT_IN_PALETTE: &[&str] = &[
 /// One New ⟨Label⟩ Tab row per agent provider as palette rows, right after New Browser Tab;
 /// none when the focused pane's workspace is on another host (`local` false: agent tabs run on
 /// this Mac only).
+/// The name of the palette's "Answer Waiting Question" (batch 3, chore 8).
+pub const ANSWER_WAITING: &str = "Answer Waiting Question";
+
+/// "Answer Waiting Question" is listed only while a question waits (the lead designer).
+pub fn keep_answer_row(rows: &mut Vec<ActionRow>, waiting: bool) {
+    if !waiting {
+        rows.retain(|r| r.name != ANSWER_WAITING);
+    }
+}
+
 pub fn add_agent_rows(rows: &mut Vec<ActionRow>, local: bool) {
     if !local {
         return;
@@ -1470,6 +1487,37 @@ mod tests {
         assert_eq!(names(&agent).len(), names(&nothing).len() + 1);
         let terminal = action_rows(Focused::Terminal, true, true, &[], &pairs);
         assert!(!names(&terminal).contains(&"Rewind Last Prompt"));
+    }
+
+    /// Batch 3, chore 8: the oldest question an agent waits on is one command away from any
+    /// tab, with ⌘⇧A beside it.
+    #[test]
+    fn answer_waiting_question_is_offered_everywhere_with_its_keys() {
+        let pairs = real_pairs();
+        for focused in [
+            Focused::Terminal,
+            Focused::Agent,
+            Focused::File,
+            Focused::Nothing,
+        ] {
+            let mut rows = action_rows(focused, false, true, &[], &pairs);
+            keep_answer_row(&mut rows, false);
+            assert!(
+                !rows.iter().any(|r| r.name == ANSWER_WAITING),
+                "{focused:?}: listed only while a question waits"
+            );
+            let mut rows = action_rows(focused, false, true, &[], &pairs);
+            keep_answer_row(&mut rows, true);
+            let row = rows
+                .iter()
+                .find(|r| r.name == "Answer Waiting Question")
+                .unwrap_or_else(|| panic!("{focused:?}: no Answer Waiting Question"));
+            assert_eq!(
+                row.keys.as_deref(),
+                Some("\u{21e7}\u{2318}A"),
+                "{focused:?}"
+            );
+        }
     }
 
     fn names(rows: &[ActionRow]) -> Vec<&str> {

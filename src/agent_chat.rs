@@ -35,6 +35,14 @@ pub fn rows_of(items: &[Item], view: &View, lanes: &[&str]) -> Vec<usize> {
                     asks.push(ix);
                 }
             }
+            // The agent's own question (batch 3, chore 8): as a permission.
+            (View::Lane(lane), Item::Question { reply, by, .. }) => {
+                if by.as_deref() == Some(lane.as_str()) {
+                    rows.push(ix);
+                } else if reply.is_none() {
+                    asks.push(ix);
+                }
+            }
             (View::Main, item) => {
                 if parent_of(item).is_none_or(|p| !lane_of(p)) {
                     rows.push(ix);
@@ -55,7 +63,11 @@ pub fn rows_of(items: &[Item], view: &View, lanes: &[&str]) -> Vec<usize> {
 pub fn agent_side(item: &Item) -> bool {
     matches!(
         item,
-        Item::Agent { .. } | Item::Tool { .. } | Item::Todo(_) | Item::Permission { .. }
+        Item::Agent { .. }
+            | Item::Tool { .. }
+            | Item::Todo(_)
+            | Item::Permission { .. }
+            | Item::Question { .. }
     )
 }
 
@@ -140,7 +152,9 @@ pub fn shows_thinking_in(working: bool, items: &[Item], rows: &[usize]) -> bool 
             .any(|&i| matches!(items[i], Item::Tool { running: true, .. }))
         && !matches!(
             items[last],
-            Item::Agent { done: false, .. } | Item::Permission { answer: None, .. }
+            Item::Agent { done: false, .. }
+                | Item::Permission { answer: None, .. }
+                | Item::Question { reply: None, .. }
         )
 }
 
@@ -186,7 +200,7 @@ pub fn avatar_top(item: &Item) -> f32 {
     match item {
         Item::Tool { .. } => 6.0,
         Item::Todo(_) => 11.0,
-        Item::Permission { answer: None, .. } => 16.0,
+        Item::Permission { answer: None, .. } | Item::Question { reply: None, .. } => 16.0,
         _ => 2.0,
     }
 }
@@ -203,7 +217,9 @@ pub fn shows_thinking(working: bool, items: &[Item]) -> bool {
             .any(|i| matches!(i, Item::Tool { running: true, .. }))
         && !matches!(
             items[last],
-            Item::Agent { done: false, .. } | Item::Permission { answer: None, .. }
+            Item::Agent { done: false, .. }
+                | Item::Permission { answer: None, .. }
+                | Item::Question { reply: None, .. }
         )
 }
 
@@ -356,6 +372,63 @@ mod tests {
             answer: answered.then_some(Answer::Allowed),
             by: None,
         }
+    }
+
+    fn question(by: Option<&str>, open: bool) -> Item {
+        Item::Question {
+            id: "q".into(),
+            questions: Vec::new(),
+            reply: (!open).then_some(crate::agent_conversation::Reply::Skipped),
+            by: by.map(String::from),
+        }
+    }
+
+    /// Batch 3, chore 8: an open question waits at the end of whichever view is shown, like a
+    /// permission; once answered it stays in Main's and its own lane's. It is the agent's, and
+    /// nothing else moves while it waits.
+    #[test]
+    fn an_open_question_shows_in_every_view_at_the_end() {
+        use crate::agent_lanes::View;
+        let lane = View::Lane("agent1".into());
+        let items = [
+            you(),
+            tool("agent1", None, true),
+            question(None, true),
+            tool("r1", Some("agent1"), false),
+        ];
+        assert_eq!(rows_of(&items, &View::Main, &["agent1"]), [0, 1, 2]);
+        assert_eq!(
+            rows_of(&items, &lane, &["agent1"]),
+            [3, 2],
+            "the open one last"
+        );
+        let answered = [
+            items[0].clone(),
+            items[1].clone(),
+            question(None, false),
+            items[3].clone(),
+        ];
+        assert_eq!(
+            rows_of(&answered, &lane, &["agent1"]),
+            [3],
+            "answered: Main's only"
+        );
+        let own = [items[1].clone(), question(Some("agent1"), false)];
+        assert_eq!(
+            rows_of(&own, &lane, &["agent1"]),
+            [1],
+            "its own lane keeps it"
+        );
+        assert!(agent_side(&question(None, true)));
+        assert_eq!(avatar_top(&question(None, true)), 16.0);
+        assert_eq!(avatar_top(&question(None, false)), 2.0);
+        assert!(!shows_thinking(true, &[you(), question(None, true)]));
+        assert!(!shows_thinking_in(
+            true,
+            &[you(), question(None, true)],
+            &[0, 1]
+        ));
+        assert!(shows_thinking(true, &[you(), question(None, false)]));
     }
 
     #[test]

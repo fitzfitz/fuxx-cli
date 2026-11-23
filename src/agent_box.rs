@@ -133,6 +133,11 @@ const MODE_MENU_WIDTH: f32 = 300.0;
 /// The warning dot on the model chip.
 const LIMIT_DOT: f32 = 6.0;
 const SEND_GLYPH: &str = "\u{27a4}";
+/// The send circle while a question waits (batch 3, chore 8; the lead designer): a check (Enter
+/// answers, it doesn't send), its words in the tooltip.
+pub(crate) const ANSWER_GLYPH: &str = "\u{2713}";
+pub(crate) const ANSWER_TIP: &str = "Answer with what you typed (\u{23ce})";
+pub(crate) const ANSWER_EMPTY_TIP: &str = "Type an answer, or pick one above";
 
 /// Where each part of the box was laid out, by name (scenes read it: `shot_part`).
 #[cfg(feature = "ui-shots")]
@@ -949,7 +954,11 @@ impl AgentTab {
             branch: self.branch.as_deref().map(branch_chip_text),
             model: model.unwrap_or_default(),
             mode,
-            send: self.stop_label().unwrap_or(SEND_GLYPH).to_string(),
+            send: self
+                .stop_label()
+                .or(self.asking().then_some(ANSWER_GLYPH))
+                .unwrap_or(SEND_GLYPH)
+                .to_string(),
             usage: usage_line(
                 self.conversation.cost_usd(),
                 self.conversation.context_pct(),
@@ -1270,6 +1279,25 @@ impl AgentTab {
                             .hover(move |s| s.bg(hsla(control)))
                             .on_click(cx.listener(|this, _, _, cx| this.stop_pressed(cx)))
                     })
+                    .into_any_element()
+            }
+            // A question waits (batch 3, chore 8): the box answers it, so the button is ready
+            // even empty (Enter takes the card's choice) and says so.
+            None if self.asking() => {
+                let hover = c.send_hover;
+                let tip = if empty { ANSWER_EMPTY_TIP } else { ANSWER_TIP };
+                self.marked("send", circle("agent-answer"))
+                    .bg(hsla(if empty { c.send_empty } else { c.send_fill }))
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::Check,
+                        px(18.),
+                        hsla(if empty { c.dim } else { c.send_ink }),
+                    ))
+                    .when(!empty, |d| {
+                        d.cursor_pointer().hover(move |s| s.bg(hsla(hover)))
+                    })
+                    .tooltip(move |_, cx| cx.new(|_| crate::sidebar_toggle::Tip(tip.into())).into())
+                    .on_click(cx.listener(|this, _, _, cx| this.send_pressed(cx)))
                     .into_any_element()
             }
             None => {
@@ -2125,7 +2153,8 @@ impl AgentTab {
             return None;
         }
         let ink = SweepInk {
-            accent: c.accent,
+            // A question waiting (batch 3, chore 8): the lap in the waiting colour.
+            accent: if self.asking() { c.ask_edge } else { c.accent },
             glow: c.glow_top,
             dark: c.page_is_dark,
         };

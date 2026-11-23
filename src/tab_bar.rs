@@ -1177,6 +1177,10 @@ impl Workspace {
             self.sync();
             self.activate(window, cx);
         }
+        // An agent tab whose question waits: the keys land on its card (batch 3, chore 8).
+        if let Some(slot) = self.agents.get(&tab) {
+            slot.view.update(cx, |t, cx| t.land_on_ask(cx));
+        }
     }
 
     /// ⌃Tab / ⌃⇧Tab: the next (or previous) tab of the focused pane, wrapping.

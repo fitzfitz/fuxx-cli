@@ -1147,6 +1147,9 @@ impl Workspace {
             .focused_workspace()
             .is_some_and(|ws| !self.workspace_is_ssh(ws));
         add_agent_rows(&mut actions, local);
+        // "Answer Waiting Question" only while one waits (batch 3, chore 8).
+        let waiting = self.agents.values().any(|s| s.view.read(cx).asking());
+        crate::palette_items::keep_answer_row(&mut actions, waiting);
         let data = self.palette_data(actions, cx);
         let recent = self.palette_recent.clone();
         let palette = cx.new(|cx| Palette::new(scope, query, data, recent, window, cx));

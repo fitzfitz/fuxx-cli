@@ -641,12 +641,29 @@ pub fn transcript_events(text: &str) -> Vec<Past> {
             Some("assistant") => {
                 out.extend(translator.assistant(&v).into_iter().map(Past::Event));
                 for b in v["message"]["content"].as_array().into_iter().flatten() {
-                    if b["type"] == "tool_use"
-                        && matches!(b["name"].as_str(), Some("Agent" | "Task"))
-                        && let Some(id) = b["id"].as_str()
-                    {
-                        agents.insert(id.to_string());
-                        out.push(Past::Event(past_lane(id, &b["input"])));
+                    if b["type"] != "tool_use" {
+                        continue;
+                    }
+                    let Some(id) = b["id"].as_str() else {
+                        continue;
+                    };
+                    match b["name"].as_str() {
+                        Some("Agent" | "Task") => {
+                            agents.insert(id.to_string());
+                            out.push(Past::Event(past_lane(id, &b["input"])));
+                        }
+                        // A past question (batch 3, chore 8): replayed, never left open (its
+                        // result answers it; the history's settling expires the rest).
+                        Some(ASK_TOOL) => {
+                            if let Some(questions) = questions_of(&b["input"]) {
+                                out.push(Past::Event(Event::Question {
+                                    id: id.to_string(),
+                                    questions,
+                                    by: None,
+                                }));
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -727,6 +744,10 @@ struct ClaudeTranslator {
     /// File rewinds asked and not answered yet (batch 3, chore 2), by request id
     /// (`fuxx-rewind-<n>`): the message and whether it was a dry run.
     rewinds: HashMap<String, (String, bool)>,
+    /// Open questions (batch 3, chore 8: AskUserQuestion), by their tool call's id (the
+    /// `Event::Question`'s): the request to answer and the tool's input, sent back with the
+    /// answers.
+    asks: HashMap<String, (String, Value)>,
     /// `cancel_async_message` requests asked and not yet answered: request id → message id.
     cancels: HashMap<String, String>,
     /// Subagents (M11ar): Claude's task id → the lane (its Agent call's id), and back.
@@ -871,6 +892,99 @@ fn tool_texts(name: &str, input: &Value) -> Vec<EditText> {
     } else {
         texts
     }
+}
+
+/// Claude's tool that asks you to choose (batch 3, chore 8).
+const ASK_TOOL: &str = "AskUserQuestion";
+/// What a skipped question tells Claude.
+const SKIPPED: &str = "The user skipped these questions.";
+
+/// AskUserQuestion's `questions`, when fuxx can read them: each with its words and options,
+/// each option with a label. A missing header, description, preview or `multiSelect` is fine
+/// (no recording yet: the shape is the binary's). None: shown as the generic card instead.
+fn questions_of(input: &Value) -> Option<Vec<Question>> {
+    let list = input["questions"].as_array().filter(|l| !l.is_empty())?;
+    list.iter()
+        .map(|q| {
+            let text = q["question"].as_str().filter(|t| !t.trim().is_empty())?;
+            let options = q["options"]
+                .as_array()?
+                .iter()
+                .map(|o| {
+                    Some(QOption {
+                        label: s(&o["label"])?,
+                        description: s(&o["description"]).unwrap_or_default(),
+                        preview: s(&o["preview"]).filter(|p| !p.is_empty()),
+                    })
+                })
+                .collect::<Option<Vec<QOption>>>()?;
+            Some(Question {
+                header: s(&q["header"]).unwrap_or_default(),
+                text: text.to_string(),
+                options,
+                multi: q["multiSelect"].as_bool().unwrap_or(false),
+            })
+        })
+        .collect()
+}
+
+/// A picked label as Claude reads a multi-select answer: as it is, unless it holds ", " or a
+/// double quote (it would split, or read as a quoted label): then JSON-quoted (Claude's own rule).
+fn listed_label(label: &str) -> String {
+    if label.contains(", ") || label.contains('"') {
+        Value::String(label.to_string()).to_string()
+    } else {
+        label.to_string()
+    }
+}
+
+/// AskUserQuestion's `input` with your `answers` (one per question, in order): `answers` keyed
+/// by each question's exact words (a multi-select's picks and your own words joined by ", "),
+/// and `annotations` with the preview of a single-select's pick. An unanswered question is left
+/// out.
+fn answered_input(mut input: Value, answers: &[QAnswer]) -> Value {
+    let mut said = serde_json::Map::new();
+    let mut notes = serde_json::Map::new();
+    let questions = input["questions"].as_array().cloned().unwrap_or_default();
+    for (q, answer) in questions.iter().zip(answers) {
+        let Some(text) = q["question"].as_str() else {
+            continue;
+        };
+        let other = answer
+            .other
+            .as_deref()
+            .map(str::trim)
+            .filter(|o| !o.is_empty());
+        let value = if q["multiSelect"] == true {
+            let mut parts: Vec<String> = answer.labels.iter().map(|l| listed_label(l)).collect();
+            parts.extend(other.map(String::from));
+            parts.join(", ")
+        } else {
+            match other {
+                Some(o) => o.to_string(),
+                None => answer.labels.first().cloned().unwrap_or_default(),
+            }
+        };
+        if value.is_empty() {
+            continue;
+        }
+        if q["multiSelect"] != true
+            && other.is_none()
+            && let Some(preview) = q["options"].as_array().and_then(|os| {
+                os.iter()
+                    .find(|o| o["label"].as_str() == Some(value.as_str()))
+                    .and_then(|o| o["preview"].as_str())
+            })
+        {
+            notes.insert(text.to_string(), json!({"preview": preview}));
+        }
+        said.insert(text.to_string(), Value::String(value));
+    }
+    input["answers"] = Value::Object(said);
+    if !notes.is_empty() {
+        input["annotations"] = Value::Object(notes);
+    }
+    input
 }
 
 fn todos(input: &Value) -> Vec<TodoItem> {
@@ -1239,6 +1353,8 @@ impl ClaudeTranslator {
                     let input = &item["input"];
                     if name == "TodoWrite" {
                         out.push(Event::Todo(todos(input)));
+                    } else if name == ASK_TOOL {
+                        // Its card is the question (`can_use_tool`), never a tool row.
                     } else {
                         out.push(Event::ToolStarted {
                             id: s(&item["id"]).unwrap_or_default(),
@@ -1434,6 +1550,19 @@ impl ClaudeTranslator {
         };
         let name = req["tool_name"].as_str().unwrap_or("");
         let input = req["input"].clone();
+        let by = s(&req["agent_id"]).and_then(|a| self.lanes.get(&a).cloned());
+        // A question it can read is a question card; one it can't stays the generic card.
+        if name == ASK_TOOL
+            && let Some(questions) = questions_of(&input)
+        {
+            let ask = s(&req["tool_use_id"]).unwrap_or_else(|| id.clone());
+            self.asks.insert(ask.clone(), (id, input));
+            return vec![Event::Question {
+                id: ask,
+                questions,
+                by,
+            }];
+        }
         let suggestions = req["permission_suggestions"].clone();
         let what = if name == "Bash" {
             s(&input["command"])
@@ -1452,7 +1581,7 @@ impl ClaudeTranslator {
                 .and_then(|a| a.first())
                 .map(describe_suggestion),
             // A subagent's request names it (`agent_id` is its task id).
-            by: s(&req["agent_id"]).and_then(|a| self.lanes.get(&a).cloned()),
+            by,
         };
         self.pending.insert(id, (input, suggestions));
         vec![event]
@@ -1625,6 +1754,24 @@ impl Translator for ClaudeTranslator {
                     Asked::ReadEffort(effort.clone()),
                 );
                 vec![apply, read]
+            }
+            Action::Answer { id, answers } => match self.asks.remove(id) {
+                Some((rid, input)) => vec![control_response(
+                    &rid,
+                    json!({"behavior": "allow", "updatedInput": answered_input(input, answers)}),
+                )],
+                None => Vec::new(),
+            },
+            // Skipping a question (batch 3, chore 8).
+            Action::Deny { id, reason } if self.asks.contains_key(id) => {
+                let Some((rid, _)) = self.asks.remove(id) else {
+                    return Vec::new();
+                };
+                let message = reason.as_deref().unwrap_or(SKIPPED);
+                vec![control_response(
+                    &rid,
+                    json!({"behavior": "deny", "message": message}),
+                )]
             }
             Action::Deny { id, reason } => {
                 if self.pending.remove(id).is_none() {
@@ -2389,6 +2536,346 @@ mod tests {
             v["response"]["response"]["message"],
             "The user denied this."
         );
+    }
+
+    // ---- Batch 3, chore 8: the agent's question picker ----
+
+    const ASK: &str = include_str!("fixtures/claude-ask.jsonl");
+
+    /// The fixture's `can_use_tool` request for AskUserQuestion, and the request.
+    fn ask_line() -> (String, Value) {
+        let v = lines_of(ASK)
+            .into_iter()
+            .find(|v| v["request"]["subtype"] == "can_use_tool")
+            .unwrap();
+        (v.to_string(), v)
+    }
+
+    /// A translator that has seen the question; what it wrote for `action`, parsed.
+    fn answer_of(action: Action) -> Vec<Value> {
+        let mut t = CLAUDE.translator();
+        t.decode(&ask_line().0);
+        t.encode(&action)
+            .iter()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    fn picked(labels: &[&str], other: Option<&str>) -> QAnswer {
+        QAnswer {
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+            other: other.map(String::from),
+        }
+    }
+
+    #[test]
+    fn the_ask_fixture_says_it_is_synthetic() {
+        assert!(
+            lines_of(ASK)[0]["synthetic"] == true,
+            "marked synthetic until recorded"
+        );
+    }
+
+    #[test]
+    fn ask_user_question_becomes_a_question_not_a_permission() {
+        let ev = decode_all(&CLAUDE, ASK);
+        assert!(
+            !ev.iter().any(|e| matches!(e, Event::Permission { .. })),
+            "{ev:?}"
+        );
+        let qs: Vec<&Event> = ev
+            .iter()
+            .filter(|e| matches!(e, Event::Question { .. }))
+            .collect();
+        assert_eq!(qs.len(), 1, "{ev:?}");
+        let Event::Question { id, questions, by } = qs[0] else {
+            unreachable!()
+        };
+        assert_eq!(id, "toolu_ask_1", "keyed by the tool call");
+        assert_eq!(*by, None);
+        assert_eq!(questions.len(), 3);
+        let q = &questions[0];
+        assert_eq!(q.header, "Test runner");
+        assert_eq!(q.text, "Which test runner should I set up?");
+        assert!(!q.multi);
+        assert_eq!(q.options[0].label, "Vitest");
+        assert_eq!(
+            q.options[0].description,
+            "Fast, Vite-native, Jest-compatible API"
+        );
+        assert!(q.options[0].preview.as_deref().unwrap().contains("vitest"));
+        assert!(questions[1].multi);
+        assert_eq!(questions[1].options[2].preview, None);
+        // No header, no multiSelect, an option with no description: tolerated.
+        let last = &questions[2];
+        assert_eq!(last.header, "");
+        assert!(!last.multi);
+        assert_eq!(last.options[1].label, "No");
+        assert_eq!(last.options[1].description, "");
+        // Its tool's result closes it.
+        assert!(
+            ev.iter().any(
+                |e| matches!(e, Event::ToolFinished { id, ok: true, .. } if id == "toolu_ask_1")
+            )
+        );
+    }
+
+    #[test]
+    fn its_tool_row_is_not_shown() {
+        let ev = decode_all(&CLAUDE, ASK);
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, Event::ToolStarted { name, .. } if name == "AskUserQuestion")),
+            "{ev:?}"
+        );
+    }
+
+    #[test]
+    fn an_answer_keeps_the_input_and_keys_answers_by_question_text() {
+        let (_, req) = ask_line();
+        let out = answer_of(Action::Answer {
+            id: "toolu_ask_1".into(),
+            answers: vec![
+                picked(&["Jest"], None),
+                picked(&["Lint"], None),
+                picked(&["No"], None),
+            ],
+        });
+        assert_eq!(out.len(), 1);
+        let v = &out[0];
+        assert_eq!(v["type"], "control_response");
+        assert_eq!(v["response"]["request_id"], "req-ask-1", "the request's id");
+        let r = &v["response"]["response"];
+        assert_eq!(r["behavior"], "allow");
+        let input = &r["updatedInput"];
+        assert_eq!(input["questions"], req["request"]["input"]["questions"]);
+        assert_eq!(
+            input["answers"],
+            json!({
+                "Which test runner should I set up?": "Jest",
+                "Which checks should run in CI?": "Lint",
+                "Should I add a coverage report?": "No",
+            })
+        );
+        assert!(r.get("response").is_none() && v["response"].get("response").is_some());
+        // Answered once: a second answer writes nothing.
+        let mut t = CLAUDE.translator();
+        t.decode(&ask_line().0);
+        let a = Action::Answer {
+            id: "toolu_ask_1".into(),
+            answers: Vec::new(),
+        };
+        assert_eq!(t.encode(&a).len(), 1);
+        assert!(t.encode(&a).is_empty());
+    }
+
+    #[test]
+    fn an_unanswered_question_is_left_out_and_its_text_is_never_trimmed() {
+        let line = json!({"type": "control_request", "request_id": "r1", "request": {
+            "subtype": "can_use_tool", "tool_name": "AskUserQuestion", "tool_use_id": "t1",
+            "input": {"questions": [
+                {"question": "  Spaced?  ", "header": "S", "multiSelect": false,
+                 "options": [{"label": "A", "description": ""}]},
+                {"question": "Skipped?", "header": "K", "multiSelect": false,
+                 "options": [{"label": "B", "description": ""}]}]}}})
+        .to_string();
+        let mut t = CLAUDE.translator();
+        t.decode(&line);
+        let out = t.encode(&Action::Answer {
+            id: "t1".into(),
+            answers: vec![picked(&["A"], None), QAnswer::default()],
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(
+            v["response"]["response"]["updatedInput"]["answers"],
+            json!({"  Spaced?  ": "A"})
+        );
+    }
+
+    #[test]
+    fn multi_select_joins_with_comma_space_and_quotes_labels_with_commas() {
+        let line = json!({"type": "control_request", "request_id": "r2", "request": {
+            "subtype": "can_use_tool", "tool_name": "AskUserQuestion", "tool_use_id": "t2",
+            "input": {"questions": [{"question": "Which?", "header": "W", "multiSelect": true,
+                "options": [{"label": "Lint", "description": ""},
+                            {"label": "Tests, fast", "description": ""},
+                            {"label": "Say \"hi\"", "description": ""}]}]}}})
+        .to_string();
+        let mut t = CLAUDE.translator();
+        t.decode(&line);
+        let out = t.encode(&Action::Answer {
+            id: "t2".into(),
+            answers: vec![picked(&["Lint", "Tests, fast", "Say \"hi\""], None)],
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(
+            v["response"]["response"]["updatedInput"]["answers"]["Which?"],
+            "Lint, \"Tests, fast\", \"Say \\\"hi\\\"\""
+        );
+    }
+
+    #[test]
+    fn other_text_is_the_answer_and_joins_picks_in_multi() {
+        let out = answer_of(Action::Answer {
+            id: "toolu_ask_1".into(),
+            answers: vec![
+                picked(&[], Some("Node's own test runner")),
+                picked(&["Lint", "Type check"], Some("a11y audit")),
+                picked(&[], None),
+            ],
+        });
+        let answers = &out[0]["response"]["response"]["updatedInput"]["answers"];
+        assert_eq!(
+            answers,
+            &json!({
+                "Which test runner should I set up?": "Node's own test runner",
+                "Which checks should run in CI?": "Lint, Type check, a11y audit",
+            })
+        );
+    }
+
+    #[test]
+    fn a_chosen_preview_goes_back_as_an_annotation() {
+        let out = answer_of(Action::Answer {
+            id: "toolu_ask_1".into(),
+            answers: vec![picked(&["Vitest"], None), picked(&["Lint"], None)],
+        });
+        let r = &out[0]["response"]["response"]["updatedInput"];
+        let preview = r["annotations"]["Which test runner should I set up?"]["preview"]
+            .as_str()
+            .expect("the preview");
+        assert!(preview.starts_with("// vitest.config.ts"), "{preview}");
+        assert!(
+            r["annotations"]
+                .get("Which checks should run in CI?")
+                .is_none(),
+            "no preview, no annotation"
+        );
+        assert!(
+            r["annotations"]["Which test runner should I set up?"]
+                .get("unanswered")
+                .is_none()
+        );
+        // No preview chosen at all: no annotations.
+        let out = answer_of(Action::Answer {
+            id: "toolu_ask_1".into(),
+            answers: vec![picked(&[], Some("mine"))],
+        });
+        assert!(
+            out[0]["response"]["response"]["updatedInput"]
+                .get("annotations")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn skip_denies_with_a_message() {
+        let out = answer_of(Action::Deny {
+            id: "toolu_ask_1".into(),
+            reason: None,
+        });
+        assert_eq!(out.len(), 1);
+        let v = &out[0];
+        assert_eq!(v["response"]["request_id"], "req-ask-1");
+        assert_eq!(
+            v["response"]["response"],
+            json!({"behavior": "deny", "message": "The user skipped these questions."})
+        );
+    }
+
+    #[test]
+    fn an_unknown_id_writes_nothing() {
+        let mut t = CLAUDE.translator();
+        t.decode(&ask_line().0);
+        let a = Action::Answer {
+            id: "nope".into(),
+            answers: vec![picked(&["Vitest"], None)],
+        };
+        assert!(t.encode(&a).is_empty());
+        // The request's own id is not the question's.
+        let a = Action::Answer {
+            id: "req-ask-1".into(),
+            answers: Vec::new(),
+        };
+        assert!(t.encode(&a).is_empty());
+        assert!(
+            CLAUDE
+                .translator()
+                .encode(&Action::Answer {
+                    id: "toolu_ask_1".into(),
+                    answers: Vec::new()
+                })
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_malformed_question_falls_back_to_the_permission_card() {
+        for input in [
+            json!({}),
+            json!({"questions": []}),
+            json!({"questions": [{"header": "No text", "options": [{"label": "A"}]}]}),
+            json!({"questions": [{"question": "No options?"}]}),
+            json!({"questions": [{"question": "Bad option", "options": [{"description": "x"}]}]}),
+        ] {
+            let line = json!({"type": "control_request", "request_id": "r3", "request": {
+                "subtype": "can_use_tool", "tool_name": "AskUserQuestion", "tool_use_id": "t3",
+                "input": input}})
+            .to_string();
+            let mut t = CLAUDE.translator();
+            let ev = t.decode(&line);
+            assert!(
+                matches!(ev.as_slice(), [Event::Permission { id, .. }] if id == "r3"),
+                "{input}: {ev:?}"
+            );
+            // Allow still answers it (as the generic card always did).
+            assert_eq!(t.encode(&Action::Allow { id: "r3".into() }).len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_subagents_question_says_who() {
+        let mut t = CLAUDE.translator();
+        t.decode(
+            &json!({"type": "system", "subtype": "task_started", "task_id": "task1",
+                "tool_use_id": "lane1", "task_type": "local_agent", "description": "Reader"})
+            .to_string(),
+        );
+        let (_, mut req) = ask_line();
+        req["request"]["agent_id"] = json!("task1");
+        let ev = t.decode(&req.to_string());
+        assert!(
+            matches!(ev.as_slice(), [Event::Question { by: Some(b), .. }] if b == "lane1"),
+            "{ev:?}"
+        );
+    }
+
+    #[test]
+    fn history_replays_a_question() {
+        let questions = lines_of(ASK)[2]["message"]["content"][0]["input"].clone();
+        let asked = json!({"type": "assistant", "uuid": "a1", "message": {"id": "m1",
+            "role": "assistant", "content": [{"type": "tool_use", "id": "toolu_h1",
+            "name": "AskUserQuestion", "input": questions}]}});
+        let result = json!({"type": "user", "uuid": "u1", "message": {"role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "toolu_h1",
+            "content": "User has answered your questions: …"}]}});
+        let text = format!("{asked}\n{result}\n");
+        let past = transcript_events(&text);
+        let q = past
+            .iter()
+            .position(|p| matches!(p, Past::Event(Event::Question { id, .. }) if id == "toolu_h1"))
+            .unwrap_or_else(|| panic!("{past:?}"));
+        let done = past
+            .iter()
+            .position(
+                |p| matches!(p, Past::Event(Event::ToolFinished { id, .. }) if id == "toolu_h1"),
+            )
+            .expect("its result");
+        assert!(q < done);
+        assert!(!past.iter().any(|p| matches!(
+            p,
+            Past::Event(Event::ToolStarted { name, .. }) if name == "AskUserQuestion"
+        )));
     }
 
     #[test]

@@ -58,6 +58,7 @@ pub fn describe(action: &str) -> Describe {
         "workspace::RenameSession" => Listed(Workspaces, "Rename Workspace\u{2026}"),
         "workspace::OpenSwitcher" => Listed(Workspaces, "Go to Workspace\u{2026}"),
         "workspace::NextNeedingYou" => Listed(Workspaces, "Go to What Needs You"),
+        "workspace::AnswerWaitingQuestion" => Listed(Workspaces, "Answer Waiting Question"),
         "workspace::OpenBrowser" => Listed(Workspaces, "Open Browser\u{2026}"),
         "workspace::NextSession" => Listed(Workspaces, "Next workspace"),
         "workspace::PrevSession" => Listed(Workspaces, "Previous workspace"),
@@ -169,6 +170,8 @@ pub fn describe(action: &str) -> Describe {
         | "agent_tab::PickFork"
         | "agent_tab::PickCopy"
         | "agent_tab::PickLeave" => Unlisted,
+        // The question card's keys (batch 3, chore 8): only while it has them.
+        other if other.starts_with("agent_tab::Ask") => Unlisted,
         // The tool modal's own Esc and ↑/↓ (spec A §B), as the @ list's.
         "agent_tab::ModalBack" | "agent_tab::ModalPrev" | "agent_tab::ModalNext"
         | "agent_tab::CloseImage" => Unlisted,

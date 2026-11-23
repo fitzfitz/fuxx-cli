@@ -297,6 +297,8 @@ fn palette_scene() {
             );
             // M11aa: its workspaces are this Mac's, so New Claude Tab is listed too.
             crate::palette_items::add_agent_rows(&mut actions, true);
+            // Batch 3, chore 8: no question waits, so no "Answer Waiting Question".
+            crate::palette_items::keep_answer_row(&mut actions, false);
             let item = |key| Line::Item {
                 key,
                 positions: Vec::new(),

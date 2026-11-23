@@ -37,6 +37,23 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Chores batch 3, wave 4: the agent's question picker
+
+- **What:** chore 8 under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]]. ("we don't have open question
+  popup yet") Claude's AskUserQuestion is a question card in the chat instead of a permission card whose Allow sent no
+  answers: options one question at a time, digits, ↑↓, Space, Enter, the box as "Other", Esc twice to skip; the
+  answers go back keyed by each question's exact words. Claude waits on it like a permission ("Claude asks: …"); a
+  line stays after it, opening to the full questions. With the user's UX bar and the lead designer's spec: it docks
+  over the chat's bottom when scrolled away, ⇧⌘A and the palette's "Answer Waiting Question" reach it from any tab,
+  "(Recommended)" options, a review step, the digit marks, a neutral light, one lap of the box rim. agy: no translator
+  change (print mode skips its own questions and has no answer channel). The fixture `claude-ask.jsonl` is synthetic
+  until a recording exists. New `src/agent_ask.rs`, `src/agent_ask_view.rs`, `src/ui_shots/agent_ask.rs`.
+- **Checks:** 2623 → 2662 tests (39 new; most watched failing first, a few written with their code); clippy 14/29 and
+  18/33 (unchanged, none on a changed line); `cargo fmt --check` clean; full `scripts/ui-shots.sh` 319 passed, 0
+  failed (the shots were 2× on the Retina display, so most older fingerprints "look different" or "differ in size";
+  none was rewritten). References written only for the nine new visual scenes (at 2×). `palette`'s scene now drops
+  the new row as the real palette does with no question waiting. Not yet seen in the real window.
+
 ### 2026-11-23 — Chores batch 3, wave 3: chat and box menus, files as pills, taking back a queued message
 
 - **What:** under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]]: chore 4 finished, chore 5, chore 6's

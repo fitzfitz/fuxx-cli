@@ -119,7 +119,7 @@ impl AgentTab {
     }
 
     /// The agent's avatar (spec B-A): its logo bare, else its letters on its colour.
-    fn avatar(&self, look: &Look) -> AnyElement {
+    pub(super) fn avatar(&self, look: &Look) -> AnyElement {
         use crate::agent_chat::chat;
         match look.logo_image.clone() {
             Some(logo) => div()
@@ -447,6 +447,13 @@ impl AgentTab {
                     ),
                 }
             }
+            // The agent's question (batch 3, chore 8): its card while open, else its summary.
+            Item::Question {
+                id,
+                questions,
+                reply,
+                ..
+            } => self.question_row(ix, id, questions, reply.as_ref(), look),
             // A fork's first row (batch 3, chore 2).
             Item::Notice(t) if self.fork_row(ix, t, look).is_some() => self
                 .fork_row(ix, t, look)

@@ -129,7 +129,9 @@ impl AgentTab {
             return None;
         };
         let (row, line, list) = (latest.row, latest.line.clone(), pane.list.clone());
-        let shows = strip_visible(&list, row);
+        // A short chat with the question docked: the strip makes room (batch 3, chore 8).
+        let shows = strip_visible(&list, row)
+            && !self.ask_hides_strip(f32::from(list.viewport_bounds().size.height), STRIP_COVER);
         if shows && !self.strip.shown {
             self.strip.appeared += 1;
         }
@@ -235,6 +237,11 @@ impl AgentTab {
     /// there unless motion is reduced), then lit a moment. Following the chat's end stops, as a
     /// scroll up stops it; scrolling back to the end resumes it.
     pub(super) fn jump_to_latest(&mut self, cx: &mut Context<Self>) {
+        // A question waits (batch 3, chore 8): the click lands on its card.
+        if self.asking() {
+            self.reveal_ask(cx);
+            return;
+        }
         let pane = self.pane();
         let Some(row) = pane.latest.as_ref().map(|l| l.row) else {
             return;

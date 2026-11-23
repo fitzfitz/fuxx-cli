@@ -508,6 +508,15 @@ pub enum Event {
         /// The subagent (lane id) that asks; `None`: the main agent.
         by: Option<String>,
     },
+    /// The agent asks you to choose (batch 3, chore 8: Claude's `AskUserQuestion`), answered by
+    /// `Action::Answer` (or skipped by `Action::Deny`). `id`: the tool call's, whose own
+    /// `ToolFinished` closes it. Not a tool row.
+    Question {
+        id: String,
+        questions: Vec<Question>,
+        /// The subagent (lane id) that asks; `None`: the main agent.
+        by: Option<String>,
+    },
     /// A subagent started (M11ar), its steps hanging under the tool call `id` (their `parent`);
     /// `parent`: the lane that started it, when nested.
     SubagentStarted {
@@ -582,6 +591,40 @@ pub enum Event {
         value: String,
         ok: bool,
     },
+}
+
+/// One question of an `Event::Question`: its chip (`header`, maybe empty), its words (`text`,
+/// kept exactly: the answer is keyed by them), its options, and whether several may be picked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Question {
+    pub header: String,
+    pub text: String,
+    pub options: Vec<QOption>,
+    pub multi: bool,
+}
+
+/// One option of a `Question`: its label, a line saying what it means (maybe empty), and what
+/// it would look like (`preview`, shown in a monospace well; single-select only).
+#[derive(Clone, Debug, PartialEq)]
+pub struct QOption {
+    pub label: String,
+    pub description: String,
+    pub preview: Option<String>,
+}
+
+/// Your answer to one `Question`: the labels picked (in the options' order) and any words of
+/// your own ("Other"). Both empty: not answered (left out of what is sent).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct QAnswer {
+    pub labels: Vec<String>,
+    pub other: Option<String>,
+}
+
+impl QAnswer {
+    /// Nothing picked and no words of your own.
+    pub fn is_empty(&self) -> bool {
+        self.labels.is_empty() && self.other.as_deref().is_none_or(|o| o.trim().is_empty())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -705,6 +748,12 @@ pub enum Action {
     },
     AlwaysAllow {
         id: String,
+    },
+    /// Your answers to `Event::Question` `id`, one per question in its order (batch 3, chore 8).
+    /// Skipping it is `Deny`. A provider that asked no such question writes nothing.
+    Answer {
+        id: String,
+        answers: Vec<QAnswer>,
     },
     Deny {
         id: String,

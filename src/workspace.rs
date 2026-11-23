@@ -135,6 +135,8 @@ actions!(
         OpenPalette,
         NextTab,
         PrevTab,
+        // Batch 3, chore 8: the oldest question an agent waits on, from anywhere (⌘⇧A).
+        AnswerWaitingQuestion,
     ]
 );
 
@@ -1411,6 +1413,17 @@ impl Workspace {
         }
     }
 
+    /// Scenes: a click on one of fuxx's banners (about `terminal`, if any).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_banner_clicked(
+        &mut self,
+        terminal: Option<Terminal>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.banner_clicked(terminal, window, cx);
+    }
+
     /// Show a clicked banner's terminal as the 🔔 list does (nothing more if it has closed
     /// since); one about no terminal, or about one numbered by another run (today's `sN` is
     /// another terminal), only brought fuxx forward.
@@ -1423,6 +1436,10 @@ impl Workspace {
         let run = self.numbering_run();
         if let Some(id) = terminal.and_then(|t| t.in_run(run)) {
             self.jump_to_notification(id, window, cx);
+        } else if terminal.is_none() {
+            // An agent's banner names no terminal (batch 3, chore 8): a question waiting is
+            // what it most likely asked about, so its card takes the keys.
+            self.answer_waiting_question(window, cx);
         }
     }
 
@@ -4189,6 +4206,9 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, _: &NextNeedingYou, w, cx| this.jump_to_needing_you(w, cx)),
             )
+            .on_action(cx.listener(|this, _: &AnswerWaitingQuestion, w, cx| {
+                this.answer_waiting_question(w, cx);
+            }))
             .on_action(
                 cx.listener(|this, _: &OpenPalette, w, cx| this.open_palette(Scope::All, w, cx)),
             )

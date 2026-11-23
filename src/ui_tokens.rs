@@ -106,6 +106,45 @@ pub mod chat {
     pub const R_TAIL: f32 = 6.0;
 }
 
+/// Batch 3, chore 8 (the lead designer's spec): the agent's question card, in points.
+pub mod ask {
+    /// The card: padding, the gap between its parts, the head and steps rows.
+    pub const PAD_X: f32 = 14.0;
+    pub const PAD_Y: f32 = 12.0;
+    pub const GAP: f32 = 10.0;
+    pub const HEAD_H: f32 = 20.0;
+    pub const STEP_H: f32 = 22.0;
+    /// An option row: its least height, padding, the gap between rows, its radius.
+    pub const ROW_MIN: f32 = 28.0;
+    pub const ROW_PAD_X: f32 = 8.0;
+    pub const ROW_PAD_Y: f32 = 5.0;
+    pub const ROW_GAP: f32 = 2.0;
+    pub const ROW_R: f32 = 6.0;
+    /// The digit mark (the radio or checkbox and the shortcut at once), and the gaps after it
+    /// and before a "Recommended" tag.
+    pub const MARK: f32 = 18.0;
+    pub const MARK_GAP: f32 = 10.0;
+    pub const TAG_GAP: f32 = 8.0;
+    /// The preview well: padding, its line height (×12.5), its most lines.
+    pub const WELL_PAD_X: f32 = 12.0;
+    pub const WELL_PAD_Y: f32 = 10.0;
+    pub const WELL_LINE: f32 = 1.45;
+    /// The review's rows and its header column, the summary line, a queued ask's line.
+    pub const REVIEW_ROW: f32 = 30.0;
+    pub const REVIEW_KEY_W: f32 = 120.0;
+    pub const SUMMARY_H: f32 = 22.0;
+    pub const QUEUED_H: f32 = 40.0;
+    /// The docked card: its most height (and at most this share of the chat), the page band
+    /// above it, and the chat height under which only its head shows.
+    pub const DOCK_MAX: f32 = 320.0;
+    pub const DOCK_SHARE: f32 = 0.45;
+    pub const DOCK_BAND: f32 = 16.0;
+    pub const TINY_DOCK_BELOW: f32 = 260.0;
+    /// Motion: the card's fade in, the body's cross-fade on a step change.
+    pub const FADE_MS: u64 = 120;
+    pub const STEP_FADE_MS: u64 = 80;
+}
+
 /// M11ai (Markdown reader): every size the file tab's Markdown Preview is drawn with, in points,
 /// in one place (agent chat keeps its own, `md_preview::Sizes::CHAT`). The Preview's side and top
 /// padding is `size::TERMINAL_PADDING`.

@@ -681,3 +681,57 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     `only_an_unread_named_message_can_be_taken_back_and_only_by_an_agent_that_can`, each watched failing first. Scene
     `agent-queued-cancel` (a held message dropped and never written; × on an unread note asks Claude with its id, the
     answer takes it out; a late one stays with the note; no × on a read message). Not yet seen in the real window.
+- **The agent's question picker** (batch 3, chore 8, wave 4; your words, 2026-11-23: "we don't have open question
+  popup yet" → "that open question, should we add it here as well as chore?" → yes): Claude's AskUserQuestion is a
+  question card in the chat. Before, it fell into the generic permission card and Allow sent no answers ("The user did
+  not answer the questions"). Now each question shows with its options, one at a time; a digit, a click, ↑↓ with
+  Enter, or your own words typed in the message box (its "Other") answer it, and the answers go back keyed by each
+  question's exact words (a multi-select's picks joined by ", ", a label holding ", " or a quote JSON-quoted, a chosen
+  preview as an annotation); Esc twice skips it (a deny saying "The user skipped these questions."). Claude waits on
+  it like a permission: the tab, its sidebar row and the banner say "Claude asks: ⟨question 1⟩ (+N more)". Answered,
+  skipped or expired (the turn ended first), it leaves one line ("Answered · Test runner: Vitest · …") that opens to
+  the full questions. A subagent's question makes its lane wait and shows in every view. A restored conversation
+  replays a question as answered (its result exists) or not answered, never open. agy: no translator change — its
+  print mode answers its own `ask_question` (skipped) and has no channel for yours; it joins the same event once a
+  recording shows a shape. Provider `Event::Question`, `Action::Answer` (skip is `Action::Deny`); `Item::Question`,
+  `Reply`, the `open_asks` cache; new `src/agent_ask.rs` (the card's keys, pure), `src/agent_ask_view.rs` (drawn),
+  `src/ui_shots/agent_ask.rs`; the fixture `claude-ask.jsonl` is synthetic (marked so) until a recording exists.
+  - **AI's calls:** the card takes the keys through a key context on the box (`AgentAsk > Composer`, as the rewind
+    pick does) rather than a focus handle on the chat, so the box keeps its caret and letters type there; a single
+    question's Enter sends at once; history marks an answered question with no answers (the transcript's result text
+    isn't parsed); the Other text is never quoted; a question's tool result closes it (failed: not answered).
+  - **AI's calls — the user's UX bar, 2026-11-23** ("make it easy to use and easy to access, feels like required and
+    have the UX great! we make this different not like any others"), as the lead designer specified it:
+    - It can't be lost: below its place, the same card (the same state and keys) docks over the chat's bottom — whole,
+      compact (the question clamped, labels only, the options scrolling inside) or, in a short chat, its head only —
+      with "Show in chat"; it swaps at the pixel the real card reaches, no fade while scrolling. The strip makes room
+      in a short chat.
+    - It feels required: "Claude is waiting for your answer" with the app's Waiting mark; the send circle is ✓ with
+      "Answer with what you typed (⏎)"; the box's placeholder names the question; the `/` list stays shut (a `/` is
+      answer text); one lap of the box rim in the waiting colour when it opens.
+    - Easy to reach: "Answer Waiting Question" (⇧⌘A, free; in the palette only while a question waits) shows the
+      oldest waiting question's tab with the keys on its card; a click on the tab or an agent's banner does the same;
+      the latest-prompt strip's click brings the card into sight.
+    - Different: the digit mark is the radio or checkbox and the key at once; "(Recommended)" shows as a tag with the
+      cursor on it, the label sent unchanged; a review step after two or more questions (a missing answer lit first,
+      "Send anyway"); step chips; a neutral light (`ask_cursor`) instead of red; new tokens `ask_cursor`, `ask_text`,
+      `ask_mark`, `ask_mark_ink`, `ask_key_edge`, `ask_done` (in the contrast test); a younger second question waits
+      as a quiet "Next · …" line.
+    - Left out for now: previews side by side on a wide card (they sit under the options); the narrow-card rules
+      (chips and hint hidden under 440/460 pt); "Show in chat" glides (it jumps); a queued permission's own small
+      variant; an agent banner names no tab, so its click goes to the oldest waiting question, not that banner's tab.
+  - **Checks:** unit tests (each watched failing first, apart from a few written with their code, said so in the
+    report): the translator's `ask_user_question_becomes_a_question_not_a_permission`, `its_tool_row_is_not_shown`,
+    `an_answer_keeps_the_input_and_keys_answers_by_question_text`,
+    `multi_select_joins_with_comma_space_and_quotes_labels_with_commas`,
+    `other_text_is_the_answer_and_joins_picks_in_multi`, `a_chosen_preview_goes_back_as_an_annotation`,
+    `skip_denies_with_a_message`, `an_unknown_id_writes_nothing`, `a_malformed_question_falls_back_to_the_permission_card`,
+    `history_replays_a_question`; the model's `a_question_waits_and_answering_works_again`,
+    `a_subagents_question_makes_its_lane_wait`, `turn_end_and_process_end_expire_it`, `its_tool_result_closes_it`,
+    `history_never_leaves_one_open`, `oldest_open_ask_wins`, `open_asks_matches_a_full_scan`,
+    `an_open_question_shows_in_every_view_at_the_end`; the card's 15 (`cursor_starts_on_one_and_enter_sends_it`,
+    `digit_picks_and_advances_except_on_the_last`, `space_toggles_in_multi_and_enter_needs_a_check`, the review,
+    Recommended, the guard, Esc Esc, Other, the summary, the dock's rule and kinds, the preview well); the keymap,
+    the palette row and the tokens' contrast. Scenes `agent-tab-question`, `-multi`, `-preview`, `-review`,
+    `-answered`, `-other`, `-lane`, `-restored`, `-dock` (both themes), `-keys`, `-skip`, `-typing-guard` and
+    `agent-question-anywhere` (⇧⌘A, a banner click). Not yet seen in the real window.

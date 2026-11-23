@@ -56,6 +56,11 @@ pub(crate) mod pills;
 
 #[path = "agent_cancel.rs"]
 mod cancel;
+
+#[path = "agent_ask_view.rs"]
+mod ask_view;
+#[cfg(feature = "ui-shots")]
+pub(crate) use ask_view::ShotAsk;
 #[cfg(feature = "ui-shots")]
 pub(crate) use cancel::CANCEL_LATE;
 #[cfg(feature = "ui-shots")]
@@ -114,7 +119,26 @@ actions!(
         PickCopy,
         PickLeave,
         // The palette's "Rewind Last Prompt".
-        RewindLastPrompt
+        RewindLastPrompt,
+        // The agent's question card (batch 3, chore 8; bound in main.rs to "AgentAsk >
+        // Composer": only while it has the keys and the box is empty).
+        AskUp,
+        AskDown,
+        AskPrev,
+        AskNext,
+        AskSpace,
+        AskEnter,
+        AskToBox,
+        AskSkip,
+        AskPick1,
+        AskPick2,
+        AskPick3,
+        AskPick4,
+        AskPick5,
+        AskPick6,
+        AskPick7,
+        AskPick8,
+        AskPick9
     ]
 );
 
@@ -811,6 +835,7 @@ pub(crate) fn fingerprint(item: &Item) -> u64 {
             }
         }
         Item::Permission { answer, .. } => format!("{answer:?}").hash(&mut h),
+        Item::Question { reply, .. } => format!("{reply:?}").hash(&mut h),
         Item::Notice(t) | Item::Error(t) => t.hash(&mut h),
     }
     h.finish()
@@ -887,6 +912,15 @@ pub struct Colors {
     pub ask_fill: Rgb,
     pub ask_head: Rgb,
     pub ask_dim: Rgb,
+    /// The question card (batch 3, chore 8): the light on its lit row (and the current step
+    /// chip), its words, its filled digit mark and the digit on it, an unfilled mark's ring,
+    /// and the answered line's check.
+    pub ask_cursor: Rgb,
+    pub ask_text: Rgb,
+    pub ask_mark: Rgb,
+    pub ask_mark_ink: Rgb,
+    pub ask_key_edge: Rgb,
+    pub ask_done: Rgb,
     pub accent: Rgb,
     pub on_accent: Rgb,
     pub todo_active: Rgb,
@@ -980,6 +1014,18 @@ impl Colors {
         let page = theme.background;
         let fit = |c: Rgb, on: Rgb| ensure_contrast(c, on, TEXT_MIN);
         let ask_fill = mix(page, ui.ring_waiting, 0.07);
+        // The question card's light (batch 3, chore 8; the lead designer): neutral, not the
+        // waiting red, so it never reads as an alarm.
+        let ask_cursor = readable(
+            mix(
+                ask_fill,
+                theme.foreground,
+                if theme.is_dark() { 0.07 } else { 0.06 },
+            ),
+            &[ask_fill],
+            crate::ui_tokens::SOFT_LINE_MIN,
+        );
+        let ask_mark = readable(ui.accent, &[ask_fill, ask_cursor], MARK_MIN);
         let code_fill = mix(page, ui.text, 0.06);
         let row_hover = mix(ui.panel, theme.foreground, 0.04);
         let meter_track = readable(mix(page, theme.foreground, 0.12), &[page], QUIET_LINE_MIN);
@@ -1001,8 +1047,18 @@ impl Colors {
             failed: fit(ui.block_failed, page),
             ask_edge: ui.ring_waiting,
             ask_fill,
-            ask_head: fit(ui.ring_waiting, ask_fill),
-            ask_dim: fit(ui.text_dim, ask_fill),
+            ask_head: readable(ui.ring_waiting, &[ask_fill, ask_cursor], TEXT_MIN),
+            ask_dim: readable(ui.text_dim, &[ask_fill, ask_cursor], TEXT_MIN),
+            ask_cursor,
+            ask_text: readable(ui.text, &[ask_fill, ask_cursor], TEXT_MIN),
+            ask_mark,
+            ask_mark_ink: fit(ui.on_accent, ask_mark),
+            ask_key_edge: readable(
+                mix(ask_fill, theme.foreground, 0.22),
+                &[ask_fill, ask_cursor],
+                QUIET_LINE_MIN,
+            ),
+            ask_done: readable(ui.ring_done, &[page, ui.card_hover], MARK_MIN),
             accent: ui.accent,
             on_accent: fit(ui.on_accent, ui.accent),
             todo_active: fit(ui.ring_working, ui.panel),
@@ -1395,6 +1451,8 @@ pub struct AgentTab {
     strip: latest::Strip,
     /// Rewind and Fork (batch 3, chore 2).
     pub(crate) rw: rewind::State,
+    /// The agent's question card (batch 3, chore 8).
+    pub(crate) ask: ask_view::AskState,
 }
 
 impl EventEmitter<AgentTabEvent> for AgentTab {}
@@ -2040,6 +2098,7 @@ impl AgentTab {
             menu_rows: Rc::default(),
             strip: latest::Strip::default(),
             rw: rewind::State::default(),
+            ask: ask_view::AskState::default(),
         }
     }
 
@@ -2054,8 +2113,12 @@ impl AgentTab {
         crate::agent_lanes::shown_status(self.status(), self.conversation.lanes())
     }
 
-    /// "⟨Label⟩ wants to run: ⟨what⟩" while a permission waits.
+    /// "⟨Label⟩ wants to run: ⟨what⟩" while a permission waits; "⟨Label⟩ asks: ⟨question⟩"
+    /// while the agent's own question is the oldest thing waiting (batch 3, chore 8).
     pub fn question(&self) -> Option<String> {
+        if let Some(line) = self.ask_question_line() {
+            return Some(line);
+        }
         match self.conversation.pending_permission() {
             Some(Item::Permission { what, .. }) => {
                 Some(format!("{} wants to run: {what}", self.label()))
@@ -2806,6 +2869,7 @@ impl AgentTab {
         }
         self.sync_lane_marks(cx);
         self.sync_rows();
+        self.sync_ask(cx);
         // The modal's tool gone (a restart, a new conversation): back out to what is left.
         if let Some(modal) = &mut self.modal
             && !modal.prune(self.conversation.items())
@@ -3006,7 +3070,10 @@ impl AgentTab {
 
     pub(super) fn update_placeholder(&mut self, cx: &mut Context<Self>) {
         let label = self.label().to_string();
-        let text: SharedString = if let Some(lane) = self.shown_lane()
+        let text: SharedString = if let Some(other) = self.ask_placeholder() {
+            // The box is the question's Other (batch 3, chore 8).
+            other.into()
+        } else if let Some(lane) = self.shown_lane()
             && self.conversation.pending_permission().is_none()
         {
             // In a lane the box still talks to Main (M11ar).
@@ -3033,7 +3100,7 @@ impl AgentTab {
         let ghost = ghost_for(
             self.suggestion.as_deref(),
             self.view == crate::agent_lanes::View::Main,
-            self.conversation.pending_permission().is_some(),
+            self.conversation.pending_permission().is_some() || self.asking(),
             self.status(),
         );
         self.composer.update(cx, |c, cx| {
@@ -3403,6 +3470,8 @@ impl AgentTab {
                 } else if self.slash.take().is_some() {
                     self.slash_dismissed = true;
                     cx.notify();
+                } else if self.ask_take_back(cx) {
+                    // A question waits: Esc goes back to its card, never stops the agent.
                 } else if !self.esc_rewind(cx) {
                     self.stop(cx);
                 }
@@ -3439,6 +3508,11 @@ impl AgentTab {
     /// What Enter or ➤ does with the box's `text`: with a permission waiting, empty allows and
     /// text denies with it as the reason; else it is sent. The box is cleared once it is used.
     fn submit(&mut self, text: String, composer: &Entity<Composer>, cx: &mut Context<Self>) {
+        if self.asking() {
+            // The agent's question waits first: the box is its Other (batch 3, chore 8).
+            self.ask_submit(&text, cx);
+            return;
+        }
         if self.conversation.pending_permission().is_some() {
             self.suggestion = None;
             let answer = if text.trim().is_empty() {
@@ -3540,6 +3614,7 @@ impl AgentTab {
             self.sweep_at = None;
         }
         self.pick_typed(cx);
+        self.ask_box_changed(cx);
         self.slash_follow(cx);
         let Some(at) = &self.at else {
             return;
@@ -3665,6 +3740,13 @@ impl AgentTab {
     /// no longer a `/` one). Esc keeps it closed until then. It stays out of the way of an open
     /// menu, the `@` list and a permission that waits for its answer.
     fn slash_follow(&mut self, cx: &mut Context<Self>) {
+        // A question waits (batch 3, chore 8): a `/` is answer text, so the list stays shut.
+        if self.asking() {
+            if self.slash.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
         let composer = self.composer.read(cx);
         let query = slash_query(composer.text(), composer.cursor()).map(str::to_string);
         let Some(query) = query else {
@@ -3887,13 +3969,18 @@ impl AgentTab {
     /// prompt, the caret at its end; otherwise the caret moves up as before. The lists over the
     /// box keep ↑ (their binding wins), and a waiting permission keeps the box for its answer.
     pub(crate) fn history_up(&mut self, _: &HistoryUp, _: &mut Window, cx: &mut Context<Self>) {
+        // A question waits: ↑ in the empty box goes back to its card (batch 3, chore 8).
+        if self.composer.read(cx).text().is_empty() && self.ask_take_back(cx) {
+            return;
+        }
         let composer = self.composer.read(cx);
         let recalls = composer.on_first_row()
             && !composer.has_selection()
             && !composer.is_composing()
             && !self.at_open()
             && !self.slash_has_picks(cx)
-            && self.conversation.pending_permission().is_none();
+            && self.conversation.pending_permission().is_none()
+            && !self.asking();
         if !recalls {
             self.composer.update(cx, |c, cx| c.move_up(cx));
             return;
@@ -5562,6 +5649,14 @@ impl Render for AgentTab {
         #[cfg(feature = "ui-shots")]
         let built = self.rows_built.clone();
         let pending = self.pending(&c, cx);
+        // The agent's question docked over the chat's bottom while its card is below (batch 3,
+        // chore 8): decided before the strip, which makes room for it.
+        self.ask_frame(window, cx);
+        let dock = if empty {
+            None
+        } else {
+            self.ask_dock(&look, cx)
+        };
         // Your latest message pinned over the chat while it is scrolled above (chore after
         // M11ar).
         let latest = if empty {
@@ -5622,6 +5717,7 @@ impl Render for AgentTab {
                     .size_full(),
                 )
                 .children(latest)
+                .children(dock)
                 .into_any_element()
         };
         // A command block dragged over the tab tints it (GPUI's element-local style: nothing
@@ -5647,13 +5743,34 @@ impl Render for AgentTab {
         }
         let modal = self.modal.is_some().then(|| self.modal_layer(&look, cx));
         let image_view = self.image_layer(&look);
+        let asking = self.ask_keys_on(cx);
         div()
-            // The rewind pick's keys win in the box while it is on (batch 3, chore 2).
+            // The rewind pick's keys win in the box while it is on (batch 3, chore 2); the
+            // question card's while it has them (chore 8).
             .key_context(if self.rw.pick.is_some() {
                 "AgentTab RewindPick"
+            } else if asking {
+                "AgentTab AgentAsk"
             } else {
                 "AgentTab"
             })
+            .on_action(cx.listener(Self::ask_up))
+            .on_action(cx.listener(Self::ask_down))
+            .on_action(cx.listener(Self::ask_prev))
+            .on_action(cx.listener(Self::ask_next))
+            .on_action(cx.listener(Self::ask_space))
+            .on_action(cx.listener(Self::ask_enter))
+            .on_action(cx.listener(Self::ask_to_box))
+            .on_action(cx.listener(Self::ask_skip))
+            .on_action(cx.listener(|this, _: &AskPick1, _, cx| this.ask_pick(1, cx)))
+            .on_action(cx.listener(|this, _: &AskPick2, _, cx| this.ask_pick(2, cx)))
+            .on_action(cx.listener(|this, _: &AskPick3, _, cx| this.ask_pick(3, cx)))
+            .on_action(cx.listener(|this, _: &AskPick4, _, cx| this.ask_pick(4, cx)))
+            .on_action(cx.listener(|this, _: &AskPick5, _, cx| this.ask_pick(5, cx)))
+            .on_action(cx.listener(|this, _: &AskPick6, _, cx| this.ask_pick(6, cx)))
+            .on_action(cx.listener(|this, _: &AskPick7, _, cx| this.ask_pick(7, cx)))
+            .on_action(cx.listener(|this, _: &AskPick8, _, cx| this.ask_pick(8, cx)))
+            .on_action(cx.listener(|this, _: &AskPick9, _, cx| this.ask_pick(9, cx)))
             .on_action(cx.listener(Self::at_up))
             .on_action(cx.listener(Self::at_down))
             .on_action(cx.listener(Self::modal_back))
@@ -6571,6 +6688,37 @@ mod tests {
             ] {
                 let got = contrast(fg, on);
                 assert!(got >= TEXT_MIN - 0.01, "{name}: {what} {got:.2}");
+            }
+            // The question card (batch 3, chore 8; the lead designer's tokens): its words on
+            // its fill and on the light, its marks, the digit on a filled mark, the answered
+            // check on the page and on a hovered line.
+            for (what, fg, on, floor) in [
+                ("ask head", c.ask_head, c.ask_fill, TEXT_MIN),
+                ("ask head lit", c.ask_head, c.ask_cursor, TEXT_MIN),
+                ("ask dim lit", c.ask_dim, c.ask_cursor, TEXT_MIN),
+                ("ask text", c.ask_text, c.ask_fill, TEXT_MIN),
+                ("ask text lit", c.ask_text, c.ask_cursor, TEXT_MIN),
+                ("ask mark", c.ask_mark, c.ask_fill, MARK_MIN),
+                ("ask mark lit", c.ask_mark, c.ask_cursor, MARK_MIN),
+                ("ask mark ink", c.ask_mark_ink, c.ask_mark, TEXT_MIN),
+                ("ask key edge", c.ask_key_edge, c.ask_fill, QUIET_LINE_MIN),
+                (
+                    "ask key edge lit",
+                    c.ask_key_edge,
+                    c.ask_cursor,
+                    QUIET_LINE_MIN,
+                ),
+                (
+                    "ask light",
+                    c.ask_cursor,
+                    c.ask_fill,
+                    crate::ui_tokens::SOFT_LINE_MIN,
+                ),
+                ("ask done", c.ask_done, c.page, MARK_MIN),
+                ("ask done hovered", c.ask_done, c.card_hover, MARK_MIN),
+            ] {
+                let got = contrast(fg, on);
+                assert!(got >= floor - 0.01, "{name}: {what} {got:.2}");
             }
             // Stop's circle reddish while the agent works (your words, 2026-11-22: "make the
             // background redish"): it reads apart from its ring, and its square on it.

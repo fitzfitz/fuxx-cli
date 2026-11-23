@@ -800,6 +800,9 @@ impl Translator for AgyTranslator {
             Action::Allow { .. }
             | Action::AlwaysAllow { .. }
             | Action::Deny { .. }
+            // Print mode answers its own `ask_question` (skipped) and has no channel for
+            // yours (batch 3, chore 8): it never sends `Event::Question`.
+            | Action::Answer { .. }
             | Action::Interrupt
             | Action::SetModel { .. }
             | Action::SetEffort { .. }

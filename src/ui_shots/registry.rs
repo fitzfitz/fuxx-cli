@@ -14,9 +14,9 @@
 //! `--changed` follows.
 
 use super::{
-    Scene, agent, agent_box, agent_lanes, agent_rewind, ask, branch, changes, chrome, chrome_parts,
-    command, file_tab, file_tab_md, file_tab_md_reader, menus, naming, notes, overlays, palette,
-    panes, right_sidebar, sidebar, status_bar, terminal, welcome, window,
+    Scene, agent, agent_ask, agent_box, agent_lanes, agent_rewind, ask, branch, changes, chrome,
+    chrome_parts, command, file_tab, file_tab_md, file_tab_md_reader, menus, naming, notes,
+    overlays, palette, panes, right_sidebar, sidebar, status_bar, terminal, welcome, window,
 };
 
 /// Files that run or declare the suite but change no scene's picture: an edit to one of these
@@ -54,6 +54,7 @@ pub(super) const AREAS: &[(&str, &[Scene])] = &[
     (agent_box::FILE, agent_box::SCENES),
     (agent_lanes::FILE, agent_lanes::SCENES),
     (agent_rewind::FILE, agent_rewind::SCENES),
+    (agent_ask::FILE, agent_ask::SCENES),
     (ask::FILE, ask::SCENES),
     (notes::FILE, notes::SCENES),
     (menus::FILE, menus::SCENES),
@@ -293,6 +294,19 @@ pub(super) const ORDER: &[&str] = &[
     "agent-tab-empty",
     "agent-tab-working",
     "agent-tab-permission",
+    "agent-tab-question",
+    "agent-tab-question-multi",
+    "agent-tab-question-preview",
+    "agent-tab-question-review",
+    "agent-tab-question-answered",
+    "agent-tab-question-other",
+    "agent-tab-question-keys",
+    "agent-tab-question-skip",
+    "agent-tab-question-typing-guard",
+    "agent-tab-question-lane",
+    "agent-tab-question-restored",
+    "agent-tab-question-dock",
+    "agent-question-anywhere",
     "agent-tab-done",
     "agent-tab-wide",
     "agent-lanes-strip",

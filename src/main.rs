@@ -4,6 +4,7 @@
 mod activity;
 mod activity_panel;
 mod adopt;
+mod agent_ask;
 mod agent_box;
 mod agent_catalog;
 mod agent_chat;
@@ -192,14 +193,14 @@ use terminal_view::{
     Copy, CopyCommandOutput, NextCommand, Paste, PrevCommand, ScrollPageDown, ScrollPageUp,
 };
 use workspace::{
-    CloseSession, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
-    LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4, LaunchPreset5, LaunchPreset6,
-    LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown, MoveSessionUp,
-    NewSessionInFolder, NewSshSession, NewTab, NewTabInWorkspaceFolder, NewWorkspace,
-    NextNeedingYou, NextPane, NextSession, NextTab, OpenBrowser, OpenPalette, OpenSwitcher,
-    PrevPane, PrevSession, PrevTab, RenameSession, SelectSession1, SelectSession2, SelectSession3,
-    SelectSession4, SelectSession5, SelectSession6, SelectSession7, SelectSession8, SelectSession9,
-    SplitDown, SplitRight, ToggleRightSidebar, ToggleSidebar, Workspace,
+    AnswerWaitingQuestion, CloseSession, EqualizePanes, FocusPaneDown, FocusPaneLeft,
+    FocusPaneRight, FocusPaneUp, LaunchPreset1, LaunchPreset2, LaunchPreset3, LaunchPreset4,
+    LaunchPreset5, LaunchPreset6, LaunchPreset7, LaunchPreset8, LaunchPreset9, MoveSessionDown,
+    MoveSessionUp, NewSessionInFolder, NewSshSession, NewTab, NewTabInWorkspaceFolder,
+    NewWorkspace, NextNeedingYou, NextPane, NextSession, NextTab, OpenBrowser, OpenPalette,
+    OpenSwitcher, PrevPane, PrevSession, PrevTab, RenameSession, SelectSession1, SelectSession2,
+    SelectSession3, SelectSession4, SelectSession5, SelectSession6, SelectSession7, SelectSession8,
+    SelectSession9, SplitDown, SplitRight, ToggleRightSidebar, ToggleSidebar, Workspace,
 };
 
 actions!(
@@ -310,6 +311,8 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
         KeyBinding::new("alt-cmd-\\", ToggleRightSidebar, None),
         KeyBinding::new("cmd-shift-u", NextNeedingYou, None),
+        // Batch 3, chore 8: the oldest question an agent waits on.
+        KeyBinding::new("cmd-shift-a", AnswerWaitingQuestion, None),
         KeyBinding::new("cmd-k", OpenPalette, None),
         KeyBinding::new("cmd-p", OpenSwitcher, None),
         KeyBinding::new("cmd-/", ShowShortcuts, None),
@@ -617,6 +620,25 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
             agent_tab::PickLeave,
             Some("RewindPick > Composer"),
         ),
+        // The agent's question card (batch 3, chore 8), while it has the keys and the box is
+        // empty: after the box's keys so they win. Letters stay the box's (its Other).
+        KeyBinding::new("up", agent_tab::AskUp, Some("AgentAsk > Composer")),
+        KeyBinding::new("down", agent_tab::AskDown, Some("AgentAsk > Composer")),
+        KeyBinding::new("left", agent_tab::AskPrev, Some("AgentAsk > Composer")),
+        KeyBinding::new("right", agent_tab::AskNext, Some("AgentAsk > Composer")),
+        KeyBinding::new("space", agent_tab::AskSpace, Some("AgentAsk > Composer")),
+        KeyBinding::new("enter", agent_tab::AskEnter, Some("AgentAsk > Composer")),
+        KeyBinding::new("tab", agent_tab::AskToBox, Some("AgentAsk > Composer")),
+        KeyBinding::new("escape", agent_tab::AskSkip, Some("AgentAsk > Composer")),
+        KeyBinding::new("1", agent_tab::AskPick1, Some("AgentAsk > Composer")),
+        KeyBinding::new("2", agent_tab::AskPick2, Some("AgentAsk > Composer")),
+        KeyBinding::new("3", agent_tab::AskPick3, Some("AgentAsk > Composer")),
+        KeyBinding::new("4", agent_tab::AskPick4, Some("AgentAsk > Composer")),
+        KeyBinding::new("5", agent_tab::AskPick5, Some("AgentAsk > Composer")),
+        KeyBinding::new("6", agent_tab::AskPick6, Some("AgentAsk > Composer")),
+        KeyBinding::new("7", agent_tab::AskPick7, Some("AgentAsk > Composer")),
+        KeyBinding::new("8", agent_tab::AskPick8, Some("AgentAsk > Composer")),
+        KeyBinding::new("9", agent_tab::AskPick9, Some("AgentAsk > Composer")),
     ];
     bindings.extend(browser_tab::page_bindings());
     bindings
@@ -1747,6 +1769,45 @@ mod tests {
         let composer: &[&str] = &["Workspace", "AgentTab", "Composer"];
         assert!(runs(&keymap, "escape", composer).partial_eq(&crate::composer::Stop));
         assert!(runs(&keymap, "enter", composer).partial_eq(&crate::composer::Send));
+    }
+
+    /// Batch 3, chore 8: while the question card has the keys (the box empty), ↑/↓ move, ←/→
+    /// change question, Space checks, ↩ picks, Tab goes to the box, Esc skips and 1–9 pick;
+    /// a letter stays the box's. Without it, the box's own keys.
+    #[test]
+    fn the_question_card_keys_win_in_the_empty_box() {
+        use crate::agent_tab::{
+            AskDown, AskEnter, AskNext, AskPick1, AskPick9, AskPrev, AskSkip, AskSpace, AskToBox,
+            AskUp,
+        };
+        let keymap = keymap();
+        let ask: &[&str] = &["Workspace", "AgentTab AgentAsk", "Composer"];
+        let keys: [(&str, Box<dyn Action>); 10] = [
+            ("up", Box::new(AskUp)),
+            ("down", Box::new(AskDown)),
+            ("left", Box::new(AskPrev)),
+            ("right", Box::new(AskNext)),
+            ("space", Box::new(AskSpace)),
+            ("enter", Box::new(AskEnter)),
+            ("tab", Box::new(AskToBox)),
+            ("escape", Box::new(AskSkip)),
+            ("1", Box::new(AskPick1)),
+            ("9", Box::new(AskPick9)),
+        ];
+        for (key, action) in keys {
+            let got = runs(&keymap, key, ask);
+            assert!(got.partial_eq(&*action), "{key}: {}", got.name());
+        }
+        let contexts: Vec<KeyContext> = ask.iter().map(|c| KeyContext::parse(c).unwrap()).collect();
+        let (found, _) = keymap.bindings_for_input(&[Keystroke::parse("a").unwrap()], &contexts);
+        assert!(found.is_empty(), "a letter is the box's");
+        let composer: &[&str] = &["Workspace", "AgentTab", "Composer"];
+        assert!(runs(&keymap, "escape", composer).partial_eq(&crate::composer::Stop));
+        assert!(runs(&keymap, "enter", composer).partial_eq(&crate::composer::Send));
+        assert!(
+            runs(&keymap, "up", composer).partial_eq(&crate::agent_tab::HistoryUp),
+            "↑ in the box: its own (it goes back to the card from there)"
+        );
     }
 
     /// The tool modal (chores after M11ab, spec A §B): Esc goes back or closes it and never
