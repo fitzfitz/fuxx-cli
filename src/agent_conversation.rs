@@ -44,6 +44,16 @@ pub enum Item {
         /// The agent has read it (its echo, `Event::Taken`; anything in the history): only then
         /// can it be rewound or forked from.
         taken: bool,
+        /// For a subagent (the lanes chore): Main is to pass it on, or answer about it.
+        to: Option<Relay>,
+    },
+    /// Subagent `lane` runs again (the lanes chore): its last run `ended` so (a divider in its
+    /// lane), and what Main `said` to it; `run` is the run it starts (2 for the first resume).
+    Resumed {
+        lane: String,
+        ended: LaneStatus,
+        said: Option<String>,
+        run: u32,
     },
     Agent {
         message: String,
@@ -87,6 +97,31 @@ pub enum Item {
     Error(String),
 }
 
+/// A message of yours for a subagent (the lanes chore, 2026-11-24): sent to Main, which passes
+/// it on word for word (a relay), or answers about it (`about`, a lane it must not resume).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Relay {
+    pub lane: String,
+    pub about: bool,
+    pub state: RelayState,
+    /// Its place in its lane's rows once it settled (`items.len()` then): from then on it
+    /// never moves; until then it is the lane's last row.
+    pub settled_at: Option<usize>,
+}
+
+/// Where a relay is (`Relay::state`); read with `Item::You::taken` (held or taken).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum RelayState {
+    /// Sent to Main, not passed on yet.
+    Sent,
+    /// Main's SendMessage to its subagent was seen.
+    Delivered,
+    /// Main's turn ended without passing it on.
+    NotPassed,
+    /// Its subagent finished before Main passed it on.
+    LaneEnded,
+}
+
 /// A subagent (M11ar): its steps are the items whose `parent` is its `id`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Lane {
@@ -102,6 +137,8 @@ pub struct Lane {
     pub tools: Option<u32>,
     pub last_tool: Option<String>,
     pub controls: LaneControls,
+    /// How many times it has started: 1, and one more for each resume (the lanes chore).
+    pub runs: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -112,6 +149,9 @@ pub enum LaneStatus {
     Done,
     Failed(String),
     Stopped,
+    /// Its source stopped with no end said (the agent exited, a history cut off): it ended
+    /// without a report (the lanes chore; never left spinning).
+    Ended,
 }
 
 impl LaneStatus {
@@ -152,6 +192,8 @@ pub struct Conversation {
     ended: bool,
     /// A turn has finished since the last `you`.
     finished: bool,
+    /// Main's tool calls that delivered a relay, and the lane each went to (the lanes chore).
+    passed_on: std::collections::HashMap<String, String>,
 }
 
 /// What `Conversation::cut_before` cut (batch 3, chore 2): kept for Undo Rewind until the next
@@ -203,6 +245,7 @@ impl Conversation {
                 self.latest_you = None;
                 self.lanes.clear();
                 self.lane_starts.clear();
+                self.passed_on.clear();
                 self.cost_usd = None;
                 self.context_pct = None;
                 self.finished = false;
@@ -363,9 +406,7 @@ impl Conversation {
                 always,
                 by,
             } => {
-                if let Some(lane) = by.as_deref().and_then(|b| self.lane_mut(b)) {
-                    lane.status = LaneStatus::Waiting;
-                }
+                self.mark_waiting(by.as_deref());
                 self.items.push(Item::Permission {
                     id,
                     tool,
@@ -397,6 +438,7 @@ impl Conversation {
                     tools: None,
                     last_tool: None,
                     controls,
+                    runs: 1,
                 };
                 match self.lane_mut(&id) {
                     Some(old) => *old = lane,
@@ -437,12 +479,45 @@ impl Conversation {
                         };
                     }
                     self.settle_lane(&id);
+                    // A relay Main hadn't passed on yet came too late.
+                    self.settle_relays(|r, _| r.lane == id, RelayState::LaneEnded);
+                }
+            }
+            // It runs again (the lanes chore): in its own lane, its place and label kept, its
+            // old end a divider there.
+            Event::SubagentResumed { id, controls, said } => {
+                if let Some(lane) = self.lane_mut(&id) {
+                    let ended = std::mem::replace(&mut lane.status, LaneStatus::Working);
+                    lane.controls = controls;
+                    lane.runs += 1;
+                    let run = lane.runs;
+                    self.items.push(Item::Resumed {
+                        lane: id,
+                        ended,
+                        said,
+                        run,
+                    });
+                }
+            }
+            // Main messaged a subagent: the oldest relay to it waiting is delivered.
+            Event::PassedOn { call, lane } => {
+                let at = self.items.len();
+                let waiting = self.items.iter_mut().find_map(|i| match i {
+                    Item::You { to: Some(r), .. }
+                        if r.lane == lane && !r.about && r.state == RelayState::Sent =>
+                    {
+                        Some(r)
+                    }
+                    _ => None,
+                });
+                if let Some(r) = waiting {
+                    r.state = RelayState::Delivered;
+                    r.settled_at = Some(at);
+                    self.passed_on.insert(call, lane);
                 }
             }
             Event::Question { id, questions, by } => {
-                if let Some(lane) = by.as_deref().and_then(|b| self.lane_mut(b)) {
-                    lane.status = LaneStatus::Waiting;
-                }
+                self.mark_waiting(by.as_deref());
                 self.open_asks.push(self.items.len());
                 self.items.push(Item::Question {
                     id,
@@ -500,6 +575,9 @@ impl Conversation {
                 } else {
                     self.outstanding.saturating_sub(1)
                 };
+                // A relay Main read in this turn (or any, when the turn failed: what was
+                // queued is dropped) and didn't pass on.
+                self.settle_relays(|_, taken| taken || !ok, RelayState::NotPassed);
                 self.busy = false;
                 self.finished = true;
                 self.settle();
@@ -536,12 +614,35 @@ impl Conversation {
 
     /// `you`, the message sent under `id` (`Provider::fresh_message_id`; batch 3, chore 2).
     pub fn you_as(&mut self, text: String, attachments: Vec<String>, id: Option<String>) {
+        self.you_to(text, attachments, id, None);
+    }
+
+    /// Your `text` for subagent `lane`, sent to Main (the lanes chore): to pass on, or
+    /// (`about`) to answer about it. A message to Main in every other way.
+    pub fn relay(&mut self, text: String, id: Option<String>, lane: String, about: bool) {
+        let to = Relay {
+            lane,
+            about,
+            state: RelayState::Sent,
+            settled_at: None,
+        };
+        self.you_to(text, Vec::new(), id, Some(to));
+    }
+
+    fn you_to(
+        &mut self,
+        text: String,
+        attachments: Vec<String>,
+        id: Option<String>,
+        to: Option<Relay>,
+    ) {
         self.latest_you = Some(self.items.len());
         self.items.push(Item::You {
             text,
             attachments,
             id,
             taken: false,
+            to,
         });
         self.outstanding += 1;
         self.ended = false;
@@ -562,6 +663,20 @@ impl Conversation {
         self.items.remove(ix);
         for at in &mut self.lane_starts {
             if *at > ix {
+                *at -= 1;
+            }
+        }
+        for item in &mut self.items {
+            if let Item::You {
+                to:
+                    Some(Relay {
+                        settled_at: Some(at),
+                        ..
+                    }),
+                ..
+            } = item
+                && *at > ix
+            {
                 *at -= 1;
             }
         }
@@ -604,15 +719,27 @@ impl Conversation {
                         attachments: Vec::new(),
                         id,
                         taken: true,
+                        to: None,
                     })
+                }
+                Past::Relay {
+                    text,
+                    id,
+                    to,
+                    about,
+                } => {
+                    self.relay(text, id, to, about);
+                    self.mark_taken(None);
                 }
                 Past::Event(event) => self.apply(event),
             }
         }
         self.outstanding = 0;
         self.busy = false;
+        // A relay never passed on in the history stays so.
+        self.settle_relays(|_, _| true, RelayState::NotPassed);
         // A subagent with no end in the history was cut off (the app quit mid-run).
-        self.stop_lanes();
+        self.stop_lanes(LaneStatus::Ended);
         self.settle();
     }
 
@@ -621,7 +748,7 @@ impl Conversation {
         self.ended = true;
         self.outstanding = 0;
         self.busy = false;
-        self.stop_lanes();
+        self.stop_lanes(LaneStatus::Stopped);
         self.settle();
         self.items.push(Item::Error(message.to_string()));
     }
@@ -824,14 +951,49 @@ impl Conversation {
             .count()
     }
 
-    /// A step under a done lane: it works again (a woken subagent). A stopped or failed one
-    /// stays so (its lagging lines don't revive it).
+    /// A step under a done lane whose agent wakes it by steps (agy): it works again. A stopped
+    /// or failed one stays so (its lagging lines don't revive it), and so does any of Claude's
+    /// (it says a resume itself: the lanes chore).
     fn reopen(&mut self, parent: Option<&str>) {
         if let Some(lane) = parent.and_then(|p| self.lane_mut(p))
+            && lane.controls.woken_by_steps
             && lane.status == LaneStatus::Done
         {
             lane.status = LaneStatus::Working;
         }
+    }
+
+    /// Subagent `by` asks: it waits on you — only while it runs (an ask after its end changes
+    /// nothing: the lanes chore).
+    fn mark_waiting(&mut self, by: Option<&str>) {
+        if let Some(lane) = by.and_then(|b| self.lane_mut(b))
+            && lane.status.live()
+        {
+            lane.status = LaneStatus::Waiting;
+        }
+    }
+
+    /// Each relay still waiting to be passed on that `which` picks (by it and whether Main has
+    /// read it) settles `so`, where it is now.
+    fn settle_relays(&mut self, which: impl Fn(&Relay, bool) -> bool, so: RelayState) {
+        let at = self.items.len();
+        for item in &mut self.items {
+            if let Item::You {
+                to: Some(r), taken, ..
+            } = item
+                && !r.about
+                && r.state == RelayState::Sent
+                && which(r, *taken)
+            {
+                r.state = so.clone();
+                r.settled_at = Some(at);
+            }
+        }
+    }
+
+    /// The lane Main's tool call `call` delivered a relay to (its row says so).
+    pub fn passed_on(&self, call: &str) -> Option<&str> {
+        self.passed_on.get(call).map(String::as_str)
     }
 
     /// Lane `id` ended: its steps stop running and its questions expire.
@@ -865,15 +1027,16 @@ impl Conversation {
     /// The process was ended from here (Force stop, a restart for a change): its subagents
     /// stop, and nothing of theirs runs or waits on (no `process_ended` follows).
     pub fn process_gone(&mut self) {
-        self.stop_lanes();
+        self.stop_lanes(LaneStatus::Stopped);
         self.settle();
     }
 
-    /// The process is gone: every lane still going stops.
-    fn stop_lanes(&mut self) {
+    /// The process is gone: every lane still going ends `so` (Stopped by fuxx, else Ended:
+    /// no report came).
+    fn stop_lanes(&mut self, so: LaneStatus) {
         for lane in &mut self.lanes {
             if lane.status.live() {
-                lane.status = LaneStatus::Stopped;
+                lane.status = so.clone();
             }
         }
     }
@@ -882,7 +1045,7 @@ impl Conversation {
         self.ended = true;
         self.outstanding = 0;
         self.busy = false;
-        self.stop_lanes();
+        self.stop_lanes(LaneStatus::Ended);
         self.settle();
         let tail = stderr_tail.trim();
         let what = match code {
@@ -911,7 +1074,7 @@ impl Conversation {
         self.ended = true;
         self.outstanding = 0;
         self.busy = false;
-        self.stop_lanes();
+        self.stop_lanes(LaneStatus::Stopped);
         self.settle();
         self.items.push(Item::Notice(notice.into()));
     }
@@ -1555,7 +1718,38 @@ mod tests {
             kind: "Explore".into(),
             task: "Find the config loader".into(),
             model: None,
-            controls: LaneControls { stop: true },
+            controls: LaneControls {
+                stop: true,
+                message: true,
+                woken_by_steps: false,
+            },
+        }
+    }
+
+    /// An agy-like lane: woken by its steps.
+    fn started_woken(id: &str, label: &str) -> Event {
+        match started(id, label) {
+            Event::SubagentStarted {
+                id,
+                parent,
+                label,
+                kind,
+                task,
+                model,
+                ..
+            } => Event::SubagentStarted {
+                id,
+                parent,
+                label,
+                kind,
+                task,
+                model,
+                controls: LaneControls {
+                    woken_by_steps: true,
+                    ..LaneControls::default()
+                },
+            },
+            other => other,
         }
     }
 
@@ -1731,7 +1925,21 @@ mod tests {
     }
 
     #[test]
-    fn a_step_after_done_reopens_the_lane() {
+    fn agy_lanes_still_wake_on_steps() {
+        let mut c = Conversation::new();
+        c.apply(started_woken("t1", "Reader"));
+        c.apply(Event::SubagentEnded {
+            id: "t1".into(),
+            end: LaneEnd::Done,
+        });
+        c.apply(sub_tool("r1", "t1"));
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Working);
+    }
+
+    #[test]
+    fn a_late_step_doesnt_reopen_a_claude_lane() {
+        // The stuck lanes (the lanes chore): Claude's steps after the end never revive it;
+        // only its resume does.
         let mut c = Conversation::new();
         c.apply(started("t1", "Reader"));
         c.apply(Event::SubagentEnded {
@@ -1739,7 +1947,228 @@ mod tests {
             end: LaneEnd::Done,
         });
         c.apply(sub_tool("r1", "t1"));
-        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Working);
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Done);
+        // A question after the end doesn't revive it either.
+        c.apply(Event::Permission {
+            id: "p1".into(),
+            tool: "Bash".into(),
+            what: "ls".into(),
+            detail: String::new(),
+            always: None,
+            by: Some("t1".into()),
+        });
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Done);
+    }
+
+    #[test]
+    fn a_resume_reopens_any_ended_lane_and_keeps_its_place() {
+        for end in [
+            LaneEnd::Done,
+            LaneEnd::Failed("no".into()),
+            LaneEnd::Stopped,
+        ] {
+            let mut c = Conversation::new();
+            c.apply(started("a", "Explore"));
+            c.apply(started("b", "Tester"));
+            c.apply(Event::SubagentEnded {
+                id: "a".into(),
+                end: end.clone(),
+            });
+            c.apply(Event::SubagentResumed {
+                id: "a".into(),
+                controls: LaneControls {
+                    stop: true,
+                    message: false,
+                    woken_by_steps: false,
+                },
+                said: Some("Also the docs".into()),
+            });
+            let lane = &c.lanes()[0];
+            assert_eq!(lane.id, "a", "{end:?}: its place");
+            assert_eq!(lane.label, "Explore");
+            assert_eq!(lane.status, LaneStatus::Working, "{end:?}");
+            assert!(!lane.controls.message, "the resume's controls");
+            assert_eq!(lane.runs, 2);
+            // Its old end is a divider in its lane, with what Main said.
+            let divider = c.items().iter().find_map(|i| match i {
+                Item::Resumed {
+                    lane, ended, said, ..
+                } => Some((lane.clone(), ended.clone(), said.clone())),
+                _ => None,
+            });
+            let was = match &end {
+                LaneEnd::Done => LaneStatus::Done,
+                LaneEnd::Failed(w) => LaneStatus::Failed(w.clone()),
+                LaneEnd::Stopped => LaneStatus::Stopped,
+            };
+            assert_eq!(
+                divider,
+                Some(("a".into(), was, Some("Also the docs".into())))
+            );
+        }
+        // An Ended lane (cut off) resumes too.
+        let mut c = Conversation::new();
+        c.past(vec![Past::Event(started("a", "Explore"))]);
+        assert_eq!(c.lane("a").unwrap().status, LaneStatus::Ended);
+        c.apply(Event::SubagentResumed {
+            id: "a".into(),
+            controls: LaneControls::default(),
+            said: None,
+        });
+        assert_eq!(c.lane("a").unwrap().status, LaneStatus::Working);
+    }
+
+    fn relay_of(c: &Conversation) -> Vec<(String, bool, RelayState)> {
+        c.items()
+            .iter()
+            .filter_map(|i| match i {
+                Item::You {
+                    text,
+                    taken,
+                    to: Some(r),
+                    ..
+                } => Some((text.clone(), *taken, r.state.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_relay_counts_as_a_message_to_main() {
+        let mut c = Conversation::new();
+        c.you_as("go".into(), Vec::new(), Some("u1".into()));
+        c.apply(Event::Taken {
+            id: Some("u1".into()),
+        });
+        c.apply(started("t1", "Explore"));
+        c.apply(turn_done());
+        assert_eq!(c.status(), Status::Done);
+        c.relay(
+            "Also the docs".into(),
+            Some("u2".into()),
+            "t1".into(),
+            false,
+        );
+        assert_eq!(c.status(), Status::Working, "waiting on Main's turn");
+        assert_eq!(c.latest_you(), Some(c.items().len() - 1));
+        assert!(c.cancel_unread("u2"), "taken back like any message");
+        assert_eq!(c.status(), Status::Done);
+        c.relay(
+            "Also the docs".into(),
+            Some("u3".into()),
+            "t1".into(),
+            false,
+        );
+        c.apply(Event::Taken {
+            id: Some("u3".into()),
+        });
+        assert_eq!(
+            relay_of(&c),
+            [("Also the docs".into(), true, RelayState::Sent)]
+        );
+        c.apply(Event::PassedOn {
+            call: "toolu_s".into(),
+            lane: "t1".into(),
+        });
+        assert_eq!(relay_of(&c)[0].2, RelayState::Delivered);
+        assert_eq!(c.passed_on("toolu_s"), Some("t1"));
+        c.apply(turn_done());
+        assert_eq!(relay_of(&c)[0].2, RelayState::Delivered, "kept");
+        assert_eq!(c.status(), Status::Done);
+    }
+
+    #[test]
+    fn a_relay_not_passed_on_or_too_late_says_so() {
+        let mut c = Conversation::new();
+        c.apply(started("t1", "Explore"));
+        c.apply(started("t2", "Tester"));
+        c.relay("one".into(), Some("u1".into()), "t1".into(), false);
+        c.relay("two".into(), Some("u2".into()), "t2".into(), false);
+        c.apply(Event::Taken {
+            id: Some("u1".into()),
+        });
+        // Explore finishes before Main passes "one" on; Main's turn ends.
+        c.apply(Event::SubagentEnded {
+            id: "t1".into(),
+            end: LaneEnd::Done,
+        });
+        c.apply(Event::Taken {
+            id: Some("u2".into()),
+        });
+        c.apply(turn_done());
+        let states: Vec<RelayState> = relay_of(&c).into_iter().map(|r| r.2).collect();
+        assert_eq!(states, [RelayState::LaneEnded, RelayState::NotPassed]);
+    }
+
+    #[test]
+    fn a_relay_shows_in_main_and_its_lane() {
+        use crate::agent_lanes::View;
+        let mut c = Conversation::new();
+        c.you("go".into(), Vec::new());
+        c.apply(agent_call("t1"));
+        c.apply(started("t1", "Explore"));
+        c.apply(sub_tool("r1", "t1"));
+        c.relay(
+            "Also the docs".into(),
+            Some("u2".into()),
+            "t1".into(),
+            false,
+        );
+        let relay = c.items().len() - 1;
+        c.apply(sub_tool("r2", "t1"));
+        let lanes = ["t1"];
+        let main = crate::agent_chat::rows_of(c.items(), &View::Main, &lanes);
+        assert!(main.contains(&relay), "your bubble in Main");
+        let lane = crate::agent_chat::rows_of(c.items(), &View::Lane("t1".into()), &lanes);
+        assert_eq!(
+            lane.last(),
+            Some(&relay),
+            "last in its lane while undelivered"
+        );
+        assert_eq!(lane.len(), 3, "r1, r2 and the relay, once");
+        c.apply(Event::PassedOn {
+            call: "s1".into(),
+            lane: "t1".into(),
+        });
+        c.apply(sub_tool("r3", "t1"));
+        let lane = crate::agent_chat::rows_of(c.items(), &View::Lane("t1".into()), &lanes);
+        assert_eq!(
+            lane[lane.len() - 2],
+            relay,
+            "delivered: it stays where it was, r3 after it"
+        );
+        // An about message is Main's only.
+        c.relay("What did it find?".into(), None, "t1".into(), true);
+        let about = c.items().len() - 1;
+        let lane = crate::agent_chat::rows_of(c.items(), &View::Lane("t1".into()), &lanes);
+        assert!(!lane.contains(&about));
+    }
+
+    #[test]
+    fn a_past_relay_is_delivered_or_not_passed() {
+        let mut c = Conversation::new();
+        c.past(vec![
+            Past::Event(started("t1", "Explore")),
+            Past::Relay {
+                text: "one".into(),
+                id: Some("u1".into()),
+                to: "t1".into(),
+                about: false,
+            },
+            Past::Event(Event::PassedOn {
+                call: "s1".into(),
+                lane: "t1".into(),
+            }),
+            Past::Relay {
+                text: "two".into(),
+                id: None,
+                to: "t1".into(),
+                about: false,
+            },
+        ]);
+        let states: Vec<RelayState> = relay_of(&c).into_iter().map(|r| r.2).collect();
+        assert_eq!(states, [RelayState::Delivered, RelayState::NotPassed]);
+        assert!(relay_of(&c).iter().all(|r| r.1), "taken");
     }
 
     #[test]
@@ -1757,7 +2186,14 @@ mod tests {
                 1 => c.paused(),
                 _ => c.paused_with("held"),
             }
-            assert_eq!(c.lane("w").unwrap().status, LaneStatus::Stopped, "{end}");
+            // The agent exiting leaves its lanes without a report (the lanes chore); a pause
+            // fuxx made stops them.
+            let cut = if end == 0 {
+                LaneStatus::Ended
+            } else {
+                LaneStatus::Stopped
+            };
+            assert_eq!(c.lane("w").unwrap().status, cut, "{end}");
             assert_eq!(c.lane("d").unwrap().status, LaneStatus::Done, "{end}");
         }
     }
@@ -1789,11 +2225,13 @@ mod tests {
     }
 
     #[test]
-    fn a_resumed_lane_without_its_result_is_stopped() {
-        // Review 2: the app quit mid-subagent: no result in the transcript.
+    fn a_resumed_lane_without_its_result_is_ended() {
+        // Review 2: the app quit mid-subagent: no result in the transcript. The lanes chore:
+        // it ended without a report (a hollow ring, never a spinner).
         let mut c = Conversation::new();
         c.past(vec![Past::Event(started("t1", "Reader"))]);
-        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Stopped);
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Ended);
+        assert!(!c.lane("t1").unwrap().status.live());
     }
 
     /// Batch 3, chore 2: a message sent under an id keeps it; the agent's echo of that id marks

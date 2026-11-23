@@ -1565,7 +1565,11 @@ pub(super) fn agent_chat_latest_prompt() {
                 kind: "general-purpose".into(),
                 task: "Lint the code in fuxx-cli/src,\n then report".into(),
                 model: None,
-                controls: crate::providers::LaneControls { stop: true },
+                controls: crate::providers::LaneControls {
+                    stop: true,
+                    message: true,
+                    woken_by_steps: false,
+                },
             },
         ];
         events.extend((0..14).map(|i| Event::MessageDone {

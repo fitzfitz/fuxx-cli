@@ -627,7 +627,11 @@ impl AgyTranslator {
                     kind: s(&sub["type_name"]).unwrap_or_default(),
                     task: s(&sub["initial_prompt"]).unwrap_or_default(),
                     model: None,
-                    controls: LaneControls::default(),
+                    // Its transcript's steps are the only sign it woke (the lanes chore).
+                    controls: LaneControls {
+                        woken_by_steps: true,
+                        ..LaneControls::default()
+                    },
                 });
             }
             if done {
@@ -810,7 +814,10 @@ impl Translator for AgyTranslator {
             // Headless agy can't rewind (batch 3, chore 2: `branching` says so), nor take back
             // a message it was given (wave 3: `cancels_queued` says so).
             | Action::RewindFiles { .. }
-            | Action::CancelQueued { .. } => Vec::new(),
+            | Action::CancelQueued { .. }
+            // Main can't pass a message on (`relays_to_subagents` is false): fuxx never asks.
+            | Action::Relay { .. }
+            | Action::About { .. } => Vec::new(),
         }
     }
 }
@@ -910,7 +917,8 @@ mod tests {
         assert_eq!(label, "a.txt Reader", "its role");
         assert_eq!(kind, "research");
         assert!(task.contains("a.txt"));
-        assert_eq!(*controls, LaneControls::default(), "agy offers no control");
+        assert!(!controls.stop && !controls.message, "agy offers no control");
+        assert!(controls.woken_by_steps, "its steps say it woke");
         // Its row: an ordinary tool row, started and finished.
         assert!(
             ev.iter()

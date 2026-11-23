@@ -1242,6 +1242,7 @@ mod tests {
             attachments: Vec::new(),
             id: id.map(str::to_string),
             taken,
+            to: None,
         }
     }
 

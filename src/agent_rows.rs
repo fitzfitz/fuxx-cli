@@ -164,12 +164,26 @@ impl AgentTab {
             // Your message (spec B-B): a bubble in the colours of the box you typed it in, its
             // tail at the bottom right; attachments as chips under the text.
             Item::You {
-                text, attachments, ..
-            } => div()
-                .w_full()
-                .flex()
-                .justify_end()
-                .child(
+                text,
+                attachments,
+                to,
+                taken,
+                ..
+            } => {
+                // A message for a subagent (the lanes chore): in Main a chip names it; in its
+                // lane a caption says where it is, quieter while Main hasn't read it.
+                let in_lane = self.view != crate::agent_lanes::View::Main;
+                let relay_chip = to
+                    .as_ref()
+                    .filter(|_| !in_lane)
+                    .map(|r| self.relay_chip(ix, r, look));
+                let held = in_lane
+                    && to
+                        .as_ref()
+                        .is_some_and(|r| r.state == crate::agent_conversation::RelayState::Sent)
+                    && !taken;
+                let fill = if held { c.queued_fill } else { c.you_fill };
+                let row = div().w_full().flex().justify_end().child(
                     div().w(relative(0.78)).flex().justify_end().child(
                         div()
                             .relative()
@@ -183,7 +197,7 @@ impl AgentTab {
                                         .py(px(9.))
                                         .rounded(px(chat::R_BUBBLE))
                                         .rounded_br(px(chat::R_TAIL))
-                                        .bg(hsla(c.you_fill))
+                                        .bg(hsla(fill))
                                         .border_1()
                                         .border_color(hsla(c.you_edge))
                                         // The rewind pick's message (batch 3, chore 2): a 2 px focus
@@ -198,6 +212,7 @@ impl AgentTab {
                                         .flex()
                                         .flex_col()
                                         .gap(px(6.))
+                                        .children(relay_chip)
                                         .child(self.you_text(ix, text, look))
                                         .when(!attachments.is_empty(), |d| {
                                             d.child(div().flex().flex_wrap().gap(px(6.)).children(
@@ -289,8 +304,26 @@ impl AgentTab {
                             )
                             .children(self.you_actions(ix, item, look)),
                     ),
-                )
-                .into_any_element(),
+                );
+                match to.as_ref().filter(|_| in_lane) {
+                    Some(r) => div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .items_end()
+                        .gap(px(4.))
+                        .child(self.relay_caption(ix, item, r, look))
+                        .child(row)
+                        .into_any_element(),
+                    None => row.into_any_element(),
+                }
+            }
+            Item::Resumed {
+                lane,
+                ended,
+                said,
+                run,
+            } => self.resumed_row(lane, ended, said.as_deref(), *run, look),
             Item::Agent { .. } => {
                 let blocks = self.blocks_at(ix).unwrap_or_default();
                 div()
@@ -619,10 +652,19 @@ impl AgentTab {
             Some(ToolDetail::Diff { unified, .. }) => Some(parse_diff(unified)),
             _ => None,
         };
+        // Main's SendMessage that delivered a relay (the lanes chore): "Passed on to Explore ✓",
+        // opening the lane.
+        let passed = self
+            .conversation
+            .passed_on(id)
+            .and_then(|l| self.conversation.lane(l))
+            .map(|l| (l.id.clone(), format!("Passed on to {} \u{2713}", l.label)));
         let openable = lane.is_some() || crate::agent_tool_modal::openable(items, ix);
-        let (name, summary) = match &lane {
-            Some(l) => (&l.label, &l.task.lines().next().unwrap_or("").to_string()),
-            None => (name, summary),
+        let blank = String::new();
+        let (name, summary) = match (&lane, &passed) {
+            (Some(l), _) => (&l.label, &l.task.lines().next().unwrap_or("").to_string()),
+            (None, Some((_, words))) => (words, &blank),
+            (None, None) => (name, summary),
         };
         let right: (String, Rgb) = if let Some(l) = &lane {
             // While it runs its last tool, then its step count; and its time when known.
@@ -781,10 +823,14 @@ impl AgentTab {
                         .bg(hsla(c.tool_divider)),
                 )
             });
-        // A subagent's row opens its lane (M11ar).
-        if lane.is_some() {
+        // A subagent's row opens its lane (M11ar), as does a relay's passing on.
+        if let Some(lane_id) = lane
+            .as_ref()
+            .map(|l| l.id.clone())
+            .or_else(|| passed.as_ref().map(|(l, _)| l.clone()))
+        {
             let view = look.view.clone();
-            let to = crate::agent_lanes::View::Lane(id.clone());
+            let to = crate::agent_lanes::View::Lane(lane_id);
             return tool
                 .cursor_pointer()
                 .hover(move |s| s.bg(row_hover))

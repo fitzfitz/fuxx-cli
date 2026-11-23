@@ -1,7 +1,7 @@
 //! Subagent lanes for the agent tab's UI (M11ar): which view is shown, the pills' labels, and
 //! stepping between views. Pure and GPUI-free; the lanes themselves are the conversation's.
 
-use crate::agent_conversation::Lane;
+use crate::agent_conversation::{Lane, LaneStatus};
 
 /// What the agent tab's chat shows: the main agent's conversation, or one subagent's.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -64,7 +64,14 @@ pub const MORE_W: f32 = 26.0;
 
 /// Which pills (by index, in order) fit in `avail` with these `widths`, and how many are left
 /// behind "+N". Main (index 0) and the `active` pill always show when anything is hidden.
+#[cfg(test)]
 pub fn fit(widths: &[f32], avail: f32, active: usize) -> (Vec<usize>, usize) {
+    fit_with(widths, avail, active, MORE_W)
+}
+
+/// `fit`, with room for a "+N" pill `more` wide (the lanes chore: it carries a live mark while
+/// a lane runs).
+pub fn fit_with(widths: &[f32], avail: f32, active: usize, more: f32) -> (Vec<usize>, usize) {
     let n = widths.len();
     let total: f32 = widths.iter().sum::<f32>() + PILL_GAP * n.saturating_sub(1) as f32;
     if total <= avail {
@@ -73,7 +80,7 @@ pub fn fit(widths: &[f32], avail: f32, active: usize) -> (Vec<usize>, usize) {
     let room = |shown: &[usize], plus: Option<usize>| {
         let pills: f32 = shown.iter().chain(plus.iter()).map(|&i| widths[i]).sum();
         let count = shown.len() + plus.iter().count();
-        pills + PILL_GAP * count as f32 + MORE_W <= avail
+        pills + PILL_GAP * count as f32 + more <= avail
     };
     let mut shown: Vec<usize> = Vec::new();
     for i in 0..n {
@@ -153,6 +160,103 @@ pub fn follow_every(lane: Option<&Lane>) -> std::time::Duration {
     }
 }
 
+/// What the box shows in a lane's view (the lanes chore, 2026-11-24).
+#[derive(Clone, Debug, PartialEq)]
+pub enum LaneBox {
+    /// The box talks to Main (an agent whose Main can't pass a message on: agy).
+    ToMain,
+    /// Main passes your message on to the lane's subagent; with `images` (which can't be
+    /// passed on) its send is off.
+    Relay { images: bool },
+    /// The closing bar, in place of the box's contents: the lane can't be messaged.
+    Bar(Bar),
+}
+
+/// Why a lane's box is the closing bar.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Bar {
+    /// It runs inside Main's step: Main can't pass a note on until it ends.
+    Foreground,
+    /// It ended so (Done, Failed, Stopped, Ended).
+    Finished(LaneStatus),
+    /// Main's process isn't ready to take a message.
+    NotReady,
+}
+
+/// The box for `lane`'s view: `relays` (the provider passes messages on), Main's process
+/// `ready`, and images waiting in the box. One pure rule, so you can never message a finished
+/// subagent.
+pub fn lane_box(lane: &Lane, relays: bool, ready: bool, images: bool) -> LaneBox {
+    if !relays {
+        return LaneBox::ToMain;
+    }
+    if !lane.status.live() {
+        return LaneBox::Bar(Bar::Finished(lane.status.clone()));
+    }
+    if !lane.controls.message {
+        return LaneBox::Bar(Bar::Foreground);
+    }
+    if !ready {
+        return LaneBox::Bar(Bar::NotReady);
+    }
+    LaneBox::Relay { images }
+}
+
+/// A lane pill's tooltip (the lanes chore): its state and time, its task's first line, whether
+/// you can message it (an agent whose Main `relays`), and "resumed" once it ran again.
+pub fn pill_tip(lane: &Lane, time: Option<std::time::Duration>, relays: bool) -> String {
+    let t = time.map(clock);
+    let state = match (&lane.status, t) {
+        (LaneStatus::Working | LaneStatus::Waiting, Some(t)) => format!("Running {t}"),
+        (LaneStatus::Working | LaneStatus::Waiting, None) => "Running".into(),
+        (LaneStatus::Done, Some(t)) => format!("Done in {t}"),
+        (LaneStatus::Done, None) => "Done".into(),
+        (LaneStatus::Failed(_), _) => "Failed".into(),
+        (LaneStatus::Stopped, Some(t)) => format!("Stopped after {t}"),
+        (LaneStatus::Stopped, None) => "Stopped".into(),
+        (LaneStatus::Ended, _) => "Ended without a report".into(),
+    };
+    let task = lane.task.lines().next().map(str::trim).unwrap_or("");
+    let message = (relays && lane.status.live()).then_some(if lane.controls.message {
+        "you can message it"
+    } else {
+        "working inside Main's step"
+    });
+    [
+        Some(state.as_str()),
+        Some(task),
+        message,
+        (lane.runs > 1).then_some("resumed"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|w| !w.is_empty())
+    .collect::<Vec<_>>()
+    .join(" \u{b7} ")
+}
+
+/// The "+N" pill's tooltip: "18 more · 3 running".
+pub fn more_tip(hidden: usize, running: usize) -> String {
+    match running {
+        0 => format!("{hidden} more"),
+        n => format!("{hidden} more \u{b7} {n} running"),
+    }
+}
+
+/// The "+N" list's rows (`hidden`: lane indexes), as two groups — those `running` when it
+/// opened, then the finished — each newest first.
+pub fn list_groups(
+    lanes: &[Lane],
+    hidden: &[usize],
+    running: &std::collections::HashSet<String>,
+) -> (Vec<usize>, Vec<usize>) {
+    let mut newest: Vec<usize> = hidden.to_vec();
+    newest.sort_unstable_by(|a, b| b.cmp(a));
+    newest
+        .into_iter()
+        .partition(|&i| running.contains(&lanes[i].id))
+}
+
 /// Whether a lane's header offers Stop: it is still going and its agent can stop it alone.
 pub fn shows_stop(lane: &Lane) -> bool {
     lane.controls.stop && lane.status.live()
@@ -176,7 +280,7 @@ pub fn clock(d: std::time::Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_conversation::{Lane, LaneStatus};
+    use crate::agent_conversation::Lane;
     use crate::providers::LaneControls;
     use std::time::{Duration, Instant};
 
@@ -193,6 +297,137 @@ mod tests {
             tools: None,
             last_tool: None,
             controls: LaneControls::default(),
+            runs: 1,
+        }
+    }
+
+    #[test]
+    fn a_pill_s_tooltip_says_its_state_its_task_and_a_resume() {
+        let mut l = lane("a", "Explore");
+        l.task = "Read the test setup\nand report".into();
+        l.controls.message = true;
+        let t = Some(Duration::from_secs(62));
+        assert_eq!(
+            pill_tip(&l, t, true),
+            "Running 1:02 \u{b7} Read the test setup \u{b7} you can message it"
+        );
+        l.controls.message = false;
+        assert_eq!(
+            pill_tip(&l, t, true),
+            "Running 1:02 \u{b7} Read the test setup \u{b7} working inside Main's step"
+        );
+        assert_eq!(
+            pill_tip(&l, t, false),
+            "Running 1:02 \u{b7} Read the test setup",
+            "agy: no message words"
+        );
+        l.status = LaneStatus::Done;
+        let done = Some(Duration::from_secs(93));
+        assert_eq!(
+            pill_tip(&l, done, true),
+            "Done in 1:33 \u{b7} Read the test setup"
+        );
+        l.runs = 2;
+        assert_eq!(
+            pill_tip(&l, done, true),
+            "Done in 1:33 \u{b7} Read the test setup \u{b7} resumed"
+        );
+        l.runs = 1;
+        l.status = LaneStatus::Failed("no such file".into());
+        assert_eq!(
+            pill_tip(&l, done, true),
+            "Failed \u{b7} Read the test setup"
+        );
+        l.status = LaneStatus::Stopped;
+        assert_eq!(
+            pill_tip(&l, Some(Duration::from_secs(48)), true),
+            "Stopped after 0:48 \u{b7} Read the test setup"
+        );
+        l.status = LaneStatus::Ended;
+        assert_eq!(
+            pill_tip(&l, None, true),
+            "Ended without a report \u{b7} Read the test setup"
+        );
+        assert_eq!(more_tip(18, 3), "18 more \u{b7} 3 running");
+        assert_eq!(more_tip(2, 0), "2 more");
+    }
+
+    #[test]
+    fn the_more_list_groups_running_then_finished_newest_first() {
+        let lanes = [
+            lane("a", "A"),
+            lane("b", "B"),
+            lane("c", "C"),
+            lane("d", "D"),
+        ];
+        let running: std::collections::HashSet<String> = ["a".to_string(), "c".to_string()].into();
+        let (live, done) = list_groups(&lanes, &[0, 1, 2, 3], &running);
+        assert_eq!(live, [2, 0], "running, newest first");
+        assert_eq!(done, [3, 1], "finished, newest first");
+        // All running: one group (no headers).
+        let all: std::collections::HashSet<String> = lanes.iter().map(|l| l.id.clone()).collect();
+        let (live, done) = list_groups(&lanes, &[1, 3], &all);
+        assert_eq!((live, done), (vec![3, 1], vec![]));
+    }
+
+    #[test]
+    fn lane_box_states() {
+        let mut bg = lane("a", "Explore");
+        bg.controls = LaneControls {
+            stop: true,
+            message: true,
+            woken_by_steps: false,
+        };
+        // agy (no relay): the box talks to Main, whatever the lane.
+        assert_eq!(lane_box(&bg, false, true, false), LaneBox::ToMain);
+        let mut agy_done = bg.clone();
+        agy_done.status = LaneStatus::Done;
+        assert_eq!(lane_box(&agy_done, false, true, false), LaneBox::ToMain);
+        // Claude, live, in the background, ready: a relay.
+        assert_eq!(
+            lane_box(&bg, true, true, false),
+            LaneBox::Relay { images: false }
+        );
+        let mut waiting = bg.clone();
+        waiting.status = LaneStatus::Waiting;
+        assert_eq!(
+            lane_box(&waiting, true, true, false),
+            LaneBox::Relay { images: false }
+        );
+        // Images can't be passed on: the relay box, its send off.
+        assert_eq!(
+            lane_box(&bg, true, true, true),
+            LaneBox::Relay { images: true }
+        );
+        // Not ready.
+        assert_eq!(
+            lane_box(&bg, true, false, false),
+            LaneBox::Bar(Bar::NotReady)
+        );
+        // Live in the foreground: inside Main's step.
+        let mut fg = bg.clone();
+        fg.controls.message = false;
+        assert_eq!(
+            lane_box(&fg, true, true, false),
+            LaneBox::Bar(Bar::Foreground)
+        );
+        // Finished, however: the closing bar.
+        for status in [
+            LaneStatus::Done,
+            LaneStatus::Failed("no such file".into()),
+            LaneStatus::Stopped,
+            LaneStatus::Ended,
+        ] {
+            let mut done = bg.clone();
+            done.status = status.clone();
+            assert_eq!(
+                lane_box(&done, true, true, false),
+                LaneBox::Bar(Bar::Finished(status.clone()))
+            );
+            assert_eq!(
+                lane_box(&done, true, false, true),
+                LaneBox::Bar(Bar::Finished(status))
+            );
         }
     }
 
@@ -209,6 +444,10 @@ mod tests {
         assert!(shown.contains(&3) && shown.contains(&0), "{shown:?}");
         assert_eq!(hidden, 1);
         assert_eq!(fit(&[], 100.0, 0), (vec![], 0));
+        // A wider "+N" (its live mark: the lanes chore) leaves room for one pill fewer.
+        let (shown, hidden) = fit_with(&widths, 210.0, 0, MORE_W + 17.0);
+        assert_eq!(shown, [0, 1], "{shown:?}");
+        assert_eq!(hidden, 2);
     }
 
     #[test]

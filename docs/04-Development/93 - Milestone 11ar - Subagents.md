@@ -30,8 +30,11 @@ entirely, so you can't see who is doing what.
 
 ## Not in it (and why)
 
-- Typing to a subagent, a box per subagent, per-subagent model or mode (neither agent lets the host talk to a
-  subagent; you talk to Main).
+- A box per subagent, per-subagent model or mode (you talk to Main). **Typing to a subagent moved into scope on
+  2026-11-24** (your words: "Why I cannot send a message to a currently running subagent?" … "yes do both. also make
+  sure I cannot send a message when subagent is done"): Claude's Main passes your message on with SendMessage (a
+  relay) to a subagent running in the background; a finished one can't be messaged (the closing bar). See "The
+  lanes chore" under "Chores after M11ar". agy still can't (its Main has no way in).
 - Stopping one agy subagent (agy has no way for the host to do it; Stop stops the whole turn, as today).
 - Answering agy subagents' questions (agy's headless mode skips them).
 - agy swarms (`/swarm`, a preview), split view, auto-switching, toasts or sidebar badges for subagents, closing,
@@ -860,3 +863,47 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   declares_its_own_scenes` (ui-shots tests) failed at HEAD because `agent_ask.rs` declares its scenes through
   `visual("…")` / `state("…")`, wrapped by rustfmt. It now also accepts a helper call with the name first, whitespace
   ignored. `cargo test --bin fuxx --features ui-shots`: 2733 passed.
+- **The lanes chore: the resume fix** (2026-11-24; the Lead Architect's binary research, Claude Code 2.1.330/2.1.331,
+  no recording): a subagent Main resumed with SendMessage (or a wake) re-sends `task_started` for the same task, its
+  `tool_use_id` the SendMessage call's. fuxx opened "Explore 2" for it, and the original lane — revived by its late
+  steps and never ended — spun forever. Lanes are now keyed by task: the same task again is
+  `Event::SubagentResumed` (its lane keeps its place and label, its clock starts again, what Main said shows "from
+  Main" after a divider "✓ Done in 1:33 · resumed by Main"; the header's time is this run's, its tooltip "This run …
+  · first run …"; the pill's mark goes back to the arc with one flash and its tooltip adds "· resumed"). Steps under
+  the resuming call land in the lane (`aliases`). A step after the end no longer reopens a Claude lane
+  (`LaneControls::woken_by_steps`: agy's lanes still wake on steps), and an ask only marks a live lane Waiting. A
+  lane whose source stops with no end (the agent exited, a history cut off) is **Ended**: a hollow ring, "ended
+  without a report", never a spinner. Synthetic fixture `claude-subagent-resume.jsonl` (marked so).
+- **The lanes chore: the relay** (your ask above): in a Claude subagent running in the background the box says
+  "To Explore · via Main" (a pill first in its folder tab, with the lane's own mark) and "Message Explore — Main
+  passes it on". Enter sends Main your words framed (`claude::relay_frame`: pass it to the subagent named by its
+  agent id with SendMessage, word for word; if it finished, don't resume it, say so) and keeps you in the lane. It is
+  a message to Main in every way (its id, its echo, the count, × while unread). In the lane your bubble's caption
+  says where it is: held, "Main is passing it on…", "delivered ✓" (Main's SendMessage to it seen; the pill flashes),
+  "Main didn't pass this on" (Send again), or "Explore had finished" (Ask Main instead). In Main it is led by
+  "→ Explore", and Main's SendMessage row reads "Passed on to Explore ✓"; the frame is never shown, history included
+  (`transcript_events` reads it back). `agent_lanes::lane_box` decides, one pure rule: agy → the box to Main as
+  before; Claude live in the background and ready → relay (an image turns its send off: "Images can't be passed on:
+  send them to Main"); in the foreground, finished or not ready → the closing bar. `Provider::relays_to_subagents`
+  (Claude only); the frames live in `providers/claude.rs`.
+- **The lanes chore: the closing bar** (the Lead UI/UX Designer's pick over hiding or disabling the box): a finished
+  lane's box (and a live one inside Main's step) keeps its exact height but shows, in the UI font, the lane's end
+  ("Explore finished in 1:33", "failed · reason", "was stopped after 0:48", "ended without a report", "is working
+  inside Main's step · messages reach it only in the background"), then "Ask Main about it", "or start typing" and
+  "Back to Main ⏎", the notch a Back circle. ⏎ goes Back to Main; typing, a paste or ↑ turns it into the box in place
+  ("To Main · about Explore", "Ask Main about Explore's result…"), and sending switches to Main with an "About
+  Explore" chip, Main told not to resume it (`claude::about_frame`); ⌫ in the empty box brings the bar back. A lane
+  finishing while you type to it never swaps the box: its pill retargets to "about" and flashes, and an Enter within
+  600 ms only flashes again. The list's end row lost its "Back to Main ›". The pill row's tooltips say each state
+  ("Running 1:02 · task · you can message it", "Done in 1:33 · …"); "+N" carries a live mark (tinted when one waits)
+  and "18 more · 3 running"; its list groups Running and Finished, each newest first, and keeps a finishing lane's
+  row until it opens again. New tokens `bar_*` and `relay_*`, held to the floors in every theme. Scenes
+  `agent-lanes-resumed`, `-relay`, `-relay-narrow`, `-closing-bar` (and `-failed`, `-stopped`, `-ended`,
+  `-foreground`), `-bar-narrow`, `-bar-typing`, `-bar-about`, `-finish-mid-draft`, `-list-grouped`,
+  `-relay-history`; `agent-lanes-narrow` re-recorded (its Claude lane relays and stays).
+  - **AI's calls:** the closing bar's not-ready words ("is working · you can message it once Main is ready") and the
+    live "about" placeholder ("Ask Main about Explore…") and frame ("which is still working inside your current
+    step") aren't in the spec; agy's lane keeps "Message Main — it can pass this to …" (the spec's ToMain); a
+    relay's other attachments go in its text, images can't; a message for a lane held while Main restarts waits as
+    any message does; the pills' width estimate is 7 pt a character (6.6 ran short once "+N" grew its mark).
+  - **On screen:** not yet seen in the real window (see the Progress Log).

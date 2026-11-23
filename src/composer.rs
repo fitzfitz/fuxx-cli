@@ -91,6 +91,8 @@ pub enum ComposerEvent {
     /// A right-click, ⌃-click or ⇧F10 (batch 3, chore 4): fuxx's menu at window point `at`;
     /// `has_sel`: something is selected in the box (Cut and Copy apply).
     ContextMenu { at: Point<Pixels>, has_sel: bool },
+    /// ⌫ with nothing in the box.
+    BackspaceEmpty,
 }
 
 /// A character that goes on a word or a path (`src/main.rs`, `~/code`).
@@ -920,8 +922,17 @@ impl Composer {
         }
     }
 
+    /// ⌫: the character (or atom, or selection) before the caret; in an empty box it says so
+    /// instead (the lanes chore: an opened closing bar closes again).
+    fn backspace(&mut self, _: &Backspace, _: &mut Window, cx: &mut Context<Self>) {
+        if self.buf.text().is_empty() {
+            cx.emit(ComposerEvent::BackspaceEmpty);
+            return;
+        }
+        self.step(|b| b.backspace(), cx);
+    }
+
     steps! {
-        backspace: Backspace => |b| b.backspace();
         delete: Delete => |b| b.delete();
         clear: Clear => |b| b.delete_to_line_start();
         delete_word_left: DeleteWordLeft => |b| b.delete_word_left();

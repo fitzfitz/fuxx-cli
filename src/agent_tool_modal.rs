@@ -198,6 +198,8 @@ pub fn shows_output(
 pub fn parent_of(item: &Item) -> Option<&str> {
     match item {
         Item::Agent { parent, .. } | Item::Tool { parent, .. } => parent.as_deref(),
+        // A resume's divider is its lane's (the lanes chore).
+        Item::Resumed { lane, .. } => Some(lane),
         _ => None,
     }
 }

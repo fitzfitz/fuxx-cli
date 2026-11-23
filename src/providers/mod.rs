@@ -393,6 +393,11 @@ pub trait Provider: Sync {
     fn edit_tip(&self) -> Option<&'static str> {
         None
     }
+    /// Whether Main can pass your message to a running subagent (`Action::Relay`; the lanes
+    /// chore). Default: it can't (the box in a lane talks to Main).
+    fn relays_to_subagents(&self) -> bool {
+        false
+    }
 }
 
 pub trait Translator: Send {
@@ -409,12 +414,20 @@ pub trait Translator: Send {
     }
 }
 
-/// What the host can do to one subagent, as its agent says when it starts (M11ar). More
-/// controls (message it, resume it) join here as the agents allow them.
+/// What the host can do to one subagent, and how its agent tells of it, as the agent says when
+/// it starts (M11ar; the lanes chore, 2026-11-24).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LaneControls {
     /// Stop this subagent alone (`Action::StopSubagent`).
     pub stop: bool,
+    /// A message can reach it while it runs (`Action::Relay`, through Main): Claude's
+    /// background subagents. A foreground one runs inside Main's step: Main can't pass a note
+    /// on until it ends.
+    pub message: bool,
+    /// A step under it after its end means it works again (agy's woken subagents, whose
+    /// transcript is the only sign). Claude says a resume itself (`Event::SubagentResumed`):
+    /// a late step never reopens its lane.
+    pub woken_by_steps: bool,
 }
 
 /// How a subagent ended.
@@ -429,7 +442,18 @@ pub enum LaneEnd {
 /// agent's record, when it has one: batch 3, chore 2), or an event of the agent's.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Past {
-    You { text: String, id: Option<String> },
+    You {
+        text: String,
+        id: Option<String>,
+    },
+    /// A message of yours fuxx asked Main to pass to subagent `to` (a lane), or (`about`) to
+    /// answer about it; `text` is your words, never the frame round them (the lanes chore).
+    Relay {
+        text: String,
+        id: Option<String>,
+        to: String,
+        about: bool,
+    },
     Event(Event),
 }
 
@@ -551,6 +575,20 @@ pub enum Event {
     SubagentEnded {
         id: String,
         end: LaneEnd,
+    },
+    /// Subagent `id` (a lane that started before) runs again (the lanes chore: Claude re-sends
+    /// `task_started` for the same task when Main's SendMessage resumes it, or it wakes):
+    /// its lane goes on, with `controls` as they are now and what Main `said` to it.
+    SubagentResumed {
+        id: String,
+        controls: LaneControls,
+        said: Option<String>,
+    },
+    /// Main's tool call `call` sent subagent `lane` a message (Claude's SendMessage): a
+    /// relay to it is delivered.
+    PassedOn {
+        call: String,
+        lane: String,
     },
     /// The agent read one of your messages (Claude's `--replay-user-messages` echo): in the
     /// turn running, or starting its own. `id`: the message's (`Action::Send`'s), when it says.
@@ -776,6 +814,24 @@ pub enum Action {
     /// Stop subagent `lane` alone (a lane whose `controls.stop` is on).
     StopSubagent {
         lane: String,
+    },
+    /// Your `text` for subagent `lane` (called `label`), sent to Main to pass on word for word
+    /// (a provider that `relays_to_subagents`; the lanes chore): a message to Main in every
+    /// other way (`id` as `Send`'s). Only the translator knows the lane's agent id.
+    Relay {
+        lane: String,
+        label: String,
+        text: String,
+        id: Option<String>,
+    },
+    /// Your `text` to Main about subagent `lane` (called `label`), which it must not resume:
+    /// finished, or (`live`) working inside Main's step.
+    About {
+        lane: String,
+        label: String,
+        text: String,
+        id: Option<String>,
+        live: bool,
     },
     /// Live changes (`Applies::Live`); a provider that can't take one writes nothing.
     SetModel {

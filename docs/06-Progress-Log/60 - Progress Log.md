@@ -37,6 +37,24 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-24 — Subagent lanes: the resume fix, the relay, the closing bar
+
+- **What:** three bullets under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]] ("The lanes chore"), and
+  "Typing to a subagent" moved from "Not in it" into scope on your word (2026-11-24: "Why I cannot send a message to
+  a currently running subagent?" … "yes do both. also make sure I cannot send a message when subagent is done").
+  The stuck lanes: a subagent Main resumed opened "… 2" and left the first spinning; lanes are now keyed by task, a
+  resume reopens its own lane, late steps never revive a Claude lane, and a lane cut off reads Ended. The relay:
+  in a background Claude subagent the box passes your message on through Main (framed, by its agent id) and you stay
+  in the lane, its caption saying held / passing / delivered / not passed on / too late. The closing bar: a finished
+  (or foreground) lane's box becomes a bar of the same height — Back to Main on ⏎, Ask Main about it, or type — so a
+  finished subagent can never be messaged. Pill tooltips per state, "+N" live and grouped.
+- **Checks:** 2683 → 2705 tests (`--features ui-shots`: 2733 → 2755); clippy 14/29 and 18/33 (unchanged, none on a
+  changed line); `cargo fmt --check` clean. Full `scripts/ui-shots.sh`: 341 passed, 0 failed (14 new scenes,
+  `agent-lanes-narrow` re-recorded; the lanes scenes are state scenes, so no references to refresh); fingerprints
+  693 same, 27 look different, 0 differ in size, 0 without a reference — the same 27 as before (shot at `d026805`
+  too: the same shots, the same scores). Synthetic resume fixture until a recording exists.
+- **Not yet seen in the real window.**
+
 ### 2026-11-23 — Screenshots the same on any display
 
 - **What:** the last open ("go fix the all the opens"), under "Opens fixed (2026-11-23)" in

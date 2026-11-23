@@ -285,6 +285,11 @@ impl Provider for Claude {
 
     /// A message not read yet goes back with `cancel_async_message` (Claude Code 2.1.330's
     /// print mode; batch 3, wave 3).
+    /// Main passes your message on with SendMessage (the lanes chore, 2026-11-24).
+    fn relays_to_subagents(&self) -> bool {
+        true
+    }
+
     fn cancels_queued(&self) -> bool {
         true
     }
@@ -597,10 +602,14 @@ pub fn transcript_path(home: &Path, cwd: &Path, id: &str) -> PathBuf {
 /// itself (`isMeta`), a sub-agent's own thread (`isSidechain`) and every other kind of line
 /// (attachments, request records, costs) are skipped, as is anything that isn't JSON.
 pub fn transcript_events(text: &str) -> Vec<Past> {
-    let translator = ClaudeTranslator::default();
+    let mut translator = ClaudeTranslator::default();
     let mut out = Vec::new();
     // Past subagents (M11ar): each Agent call is a lane, ended by its result.
     let mut agents: HashSet<String> = HashSet::new();
+    // The lanes chore: each past lane by its agent id (its result names it) and by its label,
+    // so a past relay names its lane.
+    let mut agent_lanes: HashMap<String, String> = HashMap::new();
+    let mut label_lanes: HashMap<String, String> = HashMap::new();
     // Past questions (batch 3, chore 8), by their call's id: their result is their reply.
     let mut asked: HashMap<String, Vec<Question>> = HashMap::new();
     for line in text.lines() {
@@ -656,6 +665,11 @@ pub fn transcript_events(text: &str) -> Vec<Past> {
                         if let Some(id) = r["tool_use_id"].as_str()
                             && agents.remove(id)
                         {
+                            if let Some(agent) =
+                                agent_id_of(&result_text(&r["content"]), &v["toolUseResult"])
+                            {
+                                agent_lanes.insert(agent, id.to_string());
+                            }
                             let end = if r["is_error"] == true {
                                 LaneEnd::Failed("It failed".into())
                             } else {
@@ -667,6 +681,27 @@ pub fn transcript_events(text: &str) -> Vec<Past> {
                             }));
                         }
                     }
+                } else if let Some(relayed) = said_text(content).as_deref().and_then(relay_parse) {
+                    // A relay (the lanes chore): your words, to its lane; one whose lane isn't
+                    // known is a plain message of yours.
+                    let id = s(&v["uuid"]);
+                    let lane = relayed
+                        .agent
+                        .as_ref()
+                        .and_then(|a| agent_lanes.get(a))
+                        .or_else(|| label_lanes.get(&relayed.label));
+                    out.push(match lane {
+                        Some(to) => Past::Relay {
+                            text: relayed.text,
+                            id,
+                            to: to.clone(),
+                            about: relayed.about,
+                        },
+                        None => Past::You {
+                            text: relayed.text,
+                            id,
+                        },
+                    });
                 } else if let Some(past) = said_text(content)
                     .as_deref()
                     .and_then(|t| user_said(t, s(&v["uuid"])))
@@ -686,7 +721,22 @@ pub fn transcript_events(text: &str) -> Vec<Past> {
                     match b["name"].as_str() {
                         Some("Agent" | "Task") => {
                             agents.insert(id.to_string());
-                            out.push(Past::Event(past_lane(id, &b["input"])));
+                            let lane = past_lane(id, &b["input"]);
+                            if let Event::SubagentStarted { label, .. } = &lane {
+                                label_lanes.insert(label.clone(), id.to_string());
+                            }
+                            out.push(Past::Event(lane));
+                        }
+                        // Main messaged a past lane: a relay to it was delivered.
+                        Some(SEND_TOOL) if v["parent_tool_use_id"].is_null() => {
+                            let to = b["input"]["to"].as_str().unwrap_or_default();
+                            if let Some(lane) = agent_lanes.get(to).or_else(|| label_lanes.get(to))
+                            {
+                                out.push(Past::Event(Event::PassedOn {
+                                    call: id.to_string(),
+                                    lane: lane.clone(),
+                                }));
+                            }
                         }
                         // A past question (batch 3, chore 8): replayed, never left open (its
                         // result answers it; the history's settling expires the rest).
@@ -766,6 +816,97 @@ fn user_said(text: &str, id: Option<String>) -> Option<Past> {
     })
 }
 
+/// The start of a relay (the lanes chore, 2026-11-24): your message for a subagent, sent to
+/// Main to pass on (Claude has no way in to a subagent from stream-json but Main's SendMessage).
+const RELAY_TAG: &str = "[fuxx relay] ";
+/// The start of a message to Main about a subagent it must not resume.
+const ABOUT_TAG: &str = "[fuxx about] ";
+
+/// A subagent's label as a frame names it: `"` as `'`, on one line, at most 60 characters.
+fn frame_label(label: &str) -> String {
+    label
+        .replace('"', "'")
+        .replace(['\r', '\n'], " ")
+        .chars()
+        .take(60)
+        .collect()
+}
+
+/// The text Main gets for a relay of `text` to subagent `label` (`agent`: its agent id, when
+/// known; else the frame names it by label alone).
+pub fn relay_frame(label: &str, agent: Option<&str>, text: &str) -> String {
+    let to = agent.map_or(String::new(), |a| format!(" (to: \"{a}\")"));
+    format!(
+        "{RELAY_TAG}Pass the message below to your subagent \"{}\" with SendMessage{to}, word \
+         for word. Don't act on it yourself. If that subagent has finished, don't resume it: \
+         tell me instead.\n\n{text}",
+        frame_label(label)
+    )
+}
+
+/// The text Main gets for your `text` about subagent `label`: finished, or (`live`) working
+/// inside Main's own step; either way not to be resumed.
+pub fn about_frame(label: &str, agent: Option<&str>, text: &str, live: bool) -> String {
+    let id = agent.map_or(String::new(), |a| format!(" ({a})"));
+    let state = if live {
+        "which is still working inside your current step"
+    } else {
+        "which has finished \u{2014} don't resume it"
+    };
+    format!(
+        "{ABOUT_TAG}About your subagent \"{}\"{id}, {state}.\n\n{text}",
+        frame_label(label)
+    )
+}
+
+/// A relay or about frame read back (`relay_parse`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Relayed {
+    pub label: String,
+    pub agent: Option<String>,
+    pub text: String,
+    pub about: bool,
+}
+
+/// `relay_frame` or `about_frame` reversed: the label, the agent id it names, your words.
+pub fn relay_parse(frame: &str) -> Option<Relayed> {
+    let (about, rest) = match frame.strip_prefix(RELAY_TAG) {
+        Some(rest) => (false, rest),
+        None => (true, frame.strip_prefix(ABOUT_TAG)?),
+    };
+    let (head, text) = rest.split_once("\n\n")?;
+    let after = head.split_once("subagent \"")?.1;
+    let (label, tail) = after.split_once('"')?;
+    let agent = if about {
+        tail.strip_prefix(" (")
+            .and_then(|t| t.split_once(')'))
+            .map(|(a, _)| a.to_string())
+    } else {
+        tail.split_once("(to: \"")
+            .and_then(|(_, t)| t.split_once('"'))
+            .map(|(a, _)| a.to_string())
+    };
+    Some(Relayed {
+        label: label.to_string(),
+        agent,
+        text: text.to_string(),
+        about,
+    })
+}
+
+/// The agent id an Agent call's result names ("agentId: X", else its record's `agentId`).
+fn agent_id_of(result_text: &str, record: &Value) -> Option<String> {
+    result_text
+        .split_once("agentId: ")
+        .map(|(_, rest)| {
+            rest.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect::<String>()
+        })
+        .filter(|a| !a.is_empty())
+        .or_else(|| s(&record["agentId"]))
+}
+
 #[derive(Default)]
 struct ClaudeTranslator {
     /// Open permission requests by request id: the tool input and the suggestions to send back.
@@ -792,6 +933,14 @@ struct ClaudeTranslator {
     tasks: HashMap<String, String>,
     /// The foreground subagents still going (a background one may outlive the turn).
     foreground: HashSet<String>,
+    /// The lanes chore: a resuming call's id (Main's SendMessage, or a wake's) → the lane it
+    /// resumed, for steps that name it as their parent.
+    aliases: HashMap<String, String>,
+    /// Main's SendMessage calls by id: what each said (a resume's `said`).
+    sends: HashMap<String, String>,
+    /// Each lane by the names SendMessage may give it (`to`: its agent id is its task id, in
+    /// `lanes`; else its name).
+    names: HashMap<String, String>,
 }
 
 /// Claude's own subagent types: a description names one of these better than its type does.
@@ -933,6 +1082,8 @@ fn tool_texts(name: &str, input: &Value) -> Vec<EditText> {
 
 /// Claude's tool that asks you to choose (batch 3, chore 8).
 const ASK_TOOL: &str = "AskUserQuestion";
+/// Main's tool for messaging a subagent (resuming a finished one).
+const SEND_TOOL: &str = "SendMessage";
 /// What a skipped question tells Claude.
 const SKIPPED: &str = "The user skipped these questions.";
 
@@ -1357,6 +1508,17 @@ fn content(text: &str, images: &[Picture]) -> Value {
     Value::Array(blocks)
 }
 
+/// A message of yours as Claude reads it on stdin; `id`: fuxx's id for it (batch 3, chore 2:
+/// the echo and the transcript carry it).
+fn user_line(text: &str, images: &[Picture], id: Option<&str>) -> String {
+    let mut line = json!({"type": "user",
+        "message": {"role": "user", "content": content(text, images)}});
+    if let Some(id) = id {
+        line["uuid"] = json!(id);
+    }
+    line.to_string()
+}
+
 fn control_response(request_id: &str, response: Value) -> String {
     json!({"type": "control_response",
         "response": {"subtype": "success", "request_id": request_id, "response": response}})
@@ -1469,9 +1631,19 @@ impl ClaudeTranslator {
         }
     }
 
-    fn assistant(&self, v: &Value) -> Vec<Event> {
+    /// A step's parent: the tool call it names, or the lane that call resumed (the lanes chore).
+    fn parent_of(&self, v: &Value) -> Option<String> {
+        s(&v["parent_tool_use_id"]).map(|p| self.aliases.get(&p).cloned().unwrap_or(p))
+    }
+
+    /// The lane SendMessage's `to` names: its agent id (the task's), else its name.
+    fn lane_named(&self, to: &str) -> Option<String> {
+        self.lanes.get(to).or_else(|| self.names.get(to)).cloned()
+    }
+
+    fn assistant(&mut self, v: &Value) -> Vec<Event> {
         let message = s(&v["message"]["id"]).unwrap_or_default();
-        let parent = s(&v["parent_tool_use_id"]);
+        let parent = self.parent_of(v);
         let mut out = Vec::new();
         // Each main-thread call says how much context it read: the meter moves during the turn.
         // (A sub-agent's calls run in their own context.)
@@ -1504,8 +1676,19 @@ impl ClaudeTranslator {
                     } else if name == ASK_TOOL {
                         // Its card is the question (`can_use_tool`), never a tool row.
                     } else {
+                        let id = s(&item["id"]).unwrap_or_default();
+                        // Main messaging a subagent (the lanes chore): what it said is a
+                        // resume's `said`, and a relay to that lane is delivered.
+                        let passed = (name == SEND_TOOL && parent.is_none())
+                            .then(|| {
+                                if let Some(said) = s(&input["message"]) {
+                                    self.sends.insert(id.clone(), said);
+                                }
+                                input["to"].as_str().and_then(|to| self.lane_named(to))
+                            })
+                            .flatten();
                         out.push(Event::ToolStarted {
-                            id: s(&item["id"]).unwrap_or_default(),
+                            id: id.clone(),
                             summary: tool_summary(&name, input),
                             detail: tool_detail(&name, input),
                             writes: tool_writes(&name, input),
@@ -1513,6 +1696,9 @@ impl ClaudeTranslator {
                             parent: parent.clone(),
                             name,
                         });
+                        if let Some(lane) = passed {
+                            out.push(Event::PassedOn { call: id, lane });
+                        }
                     }
                 }
                 _ => {}
@@ -1563,24 +1749,56 @@ impl ClaudeTranslator {
             // Subagents (M11ar): a `local_agent` task is one (a subagent's own Bash is a
             // `local_bash` task: not a lane).
             Some("task_started") if v["task_type"] == "local_agent" => {
-                let (Some(task), Some(lane)) = (s(&v["task_id"]), s(&v["tool_use_id"])) else {
+                let (Some(task), Some(call)) = (s(&v["task_id"]), s(&v["tool_use_id"])) else {
                     return Vec::new();
                 };
+                let background = v["is_backgrounded"] == true;
+                let controls = LaneControls {
+                    stop: true,
+                    message: background,
+                    woken_by_steps: false,
+                };
+                // The same task again (the lanes chore): Main's SendMessage resumed it (or it
+                // woke). Its lane goes on; the resuming call's steps are its steps.
+                if let Some(lane) = self.lanes.get(&task).cloned() {
+                    if call != lane {
+                        self.aliases.insert(call.clone(), lane.clone());
+                    }
+                    if background {
+                        self.foreground.remove(&lane);
+                    } else {
+                        self.foreground.insert(lane.clone());
+                    }
+                    // What Main's SendMessage said (else the run's prompt); a wake, under the
+                    // first call's id, says nothing new.
+                    let said = self
+                        .sends
+                        .remove(&call)
+                        .or_else(|| s(&v["prompt"]).filter(|_| call != lane));
+                    return vec![Event::SubagentResumed {
+                        id: lane,
+                        controls,
+                        said,
+                    }];
+                }
+                let lane = call;
                 self.lanes.insert(task.clone(), lane.clone());
                 self.tasks.insert(lane.clone(), task);
-                if v["is_backgrounded"] != true {
+                if !background {
                     self.foreground.insert(lane.clone());
                 }
                 let kind = s(&v["subagent_type"]).unwrap_or_default();
                 let description = s(&v["description"]).unwrap_or_default();
+                let label = lane_label(&kind, &description);
+                self.names.insert(label.clone(), lane.clone());
                 vec![Event::SubagentStarted {
                     id: lane,
                     parent: s(&v["parent_task_id"]).and_then(|p| self.lanes.get(&p).cloned()),
-                    label: lane_label(&kind, &description),
+                    label,
                     kind,
                     task: s(&v["prompt"]).unwrap_or(description),
                     model: None,
-                    controls: LaneControls { stop: true },
+                    controls,
                 }]
             }
             Some("task_progress") => match s(&v["task_id"]).and_then(|t| self.lanes.get(&t)) {
@@ -1639,7 +1857,7 @@ impl ClaudeTranslator {
         vec![Event::TextDelta {
             message: s(&v["api_message_id"]).unwrap_or_default(),
             text: s(&delta["text"]).unwrap_or_default(),
-            parent: s(&v["parent_tool_use_id"]),
+            parent: self.parent_of(v),
         }]
     }
 
@@ -1856,14 +2074,27 @@ impl Translator for ClaudeTranslator {
                 ],
                 None => Vec::new(),
             },
-            Action::Send { text, images, id } => {
-                let mut line = json!({"type": "user",
-                    "message": {"role": "user", "content": content(text, images)}});
-                // fuxx's id for it (batch 3, chore 2): the echo and the transcript carry it.
-                if let Some(id) = id {
-                    line["uuid"] = json!(id);
-                }
-                vec![line.to_string()]
+            Action::Send { text, images, id } => vec![user_line(text, images, id.as_deref())],
+            // The lanes chore: a message to Main, framed; the lane's agent id is its task's.
+            Action::Relay {
+                lane,
+                label,
+                text,
+                id,
+            } => {
+                let wire = relay_frame(label, self.tasks.get(lane).map(String::as_str), text);
+                vec![user_line(&wire, &[], id.as_deref())]
+            }
+            Action::About {
+                lane,
+                label,
+                text,
+                id,
+                live,
+            } => {
+                let agent = self.tasks.get(lane).map(String::as_str);
+                let wire = about_frame(label, agent, text, *live);
+                vec![user_line(&wire, &[], id.as_deref())]
             }
             Action::RewindFiles { message, dry_run } => {
                 self.sets += 1;
@@ -2164,6 +2395,331 @@ mod tests {
             })
             .collect();
         assert_eq!(ended, ["toolu_f"]);
+    }
+
+    // ---- The lanes chore (2026-11-24): resume, relay ----
+
+    const SUB_RESUME: &str = include_str!("fixtures/claude-subagent-resume.jsonl");
+
+    #[test]
+    fn the_resume_fixture_says_it_is_synthetic() {
+        assert!(
+            lines_of(SUB_RESUME)[0]["synthetic"] == true,
+            "marked synthetic until recorded"
+        );
+    }
+
+    #[test]
+    fn a_resumed_subagent_goes_on_in_its_own_lane() {
+        use crate::agent_conversation::LaneStatus;
+        let ev = decode_all(&CLAUDE, SUB_RESUME);
+        assert_eq!(
+            started_of(&ev).len(),
+            1,
+            "one start: the second is a resume"
+        );
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, Event::SubagentResumed { id, said, .. }
+                if id == "toolu_agent1"
+                    && said.as_deref() == Some("Also read the fixtures folder"))),
+            "the resume names the first lane and what Main said"
+        );
+        let c = conversation_of(SUB_RESUME);
+        assert_eq!(c.lanes().len(), 1, "no \u{201c}Explore 2\u{201d}");
+        assert_eq!(c.lanes()[0].status, LaneStatus::Done);
+        assert_eq!(c.lane_steps("toolu_agent1"), 2, "both runs' steps");
+    }
+
+    #[test]
+    fn a_resume_reopens_then_its_end_closes() {
+        use crate::agent_conversation::LaneStatus;
+        let mut c = crate::agent_conversation::Conversation::new();
+        let mut t = CLAUDE.translator();
+        let mut statuses = Vec::new();
+        for line in SUB_RESUME.lines() {
+            for e in t.decode(line) {
+                c.apply(e);
+            }
+            statuses.push(c.lane("toolu_agent1").map(|l| l.status.clone()));
+        }
+        let resumed = SUB_RESUME
+            .lines()
+            .position(|l| l.contains("\"run-2\""))
+            .unwrap();
+        assert_eq!(statuses[resumed - 1], Some(LaneStatus::Done), "done first");
+        assert_eq!(statuses[resumed], Some(LaneStatus::Working), "reopened");
+        assert_eq!(statuses.last().unwrap(), &Some(LaneStatus::Done), "closed");
+    }
+
+    #[test]
+    fn steps_under_the_resuming_call_land_in_the_lane() {
+        let mut t = CLAUDE.translator();
+        let resumed: Vec<&str> = SUB_RESUME
+            .lines()
+            .take_while(|l| !l.contains("toolu_grep1"))
+            .collect();
+        for l in resumed {
+            t.decode(l);
+        }
+        let step = json!({"type":"assistant","parent_tool_use_id":"toolu_send1",
+            "message":{"id":"m9","content":[{"type":"tool_use","id":"toolu_x","name":"Read",
+            "input":{"file_path":"a"}}]}});
+        let text = json!({"type":"stream_event","parent_tool_use_id":"toolu_send1",
+            "api_message_id":"m9","event":{"type":"content_block_delta",
+            "delta":{"type":"text_delta","text":"hi"}}});
+        let mut parents = Vec::new();
+        for v in [step, text] {
+            for e in t.decode(&v.to_string()) {
+                match e {
+                    Event::ToolStarted { parent, .. } | Event::TextDelta { parent, .. } => {
+                        parents.push(parent)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(
+            parents,
+            [
+                Some("toolu_agent1".to_string()),
+                Some("toolu_agent1".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_foreground_resume_ends_with_the_turn() {
+        let mut t = CLAUDE.translator();
+        let start = |call: &str, bg: bool| {
+            json!({"type":"system","subtype":"task_started","task_id":"t1",
+            "tool_use_id":call,"description":"Explore","subagent_type":"Explore",
+            "task_type":"local_agent","is_backgrounded":bg,"prompt":"p"})
+            .to_string()
+        };
+        t.decode(&start("toolu_a", true));
+        t.decode(
+            &json!({"type":"system","subtype":"task_notification","task_id":"t1",
+            "status":"completed"})
+            .to_string(),
+        );
+        let ev = t.decode(&start("toolu_s", false));
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, Event::SubagentResumed { id, controls, .. }
+                if id == "toolu_a" && !controls.message && controls.stop)),
+            "{ev:?}"
+        );
+        let ev = t.decode(
+            &json!({"type":"result","subtype":"success","is_error":false,"session_id":"s"})
+                .to_string(),
+        );
+        assert!(
+            ev.iter().any(
+                |e| matches!(e, Event::SubagentEnded { id, end: LaneEnd::Stopped }
+                if id == "toolu_a")
+            ),
+            "{ev:?}"
+        );
+    }
+
+    #[test]
+    fn a_wake_says_nothing_from_main() {
+        // An idle wake names the original Agent call: no new words from Main to show.
+        let mut t = CLAUDE.translator();
+        let start = json!({"type":"system","subtype":"task_started","task_id":"t1",
+            "tool_use_id":"toolu_a","description":"Explore","subagent_type":"Explore",
+            "task_type":"local_agent","is_backgrounded":true,"prompt":"Read the test setup"})
+        .to_string();
+        t.decode(&start);
+        let ev = t.decode(&start);
+        assert!(
+            ev.iter().any(
+                |e| matches!(e, Event::SubagentResumed { id, said: None, .. }
+                if id == "toolu_a")
+            ),
+            "{ev:?}"
+        );
+    }
+
+    #[test]
+    fn stop_after_resume_stops_the_same_task() {
+        let mut t = CLAUDE.translator();
+        for l in SUB_RESUME
+            .lines()
+            .take_while(|l| !l.contains("toolu_grep1"))
+        {
+            t.decode(l);
+        }
+        let out = t.encode(&Action::StopSubagent {
+            lane: "toolu_agent1".into(),
+        });
+        assert_eq!(out.len(), 1);
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(v["request"]["task_id"], "a7c41e2b9d");
+    }
+
+    #[test]
+    fn claude_controls_say_message_only_in_the_background() {
+        let ev = decode_all(&CLAUDE, SUB_RESUME);
+        let controls = ev.iter().find_map(|e| match e {
+            Event::SubagentStarted { controls, .. } => Some(*controls),
+            _ => None,
+        });
+        assert_eq!(
+            controls,
+            Some(LaneControls {
+                stop: true,
+                message: true,
+                woken_by_steps: false
+            })
+        );
+        assert!(CLAUDE.relays_to_subagents());
+    }
+
+    #[test]
+    fn main_s_send_message_to_a_lane_passes_it_on() {
+        let ev = decode_all(&CLAUDE, SUB_RESUME);
+        assert!(
+            ev.iter().any(|e| matches!(e, Event::PassedOn { call, lane }
+                if call == "toolu_send1" && lane == "toolu_agent1")),
+            "{ev:?}"
+        );
+    }
+
+    fn relay_line(t: &mut Box<dyn Translator>, lane: &str) -> Value {
+        let out = t.encode(&Action::Relay {
+            lane: lane.into(),
+            label: "Explore".into(),
+            text: "Also check the docs".into(),
+            id: Some("m-1".into()),
+        });
+        assert_eq!(out.len(), 1);
+        serde_json::from_str(&out[0]).unwrap()
+    }
+
+    #[test]
+    fn a_relay_names_the_subagent_by_its_agent_id() {
+        let mut t = CLAUDE.translator();
+        for l in SUB_RESUME.lines().take(5) {
+            t.decode(l);
+        }
+        let v = relay_line(&mut t, "toolu_agent1");
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["uuid"], "m-1", "a message to Main like any other");
+        let text = v["message"]["content"].as_str().unwrap();
+        assert_eq!(
+            text,
+            "[fuxx relay] Pass the message below to your subagent \"Explore\" with SendMessage \
+             (to: \"a7c41e2b9d\"), word for word. Don't act on it yourself. If that subagent has \
+             finished, don't resume it: tell me instead.\n\nAlso check the docs"
+        );
+    }
+
+    #[test]
+    fn relay_frame_round_trips() {
+        let frame = relay_frame(
+            "Say \"hi\"\nnow",
+            Some("a7c41e2b9d"),
+            "line one\n\nline two",
+        );
+        let parsed = relay_parse(&frame).expect("a relay");
+        assert_eq!(parsed.label, "Say 'hi' now", "quotes and newlines cleaned");
+        assert_eq!(parsed.agent.as_deref(), Some("a7c41e2b9d"));
+        assert_eq!(parsed.text, "line one\n\nline two");
+        assert!(!parsed.about);
+        let long = "x".repeat(90);
+        assert_eq!(
+            relay_parse(&relay_frame(&long, None, "t")).unwrap().label,
+            "x".repeat(60),
+            "a label is cut to 60"
+        );
+        let about = about_frame("Explore", Some("a7c41e2b9d"), "What did it find?", false);
+        assert_eq!(
+            about,
+            "[fuxx about] About your subagent \"Explore\" (a7c41e2b9d), which has finished \
+             \u{2014} don't resume it.\n\nWhat did it find?"
+        );
+        let parsed = relay_parse(&about).expect("an about");
+        assert!(parsed.about);
+        assert_eq!(parsed.agent.as_deref(), Some("a7c41e2b9d"));
+        assert_eq!(parsed.label, "Explore");
+        assert_eq!(parsed.text, "What did it find?");
+        assert!(relay_parse("hello").is_none(), "not a frame");
+    }
+
+    #[test]
+    fn a_relay_to_an_unknown_lane_still_sends() {
+        let mut t = CLAUDE.translator();
+        let v = relay_line(&mut t, "toolu_nobody");
+        let text = v["message"]["content"].as_str().unwrap();
+        assert!(
+            text.starts_with(
+                "[fuxx relay] Pass the message below to your subagent \"Explore\" with \
+                 SendMessage, word for word."
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("(to:"), "no agent id to name: {text}");
+        let parsed = relay_parse(text).unwrap();
+        assert_eq!(parsed.agent, None);
+        assert_eq!(parsed.text, "Also check the docs");
+    }
+
+    #[test]
+    fn a_past_relay_shows_as_a_relay_not_its_frame() {
+        let agent = json!({"type":"assistant","uuid":"a1","message":{"id":"m1","content":[
+            {"type":"tool_use","id":"toolu_agent1","name":"Agent",
+             "input":{"description":"Explore","subagent_type":"Explore","prompt":"Read"}}]}});
+        let result = json!({"type":"user","uuid":"r1","message":{"content":[
+            {"type":"tool_result","tool_use_id":"toolu_agent1","content":"Async agent launched successfully.\nagentId: a7c41e2b9d"}]}});
+        let frame = relay_frame("Explore", Some("a7c41e2b9d"), "Also check the docs");
+        let relay = json!({"type":"user","uuid":"u1","message":{"content": frame}});
+        let unknown = relay_frame("Gone", Some("zzz"), "Hello there");
+        let stray = json!({"type":"user","uuid":"u2","message":{"content": unknown}});
+        let about = about_frame("Explore", Some("a7c41e2b9d"), "What did it find?", false);
+        let asked = json!({"type":"user","uuid":"u3","message":{"content": about}});
+        let send = json!({"type":"assistant","uuid":"a2","message":{"id":"m2","content":[
+            {"type":"tool_use","id":"toolu_send1","name":"SendMessage",
+             "input":{"to":"a7c41e2b9d","message":"Also check the docs"}}]}});
+        let text = [agent, result, relay, send, stray, asked]
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let past = transcript_events(&text);
+        assert!(
+            past.contains(&Past::Relay {
+                text: "Also check the docs".into(),
+                id: Some("u1".into()),
+                to: "toolu_agent1".into(),
+                about: false,
+            }),
+            "{past:?}"
+        );
+        assert!(past.contains(&Past::Relay {
+            text: "What did it find?".into(),
+            id: Some("u3".into()),
+            to: "toolu_agent1".into(),
+            about: true,
+        }));
+        assert!(
+            past.contains(&Past::You {
+                text: "Hello there".into(),
+                id: Some("u2".into())
+            }),
+            "unmatched: a plain bubble with your words"
+        );
+        assert!(past.contains(&Past::Event(Event::PassedOn {
+            call: "toolu_send1".into(),
+            lane: "toolu_agent1".into()
+        })));
+        assert!(
+            !past
+                .iter()
+                .any(|p| matches!(p, Past::You { text, .. } if text.contains("[fuxx"))),
+            "the frame is never shown"
+        );
     }
 
     #[test]
@@ -4838,7 +5394,7 @@ mod branch_tests {
             .into_iter()
             .filter_map(|p| match p {
                 Past::You { text, id } => Some((text, id)),
-                Past::Event(_) => None,
+                Past::Relay { .. } | Past::Event(_) => None,
             })
             .collect();
         assert_eq!(yours[0], ("Say hello in one word".into(), Some(U.into())));

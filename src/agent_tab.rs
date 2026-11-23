@@ -44,6 +44,7 @@ mod rows;
 
 #[path = "agent_lanes_view.rs"]
 mod lanes_view;
+pub(crate) use lanes_view::{BAR_FADE, BoxMode};
 
 #[path = "agent_latest.rs"]
 mod latest;
@@ -812,8 +813,13 @@ pub(crate) fn fingerprint(item: &Item) -> u64 {
     std::mem::discriminant(item).hash(&mut h);
     match item {
         Item::You {
-            text, attachments, ..
-        } => (text, attachments).hash(&mut h),
+            text,
+            attachments,
+            taken,
+            to,
+            ..
+        } => (text, attachments, taken, to).hash(&mut h),
+        Item::Resumed { ended, said, .. } => (format!("{ended:?}"), said).hash(&mut h),
         Item::Agent { text, done, .. } => (text, done).hash(&mut h),
         Item::Tool {
             running,
@@ -1004,6 +1010,16 @@ pub struct Colors {
     /// ring.
     pub card_hover: Rgb,
     pub focus_ring: Rgb,
+    /// The lanes chore (2026-11-24): the closing bar's words (name and verb), its quiet words,
+    /// a failed lane's words and a done lane's check, on the box and a control under the
+    /// pointer; the relay target pill's fill on the tab, its words and its quiet words.
+    pub bar_text: Rgb,
+    pub bar_dim: Rgb,
+    pub bar_failed: Rgb,
+    pub bar_ok: Rgb,
+    pub relay_fill: Rgb,
+    pub relay_text: Rgb,
+    pub relay_dim: Rgb,
 }
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
@@ -1055,6 +1071,17 @@ impl Colors {
         let you_fill = ui.composer_inner;
         let chip_fill = mix(you_fill, theme.foreground, 0.06);
         let error_fill = mix(page, ui.block_failed, 0.08);
+        let control_hover = mix(ui.composer_inner, theme.foreground, 0.10);
+        let on_box = [ui.composer_inner, control_hover];
+        let relay_fill = readable(
+            mix(
+                ui.composer_outer,
+                ui.accent,
+                if theme.is_dark() { 0.12 } else { 0.08 },
+            ),
+            &[ui.composer_outer],
+            crate::ui_tokens::SOFT_LINE_MIN,
+        );
         Colors {
             page,
             text: fit(ui.text, page),
@@ -1095,7 +1122,7 @@ impl Colors {
             outer: ui.composer_outer,
             outer_edge: ui.composer_edge,
             pill_hover: ui.composer_pill_hover,
-            control_hover: mix(ui.composer_inner, theme.foreground, 0.10),
+            control_hover,
             stop_fill: {
                 let red = theme.palette[1];
                 let dim = ui.text_dim;
@@ -1176,6 +1203,13 @@ impl Colors {
             strip_mark: readable(ui.text_dim, &[ui.panel, ui.panel_hover], MARK_MIN),
             card_hover: ui.card_hover,
             focus_ring: ui.focus_ring,
+            bar_text: readable(ui.text, &on_box, TEXT_MIN),
+            bar_dim: readable(ui.text_dim, &on_box, TEXT_MIN),
+            bar_failed: readable(ui.block_failed, &on_box, TEXT_MIN),
+            bar_ok: readable(ui.ring_done, &[ui.composer_inner], MARK_MIN),
+            relay_fill,
+            relay_text: readable(ui.text, &[relay_fill], TEXT_MIN),
+            relay_dim: readable(ui.text_dim, &[relay_fill], TEXT_MIN),
         }
     }
 }
@@ -1310,8 +1344,27 @@ pub struct AgentTab {
     /// Each live lane's mark (the Working arc, or Waiting), and Main's pill's.
     lane_marks: HashMap<String, Entity<MarkView>>,
     main_mark: Option<Entity<MarkView>>,
-    /// When each lane was first seen and when it ended (its elapsed time stops there).
+    /// When each lane was first seen and when it ended (its elapsed time stops there); since
+    /// the lanes chore, its current run's (a resume starts it again).
     lane_times: HashMap<String, (Instant, Option<Instant>)>,
+    /// Each lane's finished runs' times, oldest first (a resume's divider says them).
+    lane_runs: HashMap<String, Vec<Option<Duration>>>,
+    /// When each lane's pill last flashed (a resume, a relay delivered, a draft retargeted).
+    lane_flash: HashMap<String, Instant>,
+    /// The closing bar opened into the box ("Ask Main about it", or typing), for this lane.
+    pub(crate) bar_open: Option<String>,
+    /// What the box's draft is for, set when it stops being empty in a lane.
+    draft: Option<lanes_view::Draft>,
+    /// When the draft's lane finished under it: an Enter this soon after only flashes.
+    retargeted_at: Option<Instant>,
+    /// How many times the box changed between the bar and the box (its cross-fade's key), and
+    /// when last.
+    pub(crate) bar_changes: u64,
+    pub(crate) bar_changed_at: Option<Instant>,
+    /// The box was the closing bar at the last look (`note_bar`).
+    bar_was: bool,
+    /// The "+N" list's running lanes when it opened (it regroups only on the next open).
+    lanes_menu_running: HashSet<String>,
     /// The "+N" list of the pills that don't fit, open.
     lanes_menu: bool,
     end: ProcessEnd,
@@ -1325,7 +1378,8 @@ pub struct AgentTab {
     /// Its process was stopped for "Open in classic view" (R13): a send asks the Workspace first
     /// (`ResumeAsked`).
     paused: bool,
-    queued: Vec<(String, Vec<Attachment>)>,
+    /// Messages held for the process, and (the lanes chore) the subagent each is for.
+    queued: Vec<(String, Vec<Attachment>, Option<lanes_view::Target>)>,
     run: Run,
     /// The agent's guess at your next message (`Event::Suggestion`), drawn faint in the empty
     /// box while Main is idle (`ghost_for`); Tab takes it. Never saved.
@@ -2039,6 +2093,15 @@ impl AgentTab {
             pump: None,
             followers: HashMap::new(),
             lane_marks: HashMap::new(),
+            lane_runs: HashMap::new(),
+            lane_flash: HashMap::new(),
+            bar_open: None,
+            draft: None,
+            retargeted_at: None,
+            bar_changes: 0,
+            bar_changed_at: None,
+            bar_was: false,
+            lanes_menu_running: HashSet::new(),
             main_mark: None,
             lane_times: HashMap::new(),
             lanes_menu: false,
@@ -2212,7 +2275,7 @@ impl AgentTab {
             return;
         }
         let mut texts: Vec<String> = Vec::new();
-        for (text, attachments) in queued {
+        for (text, attachments, _) in queued {
             texts.push(text);
             self.attachments.extend(attachments);
         }
@@ -2367,8 +2430,8 @@ impl AgentTab {
 
     /// Send what waited for the process (booting, or the last one ending).
     fn flush_queued(&mut self) {
-        for (text, attachments) in std::mem::take(&mut self.queued) {
-            self.say(text, attachments);
+        for (text, attachments, to) in std::mem::take(&mut self.queued) {
+            self.say_to(text, attachments, to);
         }
     }
 
@@ -2376,6 +2439,17 @@ impl AgentTab {
     /// conversation started under an id fuxx chose makes that id the tab's conversation at once
     /// (told, so saved: a process left running by a crash is found holding it, R13).
     fn say(&mut self, text: String, attachments: Vec<Attachment>) {
+        self.say_to(text, attachments, None);
+    }
+
+    /// `say`, for a subagent when `to` names one (the lanes chore): a message to Main all the
+    /// same — framed for it to pass on (or answer about), your words in the bubble.
+    fn say_to(
+        &mut self,
+        text: String,
+        attachments: Vec<Attachment>,
+        to: Option<lanes_view::Target>,
+    ) {
         let attachments = kept(&text, attachments);
         if let Some(id) = self.run.fresh.clone()
             && !self.run.started
@@ -2397,6 +2471,13 @@ impl AgentTab {
         // Its id, when the agent takes one (batch 3, chore 2): Rewind and Fork name it by it.
         let id = self.provider.and_then(|p| p.fresh_message_id());
         self.rewind_sent(id.as_deref(), &attachments);
+        if let Some(to) = to {
+            self.conversation
+                .relay(text.clone(), id.clone(), to.lane.clone(), to.about);
+            self.run.sends.push((text, attachments));
+            self.write(&to.action(wire, id));
+            return;
+        }
         self.conversation
             .you_as(text.clone(), labels(&attachments), id.clone());
         self.run.sends.push((text, attachments));
@@ -2809,6 +2890,18 @@ impl AgentTab {
                         ended.get_or_insert_with(Instant::now);
                     }
                 }
+                // The lanes chore: a resume keeps the last run's time for its divider, starts
+                // the clock again and flashes the pill.
+                Event::SubagentResumed { id, .. } => {
+                    let now = Instant::now();
+                    let took = self.lane_elapsed(id);
+                    self.lane_runs.entry(id.clone()).or_default().push(took);
+                    self.lane_times.insert(id.clone(), (now, None));
+                    self.lane_flash.insert(id.clone(), now);
+                }
+                Event::PassedOn { lane, .. } => {
+                    self.lane_flash.insert(lane.clone(), Instant::now());
+                }
                 // `/clear`: the chat empties (the conversation drops its items) and fades back in
                 // empty, keyed by how many times it was cleared.
                 Event::Cleared => {
@@ -2820,6 +2913,8 @@ impl AgentTab {
                     self.tool_started.clear();
                     self.followers.clear();
                     self.lane_times.clear();
+                    self.lane_runs.clear();
+                    self.lane_flash.clear();
                     self.cleared += 1;
                     self.cleared_at = Some(Instant::now());
                 }
@@ -2900,6 +2995,7 @@ impl AgentTab {
             });
         }
         self.sync_lane_marks(cx);
+        self.sync_draft(cx);
         self.sync_rows();
         self.sync_ask(cx);
         // The modal's tool gone (a restart, a new conversation): back out to what is left.
@@ -3105,11 +3201,9 @@ impl AgentTab {
         let text: SharedString = if let Some(other) = self.ask_placeholder() {
             // The box is the question's Other (batch 3, chore 8).
             other.into()
-        } else if let Some(lane) = self.shown_lane()
-            && self.conversation.pending_permission().is_none()
-        {
-            // In a lane the box still talks to Main (M11ar).
-            format!("Message Main \u{2014} it can pass this to {}", lane.label).into()
+        } else if let Some(words) = self.lane_placeholder(cx) {
+            // A lane's box (the lanes chore): to its subagent via Main, or to Main about it.
+            words.into()
         } else if self.drop_over {
             // Files dragged over the tab (batch 3, chore 5).
             pills::DROP_PLACEHOLDER.into()
@@ -3177,7 +3271,7 @@ impl AgentTab {
             // Held, shown as waiting under the conversation, until the process is there (or,
             // with a restart waiting for the turn, until it is done: it would lose what was
             // written to the process before it). A live change holds nothing back (R5).
-            self.queued.push((text, attachments));
+            self.queued.push((text, attachments, None));
             cx.notify();
             return;
         }
@@ -3527,6 +3621,7 @@ impl AgentTab {
                 at: *at,
                 has_sel: *has_sel,
             }),
+            ComposerEvent::BackspaceEmpty => self.backspace_empty(cx),
         }
     }
 
@@ -3556,6 +3651,12 @@ impl AgentTab {
         } else if let Some(command) = self.provider.and_then(|p| p.own_command(&text)) {
             // What fuxx answers itself opens its menu: nothing is sent.
             self.open_box_command(command, cx);
+        } else if let Some(sent) = self.lane_submit(&text, cx) {
+            // A lane's box (the lanes chore): a relay, a message about it, Back to Main, or
+            // nothing; the box keeps its text unless it went.
+            if !sent {
+                return;
+            }
         } else if text.trim().is_empty() && self.attachments.is_empty() {
             return;
         } else if self.paused {
@@ -3647,6 +3748,7 @@ impl AgentTab {
         }
         self.pick_typed(cx);
         self.ask_box_changed(cx);
+        self.lane_box_changed(cx);
         self.slash_follow(cx);
         let Some(at) = &self.at else {
             return;
@@ -5507,7 +5609,7 @@ impl AgentTab {
                 .text_size(px(BODY))
                 // Spec B-B: your bubble, quieter (the box's outer fill), waiting to go; × left of
                 // it takes it back before it is ever written (batch 3, wave 3).
-                .children(self.queued.iter().enumerate().map(|(i, (text, _))| {
+                .children(self.queued.iter().enumerate().map(|(i, (text, _, _))| {
                     let (dim, ink, hover) = (c.dim, c.text, c.card_hover);
                     div()
                         .max_w(relative(0.78))
@@ -6753,6 +6855,29 @@ mod tests {
                 ("ask well text", c.ask_well_text, c.ask_well, TEXT_MIN),
                 ("ask done", c.ask_done, c.page, MARK_MIN),
                 ("ask done hovered", c.ask_done, c.card_hover, MARK_MIN),
+                // The lanes chore: the closing bar's words and marks on the box (and a
+                // control under the pointer), the relay pill's words on its fill and its fill
+                // on the tab.
+                ("bar text", c.bar_text, c.box_fill, TEXT_MIN),
+                ("bar text hovered", c.bar_text, c.control_hover, TEXT_MIN),
+                ("bar dim", c.bar_dim, c.box_fill, TEXT_MIN),
+                ("bar dim hovered", c.bar_dim, c.control_hover, TEXT_MIN),
+                ("bar failed", c.bar_failed, c.box_fill, TEXT_MIN),
+                (
+                    "bar failed hovered",
+                    c.bar_failed,
+                    c.control_hover,
+                    TEXT_MIN,
+                ),
+                ("bar ok", c.bar_ok, c.box_fill, MARK_MIN),
+                ("relay text", c.relay_text, c.relay_fill, TEXT_MIN),
+                ("relay dim", c.relay_dim, c.relay_fill, TEXT_MIN),
+                (
+                    "relay fill",
+                    c.relay_fill,
+                    c.outer,
+                    crate::ui_tokens::SOFT_LINE_MIN,
+                ),
             ] {
                 let got = contrast(fg, on);
                 assert!(got >= floor - 0.01, "{name}: {what} {got:.2}");

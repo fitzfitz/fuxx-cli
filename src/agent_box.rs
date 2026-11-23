@@ -8,9 +8,9 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    Anchor, AnyElement, App, ClickEvent, Context, Div, Entity, Focusable, MouseButton,
-    MouseDownEvent, SharedString, Stateful, Subscription, Window, anchored, deferred, div, point,
-    prelude::*, px,
+    Anchor, AnimationExt, AnyElement, App, ClickEvent, Context, Div, Entity, Focusable,
+    MouseButton, MouseDownEvent, SharedString, Stateful, Subscription, Window, anchored, deferred,
+    div, point, prelude::*, px,
 };
 
 use crate::agent_catalog::{Catalogs, Lookup};
@@ -136,6 +136,9 @@ const SEND_GLYPH: &str = "\u{27a4}";
 /// The send circle while a question waits (batch 3, chore 8; the lead designer): a check (Enter
 /// answers, it doesn't send), its words in the tooltip.
 pub(crate) const ANSWER_GLYPH: &str = "\u{2713}";
+/// The lanes chore: the relay's send while an image waits, and the closing bar's notch.
+pub(crate) const RELAY_IMAGES_TIP: &str = "Images can't be passed on: send them to Main";
+pub(crate) const BACK_TIP: &str = "Back to Main (\u{23ce})";
 pub(crate) const ANSWER_TIP: &str = "Answer with what you typed (\u{23ce})";
 pub(crate) const ANSWER_EMPTY_TIP: &str = "Type an answer, or pick one above";
 
@@ -1257,7 +1260,59 @@ impl AgentTab {
                 .justify_center()
                 .rounded_full()
         };
+        // The lanes chore: what the box is for in a lane (the closing bar, a relay, about it).
+        let box_mode = self.box_mode(cx);
+        let bar = match &box_mode {
+            crate::agent_tab::BoxMode::Bar(why) => self.bar_rows(
+                why,
+                c,
+                cells.line_height,
+                (
+                    BOX_X - CONTROL_INSET,
+                    BOX_X - CONTROL_INSET - (BUTTON - CONTROL_ICON) / 2.,
+                    NOTCH + 8. - 2. * CONTROL_INSET,
+                ),
+                cx,
+            ),
+            _ => None,
+        };
+        let relay_tip = match &box_mode {
+            crate::agent_tab::BoxMode::Relay { images, ready } => {
+                let label = self
+                    .shown_lane()
+                    .map(|l| l.label.clone())
+                    .unwrap_or_default();
+                Some(if *images {
+                    (RELAY_IMAGES_TIP.to_string(), false)
+                } else if empty {
+                    (format!("Type a message for {label}"), false)
+                } else {
+                    (format!("Send to {label} via Main (\u{23ce})"), *ready)
+                })
+            }
+            _ => None,
+        };
         let send = match self.stop_label() {
+            // The closing bar's notch: Back to Main (⏎ does the same).
+            _ if bar.is_some() => {
+                let hover = c.send_hover;
+                let lane = self.shown_lane().map(|l| l.id.clone()).unwrap_or_default();
+                self.marked("send", circle("agent-back"))
+                    .bg(hsla(c.send_fill))
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::Back,
+                        px(18.),
+                        hsla(c.send_ink),
+                    ))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hsla(hover)))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| crate::sidebar_toggle::Tip(BACK_TIP.into()))
+                            .into()
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.back_to_main(&lane, cx)))
+                    .into_any_element()
+            }
             Some(label) => {
                 let (square, pressable) = match label {
                     "Stopping\u{2026}" => (c.dim, false),
@@ -1300,6 +1355,28 @@ impl AgentTab {
                     .on_click(cx.listener(|this, _, _, cx| this.send_pressed(cx)))
                     .into_any_element()
             }
+            // A relay (the lanes chore): ready only while it can go; its tooltip says where.
+            None if relay_tip.is_some() => {
+                let (tip, ready) = relay_tip.unwrap_or_default();
+                let hover = c.send_hover;
+                self.marked("send", circle("agent-send"))
+                    .bg(hsla(if ready { c.send_fill } else { c.send_empty }))
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::ArrowUp,
+                        px(18.),
+                        hsla(if ready { c.send_ink } else { c.dim }),
+                    ))
+                    .when(ready, |d| {
+                        d.cursor_pointer()
+                            .hover(move |s| s.bg(hsla(hover)))
+                            .on_click(cx.listener(|this, _, _, cx| this.send_pressed(cx)))
+                    })
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| crate::sidebar_toggle::Tip(tip.clone().into()))
+                            .into()
+                    })
+                    .into_any_element()
+            }
             None => {
                 // Ready, the accent (your words: "the button background should back to the first
                 // one the blue one"); empty, a control like `+` (the designer's review, your "go
@@ -1321,6 +1398,85 @@ impl AgentTab {
                     .into_any_element()
             }
         };
+        // The box's contents (the lanes chore: the closing bar in their place, same height),
+        // fading in when they change between the two (still with reduce motion or Animations
+        // off).
+        let contents: Vec<AnyElement> = match bar {
+            Some((row1, row2)) => vec![row1, row2],
+            None => {
+                let typing = div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(BOX_GAP))
+                    .child(
+                        div()
+                            .when(self.at_open() || self.slash_has_picks(cx), |d| {
+                                d.key_context("AtPopup")
+                            })
+                            .w_full()
+                            .pl(px(BOX_X - CONTROL_INSET))
+                            // The text cursor over where you type (your report, 2026-11-22: "the
+                            // cursor is still arrow"); the controls under it keep theirs.
+                            .cursor_text()
+                            .flex()
+                            .font_family(mono.clone())
+                            .text_size(cells.font_size)
+                            .line_height(cells.line_height)
+                            // No mark before the typing (your words, 2026-11-22: "I don't think we
+                            // need the icon … so that the chat box loosen").
+                            .child(div().flex_1().min_w_0().child(self.composer.clone())),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            // Clean with no fills (your words, 2026-11-22: "make it clean!"): `+`'s
+                            // glyph on the typing's left edge, then 12 between what shows (the
+                            // buttons' and pills' own room, no gap between them).
+                            .pl(px(BOX_X - CONTROL_INSET - (BUTTON - CONTROL_ICON) / 2.))
+                            .child(attach)
+                            .child(model)
+                            .child(usage)
+                            .child(div().flex_1())
+                            .children(mode)
+                            // The mode pill ends 8 before the notch's edge.
+                            .child(div().flex_none().w(px(NOTCH + 8. - 2. * CONTROL_INSET))),
+                    );
+                let mut v: Vec<AnyElement> = Vec::new();
+                v.extend(
+                    self.attachment_chips(c, cx)
+                        .map(IntoElement::into_any_element),
+                );
+                v.push(typing.into_any_element());
+                v
+            }
+        };
+        let still = cx.reduce_motion() || !cx.global::<Appearance>().animations;
+        let fading = !still
+            && self
+                .bar_changed_at
+                .is_some_and(|at| at.elapsed() < crate::agent_tab::BAR_FADE);
+        let contents: Vec<AnyElement> = if fading {
+            vec![
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(BOX_GAP))
+                    .children(contents)
+                    .with_animation(
+                        ("box-bar-fade", self.bar_changes),
+                        gpui::Animation::new(crate::agent_tab::BAR_FADE),
+                        |d, t| d.opacity(t),
+                    )
+                    .into_any_element(),
+            ]
+        } else {
+            contents
+        };
+        let target = self.target_pill(&box_mode, c, cx);
         let drop_fill = cx.global::<Appearance>().theme.ui().drop_card;
         let the_box = self.marked(
             "box",
@@ -1380,42 +1536,7 @@ impl AgentTab {
                             .border_color(hsla(c.focus_ring)),
                     )
                 })
-                .children(self.attachment_chips(c, cx))
-                .child(
-                    div()
-                        .when(self.at_open() || self.slash_has_picks(cx), |d| {
-                            d.key_context("AtPopup")
-                        })
-                        .w_full()
-                        .pl(px(BOX_X - CONTROL_INSET))
-                        // The text cursor over where you type (your report, 2026-11-22: "the
-                        // cursor is still arrow"); the controls under it keep theirs.
-                        .cursor_text()
-                        .flex()
-                        .font_family(mono.clone())
-                        .text_size(cells.font_size)
-                        .line_height(cells.line_height)
-                        // No mark before the typing (your words, 2026-11-22: "I don't think we
-                        // need the icon … so that the chat box loosen").
-                        .child(div().flex_1().min_w_0().child(self.composer.clone())),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        // Clean with no fills (your words, 2026-11-22: "make it clean!"): `+`'s
-                        // glyph on the typing's left edge, then 12 between what shows (the
-                        // buttons' and pills' own room, no gap between them).
-                        .pl(px(BOX_X - CONTROL_INSET - (BUTTON - CONTROL_ICON) / 2.))
-                        .child(attach)
-                        .child(model)
-                        .child(usage)
-                        .child(div().flex_1())
-                        .children(mode)
-                        // The mode pill ends 8 before the notch's edge.
-                        .child(div().flex_none().w(px(NOTCH + 8. - 2. * CONTROL_INSET))),
-                ),
+                .children(contents),
         );
         // As wide as the conversation's column and centred under it (your words, 2026-11-22:
         // "make it like this but put it at center" — on a wide screen the box ran the full width
@@ -1437,7 +1558,7 @@ impl AgentTab {
                     .flex_col()
                     .children(self.at_list(c, mono.clone(), cx))
                     .children(self.slash_list(c, mono, cx))
-                    .child(self.folder_tab(status, folder, branch, the_box, send, c)),
+                    .child(self.folder_tab(target, status, folder, branch, the_box, send, c)),
             )
             .into_any_element()
     }
@@ -1446,8 +1567,10 @@ impl AgentTab {
     /// a shade over the page, its top edge `TAB_RISE` down; at its left a tab rising to hold the
     /// pills, its top corners 14, the box's 15, a concave 8 where the tab steps down; the box
     /// you type in `OUTER_INSET` in.
+    #[allow(clippy::too_many_arguments)]
     fn folder_tab(
         &self,
+        target: Option<AnyElement>,
         status: Option<AnyElement>,
         folder: impl IntoElement,
         branch: Option<impl IntoElement>,
@@ -1515,6 +1638,8 @@ impl AgentTab {
             .border_r_1()
             .border_color(edge)
             .rounded_t(px(14.))
+            // The lanes chore: where the box's message goes, first.
+            .children(target)
             .children(status)
             .child(folder)
             .children(branch);

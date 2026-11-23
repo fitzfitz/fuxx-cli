@@ -5004,7 +5004,11 @@ pub(super) fn agent_box_suggestion_stale() {
                             kind: "general-purpose".into(),
                             task: "Read the README, then report".into(),
                             model: None,
-                            controls: LaneControls { stop: true },
+                            controls: LaneControls {
+                                stop: true,
+                                message: true,
+                                woken_by_steps: false,
+                            },
                         },
                         Event::SubagentEnded {
                             id: "lane-1".into(),

@@ -10,7 +10,9 @@ use crate::agent_tool_modal::parent_of;
 pub use crate::ui_tokens::chat;
 
 /// The items drawn as rows in `view`, in order (M11ar): Main's — everything but a lane's steps
-/// (a step whose lane's call is gone stays) — or a lane's own steps. One pass.
+/// (a step whose lane's call is gone stays) — or a lane's own steps. One pass. A relay to a
+/// lane (the lanes chore) is in Main's rows and its lane's: there the last row until it
+/// settles, then where it settled (it never moves after).
 pub fn rows_of(items: &[Item], view: &View, lanes: &[&str]) -> Vec<usize> {
     let tools: std::collections::HashSet<&str> = items
         .iter()
@@ -24,8 +26,19 @@ pub fn rows_of(items: &[Item], view: &View, lanes: &[&str]) -> Vec<usize> {
     let lane_of = |p: &str| tools.contains(p) && lanes.contains(&p);
     let mut rows: Vec<usize> = Vec::new();
     let mut asks: Vec<usize> = Vec::new();
+    // A lane's relays: settled ones by where they settled, waiting ones last.
+    let mut settled: Vec<(usize, usize)> = Vec::new();
+    let mut waiting: Vec<usize> = Vec::new();
     for (ix, item) in items.iter().enumerate() {
         match (view, item) {
+            (View::Lane(lane), Item::You { to: Some(r), .. }) => {
+                if r.lane == *lane && !r.about {
+                    match r.settled_at {
+                        Some(at) => settled.push((at, ix)),
+                        None => waiting.push(ix),
+                    }
+                }
+            }
             // A question waits in whichever view is shown, at its end (M11ar: Enter answers it
             // there); once answered it stays in Main's and its own lane's.
             (View::Lane(lane), Item::Permission { answer, by, .. }) => {
@@ -55,6 +68,14 @@ pub fn rows_of(items: &[Item], view: &View, lanes: &[&str]) -> Vec<usize> {
             }
         }
     }
+    // Each settled relay goes before the first row that came after it settled.
+    if !settled.is_empty() {
+        let mut keyed: Vec<((usize, u8), usize)> = rows.iter().map(|&r| ((r, 1), r)).collect();
+        keyed.extend(settled.into_iter().map(|(at, ix)| ((at, 0), ix)));
+        keyed.sort_by_key(|&(key, _)| key);
+        rows = keyed.into_iter().map(|(_, ix)| ix).collect();
+    }
+    rows.extend(waiting);
     rows.extend(asks);
     rows
 }
@@ -339,6 +360,7 @@ mod tests {
             attachments: Vec::new(),
             id: None,
             taken: false,
+            to: None,
         }
     }
 
