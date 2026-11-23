@@ -289,3 +289,6 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   keep the frame just before the fade ends (≈ 99.7 % opacity) while a full redraw draws 100 %. The fade
   (`agent_chat::thinking_opacity`, tested) now lands exactly on full for its last few percent, so any frame kept
   from its tail equals the last one: 10 runs in 10 pass, and all 92 `agent` scenes.
+- **"Built with Rust and chaos"** (your word, 2026-11-23): the README's badge now reads *built with · Rust · Chaos*
+  (`assets/badges/built-with-rust-n-chaos.svg`, its last segment widened for the longer word; the old badge file
+  removed), and the landing site's footer says the same.

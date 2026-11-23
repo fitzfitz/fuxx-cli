@@ -36,6 +36,12 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Chore: built with Rust and chaos
+
+- **What:** your word. The README badge reads "built with Rust Chaos" (new `built-with-rust-n-chaos.svg`, the old
+  one removed); the landing site's footer matches. Under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]].
+- **Checks:** the badge rendered and looked at; no code changed.
+
 ### 2026-11-23 — Chore: the flaky chrome-agent scenes fixed
 
 - **What:** your word ("try the failed … again"). `chrome-agent-tabs` / `chrome-agent-status` were stale by a few
