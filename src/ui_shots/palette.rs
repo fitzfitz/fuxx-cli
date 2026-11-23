@@ -53,7 +53,6 @@ pub(super) const SCENES: &[Scene] = &[
             "src/palette_match.rs",
             "src/overlay_panel.rs",
             "src/name_input.rs",
-            "src/pane_actions.rs",
             "src/help_shortcuts.rs",
             "src/layout_model.rs",
         ],
@@ -88,7 +87,6 @@ pub(super) const SCENES: &[Scene] = &[
             "src/overlay_panel.rs",
             "src/name_input.rs",
             "src/file_tab.rs",
-            "src/pane_actions.rs",
             "src/layout_model.rs",
         ],
     },
@@ -122,7 +120,6 @@ pub(super) const SCENES: &[Scene] = &[
             "src/name_input.rs",
             "src/switcher.rs",
             "src/palette_files.rs",
-            "src/pane_actions.rs",
         ],
     },
     Scene {

@@ -23,8 +23,8 @@ pub enum Key {
     Workspace(u64),
     Action(&'static str),
     Preset(usize),
-    /// A new agent tab of the provider of this name in the focused pane (M11aa: the ⋯ menu's
-    /// New ⟨Label⟩ Tab).
+    /// A new agent tab of the provider of this name in the focused pane (M11aa: the + menu's
+    /// agent rows).
     NewAgent(&'static str),
     File(PathBuf),
     Setting(&'static str),
@@ -206,7 +206,7 @@ pub fn applies(place: Place, focused: Focused, persistent: bool, in_repo: bool) 
 }
 
 /// How a command runs: its GPUI action, dispatched as its key would be, or New Browser Tab (the
-/// ⋯ menu's method on the focused pane).
+/// + menu's method on the focused pane).
 #[derive(Clone, Copy)]
 pub enum Run {
     Action(fn() -> Box<dyn gpui::Action>),
@@ -679,35 +679,34 @@ pub const NOT_IN_PALETTE: &[&str] = &[
     "agent_tab::NextLane",
     // ⇧Tab moves an agent tab to its next mode; the mode chip is the way in.
     "agent_tab::CycleMode",
+    // The agent box's own keys (chores after M11ar): they act on the box's text.
+    "composer::TakeSuggestion",
+    "agent_tab::HistoryUp",
+    "agent_tab::HistoryDown",
 ];
 
-/// ⋯ menu items (`pane_actions`) the palette lists under another name: the same action.
-#[cfg(test)] // the parity test's
-pub const PANE_MENU_AS: &[(&str, &str)] = &[("New Terminal Tab", "New Tab")];
-/// ⋯ menu items left out of the palette on purpose (none: each is an entry).
-#[cfg(test)] // the parity test's
-pub const PANE_MENU_LEFT_OUT: &[&str] = &[];
-
-/// The ⋯ menu's New ⟨Label⟩ Tab items (`PaneAction::items`) as palette rows, right after New
-/// Browser Tab; none when the focused pane's workspace is on another host (`local` false: agent
-/// tabs run on this Mac only).
+/// One New ⟨Label⟩ Tab row per agent provider as palette rows, right after New Browser Tab;
+/// none when the focused pane's workspace is on another host (`local` false: agent tabs run on
+/// this Mac only).
 pub fn add_agent_rows(rows: &mut Vec<ActionRow>, local: bool) {
-    use crate::pane_actions::PaneAction;
+    if !local {
+        return;
+    }
     let at = rows
         .iter()
         .position(|r| r.name == "New Browser Tab")
         .map_or(rows.len(), |i| i + 1);
-    let agents: Vec<ActionRow> = PaneAction::items(local)
-        .into_iter()
-        .filter_map(|a| match a {
-            PaneAction::NewAgent(name) => Some(action_row(
-                Key::NewAgent(name),
-                a.label(),
+    let agents: Vec<ActionRow> = crate::providers::all()
+        .iter()
+        .map(|p| {
+            let info = p.info();
+            action_row(
+                Key::NewAgent(info.name),
+                format!("New {} Tab", info.label),
                 ShortcutGroup::Tabs,
                 "agent chat",
                 None,
-            )),
-            _ => None,
+            )
         })
         .collect();
     rows.splice(at..at, agents);
@@ -1409,30 +1408,15 @@ mod tests {
         assert_eq!(names.len(), COMMANDS.len(), "COMMANDS names unique");
     }
 
-    /// The ⋯ menu's items (`pane_actions`) are palette entries too: each by its own name, by
-    /// the name the palette gives the same action (`PANE_MENU_AS`), or left out on purpose
-    /// (`PANE_MENU_LEFT_OUT`).
+    /// Batch 3, chore 1: what each tab-bar button does is a palette command too (its name
+    /// `BarButton::command`), so the keyboard reaches all of it.
     #[test]
-    fn every_pane_menu_item_is_in_the_palette_or_left_out() {
-        use crate::pane_actions::PaneAction;
-        let pairs = real_pairs();
-        let mut rows = action_rows(Focused::Terminal, false, true, &[], &pairs);
-        add_agent_rows(&mut rows, true);
-        let in_palette = |name: &str| rows.iter().any(|r| r.name == name);
-        for action in PaneAction::items(true) {
-            let label = action.label();
-            let decided = in_palette(&label)
-                || PANE_MENU_AS
-                    .iter()
-                    .any(|(item, entry)| *item == label && in_palette(entry))
-                || PANE_MENU_LEFT_OUT.contains(&label.as_str());
-            assert!(decided, "⋯ menu {label}");
-        }
-        // Each alias names an item still in the menu.
-        for (item, _) in PANE_MENU_AS {
+    fn every_bar_button_action_is_a_palette_command() {
+        for button in crate::tab_bar::BarButton::ALL {
+            let name = button.command();
             assert!(
-                PaneAction::items(true).iter().any(|a| a.label() == *item),
-                "{item} is no ⋯ item"
+                COMMANDS.iter().any(|c| c.name == name),
+                "{button:?}: no palette command {name}"
             );
         }
     }
@@ -1859,8 +1843,8 @@ mod tests {
         );
         assert_eq!(
             keys(&settings).len(),
-            25,
-            "M11x: Banner sound too; M11y: two plugin controls; M11ab: Commands as cards; the agent box sweep"
+            26,
+            "M11x: Banner sound too; M11y: two plugin controls; M11ab: Commands as cards; the agent box sweep; prompt suggestions"
         );
 
         let root = Path::new("/w/fuxx-cli");

@@ -2494,6 +2494,7 @@ mod tests {
             model: model.map(String::from),
             effort: effort.map(String::from),
             extra_args: Vec::new(),
+            branch: None,
         }
     }
 
@@ -2800,7 +2801,7 @@ mod tests {
         );
         assert_eq!(
             mode_chip_text(AGY.info().modes, None, None, AGY.info().default_mode).as_deref(),
-            Some("Accept edits"),
+            Some("Auto"),
             "then the provider's default"
         );
         assert_eq!(

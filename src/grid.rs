@@ -214,11 +214,15 @@ fn cell_view(
         match theme.selection_background {
             Some(selected_bg) => {
                 bg = selected_bg;
-                if let Some(selected_fg) = theme.selection_foreground {
-                    fg = selected_fg;
-                }
+                // A foreground set for it wins; else the glyph keeps its colour where it reads
+                // on the selection (batch 3, chore 3), from a table made once per theme.
+                fg = match theme.selection_foreground {
+                    Some(selected_fg) => selected_fg,
+                    None => crate::theme::selected_ink(theme, fg),
+                };
             }
-            // Unset: swap the window's colors (as Ghostty does), so gray text stays readable.
+            // Unset (a theme `resolve` didn't settle): swap the window's colors (as Ghostty
+            // does), so gray text stays readable.
             None => {
                 bg = theme.foreground;
                 fg = theme.selection_foreground.unwrap_or(theme.background);
@@ -777,6 +781,28 @@ z"
         assert_eq!(snap.lines[0][0].fg, t.background);
         assert_eq!(snap.lines[0][1].bg, t.foreground);
         assert_eq!(snap.lines[0][2].bg, Theme::default().background);
+    }
+
+    /// Batch 3, chore 3: a settled theme's selection is the chrome's wash; selected text keeps
+    /// its colour where it reads on it, else it takes the chrome's text colour.
+    #[test]
+    fn selected_glyphs_keep_their_colour_only_where_it_reads() {
+        let theme = crate::theme::resolve(&[], true, &|_| None);
+        let ui = theme.ui();
+        // White text (reads) then a dim palette colour (palette 8, #666666: it doesn't).
+        let mut term = term_with(b"a\x1b[90mb");
+        let mut sel = Selection::new(
+            SelectionType::Simple,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        sel.update(Point::new(Line(0), Column(1)), Side::Right);
+        term.selection = Some(sel);
+        let snap = snapshot(&term, &theme);
+        let (a, b) = (&snap.lines[0][0], &snap.lines[0][1]);
+        assert_eq!((a.bg, b.bg), (ui.selection, ui.selection));
+        assert_eq!(a.fg, theme.foreground, "white reads on the wash: kept");
+        assert_eq!(b.fg, ui.text, "grey doesn't: the chrome's text");
     }
 
     #[test]

@@ -130,6 +130,12 @@ pub fn agent_sweep_values(on: bool) -> Vec<String> {
     if on { vec![] } else { vec!["off".to_string()] }
 }
 
+/// `agent-suggestions` values to write: nothing when on (the default, so no line), `off`
+/// otherwise.
+pub fn agent_suggestions_values(on: bool) -> Vec<String> {
+    if on { vec![] } else { vec!["off".to_string()] }
+}
+
 /// `browser-keep-data` values to write: `on`, or nothing (off is the default, so no line).
 pub fn browser_keep_data_values(on: bool) -> Vec<String> {
     if on { vec!["on".to_string()] } else { vec![] }
@@ -369,6 +375,8 @@ mod tests {
 
     #[test]
     fn the_status_bar_line_is_written_only_when_off() {
+        assert!(agent_suggestions_values(true).is_empty());
+        assert_eq!(agent_suggestions_values(false), vec!["off".to_string()]);
         assert!(status_bar_values(true).is_empty());
         assert_eq!(status_bar_values(false), vec!["off".to_string()]);
     }

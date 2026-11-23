@@ -26,7 +26,7 @@ pub(super) const SCENES: &[Scene] = &[
             "src/welcome.rs",
             "src/pane_tab_menu.rs",
             "src/tab_menu.rs",
-            "src/pane_actions.rs",
+            "src/new_tab_menu.rs",
             "src/title_area.rs",
             "src/preferences.rs",
         ],
@@ -83,7 +83,8 @@ pub(super) const SCENES: &[Scene] = &[
 /// One box over the window at a time: opening the rename box, the palette, the address box or
 /// the Help panel over another closes that one, and the new one keeps the keyboard (the old one's
 /// late "lost focus" must not take it back). Rename -> palette -> rename -> address box ->
-/// palette -> help -> rename -> help -> palette, each checked after frames have run the focus
+/// palette -> help -> rename -> help -> palette -> the + menu -> rename -> the + menu ->
+/// palette, each checked after frames have run the focus
 /// changes. Then every overlay (`Overlay::ALL`) is opened
 /// in turn: each must count in the in-pane pages' hide signal (`overlays().any()`), and closing
 /// the overlays must clear it. Panics on the first that doesn't hold.
@@ -123,6 +124,9 @@ fn overlays() {
                 if let Some(h) = &ws.help {
                     open.push(("help", h.focus_handle(cx).is_focused(window)));
                 }
+                if let Some(m) = &ws.new_tab_menu {
+                    open.push(("newtab", m.menu.focus_handle(cx).is_focused(window)));
+                }
                 open
             })
             .expect("read the boxes")
@@ -137,11 +141,19 @@ fn overlays() {
             ("rename", "rename"),
             ("help", "help"),
             ("palette", "palette"),
+            ("newtab", "newtab"),
+            ("rename", "rename"),
+            ("newtab", "newtab"),
+            ("palette", "palette"),
         ] {
             cx.update_window(window, |_, window, cx| {
                 ws.update(cx, |ws, cx| match step {
                     "rename" => ws.start_rename(ws.model.display_order()[3], window, cx),
                     "address" => ws.open_address_box(window, cx),
+                    "newtab" => {
+                        let pane = ws.model.focused_pane().expect("a focused pane");
+                        ws.toggle_new_tab_menu(pane, point(px(300.0), px(60.0)), window, cx)
+                    }
                     "help" => {
                         ws.open_help(crate::help_panel::HelpPage::Shortcuts, true, window, cx)
                     }
@@ -198,9 +210,9 @@ fn overlays() {
                             let tab = ws.model.focused_tab().expect("a focused tab");
                             ws.open_pane_tab_menu(tab, at, window, cx)
                         }
-                        Overlay::PaneActions => {
+                        Overlay::NewTabMenu => {
                             let pane = ws.model.focused_pane().expect("a focused pane");
-                            ws.open_pane_actions(pane, at, window, cx)
+                            ws.toggle_new_tab_menu(pane, at, window, cx)
                         }
                         Overlay::Notifications => ws.open_notifications(window, cx),
                         Overlay::Help => {

@@ -152,7 +152,7 @@ pub fn search_label(text: &str) -> String {
 
 /// Whether typed text is an address rather than words to search for: one word with a dot, a
 /// colon or a slash in it, or `localhost`.
-fn looks_like_address(text: &str) -> bool {
+pub(crate) fn looks_like_address(text: &str) -> bool {
     !text.contains(char::is_whitespace)
         && (text.contains(['.', ':', '/']) || text.eq_ignore_ascii_case("localhost"))
 }
@@ -180,6 +180,21 @@ pub struct BrowserHistory {
 impl Global for BrowserHistory {}
 
 impl BrowserHistory {
+    /// Whether the list has been read (`list` would read its file on the UI thread otherwise).
+    pub fn is_loaded(cx: &App) -> bool {
+        cx.try_global::<BrowserHistory>()
+            .is_some_and(|h| h.list.is_some())
+    }
+
+    /// The list read off the UI thread (`read_file`): kept unless it was read (or recorded to)
+    /// meanwhile.
+    pub fn set_loaded(list: Vec<Visit>, cx: &mut App) {
+        let history = cx.default_global::<BrowserHistory>();
+        if history.list.is_none() {
+            history.list = Some(list);
+        }
+    }
+
     /// The list (read now if it hasn't been).
     pub fn list(cx: &mut App) -> &[Visit] {
         Self::loaded(cx)
@@ -245,8 +260,9 @@ impl BrowserHistory {
     }
 }
 
-/// The file's list; empty when there is none or it can't be read.
-fn read_file() -> Vec<Visit> {
+/// The file's list; empty when there is none or it can't be read. Blocking: the + menu reads it
+/// on the background executor.
+pub(crate) fn read_file() -> Vec<Visit> {
     let Some(path) = crate::workspace::home_dir().map(|h| history_path(&h)) else {
         return Vec::new();
     };

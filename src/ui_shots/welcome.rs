@@ -637,8 +637,8 @@ fn welcome_keys_scene() {
                 "{n}: the newest terminal types after Esc"
             );
 
-            // The tab bar's +, in the top band (not under the scrim): a click there still
-            // opens a tab.
+            // The tab bar's +, in the top band (not under the scrim): a click there opens its
+            // menu (one box at a time: the card goes), and Enter makes ⌘T's tab.
             open_welcome_on(cx, window, &ws, first);
             let pane = cx
                 .read(|cx| ws.read(cx).model.focused_pane())
@@ -651,12 +651,13 @@ fn welcome_keys_scene() {
             );
             cx.simulate_click(window, plus, gpui::Modifiers::none());
             settle(cx, window);
-            assert_eq!(count(cx), 4, "{n}: the band's + opened a tab");
-            assert!(welcome_of(cx, &ws).is_some(), "{n}: the + leaves it open");
             assert!(
-                welcome_focused(cx, window, &ws),
-                "{n}: the card keeps the keyboard after the +"
+                cx.read(|cx| ws.read(cx).new_tab_menu.is_some()),
+                "{n}: the band's + opened its menu"
             );
+            assert!(welcome_of(cx, &ws).is_none(), "{n}: one box at a time");
+            press_keys(cx, window, "enter");
+            assert_eq!(count(cx), 4, "{n}: Enter opened ⌘T's tab");
             slot.borrow_mut().take();
         });
 

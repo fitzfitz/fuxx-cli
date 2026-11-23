@@ -62,7 +62,9 @@ pub(super) const SCENES: &[Scene] = &[
             "src/pane_tab_menu.rs",
             "src/tab_menu.rs",
             "src/layout_model.rs",
-            "src/pane_actions.rs",
+            "src/chrome_cache.rs",
+            "src/icons.rs",
+            "src/new_tab_menu.rs",
             // `providers::all()`: one New ⟨agent⟩ Tab item per provider.
             "src/providers/mod.rs",
         ],
@@ -92,6 +94,51 @@ pub(super) const SCENES: &[Scene] = &[
             "src/layout_model.rs",
             "src/sidebar.rs",
             "src/pane_browser.rs",
+        ],
+    },
+    Scene {
+        name: "new-tab-menu",
+        run: new_tab_menu_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/new_tab_menu.rs",
+            "src/tab_bar.rs",
+            "src/overlay_panel.rs",
+            "src/presets.rs",
+            "src/agent_detect.rs",
+            "src/logos.rs",
+            "src/workspace_agent.rs",
+            "src/scrollbar.rs",
+        ],
+    },
+    Scene {
+        name: "new-tab-menu-search",
+        run: new_tab_menu_search_scene,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/new_tab_menu.rs",
+            "src/browser_history.rs",
+            "src/palette.rs",
+            "src/palette_match.rs",
+            "src/workspace_browser.rs",
+        ],
+    },
+    Scene {
+        name: "new-tab-like-last",
+        run: new_tab_like_last_scene,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/new_tab_menu.rs",
+            "src/workspace.rs",
+            "src/workspace_agent.rs",
+            "src/providers/claude.rs",
+            "src/providers/agy.rs",
         ],
     },
     Scene {
@@ -699,13 +746,17 @@ fn workspace_scenes() {
 const BAR_BUTTONS: f32 = crate::tab_bar::PLUS_GAP
     + crate::tab_bar::BUTTON
     + 2.0 * crate::tab_bar::BUTTONS_PAD
-    + 2.0 * crate::tab_bar::BUTTON
-    + crate::tab_bar::BUTTON_GAP;
+    + 3.0 * crate::tab_bar::BUTTON
+    + crate::tab_bar::BUTTON_GAP
+    + crate::tab_bar::SPLIT_TO_TOGGLE;
 
-/// How far left of its pane's right edge ⋯'s centre is in a bar that isn't the top-right one
-/// (the left bars these scenes use): the bar's last button since 2026-11-20 (the right
-/// sidebar's button is the top-right bar's alone), half a button in from its padding.
-const MORE_FROM_EDGE: f32 = crate::tab_bar::BUTTONS_PAD + crate::tab_bar::BUTTON / 2.0;
+/// How far left of its pane's right edge Split Down's centre is in a bar that isn't the
+/// top-right one (the left bars these scenes use): the bar's last button (the right sidebar's
+/// button is the top-right bar's alone), half a button in from its padding (batch 3, chore 1).
+const SPLIT_DOWN_FROM_EDGE: f32 = crate::tab_bar::BUTTONS_PAD + crate::tab_bar::BUTTON / 2.0;
+/// Split Right's centre in such a bar: a button and a gap left of Split Down's.
+const SPLIT_RIGHT_FROM_EDGE: f32 =
+    SPLIT_DOWN_FROM_EDGE + crate::tab_bar::BUTTON + crate::tab_bar::BUTTON_GAP;
 
 /// A bar's buttons sit in its middle.
 const BUTTON_TOP: f32 = (ui_tokens::size::TAB_BAR - crate::tab_bar::BUTTON) / 2.0;
@@ -735,8 +786,8 @@ const LEFT_BAR_WIDTH: f32 = (TAB_BARS_WIDTH
 ///   their tabs are `TAB` tall pills in the middle, each as wide as its title (chore 2026-11-20).
 /// - `tab-bars-hover`: the pointer over codex (`tab_idle_hover`, × shown); `tab-bars-button`: over
 ///   the left bar's + (right after its last tab).
-/// - `tab-bars-more`: the left bar's ⋯ clicked: its menu (New Terminal Tab ⌘T, New Browser Tab,
-///   Split Right ⌘D, Split Down ⇧⌘D) under it, right edges together, the ⋯ lit.
+/// - `tab-bars-split`: the pointer on the left bar's Split Right (batch 3, chore 1: the ⋯ is
+///   gone; Split Right and Split Down sit at the bar's right end): it alone is hovered.
 /// - `tab-bars-menu`: claude's right-click menu (Close Tab, Close Other Tabs in Pane, Rename
 ///   Tab…); `tab-bars-rename`: codex double-clicked (shown, its rename box open).
 /// - `tab-bars-single`: one pane, one tab (the bar still shows).
@@ -745,8 +796,8 @@ const LEFT_BAR_WIDTH: f32 = (TAB_BARS_WIDTH
 ///
 /// Panics unless the tabs have the geometry and fills above, the menus and rename box open
 /// where clicked; and (not shot) unless ⌃Tab / ⌃⇧Tab cycle the focused pane's tabs, a click
-/// shows a tab, × closes one, a middle-click closes one, Escape closes the ⋯ menu, and its
-/// Split Right splits the pane whose ⋯ it was (not the focused one).
+/// shows a tab, × closes one, a middle-click closes one, and a bar's Split Right and Split Down
+/// split the pane whose bar it is (not the focused one), the new pane focused.
 fn tab_bar_scenes() {
     use crate::layout_model::TabKind;
     use crate::workspace::{NextTab, PrevTab, Renaming};
@@ -755,7 +806,7 @@ fn tab_bar_scenes() {
     use std::rc::Rc;
 
     let wide = size(px(TAB_BARS_WIDTH), px(600.0));
-    use crate::tab_bar::{BUTTON, BUTTON_GAP, CLOSE, TAB, TAB_MAX_WIDTH, TAB_MIN_WIDTH, TAB_PAD};
+    use crate::tab_bar::{BUTTON, CLOSE, TAB, TAB_MAX_WIDTH, TAB_MIN_WIDTH, TAB_PAD};
     use crate::ui_tokens::size::{HAIRLINE, TAB_BAR};
     // The bars' top, inside the card's 1 pt edge under the `CARD_INSET` strip; the tabs' top,
     // `TAB` tall in the bar's middle.
@@ -773,7 +824,8 @@ fn tab_bar_scenes() {
             "tab-bars",
             "tab-bars-hover",
             "tab-bars-button",
-            "tab-bars-more",
+            "tab-bars-plus",
+            "tab-bars-split",
             "tab-bars-menu",
             "tab-bars-rename",
         ] {
@@ -830,27 +882,35 @@ fn tab_bar_scenes() {
                         let at = plus_centre(cx, &ws, panes[0]).expect("the left bar's +");
                         cx.simulate_mouse_move(window, at, None, none);
                     }
-                    "tab-bars-more" => {
-                        // The left bar's ⋯: its menu hangs from the button's bottom right.
+                    "tab-bars-plus" => {
+                        // The left bar's +: its new tab menu (chore 2026-11-23), no tab made,
+                        // hanging from the +'s bottom left.
+                        let at = plus_centre(cx, &ws, panes[0]).expect("the left bar's +");
+                        cx.simulate_click(window, at, none);
+                        let menu =
+                            cx.read(|cx| ws.read(cx).new_tab_menu.as_ref().map(|m| (m.pane, m.at)));
+                        let (pane, hang) = menu.expect("the + menu");
+                        assert_eq!(pane, panes[0], "{n}: the left +'s menu");
+                        let half = px(BUTTON / 2.0);
+                        let corner = point(at.x - half, at.y + half);
+                        assert!(
+                            (hang.x - corner.x).abs() <= px(0.5)
+                                && (hang.y - corner.y).abs() <= px(0.5),
+                            "{n}: under the +: {hang:?}, {corner:?}"
+                        );
+                        assert_eq!(
+                            cx.read(|cx| ws.read(cx).tab_sessions().len()),
+                            4,
+                            "{n}: the + made no tab"
+                        );
+                    }
+                    "tab-bars-split" => {
+                        // The pointer on the left bar's Split Right: hovered, nothing split.
                         let right = tabs[0].left() - px(crate::ui_tokens::size::TABS_LEFT)
                             + px(LEFT_BAR_WIDTH);
-                        let at = point(right - px(MORE_FROM_EDGE), tabs[0].center().y);
-                        cx.simulate_click(window, at, none);
-                        let menu = cx.read(|cx| {
-                            let ws = ws.read(cx);
-                            ws.pane_actions.as_ref().map(|m| (m.pane, m.at))
-                        });
-                        let corner = point(
-                            right - px(MORE_FROM_EDGE - BUTTON / 2.0),
-                            px(bar_top + BUTTON_TOP + BUTTON),
-                        );
-                        // (Within half a point: the bar's half-point width rounds.)
-                        let (pane, at) = menu.expect("the ⋯ menu");
-                        assert_eq!(pane, panes[0], "{n}: the left ⋯'s menu");
-                        assert!(
-                            (at.x - corner.x).abs() <= px(0.5) && at.y == corner.y,
-                            "{n}: under the left ⋯: {at:?}, {corner:?}"
-                        );
+                        let at = point(right - px(SPLIT_RIGHT_FROM_EDGE), tabs[0].center().y);
+                        cx.simulate_mouse_move(window, at, None, none);
+                        assert_eq!(shown_panes(cx, &ws).len(), 2, "{n}: a hover splits nothing");
                     }
                     "tab-bars-menu" => {
                         cx.simulate_mouse_down(window, tabs[1].center(), MouseButton::Right, none);
@@ -993,58 +1053,50 @@ fn tab_bar_scenes() {
                     // + right after the last tab: its corner, hovered.
                     let plus_x = f32::from(tabs[3].right()) + crate::tab_bar::PLUS_GAP;
                     let plus = px_at(plus_x + 2.0, bar_top + BUTTON_TOP + 2.0);
-                    let more = button_corner(MORE_FROM_EDGE);
+                    let split = button_corner(SPLIT_RIGHT_FROM_EDGE);
                     assert!(near_by(plus, ui.card_hover, 3), "{n}: + hovered: {plus:?}");
-                    assert!(near_by(more, ui.card, 3), "{n}: ⋯ not: {more:?}");
-                }
-                "tab-bars-more" => {
-                    // ⋯ lit: its fill stands off the bar in the gap beside it (both under the
-                    // menu's shadow, so compared with each other, not the tokens).
-                    let more = button_corner(MORE_FROM_EDGE);
-                    let beside = px_at(
-                        bar_right - MORE_FROM_EDGE - BUTTON / 2.0 - BUTTON_GAP / 2.0,
-                        bar_top + BUTTON_TOP + 2.0,
-                    );
-                    let rgb = |[r, g, b]: [u8; 3]| alacritty_terminal::vte::ansi::Rgb { r, g, b };
-                    let h = ui.card_hover;
-                    let lit = gap([h.r, h.g, h.b], ui.card);
                     assert!(
-                        gap(more, rgb(beside)) * 2 >= lit,
-                        "{n}: ⋯ lit: {more:?} beside {beside:?}"
+                        near_by(split, ui.card, 3),
+                        "{n}: Split Right not: {split:?}"
                     );
-                    // The menu's top right at the ⋯'s bottom right.
-                    let (mx, my) = (
-                        bar_right - MORE_FROM_EDGE + BUTTON / 2.0,
-                        bar_top + BUTTON_TOP + BUTTON,
+                }
+                "tab-bars-plus" => {
+                    // The menu's panel under the + (8 left of its left edge, 4 under it): its
+                    // fill just inside its left edge, not the bar's left of that.
+                    let plus_x = f32::from(tabs[3].right()) + crate::tab_bar::PLUS_GAP;
+                    let below = bar_top + BUTTON_TOP + BUTTON + 4.0;
+                    // (In its padding, inside its 1 pt edge, beside the search box.)
+                    let inside = px_at(plus_x - 8.0 + 3.0, below + 20.0);
+                    assert!(is(inside, ui.panel), "{n}: the menu under +: {inside:?}");
+                    let outside = px_at(plus_x - 8.0 - 3.0, below + 20.0);
+                    assert!(!is(outside, ui.panel), "{n}: left edge there: {outside:?}");
+                }
+                "tab-bars-split" => {
+                    // Split Right hovered (`card_hover`), Split Down beside it not (the card);
+                    // each draws its icon (ink in its middle, faint at rest).
+                    let split_right = button_corner(SPLIT_RIGHT_FROM_EDGE);
+                    let split_down = button_corner(SPLIT_DOWN_FROM_EDGE);
+                    assert!(
+                        near_by(split_right, ui.card_hover, 3),
+                        "{n}: Split Right hovered: {split_right:?}"
                     );
-                    let inside = px_at(mx - 2.5, my + 30.0);
-                    assert!(is(inside, ui.panel), "{n}: the menu under ⋯: {inside:?}");
-                    let right = px_at(mx + 3.0, my + 30.0);
-                    assert!(!is(right, ui.panel), "{n}: right edges together: {right:?}");
-                    let above = px_at(mx - 100.0, my - 2.0);
-                    assert!(!is(above, ui.panel), "{n}: under the button: {above:?}");
-                    // Six items (26 pt each, inside the 1 pt edge and 4 pt padding), each with
-                    // its name; the keys at the right of all but New Browser Tab and (M11aa)
-                    // the New ⟨agent⟩ Tab items, one per provider; the menu ends after the last.
-                    let inked = |x0: f32, x1: f32, y: f32| {
-                        (x0 as i32..x1 as i32).any(|x| {
-                            (-4..=4).any(|dy| gap(px_at(x as f32, y + dy as f32), ui.panel) > 60)
+                    assert!(
+                        near_by(split_down, ui.card, 3),
+                        "{n}: Split Down not: {split_down:?}"
+                    );
+                    let inked = |from_edge: f32, under| {
+                        let cx0 = bar_right - from_edge;
+                        let cy = bar_top + BUTTON_TOP + BUTTON / 2.0;
+                        (-6..=6).any(|dx| {
+                            (-6..=6)
+                                .any(|dy| gap(px_at(cx0 + dx as f32, cy + dy as f32), under) > 30)
                         })
                     };
-                    let items = crate::pane_actions::PaneAction::items(true);
-                    assert_eq!(items.len(), 6, "{n}: the menu's items");
-                    for (k, item) in items.iter().enumerate() {
-                        let y = my + 5.0 + 26.0 * k as f32 + 13.0;
-                        assert!(inked(mx - 192.0, mx - 110.0, y), "{n}: item {k}'s name");
-                        let keys = inked(mx - 40.0, mx - 10.0, y);
-                        assert_eq!(keys, item.keys().is_some(), "{n}: item {k}'s keys");
-                    }
-                    let end = my + 1.0 + 4.0 + items.len() as f32 * 26.0 + 4.0 + 1.0;
-                    // (Clear of the panel's rounded corners.)
-                    let last = px_at(mx - 20.0, end - 3.0);
-                    assert!(is(last, ui.panel), "{n}: the menu's foot: {last:?}");
-                    let past = px_at(mx - 20.0, end + 3.0);
-                    assert!(!is(past, ui.panel), "{n}: nothing after the last: {past:?}");
+                    assert!(inked(SPLIT_RIGHT_FROM_EDGE, ui.card_hover), "{n}: its icon");
+                    assert!(
+                        inked(SPLIT_DOWN_FROM_EDGE, ui.card),
+                        "{n}: Split Down's icon"
+                    );
                 }
                 _ => {}
             }
@@ -1170,35 +1222,11 @@ fn tab_bar_scenes() {
             assert_eq!(count(cx), 2, "{n}: middle-click closed codex");
             let codex_gone = cx.read(|cx| ws.read(cx).sessions.position(|s| s.label() == "codex"));
             assert_eq!(codex_gone, None, "{n}: codex ended");
-            // The left bar's ⋯ (the right pane, tests, has the focus): Escape closes its menu.
+            // The left bar's Split Right (the right pane, tests, has the focus): the left pane
+            // splits, beside it a third pane, focused; the right pane is still last.
             let right = api.left() - px(crate::ui_tokens::size::TABS_LEFT) + px(LEFT_BAR_WIDTH);
-            let more = point(right - px(MORE_FROM_EDGE), api.center().y);
-            cx.update(|cx| {
-                cx.bind_keys([KeyBinding::new(
-                    "escape",
-                    crate::tab_menu::Dismiss,
-                    Some("TabMenu"),
-                )])
-            });
-            let open = |cx: &mut VisualTestAppContext| {
-                cx.read(|cx| ws.read(cx).pane_actions.as_ref().map(|m| (m.pane, m.at)))
-            };
-            cx.simulate_click(window, more, none);
-            let (pane, at) = open(cx).expect("the ⋯ menu");
-            assert_eq!(pane, panes[0], "{n}: the left pane's menu");
-            cx.simulate_keystrokes(window, "escape");
-            assert_eq!(open(cx), None, "{n}: Escape closes it");
-            // Again, and its Split Right (the fourth item since M11aa's New Claude Tab): the
-            // left pane splits, beside it a third pane, focused; the right pane is still last.
-            cx.simulate_click(window, more, none);
-            assert!(open(cx).is_some(), "{n}: open again");
-            let k = crate::pane_actions::PaneAction::items(true)
-                .iter()
-                .position(|a| *a == crate::pane_actions::PaneAction::SplitRight)
-                .expect("Split Right") as f32;
-            let split = point(at.x - px(100.0), at.y + px(5.0 + 26.0 * k + 13.0));
+            let split = point(right - px(SPLIT_RIGHT_FROM_EDGE), api.center().y);
             cx.simulate_click(window, split, none);
-            assert_eq!(open(cx), None, "{n}: a choice closes it");
             let panes_now = shown_panes(cx, &ws);
             assert_eq!(panes_now.len(), 3, "{n}: Split Right made a pane");
             assert_eq!(
@@ -1208,6 +1236,22 @@ fn tab_bar_scenes() {
             );
             let focused = cx.read(|cx| ws.read(cx).model.focused_pane());
             assert_eq!(focused, Some(panes_now[1]), "{n}: the new pane focused");
+            // The right pane's bar is the top-right one: its Split Down sits before the right
+            // sidebar's button (`SPLIT_TO_TOGGLE` apart); it splits the right pane downward.
+            let tests_bar = tab_bounds(cx, &ws, panes[1], 0).expect("laid out");
+            let window_right = px(TAB_BARS_WIDTH - CARD_INSET - HAIRLINE);
+            let toggle = window_right - px(crate::tab_bar::BUTTONS_PAD + BUTTON / 2.0);
+            let down = toggle - px(BUTTON + crate::tab_bar::SPLIT_TO_TOGGLE);
+            cx.simulate_click(window, point(down, tests_bar.center().y), none);
+            let after = shown_panes(cx, &ws);
+            assert_eq!(after.len(), 4, "{n}: Split Down made a pane");
+            let focused = cx.read(|cx| ws.read(cx).model.focused_pane());
+            assert_eq!(
+                focused,
+                after.last().copied(),
+                "{n}: under the right pane, focused"
+            );
+            assert_eq!(after[2], panes[1], "{n}: the right pane keeps its place");
             slot.borrow_mut().take();
         };
         render_with(&theme, wide, build, act);
@@ -2197,13 +2241,13 @@ fn browser_tab_scenes() {
 /// shown tab has the `tab_active` wash, the others `tab_idle` (a waiting one its tint), the
 /// shown one's title in `text`, a waiting one's in `text_faint`, the others' in `tab_idle_text`; notes.md is a preview; a
 /// hovered tab is `card_lift` with its ×; + is drawn right after the last tab; and,
-/// overflowing, each tab keeps at least `TAB_MIN_WIDTH`, the row scrolls, and ＋ ⋯ ▥ stay
-/// inside each pane, drawn.
+/// overflowing, each tab keeps at least `TAB_MIN_WIDTH`, the row scrolls, and ＋, the splits
+/// and ▥ stay inside each pane, drawn (a narrow pane's bar has no splits: batch 3, chore 1).
 fn tabs_minimal_scenes() {
     use crate::layout_model::{FileMode, TabKind};
     use crate::tab_bar::{
-        AFTER, BUTTON, BUTTON_GAP, BUTTON_ICON, BUTTONS_PAD, CLOSE, PART_GAP, PLUS_GAP, STATUS_DOT,
-        TAB, TAB_MIN_WIDTH, TAB_PAD, TILE,
+        AFTER, BUTTON, BUTTON_GAP, BUTTON_ICON, BUTTONS_PAD, CLOSE, PART_GAP, PLUS_GAP,
+        SPLIT_TO_TOGGLE, STATUS_DOT, TAB, TAB_MIN_WIDTH, TAB_PAD, TILE,
     };
     use crate::ui_tokens::TEXT_MIN;
     use crate::ui_tokens::size::{CARD_INSET, HAIRLINE, SIDEBAR_DEFAULT_WIDTH, TAB_BAR};
@@ -2213,10 +2257,20 @@ fn tabs_minimal_scenes() {
 
     // A tab's place in the row: the pill, then the clear gap after it.
     let after = AFTER;
-    // The bar's right end: ⋯ and the right sidebar's, pinned (chore 2026-11-20); the room the
-    // tabs can't use adds + (right after the row) to it.
-    let pinned = 2.0 * BUTTONS_PAD + 2.0 * BUTTON + BUTTON_GAP;
+    // The top-right bar's right end: Split Right, Split Down and the right sidebar's, pinned
+    // (batch 3, chore 1); the room the tabs can't use adds + (right after the row) to it. A
+    // narrow pane's bar keeps only the right sidebar's.
+    let pinned = 2.0 * BUTTONS_PAD + 3.0 * BUTTON + BUTTON_GAP + SPLIT_TO_TOGGLE;
     let buttons = PLUS_GAP + BUTTON + pinned;
+    let pinned_narrow = 2.0 * BUTTONS_PAD + BUTTON;
+    let buttons_narrow = PLUS_GAP + BUTTON + pinned_narrow;
+    // The centres of a top-right bar's pinned buttons, from its right edge `right`, right to
+    // left: the right sidebar's, Split Down, Split Right.
+    let pinned_centres = |right: f32| {
+        let toggle = right - BUTTONS_PAD - BUTTON / 2.0;
+        let down = toggle - BUTTON - SPLIT_TO_TOGGLE;
+        [toggle, down, down - BUTTON - BUTTON_GAP]
+    };
     let bar_top = CARD_INSET + HAIRLINE;
     let cy = bar_top + TAB_BAR / 2.0;
     let dir = crate::test_temp::dir("fuxx-ui-shots-tabs-minimal");
@@ -2534,10 +2588,11 @@ fn tabs_minimal_scenes() {
         // shown, hovered): codex shrinks below `TAB_MIN_WIDTH` to fit the row, its tile, its
         // status dot and its × whole and drawn inside the row, left of the buttons; t1 keeps
         // `TAB_MIN_WIDTH` and is scrolled away.
-        // 680 pt over the old 240 pt sidebar: wider by what the default sidebar grew, so the panes
-        // stay about 215 pt each; 20 narrower since the bar's buttons shrank (2026-11-20), so the
-        // row stays narrower than one tab's place.
-        let small_w = 660.0 + (SIDEBAR_DEFAULT_WIDTH - 240.0);
+        // 680 pt over the old 240 pt sidebar: wider by what the default sidebar grew; 20 narrower
+        // since the bar's buttons shrank (2026-11-20), and 50 more since a narrow pane's bar
+        // shows the right sidebar's button alone (batch 3, chore 1: its splits hide), so the
+        // row stays narrower than one tab's place (the panes about 190 pt each).
+        let small_w = 610.0 + (SIDEBAR_DEFAULT_WIDTH - 240.0);
         let small = size(px(small_w), px(420.0));
         let slot: Slot = Rc::new(RefCell::new(None));
         let keep = slot.clone();
@@ -2600,7 +2655,7 @@ fn tabs_minimal_scenes() {
         let across = left + 0.5 * (right - left - HAIRLINE) + HAIRLINE / 2.0;
         let (row_left, row_right) = (
             across + HAIRLINE / 2.0 + crate::ui_tokens::size::TABS_LEFT,
-            right - buttons,
+            right - buttons_narrow,
         );
         assert!(
             row_right - row_left < TAB_MIN_WIDTH + after,
@@ -2649,14 +2704,13 @@ fn tabs_minimal_scenes() {
             x_box.iter().any(|&p| gap(p, fill) > 30),
             "{n}: its × drawn on hover"
         );
-        // The buttons stay drawn, in the pane: ⋯ and the right sidebar's pinned, + left of them.
-        for k in 0..3 {
-            let centre = right - BUTTONS_PAD - BUTTON / 2.0 - k as f32 * (BUTTON + BUTTON_GAP)
-                + if k == 2 {
-                    BUTTON_GAP - BUTTONS_PAD
-                } else {
-                    0.0
-                };
+        // The buttons stay drawn, in the pane: the right sidebar's pinned (no splits: the pane
+        // is narrow), + left of it.
+        let toggle = right - BUTTONS_PAD - BUTTON / 2.0;
+        for (k, centre) in [toggle, right - pinned_narrow - BUTTON / 2.0]
+            .into_iter()
+            .enumerate()
+        {
             let half = BUTTON_ICON / 2.0;
             let inked = in_box(centre - half, centre + half, cy - half, cy + half)
                 .iter()
@@ -2730,16 +2784,18 @@ fn tabs_minimal_scenes() {
         );
         for (pane, pane_right) in [("left", across - HAIRLINE / 2.0), ("right", right)] {
             // The left pane's one tab leaves its row short: its + is right after api, not here;
-            // and it has ⋯ alone (the right sidebar's button is the top-right bar's).
-            for k in 0..if pane == "left" { 1 } else { 3 } {
-                // ⋯ and the right sidebar's pinned, + right after the (full) row, left of them.
-                let centre =
-                    pane_right - BUTTONS_PAD - BUTTON / 2.0 - k as f32 * (BUTTON + BUTTON_GAP)
-                        + if k == 2 {
-                            BUTTON_GAP - BUTTONS_PAD
-                        } else {
-                            0.0
-                        };
+            // and it has the splits alone (the right sidebar's button is the top-right bar's):
+            // its last is Split Down, at the edge.
+            let centres: Vec<f32> = if pane == "left" {
+                vec![pane_right - BUTTONS_PAD - BUTTON / 2.0]
+            } else {
+                // The right sidebar's, Split Down and Split Right pinned, + right after the
+                // (full) row, left of them.
+                let mut c = pinned_centres(pane_right).to_vec();
+                c.push(pane_right - pinned - BUTTON / 2.0);
+                c
+            };
+            for (k, centre) in centres.into_iter().enumerate() {
                 let half = BUTTON_ICON / 2.0;
                 let mut inked = false;
                 for dy in ((cy - half) * scale) as usize..((cy + half) * scale) as usize {
@@ -2756,5 +2812,553 @@ fn tabs_minimal_scenes() {
             }
         }
         println!("ui-shots: {}", path.display());
+    }
+}
+
+/// A workspace for the + menu's scenes: api's terminal (the built-in presets, the app's keys).
+/// `more`: whatever else the scene sets up.
+fn new_tab_menu_build(
+    theme: crate::theme::Theme,
+    keep: Slot,
+    more: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+) -> impl FnOnce(&mut Window, &mut App) -> AnyView {
+    move |window: &mut Window, cx: &mut App| -> AnyView {
+        cx.set_global(sidebar_appearance(theme, cx));
+        cx.bind_keys(crate::new_bindings());
+        cx.bind_keys(crate::key_bindings());
+        let ws = cx.new(|cx| {
+            let mut ws = Workspace::for_shots(window, cx);
+            ws.sidebar.hint_dismissed = true;
+            let api = std::path::Path::new(API);
+            ws.open_shot_session("api", api, SHELL_TEXT, None, window, cx);
+            more(&mut ws, window, cx);
+            ws
+        });
+        *keep.borrow_mut() = Some(ws.clone());
+        ws.into()
+    }
+}
+
+/// The open + menu's model, if it's open.
+fn menu_model(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+) -> Option<crate::new_tab_menu::MenuModel> {
+    cx.read(|cx| {
+        ws.read(cx)
+            .new_tab_menu
+            .as_ref()
+            .map(|m| m.menu.read(cx).model().clone())
+    })
+}
+
+/// The open + menu (it must be).
+fn open_menu(
+    cx: &mut VisualTestAppContext,
+    ws: &gpui::Entity<Workspace>,
+) -> gpui::Entity<crate::new_tab_menu::NewTabMenu> {
+    cx.read(|cx| ws.read(cx).new_tab_menu.as_ref().map(|m| m.menu.clone()))
+        .expect("the + menu is open")
+}
+
+/// The + menu (chore 2026-11-23): a click on the bar's + opens it hanging from the +'s bottom
+/// left, the + lit, its search box with the keyboard, lit on ⌘T's button (Terminal: api is a
+/// terminal). The presets' rows: claude's and agy's logos, opencode's and codex's badges;
+/// opencode isn't on the PATH, so it is greyed ("Not installed"), never lit by the pointer or ↑↓.
+/// The pointer lights a row on a move; ↑↓ step over the icon row and the rows that can be
+/// chosen, ←→ along the icon row. Escape clears what's typed, then closes, and the terminal has
+/// the keyboard again. A click on codex (no provider: it runs in a terminal) opens it as a tab
+/// at the end of the bar running its preset.
+fn new_tab_menu_scene() {
+    use crate::agent_detect::Found;
+    use crate::new_tab_menu::{Lit, NOT_INSTALLED, NewKind};
+    let name = "new-tab-menu";
+    let dims = size(px(960.0), px(600.0));
+    for &(slug, theme_name) in shot_themes() {
+        let theme = shot_theme(theme_name);
+        let ui = theme.ui();
+        let slot: Slot = std::rc::Rc::default();
+        let build = new_tab_menu_build(theme, slot.clone(), |ws, _, cx| {
+            ws.shot_agents_found(vec![Found::Yes, Found::Yes, Found::No, Found::Unknown], cx);
+        });
+        let n = format!("{name}-{slug}");
+        let path = shoot_with(name, slug, &theme, dims, build, move |cx, window| {
+            let ws = slotted(&slot);
+            settle(cx, window);
+            let pane = cx
+                .read(|cx| ws.read(cx).model.focused_pane())
+                .expect("a pane");
+            let plus = plus_centre(cx, &ws, pane).expect("the bar's +");
+            cx.simulate_click(window, plus, gpui::Modifiers::none());
+            settle(cx, window);
+            let (at, menu_pane) = cx.read(|cx| {
+                let open = ws
+                    .read(cx)
+                    .new_tab_menu
+                    .as_ref()
+                    .expect("+ opened its menu");
+                (open.at, open.pane)
+            });
+            assert_eq!(menu_pane, pane, "{n}: this pane's menu");
+            let half = px(crate::tab_bar::BUTTON / 2.0);
+            let corner = point(plus.x - half, plus.y + half);
+            assert!(
+                (at.x - corner.x).abs() <= px(0.5) && (at.y - corner.y).abs() <= px(0.5),
+                "{n}: it hangs from the +'s bottom left: {at:?}, {corner:?}"
+            );
+            let menu = open_menu(cx, &ws);
+            let panel = cx.read(|cx| menu.read(cx).panel_bounds()).expect("drawn");
+            // (Measured inside its 1 pt edge.)
+            let panel = gpui::Bounds::new(
+                point(panel.left() - px(1.0), panel.top() - px(1.0)),
+                size(panel.size.width + px(2.0), panel.size.height + px(2.0)),
+            );
+            assert!(
+                (panel.left() - (at.x - px(8.0))).abs() <= px(0.5)
+                    && (panel.top() - (at.y + px(4.0))).abs() <= px(0.5),
+                "{n}: 8 left of it and 4 under it: {panel:?}"
+            );
+            assert_eq!(f32::from(panel.size.width), 290.0, "{n}: 290 wide");
+            let focused = cx
+                .update_window(window, |_, window, cx| {
+                    menu.read(cx).input_focused(window, cx)
+                })
+                .unwrap();
+            assert!(focused, "{n}: the search box has the keyboard");
+            let model = menu_model(cx, &ws).expect("open");
+            assert_eq!(
+                model.lit,
+                Some(Lit::Icon(NewKind::Terminal)),
+                "{n}: ⌘T's lit"
+            );
+            assert_eq!(model.icon_meta(), Some(("Terminal", Some("⌘T"))), "{n}");
+            // The presets, with their logos (claude, agy) or badges (the others).
+            let rows: Vec<(String, bool, bool)> = model
+                .agents
+                .iter()
+                .map(|a| {
+                    let logo = a
+                        .provider
+                        .and_then(crate::providers::by_name)
+                        .is_some_and(|p| p.info().logo.is_some());
+                    (a.name.clone(), logo, a.enabled())
+                })
+                .collect();
+            let want = [
+                ("claude", true, true),
+                ("agy", true, true),
+                ("opencode", false, false),
+                ("codex", false, true),
+            ];
+            assert_eq!(
+                rows,
+                want.map(|(a, l, e)| (a.to_string(), l, e)),
+                "{n}: the presets, logos, and opencode not installed"
+            );
+            assert_eq!(
+                model.agent_slot(&model.agents[2]),
+                Some(NOT_INSTALLED),
+                "{n}"
+            );
+            // Each row's mark is drawn: a logo or a badge, ink in its 16 pt box.
+            let shot = frame_fresh(cx, window);
+            for k in 0..4 {
+                let row = cx
+                    .read(|cx| menu.read(cx).agent_bounds(k))
+                    .expect("laid out");
+                let (x0, y) = (f32::from(row.left()) + 8.0, f32::from(row.center().y));
+                let inked = (0..16).any(|dx| {
+                    (-6..=6).any(|dy| {
+                        gap(
+                            pixel_at(&shot, dims, x0 + dx as f32, y + dy as f32),
+                            ui.panel,
+                        ) > 40
+                    })
+                });
+                assert!(inked, "{n}: row {k}'s logo or badge is drawn");
+            }
+            // The + is lit: its corner stands off the bar beside it.
+            let corner_px = pixel_at(
+                &shot,
+                dims,
+                f32::from(plus.x - half) + 2.0,
+                f32::from(plus.y - half) + 2.0,
+            );
+            let beside = pixel_at(
+                &shot,
+                dims,
+                f32::from(plus.x + half) + 3.0,
+                f32::from(plus.y - half) + 2.0,
+            );
+            let rgb = |[r, g, b]: [u8; 3]| alacritty_terminal::vte::ansi::Rgb { r, g, b };
+            let h = ui.card_hover;
+            let lit = gap([h.r, h.g, h.b], ui.card);
+            assert!(
+                gap(corner_px, rgb(beside)) * 2 >= lit,
+                "{n}: + lit: {corner_px:?} beside {beside:?}"
+            );
+            // The pointer lights a row on a move, never one not installed.
+            let row = |k: usize, cx: &mut VisualTestAppContext| {
+                cx.read(|cx| menu.read(cx).agent_bounds(k))
+                    .expect("laid out")
+            };
+            let agy = row(1, cx);
+            cx.simulate_mouse_move(window, agy.center(), None, gpui::Modifiers::none());
+            settle(cx, window);
+            assert_eq!(
+                menu_model(cx, &ws).unwrap().lit,
+                Some(Lit::Agent(1)),
+                "{n}: agy lit"
+            );
+            let opencode = row(2, cx);
+            cx.simulate_mouse_move(window, opencode.center(), None, gpui::Modifiers::none());
+            settle(cx, window);
+            assert_eq!(
+                menu_model(cx, &ws).unwrap().lit,
+                Some(Lit::Agent(1)),
+                "{n}: opencode can't be lit"
+            );
+            // The pointer on File lights it (one light: agy's goes), and back.
+            let file = cx
+                .read(|cx| menu.read(cx).icon_bounds(NewKind::File))
+                .expect("laid out");
+            cx.simulate_mouse_move(window, file.center(), None, gpui::Modifiers::none());
+            settle(cx, window);
+            let model = menu_model(cx, &ws).unwrap();
+            assert_eq!(model.lit, Some(Lit::Icon(NewKind::File)), "{n}: File lit");
+            assert_eq!(model.icon_meta(), Some(("File", None)), "{n}");
+            cx.simulate_mouse_move(window, agy.center(), None, gpui::Modifiers::none());
+            settle(cx, window);
+            // The keys: ↓ codex (opencode skipped), ↓ wraps to the icon row (back on File), ←
+            // Browser, ← Terminal.
+            press_keys(cx, window, "down");
+            assert_eq!(menu_model(cx, &ws).unwrap().lit, Some(Lit::Agent(3)), "{n}");
+            press_keys(cx, window, "down");
+            assert_eq!(
+                menu_model(cx, &ws).unwrap().lit,
+                Some(Lit::Icon(NewKind::File)),
+                "{n}: wraps to the icon row's last button"
+            );
+            press_keys(cx, window, "left");
+            let model = menu_model(cx, &ws).unwrap();
+            assert_eq!(
+                model.lit,
+                Some(Lit::Icon(NewKind::Browser)),
+                "{n}: ← on the icons"
+            );
+            assert_eq!(model.icon_meta(), Some(("Browser", None)), "{n}");
+            press_keys(cx, window, "left");
+            assert_eq!(
+                menu_model(cx, &ws).unwrap().lit,
+                Some(Lit::Icon(NewKind::Terminal)),
+                "{n}"
+            );
+            // Escape: what's typed goes first, then the menu, and the terminal types again.
+            cx.simulate_input(window, "x");
+            settle(cx, window);
+            assert_eq!(cx.read(|cx| menu.read(cx).box_text(cx)), "x", "{n}");
+            press_keys(cx, window, "escape");
+            assert_eq!(cx.read(|cx| menu.read(cx).box_text(cx)), "", "{n}: cleared");
+            assert!(menu_model(cx, &ws).is_some(), "{n}: still open");
+            press_keys(cx, window, "escape");
+            assert!(menu_model(cx, &ws).is_none(), "{n}: Esc closed it");
+            assert!(
+                active_terminal_focused(cx, window, &ws),
+                "{n}: the terminal has the keyboard again"
+            );
+            // codex (no provider): a terminal tab at the end of the bar running its preset.
+            let tabs = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| ws.read(cx).model.pane(pane).map_or(0, |p| p.tabs.len()))
+            };
+            let before = tabs(cx);
+            cx.simulate_click(window, plus, gpui::Modifiers::none());
+            settle(cx, window);
+            let codex = row(3, cx);
+            cx.simulate_mouse_move(window, codex.center(), None, gpui::Modifiers::none());
+            cx.simulate_click(window, codex.center(), gpui::Modifiers::none());
+            settle(cx, window);
+            assert!(menu_model(cx, &ws).is_none(), "{n}: a pick closes it");
+            assert_eq!(tabs(cx), before + 1, "{n}: a new tab");
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                let p = ws.model.pane(pane).expect("the pane");
+                let last = p.tabs.last().expect("a tab");
+                assert_eq!(p.active, last.id, "{n}: at the end, shown");
+                let id = ws.terminal_of(last.id).expect("a terminal");
+                let s = ws.sessions.items().iter().find(|s| s.id == id).unwrap();
+                assert_eq!(
+                    s.preset.as_ref().map(|p| p.name.as_str()),
+                    Some("codex"),
+                    "{n}: running codex's preset"
+                );
+            });
+            // Opened again for the picture (the + moved on with the new tab).
+            settle_frames(cx, window);
+            let plus = plus_centre(cx, &ws, pane).expect("the bar's +");
+            cx.simulate_click(window, plus, gpui::Modifiers::none());
+            settle(cx, window);
+            assert!(menu_model(cx, &ws).is_some(), "{n}: open for the picture");
+        });
+        println!("ui-shots: {}", path.display());
+    }
+}
+
+/// The + menu, typed into: the rows under their headings (Open URL, Tabs, History, Files);
+/// ↓ then Enter opens a tab's row (its tab shown), a history row (a browser tab on its page);
+/// Enter on an address opens it in a browser tab; the files row opens ⌘K on Files with the
+/// query.
+fn new_tab_menu_search_scene() {
+    use crate::layout_model::TabKind;
+    use crate::new_tab_menu::{Item, Line};
+    let name = "new-tab-menu-search";
+    let dims = size(px(960.0), px(600.0));
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = std::rc::Rc::default();
+    let build = {
+        let keep = slot.clone();
+        move |window: &mut Window, cx: &mut App| -> AnyView {
+            crate::browser_history::BrowserHistory::set_for_shots(
+                vec![crate::browser_history::Visit {
+                    url: "https://webkit.org/".into(),
+                    title: "WebKit".into(),
+                    last_visit: 1,
+                    visits: 3,
+                }],
+                cx,
+            );
+            let build = new_tab_menu_build(theme, keep, |ws, window, cx| {
+                let web = std::path::Path::new("/Users/me/code/web");
+                ws.open_shot_session("web", web, SHELL_TEXT, None, window, cx);
+                let api = ws.sessions.position(|s| s.label() == "api").expect("api");
+                ws.select(api, window, cx);
+            });
+            let view = build(window, cx);
+            // History is kept: its rows show.
+            cx.global_mut::<crate::appearance::Appearance>()
+                .browser_keep_data = true;
+            view
+        }
+    };
+    let n = name.to_string();
+    let path = shoot_with(name, "mocha", &theme, dims, build, move |cx, window| {
+        let ws = slotted(&slot);
+        settle(cx, window);
+        let pane = cx
+            .read(|cx| ws.read(cx).model.focused_pane())
+            .expect("a pane");
+        let open = |cx: &mut VisualTestAppContext, typed: &str| {
+            let plus = plus_centre(cx, &ws, pane).expect("the bar's +");
+            cx.simulate_click(window, plus, gpui::Modifiers::none());
+            settle(cx, window);
+            cx.simulate_input(window, typed);
+            settle(cx, window);
+        };
+        let labels = |cx: &mut VisualTestAppContext| -> Vec<String> {
+            menu_model(cx, &ws)
+                .expect("open")
+                .lines
+                .iter()
+                .map(|l| match l {
+                    Line::Heading(h) => format!("# {h}"),
+                    Line::Row(r) => r.label.clone(),
+                })
+                .collect()
+        };
+        open(cx, "web");
+        assert_eq!(
+            labels(cx),
+            [
+                "# Open URL",
+                &crate::browser_history::search_label("web"),
+                "# Tabs",
+                "web",
+                "# History",
+                "WebKit",
+                "# Files",
+                "Search files for \u{201c}web\u{201d}",
+            ],
+            "{n}"
+        );
+        // ↓ then Enter: web's tab, shown.
+        press_keys(cx, window, "down enter");
+        assert!(menu_model(cx, &ws).is_none(), "{n}: closed");
+        let active = cx.read(|cx| ws.read(cx).sessions.active().map(|s| s.label().to_string()));
+        assert_eq!(active.as_deref(), Some("web"), "{n}: web's tab shown");
+        // Back on api: ↓↓ then Enter, the history row: a browser tab on its page.
+        cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let api = ws.sessions.position(|s| s.label() == "api").expect("api");
+                ws.select(api, window, cx)
+            })
+        })
+        .unwrap();
+        settle(cx, window);
+        let last_kind = |cx: &mut VisualTestAppContext| {
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                let p = ws.model.pane(pane).expect("the pane");
+                ws.model.tab(p.active).map(|t| t.kind.clone())
+            })
+        };
+        open(cx, "web");
+        press_keys(cx, window, "down down enter");
+        assert_eq!(
+            last_kind(cx),
+            Some(TabKind::Browser {
+                url: Some("https://webkit.org/".into())
+            }),
+            "{n}: the history row's page"
+        );
+        // An address: Open it.
+        open(cx, "localhost:3000");
+        let model = menu_model(cx, &ws).expect("open");
+        let Some(Line::Row(first)) = model.lines.get(1) else {
+            panic!("{n}: {:?}", model.lines)
+        };
+        assert_eq!(first.label, "Open localhost:3000", "{n}");
+        assert!(matches!(&first.item, Item::Url(_)), "{n}");
+        press_keys(cx, window, "enter");
+        let opened = last_kind(cx);
+        assert!(
+            matches!(&opened, Some(TabKind::Browser { url: Some(u) }) if u.contains("localhost:3000")),
+            "{n}: {opened:?}"
+        );
+        // The files row (the last: ↑ from the first wraps to it, then a click on it, the box
+        // keeping the keyboard till then) opens ⌘K on Files, typed.
+        open(cx, "main");
+        press_keys(cx, window, "up");
+        let model = menu_model(cx, &ws).expect("open");
+        let files = model.lines.len() - 1;
+        assert_eq!(
+            model.lit,
+            Some(crate::new_tab_menu::Lit::Line(files)),
+            "{n}: wrapped"
+        );
+        let menu = open_menu(cx, &ws);
+        let row = cx
+            .read(|cx| menu.read(cx).line_bounds(files))
+            .expect("laid out");
+        cx.simulate_click(window, row.center(), gpui::Modifiers::none());
+        settle(cx, window);
+        assert!(menu_model(cx, &ws).is_none(), "{n}: closed");
+        cx.read(|cx| {
+            let palette = ws.read(cx).palette.clone().expect("⌘K opened");
+            let p = palette.read(cx);
+            assert_eq!(
+                p.scope(),
+                crate::palette_items::Scope::Files,
+                "{n}: on Files"
+            );
+            assert_eq!(p.box_text(cx), "main", "{n}: the query typed");
+        });
+        // For the picture: the menu typed into again.
+        cx.update(|cx| ws.update(cx, |ws, _| ws.palette = None));
+        open(cx, "web");
+    });
+    println!("ui-shots: {}", path.display());
+}
+
+/// ⌘T makes a tab like the focused pane's active one (chore 2026-11-23): in a Claude tab, a
+/// Claude tab in its folder with its model and effort, in Auto; in an agy tab, agy; after a
+/// browser tab, a browser tab; after a file or a terminal, a terminal. ⇧⌘T in an agent tab is a
+/// terminal. Enter on the + menu with nothing typed does what ⌘T does.
+fn new_tab_like_last_scene() {
+    use crate::layout_model::{FileMode, TabKind};
+    let name = "new-tab-like-last";
+    let dims = size(px(960.0), px(600.0));
+    let theme = shot_theme("Catppuccin Mocha");
+    let my_app = std::path::PathBuf::from("/Users/me/code/my-app");
+    let agent = |provider: &str| TabKind::Agent {
+        provider: provider.into(),
+        cwd: my_app.clone(),
+        conversation: None,
+        mode: Some("plan".into()),
+        title: None,
+        model: Some("opus".into()),
+        effort: Some("high".into()),
+    };
+    let file = TabKind::File {
+        path: concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs").into(),
+        mode: FileMode::Plain,
+    };
+    // What ⌘T made: the same agent in its folder with its model and effort, in Auto (none: a
+    // terminal).
+    let made = |provider: &str| {
+        Some(TabKind::Agent {
+            provider: provider.into(),
+            cwd: my_app.clone(),
+            conversation: None,
+            mode: Some("auto".into()),
+            title: None,
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+        })
+    };
+    let starts: Vec<(&str, TabKind, &str, Option<TabKind>)> = vec![
+        ("claude", agent("claude"), "cmd-t", made("claude")),
+        ("agy", agent("agy"), "cmd-t", made("agy")),
+        (
+            "browser",
+            TabKind::Browser { url: None },
+            "cmd-t",
+            Some(TabKind::Browser { url: None }),
+        ),
+        ("file", file, "cmd-t", None),
+        ("terminal", TabKind::Terminal(0), "cmd-t", None),
+        ("claude-shift", agent("claude"), "cmd-shift-t", None),
+        ("claude-menu", agent("claude"), "menu", made("claude")),
+    ];
+    for (case, start, keys, want) in starts {
+        let slot: Slot = std::rc::Rc::default();
+        let build = new_tab_menu_build(theme, slot.clone(), {
+            let start = start.clone();
+            move |ws, window, cx| {
+                if !matches!(start, TabKind::Terminal(_)) {
+                    let pane = ws.model.focused_pane().expect("a pane");
+                    let opened = ws.model.add_tab(pane, start).expect("added");
+                    ws.sync();
+                    ws.select_tab(opened.tab, window, cx);
+                }
+            }
+        });
+        let n = format!("{name}-{case}");
+        let said = n.clone();
+        render_with(&theme, dims, build, move |cx, window| {
+            let ws = slotted(&slot);
+            settle_frames(cx, window);
+            let pane = cx
+                .read(|cx| ws.read(cx).model.focused_pane())
+                .expect("a pane");
+            let count = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| ws.read(cx).model.pane(pane).map_or(0, |p| p.tabs.len()))
+            };
+            let before = count(cx);
+            if keys == "menu" {
+                let plus = plus_centre(cx, &ws, pane).expect("the bar's +");
+                cx.simulate_click(window, plus, gpui::Modifiers::none());
+                settle(cx, window);
+                assert!(menu_model(cx, &ws).is_some(), "{n}: the + menu");
+                press_keys(cx, window, "enter");
+            } else {
+                press_keys(cx, window, keys);
+            }
+            settle_frames(cx, window);
+            assert_eq!(count(cx), before + 1, "{n}: one new tab");
+            let kind = cx.read(|cx| {
+                let ws = ws.read(cx);
+                let p = ws.model.pane(pane).expect("the pane");
+                let tab = p.tabs.last().expect("a tab");
+                assert_eq!(p.active, tab.id, "{n}: at the end of the bar, shown");
+                tab.kind.clone()
+            });
+            match &want {
+                Some(want) => assert_eq!(&kind, want, "{n}"),
+                None => assert!(
+                    matches!(kind, TabKind::Terminal(_)),
+                    "{n}: a terminal: {kind:?}"
+                ),
+            }
+        });
+        println!("ui-shots: {said} ok");
     }
 }

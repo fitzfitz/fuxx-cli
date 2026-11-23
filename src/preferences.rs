@@ -161,6 +161,7 @@ impl Section {
                     rows: &[
                         Switch(OnOff::Animations),
                         Switch(OnOff::AgentSweep),
+                        Switch(OnOff::AgentSuggestions),
                         Switch(OnOff::StatusBar),
                         TipsCard,
                     ],
@@ -318,6 +319,7 @@ impl Control {
             Control::PluginList => "Installed plugins",
             Control::Switch(OnOff::Animations) => "Animations",
             Control::Switch(OnOff::AgentSweep) => "Agent box sweep",
+            Control::Switch(OnOff::AgentSuggestions) => "Prompt suggestions",
             Control::Switch(OnOff::StatusBar) => "Status Bar",
             Control::Switch(OnOff::CheckUpdates) => "Check for updates",
             Control::Switch(OnOff::KeepRunning) => "Keep running after quit",
@@ -353,6 +355,9 @@ impl Control {
             Control::Switch(OnOff::Animations) => ANIMATIONS_NOTE,
             Control::Switch(OnOff::AgentSweep) => {
                 "A light runs once round the agent box when you open its tab."
+            }
+            Control::Switch(OnOff::AgentSuggestions) => {
+                "Claude guesses your next message; Tab takes it."
             }
             Control::Switch(OnOff::StatusBar) => "The line along the window's foot.",
             Control::Switch(OnOff::CheckUpdates) => CHECK_UPDATES_NOTE,
@@ -426,6 +431,8 @@ pub(crate) enum OnOff {
     Animations,
     /// `agent-sweep`: a light runs once round the agent box when its tab is shown.
     AgentSweep,
+    /// `agent-suggestions`: Claude guesses your next message (applies to agents started after).
+    AgentSuggestions,
     /// `status-bar`: the bar at the window's bottom (M11v part 3).
     StatusBar,
     CheckUpdates,
@@ -448,6 +455,7 @@ impl OnOff {
         match self {
             OnOff::Animations => "animations",
             OnOff::AgentSweep => "agent-sweep",
+            OnOff::AgentSuggestions => "agent-suggestions",
             OnOff::StatusBar => "status-bar",
             OnOff::CheckUpdates => "check-updates",
             OnOff::KeepRunning => "persistent-sessions",
@@ -466,6 +474,7 @@ impl OnOff {
         match self {
             OnOff::Animations => prefs::animations_values(on),
             OnOff::AgentSweep => prefs::agent_sweep_values(on),
+            OnOff::AgentSuggestions => prefs::agent_suggestions_values(on),
             OnOff::StatusBar => prefs::status_bar_values(on),
             OnOff::CheckUpdates => prefs::check_updates_values(on),
             OnOff::KeepRunning => prefs::persistence_values(on),
@@ -484,6 +493,7 @@ impl OnOff {
         match self {
             OnOff::Animations => a.animations,
             OnOff::AgentSweep => a.agent_sweep,
+            OnOff::AgentSuggestions => a.agent_suggestions,
             OnOff::StatusBar => a.status_bar,
             OnOff::CheckUpdates => a.check_updates,
             OnOff::KeepRunning => a.persistent,
@@ -2119,12 +2129,13 @@ mod tests {
     #[test]
     fn palette_settings_cover_every_control() {
         let all = palette_settings();
-        // 25 since the agent box sweep (2026-11-22; 24 since M11ab's "Commands as cards").
-        assert_eq!(all.len(), 25);
+        // 26 since prompt suggestions (2026-11-23; 25 since the agent box sweep, 24 since
+        // M11ab's "Commands as cards").
+        assert_eq!(all.len(), 26);
         let mut names: Vec<&str> = all.iter().map(|s| s.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 25, "names unique");
+        assert_eq!(names.len(), 26, "names unique");
         let order = |s: Section| Section::ALL.iter().position(|&x| x == s);
         assert!(
             all.windows(2)
@@ -2139,9 +2150,11 @@ mod tests {
         assert!(all.iter().all(|s| s.name != "Cursor"));
         assert_eq!(all[0].name, "Animations");
         assert_eq!(all[1].name, "Agent box sweep");
-        assert_eq!(all[2].name, "Status Bar");
-        // (Two later than before M11ab: "Commands as cards" and the sweep come before it.)
-        assert_eq!(all[19].name, "Keep history and data");
+        assert_eq!(all[2].name, "Prompt suggestions");
+        assert_eq!(all[3].name, "Status Bar");
+        // (Three later than before M11ab: "Commands as cards", the sweep and the suggestions
+        // come before it.)
+        assert_eq!(all[20].name, "Keep history and data");
         for section in Section::ALL {
             for control in section.controls() {
                 if let Control::Switch(switch) = control {
@@ -2319,6 +2332,10 @@ mod tests {
                             (
                                 "Agent box sweep",
                                 "A light runs once round the agent box when you open its tab."
+                            ),
+                            (
+                                "Prompt suggestions",
+                                "Claude guesses your next message; Tab takes it."
                             ),
                             ("Status Bar", "The line along the window's foot."),
                             ("Tips card", "The welcome tips in the sidebar."),
@@ -2500,6 +2517,7 @@ mod tests {
             [
                 Switch(OnOff::Animations),
                 Switch(OnOff::AgentSweep),
+                Switch(OnOff::AgentSuggestions),
                 Switch(OnOff::StatusBar),
                 TipsCard,
                 Switch(OnOff::CheckUpdates)
@@ -2554,6 +2572,7 @@ mod tests {
             CursorFun,
             Switch(OnOff::Animations),
             Switch(OnOff::AgentSweep),
+            Switch(OnOff::AgentSuggestions),
             Switch(OnOff::StatusBar),
             Switch(OnOff::CheckUpdates),
             Switch(OnOff::KeepRunning),

@@ -50,6 +50,9 @@ pub struct Appearance {
     /// `agent-sweep = on|off`: a light runs once round the agent box when its tab is shown
     /// (2026-11-22; default on).
     pub agent_sweep: bool,
+    /// `agent-suggestions = on|off`: Claude guesses your next message after a turn, shown as
+    /// faint text in the empty box (a chore after M11ar; default on). Read when an agent starts.
+    pub agent_suggestions: bool,
     /// `browser-keep-data = on|off`: browser windows opened from now on keep cookies, logins and
     /// site data on disk between runs (default off: each run starts from nothing).
     pub browser_keep_data: bool,
@@ -248,6 +251,11 @@ fn status_bar_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
 /// `agent-sweep`, on by default (see `switch_from_entries`).
 fn agent_sweep_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
     switch_from_entries(entries, "agent-sweep", true)
+}
+
+/// `agent-suggestions`, on by default (see `switch_from_entries`).
+fn agent_suggestions_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    switch_from_entries(entries, "agent-suggestions", true)
 }
 
 /// `browser-keep-data`, off by default (see `switch_from_entries`).
@@ -451,6 +459,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
     let (browser_address_bar, address_bar_warnings) = browser_address_bar_from_entries(&entries);
     let (status_bar, status_bar_warnings) = status_bar_from_entries(&entries);
     let (agent_sweep, agent_sweep_warnings) = agent_sweep_from_entries(&entries);
+    let (agent_suggestions, suggestions_warnings) = agent_suggestions_from_entries(&entries);
     let (browser_keep_data, keep_data_warnings) = browser_keep_data_from_entries(&entries);
     let (check_updates, check_updates_warnings) = check_updates_from_entries(&entries);
     let (cursor_style, cursor_style_warnings) = cursor_style_from_entries(&entries);
@@ -471,6 +480,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         .chain(&address_bar_warnings)
         .chain(&status_bar_warnings)
         .chain(&agent_sweep_warnings)
+        .chain(&suggestions_warnings)
         .chain(&keep_data_warnings)
         .chain(&check_updates_warnings)
         .chain(&cursor_style_warnings)
@@ -505,6 +515,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         browser_address_bar,
         status_bar,
         agent_sweep,
+        agent_suggestions,
         browser_keep_data,
         check_updates,
         cursor_style,
@@ -747,6 +758,18 @@ mod tests {
             warnings,
             vec!["status-bar \"hide\": expected on or off".to_string()]
         );
+    }
+
+    /// Prompt suggestions (a chore after M11ar): on unless turned off.
+    #[test]
+    fn agent_suggestions_setting_defaults_on() {
+        let sug = |v: &str| entry("agent-suggestions", v);
+        assert_eq!(agent_suggestions_from_entries(&[]), (true, vec![]));
+        assert_eq!(
+            agent_suggestions_from_entries(&[sug("off")]),
+            (false, vec![])
+        );
+        assert_eq!(agent_suggestions_from_entries(&[sug("on")]), (true, vec![]));
     }
 
     #[test]

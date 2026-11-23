@@ -147,6 +147,54 @@ pub(super) const SCENES: &[Scene] = &[
         sources: LAYOUT,
     },
     Scene {
+        name: "agent-box-suggestion",
+        run: agent_box_suggestion,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: SUGGEST,
+    },
+    Scene {
+        name: "agent-box-suggestion-tab-takes",
+        run: agent_box_suggestion_tab_takes,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: SUGGEST,
+    },
+    Scene {
+        name: "agent-box-suggestion-stale",
+        run: agent_box_suggestion_stale,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: SUGGEST,
+    },
+    Scene {
+        name: "agent-box-suggestion-flags",
+        run: agent_box_suggestion_flags,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: SUGGEST,
+    },
+    Scene {
+        name: "agent-box-history",
+        run: agent_box_history,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: SUGGEST,
+    },
+    Scene {
+        name: "agent-box-history-folder",
+        run: agent_box_history_folder,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: SUGGEST,
+    },
+    Scene {
         name: "agent-box-attachment",
         run: agent_box_attachment,
         themes: Themes::Both,
@@ -552,6 +600,7 @@ fn start(mode: Option<&str>, model: Option<&str>) -> Start {
         model: model.map(String::from),
         effort: None,
         extra_args: Vec::new(),
+        branch: None,
     }
 }
 
@@ -2030,6 +2079,37 @@ pub(super) fn agent_box_image_chip() {
             ],
             "{n}"
         );
+        // The pasted one is a pill in the text: drawn inside the box's typing, in the pill's
+        // fill (its hidden bracket's cell shows the fill alone). The pointing hand over it can't
+        // be seen by a scene.
+        let pills = cx.read(|cx| tab.read(cx).shot_composer().read(cx).shot_pills());
+        assert_eq!(pills.len(), 1, "{n}: one pill, [Image #1]: {pills:?}");
+        let typing = composer_bounds(cx, tab);
+        let (cell, _) = cx.read(|cx| tab.read(cx).shot_composer().read(cx).shot_cell());
+        let shot = frame_fresh(cx, window);
+        let pill_rgb = cx.read(|cx| {
+            let theme = cx.global::<crate::appearance::Appearance>().theme;
+            crate::theme::mix(theme.ui().composer_inner, theme.foreground, 0.12)
+        });
+        for pill in &pills {
+            assert!(
+                pill.left() >= typing.left()
+                    && pill.right() <= typing.right()
+                    && pill.top() >= typing.top()
+                    && pill.bottom() <= typing.bottom(),
+                "{n}: the pill {pill:?} is in the typing {typing:?}"
+            );
+            let p = super::pixel_at(
+                &shot,
+                size(px(DIMS.0), px(DIMS.1)),
+                f32::from(pill.left() + cell / 2.),
+                f32::from(pill.center().y),
+            );
+            assert!(
+                super::near(p, pill_rgb),
+                "{n}: the pill's fill {pill_rgb:?} at {pill:?}: {p:?}"
+            );
+        }
         let chip_row = part(cx, tab, n, "attachments");
         assert!(inside(chip_row, part(cx, tab, n, "box")), "{n}: in the box");
         assert!(
@@ -4698,6 +4778,515 @@ pub(super) fn agent_box_at_sections() {
             nothing_sent(n, cx, tab);
             // Left open for the shot.
             open_at_list(n, cx, window, tab, &FILES, "re");
+        },
+    );
+}
+
+// ---- Prompt suggestions and history (chores after M11ar) ----
+
+/// The files the agent's guess and the prompt history go through: the box's, the composer that
+/// draws the ghost and takes the keys, the history store, the keys, the fixture.
+const SUGGEST: &[&str] = &[
+    "src/agent_tab.rs",
+    "src/agent_box.rs",
+    "src/agent_conversation.rs",
+    "src/agent_process.rs",
+    "src/appearance.rs",
+    "src/composer.rs",
+    "src/main.rs",
+    "src/prompt_history.rs",
+    "src/providers/mod.rs",
+    "src/providers/claude.rs",
+    "src/providers/agy.rs",
+    "src/providers/fixtures/claude-prompt-suggestion.jsonl",
+];
+
+/// Lines `range` of Claude's recorded suggestion turns, decoded: 0..4 is the first turn and
+/// its guess ("go ahead and create it"), 4..7 the second ("and the third step?").
+fn suggestion_turn(range: std::ops::Range<usize>) -> Vec<Event> {
+    let mut t = CLAUDE.translator();
+    let lines: Vec<&str> = include_str!("../providers/fixtures/claude-prompt-suggestion.jsonl")
+        .lines()
+        .collect();
+    lines[range].iter().flat_map(|l| t.decode(l)).collect()
+}
+
+/// The ghost as last drawn, its text (None: not drawn).
+fn ghost(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+) -> Option<String> {
+    let _ = frame_fresh(cx, window);
+    cx.read(|cx| tab.read(cx).shot_composer().read(cx).shot_ghost())
+        .map(|(text, _)| text)
+}
+
+fn suggestion(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Option<String> {
+    cx.read(|cx| tab.read(cx).suggestion.clone())
+}
+
+/// Ask, and let the first recorded turn answer: the tab idle with Claude's guess.
+fn ask_and_answer(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>) {
+    feed(cx, tab, |t, cx| {
+        t.send("Is there a README in code/my-app?".into(), cx)
+    });
+    feed(cx, tab, |t, cx| t.shot_feed(suggestion_turn(0..4), cx));
+}
+
+/// The user's words: "can I get the agent suggestion on what to type? just like in claude cli,
+/// it has prompt suggestions". After a turn Claude's guess shows in the empty box, faint, with
+/// a faint "⇥" after it, in place of the placeholder; typing hides it, emptying brings it back.
+pub(super) fn agent_box_suggestion() {
+    layout_scene("agent-box-suggestion", |n, cx, window, tab| {
+        ask_and_answer(cx, tab);
+        assert_eq!(
+            suggestion(cx, tab).as_deref(),
+            Some("go ahead and create it"),
+            "{n}: kept, the tab idle"
+        );
+        assert_eq!(
+            ghost(cx, window, tab).as_deref(),
+            Some("go ahead and create it"),
+            "{n}: drawn"
+        );
+        let composer = cx.read(|cx| tab.read(cx).shot_composer());
+        let (cell, _) = cx.read(|cx| composer.read(cx).shot_cell());
+        let (_, at) = cx
+            .read(|cx| composer.read(cx).shot_ghost())
+            .expect("the ghost");
+        let len = "go ahead and create it".chars().count() as f32;
+        assert!(
+            at.size.width >= cell * (len + 1.5),
+            "{n}: \" ⇥\" drawn after it ({:?} for {len} cells of {cell:?})",
+            at.size.width
+        );
+        assert!(
+            inside(at, composer_bounds(cx, tab)),
+            "{n}: in the typing {at:?}"
+        );
+        assert_eq!(
+            cx.read(|cx| composer.read(cx).shot_placeholder()),
+            None,
+            "{n}: no placeholder under it"
+        );
+        type_in_box(cx, window, "x");
+        assert_eq!(ghost(cx, window, tab), None, "{n}: typing hides it");
+        press(cx, window, "backspace");
+        assert_eq!(
+            ghost(cx, window, tab).as_deref(),
+            Some("go ahead and create it"),
+            "{n}: emptied, it is back"
+        );
+    });
+}
+
+/// Tab takes the guess (the caret at its end) and Enter sends it; Enter on the empty box with a
+/// guess showing sends nothing; Tab with the `/` list open still completes.
+pub(super) fn agent_box_suggestion_tab_takes() {
+    box_scene(
+        "agent-box-suggestion-tab-takes",
+        &CLAUDE,
+        example_start(),
+        Lookup::Ready(slash_catalog()),
+        |n, cx, window, tab| {
+            ask_and_answer(cx, tab);
+            let sent = written(cx, tab).len();
+            press(cx, window, "enter");
+            assert_eq!(
+                written(cx, tab).len(),
+                sent,
+                "{n}: Enter never sends the ghost"
+            );
+            assert_eq!(said(cx, tab).len(), 1, "{n}: nothing said");
+            press(cx, window, "tab");
+            assert_eq!(box_text(cx, tab), "go ahead and create it", "{n}: taken");
+            let caret = cx.read(|cx| tab.read(cx).shot_composer().read(cx).cursor());
+            assert_eq!(caret, box_text(cx, tab).len(), "{n}: the caret at its end");
+            press(cx, window, "enter");
+            assert_eq!(
+                said(cx, tab).last().map(String::as_str),
+                Some("go ahead and create it"),
+                "{n}: Enter sent it"
+            );
+            assert_eq!(suggestion(cx, tab), None, "{n}: a send clears it");
+            assert_eq!(box_text(cx, tab), "", "{n}");
+            // The next turn's guess, then the `/` list: its Tab completes, as before.
+            feed(cx, tab, |t, cx| t.shot_feed(suggestion_turn(4..7), cx));
+            assert_eq!(
+                ghost(cx, window, tab).as_deref(),
+                Some("and the third step?"),
+                "{n}"
+            );
+            type_in_box(cx, window, "/");
+            assert!(slash_state(cx, tab).is_some(), "{n}: the list is open");
+            press(cx, window, "tab");
+            assert_eq!(
+                box_text(cx, tab),
+                "/help ",
+                "{n}: Tab completed the command"
+            );
+        },
+    );
+}
+
+/// A guess is only for an idle Main: one that comes while it works is dropped, a message read
+/// (`Taken`) clears it, a lane view and a waiting permission hide it, a restart clears it.
+pub(super) fn agent_box_suggestion_stale() {
+    use crate::agent_lanes::View;
+    use crate::providers::LaneControls;
+    box_scene(
+        "agent-box-suggestion-stale",
+        &CLAUDE,
+        example_start(),
+        Lookup::Ready(example_catalog()),
+        |n, cx, window, tab| {
+            let guess = |text: &str| vec![Event::Suggestion(text.into())];
+            feed(cx, tab, |t, cx| t.send("Look at code/my-app".into(), cx));
+            feed(cx, tab, |t, cx| t.shot_feed(guess("too early"), cx));
+            assert_eq!(suggestion(cx, tab), None, "{n}: dropped while working");
+            // A subagent ran in that turn (its lane stays to look at).
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(
+                    vec![
+                        Event::ToolStarted {
+                            id: "lane-1".into(),
+                            name: "Agent".into(),
+                            summary: "Read the README".into(),
+                            parent: None,
+                            detail: None,
+                            writes: Vec::new(),
+                            texts: Vec::new(),
+                        },
+                        Event::SubagentStarted {
+                            id: "lane-1".into(),
+                            parent: None,
+                            label: "Read the README".into(),
+                            kind: "general-purpose".into(),
+                            task: "Read the README, then report".into(),
+                            model: None,
+                            controls: LaneControls { stop: true },
+                        },
+                        Event::SubagentEnded {
+                            id: "lane-1".into(),
+                            end: crate::providers::LaneEnd::Done,
+                        },
+                        Event::ToolFinished {
+                            id: "lane-1".into(),
+                            ok: true,
+                            summary: "Read the README".into(),
+                            output: None,
+                        },
+                        turn_done(),
+                    ],
+                    cx,
+                )
+            });
+            feed(cx, tab, |t, cx| t.shot_feed(guess("go ahead"), cx));
+            assert_eq!(ghost(cx, window, tab).as_deref(), Some("go ahead"), "{n}");
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(vec![Event::Taken { id: None }], cx)
+            });
+            assert_eq!(suggestion(cx, tab), None, "{n}: Main read a message");
+            assert_eq!(ghost(cx, window, tab), None, "{n}");
+            feed(cx, tab, |t, cx| t.shot_feed(vec![turn_done()], cx));
+            feed(cx, tab, |t, cx| t.shot_feed(guess("and then?"), cx));
+            assert_eq!(ghost(cx, window, tab).as_deref(), Some("and then?"), "{n}");
+            feed(cx, tab, |t, cx| {
+                t.show_view(View::Lane("lane-1".into()), cx)
+            });
+            assert_eq!(ghost(cx, window, tab), None, "{n}: not in a lane view");
+            feed(cx, tab, |t, cx| t.show_view(View::Main, cx));
+            assert_eq!(
+                ghost(cx, window, tab).as_deref(),
+                Some("and then?"),
+                "{n}: Main shows it again"
+            );
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(
+                    vec![Event::Permission {
+                        id: "p1".into(),
+                        tool: "Bash".into(),
+                        what: "ls".into(),
+                        detail: "ls".into(),
+                        always: None,
+                        by: None,
+                    }],
+                    cx,
+                )
+            });
+            assert_eq!(
+                ghost(cx, window, tab),
+                None,
+                "{n}: not with a permission waiting"
+            );
+            press(cx, window, "enter");
+            feed(cx, tab, |t, cx| t.shot_feed(vec![turn_done()], cx));
+            feed(cx, tab, |t, cx| t.shot_feed(guess("one more"), cx));
+            assert_eq!(suggestion(cx, tab).as_deref(), Some("one more"), "{n}");
+            feed(cx, tab, |t, cx| t.shot_respawn(cx));
+            assert_eq!(suggestion(cx, tab), None, "{n}: a restart clears it");
+            assert_eq!(ghost(cx, window, tab), None, "{n}");
+        },
+    );
+}
+
+/// Claude is started with `--prompt-suggestions true` and its env var while the setting is on,
+/// with neither when it is off (from the next start; its file checkpoints' variable either way,
+/// batch 3 chore 2); a preset that names the flag wins; agy never has them.
+pub(super) fn agent_box_suggestion_flags() {
+    use crate::providers::Provider;
+    let env = || CLAUDE.process_env(true);
+    run_scene(
+        "agent-box-suggestion-flags",
+        &CLAUDE,
+        start(None, None),
+        move |n, cx, tab, _| {
+            let last_env = |cx: &VisualTestAppContext| cx.read(|cx| tab.read(cx).shot_last_env());
+            assert_eq!(
+                flag(&argv(cx, tab), "--prompt-suggestions").as_deref(),
+                Some("true"),
+                "{n}: {:?}",
+                argv(cx, tab)
+            );
+            assert_eq!(last_env(cx), env(), "{n}");
+            cx.update(|cx| {
+                cx.update_global::<crate::appearance::Appearance, _>(|a, _| {
+                    a.agent_suggestions = false
+                })
+            });
+            feed(cx, tab, |t, cx| t.shot_respawn(cx));
+            assert!(
+                !argv(cx, tab).iter().any(|a| a == "--prompt-suggestions"),
+                "{n}: off: {:?}",
+                argv(cx, tab)
+            );
+            assert_eq!(
+                last_env(cx),
+                CLAUDE.process_env(false),
+                "{n}: off, no suggestion env"
+            );
+            assert!(
+                !last_env(cx)
+                    .iter()
+                    .any(|(k, _)| k == "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"),
+                "{n}"
+            );
+        },
+    );
+    run_scene(
+        "agent-box-suggestion-flags",
+        &CLAUDE,
+        Start {
+            extra_args: vec!["--prompt-suggestions".into(), "false".into()],
+            ..start(None, None)
+        },
+        |n, cx, tab, _| {
+            let argv = argv(cx, tab);
+            let named = argv.iter().filter(|a| *a == "--prompt-suggestions").count();
+            assert_eq!(named, 1, "{n}: the preset's flag only: {argv:?}");
+            assert_eq!(
+                flag(&argv, "--prompt-suggestions").as_deref(),
+                Some("false")
+            );
+        },
+    );
+    run_scene(
+        "agent-box-suggestion-flags",
+        &AGY,
+        start(None, None),
+        |n, cx, tab, _| {
+            assert!(
+                !argv(cx, tab).iter().any(|a| a.contains("suggestion")),
+                "{n}: agy: {:?}",
+                argv(cx, tab)
+            );
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_last_env()),
+                Vec::new(),
+                "{n}"
+            );
+        },
+    );
+}
+
+fn caret(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> usize {
+    cx.read(|cx| tab.read(cx).shot_composer().read(cx).cursor())
+}
+
+/// The user's words: "when I focus on chatbox, and I hit up or down, can it pick by the prompt
+/// history?" ↑ on the first row recalls the newest prompt (caret at its end), walks a
+/// multi-line one's rows, then the older; ↓ comes back and past the newest restores the draft.
+/// The `@` list keeps ↑; a waiting permission stops recall; an image's marker isn't recalled.
+pub(super) fn agent_box_history() {
+    const TWO: &str = "first line\nsecond line";
+    box_scene(
+        "agent-box-history",
+        &CLAUDE,
+        example_start(),
+        Lookup::Ready(at_catalog()),
+        |n, cx, window, tab| {
+            type_in_box(cx, window, "fix the build in code/my-app");
+            press(cx, window, "enter");
+            type_in_box(cx, window, "first line");
+            press(cx, window, "shift-enter");
+            type_in_box(cx, window, "second line");
+            press(cx, window, "enter");
+            assert_eq!(said(cx, tab), ["fix the build in code/my-app", TWO], "{n}");
+            type_in_box(cx, window, "half typed");
+            press(cx, window, "up");
+            assert_eq!(box_text(cx, tab), TWO, "{n}: the newest");
+            assert_eq!(caret(cx, tab), TWO.len(), "{n}: the caret at its end");
+            press(cx, window, "up");
+            assert_eq!(box_text(cx, tab), TWO, "{n}: ↑ walks its rows first");
+            assert!(
+                caret(cx, tab) <= "first line".len(),
+                "{n}: on its first row"
+            );
+            press(cx, window, "up");
+            assert_eq!(
+                box_text(cx, tab),
+                "fix the build in code/my-app",
+                "{n}: the older"
+            );
+            press(cx, window, "up");
+            assert_eq!(
+                box_text(cx, tab),
+                "fix the build in code/my-app",
+                "{n}: the oldest stays"
+            );
+            press(cx, window, "down");
+            assert_eq!(box_text(cx, tab), TWO, "{n}: ↓ the newer");
+            press(cx, window, "down");
+            assert_eq!(
+                box_text(cx, tab),
+                "half typed",
+                "{n}: past the newest, the draft"
+            );
+            press(cx, window, "down");
+            assert_eq!(
+                box_text(cx, tab),
+                "half typed",
+                "{n}: not browsing: the caret's"
+            );
+            // Editing a recalled prompt ends browsing: ↓ is the caret's again.
+            press(cx, window, "up");
+            type_in_box(cx, window, "!");
+            press(cx, window, "down");
+            assert_eq!(box_text(cx, tab), format!("{TWO}!"), "{n}: kept as edited");
+            // The `@` list keeps ↑ / ↓ while open.
+            feed(cx, tab, |t, cx| {
+                t.shot_composer()
+                    .update(cx, |c, cx| c.set_text(String::new(), cx))
+            });
+            open_at_list(n, cx, window, tab, &["README.md", "src/rsvp.ts"], "r");
+            press(cx, window, "down");
+            press(cx, window, "up");
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_at_selected()),
+                Some(0),
+                "{n}"
+            );
+            assert_eq!(
+                box_text(cx, tab),
+                "@r",
+                "{n}: ↑ moved the list, not the history"
+            );
+            press(cx, window, "escape");
+            // A pasted image's marker isn't part of what is recalled.
+            feed(cx, tab, |t, cx| {
+                t.shot_composer()
+                    .update(cx, |c, cx| c.set_text(String::new(), cx));
+                t.send("look at [Image #1] here".into(), cx)
+            });
+            press(cx, window, "up");
+            assert_eq!(
+                box_text(cx, tab),
+                "look at here",
+                "{n}: the marker stripped"
+            );
+            // A recalled `/` prompt doesn't open the `/` list, so ↑ goes on to the older.
+            feed(cx, tab, |t, cx| {
+                t.shot_composer()
+                    .update(cx, |c, cx| c.set_text(String::new(), cx));
+                t.send("/example-release".into(), cx)
+            });
+            press(cx, window, "up");
+            assert_eq!(box_text(cx, tab), "/example-release", "{n}: the / prompt");
+            assert!(
+                !cx.read(|cx| tab.read(cx).slash_has_picks(cx)),
+                "{n}: a recalled / prompt leaves the / list shut"
+            );
+            press(cx, window, "up");
+            assert_eq!(
+                box_text(cx, tab),
+                "look at here",
+                "{n}: ↑ went on to the older, not into the list"
+            );
+            // With a permission waiting, ↑ doesn't recall.
+            feed(cx, tab, |t, cx| {
+                t.shot_composer()
+                    .update(cx, |c, cx| c.set_text(String::new(), cx));
+                t.shot_feed(
+                    vec![Event::Permission {
+                        id: "p1".into(),
+                        tool: "Bash".into(),
+                        what: "ls".into(),
+                        detail: "ls".into(),
+                        always: None,
+                        by: None,
+                    }],
+                    cx,
+                )
+            });
+            press(cx, window, "up");
+            assert_eq!(
+                box_text(cx, tab),
+                "",
+                "{n}: no recall with a permission waiting"
+            );
+        },
+    );
+}
+
+/// The folder's stored prompts come after the tab's own, without repeats (seeded with
+/// `set_for_shots`: no file is read or written).
+pub(super) fn agent_box_history_folder() {
+    box_scene(
+        "agent-box-history-folder",
+        &CLAUDE,
+        example_start(),
+        Lookup::Ready(example_catalog()),
+        |n, cx, window, tab| {
+            let folder = cwd().to_string_lossy().into_owned();
+            cx.update(|cx| {
+                crate::prompt_history::PromptHistory::set_for_shots(
+                    &[(
+                        folder.as_str(),
+                        &["fix the build in code/my-app", "an older idea"],
+                    )],
+                    cx,
+                )
+            });
+            type_in_box(cx, window, "fix the build in code/my-app");
+            press(cx, window, "enter");
+            type_in_box(cx, window, "run the tests");
+            press(cx, window, "enter");
+            let mut seen = Vec::new();
+            for _ in 0..4 {
+                press(cx, window, "up");
+                seen.push(box_text(cx, tab));
+            }
+            assert_eq!(
+                seen,
+                [
+                    "run the tests",
+                    "fix the build in code/my-app",
+                    "an older idea",
+                    "an older idea"
+                ],
+                "{n}: own first, then the folder's, no repeats"
+            );
         },
     );
 }

@@ -86,6 +86,20 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "selection-colors",
+        run: selection_colors_scene,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/theme.rs",
+            "src/grid.rs",
+            "src/terminal_view.rs",
+            "src/name_input.rs",
+            "src/sidebar.rs",
+        ],
+    },
+    Scene {
         name: "shell-cards-wrap",
         run: shell_cards_wrap_scene,
         themes: Themes::Both,
@@ -1622,6 +1636,117 @@ fn shell_cards_scene() {
         // Rework: the composer's two boxes.
         assert!(any(ui.composer_outer), "{n}: the composer's outer box");
         assert!(any(ui.composer_inner), "{n}: the composer's inner box");
+    }
+}
+
+/// `selection-colors` (batch 3, chore 3: one lighter selection blue on every surface and
+/// theme): a drag across a terminal's two rows (white text, then palette 8's grey) and the
+/// sidebar's rename box (its name selected as it opens). Panics unless both selections are drawn
+/// in `ui.selection` (the terminal's is no longer the inverse block), the unselected part of the
+/// terminal stays the background, and the grey selected text is drawn in `ui.text`.
+fn selection_colors_scene() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    for &(slug, name) in shot_themes() {
+        let theme = shot_theme(name);
+        let ui = theme.ui();
+        let n = format!("selection-colors-{slug}");
+        assert_eq!(
+            theme.selection_background,
+            Some(ui.selection),
+            "{n}: settled"
+        );
+        // The terminal: "selected text" white, "grey" in palette 8, both rows selected.
+        let dims = size(px(480.0), px(160.0));
+        let text = "selected text here\r\n\x1b[90mgrey grey grey\x1b[0m\r\nnot selected\r\n";
+        let mut rig = CursorRig::sized(theme, text, dims, false, (true, true, true), |_| {});
+        let _ = rig.frame();
+        let (window, none) = (rig.window, gpui::Modifiers::none());
+        let first = rig.cell(0, 0);
+        let from = point(first.left() + px(0.5), first.center().y);
+        let to = rig.cell(13, 1).center();
+        rig.cx
+            .simulate_mouse_down(window, from, gpui::MouseButton::Left, none);
+        rig.cx
+            .simulate_mouse_move(window, to, Some(gpui::MouseButton::Left), none);
+        rig.cx
+            .simulate_mouse_up(window, to, gpui::MouseButton::Left, none);
+        rig.cx.run_until_parked();
+        let picked = rig.read(|v| v.selection_text()).unwrap_or_default();
+        assert!(picked.starts_with("selected"), "{n}: {picked:?}");
+        let shot = rig.frame();
+        let row = |r: usize| rig.cell(0, r);
+        let band = |r: usize, c| {
+            let b = row(r);
+            let y = f32::from(b.top()) + 1.0;
+            let x0 = f32::from(b.left());
+            count_along(&shot, dims, c, y, x0, x0 + f32::from(b.size.width) * 13.0)
+        };
+        assert!(band(0, ui.selection) > 40, "{n}: row 1 in the wash");
+        assert!(band(1, ui.selection) > 40, "{n}: row 2 in the wash");
+        assert_eq!(band(2, ui.selection), 0, "{n}: row 3 not selected");
+        // The grey row's glyphs: `ui.text` where grey doesn't read on the wash, else grey.
+        let grey = theme.palette[8];
+        let ink = crate::theme::selected_ink(&theme, grey);
+        let b = row(1);
+        let inked: usize = (2..12)
+            .map(|k| f32::from(b.top()) + f32::from(b.size.height) * k as f32 / 14.0)
+            .map(|y| count_along(&shot, dims, ink, y, f32::from(b.left()), 300.0))
+            .sum();
+        assert!(inked > 5, "{n}: the grey row's glyphs in {ink:?} ({inked})");
+        save_shot("selection-colors", slug, &shot);
+        drop(rig);
+        // The rename box on the sidebar: its name selected, in the same wash.
+        let wdims = size(px(960.0), px(600.0));
+        let slot: Slot = Rc::new(RefCell::new(None));
+        let keep = slot.clone();
+        let build = move |window: &mut Window, cx: &mut App| -> AnyView {
+            cx.set_global(sidebar_appearance(theme, cx));
+            let ws = cx.new(|cx| switcher_workspace(window, cx));
+            *keep.borrow_mut() = Some(ws.clone());
+            ws.into()
+        };
+        let renamed = Rc::new(Cell::new(None));
+        let found = renamed.clone();
+        let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+            let ws = slotted(&slot);
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.start_rename(ws.model.display_order()[3], window, cx)
+                })
+            })
+            .expect("open it");
+            cx.run_until_parked();
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                let b = ws.sidebar.scroll.bounds_for_item(4).expect("laid out");
+                found.set(Some((
+                    f32::from(b.left()),
+                    f32::from(b.right()),
+                    f32::from(b.top()),
+                )));
+            });
+            slot.borrow_mut().take();
+        };
+        let path = shoot_with(
+            "selection-colors-rename",
+            slug,
+            &theme,
+            wdims,
+            build.clone(),
+            act.clone(),
+        );
+        let shot = render_with(&theme, wdims, build, act);
+        let (left, right, top) = renamed.get().expect("the renamed row");
+        let washed: usize = (0..30)
+            .map(|k| top + 4.0 + k as f32 * 0.5)
+            .map(|y| count_along(&shot, wdims, ui.selection, y, left + 30.0, right - 40.0))
+            .sum();
+        assert!(
+            washed > 40,
+            "{n}: the rename box's selection ({washed} pixels)"
+        );
+        println!("ui-shots: {}", path.display());
     }
 }
 

@@ -53,7 +53,6 @@ use crate::notification_list::{self, NotificationList};
 use crate::notifier;
 use crate::palette::Palette;
 use crate::palette_items::{Recent, Scope};
-use crate::pane_actions::PaneActionsMenu;
 use crate::pane_tab_menu::PaneTabMenu;
 use crate::panes::{self, HoverDivider, PaneColors, Panes, SelectPane, StartDrag};
 use crate::presets::Preset;
@@ -586,7 +585,7 @@ overlays!(
     BranchSwitcher,
     TabMenu,
     PaneTabMenu,
-    PaneActions,
+    NewTabMenu,
     Notifications,
     Help,
     Welcome,
@@ -661,8 +660,12 @@ pub struct Workspace {
     pub(crate) renaming: Option<(Renaming, Entity<NameInput>)>,
     /// A pane tab's right-click menu, while it is open.
     pub(crate) pane_tab_menu: Option<PaneTabMenu>,
-    /// A pane bar's ⋯ menu, while it is open (M11i).
-    pub(crate) pane_actions: Option<PaneActionsMenu>,
+    /// A pane bar's + menu, while it is open (chore 2026-11-23).
+    pub(crate) new_tab_menu: Option<crate::new_tab_menu::OpenNewTabMenu>,
+    /// The agent presets' PATH answers the + menu shows (asked off the UI thread on open).
+    pub(crate) agents_found: Option<crate::new_tab_menu::AgentsFound>,
+    /// The browser history is being read for the + menu (off the UI thread).
+    pub(crate) history_loading: bool,
     /// Each pane's tab row: its scroll, and the tab last scrolled into view, if any (a pane whose
     /// shown tab changes scrolls to it). Panes gone are dropped as the bars are drawn.
     pub(crate) tab_scroll: RefCell<HashMap<PaneId, (ScrollHandle, Option<TabId>)>>,
@@ -1032,7 +1035,9 @@ impl Workspace {
             collapsed: Vec::new(),
             renaming: None,
             pane_tab_menu: None,
-            pane_actions: None,
+            new_tab_menu: None,
+            agents_found: None,
+            history_loading: false,
             tab_scroll: RefCell::new(HashMap::new()),
             tab_drag: Rc::new(Cell::new(None)),
             tab_drop: None,
@@ -1934,11 +1939,11 @@ impl Workspace {
                 sessions.iter().any(|s| s.id == *key)
             }
         });
-        // A ⋯ menu whose pane went goes with it.
-        if let Some(menu) = &self.pane_actions
+        // A + menu whose pane went goes with it.
+        if let Some(menu) = &self.new_tab_menu
             && self.model.pane(menu.pane).is_none()
         {
-            self.pane_actions = None;
+            self.new_tab_menu = None;
         }
         let ids = self.session_ids();
         self.places.retain(|id| ids.contains(&id));
@@ -2298,14 +2303,53 @@ impl Workspace {
         );
     }
 
-    /// ⌘T: a new terminal tab at the end of the focused pane's bar, as its new-terminal button
-    /// makes one (also when the focused tab is a browser). With no pane (no workspace open) it
-    /// is a new workspace.
+    /// ⌘T: a new tab at the end of the focused pane's bar like its active one
+    /// (`new_tab_like`): a terminal after a terminal, the same agent after an agent tab, a
+    /// browser tab after a browser tab. With no pane (no workspace open) it is a new workspace.
     pub(crate) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.model.focused_pane() {
-            Some(pane) => self.new_terminal_tab(pane, true, window, cx),
+            Some(pane) => self.new_tab_like(pane, window, cx),
             None => self.new_session(window, cx),
         }
+    }
+
+    /// A new tab at the end of `pane`'s bar, like its active tab (`new_tab_menu::plan_like`,
+    /// chore 2026-11-23): a terminal as its new-terminal button makes one (SSH: another
+    /// session to the host); an agent tab of the same provider in that tab's folder, with its
+    /// model and effort, in the provider's default mode; a blank browser tab.
+    pub(crate) fn new_tab_like(
+        &mut self,
+        pane: PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let kind = self
+            .model
+            .pane(pane)
+            .and_then(|p| self.model.tab(p.active))
+            .map(|t| t.kind.clone());
+        match crate::new_tab_menu::plan_like(kind.as_ref(), self.pane_is_local(pane)) {
+            crate::new_tab_menu::NewTabPlan::Terminal => {
+                self.new_terminal_tab(pane, true, window, cx)
+            }
+            crate::new_tab_menu::NewTabPlan::Browser => self.new_browser_tab(pane, window, cx),
+            crate::new_tab_menu::NewTabPlan::Agent {
+                provider,
+                cwd,
+                model,
+                effort,
+            } => {
+                self.new_agent_like(pane, provider, cwd, model, effort, cx);
+            }
+        }
+    }
+
+    /// Whether `pane`'s workspace is on this Mac (agents run only here, spec §1.6).
+    pub(crate) fn pane_is_local(&self, pane: PaneId) -> bool {
+        self.model
+            .pane(pane)
+            .and_then(|p| self.model.locate(p.active))
+            .is_some_and(|(ws, _)| !self.workspace_is_ssh(ws))
     }
 
     /// ⇧⌘T: a new terminal tab that starts fresh in the workspace's folder, not where the
@@ -2942,17 +2986,11 @@ impl Workspace {
 
     /// The dragged line follows the mouse: its split's ratio is where `position` falls in it.
     fn drag_to(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let (Some((ws, path)), Some(bounds)) = (&self.dragging, self.pane_area.get()) else {
+        let (Some((ws, path)), Some(area)) = (&self.dragging, self.pane_area_rect()) else {
             return;
         };
         let Some(tree) = self.model.workspace(*ws).map(|w| &w.layout) else {
             return;
-        };
-        let area = Rect {
-            x: f32::from(bounds.origin.x),
-            y: f32::from(bounds.origin.y),
-            w: f32::from(bounds.size.width),
-            h: f32::from(bounds.size.height),
         };
         let Some((axis, split)) = tree.split_rect(path, area) else {
             return;
@@ -2965,6 +3003,16 @@ impl Workspace {
         if self.model.set_ratio(ws, &path, ratio) {
             cx.notify();
         }
+    }
+
+    /// The pane area as last painted (None before the first paint).
+    pub(crate) fn pane_area_rect(&self) -> Option<Rect> {
+        self.pane_area.get().map(|bounds| Rect {
+            x: f32::from(bounds.origin.x),
+            y: f32::from(bounds.origin.y),
+            w: f32::from(bounds.size.width),
+            h: f32::from(bounds.size.height),
+        })
     }
 
     /// The pointer entered (`over`) or left the line of the split at `path` in the layout on
@@ -3008,7 +3056,7 @@ impl Workspace {
     pub(crate) fn close_menus(&mut self) {
         self.sidebar.tab_menu = None;
         self.pane_tab_menu = None;
-        self.pane_actions = None;
+        self.new_tab_menu = None;
         self.notifications_popover = None;
         self.sidebar.new_menu = false;
     }
@@ -3070,8 +3118,8 @@ impl Workspace {
         if keep != Overlay::PaneTabMenu {
             self.pane_tab_menu = None;
         }
-        if keep != Overlay::PaneActions {
-            self.pane_actions = None;
+        if keep != Overlay::NewTabMenu {
+            self.new_tab_menu = None;
         }
         if keep != Overlay::Notifications {
             self.notifications_popover = None;
@@ -3557,7 +3605,13 @@ impl Workspace {
         let dragging = self.dragging.is_some();
         let this = cx.entity().downgrade();
         canvas(
-            move |bounds, _, _| area.set(Some(bounds)),
+            move |bounds, window, _| {
+                // A new size: the bars are placed again next frame (a narrow pane's hides its
+                // split buttons, `chrome_cache::narrow_panes`). Only on a change: no frame loop.
+                if area.replace(Some(bounds)) != Some(bounds) {
+                    window.request_animation_frame();
+                }
+            },
             move |_, _, window, _| {
                 if !dragging {
                     return;
@@ -3928,7 +3982,7 @@ impl Render for Workspace {
             .map(|card| self.welcome_layer(card, ui, cx));
         let tab_menu = self.render_tab_menu(ui, cx);
         let pane_tab_menu = self.render_pane_tab_menu(ui, cx);
-        let pane_actions = self.render_pane_actions(ui, cx);
+        let new_tab_menu = self.render_new_tab_menu(cx);
         let preferences = self
             .preferences
             .clone()
@@ -4210,7 +4264,7 @@ impl Render for Workspace {
             .children(new_menu)
             .children(tab_menu)
             .children(pane_tab_menu)
-            .children(pane_actions)
+            .children(new_tab_menu)
             .children(notifications)
             // Preferences (M11x): over everything, the whole window dimmed behind it.
             .children(preferences)

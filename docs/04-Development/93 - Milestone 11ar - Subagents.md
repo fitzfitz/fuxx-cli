@@ -302,3 +302,182 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     command palette (the palette has the focus, not the tab; the chip is the way in).
   - **Checks:** unit tests for `next_mode` and the binding (in the tab and in the box); `agent-box-mode-menu` presses
     ⇧Tab twice and sees `auto` then `default` asked live.
+- **Agent tabs start in Auto** (your words, 2026-11-23: "agent tab: mode use auto for both agy and claude"): a new
+  Claude or agy tab opens in Auto (`ProviderInfo::default_mode` `auto` in both provider files; agy's argv falls back
+  to `auto` too). Claude gets `--permission-mode auto`.
+  - **AI's calls:** a restored tab keeps the mode it had; a mode agy doesn't have falls back to Auto (it was Accept
+    edits).
+  - **Checks:** the provider tests now pin Auto, and a new one checks Claude's argv has `--permission-mode auto`;
+    `agent-tab-agy` starts on Auto and chooses Plan → Accept edits → Auto, each one a real change.
+- **New Fuxxpace lost its preset rows** (your words, 2026-11-23: "remove this on New Fuxxpace"): the sidebar's +
+  menu is New Fuxxpace and New Fuxxpace in Folder…, nothing under them.
+  - **AI's calls:** ⌃⌘1–9, ⌘K and Welcome still launch presets; the menu's width and its two rows are unchanged;
+    `agent_badge` stays (the pane bar's new + menu draws it).
+  - **Checks:** `sidebar-menu`'s reference refreshed; the scene that checked the removed rows' badges
+    (`agent-preset-menu`) is gone, its checks moved into `new-tab-menu`.
+- **A pointing hand on image pills** (your words, 2026-11-23: "in agent chat input, make the image attachment when
+  user hover, it becomes pointer hand icon"): over an `[Image #N]` pill in the message box the cursor is a pointing
+  hand, and the pill's fill deepens (mixed 0.20 toward the text instead of 0.12) while the pointer is on it. A click
+  still opens the image.
+  - **AI's calls:** no underline, tooltip or motion; a pill split over two rows lights both halves; each pill's
+    rectangle is worked out once per frame (`composer::atom_spans`), for its fill and its hitbox, and only a move
+    that changes which pill is under the pointer redraws.
+  - **Checks:** a unit test for `atom_spans` (an atom split over two rows, atoms off the row, two on one row);
+    `agent-box-image-chip` checks the pill is drawn inside the typing in the pill's colour. The cursor itself can't
+    be seen by a scene.
+- **The pane bar's + opens a new tab menu** (your words, 2026-11-23: "on the panel + button, I want to design it like
+  this"): a click on + opens a menu under it (+ lit while it's open), its search box ready. With nothing typed:
+  Terminal, Browser and File buttons, then a row per agent preset (logo or badge, a preset not on your PATH greyed
+  "Not installed"; none in an SSH workspace). Typing lists Open URL (the address, or a web search), Agents, New,
+  Tabs, History and Files. ↑↓ and the pointer light one thing at a time, ←→ move along the buttons, Enter runs it,
+  Escape clears then closes (`new_tab_menu.rs`).
+  - **AI's calls:** no chevron or submenu, no "Agent settings…" row (Preferences has no Agents section), no gear and
+    no simulator; the ⋯ menu stays as it was; file search goes to ⌘K on Files (the files row hands it the query,
+    the File button opens it empty); the light starts on whatever ⌘T would make, so Enter with nothing typed is ⌘T,
+    and the row ⌘T would open says ⌘T; a preset without a provider (opencode, codex) opens as a terminal tab
+    running it; the PATH check runs off the UI thread and is asked again on open only after 30 s or when the
+    presets change; history is read off the UI thread the first time; at most 8 agent rows show before they scroll.
+  - **Checks:** 12 unit tests for the menu's model (rows, order, the light, ↑↓ ←→, the PATH cache) and one for its
+    keys; scenes `new-tab-menu` (both themes: placement, + lit, logos, the greyed row, pointer and keys, Escape,
+    opencode/codex's path), `new-tab-menu-search` (tab, history and URL rows, the files row opening ⌘K), a
+    `tab-bars-plus` case, and the `overlays` scene opening it among the other boxes.
+- **⌘T makes a tab like the last one** (your words, 2026-11-23: "when cmd + t, it will open a new tab based on last
+  tab…"): after a terminal, a terminal (SSH as before); after a Claude or agy tab, the same agent in that tab's
+  folder; after a browser tab, a browser tab; after a file tab, or with an agent fuxx doesn't know, a terminal.
+  ⇧⌘T stays a terminal in the workspace folder.
+  - **AI's calls:** ⌘T carries the agent tab's model and effort, and resets the mode to Auto; browser → browser;
+    file → terminal; "the last tab" is the focused pane's shown tab; the new tab goes at the end of the bar.
+  - **Checks:** unit tests for `new_tab_menu::plan_like` (every kind of tab); `new-tab-like-last` presses ⌘T after
+    Claude, agy, browser, file and terminal tabs, ⇧⌘T after Claude, and Enter on the empty + menu.
+- **Claude's prompt suggestions** (your words, 2026-11-23: "can I get the agent suggestion on what to type? just like
+  in claude cli, it has prompt suggestions"): after a turn, Claude's guess at your next message shows faint in the
+  empty box with a faint "⇥" after it, in place of the placeholder; Tab takes it into the box (the caret at its end)
+  and Enter sends it. Typing hides it, emptying the box brings it back. Claude Code 2.1.330 sends it as a
+  `prompt_suggestion` line about a second after a turn's `result` when started with `--prompt-suggestions true`
+  (`Event::Suggestion`; the fixture `claude-prompt-suggestion.jsonl`). A switch in Preferences → General →
+  Interface: "Prompt suggestions — Claude guesses your next message; Tab takes it." (`agent-suggestions = on|off`).
+  - **AI's calls:** on by default, and fuxx also sets `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=1` on Claude's process
+    (recordings showed the guess rarely came without it), both from Claude's provider file
+    (`suggestion_flags`, `suggestion_env`; agy keeps the empty defaults); the switch applies to agents started after
+    the change, and a preset that names the flag wins. **Enter on the empty box never sends the guess**: only Tab
+    takes it. A guess is kept only while Main is idle (no turn, nothing queued or unread, no permission waiting),
+    else dropped as stale; any send, a message read (`Taken`), Main at work again, `/clear` and a restart clear it; a
+    tab switch keeps it; it never shows in a lane view or with a permission waiting; it is never saved. Tab with the
+    `/` or `@` list open still completes (its binding comes after the box's).
+  - **Checks:** unit tests for the decode (and a blank guess), Claude's flag and env vs agy's none, the env reaching
+    the process, `with_suggestions` (on, off, a preset naming the flag), `keeps_suggestion`, `ghost_for`, the
+    setting and the keymap; scenes `agent-box-suggestion` (both themes: the ghost and "⇥" drawn, no placeholder,
+    typing hides it), `agent-box-suggestion-tab-takes` (Tab fills, Enter sends, Enter on the empty box sends
+    nothing, Tab in the `/` list completes), `agent-box-suggestion-stale` (dropped while working, `Taken` clears,
+    a lane view hides it and Main shows it again, a permission hides it, a restart clears it),
+    `agent-box-suggestion-flags` (argv and env on, off, with a preset's flag, agy); the `preferences` reference
+    refreshed for the new switch.
+- **↑/↓ bring back what you sent** (your words, 2026-11-23: "when I focus on chatbox, and I hit up or down, can it
+  pick by the prompt history?"): in an agent tab's box, ↑ (⌃P) on the first row recalls the older prompt, the caret
+  at its end, so a multi-line one walks its rows first; ↓ (⌃N) on the last row comes back, and past the newest puts
+  your unsent draft back. Editing a recalled prompt ends browsing. The tab's own prompts come first (a resumed
+  conversation's too), then the folder's stored ones, without repeats (`prompt_history.rs`).
+  - **AI's calls:** history is per folder and kept in a file, `~/Library/Application Support/fuxx/prompt-history.jsonl`
+    (`-dev` for a test build), one line per send appended off the UI thread, read and compacted once at app start
+    off the UI thread (until then only the tab's own prompts); at most 100 prompts per folder and 40 folders (the
+    least recently used go first), a prompt over 8,000 characters isn't kept, a repeat moves to the front, the file
+    is compacted once it holds twice what is kept. Only what goes to the agent is kept (messages, notes, `/commands`
+    it runs), not fuxx's own commands or permission answers; images are stripped (`[Image #N]` markers out, the
+    spaces tidied, an image-only prompt skipped). The `/` and `@` lists keep ↑/↓ while open; **↑ doesn't recall with
+    a permission waiting**; recall works mid-turn and in lane views; with a guess showing, ↑ recalls and the guess
+    hides, and ↓ past the newest brings the empty box and the guess back. A recalled `/command` keeps the `/` list
+    shut (as Esc would), so ↑/↓ go on through the history; ↓ back to your own draft lets its list open again.
+  - **Checks:** unit tests `recall_older_newer_and_draft_restored`, `recall_skips_an_entry_equal_to_the_box`,
+    `editing_a_recalled_prompt_ends_browsing`, `end_of_history_stays`, `record_moves_a_repeat_to_front_and_caps`,
+    `image_markers_stripped_and_image_only_skipped`, `oversized_not_kept`, `own_tab_first_then_folder_deduped`,
+    `jsonl_round_trip_and_garbage_ignored`, `compaction_keeps_newest_per_folder_and_lru_folders`, the file path, and
+    `first_and_last_row_follow_wrapping` (each also shown to catch a planted fault); keymap and shortcut-list tests;
+    scenes `agent-box-history` (two prompts, rows walked, the draft back, the `@` list keeps ↑, no recall with a
+    permission, the marker stripped, a recalled `/command` leaves the `/` list shut — watched failing first) and
+    `agent-box-history-folder` (seeded with `set_for_shots`, no file touched).
+- **The ⋯ menu's New Terminal Tab lost its "⌘T"** (a fix after "⌘T makes a tab like the last one"): ⌘T follows the last
+  tab now, so the hint was wrong.
+  - **AI's calls:** the item keeps its place; ⌘D and ⇧⌘D still show.
+  - **Checks:** `the_menu_lists_the_pane_actions_with_their_keys` updated (watched failing first).
+- **Your latest message pinned over the chat** (your words, 2026-11-23: "can you also on chatbox add the floating
+  latest chat on top, when clicked, it goes to that chat. just like in claude code so that its easy to know what I
+  prompt when the agent is running"): while your latest message is scrolled above the chat, one line of it floats
+  over the chat's top edge: a card in the panel's fill with its 1 pt edge and a soft shadow, a tool row tall, an ↑
+  mark and your words (whitespace folded, cut with "…"), a step dimmer than in your bubble. A step lighter and the
+  pointing hand under the pointer, tooltip "Jump to your message". A click glides the chat back until your message
+  is at the top and lights its bubble for 0.6 s; the strip then hides. On screen, or nothing said yet: no strip. A
+  new message replaces it at once. In a subagent's view it says the task Main gave it (its "from Main" bubble).
+  New `src/agent_latest.rs`.
+  - **AI's calls:** it overlays the chat and never moves a row; a band of the page colour behind it, fading out
+    under it, so no row shows as a cut-off sliver above it. A message counts as off screen once what is left of it
+    would sit under the strip. Visibility comes from the list's scroll top and your message's row: the conversation
+    keeps your latest's index as items come and `sync_rows` keeps its row and its one line (built once per message).
+    The check runs before the list lays out, so a canvas after the list checks again and asks for one more frame
+    when they differ (output pushing your message off while the chat follows its end). The click stops following
+    the chat's end, as a scroll up does; scrolling back to the end resumes it (GPUI's own follow). The glide is
+    0.22 s and covers at most the last 1.5 screens (from further down it jumps that close first); the strip fades in
+    over 0.12 s. With reduce motion (or Animations off) it jumps without gliding, appears without a fade and the
+    message isn't lit. fuxx's icon set has no image glyph, so `[Image #N]` stays as text; the ↑ is the box's own
+    send arrow. One line keeps at most 200 characters before GPUI cuts it to its width.
+  - **Checks:** unit tests `the_latest_you_follows_what_is_pushed`, `the_strip_line_is_one_line_cut_with_an_ellipsis`,
+    `the_strip_line_keeps_image_markers_as_text`, `the_strip_shows_only_while_your_message_is_above_the_view`,
+    `the_jump_highlight_holds_then_fades_to_nothing` and `the_jump_glides_at_most_the_last_stretch` (each watched
+    failing first); scene `agent-chat-latest-prompt` (both themes: no strip before a message or while it is on
+    screen; output scrolls it off and the strip says its folded line, the chat not moved; the panel's fill, lit
+    under the pointer, its tooltip; a real click glides back, your message at the top, the strip gone, following
+    stopped; the wheel to the end follows again and shows it again; a lane's view says its task and its click
+    works; a second message replaces the line). `agent-tab-done` now shows the strip ("Now fix notes.txt" is
+    scrolled off); it keeps no reference.
+- **The ⋯ is gone; Split Right and Split Down sit by the right sidebar's button** (batch 3, chore 1; your words,
+  2026-11-23: "on three dots accross tabs, remove it, and make the split right and down out of that and appear beside
+  right sidebar toggle"): every pane's bar ends in two buttons, Split Right (⌘D) and Split Down (⇧⌘D), Lucide's
+  `square-split-horizontal` and `square-split-vertical` (24 pt, 14 pt glyph, faint until hovered, then `text` on
+  `card_hover`, never lit). A click focuses that pane, then splits it. On the top-right pane's bar the right
+  sidebar's button follows, 8 pt after them (`SPLIT_TO_TOGGLE`; 4 between the two splits). `src/pane_actions.rs` is
+  deleted: the menu, its overlay, its field and its render; the + menu already makes terminal, browser and agent
+  tabs.
+  - **AI's calls:** a pane under 320 pt wide hides the splits (`chrome_cache::HIDE_SPLITS_BELOW`; ⌘D and ⇧⌘D still
+    work). The width comes from the pane area as last painted and the layout's ratios (`narrow_panes`), part of the
+    bar's cached key (`BarPlace::narrow`), so only a change of narrowness draws a bar again; a resize asks for one
+    more frame only when the area's size changed. The palette's New ⟨Agent⟩ Tab rows now come straight from the
+    providers. The unused ⋯ icon (`ellipsis.svg`) went with it.
+  - **Checks:** unit tests `the_buttons_are_plus_the_splits_and_the_right_sidebar`, `the_pinned_buttons_follow_the_bars_place`,
+    `a_pane_under_320_pt_is_narrow` and `every_bar_button_action_is_a_palette_command` (watched failing first); the
+    pane-menu tests and the palette parity test are gone with the menu. Scene `tab-bars-more` became
+    `tab-bars-split` (the left bar's Split Right hovered, Split Down not, both icons drawn); `tab-bars-act` clicks
+    the left bar's Split Right and the top-right bar's Split Down (each splits its own pane, the new one focused);
+    `tabs-minimal` follows the new buttons (a narrow pane keeps only the right sidebar's); `agent-pane-menu` is
+    gone; `overlays` and `chrome-agent-tabs` no longer open the ⋯; `right-sidebar` reads the other pane's last button
+    as unlit (narrow there, its splits hide).
+- **One selection blue on every theme** (batch 3, chore 3; your words, 2026-11-23: "What I block text on any
+  place, make the blue lighter", then "should it be blue apply everywhere? because its like a default color for
+  text blocking" → yes): one colour for every selection (the boxes, the chat, the file tab, the terminal), on
+  every theme whatever its accent: `theme::selection_wash`, macOS's own text selection blue — #3f638b on a dark
+  card (was a grey slate, #384451 on the default theme), #b3d7ff on a light one — deepened toward the system blue
+  in 5 % steps where a light page is too pale for it to show (Latte: #aad2ff), eased toward the card only where the
+  text would read under 4.5:1; always visible (1.25:1) on the page, the box fill and the sidebar. The terminal's
+  selection is that same blue on every built-in and plugin theme (no more white block on the default theme); only
+  a `selection-background` in your own config still wins.
+  - **AI's calls:** the lead's fix after wave 1: the first build followed each theme's accent (mauve on Catppuccin, brown
+    on Gruvbox); you asked for blue, so it is now a fixed blue. A selected glyph keeps its colour where it reads (4.5:1) on the wash, else takes the
+    chrome's text: in the terminal from a table made once per theme (`theme::selected_ink`, the 16 colours and the
+    foreground), in the file tab by recolouring the selected stretch's runs only (no new layout); the boxes already
+    draw `text`, which reads at 7:1. The chat keeps its colours (recolouring would lay it out again). A theme's own
+    `selection-foreground` goes with its background; yours stays.
+  - **Checks:** unit tests `the_selection_is_one_blue_on_every_theme` (every theme blue, the floors, the targets; watched failing on Gruvbox Dark's
+    brown #6b401d),
+    `terminal_selection_is_the_chrome_selection_unless_you_set_one`, `a_plugin_themes_selection_background_is_replaced`,
+    `a_selected_glyph_keeps_its_colour_only_where_it_reads`, `selected_glyphs_keep_their_colour_only_where_it_reads`
+    (the grid) and `selected_text_takes_its_ink_only_inside_the_selection` (the file tab), each watched failing
+    first. New scene `selection-colors` (both themes: a terminal drag and the rename box, each in `ui.selection`,
+    the grey selected text in `text`). The screenshot themes now come from `theme::resolve`, as your config's do.
+- **Rewind and Fork: the provider and conversation core** (batch 3, chore 2; your words, 2026-11-23: "when I just
+  prompt and suddenly stop it, I want to have the rewind/fork feaeture like in antigravity IDE/claude code"). Core
+  only, UI in wave 2: each message goes with an id fuxx mints (Claude's `uuid`, `Action::Send{id}`), its echo marks it
+  read (`Event::Taken{id}`, `Item::You{id, taken}`), a resumed conversation's messages keep theirs (`Past::You`);
+  `Start.branch` starts Claude with `--resume S --resume-session-at P --fork-session --session-id N` (the old
+  transcript untouched); `Provider::branch_point` reads P (the message's `parentUuid`) off the UI thread;
+  `Conversation::cut_before` / `restore` cut and put back; Claude runs with
+  `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true` (`Provider::process_env`, which replaces `suggestion_env`);
+  `Action::RewindFiles` / `Event::FilesRewound` and the one-off `rewind_files_probe`; `Attachment::Quote` for wave 3;
+  agy reports no branching. 14 unit tests, each watched failing first. Nothing on screen yet.

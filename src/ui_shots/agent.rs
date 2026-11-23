@@ -193,6 +193,22 @@ pub(super) const SCENES: &[Scene] = &[
         sources: TAB,
     },
     Scene {
+        name: "agent-chat-latest-prompt",
+        run: agent_chat_latest_prompt,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: &[
+            "src/agent_tab.rs",
+            "src/agent_latest.rs",
+            "src/agent_rows.rs",
+            "src/agent_lanes_view.rs",
+            "src/agent_chat.rs",
+            "src/agent_conversation.rs",
+            "src/sidebar_toggle.rs",
+        ],
+    },
+    Scene {
         name: "agent-box-sweep",
         run: agent_box_sweep,
         themes: Themes::One,
@@ -368,34 +384,6 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
-        name: "agent-preset-menu",
-        run: agent_preset_menu,
-        themes: Themes::Both,
-        serial: false,
-        kind: Kind::State,
-        sources: &[
-            "src/sidebar.rs",
-            "src/presets.rs",
-            "src/workspace_agent.rs",
-            "src/providers/mod.rs",
-            "src/providers/claude.rs",
-            "src/providers/agy.rs",
-        ],
-    },
-    Scene {
-        name: "agent-pane-menu",
-        run: agent_pane_menu,
-        themes: Themes::Both,
-        serial: false,
-        kind: Kind::State,
-        sources: &[
-            "src/pane_actions.rs",
-            "src/overlay_panel.rs",
-            "src/tab_bar.rs",
-            "src/layout_model.rs",
-        ],
-    },
-    Scene {
         name: "agent-sidebar-waiting",
         run: agent_sidebar_waiting,
         themes: Themes::Both,
@@ -526,6 +514,7 @@ pub(super) fn start() -> Start {
         extra_args: Vec::new(),
         model: None,
         effort: None,
+        branch: None,
     }
 }
 
@@ -1089,13 +1078,10 @@ pub(super) fn agent_tab_agy() {
                 let mode = |cx: &mut VisualTestAppContext| {
                     cx.read(|cx| tab.read(cx).mode().map(str::to_string))
                 };
-                assert_eq!(
-                    mode(cx).as_deref(),
-                    Some("accept-edits"),
-                    "{n}: the default"
-                );
-                // Before the first message the menu's choices apply, one after another.
-                for want in ["auto", "plan", "accept-edits"] {
+                assert_eq!(mode(cx).as_deref(), Some("auto"), "{n}: the default");
+                // Before the first message the menu's choices apply, one after another (each a
+                // real change from the one before).
+                for want in ["plan", "accept-edits", "auto"] {
                     feed(cx, &tab, |t, cx| t.shot_choose_mode(want, cx));
                     assert_eq!(mode(cx).as_deref(), Some(want), "{n}");
                 }
@@ -1429,6 +1415,206 @@ pub(super) fn agent_tab_long() {
         });
         feed(cx, tab, |t, cx| t.shot_open_tool(big, cx));
         feed(cx, tab, |t, cx| t.shot_modal_key("escape", cx));
+    });
+}
+
+/// The latest-prompt strip (chore after M11ar): your message scrolled off by the agent's output
+/// shows as one line over the chat's top (the chat under it doesn't move), the panel's card
+/// that lights under the pointer with its tooltip; a click glides the chat back to the message
+/// (the strip hides, following the end stops) and scrolling to the end shows it again. A lane's
+/// view says the task Main gave it. A second message replaces the line; the picture keeps it.
+pub(super) fn agent_chat_latest_prompt() {
+    use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    const FIRST: &str = "Fix the failing date test\n\nin fuxx-cli/src   and run cargo test again";
+    const FIRST_LINE: &str = "Fix the failing date test in fuxx-cli/src and run cargo test again";
+    const SECOND: &str = "Now add a note about the fix to the README in code/my-app";
+    fn turn(tag: &str, replies: usize) -> Vec<Event> {
+        let mut events: Vec<Event> = (0..replies)
+            .map(|i| Event::MessageDone {
+                message: format!("msg_{tag}_{i}"),
+                text: format!(
+                    "Step {i}: read the next file in fuxx-cli/src.\n\nIt parses dates before \
+                     comparing them; nothing else changes here."
+                ),
+                parent: None,
+            })
+            .collect();
+        events.push(Event::TurnDone {
+            ok: true,
+            message: None,
+        });
+        events
+    }
+    fn settle(cx: &mut VisualTestAppContext, window: AnyWindowHandle, tab: &Entity<AgentTab>) {
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            settle_frames(cx, window);
+            if !cx.read(|cx| tab.read(cx).shot_gliding()) {
+                break;
+            }
+            assert!(Instant::now() < until, "the jump's glide ends");
+        }
+        settle_frames(cx, window);
+    }
+    scene("agent-chat-latest-prompt", |n, cx, window, tab| {
+        let strip = |cx: &mut VisualTestAppContext| cx.read(|cx| tab.read(cx).shot_latest_strip());
+        let list = cx.read(|cx| tab.read(cx).shot_list());
+        assert_eq!(strip(cx), None, "{n}: nothing said: no strip");
+        feed(cx, tab, |t, cx| t.send(FIRST.into(), cx));
+        settle(cx, window, tab);
+        assert_eq!(strip(cx), None, "{n}: your message on screen: no strip");
+        let viewport = list.viewport_bounds();
+        feed(cx, tab, |t, cx| t.shot_feed(turn("a", 14), cx));
+        settle(cx, window, tab);
+        assert_eq!(
+            strip(cx).as_deref(),
+            Some(FIRST_LINE),
+            "{n}: scrolled off by the output: one line of it"
+        );
+        assert_eq!(
+            list.viewport_bounds(),
+            viewport,
+            "{n}: the strip lies over the chat, which doesn't move"
+        );
+        // The panel's card; a step lighter under the pointer, with its tooltip.
+        let colors = cx.read(|cx| {
+            crate::agent_tab::Colors::of(&cx.global::<crate::appearance::Appearance>().theme)
+        });
+        let card = cx
+            .read(|cx| tab.read(cx).shot_part("latest-strip"))
+            .unwrap_or_else(|| panic!("{n}: the strip drawn"));
+        assert!(
+            (28.0..34.0).contains(&f32::from(card.size.height)),
+            "{n}: about a row tall: {card:?}"
+        );
+        let dims = size(px(DIMS.0), px(DIMS.1));
+        let fill_at = (f32::from(card.left()) + 5.0, f32::from(card.center().y));
+        let rest = frame_fresh(cx, window);
+        let p = super::pixel_at(&rest, dims, fill_at.0, fill_at.1);
+        assert!(super::near(p, colors.panel), "{n}: the panel's fill: {p:?}");
+        if let Ok(mut shown) = crate::sidebar_toggle::SHOWN_TIP.lock() {
+            *shown = None;
+        }
+        cx.simulate_mouse_move(window, card.center(), None, Modifiers::none());
+        cx.advance_clock(Duration::from_secs(1));
+        settle(cx, window, tab);
+        let hovered = frame_fresh(cx, window);
+        let tip = crate::sidebar_toggle::SHOWN_TIP
+            .lock()
+            .ok()
+            .and_then(|t| t.clone());
+        assert_eq!(
+            tip.as_deref(),
+            Some(crate::agent_tab::STRIP_TIP),
+            "{n}: its tooltip"
+        );
+        let p = super::pixel_at(&hovered, dims, fill_at.0, fill_at.1);
+        assert!(
+            super::near(p, colors.panel_hover),
+            "{n}: lit under the pointer: {p:?}"
+        );
+        // A click: the chat glides back to your message, at the top; the strip hides and the
+        // chat stops following its end.
+        cx.simulate_click(window, card.center(), Modifiers::none());
+        settle(cx, window, tab);
+        let row = cx
+            .read(|cx| tab.read(cx).shot_latest_row())
+            .expect("its row");
+        assert_eq!(
+            list.logical_scroll_top().item_ix,
+            row,
+            "{n}: your message at the top"
+        );
+        assert_eq!(strip(cx), None, "{n}: back on screen: no strip");
+        assert!(!list.is_following_tail(), "{n}: following the end stopped");
+        // Scrolling back to the end: following again, and the strip back.
+        let chat = list.viewport_bounds();
+        let at = point(chat.center().x, chat.bottom() - px(40.));
+        cx.simulate_mouse_move(window, at, None, Modifiers::none());
+        cx.simulate_event(
+            window,
+            ScrollWheelEvent {
+                position: at,
+                delta: ScrollDelta::Pixels(point(px(0.0), px(-100_000.0))),
+                modifiers: Modifiers::none(),
+                touch_phase: TouchPhase::Moved,
+            },
+        );
+        settle(cx, window, tab);
+        assert!(list.is_following_tail(), "{n}: at the end it follows again");
+        assert_eq!(
+            strip(cx).as_deref(),
+            Some(FIRST_LINE),
+            "{n}: scrolled down: shown again"
+        );
+        // A lane's view: the task Main gave it, the same way.
+        let mut events = vec![
+            Event::ToolStarted {
+                id: "lint".into(),
+                name: "Agent".into(),
+                summary: "Lint the code".into(),
+                parent: None,
+                detail: None,
+                writes: Vec::new(),
+                texts: Vec::new(),
+            },
+            Event::SubagentStarted {
+                id: "lint".into(),
+                parent: None,
+                label: "Lint the code".into(),
+                kind: "general-purpose".into(),
+                task: "Lint the code in fuxx-cli/src,\n then report".into(),
+                model: None,
+                controls: crate::providers::LaneControls { stop: true },
+            },
+        ];
+        events.extend((0..14).map(|i| Event::MessageDone {
+            message: format!("msg_lint_{i}"),
+            text: format!("Lint pass {i}: no warnings in this file.\n\nOn to the next one."),
+            parent: Some("lint".into()),
+        }));
+        events.push(Event::SubagentEnded {
+            id: "lint".into(),
+            end: crate::providers::LaneEnd::Done,
+        });
+        events.push(Event::ToolFinished {
+            id: "lint".into(),
+            ok: true,
+            summary: "done".into(),
+            output: None,
+        });
+        feed(cx, tab, |t, cx| t.shot_feed(events, cx));
+        let lane = crate::agent_lanes::View::Lane("lint".into());
+        feed(cx, tab, |t, cx| t.show_view(lane.clone(), cx));
+        settle(cx, window, tab);
+        assert_eq!(
+            strip(cx).as_deref(),
+            Some("Lint the code in fuxx-cli/src, then report"),
+            "{n}: a lane's view: its task"
+        );
+        let card = cx
+            .read(|cx| tab.read(cx).shot_part("latest-strip"))
+            .expect("the lane's strip");
+        cx.simulate_click(window, card.center(), Modifiers::none());
+        settle(cx, window, tab);
+        assert_eq!(strip(cx), None, "{n}: the lane's task back on screen");
+        feed(cx, tab, |t, cx| {
+            t.show_view(crate::agent_lanes::View::Main, cx)
+        });
+        settle(cx, window, tab);
+        // A second message: on screen at once, then scrolled off: its line replaces the first.
+        feed(cx, tab, |t, cx| t.send(SECOND.into(), cx));
+        settle(cx, window, tab);
+        assert_eq!(strip(cx), None, "{n}: the new message on screen: no strip");
+        feed(cx, tab, |t, cx| t.shot_feed(turn("b", 14), cx));
+        settle(cx, window, tab);
+        assert_eq!(
+            strip(cx).as_deref(),
+            Some(SECOND),
+            "{n}: the second message's line"
+        );
+        cx.simulate_mouse_move(window, at, None, Modifiers::none());
+        settle(cx, window, tab);
     });
 }
 
@@ -2000,7 +2186,7 @@ pub(super) fn agent_tab_review() {
         );
         save_shot("agent-tab-review-boot", "mocha", &after);
         feed(cx, &tab, |t, cx| {
-            t.shot_history(vec![Past::You("earlier".into())], cx)
+            t.shot_history(vec![Past::you("earlier")], cx)
         });
         cx.read(|cx| {
             let t = tab.read(cx);
@@ -2478,94 +2664,6 @@ pub(super) fn agent_box_sweep() {
     println!("ui-shots: {n}: {}", path.display());
 }
 
-/// The sidebar's + menu: each preset fuxx runs as an agent tab (`claude`, `agy`) has its
-/// provider's badge before its name; the others (opencode, codex) none.
-pub(super) fn agent_preset_menu() {
-    let n = "agent-preset-menu";
-    for &(slug, theme_name) in shot_themes() {
-        let theme = shot_theme(theme_name);
-        let slot: Rc<RefCell<Option<Entity<crate::workspace::Workspace>>>> = Rc::default();
-        let build = agent_workspace(theme, slot.clone(), |ws, window, cx| {
-            let api = std::path::Path::new("/Users/me/code/api");
-            ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
-            ws.sidebar.new_menu = true;
-        });
-        let path = shoot_with(
-            n,
-            slug,
-            &theme,
-            size(px(960.0), px(600.0)),
-            build,
-            |cx, window| {
-                let ws = slot.borrow_mut().take().expect("the workspace");
-                settle_frames(cx, window);
-                cx.read(|cx| {
-                    assert!(ws.read(cx).sidebar.new_menu, "{n}: the + menu is open");
-                    let presets = &cx.global::<crate::appearance::Appearance>().presets;
-                    let badged: Vec<&str> = presets
-                        .iter()
-                        .filter(|p| crate::presets::provider_for(p).is_some())
-                        .map(|p| p.name.as_str())
-                        .collect();
-                    assert_eq!(
-                        badged,
-                        ["claude", "agy"],
-                        "{n}: the presets drawn with a badge"
-                    );
-                });
-            },
-        );
-        println!("ui-shots: {n}: {}", path.display());
-    }
-}
-
-/// A pane's ⋯ menu lists New Claude Tab (here, a workspace on this Mac); one of an SSH
-/// workspace wouldn't (`PaneAction::items(false)`, unit-tested).
-pub(super) fn agent_pane_menu() {
-    use crate::pane_actions::PaneAction;
-    let n = "agent-pane-menu";
-    for &(slug, theme_name) in shot_themes() {
-        let theme = shot_theme(theme_name);
-        let slot: Rc<RefCell<Option<Entity<crate::workspace::Workspace>>>> = Rc::default();
-        let build = agent_workspace(theme, slot.clone(), |ws, window, cx| {
-            let api = std::path::Path::new("/Users/me/code/api");
-            ws.open_shot_session("api", api, super::SHELL_TEXT, None, window, cx);
-        });
-        let path = shoot_with(
-            n,
-            slug,
-            &theme,
-            size(px(960.0), px(600.0)),
-            build,
-            |cx, window| {
-                let ws = slot.borrow_mut().take().expect("the workspace");
-                settle_frames(cx, window);
-                cx.update_window(window, |_, window, cx| {
-                    ws.update(cx, |ws, cx| {
-                        let pane = ws.model.focused_pane().expect("a pane");
-                        ws.open_pane_actions(pane, gpui::point(px(930.0), px(40.0)), window, cx)
-                    })
-                })
-                .unwrap();
-                settle_frames(cx, window);
-                cx.read(|cx| {
-                    let ws = ws.read(cx);
-                    let w = ws.model.focused_workspace().expect("a workspace");
-                    assert!(ws.pane_actions.is_some(), "{n}: the menu is open");
-                    assert!(!ws.workspace_is_ssh(w), "{n}");
-                    let labels: Vec<String> =
-                        PaneAction::items(true).iter().map(|a| a.label()).collect();
-                    assert!(
-                        labels.contains(&"New Claude Tab".to_string()),
-                        "{n}: {labels:?}"
-                    );
-                });
-            },
-        );
-        println!("ui-shots: {n}: {}", path.display());
-    }
-}
-
 /// R13 at boot: a restored tab whose conversation another process holds (the boot's `ps`
 /// found it: its classic view left running) starts paused with the warning, and no process is
 /// started (no command line built); what you typed while it booted is back in the box. A
@@ -2601,7 +2699,7 @@ pub(super) fn agent_tab_held() {
                     t.shot_boot();
                     t.send("are you there".into(), cx)
                 });
-                let past = vec![Past::You("earlier".into())];
+                let past = vec![Past::you("earlier")];
                 let h = holder;
                 feed(cx, &tab, |t, cx| t.shot_history_held(past, h, cx));
                 cx.read(|cx| {
@@ -2963,7 +3061,9 @@ pub(super) fn agent_tab_attachment() {
                     "{n}: sent with the message"
                 );
                 let you = t.shot_items().iter().find_map(|i| match i {
-                    Item::You { text, attachments } => Some((text.clone(), attachments.clone())),
+                    Item::You {
+                        text, attachments, ..
+                    } => Some((text.clone(), attachments.clone())),
                     _ => None,
                 });
                 let (text, with) = you.expect("your message");
@@ -3025,7 +3125,9 @@ pub(super) fn agent_tab_attachment() {
                 let t = view.read(cx);
                 assert!(t.shot_attachments().is_empty(), "{n}");
                 let last = t.shot_items().iter().rev().find_map(|i| match i {
-                    Item::You { text, attachments } => Some((text.clone(), attachments.clone())),
+                    Item::You {
+                        text, attachments, ..
+                    } => Some((text.clone(), attachments.clone())),
                     _ => None,
                 });
                 let (text, with) = last.expect("your second message");

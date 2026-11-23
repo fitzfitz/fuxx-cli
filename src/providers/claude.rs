@@ -39,7 +39,7 @@ static INFO: ProviderInfo = ProviderInfo {
             about: "Decides for itself which actions need asking",
         },
     ],
-    default_mode: None,
+    default_mode: Some("auto"),
 };
 
 /// The id the start-up `initialize` request carries, and its answer's `request_id`.
@@ -148,6 +148,11 @@ const OWNED_FLAGS: &[(&str, bool)] = &[
     ("--session-id", true),
     ("--continue", false),
     ("-c", false),
+    // Branching (batch 3, chore 2): fuxx's own when it rewinds or forks.
+    ("--fork-session", false),
+    ("--resume-session-at", true),
+    ("--resume-drops-turn", true),
+    ("--rewind-files", true),
 ];
 
 /// The flags that name the conversation a `claude` works on.
@@ -176,12 +181,28 @@ impl Provider for Claude {
         ]
         .map(String::from)
         .to_vec();
-        match (&start.resume, &start.new_id) {
-            (Some(id), _) => a.extend(["--resume".to_string(), id.clone()]),
+        match (&start.branch, &start.resume, &start.new_id) {
+            // Rewind and Fork (batch 3, chore 2): the old conversation resumed up to the entry
+            // before the cut message, as a new session under fuxx's id (`--fork-session`): the
+            // old transcript is never touched (Claude Code 2.1.330's `--help`).
+            (Some(Branch { from, at: Some(at) }), _, new_id) => {
+                a.extend(["--resume".to_string(), from.clone()]);
+                a.extend(["--resume-session-at".to_string(), at.clone()]);
+                a.push("--fork-session".to_string());
+                if let Some(id) = new_id {
+                    a.extend(["--session-id".to_string(), id.clone()]);
+                }
+            }
+            // The first message cut: nothing to keep, a fresh conversation.
+            (Some(Branch { at: None, .. }), _, Some(id)) => {
+                a.extend(["--session-id".to_string(), id.clone()])
+            }
+            (Some(Branch { at: None, .. }), _, None) => {}
+            (None, Some(id), _) => a.extend(["--resume".to_string(), id.clone()]),
             // A new conversation under the id fuxx chose: init reports that same id (checked
             // with Claude Code 2.1.326; an id already used is refused).
-            (None, Some(id)) => a.extend(["--session-id".to_string(), id.clone()]),
-            (None, None) => {}
+            (None, None, Some(id)) => a.extend(["--session-id".to_string(), id.clone()]),
+            (None, None, None) => {}
         }
         // What was chosen replaces the same flag in the preset; what wasn't, passes through.
         let mut owned = OWNED_FLAGS.to_vec();
@@ -210,11 +231,13 @@ impl Provider for Claude {
             model: None,
             effort: None,
             extra_args: Vec::new(),
+            branch: None,
         };
         vec![Probe {
             argv: self.argv(&start),
             stdin: vec![initialize_line()],
             until: Some(is_initialize_answer),
+            env: Vec::new(),
         }]
     }
 
@@ -231,6 +254,69 @@ impl Provider for Claude {
             .find(is_init_answer)
             .map(|v| catalog_of(&v["response"]["response"]))
             .ok_or_else(|| "no answer to initialize".to_string())
+    }
+
+    /// Claude guesses your next message after a turn when asked by this flag...
+    fn suggestion_flags(&self) -> Vec<String> {
+        vec!["--prompt-suggestions".into(), "true".into()]
+    }
+
+    /// File checkpoints, always: stream-json keeps none unless this is set (Claude Code
+    /// 2.1.330's binary; `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING` still vetoes it), and Rewind's
+    /// file undo needs them (batch 3, chore 2). With suggestions on, the variable without which
+    /// it sent one rarely in recordings (Claude Code 2.1.330).
+    fn process_env(&self, suggestions: bool) -> Vec<(String, String)> {
+        let mut env = vec![(CHECKPOINTS.0.into(), CHECKPOINTS.1.into())];
+        if suggestions {
+            env.push(("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION".into(), "1".into()));
+        }
+        env
+    }
+
+    /// Rewind and Fork through `--resume-session-at` and `--fork-session`, files through its
+    /// checkpoints (batch 3, chore 2).
+    fn branching(&self) -> Branching {
+        Branching {
+            rewind: true,
+            fork: true,
+            files: true,
+        }
+    }
+
+    /// The `uuid` of a stream-json `user` line is fuxx's to choose: the echo and the transcript
+    /// carry it (batch 3, chore 2).
+    fn fresh_message_id(&self) -> Option<String> {
+        new_uuid()
+    }
+
+    /// The message's `parentUuid` in its transcript (any chain entry: `--resume-session-at`
+    /// keeps up to and including it).
+    fn branch_point(
+        &self,
+        home: &Path,
+        start: &Start,
+        message: &str,
+    ) -> Result<BranchPoint, String> {
+        let text = transcript_text(home, start)
+            .ok_or_else(|| "Couldn't read the conversation's transcript".to_string())?;
+        branch_point_in(&text, message)
+    }
+
+    /// `claude -p --resume S --rewind-files <message>`: puts the files back and exits, no
+    /// prompt needed (its `--help`); with checkpoints on, as the tab's process ran.
+    fn rewind_files_probe(&self, start: &Start, message: &str) -> Option<Probe> {
+        let id = start.resume.as_ref().filter(|id| uuid_shaped(id))?;
+        if !uuid_shaped(message) {
+            return None;
+        }
+        Some(Probe {
+            argv: ["claude", "-p", "--resume", id, "--rewind-files", message]
+                .map(String::from)
+                .to_vec(),
+            stdin: Vec::new(),
+            until: None,
+            env: self.process_env(false),
+        })
     }
 
     /// The commands the box answers with its own menus (a whole line, no arguments).
@@ -263,6 +349,7 @@ impl Provider for Claude {
             .to_vec(),
             stdin: Vec::new(),
             until: None,
+            env: Vec::new(),
         })
     }
 
@@ -282,6 +369,7 @@ impl Provider for Claude {
             .to_vec(),
             stdin: Vec::new(),
             until: None,
+            env: Vec::new(),
         })
     }
 
@@ -443,22 +531,45 @@ pub fn claude_json_projects(text: &str) -> Vec<PathBuf> {
 /// under `start`'s folder, it is looked for under every folder's entry (an id is unique). An id
 /// not of a session id's shape (a path, `..`) reads nothing.
 fn history_in(home: &Path, start: &Start) -> Vec<Past> {
+    transcript_text(home, start)
+        .map(|text| transcript_events(&text))
+        .unwrap_or_default()
+}
+
+/// The transcript of the conversation `start` resumes, as `history_in` finds it (under its own
+/// folder's entry, else any folder's); None to resume, an id not of a session id's shape, or
+/// nothing readable.
+fn transcript_text(home: &Path, start: &Start) -> Option<String> {
     // The id comes from the sessions file: only a session id's shape is joined into a path.
-    let Some(id) = start.resume.as_ref().filter(|id| uuid_shaped(id)) else {
-        return Vec::new();
-    };
+    let id = start.resume.as_ref().filter(|id| uuid_shaped(id))?;
     let cwd = std::fs::canonicalize(&start.cwd).unwrap_or_else(|_| start.cwd.clone());
     let here = transcript_path(home, &cwd, id);
-    let text = std::fs::read_to_string(&here).ok().or_else(|| {
+    std::fs::read_to_string(&here).ok().or_else(|| {
         let name = here.file_name()?;
         std::fs::read_dir(home.join(".claude").join("projects"))
             .ok()?
             .flatten()
             .find_map(|entry| std::fs::read_to_string(entry.path().join(name)).ok())
-    });
-    text.map(|text| transcript_events(&text))
-        .unwrap_or_default()
+    })
 }
+
+/// Message `message`'s place in transcript `text`: its `user` line (one you said, not a tool's
+/// result) and that line's `parentUuid` (none for the first).
+#[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+fn branch_point_in(text: &str, message: &str) -> Result<BranchPoint, String> {
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| v["uuid"] == message)
+        .filter(|v| v["type"] == "user" && said_text(&v["message"]["content"]).is_some())
+        .map(|v| BranchPoint {
+            message: message.to_string(),
+            parent: s(&v["parentUuid"]),
+        })
+        .ok_or_else(|| "That message isn't in the conversation's transcript".to_string())
+}
+
+/// The variable that turns Claude's file checkpoints on in stream-json, and its value.
+const CHECKPOINTS: (&str, &str) = ("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "true");
 
 /// Where Claude keeps conversation `id` begun in folder `cwd` (its realpath: the caller resolves
 /// it): `<home>/.claude/projects/<cwd with / and . turned into ->/<id>.jsonl` (M11aa Task 0).
@@ -514,7 +625,10 @@ pub fn transcript_events(text: &str) -> Vec<Past> {
                             }));
                         }
                     }
-                } else if let Some(past) = said_text(content).as_deref().and_then(user_said) {
+                } else if let Some(past) = said_text(content)
+                    .as_deref()
+                    .and_then(|t| user_said(t, s(&v["uuid"])))
+                {
                     out.push(past);
                 }
             }
@@ -558,10 +672,10 @@ fn inside<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     Some(&text[start..end])
 }
 
-/// What a `user` line's text was in the conversation: you, unless it is one of Claude's own
-/// wrappers — a slash command (shown as you typed it), its output (a notice), an interrupt
-/// ("Stopped"), or another `<…>` wrapper (left out).
-fn user_said(text: &str) -> Option<Past> {
+/// What a `user` line's text was in the conversation: you (with the line's `uuid`, `id`), unless
+/// it is one of Claude's own wrappers — a slash command (shown as you typed it), its output (a
+/// notice), an interrupt ("Stopped"), or another `<…>` wrapper (left out).
+fn user_said(text: &str, id: Option<String>) -> Option<Past> {
     let t = text.trim();
     if t.starts_with("[Request interrupted by user") {
         return Some(Past::Event(Event::Notice("Stopped".into())));
@@ -574,7 +688,7 @@ fn user_said(text: &str) -> Option<Past> {
         } else {
             format!("{name} {args}")
         };
-        return Some(Past::You(typed));
+        return Some(Past::You { text: typed, id });
     }
     if t.starts_with("<local-command-stdout>") {
         let out = inside(t, "local-command-stdout")?.trim();
@@ -586,7 +700,10 @@ fn user_said(text: &str) -> Option<Past> {
         .is_some_and(|(tag, _)| {
             !tag.is_empty() && tag.chars().all(|c| c.is_ascii_lowercase() || c == '-')
         });
-    (!wrapper && !t.is_empty()).then(|| Past::You(text.to_string()))
+    (!wrapper && !t.is_empty()).then(|| Past::You {
+        text: text.to_string(),
+        id,
+    })
 }
 
 #[derive(Default)]
@@ -601,6 +718,9 @@ struct ClaudeTranslator {
     asked: HashMap<String, Asked>,
     /// The last `fuxx-set-<n>` written.
     sets: u32,
+    /// File rewinds asked and not answered yet (batch 3, chore 2), by request id
+    /// (`fuxx-rewind-<n>`): the message and whether it was a dry run.
+    rewinds: HashMap<String, (String, bool)>,
     /// Subagents (M11ar): Claude's task id → the lane (its Agent call's id), and back.
     lanes: HashMap<String, String>,
     tasks: HashMap<String, String>,
@@ -1033,6 +1153,43 @@ impl ClaudeTranslator {
         }]
     }
 
+    /// The answer to a file rewind fuxx asked (`rewind_files`): `{canRewind, error?,
+    /// filesChanged?, insertions?, deletions?}` (Claude Code 2.1.330's schema), or an error.
+    fn rewound(&mut self, v: &Value) -> Vec<Event> {
+        let response = &v["response"];
+        let Some((message, dry_run)) = response["request_id"]
+            .as_str()
+            .and_then(|id| self.rewinds.remove(id))
+        else {
+            return Vec::new();
+        };
+        let outcome = if response["subtype"] == "success" {
+            let body = &response["response"];
+            FileRewind {
+                can_rewind: body["canRewind"] == true,
+                error: s(&body["error"]),
+                files: body["filesChanged"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(s)
+                    .collect(),
+                insertions: body["insertions"].as_u64(),
+                deletions: body["deletions"].as_u64(),
+            }
+        } else {
+            FileRewind {
+                error: Some(s(&response["error"]).unwrap_or_else(|| "Claude refused it".into())),
+                ..FileRewind::default()
+            }
+        };
+        vec![Event::FilesRewound {
+            message,
+            dry_run,
+            outcome,
+        }]
+    }
+
     /// The session model's context window, as a finished turn (in any tab) reported it; with no
     /// model named, the last turn's.
     fn known_window(&self) -> Option<u64> {
@@ -1322,6 +1479,13 @@ impl Translator for ClaudeTranslator {
                     _ => Vec::new(),
                 }
             }
+            Some("control_response")
+                if v["response"]["request_id"]
+                    .as_str()
+                    .is_some_and(|r| self.rewinds.contains_key(r)) =>
+            {
+                self.rewound(&v)
+            }
             Some("control_response") => self.answered(&v),
             Some("stream_event") => self.stream_event(&v),
             Some("assistant") => self.assistant(&v),
@@ -1329,13 +1493,21 @@ impl Translator for ClaudeTranslator {
             Some("user")
                 if v["isReplay"] == true && said_text(&v["message"]["content"]).is_some() =>
             {
-                vec![Event::Taken]
+                vec![Event::Taken { id: s(&v["uuid"]) }]
             }
             Some("user") => self.user(&v),
             Some("result") => self.result(&v),
             Some("rate_limit_event") => rate_limit(&v),
             // `/clear`: then a new `system/init` under a new session id (Claude Code 2.1.330).
             Some("conversation_reset") => vec![Event::Cleared],
+            // A guess at your next message, about a second after a turn's `result` (with
+            // `--prompt-suggestions true`; Claude Code 2.1.330). Not every turn has one.
+            Some("prompt_suggestion") => v["suggestion"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| vec![Event::Suggestion(s.to_string())])
+                .unwrap_or_default(),
             Some("control_request") if v["request"]["subtype"] == "can_use_tool" => {
                 self.permission(&v)
             }
@@ -1354,11 +1526,29 @@ impl Translator for ClaudeTranslator {
                 ],
                 None => Vec::new(),
             },
-            Action::Send { text, images } => vec![
-                json!({"type": "user",
-                "message": {"role": "user", "content": content(text, images)}})
-                .to_string(),
-            ],
+            Action::Send { text, images, id } => {
+                let mut line = json!({"type": "user",
+                    "message": {"role": "user", "content": content(text, images)}});
+                // fuxx's id for it (batch 3, chore 2): the echo and the transcript carry it.
+                if let Some(id) = id {
+                    line["uuid"] = json!(id);
+                }
+                vec![line.to_string()]
+            }
+            Action::RewindFiles { message, dry_run } => {
+                self.sets += 1;
+                let rid = format!("fuxx-rewind-{}", self.sets);
+                let mut request = json!({"subtype": "rewind_files", "user_message_id": message});
+                if *dry_run {
+                    request["dry_run"] = json!(true);
+                }
+                self.rewinds
+                    .insert(rid.clone(), (message.clone(), *dry_run));
+                vec![
+                    json!({"type": "control_request", "request_id": rid, "request": request})
+                        .to_string(),
+                ]
+            }
             Action::Interrupt => vec![
                 json!({"type": "control_request", "request_id": "fuxx-stop",
                 "request": {"subtype": "interrupt"}})
@@ -1641,6 +1831,7 @@ mod tests {
             extra_args: Vec::new(),
             model: None,
             effort: None,
+            branch: None,
         };
         assert!(
             CLAUDE
@@ -1651,12 +1842,20 @@ mod tests {
         let echo = json!({"type":"user","isReplay":true,
             "message":{"role":"user","content":"Also: what is 2+2?"},"session_id":"s"})
         .to_string();
-        assert_eq!(CLAUDE.translator().decode(&echo), [Event::Taken]);
+        assert_eq!(
+            CLAUDE.translator().decode(&echo),
+            [Event::Taken { id: None }]
+        );
         // A tool's result isn't a message of yours.
         let result = json!({"type":"user","message":{"role":"user","content":[
             {"type":"tool_result","tool_use_id":"t","content":"ok"}]}})
         .to_string();
-        assert!(!CLAUDE.translator().decode(&result).contains(&Event::Taken));
+        assert!(
+            !CLAUDE
+                .translator()
+                .decode(&result)
+                .contains(&Event::Taken { id: None })
+        );
     }
 
     #[test]
@@ -2191,15 +2390,20 @@ mod tests {
         assert_eq!(
             past,
             vec![
-                Past::You("Say hello in one word".into()),
+                Past::You {
+                    text: "Say hello in one word".into(),
+                    id: Some("9ae3b190-4bf7-404f-ac4d-4678b6fd9c06".into()),
+                },
                 Past::Event(Event::MessageDone {
                     message: "msg_011Cgz3BeeVjP3aWM4pjPKbD".into(),
                     text: "Hello!".into(),
                     parent: None,
                 }),
-                Past::You(
-                    "What single word did I ask you to say earlier? Answer in one word.".into()
-                ),
+                Past::You {
+                    text: "What single word did I ask you to say earlier? Answer in one word."
+                        .into(),
+                    id: Some("4d02f791-3abf-497c-b3fe-3503c2c8f4b2".into()),
+                },
                 Past::Event(Event::MessageDone {
                     message: "msg_011Cgz3JJVyRZykwmNZqqJjR".into(),
                     text: "Hello".into(),
@@ -2226,7 +2430,7 @@ mod tests {
         let text: String = lines.iter().map(|l| l.to_string() + "\n").collect();
         let past = transcript_events(&format!("{text}not json\n"));
         assert_eq!(past.len(), 3, "{past:?}");
-        assert_eq!(past[0], Past::You("fix it".into()));
+        assert_eq!(past[0], Past::you("fix it"));
         assert!(matches!(&past[1], Past::Event(Event::ToolStarted { id, .. }) if id == "t1"));
         assert!(
             matches!(&past[2], Past::Event(Event::ToolFinished { id, ok: true, .. }) if id == "t1")
@@ -2260,8 +2464,8 @@ mod tests {
         assert_eq!(
             transcript_events(&text),
             vec![
-                Past::You("look at\nthis".into()),
-                Past::You("/compact".into()),
+                Past::you("look at\nthis"),
+                Past::you("/compact"),
                 Past::Event(Event::Notice(
                     "Compacted (ctrl+o to see full summary)".into()
                 )),
@@ -2302,6 +2506,7 @@ mod tests {
             extra_args: Vec::new(),
             model: None,
             effort: None,
+            branch: None,
         };
         // A made-up home (never the real one: a miss looks under every folder's entry).
         let home = scratch_home("missing");
@@ -2341,6 +2546,7 @@ mod tests {
         let out = t.encode(&Action::Send {
             text: "hi".into(),
             images: Vec::new(),
+            id: None,
         });
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(
@@ -2387,6 +2593,7 @@ mod tests {
         let out = t.encode(&Action::Send {
             text: "what colour".into(),
             images: vec![picture.clone(), picture],
+            id: None,
         });
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         let image = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}});
@@ -2399,6 +2606,7 @@ mod tests {
         let out = t.encode(&Action::Send {
             text: String::new(),
             images: vec![Picture::new("image/png", b"foo".to_vec())],
+            id: None,
         });
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(v["message"]["content"].as_array().map(Vec::len), Some(1));
@@ -2413,6 +2621,7 @@ mod tests {
         let out = CLAUDE.translator().encode(&Action::Send {
             text: "what is in [Image #1]?".into(),
             images: vec![picture],
+            id: None,
         });
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         let blocks = v["message"]["content"].as_array().unwrap();
@@ -2437,6 +2646,7 @@ mod tests {
         let out = CLAUDE.translator().encode(&Action::Send {
             text: String::new(),
             images: vec![picture],
+            id: None,
         });
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(v["message"]["content"][0]["source"]["data"], "VERBATIM");
@@ -2452,6 +2662,7 @@ mod tests {
         let out = t.encode(&Action::Send {
             text: "hi".into(),
             images: Vec::new(),
+            id: None,
         });
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(v["message"]["content"], "hi", "a plain string, not blocks");
@@ -2756,6 +2967,7 @@ mod tests {
             ],
             model: None,
             effort: None,
+            branch: None,
         };
         let a = CLAUDE.argv(&s);
         assert!(a.ends_with(&["--model".to_string(), "sonnet".to_string()]));
@@ -2795,6 +3007,7 @@ mod tests {
             .to_vec(),
             model: None,
             effort: None,
+            branch: None,
         };
         let a = CLAUDE.argv(&s);
         assert!(a.windows(2).any(|w| w == ["--resume", "abc"]));
@@ -2886,6 +3099,7 @@ mod tests {
                 .to_vec(),
             model: None,
             effort: None,
+            branch: None,
         };
         let a = CLAUDE.argv(&fresh);
         assert!(
@@ -3060,7 +3274,78 @@ mod tests {
         let labels: Vec<&str> = i.modes.iter().map(|m| m.label).collect();
         assert_eq!(labels, ["Ask before edits", "Accept edits", "Plan", "Auto"]);
         assert!(i.modes.iter().all(|m| !m.about.is_empty()));
-        assert_eq!(i.default_mode, None);
+        assert_eq!(i.default_mode, Some("auto"), "the user's call: Auto");
+    }
+
+    // ---- Prompt suggestions (a chore after M11ar) ----
+
+    const SUGGESTION: &str = include_str!("fixtures/claude-prompt-suggestion.jsonl");
+
+    /// Claude's `prompt_suggestion` lines, after each turn's `result`, are the main
+    /// conversation's suggestions (their `uuid` and `session_id` ignored).
+    #[test]
+    fn prompt_suggestion_decodes_to_a_suggestion() {
+        let suggestions: Vec<String> = decode_all(&CLAUDE, SUGGESTION)
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Suggestion(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            suggestions,
+            ["go ahead and create it", "and the third step?"]
+        );
+        let mut t = CLAUDE.translator();
+        let padded = json!({"type": "prompt_suggestion", "suggestion": "  run the tests \n"});
+        assert_eq!(
+            t.decode(&padded.to_string()),
+            [Event::Suggestion("run the tests".into())]
+        );
+    }
+
+    #[test]
+    fn a_blank_suggestion_is_nothing() {
+        let mut t = CLAUDE.translator();
+        for line in [
+            json!({"type": "prompt_suggestion", "suggestion": "   "}),
+            json!({"type": "prompt_suggestion", "suggestion": ""}),
+            json!({"type": "prompt_suggestion"}),
+            json!({"type": "prompt_suggestion", "suggestion": 4}),
+        ] {
+            assert!(t.decode(&line.to_string()).is_empty(), "{line}");
+        }
+    }
+
+    /// Claude is asked for suggestions by a flag, and sends them only with its env var set.
+    #[test]
+    fn claude_asks_for_suggestions_by_flag_and_env() {
+        assert_eq!(CLAUDE.suggestion_flags(), ["--prompt-suggestions", "true"]);
+        let suggest = (
+            "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION".to_string(),
+            "1".to_string(),
+        );
+        assert!(CLAUDE.process_env(true).contains(&suggest));
+        assert!(!CLAUDE.process_env(false).contains(&suggest));
+    }
+
+    #[test]
+    fn argv_passes_the_auto_mode() {
+        let s = Start {
+            cwd: "/tmp".into(),
+            resume: None,
+            new_id: None,
+            mode: Some("auto".into()),
+            model: None,
+            effort: None,
+            extra_args: vec![],
+            branch: None,
+        };
+        let a = CLAUDE.argv(&s);
+        assert!(
+            a.windows(2).any(|w| w == ["--permission-mode", "auto"]),
+            "{a:?}"
+        );
     }
 
     #[test]
@@ -3073,6 +3358,7 @@ mod tests {
             model: None,
             effort: None,
             extra_args: vec!["--model".into(), "x".into()],
+            branch: None,
         };
         let a = CLAUDE.argv(&s);
         for flag in ["--effort", "--permission-mode"] {
@@ -3581,11 +3867,15 @@ mod tests {
             model: None,
             effort: None,
             extra_args: Vec::new(),
+            branch: None,
         };
         let past = history_in(&home, &start);
         assert_eq!(
             past.first(),
-            Some(&Past::You("Say hello in one word".into())),
+            Some(&Past::You {
+                text: "Say hello in one word".into(),
+                id: Some("9ae3b190-4bf7-404f-ac4d-4678b6fd9c06".into()),
+            }),
             "read from the first folder's entry: {past:?}"
         );
         assert_eq!(past.len(), 4);
@@ -3620,10 +3910,309 @@ mod tests {
             model: None,
             effort: None,
             extra_args: Vec::new(),
+            branch: None,
         };
         for id in ["../escape", "../../escape", "a/../../escape", ""] {
             assert!(history_in(&home, &start(id)).is_empty(), "{id:?}");
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+/// Batch 3, chore 2 (Rewind and Fork, the provider core): message ids, the forked resume, the
+/// branch point from the transcript, file checkpoints and their rewind (Claude Code 2.1.330's
+/// `--help` and its binary's strings; no model called).
+#[cfg(test)]
+mod branch_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn start(resume: Option<&str>, new_id: Option<&str>, branch: Option<Branch>) -> Start {
+        Start {
+            cwd: PathBuf::from("/tmp/fx"),
+            resume: resume.map(String::from),
+            new_id: new_id.map(String::from),
+            mode: None,
+            model: None,
+            effort: None,
+            extra_args: Vec::new(),
+            branch,
+        }
+    }
+
+    const S: &str = "6a1c234d-7469-40ef-b093-c74ad8006c28";
+    const N: &str = "11111111-2222-4333-8444-555555555555";
+    const P: &str = "c6775dd7-1a5a-4e4a-975c-aab3efe12bf8";
+    const U: &str = "9ae3b190-4bf7-404f-ac4d-4678b6fd9c06";
+
+    #[test]
+    fn claude_can_rewind_fork_and_undo_files() {
+        assert_eq!(
+            CLAUDE.branching(),
+            Branching {
+                rewind: true,
+                fork: true,
+                files: true
+            }
+        );
+        let id = CLAUDE.fresh_message_id().expect("Claude takes fuxx's ids");
+        assert!(uuid_shaped(&id), "{id}");
+    }
+
+    #[test]
+    fn a_send_carries_its_message_id_and_the_echo_names_it() {
+        let mut t = CLAUDE.translator();
+        let out = t.encode(&Action::Send {
+            text: "hi".into(),
+            images: Vec::new(),
+            id: Some(U.into()),
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(
+            v,
+            json!({"type":"user","uuid":U,"message":{"role":"user","content":"hi"}})
+        );
+        // No id: the line as before.
+        let out = t.encode(&Action::Send {
+            text: "hi".into(),
+            images: Vec::new(),
+            id: None,
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert!(v.get("uuid").is_none(), "{v}");
+        let echo = json!({"type":"user","isReplay":true,"uuid":U,
+            "message":{"role":"user","content":"hi"},"session_id":"s"})
+        .to_string();
+        assert_eq!(
+            CLAUDE.translator().decode(&echo),
+            [Event::Taken { id: Some(U.into()) }]
+        );
+    }
+
+    #[test]
+    fn history_keeps_each_messages_id() {
+        let past = transcript_events(include_str!("fixtures/claude-transcript.jsonl"));
+        let yours: Vec<(String, Option<String>)> = past
+            .into_iter()
+            .filter_map(|p| match p {
+                Past::You { text, id } => Some((text, id)),
+                Past::Event(_) => None,
+            })
+            .collect();
+        assert_eq!(yours[0], ("Say hello in one word".into(), Some(U.into())));
+        assert_eq!(
+            yours[1].1.as_deref(),
+            Some("4d02f791-3abf-497c-b3fe-3503c2c8f4b2")
+        );
+    }
+
+    /// Rewind and Fork both start a forked session (the old transcript untouched, so Undo
+    /// Rewind can go back to it): resume S at the cut message's parent, under fuxx's new id.
+    #[test]
+    fn a_branch_resumes_at_its_point_and_forks_under_the_new_id() {
+        let from = |at: Option<&str>| Branch {
+            from: S.into(),
+            at: at.map(String::from),
+        };
+        let argv = CLAUDE.argv(&start(Some(S), Some(N), Some(from(Some(P)))));
+        let tail: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let at = |flag: &str| tail.iter().position(|a| *a == flag);
+        let after = |flag: &str| at(flag).map(|i| tail[i + 1]);
+        assert_eq!(after("--resume"), Some(S));
+        assert_eq!(after("--resume-session-at"), Some(P));
+        assert!(at("--fork-session").is_some(), "{tail:?}");
+        assert_eq!(after("--session-id"), Some(N));
+        assert_eq!(
+            tail.iter().filter(|a| **a == "--resume").count(),
+            1,
+            "one resume: {tail:?}"
+        );
+        // The first message cut: nothing to keep, a fresh conversation under N.
+        let argv = CLAUDE.argv(&start(Some(S), Some(N), Some(from(None))));
+        assert!(
+            !argv
+                .iter()
+                .any(|a| a == "--resume" || a == "--fork-session")
+        );
+        let i = argv.iter().position(|a| a == "--session-id").unwrap();
+        assert_eq!(argv[i + 1], N);
+        // A preset's own branch flags are fuxx's: dropped.
+        let mut s = start(Some(S), None, None);
+        s.extra_args = [
+            "--fork-session",
+            "--resume-session-at",
+            "x",
+            "--rewind-files",
+            "y",
+        ]
+        .map(String::from)
+        .to_vec();
+        let argv = CLAUDE.argv(&s);
+        for flag in ["--fork-session", "--resume-session-at", "--rewind-files"] {
+            assert!(!argv.iter().any(|a| a == flag), "{flag}: {argv:?}");
+        }
+    }
+
+    fn write_transcript(home: &Path, cwd: &Path, id: &str, text: &str) {
+        let at = transcript_path(home, &std::fs::canonicalize(cwd).unwrap(), id);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, text).unwrap();
+    }
+
+    /// The point to resume at is the cut message's `parentUuid` (any chain entry); the first
+    /// message has none. Read off the UI thread, from the transcript `history` reads.
+    #[test]
+    fn the_branch_point_is_the_messages_parent_in_the_transcript() {
+        let home = crate::test_temp::dir("fuxx-claude-branch-point");
+        let _ = std::fs::remove_dir_all(&home);
+        let cwd = home.join("code/my-app");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let lines = [
+            json!({"type":"user","uuid":"a","parentUuid":null,
+                "message":{"role":"user","content":"first"}}),
+            json!({"type":"assistant","uuid":"b","parentUuid":"a",
+                "message":{"id":"m","role":"assistant","content":[{"type":"text","text":"ok"}]}}),
+            json!({"type":"system","uuid":"c","parentUuid":"b","subtype":"x"}),
+            json!({"type":"user","uuid":"d","parentUuid":"c",
+                "message":{"role":"user","content":"second"}}),
+        ]
+        .map(|v| v.to_string())
+        .join("\n");
+        write_transcript(&home, &cwd, S, &lines);
+        let mut s = start(Some(S), None, None);
+        s.cwd = cwd.clone();
+        assert_eq!(
+            CLAUDE.branch_point(&home, &s, "d"),
+            Ok(BranchPoint {
+                message: "d".into(),
+                parent: Some("c".into())
+            })
+        );
+        assert_eq!(
+            CLAUDE.branch_point(&home, &s, "a"),
+            Ok(BranchPoint {
+                message: "a".into(),
+                parent: None
+            })
+        );
+        // Not a message of yours, or not there at all: said.
+        assert!(CLAUDE.branch_point(&home, &s, "b").is_err());
+        assert!(CLAUDE.branch_point(&home, &s, "zz").is_err());
+        // No conversation, or not a session id: nothing read.
+        assert!(
+            CLAUDE
+                .branch_point(&home, &start(None, None, None), "d")
+                .is_err()
+        );
+        let mut odd = s.clone();
+        odd.resume = Some("../x".into());
+        assert!(CLAUDE.branch_point(&home, &odd, "d").is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Claude keeps file checkpoints in stream-json only with this set (its binary:
+    /// `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`, vetoed by `…_DISABLE_FILE_CHECKPOINTING`);
+    /// the suggestion variable joins it while suggestions are on.
+    #[test]
+    fn claude_runs_with_file_checkpoints_on() {
+        let on = (
+            "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING".to_string(),
+            "true".to_string(),
+        );
+        let suggest = (
+            "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION".to_string(),
+            "1".to_string(),
+        );
+        assert_eq!(CLAUDE.process_env(false), std::slice::from_ref(&on));
+        assert_eq!(CLAUDE.process_env(true), [on, suggest]);
+    }
+
+    #[test]
+    fn rewind_files_asks_claude_and_its_answer_decodes() {
+        let mut t = CLAUDE.translator();
+        let out = t.encode(&Action::RewindFiles {
+            message: U.into(),
+            dry_run: true,
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert_eq!(v["type"], "control_request");
+        assert_eq!(
+            v["request"],
+            json!({"subtype":"rewind_files","user_message_id":U,"dry_run":true})
+        );
+        let rid = v["request_id"].as_str().unwrap().to_string();
+        assert!(rid.starts_with("fuxx-rewind-"), "{rid}");
+        let answer = json!({"type":"control_response","response":{"subtype":"success",
+            "request_id":rid,"response":{"canRewind":true,"filesChanged":["src/a.rs","b.md"],
+            "insertions":3,"deletions":1}}})
+        .to_string();
+        assert_eq!(
+            t.decode(&answer),
+            [Event::FilesRewound {
+                message: U.into(),
+                dry_run: true,
+                outcome: FileRewind {
+                    can_rewind: true,
+                    error: None,
+                    files: vec!["src/a.rs".into(), "b.md".into()],
+                    insertions: Some(3),
+                    deletions: Some(1),
+                },
+            }]
+        );
+        // Asked again for real: refused by Claude (an error answer).
+        let out = t.encode(&Action::RewindFiles {
+            message: U.into(),
+            dry_run: false,
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        assert!(
+            v["request"].get("dry_run").is_none(),
+            "only a dry run says so"
+        );
+        let rid = v["request_id"].as_str().unwrap().to_string();
+        let refused = json!({"type":"control_response","response":{"subtype":"error",
+            "request_id":rid,"error":"No file checkpoint for this message"}})
+        .to_string();
+        let ev = t.decode(&refused);
+        assert!(
+            matches!(&ev[..], [Event::FilesRewound { dry_run: false, outcome, .. }]
+                if !outcome.can_rewind
+                    && outcome.error.as_deref() == Some("No file checkpoint for this message")),
+            "{ev:?}"
+        );
+        // Answered once: a repeat is nobody's.
+        assert!(t.decode(&refused).is_empty());
+    }
+
+    /// The process isn't running: a one-off `--rewind-files` on the conversation (it needs no
+    /// prompt and exits), with checkpoints on.
+    #[test]
+    fn the_one_off_rewind_needs_no_prompt() {
+        let probe = CLAUDE
+            .rewind_files_probe(&start(Some(S), None, None), U)
+            .expect("Claude can");
+        assert_eq!(
+            probe.argv,
+            ["claude", "-p", "--resume", S, "--rewind-files", U]
+        );
+        assert!(probe.stdin.is_empty());
+        assert_eq!(probe.env, CLAUDE.process_env(false));
+        assert!(
+            CLAUDE
+                .rewind_files_probe(&start(None, None, None), U)
+                .is_none()
+        );
+        assert!(
+            CLAUDE
+                .rewind_files_probe(&start(Some("../x"), None, None), U)
+                .is_none()
+        );
+        assert!(
+            CLAUDE
+                .rewind_files_probe(&start(Some(S), None, None), "-rm")
+                .is_none(),
+            "only an id"
+        );
     }
 }

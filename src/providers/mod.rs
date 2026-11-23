@@ -89,12 +89,63 @@ pub enum BoxCommand {
 }
 
 /// A short-lived process that answers part of the catalog: its command line, the lines to write
-/// to its stdin, and (when it keeps running) the stdout line that is the answer.
+/// to its stdin, (when it keeps running) the stdout line that is the answer, and the environment
+/// it runs with besides the login one (none for most).
 #[derive(Clone, Debug)]
 pub struct Probe {
     pub argv: Vec<String>,
     pub stdin: Vec<String>,
     pub until: Option<fn(&str) -> bool>,
+    pub env: Vec<(String, String)>,
+}
+
+/// What a provider can do to go back in a conversation (batch 3, chore 2): cut it before one of
+/// your messages in place (`rewind`), start a new conversation from that point (`fork`), and
+/// undo the file changes made after it (`files`, through the agent's own checkpoints).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+pub struct Branching {
+    pub rewind: bool,
+    pub fork: bool,
+    pub files: bool,
+}
+
+impl Branching {
+    /// Whether it can go back at all.
+    #[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+    pub fn any(self) -> bool {
+        self.rewind || self.fork
+    }
+}
+
+/// Where a new conversation branches off an old one (`Start::branch`): conversation `from`, kept
+/// up to and including chain entry `at` (`BranchPoint::parent`); `at` None (the first message
+/// cut): nothing kept, a fresh conversation. The new one starts under `Start::new_id`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Branch {
+    pub from: String,
+    pub at: Option<String>,
+}
+
+/// One of your messages in its conversation's record: its id, and the entry before it (where a
+/// branch that cuts the message resumes; None for the first).
+#[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+pub struct BranchPoint {
+    pub message: String,
+    pub parent: Option<String>,
+}
+
+/// The agent's answer to `Action::RewindFiles` (Claude's `rewind_files`): whether it can (or, not
+/// a dry run, did) put the files back as they were before the message, why not, and what it
+/// changes. `files` empty when it doesn't say.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileRewind {
+    pub can_rewind: bool,
+    pub error: Option<String>,
+    pub files: Vec<String>,
+    pub insertions: Option<u64>,
+    pub deletions: Option<u64>,
 }
 
 /// One group of usage limits (agy names its groups; Claude's lines make one nameless group).
@@ -177,6 +228,9 @@ pub struct Start {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub extra_args: Vec<String>,
+    /// Start a new conversation branched off an old one (batch 3, chore 2: Rewind and Fork),
+    /// under `new_id`; it wins over `resume`. None: as `resume` and `new_id` say.
+    pub branch: Option<Branch>,
 }
 
 pub trait Provider: Sync {
@@ -286,6 +340,48 @@ pub trait Provider: Sync {
     fn known_folders(&self, _home: &Path) -> Vec<PathBuf> {
         Vec::new()
     }
+    /// The flags that ask the agent to guess your next message after each turn
+    /// (`Event::Suggestion`), added while fuxx's "Prompt suggestions" is on. Default: none (the
+    /// agent can't).
+    fn suggestion_flags(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// The environment set on the agent's own process (besides the login one): what it always
+    /// needs (batch 3, chore 2: Claude's file checkpoints), and with `suggestions` (fuxx's
+    /// "Prompt suggestions" on) what its guesses need. Default: none.
+    fn process_env(&self, _suggestions: bool) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// What it can do to go back in a conversation (batch 3, chore 2). Default: nothing.
+    #[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+    fn branching(&self) -> Branching {
+        Branching::default()
+    }
+    /// An id for a message about to be sent (`Action::Send`'s `id`), when the agent takes one and
+    /// names the message by it after (its echo, `Event::Taken`; its record, `Past::You`). None:
+    /// the agent names messages its own way, or not at all.
+    fn fresh_message_id(&self) -> Option<String> {
+        None
+    }
+    /// Where message `message` sits in the conversation `start` resumes (`Start::resume`), under
+    /// your `home`: for a `Branch` that cuts it. Reads a file: call it off the UI thread. Err: the
+    /// line to show. Default: it can't.
+    #[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+    fn branch_point(
+        &self,
+        _home: &Path,
+        _start: &Start,
+        _message: &str,
+    ) -> Result<BranchPoint, String> {
+        Err("This agent can't go back in a conversation".into())
+    }
+    /// A one-off process that undoes the file changes made since message `message` in the
+    /// conversation `start` resumes, for when its own process isn't running (the live way is
+    /// `Action::RewindFiles`). None: it can't (or `start` names no conversation of its shape).
+    #[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+    fn rewind_files_probe(&self, _start: &Start, _message: &str) -> Option<Probe> {
+        None
+    }
 }
 
 pub trait Translator: Send {
@@ -318,11 +414,23 @@ pub enum LaneEnd {
     Stopped,
 }
 
-/// One piece of a resumed conversation's history: something you said, or an event of the agent's.
+/// One piece of a resumed conversation's history: something you said (with its id in the
+/// agent's record, when it has one: batch 3, chore 2), or an event of the agent's.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Past {
-    You(String),
+    You { text: String, id: Option<String> },
     Event(Event),
+}
+
+#[cfg(any(test, feature = "ui-shots"))]
+impl Past {
+    /// Something you said, with no id.
+    pub fn you(text: impl Into<String>) -> Past {
+        Past::You {
+            text: text.into(),
+            id: None,
+        }
+    }
 }
 
 /// The new text of one edit, as the provider read it from the call (M11ag).
@@ -412,8 +520,16 @@ pub enum Event {
         end: LaneEnd,
     },
     /// The agent read one of your messages (Claude's `--replay-user-messages` echo): in the
-    /// turn running, or starting its own.
-    Taken,
+    /// turn running, or starting its own. `id`: the message's (`Action::Send`'s), when it says.
+    Taken {
+        id: Option<String>,
+    },
+    /// The answer to `Action::RewindFiles` for message `message` (batch 3, chore 2).
+    FilesRewound {
+        message: String,
+        dry_run: bool,
+        outcome: FileRewind,
+    },
     /// Read this file's new lines as subagent `id`'s, through the translator's
     /// `decode_followed` (agy writes a subagent's steps to its own transcript).
     Follow {
@@ -432,6 +548,9 @@ pub enum Event {
     Error(String),
     /// The provider's own start answered the catalog.
     Catalog(Catalog),
+    /// The agent's guess at your next message, after a turn of the main conversation (Claude's
+    /// `prompt_suggestion`); never empty.
+    Suggestion(String),
     /// The names of the skills the agent has (the cache marks those commands `Skill`).
     Skills(Vec<String>),
     /// A usage limit changed state.
@@ -557,10 +676,12 @@ pub fn base64(bytes: &[u8]) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     /// A message; `images` go with it only for a provider that `sends_images` (the others get
-    /// each image's path in `text`).
+    /// each image's path in `text`); `id` its id, from `Provider::fresh_message_id` (an agent
+    /// that takes none ignores it).
     Send {
         text: String,
         images: Vec<Picture>,
+        id: Option<String>,
     },
     Allow {
         id: String,
@@ -586,6 +707,13 @@ pub enum Action {
     },
     SetMode {
         mode: String,
+    },
+    /// Put the files back as they were before message `message` (`dry_run`: only say what would
+    /// change); answered by `Event::FilesRewound`. A provider that can't writes nothing.
+    #[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+    RewindFiles {
+        message: String,
+        dry_run: bool,
     },
 }
 
@@ -945,6 +1073,28 @@ mod tests {
     fn a_model_is_labelled_as_it_is_unless_the_provider_knows_better() {
         assert_eq!(Plain.model_label("claude-opus-5-5"), "claude-opus-5-5");
         assert_eq!(Plain.model_label("gemini-3"), "gemini-3");
+    }
+
+    /// Batch 3, chore 2: a provider that says nothing can't branch, mints no message ids, sets
+    /// no environment and has no one-off file rewind.
+    #[test]
+    fn a_provider_cant_branch_unless_it_says() {
+        assert_eq!(Plain.branching(), Branching::default());
+        assert!(!Plain.branching().any());
+        assert_eq!(Plain.fresh_message_id(), None);
+        assert!(Plain.process_env(true).is_empty());
+        let start = Start {
+            cwd: PathBuf::from("/tmp"),
+            resume: Some("x".into()),
+            new_id: None,
+            mode: None,
+            model: None,
+            effort: None,
+            extra_args: Vec::new(),
+            branch: None,
+        };
+        assert!(Plain.branch_point(Path::new("/tmp"), &start, "m").is_err());
+        assert!(Plain.rewind_files_probe(&start, "m").is_none());
     }
 
     #[test]

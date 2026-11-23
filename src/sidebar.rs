@@ -35,7 +35,6 @@ use crate::layout_model::{Model, TabDrop, TabId, TabKind, WorkspaceId};
 use crate::mark_view::MarkView;
 use crate::palette_items::Scope;
 use crate::preferences;
-use crate::presets::MAX_PRESETS;
 use crate::procs::ProgramState;
 use crate::reduce_motion::WindowVisible;
 use crate::restore::SavedState;
@@ -948,8 +947,6 @@ const ROW_GROUP: &str = "sidebar-row";
 const AVATAR_GROUP: &str = "sidebar-avatar";
 /// The + menu's width.
 const MENU_WIDTH: f32 = 230.0;
-/// A provider preset's badge in the + menu (M11aa).
-const PRESET_BADGE: f32 = 16.0;
 /// The + menu's first items (the presets follow): label and shortcut.
 const NEW_MENU: [(&str, &str); 2] = [("New Workspace", "⌘N"), ("New Workspace in Folder…", "⌘O")];
 /// How long a header's chevron takes to turn.
@@ -2885,8 +2882,9 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The + menu, over the window above the footer: a new workspace (here, or in a
-    /// folder) and each preset's. A click anywhere else closes it.
+    /// The + menu, over the window above the footer: a new workspace, here or in a folder
+    /// (presets left it, chore 2026-11-23: ⌃⌘1–9, ⌘K and Welcome still launch them). A click
+    /// anywhere else closes it.
     pub(crate) fn render_new_menu(
         &self,
         ui: UiColors,
@@ -2896,10 +2894,7 @@ impl Workspace {
             return None;
         }
         let hover = ui.panel_hover;
-        let item = |id: (&'static str, usize),
-                    label: String,
-                    keys: String,
-                    badge: Option<(&'static str, u32)>| {
+        let item = |id: (&'static str, usize), label: String, keys: String| {
             div()
                 .id(id)
                 .flex()
@@ -2911,9 +2906,6 @@ impl Workspace {
                 .text_color(hsla(ui.text))
                 .cursor_pointer()
                 .hover(move |style| style.bg(hsla(hover)))
-                .children(badge.map(|(badge, rgb)| {
-                    crate::workspace_agent::agent_badge(badge, rgb, PRESET_BADGE).mr(px(8.0))
-                }))
                 .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
                 .child(
                     div()
@@ -2925,58 +2917,20 @@ impl Workspace {
                 )
         };
         let [(new, new_keys), (in_folder, in_folder_keys)] = NEW_MENU;
-        let mut items = vec![
-            item(("new-menu", 0), new.into(), new_keys.into(), None)
+        let items = [
+            item(("new-menu", 0), new.into(), new_keys.into())
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.close_new_menu(cx);
                     this.new_session(window, cx)
                 }))
                 .into_any_element(),
-            item(
-                ("new-menu", 1),
-                in_folder.into(),
-                in_folder_keys.into(),
-                None,
-            )
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.close_new_menu(cx);
-                this.new_session_in_folder(window, cx)
-            }))
-            .into_any_element(),
+            item(("new-menu", 1), in_folder.into(), in_folder_keys.into())
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.close_new_menu(cx);
+                    this.new_session_in_folder(window, cx)
+                }))
+                .into_any_element(),
         ];
-        let presets = &cx.global::<Appearance>().presets;
-        if !presets.is_empty() {
-            items.push(
-                div()
-                    .my(px(4.0))
-                    .mx(px(8.0))
-                    .h(px(1.0))
-                    .bg(hsla(ui.panel_border))
-                    .into_any_element(),
-            );
-        }
-        // A provider's preset (it opens an agent tab, M11aa) has its badge before its name.
-        let presets: Vec<(String, Option<(&'static str, u32)>)> = presets
-            .iter()
-            .take(MAX_PRESETS)
-            .map(|p| {
-                let badge = crate::presets::provider_for(p).map(|v| {
-                    let info = v.info();
-                    (info.badge, info.badge_rgb)
-                });
-                (p.name.clone(), badge)
-            })
-            .collect();
-        for (n, (name, badge)) in presets.into_iter().enumerate() {
-            items.push(
-                item(("new-menu-preset", n), name, format!("⌃⌘{}", n + 1), badge)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.close_new_menu(cx);
-                        this.launch_preset(n, window, cx)
-                    }))
-                    .into_any_element(),
-            );
-        }
         let menu = div()
             .absolute()
             .left(px(ROW_INSET))

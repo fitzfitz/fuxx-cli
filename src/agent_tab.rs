@@ -45,6 +45,11 @@ mod rows;
 #[path = "agent_lanes_view.rs"]
 mod lanes_view;
 
+#[path = "agent_latest.rs"]
+mod latest;
+#[cfg(feature = "ui-shots")]
+pub(crate) use latest::STRIP_TIP;
+
 use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
@@ -75,7 +80,17 @@ use crate::workspace_agent::Holder;
 actions!(
     agent_tab,
     [
-        AtUp, AtDown, ModalBack, ModalPrev, ModalNext, CloseImage, PrevLane, NextLane, CycleMode
+        AtUp,
+        AtDown,
+        ModalBack,
+        ModalPrev,
+        ModalNext,
+        CloseImage,
+        PrevLane,
+        NextLane,
+        CycleMode,
+        HistoryUp,
+        HistoryDown
     ]
 );
 
@@ -384,6 +399,14 @@ pub enum Attachment {
         /// A pasted one: it sits in the text as `[name]` (a pill), not as a chip.
         inline: bool,
     },
+    /// Text quoted from elsewhere (batch 3: wave 3's Add to Chat), with where it came from
+    /// (`from`: "Terminal api", "Claude"): sent as a Markdown block quote under a line naming
+    /// its source.
+    #[allow(dead_code)] // Batch 3 wave 3 (Add to Chat) makes it.
+    Quote {
+        text: String,
+        from: String,
+    },
 }
 
 impl Attachment {
@@ -396,6 +419,7 @@ impl Attachment {
             Attachment::File(path) => file_name(path),
             Attachment::Code(code) => code.label(),
             Attachment::Image { name, .. } => name.clone(),
+            Attachment::Quote { text, .. } => quote_label(text),
         }
     }
 
@@ -403,6 +427,7 @@ impl Attachment {
     pub fn tip(&self) -> Option<String> {
         match self {
             Attachment::Code(code) => Some(code.path.display().to_string()),
+            Attachment::Quote { from, .. } => Some(format!("Quoted from {from}")),
             _ => None,
         }
     }
@@ -412,9 +437,40 @@ impl Attachment {
         match self {
             Attachment::Image { .. } => "\u{1f5bc}",
             Attachment::Code(_) => "</>",
+            Attachment::Quote { .. } => "\u{275d}",
             _ => "\u{1f4ce}",
         }
     }
+}
+
+/// A quote chip's words: the quote's first line with words, at most 40 characters (then "…").
+fn quote_label(text: &str) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if line.chars().count() <= 40 {
+        line.to_string()
+    } else {
+        line.chars().take(39).collect::<String>() + "…"
+    }
+}
+
+/// A quote as sent: a line naming where it came from, then the text as a Markdown block quote
+/// (a blank line kept as a bare `>`).
+fn quote_wire(text: &str, from: &str) -> String {
+    let quoted: Vec<String> = text
+        .lines()
+        .map(|l| {
+            if l.trim().is_empty() {
+                ">".to_string()
+            } else {
+                format!("> {l}")
+            }
+        })
+        .collect();
+    format!("From {from}:\n{}", quoted.join("\n"))
 }
 
 /// The last part of `path` (the whole of it when it has none).
@@ -573,6 +629,7 @@ pub fn wire_text(
             Attachment::Text(text) => text.clone(),
             Attachment::File(path) => path.to_string_lossy().into_owned(),
             Attachment::Code(code) => code.text(&agent_path(&code.path, code.real.as_deref(), cwd)),
+            Attachment::Quote { text, from } => quote_wire(text, from),
             Attachment::Image {
                 path, inline, name, ..
             } if !images_inline => match path {
@@ -672,7 +729,9 @@ pub(crate) fn fingerprint(item: &Item) -> u64 {
     let mut h = DefaultHasher::new();
     std::mem::discriminant(item).hash(&mut h);
     match item {
-        Item::You { text, attachments } => (text, attachments).hash(&mut h),
+        Item::You {
+            text, attachments, ..
+        } => (text, attachments).hash(&mut h),
         Item::Agent { text, done, .. } => (text, done).hash(&mut h),
         Item::Tool {
             running,
@@ -709,6 +768,43 @@ pub fn changed_rows(old: &[u64], new: &[u64]) -> Vec<usize> {
         .filter(|(_, (a, b))| a != b)
         .map(|(i, _)| i)
         .collect()
+}
+
+/// The command line with the provider's suggestion flags (`Provider::suggestion_flags`) added
+/// while "Prompt suggestions" is `on`; a command line that names the flag already (a preset's)
+/// is left as it is: the preset wins.
+pub fn with_suggestions(mut argv: Vec<String>, flags: &[String], on: bool) -> Vec<String> {
+    let Some(flag) = flags.first().filter(|_| on) else {
+        return argv;
+    };
+    let named = argv.iter().any(|a| {
+        a == flag
+            || a.strip_prefix(flag.as_str())
+                .is_some_and(|r| r.starts_with('='))
+    });
+    if !named {
+        argv.extend(flags.iter().cloned());
+    }
+    argv
+}
+
+/// Whether a suggestion arriving now is kept: only while Main is idle (no turn running, no
+/// permission waiting) with nothing queued to send; otherwise it is stale.
+pub fn keeps_suggestion(status: Status, queued: bool) -> bool {
+    !matches!(status, Status::Working | Status::Waiting) && !queued
+}
+
+/// The faint guess the empty box shows (`Composer::set_ghost`): the suggestion, only in Main's
+/// view while it is idle and no permission waits.
+pub fn ghost_for(
+    suggestion: Option<&str>,
+    main_view: bool,
+    permission: bool,
+    status: Status,
+) -> Option<String> {
+    suggestion
+        .filter(|_| main_view && !permission && keeps_suggestion(status, false))
+        .map(str::to_string)
 }
 
 /// The colours the tab draws with, from the theme's `UiColors` (text held to `TEXT_MIN` on what
@@ -803,6 +899,10 @@ pub struct Colors {
     pub error_edge: Rgb,
     pub error_mark: Rgb,
     pub error_text: Rgb,
+    /// The latest-prompt strip (chore after M11ar): your message's words a step dimmer than in
+    /// its bubble, and its leading mark, on the panel (and its hover).
+    pub strip_text: Rgb,
+    pub strip_mark: Rgb,
 }
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
@@ -926,6 +1026,12 @@ impl Colors {
             ),
             error_mark: readable(ui.block_failed, &[error_fill], MARK_MIN),
             error_text: fit(ui.text, error_fill),
+            strip_text: readable(
+                mix(ui.text, ui.text_dim, 0.4),
+                &[ui.panel, ui.panel_hover],
+                TEXT_MIN,
+            ),
+            strip_mark: readable(ui.text_dim, &[ui.panel, ui.panel_hover], MARK_MIN),
         }
     }
 }
@@ -950,6 +1056,9 @@ struct Pane {
     tail: bool,
     /// Its chat text's selection (chore after M11ar): each view keeps its own.
     select: Rc<crate::chat_select::ChatSelect>,
+    /// The message its latest-prompt strip says (chore after M11ar): Main's your latest, a
+    /// lane's its task; its row, and its one line, built once per message.
+    latest: Option<latest::Latest>,
 }
 
 impl Pane {
@@ -963,6 +1072,7 @@ impl Pane {
             select: Rc::default(),
             head: false,
             tail: false,
+            latest: None,
         }
     }
 }
@@ -1071,6 +1181,12 @@ pub struct AgentTab {
     paused: bool,
     queued: Vec<(String, Vec<Attachment>)>,
     run: Run,
+    /// The agent's guess at your next message (`Event::Suggestion`), drawn faint in the empty
+    /// box while Main is idle (`ghost_for`); Tab takes it. Never saved.
+    pub(crate) suggestion: Option<String>,
+    /// ↑/↓ browsing the prompt history from the box (`prompt_history::Recall`); dropped once the
+    /// box holds anything but the prompt it put there.
+    recall: Option<crate::prompt_history::Recall>,
     /// The id fuxx chose for a new conversation, taken as the tab's conversation at your first
     /// message, while the agent hasn't said it started under it: a restart then starts a new
     /// conversation again (under a new id: an agent may refuse an id used before) instead of
@@ -1180,9 +1296,12 @@ pub struct AgentTab {
     /// of them is a restart, what you send waits with them (`queued`), for the restarted agent.
     waiting: Vec<Change>,
     asked: Asked,
-    /// The command line of the last start (scenes check a restart resumes).
+    /// The command line of the last start (scenes check a restart resumes), and the environment
+    /// it was given.
     #[cfg(feature = "ui-shots")]
     last_argv: Vec<String>,
+    #[cfg(feature = "ui-shots")]
+    last_env: Vec<(String, String)>,
     /// The lines a scene tab (no process) would have written to its agent.
     #[cfg(feature = "ui-shots")]
     written: Vec<String>,
@@ -1198,6 +1317,9 @@ pub struct AgentTab {
     /// Where each row of the open menu was laid out, by its words (`shot_menu_row`).
     #[cfg(feature = "ui-shots")]
     pub(crate) menu_rows: crate::agent_box::MenuRows,
+    /// The latest-prompt strip (chore after M11ar): whether the last draw showed it, the jump's
+    /// glide while it runs, and the jumped-to message's highlight.
+    strip: latest::Strip,
 }
 
 impl EventEmitter<AgentTabEvent> for AgentTab {}
@@ -1474,7 +1596,7 @@ impl AgentTab {
     /// A plain process in place of the agent (a scene's `sleep`, to see closing end it).
     #[cfg(feature = "ui-shots")]
     pub fn shot_spawn(&mut self, argv: Vec<String>, cx: &mut Context<Self>) {
-        self.listen(&argv, cx);
+        self.listen(&argv, &[], cx);
     }
 
     /// Open tool row `ix`'s detail, as its click does.
@@ -1556,6 +1678,21 @@ impl AgentTab {
     #[cfg(feature = "ui-shots")]
     pub fn shot_last_argv(&self) -> Vec<String> {
         self.last_argv.clone()
+    }
+
+    /// Start the agent again on its conversation, as a restart does (a scene starts nothing:
+    /// the command line is only built).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_respawn(&mut self, cx: &mut Context<Self>) {
+        let resume = self.conversation_id();
+        self.spawn_process(resume, cx);
+        self.after_change(true, cx);
+    }
+
+    /// The environment the last (re)start added (prompt suggestions' switch).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_last_env(&self) -> Vec<(String, String)> {
+        self.last_env.clone()
     }
 
     /// The lines written to the agent (a scene tab's, kept by `write`).
@@ -1697,6 +1834,8 @@ impl AgentTab {
             paused: false,
             queued: Vec::new(),
             run: Run::default(),
+            suggestion: None,
+            recall: None,
             unconfirmed: None,
             no_process: false,
             catalog_pending: false,
@@ -1759,6 +1898,8 @@ impl AgentTab {
             #[cfg(feature = "ui-shots")]
             last_argv: Vec::new(),
             #[cfg(feature = "ui-shots")]
+            last_env: Vec::new(),
+            #[cfg(feature = "ui-shots")]
             written: Vec::new(),
             #[cfg(feature = "ui-shots")]
             rows_built: Rc::new(Cell::new(0)),
@@ -1768,6 +1909,7 @@ impl AgentTab {
             parts: Rc::default(),
             #[cfg(feature = "ui-shots")]
             menu_rows: Rc::default(),
+            strip: latest::Strip::default(),
         }
     }
 
@@ -2027,9 +2169,16 @@ impl AgentTab {
         } else {
             Vec::new()
         };
-        self.conversation.you(text.clone(), labels(&attachments));
+        // Its id, when the agent takes one (batch 3, chore 2): Rewind and Fork name it by it.
+        let id = self.provider.and_then(|p| p.fresh_message_id());
+        self.conversation
+            .you_as(text.clone(), labels(&attachments), id.clone());
         self.run.sends.push((text, attachments));
-        self.write(&Action::Send { text: wire, images });
+        self.write(&Action::Send {
+            text: wire,
+            images,
+            id,
+        });
     }
 
     /// Start (or start again) the agent, resuming `resume`; with none, a new conversation (under
@@ -2067,6 +2216,8 @@ impl AgentTab {
         };
         self.end = ProcessEnd::default();
         self.exited = false;
+        // A guess from the last process is about what it said: gone with it.
+        self.suggestion = None;
         let Some(provider) = self.provider else {
             return;
         };
@@ -2075,15 +2226,22 @@ impl AgentTab {
             new_id: fresh,
             ..self.start.clone()
         };
-        let argv = provider.argv(&start);
+        // "Prompt suggestions" (on by default), read at each start: a change applies to agents
+        // started after it.
+        let suggest = cx
+            .try_global::<Appearance>()
+            .is_none_or(|a| a.agent_suggestions);
+        let argv = with_suggestions(provider.argv(&start), &provider.suggestion_flags(), suggest);
+        let env = provider.process_env(suggest);
         #[cfg(feature = "ui-shots")]
         {
             self.last_argv = argv.clone();
+            self.last_env = env.clone();
         }
         if self.no_process {
             return;
         }
-        let process = self.listen(&argv, cx);
+        let process = self.listen(&argv, &env, cx);
         self.ask_catalog(provider, cx);
         let mut translator = provider.translator();
         for line in translator.hello() {
@@ -2125,12 +2283,18 @@ impl AgentTab {
     }
 
     /// Start `argv` in the agent's folder and read its events on a task (`on_process`).
-    fn listen(&mut self, argv: &[String], cx: &mut Context<Self>) -> Arc<AgentProcess> {
+    fn listen(
+        &mut self,
+        argv: &[String],
+        env: &[(String, String)],
+        cx: &mut Context<Self>,
+    ) -> Arc<AgentProcess> {
         let (tx, mut rx) = mpsc::unbounded();
         let process = Arc::new(agent_process::spawn(
             argv,
             &self.start.cwd,
             self.path.as_deref(),
+            env,
             tx,
         ));
         self.process = Some(process.clone());
@@ -2408,6 +2572,7 @@ impl AgentTab {
                 // `/clear`: the chat empties (the conversation drops its items) and fades back in
                 // empty, keyed by how many times it was cleared.
                 Event::Cleared => {
+                    self.suggestion = None;
                     // The reset settles a resume: the new id after it is the cleared conversation
                     // going on, not a failed resume (your report, 2026-11-22: the first `/clear`
                     // after a restart said "Couldn't resume…").
@@ -2453,9 +2618,19 @@ impl AgentTab {
                 }
                 Event::Applied { kind, value, ok } => self.applied(*kind, value, *ok, cx),
                 Event::Mode(mode) => self.reported_mode(mode, cx),
+                // Kept only while Main is idle with nothing waiting to go: else it is stale.
+                Event::Suggestion(text) => {
+                    self.suggestion = keeps_suggestion(self.status(), !self.queued.is_empty())
+                        .then(|| text.clone());
+                }
                 _ => {}
             }
             self.conversation.apply(event);
+            // Main at work again (a turn starting, a message read, a permission asked): the
+            // guess is out of date.
+            if matches!(self.status(), Status::Working | Status::Waiting) {
+                self.suggestion = None;
+            }
         }
         if turn_ended {
             self.settle_waiting(cx);
@@ -2591,6 +2766,19 @@ impl AgentTab {
                 });
             }
         }
+        // The strip's message: Main's your latest (cached by the conversation, its row found
+        // in the sorted rows), a lane's its task (its first row).
+        let said = match &lane {
+            Some(l) => Some((0, l.task.as_str())),
+            None => self.conversation.latest_you().and_then(|ix| {
+                let k = order.binary_search(&ix).ok()?;
+                match &items[ix] {
+                    Item::You { text, .. } => Some((k, text.as_str())),
+                    _ => None,
+                }
+            }),
+        };
+        pane.latest = latest::Latest::update(pane.latest.take(), said);
         pane.order = order;
         pane.head = head;
         pane.tail = tail;
@@ -2685,8 +2873,16 @@ impl AgentTab {
         } else {
             PLACEHOLDER.into()
         };
-        self.composer
-            .update(cx, |c, cx| c.set_placeholder(text, cx));
+        let ghost = ghost_for(
+            self.suggestion.as_deref(),
+            self.view == crate::agent_lanes::View::Main,
+            self.conversation.pending_permission().is_some(),
+            self.status(),
+        );
+        self.composer.update(cx, |c, cx| {
+            c.set_placeholder(text, cx);
+            c.set_ghost(ghost.map(SharedString::from), cx);
+        });
     }
 
     /// Send `text` (with the attachments waiting) to the agent; mid-turn it goes at once (the
@@ -2697,6 +2893,8 @@ impl AgentTab {
             self.attachments = attachments;
             return;
         }
+        // What you send answers any guess.
+        self.suggestion = None;
         // The box talks to Main: your message shows there (M11ar).
         if self.view != crate::agent_lanes::View::Main {
             self.show_view(crate::agent_lanes::View::Main, cx);
@@ -2707,6 +2905,14 @@ impl AgentTab {
             cx.emit(AgentTabEvent::ResumeAsked(text));
             return;
         }
+        // Kept for ↑ in this folder's boxes: what goes to the agent (a message, a note, a
+        // command it runs), never a command fuxx answers itself.
+        if self.provider.and_then(|p| p.own_command(&text)).is_none() {
+            let folder = self.history_folder();
+            let write = !self.no_process;
+            crate::prompt_history::PromptHistory::record(&folder, &text, write, cx);
+        }
+        self.recall = None;
         if self.booting || self.ending || self.restart_waits(cx) {
             // Held, shown as waiting under the conversation, until the process is there (or,
             // with a restart waiting for the turn, until it is done: it would lose what was
@@ -3049,6 +3255,7 @@ impl AgentTab {
     /// text denies with it as the reason; else it is sent. The box is cleared once it is used.
     fn submit(&mut self, text: String, composer: &Entity<Composer>, cx: &mut Context<Self>) {
         if self.conversation.pending_permission().is_some() {
+            self.suggestion = None;
             let answer = if text.trim().is_empty() {
                 Answer::Allowed
             } else {
@@ -3449,6 +3656,100 @@ impl AgentTab {
             at.selected = at.selected.saturating_sub(1);
             let selected = at.selected;
             self.scroll_at_to(selected, cx);
+        }
+    }
+
+    /// What ↑ walks: this tab's own prompts, newest first, then its folder's stored ones
+    /// (none until the file is read), without repeats.
+    fn history_entries(&self, cx: &App) -> Vec<String> {
+        let own: Vec<String> = self
+            .conversation
+            .items()
+            .iter()
+            .filter_map(|i| match i {
+                Item::You { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        let folder = crate::prompt_history::PromptHistory::prompts(&self.history_folder(), cx);
+        let folder: Vec<&str> = folder.iter().map(String::as_str).collect();
+        crate::prompt_history::entries(&own, &folder)
+    }
+
+    /// The folder prompt history is kept under: the agent's.
+    fn history_folder(&self) -> String {
+        self.start.cwd.to_string_lossy().into_owned()
+    }
+
+    /// The box's text is the recalled prompt still: browsing goes on. Edited, it is over.
+    fn recall_current(&mut self, cx: &App) -> Option<&mut crate::prompt_history::Recall> {
+        let text = self.composer.read(cx).text();
+        if !self.recall.as_ref().is_some_and(|r| r.browsing(text)) {
+            self.recall = None;
+        }
+        self.recall.as_mut()
+    }
+
+    /// A recalled prompt in the box. One starting with `/` keeps the `/` list shut (as Esc
+    /// would), so ↑ / ↓ go on through the history instead of into the list.
+    fn show_recalled(&mut self, text: String, cx: &mut Context<Self>) {
+        self.slash_dismissed = true;
+        self.composer.update(cx, |c, cx| c.set_text(text, cx));
+    }
+
+    /// ↑ (⌃P) in the box: on its first row, with nothing selected or being composed, the older
+    /// prompt, the caret at its end; otherwise the caret moves up as before. The lists over the
+    /// box keep ↑ (their binding wins), and a waiting permission keeps the box for its answer.
+    pub(crate) fn history_up(&mut self, _: &HistoryUp, _: &mut Window, cx: &mut Context<Self>) {
+        let composer = self.composer.read(cx);
+        let recalls = composer.on_first_row()
+            && !composer.has_selection()
+            && !composer.is_composing()
+            && !self.at_open()
+            && !self.slash_has_picks(cx)
+            && self.conversation.pending_permission().is_none();
+        if !recalls {
+            self.composer.update(cx, |c, cx| c.move_up(cx));
+            return;
+        }
+        let shown = match self.recall_current(cx) {
+            Some(recall) => recall.older().map(str::to_string),
+            None => {
+                let draft = self.composer.read(cx).text().to_string();
+                self.recall =
+                    crate::prompt_history::Recall::begin(self.history_entries(cx), &draft);
+                self.recall.as_ref().map(|r| r.shown().to_string())
+            }
+        };
+        match shown {
+            Some(text) => self.show_recalled(text, cx),
+            // The oldest already (or nothing to recall): the caret moves as before.
+            None => self.composer.update(cx, |c, cx| c.move_up(cx)),
+        }
+    }
+
+    /// ↓ (⌃N): while browsing, on the last row, the newer prompt, and past the newest the draft
+    /// you had; otherwise the caret moves down as before.
+    pub(crate) fn history_down(&mut self, _: &HistoryDown, _: &mut Window, cx: &mut Context<Self>) {
+        let composer = self.composer.read(cx);
+        let walks = composer.on_last_row()
+            && !composer.has_selection()
+            && !composer.is_composing()
+            && !self.at_open()
+            && !self.slash_has_picks(cx);
+        let next = match self.recall_current(cx) {
+            Some(recall) if walks => Some(recall.newer()),
+            _ => None,
+        };
+        match next {
+            Some(crate::prompt_history::Newer::Show(text)) => self.show_recalled(text, cx),
+            Some(crate::prompt_history::Newer::Draft(draft)) => {
+                self.recall = None;
+                // Your own words again: a `/` you were typing gets its list back.
+                self.slash_dismissed = false;
+                self.composer.update(cx, |c, cx| c.set_text(draft, cx));
+            }
+            None => self.composer.update(cx, |c, cx| c.move_down(cx)),
         }
     }
 
@@ -5029,6 +5330,13 @@ impl Render for AgentTab {
         #[cfg(feature = "ui-shots")]
         let built = self.rows_built.clone();
         let pending = self.pending(&c);
+        // Your latest message pinned over the chat while it is scrolled above (chore after
+        // M11ar).
+        let latest = if empty {
+            None
+        } else {
+            self.latest_layer(&c, window, cx)
+        };
         let stream = if empty && self.queued.is_empty() {
             self.empty_state(&c, cx)
         } else if empty {
@@ -5080,6 +5388,7 @@ impl Render for AgentTab {
                     .left_0()
                     .size_full(),
                 )
+                .children(latest)
                 .into_any_element()
         };
         // A command block dragged over the tab tints it (GPUI's element-local style: nothing
@@ -5110,6 +5419,8 @@ impl Render for AgentTab {
             .on_action(cx.listener(Self::prev_lane))
             .on_action(cx.listener(Self::next_lane))
             .on_action(cx.listener(Self::cycle_mode))
+            .on_action(cx.listener(Self::history_up))
+            .on_action(cx.listener(Self::history_down))
             // ⌘C / ⌘A reach here when the box has nothing to copy or select (chore after M11ar).
             .on_action(cx.listener(|this, _: &crate::composer::Copy, _, cx| this.copy_chat(cx)))
             .on_action(cx.listener(|this, _: &crate::terminal_view::Copy, _, cx| {
@@ -5177,6 +5488,62 @@ impl Render for AgentTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Prompt suggestions (a chore after M11ar) ----
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn with_suggestions_adds_the_flags_only_when_on() {
+        let argv = words(&["claude", "-p"]);
+        let flags = words(&["--prompt-suggestions", "true"]);
+        assert_eq!(
+            with_suggestions(argv.clone(), &flags, true),
+            words(&["claude", "-p", "--prompt-suggestions", "true"])
+        );
+        assert_eq!(with_suggestions(argv.clone(), &flags, false), argv);
+        // An agent with no such flags (agy) gets nothing.
+        assert_eq!(with_suggestions(argv.clone(), &[], true), argv);
+    }
+
+    /// A preset that names the flag itself wins: nothing is added.
+    #[test]
+    fn with_suggestions_leaves_a_preset_that_names_the_flag() {
+        let flags = words(&["--prompt-suggestions", "true"]);
+        let preset = words(&["claude", "-p", "--prompt-suggestions", "false"]);
+        assert_eq!(with_suggestions(preset.clone(), &flags, true), preset);
+        let joined = words(&["claude", "--prompt-suggestions=false"]);
+        assert_eq!(with_suggestions(joined.clone(), &flags, true), joined);
+    }
+
+    /// A suggestion is kept only while Main is idle with nothing waiting to go.
+    #[test]
+    fn keeps_suggestion_only_when_idle() {
+        assert!(keeps_suggestion(Status::Done, false));
+        assert!(keeps_suggestion(Status::Idle, false));
+        assert!(!keeps_suggestion(Status::Working, false), "a turn runs");
+        assert!(
+            !keeps_suggestion(Status::Waiting, false),
+            "a permission waits"
+        );
+        assert!(!keeps_suggestion(Status::Done, true), "a message is queued");
+    }
+
+    #[test]
+    fn ghost_for_shows_only_in_the_idle_main_view() {
+        let s = Some("go ahead and create it");
+        let ghost = |s, main, permission, status| ghost_for(s, main, permission, status);
+        assert_eq!(
+            ghost(s, true, false, Status::Done).as_deref(),
+            Some("go ahead and create it")
+        );
+        assert_eq!(ghost(None, true, false, Status::Done), None);
+        assert_eq!(ghost(s, false, false, Status::Done), None, "a lane view");
+        assert_eq!(ghost(s, true, true, Status::Waiting), None, "a permission");
+        assert_eq!(ghost(s, true, false, Status::Working), None, "a turn runs");
+    }
 
     #[test]
     fn pasted_images_are_numbered_and_drawn_as_they_are() {
@@ -5698,6 +6065,31 @@ mod tests {
         assert_eq!(Attachment::Text("a\nb".into()).label(), "a\nb");
         assert_eq!(image("shot.png", None).glyph(), "\u{1f5bc}");
         assert_eq!(Attachment::File(PathBuf::from("/p/a")).glyph(), "\u{1f4ce}");
+    }
+
+    /// Batch 3, chore 2's core for wave 3's Add to Chat: a quote's chip says its first line
+    /// (cut at 40), its tip where it came from, and it goes as a Markdown block quote under a
+    /// line naming its source, after your text.
+    #[test]
+    fn a_quote_is_labelled_tipped_and_sent_as_a_block_quote() {
+        let quote = Attachment::Quote {
+            text: "error: the build failed\n\n  at src/main.rs:4".into(),
+            from: "Terminal api".into(),
+        };
+        assert_eq!(quote.label(), "error: the build failed");
+        assert_eq!(quote.tip().as_deref(), Some("Quoted from Terminal api"));
+        assert_eq!(quote.glyph(), "\u{275d}");
+        let long = Attachment::Quote {
+            text: "x".repeat(60),
+            from: "Claude".into(),
+        };
+        assert_eq!(long.label(), format!("{}…", "x".repeat(39)));
+        assert_eq!(
+            wire_text("why?", &[quote], true, Path::new(CWD_STR)),
+            "why?\n\nFrom Terminal api:\n> error: the build failed\n>\n>   at src/main.rs:4"
+        );
+        // It is listed under the message like any chip.
+        assert_eq!(labels(&[long]), [format!("{}…", "x".repeat(39))]);
     }
 
     #[test]

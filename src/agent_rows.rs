@@ -159,57 +159,74 @@ impl AgentTab {
         match item {
             // Your message (spec B-B): a bubble in the colours of the box you typed it in, its
             // tail at the bottom right; attachments as chips under the text.
-            Item::You { text, attachments } => div()
+            Item::You {
+                text, attachments, ..
+            } => div()
                 .w_full()
                 .flex()
                 .justify_end()
                 .child(
                     div().w(relative(0.78)).flex().justify_end().child(
-                        div()
-                            .max_w(px(520.))
-                            .px(px(14.))
-                            .py(px(9.))
-                            .rounded(px(chat::R_BUBBLE))
-                            .rounded_br(px(chat::R_TAIL))
-                            .bg(hsla(c.you_fill))
-                            .border_1()
-                            .border_color(hsla(c.you_edge))
-                            .text_color(hsla(c.you_text))
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.))
-                            .child(self.you_text(ix, text, look))
-                            .when(!attachments.is_empty(), |d| {
-                                d.child(div().flex().flex_wrap().gap(px(6.)).children(
-                                    attachments.iter().enumerate().map(|(j, a)| {
-                                        // An image this tab has opens in the viewer.
-                                        let image = self.images.contains_key(a).then(|| a.clone());
-                                        div()
-                                            .id(SharedString::from(format!("you-chip-{ix}-{j}")))
-                                            .when_some(image, |d, name| {
-                                                d.cursor_pointer()
-                                                    .hover(move |s| s.text_color(hsla(c.you_text)))
-                                                    .on_click(on_tab(
-                                                        &look.view,
-                                                        move |this, cx| this.view_image(&name, cx),
-                                                    ))
-                                            })
-                                            .h(px(22.))
-                                            .px(px(8.))
-                                            .rounded(px(chat::R_CHIP))
-                                            .bg(hsla(c.chip_fill))
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(4.))
-                                            .text_size(px(text::META))
-                                            .text_color(hsla(c.you_dim))
-                                            .child(icon(Icon::Paperclip, px(12.), hsla(c.you_dim)))
-                                            .child(SharedString::from(
-                                                a.lines().next().unwrap_or("").to_string(),
-                                            ))
-                                    }),
-                                ))
-                            }),
+                        self.flashed_you(
+                            div()
+                                .max_w(px(520.))
+                                .px(px(14.))
+                                .py(px(9.))
+                                .rounded(px(chat::R_BUBBLE))
+                                .rounded_br(px(chat::R_TAIL))
+                                .bg(hsla(c.you_fill))
+                                .border_1()
+                                .border_color(hsla(c.you_edge))
+                                .text_color(hsla(c.you_text))
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(self.you_text(ix, text, look))
+                                .when(!attachments.is_empty(), |d| {
+                                    d.child(div().flex().flex_wrap().gap(px(6.)).children(
+                                        attachments.iter().enumerate().map(|(j, a)| {
+                                            // An image this tab has opens in the viewer.
+                                            let image =
+                                                self.images.contains_key(a).then(|| a.clone());
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "you-chip-{ix}-{j}"
+                                                )))
+                                                .when_some(image, |d, name| {
+                                                    d.cursor_pointer()
+                                                        .hover(move |s| {
+                                                            s.text_color(hsla(c.you_text))
+                                                        })
+                                                        .on_click(on_tab(
+                                                            &look.view,
+                                                            move |this, cx| {
+                                                                this.view_image(&name, cx)
+                                                            },
+                                                        ))
+                                                })
+                                                .h(px(22.))
+                                                .px(px(8.))
+                                                .rounded(px(chat::R_CHIP))
+                                                .bg(hsla(c.chip_fill))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(4.))
+                                                .text_size(px(text::META))
+                                                .text_color(hsla(c.you_dim))
+                                                .child(icon(
+                                                    Icon::Paperclip,
+                                                    px(12.),
+                                                    hsla(c.you_dim),
+                                                ))
+                                                .child(SharedString::from(
+                                                    a.lines().next().unwrap_or("").to_string(),
+                                                ))
+                                        }),
+                                    ))
+                                }),
+                            ix,
+                            c,
+                        ),
                     ),
                 )
                 .into_any_element(),

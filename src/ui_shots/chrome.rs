@@ -158,7 +158,6 @@ pub(super) const SCENES: &[Scene] = &[
             "src/agent_conversation.rs",
             "src/composer.rs",
             "src/layout_model.rs",
-            "src/pane_actions.rs",
             "src/name_input.rs",
             "src/procs.rs",
             "src/sidebar.rs",
@@ -1295,7 +1294,6 @@ pub(super) fn chrome_renaming() {
 /// Panics unless after each step the window shows what a full redraw does, and it changed.
 pub(super) fn chrome_agent_tabs() {
     use crate::layout_model::TabKind;
-    use crate::pane_actions::PaneAction;
     let n = "chrome-agent-tabs";
     // 900 pt over the old 240 pt sidebar, wider by what the default sidebar grew: its three
     // panes (api, tests, the agent tab) keep their width. At 900 the agent tab's pane is about
@@ -1360,11 +1358,11 @@ pub(super) fn chrome_agent_tabs() {
     steps.step(
         &mut cx,
         window,
-        "the pane menu adds a Claude tab",
+        "the + menu adds a Claude tab",
         Seen::Changes,
         |cx| {
             on_ws(cx, window, ws, |ws, window, cx| {
-                ws.run_pane_action(tests_pane, PaneAction::NewAgent("claude"), window, cx)
+                ws.new_agent_tab(tests_pane, "claude", window, cx);
             })
         },
     );
@@ -2821,16 +2819,23 @@ pub(super) fn chrome_bars_and_edges() {
         },
     );
     assert_ne!(offset(&mut cx), before, "{n}: the row scrolled");
-    steps.step(&mut cx, window, "a ⋯ menu opened", Seen::Changes, |cx| {
-        on_ws(cx, window, ws, |ws, window, cx| {
-            ws.open_pane_actions(other, point(px(800.0), px(40.0)), window, cx)
-        })
-    });
+    steps.step(
+        &mut cx,
+        window,
+        "a tab's menu opened",
+        Seen::Changes,
+        |cx| {
+            on_ws(cx, window, ws, |ws, window, cx| {
+                let tab = ws.model.pane(other).expect("the pane").active;
+                ws.open_pane_tab_menu(tab, point(px(800.0), px(40.0)), window, cx)
+            })
+        },
+    );
     steps.step(&mut cx, window, "Esc closes it", Seen::Changes, |cx| {
         cx.simulate_keystrokes(window, "escape")
     });
     assert!(
-        cx.read(|cx| ws.read(cx).pane_actions.is_none()),
+        cx.read(|cx| ws.read(cx).pane_tab_menu.is_none()),
         "{n}: closed"
     );
     steps.step(

@@ -517,20 +517,25 @@ impl AgentTab {
                                 .text_color(hsla(c.dim))
                                 .child("from Main"),
                         )
+                        // Lit a moment when the strip jumps to it (chore after M11ar).
                         .child(
-                            div()
-                                .max_w(px(520.))
-                                .px(px(14.))
-                                .py(px(9.))
-                                .rounded(px(crate::ui_tokens::chat::R_BUBBLE))
-                                .rounded_tr(px(crate::ui_tokens::chat::R_TAIL))
-                                .bg(hsla(c.you_fill))
-                                .border_1()
-                                .border_color(hsla(c.you_edge))
-                                .text_size(px(crate::ui_tokens::chat::BODY))
-                                .line_height(relative(crate::ui_tokens::chat::BODY_LINE))
-                                .text_color(hsla(c.you_text))
-                                .child(SharedString::from(task)),
+                            self.flashed(
+                                div()
+                                    .max_w(px(520.))
+                                    .px(px(14.))
+                                    .py(px(9.))
+                                    .rounded(px(crate::ui_tokens::chat::R_BUBBLE))
+                                    .rounded_tr(px(crate::ui_tokens::chat::R_TAIL))
+                                    .bg(hsla(c.you_fill))
+                                    .border_1()
+                                    .border_color(hsla(c.you_edge))
+                                    .text_size(px(crate::ui_tokens::chat::BODY))
+                                    .line_height(relative(crate::ui_tokens::chat::BODY_LINE))
+                                    .text_color(hsla(c.you_text))
+                                    .child(SharedString::from(task)),
+                                0,
+                                &c,
+                            ),
                         ),
                 ),
             )

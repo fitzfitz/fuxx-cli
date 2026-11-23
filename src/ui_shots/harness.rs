@@ -27,11 +27,13 @@ pub const SHOT_THEMES: [(&str, &str); 2] =
 
 /// A built-in theme resolved the way the app resolves `theme = <name>`.
 pub fn shot_theme(name: &str) -> Theme {
-    let text = theme::builtin_theme(name).expect("a built-in theme");
-    let mut t = Theme::default();
-    theme::apply(&mut t, &settings::parse(text));
-    // As `resolve` settles it: the panel darker, the window lighter (the dark-panel chore).
-    t.with_dark_panel()
+    assert!(theme::builtin_theme(name).is_some(), "a built-in theme");
+    // As your config's `theme = <name>` gives it: the panel darker, the window lighter (the
+    // dark-panel chore), the one selection wash (batch 3, chore 3).
+    let entries = settings::parse(&format!("theme = {name}"));
+    theme::resolve(&entries, true, &|n| {
+        theme::builtin_theme(n).map(str::to_string)
+    })
 }
 
 /// A rendered scene: size in device pixels and RGBA bytes, row by row.
@@ -770,6 +772,7 @@ pub(super) fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         status_bar: true,
         // Still in the shots (its own scene turns it on).
         agent_sweep: false,
+        agent_suggestions: true,
         browser_keep_data: false,
         check_updates: true,
         cursor_style: Default::default(),

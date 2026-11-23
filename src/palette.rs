@@ -341,8 +341,10 @@ fn line_key(line: &Line) -> Option<Key> {
 }
 
 impl Palette {
+    /// Opened on `scope` with `query` typed (empty but from the + menu's files row).
     pub fn new(
         scope: Scope,
+        query: String,
         data: PaletteData,
         recent: Recent,
         window: &mut Window,
@@ -386,6 +388,10 @@ impl Palette {
             _clock: clock,
         };
         this.relist(false);
+        if !query.is_empty() {
+            this.input.update(cx, |input, _| input.set_text(query));
+            this.query_changed(cx);
+        }
         this
     }
 
@@ -859,7 +865,7 @@ pub(crate) fn item_frame(chosen: bool, ui: &UiColors, icon: Option<Div>) -> Div 
 }
 
 /// `text` with the chars at `positions` semibold.
-fn highlighted(text: &str, positions: &[usize]) -> StyledText {
+pub(crate) fn highlighted(text: &str, positions: &[usize]) -> StyledText {
     let matched = HighlightStyle {
         font_weight: Some(FontWeight::SEMIBOLD),
         ..Default::default()
@@ -1083,45 +1089,71 @@ impl Workspace {
                     palette.focus_handle(cx).focus(window, cx);
                 }
             }
-            Step::Open => {
-                self.close_overlays(Overlay::Palette);
-                // On All or Files, the listing starts now, so it's there once something is typed.
-                if matches!(scope, Scope::All | Scope::Files) {
-                    self.list_palette_files(cx);
-                }
-                let presets: Vec<String> = cx
-                    .global::<Appearance>()
-                    .presets
-                    .iter()
-                    .map(|p| p.name.clone())
-                    .collect();
-                // The focused terminal is one the branch switcher opens for (the openers' rule).
-                let in_repo = self
-                    .focused_terminal()
-                    .is_some_and(|t| self.switchable_folder(t).is_some());
-                let mut actions = action_rows(
-                    self.focused_kind(),
-                    self.persistent,
-                    in_repo,
-                    &presets,
-                    &binding_table(self.persistent),
-                );
-                // The ⋯ menu's New ⟨Label⟩ Tab rows, for the focused pane (M11aa).
-                let local = self
-                    .model
-                    .focused_workspace()
-                    .is_some_and(|ws| !self.workspace_is_ssh(ws));
-                add_agent_rows(&mut actions, local);
-                let data = self.palette_data(actions, cx);
-                let recent = self.palette_recent.clone();
-                let palette = cx.new(|cx| Palette::new(scope, data, recent, window, cx));
-                cx.subscribe_in(&palette, window, Self::on_palette_event)
-                    .detach();
-                palette.focus_handle(cx).focus(window, cx);
-                self.palette = Some(palette);
-            }
+            Step::Open => self.open_palette_now(scope, String::new(), window, cx),
         }
         cx.notify();
+    }
+
+    /// The palette on `scope` with `query` typed (the + menu's File button and files row),
+    /// whatever was open.
+    pub(crate) fn open_palette_with(
+        &mut self,
+        scope: Scope,
+        query: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.branch_switcher_busy(cx) {
+            return;
+        }
+        self.palette = None;
+        self.open_palette_now(scope, query, window, cx);
+        cx.notify();
+    }
+
+    /// Open the palette fresh on `scope` with `query` typed; any other box closes first.
+    fn open_palette_now(
+        &mut self,
+        scope: Scope,
+        query: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_overlays(Overlay::Palette);
+        // On All or Files, the listing starts now, so it's there once something is typed.
+        if matches!(scope, Scope::All | Scope::Files) {
+            self.list_palette_files(cx);
+        }
+        let presets: Vec<String> = cx
+            .global::<Appearance>()
+            .presets
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        // The focused terminal is one the branch switcher opens for (the openers' rule).
+        let in_repo = self
+            .focused_terminal()
+            .is_some_and(|t| self.switchable_folder(t).is_some());
+        let mut actions = action_rows(
+            self.focused_kind(),
+            self.persistent,
+            in_repo,
+            &presets,
+            &binding_table(self.persistent),
+        );
+        // The New ⟨Label⟩ Tab rows (one per provider), for the focused pane (M11aa).
+        let local = self
+            .model
+            .focused_workspace()
+            .is_some_and(|ws| !self.workspace_is_ssh(ws));
+        add_agent_rows(&mut actions, local);
+        let data = self.palette_data(actions, cx);
+        let recent = self.palette_recent.clone();
+        let palette = cx.new(|cx| Palette::new(scope, query, data, recent, window, cx));
+        cx.subscribe_in(&palette, window, Self::on_palette_event)
+            .detach();
+        palette.focus_handle(cx).focus(window, cx);
+        self.palette = Some(palette);
     }
 
     /// The palette picked a row or was closed.

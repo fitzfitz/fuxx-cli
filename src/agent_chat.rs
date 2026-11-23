@@ -222,6 +222,77 @@ pub fn row_print(items: &[Item], ix: usize, thinking: bool) -> u64 {
     }
 }
 
+/// The most characters the latest-prompt strip keeps of your message (chore after M11ar): it is
+/// one line, cut again to its width as it is drawn; this only bounds what is shaped.
+pub const STRIP_CHARS: usize = 200;
+
+/// Your message as the latest-prompt strip says it: one line, its whitespace collapsed, cut
+/// with "…" past `STRIP_CHARS`. A pasted image's `[Image #N]` stays as text (the icon set has
+/// no image glyph). Built once per message, not per frame.
+pub fn strip_line(text: &str) -> String {
+    let mut line = String::new();
+    let mut count = 0;
+    for word in text.split_whitespace() {
+        for ch in (!line.is_empty())
+            .then_some(' ')
+            .into_iter()
+            .chain(word.chars())
+        {
+            if count == STRIP_CHARS {
+                line.push('\u{2026}');
+                return line;
+            }
+            line.push(ch);
+            count += 1;
+        }
+    }
+    line
+}
+
+/// Whether the latest-prompt strip shows: your message's row (`row`) is scrolled above the
+/// view, judged from the list's scroll top (`top`: the first row in sight and how far into it;
+/// `None` before the list is laid out). A message mostly scrolled off counts once what is left
+/// of it (its measured `height` less the offset) fits under the strip (`cover`).
+pub fn strip_shows(
+    row: Option<usize>,
+    top: Option<(usize, f32)>,
+    height: Option<f32>,
+    cover: f32,
+) -> bool {
+    let (Some(row), Some((ix, offset))) = (row, top) else {
+        return false;
+    };
+    ix > row || (ix == row && height.is_some_and(|h| h - offset <= cover))
+}
+
+/// The jumped-to message's highlight: how long it lasts, and how much of that it holds full.
+pub const FLASH_MS: u64 = 600;
+pub const FLASH_HOLD: f32 = 0.3;
+
+/// The highlight's strength at `t` (0..1 of `FLASH_MS`): full while held, then easing to none.
+pub fn flash_strength(t: f32) -> f32 {
+    if t <= FLASH_HOLD {
+        return 1.0;
+    }
+    1.0 - crate::agent_top::ease_out_cubic((t - FLASH_HOLD) / (1.0 - FLASH_HOLD))
+}
+
+/// The jump's glide: how long it takes, and at most how many screens of it are seen (from
+/// further down it starts that far from your message: the rest would only blur by).
+pub const GLIDE_MS: u64 = 220;
+pub const GLIDE_SCREENS: f32 = 1.5;
+
+/// Where the glide up to `to` starts, from `from` (scroll offsets in points), in a view
+/// `screen` tall.
+pub fn glide_from(from: f32, to: f32, screen: f32) -> f32 {
+    from.min(to + screen * GLIDE_SCREENS)
+}
+
+/// The glide's offset at `t` (0..1 of `GLIDE_MS`), eased out.
+pub fn glide_at(from: f32, to: f32, t: f32) -> f32 {
+    from + (to - from) * crate::agent_top::ease_out_cubic(t)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -246,6 +317,8 @@ mod tests {
         Item::You {
             text: "hi".into(),
             attachments: Vec::new(),
+            id: None,
+            taken: false,
         }
     }
 
@@ -440,5 +513,82 @@ mod tests {
         assert_eq!(row_print(&one, 0, false), row_print(&two, 0, false));
         // The thinking line joins the last row.
         assert_ne!(row_print(&one, 1, false), row_print(&one, 1, true));
+    }
+
+    // ---- The latest-prompt strip (chore after M11ar) ----
+
+    #[test]
+    fn the_strip_line_is_one_line_cut_with_an_ellipsis() {
+        assert_eq!(
+            strip_line("  fix the\n\n  build   in\tcode/my-app  "),
+            "fix the build in code/my-app"
+        );
+        assert_eq!(strip_line(""), "");
+        assert_eq!(strip_line(" \n\t "), "");
+        let long = "word ".repeat(200);
+        let line = strip_line(&long);
+        assert!(line.ends_with('\u{2026}'), "cut: {line:?}");
+        assert_eq!(line.chars().count(), STRIP_CHARS + 1);
+        assert!(!line.contains("  "));
+        // Cut on a character, never inside one.
+        let wide = "é".repeat(STRIP_CHARS + 5);
+        assert_eq!(strip_line(&wide).chars().count(), STRIP_CHARS + 1);
+        // Exactly the limit: nothing cut.
+        let exact = "a".repeat(STRIP_CHARS);
+        assert_eq!(strip_line(&exact), exact);
+    }
+
+    /// fuxx's icon set has no image glyph: a pasted image's marker stays as its text.
+    #[test]
+    fn the_strip_line_keeps_image_markers_as_text() {
+        assert_eq!(
+            strip_line("look at [Image #1]\nand [Image #2] please"),
+            "look at [Image #1] and [Image #2] please"
+        );
+    }
+
+    #[test]
+    fn the_strip_shows_only_while_your_message_is_above_the_view() {
+        const COVER: f32 = 40.0;
+        // No message of yours: never.
+        assert!(!strip_shows(None, Some((9, 0.0)), None, COVER));
+        // Not laid out yet: the scroll top isn't known.
+        assert!(!strip_shows(Some(2), None, None, COVER));
+        // It is the first row in sight, or under it: on screen.
+        assert!(!strip_shows(Some(2), Some((2, 0.0)), Some(80.0), COVER));
+        assert!(!strip_shows(Some(2), Some((1, 30.0)), None, COVER));
+        // Scrolled past it: shown.
+        assert!(strip_shows(Some(2), Some((3, 0.0)), None, COVER));
+        // Mostly scrolled off: what is left of it sits under the strip.
+        assert!(strip_shows(Some(2), Some((2, 41.0)), Some(80.0), COVER));
+        assert!(!strip_shows(Some(2), Some((2, 39.0)), Some(80.0), COVER));
+        // Its height not measured: kept hidden rather than guessed.
+        assert!(!strip_shows(Some(2), Some((2, 41.0)), None, COVER));
+    }
+
+    /// The jumped-to message's highlight: full a moment, then gone, its last frame exactly none
+    /// (a frame kept from it equals the message at rest).
+    #[test]
+    fn the_jump_highlight_holds_then_fades_to_nothing() {
+        assert_eq!(flash_strength(0.0), 1.0);
+        assert_eq!(flash_strength(FLASH_HOLD * 0.9), 1.0, "held first");
+        let mid = flash_strength(0.7);
+        assert!(mid > 0.0 && mid < 1.0, "fading: {mid}");
+        assert_eq!(flash_strength(1.0), 0.0);
+    }
+
+    /// The jump glides the last stretch only: from far down it starts within a little over a
+    /// screen of your message; a short way, it glides all of it.
+    #[test]
+    fn the_jump_glides_at_most_the_last_stretch() {
+        assert_eq!(
+            glide_from(5_000.0, 200.0, 400.0),
+            200.0 + 400.0 * GLIDE_SCREENS
+        );
+        assert_eq!(glide_from(500.0, 200.0, 400.0), 500.0);
+        let at = |t| glide_at(1_000.0, 200.0, t);
+        assert_eq!(at(0.0), 1_000.0);
+        assert_eq!(at(1.0), 200.0);
+        assert!(at(0.5) < 600.0, "eases out: fast first");
     }
 }

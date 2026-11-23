@@ -100,7 +100,7 @@ static INFO: ProviderInfo = ProviderInfo {
             about: "Plans first and asks for approval before changing anything",
         },
     ],
-    default_mode: Some("accept-edits"),
+    default_mode: Some("auto"),
 };
 
 /// Flags fuxx sets itself (or never passes), with whether each takes a value: an `extra_args`
@@ -137,7 +137,7 @@ impl Provider for Agy {
             .as_deref()
             .filter(|m| INFO.modes.iter().any(|x| x.id == *m))
             .or(INFO.default_mode)
-            .unwrap_or("accept-edits");
+            .unwrap_or("auto");
         let mut a: Vec<String> = [
             "agy",
             "-p=",
@@ -183,6 +183,7 @@ impl Provider for Agy {
                 .to_vec(),
             stdin: Vec::new(),
             until: None,
+            env: Vec::new(),
         })
     }
 
@@ -194,6 +195,7 @@ impl Provider for Agy {
                 .to_vec(),
             stdin: Vec::new(),
             until: None,
+            env: Vec::new(),
         })
     }
 
@@ -224,6 +226,7 @@ impl Provider for Agy {
             argv: argv.iter().map(|w| w.to_string()).collect(),
             stdin: Vec::new(),
             until: None,
+            env: Vec::new(),
         };
         vec![
             probe(&["agy", "models"]),
@@ -792,7 +795,9 @@ impl Translator for AgyTranslator {
             | Action::Interrupt
             | Action::SetModel { .. }
             | Action::SetEffort { .. }
-            | Action::SetMode { .. } => Vec::new(),
+            | Action::SetMode { .. }
+            // Headless agy can't rewind (batch 3, chore 2: `branching` says so).
+            | Action::RewindFiles { .. } => Vec::new(),
         }
     }
 }
@@ -828,6 +833,31 @@ mod tests {
         (t, out)
     }
 
+    /// agy has no prompt suggestions: no flag, no env.
+    #[test]
+    fn agy_has_no_suggestions() {
+        assert!(AGY.suggestion_flags().is_empty());
+        assert!(AGY.process_env(true).is_empty());
+    }
+
+    /// Batch 3, chore 2: headless agy has no rewind or fork (its terminal UI's `/rewind` only),
+    /// takes no message ids, and a send with one writes the same line.
+    #[test]
+    fn agy_reports_no_branching() {
+        assert_eq!(AGY.branching(), Branching::default());
+        assert_eq!(AGY.fresh_message_id(), None);
+        let send = |id: Option<&str>| {
+            AGY.translator().encode(&Action::Send {
+                text: "hi".into(),
+                images: Vec::new(),
+                id: id.map(String::from),
+            })
+        };
+        assert_eq!(
+            send(Some("6a1c234d-7469-40ef-b093-c74ad8006c28")),
+            send(None)
+        );
+    }
     #[test]
     fn a_subagent_step_is_a_row_and_a_lane() {
         let ev = decode_all(SUBS);
@@ -1056,6 +1086,7 @@ mod tests {
             extra_args: extra.iter().map(|s| s.to_string()).collect(),
             model: None,
             effort: None,
+            branch: None,
         }
     }
 
@@ -1290,10 +1321,10 @@ mod tests {
         ];
         let a = AGY.argv(&start(None, None, &[]));
         assert_eq!(a[..7], head);
-        assert_eq!(a[7..], ["accept-edits"]);
+        assert_eq!(a[7..], ["auto"]);
         assert_eq!(AGY.argv(&start(None, Some("plan"), &[]))[7], "plan");
         // A mode agy doesn't have: its default.
-        assert_eq!(AGY.argv(&start(None, Some("yolo"), &[]))[7], "accept-edits");
+        assert_eq!(AGY.argv(&start(None, Some("yolo"), &[]))[7], "auto");
         let extra = [
             "--dangerously-skip-permissions",
             "--model",
@@ -1314,10 +1345,7 @@ mod tests {
         ];
         let a = AGY.argv(&start(None, None, &extra));
         assert!(!a.iter().any(|w| w == "--dangerously-skip-permissions"));
-        assert_eq!(
-            a[7..],
-            ["accept-edits", "--model", "gemini-3", "--effort=high"]
-        );
+        assert_eq!(a[7..], ["auto", "--model", "gemini-3", "--effort=high"]);
     }
 
     #[test]
@@ -1368,6 +1396,7 @@ mod tests {
         let sent = t.encode(&Action::Send {
             text: "hi".into(),
             images: Vec::new(),
+            id: None,
         });
         assert_eq!(sent.len(), 1);
         let v: Value = serde_json::from_str(&sent[0]).unwrap();
@@ -1416,7 +1445,7 @@ mod tests {
             i.modes.iter().map(|m| m.id).collect::<Vec<_>>(),
             ["accept-edits", "auto", "plan"]
         );
-        assert_eq!(i.default_mode, Some("accept-edits"));
+        assert_eq!(i.default_mode, Some("auto"));
     }
 
     /// agy can't be told the id of a new conversation (Ruling 40: its crash orphan is a limit),

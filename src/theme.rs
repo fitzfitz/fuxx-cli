@@ -250,6 +250,90 @@ pub fn on_accent(accent: Rgb, background: Rgb, foreground: Rgb) -> Rgb {
     ensure_contrast(ink, accent, TEXT_MIN)
 }
 
+/// How far the selection stands off each surface it is drawn over.
+const SELECTION_SHOWS: f32 = 1.25;
+/// The selection blue on a dark card and on a light one: macOS's own text selection colours
+/// (your call, batch 3 chore 3: "blue apply everywhere … like a default color for text
+/// blocking"), whatever the theme's accent.
+pub const SELECTION_BLUE_DARK: Rgb = Rgb {
+    r: 0x3f,
+    g: 0x63,
+    b: 0x8b,
+};
+pub const SELECTION_BLUE_LIGHT: Rgb = Rgb {
+    r: 0xb3,
+    g: 0xd7,
+    b: 0xff,
+};
+
+/// The system blue a light theme's selection deepens toward when the pale blue won't show.
+const SELECTION_BLUE_DEEP: Rgb = Rgb {
+    r: 0x00,
+    g: 0x7a,
+    b: 0xff,
+};
+
+/// The selection over `base` (the card): the selection blue for its brightness. Where that won't
+/// do, a light card deepens it toward the system blue in 5 % steps (to show), and either card
+/// eases it toward `base` (for `ink` to read) — the first that keeps `ink` at `TEXT_MIN` and
+/// shows (`SELECTION_SHOWS`) on every one of `surfaces`; then the first `ink` reads on (text
+/// wins); at worst `base` itself, which the text reads on.
+pub fn selection_wash(base: Rgb, ink: Rgb, surfaces: &[Rgb]) -> Rgb {
+    let dark = luminance(base) < 0.5;
+    let blue = if dark {
+        SELECTION_BLUE_DARK
+    } else {
+        SELECTION_BLUE_LIGHT
+    };
+    let deeper = (1..=10)
+        .filter(|_| !dark)
+        .map(|k| mix(blue, SELECTION_BLUE_DEEP, 0.05 * k as f32));
+    let eased = (1..=20).map(|k| mix(base, blue, 1.0 - 0.05 * k as f32));
+    let washes: Vec<Rgb> = std::iter::once(blue).chain(deeper).chain(eased).collect();
+    let shows = |w: Rgb| surfaces.iter().all(|&s| contrast(w, s) >= SELECTION_SHOWS);
+    let reads = |w: Rgb| contrast(ink, w) >= TEXT_MIN;
+    washes
+        .iter()
+        .copied()
+        .find(|&w| reads(w) && shows(w))
+        .or_else(|| washes.iter().copied().find(|&w| reads(w)))
+        .unwrap_or(base)
+}
+
+thread_local! {
+    /// The last theme `selected_ink` saw, and its 16 palette colours and foreground as drawn
+    /// selected (made once per theme, not per frame).
+    static SELECTED_INK: Cell<Option<(Theme, [Rgb; 17])>> = const { Cell::new(None) };
+}
+
+/// The colour a selected glyph of colour `fg` is drawn in on `theme`'s selection: its own where
+/// it reads there (`TEXT_MIN`), else the chrome's text. The palette and the foreground are
+/// looked up from a table made once per theme; any other colour (true colour) is worked out.
+pub fn selected_ink(theme: &Theme, fg: Rgb) -> Rgb {
+    let Some(bg) = theme.selection_background else {
+        return fg;
+    };
+    let pick = |c: Rgb, text: Rgb| if contrast(c, bg) >= TEXT_MIN { c } else { text };
+    let table = SELECTED_INK.with(|cache| match cache.get() {
+        Some((t, table)) if t == *theme => table,
+        _ => {
+            let text = theme.ui().text;
+            let mut table = [text; 17];
+            for (slot, &c) in table.iter_mut().zip(theme.palette.iter()) {
+                *slot = pick(c, text);
+            }
+            table[16] = pick(theme.foreground, text);
+            cache.set(Some((*theme, table)));
+            table
+        }
+    });
+    let known = theme.palette.iter().chain([&theme.foreground]);
+    match known.zip(table).find(|(c, _)| **c == fg) {
+        Some((_, ink)) => ink,
+        None => pick(fg, theme.ui().text),
+    }
+}
+
 /// `fg` moved along its hue (see `ensure_contrast`) until it reaches `min` on every one of `bgs`.
 /// The chrome's surfaces all sit on the same side of a foreground, so moving away from one never
 /// loses another; the repeat is a guard for odd user themes where they don't.
@@ -475,12 +559,6 @@ impl Theme {
         // 30 % (half way until you agreed with the designer's flag: brighter, it pulled the
         // eye off the terminal).
         let ink = text(mix(fg, if dark { white } else { black }, 0.30));
-        // The accent over the box (drawn on the sidebar colour), 30 % or less: as much as keeps
-        // the text on it readable. At 0 it is the box itself, which the text reads on.
-        let selection = (0..=6)
-            .map(|step| mix(base, accent, 0.30 - 0.05 * step as f32))
-            .find(|&s| contrast(ink, s) >= TEXT_MIN)
-            .unwrap_or(base);
         // The designer's call: two greys, not three: faint is dim (rank below it by size and
         // place).
         let text_faint = text_dim;
@@ -586,6 +664,9 @@ impl Theme {
             let top = readable(mix(card, fg, 0.06), &[inner], SOFT_LINE_MIN);
             (mix(card, white, 0.20), inner, top, mix(top, fg, 0.06))
         };
+        // One selection blue on every surface and theme (batch 3, chore 3; the terminal's
+        // too, `resolve`): visible on the page, the box fill and the sidebar.
+        let selection = selection_wash(card, ink, &[card, composer_inner, canvas]);
         UiColors {
             sidebar_background: canvas,
             sidebar_border: quiet(mix(canvas, fg, 0.12), &[canvas, bg]),
@@ -1014,7 +1095,17 @@ pub fn resolve(
         theme.chrome.canvas = None;
     }
     apply(&mut theme, entries);
-    theme.with_dark_panel()
+    let mut theme = theme.with_dark_panel();
+    // One selection everywhere (batch 3, chore 3): the terminal's is the chrome's wash, its
+    // glyphs kept where they read (`selected_ink`), over whatever a theme file set; only your
+    // own `selection-background` wins (with whatever foreground goes with it).
+    if !own("selection-background") {
+        theme.selection_background = Some(theme.ui().selection);
+        if !own("selection-foreground") {
+            theme.selection_foreground = None;
+        }
+    }
+    theme
 }
 
 /// The folder for the user's own theme files: `{XDG_CONFIG_HOME or ~/.config}/fuxx/themes`.
@@ -1524,11 +1615,8 @@ mod tests {
             resolve(&e, true, &read).chrome.canvas,
             parse_color("1e1e2e")
         );
-        // "Nope" missing → defaults
-        assert_eq!(
-            resolve(&e, false, &read),
-            Theme::default().with_dark_panel()
-        );
+        // "Nope" missing → defaults (settled: the dark panel, the one selection)
+        assert_eq!(resolve(&e, false, &read), resolve(&[], false, &read));
     }
 
     #[test]
@@ -1558,7 +1646,10 @@ mod tests {
             true,
             &read,
         );
-        assert_eq!(t, Theme::default().with_dark_panel());
+        assert_eq!(t, resolve(&[], true, &read));
+        let mut defaults = Theme::default().with_dark_panel();
+        defaults.selection_background = t.selection_background;
+        assert_eq!(t, defaults);
     }
 
     /// Your own `background` over a theme: the panel derives from it (dark: 42 % toward black),
@@ -1644,6 +1735,99 @@ mod tests {
         // A mid-grey accent: still readable one way or the other.
         let grey = hex(0x777777);
         assert!(contrast(on_accent(grey, grey, grey), grey) >= TEXT_MIN);
+    }
+
+    /// Batch 3, chore 3 (your call, 2026-11-23: "should it be blue apply everywhere? because its
+    /// like a default color for text blocking"): one selection blue on every theme, whatever its
+    /// accent: macOS's own selection blue (dark #3f638b, light #b3d7ff), eased toward the card only
+    /// where a theme needs it for the text to read (4.5:1); always visible (1.25:1) on the page,
+    /// the box fill and the sidebar it is drawn over.
+    #[test]
+    fn the_selection_is_one_blue_on_every_theme() {
+        let h = |c: Rgb| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let s = ui.selection;
+            assert!(
+                s.b > s.r && s.b >= s.g,
+                "{name}: the selection {} isn't blue",
+                h(s)
+            );
+            let reads = contrast(ui.text, s);
+            assert!(
+                reads >= TEXT_MIN,
+                "{name}: text on the selection {reads:.2}"
+            );
+            for (what, on) in [
+                ("page", ui.card),
+                ("box", ui.composer_inner),
+                ("sidebar", ui.sidebar_background),
+            ] {
+                let shows = contrast(s, on);
+                assert!(shows >= 1.25, "{name}: only {shows:.2} on the {what}");
+            }
+        }
+        let get = |n: &str| every_theme().into_iter().find(|(k, _)| *k == n).unwrap().1;
+        // The default dark theme (was #384451, a grey slate) and Latte (was mauve #c6b0eb).
+        assert_eq!(h(get("default").ui().selection), "#3f638b");
+        // Latte's page is so light the pale blue steps one 5 % deeper to show.
+        assert_eq!(h(get("Catppuccin Latte").ui().selection), "#aad2ff");
+        assert_eq!(h(get("Catppuccin Mocha").ui().selection), "#3f638b");
+    }
+
+    /// Batch 3, chore 3: the terminal's selection is the chrome's (`ui.selection`), its glyphs
+    /// kept (no `selection-foreground`), on every built-in theme; only a `selection-background`
+    /// in your own config wins.
+    #[test]
+    fn terminal_selection_is_the_chrome_selection_unless_you_set_one() {
+        let read = |n: &str| builtin_theme(n).map(str::to_string);
+        for name in BUILTIN_THEMES {
+            let t = resolve(&parse(&format!("theme = {name}")), true, &read);
+            assert_eq!(t.selection_background, Some(t.ui().selection), "{name}");
+            assert_eq!(t.selection_foreground, None, "{name}");
+        }
+        let t = resolve(&[], true, &|_| None);
+        assert_eq!(t.selection_background, Some(t.ui().selection), "default");
+        let mine = resolve(
+            &parse("theme = Catppuccin Mocha\nselection-background = #123456"),
+            true,
+            &read,
+        );
+        assert_eq!(mine.selection_background, Some(hex(0x123456)));
+    }
+
+    /// A plugin theme's own `selection-background` (a theme file, not your config) is replaced
+    /// by the one wash too.
+    #[test]
+    fn a_plugin_themes_selection_background_is_replaced() {
+        let plugin = "background = #101010\nforeground = #e0e0e0\nselection-background = #ff00ff\nselection-foreground = #00ff00";
+        let t = resolve(&parse("theme = Mine"), true, &|n| {
+            (n == "Mine").then(|| plugin.to_string())
+        });
+        assert_ne!(t.selection_background, Some(hex(0xff00ff)));
+        assert_eq!(t.selection_background, Some(t.ui().selection));
+        assert_eq!(t.selection_foreground, None);
+    }
+
+    /// Batch 3, chore 3: a selected glyph keeps its colour where it reads (4.5:1) on the wash,
+    /// else it is drawn in the chrome's text.
+    #[test]
+    fn a_selected_glyph_keeps_its_colour_only_where_it_reads() {
+        for (name, theme) in every_theme() {
+            let ui = theme.ui();
+            let bg = theme.selection_background.expect("set by resolve");
+            for fg in theme.palette.iter().copied().chain([theme.foreground]) {
+                let ink = selected_ink(&theme, fg);
+                if contrast(fg, bg) >= TEXT_MIN {
+                    assert_eq!(ink, fg, "{name}: {fg:?} kept");
+                } else {
+                    assert_eq!(ink, ui.text, "{name}: {fg:?} drawn in the text colour");
+                }
+            }
+            // Any other colour (true colour) by the same rule.
+            let odd = mix(bg, theme.foreground, 0.1);
+            assert_eq!(selected_ink(&theme, odd), ui.text, "{name}");
+        }
     }
 
     #[test]

@@ -17,7 +17,9 @@ pub enum Icon {
     Globe,
     File,
     Plus,
-    Ellipsis,
+    /// The tab bars' Split Right and Split Down (batch 3, chore 1).
+    SplitRight,
+    SplitDown,
     PanelRight,
     PanelLeft,
     Folder,
@@ -71,12 +73,13 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 51] = [
+    pub const ALL: [Icon; 52] = [
         Icon::Terminal,
         Icon::Globe,
         Icon::File,
         Icon::Plus,
-        Icon::Ellipsis,
+        Icon::SplitRight,
+        Icon::SplitDown,
         Icon::PanelRight,
         Icon::PanelLeft,
         Icon::Folder,
@@ -132,7 +135,8 @@ impl Icon {
             Icon::Globe => "icons/lucide/globe.svg",
             Icon::File => "icons/lucide/file.svg",
             Icon::Plus => "icons/lucide/plus.svg",
-            Icon::Ellipsis => "icons/lucide/ellipsis.svg",
+            Icon::SplitRight => "icons/lucide/square-split-horizontal.svg",
+            Icon::SplitDown => "icons/lucide/square-split-vertical.svg",
             Icon::PanelRight => "icons/lucide/panel-right.svg",
             Icon::PanelLeft => "icons/lucide/panel-left.svg",
             Icon::Folder => "icons/lucide/folder.svg",
@@ -184,7 +188,7 @@ impl Icon {
 }
 
 /// The embedded files, by asset path.
-const FILES: [(&str, &[u8]); 49] = [
+const FILES: [(&str, &[u8]); 50] = [
     (
         "icons/lucide/circle.svg",
         include_bytes!("../assets/icons/lucide/circle.svg"),
@@ -274,8 +278,12 @@ const FILES: [(&str, &[u8]); 49] = [
         include_bytes!("../assets/icons/lucide/copy.svg"),
     ),
     (
-        "icons/lucide/ellipsis.svg",
-        include_bytes!("../assets/icons/lucide/ellipsis.svg"),
+        "icons/lucide/square-split-horizontal.svg",
+        include_bytes!("../assets/icons/lucide/square-split-horizontal.svg"),
+    ),
+    (
+        "icons/lucide/square-split-vertical.svg",
+        include_bytes!("../assets/icons/lucide/square-split-vertical.svg"),
     ),
     (
         "icons/lucide/external-link.svg",

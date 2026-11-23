@@ -268,8 +268,8 @@ fn right_sidebar_scenes() {
             // nearest the colour anywhere in its box.)
             let scale = shot.width as f32 / f32::from(dims.width);
             // The button is the top-right bar's alone since 2026-11-20 (critique issue 4): the
-            // rightmost pane's here (both panes reach the top); the other's ⋯ sits in its
-            // place, never lit.
+            // rightmost pane's here (both panes reach the top); in the other's bar that place
+            // holds Split Down (or, narrow, the tabs: batch 3, chore 1), never lit.
             let rightmost = edges.borrow().iter().copied().fold(f32::MIN, f32::max);
             for (i, right) in edges.borrow().iter().enumerate() {
                 let centre = right - RIGHT_SIDEBAR_FROM_EDGE;
@@ -278,7 +278,10 @@ fn right_sidebar_scenes() {
                 let beside = centre - crate::tab_bar::BUTTON / 2.0 + 2.0;
                 let fill = at(beside, BAR_MIDDLE);
                 if *right < rightmost {
-                    assert!(near(fill, ui.card), "{n}: pane {i}'s ⋯ unlit: {fill:?}");
+                    assert!(
+                        !near(fill, ui.card_hover),
+                        "{n}: pane {i}'s last button unlit: {fill:?}"
+                    );
                     continue;
                 }
                 let half = crate::tab_bar::BUTTON_ICON / 2.0;

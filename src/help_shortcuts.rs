@@ -88,6 +88,10 @@ pub fn describe(action: &str) -> Describe {
         "agent_tab::PrevLane" => Listed(Tabs, "Previous Subagent"),
         "agent_tab::NextLane" => Listed(Tabs, "Next Subagent"),
         "agent_tab::CycleMode" => Listed(Tabs, "Next Agent Mode"),
+        // The agent box (chores after M11ar): Tab takes the agent's guess; ↑/↓ recall prompts.
+        "composer::TakeSuggestion" => Listed(Tabs, "Take Agent Suggestion"),
+        "agent_tab::HistoryUp" => Listed(Tabs, "Previous Prompt"),
+        "agent_tab::HistoryDown" => Listed(Tabs, "Next Prompt"),
         "file_tab::Find" => Listed(Tabs, "Find in File\u{2026}"),
         "file_tab::FindNext" => Listed(Tabs, "Find Next"),
         "file_tab::FindPrev" => Listed(Tabs, "Find Previous"),
@@ -161,6 +165,8 @@ pub fn describe(action: &str) -> Describe {
         | "agent_tab::CloseImage" => Unlisted,
         other if other.starts_with("host_picker::") => Unlisted,
         other if other.starts_with("palette::") => Unlisted,
+        // The + menu's own ↑↓←→ (its box's keys, as the palette's).
+        other if other.starts_with("new_tab_menu::") => Unlisted,
         // The branch switcher's arrows (in its panel only).
         other if other.starts_with("branch_switcher::") => Unlisted,
         // The Files panel's arrows, Return and Escape (in the panel only).
@@ -466,6 +472,24 @@ mod tests {
         assert!(terminal.contains(&("Scroll down a page", "\u{21e7}\u{21df} / \u{2318}\u{2193}")));
     }
 
+    /// Prompt suggestions and history (chores after M11ar) are listed with the agent tab's keys.
+    #[test]
+    fn suggestion_and_prompt_history_keys_are_listed() {
+        let rows = shortcut_rows(&binding_pairs(&crate::key_bindings()));
+        let tabs: Vec<(&str, &str)> = rows
+            .iter()
+            .filter(|r| r.group == ShortcutGroup::Tabs)
+            .map(|r| (r.name, r.keys.as_str()))
+            .collect();
+        for row in [
+            ("Take Agent Suggestion", "\u{21e5}"),
+            ("Previous Prompt", "\u{2191} / \u{2303}P"),
+            ("Next Prompt", "\u{2193} / \u{2303}N"),
+        ] {
+            assert!(tabs.contains(&row), "{row:?} in {tabs:?}");
+        }
+    }
+
     #[test]
     fn every_binding_is_listed_or_marked_unlisted() {
         let mut bindings = crate::key_bindings();
@@ -541,6 +565,7 @@ mod tests {
         ));
         assert!(!rows.iter().any(|r| r.name.starts_with("Go to Session")));
         assert_eq!(describe("palette::NextScope"), Describe::Unlisted);
+        assert_eq!(describe("new_tab_menu::IconNext"), Describe::Unlisted);
         assert_eq!(describe("switcher::SelectNext"), Describe::Unknown);
     }
 }

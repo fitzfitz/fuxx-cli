@@ -282,7 +282,7 @@ pub fn run_probe_stoppable(
     stop: &std::sync::atomic::AtomicBool,
 ) -> Result<String, String> {
     let (tx, mut rx) = mpsc::unbounded();
-    let process = agent_process::spawn(&probe.argv, cwd, path_env, tx);
+    let process = agent_process::spawn(&probe.argv, cwd, path_env, &probe.env, tx);
     for line in &probe.stdin {
         process.send(line.clone());
     }
@@ -475,6 +475,7 @@ mod tests {
             argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
             stdin: Vec::new(),
             until: None,
+            env: Vec::new(),
         }
     }
 
@@ -668,6 +669,7 @@ mod tests {
             argv: vec!["fuxx-no-such-program".into()],
             stdin: Vec::new(),
             until: None,
+            env: Vec::new(),
         };
         assert!(run_probe(&probe, Path::new("/"), None, Duration::from_secs(5)).is_err());
     }

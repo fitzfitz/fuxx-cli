@@ -92,6 +92,7 @@ mod mouse;
 mod mux_proto;
 mod name_input;
 mod native_notify;
+mod new_tab_menu;
 mod notification_list;
 mod notifier;
 mod overlay_panel;
@@ -99,7 +100,6 @@ mod palette;
 mod palette_files;
 mod palette_items;
 mod palette_match;
-mod pane_actions;
 mod pane_browser;
 mod pane_tab_menu;
 mod panes;
@@ -117,6 +117,7 @@ mod prefs;
 mod presets;
 mod private_socket;
 mod procs;
+mod prompt_history;
 mod providers;
 mod pty;
 mod reduce_motion;
@@ -411,6 +412,22 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("tab", palette::NextScope, Some("Palette")),
         KeyBinding::new("shift-tab", palette::PrevScope, Some("Palette")),
         KeyBinding::new("cmd-v", name_input::Paste, Some("Palette > NameInput")),
+        // The pane bar's + menu (chore 2026-11-23): its box is a NameInput too; ↑↓ move the
+        // light, ←→ along the icon row while it's lit (later than the caret's ←→, so they win
+        // there; elsewhere they stay the caret's).
+        KeyBinding::new("up", new_tab_menu::SelectPrev, Some("NewTabMenu")),
+        KeyBinding::new("down", new_tab_menu::SelectNext, Some("NewTabMenu")),
+        KeyBinding::new(
+            "left",
+            new_tab_menu::IconPrev,
+            Some("(NewTabMenu && icons) > NameInput"),
+        ),
+        KeyBinding::new(
+            "right",
+            new_tab_menu::IconNext,
+            Some("(NewTabMenu && icons) > NameInput"),
+        ),
+        KeyBinding::new("cmd-v", name_input::Paste, Some("NewTabMenu > NameInput")),
         // The branch switcher: its box is a NameInput too; these keys move through its list.
         KeyBinding::new("up", branch_switcher::SelectPrev, Some("BranchSwitcher")),
         KeyBinding::new("down", branch_switcher::SelectNext, Some("BranchSwitcher")),
@@ -505,6 +522,20 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
             "ctrl-cmd-space",
             composer::ShowCharacterPalette,
             Some("Composer"),
+        ),
+        // The agent's guess at your next message (a chore after M11ar): Tab takes it into the
+        // empty box; otherwise Tab goes on (the lists' Complete, bound after this, wins).
+        KeyBinding::new("tab", composer::TakeSuggestion, Some("Composer")),
+        // Prompt history in the agent tab's box: ↑ on the first row recalls the older prompt,
+        // ↓ on the last the newer; elsewhere they move the caret (the handler hands them on).
+        // After the plain Composer keys so they come first; before the lists' so those win.
+        KeyBinding::new("up", agent_tab::HistoryUp, Some("AgentTab > Composer")),
+        KeyBinding::new("down", agent_tab::HistoryDown, Some("AgentTab > Composer")),
+        KeyBinding::new("ctrl-p", agent_tab::HistoryUp, Some("AgentTab > Composer")),
+        KeyBinding::new(
+            "ctrl-n",
+            agent_tab::HistoryDown,
+            Some("AgentTab > Composer"),
         ),
         // The agent tab's `@` file list and `/` list, while one is open over the composer.
         // The tool modal (spec A §B): Esc backs out or closes, ↑/↓ walk the tools.
@@ -1164,6 +1195,8 @@ fn main() {
             }
             // Pasted images written for agy (a day old or more) go, off the UI thread.
             std::thread::spawn(agent_tab::clean_old_pasted);
+            // The agent boxes' prompt history, read (and compacted) off the UI thread.
+            prompt_history::PromptHistory::load(cx);
             cx.activate(true);
         });
 }
@@ -1537,8 +1570,8 @@ mod tests {
             ("enter", Box::new(composer::Send)),
             ("shift-enter", Box::new(composer::Newline)),
             ("escape", Box::new(composer::Stop)),
-            ("up", Box::new(composer::MoveUp)),
-            ("down", Box::new(composer::MoveDown)),
+            ("up", Box::new(crate::agent_tab::HistoryUp)),
+            ("down", Box::new(crate::agent_tab::HistoryDown)),
             ("cmd-left", Box::new(composer::LineStart)),
             ("cmd-v", Box::new(composer::Paste)),
             ("cmd-c", Box::new(composer::Copy)),
@@ -1558,6 +1591,54 @@ mod tests {
         assert!(runs(&keymap, "cmd-k", composer).partial_eq(&OpenPalette));
         assert!(runs(&keymap, "cmd-t", composer).partial_eq(&NewTab));
         assert!(runs(&keymap, "cmd-w", composer).partial_eq(&CloseSession));
+    }
+
+    /// Prompt suggestions and history (chores after M11ar): in the agent tab's box, Tab takes
+    /// the suggestion and ↑/↓ (⌃P/⌃N) recall prompts, each falling back to the composer's own
+    /// key when it doesn't apply; the `@` and `/` lists still win while open.
+    #[test]
+    fn tab_takes_the_suggestion_and_arrows_recall_prompts() {
+        use crate::agent_tab::{AtDown, AtUp, HistoryDown, HistoryUp};
+        use crate::composer;
+        let keymap = keymap();
+        let composer: &[&str] = &["Workspace", "AgentTab", "Composer"];
+        let at_list: &[&str] = &["Workspace", "AgentTab", "AtPopup", "Composer"];
+        let found = |keys: &str, stack: &[&str]| -> Vec<Box<dyn Action>> {
+            let contexts: Vec<KeyContext> = stack
+                .iter()
+                .map(|c| KeyContext::parse(c).unwrap())
+                .collect();
+            let typed = [Keystroke::parse(keys).unwrap()];
+            let (found, _) = keymap.bindings_for_input(&typed, &contexts);
+            found.iter().map(|b| b.action().boxed_clone()).collect()
+        };
+        let tab = found("tab", composer);
+        assert!(tab[0].partial_eq(&composer::TakeSuggestion));
+        for (keys, history, caret) in [
+            (
+                "up",
+                &HistoryUp as &dyn Action,
+                &composer::MoveUp as &dyn Action,
+            ),
+            ("down", &HistoryDown, &composer::MoveDown),
+            ("ctrl-p", &HistoryUp, &composer::MoveUp),
+            ("ctrl-n", &HistoryDown, &composer::MoveDown),
+        ] {
+            let got = found(keys, composer);
+            assert!(got[0].partial_eq(history), "{keys}: {}", got[0].name());
+            // When it doesn't recall, the key moves the caret as before.
+            assert!(got[1].partial_eq(caret), "{keys}: then {}", got[1].name());
+        }
+        // The lists over the box keep their keys (Tab completes, ↑/↓ move the list).
+        let tab = found("tab", at_list);
+        assert!(tab[0].partial_eq(&composer::Complete), "{}", tab[0].name());
+        assert!(found("up", at_list)[0].partial_eq(&AtUp));
+        assert!(found("down", at_list)[0].partial_eq(&AtDown));
+        assert!(found("ctrl-p", at_list)[0].partial_eq(&AtUp));
+        // A terminal's or another box's Tab and arrows are untouched.
+        assert!(runs(&keymap, "shift-tab", composer).partial_eq(&crate::agent_tab::CycleMode));
+        let other_box: &[&str] = &["Workspace", "Composer"];
+        assert!(runs(&keymap, "up", other_box).partial_eq(&composer::MoveUp));
     }
 
     /// The subagent pills (M11ar): ⌥⌘[ / ⌥⌘] step between Main and the lanes in an agent tab.
@@ -1617,8 +1698,9 @@ mod tests {
             ("ctrl-e", Box::new(composer::LineEnd)),
             ("ctrl-b", Box::new(composer::MoveLeft)),
             ("ctrl-f", Box::new(composer::MoveRight)),
-            ("ctrl-p", Box::new(composer::MoveUp)),
-            ("ctrl-n", Box::new(composer::MoveDown)),
+            // Prompt history first; it moves the caret when it doesn't recall.
+            ("ctrl-p", Box::new(crate::agent_tab::HistoryUp)),
+            ("ctrl-n", Box::new(crate::agent_tab::HistoryDown)),
             ("ctrl-h", Box::new(composer::Backspace)),
             ("ctrl-d", Box::new(composer::Delete)),
         ];
@@ -1628,6 +1710,25 @@ mod tests {
         }
         assert!(runs(&keymap, "ctrl-p", at_list).partial_eq(&crate::agent_tab::AtUp));
         assert!(runs(&keymap, "ctrl-n", at_list).partial_eq(&crate::agent_tab::AtDown));
+    }
+
+    /// The + menu's keys in its box: ↑↓ move the light; ←→ move it along the icon row only
+    /// while that row is lit, else they stay the caret's.
+    #[test]
+    fn the_new_tab_menus_keys_work_in_its_box() {
+        use crate::new_tab_menu::{IconNext, IconPrev, SelectNext, SelectPrev};
+        let keymap = keymap();
+        let on_row: &[&str] = &["Workspace", "NewTabMenu icons", "NameInput"];
+        let off_row: &[&str] = &["Workspace", "NewTabMenu", "NameInput"];
+        for stack in [on_row, off_row] {
+            assert!(runs(&keymap, "up", stack).partial_eq(&SelectPrev));
+            assert!(runs(&keymap, "down", stack).partial_eq(&SelectNext));
+        }
+        assert!(runs(&keymap, "left", on_row).partial_eq(&IconPrev));
+        assert!(runs(&keymap, "right", on_row).partial_eq(&IconNext));
+        assert!(runs(&keymap, "left", off_row).partial_eq(&crate::name_input::MoveLeft));
+        assert!(runs(&keymap, "right", off_row).partial_eq(&crate::name_input::MoveRight));
+        assert!(runs(&keymap, "cmd-v", off_row).partial_eq(&crate::name_input::Paste));
     }
 
     #[test]

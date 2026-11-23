@@ -353,7 +353,7 @@ impl Workspace {
             branch_switcher: self.branch_switcher.is_some(),
             row_menu: self.sidebar.tab_menu.is_some(),
             tab_menu: self.pane_tab_menu.is_some(),
-            pane_actions: self.pane_actions.is_some(),
+            new_tab_menu: self.new_tab_menu.is_some(),
             new_menu: self.sidebar.new_menu,
             suggestions: self
                 .browser_tabs
@@ -541,14 +541,30 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(opened) = self.model.add_tab(pane, TabKind::Browser { url: None }) else {
+        self.new_browser_tab_at(pane, None, window, cx);
+    }
+
+    /// A browser tab at the end of `pane`'s bar going to `url` (the + menu's Open URL, a
+    /// history row); none: blank, its address field ready for typing.
+    pub(crate) fn new_browser_tab_at(
+        &mut self,
+        pane: PaneId,
+        url: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let kind = TabKind::Browser { url: url.clone() };
+        let Some(opened) = self.model.add_tab(pane, kind) else {
             return;
         };
         self.sync();
-        let view = self.make_browser_tab(opened.tab, None, window, cx);
+        let blank = url.is_none();
+        let view = self.make_browser_tab(opened.tab, url, window, cx);
         self.save();
         self.activate(window, cx);
-        view.update(cx, |view, cx| view.start_editing(window, cx));
+        if blank {
+            view.update(cx, |view, cx| view.start_editing(window, cx));
+        }
     }
 
     /// Put a browser in workspace `ws` for something in `pane` (`browser_place`), going to

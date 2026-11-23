@@ -126,12 +126,13 @@ impl Ids {
 /// Every process this app started and hasn't seen reaped yet (pruned as more start).
 static STARTED: std::sync::Mutex<Vec<Ids>> = std::sync::Mutex::new(Vec::new());
 
-/// Start `argv` in `cwd` (with `PATH` = `path_env` if given); never blocks. Events arrive on
-/// `events`.
+/// Start `argv` in `cwd` (with `PATH` = `path_env` if given, and `env` set too); never blocks.
+/// Events arrive on `events`.
 pub fn spawn(
     argv: &[String],
     cwd: &Path,
     path_env: Option<&str>,
+    env: &[(String, String)],
     events: UnboundedSender<ProcessEvent>,
 ) -> AgentProcess {
     let pid = Arc::new(AtomicI32::new(0));
@@ -152,12 +153,16 @@ pub fn spawn(
     }
     let argv = argv.to_vec();
     let cwd = cwd.to_path_buf();
-    let path_env = path_env.map(str::to_string);
+    let env: Vec<(String, String)> = path_env
+        .map(|path| ("PATH".to_string(), path.to_string()))
+        .into_iter()
+        .chain(env.iter().cloned())
+        .collect();
     let started = std::thread::Builder::new()
         .name("fuxx-agent".into())
         .spawn({
             let events = events.clone();
-            move || run(argv, cwd, path_env, events, lines, pid, killed, done)
+            move || run(argv, cwd, env, events, lines, pid, killed, done)
         });
     if let Err(err) = started {
         let _ = events.unbounded_send(ProcessEvent::SpawnFailed(err.to_string()));
@@ -279,7 +284,7 @@ fn spawn_retrying(command: &mut Command) -> std::io::Result<std::process::Child>
 fn run(
     argv: Vec<String>,
     cwd: std::path::PathBuf,
-    path_env: Option<String>,
+    env: Vec<(String, String)>,
     events: UnboundedSender<ProcessEvent>,
     lines: mpsc::Receiver<String>,
     pid: Arc<AtomicI32>,
@@ -307,9 +312,7 @@ fn run(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(path) = &path_env {
-        command.env("PATH", path);
-    }
+    command.envs(env);
     // SAFETY: setsid is async-signal-safe; it makes the child its own process group's leader.
     unsafe {
         command.pre_exec(|| {
@@ -454,7 +457,7 @@ mod tests {
 
     fn start(argv: &[String]) -> (AgentProcess, UnboundedReceiver<ProcessEvent>) {
         let (tx, rx) = unbounded();
-        (spawn(argv, Path::new("/"), None, tx), rx)
+        (spawn(argv, Path::new("/"), None, &[], tx), rx)
     }
 
     /// The next event other than `Ended`, or panic after 5 s.
@@ -484,6 +487,21 @@ mod tests {
 
     fn line(text: &str) -> ProcessEvent {
         ProcessEvent::Line(text.to_string())
+    }
+
+    /// The provider's environment (prompt suggestions' switch) reaches the agent's process.
+    #[test]
+    fn extra_env_reaches_the_process() {
+        let (tx, mut rx) = unbounded();
+        let env = vec![("FUXX_TEST_SUGGEST".to_string(), "1".to_string())];
+        let _process = spawn(
+            &argv("echo \"[$FUXX_TEST_SUGGEST]\""),
+            Path::new("/"),
+            None,
+            &env,
+            tx,
+        );
+        assert_eq!(next(&mut rx), line("[1]"));
     }
 
     #[test]

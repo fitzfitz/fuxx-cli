@@ -37,6 +37,82 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Chores batch 3, wave 1: split buttons, one selection colour, Rewind/Fork core
+
+- **What:** three chores under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]], wave 1 of the batch 3
+  spec. ("on three dots accross tabs, remove it, and make the split right and down out of that and appear beside
+  right sidebar toggle") The ⋯ menu is gone (`src/pane_actions.rs` deleted); every pane's bar ends in Split Right
+  and Split Down (Lucide's square-split icons, tooltips with ⌘D / ⇧⌘D), 8 pt before the right sidebar's button on
+  the top-right bar, hidden on a pane under 320 pt. ("What I block text on any place, make the blue lighter" → one
+  colour on every theme) One selection blue everywhere, whatever the theme (`theme::selection_wash`: macOS's #3f638b dark /
+  #b3d7ff light, Latte #aad2ff), the terminal's included (no more white block; your own `selection-background` still wins); selected
+  glyphs keep their colour where it reads, else the chrome's text. ("when I just prompt and suddenly stop it, I want
+  to have the rewind/fork feaeture") Rewind and Fork: core only, UI in wave 2 — message ids on send and echo, the
+  forked resume's flags, the branch point from the transcript, Claude's file checkpoints and `rewind_files`,
+  `Conversation::cut_before` / `restore`, `Attachment::Quote`; agy reports no branching.
+- **Checks:** 2540 → 2559 tests (23 new, each watched failing first; the 3 pane-menu tests and the palette parity
+  test went with the menu); clippy 14/29 and 18/33 (unchanged, none on a changed line); `cargo fmt --check` clean;
+  full `scripts/ui-shots.sh` 291 passed, 2 failed (`tabs-minimal` and `right-sidebar`, whose checks assumed the ⋯;
+  fixed and each passing alone). A second full run, after the screen changed to a 1× external display mid-session,
+  gave 288 passed, 5 failed (`sidebar-band`, `card-split`, `file-code-bars`, `file-tab-md-reader-column`,
+  `file-tab`'s narrow header: pixel-position checks in scenes this doesn't touch, all passing in the first run on the
+  same code; they fail alone too on this display). New `selection-colors`; `tab-bars-more` is now `tab-bars-split`;
+  `agent-pane-menu` gone. References refreshed for `tab-bars`, `splits`, `rename-box` and `file-tab-drag-select`,
+  added for `selection-colors` and `tab-bars-split`; the rest of the "looks different" fingerprints are this
+  machine's (8–13 apart, or another screen scale, in scenes this doesn't touch). No real `claude` was run: its flags
+  and `rewind_files` schema come from 2.1.330's `--help` and binary strings. Not yet seen in the real window.
+
+### 2026-11-23 — Chore: your latest message pinned over the chat
+
+- **What:** one more chore under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]]. ("can you also on
+  chatbox add the floating latest chat on top, when clicked, it goes to that chat. just like in claude code so that
+  its easy to know what I prompt when the agent is running") While your latest message is scrolled above the chat,
+  one line of it floats over the chat's top: the panel's card, an ↑ and your words cut with "…", lit under the
+  pointer, tooltip "Jump to your message". A click glides back to the message (at the top of the view), lights its
+  bubble for 0.6 s and stops following the chat's end, as a scroll up does; scrolling to the end follows again. A
+  subagent's view shows the task Main gave it. It overlays the chat (no row moves); the visibility is the list's
+  scroll top against your message's row, kept as items come, its line built once per message. Reduce motion: no
+  glide, fade or highlight. New `src/agent_latest.rs`.
+- **Checks:** 2534 → 2540 tests (6 new, each watched failing first); clippy 14/29 and 18/33 (unchanged, none on a
+  changed line); `cargo fmt --check` clean; full `scripts/ui-shots.sh` 293 passed, 0 failed (new:
+  `agent-chat-latest-prompt`, both themes, with a real click, hover, tooltip and wheel; its reference added).
+  `agent-tab-done` now shows the strip (it keeps no reference). The suite's many "looks different" fingerprints
+  are this machine's (the same 8–13 distance in areas this doesn't touch). Not yet seen in the real window.
+
+### 2026-11-23 — Chores: prompt suggestions, prompt history, the ⋯ menu's ⌘T
+
+- **What:** three more chores under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]]. ("can I get the
+  agent suggestion on what to type? just like in claude cli, it has prompt suggestions") Claude's guess at your next
+  message shows faint in the empty box after a turn, "⇥" after it; Tab takes it. On by default (Preferences →
+  General → Prompt suggestions), and fuxx sets Claude's `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=1` with the flag;
+  Enter never sends the guess. ("when I focus on chatbox, and I hit up or down, can it pick by the prompt history?")
+  ↑/↓ in an agent box recall what you sent: the tab's own prompts, then the folder's, kept per folder in
+  `prompt-history.jsonl` (100 per folder, 40 folders, images stripped); ↑ doesn't recall with a permission
+  waiting; a recalled `/command` keeps the `/` list shut so ↑ goes on through the history. The ⋯ menu's New
+  Terminal Tab no longer says ⌘T.
+- **Checks:** 2510 → 2534 tests (24 new; written first and watched failing, except `prompt_history.rs`, whose tests
+  went in with the module and were each shown to catch a planted fault); clippy 14/29 and 18/33 (unchanged, none on
+  a changed line); `cargo fmt --check` clean; full `scripts/ui-shots.sh` 292 passed, 0 failed (new:
+  `agent-box-suggestion`, `-tab-takes`, `-stale`, `-flags`, `agent-box-history`, `-history-folder`); references
+  added for `agent-box-suggestion` and refreshed for `preferences-general`. No real `claude` was run: the wire
+  format is the recorded one. Not yet seen in the real window.
+
+### 2026-11-23 — Chores: Auto mode, New Fuxxpace, image pills, the + menu, ⌘T like the last tab
+
+- **What:** five chores from your words, under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]]. ("agent
+  tab: mode use auto for both agy and claude") new Claude and agy tabs start in Auto. ("remove this on New
+  Fuxxpace") the sidebar's + menu lost its preset rows. ("in agent chat input, make the image attachment when user
+  hover, it becomes pointer hand icon") an image pill shows a pointing hand and a deeper fill under the pointer.
+  ("on the panel + button, I want to design it like this") the pane bar's + opens a new tab menu: Terminal,
+  Browser, File, the agent presets, and search across URLs, agents, tabs, history and files. ("when cmd + t, it
+  will open a new tab based on last tab…") ⌘T makes a terminal after a terminal, the same agent (its folder, model
+  and effort, in Auto) after an agent tab, a browser tab after a browser tab.
+- **Checks:** 2495 → 2510 tests (15 new; 14 watched failing first, and the Claude `--permission-mode auto` one
+  passed at once: it pins a pass-through that already worked); clippy 14/29 and 18/33 (unchanged, none on a
+  changed line); `cargo fmt --check` clean; full `scripts/ui-shots.sh` 286 passed, 0 failed (new: `new-tab-menu`,
+  `new-tab-menu-search`, `new-tab-like-last`, a `tab-bars-plus` case; `agent-preset-menu` removed); references
+  refreshed for `sidebar-menu` and added for the new pictures. Not yet seen in the real window.
+
 ### 2026-11-23 — v0.12.8 released
 
 - **What:** your word ("commit and push it and make patch release"). `Cargo.toml` 0.12.7 → 0.12.8 (`367acc2`), tag

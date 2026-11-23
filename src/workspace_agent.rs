@@ -464,6 +464,7 @@ impl Workspace {
             model: None,
             effort: None,
             extra_args: Vec::new(),
+            branch: None,
         });
         let name = name.clone();
         #[cfg(feature = "ui-shots")]
@@ -570,6 +571,7 @@ impl Workspace {
             model: model.clone(),
             effort: effort.clone(),
             extra_args,
+            branch: None,
         })
     }
 
@@ -586,7 +588,7 @@ impl Workspace {
         Some((tab, self.agents.get(&tab)?.view.clone()))
     }
 
-    /// A new agent tab of `provider` at the end of `pane`'s bar (its ⋯ menu, ⌘K), where the
+    /// A new agent tab of `provider` at the end of `pane`'s bar (its + menu, ⌘K), where the
     /// terminal the pane shows is now (else where the active terminal is, else its or the
     /// active one's project, else your home: `new_agent_folder`). Its view is made on the next
     /// frame (`ensure_agent_tabs`), and takes the keyboard there.
@@ -606,7 +608,23 @@ impl Workspace {
                 .and_then(|s| s.project.clone())
                 .or_else(|| self.active_project()),
         );
-        let kind = self.new_agent_kind(provider, folder);
+        let kind = self.new_agent_kind(provider, folder, None, None);
+        self.add_agent_tab(pane, kind, None, cx)
+    }
+
+    /// ⌘T after an agent tab (`new_tab_menu::plan_like`): an agent tab of `provider` at the end
+    /// of `pane`'s bar, in `cwd` (that tab's folder), with its `model` and `effort`, in the
+    /// provider's default mode.
+    pub(crate) fn new_agent_like(
+        &mut self,
+        pane: PaneId,
+        provider: &'static str,
+        cwd: PathBuf,
+        model: Option<String>,
+        effort: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Option<TabId> {
+        let kind = self.new_agent_kind(provider, Some(cwd), model, effort);
         self.add_agent_tab(pane, kind, None, cx)
     }
 
@@ -661,7 +679,7 @@ impl Workspace {
             self.active_folder_now(),
             session.and_then(|s| s.project.clone()),
         );
-        let kind = self.new_agent_kind(provider, folder);
+        let kind = self.new_agent_kind(provider, folder, None, None);
         let TabKind::Agent { cwd, .. } = &kind else {
             return;
         };
@@ -675,8 +693,15 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A fresh agent tab of `provider` in `folder` (none: your home), in its default mode.
-    fn new_agent_kind(&self, provider: &'static str, folder: Option<PathBuf>) -> TabKind {
+    /// A fresh agent tab of `provider` in `folder` (none: your home), in its default mode, with
+    /// `model` and `effort` (none: the agent's own; ⌘T carries an agent tab's, chore 2026-11-23).
+    fn new_agent_kind(
+        &self,
+        provider: &'static str,
+        folder: Option<PathBuf>,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> TabKind {
         let cwd = folder
             .or_else(|| self.places.home.clone())
             .or_else(crate::workspace::home_dir)
@@ -690,8 +715,8 @@ impl Workspace {
             conversation: None,
             mode,
             title: None,
-            model: None,
-            effort: None,
+            model,
+            effort,
         }
     }
 
@@ -904,7 +929,8 @@ impl Workspace {
                     _ => None,
                 };
                 if let (Some(provider), Some((_, pane))) = (provider, self.model.locate(tab)) {
-                    let kind = self.new_agent_kind(provider.info().name, Some(folder.clone()));
+                    let kind =
+                        self.new_agent_kind(provider.info().name, Some(folder.clone()), None, None);
                     self.add_agent_tab(pane, kind, Some(tab), cx);
                 }
             }

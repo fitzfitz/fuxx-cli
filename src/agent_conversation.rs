@@ -24,6 +24,12 @@ pub enum Item {
     You {
         text: String,
         attachments: Vec<String>,
+        /// Its id in the agent's record (batch 3, chore 2: `Provider::fresh_message_id`, or the
+        /// history's), when the agent takes one: what Rewind and Fork name it by.
+        id: Option<String>,
+        /// The agent has read it (its echo, `Event::Taken`; anything in the history): only then
+        /// can it be rewound or forked from.
+        taken: bool,
     },
     Agent {
         message: String,
@@ -96,8 +102,14 @@ impl LaneStatus {
 #[derive(Default)]
 pub struct Conversation {
     items: Vec<Item>,
+    /// Your latest message's index (the chat's latest-prompt strip, chore after M11ar): kept as
+    /// items come, so nothing scans the conversation for it.
+    latest_you: Option<usize>,
     /// The subagents, in start order.
     lanes: Vec<Lane>,
+    /// Where each lane started (`items.len()` then), by the lanes' order: a cut keeps the lanes
+    /// started before it (batch 3, chore 2).
+    lane_starts: Vec<usize>,
     conversation: Option<String>,
     model: Option<String>,
     cost_usd: Option<f64>,
@@ -115,6 +127,30 @@ pub struct Conversation {
     ended: bool,
     /// A turn has finished since the last `you`.
     finished: bool,
+}
+
+/// What `Conversation::cut_before` cut (batch 3, chore 2): kept for Undo Rewind until the next
+/// send.
+#[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+pub struct Cut {
+    items: Vec<Item>,
+    lanes: Vec<Lane>,
+    lane_starts: Vec<usize>,
+    latest_you: Option<usize>,
+}
+
+#[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+impl Cut {
+    /// The cut items, your message first.
+    pub fn items(&self) -> &[Item] {
+        &self.items
+    }
+
+    /// Your message the cut was made before (its text and attachments go back in the box).
+    pub fn message(&self) -> Option<&Item> {
+        self.items.first()
+    }
 }
 
 impl Conversation {
@@ -136,7 +172,9 @@ impl Conversation {
         match event {
             Event::Cleared => {
                 self.items.clear();
+                self.latest_you = None;
                 self.lanes.clear();
+                self.lane_starts.clear();
                 self.cost_usd = None;
                 self.context_pct = None;
                 self.finished = false;
@@ -308,7 +346,10 @@ impl Conversation {
                 };
                 match self.lane_mut(&id) {
                     Some(old) => *old = lane,
-                    None => self.lanes.push(lane),
+                    None => {
+                        self.lanes.push(lane);
+                        self.lane_starts.push(self.items.len());
+                    }
                 }
             }
             Event::SubagentProgress {
@@ -346,12 +387,16 @@ impl Conversation {
             }
             // The tab follows the file; nothing to show yet.
             Event::Follow { .. } => {}
-            // The agent read one of your messages (in this turn, or starting its own).
-            Event::Taken => {
+            // The agent read one of your messages (in this turn, or starting its own): the one
+            // of that id, or (none said) the oldest not read yet.
+            Event::Taken { id } => {
                 self.echoes = true;
                 self.outstanding = self.outstanding.saturating_sub(1);
                 self.busy = true;
+                self.mark_taken(id.as_deref());
             }
+            // The tab acts on a file rewind's answer (batch 3, chore 2); nothing to show here.
+            Event::FilesRewound { .. } => {}
             Event::Usage {
                 context_pct,
                 cost_usd,
@@ -388,7 +433,11 @@ impl Conversation {
             Event::Notice(text) => self.items.push(Item::Notice(text)),
             // The catalog, the skills, the limits and the mode are the tab's, not the
             // conversation's.
-            Event::Catalog(_) | Event::Skills(_) | Event::RateLimit(_) | Event::Mode(_) => {}
+            Event::Catalog(_)
+            | Event::Suggestion(_)
+            | Event::Skills(_)
+            | Event::RateLimit(_)
+            | Event::Mode(_) => {}
             // A live model switch the agent confirmed: the id it now runs.
             Event::Applied {
                 kind: crate::providers::ChangeKind::Model,
@@ -401,10 +450,38 @@ impl Conversation {
     }
 
     pub fn you(&mut self, text: String, attachments: Vec<String>) {
-        self.items.push(Item::You { text, attachments });
+        self.you_as(text, attachments, None);
+    }
+
+    /// `you`, the message sent under `id` (`Provider::fresh_message_id`; batch 3, chore 2).
+    pub fn you_as(&mut self, text: String, attachments: Vec<String>, id: Option<String>) {
+        self.latest_you = Some(self.items.len());
+        self.items.push(Item::You {
+            text,
+            attachments,
+            id,
+            taken: false,
+        });
         self.outstanding += 1;
         self.ended = false;
         self.finished = false;
+    }
+
+    /// Your message `id` was read (none said: the oldest not read yet). Looked for from the
+    /// newest back when named (it is nearly always the last), from the oldest when not.
+    fn mark_taken(&mut self, id: Option<&str>) {
+        let unread = |i: &Item| matches!(i, Item::You { taken: false, .. });
+        let found = match id {
+            Some(id) => self
+                .items
+                .iter_mut()
+                .rev()
+                .find(|i| matches!(i, Item::You { id: Some(x), .. } if x == id)),
+            None => self.items.iter_mut().find(|i| unread(i)),
+        };
+        if let Some(Item::You { taken, .. }) = found {
+            *taken = true;
+        }
     }
 
     /// A resumed conversation's history: what you said (shown, but not counted as a send
@@ -413,10 +490,15 @@ impl Conversation {
     pub fn past(&mut self, past: Vec<Past>) {
         for piece in past {
             match piece {
-                Past::You(text) => self.items.push(Item::You {
-                    text,
-                    attachments: Vec::new(),
-                }),
+                Past::You { text, id } => {
+                    self.latest_you = Some(self.items.len());
+                    self.items.push(Item::You {
+                        text,
+                        attachments: Vec::new(),
+                        id,
+                        taken: true,
+                    })
+                }
                 Past::Event(event) => self.apply(event),
             }
         }
@@ -441,11 +523,60 @@ impl Conversation {
     /// new conversation follows what came before). Nothing is left running or waiting.
     pub fn keep_first(&mut self, len: usize) {
         self.items.truncate(len);
+        // Rare (a failed resume): the one still there is looked for once.
+        if self.latest_you.is_some_and(|i| i >= len) {
+            self.latest_you = self
+                .items
+                .iter()
+                .rposition(|i| matches!(i, Item::You { .. }));
+        }
         self.lanes.clear();
+        self.lane_starts.clear();
         self.outstanding = 0;
         self.busy = false;
         self.ended = false;
         self.settle();
+    }
+
+    /// Rewind (batch 3, chore 2): the conversation cut before your message at `ix` — it and
+    /// everything after it go, handed back as a `Cut` (for Undo Rewind, `restore`); the lanes
+    /// started before it stay; nothing is left running or waiting. None (nothing cut) unless
+    /// `ix` is a message of yours.
+    #[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+    pub fn cut_before(&mut self, ix: usize) -> Option<Cut> {
+        if !matches!(self.items.get(ix), Some(Item::You { .. })) {
+            return None;
+        }
+        // A lane's start is how many items there were then: one at `ix` or before began before
+        // your message at `ix` was added.
+        let keep = self.lane_starts.iter().take_while(|&&at| at <= ix).count();
+        let cut = Cut {
+            items: self.items.split_off(ix),
+            lanes: self.lanes.split_off(keep),
+            lane_starts: self.lane_starts.split_off(keep),
+            latest_you: self.latest_you,
+        };
+        // Once, on a cut: the message before it.
+        self.latest_you = self
+            .items
+            .iter()
+            .rposition(|i| matches!(i, Item::You { .. }));
+        self.outstanding = 0;
+        self.busy = false;
+        self.ended = false;
+        self.finished = false;
+        self.settle();
+        Some(cut)
+    }
+
+    /// Undo Rewind: what `cut_before` cut, back after what it kept (nothing may have been added
+    /// since: the tab keeps a cut only until the next send).
+    #[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
+    pub fn restore(&mut self, cut: Cut) {
+        self.items.extend(cut.items);
+        self.lanes.extend(cut.lanes);
+        self.lane_starts.extend(cut.lane_starts);
+        self.latest_you = cut.latest_you;
     }
 
     /// Notice `old` (its last one) says `new` instead, in its place; without one, `new` is added.
@@ -626,6 +757,11 @@ impl Conversation {
 
     pub fn items(&self) -> &[Item] {
         &self.items
+    }
+
+    /// Your latest message's index in `items`, if you said anything.
+    pub fn latest_you(&self) -> Option<usize> {
+        self.latest_you
     }
 
     pub fn pending_permission(&self) -> Option<&Item> {
@@ -946,7 +1082,7 @@ mod tests {
     fn past_turns_read_done_not_working() {
         let mut c = Conversation::new();
         c.past(vec![
-            Past::You("hi".into()),
+            Past::you("hi"),
             Past::Event(Event::MessageDone {
                 message: "m".into(),
                 text: "Hello".into(),
@@ -1453,6 +1589,124 @@ mod tests {
         assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Stopped);
     }
 
+    /// Batch 3, chore 2: a message sent under an id keeps it; the agent's echo of that id marks
+    /// it read (only then can it be rewound or forked from); an echo with no id marks the oldest
+    /// unread one.
+    #[test]
+    fn a_message_keeps_its_id_and_its_echo_marks_it_taken() {
+        let mut c = Conversation::new();
+        c.you_as("first".into(), Vec::new(), Some("u1".into()));
+        c.you_as("second".into(), Vec::new(), Some("u2".into()));
+        let taken = |c: &Conversation| -> Vec<(Option<String>, bool)> {
+            c.items()
+                .iter()
+                .filter_map(|i| match i {
+                    Item::You { id, taken, .. } => Some((id.clone(), *taken)),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            taken(&c),
+            [(Some("u1".into()), false), (Some("u2".into()), false)]
+        );
+        c.apply(Event::Taken {
+            id: Some("u2".into()),
+        });
+        assert_eq!(
+            taken(&c),
+            [(Some("u1".into()), false), (Some("u2".into()), true)]
+        );
+        c.apply(Event::Taken { id: None });
+        assert_eq!(
+            taken(&c),
+            [(Some("u1".into()), true), (Some("u2".into()), true)]
+        );
+        // The plain `you` has no id (an agent that takes none).
+        c.you("third".into(), Vec::new());
+        assert!(matches!(
+            c.items().last(),
+            Some(Item::You {
+                id: None,
+                taken: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn history_messages_are_taken_with_their_ids() {
+        let mut c = Conversation::new();
+        c.past(vec![
+            Past::You {
+                text: "old".into(),
+                id: Some("h1".into()),
+            },
+            Past::Event(said("ok")),
+        ]);
+        assert!(matches!(
+            &c.items()[0],
+            Item::You { text, id: Some(id), taken: true, .. } if text == "old" && id == "h1"
+        ));
+    }
+
+    fn agent_call(id: &str) -> Event {
+        Event::ToolStarted {
+            id: id.into(),
+            name: "Agent".into(),
+            summary: "Explore".into(),
+            parent: None,
+            detail: None,
+            writes: Vec::new(),
+            texts: Vec::new(),
+        }
+    }
+
+    /// Batch 3, chore 2: Rewind cuts the conversation before one of your messages: it and all
+    /// after it go (handed back, for Undo Rewind), the lanes started before it stay, your
+    /// latest message is the one before, and nothing runs or waits.
+    #[test]
+    fn cut_before_drops_the_message_and_what_came_after() {
+        let mut c = Conversation::new();
+        c.you_as("one".into(), Vec::new(), Some("u1".into()));
+        c.apply(agent_call("t1"));
+        c.apply(started("t1", "Reader"));
+        c.apply(turn_done());
+        c.you_as("two".into(), vec!["a.rs".into()], Some("u2".into()));
+        c.apply(agent_call("t2"));
+        c.apply(started("t2", "Tester"));
+        c.apply(said("working"));
+        let ix = c.latest_you().expect("two");
+        assert_eq!(ix, 2);
+        let before = c.items()[..ix].to_vec();
+        let cut = c.cut_before(ix).expect("a message of yours");
+        assert_eq!(c.items(), &before[..]);
+        assert_eq!(c.latest_you(), Some(0));
+        assert_eq!(
+            c.lanes().iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["t1"]
+        );
+        assert_eq!(c.status(), Status::Done, "nothing runs on");
+        assert!(matches!(
+            cut.message(),
+            Some(Item::You { text, attachments, .. }) if text == "two" && attachments == &["a.rs"]
+        ));
+        assert_eq!(cut.items().len(), 3);
+        // Undo Rewind: all of it back, as it was.
+        c.restore(cut);
+        assert_eq!(c.items().len(), 5);
+        assert_eq!(c.latest_you(), Some(2));
+        assert_eq!(c.lanes().len(), 2);
+        // Only a message of yours is a place to cut.
+        assert!(c.cut_before(1).is_none());
+        assert!(c.cut_before(99).is_none());
+        assert_eq!(c.items().len(), 5, "nothing cut");
+        // Cutting the first message leaves nothing: Idle.
+        let _ = c.cut_before(0).expect("one");
+        assert!(c.items().is_empty() && c.lanes().is_empty());
+        assert_eq!((c.latest_you(), c.status()), (None, Status::Idle));
+    }
+
     fn said(text: &str) -> Event {
         Event::TextDelta {
             message: "m2".into(),
@@ -1474,9 +1728,9 @@ mod tests {
         // reads it after this step") gets no `result` of its own: Main must not stay Working.
         let mut c = Conversation::new();
         c.you("first".into(), Vec::new());
-        c.apply(Event::Taken);
+        c.apply(Event::Taken { id: None });
         c.you("a note".into(), Vec::new());
-        c.apply(Event::Taken);
+        c.apply(Event::Taken { id: None });
         c.apply(turn_done());
         assert_eq!(c.status(), Status::Done);
     }
@@ -1485,7 +1739,7 @@ mod tests {
     fn a_queued_message_works_again_when_its_turn_starts() {
         let mut c = Conversation::new();
         c.you("first".into(), Vec::new());
-        c.apply(Event::Taken);
+        c.apply(Event::Taken { id: None });
         c.you("queued".into(), Vec::new());
         c.apply(turn_done());
         assert_eq!(
@@ -1493,7 +1747,7 @@ mod tests {
             Status::Working,
             "not read yet: its turn is to come"
         );
-        c.apply(Event::Taken);
+        c.apply(Event::Taken { id: None });
         c.apply(said("on it"));
         c.apply(turn_done());
         assert_eq!(c.status(), Status::Done);
@@ -1618,5 +1872,32 @@ mod tests {
         assert_eq!(c.cost_usd(), None);
         assert_eq!(c.context_pct(), None);
         assert_eq!(c.conversation(), Some("old"));
+    }
+
+    /// Your latest message is kept by index as items come (the chat's latest-prompt strip,
+    /// chore after M11ar): no scan of the conversation per frame.
+    #[test]
+    fn the_latest_you_follows_what_is_pushed() {
+        let mut c = Conversation::new();
+        assert_eq!(c.latest_you(), None, "nothing said yet");
+        c.apply(Event::Notice("note".into()));
+        assert_eq!(c.latest_you(), None, "a notice is not you");
+        c.you("first".into(), Vec::new());
+        assert_eq!(c.latest_you(), Some(1));
+        c.apply(said("reply"));
+        c.apply(turn_done());
+        assert_eq!(c.latest_you(), Some(1), "the agent's reply leaves it");
+        c.you("second".into(), Vec::new());
+        assert_eq!(c.latest_you(), Some(3));
+        // A failed resume keeps only what came before it: back to the one still there.
+        c.keep_first(3);
+        assert_eq!(c.latest_you(), Some(1));
+        c.keep_first(1);
+        assert_eq!(c.latest_you(), None);
+        // History: its last message of yours.
+        c.past(vec![Past::you("old one"), Past::you("old two")]);
+        assert_eq!(c.latest_you(), Some(2));
+        c.apply(Event::Cleared);
+        assert_eq!(c.latest_you(), None, "`/clear` takes it with the rest");
     }
 }

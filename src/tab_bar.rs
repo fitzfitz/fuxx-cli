@@ -8,8 +8,9 @@
 //! has the accent wash (`tab_active`; in an unfocused split pane a neutral one, `card_lift`);
 //! the others are quiet pills (`card_hover`), a waiting one tinted. Too many tabs shrink to a
 //! minimum width, then the row scrolls sideways. + (a new terminal tab) follows the last tab;
-//! on the right, pinned: ⋯ (the pane's actions, `pane_actions`) and the right sidebar's (M11g;
-//! lit while it's open).
+//! on the right, pinned: Split Right and Split Down (batch 3, chore 1, in place of the ⋯ menu;
+//! hidden on a narrow pane) and, on the top-right pane's bar, the right sidebar's (M11g; lit
+//! while it's open).
 //!
 //! A tab can be dragged (M11b Task 7): within its bar or into another pane's, or onto a sidebar
 //! row (into that workspace's focused pane, at the end). It is picked up (Task 7b): the pointer
@@ -320,7 +321,7 @@ pub fn tile_ink(ui: &UiColors, icon: TabIcon) -> Rgb {
 /// A tab's icon (M11al §4.3; since 2026-11-20 an outline icon of the set, no tile behind it:
 /// "find icon with outline no backgrounds"): `TILE` square, in `tile_ink`; an agent's provider
 /// letters (`TILE_GLYPH`) in its provider's colour.
-fn tile(icon: TabIcon, ui: &UiColors, cx: &App) -> Div {
+pub(crate) fn tile(icon: TabIcon, ui: &UiColors, cx: &App) -> Div {
     let ink = tile_ink(ui, icon);
     let line = |i| crate::icons::icon(i, px(TILE), hsla(ink)).into_any_element();
     let inside = match icon {
@@ -351,22 +352,30 @@ fn tile(icon: TabIcon, ui: &UiColors, cx: &App) -> Div {
 /// The bar's buttons, left to right after the tabs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BarButton {
-    NewTerminal,
-    /// Opens the pane's actions menu (`pane_actions`); lit while it's open.
-    More,
+    /// Opens the pane's new tab menu (`new_tab_menu`); lit while it's open.
+    NewTab,
+    /// Splits its pane to the right (⌘D), focusing the pane first.
+    SplitRight,
+    /// Splits its pane downward (⇧⌘D), focusing the pane first.
+    SplitDown,
     /// Opens or closes the right sidebar (M11g), at the far right; lit while it's open.
     RightSidebar,
 }
 
 impl BarButton {
     #[cfg(test)]
-    pub const ALL: [BarButton; 3] = [
-        BarButton::NewTerminal,
-        BarButton::More,
+    pub const ALL: [BarButton; 4] = [
+        BarButton::NewTab,
+        BarButton::SplitRight,
+        BarButton::SplitDown,
         BarButton::RightSidebar,
     ];
     /// The ones pinned at the bar's right end; + follows the last tab (chore 2026-11-20).
-    pub const PINNED: [BarButton; 2] = [BarButton::More, BarButton::RightSidebar];
+    pub const PINNED: [BarButton; 3] = [
+        BarButton::SplitRight,
+        BarButton::SplitDown,
+        BarButton::RightSidebar,
+    ];
 
     /// Whether it can be clicked (all can, since browser tabs exist).
     pub fn enabled(self) -> bool {
@@ -376,11 +385,47 @@ impl BarButton {
     /// Its tooltip.
     pub fn tooltip(self) -> &'static str {
         match self {
-            BarButton::NewTerminal => "New terminal tab (⌘T)",
-            BarButton::More => "More",
+            BarButton::NewTab => "New Tab",
+            BarButton::SplitRight => "Split Right (⌘D)",
+            BarButton::SplitDown => "Split Down (⇧⌘D)",
             BarButton::RightSidebar => "Toggle right sidebar (⌥⌘\\)",
         }
     }
+
+    /// The palette command that does the same (`palette_items::COMMANDS`).
+    #[cfg(test)]
+    pub fn command(self) -> &'static str {
+        match self {
+            BarButton::NewTab => "New Tab",
+            BarButton::SplitRight => "Split Right",
+            BarButton::SplitDown => "Split Down",
+            BarButton::RightSidebar => "Toggle Right Sidebar",
+        }
+    }
+}
+
+/// The pinned buttons a bar at `place` shows, each with the gap before it: the splits unless
+/// the pane is narrow, the right sidebar's on the top-right pane's bar only, `SPLIT_TO_TOGGLE`
+/// before it after a split.
+pub fn pinned_buttons(place: BarPlace) -> Vec<(BarButton, f32)> {
+    let mut out: Vec<(BarButton, f32)> = Vec::new();
+    for b in BarButton::PINNED {
+        let shown = match b {
+            BarButton::SplitRight | BarButton::SplitDown => !place.narrow,
+            BarButton::RightSidebar => place.top_right,
+            BarButton::NewTab => false,
+        };
+        if !shown {
+            continue;
+        }
+        let gap = match (out.last(), b) {
+            (None, _) => 0.0,
+            (Some(_), BarButton::RightSidebar) => SPLIT_TO_TOGGLE,
+            (Some(_), _) => BUTTON_GAP,
+        };
+        out.push((b, gap));
+    }
+    out
 }
 
 /// What a pane tab carries while it's dragged.
@@ -465,6 +510,8 @@ pub(crate) const CLOSE: f32 = 16.0;
 pub(crate) const BUTTON: f32 = 24.0;
 pub(crate) const BUTTON_ICON: f32 = 14.0;
 pub(crate) const BUTTON_GAP: f32 = 4.0;
+/// The gap between the split buttons and the right sidebar's after them.
+pub(crate) const SPLIT_TO_TOGGLE: f32 = 8.0;
 pub(crate) const BUTTONS_PAD: f32 = 10.0;
 /// The bars' line icons' box.
 pub(crate) const ICON: f32 = 12.0;
@@ -601,10 +648,11 @@ impl Workspace {
                 },
             ));
         let button = |b: BarButton, cx: &mut Context<Self>| {
-            // The right sidebar's is lit while the sidebar is open; ⋯ while its menu is.
+            // The right sidebar's is lit while the sidebar is open; + while its menu is; the
+            // splits never.
             let lit = match b {
-                BarButton::NewTerminal => false,
-                BarButton::More => self.pane_actions.as_ref().is_some_and(|m| m.pane == pane),
+                BarButton::NewTab => self.new_tab_menu.as_ref().is_some_and(|m| m.pane == pane),
+                BarButton::SplitRight | BarButton::SplitDown => false,
                 BarButton::RightSidebar => !self.right_sidebar.hidden,
             };
             render_button(pane, b, lit, ui, cx)
@@ -617,7 +665,7 @@ impl Workspace {
             .items_center()
             .h_full()
             .pl(px(PLUS_GAP))
-            .child(button(BarButton::NewTerminal, cx));
+            .child(button(BarButton::NewTab, cx));
         // What the tabs and + leave empty; it takes no space once they fill the bar.
         let filler = div()
             .id(("pane-tabs-empty", pane.0 as usize))
@@ -653,12 +701,10 @@ impl Workspace {
             .items_center()
             .h_full()
             .px(px(BUTTONS_PAD))
-            .gap(px(BUTTON_GAP))
             .children(
-                BarButton::PINNED
+                pinned_buttons(place)
                     .into_iter()
-                    .filter(|&b| b != BarButton::RightSidebar || place.top_right)
-                    .map(|b| button(b, cx)),
+                    .map(|(b, gap)| button(b, cx).ml(px(gap))),
             );
         Some(
             div()
@@ -1192,7 +1238,7 @@ impl Workspace {
         self.open_session_then(launch, At::Tab(pane), None, window, cx);
     }
 
-    /// Split `pane` (its ⋯ menu): it takes the focus, then splits as ⌘D / ⇧⌘D do.
+    /// Split `pane` (its bar's split buttons): it takes the focus, then splits as ⌘D / ⇧⌘D do.
     pub(crate) fn split_pane(
         &mut self,
         pane: PaneId,
@@ -1220,9 +1266,9 @@ pub(crate) fn hold_closed_hand(window: &Window, cx: &mut App) {
 
 /// One of a bar's buttons (M11al §4.6: `BUTTON` square, its `BUTTON_ICON` glyph): its icon
 /// faint until hovered; a disabled one stays faint and only says why. A `lit` one (the right
-/// sidebar's while it's open, ⋯ while its menu is) is drawn as hovered all the time: its icon
-/// in the text colour on the card's hover shade. ⋯ opens its menu
-/// under itself, right edges together (it knows where it is from its last paint).
+/// sidebar's while it's open, + while its menu is) is drawn as hovered all the time: its icon
+/// in the text colour on the card's hover shade. + opens its menu under itself, left edges
+/// near (it knows where it is from its last paint); a split focuses its pane, then splits it.
 fn render_button(
     pane: PaneId,
     button: BarButton,
@@ -1238,12 +1284,13 @@ fn render_button(
         (false, _) => (ui.text_faint, ui.text_faint),
     };
     let kind = match button {
-        BarButton::NewTerminal => crate::icons::Icon::Plus,
-        BarButton::More => crate::icons::Icon::Ellipsis,
+        BarButton::NewTab => crate::icons::Icon::Plus,
+        BarButton::SplitRight => crate::icons::Icon::SplitRight,
+        BarButton::SplitDown => crate::icons::Icon::SplitDown,
         BarButton::RightSidebar => crate::icons::Icon::PanelRight,
     };
     let tip = button.tooltip();
-    // Where it was last painted: the ⋯ menu opens under it.
+    // Where it was last painted: the + menu opens under it.
     let placed: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
     let place = placed.clone();
     // Its icon of the set (chore 2026-11-20), in the hover colour while the pointer is on it.
@@ -1265,17 +1312,18 @@ fn render_button(
                     .hover(move |s| s.bg(hsla(ui.card_hover)))
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, window, cx| match button {
-                            BarButton::NewTerminal => this.new_terminal_tab(pane, true, window, cx),
-                            BarButton::More => {
+                            BarButton::NewTab => {
                                 if let Some(b) = placed.get() {
-                                    this.open_pane_actions(pane, b.bottom_right(), window, cx)
+                                    this.toggle_new_tab_menu(pane, b.bottom_left(), window, cx)
                                 }
                             }
+                            BarButton::SplitRight => this.split_pane(pane, Axis::Row, window, cx),
+                            BarButton::SplitDown => this.split_pane(pane, Axis::Column, window, cx),
                             BarButton::RightSidebar => this.right_sidebar_button(pane, window, cx),
                         }),
                     )
             })
-            .when(button == BarButton::More, |b| {
+            .when(button == BarButton::NewTab, |b| {
                 b.child(
                     canvas(move |bounds, _, _| place.set(Some(bounds)), |_, _, _, _| {})
                         .absolute()
@@ -1627,28 +1675,68 @@ mod tests {
     }
 
     #[test]
-    fn the_buttons_are_plus_more_and_the_right_sidebar() {
+    fn the_buttons_are_plus_the_splits_and_the_right_sidebar() {
         assert_eq!(
             BarButton::ALL,
             [
-                BarButton::NewTerminal,
-                BarButton::More,
+                BarButton::NewTab,
+                BarButton::SplitRight,
+                BarButton::SplitDown,
                 BarButton::RightSidebar
             ]
         );
+        // + opens the new tab menu (chore 2026-11-23); ⌘T alone makes a tab like the last.
         assert_eq!(
             BarButton::ALL.map(BarButton::tooltip),
             [
-                "New terminal tab (⌘T)",
-                "More",
+                "New Tab",
+                "Split Right (⌘D)",
+                "Split Down (⇧⌘D)",
                 "Toggle right sidebar (⌥⌘\\)"
             ]
         );
-        // + follows the last tab; ⋯ and the right sidebar's stay pinned on the right.
+        // + follows the last tab; the splits and the right sidebar's stay pinned on the right
+        // (batch 3, chore 1: the ⋯ is gone).
         assert_eq!(
             BarButton::PINNED,
-            [BarButton::More, BarButton::RightSidebar]
+            [
+                BarButton::SplitRight,
+                BarButton::SplitDown,
+                BarButton::RightSidebar
+            ]
         );
+    }
+
+    /// Batch 3, chore 1: the splits on every pane's bar, 4 apart, 8 before the toggle (top
+    /// right only); a narrow pane (`BarPlace::narrow`) hides them, ⌘D and ⇧⌘D still work.
+    #[test]
+    fn the_pinned_buttons_follow_the_bars_place() {
+        let place = |top_right, narrow| BarPlace {
+            top_right,
+            narrow,
+            ..BarPlace::default()
+        };
+        assert_eq!(
+            pinned_buttons(place(true, false)),
+            [
+                (BarButton::SplitRight, 0.0),
+                (BarButton::SplitDown, BUTTON_GAP),
+                (BarButton::RightSidebar, SPLIT_TO_TOGGLE)
+            ]
+        );
+        assert_eq!(
+            pinned_buttons(place(false, false)),
+            [
+                (BarButton::SplitRight, 0.0),
+                (BarButton::SplitDown, BUTTON_GAP)
+            ]
+        );
+        assert_eq!(
+            pinned_buttons(place(true, true)),
+            [(BarButton::RightSidebar, 0.0)]
+        );
+        assert!(pinned_buttons(place(false, true)).is_empty());
+        assert_eq!((BUTTON, BUTTON_ICON, SPLIT_TO_TOGGLE), (24.0, 14.0, 8.0));
     }
 
     #[test]

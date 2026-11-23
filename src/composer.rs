@@ -15,12 +15,12 @@ use std::time::Instant;
 use alacritty_terminal::vte::ansi::CursorShape;
 
 use gpui::{
-    App, AvailableSpace, Bounds, ClipboardItem, Context, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, InspectorElementId,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ScrollWheelEvent, ShapedLine, SharedString, Style, Subscription, TextAlign, TextRun,
-    UTF16Selection, UnderlineStyle, Window, actions, div, fill, point, prelude::*, px, relative,
-    size,
+    App, AvailableSpace, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, ElementId,
+    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
+    GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, ShapedLine,
+    SharedString, Style, Subscription, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window,
+    actions, div, fill, point, prelude::*, px, relative, size,
 };
 
 use crate::appearance::{Appearance, CursorFun};
@@ -68,7 +68,8 @@ actions!(
         SelectWordRight,
         SelectToStart,
         SelectToEnd,
-        Complete
+        Complete,
+        TakeSuggestion
     ]
 );
 
@@ -459,6 +460,16 @@ impl EditBuffer {
         out
     }
 
+    /// The caret is on the first visual row (an empty text has only that one).
+    pub fn on_first_row(&self) -> bool {
+        self.visual_row_of(self.cursor) == 0
+    }
+
+    /// The caret is on the last visual row.
+    pub fn on_last_row(&self) -> bool {
+        self.visual_row_of(self.cursor) + 1 >= self.visual_row_count()
+    }
+
     pub fn visual_row_count(&self) -> usize {
         self.visual_rows().len()
     }
@@ -528,6 +539,10 @@ pub struct Composer {
     focus_handle: FocusHandle,
     buf: EditBuffer,
     placeholder: SharedString,
+    /// The agent's guess at your next message, drawn faint in place of the placeholder while
+    /// the box is empty, "⇥" after it; Tab takes it (`TakeSuggestion`). Typing hides it,
+    /// emptying the box shows it again; only its owner clears it (`set_ghost`).
+    ghost: Option<SharedString>,
     /// The IME's composition in progress, as a byte range of the text.
     marked: Option<Range<usize>>,
     /// A mouse drag is selecting.
@@ -554,6 +569,12 @@ pub struct Composer {
     last_cell: (Pixels, Pixels),
     last_caret: Option<(PaintShape, Bounds<Pixels>)>,
     last_placeholder: Option<(String, Bounds<Pixels>)>,
+    /// The ghost as last drawn (without its "⇥"), and where.
+    last_ghost: Option<(String, Bounds<Pixels>)>,
+    /// From the last paint: the atoms' pills as drawn (scenes read them), and the atom whose
+    /// pill the pointer is on (its fill deepens; a move that changes it redraws).
+    last_pills: Vec<Bounds<Pixels>>,
+    hovered_atom: Option<usize>,
     /// Scenes' stand-in for "the window is the key window" (none: ask the window).
     key_window: Option<bool>,
     /// The caret is the terminal's cursor (the designer; your words: "it doesn't glow and smooth
@@ -588,6 +609,7 @@ impl Composer {
             focus_handle: cx.focus_handle(),
             buf: EditBuffer::new(""),
             placeholder,
+            ghost: None,
             marked: None,
             dragging: false,
             first_row: 0,
@@ -597,10 +619,13 @@ impl Composer {
             last_origin: None,
             last_bounds: None,
             last_line_height: px(0.),
+            last_pills: Vec::new(),
+            hovered_atom: None,
             bare: false,
             last_cell: (px(0.), px(0.)),
             last_caret: None,
             last_placeholder: None,
+            last_ghost: None,
             key_window: None,
             motion: CursorMotion::new(Instant::now()),
             breathing: false,
@@ -741,6 +766,12 @@ impl Composer {
     }
 
     /// The caret's shape and box as last drawn (none: not drawn).
+    /// The atoms' pills as last drawn, in window coordinates.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_pills(&self) -> Vec<Bounds<Pixels>> {
+        self.last_pills.clone()
+    }
+
     #[cfg(feature = "ui-shots")]
     pub fn shot_caret(&self) -> Option<(PaintShape, Bounds<Pixels>)> {
         self.last_caret
@@ -760,6 +791,56 @@ impl Composer {
     #[cfg(feature = "ui-shots")]
     pub fn shot_not_key(&mut self) {
         self.key_window = Some(false);
+    }
+
+    /// The ghost as last drawn (none: not drawn).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_ghost(&self) -> Option<(String, Bounds<Pixels>)> {
+        self.last_ghost.clone()
+    }
+
+    /// A new ghost, or none (redrawn only when it changes).
+    pub fn set_ghost(&mut self, ghost: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.ghost != ghost {
+            self.ghost = ghost;
+            cx.notify();
+        }
+    }
+
+    /// The caret is on the first visual row, or the last (prompt history's ↑ and ↓).
+    pub fn on_first_row(&self) -> bool {
+        self.buf.on_first_row()
+    }
+
+    pub fn on_last_row(&self) -> bool {
+        self.buf.on_last_row()
+    }
+
+    pub fn has_selection(&self) -> bool {
+        !self.buf.selection().is_empty()
+    }
+
+    /// The IME is composing text (its marked text is in the box).
+    pub fn is_composing(&self) -> bool {
+        self.marked.is_some()
+    }
+
+    /// One visual row up or down, as ↑ and ↓ do.
+    pub fn move_up(&mut self, cx: &mut Context<Self>) {
+        self.step(EditBuffer::up, cx);
+    }
+
+    pub fn move_down(&mut self, cx: &mut Context<Self>) {
+        self.step(EditBuffer::down, cx);
+    }
+
+    /// Tab: the ghost fills the empty box, the caret at its end. With no ghost or text in the
+    /// box, Tab goes on to its other bindings (the `@` and `/` lists complete).
+    fn take_suggestion(&mut self, _: &TakeSuggestion, _: &mut Window, cx: &mut Context<Self>) {
+        match self.ghost.clone().filter(|_| self.buf.text().is_empty()) {
+            Some(ghost) => self.set_text(ghost.to_string(), cx),
+            None => cx.propagate(),
+        }
     }
 
     /// A new placeholder (redrawn only when it is new).
@@ -811,8 +892,8 @@ impl Composer {
         newline: Newline => |b| b.newline();
         move_left: MoveLeft => |b| b.left(false);
         move_right: MoveRight => |b| b.right(false);
-        move_up: MoveUp => |b| b.up();
-        move_down: MoveDown => |b| b.down();
+        up_pressed: MoveUp => |b| b.up();
+        down_pressed: MoveDown => |b| b.down();
         word_left: WordLeft => |b| b.word_left(false);
         word_right: WordRight => |b| b.word_right(false);
         line_start: LineStart => |b| b.line_start(false);
@@ -1149,6 +1230,7 @@ impl Render for Composer {
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::stop))
             .on_action(cx.listener(Self::complete))
+            .on_action(cx.listener(Self::take_suggestion))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::clear))
             .on_action(cx.listener(Self::delete_word_left))
@@ -1161,8 +1243,8 @@ impl Render for Composer {
             .on_action(cx.listener(Self::show_character_palette))
             .on_action(cx.listener(Self::move_left))
             .on_action(cx.listener(Self::move_right))
-            .on_action(cx.listener(Self::move_up))
-            .on_action(cx.listener(Self::move_down))
+            .on_action(cx.listener(Self::up_pressed))
+            .on_action(cx.listener(Self::down_pressed))
             .on_action(cx.listener(Self::word_left))
             .on_action(cx.listener(Self::word_right))
             .on_action(cx.listener(Self::line_start))
@@ -1259,6 +1341,11 @@ fn runs_for(range: &Range<usize>, marked: Option<&Range<usize>>, base: &TextRun)
     if runs.is_empty() { vec![with(0)] } else { runs }
 }
 
+/// An atom's pill: its fill, mixed this far from the box's toward the text; more under the
+/// pointer.
+const PILL: f32 = 0.12;
+const PILL_HOVER: f32 = 0.20;
+
 /// Paints the rows and caret, and registers the box as the window's text input while focused.
 struct ComposerText {
     input: Entity<Composer>,
@@ -1277,8 +1364,10 @@ pub struct Shaped {
     rows: Vec<Range<usize>>,
     first: usize,
     lines: Vec<ShapedLine>,
-    /// Where the atoms are (drawn as pills).
-    atoms: Vec<Range<usize>>,
+    /// The text's left edge (a caret row wider than the box scrolls left).
+    left: Pixels,
+    /// The shown atoms' pills: which atom, where, and its hitbox (the pointing hand).
+    pills: Vec<(usize, Bounds<Pixels>, Hitbox)>,
 }
 
 impl Element for ComposerText {
@@ -1333,7 +1422,7 @@ impl Element for ComposerText {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
@@ -1374,12 +1463,50 @@ impl Element for ComposerText {
                     None,
                 )
             })
-            .collect();
+            .collect::<Vec<ShapedLine>>();
+        // A caret row wider than the box (wide characters) scrolls left so the caret shows.
+        let caret_width = m.cell_width;
+        let left = match shown_row(caret_row, first, lines.len()) {
+            Some(n) => {
+                let line = &lines[n];
+                let col = input.buf.cursor() - rows[caret_row].start;
+                let overflow = (line.width() + caret_width - bounds.size.width).max(px(0.));
+                let to_caret = line.x_for_index(col) + caret_width - bounds.size.width;
+                bounds.left() - to_caret.clamp(px(0.), overflow)
+            }
+            None => bounds.left(),
+        };
+        // Each shown atom's pill, worked out once: painted, and a hitbox for the pointing hand.
+        let line_height = m.line_height;
+        let mut pills = Vec::new();
+        for (n, line) in lines.iter().enumerate() {
+            let row = &rows[first + n];
+            let top = bounds.top() + line_height * n as f32;
+            for span in atom_spans(row, &atoms) {
+                let at = row.start + span.start;
+                let Some(atom) = atoms.iter().position(|a| a.start <= at && at < a.end) else {
+                    continue;
+                };
+                let rect = Bounds::from_corners(
+                    point(left + line.x_for_index(span.start) + px(1.), top + px(2.)),
+                    point(
+                        left + line.x_for_index(span.end) - px(1.),
+                        top + line_height - px(2.),
+                    ),
+                );
+                pills.push((
+                    atom,
+                    rect,
+                    window.insert_hitbox(rect, HitboxBehavior::Normal),
+                ));
+            }
+        }
         Shaped {
             rows,
             first,
             lines,
-            atoms,
+            left,
+            pills,
         }
     }
 
@@ -1421,11 +1548,12 @@ impl Element for ComposerText {
                 input.buf.cursor(),
                 input.buf.selection(),
                 input.key_window,
-                input
-                    .buf
-                    .text()
-                    .is_empty()
-                    .then(|| input.placeholder.clone()),
+                // Empty: the agent's guess if there is one (faint, "⇥" after it), else the
+                // placeholder (dim).
+                input.buf.text().is_empty().then(|| match &input.ghost {
+                    Some(ghost) => (ghost.clone(), true),
+                    None => (input.placeholder.clone(), false),
+                }),
             )
         };
         let key_window = key_window.unwrap_or_else(|| window.is_window_active());
@@ -1437,18 +1565,40 @@ impl Element for ComposerText {
         let (rows, first, lines) = (&shaped.rows, shaped.first, &shaped.lines);
         let caret_row = row_at(rows, caret);
         let caret_shown = shown_row(caret_row, first, lines.len());
-        // A caret row wider than the box (wide characters) scrolls left so the caret shows.
-        let caret_width = cell_w;
-        let left = match caret_shown {
-            Some(n) => {
-                let line = &lines[n];
-                let col = caret - rows[caret_row].start;
-                let overflow = (line.width() + caret_width - bounds.size.width).max(px(0.));
-                let to_caret = line.x_for_index(col) + caret_width - bounds.size.width;
-                bounds.left() - to_caret.clamp(px(0.), overflow)
-            }
-            None => bounds.left(),
-        };
+        let left = shaped.left;
+        // The pills: a pointing hand over each (this request is newer than the box's I-beam,
+        // so it wins), the one under the pointer lit, and a move that changes which redraws.
+        let hovered = shaped
+            .pills
+            .iter()
+            .find(|(_, _, hitbox)| hitbox.is_hovered(window))
+            .map(|(atom, _, _)| *atom);
+        for (_, _, hitbox) in &shaped.pills {
+            window.set_cursor_style(CursorStyle::PointingHand, hitbox);
+        }
+        if !shaped.pills.is_empty() {
+            let hitboxes: Vec<(usize, Hitbox)> = shaped
+                .pills
+                .iter()
+                .map(|(atom, _, hitbox)| (*atom, hitbox.clone()))
+                .collect();
+            let input = self.input.clone();
+            window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                let now = hitboxes
+                    .iter()
+                    .find(|(_, hitbox)| hitbox.is_hovered(window))
+                    .map(|(atom, _)| *atom);
+                input.update(cx, |input, cx| {
+                    if input.hovered_atom != now {
+                        input.hovered_atom = now;
+                        cx.notify();
+                    }
+                });
+            });
+        }
         let shade = ui.selection;
         // The caret: the terminal's cursor over the shown rows, as cells from `origin` (the
         // shape, glide, trail, glow and sparks a pane would draw; "unset" by any program, so
@@ -1518,23 +1668,21 @@ impl Element for ComposerText {
                     ));
                 }
             }
-            // An atom is a pill behind its text (its brackets drawn clear: the pill's padding).
-            for atom in &shaped.atoms {
-                if atom.end <= range.start || atom.start >= range.end {
+            // An atom is a pill behind its text (its brackets drawn clear: the pill's padding),
+            // deeper while the pointer is on it.
+            for (atom, rect, _) in &shaped.pills {
+                if rect.top() < top || rect.top() >= top + line_height {
                     continue;
                 }
-                let s = atom.start.max(range.start) - range.start;
-                let e = atom.end.min(range.end) - range.start;
+                let deep = if hovered == Some(*atom) {
+                    PILL_HOVER
+                } else {
+                    PILL
+                };
                 window.paint_quad(
                     fill(
-                        Bounds::from_corners(
-                            point(left + line.x_for_index(s) + px(1.), top + px(2.)),
-                            point(
-                                left + line.x_for_index(e) - px(1.),
-                                top + line_height - px(2.),
-                            ),
-                        ),
-                        hsla(crate::theme::mix(ui.composer_inner, theme.foreground, 0.12)),
+                        *rect,
+                        hsla(crate::theme::mix(ui.composer_inner, theme.foreground, deep)),
                     )
                     .corner_radii(px(4.)),
                 );
@@ -1553,15 +1701,31 @@ impl Element for ComposerText {
         // words, 2026-11-22: a beam right beside its first letter, an underline or a block on
         // it), dim, "…" when it doesn't fit.
         let mut drawn_placeholder = None;
-        if let Some(words) = placeholder {
+        let mut drawn_ghost = None;
+        let empty_ink = match &placeholder {
+            Some((_, true)) => hsla(ui.text_faint),
+            _ => hsla(ui.text_dim),
+        };
+        if let Some((words, ghost)) = placeholder {
             let cols = (bounds.size.width / cell_w).floor() as usize;
-            let words = crate::card_view::fit_words(&words, cols);
+            // The ghost on one row, with room for its " ⇥".
+            let words = if ghost {
+                let one_row = words.split_whitespace().collect::<Vec<_>>().join(" ");
+                let fit = crate::card_view::fit_words(&one_row, cols.saturating_sub(2));
+                if fit.is_empty() {
+                    fit
+                } else {
+                    format!("{fit} \u{21E5}")
+                }
+            } else {
+                crate::card_view::fit_words(&words, cols)
+            };
             let at = point(bounds.left(), bounds.top());
             if !words.is_empty() {
                 let run = TextRun {
                     len: words.len(),
                     font: m.font.clone(),
-                    color: hsla(ui.text_dim),
+                    color: empty_ink,
                     background_color: None,
                     underline: None,
                     strikethrough: None,
@@ -1575,10 +1739,15 @@ impl Element for ComposerText {
                 shaped
                     .paint(at, line_height, TextAlign::Left, None, window, cx)
                     .ok();
-                drawn_placeholder = Some((
+                let drawn = (
                     words.clone(),
                     Bounds::new(at, size(shaped.width, line_height)),
-                ));
+                );
+                if ghost {
+                    let text = words.trim_end_matches('\u{21E5}').trim_end().to_string();
+                    drawn_ghost = Some((text, drawn.1));
+                }
+                drawn_placeholder = Some(drawn);
             }
         }
         // A block on its cell: the letter under it in the cursor's text colour, as much as the
@@ -1595,7 +1764,7 @@ impl Element for ComposerText {
                     drawn_placeholder
                         .as_ref()
                         .and_then(|(words, _): &(String, _)| words.chars().next()),
-                    hsla(ui.text_dim),
+                    empty_ink,
                 ),
                 None => (None, window.text_style().color),
             };
@@ -1636,6 +1805,7 @@ impl Element for ComposerText {
             Frames::None => {}
         }
         let lines = std::mem::take(&mut shaped.lines);
+        let pills = shaped.pills.iter().map(|(_, rect, _)| *rect).collect();
         self.input.update(cx, |input, _| {
             input.first_row = first;
             input.last_lines = lines;
@@ -1644,9 +1814,23 @@ impl Element for ComposerText {
             input.last_line_height = line_height;
             input.last_cell = (cell_w, line_height);
             input.last_caret = drawn_caret;
-            input.last_placeholder = drawn_placeholder;
+            // The ghost is not the placeholder: scenes that read the placeholder see none.
+            input.last_placeholder = drawn_placeholder.filter(|_| drawn_ghost.is_none());
+            input.last_ghost = drawn_ghost;
+            input.hovered_atom = hovered;
+            input.last_pills = pills;
         });
     }
+}
+
+/// The atoms on visual row `row`, as byte ranges from the row's start, in order: an atom split
+/// over rows is a span on each; atoms off the row (or only touching its edges) aren't there.
+fn atom_spans(row: &Range<usize>, atoms: &[Range<usize>]) -> Vec<Range<usize>> {
+    atoms
+        .iter()
+        .filter(|a| a.end > row.start && a.start < row.end)
+        .map(|a| a.start.max(row.start) - row.start..a.end.min(row.end) - row.start)
+        .collect()
 }
 
 /// How many cells of width `cell` fit in `width` (at least one), less a cell for the caret.
@@ -1659,7 +1843,50 @@ fn wrap_columns(width: Pixels, cell: Pixels) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{EditBuffer, shown_row};
+    use super::{EditBuffer, atom_spans, shown_row};
+
+    #[test]
+    fn atom_spans_are_the_atoms_on_a_row_row_relative() {
+        // Rows 0..10 and 10..20; an atom 6..14 splits over both.
+        let atom = 6..14;
+        let atoms = std::slice::from_ref(&atom);
+        assert_eq!(atom_spans(&(0..10), atoms), vec![6..10]);
+        assert_eq!(atom_spans(&(10..20), atoms), vec![0..4]);
+        // Atoms before, after or only touching the row's edges aren't on it.
+        assert!(atom_spans(&(20..30), &[0..20, 30..40]).is_empty());
+        // Two atoms on one row: both, in order.
+        assert_eq!(atom_spans(&(10..30), &[12..15, 20..26]), vec![2..5, 10..16]);
+    }
+
+    /// Prompt history (a chore after M11ar): ↑ recalls only from the first visual row, ↓ only
+    /// from the last, so a wrapped or multi-line prompt walks its rows first.
+    #[test]
+    fn first_and_last_row_follow_wrapping() {
+        let mut b = EditBuffer::new("");
+        assert!(b.on_first_row() && b.on_last_row(), "an empty box is both");
+        // "aaaa bbbb cccc" wraps in 3 at 5 columns: "aaaa ", "bbbb ", "cccc".
+        b.set_text("aaaa bbbb cccc\nzz");
+        b.set_wrap(Some(5));
+        b.set_cursor(3);
+        assert!(b.on_first_row());
+        assert!(!b.on_last_row());
+        b.set_cursor(7);
+        assert!(!b.on_first_row(), "the second visual row of the first line");
+        assert!(!b.on_last_row());
+        b.set_cursor(12);
+        assert!(
+            !b.on_last_row(),
+            "the first line's last row is not the text's"
+        );
+        b.set_cursor(16);
+        assert!(b.on_last_row());
+        // Unwrapped, the first line is one row.
+        b.set_wrap(None);
+        b.set_cursor(12);
+        assert!(b.on_first_row());
+        b.set_cursor(b.text().len());
+        assert!(b.on_last_row());
+    }
 
     #[test]
     fn up_and_down_move_by_visual_row() {

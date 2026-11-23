@@ -33,6 +33,7 @@ use gpui::{
 
 use crate::appearance::Appearance;
 use crate::layout_model::PaneId;
+use crate::split_tree::{Node, Rect};
 use crate::workspace::Workspace;
 
 /// Which part of the chrome a `ChromePart` draws.
@@ -59,15 +60,35 @@ pub struct BarPlace {
     /// The top-left pane's while the sidebar is hidden: its tabs start after the traffic lights
     /// and the sidebar's buttons (`title_area::band_reserve`; critique issue 5).
     pub under_lights: bool,
+    /// Under `HIDE_SPLITS_BELOW` wide (`narrow_panes`): its bar hides the split buttons (batch
+    /// 3, chore 1; ⌘D and ⇧⌘D still split it).
+    pub narrow: bool,
+}
+
+/// Below this pane width (points) a bar hides its Split Right and Split Down buttons.
+pub const HIDE_SPLITS_BELOW: f32 = 320.0;
+
+/// The panes of `tree` laid out in `area` (the pane area as last painted; None before the
+/// first paint, when nothing is narrow) that are under `HIDE_SPLITS_BELOW` wide.
+pub fn narrow_panes(tree: &Node<PaneId>, area: Option<Rect>) -> Vec<PaneId> {
+    let Some(area) = area else {
+        return Vec::new();
+    };
+    tree.rects(area)
+        .into_iter()
+        .filter(|(_, r)| r.w < HIDE_SPLITS_BELOW)
+        .map(|(id, _)| id)
+        .collect()
 }
 
 /// Each of `leaves`' bar's place, `top` being the leaves along the layout's top edge, left to
-/// right (`top_leaves`).
+/// right (`top_leaves`), `narrow` those too narrow for the split buttons (`narrow_panes`).
 pub fn bar_places(
     leaves: &[PaneId],
     top: &[PaneId],
     full_screen: bool,
     sidebar_hidden: bool,
+    narrow: &[PaneId],
 ) -> Vec<(PaneId, BarPlace)> {
     leaves
         .iter()
@@ -76,6 +97,7 @@ pub fn bar_places(
                 drags_window: !full_screen && top.contains(&id),
                 top_right: top.last() == Some(&id),
                 under_lights: sidebar_hidden && top.first() == Some(&id),
+                narrow: narrow.contains(&id),
             };
             (id, place)
         })
@@ -241,11 +263,13 @@ impl Workspace {
             .into_iter()
             .filter(|id| self.model.pane(*id).is_some())
             .collect();
+        let area = self.pane_area_rect();
         bar_places(
             &leaves,
             &tree.top_leaves(),
             window.is_fullscreen(),
             self.sidebar.hidden,
+            &narrow_panes(tree, area),
         )
     }
 }
@@ -336,7 +360,7 @@ pub fn bump(_: Counted) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{BarPlace, bar_places, on_for};
+    use super::{BarPlace, bar_places, narrow_panes, on_for};
     use crate::layout_model::PaneId;
 
     /// Critique issues 4 and 5 (2026-11-20): one right-sidebar button per window, on the
@@ -352,9 +376,10 @@ mod tests {
             drags_window,
             top_right,
             under_lights,
+            narrow: false,
         };
         assert_eq!(
-            bar_places(&leaves, &top, false, false),
+            bar_places(&leaves, &top, false, false, &[]),
             vec![
                 (p(1), place(true, false, false)),
                 (p(2), place(true, true, false)),
@@ -363,7 +388,7 @@ mod tests {
         );
         // Hidden sidebar: the top-left one is under the lights; full screen drags nothing.
         assert_eq!(
-            bar_places(&leaves, &top, true, true),
+            bar_places(&leaves, &top, true, true, &[]),
             vec![
                 (p(1), place(false, false, true)),
                 (p(2), place(false, true, false)),
@@ -372,9 +397,38 @@ mod tests {
         );
         // One pane: it is both.
         assert_eq!(
-            bar_places(&[p(7)], &[p(7)], false, true),
+            bar_places(&[p(7)], &[p(7)], false, true, &[]),
             vec![(p(7), place(true, true, true))]
         );
+        // A narrow pane's bar hides its split buttons (batch 3, chore 1).
+        let narrow = bar_places(&leaves, &top, false, false, &[p(3)]);
+        assert_eq!(
+            narrow.iter().map(|(_, b)| b.narrow).collect::<Vec<_>>(),
+            [false, false, true]
+        );
+    }
+
+    /// Batch 3, chore 1: below 320 pt a pane's bar has no room for the splits.
+    #[test]
+    fn a_pane_under_320_pt_is_narrow() {
+        use crate::split_tree::{Axis, Node, Rect};
+        let p = PaneId;
+        let mut tree = Node::Leaf(p(1));
+        assert!(tree.split(p(1), p(2), Axis::Row));
+        let area = |w| Rect {
+            x: 0.0,
+            y: 0.0,
+            w,
+            h: 400.0,
+        };
+        assert_eq!(
+            narrow_panes(&tree, Some(area(1000.0))),
+            Vec::<PaneId>::new()
+        );
+        assert_eq!(narrow_panes(&tree, Some(area(600.0))), [p(1), p(2)]);
+        assert_eq!(narrow_panes(&tree, Some(area(640.0))), Vec::<PaneId>::new());
+        // Before the first paint nothing is known: the splits show.
+        assert_eq!(narrow_panes(&tree, None), Vec::<PaneId>::new());
     }
 
     #[test]

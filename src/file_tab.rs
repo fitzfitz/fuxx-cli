@@ -2873,6 +2873,61 @@ fn sign_inks(bars: &BarColours, background: Rgb) -> (Rgb, Rgb) {
     (on_tint(bars.deleted), on_tint(bars.added))
 }
 
+/// A line's `spans` (source bytes, sorted) with bytes `sel` of it (the selection on it) drawn
+/// in `ink` of their colour (the plain `fg` between spans too): a selected glyph keeps its colour
+/// where it reads on the selection, else takes the chrome's text (batch 3, chore 3). Outside
+/// `sel` the spans stay as they are. Only the colours change, so the line isn't laid out again.
+fn selected_spans(
+    spans: &[Span],
+    fg: Rgb,
+    line_len: usize,
+    sel: Range<usize>,
+    ink: impl Fn(Rgb) -> Rgb,
+) -> Vec<Span> {
+    if sel.is_empty() {
+        return spans.to_vec();
+    }
+    // Every stretch of the line: the spans, and the gaps between them (None: the plain fg).
+    let mut stretches: Vec<(Range<usize>, Option<Rgb>)> = Vec::new();
+    let mut at = 0;
+    for (r, c) in spans {
+        let start = r.start.max(at);
+        if start >= r.end {
+            continue;
+        }
+        if start > at {
+            stretches.push((at..start, None));
+        }
+        stretches.push((start..r.end, Some(*c)));
+        at = r.end;
+    }
+    if at < line_len {
+        stretches.push((at..line_len, None));
+    }
+    let mut out = Vec::new();
+    for (r, c) in stretches {
+        let cuts = [
+            r.start,
+            sel.start.clamp(r.start, r.end),
+            sel.end.clamp(r.start, r.end),
+            r.end,
+        ];
+        for w in cuts.windows(2) {
+            let piece = w[0]..w[1];
+            if piece.is_empty() {
+                continue;
+            }
+            let inside = piece.start >= sel.start && piece.end <= sel.end;
+            match (inside, c) {
+                (true, c) => out.push((piece, ink(c.unwrap_or(fg)))),
+                (false, Some(c)) => out.push((piece, c)),
+                (false, None) => {}
+            }
+        }
+    }
+    out
+}
+
 /// The colour runs (shown bytes, colour) of bytes `range` of a line as shown, covering it: the
 /// line's spans (source bytes, sorted; the line's ending and anything outside `range` dropped,
 /// tabs widened), the foreground between them.
@@ -3725,6 +3780,29 @@ fn paint_body(
             Some(d) => (Some(d.as_slice()), dim(f.theme.foreground, bg)),
             None => (line_spans, f.theme.foreground),
         };
+        // Batch 3, chore 3: the selection on this line (as drawn below) keeps a glyph's colour
+        // where it reads on the wash, else the chrome's text. Colours only: no new layout.
+        let selected = f.selection.and_then(|(s, e)| {
+            let on = (s.line..=e.line).contains(&i)
+                && s != e
+                && half.is_none_or(|h| f.sel_half.unwrap_or(Half::Old) == h);
+            on.then(|| {
+                let from = if i == s.line { s.col } else { 0 };
+                let to = if i == e.line { e.col } else { line.len() };
+                from..to.max(from)
+            })
+        });
+        let recoloured: Option<Vec<Span>> = selected.map(|sel| {
+            let ink = |c: Rgb| {
+                if contrast(c, ui.selection) >= TEXT_MIN {
+                    c
+                } else {
+                    ui.text
+                }
+            };
+            selected_spans(line_spans.unwrap_or(&[]), fg, line.len(), sel, ink)
+        });
+        let line_spans = recoloured.as_deref().or(line_spans);
         let laid = match part {
             Some((from, to, start, _)) => {
                 Laid::part(&f.doc, i, from, to, start, line_spans, fg, m, window)
@@ -9482,6 +9560,29 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::edit_notes::{Light, LightKind};
+
+    /// Batch 3, chore 3: a selected stretch's colours as drawn: each kept where `ink` keeps it,
+    /// the plain foreground between spans too; outside the selection, nothing changes.
+    #[test]
+    fn selected_text_takes_its_ink_only_inside_the_selection() {
+        let rgb = |v: u8| Rgb { r: v, g: v, b: v };
+        let (fg, kw, text) = (rgb(200), rgb(60), rgb(255));
+        // "let x = 1": `let` a keyword (0..3), the rest plain.
+        let spans: Vec<Span> = vec![(0..3, kw)];
+        // Dark colours don't read on the selection: they take the text colour.
+        let ink = |c: Rgb| if c.r < 100 { text } else { c };
+        assert_eq!(
+            selected_spans(&spans, fg, 9, 1..6, ink),
+            vec![(0..1, kw), (1..3, text), (3..6, fg)]
+        );
+        // Nothing selected on the line: as it was.
+        assert_eq!(selected_spans(&spans, fg, 9, 4..4, ink), spans);
+        // The whole line.
+        assert_eq!(
+            selected_spans(&spans, fg, 9, 0..9, ink),
+            vec![(0..3, text), (3..9, fg)]
+        );
+    }
 
     /// M11ae: the view switch offers File always, Diff in a repo (or in Diff mode), Preview for
     /// Markdown (in either mode); it shows with two segments or more.
