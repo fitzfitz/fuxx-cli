@@ -2904,6 +2904,22 @@ pub(super) fn agent_box_mode_menu() {
             assert_eq!(asks[0]["request"]["subtype"], "set_permission_mode", "{n}");
             assert_eq!(asks[0]["request"]["mode"], "plan", "{n}");
             assert!(sent.iter().all(|l| l["type"] != "user"), "{n}: no message");
+            // ⇧Tab (a chore after M11ar): the next mode after the one asked (Plan, not yet
+            // answered), then wrapping to the first; each asked live, nothing sent.
+            let modes_asked = |cx: &VisualTestAppContext| -> Vec<String> {
+                written(cx, tab)
+                    .iter()
+                    .filter(|l| l["request"]["subtype"] == "set_permission_mode")
+                    .map(|l| l["request"]["mode"].as_str().unwrap_or("").to_string())
+                    .collect()
+            };
+            cx.simulate_keystrokes(window, "shift-tab");
+            cx.simulate_keystrokes(window, "shift-tab");
+            assert_eq!(modes_asked(cx), ["plan", "auto", "default"], "{n}");
+            assert!(
+                written(cx, tab).iter().all(|l| l["type"] != "user"),
+                "{n}: no message"
+            );
             // Left open for the shot.
             click_mode_chip(n, cx, window, tab);
             assert_eq!(menu(cx, tab), Some(BoxMenu::Mode), "{n}");

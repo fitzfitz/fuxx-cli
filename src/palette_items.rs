@@ -677,6 +677,8 @@ pub const NOT_IN_PALETTE: &[&str] = &[
     // M11ar: they step through an agent tab's pills; the pills are the way in.
     "agent_tab::PrevLane",
     "agent_tab::NextLane",
+    // ⇧Tab moves an agent tab to its next mode; the mode chip is the way in.
+    "agent_tab::CycleMode",
 ];
 
 /// ⋯ menu items (`pane_actions`) the palette lists under another name: the same action.

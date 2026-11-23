@@ -87,6 +87,7 @@ pub fn describe(action: &str) -> Describe {
         "workspace::PrevTab" => Listed(Tabs, "Previous tab"),
         "agent_tab::PrevLane" => Listed(Tabs, "Previous Subagent"),
         "agent_tab::NextLane" => Listed(Tabs, "Next Subagent"),
+        "agent_tab::CycleMode" => Listed(Tabs, "Next Agent Mode"),
         "file_tab::Find" => Listed(Tabs, "Find in File\u{2026}"),
         "file_tab::FindNext" => Listed(Tabs, "Find Next"),
         "file_tab::FindPrev" => Listed(Tabs, "Find Previous"),

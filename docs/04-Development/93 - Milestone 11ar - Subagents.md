@@ -292,3 +292,13 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
 - **"Built with Rust and chaos"** (your word, 2026-11-23): the README's badge now reads *built with · Rust · Chaos*
   (`assets/badges/built-with-rust-n-chaos.svg`, its last segment widened for the longer word; the old badge file
   removed), and the landing site's footer says the same.
+- **⇧Tab changes the agent mode** (your words, 2026-11-23: "on agent tab, I want to add shortcut shift+tab to change
+  agent mode … fast as chore"): ⇧Tab anywhere in an agent tab, the message box included, chooses the next mode
+  (Claude: Ask before edits → Accept edits → Plan → Auto → back; agy: Accept edits → Auto → Plan → back), the same
+  way the mode chip's menu does (`agent_box::next_mode`, the `agent_tab::CycleMode` action). Listed in Keyboard
+  Shortcuts as "Next Agent Mode".
+  - **AI's calls:** with no mode known, or one not in the list, it goes to the first; pressed twice before the agent
+    answers, it moves on from the mode asked, not the one shown; a tab with no modes ignores it; left out of the
+    command palette (the palette has the focus, not the tab; the chip is the way in).
+  - **Checks:** unit tests for `next_mode` and the binding (in the tab and in the box); `agent-box-mode-menu` presses
+    ⇧Tab twice and sees `auto` then `default` asked live.

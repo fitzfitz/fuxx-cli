@@ -512,6 +512,8 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         // M11ar: step between Main and the subagents' pills.
         KeyBinding::new("alt-cmd-[", agent_tab::PrevLane, Some("AgentTab")),
         KeyBinding::new("alt-cmd-]", agent_tab::NextLane, Some("AgentTab")),
+        // ⇧Tab: the next mode, as the mode chip would choose it.
+        KeyBinding::new("shift-tab", agent_tab::CycleMode, Some("AgentTab")),
         KeyBinding::new("escape", agent_tab::CloseImage, Some("AgentImageView")),
         KeyBinding::new("up", agent_tab::ModalPrev, Some("AgentToolModal")),
         KeyBinding::new("down", agent_tab::ModalNext, Some("AgentToolModal")),
@@ -1565,6 +1567,17 @@ mod tests {
         let tab: &[&str] = &["Workspace", "AgentTab"];
         assert!(runs(&keymap, "alt-cmd-[", tab).partial_eq(&crate::agent_tab::PrevLane));
         assert!(runs(&keymap, "alt-cmd-]", tab).partial_eq(&crate::agent_tab::NextLane));
+    }
+
+    /// ⇧Tab moves an agent tab to its next mode, from the message box too (a chore after
+    /// M11ar).
+    #[test]
+    fn shift_tab_cycles_the_agent_mode() {
+        let keymap = keymap();
+        let tab: &[&str] = &["Workspace", "AgentTab"];
+        let composer: &[&str] = &["Workspace", "AgentTab", "Composer"];
+        assert!(runs(&keymap, "shift-tab", tab).partial_eq(&crate::agent_tab::CycleMode));
+        assert!(runs(&keymap, "shift-tab", composer).partial_eq(&crate::agent_tab::CycleMode));
     }
 
     /// The tool modal (chores after M11ab, spec A §B): Esc goes back or closes it and never

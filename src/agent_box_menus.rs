@@ -872,6 +872,25 @@ impl AgentTab {
         self.choose(Change::Mode(id.to_string()), cx);
     }
 
+    /// ⇧Tab: the next mode after the one in force (`next_mode`), or after the one asked and not
+    /// yet answered (pressed twice quickly), chosen as the menu would.
+    pub(crate) fn cycle_mode(
+        &mut self,
+        _: &crate::agent_tab::CycleMode,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(provider) = self.provider else {
+            return;
+        };
+        if let Some(id) = crate::agent_box::next_mode(
+            provider.info().modes,
+            self.mode_asked().or(self.mode_now(cx)),
+        ) {
+            self.choose_mode(id, cx);
+        }
+    }
+
     /// The mode menu's panel content (§6): each mode's name, ✓ on the one in force, and what
     /// it does in grey under it.
     pub(super) fn mode_menu(&self, cx: &mut Context<Self>) -> AnyElement {

@@ -290,6 +290,14 @@ pub fn current_mode<'a>(
     chosen.or(reported).or(default)
 }
 
+/// The mode ⇧Tab moves to: the one after `current` in `modes`, wrapping to the first; the
+/// first when none is known or `current` isn't one of them; None when there are no modes.
+pub fn next_mode(modes: &[ModeChoice], current: Option<&str>) -> Option<&'static str> {
+    let at = modes.iter().position(|m| Some(m.id) == current);
+    let next = at.map_or(0, |at| (at + 1) % modes.len());
+    modes.get(next).map(|m| m.id)
+}
+
 /// The mode chip: `🛡 <label> ▾` for the chosen mode, else the one the agent reports, else the
 /// provider's default (an id not in `modes` as it is); None when the provider has no modes or
 /// none is known.
@@ -2806,6 +2814,22 @@ mod tests {
             None,
             "no modes"
         );
+    }
+
+    #[test]
+    fn next_mode_steps_through_the_modes_and_wraps() {
+        let modes = CLAUDE.info().modes;
+        assert_eq!(next_mode(modes, Some("default")), Some("acceptEdits"));
+        assert_eq!(next_mode(modes, Some("acceptEdits")), Some("plan"));
+        assert_eq!(next_mode(modes, Some("plan")), Some("auto"));
+        assert_eq!(next_mode(modes, Some("auto")), Some("default"), "wraps");
+        assert_eq!(next_mode(modes, None), Some("default"), "none known: first");
+        assert_eq!(
+            next_mode(modes, Some("bypassPermissions")),
+            Some("default"),
+            "one not in the list: first"
+        );
+        assert_eq!(next_mode(&[], Some("plan")), None, "no modes");
     }
 
     #[test]

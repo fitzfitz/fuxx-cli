@@ -75,7 +75,7 @@ use crate::workspace_agent::Holder;
 actions!(
     agent_tab,
     [
-        AtUp, AtDown, ModalBack, ModalPrev, ModalNext, CloseImage, PrevLane, NextLane
+        AtUp, AtDown, ModalBack, ModalPrev, ModalNext, CloseImage, PrevLane, NextLane, CycleMode
     ]
 );
 
@@ -2214,6 +2214,11 @@ impl AgentTab {
     /// choose mode mid run"), else the start flag's.
     pub(crate) fn mode_chosen(&self) -> Option<&str> {
         self.waiting_mode().or(self.start.mode.as_deref())
+    }
+
+    /// The mode asked of the running agent that it hasn't answered yet (⇧Tab moves on from it).
+    pub(crate) fn mode_asked(&self) -> Option<&str> {
+        self.asked.mode.as_deref()
     }
 
     /// The latest change waiting for the turn to end.
@@ -5104,6 +5109,7 @@ impl Render for AgentTab {
             .on_action(cx.listener(Self::close_image_action))
             .on_action(cx.listener(Self::prev_lane))
             .on_action(cx.listener(Self::next_lane))
+            .on_action(cx.listener(Self::cycle_mode))
             // ⌘C / ⌘A reach here when the box has nothing to copy or select (chore after M11ar).
             .on_action(cx.listener(|this, _: &crate::composer::Copy, _, cx| this.copy_chat(cx)))
             .on_action(cx.listener(|this, _: &crate::terminal_view::Copy, _, cx| {

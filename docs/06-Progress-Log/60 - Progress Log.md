@@ -37,6 +37,18 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Chore: ⇧Tab changes the agent mode
+
+- **What:** your word ("on agent tab, I want to add shortcut shift+tab to change agent mode"). ⇧Tab in an agent tab
+  (the message box too) moves to the next mode, wrapping, chosen as the mode chip's menu would (live where the agent
+  can, else a restart on the same conversation). Pressed twice quickly it moves on from the mode still being asked.
+  Listed in Keyboard Shortcuts as "Next Agent Mode"; not in the palette. Under "Chores after M11ar" in
+  [[93 - Milestone 11ar - Subagents]].
+- **Checks:** 2495 tests (2 new, each watched failing first: `next_mode`, the ⇧Tab binding); no clippy warning on
+  a changed line; `cargo fmt --check` clean; ui-shots `agent-box-mode-menu` now presses ⇧Tab twice after choosing
+  Plan and sees `auto` then `default` asked live, no message (`agent-box-mode`/`-model` 13, `help` 1, `palette` 12
+  passed). Not yet seen in the real window.
+
 ### 2026-11-23 — v0.12.7 released
 
 - **What:** your word ("make a release for fuxx-cli"). `Cargo.toml` 0.12.6 → 0.12.7 (`0273790`), tag `v0.12.7`;
