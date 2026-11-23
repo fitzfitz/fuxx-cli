@@ -19,6 +19,8 @@ pub enum Answer {
     Denied(Option<String>),
     /// The turn ended (or the process died) before you answered.
     Expired,
+    /// The agent stopped waiting before you answered (it withdrew the ask).
+    Withdrawn,
 }
 
 /// How a question of the agent's ended (batch 3, chore 8).
@@ -463,6 +465,19 @@ impl Conversation {
             Event::FilesRewound { .. } => {}
             // The tab acts on it (`cancel_unread`).
             Event::QueuedCancelled { .. } => {}
+            // The agent stopped waiting (Claude's `control_cancel_request`): the card settles
+            // now, not at the turn's end. One answered already keeps its answer.
+            Event::AskWithdrawn { id } => {
+                let open_permission = self
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, Item::Permission { id: p, answer: None, .. } if *p == id));
+                if open_permission {
+                    self.answered(&id, Answer::Withdrawn);
+                } else {
+                    self.reply(&id, Reply::Expired);
+                }
+            }
             Event::Usage {
                 context_pct,
                 cost_usd,
@@ -2225,6 +2240,53 @@ mod tests {
         // Answered once: a second reply changes nothing.
         c.reply("q1", Reply::Skipped);
         assert!(matches!(reply_of(&c, "q1"), Some(Reply::Answered(_))));
+    }
+
+    /// The agent stopped waiting (Claude's `control_cancel_request`): the open card settles at
+    /// once, not at the turn's end; an answered one keeps its answer.
+    #[test]
+    fn a_withdrawn_ask_settles_now_and_an_answered_one_keeps_its_answer() {
+        let mut c = Conversation::new();
+        c.you("go".into(), Vec::new());
+        c.apply(started("t1", "Reader"));
+        c.apply(ask("q1", Some("t1")));
+        c.apply(Event::Permission {
+            id: "p1".into(),
+            tool: "Bash".into(),
+            what: "npm test".into(),
+            detail: String::new(),
+            always: None,
+            by: Some("t1".into()),
+        });
+        c.apply(Event::Permission {
+            id: "p2".into(),
+            tool: "Bash".into(),
+            what: "ls".into(),
+            detail: String::new(),
+            always: None,
+            by: None,
+        });
+        c.answered("p2", Answer::Allowed);
+        c.apply(Event::AskWithdrawn { id: "q1".into() });
+        assert_eq!(reply_of(&c, "q1"), Some(Reply::Expired));
+        assert_eq!(c.pending_ask(), None);
+        assert_eq!(
+            c.lane("t1").unwrap().status,
+            LaneStatus::Waiting,
+            "p1 waits"
+        );
+        c.apply(Event::AskWithdrawn { id: "p1".into() });
+        let answer_of = |c: &Conversation, id: &str| {
+            c.items().iter().find_map(|i| match i {
+                Item::Permission { id: p, answer, .. } if p == id => Some(answer.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(answer_of(&c, "p1"), Some(Some(Answer::Withdrawn)));
+        assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Working);
+        assert_eq!(c.status(), Status::Working, "nothing waits");
+        c.apply(Event::AskWithdrawn { id: "p2".into() });
+        assert_eq!(answer_of(&c, "p2"), Some(Some(Answer::Allowed)));
     }
 
     #[test]

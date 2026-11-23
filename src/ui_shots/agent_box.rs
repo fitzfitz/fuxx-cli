@@ -822,6 +822,45 @@ pub(super) fn agent_box_terminal_text() {
             "{n}: {words}"
         );
         assert_eq!(spot.left(), text.left(), "{n}: from the caret's cell");
+        // A beam sits just before the placeholder, never over its first letter (the lead
+        // designer, 2026-11-23: "Send your answers…" read like "$end"), as a macOS field's caret
+        // does: the words start the beam's width and 1 pt to its right, focused or not (they
+        // don't move); without focus the hollow cell moves with them.
+        cx.update(|cx| {
+            cx.update_global::<Appearance, _>(|a, _| a.cursor_style = CursorShapeSetting::Bar)
+        });
+        let _ = frame_fresh(cx, window);
+        let (shape, beam) = caret(cx).unwrap_or_else(|| panic!("{n}: no caret"));
+        assert_eq!(shape, PaintShape::Bar, "{n}: a beam");
+        assert_eq!(beam.left(), text.left(), "{n}: the beam at the start");
+        let (_, spot) = cx
+            .read(|cx| composer.read(cx).shot_placeholder())
+            .unwrap_or_else(|| panic!("{n}: no placeholder"));
+        assert_eq!(
+            spot.left(),
+            beam.right() + px(1.),
+            "{n}: the placeholder clear of the beam"
+        );
+        cx.update(|cx| composer.update(cx, |c, _| c.shot_not_key()));
+        cx.update_window(window, |_, w, _| w.refresh()).ok();
+        let _ = frame_fresh(cx, window);
+        let (shape, cell) = caret(cx).unwrap_or_else(|| panic!("{n}: no caret"));
+        assert_eq!(shape, PaintShape::Hollow, "{n}: hollow, not key");
+        let (_, still) = cx
+            .read(|cx| composer.read(cx).shot_placeholder())
+            .unwrap_or_else(|| panic!("{n}: no placeholder"));
+        assert_eq!(still.left(), spot.left(), "{n}: the words don't move");
+        assert_eq!(
+            cell.left(),
+            spot.left(),
+            "{n}: the hollow cell on the first letter"
+        );
+        cx.update(|cx| {
+            composer.update(cx, |c, _| c.shot_be_key());
+            cx.update_global::<Appearance, _>(|a, _| a.cursor_style = CursorShapeSetting::Block)
+        });
+        cx.update_window(window, |_, w, _| w.refresh()).ok();
+        let _ = frame_fresh(cx, window);
         // No mark before the typing (your words, 2026-11-22: "I don't think we need the icon,
         // remove it … so that the chat box loosen"): the typing 14 in.
         let the_box = part(cx, tab, n, "box");

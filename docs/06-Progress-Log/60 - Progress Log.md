@@ -37,6 +37,19 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Opens fixed: the caret, banner clicks, withdrawn asks, the glide, Rewind on the strip
+
+- **What:** the five items left open after chore 8 ("go fix the all the opens"), under "Opens fixed (2026-11-23)" in
+  [[93 - Milestone 11ar - Subagents]]. A beam caret sits just before a placeholder, never over its first letter (the
+  agent box and every placeholder field); an agent's banner names its tab, so its click lands there (the oldest
+  question only when the tab is gone); Claude's `control_cancel_request` settles a withdrawn permission or question
+  at once ("Not answered", "Claude stopped waiting before you answered."); the docked card's "Show in chat" glides
+  (a jump with Reduce motion) and follows the end again; after a Stop the latest-prompt strip has a Rewind button.
+- **Checks:** 2674 → 2682 tests (8 new, each watched failing first); clippy 14/29 and 18/33 (unchanged, none on a
+  changed line); `cargo fmt --check` clean; full `scripts/ui-shots.sh` 322 passed, 5 failed (the five known to fail
+  on the 1× display on old commits too); references not refreshed (the follow-up job re-records them). Not yet seen
+  in the real window.
+
 ### 2026-11-23 — Chore 8 after the design review: the question card's fourteen fixes
 
 - **What:** the lead designer's review of the real shots, under chore 8 in [[93 - Milestone 11ar - Subagents]] ("After

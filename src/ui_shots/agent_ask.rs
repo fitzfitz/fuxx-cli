@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{AnyWindowHandle, Entity, ListOffset, Modifiers, VisualTestAppContext, px, size};
 use serde_json::{Value, json};
@@ -770,8 +770,8 @@ pub(super) fn agent_tab_question_dock() {
 }
 
 /// From anywhere: two workspaces' Claudes ask; "Answer Waiting Question" (⌘⇧A) shows the one
-/// that asked first with the keys on its card, and so does a click on an agent's banner (it
-/// names no terminal). The banner says "Claude asks: …".
+/// that asked first with the keys on its card, and so does a click on a banner about nothing;
+/// an agent's banner names its tab, and its click goes there. The banner says "Claude asks: …".
 pub(super) fn agent_question_anywhere() {
     use super::agent::agent_workspace;
     let n = "agent-question-anywhere";
@@ -849,6 +849,33 @@ pub(super) fn agent_question_anywhere() {
                 Some(first.0),
                 "{n}: a banner click lands on the oldest question"
             );
+            // A banner naming its tab (the opens fixed, 2026-11-23): that tab, the keys on its
+            // card, though another asked first; one naming a tab gone since: the oldest.
+            let named = |id: u64| {
+                Some(crate::native_notify::About::Tab {
+                    run: crate::native_notify::this_run(),
+                    id,
+                })
+            };
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.shot_banner_clicked(named(other.0), window, cx)
+                })
+            })
+            .unwrap();
+            settle_frames(cx, window);
+            let now = cx.read(|cx| ws.read(cx).focused_agent_tab().map(|(t, _)| t));
+            assert_eq!(now, Some(other), "{n}: a banner lands on its own tab");
+            assert!(ask_of(cx, &second.1).keys_on, "{n}: the keys on its card");
+            cx.update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.shot_banner_clicked(named(u64::MAX), window, cx)
+                })
+            })
+            .unwrap();
+            settle_frames(cx, window);
+            let now = cx.read(|cx| ws.read(cx).focused_agent_tab().map(|(t, _)| t));
+            assert_eq!(now, Some(first.0), "{n}: its tab gone, the oldest question");
             // Answered there, ⌘⇧A goes to the other.
             past_guard();
             cx.update(|cx| first.1.update(cx, |t, cx| t.shot_ask_go_to(3, cx)));
@@ -993,6 +1020,53 @@ pub(super) fn agent_tab_question_dock_tiny() {
             );
         },
     );
+    // "Show in chat" glides (the opens fixed, 2026-11-23), as the latest-prompt strip's jump
+    // does, to the chat's end, which it follows again; with motion reduced, it jumps.
+    for still in [false, true] {
+        once_sized(
+            "agent-tab-question-dock-tiny: show in chat",
+            (720.0, 420.0),
+            move |cx, window, tab| {
+                let n = format!("agent-tab-question-dock-tiny (reduce motion {still})");
+                feed(cx, tab, |t, cx| t.shot_history(long_past(), cx));
+                to_question(cx, tab);
+                settle_frames(cx, window);
+                let list = cx.read(|cx| tab.read(cx).shot_list());
+                list.scroll_to(ListOffset {
+                    item_ix: 0,
+                    offset_in_item: px(0.),
+                });
+                cx.update_window(window, |_, window, _| window.refresh())
+                    .unwrap();
+                settle_frames(cx, window);
+                assert!(ask_of(cx, tab).dock.is_some(), "{n}: docked");
+                cx.update(|cx| cx.set_reduce_motion(still));
+                cx.update(|cx| tab.update(cx, |t, cx| t.shot_show_in_chat(cx)));
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).shot_gliding()),
+                    !still,
+                    "{n}: a glide, or a jump"
+                );
+                let until = Instant::now() + Duration::from_secs(5);
+                loop {
+                    settle_frames(cx, window);
+                    if !cx.read(|cx| tab.read(cx).shot_gliding()) {
+                        break;
+                    }
+                    assert!(Instant::now() < until, "{n}: the glide ends");
+                }
+                settle_frames(cx, window);
+                assert!(
+                    list.is_following_tail(),
+                    "{n}: the chat follows its end again"
+                );
+                let ask = ask_of(cx, tab);
+                assert_eq!(ask.dock, None, "{n}: the card in sight: {ask:?}");
+                assert!(ask.keys_on, "{n}: the keys on its card");
+                cx.update(|cx| cx.set_reduce_motion(false));
+            },
+        );
+    }
 }
 
 /// Answered, the line as it is left live (the design review's scene): "Answered · Test runner:

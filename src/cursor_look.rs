@@ -29,6 +29,11 @@ pub enum PaintShape {
 /// A bar's and an underline's thickness, pixels.
 pub const BAR: f32 = 2.0;
 
+/// How far a placeholder starts right of a beam caret at a field's start: the beam's width and
+/// 1 pt, so the beam sits just before the words, never over the first letter (as a macOS
+/// field's caret does; the lead designer, 2026-11-23).
+pub const PLACEHOLDER_IN: f32 = BAR + 1.0;
+
 /// A shape to paint and whether it breathes (the blinking flag of the program's choice, or
 /// true for the user's setting; the Breathing glow setting still has the last word).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

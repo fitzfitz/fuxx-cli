@@ -48,7 +48,7 @@ use crate::layout_model::{self, Model, PaneId, TabDrop, TabId, TabKind, Workspac
 use crate::mark_view::{MarkClock, MarkView};
 use crate::mux_proto::{self, Create};
 use crate::name_input::{NameInput, NameInputEvent};
-use crate::native_notify::{self, PendingShow, Terminal};
+use crate::native_notify::{self, About, PendingShow, Terminal};
 use crate::notification_list::{self, NotificationList};
 use crate::notifier;
 use crate::palette::Palette;
@@ -940,7 +940,7 @@ impl Workspace {
     /// the first one opens).
     pub fn new(
         scripting: Option<(PathBuf, UnboundedReceiver<api_server::Incoming>)>,
-        clicks: UnboundedReceiver<Option<Terminal>>,
+        clicks: UnboundedReceiver<Option<About>>,
         persistent: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1358,7 +1358,7 @@ impl Workspace {
     /// it existed are waiting in `clicks`).
     pub(crate) fn listen_for_clicks(
         &mut self,
-        clicks: UnboundedReceiver<Option<Terminal>>,
+        clicks: UnboundedReceiver<Option<About>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1377,13 +1377,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let clicks = shows.map(move |id| run.map(|run| Terminal { run, id }));
+        let clicks = shows.map(move |id| run.map(|run| About::Terminal(Terminal { run, id })));
         self._shows = Some(Self::hear(clicks, window, cx));
     }
 
     /// Hand each click from `clicks` to `banner_clicked`, until it ends or the workspace goes.
     fn hear(
-        mut clicks: impl futures::Stream<Item = Option<Terminal>> + Unpin + 'static,
+        mut clicks: impl futures::Stream<Item = Option<About>> + Unpin + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<()> {
@@ -1399,11 +1399,11 @@ impl Workspace {
         })
     }
 
-    /// A click on one of fuxx's banners: fuxx comes forward and terminal `sN` (if the banner
-    /// names one) is shown, now or, while the saved sessions reopen, once they have.
+    /// A click on one of fuxx's banners: fuxx comes forward and what the banner names (terminal
+    /// `sN`, an agent tab) is shown, now or, while the saved sessions reopen, once they have.
     fn banner_clicked(
         &mut self,
-        terminal: Option<Terminal>,
+        terminal: Option<About>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1413,33 +1413,36 @@ impl Workspace {
         }
     }
 
-    /// Scenes: a click on one of fuxx's banners (about `terminal`, if any).
+    /// Scenes: a click on one of fuxx's banners (about `terminal`, if anything).
     #[cfg(feature = "ui-shots")]
     pub fn shot_banner_clicked(
         &mut self,
-        terminal: Option<Terminal>,
+        terminal: Option<About>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.banner_clicked(terminal, window, cx);
     }
 
-    /// Show a clicked banner's terminal as the 🔔 list does (nothing more if it has closed
-    /// since); one about no terminal, or about one numbered by another run (today's `sN` is
-    /// another terminal), only brought fuxx forward.
-    fn show_clicked(
-        &mut self,
-        terminal: Option<Terminal>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let run = self.numbering_run();
-        if let Some(id) = terminal.and_then(|t| t.in_run(run)) {
-            self.jump_to_notification(id, window, cx);
-        } else if terminal.is_none() {
-            // An agent's banner names no terminal (batch 3, chore 8): a question waiting is
-            // what it most likely asked about, so its card takes the keys.
-            self.answer_waiting_question(window, cx);
+    /// Show what a clicked banner names (`native_notify::landing`): its terminal as the 🔔
+    /// list does (nothing more if it has closed since; one numbered by another run, today's
+    /// `sN` being another terminal, only brings fuxx forward); its agent tab, the card it
+    /// waits on with the keys (the opens fixed, 2026-11-23); a banner about nothing, or about
+    /// a tab gone since, the oldest waiting question's card (batch 3, chore 8).
+    fn show_clicked(&mut self, about: Option<About>, window: &mut Window, cx: &mut Context<Self>) {
+        let landing = native_notify::landing(
+            about,
+            self.numbering_run(),
+            native_notify::this_run(),
+            |id| self.agents.contains_key(&TabId(id)),
+        );
+        match landing {
+            native_notify::Landing::Terminal(id) => self.jump_to_notification(id, window, cx),
+            native_notify::Landing::Tab(id) => self.show_agent_waiting(TabId(id), window, cx),
+            native_notify::Landing::OldestQuestion => {
+                self.answer_waiting_question(window, cx);
+            }
+            native_notify::Landing::Nothing => {}
         }
     }
 
@@ -1450,9 +1453,9 @@ impl Workspace {
 
     /// What a banner about session `terminal` names: it and the run that numbered it. None when
     /// that run isn't known (a click on it then only brings fuxx forward).
-    pub(crate) fn banner_about(&self, terminal: Option<u64>) -> Option<Terminal> {
+    pub(crate) fn banner_about(&self, terminal: Option<u64>) -> Option<About> {
         let run = self.numbering_run()?;
-        terminal.map(|id| Terminal { run, id })
+        terminal.map(|id| About::Terminal(Terminal { run, id }))
     }
 
     /// Post a banner, `about` a terminal if any (`banner_about`), with its sound (M11x: with
@@ -1464,7 +1467,7 @@ impl Workspace {
         summary: String,
         subtitle: String,
         body: String,
-        about: Option<Terminal>,
+        about: Option<About>,
         cx: &mut Context<Self>,
     ) {
         #[cfg(feature = "ui-shots")]

@@ -2,7 +2,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::command_name::Finished;
-use crate::native_notify::{self, Permission, PostError, Terminal};
+use crate::native_notify::{self, About, Permission, PostError};
 use crate::status::{self, Status, age_label};
 
 /// Which way a banner goes out.
@@ -36,7 +36,7 @@ pub fn route(bundled: bool, permission: Option<Permission>) -> Route {
 /// does not display notifications for an unbundled binary — `show()` succeeds but nothing
 /// appears. `osascript`'s `display notification` goes through an entitled system component and
 /// works without shipping fuxx as a signed `.app` bundle.
-pub fn fire(summary: &str, subtitle: &str, body: &str, about: Option<Terminal>) {
+pub fn fire(summary: &str, subtitle: &str, body: &str, about: Option<About>) {
     let bundled = native_notify::is_bundled();
     let permission = if bundled {
         native_notify::permission()

@@ -298,10 +298,14 @@ pub fn flash_strength(t: f32) -> f32 {
 pub const GLIDE_MS: u64 = 220;
 pub const GLIDE_SCREENS: f32 = 1.5;
 
-/// Where the glide up to `to` starts, from `from` (scroll offsets in points), in a view
-/// `screen` tall.
+/// Where the glide to `to` starts, from `from` (scroll offsets in points), in a view `screen`
+/// tall: at most `GLIDE_SCREENS` away, below it (a glide up) or above it (down).
 pub fn glide_from(from: f32, to: f32, screen: f32) -> f32 {
-    from.min(to + screen * GLIDE_SCREENS)
+    if from <= to {
+        from.max(to - screen * GLIDE_SCREENS)
+    } else {
+        from.min(to + screen * GLIDE_SCREENS)
+    }
 }
 
 /// The glide's offset at `t` (0..1 of `GLIDE_MS`), eased out.
@@ -663,5 +667,16 @@ mod tests {
         assert_eq!(at(0.0), 1_000.0);
         assert_eq!(at(1.0), 200.0);
         assert!(at(0.5) < 600.0, "eases out: fast first");
+    }
+
+    /// Down to the chat's end ("Show in chat", the opens fixed, 2026-11-23): the same last
+    /// stretch, from above.
+    #[test]
+    fn a_glide_down_starts_within_the_last_stretch_too() {
+        assert_eq!(
+            glide_from(0.0, 5_000.0, 400.0),
+            5_000.0 - 400.0 * GLIDE_SCREENS
+        );
+        assert_eq!(glide_from(4_800.0, 5_000.0, 400.0), 4_800.0);
     }
 }

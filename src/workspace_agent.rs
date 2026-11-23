@@ -612,6 +612,22 @@ impl Workspace {
         true
     }
 
+    /// A click on agent tab `tab`'s banner (the opens fixed, 2026-11-23): its tab shown and the
+    /// card it waits on with the keys (a question's, or a permission's, brought into sight).
+    pub(crate) fn show_agent_waiting(
+        &mut self,
+        tab: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_tab(tab, window, cx);
+        self.close_menus();
+        self.focus_active(window, cx);
+        if let Some(slot) = self.agents.get(&tab) {
+            slot.view.update(cx, |t, cx| t.land_on_waiting(cx));
+        }
+    }
+
     pub(crate) fn focused_agent_tab(&self) -> Option<(TabId, Entity<AgentTab>)> {
         let tab = self.model.focused_tab()?;
         Some((tab, self.agents.get(&tab)?.view.clone()))
@@ -1258,8 +1274,8 @@ impl Workspace {
     /// For agent tab `tab` what `set_status` does for a terminal: its status and since when;
     /// Done pops once, as it arrives, if its row is on screen; an Activity entry; and a
     /// notification by the M4 rules (not while you look at it): a 🔔 list entry (about no
-    /// terminal) and, unless a short run, the sound and a banner (call 3: no click target,
-    /// `banner_about(None)`; its subtitle names the provider, its body says the question or
+    /// terminal) and, unless a short run, the sound and a banner (naming the tab, so its click
+    /// goes there: `About::Tab`; its subtitle names the provider, its body says the question or
     /// what the tab was doing, its title). `live: false` (history replayed, the pause before
     /// "Open in classic view") is not news: no pop, no Activity entry, no notification.
     pub(crate) fn set_agent_status(
@@ -1374,7 +1390,11 @@ impl Workspace {
         if !notifier::worth_a_banner(new, worked) {
             return;
         }
-        let about = self.banner_about(None);
+        // It names its tab, so a click goes there (the opens fixed, 2026-11-23).
+        let about = Some(crate::native_notify::About::Tab {
+            run: crate::native_notify::this_run(),
+            id: tab.0,
+        });
         self.post_banner(summary, subtitle, body, about, cx);
     }
 

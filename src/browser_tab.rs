@@ -690,7 +690,8 @@ impl BrowserTab {
                         d.child(
                             div()
                                 .absolute()
-                                .left(px(3.0))
+                                // Clear of the caret at the start (its width and 1 pt).
+                                .left(px(crate::cursor_look::PLACEHOLDER_IN))
                                 .text_color(hsla(ui.text_dim))
                                 .child(PLACEHOLDER),
                         )

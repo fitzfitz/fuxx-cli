@@ -951,11 +951,12 @@ fn banner_click() {
 
         // This workspace runs its sessions itself: this run numbers them.
         let run = crate::native_notify::this_run();
-        let ours = |id: u64| Some(crate::native_notify::Terminal { run, id });
-        let earlier = Some(crate::native_notify::Terminal {
+        use crate::native_notify::{About, Terminal};
+        let ours = |id: u64| Some(About::Terminal(Terminal { run, id }));
+        let earlier = Some(About::Terminal(Terminal {
             run: run.wrapping_add(1),
             id: notes,
-        });
+        }));
         for (click, what) in [
             (ours(gone), "a closed terminal"),
             (None, "no terminal"),

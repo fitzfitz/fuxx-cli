@@ -550,9 +550,10 @@ impl Running {
     /// after the next window's `Hello`. macOS reports them while `wait` runs the run loop.
     pub fn hear_banner_clicks(&self) {
         let shared = Arc::downgrade(&self.shared);
-        native_notify::hear_clicks(move |terminal| {
+        // The service posts only terminals' banners.
+        native_notify::hear_clicks(move |about| {
             if let Some(shared) = shared.upgrade() {
-                shared.banner_clicked(terminal);
+                shared.banner_clicked(about.and_then(native_notify::About::terminal));
             }
         });
     }
@@ -798,7 +799,12 @@ fn tick_loop(shared: &Shared, guard: SocketGuard, idle_exit: Duration, reap: boo
                 };
                 // `osascript` blocks ~100 ms: never on the tick thread.
                 std::thread::spawn(move || {
-                    notifier::fire(&summary, "", &body, Some(about));
+                    notifier::fire(
+                        &summary,
+                        "",
+                        &body,
+                        Some(native_notify::About::Terminal(about)),
+                    );
                     // M11x: the banner's sound, after quit too (no window plays it: the service
                     // posts only while none is attached).
                     crate::sounds::play_banner_detached();

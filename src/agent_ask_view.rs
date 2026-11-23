@@ -258,6 +258,25 @@ impl AgentTab {
         cx.notify();
     }
 
+    /// Its banner clicked (the opens fixed, 2026-11-23): the oldest ask's card takes the keys —
+    /// a question's as `land_on_ask` does, a permission's brought into sight with the box (its
+    /// Enter allows, its words deny) taking the keyboard.
+    pub(crate) fn land_on_waiting(&mut self, cx: &mut Context<Self>) {
+        let Some(ix) = self.conversation.oldest_ask() else {
+            return;
+        };
+        if matches!(self.conversation.items()[ix], Item::Permission { .. }) {
+            let pane = self.pane();
+            if let Ok(k) = pane.order.binary_search(&ix) {
+                pane.list.scroll_to_reveal_item(k + pane.head as usize);
+            }
+            self.refocus = Some(Refocus::Box);
+            cx.notify();
+        } else {
+            self.land_on_ask(cx);
+        }
+    }
+
     /// The latest-prompt strip clicked while a question waits: its row brought into sight and
     /// the keys on its card.
     pub(super) fn reveal_ask(&mut self, cx: &mut Context<Self>) {
@@ -270,10 +289,17 @@ impl AgentTab {
         self.land_on_ask(cx);
     }
 
-    /// The dock's "Show in chat": the chat to its end, following it again.
+    /// The dock's "Show in chat": the chat glides to its end (the strip's glide; a jump with
+    /// motion reduced), following it again.
     fn show_in_chat(&mut self, cx: &mut Context<Self>) {
-        self.pane().list.scroll_to_end();
+        self.glide_to_end(cx);
         self.land_on_ask(cx);
+    }
+
+    /// Scenes: the dock's "Show in chat" clicked.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_show_in_chat(&mut self, cx: &mut Context<Self>) {
+        self.show_in_chat(cx);
     }
 
     /// The question's row is laid out again in every view (its card changed).

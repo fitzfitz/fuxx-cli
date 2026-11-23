@@ -155,6 +155,16 @@ fn turn_done(ok: bool) -> Event {
 /// mid-answer (as Claude says a stop: "Stopped", then the turn's end). The transcript (under
 /// the scene's own `home`) holds both messages, the second after the reply.
 fn talk_and_stop(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, home: &std::path::Path) {
+    talk_and_stop_with(cx, tab, home, "Splitting it into lexer, parser and");
+}
+
+/// `talk_and_stop`, the second answer saying `stopped` before the stop.
+fn talk_and_stop_with(
+    cx: &mut VisualTestAppContext,
+    tab: &Entity<AgentTab>,
+    home: &std::path::Path,
+    stopped: &str,
+) {
     feed(cx, tab, |t, cx| t.shot_history(Vec::new(), cx));
     let s = session(cx, tab);
     feed(cx, tab, |t, cx| t.send(FIRST.into(), cx));
@@ -179,7 +189,7 @@ fn talk_and_stop(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, home: &s
         let mut events = vec![Event::Taken {
             id: Some(u2.clone()),
         }];
-        events.extend(reply("Splitting it into lexer, parser and"));
+        events.extend(reply(stopped));
         t.shot_feed(events, cx)
     });
     feed(cx, tab, |t, cx| t.shot_press_stop(cx));
@@ -288,6 +298,8 @@ pub(super) fn agent_rewind() {
     checks("agent-rewind-failed", failed_checks);
     checks("agent-rewind-pick", pick_checks);
     checks("agent-rewind-working", working_checks);
+    checks("agent-rewind-strip", strip_checks);
+    checks("agent-rewind-strip-sent", strip_sent_checks);
     for &(slug, theme_name) in shot_themes() {
         let theme = shot_theme(theme_name);
         let slot: Slot = Rc::default();
@@ -353,6 +365,84 @@ fn checks(
         },
     );
     println!("ui-shots: {name}: checked");
+}
+
+/// The latest-prompt strip's Rewind (the opens fixed, 2026-11-23): after a stop, the stopped
+/// message scrolled off by a long answer, the strip shows a Rewind button at its right; its
+/// click starts the same rewind as the "Stopped" notice's link (the agent's dry run asked), not
+/// the strip's jump.
+fn strip_checks(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+    home: &std::path::Path,
+) {
+    let long: Vec<String> = (0..24)
+        .map(|i| format!("Step {i}: moved the next part of the parser into its own module."))
+        .collect();
+    talk_and_stop_with(cx, tab, home, &long.join("\n\n"));
+    settle_frames(cx, window);
+    cx.read(|cx| tab.read(cx).shot_list()).scroll_to_end();
+    cx.update_window(window, |_, window, _| window.refresh())
+        .unwrap();
+    settle_frames(cx, window);
+    assert_eq!(
+        cx.read(|cx| tab.read(cx).shot_latest_strip()).as_deref(),
+        Some(SECOND),
+        "{n}: the strip shows the stopped message"
+    );
+    assert!(
+        cx.read(|cx| tab.read(cx).shot_strip_rewinds()),
+        "{n}: it offers Rewind"
+    );
+    let at = cx
+        .read(|cx| tab.read(cx).shot_part("latest-strip-rewind"))
+        .unwrap_or_else(|| panic!("{n}: the button laid out"));
+    let strip = cx
+        .read(|cx| tab.read(cx).shot_part("latest-strip"))
+        .unwrap_or_else(|| panic!("{n}: the strip laid out"));
+    assert!(
+        at.right() <= strip.right() && at.left() > strip.center().x,
+        "{n}: at the strip's right ({at:?} in {strip:?})"
+    );
+    assert_eq!((at.size.width, at.size.height), (px(24.), px(24.)), "{n}");
+    cx.simulate_mouse_move(window, at.center(), None, Modifiers::none());
+    settle_frames(cx, window);
+    cx.simulate_click(window, at.center(), Modifiers::none());
+    settle_frames(cx, window);
+    assert_eq!(
+        rewinds_written(cx, tab),
+        [true],
+        "{n}: the same rewind as the notice's link (the agent's dry run asked)"
+    );
+    assert!(
+        !cx.read(|cx| tab.read(cx).shot_gliding())
+            && cx.read(|cx| tab.read(cx).shot_list()).is_following_tail(),
+        "{n}: not the strip's jump (the chat still at its end)"
+    );
+}
+
+/// The strip's Rewind is gone once the next message is sent (the stop is behind it).
+fn strip_sent_checks(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+    home: &std::path::Path,
+) {
+    talk_and_stop(cx, tab, home);
+    settle_frames(cx, window);
+    assert!(
+        cx.read(|cx| tab.read(cx).shot_strip_rewinds()),
+        "{n}: offered after the stop"
+    );
+    feed(cx, tab, |t, cx| t.send("And keep the old names".into(), cx));
+    settle_frames(cx, window);
+    assert!(
+        !cx.read(|cx| tab.read(cx).shot_strip_rewinds()),
+        "{n}: gone after the next send"
+    );
 }
 
 fn rewind_checks(

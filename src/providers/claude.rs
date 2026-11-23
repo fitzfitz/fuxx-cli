@@ -1691,6 +1691,34 @@ impl ClaudeTranslator {
         out
     }
 
+    /// Claude withdrew a pending ask (`control_cancel_request`, Claude Code 2.1.330: "Permission
+    /// request withdrawn unanswered", a Stop or the session ending; `{type, request_id}`, with
+    /// `takes_late_allow`/`tool_use_id`/`session_id` at times, unread). The card goes by its own
+    /// id: a permission's is the request's, a question's its tool call's. An id not asked says
+    /// nothing; an answer to it after writes nothing.
+    fn withdrawn(&mut self, v: &Value) -> Vec<Event> {
+        let Some(rid) = v["request_id"].as_str() else {
+            return Vec::new();
+        };
+        if self.pending.remove(rid).is_some() {
+            return vec![Event::AskWithdrawn {
+                id: rid.to_string(),
+            }];
+        }
+        let ask = self
+            .asks
+            .iter()
+            .find(|(_, (r, _))| r == rid)
+            .map(|(ask, _)| ask.clone());
+        match ask {
+            Some(ask) => {
+                self.asks.remove(&ask);
+                vec![Event::AskWithdrawn { id: ask }]
+            }
+            None => Vec::new(),
+        }
+    }
+
     fn permission(&mut self, v: &Value) -> Vec<Event> {
         let req = &v["request"];
         let Some(id) = s(&v["request_id"]) else {
@@ -1812,6 +1840,7 @@ impl Translator for ClaudeTranslator {
             Some("control_request") if v["request"]["subtype"] == "can_use_tool" => {
                 self.permission(&v)
             }
+            Some("control_cancel_request") => self.withdrawn(&v),
             _ => Vec::new(),
         }
     }
@@ -2714,6 +2743,62 @@ mod tests {
             labels: labels.iter().map(|l| l.to_string()).collect(),
             other: other.map(String::from),
         }
+    }
+
+    const WITHDRAWN: &str = include_str!("fixtures/claude-withdrawn.jsonl");
+
+    #[test]
+    fn the_withdrawn_fixture_says_it_is_synthetic() {
+        assert!(
+            lines_of(WITHDRAWN)[0]["synthetic"] == true,
+            "marked synthetic until recorded"
+        );
+    }
+
+    /// Claude 2.1.330 withdraws a pending ask with `control_cancel_request` (a Stop, the session
+    /// ending): the permission by its request id, the question by its tool call (the card's id).
+    #[test]
+    fn a_withdrawn_ask_settles_its_card_by_the_card_s_id() {
+        let withdrawn: Vec<String> = decode_all(&CLAUDE, WITHDRAWN)
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::AskWithdrawn { id } => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            withdrawn,
+            vec!["req-perm-w1".to_string(), "toolu_ask_w1".to_string()],
+            "an unknown request id says nothing"
+        );
+    }
+
+    #[test]
+    fn a_withdrawn_ask_can_t_be_answered_after() {
+        let mut t = CLAUDE.translator();
+        for line in WITHDRAWN.lines() {
+            t.decode(line);
+        }
+        assert!(
+            t.encode(&Action::Allow {
+                id: "req-perm-w1".into()
+            })
+            .is_empty()
+        );
+        assert!(
+            t.encode(&Action::Answer {
+                id: "toolu_ask_w1".into(),
+                answers: vec![QAnswer::default()],
+            })
+            .is_empty()
+        );
+        assert!(
+            t.encode(&Action::Deny {
+                id: "toolu_ask_w1".into(),
+                reason: None,
+            })
+            .is_empty()
+        );
     }
 
     #[test]

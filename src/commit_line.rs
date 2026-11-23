@@ -611,7 +611,8 @@ impl Workspace {
                         "hint",
                         div()
                             .absolute()
-                            .left_0()
+                            // Clear of the caret at the start (its width and 1 pt).
+                            .left(px(crate::cursor_look::PLACEHOLDER_IN))
                             .right_0()
                             .overflow_hidden()
                             .whitespace_nowrap()

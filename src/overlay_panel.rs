@@ -59,9 +59,9 @@ pub fn filter_box(
                 div()
                     .absolute()
                     // Inside the box's 1 px border and 4 px padding, and clear of the caret at
-                    // the start.
+                    // the start (its width and 1 pt: it never covers the first letter).
                     .top(px(1.0))
-                    .left(px(7.0))
+                    .left(px(5.0 + crate::cursor_look::PLACEHOLDER_IN))
                     .text_color(hsla(ui.text_dim))
                     .child(placeholder),
             )

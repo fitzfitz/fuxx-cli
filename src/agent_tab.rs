@@ -410,6 +410,7 @@ pub fn answer_line(answer: &Answer) -> String {
         Answer::Denied(Some(why)) => format!("Denied: {why}"),
         Answer::Denied(None) => "Denied".into(),
         Answer::Expired => "Expired".into(),
+        Answer::Withdrawn => "Not answered".into(),
     }
 }
 
@@ -3389,7 +3390,7 @@ impl AgentTab {
                 id: id.clone(),
                 reason: reason.clone(),
             },
-            Answer::Expired => Action::Deny {
+            Answer::Expired | Answer::Withdrawn => Action::Deny {
                 id: id.clone(),
                 reason: None,
             },

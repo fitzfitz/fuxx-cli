@@ -705,7 +705,7 @@ impl Element for NameText {
         );
         // A name wider than the box scrolls left so the caret stays visible (at the end: the
         // end; nearer the start, less).
-        let caret_width = px(2.);
+        let caret_width = px(crate::cursor_look::BAR);
         let overflow = (line.width() + caret_width - bounds.size.width).max(px(0.));
         let to_caret = line.x_for_index(caret_index) + caret_width - bounds.size.width;
         let origin = point(

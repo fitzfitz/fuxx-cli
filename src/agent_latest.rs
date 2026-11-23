@@ -25,6 +25,8 @@ const BAND_FADE: f32 = 12.0;
 /// Its fade in as it appears (none with reduce motion: GPUI draws an animation still then).
 const FADE_MS: u64 = 120;
 pub(crate) const STRIP_TIP: &str = "Jump to your message";
+/// The strip's Rewind button's tooltip (after a stop).
+pub(crate) const STRIP_REWIND_TIP: &str = "Rewind to edit this message";
 
 /// The message a view's strip says: its row in the view's list, and its one line.
 pub(super) struct Latest {
@@ -66,13 +68,26 @@ pub(super) struct Strip {
     flashes: u64,
 }
 
-/// The jump gliding up to `row` (scroll offsets in points), started `at`.
+/// The jump gliding to `target` (scroll offsets in points), started `at`.
 struct Glide {
     view: View,
-    row: usize,
+    target: Target,
     from: f32,
     to: f32,
     at: Instant,
+}
+
+/// Where a glide ends: a row at the top of the view (the strip's message), or the chat's end
+/// (the question dock's "Show in chat"), chased as it grows, then followed again.
+#[derive(Clone, Copy, PartialEq)]
+enum Target {
+    Row(usize),
+    End,
+}
+
+/// The offset of the chat's end (in points): the list scrolled as far as it goes.
+fn end_offset(list: &ListState) -> f32 {
+    f32::from(list.max_offset_for_scrollbar().y)
 }
 
 /// The jumped-to message, lit for `FLASH_MS`: its view and row, and its animation's key.
@@ -236,8 +251,52 @@ impl AgentTab {
             })
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.jump_to_latest(cx)))
             .child(icon(Icon::ArrowUp, px(12.), hsla(c.strip_mark)))
-            .child(div().flex_1().min_w(px(0.)).truncate().child(line));
+            .child(div().flex_1().min_w(px(0.)).truncate().child(line))
+            .children(self.strip_rewind_button(c, cx));
         self.marked("latest-strip", card).into_any_element()
+    }
+
+    /// After a stop (the "Stopped" notice offers "Rewind to edit your message"), a Rewind
+    /// button at the strip's right doing the same (the opens fixed, 2026-11-23); none once the
+    /// next message is sent, in a lane's view, or where the agent can't rewind.
+    fn strip_rewind_button(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let you = super::rewind::strip_rewind(
+            self.conversation.items(),
+            self.conversation.latest_you(),
+            self.branching(),
+            self.view == View::Main,
+            self.paused,
+        )?;
+        let (hover, dim, ink) = (c.card_hover, c.dim, c.text);
+        let group = SharedString::from("latest-strip-rewind");
+        let button = div()
+            .id("latest-strip-rewind")
+            .group(group.clone())
+            .flex_none()
+            .size(px(24.))
+            .rounded(px(chat::R_CHIP))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(move |s| s.bg(hsla(hover)))
+            .tooltip(|_, cx| {
+                cx.new(|_| crate::sidebar_toggle::Tip(STRIP_REWIND_TIP.into()))
+                    .into()
+            })
+            // Its own click, not the strip's jump.
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                cx.stop_propagation();
+                this.rewind_to(you, window, cx);
+            }))
+            .child(
+                icon(Icon::Revert, px(14.), hsla(dim))
+                    .group_hover(group, move |s| s.text_color(hsla(ink))),
+            );
+        Some(
+            self.marked("latest-strip-rewind", button)
+                .into_any_element(),
+        )
     }
 
     /// The strip's click: the chat to its message, that message at the top of the view (gliding
@@ -264,7 +323,7 @@ impl AgentTab {
             let screen = f32::from(list.viewport_bounds().size.height);
             Glide {
                 view: self.view.clone(),
-                row,
+                target: Target::Row(row),
                 from: glide_from(from, to, screen),
                 to,
                 at: Instant::now(),
@@ -280,8 +339,32 @@ impl AgentTab {
         cx.notify();
     }
 
+    /// "Show in chat" on the docked question card (the opens fixed, 2026-11-23): the chat
+    /// glides down to its end as the strip's jump glides up (a jump with motion reduced), and
+    /// follows it again from there.
+    pub(super) fn glide_to_end(&mut self, cx: &mut Context<Self>) {
+        let list = self.pane().list.clone();
+        if cx.reduce_motion() {
+            self.strip.glide = None;
+            list.scroll_to_end();
+            cx.notify();
+            return;
+        }
+        let (from, to) = (scrolled(&list), end_offset(&list));
+        let screen = f32::from(list.viewport_bounds().size.height);
+        self.strip.glide = Some(Glide {
+            view: self.view.clone(),
+            target: Target::End,
+            from: glide_from(from, to, screen),
+            to,
+            at: Instant::now(),
+        });
+        cx.notify();
+    }
+
     /// One frame of the jump's glide (its first jumps to where the glide starts). Ends on the
-    /// message's row exactly; another view shown ends it.
+    /// message's row exactly, or on the chat's end (followed again); another view shown ends
+    /// it.
     fn glide_step(&mut self, window: &mut Window) {
         let Some(g) = &self.strip.glide else {
             return;
@@ -293,14 +376,22 @@ impl AgentTab {
         let list = self.pane().list.clone();
         let t = g.at.elapsed().as_secs_f32() * 1000. / GLIDE_MS as f32;
         if t >= 1. {
-            list.scroll_to(ListOffset {
-                item_ix: g.row,
-                offset_in_item: px(0.),
-            });
+            match g.target {
+                Target::Row(row) => list.scroll_to(ListOffset {
+                    item_ix: row,
+                    offset_in_item: px(0.),
+                }),
+                Target::End => list.scroll_to_end(),
+            }
             self.strip.glide = None;
             return;
         }
-        list.scroll_by(px(glide_at(g.from, g.to, t) - scrolled(&list)));
+        // The end is chased as it grows (a reply streaming in meanwhile).
+        let to = match g.target {
+            Target::Row(_) => g.to,
+            Target::End => end_offset(&list),
+        };
+        list.scroll_by(px(glide_at(g.from, to, t) - scrolled(&list)));
         window.request_animation_frame();
     }
 
@@ -360,6 +451,19 @@ impl AgentTab {
     #[cfg(feature = "ui-shots")]
     pub fn shot_latest_row(&self) -> Option<usize> {
         self.pane().latest.as_ref().map(|l| l.row)
+    }
+
+    /// Whether the strip offers its Rewind button (scenes).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_strip_rewinds(&self) -> bool {
+        super::rewind::strip_rewind(
+            self.conversation.items(),
+            self.conversation.latest_you(),
+            self.branching(),
+            self.view == View::Main,
+            self.paused,
+        )
+        .is_some()
     }
 
     /// Whether the jump's glide still runs (scenes wait for it).

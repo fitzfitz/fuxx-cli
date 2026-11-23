@@ -517,6 +517,12 @@ pub enum Event {
         /// The subagent (lane id) that asks; `None`: the main agent.
         by: Option<String>,
     },
+    /// The agent stopped waiting on its ask `id` (a permission's or a question's, as the card
+    /// is keyed) before you answered: Claude's `control_cancel_request` ("Permission request
+    /// withdrawn unanswered", a Stop or the session ending). The card settles at once.
+    AskWithdrawn {
+        id: String,
+    },
     /// A past question's reply as its result says it (the design review of batch 3, chore 8):
     /// your answers, one per question in order (`None`: you skipped it). Restored history only;
     /// a question closed already keeps its reply.

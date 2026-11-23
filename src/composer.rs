@@ -23,7 +23,7 @@ use gpui::{
     actions, div, fill, point, prelude::*, px, relative, size,
 };
 
-use crate::appearance::{Appearance, CursorFun};
+use crate::appearance::{Appearance, CursorFun, CursorShapeSetting};
 use crate::cursor_look::{self, Frames, PaintShape};
 use crate::grid::{CellView, CursorView, GridSnapshot};
 use crate::name_input::{next_char, prev_char, utf8_offset, utf16_offset, word_end, word_start};
@@ -1719,6 +1719,14 @@ impl Element for ComposerText {
         // shape, glide, trail, glow and sparks a pane would draw; "unset" by any program, so
         // the cursor setting's shape).
         let origin = point(left, bounds.top());
+        // Empty with a beam caret, the placeholder (or the guess) starts just right of the beam
+        // (`PLACEHOLDER_IN`), focused or not, so the words never move; any other shape drawn
+        // there (the hollow cell without focus) moves with them, onto their first letter.
+        let words_in = if placeholder.is_some() && settings.setting == CursorShapeSetting::Bar {
+            px(cursor_look::PLACEHOLDER_IN)
+        } else {
+            px(0.)
+        };
         let look = {
             let text = self.input.read(cx).buf.text();
             let blank = CellView::blank(&theme);
@@ -1757,8 +1765,16 @@ impl Element for ComposerText {
                 live.look(&snap, &theme, &mut input.motion, Instant::now())
             })
         };
+        // Where the cursor's cells start: shifted with the words, except a beam (before them).
+        let cursor_origin = |c: &crate::terminal_view::CursorLook| {
+            if c.shape == PaintShape::Bar {
+                origin
+            } else {
+                origin + point(words_in, px(0.))
+            }
+        };
         if let Some(c) = &look {
-            crate::terminal_view::paint_cursor_under(c, origin, &m, window);
+            crate::terminal_view::paint_cursor_under(c, cursor_origin(c), &m, window);
         }
         for (n, line) in lines.iter().enumerate() {
             let range = &rows[first + n];
@@ -1835,7 +1851,7 @@ impl Element for ComposerText {
             } else {
                 crate::card_view::fit_words(&words, cols)
             };
-            let at = point(bounds.left(), bounds.top());
+            let at = point(bounds.left() + words_in, bounds.top());
             if !words.is_empty() {
                 let run = TextRun {
                     len: words.len(),
@@ -1869,6 +1885,7 @@ impl Element for ComposerText {
         // block shows through its breath; then the other shapes and the sparks over the text.
         let mut drawn_caret = None;
         if let Some(c) = &look {
+            let origin = cursor_origin(c);
             let (col, n) = c.cell;
             let text = self.input.read(cx).buf.text();
             let row = &rows[first + n];

@@ -2352,8 +2352,9 @@ impl Workspace {
                                     div()
                                         .absolute()
                                         .top_0()
-                                        // Clear of the caret at the start.
-                                        .left(px(2.0))
+                                        // Clear of the caret at the start (its
+                                        // width and 1 pt).
+                                        .left(px(crate::cursor_look::PLACEHOLDER_IN))
                                         .text_color(hsla(ui.text_dim))
                                         .child(FILTER_PLACEHOLDER),
                                 )

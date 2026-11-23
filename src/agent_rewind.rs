@@ -98,6 +98,22 @@ pub(crate) fn stopped_link(items: &[Item], latest: Option<usize>, b: Branching) 
         .find(|&i| matches!(&items[i], Item::Notice(t) if t == STOPPED_NOTICE))
 }
 
+/// The message the latest-prompt strip's Rewind button rewinds (the opens fixed, 2026-11-23):
+/// the one the "Stopped" notice offers (`stopped_link`), in Main's view (`main`) of a tab not
+/// paused for its classic view (that process holds the conversation).
+pub(crate) fn strip_rewind(
+    items: &[Item],
+    latest: Option<usize>,
+    b: Branching,
+    main: bool,
+    paused: bool,
+) -> Option<usize> {
+    if !main || paused {
+        return None;
+    }
+    stopped_link(items, latest, b).and(latest)
+}
+
 /// A fork's title: the source's with " (fork)"; a fork of a fork counts on ("(fork 2)", …).
 pub(crate) fn fork_title(source: &str) -> String {
     if let Some(base) = source.strip_suffix(" (fork)") {
@@ -1308,6 +1324,35 @@ mod tests {
         let unread = vec![you(Some("u1"), false), notice(STOPPED_NOTICE)];
         assert_eq!(stopped_link(&unread, Some(0), CLAUDE), None);
         assert_eq!(stopped_link(&items, None, CLAUDE), None);
+    }
+
+    /// The latest-prompt strip's Rewind (the opens fixed, 2026-11-23): after a stop, in Main,
+    /// for the message the "Stopped" notice offers, while the provider can rewind and the
+    /// message was read; gone after the next send, in a lane's view and in a paused tab.
+    #[test]
+    fn the_strip_offers_rewind_while_the_stopped_notice_does() {
+        let items = vec![you(Some("u1"), true), notice("Hi"), notice(STOPPED_NOTICE)];
+        assert_eq!(strip_rewind(&items, Some(0), CLAUDE, true, false), Some(0));
+        assert_eq!(
+            strip_rewind(&items, Some(0), NONE, true, false),
+            None,
+            "agy"
+        );
+        assert_eq!(
+            strip_rewind(&items, Some(0), CLAUDE, false, false),
+            None,
+            "a lane's view"
+        );
+        assert_eq!(
+            strip_rewind(&items, Some(0), CLAUDE, true, true),
+            None,
+            "a paused tab"
+        );
+        let mut sent = items.clone();
+        sent.push(you(Some("u2"), false));
+        assert_eq!(strip_rewind(&sent, Some(3), CLAUDE, true, false), None);
+        let unread = vec![you(Some("u1"), false), notice(STOPPED_NOTICE)];
+        assert_eq!(strip_rewind(&unread, Some(0), CLAUDE, true, false), None);
     }
 
     #[test]

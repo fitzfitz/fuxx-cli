@@ -415,12 +415,25 @@ impl AgentTab {
                     // Answered (spec B-B): one quiet line, a check or a cross before it.
                     Some(answer) => {
                         let allowed = matches!(answer, Answer::Allowed | Answer::AlwaysAllowed);
+                        let withdrawn = *answer == Answer::Withdrawn;
+                        // Withdrawn (the agent stopped waiting): the question's "Not answered"
+                        // look, a dim circle and why on hover.
                         let (glyph, ink) = if allowed {
                             (Icon::Check, c.tool_ok)
+                        } else if withdrawn {
+                            (Icon::Circle, c.dim)
                         } else {
                             (Icon::Stop, c.failed)
                         };
+                        let tip = format!("{} stopped waiting before you answered.", look.label);
                         div()
+                            .id(SharedString::from(format!("permission-answer-{ix}")))
+                            .when(withdrawn, |d| {
+                                d.tooltip(move |_, cx| {
+                                    cx.new(|_| crate::sidebar_toggle::Tip(tip.clone().into()))
+                                        .into()
+                                })
+                            })
                             .w_full()
                             .h(px(22.))
                             .flex()

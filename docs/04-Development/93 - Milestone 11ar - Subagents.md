@@ -720,6 +720,7 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     - Left out for now: previews side by side on a wide card (they sit under the options); the narrow-card rules
       (chips and hint hidden under 440/460 pt); "Show in chat" glides (it jumps); a queued permission's own small
       variant; an agent banner names no tab, so its click goes to the oldest waiting question, not that banner's tab.
+      (The glide and the banner's tab: fixed in "Opens fixed (2026-11-23)" below.)
   - **Checks:** unit tests (each watched failing first, apart from a few written with their code, said so in the
     report): the translator's `ask_user_question_becomes_a_question_not_a_permission`, `its_tool_row_is_not_shown`,
     `an_answer_keeps_the_input_and_keys_answers_by_question_text`,
@@ -784,3 +785,49 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
       and `-answered-line`'s "stays put" check were each seen failing with their fix taken out). References refreshed
       for the question scenes (their look changed on purpose) and written for the new ones; the full
       `scripts/ui-shots.sh` 327 passed, 0 failed. Not yet seen in the real window.
+- **Opens fixed (2026-11-23)** (your words: "go fix the all the opens"; performance and ease of use win). Five items
+  left open by chore 8 and the designer:
+  - **The caret over the placeholder** (the lead designer: "Send your answers…" read like "$end"): as in a macOS
+    field, a beam caret sits just before the placeholder, never over its first letter. In the agent box the
+    placeholder (or the agent's guess) starts the beam's width and 1 pt right of it (`cursor_look::PLACEHOLDER_IN`,
+    3 pt) whenever the cursor setting is Bar, focused or not, so the words never move; the hollow cell without focus
+    moves with them. A block or underline stays on the first letter (your words, 2026-11-22). Every other field with
+    a placeholder over its caret goes 3 pt in from the caret's start too: the filter boxes (⌘K palette, Help, branch
+    switcher, host picker, new tab menu, find in file, the folder picker), the Files filter and the commit line (it
+    was over the caret); the address field already was.
+  - **A banner click goes to its own tab:** an agent's banner names its tab (`About::Tab`, request id
+    `fuxx-t{tab}-r{run}-…`, the window's run); its click shows that tab with the card it waits on taking the keys —
+    a question's card, or a permission's brought into sight with the box (its Enter allows) taking the keyboard. Only
+    a banner about nothing, or about a tab gone since, goes to the oldest waiting question as before
+    (`native_notify::landing`). Its banners replace each other as a terminal's do.
+  - **Claude's `control_cancel_request`:** Claude Code 2.1.330 withdraws a pending ask ("Permission request withdrawn
+    unanswered: the person pressed Stop, or the session is ending") with `{"type": "control_cancel_request",
+    "request_id": …}` (at times with `takes_late_allow`, `tool_use_id`, `session_id`; found in its binary, no model
+    called). claude.rs decodes it to `Event::AskWithdrawn { id }` (by the card's id: a permission's request id, a
+    question's tool call); the card settles at once instead of at the turn's end. A question shows "Not answered · …"
+    with "Claude stopped waiting before you answered."; a permission "Not answered · Bash npm test" with a dim circle
+    and the same tooltip (`Answer::Withdrawn`). An answer to it afterwards writes nothing; an unknown id says nothing.
+    The fixture `claude-withdrawn.jsonl` is synthetic (marked so) until a recording exists.
+  - **"Show in chat" glides** to the chat's end with the latest-prompt strip's glide (`GLIDE_MS`, at most 1.5
+    screens of it, the end chased as it grows), a jump with Reduce motion on, then follows the end again.
+  - **Rewind on the latest-prompt strip:** after a Stop (while the "Stopped" notice offers "Rewind to edit your
+    message"), the strip shows a 24 pt Rewind button (`Icon::Revert`, 14) at its right, "Rewind to edit this message",
+    running the same rewind; only in Main, where the agent can rewind and the message was read, not in a paused tab;
+    gone after the next send. Its click is its own (not the strip's jump).
+  - **AI's calls:** the placeholder moves only for a beam (a block or underline is drawn on the letter, as you asked
+    on 2026-11-22); a withdrawn question reuses "Not answered" (`Reply::Expired`, whose tooltip already said it), a
+    withdrawn permission gets its own `Answer::Withdrawn` so a turn-end expiry keeps "Expired"; a banner-landed
+    permission takes the box's keyboard (the box answers it) rather than a new key context.
+  - **Checks:** 2674 → 2682 tests, each watched failing first: `the_withdrawn_fixture_says_it_is_synthetic`,
+    `a_withdrawn_ask_settles_its_card_by_the_card_s_id`, `a_withdrawn_ask_can_t_be_answered_after`,
+    `a_withdrawn_ask_settles_now_and_an_answered_one_keeps_its_answer`, `request_ids_carry_an_agent_tab_and_its_run`,
+    `a_banner_click_lands_on_its_own_tab_and_falls_back_when_it_is_gone`, `a_glide_down_starts_within_the_last_stretch_too`,
+    `the_strip_offers_rewind_while_the_stopped_notice_does`. Scene checks (the first three seen failing first; the
+    strip's written with its code, its own-click check seen failing with the fix taken out):
+    `agent-box-terminal-text` (the placeholder clear of the beam, unmoved without focus, the hollow cell on its first
+    letter), `agent-question-anywhere` (a banner naming the younger question's tab lands there with the keys; a gone
+    tab falls back), `agent-tab-question-dock-tiny` ("Show in chat" glides, or jumps with Reduce motion, then follows
+    the end), `agent-rewind` (`-strip`: the button at the strip's right, its click the same dry run as the notice's
+    link and not the jump; `-strip-sent`: gone after the next send). The full
+    `scripts/ui-shots.sh` 322 passed, 5 failed (the five that fail on this Mac's 1× display on old commits too);
+    references not refreshed. Not yet seen in the real window.
