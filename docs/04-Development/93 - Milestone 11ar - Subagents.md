@@ -814,7 +814,26 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     message"), the strip shows a 24 pt Rewind button (`Icon::Revert`, 14) at its right, "Rewind to edit this message",
     running the same rewind; only in Main, where the agent can rewind and the message was read, not in a paused tab;
     gone after the next send. Its click is its own (not the strip's jump).
-  - **AI's calls:** the placeholder moves only for a beam (a block or underline is drawn on the letter, as you asked
+  - **Screenshots the same on any display** (the last open: the shots came out at 1× or 2× by which display was
+    main, so the references drifted and five scenes failed at 1×). Cause: GPUI sizes a window by its screen's
+    `backingScaleFactor` and `open_offscreen_window` puts the window on the primary screen. The runner now makes every
+    screen report 2× for its own process (`force_scale`, `-[NSScreen backingScaleFactor]` replaced; the shot is GPUI's
+    own Metal render, so no real 2× screen is needed) and checks a 16 pt window's shot is 32 px (`check_shot_scale`).
+    `UI_SHOTS_SCALE=1` shoots at 1× to check the scenes there (no fingerprints compared; `--update-refs` refuses it).
+    The five 1× failures were the checks' own 2× assumptions, now scale-correct: `sidebar-band` sampled New's old fill
+    at mid height, inside the `w` of "New" (its top lands higher at 1×), now above the words; `card-split` read the
+    lower bar's line at a half point (drawn there at 2×, snapped to a whole pixel at 1×), now counts one line's pixels
+    within 2 pt, and its hover check finds the quiet line's first pixel over the hairline too; `file-code-bars` expects
+    a round end's corner pixel as GPUI's quad shader covers it at the shot's scale (`corner_cover`: none at 2×, 0.59 at
+    1×) with the bar's edges snapped as GPUI draws them (`device_snap`); `file-tab-md-reader-column` expects lines of
+    GPUI's pixel-snapped height (26.4 is 26.5 at 2×, 26 at 1×); `file-tab-header-narrow` expects Where's floor as laid
+    out (`pixel_snap` of 12.5: 12 at 1×). Then a second cause of drift: since 2026-11-22 a scene's scratch sat in
+    `$TMPDIR/fuxx-t/<pid>`, and scenes draw their scratch paths, so about 100 shots changed every run; a scene's
+    scratch is now its own folder, `$TMPDIR/fuxx-t/shots/<hash of its name>`, the same every run in any process,
+    held by a lock (`test_temp::begin_scene`; a concurrent run falls back to the pid folder). All 733 references
+    re-recorded once at 2× (`--update-refs`, every scene: 181 folders, `files-menu`, `context-menu-chat` and
+    `files-drag-pill` among them; 5,372,612 bytes, just over the C3 trial's 5 MB mark).
+ the placeholder moves only for a beam (a block or underline is drawn on the letter, as you asked
     on 2026-11-22); a withdrawn question reuses "Not answered" (`Reply::Expired`, whose tooltip already said it), a
     withdrawn permission gets its own `Answer::Withdrawn` so a turn-end expiry keeps "Expired"; a banner-landed
     permission takes the box's keyboard (the box answers it) rather than a new key context.
@@ -830,4 +849,14 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     the end), `agent-rewind` (`-strip`: the button at the strip's right, its click the same dry run as the notice's
     link and not the jump; `-strip-sent`: gone after the next send). The full
     `scripts/ui-shots.sh` 322 passed, 5 failed (the five that fail on this Mac's 1× display on old commits too);
-    references not refreshed. Not yet seen in the real window.
+    references not refreshed. Not yet seen in the real window. The screenshots' fix: 2682 → 2683 tests
+    (`a_scene_folder_is_the_same_each_time_made_empty_and_refused_while_held`; with the `ui-shots` feature also
+    `an_edge_snaps_to_a_device_pixel_as_gpui_draws_it` and `a_round_corners_first_pixel_is_covered_by_the_scale`);
+    the full `scripts/ui-shots.sh` on this Mac's 1× display: 327 passed, 0 failed, fingerprints 693 same, 27 look
+    different, 0 differ in size, 0 without a reference; with `UI_SHOTS_SCALE=1` 327 passed, 0 failed. The 27 vary
+    between runs of the same code in a serial run too (the agent box's menus, the shell cards, the sliding sidebar
+    and title bar, `card-slide`): not the display; still open.
+- **The registry's scene check reads helpers too** (the lead, closing the opens): `each_area_file_is_repo_relative_and_
+  declares_its_own_scenes` (ui-shots tests) failed at HEAD because `agent_ask.rs` declares its scenes through
+  `visual("…")` / `state("…")`, wrapped by rustfmt. It now also accepts a helper call with the name first, whitespace
+  ignored. `cargo test --bin fuxx --features ui-shots`: 2733 passed.

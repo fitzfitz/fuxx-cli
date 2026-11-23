@@ -37,6 +37,23 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Screenshots the same on any display
+
+- **What:** the last open ("go fix the all the opens"), under "Opens fixed (2026-11-23)" in
+  [[93 - Milestone 11ar - Subagents]]. The screenshot runs shot at the main display's scale (GPUI reads the screen's
+  `backingScaleFactor`; the off-screen window sits on the primary screen), so the references drifted and five scenes
+  failed at 1×. The runner now makes every screen report 2× for its own process and checks it took; `UI_SHOTS_SCALE=1`
+  checks the scenes at 1×. The five checks were made scale-correct (pixel snapping, a round corner's coverage, the
+  line height). A scene's scratch folder no longer carries the process's pid (scenes draw their paths). Every
+  reference re-recorded once at 2× (733 in 181 folders). Docs: note 81 (C3) and note 50 ("Any display").
+- **Checks:** 2682 → 2683 tests (+2 `ui-shots`-feature harness tests); clippy 14/29 and 18/33 (unchanged, none on a
+  changed line); `cargo fmt --check` clean. Full `scripts/ui-shots.sh` on the 1× display: 327 passed, 0 failed;
+  fingerprints 693 same, 27 look different, 0 differ in size, 0 without a reference (the 27 vary run to run in a serial
+  run too: still open). `UI_SHOTS_SCALE=1`: 327 passed, 0 failed. Not checked with the Retina display attached (it
+  wasn't); the scale no longer comes from any display. The `ui-shots`-feature test
+  `each_area_file_is_repo_relative_and_declares_its_own_scenes` fails at HEAD (`agent_ask.rs` declares its scenes
+  through `visual(…)`); untouched.
+
 ### 2026-11-23 — Opens fixed: the caret, banner clicks, withdrawn asks, the glide, Rewind on the strip
 
 - **What:** the five items left open after chore 8 ("go fix the all the opens"), under "Opens fixed (2026-11-23)" in

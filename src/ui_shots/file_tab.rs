@@ -1036,9 +1036,15 @@ fn file_header_scenes() {
                 "{n}: the controls {controls:?} in the pane"
             );
             let place = cx.read(|cx| tab.read(cx).meta_bounds()[0]).expect("Where");
+            // Its floor as laid out: one em, snapped to device pixels (12.5 is 12 at 1x).
+            let floor = cx
+                .update_window(window, |_, window, _| {
+                    window.pixel_snap(px(ui_tokens::text::META))
+                })
+                .expect("the window");
             assert!(
-                place.size.width >= px(ui_tokens::text::META),
-                "{n}: Where never vanishes, its `…` stays ({place:?})"
+                place.size.width >= floor,
+                "{n}: Where never vanishes, its `…` stays ({place:?}, floor {floor:?})"
             );
             for b in segments.into_iter().flatten() {
                 assert!(inside(b), "{n}: a segment {b:?} in the pane");
@@ -4131,12 +4137,14 @@ fn file_code_guides_scenes() {
 }
 
 /// `file-code-bars` (both themes; M11ah Task 3): three Added rows are one 3 pt bar with rounded
-/// ends (its corner pixels show the row's tint, not the green; its middle the green); an Added
+/// ends (its corner pixels show the row's tint, not the green, at 2x; at 1x as much of the green
+/// as the curve covers, `corner_cover`; its middle the green); an Added
 /// run touching a Changed run leaves 2 pt between them (1 pt of each row's tint); the deleted
 /// lines' ▸ is still drawn; a press on any row of a run opens Diff.
 fn file_code_bars_scenes() {
     use crate::git_status::LineChange;
     use crate::layout_model::FileMode;
+    use crate::ui_tokens::code::BAR_WIDTH;
     use crate::ui_tokens::{MARK_MIN, ensure_contrast};
     use gpui::{Modifiers, MouseButton};
 
@@ -4171,9 +4179,14 @@ fn file_code_bars_scenes() {
         });
         keep_shot(&n, &shot);
         let (lh, top) = (f32::from(g.line_height), f32::from(g.bounds.top()));
-        let left = f32::from(g.bounds.left() + g.bar_left);
+        // The bar's edges as drawn: on device pixels (`device_snap`; at 1x a half point moves).
+        let scale = scale_of(&shot, dims);
+        let snap = |v: f32| device_snap(v, scale);
+        let left = snap(f32::from(g.bounds.left() + g.bar_left));
         let at = |x: f32, y: f32| pixel_at(&shot, dims, x, y);
-        let (y0, y1) = (top + lh * 2.0, top + lh * 5.0);
+        let (y0, y1) = (snap(top + lh * 2.0), snap(top + lh * 5.0));
+        // A corner pixel: the row's tint, with as much of the green as the round end covers.
+        let corner = crate::theme::mix(tint_green, green, corner_cover(BAR_WIDTH / 2.0, scale));
         // The run's middle is the green, at its full width.
         for dx in [0.4, 1.5, 2.6] {
             let p = at(left + dx, y0 + lh * 1.5);
@@ -4186,8 +4199,8 @@ fn file_code_bars_scenes() {
         for x in [left + 0.25, left + 2.75] {
             let p = at(x, y0 + 0.25);
             assert!(
-                live_near(p, tint_green, 10),
-                "{n}: top corner {p:?}, not {tint_green:?}"
+                live_near(p, corner, 10),
+                "{n}: top corner {p:?}, not {corner:?}"
             );
         }
         let p = at(left + 1.5, y0 + 2.0);
@@ -4195,7 +4208,10 @@ fn file_code_bars_scenes() {
         // The bottom end (touching the Changed run) is shortened by 1 pt and round.
         for x in [left + 0.25, left + 2.75] {
             let p = at(x, y1 - 1.25);
-            assert!(live_near(p, tint_green, 10), "{n}: bottom corner {p:?}");
+            assert!(
+                live_near(p, corner, 10),
+                "{n}: bottom corner {p:?}, not {corner:?}"
+            );
         }
         let p = at(left + 1.5, y1 - 3.0);
         assert!(live_near(p, green, 12), "{n}: above the gap {p:?}");

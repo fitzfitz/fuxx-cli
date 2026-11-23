@@ -353,7 +353,9 @@ fn file_tab_md_reader_column_scenes() {
                 continue;
             }
             let text = crate::md_preview::inline(spans).text;
-            let one_line = cx
+            // GPUI snaps a text line's height to device pixels (`pixel_snap`): 26.4 is 26.5
+            // at 2x, 26 at 1x.
+            let (one_line, line) = cx
                 .update_window(window, |_, window, _| {
                     let run = window.text_style().to_run(text.len());
                     let line = window.text_system().shape_line(
@@ -362,13 +364,14 @@ fn file_tab_md_reader_column_scenes() {
                         &[run],
                         None,
                     );
-                    f32::from(line.width)
+                    let height = window.pixel_snap(px(BODY * BODY_LINE));
+                    (f32::from(line.width), f32::from(height))
                 })
                 .expect("shape");
             let lines = (one_line / f32::from(b.size.width)).ceil().max(1.0);
             let high = f32::from(b.size.height);
             assert!(
-                high >= lines * BODY * BODY_LINE - 1.0,
+                high >= lines * line - 1.0,
                 "{n}: row {row} is {high} high, too short for {lines} lines of its text \
                  ({one_line} wide on one line, {} wide here)",
                 f32::from(b.size.width)

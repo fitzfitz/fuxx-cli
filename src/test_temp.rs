@@ -2,12 +2,28 @@
 //! `$TMPDIR/fuxx-t/<pid>`, which is removed when the run exits; a run that dies (killed,
 //! aborted) leaves its folder for the next run to sweep. The parent name is short because a
 //! Unix socket path is capped at 104 bytes on macOS and some tests bind one in here.
+//!
+//! A ui-shots scene's scratch is its own instead (`begin_scene`): a scene draws its scratch
+//! path (a project's folder in the status bar, a file's header), so a pid in it would change
+//! the picture, and the scene's reference fingerprint, every run. The scene's folder,
+//! `$TMPDIR/fuxx-t/shots/<hash of its name>`, is the same every run and in whichever process
+//! runs the scene.
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// The folder all runs' folders sit in.
 const PARENT: &str = "fuxx-t";
+
+/// The folder the scenes' folders (and their lock files) sit in, beside the runs' folders
+/// (not a pid, so never swept).
+const SHOTS: &str = "shots";
+
+/// The scene folder this process holds (`begin_scene`): the folder, the process that claimed
+/// it, and its held lock.
+type Claim = (PathBuf, u32, File);
+static SCENE: Mutex<Option<Claim>> = Mutex::new(None);
 
 /// The run's folder that set its removal at exit, and the process it belongs to: a forked
 /// child that exits before its `exec` must not remove its parent's folder.
@@ -18,9 +34,63 @@ unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> std::os::raw::c_int;
 }
 
-/// A path named `name` inside this run's folder (the folder exists; `name` doesn't, yet).
+/// A path named `name` inside this run's folder (the folder exists; `name` doesn't, yet);
+/// during a ui-shots scene, inside the scene's folder (`begin_scene`).
 pub fn dir(name: &str) -> PathBuf {
-    run().join(name)
+    let scene = SCENE.lock().unwrap_or_else(|e| e.into_inner());
+    match scene.as_ref() {
+        Some((folder, _, _)) => folder.join(name),
+        None => run().join(name),
+    }
+}
+
+/// A ui-shots scene starts (the runner, before each): the last scene's folder is removed, and
+/// `dir` gives paths in `$TMPDIR/fuxx-t/shots/<hash of key>` (the same every run) while this
+/// process holds that folder's lock. Another live process may hold it (a concurrent run, from
+/// another checkout too): then `dir` gives the run's own folder, as for a test.
+#[cfg_attr(not(feature = "ui-shots"), allow(dead_code))]
+pub fn begin_scene(key: &str) {
+    let mut scene = SCENE.lock().unwrap_or_else(|e| e.into_inner());
+    release(scene.take());
+    *scene = claim(&std::env::temp_dir().join(PARENT).join(SHOTS), key);
+}
+
+/// The folder for `key` in `shots`, made empty, and its lock (`<folder>.lock`, never removed,
+/// so two processes never lock two different files of one name); None when another process
+/// holds the lock or a killed run's leftover won't go.
+fn claim(shots: &Path, key: &str) -> Option<Claim> {
+    let name = format!("{:08x}", fnv1a(key));
+    std::fs::create_dir_all(shots).ok()?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(shots.join(format!("{name}.lock")))
+        .ok()?;
+    lock.try_lock().ok()?;
+    let folder = shots.join(name);
+    // A killed run's folder (its exit never removed it).
+    if folder.exists() && std::fs::remove_dir_all(&folder).is_err() {
+        return None;
+    }
+    std::fs::create_dir_all(&folder).ok()?;
+    // The exit hook (`remove_run`) is set with the run's folder.
+    run();
+    Some((folder, std::process::id(), lock))
+}
+
+/// Removes a claimed folder (by the process that claimed it), then lets its lock go.
+fn release(claim: Option<Claim>) {
+    if let Some((folder, owner, lock)) = claim {
+        remove_if_owner(&folder, owner, std::process::id());
+        drop(lock);
+    }
+}
+
+/// A short, stable hash of a scene's name (FNV-1a, 32 bits): its folder's name.
+fn fnv1a(key: &str) -> u32 {
+    key.bytes().fold(0x811c_9dc5, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+    })
 }
 
 /// This run's folder: made on first use, with the dead runs' folders swept and its own
@@ -42,6 +112,7 @@ extern "C" fn remove_run() {
     if let Some((root, owner)) = RUN.get() {
         remove_if_owner(root, *owner, std::process::id());
     }
+    release(SCENE.lock().unwrap_or_else(|e| e.into_inner()).take());
 }
 
 /// Removes `root` when the exiting process is the one that made it.
@@ -120,6 +191,30 @@ mod tests {
         assert!(!dead.exists(), "a dead run's folder goes");
         assert!(kept.exists(), "a live run's folder stays");
         assert!(other.exists(), "a folder not named by a pid stays");
+    }
+
+    #[test]
+    fn a_scene_folder_is_the_same_each_time_made_empty_and_refused_while_held() {
+        let shots = dir("fuxx-test-temp-shots");
+        // A fixed value, not the process's: the same folder every run.
+        let name = format!("{:08x}", fnv1a("scene"));
+        assert_eq!(name, "2063cb13");
+        assert_ne!(name, format!("{:08x}", fnv1a("scene-2")));
+        // A killed run's leftover is cleared when the scene's folder is claimed.
+        std::fs::create_dir_all(shots.join(&name).join("inside")).unwrap();
+        let claimed = claim(&shots, "scene").expect("a free folder");
+        assert_eq!(claimed.0, shots.join(&name));
+        assert!(claimed.0.is_dir() && !claimed.0.join("inside").exists());
+        // Held (by this claim's lock): refused, and the folder left alone.
+        std::fs::create_dir_all(claimed.0.join("made")).unwrap();
+        assert!(claim(&shots, "scene").is_none(), "held");
+        assert!(claimed.0.join("made").exists());
+        // Let go: removed, and free again.
+        let folder = claimed.0.clone();
+        release(Some(claimed));
+        assert!(!folder.exists(), "removed when let go");
+        let again = claim(&shots, "scene").expect("free again");
+        release(Some(again));
     }
 
     #[test]

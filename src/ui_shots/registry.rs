@@ -458,12 +458,14 @@ mod tests {
             );
             let text = std::fs::read_to_string(root.join(file))
                 .unwrap_or_else(|e| panic!("{file} does not read: {e}"));
+            let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
             for scene in *area {
-                assert!(
-                    text.contains(&format!("name: \"{}\"", scene.name)),
-                    "{file} does not declare scene {}",
-                    scene.name
-                );
+                // A `Scene { name: "…", … }` literal, or a call to one of the file's own scene
+                // helpers with the name first (`visual("…", …)`, `state("…", …)`), however
+                // rustfmt wraps it (whitespace ignored).
+                let declared = compact.contains(&format!("name:\"{}\"", scene.name))
+                    || compact.contains(&format!("(\"{}\",", scene.name));
+                assert!(declared, "{file} does not declare scene {}", scene.name);
             }
         }
     }

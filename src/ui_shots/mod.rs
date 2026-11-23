@@ -349,6 +349,15 @@ pub fn run(args: &[String]) -> ! {
         }
     };
     opts.png |= std::env::var("UI_SHOTS_PNG").is_ok_and(|v| v == "1");
+    // One scale for every shot, whichever display is attached (`force_scale`).
+    let scale = shot_scale();
+    if opts.update_refs && !fingerprint_scale_ok() {
+        eprintln!(
+            "ui-shots: --update-refs writes the {REF_SCALE}x references; unset {SCALE_ENV} (it is {scale})"
+        );
+        exit(2);
+    }
+    force_scale(scale);
     let filter = opts.filter.clone();
     // A shard's or the serial run's own timings, beside `timings.tsv` (which the script merges
     // them into): `timings.<I>.tsv` or `timings.serial.tsv`.
@@ -398,12 +407,19 @@ pub fn run(args: &[String]) -> ! {
     // A child process (cache-off, WebKit) is a filtered run of this binary: it leaves the
     // timings, the summary and the fingerprints to its parent.
     let child = std::env::var(CHILD_ENV).is_ok_and(|v| v == "1");
-    // Fingerprints (C3): only reported, never a failure.
-    let fingerprints = !child && picked.iter().any(|s| s.kind == Kind::Visual);
-    let mut refs = RefCounts::default();
-    if fingerprints {
-        measure_fingerprint_scale();
+    // The forced scale took (it panics if not). Not in a child: its parent has checked it,
+    // and a WebKit child's scene must have the process's first app (an app made and dropped
+    // before it aborts the Mermaid child: "app was released before async operation completed").
+    if !child {
+        check_shot_scale();
     }
+    // Fingerprints (C3): only reported, never a failure; only at the references' scale.
+    let fingerprints =
+        !child && fingerprint_scale_ok() && picked.iter().any(|s| s.kind == Kind::Visual);
+    if !child && !fingerprint_scale_ok() {
+        println!("ui-shots: shot at {scale}x ({SCALE_ENV}): fingerprints not compared");
+    }
+    let mut refs = RefCounts::default();
     // `--update-refs` over every scene replaces each scene's folder; narrowed by a filter or
     // `--changed`, it rewrites only the shots it took.
     let whole = options().filter.is_none() && options().changed.is_none();
@@ -412,6 +428,7 @@ pub fn run(args: &[String]) -> ! {
         (true, true) => Refs::Replace,
         (true, false) => Refs::Overwrite,
     };
+    let in_child = child;
     let mut times: Vec<(&str, f64, bool)> = Vec::new();
     for scene in picked {
         let name = scene.name;
@@ -426,6 +443,15 @@ pub fn run(args: &[String]) -> ! {
         // have left one set (its unwind skipped the reset).
         chrome_cache::shots_off::set(false);
         SCENE_THEMES.set(scene.themes);
+        // The scene's scratch in a folder of its own, without this process's pid (scenes draw
+        // their scratch paths): the same pictures each run. A child (the WebKit half of a
+        // scene, its parent waiting) has a folder of its own too.
+        let key = if in_child {
+            format!("{name} (child)")
+        } else {
+            name.to_string()
+        };
+        crate::test_temp::begin_scene(&key);
         let t = Instant::now();
         // A failed check panics (the default hook prints it); the run goes on to the next scene.
         let passed = std::panic::catch_unwind(AssertUnwindSafe(scene.run)).is_ok();
@@ -470,7 +496,7 @@ pub fn run(args: &[String]) -> ! {
             println!("ui-shots: fingerprints: {written} written");
         } else {
             let resized = if resized > 0 {
-                format!(", {resized} differ in size (another screen scale?)")
+                format!(", {resized} differ in size (the view's size changed?)")
             } else {
                 String::new()
             };

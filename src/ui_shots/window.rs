@@ -2031,11 +2031,20 @@ fn one_card_split_scenes() {
                     near(p, ui.card),
                     "{n}: the bar (the card) right under the line at ({x}, {y}): {p:?}"
                 );
+                // The split puts it on a half point (`down` is the line's middle): drawn there
+                // at 2x, snapped to a whole pixel at 1x; so one line's pixels within 2 pt of it.
                 let bar_line = down + HAIRLINE / 2.0 + bar - HAIRLINE / 2.0;
-                let p = at(x, bar_line);
-                assert!(
-                    near(p, ui.card_border),
-                    "{n}: the lower bar's bottom line at ({x}, {bar_line}): {p:?}"
+                let lines = count_down(
+                    &shot,
+                    dims,
+                    ui.card_border,
+                    x,
+                    bar_line - 2.0,
+                    bar_line + 2.0,
+                );
+                assert_eq!(
+                    lines, one,
+                    "{n}: the lower bar's bottom line at ({x}, {bar_line})"
                 );
             }
             // The vertical one, in the lower panes (clear of the horizontal lines).
@@ -2055,9 +2064,16 @@ fn one_card_split_scenes() {
                 assert_eq!(quiet, (2.0 * scale) as usize, "{n}: the 2 px quiet line");
                 let lines = count_along(&shot, dims, ui.card_border, y, x0, x1);
                 assert_eq!(lines, 0, "{n}: the hairline under the quiet line");
+                // Its first pixel, over the card or over the hairline: at 1x the hairline (on
+                // a half point) is snapped onto the quiet line's left pixel.
                 let over_card = quiet_line(at(x0, y), &ui);
+                let border = ui.card_border;
+                let over_line = quiet_line([border.r, border.g, border.b], &ui);
                 let first = (0..(8.0 * scale) as usize)
-                    .find(|&d| near(at(x0 + d as f32 / scale, y), over_card))
+                    .find(|&d| {
+                        let p = at(x0 + d as f32 / scale, y);
+                        near(p, over_card) || near(p, over_line)
+                    })
                     .expect("the line");
                 let middle = x0 + (first as f32 + scale) / scale;
                 assert!(

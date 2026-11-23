@@ -39,6 +39,9 @@ scenes its change touches.
   (`--png` writes the pictures to `target/ui-shots/`), but it is not part of the task's gate.
 - **Once per milestone, twice:** the full `scripts/ui-shots.sh` right before the whole-branch review, and
   again after its fix wave, before the milestone is called done.
+- **Any display** (2026-11-23): the scenes always shoot at 2x, whichever display is attached or main, so the
+  reference fingerprints in `tests/ui-shots-ref/` hold on any Mac. `UI_SHOTS_SCALE=1 scripts/ui-shots.sh`
+  checks the scenes at 1x (no fingerprints compared then; `--update-refs` refuses it).
 - **The rule:** logic that doesn't need a real window (what a view would show, positions from
   geometry, labels, state transitions) goes in plain functions tested by `cargo test`. A scene
   is for what needs a window: layout, pixels, real mouse and key events, focus.

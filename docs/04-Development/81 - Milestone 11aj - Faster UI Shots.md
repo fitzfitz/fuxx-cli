@@ -318,6 +318,17 @@ Skipped: `State` scenes, the 11 pictures that vary between runs of unchanged cod
 `activity-waiting`, `welcome-checking`, `changes-click`, `files-panel-follows-active-tab` in both themes, and
 `branch-switcher-open-mocha`), child runs (cache-off, WebKit) and failed scenes.
 
+**One scale, whatever the display (2026-11-23).** The shots used to come out at the main display's scale (GPUI sizes
+a window by its screen's `backingScaleFactor`, and the off-screen window sits on the primary screen), so on a Mac
+with a 1x main display the references drifted and five scenes failed. Now the runner makes every screen report 2x for
+its own process (`force_scale` in `harness.rs`) and checks a small window's shot came out at 2x (`check_shot_scale`):
+every run shoots at 2x on any display, and the references are 2x. `UI_SHOTS_SCALE=1` shoots a run at 1x instead (to
+check that the scenes' pixel checks hold on a 1x screen); such a run compares no fingerprints, and `--update-refs`
+refuses it. "Differ in size" now only means a view's size changed. A scene's scratch folder is its own, without the
+process's pid (`test_temp::begin_scene`: `$TMPDIR/fuxx-t/shots/<hash of the scene's name>`), since scenes draw their
+scratch paths and a pid in them changed the picture every run. Re-recorded then: 733 references in 181 folders,
+5,372,612 bytes (just over the 5 MB mark below).
+
 **Size:** written with `--all-themes --update-refs`: **393 references, 2,685,502 bytes (2.56 MB)**, under the 5 MB cap,
 so they are committed. The plain per-cell layout was enough; no coarser grid or packing was needed. The largest is
 19,775 bytes (each `preferences` page, 1400 × 900 pt). 58 of the 79 visual scenes have references; the other 21

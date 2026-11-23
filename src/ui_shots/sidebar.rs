@@ -1715,10 +1715,15 @@ fn sidebar_band_scenes() {
             ("New's left end", FOOTER_SIDE + 0.5),
             ("the gear's right end", w - FOOTER_SIDE - 0.5),
             ("between the bell and the gear", gear - 2.0),
-            ("New's old edge", 60.0),
         ] {
             assert!(near(at(x, mid), side), "{n}: nothing drawn at rest: {what}");
         }
+        // The old wide button's fill, at x 60: above New's words (x 60 is in its `w` at mid
+        // height, whose top lands a point or two higher at 1x than at 2x), inside the box.
+        assert!(
+            near(at(60.0, foot + 13.5), side),
+            "{n}: nothing drawn at rest: New's old fill, above its words"
+        );
         assert!(
             near(at(60.0, foot + 10.5), side),
             "{n}: no edge along New's top"

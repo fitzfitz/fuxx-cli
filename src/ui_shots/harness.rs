@@ -509,8 +509,8 @@ pub(super) fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
-/// A fingerprint cell's edge in device pixels: 8 points at the screen's scale (16 at 2x, the
-/// default; `run` sets it from the screen before the first scene that compares fingerprints).
+/// A fingerprint cell's edge in device pixels: 8 points at the shots' scale (16 at 2x, the
+/// default; `run` sets it from a measured shot before the first scene, `check_shot_scale`).
 static CELL_PX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16);
 
 /// Fingerprints are 1/8 of a shot's size in points: a cell is this many points across.
@@ -663,8 +663,8 @@ pub(super) enum Refs {
 pub(super) struct RefCounts {
     pub(super) same: usize,
     pub(super) different: usize,
-    /// Of a different size from their reference: another screen scale, or the view's size
-    /// changed.
+    /// Of a different size from their reference: the view's size changed (a cell is 8
+    /// points, so the scale never changes it).
     pub(super) resized: usize,
     pub(super) missing: usize,
     pub(super) written: usize,
@@ -728,9 +728,77 @@ pub(super) fn check_refs(scene: &str, refs: Refs, counts: &mut RefCounts) {
     });
 }
 
-/// Set the fingerprint cell from this screen's scale: a small window's shot, its device pixels
-/// over its points.
-pub(super) fn measure_fingerprint_scale() {
+/// The scale the references are shot at (device pixels per point): a Retina screen's, as most
+/// Macs run.
+pub(super) const REF_SCALE: f64 = 2.0;
+
+/// The environment variable that shoots a run at another scale: `UI_SHOTS_SCALE=1`, a 1x
+/// screen's (to check that the scenes' checks hold there too). Fingerprints are then not
+/// compared, nor written (`fingerprint_scale_ok`).
+pub(super) const SCALE_ENV: &str = "UI_SHOTS_SCALE";
+
+/// The scale this run shoots at: `UI_SHOTS_SCALE` (1 or 2), or `REF_SCALE`. Any other value
+/// is a mistake and stops the run.
+pub(super) fn shot_scale() -> f64 {
+    match std::env::var(SCALE_ENV).as_deref() {
+        Err(_) | Ok("") => REF_SCALE,
+        Ok("1") => 1.0,
+        Ok("2") => 2.0,
+        Ok(other) => {
+            eprintln!("ui-shots: {SCALE_ENV} is 1 or 2, not {other:?}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// The scale `force_scale` set, as `f64` bits (`REF_SCALE` until then).
+static FORCED_SCALE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0x4000_0000_0000_0000); // 2.0
+
+/// `-[NSScreen backingScaleFactor]` for this process once `force_scale` has run.
+extern "C-unwind" fn forced_backing_scale(
+    _screen: *mut objc2::runtime::AnyObject,
+    _cmd: objc2::runtime::Sel,
+) -> f64 {
+    f64::from_bits(FORCED_SCALE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Make every screen report `scale` as its backing scale, for this process: GPUI sizes a
+/// window's drawing (and so the shot `capture_screenshot` renders) by its screen's
+/// `backingScaleFactor` (gpui_macos `get_scale_factor`), and `open_offscreen_window` puts the
+/// window on the primary screen, so without this a run's pictures are 1x or 2x by whichever
+/// display is the main one (found 2026-11-23: a 1x main display, 340 fingerprints off). The
+/// window is never shown and the shot is GPUI's own Metal render, so no real screen is needed
+/// at that scale. Called once, before the first app; only the ui-shots runner does it.
+pub(super) fn force_scale(scale: f64) {
+    use objc2::runtime::{AnyClass, Imp, Sel};
+    FORCED_SCALE.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    let screen = AnyClass::get(c"NSScreen").expect("AppKit's NSScreen");
+    let method = screen
+        .instance_method(Sel::register(c"backingScaleFactor"))
+        .expect("-[NSScreen backingScaleFactor]");
+    let ours: extern "C-unwind" fn(*mut objc2::runtime::AnyObject, Sel) -> f64 =
+        forced_backing_scale;
+    // SAFETY: the replacement has the method's signature (an object, the selector; a CGFloat,
+    // f64 on every Mac fuxx builds for), and it is set once, on the main thread, before any
+    // window exists.
+    unsafe {
+        method.set_implementation(std::mem::transmute::<
+            extern "C-unwind" fn(*mut objc2::runtime::AnyObject, Sel) -> f64,
+            Imp,
+        >(ours));
+    }
+}
+
+/// Whether this run's fingerprints may be compared with the references (or written): only at
+/// `REF_SCALE`, the references' scale.
+pub(super) fn fingerprint_scale_ok() -> bool {
+    shot_scale() == REF_SCALE
+}
+
+/// Check that GPUI shoots at the forced scale (a small window's shot: its device pixels over
+/// its points), and set the fingerprint cell for it. Panics if the scale didn't take.
+pub(super) fn check_shot_scale() {
     const SIDE: f32 = 16.0;
     let theme = shot_theme(SHOT_THEMES[0].1);
     let shot = render(
@@ -738,7 +806,13 @@ pub(super) fn measure_fingerprint_scale() {
         gpui::size(gpui::px(SIDE), gpui::px(SIDE)),
         |_, cx| cx.new(|_| gpui::EmptyView).into(),
     );
-    set_fingerprint_scale(shot.width as f32 / SIDE);
+    let measured = shot.width as f32 / SIDE;
+    let wanted = shot_scale() as f32;
+    assert!(
+        measured == wanted,
+        "ui-shots: shots come out at {measured}x, not the forced {wanted}x"
+    );
+    set_fingerprint_scale(measured);
 }
 
 /// The terminal's font as the app builds it with no font settings (bundled JetBrains Mono).
@@ -801,6 +875,30 @@ pub(super) fn gap(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb) -> u8 {
 /// Whether pixel `p` is colour `c` (give or take 3 per channel).
 pub(super) fn near(p: [u8; 3], c: alacritty_terminal::vte::ansi::Rgb) -> bool {
     gap(p, c) <= 3
+}
+
+/// Where GPUI draws a quad's edge at `points`, for a shot at `scale`: on the nearest device
+/// pixel, half toward zero (gpui's `round_to_device_pixel`, as `Window::pixel_snap`). An
+/// edge on a half point stays put at 2x and moves half a point at 1x.
+pub(super) fn device_snap(points: f32, scale: f32) -> f32 {
+    let v = points * scale;
+    (v.abs() - 0.5).ceil().copysign(v) / scale
+}
+
+/// How much of a rounded corner's first device pixel (its centre half a pixel in from each edge)
+/// a quad covers at `scale`: GPUI's quad shader blends it `0.5 - <its centre's distance outside
+/// the curve>`, in device pixels. A 1.5 pt corner: 0 at 2x (the pixel is clear of the curve),
+/// about 0.59 at 1x (its centre is just inside). For a radius of more than half a pixel (the
+/// pixel's centre inside the curve's square); a square corner covers it whole.
+pub(super) fn corner_cover(radius: f32, scale: f32) -> f32 {
+    let inset = 0.5 / scale;
+    let outside = ((radius - inset) * std::f32::consts::SQRT_2 - radius) * scale;
+    (0.5 - outside).clamp(0.0, 1.0)
+}
+
+/// The shot's scale: its device pixels per point.
+pub(super) fn scale_of(shot: &Shot, dims: Size<Pixels>) -> f32 {
+    shot.width as f32 / f32::from(dims.width)
 }
 
 /// The window pixel at (`x`, `y`) points.
@@ -1338,6 +1436,27 @@ mod tests {
             height: h,
             rgba,
         }
+    }
+
+    #[test]
+    fn an_edge_snaps_to_a_device_pixel_as_gpui_draws_it() {
+        // On a half point: kept at 2x, half toward zero at 1x.
+        assert_eq!(device_snap(286.5, 2.0), 286.5);
+        assert_eq!(device_snap(286.5, 1.0), 286.0);
+        assert_eq!(device_snap(12.5, 1.0), 12.0);
+        assert_eq!(device_snap(26.4, 2.0), 26.5);
+        assert_eq!(device_snap(26.4, 1.0), 26.0);
+        assert_eq!(device_snap(286.6, 1.0), 287.0);
+    }
+
+    #[test]
+    fn a_round_corners_first_pixel_is_covered_by_the_scale() {
+        // A 3 pt bar's 1.5 pt ends: clear of the curve at 2x, mostly covered at 1x.
+        assert_eq!(corner_cover(1.5, 2.0), 0.0);
+        let one = corner_cover(1.5, 1.0);
+        assert!((one - 0.586).abs() < 0.001, "{one}");
+        // A rounder corner leaves more of it out.
+        assert!(corner_cover(3.0, 1.0) < one);
     }
 
     #[test]
