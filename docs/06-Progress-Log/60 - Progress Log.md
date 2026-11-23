@@ -15,6 +15,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ## Current status snapshot
 
 - **Latest (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
+- **Released (2026-11-23):** **v0.12.7** (run 45097026110, `fuxx-0.12.7.zip`): chat text selection, the thinking fade, the graph fixture's made-up history.
 - **Released (2026-11-23):** **v0.12.6** (run 45070831970, `fuxx-0.12.6.zip`): M11ar, M11au and the chores since v0.12.5.
 - **Released (2026-11-22):** **v0.12.2** (run 45007594771, `fuxx-0.12.2.zip`): the agent box's sweep and the evening's fixes.
 - **Released (2026-11-22):** **v0.12.1** (run 44965749641, `fuxx-0.12.1.zip`): the tool modal blink fixed.
@@ -35,6 +36,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-23 — v0.12.7 released
+
+- **What:** your word ("make a release for fuxx-cli"). `Cargo.toml` 0.12.6 → 0.12.7 (`0273790`), tag `v0.12.7`;
+  the Release workflow (run 45097026110: test, both slices, release) published
+  `https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.12.7` with `fuxx-0.12.7.zip`. In it since v0.12.6: chat
+  text can be selected and copied, the thinking line's fade settles cleanly, the graph screenshot's history made up,
+  a smaller build folder. The in-app updater offers it.
+- **Checks:** `cargo test` 2493 passed locally before tagging; the tag matched `Cargo.toml`
+  (`scripts/check-release-tag.sh`); all four jobs green.
 
 ### 2026-11-23 — Chore: built with Rust and chaos
 

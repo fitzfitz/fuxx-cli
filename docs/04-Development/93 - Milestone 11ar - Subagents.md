@@ -263,7 +263,7 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   `v0.4.0`), and so is the name in [[74 - Milestone 11w - Graph]]'s example. The six fingerprints were rewritten
   (`changes-graph`, `-card`, `-closed`, both themes). The old strings are still in the pushed history: rewriting
   that needs a force-push, so it waits for your word.
-- **Chat text can be selected and copied** (your report, 2026-11-23: "on agent chatbox, I cannot block texts then
+- **Chat text can be selected and copied** (released in v0.12.7; your report, 2026-11-23: "on agent chatbox, I cannot block texts then
   do a copy or any other stuff that can be done to any texts normally"): the chat is drawn with GPUI's
   `StyledText`, which has no selection, and the chat never had one of its own (the terminal, file tabs and shell
   cards each built theirs). New `src/chat_select.rs`: every piece of chat text (your messages, and the agent's
