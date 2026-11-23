@@ -601,6 +601,8 @@ pub fn transcript_events(text: &str) -> Vec<Past> {
     let mut out = Vec::new();
     // Past subagents (M11ar): each Agent call is a lane, ended by its result.
     let mut agents: HashSet<String> = HashSet::new();
+    // Past questions (batch 3, chore 8), by their call's id: their result is their reply.
+    let mut asked: HashMap<String, Vec<Question>> = HashMap::new();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -615,7 +617,41 @@ pub fn transcript_events(text: &str) -> Vec<Past> {
                     .as_array()
                     .is_some_and(|a| a.iter().any(|i| i["type"] == "tool_result"));
                 if results {
-                    out.extend(translator.user(&v).into_iter().map(Past::Event));
+                    // A question's result replies to it (what you chose, or skipped); it has no
+                    // tool row to finish. A result that says neither leaves it to expire.
+                    let mut replied: HashSet<String> = HashSet::new();
+                    for r in content.as_array().into_iter().flatten() {
+                        let Some(id) = r["tool_use_id"].as_str() else {
+                            continue;
+                        };
+                        let Some(questions) = asked.remove(id) else {
+                            continue;
+                        };
+                        replied.insert(id.to_string());
+                        let text = result_text(&r["content"]);
+                        let answers = if r["is_error"] == true {
+                            if !text.contains(SKIPPED) {
+                                continue;
+                            }
+                            None
+                        } else {
+                            Some(past_answers(&questions, &text, &v["toolUseResult"]))
+                        };
+                        out.push(Past::Event(Event::QuestionReplied {
+                            id: id.to_string(),
+                            answers,
+                        }));
+                    }
+                    out.extend(
+                        translator
+                            .user(&v)
+                            .into_iter()
+                            .filter(|e| {
+                                !matches!(e, Event::ToolFinished { id, .. }
+                                    if replied.contains(id))
+                            })
+                            .map(Past::Event),
+                    );
                     for r in content.as_array().into_iter().flatten() {
                         if let Some(id) = r["tool_use_id"].as_str()
                             && agents.remove(id)
@@ -656,6 +692,7 @@ pub fn transcript_events(text: &str) -> Vec<Past> {
                         // result answers it; the history's settling expires the rest).
                         Some(ASK_TOOL) => {
                             if let Some(questions) = questions_of(&b["input"]) {
+                                asked.insert(id.to_string(), questions.clone());
                                 out.push(Past::Event(Event::Question {
                                     id: id.to_string(),
                                     questions,
@@ -935,6 +972,117 @@ fn listed_label(label: &str) -> String {
         Value::String(label.to_string()).to_string()
     } else {
         label.to_string()
+    }
+}
+
+/// Your answers to past `questions` (one per question, in order) as their result says them:
+/// the result's own record (`toolUseResult.answers`, keyed by each question's words) when it is
+/// there, else its text (`User has answered your questions: "Q"="A", …`). Each answer is split
+/// on ", " against its question's labels (a label with ", " or a quote comes JSON-quoted, as
+/// `listed_label` sends it); what matches no label is your own words. A question with no answer
+/// is left empty.
+fn past_answers(questions: &[Question], text: &str, record: &Value) -> Vec<QAnswer> {
+    let said: HashMap<&str, String> = match record["answers"].as_object() {
+        Some(map) => questions
+            .iter()
+            .filter_map(|q| {
+                let a = match &map.get(&q.text)? {
+                    Value::String(a) => a.clone(),
+                    Value::Array(list) => list
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(listed_label)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    _ => return None,
+                };
+                Some((q.text.as_str(), a))
+            })
+            .collect(),
+        None => answers_in_text(questions, text),
+    };
+    questions
+        .iter()
+        .map(|q| match said.get(q.text.as_str()) {
+            Some(a) => answer_of(q, a),
+            None => QAnswer::default(),
+        })
+        .collect()
+}
+
+/// The answers in a result's text, by question: each `"Q"="` found, its answer running to the
+/// next question's (less the `", ` between them), the last to the last quote.
+fn answers_in_text<'q>(questions: &'q [Question], text: &str) -> HashMap<&'q str, String> {
+    let mut at: Vec<(usize, usize, &str)> = questions
+        .iter()
+        .filter_map(|q| {
+            let key = format!("\"{}\"=\"", q.text);
+            let start = text.find(&key)?;
+            Some((start, start + key.len(), q.text.as_str()))
+        })
+        .collect();
+    at.sort_unstable();
+    let mut out = HashMap::new();
+    for (k, &(_, from, q)) in at.iter().enumerate() {
+        let rest = match at.get(k + 1) {
+            Some(&(next, _, _)) => text[from..next]
+                .strip_suffix(", ")
+                .unwrap_or(&text[from..next]),
+            None => &text[from..],
+        };
+        let Some(end) = rest.rfind('"') else {
+            continue;
+        };
+        out.insert(q, rest[..end].to_string());
+    }
+    out
+}
+
+/// One answer's words read back against question `q`'s labels: a single-select's whole answer
+/// is a label or your words; a multi-select's parts are taken from the start while they are
+/// labels, the rest is your words.
+fn answer_of(q: &Question, said: &str) -> QAnswer {
+    let said = said.trim();
+    if said.is_empty() {
+        return QAnswer::default();
+    }
+    if !q.multi {
+        return match q.options.iter().find(|o| o.label == said) {
+            Some(o) => QAnswer {
+                labels: vec![o.label.clone()],
+                other: None,
+            },
+            None => QAnswer {
+                labels: Vec::new(),
+                other: Some(said.to_string()),
+            },
+        };
+    }
+    // The longest label first, so "Unit tests, e2e" never reads as "Unit".
+    let mut options: Vec<&QOption> = q.options.iter().collect();
+    options.sort_by_key(|o| std::cmp::Reverse(listed_label(&o.label).len()));
+    let mut labels = Vec::new();
+    let mut rest = said;
+    'parts: while !rest.is_empty() {
+        for o in &options {
+            let shown = listed_label(&o.label);
+            if let Some(after) = rest.strip_prefix(shown.as_str())
+                && (after.is_empty() || after.starts_with(", "))
+            {
+                if !labels.contains(&o.label) {
+                    labels.push(o.label.clone());
+                }
+                rest = after.strip_prefix(", ").unwrap_or(after);
+                continue 'parts;
+            }
+        }
+        break;
+    }
+    // In the options' order, as the card keeps them.
+    labels.sort_by_key(|l| q.options.iter().position(|o| &o.label == l));
+    QAnswer {
+        labels,
+        other: (!rest.trim().is_empty()).then(|| rest.trim().to_string()),
     }
 }
 
@@ -2868,14 +3016,102 @@ mod tests {
         let done = past
             .iter()
             .position(
-                |p| matches!(p, Past::Event(Event::ToolFinished { id, .. }) if id == "toolu_h1"),
+                |p| matches!(p, Past::Event(Event::QuestionReplied { id, .. }) if id == "toolu_h1"),
             )
-            .expect("its result");
+            .expect("its result replies to it");
         assert!(q < done);
         assert!(!past.iter().any(|p| matches!(
             p,
             Past::Event(Event::ToolStarted { name, .. }) if name == "AskUserQuestion"
         )));
+    }
+
+    /// The fixture's question as a past `tool_use`, and a `user` line with its result.
+    fn past_ask(result: Value, extra: Value) -> String {
+        let questions = lines_of(ASK)[2]["message"]["content"][0]["input"].clone();
+        let asked = json!({"type": "assistant", "uuid": "a1", "message": {"id": "m1",
+            "role": "assistant", "content": [{"type": "tool_use", "id": "toolu_h1",
+            "name": "AskUserQuestion", "input": questions}]}});
+        let mut done = json!({"type": "user", "uuid": "u1", "message": {"role": "user",
+            "content": [result]}});
+        if let Value::Object(more) = extra {
+            for (k, v) in more {
+                done[k] = v;
+            }
+        }
+        format!("{asked}\n{done}\n")
+    }
+
+    fn replied(text: &str) -> Option<Option<Vec<QAnswer>>> {
+        transcript_events(text).into_iter().find_map(|p| match p {
+            Past::Event(Event::QuestionReplied { id, answers }) if id == "toolu_h1" => {
+                Some(answers)
+            }
+            _ => None,
+        })
+    }
+
+    /// The design review (fix 3): a restored answer keeps what you chose — each question matched
+    /// by its words, a multi-select split on ", " against its labels, the rest your own words.
+    #[test]
+    fn a_restored_answer_reads_back_its_picks_and_words() {
+        let text = past_ask(
+            json!({"type": "tool_result", "tool_use_id": "toolu_h1",
+                "content": "User has answered your questions: \"Which test runner should I set up?\"=\"Vitest\", \"Which checks should run in CI?\"=\"Lint, Unit tests, a11y audit\", \"Should I add a coverage report?\"=\"Only for src/\". You can now continue with the user's answers in mind."}),
+            json!({}),
+        );
+        assert_eq!(
+            replied(&text),
+            Some(Some(vec![
+                picked(&["Vitest"], None),
+                picked(&["Lint", "Unit tests"], Some("a11y audit")),
+                picked(&[], Some("Only for src/")),
+            ]))
+        );
+        // Its result is the reply: no tool row's result for it.
+        assert!(
+            !transcript_events(&text).iter().any(
+                |p| matches!(p, Past::Event(Event::ToolFinished { id, .. }) if id == "toolu_h1")
+            )
+        );
+    }
+
+    /// The result's own record (`toolUseResult.answers`) is read when it is there; a question
+    /// left out is unanswered.
+    #[test]
+    fn a_restored_answer_prefers_the_result_record() {
+        let text = past_ask(
+            json!({"type": "tool_result", "tool_use_id": "toolu_h1",
+                "content": "User has answered your questions: …"}),
+            json!({"toolUseResult": {"answers": {
+                "Which checks should run in CI?": "Type check, Lint"}}}),
+        );
+        assert_eq!(
+            replied(&text),
+            Some(Some(vec![
+                QAnswer::default(),
+                picked(&["Lint", "Type check"], None),
+                QAnswer::default(),
+            ]))
+        );
+    }
+
+    /// A skipped question (fuxx's deny message) replays as skipped, not "Not answered".
+    #[test]
+    fn a_restored_skip_is_skipped() {
+        let text = past_ask(
+            json!({"type": "tool_result", "tool_use_id": "toolu_h1", "is_error": true,
+                "content": "The user skipped these questions."}),
+            json!({}),
+        );
+        assert_eq!(replied(&text), Some(None));
+        // Another failure says nothing: the question expires.
+        let text = past_ask(
+            json!({"type": "tool_result", "tool_use_id": "toolu_h1", "is_error": true,
+                "content": "Interrupted"}),
+            json!({}),
+        );
+        assert_eq!(replied(&text), None);
     }
 
     #[test]

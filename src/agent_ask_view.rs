@@ -13,8 +13,9 @@
 
 use super::*;
 use crate::agent_ask::{
-    AskKey, AskUi, DockKind, Effect, asks_line, dock_kind, dock_shows, header_of, preview_lines,
-    recommended, shown_label, summary_parts,
+    AskKey, AskUi, CardLayout, DockKind, Effect, asks_line, card_width, chip_of, dock_kind,
+    dock_shows, header_of, layout_for, preview_lines, recommended, shown_label, strip_covers_card,
+    summary_spans,
 };
 use crate::agent_conversation::Reply;
 use crate::providers::{QAnswer, Question};
@@ -41,6 +42,8 @@ pub struct ShotAsk {
     pub review: bool,
     pub armed: bool,
     pub anyway: bool,
+    /// The light shows (the tab focused, the window the key window).
+    pub lit: bool,
 }
 
 /// Where a card is drawn: in its chat row, or docked over the chat's bottom.
@@ -79,6 +82,25 @@ pub(crate) struct AskState {
     /// Whether the card was below its place after the last layout: what a draw goes by while
     /// its row isn't measured (a question just come is measured as it lays out: no flash).
     after: Rc<Cell<bool>>,
+    /// The chat's width the card was last laid out for (its layout follows the card's width:
+    /// the design review's side-by-side previews and narrow rules).
+    width: Rc<Cell<f32>>,
+    /// The oldest open ask last seen: when another becomes it, its row is laid out again (a
+    /// queued line becomes its card).
+    oldest: Option<usize>,
+}
+
+/// Whether the latest-prompt strip would cover the open ask's row `row` (the design review: the
+/// "waiting" line is never covered), from the list as it was last laid out.
+pub(super) fn ask_under_strip(list: &ListState, row: Option<usize>, cover: f32) -> bool {
+    let view = list.viewport_bounds();
+    if view.size.height <= px(0.) {
+        return false;
+    }
+    let bounds = row
+        .and_then(|r| list.bounds_for_item(r))
+        .map(|b| (f32::from(b.top()), f32::from(b.bottom())));
+    strip_covers_card(bounds, f32::from(view.top()), cover)
 }
 
 impl AgentTab {
@@ -99,6 +121,14 @@ impl AgentTab {
     /// The card follows the conversation (after every change): a new oldest question gets a
     /// fresh card with the keys, its Waiting marks and one lap of the box rim; none, no card.
     pub(super) fn sync_ask(&mut self, cx: &mut Context<Self>) {
+        // Another ask is the oldest now: its row (a queued line until now) is laid out again.
+        let oldest = self.conversation.oldest_ask();
+        if oldest != self.ask.oldest {
+            self.ask.oldest = oldest;
+            if let Some(ix) = oldest {
+                self.relayout_item(ix);
+            }
+        }
         let target = self
             .ask_target()
             .map(|(_, id, questions)| (id.to_string(), questions.to_vec()));
@@ -148,12 +178,44 @@ impl AgentTab {
     /// Before a draw: whether the light shows (the card has the keys and the box the
     /// keyboard); its row is laid out again when that changes.
     pub(super) fn ask_frame(&mut self, window: &Window, cx: &App) {
-        let lit =
-            self.ask_keys_on(cx) && self.composer.read(cx).focus_handle(cx).is_focused(window);
-        if lit != self.ask.lit {
+        if self.ask.ui.is_none() {
+            return;
+        }
+        // No light while the window isn't the key window (the design review; the picks stay).
+        let composer = self.composer.read(cx);
+        let lit = self.ask_keys_on(cx)
+            && composer.focus_handle(cx).is_focused(window)
+            && composer.is_key_window(window);
+        let view_w = f32::from(self.pane().list.viewport_bounds().size.width);
+        let resized = view_w > 0. && view_w != self.ask.width.get();
+        if resized {
+            self.ask.width.set(view_w);
+        }
+        if lit != self.ask.lit || resized {
             self.ask.lit = lit;
             self.relayout_ask();
         }
+    }
+
+    /// The open card's layout for the chat's width as last laid out (before the first layout:
+    /// the widest column).
+    fn ask_layout(&self) -> CardLayout {
+        let view_w = self.ask.width.get();
+        layout_for(if view_w > 0. {
+            card_width(view_w)
+        } else {
+            card_width(f32::MAX)
+        })
+    }
+
+    /// The oldest open ask's row in the shown view (a question or a permission).
+    pub(super) fn ask_row(&self) -> Option<usize> {
+        let ix = self.conversation.oldest_ask()?;
+        let pane = self.pane();
+        pane.order
+            .binary_search(&ix)
+            .ok()
+            .map(|k| k + pane.head as usize)
     }
 
     /// "⟨Label⟩ asks: ⟨its first question⟩ (+N more)" while a question is the oldest ask (a
@@ -164,27 +226,25 @@ impl AgentTab {
         Some(asks_line(&label, questions))
     }
 
-    /// Who asks question `ix`: its lane's label, else the agent's.
-    fn asker_label(&self, ix: usize) -> String {
+    /// Who asks question `ix`: its lane's subagent type (its task after it, when that says
+    /// more; the design review), else the agent's label.
+    fn asker(&self, ix: usize) -> (String, Option<String>) {
         match &self.conversation.items()[ix] {
-            Item::Question { by: Some(b), .. } => self
-                .conversation
-                .lane(b)
-                .map_or_else(|| self.label().to_string(), |l| l.label.clone()),
-            _ => self.label().to_string(),
+            Item::Question { by: Some(b), .. } => match self.conversation.lane(b) {
+                Some(l) => crate::agent_ask::asker(&l.kind, &l.label),
+                None => (self.label().to_string(), None),
+            },
+            _ => (self.label().to_string(), None),
         }
+    }
+
+    fn asker_label(&self, ix: usize) -> String {
+        self.asker(ix).0
     }
 
     /// The box's placeholder while it is the card's Other.
     pub(super) fn ask_placeholder(&self) -> Option<String> {
-        let ui = self.ask.ui.as_ref()?;
-        Some(match ui.current() {
-            Some(q) if !q.header.trim().is_empty() => {
-                format!("Other answer for {}\u{2026}", q.header.trim())
-            }
-            Some(_) => "Other answer\u{2026}".to_string(),
-            None => "\u{23ce} sends your answers".to_string(),
-        })
+        self.ask.ui.as_ref().map(AskUi::placeholder)
     }
 
     /// The question waits: the keys go to its card (a click on the tab, ⇧⌘A, a banner),
@@ -443,12 +503,18 @@ impl AgentTab {
 
     /// The younger of two open asks (the designer): one quiet line, not interactive.
     fn ask_queued(&self, ix: usize, questions: &[Question], look: &Look) -> AnyElement {
-        let c = &look.c;
         let line = format!(
             "Next \u{b7} {}",
             asks_line(&self.asker_label(ix), questions)
         );
-        div()
+        self.queued_line(ix, line, look)
+    }
+
+    /// A queued ask's line (a question or a permission): one quiet line, "Answer the one above
+    /// first".
+    pub(super) fn queued_line(&self, ix: usize, line: String, look: &Look) -> AnyElement {
+        let c = &look.c;
+        let el = div()
             .id(SharedString::from(format!("ask-queued-{ix}")))
             .w_full()
             .h(px(size::QUEUED_H))
@@ -472,8 +538,8 @@ impl AgentTab {
                     .min_w(px(0.))
                     .truncate()
                     .child(SharedString::from(line)),
-            )
-            .into_any_element()
+            );
+        self.marked("ask-queued", el).into_any_element()
     }
 
     /// The card docked over the chat's bottom while its row sits below its place (the
@@ -509,6 +575,7 @@ impl AgentTab {
             .then_some((kind, h))
         };
         let after = self.ask.after.clone();
+        let width = self.ask.width.clone();
         let dock = decide(&list, after.get());
         self.ask.dock = dock;
         let tab = cx.entity_id();
@@ -516,7 +583,10 @@ impl AgentTab {
             move |_, window, _| {
                 let now = decide(&list, true);
                 after.set(now.is_some());
-                if now.map(|d| d.0) != dock.map(|d| d.0) {
+                // A new width lays the card out again (`ask_frame`), in the next frame.
+                let w = f32::from(list.viewport_bounds().size.width);
+                let resized = w > 0. && w != width.get();
+                if resized || now.map(|d| d.0) != dock.map(|d| d.0) {
                     window.on_next_frame(move |_, cx| cx.notify(tab));
                 }
             },
@@ -585,11 +655,12 @@ impl AgentTab {
         let c = &look.c;
         let docked = place != Place::Chat;
         let tag = if docked { "dock" } else { "row" };
-        let label = self.asker_label(ix);
+        let (label, task) = self.asker(ix);
         let by = match &self.conversation.items()[ix] {
             Item::Question { by, .. } => by.clone(),
             _ => None,
         };
+        let layout = self.ask_layout();
         let (dim, ink) = (c.ask_dim, c.ask_text);
         let link = move |id: &str| {
             div()
@@ -609,10 +680,14 @@ impl AgentTab {
         let open_lane = by
             .filter(|_| self.view == crate::agent_lanes::View::Main)
             .map(|lane| {
-                let name = label.clone();
+                let name = self
+                    .conversation
+                    .lane(&lane)
+                    .map_or_else(|| label.clone(), |l| l.label.clone());
                 let tip: SharedString = format!("Show {name}'s view").into();
+                // "Open lane": the head says the task already (the designer's second look).
                 link("ask-open-lane")
-                    .child(SharedString::from(format!("Open {name}")))
+                    .child("Open lane")
                     .tooltip(move |_, cx| {
                         cx.new(|_| crate::sidebar_toggle::Tip(tip.clone())).into()
                     })
@@ -642,9 +717,29 @@ impl AgentTab {
                     .text_size(px(text::META))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(c.ask_head))
-                    .child(SharedString::from(format!(
-                        "{label} is waiting for your answer"
-                    ))),
+                    .child({
+                        // A lane's task after who waits, quiet (the design review).
+                        let waits = format!("{label} is waiting for your answer");
+                        let at = waits.len();
+                        let whole = match &task {
+                            Some(t) => format!("{waits} \u{b7} {t}"),
+                            None => waits,
+                        };
+                        let runs = (whole.len() > at)
+                            .then(|| {
+                                (
+                                    at..whole.len(),
+                                    HighlightStyle {
+                                        color: Some(hsla(c.ask_dim)),
+                                        font_weight: Some(FontWeight::NORMAL),
+                                        ..Default::default()
+                                    },
+                                )
+                            })
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                        StyledText::new(whole).with_highlights(runs)
+                    }),
             )
             .children(open_lane)
             .when(docked, |d| {
@@ -671,7 +766,7 @@ impl AgentTab {
         } else {
             let compact = place == Place::Dock(DockKind::Compact);
             let body = match ui.current() {
-                Some(q) => self.ask_question(ui, q, compact, tag, look),
+                Some(q) => self.ask_question(ui, q, compact, layout, tag, look),
                 None => self.ask_review(ui, tag, look),
             };
             // The body cross-fades on a step change; the head, steps and footer stay put.
@@ -698,10 +793,10 @@ impl AgentTab {
                 _ => body,
             };
             card.when(ui.questions.len() >= 2, |d| {
-                d.child(self.ask_steps(ui, tag, look))
+                d.child(self.ask_steps(ui, layout, tag, look))
             })
             .child(body)
-            .child(self.ask_footer(ui, tag, look))
+            .child(self.ask_footer(ui, layout, tag, look))
         };
         let shadow = |y: f32, blur: f32, a: f32| gpui::BoxShadow {
             color: gpui::Hsla { a, ..gpui::black() },
@@ -739,18 +834,26 @@ impl AgentTab {
 
     /// The steps row (two or more questions): each question's chip and the review's, and
     /// "2 of 3".
-    fn ask_steps(&self, ui: &AskUi, tag: &'static str, look: &Look) -> AnyElement {
+    fn ask_steps(
+        &self,
+        ui: &AskUi,
+        layout: CardLayout,
+        tag: &'static str,
+        look: &Look,
+    ) -> AnyElement {
         let c = &look.c;
         let n = ui.questions.len();
-        let chips = (0..ui.steps()).map(|s| {
-            let header = match ui.questions.get(s) {
-                Some(q) => header_of(q, s),
-                None => "Review".to_string(),
+        // A narrow card: only the current chip (the design review: none cut mid-word).
+        let shown = (0..ui.steps()).filter(|&s| !layout.narrow_steps || s == ui.step);
+        let chips = shown.map(|s| {
+            let (header, whole) = match ui.questions.get(s) {
+                Some(q) => (chip_of(q, s), header_of(q, s)),
+                None => ("Review".to_string(), "Review".to_string()),
             };
             let current = s == ui.step;
             let done = s < n && ui.answered(s);
             let light = c.ask_cursor;
-            let tip: SharedString = format!("Go to {header}").into();
+            let tip: SharedString = format!("Go to {whole}").into();
             div()
                 .id((SharedString::from(format!("ask-step-{tag}")), s))
                 .flex_none()
@@ -777,11 +880,8 @@ impl AgentTab {
                 })
                 .child(SharedString::from(header))
         });
-        let count = if ui.on_review() {
-            format!("{n} of {n}")
-        } else {
-            format!("{} of {n}", ui.step + 1)
-        };
+        // On the review: how many are answered, standing out while some aren't.
+        let (count, short) = ui.counter();
         div()
             .h(px(size::STEP_H))
             .flex()
@@ -800,7 +900,7 @@ impl AgentTab {
                 div()
                     .flex_none()
                     .text_size(px(text::KEYS))
-                    .text_color(hsla(c.ask_dim))
+                    .text_color(hsla(if short { c.ask_head } else { c.ask_dim }))
                     .child(SharedString::from(count)),
             )
             .into_any_element()
@@ -838,6 +938,7 @@ impl AgentTab {
         ui: &AskUi,
         q: &Question,
         compact: bool,
+        layout: CardLayout,
         tag: &'static str,
         look: &Look,
     ) -> AnyElement {
@@ -895,7 +996,7 @@ impl AgentTab {
                     .flex_none()
                     .text_size(px(text::KEYS))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(hsla(c.ask_mark))
+                    .text_color(hsla(c.ask_tag))
                     .child("Recommended")
             });
             let label = div()
@@ -1010,26 +1111,57 @@ impl AgentTab {
                 .flatten();
             let line_h = WELL_TEXT * size::WELL_LINE;
             let well = div()
-                .w_full()
                 .h(px(lines as f32 * line_h + 2. * size::WELL_PAD_Y))
-                .overflow_hidden()
                 .px(px(size::WELL_PAD_X))
                 .py(px(size::WELL_PAD_Y))
-                .rounded(px(crate::agent_chat::chat::R_GROUP))
-                .bg(hsla(c.code_fill));
+                .rounded(px(crate::agent_chat::chat::R_GROUP));
+            // Beside the options on a wide card (the well takes the rest), else under them.
+            let well = if layout.side_by_side {
+                well.flex_1().min_w(px(0.))
+            } else {
+                well.w_full()
+            };
             match shown {
-                Some(p) => well
-                    .font_family(look.mono.clone())
-                    .text_size(px(WELL_TEXT))
-                    .line_height(px(line_h))
-                    .text_color(hsla(c.code_text))
-                    .child(SharedString::from(
-                        p.lines()
-                            .take(crate::agent_ask::PREVIEW_MAX_LINES)
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    )),
+                Some(p) => {
+                    let fill = hsla(c.ask_well);
+                    // A line running past the padding fades out at it (the designer's second
+                    // look: the clip keeps the right padding, the cut softened).
+                    let fade =
+                        crate::agent_ask::preview_overflows(&p, layout.well_text_w).then(|| {
+                            div().absolute().top_0().bottom_0().right_0().w(px(24.)).bg(
+                                gpui::linear_gradient(
+                                    90.,
+                                    gpui::linear_color_stop(gpui::Hsla { a: 0., ..fill }, 0.),
+                                    gpui::linear_color_stop(fill, 1.),
+                                ),
+                            )
+                        });
+                    well.bg(fill)
+                        .font_family(look.mono.clone())
+                        .text_size(px(WELL_TEXT))
+                        .line_height(px(line_h))
+                        .text_color(hsla(c.ask_well_text))
+                        .child(
+                            // Code lines run on and clip inside the padding: a wrapped line
+                            // would push the last out of the well's fixed height.
+                            div()
+                                .relative()
+                                .size_full()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(SharedString::from(
+                                    p.lines()
+                                        .take(crate::agent_ask::PREVIEW_MAX_LINES)
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                ))
+                                .children(fade),
+                        )
+                }
+                // Nothing to show: an outline, not a dead slab (the design review).
                 None => well
+                    .border_1()
+                    .border_color(hsla(c.ask_key_edge))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1038,11 +1170,12 @@ impl AgentTab {
                     .child("No preview"),
             }
         });
-        div()
+        // The question, and under a multi-select's "Choose any that apply" 2 pt below it.
+        let head = div()
             .w_full()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(px(2.))
             .child(words)
             .when(q.multi, |d| {
                 d.child(
@@ -1051,9 +1184,33 @@ impl AgentTab {
                         .text_color(hsla(c.ask_dim))
                         .child("Choose any that apply"),
                 )
-            })
-            .child(list)
-            .children(preview)
+            });
+        let options = match preview {
+            Some(well) if layout.side_by_side => div()
+                .w_full()
+                .flex()
+                .items_start()
+                .gap(px(size::SIDE_GAP))
+                .child(div().flex_none().w(px(layout.options_w)).child(list))
+                .child(well)
+                .into_any_element(),
+            Some(well) => div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(list)
+                .child(well)
+                .into_any_element(),
+            None => list,
+        };
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(head)
+            .child(options)
             .into_any_element()
     }
 
@@ -1135,7 +1292,13 @@ impl AgentTab {
 
     /// The card's buttons: the primary (Answer / Next / Review / Send answers / Send anyway),
     /// Skip (or "Esc again to skip"), and a key hint.
-    fn ask_footer(&self, ui: &AskUi, tag: &'static str, look: &Look) -> AnyElement {
+    fn ask_footer(
+        &self,
+        ui: &AskUi,
+        layout: CardLayout,
+        tag: &'static str,
+        look: &Look,
+    ) -> AnyElement {
         let c = &look.c;
         let n = ui.questions.len();
         let (primary, hint) = match ui.current() {
@@ -1180,14 +1343,15 @@ impl AgentTab {
         let armed = ui.skip_armed(look.now);
         let skip = button(
             SharedString::from(format!("ask-skip-{tag}")),
-            if armed {
-                "Esc again to skip"
-            } else {
-                "Skip  esc"
-            },
+            if armed { "Esc again to skip" } else { "Skip" },
             false,
             c,
         )
+        // Its key quieter than its word.
+        .when(!armed, |d| {
+            d.gap(px(8.))
+                .child(div().text_color(hsla(c.ask_dim)).child("esc"))
+        })
         .when(armed, |d| d.border_color(hsla(c.ask_edge)))
         .on_click(on_tab(&look.view, |this, cx| {
             this.apply_ask(Effect::Skip, cx)
@@ -1199,17 +1363,20 @@ impl AgentTab {
             .text_size(px(text::META + 0.5))
             .child(primary)
             .child(skip)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .flex()
-                    .justify_end()
-                    .truncate()
-                    .text_size(px(text::KEYS))
-                    .text_color(hsla(c.ask_dim))
-                    .child(hint),
-            )
+            // No hint on a narrow card (the design review).
+            .when(layout.hint, |d| {
+                d.child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .justify_end()
+                        .truncate()
+                        .text_size(px(text::KEYS))
+                        .text_color(hsla(c.ask_dim))
+                        .child(hint),
+                )
+            })
             .into_any_element()
     }
 
@@ -1224,11 +1391,16 @@ impl AgentTab {
     ) -> AnyElement {
         let c = &look.c;
         let open = self.ask.open.contains(id);
-        let (head, rest) = summary_parts(questions, reply);
+        let (head, rest, answers) = summary_spans(questions, reply);
         let glyph = match reply {
             Reply::Answered(_) => icon(Icon::Check, px(12.), hsla(c.ask_done)).into_any_element(),
+            // In a 12 pt box, so "Skipped" lines up with "Answered" and "Not answered".
             Reply::Skipped => div()
                 .flex_none()
+                .size(px(12.))
+                .flex()
+                .items_center()
+                .justify_center()
                 .text_size(px(12.))
                 .text_color(hsla(c.dim))
                 .child("\u{2298}")
@@ -1236,26 +1408,19 @@ impl AgentTab {
             Reply::Expired => icon(Icon::Circle, px(12.), hsla(c.dim)).into_any_element(),
         };
         // Answered here: the headers dim, the answers in the text colour.
-        let line_text = match reply {
-            Reply::Answered(a) if a.iter().any(|a| !a.is_empty()) => {
-                let mut runs = Vec::new();
-                let mut at = 0;
-                for part in rest.split(" \u{b7} ") {
-                    if let Some(colon) = part.find(": ") {
-                        runs.push((
-                            at + colon + 2..at + part.len(),
-                            HighlightStyle {
-                                color: Some(hsla(c.text)),
-                                ..Default::default()
-                            },
-                        ));
-                    }
-                    at += part.len() + " \u{b7} ".len();
-                }
-                StyledText::new(rest.clone()).with_highlights(runs)
-            }
-            _ => StyledText::new(rest.clone()),
-        };
+        let runs: Vec<_> = answers
+            .into_iter()
+            .map(|r| {
+                (
+                    r,
+                    HighlightStyle {
+                        color: Some(hsla(c.text)),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let line_text = StyledText::new(rest.clone()).with_highlights(runs);
         let key = id.to_string();
         let tip = match (open, reply) {
             (true, _) => "Hide the questions".to_string(),
@@ -1362,16 +1527,21 @@ impl AgentTab {
                         .and_then(|o| o.preview.clone())
                 })
                 .flatten()
+                // Under its option's words (20 pt in), on the page with an edge: `code_fill`
+                // was lost on the panel (the design review).
                 .map(|p| {
                     div()
                         .mt(px(4.))
+                        .ml(px(20.))
                         .px(px(size::WELL_PAD_X))
                         .py(px(size::WELL_PAD_Y))
                         .rounded(px(crate::agent_chat::chat::R_GROUP))
-                        .bg(hsla(c.code_fill))
+                        .bg(hsla(c.page))
+                        .border_1()
+                        .border_color(hsla(c.panel_border))
                         .font_family(look.mono.clone())
                         .text_size(px(WELL_TEXT))
-                        .text_color(hsla(c.code_text))
+                        .text_color(hsla(c.text))
                         .child(SharedString::from(
                             p.lines().take(6).collect::<Vec<_>>().join("\n"),
                         ))
@@ -1380,13 +1550,16 @@ impl AgentTab {
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(
-                    div()
-                        .text_size(px(text::KEYS))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(hsla(c.panel_dim))
-                        .child(SharedString::from(header_of(q, i))),
-                )
+                // No header: the question's own words say it (not twice).
+                .when(!q.header.trim().is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_size(px(text::KEYS))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(hsla(c.panel_dim))
+                            .child(SharedString::from(header_of(q, i))),
+                    )
+                })
                 .child(
                     div()
                         .text_size(px(text::UI))
@@ -1447,6 +1620,7 @@ impl AgentTab {
             review: ui.on_review(),
             armed: ui.skip_armed(Instant::now()),
             anyway: ui.send_anyway(),
+            lit: self.ask.lit,
         })
     }
 
@@ -1469,18 +1643,56 @@ impl AgentTab {
     }
 
     /// An answered summary opened or closed.
+    ///
+    /// The design review: the clicked line stays where it was. While the chat follows its end,
+    /// a last row that grows would push its line up under the strip; so following stops and the
+    /// view is scrolled to keep the row's top at its old height (following resumes, as ever,
+    /// once you scroll back to the end).
     fn toggle_summary(&mut self, id: &str, cx: &mut Context<Self>) {
         if !self.ask.open.remove(id) {
             self.ask.open.insert(id.to_string());
         }
-        if let Some(ix) = self
+        let Some(ix) = self
             .conversation
             .items()
             .iter()
             .position(|i| matches!(i, Item::Question { id: q, .. } if q == id))
-        {
-            self.relayout_item(ix);
+        else {
+            cx.notify();
+            return;
+        };
+        let pane = self.pane();
+        let list = pane.list.clone();
+        let kept = pane
+            .order
+            .binary_search(&ix)
+            .ok()
+            .map(|k| k + pane.head as usize)
+            .and_then(|row| {
+                let top = list.bounds_for_item(row)?.top();
+                Some((row, f32::from(top - list.viewport_bounds().top())))
+            });
+        self.relayout_item(ix);
+        if let Some((row, y)) = kept {
+            keep_row_at(&list, row, y);
         }
         cx.notify();
+    }
+}
+
+/// The list scrolled so row `row`'s top sits `y` below the view's top (it stops following the
+/// end); the rows before it are as they were laid out.
+fn keep_row_at(list: &ListState, row: usize, y: f32) {
+    if y <= 0. {
+        list.scroll_to(gpui::ListOffset {
+            item_ix: row,
+            offset_in_item: px(-y),
+        });
+    } else {
+        list.scroll_to(gpui::ListOffset {
+            item_ix: row,
+            offset_in_item: px(0.),
+        });
+        list.scroll_by(px(-y));
     }
 }

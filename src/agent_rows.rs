@@ -437,6 +437,20 @@ impl AgentTab {
                             ))
                             .into_any_element()
                     }
+                    // An older ask goes first (the design review): this one waits, quiet and
+                    // not interactive, until it is the oldest.
+                    None if self.conversation.oldest_ask() != Some(ix) => {
+                        let label = match by.as_deref().and_then(|b| self.conversation.lane(b)) {
+                            Some(lane) => lane.label.clone(),
+                            None => look.label.to_string(),
+                        };
+                        let line = if what.trim().is_empty() {
+                            format!("Next \u{b7} {label} wants to run {tool}")
+                        } else {
+                            format!("Next \u{b7} {label} wants to run {tool}: {}", what.trim())
+                        };
+                        self.queued_line(ix, line, look)
+                    }
                     None => self.permission_card(
                         tool,
                         what,

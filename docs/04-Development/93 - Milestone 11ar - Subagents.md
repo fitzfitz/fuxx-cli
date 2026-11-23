@@ -735,3 +735,52 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     the palette row and the tokens' contrast. Scenes `agent-tab-question`, `-multi`, `-preview`, `-review`,
     `-answered`, `-other`, `-lane`, `-restored`, `-dock` (both themes), `-keys`, `-skip`, `-typing-guard` and
     `agent-question-anywhere` (⇧⌘A, a banner click). Not yet seen in the real window.
+  - **After the design review** (the lead designer looked at the real 2× shots; the user's bar again: "make it easy
+    to use and easy to access … we make this different not like any others"). Fourteen fixes, most important first:
+    1. The latest-prompt strip hides while the open ask's row is in sight with its top under the strip: the "waiting"
+       line is never covered (`strip_covers_card`, the same `bounds_for_item` check the dock uses, re-checked after
+       layout).
+    2. Opening an answered line keeps it where it was: following the chat's end stops and the view is scrolled so the
+       row's top stays put (before, the last row grew upward and the line went under the strip).
+    3. A restored question keeps its answers: the result's text (`User has answered your questions: "Q"="A", …`) or
+       its `toolUseResult.answers` is read back in claude.rs — each question matched by its words, a multi-select
+       split on ", " against its labels, the rest your own words — and a skip (fuxx's deny message) restores as
+       "Skipped", not "Not answered". New `Event::QuestionReplied`.
+    4. A lane's ask goes by the subagent's type: "Explore is waiting for your answer · Read the test setup",
+       "Explore asks: …"; "Open ⟨task⟩" stays in Main.
+    5. "Recommended" has its own token `ask_tag` (Latte's was 3.3:1).
+    6. Previews sit beside the options on a wide card (inner width ≥ 600: options 42 %, at least 240, gap 12), under
+       them otherwise; the card's width comes from the chat's, laid out again on a resize.
+    7. The preview well has its own fill `ask_well` (and `ask_well_text`); code doesn't wrap, so the fixed height
+       holds; in the opened summary the well is the page with a 1 pt edge (it was lost on the panel in Mocha).
+    8. "No preview" is an outline (`ask_key_edge`) at the same height, not a filled slab.
+    9. The review's counter says "2 of 3 answered", in the waiting colour while one is missing.
+    10. The review's placeholder reads "Send your answers with ⏎" (the caret covered the ⏎).
+    11. Under 440 pt of card width only the current chip and "2 of 3"; under 460 pt no key hint.
+    12. A permission behind an older ask is a quiet "Next · Claude wants to run Bash: npm test" line, not
+        interactive, "Answer the one above first" (it becomes its card when it is the oldest).
+    13. No light while the window isn't the key window; a change of key window draws the card again.
+    14. A question with no header goes by its words (cut) in the summary, the review and the tooltips, and by its
+        first three words and "…" on its chip.
+    - Nits: "esc" in `ask_dim` on Skip; 2 pt between a multi-select's question and "Choose any that apply", 8 to the
+      list; the opened summary's preview 20 pt in; a touch warmer light in light themes (floors kept); an opened
+      summary shows no header line for a question without one.
+    - The designer's second look ("ship once these are in"): the preview well clips inside its right padding and a
+      line running past it fades out over 24 pt (from the well's colour to clear); a label ending a sentence joins
+      its answer with a space ("Should I add a coverage report? No", not "?:"); the lane link in Main reads "Open
+      lane", its tooltip "Show ⟨task⟩'s view" (the task isn't said twice); the ⊘ sits in a 12 pt box so "Skipped"
+      lines up with "Answered" and "Not answered".
+    - **AI's calls:** the queued permission says "wants to run ⟨tool⟩: ⟨what⟩" (the spec's "wants to run: npm test"
+      would read oddly for a file tool); the scenes draw the window as the key window (the light shows only then).
+    - **Checks:** 2662 → 2674 tests, each new one watched failing first: `the_strip_hides_while_it_would_cover_the_card_s_head`,
+      `the_review_counts_the_answered`, `the_placeholder_names_the_question_and_the_review_s_enter`,
+      `the_card_s_width_decides_its_layout`, `a_question_with_no_header_goes_by_its_words`,
+      `a_lane_asks_by_its_type_and_its_task_follows`, `a_restored_answer_reads_back_its_picks_and_words`,
+      `a_restored_answer_prefers_the_result_record`, `a_restored_skip_is_skipped`,
+      `a_replayed_reply_closes_it_with_your_answers`, `a_label_ending_a_sentence_joins_its_answer_with_a_space`,
+      `a_preview_running_past_the_well_fades_at_its_edge`; the contrast test gains `ask_tag` and the well. New scenes
+      (both themes) `agent-tab-question-lane-main`, `-queued`, `-narrow`, `-anyway`, `-armed`, `-dock-tiny`,
+      `-answered-line`, and the state check `-head-clear` (the strip over the head, the light in a back window; it
+      and `-answered-line`'s "stays put" check were each seen failing with their fix taken out). References refreshed
+      for the question scenes (their look changed on purpose) and written for the new ones; the full
+      `scripts/ui-shots.sh` 327 passed, 0 failed. Not yet seen in the real window.

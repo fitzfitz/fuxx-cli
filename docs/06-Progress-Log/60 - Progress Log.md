@@ -37,6 +37,20 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-23 — Chore 8 after the design review: the question card's fourteen fixes
+
+- **What:** the lead designer's review of the real shots, under chore 8 in [[93 - Milestone 11ar - Subagents]] ("After
+  the design review"). The strip never covers a waiting card's head; opening an answered line keeps it in place; a
+  restored question keeps its answers (and a skip restores as skipped); a lane's ask names the subagent's type with
+  its task; previews beside the options on a wide card, in their own well, "No preview" as an outline; "2 of 3
+  answered"; "Send your answers with ⏎"; the narrow-card rules; a queued permission as a quiet "Next" line; no light
+  in a window in the back; a question with no header goes by its words. Seven new scenes. Then the designer's second
+  look: the well clips inside its padding with a fade, "report? No" (no "?:"), "Open lane", the ⊘ lined up.
+- **Checks:** 2662 → 2674 tests (12 new, each watched failing first); clippy 14/29 and 18/33 (unchanged, none on a
+  changed line); `cargo fmt --check` clean; full `scripts/ui-shots.sh` 327 passed, 0 failed
+  (the question scenes match their new references; older references still "look different" at 2×, none rewritten). References refreshed only for the
+  question scenes and written for the new ones. Not yet seen in the real window.
+
 ### 2026-11-23 — Chores batch 3, wave 4: the agent's question picker
 
 - **What:** chore 8 under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]]. ("we don't have open question

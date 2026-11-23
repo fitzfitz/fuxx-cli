@@ -921,6 +921,11 @@ pub struct Colors {
     pub ask_mark_ink: Rgb,
     pub ask_key_edge: Rgb,
     pub ask_done: Rgb,
+    /// The design review: the "Recommended" tag (text, so it meets the text floor), the
+    /// preview well's fill on the card and its code.
+    pub ask_tag: Rgb,
+    pub ask_well: Rgb,
+    pub ask_well_text: Rgb,
     pub accent: Rgb,
     pub on_accent: Rgb,
     pub todo_active: Rgb,
@@ -1016,15 +1021,31 @@ impl Colors {
         let ask_fill = mix(page, ui.ring_waiting, 0.07);
         // The question card's light (batch 3, chore 8; the lead designer): neutral, not the
         // waiting red, so it never reads as an alarm.
-        let ask_cursor = readable(
+        // The design review: a touch warmer in a light theme (towards the waiting colour,
+        // the floors kept by `readable` and the words' own).
+        let lit = if theme.is_dark() {
+            mix(ask_fill, theme.foreground, 0.07)
+        } else {
+            mix(
+                mix(ask_fill, theme.foreground, 0.055),
+                ui.ring_waiting,
+                0.035,
+            )
+        };
+        let ask_cursor = readable(lit, &[ask_fill], crate::ui_tokens::SOFT_LINE_MIN);
+        let ask_well = if theme.is_dark() {
+            mix(ask_fill, BLACK, 0.25)
+        } else {
             mix(
                 ask_fill,
-                theme.foreground,
-                if theme.is_dark() { 0.07 } else { 0.06 },
-            ),
-            &[ask_fill],
-            crate::ui_tokens::SOFT_LINE_MIN,
-        );
+                Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
+                0.5,
+            )
+        };
         let ask_mark = readable(ui.accent, &[ask_fill, ask_cursor], MARK_MIN);
         let code_fill = mix(page, ui.text, 0.06);
         let row_hover = mix(ui.panel, theme.foreground, 0.04);
@@ -1059,6 +1080,9 @@ impl Colors {
                 QUIET_LINE_MIN,
             ),
             ask_done: readable(ui.ring_done, &[page, ui.card_hover], MARK_MIN),
+            ask_tag: readable(ui.accent, &[ask_fill, ask_cursor], TEXT_MIN),
+            ask_well,
+            ask_well_text: readable(ui.text, &[ask_well], TEXT_MIN),
             accent: ui.accent,
             on_accent: fit(ui.on_accent, ui.accent),
             todo_active: fit(ui.ring_working, ui.panel),
@@ -1966,6 +1990,13 @@ impl AgentTab {
         });
         let panes = HashMap::from([(crate::agent_lanes::View::Main, Pane::new())]);
         let subscriptions = vec![
+            // The question card's light goes out while the window isn't the key window (the
+            // design review of batch 3, chore 8): a change of key window draws it again.
+            cx.observe_window_activation(window, |this, _, cx| {
+                if this.asking() {
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&composer, window, Self::on_composer),
             cx.observe(&composer, |this, _, cx| this.composer_changed(cx)),
             // The box's menus draw from the cache: a probe finishing redraws the tab (and the
@@ -6714,6 +6745,11 @@ mod tests {
                     c.ask_fill,
                     crate::ui_tokens::SOFT_LINE_MIN,
                 ),
+                // The design review: the "Recommended" tag reads as text (Latte's was 3.3:1),
+                // and the preview well's code on the well.
+                ("ask tag", c.ask_tag, c.ask_fill, TEXT_MIN),
+                ("ask tag lit", c.ask_tag, c.ask_cursor, TEXT_MIN),
+                ("ask well text", c.ask_well_text, c.ask_well, TEXT_MIN),
                 ("ask done", c.ask_done, c.page, MARK_MIN),
                 ("ask done hovered", c.ask_done, c.card_hover, MARK_MIN),
             ] {

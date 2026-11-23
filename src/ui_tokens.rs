@@ -129,6 +129,15 @@ pub mod ask {
     pub const WELL_PAD_X: f32 = 12.0;
     pub const WELL_PAD_Y: f32 = 10.0;
     pub const WELL_LINE: f32 = 1.45;
+    /// Previews beside the options (the design review) from this inner card width: the
+    /// options column's share of it and its least width, and the gap to the well.
+    pub const SIDE_FROM: f32 = 600.0;
+    pub const SIDE_SHARE: f32 = 0.42;
+    pub const SIDE_MIN: f32 = 240.0;
+    pub const SIDE_GAP: f32 = 12.0;
+    /// Under these card widths only the current step chip shows, and no key hint.
+    pub const NARROW_STEPS_BELOW: f32 = 440.0;
+    pub const HINT_BELOW: f32 = 460.0;
     /// The review's rows and its header column, the summary line, a queued ask's line.
     pub const REVIEW_ROW: f32 = 30.0;
     pub const REVIEW_KEY_W: f32 = 120.0;

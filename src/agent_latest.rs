@@ -129,9 +129,16 @@ impl AgentTab {
             return None;
         };
         let (row, line, list) = (latest.row, latest.line.clone(), pane.list.clone());
-        // A short chat with the question docked: the strip makes room (batch 3, chore 8).
-        let shows = strip_visible(&list, row)
-            && !self.ask_hides_strip(f32::from(list.viewport_bounds().size.height), STRIP_COVER);
+        // A short chat with the question docked: the strip makes room (batch 3, chore 8); and
+        // it never covers an open ask's head (the design review).
+        let room =
+            !self.ask_hides_strip(f32::from(list.viewport_bounds().size.height), STRIP_COVER);
+        let ask_row = self.ask_row();
+        let visible = move |list: &ListState| {
+            room && strip_visible(list, row)
+                && !super::ask_view::ask_under_strip(list, ask_row, STRIP_COVER)
+        };
+        let shows = visible(&list);
         if shows && !self.strip.shown {
             self.strip.appeared += 1;
         }
@@ -139,7 +146,7 @@ impl AgentTab {
         let tab = cx.entity_id();
         let check = canvas(
             move |_, window, _| {
-                if strip_visible(&list, row) != shows {
+                if visible(&list) != shows {
                     window.on_next_frame(move |_, cx| cx.notify(tab));
                 }
             },

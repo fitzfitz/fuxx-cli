@@ -335,6 +335,20 @@ impl Conversation {
                     self.reply(&id, reply);
                 }
             }
+            // A restored question's reply (the design review): what you chose, or skipped.
+            Event::QuestionReplied { id, answers } => {
+                let open = self
+                    .open_asks
+                    .iter()
+                    .any(|&ix| matches!(&self.items[ix], Item::Question { id: q, .. } if *q == id));
+                if open {
+                    let reply = match answers {
+                        Some(a) => Reply::Answered(a),
+                        None => Reply::Skipped,
+                    };
+                    self.reply(&id, reply);
+                }
+            }
             Event::Todo(list) => match self.items.iter_mut().find(|i| matches!(i, Item::Todo(_))) {
                 Some(item) => *item = Item::Todo(list),
                 None => self.items.push(Item::Todo(list)),
@@ -2298,6 +2312,40 @@ mod tests {
         c.reply("q1", Reply::Skipped);
         c.apply(finished(false));
         assert_eq!(reply_of(&c, "q1"), Some(Reply::Skipped));
+    }
+
+    /// The design review (fix 3): a restored result's reply closes the question with what you
+    /// chose, or as skipped; one already closed keeps its reply.
+    #[test]
+    fn a_replayed_reply_closes_it_with_your_answers() {
+        let answers = vec![crate::providers::QAnswer {
+            labels: vec!["Vitest".into()],
+            other: None,
+        }];
+        let mut c = Conversation::new();
+        c.past(vec![
+            Past::Event(ask("q1", None)),
+            Past::Event(Event::QuestionReplied {
+                id: "q1".into(),
+                answers: Some(answers.clone()),
+            }),
+            Past::Event(ask("q2", None)),
+            Past::Event(Event::QuestionReplied {
+                id: "q2".into(),
+                answers: None,
+            }),
+        ]);
+        assert_eq!(reply_of(&c, "q1"), Some(Reply::Answered(answers)));
+        assert_eq!(reply_of(&c, "q2"), Some(Reply::Skipped));
+        assert_eq!(c.pending_ask(), None);
+        let mut c = Conversation::new();
+        c.apply(ask("q1", None));
+        c.reply("q1", Reply::Expired);
+        c.apply(Event::QuestionReplied {
+            id: "q1".into(),
+            answers: None,
+        });
+        assert_eq!(reply_of(&c, "q1"), Some(Reply::Expired));
     }
 
     #[test]

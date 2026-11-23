@@ -130,6 +130,30 @@ impl AskUi {
             .collect()
     }
 
+    /// The steps row's counter: "2 of 3" on a question; on the review "1 of 3 answered",
+    /// standing out (true) while some aren't.
+    pub fn counter(&self) -> (String, bool) {
+        let n = self.questions.len();
+        if self.on_review() {
+            let k = (0..n).filter(|&q| self.answered(q)).count();
+            (format!("{k} of {n} answered"), k < n)
+        } else {
+            (format!("{} of {n}", self.step + 1), false)
+        }
+    }
+
+    /// The box's placeholder while it is the card's Other: it names the question; on the
+    /// review, Enter sends (the ⏎ last: the caret sits at the start).
+    pub fn placeholder(&self) -> String {
+        match self.current() {
+            Some(q) if !q.header.trim().is_empty() => {
+                format!("Other answer for {}\u{2026}", q.header.trim())
+            }
+            Some(_) => "Other answer\u{2026}".to_string(),
+            None => "Send your answers with \u{23ce}".to_string(),
+        }
+    }
+
     /// Show step `step` (a step chip clicked, ← / →).
     pub fn go_to(&mut self, step: usize) {
         self.step = step.min(self.steps().saturating_sub(1));
@@ -475,13 +499,108 @@ pub fn shown_label(label: &str) -> &str {
     recommended(label).unwrap_or(label)
 }
 
-/// The words question `i` goes by: its chip, else "Question N" (the designer).
-pub fn header_of(q: &Question, i: usize) -> String {
+/// How many characters of a question's words stand for a missing header.
+const HEADER_CHARS: usize = 40;
+
+/// The words question `i` goes by in the review, the summary and the tooltips: its header,
+/// else its own words, cut (the design review: "Question N" said nothing).
+pub fn header_of(q: &Question, _i: usize) -> String {
     if q.header.trim().is_empty() {
-        format!("Question {}", i + 1)
+        cut_words(q.text.trim(), HEADER_CHARS)
     } else {
         q.header.trim().to_string()
     }
+}
+
+/// Question `i`'s step chip: its header, else its first three words and "…".
+pub fn chip_of(q: &Question, i: usize) -> String {
+    if !q.header.trim().is_empty() {
+        return header_of(q, i);
+    }
+    let words: Vec<&str> = q.text.split_whitespace().collect();
+    if words.len() <= 3 {
+        words.join(" ")
+    } else {
+        format!("{}\u{2026}", words[..3].join(" "))
+    }
+}
+
+/// Who asks, as the card's head says it: a lane's subagent type (`kind`), else its label; and
+/// its task after it when that says more (the design review: "Explore is waiting…  · Read the
+/// test setup").
+pub fn asker(kind: &str, label: &str) -> (String, Option<String>) {
+    let kind = kind.trim();
+    let label = label.trim();
+    if kind.is_empty() {
+        return (label.to_string(), None);
+    }
+    let task = (!label.is_empty() && label != kind).then(|| label.to_string());
+    (kind.to_string(), task)
+}
+
+/// The card's width in a chat `view_w` wide: the centred column (its sides' padding off, at
+/// most `COLUMN_MAX`) less the avatar's gutter.
+pub fn card_width(view_w: f32) -> f32 {
+    use crate::agent_box::AREA_X;
+    use crate::ui_tokens::chat::{AVATAR, AVATAR_GAP, COLUMN_MAX};
+    ((view_w - 2.0 * AREA_X).min(COLUMN_MAX) - AVATAR - AVATAR_GAP).max(0.0)
+}
+
+/// How a card `card_w` wide is laid out (the design review).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CardLayout {
+    /// The preview well beside the options (else under them).
+    pub side_by_side: bool,
+    /// The options column's width when side by side.
+    pub options_w: f32,
+    /// Only the current step chip (and "2 of 3"): no chip cut mid-word.
+    pub narrow_steps: bool,
+    /// The footer's key hint shows.
+    pub hint: bool,
+    /// The preview well's text width (inside its padding).
+    pub well_text_w: f32,
+}
+
+pub fn layout_for(card_w: f32) -> CardLayout {
+    use crate::ui_tokens::ask::{
+        HINT_BELOW, NARROW_STEPS_BELOW, PAD_X, SIDE_FROM, SIDE_GAP, SIDE_MIN, SIDE_SHARE,
+        WELL_PAD_X,
+    };
+    // Inside its padding and its 1 pt edge.
+    let inner = card_w - 2.0 * PAD_X - 2.0;
+    let side_by_side = inner >= SIDE_FROM;
+    let options_w = (inner * SIDE_SHARE).max(SIDE_MIN);
+    let well_w = if side_by_side {
+        inner - options_w - SIDE_GAP
+    } else {
+        inner
+    };
+    CardLayout {
+        side_by_side,
+        options_w,
+        narrow_steps: card_w < NARROW_STEPS_BELOW,
+        hint: card_w >= HINT_BELOW,
+        well_text_w: well_w - 2.0 * WELL_PAD_X,
+    }
+}
+
+/// A monospace character's advance in the preview well (12.5 pt text): about 0.6 em.
+pub const MONO_ADVANCE: f32 = 12.5 * 0.6;
+
+/// Whether a line of `preview` (as the well shows it: its first lines) runs past `text_w`
+/// (the well then fades at its right edge).
+pub fn preview_overflows(preview: &str, text_w: f32) -> bool {
+    preview
+        .lines()
+        .take(PREVIEW_MAX_LINES)
+        .any(|l| l.chars().count() as f32 * MONO_ADVANCE > text_w)
+}
+
+/// Whether the latest-prompt strip would cover the open ask's head: its row is in sight
+/// (`bounds`: its top and bottom, None when not laid out in the view) and its top is under the
+/// strip, which covers `cover` from the chat's top `view_top`.
+pub fn strip_covers_card(bounds: Option<(f32, f32)>, view_top: f32, cover: f32) -> bool {
+    bounds.is_some_and(|(top, bottom)| bottom > view_top && top < view_top + cover)
 }
 
 /// "⟨Label⟩ asks: ⟨the first question⟩", and " (+N more)" with more (`question()`, the banner,
@@ -492,6 +611,16 @@ pub fn asks_line(label: &str, questions: &[Question]) -> String {
         0 | 1 => format!("{label} asks: {first}"),
         n => format!("{label} asks: {first} (+{} more)", n - 1),
     }
+}
+
+/// `text` cut to `max` characters at most, the last an ellipsis after the last whole character
+/// kept (no space before it).
+fn cut_words(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max - 1).collect();
+    format!("{}\u{2026}", kept.trim_end())
 }
 
 /// `text` cut to `max` characters, the last an ellipsis.
@@ -528,7 +657,19 @@ pub fn summary_line(questions: &[Question], reply: &Reply) -> String {
 
 /// `summary_line`'s two parts: how it ended ("Answered", "Skipped", "Not answered") and the
 /// rest ("Test runner: Vitest · CI: Lint", or "Test runner, CI").
+#[cfg(test)]
 pub fn summary_parts(questions: &[Question], reply: &Reply) -> (&'static str, String) {
+    let (head, rest, _) = summary_spans(questions, reply);
+    (head, rest)
+}
+
+/// `summary_parts` with the byte ranges of the answers in the rest (the line draws them
+/// brighter). A label ending a sentence ("?", "." or "!", a question's own words standing in
+/// for its header) is joined to its answer by a space, else by ": ".
+pub fn summary_spans(
+    questions: &[Question],
+    reply: &Reply,
+) -> (&'static str, String, Vec<std::ops::Range<usize>>) {
     let headers = || {
         questions
             .iter()
@@ -537,23 +678,47 @@ pub fn summary_parts(questions: &[Question], reply: &Reply) -> (&'static str, St
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let mut spans = Vec::new();
     let (head, rest) = match reply {
         Reply::Answered(a) if a.iter().any(|a| !a.is_empty()) => {
-            let parts: Vec<String> = questions
-                .iter()
-                .enumerate()
-                .filter_map(|(i, q)| {
-                    let a = a.get(i).filter(|a| !a.is_empty())?;
-                    Some(format!("{}: {}", header_of(q, i), answer_words(a)))
-                })
-                .collect();
-            ("Answered", parts.join(" \u{b7} "))
+            let mut rest = String::new();
+            for (i, q) in questions.iter().enumerate() {
+                let Some(a) = a.get(i).filter(|a| !a.is_empty()) else {
+                    continue;
+                };
+                if !rest.is_empty() {
+                    rest.push_str(" \u{b7} ");
+                }
+                let label = header_of(q, i);
+                rest.push_str(&label);
+                rest.push_str(if label.ends_with(['?', '.', '!']) {
+                    " "
+                } else {
+                    ": "
+                });
+                let from = rest.len();
+                rest.push_str(&answer_words(a));
+                spans.push(from..rest.len());
+            }
+            ("Answered", rest)
         }
         Reply::Answered(_) => ("Answered", headers()),
         Reply::Skipped => ("Skipped", headers()),
         Reply::Expired => ("Not answered", headers()),
     };
-    (head, cut(&rest, SUMMARY_CHARS))
+    let shown = cut(&rest, SUMMARY_CHARS);
+    // Cut short: the ranges end where the kept words do (before the ellipsis).
+    let kept = if shown.len() == rest.len() {
+        rest.len()
+    } else {
+        shown.len() - '\u{2026}'.len_utf8()
+    };
+    let spans = spans
+        .into_iter()
+        .map(|r| r.start..r.end.min(kept))
+        .filter(|r| r.start < r.end)
+        .collect();
+    (head, shown, spans)
 }
 
 /// The preview well's height in lines for `q`: its tallest preview, at most
@@ -952,7 +1117,7 @@ mod tests {
         // The designer: skipped and expired list the headers with commas.
         assert_eq!(
             summary_line(&qs, &Reply::Skipped),
-            "Skipped · Test runner, CI checks, Question 3"
+            "Skipped · Test runner, CI checks, Should I also add a coverage report to…"
         );
         assert_eq!(
             summary_line(&qs[..1], &Reply::Expired),
@@ -960,8 +1125,8 @@ mod tests {
         );
         assert_eq!(
             summary_line(&qs[2..], &Reply::Answered(Vec::new())),
-            "Answered · Question 1",
-            "answered elsewhere: the headers; no header: its number"
+            "Answered · Should I also add a coverage report to…",
+            "answered elsewhere: the headers; no header: its words"
         );
         assert_eq!(
             summary_parts(&qs[..1], &Reply::Skipped),
@@ -1065,5 +1230,190 @@ mod tests {
         assert_eq!(preview_lines(&q), PREVIEW_MAX_LINES, "capped");
         q.multi = true;
         assert_eq!(preview_lines(&q), 0, "single-select only");
+    }
+
+    /// The design review (fix 1): the latest-prompt strip hides while the open ask's row is in
+    /// sight and its top is under the strip, so the "waiting" line is never covered.
+    #[test]
+    fn the_strip_hides_while_it_would_cover_the_card_s_head() {
+        let (view_top, cover) = (100.0, 46.0);
+        assert!(
+            strip_covers_card(Some((120.0, 400.0)), view_top, cover),
+            "its head under the strip"
+        );
+        assert!(
+            strip_covers_card(Some((60.0, 400.0)), view_top, cover),
+            "scrolled part way above: still in sight"
+        );
+        assert!(
+            !strip_covers_card(Some((view_top + cover, 400.0)), view_top, cover),
+            "just below the strip"
+        );
+        assert!(
+            !strip_covers_card(Some((20.0, 90.0)), view_top, cover),
+            "wholly above the view"
+        );
+        assert!(!strip_covers_card(None, view_top, cover), "not in sight");
+    }
+
+    /// Fix 9: the review's counter says how many are answered, standing out while some aren't.
+    #[test]
+    fn the_review_counts_the_answered() {
+        let t0 = Instant::now();
+        let t = later(t0);
+        let mut ui = card(t0);
+        assert_eq!(ui.counter(), ("1 of 3".to_string(), false));
+        ui.key(AskKey::Digit(1), t);
+        ui.go_to(3);
+        assert_eq!(ui.counter(), ("1 of 3 answered".to_string(), true));
+        ui.picks[1] = vec![0];
+        ui.picks[2] = vec![1];
+        assert_eq!(ui.counter(), ("3 of 3 answered".to_string(), false));
+    }
+
+    /// Fix 10: the box's placeholder names the question, and on the review says Enter sends
+    /// (the ⏎ last, where the caret doesn't cover it).
+    #[test]
+    fn the_placeholder_names_the_question_and_the_review_s_enter() {
+        let t0 = Instant::now();
+        let mut ui = card(t0);
+        assert_eq!(ui.placeholder(), "Other answer for Test runner\u{2026}");
+        ui.questions[0].header = String::new();
+        assert_eq!(ui.placeholder(), "Other answer\u{2026}");
+        ui.go_to(3);
+        assert_eq!(ui.placeholder(), "Send your answers with \u{23ce}");
+    }
+
+    /// Fixes 6 and 11: the card's width from the chat's; side by side from 600 inside; under
+    /// 440 only the current chip; under 460 no hint.
+    #[test]
+    fn the_card_s_width_decides_its_layout() {
+        use crate::ui_tokens::ask::{PAD_X, SIDE_GAP, SIDE_MIN};
+        assert_eq!(
+            card_width(2000.0),
+            728.0,
+            "the column's most, less the avatar"
+        );
+        assert_eq!(card_width(600.0), 600.0 - 56.0 - 32.0);
+        let inner = |w: f32| w - 2.0 * PAD_X - 2.0;
+        let wide = layout_for(728.0);
+        assert!(wide.side_by_side && !wide.narrow_steps && wide.hint);
+        assert_eq!(wide.options_w, (inner(728.0) * 0.42).max(SIDE_MIN));
+        assert!(layout_for(632.0).side_by_side, "{}", inner(632.0));
+        assert!(!layout_for(620.0).side_by_side, "{}", inner(620.0));
+        let narrow = layout_for(450.0);
+        assert!(!narrow.narrow_steps && !narrow.hint && !narrow.side_by_side);
+        assert!(layout_for(439.0).narrow_steps);
+        assert!(layout_for(460.0).hint);
+        assert_eq!(
+            layout_for(650.0).options_w,
+            SIDE_MIN.max(inner(650.0) * 0.42)
+        );
+        let _ = SIDE_GAP;
+    }
+
+    /// Fix 14: with no header, a question goes by its words (cut), and a chip by its first
+    /// three words.
+    #[test]
+    fn a_question_with_no_header_goes_by_its_words() {
+        let q = Question {
+            header: String::new(),
+            text: "Should I also add a coverage report to the README?".into(),
+            options: vec![option("Yes", None)],
+            multi: false,
+        };
+        assert_eq!(chip_of(&q, 0), "Should I also\u{2026}");
+        assert_eq!(
+            header_of(&q, 0),
+            "Should I also add a coverage report to\u{2026}"
+        );
+        let short = Question {
+            text: "Add CI?".into(),
+            ..q.clone()
+        };
+        assert_eq!(
+            (chip_of(&short, 0), header_of(&short, 0)),
+            ("Add CI?".into(), "Add CI?".into())
+        );
+        let named = question("Test runner", &["Vitest"], false);
+        assert_eq!(
+            (chip_of(&named, 0), header_of(&named, 0)),
+            ("Test runner".into(), "Test runner".into())
+        );
+    }
+
+    /// Fix 4: a lane's ask goes by the subagent's type, its task after it.
+    #[test]
+    fn a_lane_asks_by_its_type_and_its_task_follows() {
+        assert_eq!(
+            asker("Explore", "Read the test setup"),
+            (
+                "Explore".to_string(),
+                Some("Read the test setup".to_string())
+            )
+        );
+        assert_eq!(asker("", "Reader"), ("Reader".to_string(), None));
+        assert_eq!(
+            asker("reviewer", "reviewer"),
+            ("reviewer".to_string(), None)
+        );
+    }
+
+    /// The designer's second look: a label that ends a sentence ("?", "." or "!") is joined to
+    /// its answer by a space, not ": "; the answers' ranges are what the line draws brighter.
+    #[test]
+    fn a_label_ending_a_sentence_joins_its_answer_with_a_space() {
+        let qs = vec![
+            question("Test runner", &["Vitest"], false),
+            Question {
+                header: String::new(),
+                text: "Should I add a coverage report?".into(),
+                options: vec![option("No", None)],
+                multi: false,
+            },
+        ];
+        let reply = Reply::Answered(vec![one(&["Vitest"]), one(&["No"])]);
+        let (head, rest, answers) = summary_spans(&qs, &reply);
+        assert_eq!(head, "Answered");
+        assert_eq!(
+            rest,
+            "Test runner: Vitest · Should I add a coverage report? No"
+        );
+        let shown: Vec<&str> = answers.iter().map(|r| &rest[r.clone()]).collect();
+        assert_eq!(shown, ["Vitest", "No"]);
+        assert_eq!(summary_parts(&qs, &reply), (head, rest.clone()));
+        // Cut short: no range runs past what is kept.
+        let long = Reply::Answered(vec![one(&[&"word ".repeat(60)]), one(&["No"])]);
+        let (_, rest, answers) = summary_spans(&qs, &long);
+        assert!(
+            answers
+                .iter()
+                .all(|r| r.end <= rest.len() && r.start < r.end)
+        );
+        assert!(!summary_spans(&qs, &Reply::Skipped).2.iter().any(|_| true));
+    }
+
+    /// The designer's second look: a preview line that runs past the well's text width fades
+    /// at its right edge (the width from the card's layout, a monospace advance per character).
+    #[test]
+    fn a_preview_running_past_the_well_fades_at_its_edge() {
+        use crate::ui_tokens::ask::{PAD_X, SIDE_GAP, WELL_PAD_X};
+        let wide = layout_for(728.0);
+        let inner = 728.0 - 2.0 * PAD_X - 2.0;
+        assert_eq!(
+            wide.well_text_w,
+            inner - wide.options_w - SIDE_GAP - 2.0 * WELL_PAD_X
+        );
+        let stacked = layout_for(500.0);
+        assert_eq!(
+            stacked.well_text_w,
+            500.0 - 2.0 * PAD_X - 2.0 - 2.0 * WELL_PAD_X
+        );
+        let fits = (wide.well_text_w / MONO_ADVANCE) as usize;
+        assert!(!preview_overflows(&"x".repeat(fits), wide.well_text_w));
+        assert!(preview_overflows(
+            &format!("short\n{}", "x".repeat(fits + 1)),
+            wide.well_text_w
+        ));
     }
 }

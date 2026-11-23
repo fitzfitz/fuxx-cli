@@ -74,6 +74,20 @@ pub(super) const SCENES: &[Scene] = &[
     visual("agent-tab-question-lane", agent_tab_question_lane),
     visual("agent-tab-question-restored", agent_tab_question_restored),
     visual("agent-tab-question-dock", agent_tab_question_dock),
+    visual("agent-tab-question-lane-main", agent_tab_question_lane_main),
+    visual("agent-tab-question-queued", agent_tab_question_queued),
+    visual("agent-tab-question-narrow", agent_tab_question_narrow),
+    visual("agent-tab-question-anyway", agent_tab_question_anyway),
+    visual("agent-tab-question-armed", agent_tab_question_armed),
+    visual("agent-tab-question-dock-tiny", agent_tab_question_dock_tiny),
+    visual(
+        "agent-tab-question-answered-line",
+        agent_tab_question_answered_line,
+    ),
+    state(
+        "agent-tab-question-head-clear",
+        agent_tab_question_head_clear,
+    ),
     Scene {
         name: "agent-question-anywhere",
         run: agent_question_anywhere,
@@ -108,12 +122,25 @@ fn lines_to_question() -> Vec<String> {
 }
 
 /// `lines` read as the tab's process would bring them (its own translator decodes them).
+/// The window drawn as the key window (the card's light shows only then: the design review).
 fn hear(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, lines: Vec<String>) {
+    be_key(cx, tab);
     for line in lines {
         feed(cx, tab, |t, cx| {
             t.shot_process(ProcessEvent::Line(line), cx)
         });
     }
+}
+
+/// The tab's box drawn as in the key window, or not (the card's light follows it).
+fn be_key(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>) {
+    let composer = cx.read(|cx| tab.read(cx).shot_composer());
+    cx.update(|cx| composer.update(cx, |c, _| c.shot_be_key()));
+}
+
+fn not_key(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>) {
+    let composer = cx.read(|cx| tab.read(cx).shot_composer());
+    cx.update(|cx| composer.update(cx, |c, _| c.shot_not_key()));
 }
 
 /// A message sent, and the fixture up to its question.
@@ -164,12 +191,21 @@ fn once(
     n: &'static str,
     act: impl FnOnce(&mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + 'static,
 ) {
+    once_sized(n, DIMS, act);
+}
+
+/// `once` in a window `dims` big.
+fn once_sized(
+    n: &'static str,
+    dims: (f32, f32),
+    act: impl FnOnce(&mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>) + 'static,
+) {
     let theme = shot_theme("Catppuccin Mocha");
     let slot: Slot = Rc::default();
     let keep = slot.clone();
     render_with(
         &theme,
-        size(px(DIMS.0), px(DIMS.1)),
+        size(px(dims.0), px(dims.1)),
         build_with(&CLAUDE, theme, slot, start()),
         move |cx, window| {
             let tab = tab_of(&keep);
@@ -315,7 +351,7 @@ pub(super) fn agent_tab_question_review() {
                 .read(cx)
                 .placeholder()
                 .to_string()),
-            "\u{23ce} sends your answers",
+            "Send your answers with \u{23ce}",
             "{n}"
         );
         // A review row back to its question; Enter there back to the review.
@@ -578,51 +614,52 @@ pub(super) fn agent_tab_question_lane() {
     });
 }
 
-/// A restored conversation: a past question replays as answered (its result exists) or not
-/// answered; none is left open.
+/// A restored conversation (the design review): a past question replays with what you chose
+/// (read back from its result), a skipped one as skipped, one with no result as not answered;
+/// none is left open. Read through Claude's own transcript reader.
 pub(super) fn agent_tab_question_restored() {
     scene_sized("agent-tab-question-restored", DIMS, |n, cx, window, tab| {
-        let questions = match crate::providers::claude::transcript_events(&format!(
-            "{}\n",
-            json!({"type": "assistant", "uuid": "a1", "message": {"id": "m1", "role": "assistant",
-                "content": [{"type": "tool_use", "id": "toolu_old",
-                "name": "AskUserQuestion",
-                "input": serde_json::from_str::<Value>(ASK.lines().nth(2).unwrap()).unwrap()
-                    ["message"]["content"][0]["input"].clone()}]}})
-        ))
-        .into_iter()
-        .find_map(|p| match p {
-            Past::Event(Event::Question { questions, .. }) => Some(questions),
-            _ => None,
-        }) {
-            Some(q) => q,
-            None => panic!("{n}: the transcript replays the question"),
+        let input: Value = serde_json::from_str::<Value>(ASK.lines().nth(2).unwrap()).unwrap()
+            ["message"]["content"][0]["input"]
+            .clone();
+        let coverage = json!({"questions": [input["questions"][2].clone()]});
+        let you = |uuid: &str, text: &str| json!({"type": "user", "uuid": uuid, "message": {"role": "user", "content": text}});
+        let asked = |uuid: &str, id: &str, input: &Value| {
+            json!({"type": "assistant", "uuid": uuid, "message": {"id": uuid,
+                "role": "assistant", "content": [{"type": "tool_use", "id": id,
+                "name": "AskUserQuestion", "input": input}]}})
         };
-        let past = vec![
-            Past::you("Set up tests for the app"),
-            Past::Event(Event::Question {
-                id: "q1".into(),
-                questions: questions.clone(),
-                by: None,
-            }),
-            Past::Event(Event::ToolFinished {
-                id: "q1".into(),
-                ok: true,
-                summary: String::new(),
-                output: None,
-            }),
-            Past::Event(Event::MessageDone {
-                message: "m2".into(),
-                text: "Set up Vitest with lint and unit tests in CI.".into(),
-                parent: None,
-            }),
-            Past::you("Add a coverage report too"),
-            Past::Event(Event::Question {
-                id: "q2".into(),
-                questions: questions[2..].to_vec(),
-                by: None,
-            }),
+        let result = |uuid: &str, id: &str, text: &str, error: bool| {
+            json!({"type": "user", "uuid": uuid, "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": id, "content": text, "is_error": error}]}})
+        };
+        let said = |uuid: &str, text: &str| {
+            json!({"type": "assistant", "uuid": uuid, "message": {"id": uuid,
+                "role": "assistant", "content": [{"type": "text", "text": text}]}})
+        };
+        let lines = [
+            you("u1", "Set up tests for the app"),
+            asked("a1", "toolu_old", &input),
+            result(
+                "u2",
+                "toolu_old",
+                "User has answered your questions: \"Which test runner should I set up?\"=\"Vitest\", \"Which checks should run in CI?\"=\"Lint, Unit tests\", \"Should I add a coverage report?\"=\"No\". You can now continue with the user's answers in mind.",
+                false,
+            ),
+            said("a2", "Set up Vitest with lint and unit tests in CI."),
+            you("u3", "Add a coverage report too"),
+            asked("a3", "toolu_skip", &coverage),
+            result(
+                "u4",
+                "toolu_skip",
+                "The user skipped these questions.",
+                true,
+            ),
+            you("u5", "Then just the badge"),
+            asked("a4", "toolu_left", &coverage),
         ];
+        let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        let past = crate::providers::claude::transcript_events(&text);
         feed(cx, tab, |t, cx| t.shot_history(past, cx));
         settle_frames(cx, window);
         cx.read(|cx| {
@@ -637,10 +674,22 @@ pub(super) fn agent_tab_question_restored() {
                     _ => None,
                 })
                 .collect();
+            let picked = |labels: &[&str]| crate::providers::QAnswer {
+                labels: labels.iter().map(|l| l.to_string()).collect(),
+                other: None,
+            };
             assert_eq!(
                 replies,
-                [Some(Reply::Answered(Vec::new())), Some(Reply::Expired)],
-                "{n}"
+                [
+                    Some(Reply::Answered(vec![
+                        picked(&["Vitest"]),
+                        picked(&["Lint", "Unit tests"]),
+                        picked(&["No"]),
+                    ])),
+                    Some(Reply::Skipped),
+                    Some(Reply::Expired),
+                ],
+                "{n}: what you chose, skipped, not answered"
             );
         });
     });
@@ -814,4 +863,248 @@ pub(super) fn agent_question_anywhere() {
         },
     );
     println!("ui-shots: {n}: palette command, ⌘⇧A, banner click");
+}
+
+/// A subagent's question seen in Main (the design review): its head names the subagent's type
+/// with its task after it, and offers "Open ⟨its task⟩".
+pub(super) fn agent_tab_question_lane_main() {
+    scene_sized(
+        "agent-tab-question-lane-main",
+        DIMS,
+        |n, cx, window, tab| {
+            feed(cx, tab, |t, cx| t.send("Review the tests".into(), cx));
+            let started = json!({"type": "system", "subtype": "task_started", "task_id": "task1",
+            "tool_use_id": "toolu_lane", "task_type": "local_agent", "subagent_type": "Explore",
+            "description": "Read the test setup"})
+            .to_string();
+            let mut ask: Value = serde_json::from_str(lines_to_question().last().unwrap()).unwrap();
+            ask["request"]["agent_id"] = json!("task1");
+            hear(cx, tab, vec![started, ask.to_string()]);
+            settle_frames(cx, window);
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                assert_eq!(
+                    t.question().as_deref(),
+                    Some("Explore asks: Which test runner should I set up? (+2 more)"),
+                    "{n}: by the subagent's type"
+                );
+                assert!(t.shot_part("ask-card").is_some(), "{n}: the card in Main");
+            });
+        },
+    );
+}
+
+/// Two open asks (the design review): the oldest is the card; a permission after it waits as
+/// a quiet "Next" line, not a second card.
+pub(super) fn agent_tab_question_queued() {
+    scene_sized("agent-tab-question-queued", DIMS, |n, cx, window, tab| {
+        to_question(cx, tab);
+        let permission = json!({"type": "control_request", "request_id": "req-bash",
+            "request": {"subtype": "can_use_tool", "tool_name": "Bash", "tool_use_id": "toolu_bash",
+            "input": {"command": "npm test", "description": "Run the tests"}}})
+        .to_string();
+        hear(cx, tab, vec![permission]);
+        settle_frames(cx, window);
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            assert!(t.shot_part("ask-card").is_some(), "{n}: the question first");
+            assert!(
+                t.shot_part("ask-queued").is_some(),
+                "{n}: the permission queued"
+            );
+        });
+    });
+}
+
+/// A narrow card (the design review): only the current step chip and "2 of 3", no hint.
+pub(super) fn agent_tab_question_narrow() {
+    scene_sized(
+        "agent-tab-question-narrow",
+        (480.0, 700.0),
+        |n, cx, window, tab| {
+            to_question(cx, tab);
+            past_guard();
+            keys(cx, window, "1");
+            let card = cx
+                .read(|cx| tab.read(cx).shot_part("ask-card"))
+                .expect("the card");
+            assert!(
+                f32::from(card.size.width) < 440.0,
+                "{n}: narrow: {:?}",
+                card.size
+            );
+            assert_eq!(ask_of(cx, tab).step, 1, "{n}");
+        },
+    );
+}
+
+/// The review with an answer missing (the design review): the first Enter lights it and the
+/// primary reads "Send anyway"; nothing is sent yet.
+pub(super) fn agent_tab_question_anyway() {
+    scene_sized("agent-tab-question-anyway", DIMS, |n, cx, window, tab| {
+        to_question(cx, tab);
+        past_guard();
+        // Vitest; no CI check; Coverage: No; then the review.
+        keys(cx, window, "1 right 2");
+        feed(cx, tab, |t, cx| t.shot_ask_go_to(3, cx));
+        keys(cx, window, "enter");
+        let ask = ask_of(cx, tab);
+        assert!(ask.review && ask.anyway, "{n}: {ask:?}");
+        assert_eq!(ask.cursor, 1, "{n}: the missing one lit");
+        assert!(written(cx, tab).is_empty(), "{n}: not sent yet");
+    });
+}
+
+/// Esc arms Skip (the design review's scene): "Esc again to skip" with the waiting edge.
+pub(super) fn agent_tab_question_armed() {
+    scene_sized("agent-tab-question-armed", DIMS, |n, cx, window, tab| {
+        to_question(cx, tab);
+        past_guard();
+        keys(cx, window, "escape");
+        assert!(ask_of(cx, tab).armed, "{n}");
+        assert!(written(cx, tab).is_empty(), "{n}");
+    });
+}
+
+/// A short chat (the design review's scene): the docked card is its head row only, with
+/// "Show in chat".
+pub(super) fn agent_tab_question_dock_tiny() {
+    scene_sized(
+        "agent-tab-question-dock-tiny",
+        (720.0, 420.0),
+        |n, cx, window, tab| {
+            feed(cx, tab, |t, cx| t.shot_history(long_past(), cx));
+            to_question(cx, tab);
+            settle_frames(cx, window);
+            cx.read(|cx| {
+                tab.read(cx).shot_list().scroll_to(ListOffset {
+                    item_ix: 0,
+                    offset_in_item: px(0.),
+                })
+            });
+            cx.update_window(window, |_, window, _| window.refresh())
+                .unwrap();
+            settle_frames(cx, window);
+            let ask = ask_of(cx, tab);
+            assert_eq!(
+                ask.dock,
+                Some(crate::agent_ask::DockKind::Tiny),
+                "{n}: {ask:?}"
+            );
+        },
+    );
+}
+
+/// Answered, the line as it is left live (the design review's scene): "Answered · Test runner:
+/// Vitest · …". Opening it keeps the line where it was, though the chat followed its end.
+pub(super) fn agent_tab_question_answered_line() {
+    scene_sized(
+        "agent-tab-question-answered-line",
+        DIMS,
+        |n, cx, window, tab| {
+            to_question(cx, tab);
+            past_guard();
+            keys(cx, window, "1 1 3 enter 2 enter enter");
+            settle_frames(cx, window);
+            assert!(
+                matches!(reply_of(cx, tab), Some(Reply::Answered(a)) if a.len() == 3),
+                "{n}"
+            );
+            assert!(
+                cx.read(|cx| tab.read(cx).shot_part("ask-summary"))
+                    .is_some(),
+                "{n}: the line"
+            );
+        },
+    );
+    once(
+        "agent-tab-question-answered-line: open",
+        |cx, window, tab| {
+            let n = "agent-tab-question-answered-line";
+            feed(cx, tab, |t, cx| t.shot_history(long_past(), cx));
+            to_question(cx, tab);
+            past_guard();
+            keys(cx, window, "1 1 3 enter 2 enter enter");
+            settle_frames(cx, window);
+            assert!(
+                cx.read(|cx| tab.read(cx).shot_list().is_following_tail()),
+                "{n}: the chat follows its end"
+            );
+            let before = cx
+                .read(|cx| tab.read(cx).shot_part("ask-summary"))
+                .expect("the line");
+            cx.simulate_click(window, before.center(), Modifiers::none());
+            settle_frames(cx, window);
+            assert!(
+                cx.read(|cx| tab.read(cx).shot_summary_open("toolu_ask_1")),
+                "{n}: opened"
+            );
+            let after = cx
+                .read(|cx| tab.read(cx).shot_part("ask-summary"))
+                .expect("the line");
+            assert!(
+                (f32::from(after.top()) - f32::from(before.top())).abs() < 1.0,
+                "{n}: the line stays put: {before:?} → {after:?}"
+            );
+        },
+    );
+}
+
+/// The design review: the latest-prompt strip never covers a waiting card's head, and the
+/// light goes out while the window isn't the key window.
+pub(super) fn agent_tab_question_head_clear() {
+    // A chat shorter than the card, so its head can sit under the strip.
+    once_sized(
+        "agent-tab-question-head-clear",
+        (720.0, 470.0),
+        |cx, window, tab| {
+            let n = "agent-tab-question-head-clear";
+            feed(cx, tab, |t, cx| t.shot_history(long_past(), cx));
+            to_question(cx, tab);
+            settle_frames(cx, window);
+            // Your message just above the view, the card's head at the top under the strip.
+            let (row, list) = cx.read(|cx| {
+                let t = tab.read(cx);
+                let row = t
+                    .shot_items()
+                    .iter()
+                    .rposition(|i| matches!(i, Item::Question { .. }))
+                    .expect("the question");
+                (row, t.shot_list())
+            });
+            list.scroll_to(ListOffset {
+                item_ix: row,
+                offset_in_item: px(10.),
+            });
+            cx.update_window(window, |_, window, _| window.refresh())
+                .unwrap();
+            settle_frames(cx, window);
+            let top = cx.read(|cx| tab.read(cx).shot_list().logical_scroll_top());
+            assert_eq!(top.item_ix, row, "{n}: the card's row at the top: {top:?}");
+            assert_eq!(
+                cx.read(|cx| tab.read(cx).shot_latest_strip()),
+                None,
+                "{n}: no strip over the card's head"
+            );
+            // A row further down: the card above the view, the strip back.
+            list.scroll_to_end();
+            cx.update_window(window, |_, window, _| window.refresh())
+                .unwrap();
+            settle_frames(cx, window);
+            assert!(ask_of(cx, tab).lit, "{n}: lit in the key window");
+            not_key(cx, tab);
+            cx.update_window(window, |_, window, _| window.refresh())
+                .unwrap();
+            settle_frames(cx, window);
+            assert!(
+                !ask_of(cx, tab).lit,
+                "{n}: no light in a window in the back"
+            );
+            be_key(cx, tab);
+            cx.update_window(window, |_, window, _| window.refresh())
+                .unwrap();
+            settle_frames(cx, window);
+            assert!(ask_of(cx, tab).lit, "{n}: back");
+        },
+    );
 }

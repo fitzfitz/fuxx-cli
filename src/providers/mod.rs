@@ -517,6 +517,13 @@ pub enum Event {
         /// The subagent (lane id) that asks; `None`: the main agent.
         by: Option<String>,
     },
+    /// A past question's reply as its result says it (the design review of batch 3, chore 8):
+    /// your answers, one per question in order (`None`: you skipped it). Restored history only;
+    /// a question closed already keeps its reply.
+    QuestionReplied {
+        id: String,
+        answers: Option<Vec<QAnswer>>,
+    },
     /// A subagent started (M11ar), its steps hanging under the tool call `id` (their `parent`);
     /// `parent`: the lane that started it, when nested.
     SubagentStarted {

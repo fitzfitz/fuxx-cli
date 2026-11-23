@@ -711,6 +711,11 @@ impl Composer {
         cx.notify();
     }
 
+    /// Whether its window is the key window, as the box draws it (scenes can say so).
+    pub fn is_key_window(&self, window: &Window) -> bool {
+        self.key_window.unwrap_or_else(|| window.is_window_active())
+    }
+
     #[cfg(feature = "ui-shots")]
     pub fn placeholder(&self) -> &SharedString {
         &self.placeholder
