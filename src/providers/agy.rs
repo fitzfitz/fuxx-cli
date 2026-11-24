@@ -1099,7 +1099,17 @@ impl Translator for AgyTranslator {
                     .filter(|l| !l.starts_with("Created At:") && !l.starts_with("Completed At:"))
                     .collect::<Vec<_>>()
                     .join("\n");
-                for id in self.calls.remove(lane).unwrap_or_default() {
+                let ids = self.calls.remove(lane).unwrap_or_default();
+                // The exit header is one command's: the step's first command call's alone.
+                let own = ids
+                    .iter()
+                    .position(|id| self.activities.get(id).is_some_and(|c| c.command()))
+                    .filter(|_| exit.is_some());
+                for (n, id) in ids.into_iter().enumerate() {
+                    let (ok, exit) = match own {
+                        Some(at) if at != n => (true, None),
+                        _ => (ok, exit),
+                    };
                     let done = self
                         .activities
                         .remove(&id)

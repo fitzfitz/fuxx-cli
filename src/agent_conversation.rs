@@ -801,9 +801,24 @@ impl Conversation {
         };
         let finished = matches!(&self.items[ix], Item::Tool { running: false, .. });
         if finished && activity.check_failed() {
-            activity.planned_failure = activity.planned_failure
-                || activity.said.as_deref().is_some_and(announces_failure)
+            let announced = activity.said.as_deref().is_some_and(announces_failure)
                 || self.narration_before(ix).is_some_and(announces_failure);
+            // Only the first red run of a check in the run is the announced one: the same check
+            // failing again after it is a real failure.
+            let again = activity.check.as_ref().is_some_and(|check| {
+                self.items[self.run_start(ix)..ix].iter().any(|i| match i {
+                    Item::Tool {
+                        activity: Some(a), ..
+                    } => {
+                        a.check_failed()
+                            && a.check
+                                .as_ref()
+                                .is_some_and(|c| c.what == check.what && c.scope == check.scope)
+                    }
+                    _ => false,
+                })
+            });
+            activity.planned_failure = activity.planned_failure || announced && !again;
         }
         if let Item::Tool { activity: slot, .. } = &mut self.items[ix] {
             *slot = Some(Box::new(activity));
@@ -813,26 +828,43 @@ impl Conversation {
     /// The agent's text just before the run of tool calls holding item `ix`, from the same
     /// agent (Main's, or the same lane's); None when your message comes first.
     pub fn narration_before(&self, ix: usize) -> Option<&str> {
+        match self.run_head(ix)? {
+            (at, true) => match &self.items[at] {
+                Item::Agent { text, .. } => Some(text),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Where the run of tool calls holding item `ix` starts: just after its narration, your
+    /// message or its lane's resume.
+    fn run_start(&self, ix: usize) -> usize {
+        self.run_head(ix).map_or(0, |(at, _)| at + 1)
+    }
+
+    /// The item that leads the run of tool calls holding item `ix`, and whether it is the
+    /// agent's narration (else your message or the lane's resume); None for a non-tool or a run
+    /// from the start.
+    fn run_head(&self, ix: usize) -> Option<(usize, bool)> {
         let Some(Item::Tool { parent, .. }) = self.items.get(ix) else {
             return None;
         };
-        for item in self.items[..ix].iter().rev() {
-            match item {
-                Item::Agent {
-                    text, parent: p, ..
-                } if p == parent => return Some(text),
-                Item::You { .. } => return None,
+        self.items[..ix]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(at, item)| match item {
+                Item::Agent { parent: p, .. } if p == parent => Some((at, true)),
+                Item::You { .. } => Some((at, false)),
                 Item::Resumed { lane, .. } if parent.as_deref() == Some(lane.as_str()) => {
-                    return None;
+                    Some((at, false))
                 }
-                _ => {}
-            }
-        }
-        None
+                _ => None,
+            })
     }
 
     /// Where the restored history ends (0: none restored).
-    #[allow(dead_code)] // the step model and ledger (this chore's next tasks) call it.
     pub fn live_from(&self) -> usize {
         self.live_from
     }
@@ -3144,6 +3176,37 @@ mod tests {
         assert!(!run(None, None));
         assert!(!run(Some("Run the tests."), None));
         assert!(run(None, Some("Run it, it should fail")));
+    }
+
+    #[test]
+    fn only_the_first_red_run_of_a_check_is_planned() {
+        let failed_run = |c: &mut Conversation, id: &str| {
+            c.apply(tool_started(id));
+            c.apply(finished_ok(id, false));
+            let Event::Activity { activity, .. } = activity_of("Ran tests", failed_check()) else {
+                unreachable!()
+            };
+            c.apply(Event::Activity {
+                id: id.into(),
+                activity,
+            });
+        };
+        let mut c = Conversation::new();
+        c.you("add retries".into(), vec![]);
+        c.apply(done("m1", "Write the failing test first (red first)."));
+        failed_run(&mut c, "t1");
+        c.apply(tool_started("t2"));
+        c.apply(finished_ok("t2", true));
+        failed_run(&mut c, "t3");
+        assert!(tool_activity(&c, "t1").unwrap().planned_failure);
+        assert!(
+            !tool_activity(&c, "t3").unwrap().planned_failure,
+            "the same check failing again after a change is a real failure"
+        );
+        // A new narration starts a new run: its announced failure is planned again.
+        c.apply(done("m2", "Now another failing test first (red first)."));
+        failed_run(&mut c, "t4");
+        assert!(tool_activity(&c, "t4").unwrap().planned_failure);
     }
 
     #[test]

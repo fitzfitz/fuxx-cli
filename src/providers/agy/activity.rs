@@ -15,15 +15,29 @@ use crate::agent_activity_command::read_command;
 pub(super) struct Call {
     start: Activity,
     exit_hidden: bool,
+    command: bool,
+}
+
+impl Call {
+    /// A `run_command`: a result's exit header is its own.
+    pub(super) fn command(&self) -> bool {
+        self.command
+    }
 }
 
 /// A call's activity at its start (`said`: a lane's `toolSummary`), and what its finish needs.
 pub(super) fn call_started(name: &str, params: &Value, said: Option<String>) -> (Activity, Call) {
     let start = activity_at_start(name, params, said);
-    let exit_hidden = params["CommandLine"]
-        .as_str()
-        .is_some_and(|c| !read_command(c).exit_trusted);
-    (start.clone(), Call { start, exit_hidden })
+    let line = params["CommandLine"].as_str();
+    let exit_hidden = line.is_some_and(|c| !read_command(c).exit_trusted);
+    (
+        start.clone(),
+        Call {
+            start,
+            exit_hidden,
+            command: line.is_some(),
+        },
+    )
 }
 
 /// A call's final activity: `exit` from the command's header, `error` agy's own error text.
@@ -203,6 +217,33 @@ mod tests {
         );
         let (_, activity) = activities(&ev).pop().expect("an activity");
         assert_eq!(activity.exit, Some(1));
+    }
+
+    #[test]
+    fn an_agy_result_s_exit_is_only_its_command_s() {
+        let mut t = AgyTranslator::default();
+        let call = json!({"step_index": 3, "type": "PLANNER_RESPONSE", "tool_calls": [
+            {"name": "read_file", "args": {"Path": "\"src/api.rs\""}},
+            {"name": "run_command", "args": {"CommandLine": "\"cargo build\""}}]});
+        let result = json!({"step_index": 4, "type": "GENERIC",
+            "content": "Created At: x\nCompleted At: x\nCommand exited with code 1.\n\nCommand output:\nerror: could not compile `my-app`\n"});
+        t.decode_followed("lane-1", &call.to_string());
+        let ev = t.decode_followed("lane-1", &result.to_string());
+        let oks: Vec<(String, bool)> = ev
+            .iter()
+            .filter_map(|e| match e {
+                Event::ToolFinished { id, ok, .. } => Some((id.clone(), *ok)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            oks,
+            vec![("lane-1-3-0".into(), true), ("lane-1-3-1".into(), false)]
+        );
+        let found = activities(&ev);
+        assert_eq!(found[0].1.exit, None, "the read has no exit");
+        assert_eq!(found[0].1.failed, None);
+        assert_eq!(found[1].1.exit, Some(1));
     }
 
     #[test]

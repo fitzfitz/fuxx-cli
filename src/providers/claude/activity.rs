@@ -36,8 +36,15 @@ pub(super) fn call_started(name: &str, input: &Value) -> (Activity, Call) {
 }
 
 /// A call's final activity from its result's text (`ok`: not `is_error`); `not_run`: the
-/// permission was denied.
+/// permission was denied (live), else the result is fuxx's denial (`deny_message`). Claude's
+/// leading `Exit code N` line is read as the exit and left out of the output.
 pub(super) fn call_finished(call: Call, ok: bool, text: &str, not_run: bool) -> Activity {
+    let not_run = not_run || !ok && denied(text);
+    let exit = exit_code(text);
+    let output = match exit {
+        Some(_) => text.split_once('\n').map_or("", |(_, rest)| rest),
+        None => text,
+    };
     let Call {
         mut start,
         exit_hidden,
@@ -55,13 +62,30 @@ pub(super) fn call_finished(call: Call, ok: bool, text: &str, not_run: bool) -> 
         start,
         Finish {
             ok,
-            exit: exit_code(text),
-            output: text,
+            exit,
+            output,
             error: error_line(text).filter(|_| !ok),
             not_run,
             exit_hidden,
         },
     )
+}
+
+/// How fuxx's denial starts, so a call's result says it was denied (in the history too, where
+/// fuxx's own `Action::Deny` isn't replayed).
+const DENIED: &str = "The user denied this in fuxx";
+
+/// What fuxx tells Claude when you deny a call: `DENIED`, then your reason.
+pub(super) fn deny_message(reason: Option<&str>) -> String {
+    match reason.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(reason) => format!("{DENIED}: {reason}"),
+        None => format!("{DENIED}."),
+    }
+}
+
+/// Whether a call's result is fuxx's denial.
+fn denied(text: &str) -> bool {
+    text.trim_start().starts_with(DENIED)
 }
 
 /// The number of lines in an edit's text (none for an empty one).
@@ -438,5 +462,74 @@ mod tests {
             let id = format!("toolu_act_{n}");
             assert_eq!(activity_of(&live, &id), activity_of(&past, &id), "{id}");
         }
+        // A denied call: live it was denied in fuxx; in the history only its result says so.
+        let deny = include_str!("../fixtures/claude-permission-deny.jsonl").replace(
+            "\"content\": \"Not now\"",
+            &format!("\"content\": {:?}", deny_message(Some("Not now"))),
+        );
+        let mut t = CLAUDE.translator();
+        let mut live = Vec::new();
+        let mut call = String::new();
+        for line in deny.lines() {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            live.extend(t.decode(line));
+            if v["request"]["subtype"] == "can_use_tool" {
+                call = v["request"]["tool_use_id"].as_str().unwrap().to_string();
+                let id = v["request_id"].as_str().unwrap().to_string();
+                t.encode(&Action::Deny {
+                    id,
+                    reason: Some("Not now".into()),
+                });
+            }
+        }
+        let transcript: String = deny
+            .lines()
+            .filter(|l| l.contains("\"type\": \"assistant\"") || l.contains("\"type\": \"user\""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let past: Vec<Event> = transcript_events(&transcript)
+            .into_iter()
+            .filter_map(|p| match p {
+                Past::Event(e) => Some(e),
+                _ => None,
+            })
+            .collect();
+        let (live, past) = (activity_of(&live, &call), activity_of(&past, &call));
+        assert!(past.not_run, "the history knows the call was denied");
+        assert_eq!(live, past);
+    }
+
+    #[test]
+    fn claudes_exit_code_line_is_never_a_first_error() {
+        let (_, call) = call_started("Bash", &json!({"command": "cargo fmt --check"}));
+        let a = call_finished(
+            call,
+            false,
+            "Exit code 1\nDiff in /tmp/fx/code/my-app/src/api.rs at line 3:\n",
+            false,
+        );
+        assert_eq!(
+            a.check.unwrap().outcome,
+            Outcome::Failed {
+                failed: None,
+                of: None,
+                first_error: Some("Diff in /tmp/fx/code/my-app/src/api.rs at line 3:".into()),
+            }
+        );
+        let (_, call) = call_started("Bash", &json!({"command": "ls nope"}));
+        let a = call_finished(
+            call,
+            false,
+            "Exit code 2\nls: nope: No such file or directory",
+            false,
+        );
+        assert_eq!(
+            a.failed.as_deref(),
+            Some("ls: nope: No such file or directory")
+        );
+        // grep's exit 1 with no match: Claude's result is the Exit code line alone.
+        let (_, call) = call_started("Bash", &json!({"command": "rg -n NOPE src/api.rs"}));
+        let a = call_finished(call, false, "Exit code 1", false);
+        assert_eq!(a.failed, None);
     }
 }

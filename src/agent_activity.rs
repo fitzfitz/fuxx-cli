@@ -440,30 +440,54 @@ pub fn of(item: &Item) -> Option<Cow<'_, Activity>> {
 }
 
 /// Whether the agent's words announce a failure ("red first", "(red)", "failing test first",
-/// "should fail", "expect … to fail", "TDD").
+/// "should fail", "expect … to fail", "TDD" beside a red / fail word), clause by clause: a
+/// negation before "should fail" / "to fail" in the same clause ("nothing should fail now", "I
+/// don't expect it to fail") announces none.
 pub fn announces_failure(text: &str) -> bool {
+    const NEGATIONS: [&str; 9] = [
+        "nothing",
+        "none",
+        "no",
+        "not",
+        "never",
+        "won't",
+        "don't",
+        "doesn't",
+        "shouldn't",
+    ];
+    const RED: [&str; 6] = ["red", "fail", "fails", "failing", "failure", "failed"];
+    let words = |text: &str| -> Vec<String> {
+        text.split(|c: char| !c.is_alphanumeric() && c != '\'')
+            .filter(|w| !w.is_empty())
+            .map(String::from)
+            .collect()
+    };
     let lower = text.to_lowercase();
-    if [
-        "red first",
-        "(red)",
-        "failing first",
-        "failing test first",
-        "should fail",
-    ]
-    .iter()
-    .any(|k| lower.contains(k))
-    {
-        return true;
-    }
-    if lower.split(['.', '!', '?', '\n']).any(|s| {
-        s.find("expect")
-            .is_some_and(|at| s[at..].contains("to fail"))
-    }) {
-        return true;
-    }
-    lower
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|w| w == "tdd")
+    let negated = |clause: &str, at: usize| {
+        words(&clause[..at])
+            .iter()
+            .any(|w| NEGATIONS.contains(&w.as_str()))
+    };
+    let said = lower
+        .split(['.', '!', '?', '\n', ',', ';', ':'])
+        .any(|clause| {
+            let plain = ["red first", "(red)", "failing first", "failing test first"]
+                .iter()
+                .any(|k| clause.contains(k));
+            let should = clause
+                .find("should fail")
+                .is_some_and(|at| !negated(clause, at));
+            let expect = clause
+                .find("expect")
+                .and_then(|at| Some(at + clause[at..].find("to fail")?))
+                .is_some_and(|at| !negated(clause, at));
+            plain || should || expect
+        });
+    // "TDD" counts only beside a red / fail word in the same sentence.
+    said || lower.split(['.', '!', '?', '\n']).any(|sentence| {
+        let w = words(sentence);
+        w.iter().any(|w| w == "tdd") && w.iter().any(|w| RED.contains(&w.as_str()))
+    })
 }
 
 #[cfg(test)]
@@ -637,7 +661,8 @@ mod tests {
             "Run the failing test first",
             "This should fail",
             "I expect the new test to fail",
-            "TDD: add the test",
+            "TDD: red, then green",
+            "Write the test first, TDD style, so it fails",
         ] {
             assert!(announces_failure(yes), "{yes}");
         }
@@ -646,6 +671,13 @@ mod tests {
             "Fix the failing build",
             "Expected output",
             "Read the red theme",
+            "Nothing should fail now",
+            "None of these should fail.",
+            "This should not fail; it's a refactor",
+            "I don't expect it to fail",
+            "It won't fail this time, I fixed the import",
+            "TDD: add the test",
+            "The repo follows TDD. Run the suite.",
         ] {
             assert!(!announces_failure(no), "{no}");
         }

@@ -2213,7 +2213,7 @@ impl Translator for ClaudeTranslator {
                     return Vec::new();
                 };
                 self.denied.extend(call);
-                let message = reason.as_deref().unwrap_or("The user denied this.");
+                let message = activity::deny_message(reason.as_deref());
                 vec![control_response(
                     id,
                     json!({"behavior": "deny", "message": message}),
@@ -3298,7 +3298,10 @@ mod tests {
         });
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(v["response"]["response"]["behavior"], "deny");
-        assert_eq!(v["response"]["response"]["message"], "Not now");
+        assert_eq!(
+            v["response"]["response"]["message"],
+            "The user denied this in fuxx: Not now"
+        );
 
         t.decode(&line);
         let out = t.encode(&Action::Deny {
@@ -3308,7 +3311,7 @@ mod tests {
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(
             v["response"]["response"]["message"],
-            "The user denied this."
+            "The user denied this in fuxx."
         );
     }
 
