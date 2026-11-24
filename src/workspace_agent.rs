@@ -1336,6 +1336,9 @@ impl Workspace {
         let Some(old) = self.agents.get(&tab).map(|slot| slot.status) else {
             return;
         };
+        if live {
+            self.note_finish(tab, old, new, looking && window_active);
+        }
         if old != new && (live || new != Status::Working) {
             let (was, is) = (old == Status::Working, new == Status::Working);
             if was != is {

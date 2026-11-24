@@ -83,6 +83,7 @@ mod graph_panel;
 mod grid;
 mod groups;
 mod help_commands;
+mod hover_delay;
 mod help_menu;
 mod help_panel;
 mod help_shortcuts;

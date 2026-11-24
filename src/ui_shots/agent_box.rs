@@ -3712,15 +3712,21 @@ fn claude_usage() -> Lookup<Vec<UsageGroup>> {
     }])
 }
 
-/// Press the usage button beside the model pill (a real click): its panel opens over it.
+/// Rest the pointer on the usage button beside the model pill: its panel opens over it after
+/// `hover_delay::OPEN_AFTER` (the 2026-11-24 chores: hover, not click), not before.
 fn open_usage(
     n: &str,
     cx: &mut VisualTestAppContext,
     window: AnyWindowHandle,
     tab: &Entity<AgentTab>,
 ) {
+    use crate::hover_delay::OPEN_AFTER;
     let button = part(cx, tab, n, "usage-button");
-    cx.simulate_click(window, button.center(), Modifiers::none());
+    cx.simulate_mouse_move(window, button.center(), None, Modifiers::none());
+    cx.advance_clock(OPEN_AFTER - std::time::Duration::from_millis(100));
+    cx.run_until_parked();
+    assert_eq!(menu(cx, tab), None, "{n}: not before the rest");
+    cx.advance_clock(std::time::Duration::from_millis(100));
     cx.run_until_parked();
     let _ = frame_fresh(cx, window);
     assert_eq!(menu(cx, tab), Some(BoxMenu::Usage), "{n}");
@@ -3802,11 +3808,13 @@ pub(super) fn agent_box_usage_claude() {
                 written(cx, tab).is_empty(),
                 "{n}: nothing sent to the agent"
             );
-            // The button again closes it.
+            // The pointer leaving the button and its panel closes it.
             let button = part(cx, tab, n, "usage-button");
-            cx.simulate_click(window, button.center(), Modifiers::none());
+            let away = gpui::point(button.center().x, px(40.));
+            cx.simulate_mouse_move(window, away, None, Modifiers::none());
+            cx.advance_clock(crate::hover_delay::CLOSE_GRACE);
             cx.run_until_parked();
-            assert_eq!(menu(cx, tab), None, "{n}: the button closes it");
+            assert_eq!(menu(cx, tab), None, "{n}: leaving closes it");
             // And the panel is back for the shot.
             open_usage(n, cx, window, tab);
             assert_usage_panel(n, cx, tab, &["Current session"]);

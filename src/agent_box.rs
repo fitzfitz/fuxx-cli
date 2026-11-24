@@ -110,7 +110,6 @@ pub const SLASH_NONE: &str = "No command matches";
 pub const MODEL_LIST_FAILED: &str = "Couldn't read the model list";
 pub const DEFAULT_LIST: &str = "(default list)";
 pub const NEXT_CONVERSATION_NOTE: &str = "applies to a new conversation";
-pub const VIEW_USAGE: &str = "Usage";
 /// The id of the effort list's rows, beside the model menu, and the width of its panel.
 const EFFORT_ROWS: &str = "box-effort";
 const EFFORT_WIDTH: f32 = 128.0;
@@ -1220,28 +1219,23 @@ impl AgentTab {
                     ),
                 )
             })
-            .tooltip(|_, cx| {
-                cx.new(|_| crate::sidebar_toggle::Tip(VIEW_USAGE.into()))
-                    .into()
-            })
+            // A rest on it opens its panel (the 2026-11-24 chores: hover, not click; the panel
+            // says more than a "Usage" tip would, so it has none).
             .when(self.provider.is_some(), |d| {
-                d.cursor_pointer()
-                    .hover(move |s| s.bg(hsla(usage_hover)))
-                    .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-                        let pressed = match event {
-                            ClickEvent::Mouse(click) => Some(click.down.position),
-                            _ => None,
-                        };
-                        // This press already closed the open menu (from outside it).
-                        let closed_at = this.chip_closed_at.take();
-                        if pressed.is_none() || closed_at != pressed {
-                            this.usage_clicked(cx)
-                        }
+                d.hover(move |s| s.bg(hsla(usage_hover)))
+                    .on_hover(cx.listener(|this, on: &bool, _, cx| {
+                        this.usage_hovered(crate::hover_delay::Part::Anchor, *on, cx)
                     }))
             })
             .when(menu_on(|m| matches!(m, BoxMenu::Usage)), |d| {
                 let ui = cx.global::<Appearance>().theme.ui();
-                let panel = self.usage_panel(&ui, cx);
+                let panel = div()
+                    .id("agent-usage-panel")
+                    .on_hover(cx.listener(|this, on: &bool, _, cx| {
+                        this.usage_hovered(crate::hover_delay::Part::Panel, *on, cx)
+                    }))
+                    .child(self.usage_panel(&ui, cx))
+                    .into_any_element();
                 d.child(self.menu_frame(None, Some(panel), USAGE_WIDTH, cx))
             });
         let mode_glyph = self.mode_now(cx).map(mode_icon);

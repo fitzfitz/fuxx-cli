@@ -1578,6 +1578,8 @@ pub struct AgentTab {
     /// Where the press was that last closed the folder or model menu from outside it: that
     /// chip's click from the same press leaves it closed (not closed and opened again).
     pub(crate) chip_closed_at: Option<gpui::Point<gpui::Pixels>>,
+    /// The usage gauge's panel opens on a rest over it (the 2026-11-24 chores: hover, not click).
+    pub(crate) usage_hover: crate::hover_delay::HoverDelay,
     /// The branch checked out in the agent's folder (none outside a repo, or before it is read):
     /// looked up on the background executor, never in `render` (`read_branch`).
     pub(crate) branch: Option<String>,
@@ -2283,6 +2285,7 @@ impl AgentTab {
             menu: None,
             picker: None,
             chip_closed_at: None,
+            usage_hover: Default::default(),
             branch: None,
             files: None,
             listing: false,
@@ -3913,6 +3916,8 @@ impl AgentTab {
         self.models_older_open = None;
         self.effort_switch = None;
         self.effort_panel_at.set(None);
+        // A hover-opened panel closed another way waits for a fresh rest.
+        self.usage_hover.close();
         #[cfg(feature = "ui-shots")]
         self.menu_rows.borrow_mut().clear();
         if self.menu.take().is_some() {
@@ -5650,7 +5655,9 @@ impl AgentTab {
             .items_center()
             .gap(px(5.))
             .h(px(crate::card_view::PILL_H))
-            .px(px(8.))
+            // Its right side flush (the 2026-11-24 chores: "the gap, make it smaller"): the folder
+            // chip's own padding is the gap.
+            .pl(px(8.))
             .text_size(px(12.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(hsla(to_ink))

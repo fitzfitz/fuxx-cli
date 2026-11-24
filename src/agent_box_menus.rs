@@ -2,6 +2,7 @@
 //! rows they share (moved out of `agent_box.rs`, which keeps the pure part and the box itself).
 
 use super::*;
+use crate::hover_delay::{HoverDelay, Part};
 use crate::usage_view::{heading, quiet};
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{Animation, AnimationExt, FontWeight};
@@ -432,12 +433,55 @@ impl AgentTab {
     /// The model chip's click: the model menu opens over it, or (open) closes. Opening asks for
     /// the model list again when it could not be read (or was never asked).
     /// The usage button's click: its panel opens over it (read now unless fresh), or closes.
-    pub(super) fn usage_clicked(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.menu, Some(BoxMenu::Usage)) {
-            self.close_menu(cx);
+    /// The pointer arrived on (or left) the usage gauge or its panel: the panel opens after a
+    /// rest (`hover_delay::OPEN_AFTER`) and closes once the pointer has left both.
+    pub(super) fn usage_hovered(&mut self, part: Part, on: bool, cx: &mut Context<Self>) {
+        self.hover_panel(
+            |this| &mut this.usage_hover,
+            part,
+            on,
+            |this, open, cx| {
+                if open {
+                    this.open_usage(cx);
+                } else if matches!(this.menu, Some(BoxMenu::Usage)) {
+                    this.close_menu(cx);
+                }
+            },
+            cx,
+        );
+    }
+
+    /// One hover-opened panel's timers (the gauge's, the clock's): `state` picks its
+    /// `HoverDelay`; `changed` opens (true) or closes (false) the panel when a timer settles it.
+    pub(super) fn hover_panel(
+        &mut self,
+        state: fn(&mut Self) -> &mut HoverDelay,
+        part: Part,
+        on: bool,
+        changed: fn(&mut Self, bool, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) {
+        let hover = state(self);
+        let wait = if on {
+            hover.enter(part).map(|t| (t, crate::hover_delay::OPEN_AFTER))
         } else {
-            self.open_usage(cx);
-        }
+            hover.leave(part).map(|t| (t, crate::hover_delay::CLOSE_GRACE))
+        };
+        let Some((ticket, wait)) = wait else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            this.update(cx, |this, cx| {
+                let hover = state(this);
+                if hover.settle(ticket) {
+                    let open = hover.is_open();
+                    changed(this, open, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(super) fn model_clicked(&mut self, cx: &mut Context<Self>) {

@@ -42,7 +42,6 @@ use crate::sidebar::AGENT_MARK;
 use crate::sidebar_toggle::Tip;
 use crate::split_tree::Axis;
 use crate::status::{self, Status};
-use crate::status_mark;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
 use crate::ui_tokens::MARK_MIN;
@@ -113,6 +112,8 @@ pub struct BarTab {
     pub tip: String,
     /// Its pane's preview tab (M11t): its title in italics.
     pub preview: bool,
+    /// It finished while you weren't looking (`tab_mark`'s Unseen).
+    pub unseen: bool,
 }
 
 /// The icon for a tab of `kind`.
@@ -209,6 +210,7 @@ pub fn bar_tabs(
                 status,
                 active: t.id == pane.active,
                 preview: false,
+                unseen: false,
             }
         })
         .collect()
@@ -301,6 +303,40 @@ pub fn natural_width(title: f32, dot: bool) -> f32 {
     let dot = if dot { PART_GAP + DOT_ROOM } else { 0.0 };
     (2.0 * TAB_PAD + TILE + 2.0 * PART_GAP + CLOSE + title + dot)
         .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+}
+
+/// The mark a tab draws after its title (the 2026-11-24 chores: "only show loading and need
+/// confirmation"): Working's turning arc, Waiting's breathing dot, and, for a tab that finished
+/// while you weren't looking, a small "done, not seen" dot until you open it. Idle and a seen
+/// Done draw nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabMark {
+    Working,
+    Waiting,
+    Unseen,
+}
+
+/// The "done, not seen" dot's size, inside the mark's `STATUS_DOT` slot.
+const UNSEEN_DOT: f32 = 6.0;
+
+pub fn tab_mark(status: Status, done_unseen: bool) -> Option<TabMark> {
+    match status {
+        Status::Working => Some(TabMark::Working),
+        Status::Waiting => Some(TabMark::Waiting),
+        Status::Done if done_unseen => Some(TabMark::Unseen),
+        Status::Done | Status::Idle => None,
+    }
+}
+
+/// Whether a tab's finish is still unseen after its status goes `old` → `new`: a finish while
+/// the tab isn't `shown` (not the active tab of a window you're in) is unseen; it stays so
+/// (`was`) until the tab is opened or its status moves on.
+pub fn done_unseen_after(old: Status, new: Status, shown: bool, was: bool) -> bool {
+    match (old, new) {
+        (_, n) if n != Status::Done => false,
+        (Status::Done, _) => was,
+        _ => !shown,
+    }
 }
 
 /// A tab's icon's opacity (spec B-C): quieter on an inactive tab on a dark theme (0.75), whole
@@ -569,6 +605,7 @@ impl Workspace {
         .into_iter()
         .map(|mut t| {
             t.preview = self.model.is_preview(t.tab);
+            t.unseen = self.done_unseen.contains(&t.tab);
             t
         })
         .collect()
@@ -615,7 +652,10 @@ impl Workspace {
                     window
                         .text_system()
                         .shape_line(t.title.clone(), px(text::UI), &[run], None);
-                natural_width(f32::from(line.width()) + 1.0, t.status != Status::Idle)
+                natural_width(
+                    f32::from(line.width()) + 1.0,
+                    tab_mark(t.status, t.unseen).is_some(),
+                )
             })
             .collect();
         let scroll = self.tab_row_scroll(pane, p.active, &tabs);
@@ -822,29 +862,33 @@ impl Workspace {
             .and_then(|t| self.sessions.items().iter().find(|s| s.id == t));
         // Its status dot after its title (M11al §4.4), unless Idle: a terminal's (its `sN`) or
         // an agent tab's (R2: `AGENT_MARK`, its `aN`). Working's turning arc and Waiting's
-        // breathing dot are their own views, which the marks' clock turns (M11p); Done is the
-        // muted ✓ in `text_dim` (drawn still, as the sidebar's).
+        // breathing dot are their own views, which the marks' clock turns (M11p).
         let marked = match (session, self.agents.get(&tab.tab)) {
             (Some(s), _) => Some(("tab", s.id, s.status)),
             (None, Some(slot)) => Some((AGENT_MARK, slot.id, slot.status)),
             (None, None) => None,
         };
+        // Only Working and Waiting draw a mark, and a finish you haven't seen its small dot (the
+        // 2026-11-24 chores: "the idle and done no need to show"); the tooltip still says done.
         let dot = marked.and_then(|(place, key, status)| {
-            let mark = match status {
-                Status::Idle => return None,
-                // Done: the check on a green disc (your words, 2026-11-22: "make the checklist
-                // have backgrounds (green background)"), cut out in the tab's own fill.
-                Status::Done => div()
+            let mark = match tab_mark(status, tab.unseen)? {
+                // A small green disc, quieter than the marks that ask for you.
+                TabMark::Unseen => div()
                     .flex_none()
                     .size(px(STATUS_DOT))
-                    .rounded_full()
-                    .bg(hsla(ui.ring_done))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(status_mark::done_check(surface, px(STATUS_DOT - 2.0)))
+                    .child(
+                        div()
+                            .size(px(UNSEEN_DOT))
+                            .rounded_full()
+                            .bg(hsla(ui.ring_done)),
+                    )
                     .into_any_element(),
-                _ => self.mark_view(place, key, status, px(STATUS_DOT), surface, cx),
+                TabMark::Working | TabMark::Waiting => {
+                    self.mark_view(place, key, status, px(STATUS_DOT), surface, cx)
+                }
             };
             Some(mark)
         });
@@ -1418,6 +1462,52 @@ pub(crate) fn footer_glyph(kind: Glyph, color: Rgb, size: f32) -> Div {
 mod tests {
     use super::*;
     use crate::theme::Theme;
+
+    #[test]
+    fn done_while_not_shown_is_unseen() {
+        assert!(done_unseen_after(Status::Working, Status::Done, false, false));
+    }
+
+    #[test]
+    fn done_while_shown_is_seen() {
+        assert!(!done_unseen_after(Status::Working, Status::Done, true, false));
+    }
+
+    #[test]
+    fn staying_done_keeps_what_it_was() {
+        assert!(done_unseen_after(Status::Done, Status::Done, true, true));
+        assert!(!done_unseen_after(Status::Done, Status::Done, false, false));
+    }
+
+    #[test]
+    fn leaving_done_clears_unseen() {
+        assert!(!done_unseen_after(Status::Done, Status::Working, false, true));
+        assert!(!done_unseen_after(Status::Done, Status::Waiting, false, true));
+    }
+
+    #[test]
+    fn idle_and_done_draw_no_mark() {
+        assert_eq!(tab_mark(Status::Idle, false), None);
+        assert_eq!(tab_mark(Status::Done, false), None);
+    }
+
+    #[test]
+    fn working_and_waiting_keep_their_marks() {
+        assert_eq!(tab_mark(Status::Working, false), Some(TabMark::Working));
+        assert_eq!(tab_mark(Status::Waiting, false), Some(TabMark::Waiting));
+    }
+
+    #[test]
+    fn an_unseen_finish_draws_the_dot() {
+        assert_eq!(tab_mark(Status::Done, true), Some(TabMark::Unseen));
+    }
+
+    #[test]
+    fn natural_width_reserves_no_dot_for_a_seen_done() {
+        let seen_done = natural_width(80.0, tab_mark(Status::Done, false).is_some());
+        assert_eq!(seen_done, natural_width(80.0, false));
+        assert!(natural_width(80.0, tab_mark(Status::Working, false).is_some()) > seen_done);
+    }
 
     fn ui() -> UiColors {
         Theme::default().ui()

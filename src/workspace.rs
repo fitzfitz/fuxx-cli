@@ -846,6 +846,9 @@ pub struct Workspace {
     pub(crate) marks_ticking: bool,
     /// The last Done pop's number.
     pub(crate) pops: u64,
+    /// Tabs that finished while you weren't looking (the 2026-11-24 chores): their bar draws
+    /// the "done, not seen" dot until they are opened.
+    pub(crate) done_unseen: std::collections::HashSet<TabId>,
     /// Persistence asked for at startup (`persistent-sessions = on`).
     pub(crate) persistent: bool,
     pub(crate) service: Service,
@@ -1026,6 +1029,9 @@ impl Workspace {
     ) -> Self {
         let activation = cx.observe_window_activation(window, |this, window, cx| {
             this.window_active = window.is_window_active();
+            if this.window_active {
+                this.seen_focused_tab();
+            }
             cx.notify();
         });
         let appearance = cx.observe_global::<Appearance>(|this, cx| {
@@ -1137,6 +1143,7 @@ impl Workspace {
             marks: RefCell::default(),
             marks_ticking: false,
             pops: 0,
+            done_unseen: Default::default(),
             persistent,
             service: if persistent {
                 Service::Starting
@@ -2668,6 +2675,13 @@ impl Workspace {
         // How long it worked, when a Working stretch ends here (for a Done notification).
         let worked = (old == Status::Working && new != old).then(|| session.status_since.elapsed());
         session.status = new;
+        let terminal = session.id;
+        if let Some(tab) = self.model.terminal_tab(terminal) {
+            self.note_finish(tab, old, new, is_active && window_active);
+        }
+        let Some(session) = self.sessions.get_mut(index) else {
+            return;
+        };
         // The cursor takes the status colour (M11f).
         session.view.update(cx, |view, cx| view.set_status(new, cx));
         // The log's `lasted` is read before `status_since` is reset.
@@ -3125,9 +3139,27 @@ impl Workspace {
 
     /// After the active session changed (by any route): open its group and focus it.
     pub(crate) fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.seen_focused_tab();
         self.close_menus();
         self.note_active(cx);
         self.focus_active(window, cx);
+    }
+
+    /// The focused tab is in front of you now: its finish, if any, has been seen.
+    pub(crate) fn seen_focused_tab(&mut self) {
+        if let Some(tab) = self.model.focused_tab() {
+            self.done_unseen.remove(&tab);
+        }
+    }
+
+    /// A tab's status went `old` → `new`; `shown`: it is the focused tab of the active window.
+    pub(crate) fn note_finish(&mut self, tab: TabId, old: Status, new: Status, shown: bool) {
+        let was = self.done_unseen.contains(&tab);
+        if crate::tab_bar::done_unseen_after(old, new, shown, was) {
+            self.done_unseen.insert(tab);
+        } else {
+            self.done_unseen.remove(&tab);
+        }
     }
 
     /// The keyboard is going to the focused tab, so the menus and the 🔔's popover close: the
