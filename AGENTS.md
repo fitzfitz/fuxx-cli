@@ -78,6 +78,11 @@ is pre-1.0 and consumed as a **pinned git dep** — verify the rev. See [`docs/0
 - **macOS notifications:** use `osascript`, not `notify-rust` (v1 finding — see memory
   `macos-notify-rust-broken`).
 - **Verify crate versions/APIs via Context7** (above); GPUI rev must be pinned.
+- **Build for reuse, keep files lean, no duplication.** Before writing a UI component, helper, or
+  function, search for an existing one to reuse or extend. If the same shape shows up a second
+  time, pull it into one shared piece instead of copy-pasting. When a file starts to bloat, split
+  it into focused modules instead of adding more. Design each piece so the next feature can reuse
+  it without editing it. (Applies to new code; this doesn't permit unplanned refactors — Hard Rule 3.)
 
 ## What you must NOT do
 
