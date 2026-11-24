@@ -1336,3 +1336,47 @@ The long-chat performance chore after it is **released in v0.13.3** (2026-11-24,
     display width), 34 look different (the animation-heavy set), 8 differ in size (the same clamp).
   - **On screen:** not yet seen in the real window: the feel of scrolling and streaming in a long session is yours
     to judge.
+- **The 2026-11-24 chore batch** (twelve chores agreed with you item by item; design
+  `docs/superpowers/specs/2026-11-24-chore-batch-design.md`, plan `docs/superpowers/plans/2026-11-24-chore-batch.md`;
+  branch `chore/batch-2026-11-24`, merged to master, not pushed). Built small → medium → big, the tests per tier:
+  - **Small.** The usage gauge opens on a 0.8 s rest (no click; `hover_delay.rs`); the status mark sits closer to the
+    folder chip; tabs mark only Working and Waiting, plus a small green "done, not seen" dot until you open the tab;
+    a blinking caret in every one-line field (`caret_blink.rs`: a 0.5 s timer that stops after 20 s idle, out of
+    focus or in the background; follows the cursor-glow switch); the zsh suggestion list as a greyed gutter list in
+    fuxx-completes (branch `chore/gutter-list` there, **not committed**: its AGENTS.md waits for your word).
+  - **Medium.** Cost and context behind a clock between the model pill and the gauge (same hover; a warning dot past
+    80 %; the top bar keeps only its margin); the live status moved out of the folder tab into a strip over the box
+    (`agent_status_line.rs`: "Task 5/6 · Cultivating… · Running tests · 0:31", "Waiting for you · …", "Done · 0:42",
+    the counts under it open the ledger's popover); the folder tab keeps the mark, folder and branch; the model
+    name gives way first in a narrow footer. A workspace keeps its folder whatever tabs it holds (`Workspace.home`,
+    saved; an older save learns it from its terminal). Closing an agent or terminal tab asks first, with "Don't Ask
+    Again" (Preferences → General → "Ask before closing a tab" turns it back on); a workspace asks once.
+  - **Big.** The activity tracks as icon tiles (eye, magnifier, pen, terminal, ✓, ✕) under phase bands (Looking
+    around → Ran → Changing → Checking; a legend when a band is too narrow for its word), a numbered column hover
+    ("#5 · Read …"), states in words ("1st try failed", "expected — test written first"). ⌘Z / ⇧⌘Z in every text
+    field (`undo_history.rs`: word-sized steps; paste, delete and a ↑ recall one each; a send clears it); at a shell
+    prompt ⌘Z sends the shell's own undo (⌃_). Plan progress: a burger tab "☰ 4/6" at the folder-tab row's right
+    (⌥⌘P), its popover listing ✓ done (with its commit), ◐ being built, ○ next, then the subagents.
+  - **Rulings that changed what you asked** (the rest are in the plan's ledger): ⇧⌘Z does nothing at a shell prompt
+    (no shell binds a redo key fuxx could rely on; sending one typed junk); closing the window doesn't ask (it is the
+    quit flow, where sessions may keep running); removing an attachment chip isn't undone (the box's pasted-image
+    pills are); the plan comes from Claude's checklist file, since Claude 2.1.331 in `-p` keeps no task list (a
+    file it only read counts only with `### Task N` headings, and commits mark tasks only after the file existed);
+    subagents show as rows, not lists; the shell tab had no status pill to move closer; bash and fish draw no
+    suggestion list to restyle.
+  - **Checks.** Tests 2933 green; clippy: no new warnings (the rest is the baseline); `cargo fmt --check` clean;
+    fuxx-completes' zsh suite 181 green. Full `scripts/ui-shots.sh`: 363 passed, 1 failed (`agent-tab-wide`, which
+    fails on master too); references refreshed. One whole-branch review on the most capable model: no critical,
+    seven important (all fixed with tests), the minors fixed or noted.
+  - **Your on-screen check** (not seen in the real window yet):
+    1. Rest on the gauge and on the clock: each opens after about a second, not before, and closes when you leave.
+    2. A tab that finishes while you're elsewhere shows a small green dot until you open it; idle and seen tabs
+       show nothing.
+    3. The caret blinks in the palette, search and rename fields; not in the agent box or a terminal.
+    4. Run an agent: the strip over the box names what it runs and its time; the counts open the popover.
+    5. Close an agent or terminal tab: it asks; "Don't Ask Again" stops it.
+    6. A workspace with only an agent tab left stays in its folder.
+    7. A busy step's tracks: icons, bands and the column hover read clearly in both themes.
+    8. ⌘Z / ⇧⌘Z in the box and a field; ⌘Z at a shell prompt undoes the typing.
+    9. With a plan file (`### Task N` headings) the burger shows its count; ⌥⌘P opens it.
+    10. In zsh with fuxx-completes from its branch, the suggestion list looks like the gutter mockup.

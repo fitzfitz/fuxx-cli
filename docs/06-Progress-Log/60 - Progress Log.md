@@ -14,7 +14,10 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Latest (2026-11-24):** **v0.13.3 released** (run 45367550134): the long-chat performance chore (long conversations no longer lag); waiting for your feel of it in the real window (note 93). Before it the same day: v0.13.2 (paste), v0.13.1 (the agent activity view and chores) and v0.13.0.
+- **Latest (2026-11-24):** **the chore batch** (twelve chores, note 93) built on `chore/batch-2026-11-24`, reviewed,
+  merged to master, **not pushed**; waiting for your on-screen check (note 93's ten items) and your word on pushing,
+  on committing fuxx-completes' gutter list and on a release.
+- **Before (2026-11-24, earlier):** **v0.13.3 released** (run 45367550134): the long-chat performance chore.
 - **Before (2026-11-24):** **v0.13.2 released** (run 45352171051): the paste chore. Before it the same day: v0.13.1 (the agent activity view and chores) and v0.13.0. Waiting for your on-screen checks (note 93, "Chores after M11ar").
 - **Before (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
 - **Released (2026-11-23):** **v0.12.7** (run 45097026110, `fuxx-0.12.7.zip`): chat text selection, the thinking fade, the graph fixture's made-up history.
@@ -38,6 +41,19 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-24 — The chore batch: twelve chores, small → medium → big
+
+- **Did:** the twelve chores you agreed item by item (note 93, "The 2026-11-24 chore batch"): hover panels for the
+  gauge and a new clock, the live status in a strip over the box, quieter tab marks with a "done, not seen" dot, a
+  blinking caret in one-line fields, a workspace that keeps its folder, close confirmation, readable activity tracks
+  (icon tiles, phase bands, numbered hover), undo and redo in every text field, and plan progress behind a burger
+  tab; the gutter suggestion list in fuxx-completes (its branch, uncommitted). One whole-branch review, one fix wave.
+- **Learned:** a timer made inside a spawned task starts when the task first runs, not when it was spawned: make it
+  first, then spawn (the hover scenes caught it). And the Claude build fuxx runs headless keeps no task list, so a
+  plan's progress has to come from the files and commits the agent leaves.
+- **Blocked:** nothing. Pushing, the fuxx-completes commit and a release wait for your word.
+- **Next task:** your on-screen check (note 93's ten items).
 
 ### 2026-11-24 — Fix: fuxx crashed on launch on a bare `localhost:` in an agent chat
 
