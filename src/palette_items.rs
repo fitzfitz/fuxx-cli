@@ -697,6 +697,8 @@ pub const NOT_IN_PALETTE: &[&str] = &[
     // The agent activity chore: ⌥↑ in the box puts the keyboard on the latest busy step's
     // tracks; the palette has the keyboard then, so it would move nothing.
     "agent_tab::FocusTracks",
+    // The 2026-11-24 chores: ⌥⌘P opens the plan over the box; the burger tab is the way in.
+    "agent_tab::TogglePlan",
     // ⇧Tab moves an agent tab to its next mode; the mode chip is the way in.
     "agent_tab::CycleMode",
     // Batch 3, chore 4: ⇧F10 opens the focused surface's right-click menu where you are; the
