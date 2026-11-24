@@ -78,6 +78,11 @@ pub(super) const SCENES: &[Scene] = &[
     scene("agent-tracks-more-files", agent_tracks_more_files, SOURCES),
     scene("agent-tracks-earlier", agent_tracks_earlier, SOURCES),
     scene("agent-tracks-narrow", agent_tracks_narrow, SOURCES),
+    Scene {
+        // Reads the unknown check's ring's pixels.
+        kind: Kind::Visual,
+        ..scene("agent-tracks-unknown", agent_tracks_unknown, SOURCES)
+    },
     scene("agent-steps-rows", agent_steps_rows, SOURCES),
     scene("agent-ledger-running", agent_ledger_running, LEDGER),
     scene("agent-ledger-done", agent_ledger_done, LEDGER),
@@ -332,7 +337,7 @@ pub(super) fn agent_tracks_running() {
 }
 
 /// A step ending in a real compile failure under `cargo test`: a failed bead on the checks
-/// track, its first error under the group, and the ledger saying tests fail.
+/// track, its first error under the group, and the ledger saying the build fails.
 pub(super) fn agent_tracks_failure() {
     shoot("agent-tracks-failure", DIMS, |n, cx, window, tab, _| {
         feed(cx, tab, |t, cx| t.send("Wire the timeout".into(), cx));
@@ -361,8 +366,8 @@ pub(super) fn agent_tracks_failure() {
         let _ = part(cx, tab, n, "tracks-first-error");
         assert_eq!(
             ledger(cx, tab).last().map(String::as_str),
-            Some("tests failing"),
-            "{n}"
+            Some("build failing"),
+            "{n}: a compile error under cargo test is the build's"
         );
     });
 }
@@ -435,8 +440,7 @@ pub(super) fn agent_tracks_more_files() {
 }
 
 /// A step of 30 calls: "+6 earlier" in its header (shot as `…-collapsed`); a click shows all 30
-/// (sideways) and the header says "latest only", which shows the latest again; ←/→ move the
-/// cursor.
+/// (sideways) and the header says "fewer", which shows the latest again; ←/→ move the cursor.
 pub(super) fn agent_tracks_earlier() {
     shoot("agent-tracks-earlier", DIMS, |n, cx, window, tab, _| {
         feed(cx, tab, |t, cx| t.send("Read it all".into(), cx));
@@ -461,11 +465,7 @@ pub(super) fn agent_tracks_earlier() {
         assert_eq!(all[0].shown_columns(true), 0..30, "{n}");
         let _ = frame_fresh(cx, window);
         click(cx, window, part(cx, tab, n, "tracks-earlier"));
-        assert_eq!(
-            cols_all(cx),
-            0,
-            "{n}: \"latest only\" shows the latest again"
-        );
+        assert_eq!(cols_all(cx), 0, "{n}: \"fewer\" shows the latest again");
         let _ = frame_fresh(cx, window);
         click(cx, window, part(cx, tab, n, "tracks-earlier"));
         assert_eq!(cols_all(cx), 1, "{n}");
@@ -492,6 +492,57 @@ pub(super) fn agent_tracks_earlier() {
         cx.run_until_parked();
         assert_eq!(cx.read(|cx| tab.read(cx).shot_track_state()).2, None, "{n}");
         let _ = frame_fresh(cx, window);
+    });
+}
+
+/// A check whose outcome can't be read (`cargo test | head -5`, its summary cut off): its bead
+/// is a drawn hollow ring in `panel_dim` (ink round its cell, empty in the middle), never green;
+/// the checks track says it "ran".
+pub(super) fn agent_tracks_unknown() {
+    shoot("agent-tracks-unknown", DIMS, |n, cx, window, tab, _| {
+        feed(cx, tab, |t, cx| t.send("Run the tests".into(), cx));
+        let turn = Turn::new()
+            .say("Check the client builds and run the tests.")
+            .read("src/api_client.rs")
+            .edit("src/api_client.rs", "fn get()", "fn get() -> u8")
+            .bash(
+                "cargo test 2>&1 | head -5",
+                Some(("   Compiling my-app v0.1.0 (/tmp/fx/code/my-app)\n", false)),
+            );
+        give(cx, tab, turn.events());
+        let shot = frame_fresh(cx, window);
+        let all = tracks(cx, tab);
+        assert_eq!(all.len(), 1, "{n}");
+        let checks = all[0].checks.as_ref().expect("a checks track");
+        assert_eq!(
+            checks.beads[0].1.glyph,
+            Glyph::Check,
+            "{n}: unknown, never green"
+        );
+        assert_eq!(checks.summary, "tests · ran", "{n}");
+        let ring = part(cx, tab, n, "tracks-unknown");
+        let c = cx.read(|cx| {
+            crate::agent_tab::Colors::of(&cx.global::<crate::appearance::Appearance>().theme)
+        });
+        let rgb = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
+        let dims = size(px(DIMS.0), px(DIMS.1));
+        let area = (
+            f32::from(ring.left()),
+            f32::from(ring.top()),
+            f32::from(ring.size.width),
+            f32::from(ring.size.height),
+        );
+        let (x0, x1, y0, y1) = super::ink_box(&shot, dims, area, rgb(c.panel), rgb(c.panel_dim))
+            .unwrap_or_else(|| panic!("{n}: the ring draws ink in its cell {ring:?}"));
+        assert!(
+            x1 - x0 >= 6.0 && y1 - y0 >= 6.0,
+            "{n}: a ring, not a dot ({x0}..{x1} × {y0}..{y1})"
+        );
+        let centre = super::pixel_at(&shot, dims, (x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        assert!(
+            super::gap(centre, c.panel) < super::gap(centre, c.panel_dim),
+            "{n}: hollow ({centre:?})"
+        );
     });
 }
 

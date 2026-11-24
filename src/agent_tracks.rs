@@ -66,9 +66,20 @@ pub fn glyph_text(g: Glyph) -> &'static str {
         Glyph::Script => "◇",
         Glyph::Passed => "✓",
         Glyph::Failed => "✖",
+        Glyph::Cleared => "✕",
         Glyph::Planned => "○",
         Glyph::Running => "",
     }
+}
+
+/// An unknown check's mark: a drawn hollow ring `size` across in `ink` (the font's ◌ draws as
+/// faint dots at bead size).
+pub(crate) fn hollow_ring(ink: Rgb, size: f32) -> gpui::Div {
+    div()
+        .size(px(size))
+        .rounded_full()
+        .border_1()
+        .border_color(hsla(ink))
 }
 
 /// The keyboard's column in a step's tracks: the step (its first call's id) and the column.
@@ -142,9 +153,8 @@ impl AgentTab {
                         .h(px(chat::TRACK_ROW))
                         .flex()
                         .items_center()
-                        .text_color(hsla(c.panel_dim))
+                        .text_color(hsla(c.panel_text))
                         .cursor_pointer()
-                        .hover(|s| s.text_color(hsla(c.panel_text)))
                         .child(SharedString::from(words))
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             cx.stop_propagation();
@@ -191,7 +201,7 @@ impl AgentTab {
                     })
             });
         // The header: the counts, "N failed" in the failure's ink, the time, and "+M earlier"
-        // (or "latest only" once every column shows), which toggles the earlier columns.
+        // (or "fewer" once every column shows), which toggles the earlier columns.
         let head = {
             let view = look.view.clone();
             let step = lead.clone();
@@ -200,7 +210,7 @@ impl AgentTab {
                 let view = look.view.clone();
                 let step = lead.clone();
                 let words = if all_cols {
-                    "latest only".to_string()
+                    "fewer".to_string()
                 } else {
                     format!("+{} earlier", tracks.earlier)
                 };
@@ -208,8 +218,8 @@ impl AgentTab {
                     "tracks-earlier",
                     div()
                         .id(("agent-tracks-earlier", ix))
+                        .text_color(hsla(c.panel_text))
                         .cursor_pointer()
-                        .hover(|s| s.text_color(hsla(c.panel_text)))
                         .child(SharedString::from(words))
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             cx.stop_propagation();
@@ -340,7 +350,7 @@ impl AgentTab {
                 match bead.glyph {
                     Glyph::Edit | Glyph::Script => c.bead_edit,
                     Glyph::Passed => c.tool_ok,
-                    Glyph::Failed | Glyph::Planned => c.failed_panel,
+                    Glyph::Failed | Glyph::Planned | Glyph::Cleared => c.failed_panel,
                     Glyph::Check => c.panel_dim,
                     _ => c.bead,
                 }
@@ -360,6 +370,9 @@ impl AgentTab {
                         None => div().child("●").into_any_element(),
                     }
                 }
+                Glyph::Check => self
+                    .marked("tracks-unknown", hollow_ring(ink, chat::BEAD))
+                    .into_any_element(),
                 g => div().child(glyph_text(g)).into_any_element(),
             };
             div()
@@ -623,10 +636,11 @@ mod tests {
                 Glyph::Failed,
                 Glyph::Planned,
                 Glyph::Check,
-                Glyph::Command
+                Glyph::Command,
+                Glyph::Cleared
             ]
             .map(glyph_text),
-            ["●", "▲", "■", "◇", "✓", "✖", "○", "◌", "●"]
+            ["●", "▲", "■", "◇", "✓", "✖", "○", "◌", "●", "✕"]
         );
         assert_eq!(glyph_text(Glyph::Running), "");
     }

@@ -178,9 +178,10 @@ pub fn file_summary(touches: &[(&Touch, bool, ToolKind)]) -> String {
     parts.join(" · ")
 }
 
-/// A check run or failed call's outcome in words: "2 passed", "tests · 1 of 3 failed", "build
-/// failed · E0425", "red, as planned"; a failed call's first error (cut to `CHIP_ERROR_MAX`),
-/// else "failed". None: nothing to say (running, unknown, not run).
+/// A check run or failed call's outcome in words: "2 passed", "1 of 3 failed" (a row's title
+/// already says what ran), "build failed · E0425" (a compile error is the build's, whatever ran
+/// it), "red, as planned"; a failed call's first error (cut to `CHIP_ERROR_MAX`), else "failed".
+/// None: nothing to say (running, unknown, not run).
 pub fn outcome_phrase(a: &Activity) -> Option<String> {
     let Some(check) = &a.check else {
         return (a.failed.is_some() && !a.not_run).then(|| {
@@ -201,14 +202,13 @@ pub fn outcome_phrase(a: &Activity) -> Option<String> {
             of,
             first_error,
         } => {
-            let what = what_word(check.what);
             if let Some(code) = first_error.as_deref().and_then(error_code) {
-                return Some(format!("{what} failed · {code}"));
+                return Some(format!("build failed · {code}"));
             }
             Some(match (failed, of) {
-                (Some(f), Some(of)) => format!("{what} · {f} of {of} failed"),
-                (Some(f), None) => format!("{what} · {f} failed"),
-                _ => format!("{what} failed"),
+                (Some(f), Some(of)) => format!("{f} of {of} failed"),
+                (Some(f), None) => format!("{f} failed"),
+                _ => format!("{} failed", what_word(check.what)),
             })
         }
         Outcome::Unknown => None,
@@ -355,7 +355,7 @@ fn failing_words(a: &Activity) -> String {
         return format!("{what} failed");
     };
     if let Some(code) = first_error.as_deref().and_then(error_code) {
-        return format!("{what} failed · {code}");
+        return format!("build failed · {code}");
     }
     let mut detail: Vec<String> = Vec::new();
     let filter = scope_filter(&check.scope);
@@ -606,7 +606,12 @@ mod tests {
             s(&[cli(failed(1, 3)), cli(failed(1, 3))]),
             "tests failed · cli:: 1 of 3"
         );
-        assert_eq!(s(&[build(e0425)]), "build failed · E0425");
+        assert_eq!(s(&[build(e0425.clone())]), "build failed · E0425");
+        assert_eq!(
+            s(&[cli(e0425)]),
+            "build failed · E0425",
+            "a compile error under cargo test is the build's"
+        );
         assert_eq!(s(&[cli(Outcome::Unknown)]), "tests · ran");
         assert_eq!(
             s(&[
@@ -625,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_calls_chip_is_its_first_error_and_a_failed_check_names_its_kind() {
+    fn a_failed_calls_chip_is_its_first_error_and_a_compile_error_is_the_builds() {
         let bad = |e: &str| Activity {
             failed: Some(e.into()),
             ..Default::default()
@@ -640,7 +645,18 @@ mod tests {
         assert_eq!(outcome_phrase(&bad("  ")).as_deref(), Some("failed"));
         assert_eq!(
             outcome_phrase(&check(CheckWhat::Tests, "cargo test", failed(1, 3))).as_deref(),
-            Some("tests · 1 of 3 failed")
+            Some("1 of 3 failed"),
+            "the row's title already says what ran"
+        );
+        let e0425 = Outcome::Failed {
+            failed: None,
+            of: None,
+            first_error: Some("error[E0425]: cannot find function `call_within`".into()),
+        };
+        assert_eq!(
+            outcome_phrase(&check(CheckWhat::Tests, "cargo test", e0425)).as_deref(),
+            Some("build failed · E0425"),
+            "the tests never ran"
         );
     }
 

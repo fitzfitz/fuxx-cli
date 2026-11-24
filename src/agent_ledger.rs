@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::agent_activity::{CheckWhat, How, Outcome, of};
+use crate::agent_activity_checks::error_code;
 use crate::agent_conversation::{Conversation, Item};
 use crate::agent_lanes::{View, clock};
 pub use crate::agent_steps::ToolTimes;
@@ -226,10 +227,19 @@ pub fn ledger_of(
         .filter(|r| matches!(r.outcome, Outcome::Passed { .. }))
         .count();
     let total = checks.len();
+    // The latest real failure's kind; a compile error is the build's, whatever ran it.
     let failing = open
         .iter()
         .max_by_key(|(_, ix)| **ix)
-        .map(|((what, _), _)| *what);
+        .map(|((what, _), &ix)| {
+            let compile = of(&items[ix])
+                .and_then(|a| match &a.check.as_ref()?.outcome {
+                    Outcome::Failed { first_error, .. } => first_error.clone(),
+                    _ => None,
+                })
+                .is_some_and(|e| error_code(&e).is_some());
+            if compile { CheckWhat::Build } else { *what }
+        });
     // The latest started runs now (else the last in order), the others "+N running".
     let lead = running
         .iter()
@@ -586,6 +596,23 @@ mod tests {
             ]
         );
         assert!(!l.scopes[0].failing() && l.scopes[1].failing() && !l.scopes[2].failing());
+    }
+
+    #[test]
+    fn a_compile_error_under_cargo_test_is_the_build_failing() {
+        let mut c = turn();
+        let e0425 = Outcome::Failed {
+            failed: None,
+            of: None,
+            first_error: Some("error[E0425]: cannot find function `call_within`".into()),
+        };
+        call(&mut c, "1", None, check("cargo test cli::", e0425));
+        let l = main_of(&c);
+        assert_eq!(l.failing, Some(CheckWhat::Build));
+        assert_eq!(
+            parts(&l, Instant::now()).last().map(|p| p.text.as_str()),
+            Some("build failing")
+        );
     }
 
     #[test]

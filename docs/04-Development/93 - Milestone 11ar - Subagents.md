@@ -1205,6 +1205,17 @@ Everything below up to the 2026-11-24 "browser opened from a terminal" chore is 
       `scripts/ui-shots.sh`: 359 passed, 1 failed (`agent-tab-wide`, display-dependent: the screen here is 1512 pt
       wide, so its 1600 pt window is clamped; it fails the same on the branch before the fix wave), 32 look different
       (the animation set), 8 differ in size (the same clamp).
+    - **After the designer's re-check** (everything had landed; four last items, one commit): a compile error is the
+      build's whatever ran it ("build failed · E0425" under `cargo test` too, on the row, the checks track and the
+      ledger's "build failing"); a real ✖ that a later pass of the same kind and scope cleared draws as the light ✕ in
+      the same ink (the history stays, the alarm goes); the unknown check is a drawn hollow ring, not the font's ◌
+      (which drew only faint dots at bead size, about 4 × 3.5 pt of half ink), on the track and in the popover's
+      strips; the "+6 earlier" toggle reads "fewer" once open (as the files toggle) and both toggles are in
+      `panel_text`; a row's chip drops the kind ("1 of 3 failed": its title says what ran), the checks track keeps it.
+      Checks: 2850 → 2852 tests (`a_compile_error_under_cargo_test_is_the_build_failing`,
+      `a_failure_a_later_pass_cleared_draws_as_the_light_cross`, the chip and summary tests extended), each watched
+      failing first; new visual scene `agent-tracks-unknown` (the ring's ink round its cell, hollow in the middle;
+      reference recorded); the `agent-tracks`, `agent-steps` and `agent-ledger` scenes pass, no other reference moved.
     - **On screen:** not yet seen in the real window; no claude or agy was run.
 
 - **A long notice or error no longer runs under the next message** (your words, 2026-11-24: "why the layout below is

@@ -355,6 +355,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-tracks-more-files",
     "agent-tracks-earlier",
     "agent-tracks-narrow",
+    "agent-tracks-unknown",
     "agent-steps-rows",
     "agent-ledger-running",
     "agent-ledger-done",

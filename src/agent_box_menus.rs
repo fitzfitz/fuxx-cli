@@ -966,9 +966,15 @@ impl AgentTab {
                     Glyph::Failed | Glyph::Planned => c.bar_failed,
                     _ => c.bar_dim,
                 };
-                div()
-                    .text_color(hsla(ink))
-                    .child(crate::agent_tab::tracks::glyph_text(glyph))
+                match glyph {
+                    Glyph::Check => div()
+                        .flex()
+                        .items_center()
+                        .child(crate::agent_tab::tracks::hollow_ring(ink, 8.)),
+                    _ => div()
+                        .text_color(hsla(ink))
+                        .child(crate::agent_tab::tracks::glyph_text(glyph)),
+                }
             });
             let outcome_ink = if scope.failing() {
                 c.bar_failed

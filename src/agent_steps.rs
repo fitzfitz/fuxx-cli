@@ -139,6 +139,8 @@ pub enum Glyph {
     Check,
     /// A call with no file that isn't a check (the Commands track).
     Command,
+    /// A real check failure a later pass of the same kind and scope cleared: the light ✕.
+    Cleared,
     Running,
 }
 
@@ -150,7 +152,7 @@ impl Glyph {
             Glyph::Search => 1,
             Glyph::Script => 2,
             Glyph::Edit | Glyph::Passed | Glyph::Planned => 3,
-            Glyph::Failed => 4,
+            Glyph::Failed | Glyph::Cleared => 4,
             Glyph::Running => 5,
         }
     }
@@ -283,6 +285,8 @@ pub fn tracks_of(
     let mut files: Vec<FileAcc> = Vec::new();
     let mut by_key: HashMap<PathBuf, usize> = HashMap::new();
     let mut checks: Vec<(usize, Bead)> = Vec::new();
+    // Each finished check's column, key and whether it passed (for the cleared failures).
+    let mut check_runs: Vec<(usize, (CheckWhat, String), bool)> = Vec::new();
     let mut commands: Vec<(usize, Bead)> = Vec::new();
     let mut commands_failed = 0;
     let mut runs: Vec<Cow<'_, Activity>> = Vec::new();
@@ -341,6 +345,10 @@ pub fn tracks_of(
             } else {
                 check_glyph(&check.outcome, a.planned_failure)
             };
+            if !*running {
+                let passed = matches!(check.outcome, Outcome::Passed { .. });
+                check_runs.push((col, check_key(check, cwd), passed));
+            }
             add_bead(
                 &mut checks,
                 col,
@@ -411,6 +419,22 @@ pub fn tracks_of(
             }
         })
         .collect();
+    // A real failure a later pass of the same kind and scope cleared: the light ✕ (the history
+    // stays, the alarm goes).
+    for (col, bead) in &mut checks {
+        if bead.glyph != Glyph::Failed {
+            continue;
+        }
+        let Some((_, key, _)) = check_runs.iter().find(|(c, ..)| c == col) else {
+            continue;
+        };
+        if check_runs
+            .iter()
+            .any(|(c, k, passed)| c > col && k == key && *passed)
+        {
+            bead.glyph = Glyph::Cleared;
+        }
+    }
     let runs: Vec<&Activity> = runs.iter().map(|r| r.as_ref()).collect();
     let checks = (!checks.is_empty()).then(|| Track {
         label: "Checks".into(),
@@ -889,6 +913,28 @@ pub(crate) mod tests {
             run_check("3", CheckWhat::Tests, "cargo test", passed(3)),
         ]);
         assert!(!fixed.checks.unwrap().failing);
+    }
+
+    #[test]
+    fn a_failure_a_later_pass_cleared_draws_as_the_light_cross() {
+        let t = tracks(&[
+            run_check("1", CheckWhat::Tests, "cargo test", failed(1, 3)),
+            run_check("2", CheckWhat::Lint, "cargo clippy", failed(1, 1)),
+            edit("3", "src/b.rs"),
+            run_check("4", CheckWhat::Tests, "cargo test", passed(3)),
+        ]);
+        let glyphs: Vec<Glyph> = t
+            .checks
+            .unwrap()
+            .beads
+            .iter()
+            .map(|(_, b)| b.glyph)
+            .collect();
+        assert_eq!(
+            glyphs,
+            [Glyph::Cleared, Glyph::Failed, Glyph::Passed],
+            "the tests' failure was cleared, the lint's still stands"
+        );
     }
 
     #[test]
