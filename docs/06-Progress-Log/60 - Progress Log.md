@@ -14,7 +14,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Latest (2026-11-24):** the agent activity view chore 🟨 built on branch `chore/agent-activity-view` (6 commits, not merged, not pushed): file tracks for busy steps, readable rows, the turn ledger in the box's folder tab; waiting for the whole-branch review and your on-screen check (note 93, "Chores after M11ar").
+- **Latest (2026-11-24):** the agent activity view chore 🟨 built on branch `chore/agent-activity-view`, its whole-branch review's fix wave in (code review, design review and the long-notice overlap fix; not merged, not pushed); waiting for the design re-check and your on-screen check (note 93, "Chores after M11ar").
 - **Before (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
 - **Released (2026-11-23):** **v0.12.7** (run 45097026110, `fuxx-0.12.7.zip`): chat text selection, the thinking fade, the graph fixture's made-up history.
 - **Released (2026-11-23):** **v0.12.6** (run 45070831970, `fuxx-0.12.6.zip`): M11ar, M11au and the chores since v0.12.5.
@@ -37,6 +37,34 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-24 — Fix: a long notice or error ran under the next message
+
+- **What:** your bug report ("why the layout below is broken?"): Claude Code's six-paragraph safety-check notice in
+  Main's chat was given less height than its wrapped text, so its last line drew under the next message. Root cause:
+  a row's column (`w_full`, at most `COLUMN_MAX`) sat in a flex column, and taffy measures a flex column's child at
+  its unclamped width, so on a wide tab the text was measured on wider lines than it was drawn on. Rows now centre
+  their column in a flex row (`agent_rows::centred`); the lane's task and end rows too. Note 93, "Chores after
+  M11ar".
+- **Checks:** new scene `agent-notice-long` (a long notice and a long error at 720 and 1100 pt) failed at 1100 first,
+  passes now; the agent and lanes scenes (155) pass.
+- **Not yet seen in the real window.**
+
+### 2026-11-24 — Chore: the agent activity view, after the review
+
+- **What:** the one fix wave after the whole-branch review, on `chore/agent-activity-view`: the code review's six
+  must-fix (a check's exit trusted only when it is its own; a failing exit or a crashed binary beats a passing summary;
+  an Unknown check never green on a row; only the first red run planned, no negations or bare "TDD"; scopes keep what
+  follows `--`; several checks in one command are one compound check), its should-fix (`cd` in scopes and paths,
+  Claude's `Exit code` line, denials in the history, cached row words, P/T over every run, the words split into
+  `agent_step_words.rs`) and nits; the design review's calm-vs-noise changes, material fixes 1–11, the pill's
+  separator gap and nits (one clock format, ⌥↑ to the latest step's tracks among them). Note 93, "After the review".
+- **Checks:** 2827 → 2850 tests (`--features ui-shots`: 2877 → 2900; each new one failed first); clippy 14/29 and
+  18/33; `cargo fmt --check` clean. Full `scripts/ui-shots.sh`: 359 passed, 1 failed (`agent-tab-wide`: this screen
+  is 1512 pt wide, so its 1600 pt window is clamped; it fails the same before the fix wave), 32 look different (the
+  animation set), 8 differ in size (the same clamp). References refreshed for `agent-tracks-running` and
+  `agent-tab-question-agy`. No claude or agy was run.
+- **Not yet seen in the real window.**
 
 ### 2026-11-24 — Chore: the agent activity view
 

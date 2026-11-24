@@ -1146,3 +1146,77 @@ Everything below up to the 2026-11-24 "browser opened from a terminal" chore is 
     `-failure`, `-planned`, `-more-files`, `-earlier`, `-narrow`, `agent-steps-rows`, `agent-ledger-running`, `-done`,
     `-trimmed`, `-popover`.
   - **On screen:** not yet seen in the real window; no claude or agy was run.
+  - **After the review** (the whole-branch code review and the Lead UI/UX finish review, one fix wave):
+    - **Checks read right.** A check's exit counts only when it is the check's own (the check last, or followed only
+      by `&&`, never piped): `; echo done`, `|| true` and a pipe leave it Unknown unless its output holds a summary. A
+      failing exit beats a passing summary, a crashed test binary (`process didn't exit successfully`, `error: test
+      failed`) fails though every result line was ok, and a failed jest suite / vitest file fails it. A scope keeps
+      what follows `--` but output flags (`-- cli::`, `--skip api`, `-D warnings` no longer cleared by a laxer run),
+      and a `cd` before a check is part of it (relative paths after a `cd` are keyed under it, so the popover opens
+      the right file; a `cd` to the tab's folder is the same scope as none). Several checks in one command are one
+      compound check ("Ran lint + tests"), so only the same command clears it. `timeout 600` wraps, `sed -Ei` edits, a
+      script's `s/…/…/` strings and plain words aren't files, Windows line endings are read, an empty grep / rg (exit
+      1) is no failure, and a cargo panic reads as one sentence ("cli::tests::bad: assertion `left == right` failed
+      (src/cli.rs:42)").
+    - **Planned failures.** Only the first red run of a check in a run of calls is the announced one (the same check
+      failing again after an edit is real); "nothing should fail", "I don't expect it to fail" and a bare "TDD"
+      announce nothing ("TDD" counts beside a red / fail word).
+    - **Providers.** Claude's `Exit code N` line is read as the exit and left out of the output, so it is never a first
+      error; fuxx's denial now says "The user denied this in fuxx: …", so a denied call reads the same in the history
+      (`history_rebuilds_the_same_activities` has a deny case). An agy result's exit header is its own command's, not
+      every call of the step.
+    - **Calm vs noise, as the design review asked.** Beads in the text's dim ink, a read's dot 2 pt smaller, a script a
+      hollow ◇ in the edit ink, a real failure a heavy ✖, a planned one ○, an Unknown check ◌; a call that failed draws
+      dim under an 8 pt ✕ (the change that didn't happen). The bead lane snaps to 6 columns. Labels are 148 pt wide,
+      a read-only file's in `panel_dim`, a changed one's in `panel_text`, "Checks" and "Commands" MEDIUM. A summary
+      that says a failure (a scope still failing, "edit failed", a failed command) and the header's "N failed" are in
+      `failed_panel`.
+    - **Words.** The checks track says each scope's latest state, not a chain: "tests failed · cli:: 1 of 3", "tests ·
+      red → green · 2 passed", "tests · 3 passed · fixed", "3 passing · 2 fixed", the kind always named. A failed call's
+      chip is its first error (40 characters), its title the plain verb ("Edit cli.rs", "List files"); a listing's own
+      title is "Ran ls nope" (fuxx's fallback; an agent's description still leads). A last "Commands" track beads the
+      calls with no file that aren't checks ("2 commands · 1 failed"). "+6 earlier" moved into the header and reads
+      "latest only" once open; "+N files" reads "fewer" once open. The header hides a time under a second; the running
+      row and the tool modal use the one clock format ("0:12").
+    - **Ledger.** The folder tab says "checks pass" when every scope's latest run passed, "tests failing" (red) while
+      one fails for real, else "checks ran"; the popover has "P/T passed" beside its Checks heading (T counts every
+      run, Unknown and planned ones too: the lead's call) and one row per scope with a strip of its runs (✓ ✖ ○ ◌) and
+      its latest outcome, red only while that scope still fails. A changed file's row has the tooltip "Open the diff".
+      The pill's status word and ledger parts sit in one gapless run (the 5 pt gap only after the mark).
+    - **Rows and keys.** A readable row with an Unknown check gets a dim ring, never the green dot. Its words are built
+      once per change and cached on the row (its trace capped at 160 characters); a step's tracks come from the row
+      that draws them (no scan). ⌥↑ in the box puts the keyboard on the latest busy step's tracks (Esc gives it back;
+      listed in the shortcuts as "Step Through the Latest Busy Step").
+    - **Lean files.** The step model's words (header, summaries, outcome phrases, row words, tips) moved from
+      `agent_steps.rs` to `src/agent_step_words.rs`; `agent_ask::cut` is shared for the cut titles, traces and chips.
+    - **AI's calls:** "+2 −1" stays calm (no tint); the checks track's failure ink follows the step's own scopes (as
+      its summary does); a Commands bead for a failed call is the ✖ itself; the scenes keep their collapsed state as
+      `…-collapsed` pictures before the click.
+    - **Checks:** 2827 → 2850 tests (`--features ui-shots`: 2877 → 2900), among them
+      `a_checks_exit_is_trusted_only_when_nothing_after_it_can_replace_it`, `a_failing_exit_beats_a_passing_summary`,
+      `words_after_a_bare_dashdash_stay_in_the_scope_but_output_flags`,
+      `several_checks_in_one_command_share_one_compound_scope`, `a_cd_scopes_the_check_and_prefixes_relative_paths`,
+      `only_the_first_red_run_of_a_check_is_planned`, `claudes_exit_code_line_is_never_a_first_error`,
+      `an_agy_result_s_exit_is_only_its_command_s`, `checks_summaries_say_each_scopes_latest_state`,
+      `an_unknown_check_never_marks_its_row_green`, `calls_with_no_file_that_arent_checks_bead_a_last_commands_track`,
+      `the_lane_snaps_to_six_columns`, each watched failing first; clippy 14/29 and 18/33; fmt clean. The activity
+      scenes check the new words, ⌥↑, "latest only" and "fewer"; references refreshed for `agent-tracks-running` and
+      `agent-tab-question-agy` (its failed listing row: "Run ls -la …" with its first error). Full
+      `scripts/ui-shots.sh`: 359 passed, 1 failed (`agent-tab-wide`, display-dependent: the screen here is 1512 pt
+      wide, so its 1600 pt window is clamped; it fails the same on the branch before the fix wave), 32 look different
+      (the animation set), 8 differ in size (the same clamp).
+    - **On screen:** not yet seen in the real window; no claude or agy was run.
+
+- **A long notice or error no longer runs under the next message** (your words, 2026-11-24: "why the layout below is
+  broken?", on Claude Code's six-paragraph safety-check notice in Main's chat). Root cause: each chat row is a flex
+  column (`items_center`) holding the column (`w_full`, at most `COLUMN_MAX`); taffy sizes a flex column's child — its
+  flex basis, so its height — at its `w_full` width, not clamped by `max_w`. On a tab wider than `COLUMN_MAX` the
+  notice's text was wrapped on the wider lines (fewer of them) when the row's height was measured, then drawn on the
+  narrower ones, so its last lines ran under the next row. The agent's own message escaped only because its body
+  carries its own `max_w`. Fix: a row centres its column in a flex row (`agent_rows::centred`), where the width is
+  clamped before the height is measured; the lane's task and end rows, which had the same shape, use it too.
+  - **Checks:** new state scene `agent-notice-long` (a 6-paragraph notice and a 3-paragraph error, each followed by
+    the agent's message, at 720 and 1100 pt): each body's drawn bottom is at or above the next row's top and inside
+    its own row; it failed at 1100 first (the notice's text ended at 401, the next row began at 364). The agent and
+    lanes scenes (155) pass.
+  - **On screen:** not yet seen in the real window.
