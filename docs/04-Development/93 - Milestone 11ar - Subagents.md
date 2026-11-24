@@ -1272,3 +1272,52 @@ The paste chore after that is **released in v0.13.2** (2026-11-24, run 453521710
     least 1600 pt wide and only the 1512 pt one was attached), 33 look different, 8 differ in size (the same clamp).
   - **On screen:** not yet seen in the real window: the real clipboard (a Finder copy, a TIFF from Preview) wasn't
     tried in the app.
+- **A long conversation no longer makes the agent tab lag** (your words, 2026-11-24: "when the conversations get too
+  long, when I scroll and sometime when Im not scroll either, its laggy. trace it for me, find root cause and come
+  up with permanent solution", then "yes build it as a chore"). Branch `chore/agent-tab-perf`.
+  - **Root cause:** a live `sample` of v0.13.1 on a very long Claude session had the main thread busy 22 % of the
+    time while the agent worked, nearly all of it the agent tab's prepaint, paint and layout
+    (`agent_chat::shows_thinking`, `rows_of`, `agent_lanes::pill_labels`, `item_row`). Two things together: (1) GPUI
+    marks every ancestor view dirty when a child view notifies, so each tick of a spinner, the caret or a clock, and
+    each scroll frame, re-renders the whole tab (GPUI's design, kept); (2) that render, and the sync after every
+    streamed line, did work in proportion to the whole conversation: the last row's thinking line rebuilt Main's
+    rows and scanned every item, the pill labels were rebuilt per frame, `status()` scanned for permissions, and
+    `sync_rows` rebuilt the order, roles and every row's print, hashing each message's full text, per line.
+  - **What changed:** the conversation's items are one store (`src/agent_items.rs`) changed only through methods
+    that note what changed: a version per item, the lowest index changed since the tab looked, and indexes kept as
+    items change (running calls, open permissions, tool ids, items per parent), so `status()`, the pending
+    permission, the oldest ask, a lane's step count, the tool marks and the ticker scan nothing. Each view's rows
+    live in a `ViewCache` (`src/agent_view_cache.rs`): its order, roles, prints, open check failures and thinking
+    flag, derived again only from the first changed item (back to the start of its run of tool rows), with row and
+    step prints going by item version instead of text. It starts again only when the lanes or the relays passed on
+    change, the tracks' fit changes, or a hidden view is shown after changes. The render path only reads: the
+    thinking line from the status and the running calls, pill labels kept per lanes' shape and width, the "Stopped"
+    rewind link found with the ledger. The ledger isn't rebuilt while only the agent's words stream. The pump hands
+    the tab everything already read as one batch (at most 256 lines): each line handled as before, the rows synced
+    once per run of lines.
+  - **AI's calls:** the fix makes each render and each sync cheap rather than fighting GPUI's ancestor
+    invalidation. A view not shown is rebuilt once when shown again after changes (cheap now that nothing is
+    hashed), rather than following every change. A lane's view finds its order again each sync (a plain scan, no
+    hashing): its relays and waiting questions sort out of item order, so only Main's order is extended
+    incrementally. The ledger stays a per-turn rebuild, now only on changes other than streamed words. The burst
+    batching keeps every line's own handling and events (the status, the question, queued sends) and only defers
+    the rows, instead of deferring to the next frame, so nothing reads stale rows. No new crate.
+  - **Checks:** 2860 → 2870 tests and one ignored bench (`--features ui-shots`: 2910 → 2920), each failing first (as a missing type or function; the store's tests were
+    written with it): work counts on
+    10,000 items (a new message, 100 streamed deltas, a call and its finish each derive at most 4 rows; a shown-again
+    view, a rewind, an Undo and a width change rebuild once; nothing changed derives nothing), counters proving no
+    item's text is hashed and `rows_of` doesn't run on Main's streaming path, a fixed-seed property test of 1,500
+    random edits (messages, deltas, calls, finishes, turn ends, lanes started, stepped, ended and resumed, relays
+    passed on, permissions, check runs, rewinds and Undos, width flips) where the incremental Main and lane caches
+    equal a full rebuild and the kept indexes equal a scan (three mutations of the incremental rules each made it
+    fail), the store's own tests, the labels cache and the burst drain. **Before/after (release build, this
+    machine, indicative only):** one long-chat sync after a delta on 10,706 items 4.9 ms → 13 µs; the last row's
+    thinking check 186 µs → about 1 ns. New state scene `agent-long-chat` (3,212 items, 3,004 rows, lanes,
+    markdown) draws, streams ten pieces, scrolls to the top and back; it logs frame times (about 120 ms each in the
+    debug scene build against 115 ms for an empty tab: the frame read back dominates, so no budget is asserted).
+    Clippy 14/29 and 18/33; `cargo fmt --check` clean. Full `scripts/ui-shots.sh`: 362 passed, 1 failed
+    (`agent-tab-wide`, which needs a screen at least 1600 pt wide), 38 look different (the animation-heavy agent-box
+    menus, the shell cards, the graph card and the sliding chrome, which vary run to run: one rerun alone moved from
+    0.19 to 0.05), 8 differ in size (the same display clamp as before).
+  - **On screen:** not yet seen in the real window: the feel of scrolling and streaming in a long session is yours
+    to judge.

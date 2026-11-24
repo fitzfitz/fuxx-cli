@@ -14,7 +14,8 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Latest (2026-11-24):** **v0.13.2 released** (run 45352171051): the paste chore. Before it the same day: v0.13.1 (the agent activity view and chores) and v0.13.0. Waiting for your on-screen checks (note 93, "Chores after M11ar").
+- **Latest (2026-11-24, later):** the agent tab perf chore 🟨 built on branch `chore/agent-tab-perf` (not merged, not pushed): long conversations no longer lag; waiting for your feel of it in the real window (note 93).
+- **Before (2026-11-24):** **v0.13.2 released** (run 45352171051): the paste chore. Before it the same day: v0.13.1 (the agent activity view and chores) and v0.13.0. Waiting for your on-screen checks (note 93, "Chores after M11ar").
 - **Before (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
 - **Released (2026-11-23):** **v0.12.7** (run 45097026110, `fuxx-0.12.7.zip`): chat text selection, the thinking fade, the graph fixture's made-up history.
 - **Released (2026-11-23):** **v0.12.6** (run 45070831970, `fuxx-0.12.6.zip`): M11ar, M11au and the chores since v0.12.5.
@@ -37,6 +38,27 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-24 — Chore: a long conversation no longer makes the agent tab lag
+
+- **What:** your words: "when the conversations get too long, when I scroll and sometime when Im not scroll either,
+  its laggy. trace it for me, find root cause and come up with permanent solution", then "yes build it as a chore".
+  Root cause (a live `sample` of v0.13.1): GPUI re-renders the whole agent tab on every spinner, caret or clock tick
+  and every scroll frame (it marks ancestors dirty; kept), and that render plus the sync after every streamed line
+  did work in proportion to the whole conversation (rows rebuilt, every message's text hashed, items scanned per
+  frame). Now the items are one store that notes each change and keeps indexes (`src/agent_items.rs`), each view's
+  rows are a cache derived again only from the first changed item with prints by item version
+  (`src/agent_view_cache.rs`), the render path only reads, pill labels and the "Stopped" link are kept, and a burst
+  of lines syncs the rows once. Branch `chore/agent-tab-perf`, 5 commits, not merged, not pushed. Note 93, "Chores
+  after M11ar".
+- **Checks:** 2860 → 2870 tests and one ignored bench (`--features ui-shots`: 2910 → 2920): work counts on 10,000
+  items (at most 4 rows derived per streamed delta, new message or call; one rebuild for a rewind, an Undo, a width
+  change or a view shown again), no text hashing and no `rows_of` on Main's streaming path, and a fixed-seed
+  property test of 1,500 random edits against a full rebuild. Release build, this machine, indicative: a delta's
+  sync on 10,706 items 4.9 ms → 13 µs; the last row's thinking check 186 µs → about 1 ns. New state scene
+  `agent-long-chat` (3,212 items) logs its frame times (no budget asserted: the frame read back dominates). Clippy
+  14/29 and 18/33; `cargo fmt --check` clean; full `scripts/ui-shots.sh` 362 passed, 1 failed (`agent-tab-wide`,
+  display width), 38 look different (the animation-heavy set). Not yet seen in the real window.
 
 ### 2026-11-24 — v0.13.2 released
 
