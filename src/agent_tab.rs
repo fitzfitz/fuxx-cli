@@ -4334,7 +4334,7 @@ impl AgentTab {
     /// would), so ↑ / ↓ go on through the history instead of into the list.
     fn show_recalled(&mut self, text: String, cx: &mut Context<Self>) {
         self.slash_dismissed = true;
-        self.composer.update(cx, |c, cx| c.set_text(text, cx));
+        self.composer.update(cx, |c, cx| c.recall_text(text, cx));
     }
 
     /// ↑ (⌃P) in the box: on its first row, with nothing selected or being composed, the older
@@ -4392,7 +4392,7 @@ impl AgentTab {
                 self.recall = None;
                 // Your own words again: a `/` you were typing gets its list back.
                 self.slash_dismissed = false;
-                self.composer.update(cx, |c, cx| c.set_text(draft, cx));
+                self.composer.update(cx, |c, cx| c.recall_text(draft, cx));
             }
             None => self.composer.update(cx, |c, cx| c.move_down(cx)),
         }

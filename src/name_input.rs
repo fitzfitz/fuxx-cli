@@ -40,7 +40,9 @@ actions!(
         SelectWordRight,
         SelectToStart,
         SelectToEnd,
-        SelectAll
+        SelectAll,
+        Undo,
+        Redo
     ]
 );
 
@@ -77,6 +79,8 @@ pub struct NameInput {
     caret_on: bool,
     blink_seen: (String, Range<usize>, bool),
     blink_timer: Option<gpui::Task<()>>,
+    /// ⌘Z / ⇧⌘Z (the 2026-11-24 chores): the text and selection before each step.
+    history: crate::undo_history::UndoHistory<(String, Range<usize>)>,
     _blur: Subscription,
 }
 
@@ -110,6 +114,7 @@ impl NameInput {
             caret_on: true,
             blink_seen: (String::new(), 0..0, false),
             blink_timer: None,
+            history: Default::default(),
             _blur: blur,
         }
     }
@@ -129,6 +134,40 @@ impl NameInput {
     pub fn set_text(&mut self, text: String) {
         self.text = text;
         self.caret_to_end();
+        // Put there by its owner (cleared after a commit, a palette's prefix): a fresh start.
+        self.history.clear();
+    }
+
+    /// A step for ⌘Z before an edit of `kind`.
+    fn remember(&mut self, kind: crate::undo_history::EditKind) {
+        let now = (self.text.clone(), self.selected.clone());
+        self.history.record(now, kind);
+    }
+
+    /// ⌘Z: the text and selection before the last step.
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        let now = (self.text.clone(), self.selected.clone());
+        if let Some(back) = self.history.undo(now) {
+            self.restore(back);
+            cx.notify();
+        }
+    }
+
+    /// ⇧⌘Z: the step ⌘Z took back.
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        let now = (self.text.clone(), self.selected.clone());
+        if let Some(forward) = self.history.redo(now) {
+            self.restore(forward);
+            cx.notify();
+        }
+    }
+
+    fn restore(&mut self, (text, selected): (String, Range<usize>)) {
+        self.text = text;
+        self.marked = None;
+        self.reversed = false;
+        let end = self.text.len();
+        self.selected = selected.start.min(end)..selected.end.min(end);
     }
 
     /// Select byte range `range` of the text (clamped to it, on character edges), the caret at
@@ -189,6 +228,7 @@ impl NameInput {
         extend: bool,
         cx: &mut Context<Self>,
     ) {
+        self.history.break_run();
         let selection = self.selection();
         let at = if !extend && !selection.is_empty() {
             if left { selection.start } else { selection.end }
@@ -256,6 +296,7 @@ impl NameInput {
     fn mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // Keep clicks in the box: the sidebar row under it would take focus (and so cancel).
         cx.stop_propagation();
+        self.history.break_run();
         window.focus(&self.focus_handle, cx);
         if e.click_count >= 2 {
             self.select_all();
@@ -303,6 +344,10 @@ impl NameInput {
 
     fn backspace(&mut self, _: &Backspace, _: &mut Window, cx: &mut Context<Self>) {
         let erased = erase(&self.text, &self.selection(), prev_char);
+        if erased.is_empty() {
+            return;
+        }
+        self.remember(crate::undo_history::EditKind::Delete);
         self.put(erased, "");
         cx.notify();
     }
@@ -310,6 +355,10 @@ impl NameInput {
     /// ⌦: the selection, else the character after the caret.
     fn delete(&mut self, _: &Delete, _: &mut Window, cx: &mut Context<Self>) {
         let erased = erase(&self.text, &self.selection(), next_char);
+        if erased.is_empty() {
+            return;
+        }
+        self.remember(crate::undo_history::EditKind::Delete);
         self.put(erased, "");
         cx.notify();
     }
@@ -317,6 +366,10 @@ impl NameInput {
     /// ⌘⌫: the selection, else everything before the caret.
     fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
         let erased = erase(&self.text, &self.selection(), |_, _| 0);
+        if erased.is_empty() {
+            return;
+        }
+        self.remember(crate::undo_history::EditKind::Delete);
         self.put(erased, "");
         cx.notify();
     }
@@ -335,6 +388,7 @@ impl NameInput {
             return;
         };
         let range = self.edit_range(None);
+        self.remember(crate::undo_history::EditKind::Paste);
         self.put(range, &printable(&text));
         cx.notify();
     }
@@ -491,7 +545,16 @@ impl EntityInputHandler for NameInput {
         cx: &mut Context<Self>,
     ) {
         let range = self.edit_range(range_utf16);
-        self.put(range, &printable(new_text));
+        let text = printable(new_text);
+        // One character typed runs on into a word; anything longer (a dictation, an IME
+        // commit) is a step of its own.
+        let mut chars = text.chars();
+        let kind = match (chars.next(), chars.next()) {
+            (Some(c), None) if self.marked.is_none() => crate::undo_history::EditKind::Typed(c),
+            _ => crate::undo_history::EditKind::Paste,
+        };
+        self.remember(kind);
+        self.put(range, &text);
         cx.notify();
     }
 
@@ -597,6 +660,8 @@ impl Render for NameInput {
             .on_action(cx.listener(Self::select_to_start))
             .on_action(cx.listener(Self::select_to_end))
             .on_action(cx.listener(Self::select_all_action))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))

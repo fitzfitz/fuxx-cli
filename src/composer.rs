@@ -69,7 +69,9 @@ actions!(
         SelectToStart,
         SelectToEnd,
         Complete,
-        TakeSuggestion
+        TakeSuggestion,
+        Undo,
+        Redo
     ]
 );
 
@@ -576,6 +578,9 @@ fn clean(text: &str) -> String {
 pub struct Composer {
     focus_handle: FocusHandle,
     buf: EditBuffer,
+    /// ⌘Z / ⇧⌘Z (the 2026-11-24 chores): the text, selection and its direction before each
+    /// step.
+    history: crate::undo_history::UndoHistory<(String, Range<usize>, bool)>,
     placeholder: SharedString,
     /// The agent's guess at your next message, drawn faint in place of the placeholder while
     /// the box is empty, "⇥" after it; Tab takes it (`TakeSuggestion`). Typing hides it,
@@ -646,6 +651,7 @@ impl Composer {
         Self {
             focus_handle: cx.focus_handle(),
             buf: EditBuffer::new(""),
+            history: Default::default(),
             placeholder,
             ghost: None,
             marked: None,
@@ -687,11 +693,72 @@ impl Composer {
         self.buf.set_text(&text);
         self.marked = None;
         self.follow_caret = true;
+        // Put there by the tab (sent, a rewind, a draft back): a fresh start for ⌘Z.
+        self.history.clear();
         cx.notify();
+    }
+
+    /// An older prompt recalled with ↑ (or a newer one with ↓): as `set_text`, but ⌘Z brings
+    /// back what was in the box (the 2026-11-24 chores).
+    pub fn recall_text(&mut self, text: String, cx: &mut Context<Self>) {
+        self.remember(crate::undo_history::EditKind::Recall);
+        self.buf.set_text(&text);
+        self.marked = None;
+        self.follow_caret = true;
+        cx.notify();
+    }
+
+    /// The text and selection, as ⌘Z keeps them.
+    fn snapshot(&self) -> (String, Range<usize>, bool) {
+        (
+            self.buf.text().to_string(),
+            self.buf.selection(),
+            self.buf.reversed(),
+        )
+    }
+
+    /// A step for ⌘Z before an edit of `kind`.
+    fn remember(&mut self, kind: crate::undo_history::EditKind) {
+        let now = self.snapshot();
+        self.history.record(now, kind);
+    }
+
+    fn restore(
+        &mut self,
+        (text, sel, reversed): (String, Range<usize>, bool),
+        cx: &mut Context<Self>,
+    ) {
+        self.buf.set_text(&text);
+        let (anchor, cursor) = if reversed {
+            (sel.end, sel.start)
+        } else {
+            (sel.start, sel.end)
+        };
+        self.buf.select_range(anchor, cursor);
+        self.marked = None;
+        self.follow_caret = true;
+        cx.notify();
+    }
+
+    /// ⌘Z: the box as it was before the last step.
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        let now = self.snapshot();
+        if let Some(back) = self.history.undo(now) {
+            self.restore(back, cx);
+        }
+    }
+
+    /// ⇧⌘Z: the step ⌘Z took back.
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        let now = self.snapshot();
+        if let Some(forward) = self.history.redo(now) {
+            self.restore(forward, cx);
+        }
     }
 
     /// `text` at the caret (in place of the selection).
     pub fn insert(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.remember(crate::undo_history::EditKind::Paste);
         self.buf.insert(&clean(text));
         self.marked = None;
         self.follow_caret = true;
@@ -711,6 +778,7 @@ impl Composer {
 
     /// `text` in place of byte range `range`, the caret after it.
     pub fn replace(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
+        self.remember(crate::undo_history::EditKind::Paste);
         self.buf.replace(range, &clean(text));
         self.marked = None;
         self.follow_caret = true;
@@ -896,7 +964,15 @@ impl Composer {
 
     fn step(&mut self, f: impl FnOnce(&mut EditBuffer), cx: &mut Context<Self>) {
         self.marked = None;
+        let before = self.snapshot();
         f(&mut self.buf);
+        // An edit is a step for ⌘Z; a move ends a typed word's run.
+        if self.buf.text() != before.0 {
+            self.history
+                .record(before, crate::undo_history::EditKind::Delete);
+        } else {
+            self.history.break_run();
+        }
         self.motion.changed = Instant::now();
         self.follow_caret = true;
         cx.notify();
@@ -1241,6 +1317,14 @@ impl EntityInputHandler for Composer {
         let range = self.edit_range(range_utf16);
         let start = range.start;
         let new_text = clean(new_text);
+        // One character typed runs on into a word; more at once (dictation, an IME's commit)
+        // is a step of its own.
+        let mut chars = new_text.chars();
+        let kind = match (chars.next(), chars.next()) {
+            (Some(c), None) if self.marked.is_none() => crate::undo_history::EditKind::Typed(c),
+            _ => crate::undo_history::EditKind::Paste,
+        };
+        self.remember(kind);
         self.buf.replace(range, &new_text);
         self.marked = None;
         self.follow_caret = true;
@@ -1334,6 +1418,8 @@ impl Render for Composer {
             })
             .text_color(hsla(ui.text))
             .key_context("Composer")
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::send))
             .on_action(cx.listener(Self::newline))

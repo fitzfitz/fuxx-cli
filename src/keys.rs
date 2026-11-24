@@ -200,9 +200,52 @@ pub fn mac_shortcut(
     }
 }
 
+/// The key fuxx sends for ⇧⌘Z at a shell prompt: one no terminal key makes (a private CSI),
+/// which fuxx-completes binds to zsh's `redo` widget (the 2026-11-24 chores).
+pub const REDO_KEY: &[u8] = b"\x1b[2037~";
+
+/// ⌘Z / ⇧⌘Z in a terminal (the 2026-11-24 chores): at the shell's prompt (`prompt_ready`),
+/// the line editor's own undo (Ctrl-_, which zsh and bash bind to `undo`) and redo
+/// (`REDO_KEY`); anywhere else none, so a program in the terminal (vim, htop) gets nothing.
+pub fn undo_key(
+    key: &str,
+    cmd: bool,
+    shift: bool,
+    alt: bool,
+    ctrl: bool,
+    prompt_ready: bool,
+) -> Option<&'static [u8]> {
+    if key != "z" || !cmd || alt || ctrl || !prompt_ready {
+        return None;
+    }
+    Some(if shift { REDO_KEY } else { b"\x1f" })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cmd_z_at_the_prompt_sends_undo() {
+        assert_eq!(
+            undo_key("z", true, false, false, false, true),
+            Some(&b"\x1f"[..])
+        );
+        assert_eq!(
+            undo_key("z", true, true, false, false, true),
+            Some(REDO_KEY)
+        );
+        // Other modifiers, or another key: not ours.
+        assert_eq!(undo_key("z", true, false, true, false, true), None);
+        assert_eq!(undo_key("z", false, false, false, true, true), None);
+        assert_eq!(undo_key("x", true, false, false, false, true), None);
+    }
+
+    #[test]
+    fn cmd_z_while_a_program_runs_passes_through() {
+        assert_eq!(undo_key("z", true, false, false, false, false), None);
+        assert_eq!(undo_key("z", true, true, false, false, false), None);
+    }
 
     fn k(key: &str, key_char: Option<&str>) -> Option<Vec<u8>> {
         key_to_bytes(key, key_char, false, false, false, false)

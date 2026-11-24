@@ -1032,8 +1032,8 @@ impl TerminalCore {
     }
 
     /// A prompt is shown and where typing starts at it is known (false after a reattach until
-    /// the next prompt). (The view reads it through `rerun_facts`.)
-    #[cfg(test)]
+    /// the next prompt). The view reads it for ⌘Z (the 2026-11-24 chores) and through
+    /// `rerun_facts`.
     pub fn prompt_ready(&self) -> bool {
         self.shared.lock().tagger.prompt_ready()
     }

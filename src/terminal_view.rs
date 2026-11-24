@@ -1210,6 +1210,19 @@ impl TerminalView {
         let m = &keystroke.modifiers;
         // A press (not a held key's repeats) of a key with a sound plays it (M11s).
         let pressed = !event.is_held;
+        // ⌘Z / ⇧⌘Z at the shell's prompt: its own undo and redo (the 2026-11-24 chores).
+        // (The prompt is asked only for a ⌘ key: it takes the terminal's lock.)
+        if let Some(bytes) = keys::undo_key(
+            &keystroke.key,
+            m.platform,
+            m.shift,
+            m.alt,
+            m.control,
+            m.platform && self.core.prompt_ready(),
+        ) {
+            self.send_key_bytes(bytes, cx);
+            return;
+        }
         if let Some(bytes) =
             keys::mac_shortcut(&keystroke.key, m.platform, m.alt, m.control, m.shift)
         {

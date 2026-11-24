@@ -172,6 +172,7 @@ mod title_area;
 #[cfg(feature = "ui-shots")]
 mod ui_shots;
 mod ui_tokens;
+mod undo_history;
 mod update_release;
 mod updater;
 mod usage_strip;
@@ -387,6 +388,9 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-v", name_input::Paste, Some("AddressField > NameInput")),
         // The sidebar's rename box only; other keys type into it.
         KeyBinding::new("backspace", name_input::Backspace, Some("NameInput")),
+        // ⌘Z / ⇧⌘Z in every text field (the 2026-11-24 chores).
+        KeyBinding::new("cmd-z", name_input::Undo, Some("NameInput")),
+        KeyBinding::new("cmd-shift-z", name_input::Redo, Some("NameInput")),
         KeyBinding::new("cmd-backspace", name_input::Clear, Some("NameInput")),
         KeyBinding::new("enter", name_input::Confirm, Some("NameInput")),
         // M11aq: ⌘↵ in the Changes tab's commit field commits (Enter alone does nothing there).
@@ -537,6 +541,8 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         ),
         // The agent tab's message box: Enter sends, ⇧Enter is a newline, Esc stops the agent.
         KeyBinding::new("enter", composer::Send, Some("Composer")),
+        KeyBinding::new("cmd-z", composer::Undo, Some("Composer")),
+        KeyBinding::new("cmd-shift-z", composer::Redo, Some("Composer")),
         KeyBinding::new("shift-enter", composer::Newline, Some("Composer")),
         KeyBinding::new("escape", composer::Stop, Some("Composer")),
         KeyBinding::new("backspace", composer::Backspace, Some("Composer")),
@@ -1543,6 +1549,21 @@ mod tests {
                 got.name()
             );
         }
+    }
+
+    /// ⌘Z / ⇧⌘Z undo and redo in every text field (the 2026-11-24 chores): the agent box and
+    /// every one-line field; the Files tree's own ⌘Z (Put Back) stays outside a field.
+    #[test]
+    fn cmd_z_undoes_in_every_text_field() {
+        let keymap = keymap();
+        let composer: &[&str] = &["Workspace", "AgentTab", "Composer"];
+        let field: &[&str] = &["Workspace", "Palette", "NameInput"];
+        let tree_field: &[&str] = &["Workspace", "FileTree", "NameInput"];
+        assert!(runs(&keymap, "cmd-z", composer).partial_eq(&crate::composer::Undo));
+        assert!(runs(&keymap, "cmd-shift-z", composer).partial_eq(&crate::composer::Redo));
+        assert!(runs(&keymap, "cmd-z", field).partial_eq(&crate::name_input::Undo));
+        assert!(runs(&keymap, "cmd-shift-z", field).partial_eq(&crate::name_input::Redo));
+        assert!(runs(&keymap, "cmd-z", tree_field).partial_eq(&crate::name_input::Undo));
     }
 
     #[test]
