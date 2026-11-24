@@ -3,6 +3,7 @@
 //! Pure and generic: providers call it for their Bash / run_command tools.
 
 use crate::agent_activity::{Check, CheckWhat, How, Outcome, ToolKind, Touch, derived_words};
+use crate::agent_ask::cut;
 use crate::agent_detect::{is_assignment, unquote};
 use crate::command_name::{WRAPPERS, past_wrapper, short_form};
 
@@ -21,6 +22,8 @@ pub struct Reading {
     pub derived: String,
 }
 
+/// The longest command a listing's title names, in characters.
+const TITLE_WORDS_MAX: usize = 60;
 /// Programs that run the script they are given (a heredoc, or `-c` / `-e` code).
 const INTERPRETERS: [&str; 11] = [
     "python", "python3", "node", "ruby", "perl", "sh", "bash", "zsh", "deno", "bun", "python2",
@@ -170,6 +173,8 @@ pub fn read_command(command: &str) -> Reading {
     let (mut deleted, mut moved, mut change, mut script) = (false, false, false, false);
     let (mut searched, mut listed, mut read) = (false, false, false);
     let mut pattern = String::new();
+    // A listing's command, in its words (`ls nope`): what a listing says it ran.
+    let mut listing: Option<String> = None;
     for (si, seg) in segments.iter().enumerate() {
         let here = dir.clone();
         let at = |p: &str| under(here.as_deref(), p);
@@ -238,7 +243,10 @@ pub fn read_command(command: &str) -> Reading {
                     .into_iter()
                     .for_each(|f| add(&at(f), How::Searched { matches: None }));
             }
-            p if LISTERS.contains(&p) => listed = true,
+            p if LISTERS.contains(&p) => {
+                listed = true;
+                listing.get_or_insert_with(|| words.join(" "));
+            }
             "tee" | "touch" => {
                 paths().for_each(|a| add(&a, changed()));
                 change = true;
@@ -305,7 +313,14 @@ pub fn read_command(command: &str) -> Reading {
             outcome: Outcome::Unknown,
         });
     let derived = match kind {
-        ToolKind::Search if !searched => "Listed files".to_string(),
+        ToolKind::Search if !searched => derived_words(
+            ToolKind::Execute,
+            &[],
+            None,
+            &listing
+                .map(|l| cut(&l, TITLE_WORDS_MAX))
+                .unwrap_or_default(),
+        ),
         ToolKind::Search => derived_words(kind, &touches, None, &pattern),
         ToolKind::Execute if check.is_none() && !script => {
             return Reading {
@@ -1161,6 +1176,13 @@ mod tests {
                 "cd crates/a && cargo clippy && cargo test".into()
             ))
         );
+    }
+
+    #[test]
+    fn a_listing_says_the_command_it_ran() {
+        assert_eq!(read_command("ls nope").derived, "Ran ls nope");
+        assert_eq!(read_command("ls").derived, "Ran ls");
+        assert_eq!(read_command("ls nope").kind, ToolKind::Search);
     }
 
     #[test]

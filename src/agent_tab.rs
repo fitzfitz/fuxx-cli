@@ -49,7 +49,7 @@ mod lanes_view;
 mod lane_row;
 
 #[path = "agent_tracks.rs"]
-mod tracks;
+pub(crate) mod tracks;
 pub(crate) use lanes_view::{BAR_FADE, BoxMode};
 
 #[path = "agent_latest.rs"]
@@ -151,7 +151,10 @@ actions!(
         TrackPrev,
         TrackNext,
         TrackOpen,
-        TrackLeave
+        TrackLeave,
+        // ⌥↑ in the box: the latest busy step's tracks take the keyboard (bound in main.rs to
+        // "AgentTab > Composer").
+        FocusTracks
     ]
 );
 
@@ -396,16 +399,6 @@ pub fn modal_motion(fresh: bool) -> Option<(Duration, Duration)> {
 
 pub fn resume_failed(started: bool, resume: bool) -> bool {
     resume && !started
-}
-
-/// A running tool's elapsed time: `4s`, `1m 05s`.
-pub fn elapsed_label(d: Duration) -> String {
-    let s = d.as_secs();
-    if s < 60 {
-        format!("{s}s")
-    } else {
-        format!("{}m {:02}s", s / 60, s % 60)
-    }
 }
 
 /// A read's result: how many lines it read.
@@ -1260,11 +1253,7 @@ impl Colors {
             relay_text: readable(ui.text, &[relay_fill], TEXT_MIN),
             relay_dim: readable(ui.text_dim, &[relay_fill], TEXT_MIN),
             lane_ink,
-            bead: readable(
-                mix(ui.text_dim, ui.text, 0.4),
-                &[ui.panel, row_hover],
-                MARK_MIN,
-            ),
+            bead: readable(ui.text_dim, &[ui.panel, row_hover], MARK_MIN),
             bead_edit: readable(ui.accent, &[ui.panel, row_hover], MARK_MIN),
             track_rule: readable(
                 mix(ui.panel, theme.foreground, 0.14),
@@ -5188,7 +5177,7 @@ impl AgentTab {
             (n(RowKind::Added), n(RowKind::Removed))
         });
         let elapsed = self.tool_times.get(id).map_or(String::new(), |(t, _)| {
-            elapsed_label(look.now.saturating_duration_since(*t))
+            crate::agent_lanes::clock(look.now.saturating_duration_since(*t))
         });
         let children: Vec<usize> = items
             .iter()
@@ -5630,21 +5619,28 @@ impl AgentTab {
             .font_weight(FontWeight::MEDIUM)
             .text_color(hsla(to_ink))
             .child(mark)
-            .child(SharedString::from(self.status_word(theme)))
-            // The turn ledger after the status (the agent activity chore): the running call,
-            // the files changed, the checks; cut from the right to fit, the running call kept.
-            .children(self.ledger_shown(theme).into_iter().map(|part| {
-                let failing = part.kind == crate::agent_ledger::PartKind::Checks
-                    && self.ledger.as_ref().is_some_and(|l| l.failing.is_some());
+            .child(
                 div()
-                    .font_weight(FontWeight::NORMAL)
-                    .text_color(hsla(if failing { c.ledger_failing } else { c.dim }))
-                    .child(SharedString::from(format!(
-                        "{}{}",
-                        crate::agent_ledger::SEP,
-                        part.text
-                    )))
-            }))
+                    .flex()
+                    .items_center()
+                    .whitespace_nowrap()
+                    .child(SharedString::from(self.status_word(theme)))
+                    // The turn ledger after the status (the agent activity chore): the running
+                    // call, the files changed, the checks; cut from the right to fit, the
+                    // running call kept.
+                    .children(self.ledger_shown(theme).into_iter().map(|part| {
+                        let failing = part.kind == crate::agent_ledger::PartKind::Checks
+                            && self.ledger.as_ref().is_some_and(|l| l.failing.is_some());
+                        div()
+                            .font_weight(FontWeight::NORMAL)
+                            .text_color(hsla(if failing { c.ledger_failing } else { c.dim }))
+                            .child(SharedString::from(format!(
+                                "{}{}",
+                                crate::agent_ledger::SEP,
+                                part.text
+                            )))
+                    })),
+            )
             .when(self.ledger_shows(), |d| {
                 let hover = c.pill_hover;
                 d.relative()
@@ -6207,6 +6203,7 @@ impl Render for AgentTab {
             .on_action(cx.listener(Self::track_next))
             .on_action(cx.listener(Self::track_open))
             .on_action(cx.listener(Self::track_leave))
+            .on_action(cx.listener(Self::focus_tracks))
             .on_action(cx.listener(Self::ask_up))
             .on_action(cx.listener(Self::ask_down))
             .on_action(cx.listener(Self::ask_prev))
@@ -6699,8 +6696,6 @@ mod tests {
 
     #[test]
     fn words_and_chips() {
-        assert_eq!(elapsed_label(Duration::from_secs(4)), "4s");
-        assert_eq!(elapsed_label(Duration::from_secs(65)), "1m 05s");
         assert_eq!(lines_label(1), "1 line");
         assert_eq!(lines_label(84), "84 lines");
         assert_eq!(

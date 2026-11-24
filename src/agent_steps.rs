@@ -12,7 +12,9 @@ use crate::agent_activity::{
 };
 use crate::agent_chat::{Shape, group_shape_at};
 use crate::agent_conversation::{Conversation, Item};
-use crate::agent_step_words::{checks_summary, column_tip, counts, file_summary};
+use crate::agent_step_words::{
+    checks_failing, checks_summary, column_tip, commands_summary, counts, file_summary,
+};
 
 /// Each tool call's live start and finish (None while it runs), by its id. History never
 /// enters it, so restored calls have no times.
@@ -135,6 +137,8 @@ pub enum Glyph {
     Planned,
     /// A check whose outcome is unknown.
     Check,
+    /// A call with no file that isn't a check (the Commands track).
+    Command,
     Running,
 }
 
@@ -142,13 +146,24 @@ impl Glyph {
     /// Which bead wins when one call touches a file twice.
     fn rank(self) -> u8 {
         match self {
-            Glyph::Read | Glyph::Check => 0,
+            Glyph::Read | Glyph::Check | Glyph::Command => 0,
             Glyph::Search => 1,
             Glyph::Script => 2,
             Glyph::Edit | Glyph::Passed | Glyph::Planned => 3,
             Glyph::Failed => 4,
             Glyph::Running => 5,
         }
+    }
+}
+
+/// A finished check run's glyph: ✓ passed, ○ a planned failure, ✖ a real one, ◌ unknown (the
+/// checks track and the popover's strips).
+pub fn check_glyph(outcome: &Outcome, planned: bool) -> Glyph {
+    match outcome {
+        Outcome::Passed { .. } => Glyph::Passed,
+        Outcome::Failed { .. } if planned => Glyph::Planned,
+        Outcome::Failed { .. } => Glyph::Failed,
+        Outcome::Unknown => Glyph::Check,
     }
 }
 
@@ -170,21 +185,27 @@ pub struct Column {
     pub running: bool,
 }
 
-/// A file's track (or the checks track): its label, full path, beads by column, and summary.
+/// A file's track (or the checks or Commands track): its label, full path, beads by column,
+/// summary, whether it says a failure (a check still failing for real, a file whose every touch
+/// failed, a command that failed) and whether its file changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Track {
     pub label: String,
     pub path: String,
     pub beads: Vec<(usize, Bead)>,
     pub summary: String,
+    pub failing: bool,
+    pub changed: bool,
 }
 
 /// A step's tracks: built once when its calls change (`agent_tab::sync_rows`), only read when
 /// drawn.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tracks {
-    /// "8 actions · 5 files · 1 failed".
+    /// "8 actions · 5 files".
     pub counts: String,
+    /// The calls that themselves failed (the header's "N failed").
+    pub failed: usize,
     /// The first start and the last finish (None while one runs); None: a time is unknown.
     pub span: Option<(Instant, Option<Instant>)>,
     /// Every call, in time order.
@@ -194,6 +215,8 @@ pub struct Tracks {
     pub checks: Option<Track>,
     /// Every file track, ordered: changed first (by first change), then the rest.
     pub files: Vec<Track>,
+    /// The calls with no file that aren't checks (`git status`, `ls`), drawn last.
+    pub commands: Option<Track>,
     /// The step's latest real check failure still open: its first error line.
     pub first_error: Option<String>,
 }
@@ -232,6 +255,8 @@ struct FileAcc {
     touches: Vec<(Touch, bool, ToolKind)>,
     first_change: Option<usize>,
     first_touch: usize,
+    /// Every call touching it failed.
+    all_failed: bool,
 }
 
 /// Put `bead` in column `col`, keeping the stronger one when the call is there already.
@@ -258,6 +283,8 @@ pub fn tracks_of(
     let mut files: Vec<FileAcc> = Vec::new();
     let mut by_key: HashMap<PathBuf, usize> = HashMap::new();
     let mut checks: Vec<(usize, Bead)> = Vec::new();
+    let mut commands: Vec<(usize, Bead)> = Vec::new();
+    let mut commands_failed = 0;
     let mut runs: Vec<Cow<'_, Activity>> = Vec::new();
     let mut failed = 0;
     let mut span: Option<(Instant, Option<Instant>)> = None;
@@ -291,13 +318,28 @@ pub fn tracks_of(
         let dim = a.not_run || (!*running && ok.is_none());
         let call_failed = a.failed.is_some() && !a.not_run;
         failed += call_failed as usize;
+        if a.check.is_none() && a.touches.is_empty() {
+            commands_failed += call_failed as usize;
+            let glyph = match (*running, call_failed) {
+                (true, _) => Glyph::Running,
+                (_, true) => Glyph::Failed,
+                _ => Glyph::Command,
+            };
+            add_bead(
+                &mut commands,
+                col,
+                Bead {
+                    glyph,
+                    failed: false,
+                    dim,
+                },
+            );
+        }
         if let Some(check) = &a.check {
-            let glyph = match (&check.outcome, *running) {
-                (_, true) => Glyph::Running,
-                (Outcome::Passed { .. }, _) => Glyph::Passed,
-                (Outcome::Failed { .. }, _) if a.planned_failure => Glyph::Planned,
-                (Outcome::Failed { .. }, _) => Glyph::Failed,
-                (Outcome::Unknown, _) => Glyph::Check,
+            let glyph = if *running {
+                Glyph::Running
+            } else {
+                check_glyph(&check.outcome, a.planned_failure)
             };
             add_bead(
                 &mut checks,
@@ -318,6 +360,7 @@ pub fn tracks_of(
                     touches: Vec::new(),
                     first_change: None,
                     first_touch: col,
+                    all_failed: true,
                 });
                 files.len() - 1
             });
@@ -339,6 +382,7 @@ pub fn tracks_of(
                 },
             );
             f.touches.push((t.clone(), call_failed || dim, a.kind));
+            f.all_failed &= call_failed;
             if matches!(t.how, How::Changed { .. }) && !call_failed && !dim && !*running {
                 f.first_change.get_or_insert(col);
             }
@@ -360,11 +404,14 @@ pub fn tracks_of(
             Track {
                 label: file_name(&f.path).to_string(),
                 summary: file_summary(&refs),
+                failing: f.all_failed,
+                changed: f.first_change.is_some(),
                 path: f.path,
                 beads: f.beads,
             }
         })
         .collect();
+    let runs: Vec<&Activity> = runs.iter().map(|r| r.as_ref()).collect();
     let checks = (!checks.is_empty()).then(|| Track {
         label: "Checks".into(),
         path: String::new(),
@@ -372,8 +419,18 @@ pub fn tracks_of(
         summary: if runs.is_empty() {
             "running…".into()
         } else {
-            checks_summary(&runs.iter().map(|r| r.as_ref()).collect::<Vec<_>>())
+            checks_summary(&runs, cwd)
         },
+        failing: checks_failing(&runs, cwd),
+        changed: false,
+    });
+    let commands = (!commands.is_empty()).then(|| Track {
+        label: "Commands".into(),
+        path: String::new(),
+        summary: commands_summary(commands.len(), commands_failed),
+        failing: commands_failed > 0,
+        changed: false,
+        beads: commands,
     });
     let first_error = calls
         .iter()
@@ -386,12 +443,14 @@ pub fn tracks_of(
             _ => None,
         });
     Tracks {
-        counts: counts(columns.len(), files.len(), failed),
+        counts: counts(columns.len(), files.len()),
+        failed,
         span: span.filter(|_| timed),
         earlier: columns.len().saturating_sub(LATEST),
         columns,
         checks,
         files,
+        commands,
         first_error,
     }
 }
@@ -755,7 +814,8 @@ pub(crate) mod tests {
             )]
         );
         assert_eq!(b.summary, "edit failed");
-        assert_eq!(t.counts, "3 actions · 3 files · 1 failed");
+        assert!(b.failing, "an edit that failed reads as a failure");
+        assert_eq!((t.counts.as_str(), t.failed), ("3 actions · 3 files", 1));
         // A denied call and a stopped one: dim, not counted failed.
         let denied = Activity {
             not_run: true,
@@ -775,11 +835,60 @@ pub(crate) mod tests {
             *ok = None;
         }
         let t = tracks(&[read("1", "src/a.rs"), tool("4", denied), stopped]);
-        assert_eq!(t.counts, "3 actions · 3 files");
+        assert_eq!((t.counts.as_str(), t.failed), ("3 actions · 3 files", 0));
         for label in ["d.rs", "e.rs"] {
             let f = t.files.iter().find(|f| f.label == label).unwrap();
             assert!(f.beads[0].1.dim, "{label}");
         }
+    }
+
+    #[test]
+    fn calls_with_no_file_that_arent_checks_bead_a_last_commands_track() {
+        let status = Activity {
+            kind: ToolKind::Execute,
+            derived: "Ran git status".into(),
+            ..Default::default()
+        };
+        let broke = Activity {
+            failed: Some("fatal: not a git repository".into()),
+            ..status.clone()
+        };
+        let t = tracks(&[read("1", "src/a.rs"), tool("2", status), tool("3", broke)]);
+        let commands = t.commands.expect("a commands track");
+        assert_eq!(commands.label, "Commands");
+        assert_eq!(
+            commands
+                .beads
+                .iter()
+                .map(|(c, b)| (*c, b.glyph))
+                .collect::<Vec<_>>(),
+            vec![(1, Glyph::Command), (2, Glyph::Failed)]
+        );
+        assert_eq!(commands.summary, "2 commands · 1 failed");
+        assert!(commands.failing);
+        assert!(
+            tracks(&[read("1", "src/a.rs"), read("2", "src/b.rs")])
+                .commands
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_track_knows_if_its_file_changed_and_the_checks_if_one_still_fails() {
+        let t = tracks(&[
+            read("1", "src/a.rs"),
+            edit("2", "src/b.rs"),
+            run_check("3", CheckWhat::Tests, "cargo test", failed(1, 3)),
+        ]);
+        let label = |l: &str| t.files.iter().find(|f| f.label == l).unwrap();
+        assert!(!label("a.rs").changed && label("b.rs").changed);
+        assert!(t.checks.as_ref().unwrap().failing);
+        let fixed = tracks(&[
+            run_check("1", CheckWhat::Tests, "cargo test", failed(1, 3)),
+            edit("2", "src/b.rs"),
+            run_check("3", CheckWhat::Tests, "cargo test", passed(3)),
+        ]);
+        assert!(!fixed.checks.unwrap().failing);
     }
 
     #[test]

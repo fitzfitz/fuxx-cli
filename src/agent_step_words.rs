@@ -3,22 +3,37 @@
 //! title, trace and chips. Pure and GPUI-free; split out of `agent_steps` (the review's lean
 //! files).
 
+use std::path::Path;
 use std::time::Duration;
 
-use crate::agent_activity::{Activity, How, Outcome, ToolKind, Touch, of, what_word};
+use crate::agent_activity::{
+    Activity, Check, CheckWhat, How, Outcome, ToolKind, Touch, of, what_word,
+};
 use crate::agent_activity_checks::error_code;
+use crate::agent_activity_command::scope_filter;
+use crate::agent_ask::cut;
 use crate::agent_conversation::Item;
 use crate::agent_lanes::clock;
+use crate::agent_steps::check_key;
 use crate::providers::ToolDetail;
 
 /// The longest command trace a readable row keeps, in characters (the row truncates it to its
 /// width; a huge script needn't be carried whole).
 pub const TRACE_MAX: usize = 160;
 
-/// The header: the counts, then the time when known.
+/// The longest first error a failed call's chip shows, in characters.
+pub const CHIP_ERROR_MAX: usize = 40;
+
+/// The header's time: how long the step took, when known and at least a second.
+pub fn head_time(took: Option<Duration>) -> Option<String> {
+    took.filter(|d| d.as_secs() >= 1).map(clock)
+}
+
+/// The header: the counts, then the time (`head_time`).
+#[cfg(test)]
 pub fn header(counts: &str, took: Option<Duration>) -> String {
-    match took {
-        Some(d) => format!("{counts} · {}", clock(d)),
+    match head_time(took) {
+        Some(t) => format!("{counts} · {t}"),
         None => counts.to_string(),
     }
 }
@@ -27,13 +42,18 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// "8 actions · 5 files", and " · N failed" when calls failed.
-pub fn counts(actions: usize, files: usize, failed: usize) -> String {
-    let mut out = format!(
+/// "8 actions · 5 files" (the header's "N failed" is drawn apart, in the failure's ink).
+pub fn counts(actions: usize, files: usize) -> String {
+    format!(
         "{} · {}",
         plural(actions, "action", "actions"),
         plural(files, "file", "files")
-    );
+    )
+}
+
+/// The Commands track's summary: "2 commands · 1 failed".
+pub fn commands_summary(n: usize, failed: usize) -> String {
+    let mut out = plural(n, "command", "commands");
     if failed > 0 {
         out.push_str(&format!(" · {failed} failed"));
     }
@@ -158,11 +178,19 @@ pub fn file_summary(touches: &[(&Touch, bool, ToolKind)]) -> String {
     parts.join(" · ")
 }
 
-/// A check run or failed call's outcome in words: "2 passed", "build failed · E0425", "red, as
-/// planned", "1 of 3 failed", "tests failed", "failed". None: nothing to say (running, unknown).
+/// A check run or failed call's outcome in words: "2 passed", "tests · 1 of 3 failed", "build
+/// failed · E0425", "red, as planned"; a failed call's first error (cut to `CHIP_ERROR_MAX`),
+/// else "failed". None: nothing to say (running, unknown, not run).
 pub fn outcome_phrase(a: &Activity) -> Option<String> {
     let Some(check) = &a.check else {
-        return (a.failed.is_some() && !a.not_run).then(|| "failed".to_string());
+        return (a.failed.is_some() && !a.not_run).then(|| {
+            let first = a.failed.as_deref().unwrap_or("").trim();
+            if first.is_empty() {
+                "failed".to_string()
+            } else {
+                cut(first, CHIP_ERROR_MAX)
+            }
+        });
     };
     match &check.outcome {
         Outcome::Passed { n: Some(n) } => Some(format!("{n} passed")),
@@ -173,60 +201,213 @@ pub fn outcome_phrase(a: &Activity) -> Option<String> {
             of,
             first_error,
         } => {
+            let what = what_word(check.what);
             if let Some(code) = first_error.as_deref().and_then(error_code) {
-                return Some(format!("build failed · {code}"));
+                return Some(format!("{what} failed · {code}"));
             }
             Some(match (failed, of) {
-                (Some(f), Some(of)) => format!("{f} of {of} failed"),
-                (Some(f), None) => format!("{f} failed"),
-                _ => format!("{} failed", what_word(check.what)),
+                (Some(f), Some(of)) => format!("{what} · {f} of {of} failed"),
+                (Some(f), None) => format!("{what} · {f} failed"),
+                _ => format!("{what} failed"),
             })
         }
         Outcome::Unknown => None,
     }
 }
 
-/// The checks track's summary: each run's outcome, a planned failure that a later pass of the
-/// same check followed folded into "red → green · …", repeats collapsed, the last three kept.
-pub fn checks_summary(runs: &[&Activity]) -> String {
-    let same = |a: &Activity, b: &Activity| match (&a.check, &b.check) {
-        (Some(x), Some(y)) => x.what == y.what && x.scope == y.scope,
-        _ => false,
-    };
-    let passed = |a: &Activity| {
-        matches!(
-            a.check.as_ref().map(|c| &c.outcome),
-            Some(Outcome::Passed { .. })
-        )
-    };
-    let mut used = vec![false; runs.len()];
-    let mut phrases: Vec<String> = Vec::new();
-    for (i, a) in runs.iter().enumerate() {
-        if used[i] {
-            continue;
-        }
-        let green = (a.planned_failure && a.check_failed())
-            .then(|| (i + 1..runs.len()).find(|&j| !used[j] && same(a, runs[j]) && passed(runs[j])))
-            .flatten();
-        if let Some(j) = green {
-            used[j] = true;
-            let pass = outcome_phrase(runs[j]).unwrap_or_else(|| "passed".into());
-            phrases.push(format!("red → green · {pass}"));
-            continue;
-        }
-        if let Some(p) = outcome_phrase(a) {
-            phrases.push(p.replace("failed · ", "failed "));
-        }
-    }
-    phrases.dedup();
-    if phrases.is_empty() {
+/// How a scope's latest run stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Standing {
+    Passing,
+    Failing,
+    Planned,
+    Unknown,
+}
+
+/// The checks track's summary: each scope's latest state, not a chain of runs. A scope still
+/// failing for real leads ("tests failed · cli:: 1 of 3", "+N more"); else a red run the agent
+/// announced ("tests · red, as planned"); else what passes ("tests · 2 passed", "3 passing · 2
+/// fixed", "red → green" when a planned failure went green). The kind is always named.
+pub fn checks_summary(runs: &[&Activity], cwd: &Path) -> String {
+    let scopes = by_scope(runs, cwd);
+    let latest: Vec<(&Activity, Standing, &[&Activity])> = scopes
+        .iter()
+        .filter_map(|list| {
+            let last = *list.last()?;
+            Some((last, standing(last), list.as_slice()))
+        })
+        .collect();
+    if latest.is_empty() {
         return "ran".into();
     }
-    if phrases.len() > 3 {
-        let kept = phrases.split_off(phrases.len() - 3);
-        return format!("… → {}", kept.join(" → "));
+    let kind = |a: &Activity| a.check.as_ref().map_or("checks", |c| what_word(c.what));
+    let failing: Vec<&Activity> = latest
+        .iter()
+        .filter(|(_, s, _)| *s == Standing::Failing)
+        .map(|(a, ..)| *a)
+        .collect();
+    if let Some(last) = failing.last() {
+        let mut out = failing_words(last);
+        if failing.len() > 1 {
+            out.push_str(&format!(" · +{} more", failing.len() - 1));
+        }
+        return out;
     }
-    phrases.join(" → ")
+    if let Some((a, ..)) = latest.iter().find(|(_, s, _)| *s == Standing::Planned) {
+        let mut out = format!("{} · red, as planned", kind(a));
+        let passing = latest
+            .iter()
+            .filter(|(_, s, _)| *s == Standing::Passing)
+            .count();
+        if passing > 0 {
+            out.push_str(&format!(" · {passing} passing"));
+        }
+        return out;
+    }
+    let passing: Vec<&(&Activity, Standing, &[&Activity])> = latest
+        .iter()
+        .filter(|(_, s, _)| *s == Standing::Passing)
+        .collect();
+    let had = |list: &[&Activity], planned: bool| {
+        list.iter()
+            .any(|a| a.check_failed() && a.planned_failure == planned)
+    };
+    let fixed = passing.iter().filter(|(_, _, l)| had(l, false)).count();
+    let green = passing.iter().any(|(_, _, l)| had(l, true));
+    let unknown = latest.len() - passing.len();
+    if let [(a, _, list)] = latest.as_slice() {
+        let mut parts = vec![kind(a).to_string()];
+        if passing.is_empty() {
+            parts.push("ran".into());
+            return parts.join(" · ");
+        }
+        if green {
+            parts.push("red → green".into());
+        }
+        parts.extend(outcome_phrase(a));
+        if had(list, false) {
+            parts.push("fixed".into());
+        }
+        return parts.join(" · ");
+    }
+    let mut parts = Vec::new();
+    if passing.is_empty() {
+        parts.push(format!("{} ran", latest.len()));
+    } else {
+        parts.push(format!("{} passing", passing.len()));
+        if fixed > 0 {
+            parts.push(format!("{fixed} fixed"));
+        }
+        if green {
+            parts.push("red → green".into());
+        }
+        if unknown > 0 {
+            parts.push(format!("{unknown} unknown"));
+        }
+    }
+    parts.join(" · ")
+}
+
+/// Whether a scope's latest run among `runs` failed for real (the checks track's failure ink).
+pub fn checks_failing(runs: &[&Activity], cwd: &Path) -> bool {
+    by_scope(runs, cwd).iter().any(|list| {
+        list.last()
+            .is_some_and(|a| standing(a) == Standing::Failing)
+    })
+}
+
+/// `runs` grouped by scope (`check_key`), in the order of each scope's first run.
+fn by_scope<'a>(runs: &[&'a Activity], cwd: &Path) -> Vec<Vec<&'a Activity>> {
+    let mut scopes: Vec<((CheckWhat, String), Vec<&Activity>)> = Vec::new();
+    for a in runs {
+        let Some(check) = &a.check else { continue };
+        let key = check_key(check, cwd);
+        match scopes.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, list)) => list.push(a),
+            None => scopes.push((key, vec![a])),
+        }
+    }
+    scopes.into_iter().map(|(_, list)| list).collect()
+}
+
+fn standing(a: &Activity) -> Standing {
+    match a.check.as_ref().map(|c| &c.outcome) {
+        Some(Outcome::Passed { .. }) => Standing::Passing,
+        Some(Outcome::Failed { .. }) if a.planned_failure => Standing::Planned,
+        Some(Outcome::Failed { .. }) => Standing::Failing,
+        _ => Standing::Unknown,
+    }
+}
+
+/// A real failure in the checks track's words: "tests failed · cli:: 1 of 3", "build failed ·
+/// E0425", "tests failed".
+fn failing_words(a: &Activity) -> String {
+    let Some(check) = &a.check else {
+        return "failed".into();
+    };
+    let what = what_word(check.what);
+    let Outcome::Failed {
+        failed,
+        of,
+        first_error,
+    } = &check.outcome
+    else {
+        return format!("{what} failed");
+    };
+    if let Some(code) = first_error.as_deref().and_then(error_code) {
+        return format!("{what} failed · {code}");
+    }
+    let mut detail: Vec<String> = Vec::new();
+    let filter = scope_filter(&check.scope);
+    if !filter.is_empty() {
+        detail.push(filter);
+    }
+    match (failed, of) {
+        (Some(f), Some(of)) => detail.push(format!("{f} of {of}")),
+        (Some(f), None) => detail.push(format!("{f} failed")),
+        _ => {}
+    }
+    if detail.is_empty() {
+        format!("{what} failed")
+    } else {
+        format!("{what} failed · {}", detail.join(" "))
+    }
+}
+
+/// A readable tool row's status mark.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowMark {
+    /// The Working arc.
+    Running,
+    /// A real failure: a red dot.
+    Failed,
+    /// A failure the agent announced: a red ring.
+    Planned,
+    /// A check whose outcome is unknown, or a call that didn't run or was stopped: a dim ring.
+    Unknown,
+    /// Done: a green dot.
+    Ok,
+}
+
+/// A readable tool row's mark from its state (`ok`: the item's) and activity. An Unknown check
+/// is never green, whatever its call's ok (the review's must-fix 3).
+pub fn row_mark(running: bool, ok: Option<bool>, a: &Activity) -> RowMark {
+    let unknown = matches!(
+        a.check,
+        Some(Check {
+            outcome: Outcome::Unknown,
+            ..
+        })
+    );
+    match (running, ok) {
+        (true, _) => RowMark::Running,
+        _ if a.real_failure() => RowMark::Failed,
+        _ if a.planned_failure && a.check_failed() => RowMark::Planned,
+        _ if a.not_run || unknown => RowMark::Unknown,
+        (false, Some(true)) => RowMark::Ok,
+        (false, Some(false)) => RowMark::Failed,
+        (false, None) => RowMark::Unknown,
+    }
 }
 
 /// A readable row's words: its title, a dim trace of its command, and outcome chips.
@@ -262,7 +443,7 @@ pub fn row_words(item: &Item) -> RowWords {
     let trace = match detail {
         Some(ToolDetail::Command(cmd)) => {
             let line = cmd.split_whitespace().collect::<Vec<_>>().join(" ");
-            (a.said.is_some() || title != line).then(|| capped(line))
+            (a.said.is_some() || title != line).then(|| cut(&line, TRACE_MAX))
         }
         _ => None,
     };
@@ -317,16 +498,6 @@ pub fn row_words(item: &Item) -> RowWords {
     }
 }
 
-/// `line` cut to `TRACE_MAX` characters, an ellipsis last when cut.
-fn capped(line: String) -> String {
-    if line.chars().count() <= TRACE_MAX {
-        return line;
-    }
-    let mut out: String = line.chars().take(TRACE_MAX - 1).collect();
-    out.push('…');
-    out
-}
-
 /// A column's hover words: the call's title, its outcome and how long it took.
 pub fn column_tip(a: &Activity, took: Option<Duration>) -> String {
     let mut parts = vec![a.title().to_string()];
@@ -339,8 +510,9 @@ pub fn column_tip(a: &Activity, took: Option<Duration>) -> String {
 mod tests {
     use super::*;
     use crate::agent_activity::{Activity, CheckWhat, How, Outcome, ToolKind};
-    use crate::agent_steps::tests::{check, failed, passed, read, tool, touching};
+    use crate::agent_steps::tests::{CWD, check, failed, passed, read, tool, touching};
     use crate::providers::ToolDetail;
+    use std::path::Path;
     use std::time::Duration;
 
     #[test]
@@ -398,39 +570,112 @@ mod tests {
     }
 
     #[test]
-    fn checks_summaries() {
-        let tests = |o| check(CheckWhat::Tests, "cargo test cli::", o);
+    fn checks_summaries_say_each_scopes_latest_state() {
+        let cwd = Path::new(CWD);
+        let cli = |o| check(CheckWhat::Tests, "cargo test cli::", o);
+        let api = |o| check(CheckWhat::Tests, "cargo test api::", o);
         let planned = |o| Activity {
             planned_failure: true,
-            ..tests(o)
+            ..cli(o)
         };
         let e0425 = Outcome::Failed {
             failed: None,
             of: None,
             first_error: Some("error[E0425]: cannot find function `call_within`".into()),
         };
-        let build = check(CheckWhat::Build, "cargo build", e0425);
-        assert_eq!(checks_summary(&[&tests(passed(2))]), "2 passed");
+        let build = |o| check(CheckWhat::Build, "cargo build", o);
+        let lint = |o| check(CheckWhat::Lint, "cargo clippy", o);
+        let s = |runs: &[Activity]| checks_summary(&runs.iter().collect::<Vec<_>>(), cwd);
+        assert_eq!(s(&[cli(passed(2))]), "tests · 2 passed");
+        assert_eq!(s(&[cli(passed(2)), build(passed_any())]), "2 passing");
+        assert_eq!(s(&[planned(failed(1, 3))]), "tests · red, as planned");
         assert_eq!(
-            checks_summary(&[&tests(passed(2)), &build]),
-            "2 passed → build failed E0425"
+            s(&[planned(failed(1, 3)), cli(passed(2))]),
+            "tests · red → green · 2 passed"
         );
-        assert_eq!(checks_summary(&[&planned(failed(1, 3))]), "red, as planned");
         assert_eq!(
-            checks_summary(&[&planned(failed(1, 3)), &tests(passed(2))]),
-            "red → green · 2 passed"
+            s(&[cli(failed(1, 3)), cli(passed(3))]),
+            "tests · 3 passed · fixed"
         );
-        assert_eq!(checks_summary(&[&tests(failed(1, 3))]), "1 of 3 failed");
-        let four = [
-            tests(failed(1, 3)),
-            tests(passed(1)),
-            tests(passed(2)),
-            tests(passed(3)),
-        ];
+        // A scope still failing names its kind and filter, whatever passed since.
         assert_eq!(
-            checks_summary(&four.iter().collect::<Vec<_>>()),
-            "… → 1 passed → 2 passed → 3 passed"
+            s(&[cli(failed(1, 3)), api(passed(2))]),
+            "tests failed · cli:: 1 of 3"
         );
+        assert_eq!(
+            s(&[cli(failed(1, 3)), cli(failed(1, 3))]),
+            "tests failed · cli:: 1 of 3"
+        );
+        assert_eq!(s(&[build(e0425)]), "build failed · E0425");
+        assert_eq!(s(&[cli(Outcome::Unknown)]), "tests · ran");
+        assert_eq!(
+            s(&[
+                cli(failed(1, 3)),
+                api(failed(2, 4)),
+                lint(passed_any()),
+                cli(passed(3)),
+                api(passed(4)),
+            ]),
+            "3 passing · 2 fixed"
+        );
+    }
+
+    fn passed_any() -> Outcome {
+        Outcome::Passed { n: None }
+    }
+
+    #[test]
+    fn a_failed_calls_chip_is_its_first_error_and_a_failed_check_names_its_kind() {
+        let bad = |e: &str| Activity {
+            failed: Some(e.into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            outcome_phrase(&bad("String to replace not found in file.")).as_deref(),
+            Some("String to replace not found in file.")
+        );
+        let long = outcome_phrase(&bad(&"x".repeat(80))).unwrap();
+        assert_eq!(long.chars().count(), 40);
+        assert!(long.ends_with('…'));
+        assert_eq!(outcome_phrase(&bad("  ")).as_deref(), Some("failed"));
+        assert_eq!(
+            outcome_phrase(&check(CheckWhat::Tests, "cargo test", failed(1, 3))).as_deref(),
+            Some("tests · 1 of 3 failed")
+        );
+    }
+
+    #[test]
+    fn a_failed_or_denied_calls_title_is_the_plain_verb() {
+        let mut a = Activity {
+            derived: "Edited cli.rs".into(),
+            failed: Some("String to replace not found in file.".into()),
+            ..Default::default()
+        };
+        assert_eq!(a.title(), "Edit cli.rs");
+        a.derived = "Listed files".into();
+        assert_eq!(a.title(), "List files");
+        a.said = Some("Fix the import".into());
+        assert_eq!(a.title(), "Fix the import", "the agent's words stay");
+        let denied = Activity {
+            derived: "Ran tests".into(),
+            not_run: true,
+            ..Default::default()
+        };
+        assert_eq!(denied.title(), "Run tests");
+    }
+
+    #[test]
+    fn an_unknown_check_never_marks_its_row_green() {
+        let unknown = check(CheckWhat::Tests, "cargo test", Outcome::Unknown);
+        assert_eq!(row_mark(false, Some(true), &unknown), RowMark::Unknown);
+        let ok = check(CheckWhat::Tests, "cargo test", passed(2));
+        assert_eq!(row_mark(false, Some(true), &ok), RowMark::Ok);
+        let planned = Activity {
+            planned_failure: true,
+            ..check(CheckWhat::Tests, "cargo test", failed(1, 3))
+        };
+        assert_eq!(row_mark(false, Some(false), &planned), RowMark::Planned);
+        assert_eq!(row_mark(true, None, &ok), RowMark::Running);
     }
 
     #[test]
@@ -508,14 +753,16 @@ mod tests {
     #[test]
     fn header_counts_failed_calls_and_time_when_known() {
         assert_eq!(
-            header(&counts(8, 5, 0), Some(Duration::from_secs(112))),
+            header(&counts(8, 5), Some(Duration::from_secs(112))),
             "8 actions · 5 files · 1:52"
         );
+        assert_eq!(header(&counts(8, 5), None), "8 actions · 5 files");
         assert_eq!(
-            header(&counts(8, 5, 1), None),
-            "8 actions · 5 files · 1 failed"
+            header(&counts(8, 5), Some(Duration::from_millis(600))),
+            "8 actions · 5 files",
+            "no time under a second"
         );
-        assert_eq!(counts(1, 1, 0), "1 action · 1 file");
+        assert_eq!(counts(1, 1), "1 action · 1 file");
     }
 
     #[test]

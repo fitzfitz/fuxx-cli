@@ -694,6 +694,9 @@ pub const NOT_IN_PALETTE: &[&str] = &[
     // M11ar: they step through an agent tab's pills; the pills are the way in.
     "agent_tab::PrevLane",
     "agent_tab::NextLane",
+    // The agent activity chore: ⌥↑ in the box puts the keyboard on the latest busy step's
+    // tracks; the palette has the keyboard then, so it would move nothing.
+    "agent_tab::FocusTracks",
     // ⇧Tab moves an agent tab to its next mode; the mode chip is the way in.
     "agent_tab::CycleMode",
     // Batch 3, chore 4: ⇧F10 opens the focused surface's right-click menu where you are; the

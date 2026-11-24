@@ -685,7 +685,7 @@ impl AgentTab {
             let since = self.tool_times.get(id).map_or(Duration::ZERO, |(t, _)| {
                 look.now.saturating_duration_since(*t)
             });
-            (elapsed_label(since), c.panel_dim)
+            (crate::agent_lanes::clock(since), c.panel_dim)
         } else if activity.real_failure() {
             (words.chips.join(" · "), c.failed_panel)
         } else {
@@ -708,17 +708,16 @@ impl AgentTab {
                 .border_color(hsla(edge))
                 .into_any_element()
         };
-        let status: AnyElement = match (running, ok) {
-            (true, _) => match self.tool_marks.get(id) {
+        use crate::agent_step_words::{RowMark, row_mark};
+        let status: AnyElement = match row_mark(*running, *ok, &activity) {
+            RowMark::Running => match self.tool_marks.get(id) {
                 Some(mark) => mark.clone().into_any_element(),
                 None => dot(c.todo_active),
             },
-            _ if activity.real_failure() => dot(c.failed_panel),
-            _ if activity.planned_failure && activity.check_failed() => ring(c.failed_panel),
-            _ if activity.not_run => ring(c.panel_dim),
-            (false, Some(true)) => dot(c.tool_ok),
-            (false, Some(false)) => dot(c.failed_panel),
-            (false, None) => ring(c.panel_dim),
+            RowMark::Failed => dot(c.failed_panel),
+            RowMark::Planned => ring(c.failed_panel),
+            RowMark::Unknown => ring(c.panel_dim),
+            RowMark::Ok => dot(c.tool_ok),
         };
         let tool = self
             .tool_shell(

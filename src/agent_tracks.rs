@@ -6,14 +6,26 @@
 use std::ops::Range;
 
 use super::*;
-use crate::agent_step_words::header;
-use crate::agent_steps::{Bead, Glyph, Track, Tracks};
+use crate::agent_step_words::head_time;
+use crate::agent_steps::{Bead, Glyph, MAX_TRACKS, Track, Tracks};
 use crate::ui_tokens::chat;
 
 /// The summary column's width while a step shows every column (it scrolls sideways then).
 const SUMMARY_W: f32 = 220.0;
-/// A bead's glyph size: a little over the bead, so a text glyph fills it.
+/// A bead's glyph size: a little over the bead, so a text glyph fills it; a read's dot is
+/// smaller (reads are the calm part of a step).
 const GLYPH: f32 = chat::BEAD + 2.0;
+const READ_GLYPH: f32 = GLYPH - 2.0;
+/// The size of the small ✕ on the bead of a call that itself failed.
+const FAILED_MARK: f32 = 8.0;
+/// The lane snaps to steps of this many columns, so summaries line up across steps and move at
+/// most a few times as a step grows.
+const LANE_SNAP: usize = 6;
+
+/// The bead lane's width for `cols` shown columns: snapped up to `LANE_SNAP` columns.
+pub fn lane_width(cols: usize) -> f32 {
+    (cols.div_ceil(LANE_SNAP) * LANE_SNAP) as f32 * chat::TRACK_COL_W
+}
 
 /// Whether the chat column (the tab's width, up to `COLUMN_MAX`) holds tracks; under
 /// `TRACKS_NARROW` a busy step falls back to rows.
@@ -47,12 +59,13 @@ pub fn cursor_moved(col: Option<usize>, dir: i8, shown: Range<usize>) -> usize {
 /// the call's mark, not text.
 pub fn glyph_text(g: Glyph) -> &'static str {
     match g {
-        Glyph::Read | Glyph::Check => "●",
+        Glyph::Read | Glyph::Command => "●",
+        Glyph::Check => "◌",
         Glyph::Search => "▲",
         Glyph::Edit => "■",
-        Glyph::Script => "◆",
+        Glyph::Script => "◇",
         Glyph::Passed => "✓",
-        Glyph::Failed => "✕",
+        Glyph::Failed => "✖",
         Glyph::Planned => "○",
         Glyph::Running => "",
     }
@@ -86,12 +99,11 @@ impl AgentTab {
         let all_cols = self.tracks_all.contains(&lead);
         let all_files = self.files_all.contains(&lead);
         let shown = tracks.shown_columns(all_cols);
-        let earlier_w = if tracks.earlier > 0 && !all_cols {
-            chat::TRACK_EARLIER_W
+        let beads_w = if all_cols {
+            shown.len() as f32 * chat::TRACK_COL_W
         } else {
-            0.0
+            lane_width(shown.len())
         };
-        let beads_w = earlier_w + shown.len() as f32 * chat::TRACK_COL_W;
         let cursor = self
             .track_cursor
             .as_ref()
@@ -105,7 +117,6 @@ impl AgentTab {
         let place = Place {
             first: shown.start,
             shown: shown.clone(),
-            earlier_w,
             beads_w,
         };
         if let Some(checks) = &tracks.checks {
@@ -114,7 +125,13 @@ impl AgentTab {
         for (n, track) in files.iter().enumerate() {
             rows.push(self.track_row(n + 1, track, &place, tracks, look));
         }
-        if more > 0 {
+        // "+N files" opens the rest; once open, "fewer" closes them again.
+        let files_toggle = match (more, all_files && tracks.files.len() > MAX_TRACKS) {
+            (0, false) => None,
+            (0, true) => Some("fewer".to_string()),
+            (n, _) => Some(format!("+{n} files")),
+        };
+        if let Some(words) = files_toggle {
             let view = look.view.clone();
             let step = lead.clone();
             rows.push(
@@ -128,7 +145,7 @@ impl AgentTab {
                         .text_color(hsla(c.panel_dim))
                         .cursor_pointer()
                         .hover(|s| s.text_color(hsla(c.panel_text)))
-                        .child(SharedString::from(format!("+{more} files")))
+                        .child(SharedString::from(words))
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             cx.stop_propagation();
                             let step = step.clone();
@@ -138,6 +155,10 @@ impl AgentTab {
                 )
                 .into_any_element(),
             );
+        }
+        if let Some(commands) = &tracks.commands {
+            let n = files.len() + 1;
+            rows.push(self.track_row(n, commands, &place, tracks, look));
         }
         let rows_h = rows.len() as f32 * chat::TRACK_ROW;
         // The columns: a strip each under the tracks (hover, click, the cursor's ring).
@@ -151,7 +172,7 @@ impl AgentTab {
                 div()
                     .id(("agent-track-col", at))
                     .absolute()
-                    .left(px(column_x(at, shown.start) + earlier_w))
+                    .left(px(column_x(at, shown.start)))
                     .top(px(chat::TRACK_HEAD))
                     .w(px(chat::TRACK_COL_W))
                     .h(px(rows_h))
@@ -169,42 +190,52 @@ impl AgentTab {
                             .ok();
                     })
             });
-        let earlier = (earlier_w > 0.0).then(|| {
-            let view = look.view.clone();
-            let step = lead.clone();
-            self.marked(
-                "tracks-earlier",
-                div()
-                    .id(("agent-tracks-earlier", ix))
-                    .absolute()
-                    .left(px(chat::TRACK_LABEL_W))
-                    .top(px(chat::TRACK_HEAD))
-                    .w(px(earlier_w))
-                    .h(px(chat::TRACK_ROW))
-                    .flex()
-                    .items_center()
-                    .text_color(hsla(c.panel_dim))
-                    .cursor_pointer()
-                    .hover(|s| s.text_color(hsla(c.panel_text)))
-                    .child(SharedString::from(format!("+{} earlier", tracks.earlier)))
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        cx.stop_propagation();
-                        let step = step.clone();
-                        view.update(cx, |this, cx| this.toggle_all_columns(step, cx))
-                            .ok();
-                    }),
-            )
-        });
+        // The header: the counts, "N failed" in the failure's ink, the time, and "+M earlier"
+        // (or "latest only" once every column shows), which toggles the earlier columns.
         let head = {
             let view = look.view.clone();
             let step = lead.clone();
+            let sep = crate::agent_ledger::SEP;
+            let earlier = (tracks.earlier > 0).then(|| {
+                let view = look.view.clone();
+                let step = lead.clone();
+                let words = if all_cols {
+                    "latest only".to_string()
+                } else {
+                    format!("+{} earlier", tracks.earlier)
+                };
+                self.marked(
+                    "tracks-earlier",
+                    div()
+                        .id(("agent-tracks-earlier", ix))
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(hsla(c.panel_text)))
+                        .child(SharedString::from(words))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            cx.stop_propagation();
+                            let step = step.clone();
+                            view.update(cx, |this, cx| this.toggle_all_columns(step, cx))
+                                .ok();
+                        }),
+                )
+            });
             div()
                 .id(("agent-tracks-head", ix))
                 .h(px(chat::TRACK_HEAD))
                 .flex()
                 .items_center()
+                .whitespace_nowrap()
                 .text_color(hsla(c.panel_dim))
-                .child(SharedString::from(header(&tracks.counts, took)))
+                .child(SharedString::from(tracks.counts.clone()))
+                .when(tracks.failed > 0, |d| {
+                    d.child(
+                        div()
+                            .text_color(hsla(c.failed_panel))
+                            .child(SharedString::from(format!("{sep}{} failed", tracks.failed))),
+                    )
+                })
+                .children(head_time(took).map(|t| SharedString::from(format!("{sep}{t}"))))
+                .when_some(earlier, |d, earlier| d.child(sep).child(earlier))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
                     let step = step.clone();
@@ -222,8 +253,7 @@ impl AgentTab {
             .when(!all_cols, |d| d.w_full())
             .children(strips)
             .child(head)
-            .children(rows)
-            .children(earlier);
+            .children(rows);
         let body: AnyElement = if all_cols {
             div()
                 .id(("agent-tracks-scroll", ix))
@@ -289,7 +319,7 @@ impl AgentTab {
             .iter()
             .filter(|(col, _)| place.shown.contains(col))
             .collect();
-        let x = |col: usize| place.earlier_w + (col - place.first) as f32 * chat::TRACK_COL_W;
+        let x = |col: usize| (col - place.first) as f32 * chat::TRACK_COL_W;
         let rule = match (shown.first(), shown.last()) {
             (Some((a, _)), Some((b, _))) if a != b => Some(
                 div()
@@ -303,15 +333,22 @@ impl AgentTab {
             _ => None,
         };
         let beads = shown.iter().map(|&&(col, bead)| {
-            let ink = if bead.dim {
+            // A call that failed draws as the change that didn't happen: dim, its ✕ says why.
+            let ink = if bead.dim || bead.failed {
                 c.panel_dim
             } else {
                 match bead.glyph {
-                    Glyph::Edit => c.bead_edit,
+                    Glyph::Edit | Glyph::Script => c.bead_edit,
                     Glyph::Passed => c.tool_ok,
                     Glyph::Failed | Glyph::Planned => c.failed_panel,
+                    Glyph::Check => c.panel_dim,
                     _ => c.bead,
                 }
+            };
+            let size = if bead.glyph == Glyph::Read {
+                READ_GLYPH
+            } else {
+                GLYPH
             };
             let mark: AnyElement = match bead.glyph {
                 Glyph::Running => {
@@ -334,7 +371,7 @@ impl AgentTab {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(GLYPH))
+                .text_size(px(size))
                 .line_height(relative(1.))
                 .text_color(hsla(ink))
                 .child(mark)
@@ -345,7 +382,7 @@ impl AgentTab {
                             .absolute()
                             .top(px(2.))
                             .right(px(0.))
-                            .text_size(px(7.))
+                            .text_size(px(FAILED_MARK))
                             .text_color(hsla(c.failed_panel))
                             .child("✕"),
                     )
@@ -355,6 +392,19 @@ impl AgentTab {
             track.label.clone()
         } else {
             track.path.clone()
+        };
+        // A changed file's label (and the Checks and Commands labels) read; a read-only file's
+        // is quiet. A summary that says a failure takes the failure's ink.
+        let named = track.path.is_empty();
+        let label_ink = if track.changed || named {
+            c.panel_text
+        } else {
+            c.panel_dim
+        };
+        let summary_ink = if track.failing {
+            c.failed_panel
+        } else {
+            c.panel_dim
         };
         div()
             .h(px(chat::TRACK_ROW))
@@ -367,7 +417,8 @@ impl AgentTab {
                     .w(px(chat::TRACK_LABEL_W))
                     .pr(px(8.))
                     .truncate()
-                    .text_color(hsla(c.panel_text))
+                    .text_color(hsla(label_ink))
+                    .when(named, |d| d.font_weight(FontWeight::MEDIUM))
                     .child(SharedString::from(track.label.clone()))
                     .tooltip(tip(full)),
             )
@@ -387,7 +438,7 @@ impl AgentTab {
                     .min_w(px(0.))
                     .pl(px(8.))
                     .truncate()
-                    .text_color(hsla(c.panel_dim))
+                    .text_color(hsla(summary_ink))
                     .child(SharedString::from(track.summary.clone()))
                     .tooltip(tip(track.summary.clone())),
             )
@@ -435,6 +486,21 @@ impl AgentTab {
             self.files_all.insert(lead);
         }
         cx.notify();
+    }
+
+    /// ⌥↑ in the box: the shown view's latest busy step takes the keyboard, its cursor on its
+    /// latest call (Esc gives it back). Nothing when no step draws as tracks.
+    pub(super) fn focus_tracks(&mut self, _: &FocusTracks, _: &mut Window, cx: &mut Context<Self>) {
+        let lead = self
+            .pane()
+            .rows
+            .iter()
+            .rev()
+            .find_map(|r| Some(r.tracks.as_ref()?.columns.first()?.id.clone()));
+        match lead {
+            Some(lead) => self.track_focus_step(lead, cx),
+            None => cx.propagate(),
+        }
     }
 
     /// ←/→ in a step's tracks.
@@ -503,12 +569,10 @@ impl AgentTab {
     }
 }
 
-/// Where a step's columns sit: the first shown, the shown range, the "+M earlier" cell's width
-/// and the bead area's.
+/// Where a step's columns sit: the first shown, the shown range and the bead lane's width.
 struct Place {
     first: usize,
     shown: Range<usize>,
-    earlier_w: f32,
     beads_w: f32,
 }
 
@@ -532,6 +596,14 @@ mod tests {
     }
 
     #[test]
+    fn the_lane_snaps_to_six_columns() {
+        assert_eq!(lane_width(1), 6.0 * chat::TRACK_COL_W);
+        assert_eq!(lane_width(6), 6.0 * chat::TRACK_COL_W);
+        assert_eq!(lane_width(7), 12.0 * chat::TRACK_COL_W);
+        assert_eq!(lane_width(24), 24.0 * chat::TRACK_COL_W);
+    }
+
+    #[test]
     fn the_cursor_moves_within_the_shown_columns() {
         assert_eq!(cursor_moved(None, 1, 36..60), 59);
         assert_eq!(cursor_moved(Some(36), -1, 36..60), 36);
@@ -549,10 +621,12 @@ mod tests {
                 Glyph::Script,
                 Glyph::Passed,
                 Glyph::Failed,
-                Glyph::Planned
+                Glyph::Planned,
+                Glyph::Check,
+                Glyph::Command
             ]
             .map(glyph_text),
-            ["●", "▲", "■", "◆", "✓", "✕", "○"]
+            ["●", "▲", "■", "◇", "✓", "✖", "○", "◌", "●"]
         );
         assert_eq!(glyph_text(Glyph::Running), "");
     }

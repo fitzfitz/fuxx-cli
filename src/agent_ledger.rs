@@ -40,6 +40,27 @@ pub struct CheckRun {
     pub planned: bool,
 }
 
+/// One check scope's runs this turn (each outcome, and whether it was a planned failure), in
+/// order; `scope` as its latest run wrote it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scope {
+    pub what: CheckWhat,
+    pub scope: String,
+    pub runs: Vec<(Outcome, bool)>,
+}
+
+impl Scope {
+    /// Its latest run failed for real.
+    pub fn failing(&self) -> bool {
+        matches!(self.runs.last(), Some((Outcome::Failed { .. }, false)))
+    }
+
+    /// Its latest run passed.
+    pub fn passing(&self) -> bool {
+        matches!(self.runs.last(), Some((Outcome::Passed { .. }, _)))
+    }
+}
+
 /// The current turn's ledger.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ledger {
@@ -51,7 +72,9 @@ pub struct Ledger {
     /// Read or searched only.
     pub read: Vec<PathBuf>,
     pub checks: Vec<CheckRun>,
-    /// Passed runs, and all runs but planned failures and unknown outcomes.
+    /// The checks by scope (`check_key`), in the order of their first run.
+    pub scopes: Vec<Scope>,
+    /// Passed runs, and all runs (the popover's "P/T passed").
     pub passed: usize,
     pub total: usize,
     /// The latest check of a kind failed for real and no pass of the same kind and scope has
@@ -115,6 +138,7 @@ pub fn ledger_of(
     let mut scripted: Vec<PathBuf> = Vec::new();
     let mut read: Vec<PathBuf> = Vec::new();
     let mut checks: Vec<CheckRun> = Vec::new();
+    let mut scopes: Vec<((CheckWhat, String), Scope)> = Vec::new();
     let mut open: HashMap<(CheckWhat, String), usize> = HashMap::new();
     let mut running: Vec<(usize, &str, Option<Instant>)> = Vec::new();
     for &ix in &calls {
@@ -131,6 +155,21 @@ pub fn ledger_of(
         }
         if let Some(check) = &a.check {
             let key = crate::agent_steps::check_key(check, cwd);
+            let run = (check.outcome.clone(), a.planned_failure);
+            match scopes.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, s)) => {
+                    s.scope = check.scope.clone();
+                    s.runs.push(run);
+                }
+                None => scopes.push((
+                    key.clone(),
+                    Scope {
+                        what: check.what,
+                        scope: check.scope.clone(),
+                        runs: vec![run],
+                    },
+                )),
+            }
             match check.outcome {
                 Outcome::Passed { .. } => {
                     open.remove(&key);
@@ -186,10 +225,7 @@ pub fn ledger_of(
         .iter()
         .filter(|r| matches!(r.outcome, Outcome::Passed { .. }))
         .count();
-    let total = checks
-        .iter()
-        .filter(|r| !r.planned && r.outcome != Outcome::Unknown)
-        .count();
+    let total = checks.len();
     let failing = open
         .iter()
         .max_by_key(|(_, ix)| **ix)
@@ -214,6 +250,7 @@ pub fn ledger_of(
         scripted,
         read,
         checks,
+        scopes: scopes.into_iter().map(|(_, s)| s).collect(),
         passed,
         total,
         failing,
@@ -229,7 +266,8 @@ fn add(a: Option<u32>, b: Option<u32>) -> Option<u32> {
 }
 
 /// The folder tab's parts: the running call and its time ("+N running"), the files changed,
-/// and the checks ("checks P/T", or "tests failing" while one fails for real).
+/// and the checks by each scope's latest run: "tests failing" while one fails for real, "checks
+/// pass" when every scope's passed, else "checks ran" (P/T is the popover's).
 pub fn parts(ledger: &Ledger, now: Instant) -> Vec<Part> {
     let mut out = Vec::new();
     if let Some(r) = &ledger.running {
@@ -256,7 +294,9 @@ pub fn parts(ledger: &Ledger, now: Instant) -> Vec<Part> {
         Some(CheckWhat::Tests) => Some("tests failing".to_string()),
         Some(CheckWhat::Build) => Some("build failing".to_string()),
         Some(CheckWhat::Lint) => Some("lint failing".to_string()),
-        None => (ledger.total > 0).then(|| format!("checks {}/{}", ledger.passed, ledger.total)),
+        None if ledger.scopes.is_empty() => None,
+        None if ledger.scopes.iter().all(Scope::passing) => Some("checks pass".to_string()),
+        None => Some("checks ran".to_string()),
     };
     out.extend(checks.map(|text| Part {
         kind: PartKind::Checks,
@@ -530,8 +570,22 @@ mod tests {
             check("cargo test", Outcome::Passed { n: None }),
         );
         let l = main_of(&c);
-        assert_eq!((l.passed, l.total, l.checks.len()), (2, 3, 5));
+        // P/T counts every run (the lead's call: the design says "all check runs").
+        assert_eq!((l.passed, l.total, l.checks.len()), (2, 5, 5));
         assert!(l.checks[2].planned);
+        // One group per scope, in the order first run, each with its runs.
+        assert_eq!(
+            l.scopes
+                .iter()
+                .map(|s| (s.scope.as_str(), s.runs.len()))
+                .collect::<Vec<_>>(),
+            [
+                ("cargo test", 3),
+                ("cargo test cli::", 1),
+                ("cargo test api::", 1)
+            ]
+        );
+        assert!(!l.scopes[0].failing() && l.scopes[1].failing() && !l.scopes[2].failing());
     }
 
     #[test]
@@ -609,6 +663,11 @@ mod tests {
             scripted: Vec::new(),
             read: Vec::new(),
             checks: Vec::new(),
+            scopes: vec![Scope {
+                what: CheckWhat::Tests,
+                scope: "cargo test".into(),
+                runs: vec![(Outcome::Passed { n: Some(2) }, false)],
+            }],
             passed: 2,
             total: 6,
             failing: None,
@@ -625,8 +684,14 @@ mod tests {
         let mut l = sample(now);
         assert_eq!(
             texts(&parts(&l, now)),
-            ["Running tests 0:14 · +1 running", "4 changed", "checks 2/6"]
+            [
+                "Running tests 0:14 · +1 running",
+                "4 changed",
+                "checks pass"
+            ]
         );
+        l.scopes[0].runs.push((Outcome::Unknown, false));
+        assert_eq!(parts(&l, now)[2].text, "checks ran");
         l.failing = Some(CheckWhat::Tests);
         assert_eq!(parts(&l, now)[2].text, "tests failing");
         l.failing = Some(CheckWhat::Build);
@@ -634,6 +699,7 @@ mod tests {
         let empty = Ledger {
             running: None,
             changed: Vec::new(),
+            scopes: Vec::new(),
             passed: 0,
             total: 0,
             failing: None,
@@ -646,10 +712,10 @@ mod tests {
     fn it_trims_from_the_right_keeping_the_running_call() {
         let now = Instant::now();
         let p = parts(&sample(now), now);
-        // 31, 9 and 10 characters; a fit counts the leading SEP and one SEP between parts:
-        // 3 parts = (3 + 31 + 3 + 9 + 3 + 10) * CHAR_W = 413, 2 parts = 322, 1 part = 238.
-        assert_eq!(fit(&p, 413.0), 3);
-        assert_eq!(fit(&p, 412.0), 2);
+        // 31, 9 and 11 characters; a fit counts the leading SEP and one SEP between parts:
+        // 3 parts = (3 + 31 + 3 + 9 + 3 + 11) * CHAR_W = 420, 2 parts = 322, 1 part = 238.
+        assert_eq!(fit(&p, 420.0), 3);
+        assert_eq!(fit(&p, 419.0), 2);
         assert_eq!(fit(&p, 322.0), 2);
         assert_eq!(fit(&p, 321.0), 1);
         assert_eq!(fit(&p, 0.0), 1); // the running call is kept

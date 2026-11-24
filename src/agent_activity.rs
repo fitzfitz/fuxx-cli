@@ -101,13 +101,46 @@ pub struct Activity {
     pub exit: Option<i32>,
 }
 
+/// fuxx's verbs: past (done), present (running) and plain (failed or not run).
+const VERBS: [(&str, &str, &str); 10] = [
+    ("Read", "Reading", "Read"),
+    ("Edited", "Editing", "Edit"),
+    ("Deleted", "Deleting", "Delete"),
+    ("Moved", "Moving", "Move"),
+    ("Searched", "Searching", "Search"),
+    ("Listed", "Listing", "List"),
+    ("Ran", "Running", "Run"),
+    ("Fetched", "Fetching", "Fetch"),
+    ("Thought", "Thinking", "Think"),
+    ("Used", "Using", "Use"),
+];
+
+/// `words` with its leading past verb in the plain tense (`plain`) or the present; None when it
+/// leads with no verb of fuxx's.
+fn retensed(words: &str, plain: bool) -> Option<String> {
+    let (verb, rest) = words.split_once(' ').unwrap_or((words, ""));
+    let &(_, present, bare) = VERBS.iter().find(|v| v.0 == verb)?;
+    let now = if plain { bare } else { present };
+    Some(if rest.is_empty() {
+        now.to_string()
+    } else {
+        format!("{now} {rest}")
+    })
+}
+
 impl Activity {
-    /// The agent's words, else fuxx's.
-    pub fn title(&self) -> &str {
-        self.said
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(&self.derived)
+    /// The agent's words, else fuxx's: the plain verb when the call failed or didn't run ("Edit
+    /// cli.rs", not "Edited cli.rs").
+    pub fn title(&self) -> Cow<'_, str> {
+        if let Some(said) = self.said.as_deref().filter(|s| !s.trim().is_empty()) {
+            return Cow::Borrowed(said);
+        }
+        if (self.failed.is_some() || self.not_run)
+            && let Some(plain) = retensed(&self.derived, true)
+        {
+            return Cow::Owned(plain);
+        }
+        Cow::Borrowed(&self.derived)
     }
 
     /// While it runs: the agent's words, else the present tense ("Running tests").
@@ -128,24 +161,7 @@ impl Activity {
         } else {
             self.derived.clone()
         };
-        let (verb, rest) = past.split_once(' ').unwrap_or((&past, ""));
-        let now = match verb {
-            "Read" => "Reading",
-            "Edited" => "Editing",
-            "Deleted" => "Deleting",
-            "Moved" => "Moving",
-            "Searched" => "Searching",
-            "Listed" => "Listing",
-            "Ran" => "Running",
-            "Fetched" => "Fetching",
-            "Thought" => "Thinking",
-            _ => return past,
-        };
-        if rest.is_empty() {
-            now.to_string()
-        } else {
-            format!("{now} {rest}")
-        }
+        retensed(&past, false).unwrap_or(past)
     }
 
     /// The files it changed: none when it failed or didn't run.

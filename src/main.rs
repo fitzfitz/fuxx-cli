@@ -635,6 +635,11 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("right", agent_tab::TrackNext, Some("AgentTracks")),
         KeyBinding::new("enter", agent_tab::TrackOpen, Some("AgentTracks")),
         KeyBinding::new("escape", agent_tab::TrackLeave, Some("AgentTracks")),
+        KeyBinding::new(
+            "alt-up",
+            agent_tab::FocusTracks,
+            Some("AgentTab > Composer"),
+        ),
         KeyBinding::new("up", agent_tab::AskUp, Some("AgentAsk > Composer")),
         KeyBinding::new("down", agent_tab::AskDown, Some("AgentAsk > Composer")),
         KeyBinding::new("left", agent_tab::AskPrev, Some("AgentAsk > Composer")),
@@ -1867,6 +1872,9 @@ mod tests {
         assert!(runs(&keymap, "right", tracks).partial_eq(&crate::agent_tab::TrackNext));
         assert!(runs(&keymap, "enter", tracks).partial_eq(&crate::agent_tab::TrackOpen));
         assert!(runs(&keymap, "escape", tracks).partial_eq(&crate::agent_tab::TrackLeave));
+        // ⌥↑ in the box puts the keyboard on the latest busy step's tracks.
+        let composer: &[&str] = &["Workspace", "AgentTab", "Composer"];
+        assert!(runs(&keymap, "alt-up", composer).partial_eq(&crate::agent_tab::FocusTracks));
         assert!(runs(&keymap, "cmd-k", tracks).partial_eq(&OpenPalette));
         assert!(runs(&keymap, "cmd-w", tracks).partial_eq(&CloseSession));
     }

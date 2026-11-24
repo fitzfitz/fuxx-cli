@@ -12,7 +12,9 @@ use gpui::{
 use serde_json::json;
 
 use super::agent::{Slot, decode, feed, tab_of};
-use super::{Kind, Scene, Themes, bytes_differ, frame_fresh, shoot_with, shot_appearance};
+use super::{
+    Kind, Scene, Themes, bytes_differ, frame_fresh, keep_shot, shoot_with, shot_appearance,
+};
 use crate::agent_conversation::Item;
 use crate::agent_steps::{Glyph, Tracks};
 use crate::agent_tab::{AgentTab, AgentTabEvent};
@@ -276,7 +278,7 @@ pub(super) fn agent_tracks_busy() {
         let t = &all[0];
         // The 8th call follows the "red first" narration: a step of its own.
         assert!(t.counts.starts_with("7 actions"), "{n}: {}", t.counts);
-        assert!(t.counts.ends_with("2 failed"), "{n}: {}", t.counts);
+        assert_eq!(t.failed, 2, "{n}: the header's failed calls");
         assert!(t.checks.is_some(), "{n}: a checks track");
         let labels: Vec<&str> = t.files.iter().map(|f| f.label.as_str()).collect();
         assert_eq!(
@@ -291,6 +293,18 @@ pub(super) fn agent_tracks_busy() {
             f32::from(group.size.width) <= crate::ui_tokens::chat::COLUMN_MAX,
             "{n}: {group:?}"
         );
+        // ⌥↑ in the box: the step takes the keyboard on its latest call; Esc gives it back.
+        cx.simulate_keystrokes(window, "alt-up");
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).shot_track_state()).2,
+            Some(t.columns.len() - 1),
+            "{n}: ⌥↑ reaches the tracks"
+        );
+        cx.simulate_keystrokes(window, "escape");
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| tab.read(cx).shot_track_state()).2, None, "{n}");
+        let _ = frame_fresh(cx, window);
     });
 }
 
@@ -377,12 +391,13 @@ pub(super) fn agent_tracks_planned() {
         assert_eq!(all.len(), 1, "{n}");
         let checks = all[0].checks.as_ref().expect("a checks track");
         assert_eq!(checks.beads[0].1.glyph, Glyph::Planned, "{n}");
-        assert_eq!(checks.summary, "red → green · 2 passed", "{n}");
+        assert_eq!(checks.summary, "tests · red → green · 2 passed", "{n}");
         assert_eq!(all[0].first_error, None, "{n}");
     });
 }
 
-/// A step reading 8 files: 5 tracks and "+3 files"; a click shows all 8.
+/// A step reading 8 files: 5 tracks and "+3 files" (shot as `…-collapsed`); a click shows all
+/// 8, "fewer" shows 5 again, and another click all 8 for the shot.
 pub(super) fn agent_tracks_more_files() {
     shoot("agent-tracks-more-files", DIMS, |n, cx, window, tab, _| {
         feed(cx, tab, |t, cx| t.send("Survey the source".into(), cx));
@@ -403,16 +418,25 @@ pub(super) fn agent_tracks_more_files() {
         let _ = frame_fresh(cx, window);
         let all = tracks(cx, tab);
         assert_eq!(all[0].shown_files(false), (&all[0].files[..5], 3), "{n}");
+        keep_shot(&format!("{n}-collapsed"), &frame_fresh(cx, window));
+        let files_all = |cx: &VisualTestAppContext| cx.read(|cx| tab.read(cx).shot_track_state()).1;
         click(cx, window, part(cx, tab, n, "tracks-more-files"));
-        let (_, files_all, _) = cx.read(|cx| tab.read(cx).shot_track_state());
-        assert_eq!(files_all, 1, "{n}: the step shows every file");
+        assert_eq!(files_all(cx), 1, "{n}: the step shows every file");
         let all = tracks(cx, tab);
         assert_eq!(all[0].shown_files(true).0.len(), 8, "{n}");
+        let _ = frame_fresh(cx, window);
+        click(cx, window, part(cx, tab, n, "tracks-more-files"));
+        assert_eq!(files_all(cx), 0, "{n}: \"fewer\" shows the top files again");
+        let _ = frame_fresh(cx, window);
+        click(cx, window, part(cx, tab, n, "tracks-more-files"));
+        assert_eq!(files_all(cx), 1, "{n}");
         let _ = frame_fresh(cx, window);
     });
 }
 
-/// A step of 30 calls: "+6 earlier"; a click shows all 30 (sideways); ←/→ move the cursor.
+/// A step of 30 calls: "+6 earlier" in its header (shot as `…-collapsed`); a click shows all 30
+/// (sideways) and the header says "latest only", which shows the latest again; ←/→ move the
+/// cursor.
 pub(super) fn agent_tracks_earlier() {
     shoot("agent-tracks-earlier", DIMS, |n, cx, window, tab, _| {
         feed(cx, tab, |t, cx| t.send("Read it all".into(), cx));
@@ -424,10 +448,27 @@ pub(super) fn agent_tracks_earlier() {
         let _ = frame_fresh(cx, window);
         let all = tracks(cx, tab);
         assert_eq!((all[0].columns.len(), all[0].earlier), (30, 6), "{n}");
-        click(cx, window, part(cx, tab, n, "tracks-earlier"));
-        let (cols_all, _, _) = cx.read(|cx| tab.read(cx).shot_track_state());
-        assert_eq!(cols_all, 1, "{n}: every column");
+        let group = part(cx, tab, n, "tracks-group");
+        let toggle = part(cx, tab, n, "tracks-earlier");
+        assert!(
+            toggle.top() < group.top() + px(crate::ui_tokens::chat::TRACK_HEAD),
+            "{n}: \"+6 earlier\" sits in the header"
+        );
+        keep_shot(&format!("{n}-collapsed"), &frame_fresh(cx, window));
+        let cols_all = |cx: &VisualTestAppContext| cx.read(|cx| tab.read(cx).shot_track_state()).0;
+        click(cx, window, toggle);
+        assert_eq!(cols_all(cx), 1, "{n}: every column");
         assert_eq!(all[0].shown_columns(true), 0..30, "{n}");
+        let _ = frame_fresh(cx, window);
+        click(cx, window, part(cx, tab, n, "tracks-earlier"));
+        assert_eq!(
+            cols_all(cx),
+            0,
+            "{n}: \"latest only\" shows the latest again"
+        );
+        let _ = frame_fresh(cx, window);
+        click(cx, window, part(cx, tab, n, "tracks-earlier"));
+        assert_eq!(cols_all(cx), 1, "{n}");
         let _ = frame_fresh(cx, window);
         // The header takes the keyboard: the cursor on the latest call, ← one back.
         let group = part(cx, tab, n, "tracks-group");
@@ -525,8 +566,8 @@ pub(super) fn agent_steps_rows() {
     });
 }
 
-/// A turn with 4 files changed, checks 2 of 6 passed (every failure cleared since), and a
-/// test run going.
+/// A turn with 4 files changed, two scopes that failed twice then passed (every failure cleared
+/// since), and a test run going.
 fn ledger_turn(running: bool) -> Turn {
     let mut turn = Turn::new().say("Fix the client, then run the checks.");
     turn = turn
@@ -549,7 +590,7 @@ fn ledger_turn(running: bool) -> Turn {
     turn.bash("cargo test --bin fuxx", result)
 }
 
-/// The running turn: "Running tests …", "4 changed", "checks 2/6".
+/// The running turn: "Running tests …", "4 changed", "checks pass" (each scope's latest passed).
 pub(super) fn agent_ledger_running() {
     shoot("agent-ledger-running", DIMS, |n, cx, window, tab, _| {
         feed(cx, tab, |t, cx| t.send("Fix the client".into(), cx));
@@ -557,7 +598,7 @@ pub(super) fn agent_ledger_running() {
         let _ = frame_fresh(cx, window);
         let parts = ledger(cx, tab);
         assert!(parts[0].starts_with("Running tests"), "{n}: {parts:?}");
-        assert_eq!(parts[1..], ["4 changed", "checks 2/6"], "{n}");
+        assert_eq!(parts[1..], ["4 changed", "checks pass"], "{n}");
         let _ = part(cx, tab, n, "status");
     });
 }
@@ -574,7 +615,7 @@ pub(super) fn agent_ledger_done() {
         give(cx, tab, events);
         let _ = frame_fresh(cx, window);
         assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Done, "{n}");
-        assert_eq!(ledger(cx, tab), ["4 changed", "checks 3/7"], "{n}");
+        assert_eq!(ledger(cx, tab), ["4 changed", "checks pass"], "{n}");
     });
 }
 
@@ -595,8 +636,9 @@ pub(super) fn agent_ledger_trimmed() {
     );
 }
 
-/// A click on the pill: the popover lists the changed files (`src/api.rs` with its +/−); a click on
-/// one asks for its diff tab and closes it; Esc closes it too.
+/// A click on the pill: the popover lists the changed files (`src/api.rs` with its +/−) and the
+/// checks one row per scope ("3/7 passed"); a click on a file asks for its diff tab and closes
+/// it; Esc closes it too.
 pub(super) fn agent_ledger_popover() {
     shoot("agent-ledger-popover", DIMS, |n, cx, window, tab, told| {
         feed(cx, tab, |t, cx| t.send("Fix the client".into(), cx));
@@ -609,6 +651,10 @@ pub(super) fn agent_ledger_popover() {
         let _ = frame_fresh(cx, window);
         click(cx, window, part(cx, tab, n, "status"));
         let _ = frame_fresh(cx, window);
+        let l = cx
+            .read(|cx| tab.read(cx).shot_ledger())
+            .unwrap_or_else(|| panic!("{n}: a ledger"));
+        assert_eq!((l.passed, l.total, l.scopes.len()), (3, 7, 3), "{n}");
         let row = cx
             .read(|cx| tab.read(cx).shot_menu_row("src/api.rs"))
             .unwrap_or_else(|| panic!("{n}: src/api.rs listed"));

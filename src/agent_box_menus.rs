@@ -894,6 +894,10 @@ impl AgentTab {
                 let el = row(("ledger-changed", n), label.clone(), counts, ui.text)
                     .cursor_pointer()
                     .hover(move |s| s.bg(hsla(hover)))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| crate::sidebar_toggle::Tip("Open the diff".into()))
+                            .into()
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.close_menu(cx);
                         cx.emit(AgentTabEvent::OpenDiff(path.clone()));
@@ -918,40 +922,93 @@ impl AgentTab {
             &mut out,
         );
         plain("Read", &ledger.read, "ledger-read", &mut out);
-        // A check run's outcome in the step model's words.
-        let phrase = |r: &crate::agent_ledger::CheckRun| {
+        // The checks, one row per scope: its command, its runs' glyphs and its latest outcome
+        // (red only while that run still fails for real); "P/T passed" beside the heading.
+        if !ledger.scopes.is_empty() {
+            out.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .child(div().flex_1().child(heading("Checks".into(), &ui)))
+                    .child(
+                        div()
+                            .px(px(8.))
+                            .text_size(px(crate::ui_tokens::text::META))
+                            .text_color(hsla(ui.text_dim))
+                            .font_features(crate::sidebar::tabular())
+                            .child(SharedString::from(format!(
+                                "{}/{} passed",
+                                ledger.passed, ledger.total
+                            ))),
+                    )
+                    .into_any_element(),
+            );
+        }
+        for (n, scope) in ledger.scopes.iter().enumerate() {
+            let Some((latest, planned)) = scope.runs.last() else {
+                continue;
+            };
             let a = Activity {
                 check: Some(Check {
-                    what: r.what,
-                    scope: r.scope.clone(),
-                    outcome: r.outcome.clone(),
+                    what: scope.what,
+                    scope: scope.scope.clone(),
+                    outcome: latest.clone(),
                 }),
-                planned_failure: r.planned,
+                planned_failure: *planned,
                 ..Default::default()
             };
-            (
-                crate::agent_step_words::outcome_phrase(&a).unwrap_or_else(|| "ran".into()),
-                a.real_failure(),
-            )
-        };
-        for (planned, title, id) in [
-            (false, "Checks", "ledger-check"),
-            (true, "Planned failures", "ledger-planned"),
-        ] {
-            let runs: Vec<_> = ledger
-                .checks
-                .iter()
-                .filter(|r| r.planned == planned)
-                .collect();
-            if runs.is_empty() {
-                continue;
-            }
-            out.push(heading(title.into(), &ui));
-            for (n, r) in runs.into_iter().enumerate() {
-                let (words, failed) = phrase(r);
-                let ink = if failed { c.failed } else { ui.text };
-                out.push(row((id, n), r.scope.clone(), words, ink).into_any_element());
-            }
+            let words = crate::agent_step_words::outcome_phrase(&a).unwrap_or_else(|| "ran".into());
+            let strip = scope.runs.iter().map(|(outcome, planned)| {
+                use crate::agent_steps::{Glyph, check_glyph};
+                let glyph = check_glyph(outcome, *planned);
+                let ink = match glyph {
+                    Glyph::Passed => c.bar_ok,
+                    Glyph::Failed | Glyph::Planned => c.bar_failed,
+                    _ => c.bar_dim,
+                };
+                div()
+                    .text_color(hsla(ink))
+                    .child(crate::agent_tab::tracks::glyph_text(glyph))
+            });
+            let outcome_ink = if scope.failing() {
+                c.bar_failed
+            } else {
+                ui.text_dim
+            };
+            out.push(
+                div()
+                    .id(("ledger-check", n))
+                    .h(px(ROW_H))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .rounded(px(ROW_RADIUS))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_color(hsla(ui.text))
+                            .child(SharedString::from(scope.scope.clone())),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .gap(px(2.))
+                            .text_size(px(crate::ui_tokens::text::META))
+                            .children(strip),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(hsla(outcome_ink))
+                            .font_features(crate::sidebar::tabular())
+                            .child(SharedString::from(words)),
+                    )
+                    .into_any_element(),
+            );
         }
         div()
             .id("agent-ledger-list")
