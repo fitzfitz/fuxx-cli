@@ -38,6 +38,20 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-24 — v0.13.1 released
+
+- **What:** your word ("after that, push it up release patch then do clean ups"). Merged `chore/agent-activity-view`
+  into master (`71a520a`), pushed master's 20 commits, `Cargo.toml` 0.13.0 → 0.13.1 (`63c15b3`), tag `v0.13.1`; the
+  Release workflow (run 45339699037: test, both slices, release) published
+  `https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.13.1` with `fuxx-0.13.1.zip`. In it since v0.13.0: the agent activity view (file tracks per busy step with beads, honest check outcomes, the turn ledger in the box's folder tab and its popover), subagent rows with an outlined robot, "Orchestrating…", the box's target pill capping long names, the long-notice overlap fix.
+  A patch number on your word (it carries a feature). The in-app updater offers it.
+- **Checks:** the outgoing diff grepped clean of private and work-project names; on the merged master 2852 tests
+  (2902 with ui-shots), clippy at its baseline, `cargo fmt --check` clean, ui-shots 360 passed and 1 failed
+  (`agent-tab-wide`, which needs a screen at least 1600 pt wide; only the 1512 pt laptop screen was attached, and it
+  fails the same before these changes); all four release jobs green.
+- **Clean-up:** the merged branch deleted; the screenshots, review crops, mockups, build log and session specs
+  removed; `cargo clean` freed 70.4 GiB of build cache.
+
 ### 2026-11-24 — Fix: a long notice or error ran under the next message
 
 - **What:** your bug report ("why the layout below is broken?"): Claude Code's six-paragraph safety-check notice in
