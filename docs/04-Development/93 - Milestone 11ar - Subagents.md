@@ -213,6 +213,7 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
 Everything below up to the 2026-11-24 "browser opened from a terminal" chore is **released in v0.13.0** (2026-11-24, run 45303453320).
 The chores after it, through the agent activity view and its reviews, are **released in v0.13.1** (2026-11-24, run 45339699037).
 The paste chore after that is **released in v0.13.2** (2026-11-24, run 45352171051).
+The long-chat performance chore after it is **released in v0.13.3** (2026-11-24, run 45367550134).
 
 - **Working while subagents run** (your words, 2026-11-22: "the status indicator is false. it says done … but in
   reality there are subagents running under the hood"): the tab shows Working — its mark, the sidebar, the status
