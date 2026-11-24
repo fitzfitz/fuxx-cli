@@ -256,7 +256,7 @@ pub fn strip_ansi(text: &str) -> Cow<'_, str> {
 }
 
 /// A compiler error's code: `error[E0425]: …` → `E0425`.
-#[allow(dead_code)] // the step model and ledger (this chore's next tasks) call it.
+#[allow(dead_code)] // the activity view (this chore's drawing task) calls it through agent_steps.
 pub fn error_code(first_error: &str) -> Option<&str> {
     let rest = &first_error[first_error.find("error[")? + "error[".len()..];
     let code = &rest[..rest.find(']')?];

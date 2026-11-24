@@ -786,11 +786,13 @@ impl AgentTab {
         let c = &look.c;
         let items = self.conversation.items();
         let order = &self.pane().order;
+        // A lane's row and a "Passed on" row stand alone (the agent activity chore).
+        let alone = |i: &Item| crate::agent_steps::stands_alone(&self.conversation, i);
         let shape = order
             .iter()
             .position(|&i| i == ix)
-            .and_then(|k| crate::agent_chat::group_shape_at(items, order, k))
-            .or_else(|| group_shape(items, ix))
+            .and_then(|k| crate::agent_chat::group_shape_at(items, order, k, &alone))
+            .or_else(|| group_shape(items, ix, &alone))
             .unwrap_or(Shape::Solo);
         let (top, bottom) = match shape {
             Shape::Solo => (true, true),

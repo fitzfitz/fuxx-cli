@@ -3154,8 +3154,10 @@ impl AgentTab {
         if let Some(l) = &lane {
             new.push(print(&("head", &l.task)));
         }
+        let alone = |i: &Item| crate::agent_steps::stands_alone(&self.conversation, i);
         new.extend(
-            (0..order.len()).map(|k| crate::agent_chat::row_print_at(items, &order, k, thinking)),
+            (0..order.len())
+                .map(|k| crate::agent_chat::row_print_at(items, &order, k, thinking, &alone)),
         );
         if let (true, Some(l)) = (tail, &lane) {
             let time = self.lane_elapsed(&l.id).map(|d| d.as_secs());
