@@ -884,6 +884,20 @@ pub fn changed_rows(old: &[u64], new: &[u64]) -> Vec<usize> {
         .collect()
 }
 
+/// The most events the pump hands the tab at once (a burst beyond it waits for the next).
+pub const PUMP_BATCH: usize = 256;
+
+/// `first` and whatever else `rx` has ready, up to `max` in all.
+pub fn drain_ready<T>(first: T, rx: &mut mpsc::UnboundedReceiver<T>, max: usize) -> Vec<T> {
+    let mut batch = vec![first];
+    while batch.len() < max
+        && let Ok(more) = rx.try_recv()
+    {
+        batch.push(more);
+    }
+    batch
+}
+
 /// The command line with the provider's suggestion flags (`Provider::suggestion_flags`) added
 /// while "Prompt suggestions" is `on`; a command line that names the flag already (a preset's)
 /// is left as it is: the preset wins.
@@ -1425,6 +1439,8 @@ pub struct AgentTab {
     followers: HashMap<String, Task<()>>,
     /// Each live lane's mark (the Working arc, or Waiting), and Main's pill's.
     lane_marks: HashMap<String, Entity<MarkView>>,
+    /// The pill strip's labels, kept until a lane starts or goes (the perf chore).
+    pill_labels: crate::agent_lanes::PillLabels,
     main_mark: Option<Entity<MarkView>>,
     /// When each lane was first seen and when it ended (its elapsed time stops there); since
     /// the lanes chore, its current run's (a resume starts it again).
@@ -1564,6 +1580,13 @@ pub struct AgentTab {
     /// What the ledger was built for (its view, the lanes' shape, the turn): built again when
     /// that changes or a change that isn't only the agent's words comes.
     ledger_for: Option<(crate::agent_lanes::View, u64, Option<usize>, usize)>,
+    /// The "Stopped" notice that offers to rewind your latest message (`rewind::stopped_link`),
+    /// found with the ledger, so a frame never looks for it.
+    pub(crate) stopped: Option<usize>,
+    /// A batch of the process's lines is being handled: the rows wait for its last
+    /// (`on_process_batch`), and are owed a sync.
+    rows_held: bool,
+    rows_pending: bool,
     /// When each tool call started and finished, live only (its elapsed time; the agent
     /// activity chore's step times).
     tool_times: crate::agent_steps::ToolTimes,
@@ -2207,6 +2230,7 @@ impl AgentTab {
             pump: None,
             followers: HashMap::new(),
             lane_marks: HashMap::new(),
+            pill_labels: Default::default(),
             lane_runs: HashMap::new(),
             lane_flash: HashMap::new(),
             bar_open: None,
@@ -2274,6 +2298,9 @@ impl AgentTab {
             files_all: HashSet::new(),
             ledger: None,
             ledger_for: None,
+            stopped: None,
+            rows_held: false,
+            rows_pending: false,
             tool_times: crate::agent_steps::ToolTimes::new(),
             open_edits: HashSet::new(),
             reasons: Reasons::default(),
@@ -2760,8 +2787,10 @@ impl AgentTab {
         self.started.push(process.clone());
         self.pump = Some(cx.spawn(async move |this, cx| {
             while let Some(event) = rx.next().await {
+                // What came while the tab was busy, as one batch (the perf chore).
+                let batch = drain_ready(event, &mut rx, PUMP_BATCH);
                 if this
-                    .update(cx, |this, cx| this.on_process(event, cx))
+                    .update(cx, |this, cx| this.on_process_batch(batch, cx))
                     .is_err()
                 {
                     break;
@@ -2847,6 +2876,30 @@ impl AgentTab {
     #[allow(dead_code)] // read by scenes
     pub fn waiting_change(&self) -> Option<&Change> {
         self.waiting.last()
+    }
+
+    /// Events read together (a burst): each handled as if alone, in order, but the rows synced
+    /// once for a run of lines (the perf chore). Nothing outside the tab sees it in between: it
+    /// is one update; anything that isn't a line finds the rows synced first.
+    fn on_process_batch(&mut self, batch: Vec<ProcessEvent>, cx: &mut Context<Self>) {
+        let n = batch.len();
+        for (i, event) in batch.into_iter().enumerate() {
+            let line = matches!(event, ProcessEvent::Line(_) | ProcessEvent::ErrLine(_));
+            if !line {
+                self.flush_rows();
+            }
+            self.rows_held = line && i + 1 < n;
+            self.on_process(event, cx);
+        }
+        self.rows_held = false;
+        self.flush_rows();
+    }
+
+    /// The rows synced, if a batch held them back.
+    fn flush_rows(&mut self) {
+        if self.rows_pending {
+            self.sync_rows();
+        }
     }
 
     fn on_process(&mut self, event: ProcessEvent, cx: &mut Context<Self>) {
@@ -3161,7 +3214,11 @@ impl AgentTab {
         }
         self.sync_lane_marks(cx);
         self.sync_draft(cx);
-        self.sync_rows();
+        if self.rows_held {
+            self.rows_pending = true;
+        } else {
+            self.sync_rows();
+        }
         self.sync_ask(cx);
         // The modal's tool gone (a restart, a new conversation): back out to what is left.
         if let Some(modal) = &mut self.modal
@@ -3205,6 +3262,7 @@ impl AgentTab {
             what.hash(&mut h);
             h.finish()
         }
+        self.rows_pending = false;
         let dirty = self.conversation.take_dirty();
         let view = self.view.clone();
         // A view not shown follows no change: it starts again when shown.
@@ -3330,6 +3388,8 @@ impl AgentTab {
         });
         if !words_only || self.ledger_for.as_ref() != Some(&key) {
             self.ledger_for = Some(key);
+            self.stopped =
+                rewind::stopped_link(items, self.conversation.latest_you(), self.branching());
             self.ledger = crate::agent_ledger::ledger_of(
                 &self.conversation,
                 &self.view,
@@ -6332,6 +6392,22 @@ impl Render for AgentTab {
 
 #[cfg(test)]
 mod tests {
+    /// The perf chore: what the process said while the tab was busy comes as one batch (one
+    /// sync and one redraw for a burst), never more than `PUMP_BATCH`.
+    #[test]
+    fn a_burst_is_drained_as_one_batch() {
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        for n in 0..5 {
+            tx.unbounded_send(n).unwrap();
+        }
+        assert_eq!(drain_ready(100, &mut rx, 10), vec![100, 0, 1, 2, 3, 4]);
+        assert_eq!(drain_ready(7, &mut rx, 10), vec![7], "nothing more ready");
+        for n in 0..(PUMP_BATCH * 2) {
+            tx.unbounded_send(n).unwrap();
+        }
+        assert_eq!(drain_ready(0, &mut rx, PUMP_BATCH).len(), PUMP_BATCH);
+    }
+
     use super::*;
 
     // ---- Prompt suggestions (a chore after M11ar) ----

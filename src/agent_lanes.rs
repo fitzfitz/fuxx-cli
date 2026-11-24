@@ -41,6 +41,35 @@ pub fn pill_labels(lanes: &[Lane], max: usize) -> Vec<String> {
         .collect()
 }
 
+/// The strip's labels (`pill_labels`) kept for the lanes' shape (`Conversation::shape`: a lane
+/// started or gone) and the width's cut (the perf chore: built once, not per frame).
+#[derive(Default)]
+pub struct PillLabels {
+    kept: std::cell::RefCell<Option<((u64, usize), std::rc::Rc<Vec<String>>)>>,
+    builds: std::cell::Cell<usize>,
+}
+
+impl PillLabels {
+    pub fn get(&self, lanes: &[Lane], shape: u64, max: usize) -> std::rc::Rc<Vec<String>> {
+        let mut kept = self.kept.borrow_mut();
+        match &*kept {
+            Some((key, labels)) if *key == (shape, max) => labels.clone(),
+            _ => {
+                self.builds.set(self.builds.get() + 1);
+                let labels = std::rc::Rc::new(pill_labels(lanes, max));
+                *kept = Some(((shape, max), labels.clone()));
+                labels
+            }
+        }
+    }
+
+    /// How many times the labels were built.
+    #[cfg(test)]
+    pub fn builds(&self) -> usize {
+        self.builds.get()
+    }
+}
+
 /// The view `dir` pills from `view` (Main first, then the lanes newest first: `shown_order`;
 /// no wrap). A lane no longer there goes back to Main.
 pub fn step(view: &View, lanes: &[Lane], dir: i32) -> View {
@@ -462,6 +491,7 @@ mod tests {
     use super::*;
     use crate::agent_conversation::Lane;
     use crate::providers::LaneControls;
+    use std::rc::Rc;
     use std::time::{Duration, Instant};
 
     fn lane(id: &str, label: &str) -> Lane {
@@ -881,6 +911,26 @@ mod tests {
             lane("b", "Workspace File Reader"),
         ];
         assert_eq!(pill_labels(&long, 12), ["Workspace F…", "Workspace… 2"]);
+    }
+
+    /// The perf chore: the strip's labels are built once per lanes' shape and width, not per
+    /// frame.
+    #[test]
+    fn the_pill_labels_are_built_once_per_shape_and_width() {
+        let lanes = [lane("a", "Reader"), lane("b", "Reader")];
+        let cache = PillLabels::default();
+        let first = cache.get(&lanes, 1, 20);
+        assert_eq!(*first, ["Reader", "Reader 2"]);
+        assert!(Rc::ptr_eq(&first, &cache.get(&lanes, 1, 20)), "kept");
+        assert_eq!(cache.builds(), 1);
+        let more = [
+            lane("a", "Reader"),
+            lane("b", "Reader"),
+            lane("c", "Tester"),
+        ];
+        assert_eq!(*cache.get(&more, 2, 20), ["Reader", "Reader 2", "Tester"]);
+        assert_eq!(*cache.get(&more, 2, 12), ["Reader", "Reader 2", "Tester"]);
+        assert_eq!(cache.builds(), 3, "a new shape, a new width");
     }
 
     #[test]

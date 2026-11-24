@@ -930,7 +930,7 @@ impl AgentTab {
         let c = look.c;
         let width = self.bar_width.get();
         let max = if width < NARROW { 12 } else { 20 };
-        let labels = crate::agent_lanes::pill_labels(lanes, max);
+        let labels = self.pill_labels.get(lanes, self.conversation.shape(), max);
         // Pill widths, estimated: a mark, the label in the meta size, the padding.
         // (7 a character: the labels are MEDIUM; 6.6 ran short once "+N" grew a mark.)
         let pill_w = |label: &str| MARK + 5.0 + label.chars().count() as f32 * 7.0 + 16.0;

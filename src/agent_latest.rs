@@ -260,10 +260,9 @@ impl AgentTab {
     /// button at the strip's right doing the same (the opens fixed, 2026-11-23); none once the
     /// next message is sent, in a lane's view, or where the agent can't rewind.
     fn strip_rewind_button(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let you = super::rewind::strip_rewind(
-            self.conversation.items(),
+        let you = super::rewind::strip_rewind_from(
+            self.stopped,
             self.conversation.latest_you(),
-            self.branching(),
             self.view == View::Main,
             self.paused,
         )?;

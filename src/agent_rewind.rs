@@ -101,6 +101,7 @@ pub(crate) fn stopped_link(items: &[Item], latest: Option<usize>, b: Branching) 
 /// The message the latest-prompt strip's Rewind button rewinds (the opens fixed, 2026-11-23):
 /// the one the "Stopped" notice offers (`stopped_link`), in Main's view (`main`) of a tab not
 /// paused for its classic view (that process holds the conversation).
+#[cfg(any(test, feature = "ui-shots"))]
 pub(crate) fn strip_rewind(
     items: &[Item],
     latest: Option<usize>,
@@ -108,10 +109,21 @@ pub(crate) fn strip_rewind(
     main: bool,
     paused: bool,
 ) -> Option<usize> {
+    strip_rewind_from(stopped_link(items, latest, b), latest, main, paused)
+}
+
+/// `strip_rewind` from the "Stopped" notice's place as found already (the tab keeps it: the
+/// perf chore).
+pub(crate) fn strip_rewind_from(
+    stopped: Option<usize>,
+    latest: Option<usize>,
+    main: bool,
+    paused: bool,
+) -> Option<usize> {
     if !main || paused {
         return None;
     }
-    stopped_link(items, latest, b).and(latest)
+    stopped.and(latest)
 }
 
 /// A fork's title: the source's with " (fork)"; a fork of a fork counts on ("(fork 2)", …).
@@ -975,14 +987,9 @@ impl AgentTab {
     /// The message whose hover actions stay shown: the picked one, or after a stop the one the
     /// "Stopped" notice offers to rewind.
     pub(super) fn actions_kept(&self) -> Option<usize> {
-        self.rw.pick.or_else(|| {
-            stopped_link(
-                self.conversation.items(),
-                self.conversation.latest_you(),
-                self.branching(),
-            )
-            .and(self.conversation.latest_you())
-        })
+        self.rw
+            .pick
+            .or_else(|| self.stopped.and(self.conversation.latest_you()))
     }
 }
 
@@ -1141,13 +1148,7 @@ impl AgentTab {
     /// What follows notice `ix`'s words: after a stop, "· Rewind to edit your message"; after a
     /// rewind, "· Undo" (until the next send).
     pub(super) fn notice_action(&self, ix: usize, text: &str, look: &Look) -> Option<AnyElement> {
-        let link = if text == STOPPED_NOTICE
-            && stopped_link(
-                self.conversation.items(),
-                self.conversation.latest_you(),
-                self.branching(),
-            ) == Some(ix)
-        {
+        let link = if text == STOPPED_NOTICE && self.stopped == Some(ix) {
             let you = self.conversation.latest_you()?;
             self.notice_link(
                 "stopped-rewind",
