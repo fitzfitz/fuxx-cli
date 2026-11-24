@@ -167,7 +167,8 @@ impl LaneStatus {
 
 #[derive(Clone, Default)]
 pub struct Conversation {
-    items: Vec<Item>,
+    /// Changed only through `Items`' methods: each change is noted (the perf chore).
+    items: crate::agent_items::Items,
     /// Your latest message's index (the chat's latest-prompt strip, chore after M11ar): kept as
     /// items come, so nothing scans the conversation for it.
     latest_you: Option<usize>,
@@ -205,6 +206,10 @@ pub struct Conversation {
     /// Where the restored history ends (`items.len()` after `past`; 0: none restored): the
     /// agent activity chore's ledger shows only for a live turn.
     live_from: usize,
+    /// Bumped whenever the lanes or the relays passed on change (the perf chore): which rows
+    /// each view has and which tool rows stand alone follow them, so the tab's caches start
+    /// again; the pill labels too.
+    shape: u64,
 }
 
 /// What `Conversation::cut_before` cut (batch 3, chore 2): kept for Undo Rewind until the next
@@ -280,6 +285,7 @@ impl Conversation {
         }
         match event {
             Event::Cleared => {
+                self.shape += 1;
                 self.items.clear();
                 self.open_asks.clear();
                 self.latest_you = None;
@@ -306,17 +312,12 @@ impl Conversation {
                 parent,
             } => {
                 // A finished block is closed: a later block of the same message starts anew.
-                let found = self.items.iter_mut().rev().find_map(|i| match i {
-                    Item::Agent {
-                        message: m,
-                        text: t,
-                        done: false,
-                        ..
-                    } if *m == message => Some(t),
-                    _ => None,
-                });
-                match found {
-                    Some(t) => t.push_str(&text),
+                match self.open_text(&message) {
+                    Some(ix) => {
+                        if let Item::Agent { text: t, .. } = &mut *self.items.get_mut(ix) {
+                            t.push_str(&text);
+                        }
+                    }
                     None => self.items.push(Item::Agent {
                         message,
                         text,
@@ -329,29 +330,20 @@ impl Conversation {
                 message,
                 text,
                 parent,
-            } => {
-                let found = self.items.iter_mut().rev().find_map(|i| match i {
-                    Item::Agent {
-                        message: m,
-                        text: t,
-                        done: done @ false,
-                        ..
-                    } if *m == message => Some((t, done)),
-                    _ => None,
-                });
-                match found {
-                    Some((t, done)) => {
+            } => match self.open_text(&message) {
+                Some(ix) => {
+                    if let Item::Agent { text: t, done, .. } = &mut *self.items.get_mut(ix) {
                         *t = text;
                         *done = true;
                     }
-                    None => self.items.push(Item::Agent {
-                        message,
-                        text,
-                        done: true,
-                        parent,
-                    }),
                 }
-            }
+                None => self.items.push(Item::Agent {
+                    message,
+                    text,
+                    done: true,
+                    parent,
+                }),
+            },
             Event::ToolStarted {
                 id,
                 name,
@@ -383,17 +375,19 @@ impl Conversation {
                 summary,
                 output,
             } => {
-                for item in &mut self.items {
+                let call = self
+                    .items
+                    .iter()
+                    .position(|i| matches!(i, Item::Tool { id: t, .. } if *t == id));
+                if let Some(ix) = call {
                     if let Item::Tool {
-                        id: tid,
                         running,
                         ok: tok,
                         result,
                         output: tout,
                         dropped_lines,
                         ..
-                    } = item
-                        && *tid == id
+                    } = &mut *self.items.get_mut(ix)
                     {
                         *running = false;
                         *tok = Some(ok);
@@ -407,8 +401,8 @@ impl Conversation {
                         };
                         *tout = kept;
                         *dropped_lines = dropped;
-                        return;
                     }
+                    return;
                 }
                 // A question's own tool (batch 3, chore 8) has no row: its result closes it.
                 let asked = self.open_asks.iter().copied().find(
@@ -437,8 +431,8 @@ impl Conversation {
                     self.reply(&id, reply);
                 }
             }
-            Event::Todo(list) => match self.items.iter_mut().find(|i| matches!(i, Item::Todo(_))) {
-                Some(item) => *item = Item::Todo(list),
+            Event::Todo(list) => match self.items.iter().position(|i| matches!(i, Item::Todo(_))) {
+                Some(ix) => *self.items.get_mut(ix) = Item::Todo(list),
                 None => self.items.push(Item::Todo(list)),
             },
             Event::Permission {
@@ -483,6 +477,7 @@ impl Conversation {
                     controls,
                     runs: 1,
                 };
+                self.shape += 1;
                 match self.lane_mut(&id) {
                     Some(old) => *old = lane,
                     None => {
@@ -545,18 +540,17 @@ impl Conversation {
             // Main messaged a subagent: the oldest relay to it waiting is delivered.
             Event::PassedOn { call, lane } => {
                 let at = self.items.len();
-                let waiting = self.items.iter_mut().find_map(|i| match i {
-                    Item::You { to: Some(r), .. }
-                        if r.lane == lane && !r.about && r.state == RelayState::Sent =>
-                    {
-                        Some(r)
-                    }
-                    _ => None,
+                let waiting = self.items.iter().position(|i| {
+                    matches!(i, Item::You { to: Some(r), .. }
+                        if r.lane == lane && !r.about && r.state == RelayState::Sent)
                 });
-                if let Some(r) = waiting {
-                    r.state = RelayState::Delivered;
-                    r.settled_at = Some(at);
+                if let Some(ix) = waiting {
+                    if let Item::You { to: Some(r), .. } = &mut *self.items.get_mut(ix) {
+                        r.state = RelayState::Delivered;
+                        r.settled_at = Some(at);
+                    }
                     self.passed_on.insert(call, lane);
+                    self.shape += 1;
                 }
             }
             Event::Question { id, questions, by } => {
@@ -652,6 +646,13 @@ impl Conversation {
         }
     }
 
+    /// Message `message`'s block still streaming (the newest), if any.
+    fn open_text(&self, message: &str) -> Option<usize> {
+        self.items
+            .iter()
+            .rposition(|i| matches!(i, Item::Agent { message: m, done: false, .. } if m == message))
+    }
+
     pub fn you(&mut self, text: String, attachments: Vec<String>) {
         self.you_as(text, attachments, None);
     }
@@ -711,7 +712,8 @@ impl Conversation {
                 *at -= 1;
             }
         }
-        for item in &mut self.items {
+        let after = |i: &Item| matches!(i, Item::You { to: Some(Relay { settled_at: Some(at), .. }), .. } if *at > ix);
+        self.items.change_where(after, |i| {
             if let Item::You {
                 to:
                     Some(Relay {
@@ -719,12 +721,11 @@ impl Conversation {
                         ..
                     }),
                 ..
-            } = item
-                && *at > ix
+            } = i
             {
                 *at -= 1;
             }
-        }
+        });
         self.rebuild_asks();
         self.latest_you = self
             .items
@@ -741,12 +742,13 @@ impl Conversation {
         let found = match id {
             Some(id) => self
                 .items
-                .iter_mut()
-                .rev()
-                .find(|i| matches!(i, Item::You { id: Some(x), .. } if x == id)),
-            None => self.items.iter_mut().find(|i| unread(i)),
+                .iter()
+                .rposition(|i| matches!(i, Item::You { id: Some(x), .. } if x == id)),
+            None => self.items.iter().position(unread),
         };
-        if let Some(Item::You { taken, .. }) = found {
+        if let Some(ix) = found
+            && let Item::You { taken, .. } = &mut *self.items.get_mut(ix)
+        {
             *taken = true;
         }
     }
@@ -820,7 +822,7 @@ impl Conversation {
             });
             activity.planned_failure = activity.planned_failure || announced && !again;
         }
-        if let Item::Tool { activity: slot, .. } = &mut self.items[ix] {
+        if let Item::Tool { activity: slot, .. } = &mut *self.items.get_mut(ix) {
             *slot = Some(Box::new(activity));
         }
     }
@@ -893,6 +895,7 @@ impl Conversation {
         }
         self.lanes.clear();
         self.lane_starts.clear();
+        self.shape += 1;
         self.outstanding = 0;
         self.busy = false;
         self.ended = false;
@@ -912,6 +915,7 @@ impl Conversation {
         // your message at `ix` was added.
         let keep = self.lane_starts.iter().take_while(|&&at| at <= ix).count();
         self.live_from = self.live_from.min(ix);
+        self.shape += 1;
         let cut = Cut {
             at: ix,
             items: self.items.split_off(ix),
@@ -965,6 +969,7 @@ impl Conversation {
         self.items.extend(cut.items);
         self.lanes.extend(cut.lanes);
         self.lane_starts.extend(cut.lane_starts);
+        self.shape += 1;
         self.latest_you = cut.latest_you;
         self.rebuild_asks();
     }
@@ -973,30 +978,25 @@ impl Conversation {
     pub fn replace_notice(&mut self, old: &str, new: &str) {
         let found = self
             .items
-            .iter_mut()
-            .rev()
-            .find(|i| matches!(i, Item::Notice(t) if t == old));
+            .iter()
+            .rposition(|i| matches!(i, Item::Notice(t) if t == old));
         match found {
-            Some(item) => *item = Item::Notice(new.to_string()),
+            Some(ix) => *self.items.get_mut(ix) = Item::Notice(new.to_string()),
             None => self.items.push(Item::Notice(new.to_string())),
         }
     }
 
     pub fn answered(&mut self, id: &str, answer: Answer) {
         let mut asker = None;
-        for item in &mut self.items {
-            if let Item::Permission {
-                id: pid,
-                answer: a,
-                by,
-                ..
-            } = item
-                && pid == id
-            {
-                *a = Some(answer);
-                asker = by.clone();
-                break;
-            }
+        let found = self
+            .items
+            .iter()
+            .position(|i| matches!(i, Item::Permission { id: pid, .. } if pid == id));
+        if let Some(ix) = found
+            && let Item::Permission { answer: a, by, .. } = &mut *self.items.get_mut(ix)
+        {
+            *a = Some(answer);
+            asker = by.clone();
         }
         self.wake(asker.as_deref());
     }
@@ -1013,7 +1013,7 @@ impl Conversation {
         };
         let ix = self.open_asks.remove(k);
         let mut asker = None;
-        if let Item::Question { reply: r, by, .. } = &mut self.items[ix] {
+        if let Item::Question { reply: r, by, .. } = &mut *self.items.get_mut(ix) {
             *r = Some(reply);
             asker = by.clone();
         }
@@ -1073,10 +1073,45 @@ impl Conversation {
 
     /// How many tool calls lane `id` has made.
     pub fn lane_steps(&self, id: &str) -> usize {
-        self.items
-            .iter()
-            .filter(|i| matches!(i, Item::Tool { parent: Some(p), .. } if p == id))
-            .count()
+        self.items.steps(id)
+    }
+
+    /// How many items hang under tool call `id` (`parent_of`: its subagent's words, steps and
+    /// resumes).
+    pub fn kids(&self, id: &str) -> usize {
+        self.items.kids(id)
+    }
+
+    /// There is a tool call `id`.
+    pub fn has_tool(&self, id: &str) -> bool {
+        self.items.has_tool(id)
+    }
+
+    /// The running tool calls' indexes, in order.
+    pub fn running_tools(&self) -> &std::collections::BTreeSet<usize> {
+        self.items.running()
+    }
+
+    /// Item `ix`'s version: bumped by every change to it (the perf chore).
+    pub fn version(&self, ix: usize) -> u64 {
+        self.items.version(ix)
+    }
+
+    /// The lowest item index changed since the last call (None: nothing changed): the tab
+    /// derives its rows again from there.
+    pub fn take_dirty(&mut self) -> Option<usize> {
+        self.items.take_dirty()
+    }
+
+    /// Bumped when the lanes or the relays passed on change (`shape`).
+    pub fn shape(&self) -> u64 {
+        self.shape
+    }
+
+    /// Where the current turn starts: just after your latest message (0: none), as
+    /// `agent_steps::turn_start` finds by a scan.
+    pub fn turn_start(&self) -> usize {
+        self.latest_you.map_or(0, |ix| ix + 1)
     }
 
     /// A step under a done lane whose agent wakes it by steps (agy): it works again. A stopped
@@ -1105,18 +1140,16 @@ impl Conversation {
     /// read it) settles `so`, where it is now.
     fn settle_relays(&mut self, which: impl Fn(&Relay, bool) -> bool, so: RelayState) {
         let at = self.items.len();
-        for item in &mut self.items {
-            if let Item::You {
-                to: Some(r), taken, ..
-            } = item
-                && !r.about
-                && r.state == RelayState::Sent
-                && which(r, *taken)
-            {
+        let picked = |i: &Item| {
+            matches!(i, Item::You { to: Some(r), taken, .. }
+                if !r.about && r.state == RelayState::Sent && which(r, *taken))
+        };
+        self.items.change_where(picked, |i| {
+            if let Item::You { to: Some(r), .. } = i {
                 r.state = so.clone();
                 r.settled_at = Some(at);
             }
-        }
+        });
     }
 
     /// The lane Main's tool call `call` delivered a relay to (its row says so).
@@ -1126,29 +1159,34 @@ impl Conversation {
 
     /// Lane `id` ended: its steps stop running and its questions expire.
     fn settle_lane(&mut self, id: &str) {
-        for item in &mut self.items {
-            match item {
-                Item::Tool {
-                    running,
-                    parent: Some(p),
-                    ..
-                } if p == id => *running = false,
-                Item::Agent {
-                    done,
-                    parent: Some(p),
-                    ..
-                } if p == id => *done = true,
-                Item::Permission {
-                    answer,
-                    by: Some(b),
-                    ..
-                } if b == id && answer.is_none() => *answer = Some(Answer::Expired),
-                Item::Question {
-                    reply, by: Some(b), ..
-                } if b == id && reply.is_none() => *reply = Some(Reply::Expired),
-                _ => {}
+        let under = |p: &Option<String>| p.as_deref() == Some(id);
+        // Only what changes is touched (each change lays its row out again).
+        let picked = |i: &Item| match i {
+            Item::Tool {
+                running: true,
+                parent,
+                ..
+            } => under(parent),
+            Item::Agent {
+                done: false,
+                parent,
+                ..
+            } => under(parent),
+            Item::Permission {
+                answer: None, by, ..
             }
-        }
+            | Item::Question {
+                reply: None, by, ..
+            } => under(by),
+            _ => false,
+        };
+        self.items.change_where(picked, |i| match i {
+            Item::Tool { running, .. } => *running = false,
+            Item::Agent { done, .. } => *done = true,
+            Item::Permission { answer, .. } => *answer = Some(Answer::Expired),
+            Item::Question { reply, .. } => *reply = Some(Reply::Expired),
+            _ => {}
+        });
         self.rebuild_asks();
     }
 
@@ -1218,24 +1256,34 @@ impl Conversation {
             .collect();
         let under_live = |p: &Option<String>| p.as_ref().is_some_and(|p| live.contains(p));
         let by_message = self.by_message;
-        for item in &mut self.items {
-            match item {
-                Item::Tool {
-                    running, parent, ..
-                } if !under_live(parent) => *running = false,
-                Item::Agent { done, parent, .. } if !under_live(parent) => *done = true,
-                Item::Permission { answer, by, .. } if answer.is_none() && !under_live(by) => {
-                    *answer = Some(Answer::Expired)
-                }
-                // One the agent didn't wait on stays open: only you close it.
-                Item::Question { reply, by, .. }
-                    if reply.is_none() && !under_live(by) && !by_message =>
-                {
-                    *reply = Some(Reply::Expired)
-                }
-                _ => {}
-            }
-        }
+        // Only what changes is touched (each change lays its row out again).
+        let picked = |i: &Item| match i {
+            Item::Tool {
+                running: true,
+                parent,
+                ..
+            } => !under_live(parent),
+            Item::Agent {
+                done: false,
+                parent,
+                ..
+            } => !under_live(parent),
+            Item::Permission {
+                answer: None, by, ..
+            } => !under_live(by),
+            // One the agent didn't wait on stays open: only you close it.
+            Item::Question {
+                reply: None, by, ..
+            } => !under_live(by) && !by_message,
+            _ => false,
+        };
+        self.items.change_where(picked, |i| match i {
+            Item::Tool { running, .. } => *running = false,
+            Item::Agent { done, .. } => *done = true,
+            Item::Permission { answer, .. } => *answer = Some(Answer::Expired),
+            Item::Question { reply, .. } => *reply = Some(Reply::Expired),
+            _ => {}
+        });
         self.rebuild_asks();
     }
 
@@ -1249,9 +1297,8 @@ impl Conversation {
     }
 
     pub fn pending_permission(&self) -> Option<&Item> {
-        self.items
-            .iter()
-            .find(|i| matches!(i, Item::Permission { answer: None, .. }))
+        let ix = *self.items.open_permissions().first()?;
+        Some(&self.items[ix])
     }
 
     /// The oldest open question's index (batch 3, chore 8).
@@ -1262,10 +1309,7 @@ impl Conversation {
     /// The oldest open ask of either kind (a permission or a question): the one the box and
     /// Enter answer.
     pub fn oldest_ask(&self) -> Option<usize> {
-        let permission = self
-            .items
-            .iter()
-            .position(|i| matches!(i, Item::Permission { answer: None, .. }));
+        let permission = self.items.open_permissions().first().copied();
         match (permission, self.pending_ask()) {
             (Some(p), Some(q)) => Some(p.min(q)),
             (p, q) => p.or(q),

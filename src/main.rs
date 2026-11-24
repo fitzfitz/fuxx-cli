@@ -13,8 +13,11 @@ mod agent_catalog;
 mod agent_chat;
 mod agent_conversation;
 mod agent_detect;
+mod agent_items;
 mod agent_lanes;
 mod agent_ledger;
+#[cfg(any(test, feature = "ui-shots"))]
+mod agent_long_chat;
 mod agent_markdown;
 mod agent_process;
 mod agent_step_words;
