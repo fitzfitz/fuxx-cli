@@ -1380,3 +1380,15 @@ The long-chat performance chore after it is **released in v0.13.3** (2026-11-24,
     8. ⌘Z / ⇧⌘Z in the box and a field; ⌘Z at a shell prompt undoes the typing.
     9. With a plan file (`### Task N` headings) the burger shows its count; ⌥⌘P opens it.
     10. In zsh with fuxx-completes from its branch, the suggestion list looks like the gutter mockup.
+- **The chore batch's four minors** (your words, 2026-11-25: "fix them"; on master, not pushed):
+  - **The plan tab never meets a long folder tab.** The folder tab and the plan tab share one row: the folder tab
+    gives way first (its folder and branch cut with "…"). New scene `agent-plan-tab-narrow` (460 pt, a long folder
+    and branch); it failed on the old layout (the branch chip ran under the burger) and passes now.
+  - **A run of ⌫ undoes in one step**, in the box and every field, as macOS fields do; deleting a selection, and a
+    new line in the box, stay steps of their own (`undo_history::a_run_of_deletes_undoes_as_one_step`).
+  - **One hover rule.** The status bar's usage strip now uses the agent box's `HoverDelay` (a press still opens it
+    at once: `HoverDelay::open_now`), its own copy gone.
+  - **Less work per frame.** The status line is built once a frame (the scenes ask for it apart); the clock's
+    panel only while it is open; a caret key in the box no longer copies its text.
+  - **Checks.** Tests 2935 green; no new clippy warnings; `cargo fmt --check` clean; the scenes these touch 364
+    passed, 1 failed (`agent-tab-wide`, as on master).

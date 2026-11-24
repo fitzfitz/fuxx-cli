@@ -42,6 +42,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-25 — The chore batch's four minors
+
+- **Did:** the review's four deferred minors (note 93): the plan tab and the folder tab share a row so they never
+  overlap; a run of ⌫ undoes in one step; the status bar's usage strip moved onto the shared `HoverDelay`; the status
+  line, the clock's panel and the box's caret keys do less work per frame.
+- **Learned:** a test that should catch a layout bug is worth running once against the old code: the narrow scene
+  failed on it (the branch chip under the burger), so it guards the fix.
+- **Blocked:** nothing. Pushing waits for your word.
+- **Next task:** your on-screen check (note 93).
+
 ### 2026-11-24 — The chore batch: twelve chores, small → medium → big
 
 - **Did:** the twelve chores you agreed item by item (note 93, "The 2026-11-24 chore batch"): hover panels for the
