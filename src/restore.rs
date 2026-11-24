@@ -299,6 +299,7 @@ mod tests {
             color: None,
             pinned: false,
             placed: None,
+            home: None,
             layout: Node::Leaf(SavedPane {
                 tabs: vec![tab],
                 active: 0,
@@ -499,6 +500,7 @@ mod tests {
                 color: Some(TabColor::Teal),
                 pinned: true,
                 placed: None,
+                home: None,
                 layout: Node::Leaf(SavedPane {
                     tabs: vec![SavedTab::Terminal { session: 1 }],
                     active: 0,

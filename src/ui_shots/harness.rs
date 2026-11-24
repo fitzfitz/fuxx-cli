@@ -853,6 +853,9 @@ pub(super) fn shot_appearance(theme: Theme, cx: &App) -> Appearance {
         cursor_style: Default::default(),
         cursor_glide: true,
         cursor_glow: true,
+        // The scenes close tabs as they always have (the ask is a native sheet; its rule is
+        // `tab_menu::asks_to_close_tab`, tested).
+        confirm_close: false,
         cursor_follows_status: true,
         cursor_fun: Default::default(),
         command_blocks: true,

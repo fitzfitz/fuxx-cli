@@ -934,7 +934,7 @@ impl Workspace {
             .group_hover(group.clone(), |s| s.visible())
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 cx.stop_propagation(); // not also a click on the tab
-                this.close_tab(id, window, cx)
+                this.ask_close_tab(id, window, cx)
             }));
         let terminal = tab.terminal;
         // The tooltip says the tab's age as it opens, not as the bar was last drawn (M11p: a
@@ -1081,7 +1081,7 @@ impl Workspace {
             // A middle-click closes it, like its ×.
             .on_aux_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if event.is_middle_click() {
-                    this.close_tab(id, window, cx);
+                    this.ask_close_tab(id, window, cx);
                 }
             }))
             .on_mouse_down(
@@ -1235,12 +1235,82 @@ impl Workspace {
         }
     }
 
+    /// Your close of `tab` (its ×, a middle-click, ⌘W; the 2026-11-24 chores): an agent or
+    /// terminal tab asks first while "Ask before closing a tab" is on, with a "Don't Ask Again"
+    /// that turns it off; else it closes as `close_tab`.
+    pub(crate) fn ask_close_tab(
+        &mut self,
+        tab: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = matches!(
+            self.model.tab(tab).map(|t| &t.kind),
+            Some(TabKind::Terminal(_) | TabKind::Agent { .. })
+        );
+        let on = cx.global::<crate::appearance::Appearance>().confirm_close;
+        if !crate::tab_menu::asks_to_close_tab(session, on) {
+            self.close_tab(tab, window, cx);
+            return;
+        }
+        let title = self
+            .model
+            .locate(tab)
+            .and_then(|(_, pane)| self.model.pane(pane))
+            .and_then(|p| {
+                self.pane_bar_tabs(p, Instant::now())
+                    .into_iter()
+                    .find(|t| t.tab == tab)
+            })
+            .map_or_else(|| "this tab".to_string(), |t| t.title.to_string());
+        let busy = self
+            .agent_busy(tab, cx)
+            .then(|| crate::tab_menu::busy_line(1))
+            .flatten();
+        let (message, detail) = crate::tab_menu::close_tab_text(&title, busy);
+        let answer = window.prompt(
+            gpui::PromptLevel::Warning,
+            &message,
+            detail.as_deref(),
+            &crate::tab_menu::CLOSE_TAB_BUTTONS,
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let pick = answer.await;
+            if pick != Ok(0) && pick != Ok(2) {
+                return;
+            }
+            this.update_in(cx, |this, window, cx| {
+                if pick == Ok(2) {
+                    let off = crate::prefs::confirm_close_values(false);
+                    crate::preferences::apply(cx, "confirm-close", &off);
+                }
+                // Asked already: an agent tab doesn't ask again.
+                if this.agents.contains_key(&tab) {
+                    this.close_agent_tab(tab, false, window, cx);
+                } else {
+                    this.close_tab(tab, window, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Close `tab` (its ×, a middle-click, its menu, ⌘W, a workspace closing): a terminal ends;
     /// a browser tab's page goes with its view (`sync` drops it); a file tab just goes (the file
     /// is only read). Never asks. The pane's next
     /// tab shows, or the pane (then the workspace) goes with its last one; with nothing left,
     /// the window.
     pub(crate) fn close_tab(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        // A workspace from an older save learns its folder now, before its terminal may go.
+        if let Some((ws, _)) = self.model.locate(tab)
+            && self.model.workspace(ws).is_some_and(|w| w.home.is_none())
+            && let Some(key) = self.folder_group(ws)
+        {
+            self.model
+                .set_home(ws, Some(crate::workspace::home_of(key)));
+        }
         match self.model.tab(tab).map(|t| t.kind.clone()) {
             Some(TabKind::Terminal(id)) => {
                 if let Some(i) = self.index_of(id) {

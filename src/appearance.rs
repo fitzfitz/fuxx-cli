@@ -66,6 +66,8 @@ pub struct Appearance {
     pub cursor_glide: bool,
     /// `cursor-glow = on|off`: the cursor breathes instead of blinking (default on).
     pub cursor_glow: bool,
+    /// Closing an agent or terminal tab asks first (the 2026-11-24 chores).
+    pub confirm_close: bool,
     /// `cursor-color = status|theme`: the cursor takes its terminal's status colour (`status`,
     /// the default, true) or always the theme's cursor colour (`theme`, false).
     pub cursor_follows_status: bool,
@@ -409,6 +411,11 @@ fn cursor_glide_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
     switch_from_entries(entries, "cursor-glide", true)
 }
 
+/// `confirm-close`, on by default (see `switch_from_entries`).
+fn confirm_close_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
+    switch_from_entries(entries, "confirm-close", true)
+}
+
 /// `cursor-glow`, on by default (see `switch_from_entries`).
 fn cursor_glow_from_entries(entries: &[Entry]) -> (bool, Vec<String>) {
     switch_from_entries(entries, "cursor-glow", true)
@@ -517,6 +524,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
     let (cursor_style, cursor_style_warnings) = cursor_style_from_entries(&entries);
     let (cursor_glide, cursor_glide_warnings) = cursor_glide_from_entries(&entries);
     let (cursor_glow, cursor_glow_warnings) = cursor_glow_from_entries(&entries);
+    let (confirm_close, confirm_close_warnings) = confirm_close_from_entries(&entries);
     let (cursor_follows_status, cursor_color_warnings) = cursor_color_from_entries(&entries);
     let (cursor_fun, cursor_fun_warnings) = cursor_fun_from_entries(&entries);
     let (open_links_in, open_links_warnings) = open_links_from_entries(&entries);
@@ -539,6 +547,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         .chain(&cursor_style_warnings)
         .chain(&cursor_glide_warnings)
         .chain(&cursor_glow_warnings)
+        .chain(&confirm_close_warnings)
         .chain(&cursor_color_warnings)
         .chain(&cursor_fun_warnings)
         .chain(&open_links_warnings)
@@ -575,6 +584,7 @@ fn load_from(cx: &App, home: Option<PathBuf>, xdg: Option<PathBuf>) -> Appearanc
         cursor_style,
         cursor_glide,
         cursor_glow,
+        confirm_close,
         cursor_follows_status,
         cursor_fun,
         open_links_in,

@@ -172,6 +172,12 @@ pub fn command_blocks_values(on: bool) -> Vec<String> {
     if on { vec![] } else { vec!["off".to_string()] }
 }
 
+/// `confirm-close` values to write: nothing when on (the default, so no line), `off` otherwise
+/// ("Don't Ask Again", the 2026-11-24 chores).
+pub fn confirm_close_values(on: bool) -> Vec<String> {
+    if on { vec![] } else { vec!["off".to_string()] }
+}
+
 /// `cursor-glow` values to write: nothing when on (the default, so no line), `off` otherwise.
 pub fn cursor_glow_values(on: bool) -> Vec<String> {
     if on { vec![] } else { vec!["off".to_string()] }
@@ -420,6 +426,9 @@ mod tests {
         assert!(cursor_glide_values(true).is_empty());
         assert_eq!(cursor_glide_values(false), ["off"]);
         assert!(cursor_glow_values(true).is_empty());
+        // "Don't Ask Again" writes `confirm-close = off`.
+        assert!(confirm_close_values(true).is_empty());
+        assert_eq!(confirm_close_values(false), ["off"]);
         assert_eq!(cursor_glow_values(false), ["off"]);
         // Following the status is the default (`status`): only `theme` is written.
         assert!(cursor_color_values(true).is_empty());

@@ -614,6 +614,14 @@ pub(crate) enum At {
     Replace(EntityId),
 }
 
+/// The `Placed` a workspace remembers as its home for group `key`.
+pub(crate) fn home_of(key: GroupKey) -> crate::layout_model::Placed {
+    match key {
+        GroupKey::Folder(path) => crate::layout_model::Placed::Folder(path),
+        GroupKey::Host(host) => crate::layout_model::Placed::Host(host),
+    }
+}
+
 /// Runs once a session has opened (with its id) or failed to (`None`).
 pub(crate) type Opened =
     Box<dyn FnOnce(&mut Workspace, Option<u64>, &mut Window, &mut Context<Workspace>)>;
@@ -1918,10 +1926,13 @@ impl Workspace {
                 saved.project.as_deref(),
             );
             let at = groups::insert_index(&key_refs(&keys), key.as_ref());
-            if self.model.new_workspace(at, kind).is_none() {
+            let Some(opened) = self.model.new_workspace(at, kind) else {
                 eprintln!("[fuxx] session: s{session_id} is already shown");
                 return false;
-            }
+            };
+            // It remembers its folder (or host), whatever tabs it holds later (the 2026-11-24
+            // chores: a workspace left with an agent tab fell out of its folder).
+            self.model.set_home(opened.workspace, key.map(home_of));
         }
         // A split puts a new divider at the hovered path's place, with no enter event.
         self.divider_hover = None;
@@ -2158,14 +2169,18 @@ impl Workspace {
         layout_model::shown_group(placed, self.folder_group(ws))
     }
 
-    /// The group a workspace's folder (or host) puts it in, wherever a drag put it (`placed`).
+    /// The group a workspace's folder (or host) puts it in, wherever a drag put it (`placed`):
+    /// its first terminal's, else the folder it remembers (`layout_model::own_group`).
     pub(crate) fn folder_group(&self, ws: WorkspaceId) -> Option<GroupKey> {
-        let first = *self.model.terminals(ws).first()?;
-        self.sessions
-            .items()
-            .iter()
-            .find(|s| s.id == first)
-            .and_then(Session::group)
+        let terminal = self.model.terminals(ws).first().and_then(|&first| {
+            self.sessions
+                .items()
+                .iter()
+                .find(|s| s.id == first)
+                .and_then(Session::group)
+        });
+        let home = self.model.workspace(ws).and_then(|w| w.home.as_ref());
+        crate::layout_model::own_group(terminal, home)
     }
 
     /// Each workspace's group, in sidebar order (pinned ones not moved up).
@@ -2318,9 +2333,14 @@ impl Workspace {
             return session.project.clone();
         }
         let ws = self.model.focused_workspace()?;
-        let first = *self.model.terminals(ws).first()?;
-        let i = self.index_of(first)?;
-        self.sessions.items()[i].project.clone()
+        let terminal = self
+            .model
+            .terminals(ws)
+            .first()
+            .and_then(|&first| self.index_of(first))
+            .and_then(|i| self.sessions.items()[i].project.clone());
+        let home = self.model.workspace(ws).and_then(|w| w.home.as_ref());
+        crate::layout_model::new_tab_folder(terminal, home)
     }
 
     /// Where session `s` is now (M11u): its shell's own report, else the process look-up;
@@ -4194,7 +4214,7 @@ impl Render for Workspace {
                     return;
                 }
                 if let Some(tab) = this.model.focused_tab() {
-                    this.close_tab(tab, window, cx);
+                    this.ask_close_tab(tab, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &NextSession, window, cx| {

@@ -162,6 +162,7 @@ impl Section {
                         Switch(OnOff::Animations),
                         Switch(OnOff::AgentSweep),
                         Switch(OnOff::AgentSuggestions),
+                        Switch(OnOff::ConfirmClose),
                         Switch(OnOff::StatusBar),
                         TipsCard,
                     ],
@@ -327,6 +328,7 @@ impl Control {
             Control::Switch(OnOff::Animations) => "Animations",
             Control::Switch(OnOff::AgentSweep) => "Agent box sweep",
             Control::Switch(OnOff::AgentSuggestions) => "Prompt suggestions",
+            Control::Switch(OnOff::ConfirmClose) => "Ask before closing a tab",
             Control::Switch(OnOff::StatusBar) => "Status Bar",
             Control::Switch(OnOff::CheckUpdates) => "Check for updates",
             Control::Switch(OnOff::KeepRunning) => "Keep running after quit",
@@ -366,6 +368,9 @@ impl Control {
             }
             Control::Switch(OnOff::AgentSuggestions) => {
                 "Claude guesses your next message; Tab takes it."
+            }
+            Control::Switch(OnOff::ConfirmClose) => {
+                "An agent or terminal tab asks before it closes."
             }
             Control::Switch(OnOff::StatusBar) => "The line along the window's foot.",
             Control::Switch(OnOff::CheckUpdates) => CHECK_UPDATES_NOTE,
@@ -409,6 +414,7 @@ impl Control {
                 match s {
                     OnOff::Animations => &["motion"],
                     OnOff::CursorGlow => &["blink"],
+                    OnOff::ConfirmClose => &["close", "confirm", "ask"],
                     OnOff::CursorColor => &["color"],
                     _ => &[],
                 },
@@ -442,6 +448,8 @@ pub(crate) enum OnOff {
     AgentSweep,
     /// `agent-suggestions`: Claude guesses your next message (applies to agents started after).
     AgentSuggestions,
+    /// Closing an agent or terminal tab asks first (the 2026-11-24 chores).
+    ConfirmClose,
     /// `status-bar`: the bar at the window's bottom (M11v part 3).
     StatusBar,
     CheckUpdates,
@@ -465,6 +473,7 @@ impl OnOff {
             OnOff::Animations => "animations",
             OnOff::AgentSweep => "agent-sweep",
             OnOff::AgentSuggestions => "agent-suggestions",
+            OnOff::ConfirmClose => "confirm-close",
             OnOff::StatusBar => "status-bar",
             OnOff::CheckUpdates => "check-updates",
             OnOff::KeepRunning => "persistent-sessions",
@@ -484,6 +493,7 @@ impl OnOff {
             OnOff::Animations => prefs::animations_values(on),
             OnOff::AgentSweep => prefs::agent_sweep_values(on),
             OnOff::AgentSuggestions => prefs::agent_suggestions_values(on),
+            OnOff::ConfirmClose => prefs::confirm_close_values(on),
             OnOff::StatusBar => prefs::status_bar_values(on),
             OnOff::CheckUpdates => prefs::check_updates_values(on),
             OnOff::KeepRunning => prefs::persistence_values(on),
@@ -503,6 +513,7 @@ impl OnOff {
             OnOff::Animations => a.animations,
             OnOff::AgentSweep => a.agent_sweep,
             OnOff::AgentSuggestions => a.agent_suggestions,
+            OnOff::ConfirmClose => a.confirm_close,
             OnOff::StatusBar => a.status_bar,
             OnOff::CheckUpdates => a.check_updates,
             OnOff::KeepRunning => a.persistent,
@@ -2153,13 +2164,14 @@ mod tests {
     #[test]
     fn palette_settings_cover_every_control() {
         let all = palette_settings();
-        // 27 since "Open links in" (batch 3, chore 6; 26 since prompt suggestions, 25 since the
-        // agent box sweep, 24 since M11ab's "Commands as cards").
-        assert_eq!(all.len(), 27);
+        // 28 since "Ask before closing a tab" (the 2026-11-24 chores; 27 since "Open links in",
+        // 26 since prompt suggestions, 25 since the agent box sweep, 24 since M11ab's "Commands
+        // as cards").
+        assert_eq!(all.len(), 28);
         let mut names: Vec<&str> = all.iter().map(|s| s.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 27, "names unique");
+        assert_eq!(names.len(), 28, "names unique");
         let order = |s: Section| Section::ALL.iter().position(|&x| x == s);
         assert!(
             all.windows(2)
@@ -2175,10 +2187,11 @@ mod tests {
         assert_eq!(all[0].name, "Animations");
         assert_eq!(all[1].name, "Agent box sweep");
         assert_eq!(all[2].name, "Prompt suggestions");
-        assert_eq!(all[3].name, "Status Bar");
-        // (Four later than before M11ab: "Commands as cards", the sweep, the suggestions and
-        // "Open links in" come before it.)
-        assert_eq!(all[21].name, "Keep history and data");
+        assert_eq!(all[3].name, "Ask before closing a tab");
+        assert_eq!(all[4].name, "Status Bar");
+        // (Five later than before M11ab: "Commands as cards", the sweep, the suggestions, "Open
+        // links in" and "Ask before closing a tab" come before it.)
+        assert_eq!(all[22].name, "Keep history and data");
         for section in Section::ALL {
             for control in section.controls() {
                 if let Control::Switch(switch) = control {
@@ -2360,6 +2373,10 @@ mod tests {
                             (
                                 "Prompt suggestions",
                                 "Claude guesses your next message; Tab takes it."
+                            ),
+                            (
+                                "Ask before closing a tab",
+                                "An agent or terminal tab asks before it closes."
                             ),
                             ("Status Bar", "The line along the window's foot."),
                             ("Tips card", "The welcome tips in the sidebar."),
@@ -2546,6 +2563,7 @@ mod tests {
                 Switch(OnOff::Animations),
                 Switch(OnOff::AgentSweep),
                 Switch(OnOff::AgentSuggestions),
+                Switch(OnOff::ConfirmClose),
                 Switch(OnOff::StatusBar),
                 TipsCard,
                 Switch(OnOff::CheckUpdates)
@@ -2605,6 +2623,7 @@ mod tests {
             Switch(OnOff::Animations),
             Switch(OnOff::AgentSweep),
             Switch(OnOff::AgentSuggestions),
+            Switch(OnOff::ConfirmClose),
             Switch(OnOff::StatusBar),
             Switch(OnOff::CheckUpdates),
             Switch(OnOff::KeepRunning),

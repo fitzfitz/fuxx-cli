@@ -1922,8 +1922,8 @@ mod tests {
         );
         assert_eq!(
             keys(&settings).len(),
-            27,
-            "M11x: Banner sound too; M11y: two plugin controls; M11ab: Commands as cards; the agent box sweep; prompt suggestions; Open links in"
+            28,
+            "M11x: Banner sound too; M11y: two plugin controls; M11ab: Commands as cards; the agent box sweep; prompt suggestions; Open links in; Ask before closing a tab"
         );
 
         let root = Path::new("/w/fuxx-cli");

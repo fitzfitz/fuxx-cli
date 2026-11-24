@@ -99,6 +99,29 @@ pub fn shown_group(
     }
 }
 
+/// A workspace's own group (the 2026-11-24 chores: "the workspace is out of that folder"): its
+/// first terminal's, else the folder (or host) it remembers (`Workspace::home`), so a workspace
+/// left with only an agent, browser or file tab stays in its folder.
+pub fn own_group(
+    terminal: Option<groups::GroupKey>,
+    home: Option<&Placed>,
+) -> Option<groups::GroupKey> {
+    terminal.or_else(|| match home? {
+        Placed::Folder(path) => Some(groups::GroupKey::Folder(path.clone())),
+        Placed::Host(host) => Some(groups::GroupKey::Host(host.clone())),
+        Placed::Ungrouped => None,
+    })
+}
+
+/// The folder a new tab in a workspace starts in: the shown terminal's, else the workspace's
+/// remembered folder.
+pub fn new_tab_folder(terminal: Option<PathBuf>, home: Option<&Placed>) -> Option<PathBuf> {
+    terminal.or_else(|| match home? {
+        Placed::Folder(path) => Some(path.clone()),
+        Placed::Host(_) | Placed::Ungrouped => None,
+    })
+}
+
 /// What a drop into group `target` (none: out of every group) records for a workspace whose
 /// own group is `own`: nothing when that is its own group.
 pub fn placed_for(
@@ -126,6 +149,9 @@ pub struct Workspace {
     /// Where a sidebar drag put it: none, its own folder's (or host's) group; else out of every
     /// group, or in another one (2026-11-10, your call).
     pub placed: Option<Placed>,
+    /// The folder (or host) it was made in, remembered whatever tabs it holds (the 2026-11-24
+    /// chores); none from a save older than it (its terminal says then).
+    pub home: Option<Placed>,
     pub layout: Node<PaneId>,
     /// In no particular order; the layout's reading order is the panes' order.
     pub panes: Vec<Pane>,
@@ -193,6 +219,8 @@ pub struct SavedWorkspace {
     pub pinned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placed: Option<Placed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<Placed>,
     pub layout: Node<SavedPane>,
     /// The focused pane, by its place in reading order.
     #[serde(default)]
@@ -396,6 +424,7 @@ impl Model {
                 color: None,
                 pinned: false,
                 placed: None,
+                home: None,
                 layout: Node::Leaf(pane.id),
                 panes: vec![pane],
                 focused: opened.pane,
@@ -803,6 +832,13 @@ impl Model {
 
     /// Where a sidebar drag put a workspace (`Placed`); none: its own group. False when there
     /// is no such workspace.
+    /// Remember the folder (or host) workspace `workspace` belongs to.
+    pub fn set_home(&mut self, workspace: WorkspaceId, home: Option<Placed>) -> bool {
+        self.workspace_mut(workspace)
+            .map(|w| w.home = home)
+            .is_some()
+    }
+
     pub fn set_placed(&mut self, workspace: WorkspaceId, placed: Option<Placed>) -> bool {
         self.workspace_mut(workspace)
             .map(|w| w.placed = placed)
@@ -1002,6 +1038,7 @@ impl Model {
                 color: ws.color,
                 pinned: ws.pinned,
                 placed: ws.placed.clone(),
+                home: ws.home.clone(),
                 layout,
                 focused: kept.iter().position(|&p| p == ws.focused).unwrap_or(0),
             });
@@ -1042,6 +1079,7 @@ impl Model {
                 color: sw.color,
                 pinned: sw.pinned,
                 placed: sw.placed.clone(),
+                home: sw.home.clone(),
                 focused: by_place.get(sw.focused).copied().flatten().unwrap_or(first),
                 layout,
                 panes,
@@ -1091,6 +1129,7 @@ impl Model {
                     color: sessions.clone().find_map(|s| s.color),
                     pinned: false,
                     placed: None,
+                    home: None,
                     layout: tree.map(&|session| SavedPane {
                         tabs: vec![SavedTab::Terminal { session }],
                         active: 0,
@@ -2481,6 +2520,63 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_keeps_its_folder_with_only_an_agent_tab() {
+        let home = Placed::Folder("/x/api".into());
+        assert_eq!(
+            own_group(None, Some(&home)),
+            Some(groups::GroupKey::Folder("/x/api".into()))
+        );
+        assert_eq!(
+            own_group(None, Some(&Placed::Host("box".into()))),
+            Some(groups::GroupKey::Host("box".into()))
+        );
+        assert_eq!(own_group(None, Some(&Placed::Ungrouped)), None);
+    }
+
+    #[test]
+    fn an_old_save_without_a_folder_still_groups_by_its_terminal() {
+        let term = groups::GroupKey::Folder("/x/web".into());
+        assert_eq!(own_group(Some(term.clone()), None), Some(term.clone()));
+        // The terminal says first.
+        let home = Placed::Folder("/x/api".into());
+        assert_eq!(own_group(Some(term.clone()), Some(&home)), Some(term));
+        assert_eq!(own_group(None, None), None);
+    }
+
+    #[test]
+    fn a_new_tab_from_an_agent_only_workspace_gets_its_folder() {
+        let home = Placed::Folder("/x/api".into());
+        assert_eq!(new_tab_folder(None, Some(&home)), Some("/x/api".into()));
+        assert_eq!(
+            new_tab_folder(Some("/x/web".into()), Some(&home)),
+            Some("/x/web".into())
+        );
+        assert_eq!(
+            new_tab_folder(None, Some(&Placed::Host("box".into()))),
+            None
+        );
+    }
+
+    #[test]
+    fn a_workspace_home_is_saved_and_an_old_save_has_none() {
+        let mut m = Model::new();
+        let a = m.new_workspace(0, term(11)).unwrap();
+        m.set_home(a.workspace, Some(Placed::Folder("/x/api".into())));
+        let (saved, active) = m.to_saved(|_| Some(0));
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(json.contains(r#""home":{"folder":"/x/api"}"#), "{json}");
+        let m2 = Model::from_saved(&saved, active, &[Some(11)]);
+        assert_eq!(
+            m2.workspaces()[0].home,
+            Some(Placed::Folder("/x/api".into()))
+        );
+        let old: SavedWorkspace =
+            serde_json::from_str(r#"{"layout": {"leaf": {"tabs": [{"kind": "browser"}]}}}"#)
+                .unwrap();
+        assert_eq!(old.home, None);
+    }
+
+    #[test]
     fn the_saved_shape_round_trips_through_json() {
         let mut m = Model::new();
         let a = m.new_workspace(0, term(11)).unwrap();
@@ -2534,6 +2630,7 @@ mod tests {
                 color: None,
                 pinned: false,
                 placed: None,
+                home: None,
                 layout: Node::Split {
                     axis: Axis::Row,
                     ratio: 7.0, // clamped
@@ -2548,6 +2645,7 @@ mod tests {
                 color: None,
                 pinned: true,
                 placed: None,
+                home: None,
                 layout: Node::Leaf(pane(vec![t(0), t(1)], 0)),
                 focused: 0,
             },
@@ -2556,6 +2654,7 @@ mod tests {
                 color: None,
                 pinned: false,
                 placed: None,
+                home: None,
                 layout: Node::Leaf(pane(vec![SavedTab::Browser { url: None }], 5)),
                 focused: 4,
             },
@@ -2581,6 +2680,7 @@ mod tests {
                 color: None,
                 pinned: false,
                 placed: None,
+                home: None,
                 layout: Node::Split {
                     axis: Axis::Row,
                     ratio: f32::NAN,
@@ -2620,6 +2720,7 @@ mod tests {
             color: None,
             pinned: false,
             placed: None,
+            home: None,
             layout: Node::Split {
                 axis: Axis::Row,
                 ratio: 0.5,
@@ -2649,6 +2750,7 @@ mod tests {
                 color: None,
                 pinned: false,
                 placed: None,
+                home: None,
                 layout: Node::Leaf(SavedPane {
                     tabs: vec![
                         SavedTab::Browser {
@@ -3464,6 +3566,7 @@ mod tests {
             color: None,
             pinned: false,
             placed: None,
+            home: None,
             layout: Node::Leaf(SavedPane {
                 tabs: vec![SavedTab::Agent {
                     provider: "gone".into(),

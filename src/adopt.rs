@@ -992,6 +992,7 @@ mod tests {
                     color: None,
                     pinned: true,
                     placed: None,
+                    home: None,
                     layout: Node::Split {
                         axis: Axis::Row,
                         ratio: 0.6,
@@ -1017,6 +1018,7 @@ mod tests {
                     color: None,
                     pinned: false,
                     placed: None,
+                    home: None,
                     layout: Node::Leaf(SavedPane {
                         tabs: vec![terminal(3)],
                         active: 0,
@@ -1129,6 +1131,7 @@ mod tests {
                 color: None,
                 pinned: false,
                 placed: None,
+                home: None,
                 layout: Node::Leaf(SavedPane {
                     tabs: vec![SavedTab::Browser {
                         url: Some("https://docs.rs/gpui".into()),

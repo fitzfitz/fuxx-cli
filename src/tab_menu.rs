@@ -94,11 +94,26 @@ pub fn enabled(action: TabAction, shown: &[usize], len: usize, at: usize) -> boo
     }
 }
 
-/// Whether closing one workspace of `terminals` terminals asks first: with two or more (a
-/// single tab or pane closes at once, as ⌘W does).
-pub fn asks_to_close(terminals: usize) -> bool {
-    terminals >= 2
+/// Whether closing one workspace of `terminals` sessions (terminals and agent tabs) asks first:
+/// with any, while "Ask before closing a tab" is on (the 2026-11-24 chores); with two or more
+/// when it's off.
+pub fn asks_to_close(terminals: usize, confirm_close: bool) -> bool {
+    terminals >= if confirm_close { 1 } else { 2 }
 }
+
+/// Whether closing one tab asks first (the 2026-11-24 chores): an agent or terminal tab
+/// (`session`), while "Ask before closing a tab" is on; a browser or file tab never.
+pub fn asks_to_close_tab(session: bool, confirm_close: bool) -> bool {
+    session && confirm_close
+}
+
+/// The sheet for closing tab `title`, and its line about a busy agent, if any.
+pub fn close_tab_text(title: &str, busy: Option<String>) -> (String, Option<String>) {
+    (format!("Close {title}?"), busy)
+}
+
+/// The sheet's buttons for one tab: the third turns the asking off (the 2026-11-24 chores).
+pub const CLOSE_TAB_BUTTONS: [&str; 3] = ["Close", "Cancel", "Don't Ask Again"];
 
 /// The confirm sheet for closing `count` workspaces, `busy` of their terminals with an agent
 /// still working or waiting: its message, and a line about the busy ones when there are any.
@@ -242,7 +257,10 @@ impl Workspace {
         let terminals = self.model.terminals(ws);
         let tabs = self.model.tabs_of(ws);
         let busy_agent = tabs.iter().any(|&tab| self.agent_busy(tab, cx));
-        if !asks_to_close(terminals.len()) && !busy_agent {
+        let sessions =
+            terminals.len() + tabs.iter().filter(|t| self.agents.contains_key(t)).count();
+        let on = cx.global::<crate::appearance::Appearance>().confirm_close;
+        if !asks_to_close(sessions, on) && !busy_agent {
             self.end_tabs(&tabs, window, cx);
             return;
         }
@@ -596,11 +614,39 @@ mod tests {
     }
 
     #[test]
+    fn closing_an_agent_or_terminal_tab_asks() {
+        assert!(asks_to_close_tab(true, true));
+        assert!(
+            !asks_to_close_tab(false, true),
+            "a browser or file tab never"
+        );
+        assert!(!asks_to_close_tab(true, false), "asking turned off");
+        assert_eq!(
+            close_tab_text("api", None),
+            ("Close api?".to_string(), None)
+        );
+        assert_eq!(
+            close_tab_text("api", Some("Claude is still working.".into())).1,
+            Some("Claude is still working.".to_string())
+        );
+        assert_eq!(CLOSE_TAB_BUTTONS[2], "Don't Ask Again");
+    }
+
+    #[test]
+    fn closing_a_workspace_asks_with_any_session_while_asking_is_on() {
+        assert!(!asks_to_close(0, true));
+        assert!(asks_to_close(1, true));
+        // Off: as before, two or more terminals.
+        assert!(!asks_to_close(1, false));
+        assert!(asks_to_close(2, false));
+    }
+
+    #[test]
     fn closing_a_workspace_asks_only_with_two_or_more_terminals() {
-        assert!(!asks_to_close(0));
-        assert!(!asks_to_close(1));
-        assert!(asks_to_close(2));
-        assert!(asks_to_close(7));
+        assert!(!asks_to_close(0, false));
+        assert!(!asks_to_close(1, false));
+        assert!(asks_to_close(2, false));
+        assert!(asks_to_close(7, false));
         assert_eq!(
             confirm_workspace_text(3, 0),
             ("Close workspace with 3 terminals?".to_string(), None)
