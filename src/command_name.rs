@@ -18,7 +18,7 @@ pub const WORD_CAP: usize = 24;
 pub const NO_SHORT: &str = "command";
 
 /// Programs that run the next command: they and their options are skipped.
-const WRAPPERS: [&str; 6] = ["sudo", "env", "time", "nohup", "command", "exec"];
+pub(crate) const WRAPPERS: [&str; 6] = ["sudo", "env", "time", "nohup", "command", "exec"];
 /// Programs whose next plain word is a subcommand (`git push`, `pnpm dev`), so it may be shown.
 /// Any other program shows its name alone: its next word may be a value, even a secret
 /// (`echo sk-…`, `./deploy.sh prod`). The user's call, 2026-11-20.

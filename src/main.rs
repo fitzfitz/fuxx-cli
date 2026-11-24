@@ -4,6 +4,9 @@
 mod activity;
 mod activity_panel;
 mod adopt;
+mod agent_activity;
+mod agent_activity_checks;
+mod agent_activity_command;
 mod agent_ask;
 mod agent_box;
 mod agent_catalog;

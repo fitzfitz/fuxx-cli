@@ -1,0 +1,6 @@
+# typed in go test's real summary shape (go not installed here)
+--- FAIL: TestGet (0.00s)
+    api_test.go:9: got 1, want 2
+FAIL
+FAIL	code/my-app/api	0.01s
+FAIL
