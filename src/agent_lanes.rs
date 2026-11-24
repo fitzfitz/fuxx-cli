@@ -137,12 +137,13 @@ pub fn shown_status(main: crate::status::Status, lanes: &[Lane]) -> crate::statu
 
 /// The status pill's word while only subagents run (your words, 2026-11-22: "if subagents are
 /// working, change cultivating to divining … if main is working while subagents working as
-/// well, cultivating wins"): "Divining…"; none when none does.
+/// well, cultivating wins"; renamed 2026-11-24: "'Divining' label status indicator, change it to
+/// 'Orchestrating'"): "Orchestrating…"; none when none does.
 pub fn running_word(lanes: &[Lane]) -> Option<String> {
     lanes
         .iter()
         .any(|l| l.status.live())
-        .then(|| "Divining…".to_string())
+        .then(|| "Orchestrating…".to_string())
 }
 
 /// The lanes' places in the strip, after Main: newest first (your words, 2026-11-22: "make
@@ -692,14 +693,15 @@ mod tests {
             Status::Waiting,
             "a question wins"
         );
-        // Your words (2026-11-22): "if subagents are working, change cultivating to divining".
+        // Your words (2026-11-22): "if subagents are working, change cultivating to divining";
+        // renamed 2026-11-24: "'Divining' label status indicator, change it to 'Orchestrating'".
         assert_eq!(
             running_word(std::slice::from_ref(&running)),
-            Some("Divining…".into())
+            Some("Orchestrating…".into())
         );
         assert_eq!(
             running_word(&[running.clone(), lane("c", "C")]),
-            Some("Divining…".into())
+            Some("Orchestrating…".into())
         );
         assert_eq!(running_word(&[done]), None);
     }

@@ -668,7 +668,7 @@ pub(super) fn agent_lanes_background() {
                 )
             });
             assert_eq!(shown(cx), (Status::Done, Status::Done), "{n}: all finished");
-            // Main starts another in its turn, and finishes: "Divining…" (your words, 2026-11-22).
+            // Main starts another in its turn, and finishes: "Orchestrating…" (your words, 2026-11-22; renamed 2026-11-24).
             let mut again = started("bg2", "Watch the tests");
             again.push(Event::TurnDone {
                 ok: true,

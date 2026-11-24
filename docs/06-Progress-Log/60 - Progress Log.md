@@ -37,6 +37,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-24 — Chore: "Divining…" becomes "Orchestrating…"
+
+- **What:** your word ("\"Divining\" label status indicator, change it to \"Orchestrating\""). The status pill reads
+  "Orchestrating…" while only subagents run. Under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]].
+- **Checks:** 2748 tests (the word's test watched failing first); clippy at its baseline; `cargo fmt --check` clean;
+  `agent-lanes` scenes 22 passed. Not yet seen in the real window.
+
 ### 2026-11-24 — v0.13.0 released
 
 - **What:** your word ("push every work that has been done (except the agent chat UI plan), make a minor release").

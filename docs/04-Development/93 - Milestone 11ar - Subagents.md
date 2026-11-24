@@ -1043,3 +1043,8 @@ Everything below up to the 2026-11-24 "browser opened from a terminal" chore is 
     a second address is a tab there; the same one selects; refusals; a terminal in another workspace opens beside
     itself; "Your default browser" goes to the OS).
   - **On screen:** not yet seen in the real window; no real `npm run dev`, Vite or mockup preview was run.
+- **"Divining…" is now "Orchestrating…"** (your words, 2026-11-24: "\"Divining\" label status indicator, change it to
+  \"Orchestrating\". It's better"): the status pill's word while only subagents run (`agent_lanes::running_word`).
+  - **Checks:** `subagents_still_running_keep_the_tab_working` updated and watched failing first; 2748 tests; the
+    `agent-lanes` scenes (22) pass.
+
