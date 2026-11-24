@@ -252,6 +252,8 @@ pub enum AgentTabEvent {
     OpenLink(String),
     /// A file to open in a file tab: a link to it in the chat, a path pill or its sent chip.
     OpenFile(PathBuf),
+    /// A changed file in the turn ledger's popover (the agent activity chore): its diff tab.
+    OpenDiff(PathBuf),
     /// A folder's pill or chip: shown in the Files tree.
     RevealInFiles(PathBuf),
 }
@@ -1048,6 +1050,9 @@ pub struct Colors {
     pub bead_edit: Rgb,
     pub track_rule: Rgb,
     pub track_cursor: Rgb,
+    /// The ledger's "tests failing" in the folder tab, on the tab and on a pill under the
+    /// pointer.
+    pub ledger_failing: Rgb,
 }
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
@@ -1267,6 +1272,11 @@ impl Colors {
                 QUIET_LINE_MIN,
             ),
             track_cursor: readable(ui.accent, &[ui.panel, row_hover], MARK_MIN),
+            ledger_failing: readable(
+                ui.block_failed,
+                &[ui.composer_outer, ui.composer_pill_hover],
+                TEXT_MIN,
+            ),
         }
     }
 }
@@ -1539,6 +1549,9 @@ pub struct AgentTab {
     track_cursor: Option<tracks::TrackCursor>,
     tracks_all: HashSet<String>,
     files_all: HashSet<String>,
+    /// The shown view's turn ledger (the folder tab's words after the status, and its
+    /// popover); None: no live turn.
+    pub(crate) ledger: Option<crate::agent_ledger::Ledger>,
     /// When each tool call started and finished, live only (its elapsed time; the agent
     /// activity chore's step times).
     tool_times: crate::agent_steps::ToolTimes,
@@ -2247,6 +2260,7 @@ impl AgentTab {
             track_cursor: None,
             tracks_all: HashSet::new(),
             files_all: HashSet::new(),
+            ledger: None,
             tool_times: crate::agent_steps::ToolTimes::new(),
             open_edits: HashSet::new(),
             reasons: Reasons::default(),
@@ -3285,6 +3299,13 @@ impl AgentTab {
         pane.order = order;
         pane.head = head;
         pane.tail = tail;
+        // The turn ledger (the agent activity chore): rebuilt with the rows, never per frame.
+        self.ledger = crate::agent_ledger::ledger_of(
+            &self.conversation,
+            &self.view,
+            &self.tool_times,
+            &self.start.cwd,
+        );
     }
 
     /// The shown view's list.
@@ -5594,16 +5615,39 @@ impl AgentTab {
             .font_weight(FontWeight::MEDIUM)
             .text_color(hsla(to_ink))
             .child(mark)
-            .child(SharedString::from(
-                // Main finished, its subagents haven't: say so (not "Cultivating…").
-                match (
-                    self.status(),
-                    crate::agent_lanes::running_word(self.conversation.lanes()),
-                ) {
-                    (Status::Done | Status::Idle, Some(word)) if !stopping => word,
-                    _ => now.word.to_string(),
-                },
-            ));
+            .child(SharedString::from(self.status_word(theme)))
+            // The turn ledger after the status (the agent activity chore): the running call,
+            // the files changed, the checks; cut from the right to fit, the running call kept.
+            .children(self.ledger_shown(theme).into_iter().map(|part| {
+                let failing = part.kind == crate::agent_ledger::PartKind::Checks
+                    && self.ledger.as_ref().is_some_and(|l| l.failing.is_some());
+                div()
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(hsla(if failing { c.ledger_failing } else { c.dim }))
+                    .child(SharedString::from(format!(
+                        "{}{}",
+                        crate::agent_ledger::SEP,
+                        part.text
+                    )))
+            }))
+            .when(self.ledger_shows(), |d| {
+                let hover = c.pill_hover;
+                d.relative()
+                    .rounded(px(crate::card_view::PILL_H / 2.))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hsla(hover)))
+                    .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
+                        let pressed = match event {
+                            gpui::ClickEvent::Mouse(click) => Some(click.down.position),
+                            _ => None,
+                        };
+                        // This press already shut the open popover (from outside it).
+                        let shut_at = this.chip_closed_at.take();
+                        if pressed.is_none() || shut_at != pressed {
+                            this.ledger_clicked(cx)
+                        }
+                    }))
+            });
         let el = match from_ink {
             Some(from) => el
                 .with_animation(
@@ -5618,6 +5662,61 @@ impl AgentTab {
             self.marked("status", div().flex_none().child(el))
                 .into_any_element(),
         )
+    }
+
+    /// The status pill's word: the status's, or the subagents' while Main has finished and
+    /// they haven't.
+    fn status_word(&self, theme: &Theme) -> String {
+        let stopping = self.stopping.is_some();
+        let now = crate::agent_top::pill(self.shown_status(), stopping, theme);
+        match (
+            self.status(),
+            crate::agent_lanes::running_word(self.conversation.lanes()),
+        ) {
+            (Status::Done | Status::Idle, Some(word)) if !stopping => word,
+            _ => now.word.to_string(),
+        }
+    }
+
+    /// The ledger shows in the folder tab: a live turn, and no question or permission open
+    /// (the box answers that first).
+    fn ledger_shows(&self) -> bool {
+        self.ledger.is_some() && self.shown_status() != Status::Waiting
+    }
+
+    /// The ledger's parts the folder tab has room for (the running call's clock as of now).
+    pub(crate) fn ledger_shown(&self, theme: &Theme) -> Vec<crate::agent_ledger::Part> {
+        use crate::agent_ledger::{fit, parts, room};
+        let Some(ledger) = self.ledger.as_ref().filter(|_| self.ledger_shows()) else {
+            return Vec::new();
+        };
+        let mut all = parts(ledger, Instant::now());
+        let folder = crate::agent_box::folder_chip_text(&self.start.cwd);
+        let branch = self
+            .branch
+            .as_deref()
+            .map(crate::agent_box::branch_chip_text);
+        let column = self.bar_width.get().min(crate::ui_tokens::chat::COLUMN_MAX);
+        let room = room(column, &self.status_word(theme), &folder, branch.as_deref());
+        let shown = fit(&all, room);
+        all.truncate(shown);
+        all
+    }
+
+    /// The status pill's click while the ledger shows: its popover opens, or (open) shuts.
+    fn ledger_clicked(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.menu, Some(crate::agent_box::BoxMenu::Ledger)) {
+            self.close_menu(cx);
+        } else {
+            self.open_menu(crate::agent_box::BoxMenu::Ledger, cx);
+        }
+    }
+
+    /// The shown view's turn ledger (the scenes read it).
+    #[cfg(feature = "ui-shots")]
+    #[allow(dead_code)] // the scenes (this chore's last task) read it.
+    pub fn shot_ledger(&self) -> Option<crate::agent_ledger::Ledger> {
+        self.ledger.clone()
     }
 
     fn top_line(&mut self, c: &Colors) -> AnyElement {
@@ -7149,6 +7248,13 @@ mod tests {
                 ("passed bead hovered", c.tool_ok, c.row_hover, MARK_MIN),
                 ("track cursor", c.track_cursor, c.panel, MARK_MIN),
                 ("track rule", c.track_rule, c.panel, QUIET_LINE_MIN),
+                ("ledger failing", c.ledger_failing, c.outer, TEXT_MIN),
+                (
+                    "ledger failing on a pill under the pointer",
+                    c.ledger_failing,
+                    c.pill_hover,
+                    TEXT_MIN,
+                ),
                 // The lanes review, fix 5: "Ask Main about it" has an edge in every theme.
                 ("bar edge", c.bar_edge, c.box_fill, QUIET_LINE_MIN),
                 ("relay text", c.relay_text, c.relay_fill, TEXT_MIN),

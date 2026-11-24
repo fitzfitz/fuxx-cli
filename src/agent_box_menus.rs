@@ -6,6 +6,9 @@ use crate::usage_view::{heading, quiet};
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{Animation, AnimationExt, FontWeight};
 
+/// The turn ledger's popover's list, at most this tall (it scrolls past it).
+const LEDGER_LIST_MAX: f32 = 360.0;
+
 impl AgentTab {
     /// The open menu's panel (`content` in it), hung above its chip (a child of it) and opening
     /// upward, in the tab menu's look; `side` (This Computer's folders) beside it. A click
@@ -68,6 +71,7 @@ impl AgentTab {
                                                 | BoxMenu::Usage
                                                 | BoxMenu::Mode
                                                 | BoxMenu::Attach
+                                                | BoxMenu::Ledger
                                         )
                                     ) {
                                         this.chip_closed_at = Some(event.position);
@@ -831,6 +835,132 @@ impl AgentTab {
                 self.marked_row(label.to_string(), row).into_any_element()
             });
         div().flex().flex_col().children(rows).into_any_element()
+    }
+
+    /// The turn ledger's popover (the agent activity chore): the files the turn changed (a
+    /// click opens one's diff tab), those scripts touched, those it only read, its checks and,
+    /// apart, its planned failures. Empty sections are left out.
+    pub(super) fn ledger_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::agent_activity::{Activity, Check};
+        let ui = cx.global::<Appearance>().theme.ui();
+        let c = Colors::of(&cx.global::<Appearance>().theme);
+        let Some(ledger) = self.ledger.as_ref() else {
+            return div().into_any_element();
+        };
+        let cwd = self.start.cwd.clone();
+        let shown = move |p: &Path| {
+            p.strip_prefix(&cwd)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .into_owned()
+        };
+        // A row: words on the left, quieter words on the right.
+        let row = |id: (&'static str, usize), left: String, right: String, ink: Rgb| {
+            div()
+                .id(id)
+                .h(px(ROW_H))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .rounded(px(ROW_RADIUS))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .truncate()
+                        .text_color(hsla(ink))
+                        .child(SharedString::from(left)),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(hsla(ui.text_dim))
+                        .font_features(crate::sidebar::tabular())
+                        .child(SharedString::from(right)),
+                )
+        };
+        let mut out: Vec<AnyElement> = Vec::new();
+        if !ledger.changed.is_empty() {
+            out.push(heading("Changed".into(), &ui));
+            for (n, changed) in ledger.changed.iter().enumerate() {
+                let label = shown(&changed.path);
+                let counts = match (changed.plus, changed.minus) {
+                    (None, None) => String::new(),
+                    (p, m) => format!("+{} \u{2212}{}", p.unwrap_or(0), m.unwrap_or(0)),
+                };
+                let path = changed.path.clone();
+                let hover = ui.panel_hover;
+                let el = row(("ledger-changed", n), label.clone(), counts, ui.text)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hsla(hover)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.close_menu(cx);
+                        cx.emit(AgentTabEvent::OpenDiff(path.clone()));
+                    }));
+                out.push(self.marked_row(label, el).into_any_element());
+            }
+        }
+        let plain =
+            |title: &str, paths: &[PathBuf], id: &'static str, out: &mut Vec<AnyElement>| {
+                if paths.is_empty() {
+                    return;
+                }
+                out.push(heading(title.into(), &ui));
+                for (n, p) in paths.iter().enumerate() {
+                    out.push(row((id, n), shown(p), String::new(), ui.text).into_any_element());
+                }
+            };
+        plain(
+            "Touched by scripts",
+            &ledger.scripted,
+            "ledger-scripted",
+            &mut out,
+        );
+        plain("Read", &ledger.read, "ledger-read", &mut out);
+        // A check run's outcome in the step model's words.
+        let phrase = |r: &crate::agent_ledger::CheckRun| {
+            let a = Activity {
+                check: Some(Check {
+                    what: r.what,
+                    scope: r.scope.clone(),
+                    outcome: r.outcome.clone(),
+                }),
+                planned_failure: r.planned,
+                ..Default::default()
+            };
+            (
+                crate::agent_steps::outcome_phrase(&a).unwrap_or_else(|| "ran".into()),
+                a.real_failure(),
+            )
+        };
+        for (planned, title, id) in [
+            (false, "Checks", "ledger-check"),
+            (true, "Planned failures", "ledger-planned"),
+        ] {
+            let runs: Vec<_> = ledger
+                .checks
+                .iter()
+                .filter(|r| r.planned == planned)
+                .collect();
+            if runs.is_empty() {
+                continue;
+            }
+            out.push(heading(title.into(), &ui));
+            for (n, r) in runs.into_iter().enumerate() {
+                let (words, failed) = phrase(r);
+                let ink = if failed { c.failed } else { ui.text };
+                out.push(row((id, n), r.scope.clone(), words, ink).into_any_element());
+            }
+        }
+        div()
+            .id("agent-ledger-list")
+            .flex()
+            .flex_col()
+            .max_h(px(LEDGER_LIST_MAX))
+            .overflow_y_scroll()
+            .children(out)
+            .into_any_element()
     }
 
     /// `File…` (any files) or `Image…` (`images`) chosen: the menu closes and the macOS file

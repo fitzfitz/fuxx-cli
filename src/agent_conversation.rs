@@ -801,7 +801,8 @@ impl Conversation {
         };
         let finished = matches!(&self.items[ix], Item::Tool { running: false, .. });
         if finished && activity.check_failed() {
-            activity.planned_failure = activity.said.as_deref().is_some_and(announces_failure)
+            activity.planned_failure = activity.planned_failure
+                || activity.said.as_deref().is_some_and(announces_failure)
                 || self.narration_before(ix).is_some_and(announces_failure);
         }
         if let Item::Tool { activity: slot, .. } = &mut self.items[ix] {
