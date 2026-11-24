@@ -64,7 +64,7 @@ fn task_heading(line: &str) -> Option<&str> {
 /// A checklist file's tasks: its `### Task N: …` headings (a task done when every box under it
 /// is ticked, being built when some are), else each `- [ ]` / `- [x]` line.
 pub fn from_checklist(md: &str) -> Vec<PlanTask> {
-    let headed = md.lines().any(|l| task_heading(l).is_some());
+    let headed = has_task_headings(md);
     if !headed {
         return md
             .lines()
@@ -140,6 +140,37 @@ pub fn counts(tasks: &[PlanTask]) -> (usize, usize) {
         .filter(|t| matches!(t.state, TaskState::Done { .. }))
         .count();
     (done, tasks.len())
+}
+
+/// Whether a checklist file is a plan: it has `### Task N` headings. Only then is a file the
+/// agent merely read taken for one, and only then do commits name its tasks (the review: a README
+/// with boxes, or "Task 3" in an old milestone's commit, isn't this plan).
+pub fn has_task_headings(md: &str) -> bool {
+    md.lines().any(|l| task_heading(l).is_some())
+}
+
+/// The commits that can mark a plan's tasks: those made since the plan file was first there
+/// (`since`, seconds since the epoch); each is `(hash, subject, time)`.
+pub fn commits_since(commits: &[(String, String, i64)], since: i64) -> Vec<(String, String)> {
+    commits
+        .iter()
+        .filter(|(_, _, at)| *at >= since)
+        .map(|(hash, subject, _)| (hash.clone(), subject.clone()))
+        .collect()
+}
+
+/// The tasks to show, given a finished plan hidden after your next message (`done`): none while
+/// the list is still that one; the list, and `done` forgotten, once it changes (the review: a
+/// finished plan came straight back after the next message).
+pub fn after_done(done: &mut Option<Vec<PlanTask>>, tasks: Vec<PlanTask>) -> Vec<PlanTask> {
+    match done {
+        Some(finished) if *finished == tasks => Vec::new(),
+        Some(_) => {
+            *done = None;
+            tasks
+        }
+        None => tasks,
+    }
 }
 
 /// The task being built, as `(number, of)` for the status line's `Task 5/6`.
@@ -268,6 +299,38 @@ mod tests {
             None,
             "no tab, no task"
         );
+    }
+
+    #[test]
+    fn only_a_headed_file_is_a_plan() {
+        assert!(has_task_headings("### Task 1: A\n- [ ] x\n"));
+        assert!(has_task_headings("## Task 2: B"));
+        assert!(!has_task_headings("# Readme\n- [ ] item\n- [x] other\n"));
+    }
+
+    #[test]
+    fn old_commits_mark_nothing() {
+        let commits = [
+            ("new1".to_string(), "Task 1: A".to_string(), 200),
+            ("old9".to_string(), "M11au Task 2: x".to_string(), 50),
+        ];
+        assert_eq!(
+            commits_since(&commits, 100),
+            [("new1".to_string(), "Task 1: A".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_finished_plan_stays_hidden_until_its_list_changes() {
+        let finished = from_checklist("- [x] a\n- [x] b\n");
+        let mut done = Some(finished.clone());
+        assert!(after_done(&mut done, finished.clone()).is_empty());
+        assert!(done.is_some(), "still held");
+        let next = from_checklist("- [x] a\n- [x] b\n- [ ] c\n");
+        assert_eq!(after_done(&mut done, next.clone()), next);
+        assert!(done.is_none(), "forgotten once the list changed");
+        let mut none = None;
+        assert_eq!(after_done(&mut none, finished.clone()), finished);
     }
 
     #[test]

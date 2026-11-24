@@ -795,6 +795,14 @@ pub(super) fn agent_ledger_popover() {
         );
         click(cx, window, part(cx, tab, n, "status-counts"));
         assert!(cx.read(|cx| tab.read(cx).shot_menu()).is_some(), "{n}");
+        // The counts again close it (the review's finding 5: the press outside closed it and
+        // the click opened it again).
+        click(cx, window, part(cx, tab, n, "status-counts"));
+        assert!(
+            cx.read(|cx| tab.read(cx).shot_menu()).is_none(),
+            "{n}: a second click closes it"
+        );
+        click(cx, window, part(cx, tab, n, "status-counts"));
         cx.simulate_keystrokes(window, "escape");
         cx.run_until_parked();
         assert!(

@@ -2897,6 +2897,14 @@ impl Workspace {
         else {
             return;
         };
+        // Its workspace learns its folder before its terminal goes (an older save's).
+        if let Some((ws, _)) = self
+            .model
+            .terminal_tab(session_id)
+            .and_then(|tab| self.model.locate(tab))
+        {
+            self.learn_home(ws);
+        }
         // An agent tab's classic view in it: forgotten (R13). Not a lost one's: the service may
         // still run it, so its note and saved id stay (fail closed).
         if !lost {
@@ -3163,6 +3171,16 @@ impl Workspace {
         self.close_menus();
         self.note_active(cx);
         self.focus_active(window, cx);
+    }
+
+    /// A workspace from a save older than its remembered folder learns it from its terminal, while
+    /// one is there (before a tab closes, or a shell ends by itself).
+    pub(crate) fn learn_home(&mut self, ws: WorkspaceId) {
+        if self.model.workspace(ws).is_some_and(|w| w.home.is_none())
+            && let Some(key) = self.folder_group(ws)
+        {
+            self.model.set_home(ws, Some(home_of(key)));
+        }
     }
 
     /// The focused tab is in front of you now: its finish, if any, has been seen.

@@ -1589,8 +1589,14 @@ pub struct AgentTab {
     /// Plan progress (the 2026-11-24 chores): the burger tab's tasks, the checklist file they
     /// come from (none: the agent's own todo list), and whether to read them again.
     pub(crate) plan: Vec<crate::plan_progress::PlanTask>,
-    plan_file: Option<PathBuf>,
+    /// The file, and whether the turn wrote it (a file only read counts only as a plan with
+    /// `### Task N` headings).
+    plan_file: Option<(PathBuf, bool)>,
     plan_stale: bool,
+    /// A finished plan, hidden after your next message until its list changes.
+    plan_done: Option<Vec<crate::plan_progress::PlanTask>>,
+    /// Each read's number: an older read that lands late is dropped.
+    plan_gen: u64,
     /// The branch checked out in the agent's folder (none outside a repo, or before it is read):
     /// looked up on the background executor, never in `render` (`read_branch`).
     pub(crate) branch: Option<String>,
@@ -2301,6 +2307,8 @@ impl AgentTab {
             plan: Vec::new(),
             plan_file: None,
             plan_stale: false,
+            plan_done: None,
+            plan_gen: 0,
             branch: None,
             files: None,
             listing: false,
@@ -3380,8 +3388,7 @@ impl AgentTab {
         ) {
             // A checklist the turn wrote or read is the plan (newest first); the agent's own
             // todo list wins.
-            if let Some(file) = self
-                .ledger
+            if let Some(file) = ledger
                 .as_ref()
                 .and_then(|l| plan_file_of(l, &self.start.cwd))
             {
@@ -3893,8 +3900,7 @@ impl AgentTab {
         // A plan all done shows `6/6 ✓` until your next message (the 2026-11-24 chores).
         let (done, all) = crate::plan_progress::counts(&self.plan);
         if all > 0 && done == all {
-            self.plan.clear();
-            self.plan_file = None;
+            self.plan_done = Some(std::mem::take(&mut self.plan));
         }
         if self.asking() {
             // The agent's question waits first: the box is its Other (batch 3, chore 8).
@@ -3932,6 +3938,14 @@ impl AgentTab {
 
     /// Open `menu` over its chip, in place of any other (Esc closes it).
     pub fn open_menu(&mut self, menu: BoxMenu, cx: &mut Context<Self>) {
+        // A hover panel replaced by another menu loses its pointer without a leave: it waits for
+        // a fresh rest (the review's finding 8).
+        if menu != BoxMenu::Usage {
+            self.usage_hover.close();
+        }
+        if menu != BoxMenu::Clock {
+            self.clock_hover.close();
+        }
         self.at = None;
         self.slash = None;
         self.picker = None;
@@ -5795,7 +5809,17 @@ impl AgentTab {
                     .text_color(hsla(if failing { c.ledger_failing } else { c.dim }))
                     .cursor_pointer()
                     .hover(move |s| s.text_color(hsla(hover)))
-                    .on_click(cx.listener(|this, _, _, cx| this.ledger_clicked(cx)))
+                    .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
+                        let pressed = match event {
+                            gpui::ClickEvent::Mouse(click) => Some(click.down.position),
+                            _ => None,
+                        };
+                        // This press already shut the open popover (from outside it).
+                        let shut_at = this.chip_closed_at.take();
+                        if pressed.is_none() || shut_at != pressed {
+                            this.ledger_clicked(cx)
+                        }
+                    }))
                     .child(SharedString::from(text)),
             )
         });
@@ -5861,24 +5885,49 @@ impl AgentTab {
         if todos.is_none() && file.is_none() {
             return;
         }
+        self.plan_gen += 1;
+        let generation = self.plan_gen;
         let cwd = self.start.cwd.clone();
+        let from_file = todos.is_none();
         let read = cx.background_executor().spawn(async move {
-            let text = file.and_then(|f| std::fs::read_to_string(f).ok());
-            let commits = recent_commits(&cwd);
-            (text, commits)
+            use crate::plan_progress::{commits_since, has_task_headings};
+            if !from_file {
+                return None;
+            }
+            let (path, written) = file?;
+            let text = std::fs::read_to_string(&path).ok()?;
+            let headed = has_task_headings(&text);
+            // A file only read is a plan only with `### Task N` headings (not a README).
+            if !written && !headed {
+                return None;
+            }
+            // Commits name the tasks of a headed plan only, and only those made since it was
+            // first there.
+            let commits = if headed {
+                commits_since(&recent_commits(&cwd), plan_since(&cwd, &path))
+            } else {
+                Vec::new()
+            };
+            Some((text, commits))
         });
         cx.spawn(async move |this, cx| {
-            let (text, commits) = read.await;
+            let read = read.await;
             this.update(cx, |this, cx| {
                 use crate::plan_progress::{from_checklist, from_todos, match_commits};
-                let mut tasks = match (&todos, &text) {
+                if generation != this.plan_gen {
+                    return;
+                }
+                let tasks = match (&todos, read) {
                     (Some(list), _) => from_todos(list),
-                    (None, Some(md)) => from_checklist(md),
+                    (None, Some((md, commits))) => {
+                        let mut tasks = from_checklist(&md);
+                        match_commits(&mut tasks, &commits);
+                        tasks
+                    }
                     (None, None) => Vec::new(),
                 };
-                if todos.is_none() {
-                    match_commits(&mut tasks, &commits);
-                }
+                // A finished plan stays hidden after your next message, until its list changes.
+                let tasks = crate::plan_progress::after_done(&mut this.plan_done, tasks);
                 if tasks != this.plan {
                     this.plan = tasks;
                     cx.notify();
@@ -6535,46 +6584,79 @@ impl Render for AgentTab {
     }
 }
 
-/// The checklist file a turn worked from: the last Markdown file it changed, else the last it
-/// read (the plan tab's source when the agent keeps no todo list).
-fn plan_file_of(ledger: &crate::agent_ledger::Ledger, cwd: &Path) -> Option<PathBuf> {
+/// The checklist file a turn worked from, and whether it wrote it: the last Markdown file it
+/// changed, else the last it read (the plan tab's source when the agent keeps no todo list).
+fn plan_file_of(ledger: &crate::agent_ledger::Ledger, cwd: &Path) -> Option<(PathBuf, bool)> {
     let md = |p: &Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md"));
-    let path = ledger
+    let written = ledger
         .changed
         .iter()
         .map(|c| c.path.as_path())
         .rev()
-        .find(|p| md(p))
-        .or_else(|| {
+        .find(|p| md(p));
+    let (path, wrote) = match written {
+        Some(p) => (p, true),
+        None => (
             ledger
                 .read
                 .iter()
                 .map(PathBuf::as_path)
                 .rev()
-                .find(|p| md(p))
-        })?;
-    Some(if path.is_absolute() {
+                .find(|p| md(p))?,
+            false,
+        ),
+    };
+    let path = if path.is_absolute() {
         path.to_path_buf()
     } else {
         cwd.join(path)
-    })
+    };
+    Some((path, wrote))
 }
 
-/// The branch's latest commits (short hash and subject), for marking a plan's tasks done; none
-/// outside a repo. Run off the UI thread.
-fn recent_commits(cwd: &Path) -> Vec<(String, String)> {
+/// When a plan file was first there, in seconds since the epoch: the commit that added it, else
+/// the file's own creation (a new, uncommitted plan). Run off the UI thread.
+fn plan_since(cwd: &Path, file: &Path) -> i64 {
+    let added = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["log", "--diff-filter=A", "--format=%ct", "--"])
+        .arg(file)
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .last()
+                .and_then(|l| l.trim().parse::<i64>().ok())
+        });
+    let created = std::fs::metadata(file)
+        .and_then(|m| m.created())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    added.into_iter().chain(created).min().unwrap_or(i64::MAX)
+}
+
+/// The branch's latest commits (short hash, time and subject), for marking a plan's tasks done;
+/// none outside a repo. Run off the UI thread.
+fn recent_commits(cwd: &Path) -> Vec<(String, String, i64)> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["log", "-n", "50", "--format=%h%x09%s"])
+        .args(["log", "-n", "50", "--format=%h%x09%ct%x09%s"])
         .output();
     let Ok(out) = out else {
         return Vec::new();
     };
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter_map(|l| l.split_once('\t'))
-        .map(|(h, s)| (h.to_string(), s.to_string()))
+        .filter_map(|l| {
+            let mut parts = l.splitn(3, '\t');
+            let hash = parts.next()?;
+            let at = parts.next()?.parse::<i64>().ok()?;
+            Some((hash.to_string(), parts.next()?.to_string(), at))
+        })
         .collect()
 }
 

@@ -200,13 +200,10 @@ pub fn mac_shortcut(
     }
 }
 
-/// The key fuxx sends for ⇧⌘Z at a shell prompt: one no terminal key makes (a private CSI),
-/// which fuxx-completes binds to zsh's `redo` widget (the 2026-11-24 chores).
-pub const REDO_KEY: &[u8] = b"\x1b[2037~";
-
-/// ⌘Z / ⇧⌘Z in a terminal (the 2026-11-24 chores): at the shell's prompt (`prompt_ready`),
-/// the line editor's own undo (Ctrl-_, which zsh and bash bind to `undo`) and redo
-/// (`REDO_KEY`); anywhere else none, so a program in the terminal (vim, htop) gets nothing.
+/// ⌘Z in a terminal (the 2026-11-24 chores): at the shell's prompt (`prompt_ready`), the line
+/// editor's own undo (⌃_, which zsh, bash and fish bind to undo); anywhere else none, so a
+/// program in the terminal (vim, htop) gets nothing. ⇧⌘Z sends nothing: no shell has a redo key
+/// fuxx could rely on.
 pub fn undo_key(
     key: &str,
     cmd: bool,
@@ -215,10 +212,7 @@ pub fn undo_key(
     ctrl: bool,
     prompt_ready: bool,
 ) -> Option<&'static [u8]> {
-    if key != "z" || !cmd || alt || ctrl || !prompt_ready {
-        return None;
-    }
-    Some(if shift { REDO_KEY } else { b"\x1f" })
+    (key == "z" && cmd && !shift && !alt && !ctrl && prompt_ready).then_some(&b"\x1f"[..])
 }
 
 #[cfg(test)]
@@ -231,10 +225,9 @@ mod tests {
             undo_key("z", true, false, false, false, true),
             Some(&b"\x1f"[..])
         );
-        assert_eq!(
-            undo_key("z", true, true, false, false, true),
-            Some(REDO_KEY)
-        );
+        // ⇧⌘Z sends nothing: no shell binds a redo key fuxx could send (the review's finding 1:
+        // an unbound sequence types junk at a bash or plain zsh prompt).
+        assert_eq!(undo_key("z", true, true, false, false, true), None);
         // Other modifiers, or another key: not ours.
         assert_eq!(undo_key("z", true, false, true, false, true), None);
         assert_eq!(undo_key("z", false, false, false, true, true), None);

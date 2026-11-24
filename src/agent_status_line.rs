@@ -29,12 +29,17 @@ pub struct LineState<'a> {
     pub now: Instant,
 }
 
+/// A text's first line (the line is one row).
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or("").trim_end().to_string()
+}
+
 /// The main line, and the counts line under it (none with nothing to count).
 pub fn status_line(s: &LineState) -> (String, Option<String>) {
     let main = match s.status {
         Status::Waiting => {
             let mut words = vec!["Waiting for you".to_string()];
-            words.extend(s.question.map(str::to_string));
+            words.extend(s.question.map(first_line));
             words.join(SEP)
         }
         Status::Done => {
@@ -48,7 +53,7 @@ pub fn status_line(s: &LineState) -> (String, Option<String>) {
             words.extend(s.task.map(|(at, of)| format!("Task {at}/{of}")));
             words.push(s.word.to_string());
             if let Some(r) = s.running {
-                words.push(r.title.clone());
+                words.push(first_line(&r.title));
                 words.extend(r.started.map(|t| clock(s.now.saturating_duration_since(t))));
                 if r.more > 0 {
                     words.push(format!("+{} more", r.more));
@@ -160,6 +165,32 @@ mod tests {
             ..s
         };
         assert_eq!(status_line(&bare).0, "Waiting for you");
+    }
+
+    /// A permission's command or a call's title may run over lines (a heredoc): the line keeps
+    /// its first (the review's finding 11).
+    #[test]
+    fn multi_line_words_keep_their_first_line() {
+        let s = LineState {
+            status: Status::Waiting,
+            question: Some("Claude wants to run: cat <<EOF\nhello\nEOF"),
+            ..state(Instant::now())
+        };
+        assert_eq!(
+            status_line(&s).0,
+            "Waiting for you · Claude wants to run: cat <<EOF"
+        );
+        let now = Instant::now();
+        let r = Running {
+            title: "Run a script\nwith two lines".into(),
+            started: None,
+            ..running(now, 0)
+        };
+        let s = LineState {
+            running: Some(&r),
+            ..state(now)
+        };
+        assert_eq!(status_line(&s).0, "Cultivating… · Run a script");
     }
 
     #[test]

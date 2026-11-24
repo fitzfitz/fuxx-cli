@@ -1304,12 +1304,8 @@ impl Workspace {
     /// the window.
     pub(crate) fn close_tab(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
         // A workspace from an older save learns its folder now, before its terminal may go.
-        if let Some((ws, _)) = self.model.locate(tab)
-            && self.model.workspace(ws).is_some_and(|w| w.home.is_none())
-            && let Some(key) = self.folder_group(ws)
-        {
-            self.model
-                .set_home(ws, Some(crate::workspace::home_of(key)));
+        if let Some((ws, _)) = self.model.locate(tab) {
+            self.learn_home(ws);
         }
         match self.model.tab(tab).map(|t| t.kind.clone()) {
             Some(TabKind::Terminal(id)) => {

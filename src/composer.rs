@@ -1191,6 +1191,8 @@ impl Composer {
     /// A click puts the caret there (⇧: selects to there); a double-click selects it all; a
     /// drag selects.
     fn mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // A click ends a typed word's run (the review: typing after it joined the old word).
+        self.history.break_run();
         // ⌃-click is a right-click on a Mac.
         if e.modifiers.control {
             self.right_down(e, window, cx);
@@ -1324,6 +1326,10 @@ impl EntityInputHandler for Composer {
             (Some(c), None) if self.marked.is_none() => crate::undo_history::EditKind::Typed(c),
             _ => crate::undo_history::EditKind::Paste,
         };
+        // Typing over a selection is a step of its own, not the end of the last word.
+        if !range.is_empty() {
+            self.history.break_run();
+        }
         self.remember(kind);
         self.buf.replace(range, &new_text);
         self.marked = None;

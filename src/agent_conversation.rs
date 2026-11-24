@@ -1339,9 +1339,14 @@ impl Conversation {
 
     /// The agent's todo list, if it keeps one (the plan tab).
     pub fn todos(&self) -> Option<&[crate::providers::TodoItem]> {
-        match self.items.get(self.todo_at?) {
+        let at = self.todo_at?;
+        match self.items.get(at) {
             Some(Item::Todo(list)) => Some(list),
-            _ => None,
+            // An item before it was taken out (a cancelled message, a rewind): found again.
+            _ => self.items.iter().rev().find_map(|i| match i {
+                Item::Todo(list) => Some(list.as_slice()),
+                _ => None,
+            }),
         }
     }
 

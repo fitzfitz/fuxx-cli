@@ -553,6 +553,10 @@ impl EntityInputHandler for NameInput {
             (Some(c), None) if self.marked.is_none() => crate::undo_history::EditKind::Typed(c),
             _ => crate::undo_history::EditKind::Paste,
         };
+        // Typing over a selection is a step of its own, not the end of the last word.
+        if !range.is_empty() {
+            self.history.break_run();
+        }
         self.remember(kind);
         self.put(range, &text);
         cx.notify();
