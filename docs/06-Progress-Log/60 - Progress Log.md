@@ -49,7 +49,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   frame). Now the items are one store that notes each change and keeps indexes (`src/agent_items.rs`), each view's
   rows are a cache derived again only from the first changed item with prints by item version
   (`src/agent_view_cache.rs`), the render path only reads, pill labels and the "Stopped" link are kept, and a burst
-  of lines syncs the rows once. Branch `chore/agent-tab-perf`, 5 commits, not merged, not pushed. Note 93, "Chores
+  of lines syncs the rows once. Branch `chore/agent-tab-perf`, not merged, not pushed. Note 93, "Chores
   after M11ar".
 - **Checks:** 2860 → 2870 tests and one ignored bench (`--features ui-shots`: 2910 → 2920): work counts on 10,000
   items (at most 4 rows derived per streamed delta, new message or call; one rebuild for a rewind, an Undo, a width
@@ -58,7 +58,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   sync on 10,706 items 4.9 ms → 13 µs; the last row's thinking check 186 µs → about 1 ns. New state scene
   `agent-long-chat` (3,212 items) logs its frame times (no budget asserted: the frame read back dominates). Clippy
   14/29 and 18/33; `cargo fmt --check` clean; full `scripts/ui-shots.sh` 362 passed, 1 failed (`agent-tab-wide`,
-  display width), 38 look different (the animation-heavy set). Not yet seen in the real window.
+  display width), 38 look different (the animation-heavy set).
+- **After the review** (no must-fix; one fix wave, `1c700f5`): the open failures, the ledger and a lane's rows are
+  kept too and found again only from the change on; the pump yields during a flood; the property test checks
+  against code it doesn't share (6 × 1,200 edits) and found Undo Rewind's stale latest message (fixed). Per event,
+  release, indicative: open failures in a 3,000-call turn 226 µs → 15 µs, its ledger 233 → 16 µs, a lane's sync
+  183 → 3 µs, a lane's ledger 17 → 3.4 µs. Tests 2870 / 2920; clippy at baseline; full ui-shots 362 passed, 1 failed
+  (`agent-tab-wide`), 34 look different. Not yet seen in the real window.
 
 ### 2026-11-24 — v0.13.2 released
 

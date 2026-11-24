@@ -1319,5 +1319,19 @@ The paste chore after that is **released in v0.13.2** (2026-11-24, run 453521710
     (`agent-tab-wide`, which needs a screen at least 1600 pt wide), 38 look different (the animation-heavy agent-box
     menus, the shell cards, the graph card and the sliding chrome, which vary run to run: one rerun alone moved from
     0.19 to 0.05), 8 differ in size (the same display clamp as before).
+  - **After the review** (no must-fix; one fix wave): the open check failures keep the turn's check runs and find
+    them again only from the change on; the ledger is kept (`LedgerCache`: its sums up to the first running call
+    and 16 items behind the end); a lane's rows and its ledger come from what the store keeps (its items, what it
+    asked, the relays, the open asks; no scan, no set of every tool id); Main's order is extended in place; the
+    pump yields after a full batch so the window draws during a flood. The property test now checks against code
+    it doesn't share (fingerprints and versions under the noted index, `rows_of`, `shows_thinking`, a full
+    recompute of the failures and the ledger), on 6 × 1,200 random edits of many more kinds, Main and every lane at
+    once; it found Undo Rewind taking your latest message from the cut, stale once an earlier unread message was
+    cancelled (it is found again now). Release, this machine, indicative, per event: open failures in a 3,000-call
+    turn 226 µs → 15 µs (the whole Main sync); its ledger 233 → 16 µs; a lane's sync per delta at 10.7k items 183 →
+    3 µs; a lane's ledger 17 → 3.4 µs. Tests 2870 (`--features ui-shots` 2920; one moved, one dead helper's test
+    gone, one new); clippy 14/29 and 18/33; `cargo fmt --check` clean. The agent and
+    lanes scenes 157 passed, 1 failed (`agent-tab-wide`); full `scripts/ui-shots.sh` 362 passed, 1 failed (the same,
+    display width), 34 look different (the animation-heavy set), 8 differ in size (the same clamp).
   - **On screen:** not yet seen in the real window: the feel of scrolling and streaming in a long session is yours
     to judge.
