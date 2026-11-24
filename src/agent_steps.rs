@@ -1,6 +1,5 @@
 //! The step model (the agent activity chore): a narration line and the run of tool calls after
 //! it, as the activity view draws it. Pure and GPUI-free.
-#![allow(dead_code)] // the drawing (this chore's next task) reads it; removed then.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -49,6 +48,8 @@ pub enum Role {
 }
 
 /// Row `k`'s role (None: not a tool row). `fits`: the chat column is wide enough for tracks.
+/// (The tab builds every row's at once: `roles_of`.)
+#[cfg(test)]
 pub fn role_at(
     items: &[Item],
     rows: &[usize],
@@ -56,27 +57,45 @@ pub fn role_at(
     alone: &dyn Fn(&Item) -> bool,
     fits: bool,
 ) -> Option<Role> {
-    let shape = group_shape_at(items, rows, k, alone)?;
-    if !fits || shape == Shape::Solo {
-        return Some(Role::Row(shape));
+    roles_of(items, rows, alone, fits).swap_remove(k)
+}
+
+/// Every row's role, in one pass (`agent_tab::sync_rows`).
+pub fn roles_of(
+    items: &[Item],
+    rows: &[usize],
+    alone: &dyn Fn(&Item) -> bool,
+    fits: bool,
+) -> Vec<Option<Role>> {
+    let shapes: Vec<Option<Shape>> = (0..rows.len())
+        .map(|k| group_shape_at(items, rows, k, alone))
+        .collect();
+    let mut roles: Vec<Option<Role>> = shapes.iter().map(|s| s.map(Role::Row)).collect();
+    if !fits {
+        return roles;
     }
-    let at = |j: usize| group_shape_at(items, rows, j, alone);
-    let mut start = k;
-    while matches!(at(start), Some(Shape::Middle | Shape::Last)) {
-        start -= 1;
+    let mut k = 0;
+    while k < rows.len() {
+        if shapes[k] != Some(Shape::First) {
+            k += 1;
+            continue;
+        }
+        let mut end = k;
+        while matches!(shapes.get(end + 1), Some(Some(Shape::Middle | Shape::Last))) {
+            end += 1;
+            if shapes[end] == Some(Shape::Last) {
+                break;
+            }
+        }
+        if end + 1 - k >= TRACKS_FROM {
+            roles[k] = Some(Role::Tracks(rows[k..=end].to_vec()));
+            for role in &mut roles[k + 1..=end] {
+                *role = Some(Role::Inside);
+            }
+        }
+        k = end + 1;
     }
-    let mut end = k;
-    while matches!(at(end), Some(Shape::First | Shape::Middle)) {
-        end += 1;
-    }
-    if end + 1 - start < TRACKS_FROM {
-        return Some(Role::Row(shape));
-    }
-    Some(if k == start {
-        Role::Tracks(rows[start..=end].to_vec())
-    } else {
-        Role::Inside
-    })
+    roles
 }
 
 /// A bead's shape: what the call did to that track's file (or how a check went).
@@ -625,7 +644,10 @@ pub struct RowWords {
 /// it runs), the command as a trace, and chips ("+41 −0", "3 matches", "2 passed", "failed").
 pub fn row_words(item: &Item) -> RowWords {
     let Item::Tool {
-        running, detail, ..
+        running,
+        detail,
+        output,
+        ..
     } = item
     else {
         return RowWords {
@@ -677,6 +699,17 @@ pub fn row_words(item: &Item) -> RowWords {
                 "match",
                 "matches",
             ));
+        }
+        // A whole-file read: how many lines it read.
+        let whole_read = matches!(
+            a.touches.as_slice(),
+            [Touch {
+                how: How::Read { lines: None },
+                ..
+            }]
+        );
+        if let (true, None, Some(out)) = (whole_read, &a.failed, output) {
+            chips.push(crate::agent_tab::lines_label(out.lines().count()));
         }
         chips.extend(outcome_phrase(&a));
     }
@@ -1234,6 +1267,12 @@ mod tests {
         }
         assert_eq!(row_words(&running).title, "Running tests");
         assert!(row_words(&running).chips.is_empty());
+        // A whole-file read says how many lines it read, as the row did before.
+        let mut whole = read("5", "src/api.rs");
+        if let Item::Tool { output, .. } = &mut whole {
+            *output = Some("a\nb\nc".into());
+        }
+        assert_eq!(row_words(&whole).chips, ["3 lines"]);
     }
 
     #[test]

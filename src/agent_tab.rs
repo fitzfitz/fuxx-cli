@@ -47,6 +47,9 @@ mod lanes_view;
 
 #[path = "agent_lane_row.rs"]
 mod lane_row;
+
+#[path = "agent_tracks.rs"]
+mod tracks;
 pub(crate) use lanes_view::{BAR_FADE, BoxMode};
 
 #[path = "agent_latest.rs"]
@@ -142,7 +145,13 @@ actions!(
         AskPick6,
         AskPick7,
         AskPick8,
-        AskPick9
+        AskPick9,
+        // A busy step's tracks (the agent activity chore; bound in main.rs to "AgentTracks":
+        // only while a step's group has the keyboard).
+        TrackPrev,
+        TrackNext,
+        TrackOpen,
+        TrackLeave
     ]
 );
 
@@ -1033,6 +1042,12 @@ pub struct Colors {
     /// the accent and the status colours (`agent_lanes::lane_hue`), else `panel_dim`; held to
     /// `MARK_MIN` on the rows' fills and the page.
     pub lane_ink: Rgb,
+    /// The agent activity chore: a track's beads (an edit's apart), the rule from a track's
+    /// first bead to its last, and the keyboard cursor's ring on a column.
+    pub bead: Rgb,
+    pub bead_edit: Rgb,
+    pub track_rule: Rgb,
+    pub track_cursor: Rgb,
 }
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
@@ -1240,6 +1255,18 @@ impl Colors {
             relay_text: readable(ui.text, &[relay_fill], TEXT_MIN),
             relay_dim: readable(ui.text_dim, &[relay_fill], TEXT_MIN),
             lane_ink,
+            bead: readable(
+                mix(ui.text_dim, ui.text, 0.4),
+                &[ui.panel, row_hover],
+                MARK_MIN,
+            ),
+            bead_edit: readable(ui.accent, &[ui.panel, row_hover], MARK_MIN),
+            track_rule: readable(
+                mix(ui.panel, theme.foreground, 0.14),
+                &[ui.panel],
+                QUIET_LINE_MIN,
+            ),
+            track_cursor: readable(ui.accent, &[ui.panel, row_hover], MARK_MIN),
         }
     }
 }
@@ -1249,6 +1276,10 @@ impl Colors {
 struct Row {
     print: u64,
     blocks: Option<Rc<Vec<Md>>>,
+    /// A tool row's role in its step (the agent activity chore), and a busy step's tracks on
+    /// its first row: built when the row's print changes, only read when drawn.
+    role: Option<crate::agent_steps::Role>,
+    tracks: Option<Rc<crate::agent_steps::Tracks>>,
 }
 
 /// One view's list (M11ar: Main and each lane keep their own, so each keeps its scroll): its
@@ -1326,6 +1357,8 @@ struct Files {
 enum Refocus {
     Modal,
     Box,
+    /// A step's tracks (the agent activity chore).
+    Tracks,
 }
 
 /// What the emitted events last said.
@@ -1498,6 +1531,14 @@ pub struct AgentTab {
     /// Whether the box's placeholder was last set for a tab under `NARROW` (a lane's relay
     /// placeholder is shorter there; the width is known only once laid out).
     placeholder_narrow: bool,
+    /// The agent activity chore: whether the chat column held tracks at the last sync (a busy
+    /// step falls back to rows under `TRACKS_NARROW`), the tracks' keyboard focus (key context
+    /// `AgentTracks`) and cursor, and the steps opened to every column and to every file.
+    tracks_fit: bool,
+    tracks_focus: FocusHandle,
+    track_cursor: Option<tracks::TrackCursor>,
+    tracks_all: HashSet<String>,
+    files_all: HashSet<String>,
     /// When each tool call started and finished, live only (its elapsed time; the agent
     /// activity chore's step times).
     tool_times: crate::agent_steps::ToolTimes,
@@ -2201,6 +2242,11 @@ impl AgentTab {
             thinking_mark,
             bar_width: Rc::new(Cell::new(f32::MAX)),
             placeholder_narrow: false,
+            tracks_fit: true,
+            tracks_focus: cx.focus_handle(),
+            track_cursor: None,
+            tracks_all: HashSet::new(),
+            files_all: HashSet::new(),
             tool_times: crate::agent_steps::ToolTimes::new(),
             open_edits: HashSet::new(),
             reasons: Reasons::default(),
@@ -3000,6 +3046,9 @@ impl AgentTab {
                     // after a restart said "Couldn't resume…").
                     self.run.resume = None;
                     self.tool_times.clear();
+                    self.track_cursor = None;
+                    self.tracks_all.clear();
+                    self.files_all.clear();
                     self.followers.clear();
                     self.lane_times.clear();
                     self.lane_runs.clear();
@@ -3154,11 +3203,23 @@ impl AgentTab {
         if let Some(l) = &lane {
             new.push(print(&("head", &l.task)));
         }
+        // Each tool row's role in its step (the agent activity chore): a busy step draws as
+        // tracks on its first row, built below only when that row's print changes.
         let alone = |i: &Item| crate::agent_steps::stands_alone(&self.conversation, i);
-        new.extend(
-            (0..order.len())
-                .map(|k| crate::agent_chat::row_print_at(items, &order, k, thinking, &alone)),
-        );
+        let fits = tracks::fits_tracks(self.bar_width.get());
+        self.tracks_fit = fits;
+        let roles = crate::agent_steps::roles_of(items, &order, &alone, fits);
+        let open = crate::agent_steps::open_failures(items, crate::agent_steps::turn_start(items));
+        new.extend((0..order.len()).map(|k| {
+            let row = crate::agent_chat::row_print_at(items, &order, k, thinking, &alone);
+            let step = match &roles[k] {
+                Some(crate::agent_steps::Role::Tracks(calls)) => {
+                    crate::agent_steps::step_print(items, calls, &open, fits)
+                }
+                _ => 0,
+            };
+            print(&(row, &roles[k], step))
+        }));
         if let (true, Some(l)) = (tail, &lane) {
             let time = self.lane_elapsed(&l.id).map(|d| d.as_secs());
             new.push(print(&("tail", format!("{:?}", l.status), time)));
@@ -3172,6 +3233,14 @@ impl AgentTab {
                 .and_then(|j| order.get(j))
                 .and_then(|&i| blocks_of(&items[i]))
         };
+        let (times, cwd) = (&self.tool_times, &self.start.cwd);
+        let role = |k: usize| k.checked_sub(lane_rows).and_then(|j| roles.get(j)?.clone());
+        let tracks = |role: &Option<crate::agent_steps::Role>| match role {
+            Some(crate::agent_steps::Role::Tracks(calls)) => Some(Rc::new(
+                crate::agent_steps::tracks_of(items, calls, &open, times, cwd),
+            )),
+            _ => None,
+        };
         if new.len() < old.len() {
             pane.list.splice(new.len()..old.len(), 0);
             pane.rows.drain(new.len()..);
@@ -3179,18 +3248,24 @@ impl AgentTab {
         dirty.retain(|&k| k < new.len());
         for &k in &dirty {
             pane.list.splice(k..k + 1, 1);
+            let role = role(k);
             pane.rows[k] = Row {
                 print: new[k],
                 blocks: block(k),
+                tracks: tracks(&role),
+                role,
             };
         }
         if new.len() > old.len() {
             pane.list
                 .splice(old.len()..old.len(), new.len() - old.len());
             for (k, &print) in new.iter().enumerate().skip(old.len()) {
+                let role = role(k);
                 pane.rows.push(Row {
                     print,
                     blocks: block(k),
+                    tracks: tracks(&role),
+                    role,
                 });
             }
         }
@@ -5853,6 +5928,10 @@ impl Render for AgentTab {
             self.placeholder_narrow = narrow;
             self.update_placeholder(cx);
         }
+        // The chat column crossed `TRACKS_NARROW`: busy steps change between tracks and rows.
+        if tracks::fits_tracks(self.bar_width.get()) != self.tracks_fit {
+            self.sync_rows();
+        }
         let empty = self.conversation.items().is_empty();
         let info = self.provider.map(|p| p.info());
         let view = cx.entity().downgrade();
@@ -5985,9 +6064,12 @@ impl Render for AgentTab {
         // The keyboard moves where a click or an action asked (they have no window).
         match self.refocus.take() {
             Some(Refocus::Modal) => window.focus(&self.modal_focus, cx),
+            Some(Refocus::Tracks) => window.focus(&self.tracks_focus, cx),
             // Back to the box only if the modal had the keyboard: a modal closed because its tool
             // went (a restart) while you type elsewhere takes nothing from you.
-            Some(Refocus::Box) if self.modal_focus.is_focused(window) => {
+            Some(Refocus::Box)
+                if self.modal_focus.is_focused(window) || self.tracks_focus.is_focused(window) =>
+            {
                 let to = self.composer.read(cx).focus_handle(cx);
                 window.focus(&to, cx);
             }
@@ -6007,6 +6089,10 @@ impl Render for AgentTab {
             } else {
                 "AgentTab"
             })
+            .on_action(cx.listener(Self::track_prev))
+            .on_action(cx.listener(Self::track_next))
+            .on_action(cx.listener(Self::track_open))
+            .on_action(cx.listener(Self::track_leave))
             .on_action(cx.listener(Self::ask_up))
             .on_action(cx.listener(Self::ask_down))
             .on_action(cx.listener(Self::ask_prev))
@@ -7054,6 +7140,15 @@ mod tests {
                 ("lane ink waiting", c.lane_ink, c.ask_fill, MARK_MIN),
                 ("lane ink waiting lit", c.lane_ink, c.ask_cursor, MARK_MIN),
                 ("lane ink on the page", c.lane_ink, c.page, MARK_MIN),
+                // The agent activity chore: the tracks' beads (at rest and in a hovered
+                // column), the cursor's ring and the rule between a track's beads.
+                ("bead", c.bead, c.panel, MARK_MIN),
+                ("bead hovered", c.bead, c.row_hover, MARK_MIN),
+                ("bead edit", c.bead_edit, c.panel, MARK_MIN),
+                ("bead edit hovered", c.bead_edit, c.row_hover, MARK_MIN),
+                ("passed bead hovered", c.tool_ok, c.row_hover, MARK_MIN),
+                ("track cursor", c.track_cursor, c.panel, MARK_MIN),
+                ("track rule", c.track_rule, c.panel, QUIET_LINE_MIN),
                 // The lanes review, fix 5: "Ask Main about it" has an edge in every theme.
                 ("bar edge", c.bar_edge, c.box_fill, QUIET_LINE_MIN),
                 ("relay text", c.relay_text, c.relay_fill, TEXT_MIN),

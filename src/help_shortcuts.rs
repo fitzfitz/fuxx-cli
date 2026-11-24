@@ -175,6 +175,9 @@ pub fn describe(action: &str) -> Describe {
         // The tool modal's own Esc and ↑/↓ (spec A §B), as the @ list's.
         "agent_tab::ModalBack" | "agent_tab::ModalPrev" | "agent_tab::ModalNext"
         | "agent_tab::CloseImage" => Unlisted,
+        // A busy step's tracks' own ←/→, Enter and Esc (the agent activity chore): only while
+        // its group has the keys.
+        other if other.starts_with("agent_tab::Track") => Unlisted,
         other if other.starts_with("host_picker::") => Unlisted,
         other if other.starts_with("palette::") => Unlisted,
         // The right-click menu's own ↑↓, ↩ and Esc (while it is open only).

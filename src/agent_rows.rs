@@ -22,7 +22,18 @@ impl AgentTab {
         };
         let item = &items[ix];
         let c = &look.c;
-        let last = k + 1 == order.len();
+        // A call inside a busy step is drawn by the step's first row (the agent activity chore).
+        let role = pane
+            .rows
+            .get(k + pane.head as usize)
+            .and_then(|r| r.role.as_ref());
+        if role == Some(&crate::agent_steps::Role::Inside) {
+            return div().into_any_element();
+        }
+        // A step's tracks that end the list are its last row.
+        let last = k + 1 == order.len()
+            || matches!(role, Some(crate::agent_steps::Role::Tracks(calls))
+                if calls.last() == order.last());
         let thinking = last
             && match &self.view {
                 crate::agent_lanes::View::Main => {
@@ -626,17 +637,9 @@ impl AgentTab {
     /// group (`tool_shell`). A click opens its detail in the modal (spec A). A subagent's call
     /// is its lane's row (`lane_row`).
     fn tool(&self, ix: usize, item: &Item, look: &Look) -> AnyElement {
-        use crate::agent_chat::{chat, summary_shown};
+        use crate::agent_chat::chat;
         let Item::Tool {
-            id,
-            name,
-            summary,
-            running,
-            ok,
-            result,
-            detail,
-            output,
-            ..
+            id, running, ok, ..
         } = item
         else {
             return div().into_any_element();
@@ -644,16 +647,16 @@ impl AgentTab {
         if let Some(lane) = self.conversation.lane(id) {
             return self.lane_row(ix, lane, look);
         }
+        // A busy step: its tracks (the agent activity chore).
+        if let Some(tracks) = self.step_at(ix) {
+            return self.tracks(ix, &tracks, look);
+        }
         let c = &look.c;
         let items = self.conversation.items();
         let steps = items
             .iter()
             .filter(|i| parent_of(i) == Some(id.as_str()))
             .count();
-        let diff = match detail {
-            Some(ToolDetail::Diff { unified, .. }) => Some(parse_diff(unified)),
-            _ => None,
-        };
         // Main's SendMessage that delivered a relay (the lanes chore): "Passed on to Explore",
         // opening the lane; its green dot says it went (the lanes review: no ✓ in the name's
         // ink, no raw "Sent." on the right).
@@ -663,31 +666,29 @@ impl AgentTab {
             .and_then(|l| self.conversation.lane(l))
             .map(|l| (l.id.clone(), format!("Passed on to {}", l.label)));
         let openable = crate::agent_tool_modal::openable(items, ix);
-        let blank = String::new();
-        let (name, summary) = match &passed {
-            Some((_, words)) => (words, &blank),
-            None => (name, summary),
+        // The row's words (the agent activity chore, approach A): what it did in plain words,
+        // the command as a dim trace, and its outcome chips; a "Passed on" row as before.
+        let activity = crate::agent_activity::of(item).unwrap_or_default();
+        let words = match &passed {
+            Some((_, said)) => crate::agent_steps::RowWords {
+                title: said.clone(),
+                trace: None,
+                chips: Vec::new(),
+            },
+            None => crate::agent_steps::row_words(item),
         };
         let right: (String, Rgb) = if *running {
             let since = self.tool_times.get(id).map_or(Duration::ZERO, |(t, _)| {
                 look.now.saturating_duration_since(*t)
             });
             (elapsed_label(since), c.panel_dim)
-        } else if *ok == Some(false) {
-            let bare = result.trim_start_matches('✗').trim_start();
-            (bare.to_string(), c.failed_panel)
-        } else if passed.is_some() {
-            (String::new(), c.panel_dim)
-        } else if let Some(d) = &diff {
-            let added = d.rows.iter().filter(|r| r.kind == RowKind::Added).count();
-            let removed = d.rows.iter().filter(|r| r.kind == RowKind::Removed).count();
-            (format!("+{added} −{removed}"), c.panel_dim)
-        } else if let (true, Some(out)) = (name == "Read", output) {
-            (lines_label(out.lines().count()), c.panel_dim)
+        } else if activity.real_failure() {
+            (words.chips.join(" · "), c.failed_panel)
         } else {
-            (result.clone(), c.panel_dim)
+            (words.chips.join(" · "), c.panel_dim)
         };
-        // Its status: running, the Working arc; ok, a dot; failed, a red dot; else a ring.
+        // Its status: running, the Working arc; a real failure, a red dot; a failure the agent
+        // announced, a red ring; ok, a dot; else (stopped, denied) a ring.
         let dot = |fill: Rgb| {
             div()
                 .size(px(chat::TOOL_DOT))
@@ -695,19 +696,25 @@ impl AgentTab {
                 .bg(hsla(fill))
                 .into_any_element()
         };
+        let ring = |edge: Rgb| {
+            div()
+                .size(px(chat::TOOL_DOT))
+                .rounded_full()
+                .border_1()
+                .border_color(hsla(edge))
+                .into_any_element()
+        };
         let status: AnyElement = match (running, ok) {
             (true, _) => match self.tool_marks.get(id) {
                 Some(mark) => mark.clone().into_any_element(),
                 None => dot(c.todo_active),
             },
+            _ if activity.real_failure() => dot(c.failed_panel),
+            _ if activity.planned_failure && activity.check_failed() => ring(c.failed_panel),
+            _ if activity.not_run => ring(c.panel_dim),
             (false, Some(true)) => dot(c.tool_ok),
             (false, Some(false)) => dot(c.failed_panel),
-            (false, None) => div()
-                .size(px(chat::TOOL_DOT))
-                .rounded_full()
-                .border_1()
-                .border_color(hsla(c.panel_dim))
-                .into_any_element(),
+            (false, None) => ring(c.panel_dim),
         };
         let tool = self
             .tool_shell(
@@ -718,20 +725,26 @@ impl AgentTab {
             )
             .child(self.marked("tool-mark", status_slot(status)))
             .child(
-                div()
-                    .flex_none()
-                    .text_color(hsla(c.tool_name))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(SharedString::from(name.clone())),
+                self.marked(
+                    "tool-title",
+                    div()
+                        .flex_none()
+                        .max_w(relative(0.6))
+                        .truncate()
+                        .text_color(hsla(c.tool_name))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(SharedString::from(words.title.clone())),
+                ),
             )
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.))
                     .truncate()
-                    .text_color(hsla(c.panel_text))
-                    .when(summary_shown(name, summary), |d| {
-                        d.child(SharedString::from(summary.clone()))
+                    .font_family(look.mono.clone())
+                    .text_color(hsla(c.panel_dim))
+                    .when_some(words.trace.clone(), |d, trace| {
+                        d.child(SharedString::from(trace))
                     }),
             )
             .when(steps > 0, |d| {

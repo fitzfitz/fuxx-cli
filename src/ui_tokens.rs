@@ -104,6 +104,16 @@ pub mod chat {
     pub const R_CARD: f32 = 12.0;
     pub const R_BUBBLE: f32 = 16.0;
     pub const R_TAIL: f32 = 6.0;
+    /// A busy step's tracks (the agent activity chore): the header and a track's height, a
+    /// bead, the label column, a call's column, the "+M earlier" cell, and the chat column under
+    /// which tracks fall back to rows.
+    pub const TRACK_HEAD: f32 = 22.0;
+    pub const TRACK_ROW: f32 = 22.0;
+    pub const BEAD: f32 = 8.0;
+    pub const TRACK_LABEL_W: f32 = 112.0;
+    pub const TRACK_COL_W: f32 = 12.0;
+    pub const TRACK_EARLIER_W: f32 = 76.0;
+    pub const TRACKS_NARROW: f32 = 560.0;
 }
 
 /// Batch 3, chore 8 (the lead designer's spec): the agent's question card, in points.

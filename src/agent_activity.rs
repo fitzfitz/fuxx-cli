@@ -101,7 +101,6 @@ pub struct Activity {
     pub exit: Option<i32>,
 }
 
-#[allow(dead_code)] // the activity view (this chore's drawing task) calls it through agent_steps.
 impl Activity {
     /// The agent's words, else fuxx's.
     pub fn title(&self) -> &str {
@@ -303,7 +302,6 @@ fn detail(how: &How) -> String {
 }
 
 /// An activity for a call its provider sent none for, from the item's own fields.
-#[allow(dead_code)] // the activity view (this chore's drawing task) calls it through agent_steps.
 pub fn fallback(
     name: &str,
     summary: &str,
@@ -394,7 +392,6 @@ pub fn fallback(
 }
 
 /// A tool item's activity: the one its provider sent, else a fallback. None: not a tool.
-#[allow(dead_code)] // the activity view (this chore's drawing task) calls it through agent_steps.
 pub fn of(item: &Item) -> Option<Cow<'_, Activity>> {
     match item {
         Item::Tool {
