@@ -1477,7 +1477,7 @@ pub(super) fn agent_tab_agy_mode_refused() {
 }
 
 /// In a workspace (2026-11-24): agy's question in a tab not in front makes a banner saying
-/// "agy asked: …" though the tab never waits, and ⌘⇧A lands on its card. After agy refused
+/// "agy asked: …" (titled "agy asked a question") though the tab never waits, and ⌘⇧A lands on its card. After agy refused
 /// Auto, a new agy tab starts in Accept edits.
 pub(super) fn agent_question_agy_anywhere() {
     use super::agent::agent_workspace;
@@ -1536,6 +1536,12 @@ pub(super) fn agent_question_agy_anywhere() {
             assert!(
                 banners.iter().any(|(_, _, body)| body == AGY_ASKED),
                 "{n}: the banner says agy asked: {banners:?}"
+            );
+            // Its own title, not Waiting's "Needs your input" (the lead's nit).
+            assert!(
+                banners.iter().any(|(title, _, body)| body == AGY_ASKED
+                    && title.ends_with("\u{2014} agy asked a question")),
+                "{n}: the banner's title: {banners:?}"
             );
             cx.simulate_keystrokes(window, "cmd-shift-a");
             settle_frames(cx, window);

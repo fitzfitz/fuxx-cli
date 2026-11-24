@@ -37,6 +37,21 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-24 — Subagent lanes after the design review
+
+- **What:** an "After the design review" sub-bullet under the lanes bullets in "Chores after M11ar" in
+  [[93 - Milestone 11ar - Subagents]]: all of the Lead UI/UX Designer's fixes (1–6), the not-ready words and the
+  nits, plus the lead's notification nit. Your rule ("make sure I cannot send a message when subagent is done") now
+  holds for agy too: a finished agy lane gets the closing bar. Also: clearer foreground words, marks that keep the
+  words still, Failed as a ✕, an edge on "Ask Main about it" in Mocha, no "Explore Explore", and agy's question
+  banner titled "agy asked a question".
+- **Checks:** 2720 → 2725 tests (`--features ui-shots`: 2770 → 2775; the new ones each failed first); clippy 14/29
+  and 18/33 (unchanged, none in a changed file); `cargo fmt --check` clean. Full `scripts/ui-shots.sh`: 344 passed,
+  0 failed; fingerprints 693 same, 31 look different, 0 differ in size, 0 without a reference. Those 31 are the
+  animation set that varies run to run: two back-to-back runs of the agent-box scenes alone gave 22 and then 16,
+  different shots each time. No reference refreshed: the lanes scenes are state scenes. No claude or agy was run.
+- **Not yet seen in the real window.**
+
 ### 2026-11-24 — agy's skipped questions as the card, answered by a message; agy's real mode
 
 - **What:** a bullet under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]] ("agy's skipped questions,

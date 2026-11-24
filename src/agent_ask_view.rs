@@ -237,8 +237,9 @@ impl AgentTab {
         Some(asks_line(&label, questions))
     }
 
-    /// The agent's short name ("agy"), as a question it didn't wait on says it.
-    fn who(&self) -> &str {
+    /// The agent's short name ("agy"), as a question it didn't wait on says it (and its
+    /// notification's title).
+    pub(crate) fn who(&self) -> &str {
         self.provider.map_or(self.label(), |p| p.info().who.1)
     }
 

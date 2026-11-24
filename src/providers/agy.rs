@@ -1093,6 +1093,20 @@ impl Translator for AgyTranslator {
             Action::Send { text, .. } => {
                 vec![json!({"event": "user", "message": {"content": text}}).to_string()]
             }
+            // The closing bar's "Ask Main about it" (a finished lane): an ordinary turn that
+            // names the subagent (agy has no history fuxx reads back, so no tag to parse).
+            Action::About {
+                label, text, live, ..
+            } => {
+                let state = if *live {
+                    "which is still working"
+                } else {
+                    "which has finished"
+                };
+                let label = label.replace('"', "'").replace('\n', " ");
+                let content = format!("About your subagent \"{label}\", {state}:\n\n{text}");
+                vec![json!({"event": "user", "message": {"content": content}}).to_string()]
+            }
             Action::Allow { .. }
             | Action::AlwaysAllow { .. }
             | Action::Deny { .. }
@@ -1108,8 +1122,7 @@ impl Translator for AgyTranslator {
             | Action::RewindFiles { .. }
             | Action::CancelQueued { .. }
             // Main can't pass a message on (`relays_to_subagents` is false): fuxx never asks.
-            | Action::Relay { .. }
-            | Action::About { .. } => Vec::new(),
+            | Action::Relay { .. } => Vec::new(),
         }
     }
 }
@@ -1182,6 +1195,34 @@ mod tests {
             send(None)
         );
     }
+    /// The lanes review, fix 1: a finished agy lane gets the closing bar, whose "Ask Main about
+    /// it" sends your words to Main as an ordinary turn naming the subagent (agy has no relay).
+    #[test]
+    fn a_message_about_a_finished_subagent_goes_to_main() {
+        let about = AGY.translator().encode(&Action::About {
+            lane: "lane-1".into(),
+            label: "Explore".into(),
+            text: "What did it find?".into(),
+            id: None,
+            live: false,
+        });
+        assert_eq!(about.len(), 1, "one user line");
+        let v: Value = serde_json::from_str(&about[0]).unwrap();
+        assert_eq!(v["event"], "user");
+        let content = v["message"]["content"].as_str().unwrap();
+        assert!(content.contains("subagent \"Explore\""), "{content}");
+        assert!(content.contains("finished"), "{content}");
+        assert!(content.ends_with("\n\nWhat did it find?"), "{content}");
+        // A relay still writes nothing: agy's Main can't pass a message on.
+        let relay = AGY.translator().encode(&Action::Relay {
+            lane: "lane-1".into(),
+            label: "Explore".into(),
+            text: "hi".into(),
+            id: None,
+        });
+        assert!(relay.is_empty());
+    }
+
     #[test]
     fn a_subagent_step_is_a_row_and_a_lane() {
         let ev = decode_all(SUBS);

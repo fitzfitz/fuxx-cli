@@ -14,8 +14,8 @@ pub(crate) const BAR_FADE: Duration = Duration::from_millis(120);
 
 /// The strip's height (the Lead UI/UX Designer's spec).
 const STRIP_H: f32 = 32.0;
-/// A tab narrower than this cuts labels shorter.
-const NARROW: f32 = 480.0;
+/// A tab narrower than this cuts labels (and a relay's placeholder) shorter.
+pub(super) const NARROW: f32 = 480.0;
 
 impl AgentTab {
     /// `Event::Follow`: read `path`'s new lines as lane `lane`'s (`agent_lanes::follow_every`:
@@ -265,6 +265,9 @@ impl AgentTab {
             BoxMode::Main => return None,
             // agy: the box still talks to Main (M11ar).
             BoxMode::MainFromLane => format!("Message Main \u{2014} it can pass this to {label}"),
+            BoxMode::Relay { .. } if self.bar_width.get() < NARROW => {
+                format!("Message {label} via Main")
+            }
             BoxMode::Relay { .. } if self.status() == Status::Working => {
                 format!("Message {label} \u{2014} Main passes it on after its step")
             }
@@ -363,7 +366,6 @@ impl AgentTab {
         let lane = self.shown_lane()?;
         let narrow = self.bar_width.get() < NARROW;
         let (text_x, controls_x, notch_room) = inset;
-        let name = lane.label.clone();
         let time = self.lane_elapsed(&lane.id).map(crate::agent_lanes::clock);
         let ring = |ink: Rgb| {
             div()
@@ -373,61 +375,22 @@ impl AgentTab {
                 .border_color(hsla(ink))
                 .into_any_element()
         };
-        // (mark, the strong words and their ink, the quiet rest, a tooltip for the cut reason)
-        let (mark, strong, ink, rest, tip): (
-            AnyElement,
-            String,
-            Rgb,
-            Option<String>,
-            Option<String>,
-        ) = match why {
+        // Every mark in the same 12 pt slot, so the words never shift by state.
+        let (mark, ink) = match why {
             Bar::Finished(LaneStatus::Done) => (
-                crate::status_mark::done_check(c.bar_ok, px(MARK)).into_any_element(),
-                format!("{name} finished"),
+                mark_slot(crate::status_mark::done_check(c.bar_ok, px(MARK)).into_any_element()),
                 c.bar_text,
-                time.map(|t| format!(" in {t}")),
-                None,
             ),
-            Bar::Finished(LaneStatus::Failed(reason)) => (
-                div()
-                    .size(px(crate::ui_tokens::chat::TOOL_DOT))
-                    .rounded_full()
-                    .bg(hsla(c.bar_failed))
-                    .into_any_element(),
-                format!("{name} failed"),
+            Bar::Finished(LaneStatus::Failed(_)) => (
+                mark_slot(
+                    crate::status_mark::failed_cross(c.bar_failed, px(MARK)).into_any_element(),
+                ),
                 c.bar_failed,
-                (!reason.trim().is_empty()).then(|| format!(" \u{b7} {}", reason.trim())),
-                (!reason.trim().is_empty()).then(|| reason.trim().to_string()),
             ),
-            Bar::Finished(LaneStatus::Stopped) => (
-                ring(c.bar_dim),
-                format!("{name} was stopped"),
-                c.bar_text,
-                time.map(|t| format!(" after {t}")),
-                None,
-            ),
-            Bar::Finished(_) => (
-                ring(c.bar_dim),
-                format!("{name} ended"),
-                c.bar_text,
-                Some(" without a report".to_string()),
-                None,
-            ),
-            Bar::Foreground => (
-                self.lane_mark(lane, c),
-                format!("{name} is working inside Main's step"),
-                c.bar_text,
-                Some(" \u{b7} messages reach it only in the background".to_string()),
-                None,
-            ),
-            Bar::NotReady => (
-                self.lane_mark(lane, c),
-                format!("{name} is working"),
-                c.bar_text,
-                Some(" \u{b7} you can message it once Main is ready".to_string()),
-                None,
-            ),
+            Bar::Finished(_) => (mark_slot(ring(c.bar_dim)), c.bar_text),
+            Bar::Foreground | Bar::NotReady => (self.lane_mark(lane, c), c.bar_text),
         };
+        let (strong, rest, tip) = crate::agent_lanes::bar_words(why, &lane.label, time.as_deref());
         let words = div()
             .flex_1()
             .min_w(px(0.))
@@ -498,7 +461,7 @@ impl AgentTab {
                 .items_center()
                 .rounded(px(14.))
                 .border_1()
-                .border_color(hsla(c.outer_edge))
+                .border_color(hsla(c.bar_edge))
                 .text_size(px(text::META))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(hsla(c.bar_text))
@@ -679,6 +642,7 @@ impl AgentTab {
                         .child("Main didn't pass this on")
                         .into_any_element(),
                 );
+                parts.push(div().child("\u{b7}").into_any_element());
                 parts.push(link("relay-again", "Send again", |this, ix, cx| {
                     this.relay_again(ix, cx)
                 }));
@@ -689,6 +653,7 @@ impl AgentTab {
                         .child(SharedString::from(format!("{label} had finished")))
                         .into_any_element(),
                 );
+                parts.push(div().child("\u{b7}").into_any_element());
                 parts.push(link("relay-instead", "Ask Main instead", |this, ix, cx| {
                     this.ask_instead(ix, cx)
                 }));
@@ -893,7 +858,7 @@ impl AgentTab {
         crate::agent_lanes::elapsed(start, end, Instant::now())
     }
 
-    /// A lane's status mark: the live arc, a done check, a failed dot, a stopped ring.
+    /// A lane's status mark: the live arc, a done check, a failed ✕, a stopped ring.
     pub(crate) fn lane_mark(&self, lane: &Lane, c: &Colors) -> AnyElement {
         let dot = |fill: Rgb, hollow: bool| {
             div()
@@ -911,7 +876,9 @@ impl AgentTab {
             LaneStatus::Done => {
                 crate::status_mark::done_check(c.tool_ok, px(MARK)).into_any_element()
             }
-            LaneStatus::Failed(_) => dot(c.failed_panel, false),
+            LaneStatus::Failed(_) => {
+                crate::status_mark::failed_cross(c.failed_panel, px(MARK)).into_any_element()
+            }
             LaneStatus::Stopped | LaneStatus::Ended => dot(c.panel_dim, true),
         };
         mark_slot(mark)
@@ -1230,12 +1197,7 @@ impl AgentTab {
         let lane = self.shown_lane()?;
         let c = look.c;
         let narrow = self.bar_width.get() < NARROW;
-        let kind = [Some(lane.kind.clone()), lane.model.clone()]
-            .into_iter()
-            .flatten()
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(" · ");
+        let kind = crate::agent_lanes::header_kind(lane);
         let stats = [
             self.lane_elapsed(&lane.id).map(crate::agent_lanes::clock),
             lane.tokens
@@ -1488,6 +1450,15 @@ impl AgentTab {
             .children(divider)
             .children(said.map(|t| from_main(t, &c)))
             .into_any_element()
+    }
+
+    /// Scenes: lane `id`'s clock set to `took` (ended now, if it ended), so a scene shows a
+    /// realistic time (the lanes review) rather than 0:00.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_lane_took(&mut self, id: &str, took: Duration) {
+        let now = Instant::now();
+        let ended = self.lane_times.get(id).and_then(|t| t.1).map(|_| now);
+        self.lane_times.insert(id.to_string(), (now - took, ended));
     }
 
     /// Scenes: the lanes, and a lane's step count.

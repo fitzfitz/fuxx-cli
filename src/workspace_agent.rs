@@ -1064,12 +1064,14 @@ impl Workspace {
                         cx.notify();
                     } else if new && slot.view.read(cx).questions_by_message() {
                         // A question the agent didn't wait on (agy, 2026-11-24): no Waiting
-                        // follows, so it notifies itself ("agy asked: …").
-                        asked = question.clone().map(|q| (q, slot.label.to_string()));
+                        // follows, so it notifies itself, under its own title ("agy asked a
+                        // question"; the body "agy asked: …").
+                        let title = notifier::asked_title(slot.view.read(cx).who());
+                        asked = question.clone().map(|q| (q, slot.label.to_string(), title));
                     }
                 }
                 let looking = self.model.focused_tab() == Some(tab) && self.window_active;
-                if let Some((question, agent)) = asked.filter(|_| !looking) {
+                if let Some((question, agent, title)) = asked.filter(|_| !looking) {
                     let ws = self.model.locate(tab).map(|(ws, _)| ws);
                     self.notify_agent(
                         tab,
@@ -1079,6 +1081,7 @@ impl Workspace {
                         Some(&question),
                         None,
                         None,
+                        Some(&title),
                         cx,
                     );
                     cx.notify();
@@ -1367,6 +1370,7 @@ impl Workspace {
                 question.as_deref(),
                 worked,
                 doing.as_deref(),
+                None,
                 cx,
             );
         }
@@ -1375,7 +1379,8 @@ impl Workspace {
     }
 
     /// Agent tab `tab`'s notification (`set_agent_status`): as a terminal's, in workspace `ws`,
-    /// by `agent` (its provider's label), and a `notification` event about the tab.
+    /// by `agent` (its provider's label), and a `notification` event about the tab. `title`:
+    /// what follows "—" in place of the status's own words (a question agy didn't wait on).
     #[allow(clippy::too_many_arguments)]
     fn notify_agent(
         &mut self,
@@ -1386,10 +1391,12 @@ impl Workspace {
         question: Option<&str>,
         worked: Option<std::time::Duration>,
         doing: Option<&str>,
+        title: Option<&str>,
         cx: &mut Context<Self>,
     ) {
-        let Some((message, body)) =
-            notifier::message(new).zip(notifier::body(new, question, worked, doing))
+        let Some((message, body)) = title
+            .or(notifier::message(new))
+            .zip(notifier::body(new, question, worked, doing))
         else {
             return;
         };

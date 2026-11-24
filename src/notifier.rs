@@ -101,6 +101,12 @@ pub fn message(status: Status) -> Option<&'static str> {
     }
 }
 
+/// The title of a question the agent `who` asked without waiting on it (agy): the tab isn't
+/// Waiting, so not Waiting's "Needs your input".
+pub fn asked_title(who: &str) -> String {
+    format!("{who} asked a question")
+}
+
 /// A notification's text under its title: what a waiting session asks (`question`), or, for a
 /// finished one, what it was doing (`doing`: its terminal's title, part 5) and how long it
 /// worked (`worked`: the Working stretch that just ended). Without those, the plain message.
@@ -574,6 +580,17 @@ mod tests {
         for p in [Some(Allowed), Some(NotDetermined), Some(Denied), None] {
             assert_eq!(route(false, p), Route::Script);
         }
+    }
+
+    /// The lead's nit (the lanes review): agy's question (no Waiting follows) has its own
+    /// title, not Waiting's "Needs your input".
+    #[test]
+    fn a_question_the_agent_didn_t_wait_on_has_its_own_title() {
+        assert_eq!(asked_title("agy"), "agy asked a question");
+        assert_eq!(
+            banner_title("my-app", &asked_title("agy")),
+            "my-app \u{2014} agy asked a question"
+        );
     }
 
     #[test]

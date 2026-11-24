@@ -652,13 +652,14 @@ impl AgentTab {
             Some(ToolDetail::Diff { unified, .. }) => Some(parse_diff(unified)),
             _ => None,
         };
-        // Main's SendMessage that delivered a relay (the lanes chore): "Passed on to Explore ✓",
-        // opening the lane.
+        // Main's SendMessage that delivered a relay (the lanes chore): "Passed on to Explore",
+        // opening the lane; its green dot says it went (the lanes review: no ✓ in the name's
+        // ink, no raw "Sent." on the right).
         let passed = self
             .conversation
             .passed_on(id)
             .and_then(|l| self.conversation.lane(l))
-            .map(|l| (l.id.clone(), format!("Passed on to {} \u{2713}", l.label)));
+            .map(|l| (l.id.clone(), format!("Passed on to {}", l.label)));
         let openable = lane.is_some() || crate::agent_tool_modal::openable(items, ix);
         let blank = String::new();
         let (name, summary) = match (&lane, &passed) {
@@ -694,6 +695,8 @@ impl AgentTab {
         } else if *ok == Some(false) {
             let bare = result.trim_start_matches('✗').trim_start();
             (bare.to_string(), c.failed_panel)
+        } else if passed.is_some() {
+            (String::new(), c.panel_dim)
         } else if let Some(d) = &diff {
             let added = d.rows.iter().filter(|r| r.kind == RowKind::Added).count();
             let removed = d.rows.iter().filter(|r| r.kind == RowKind::Removed).count();

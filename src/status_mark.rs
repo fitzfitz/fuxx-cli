@@ -148,6 +148,22 @@ pub fn done_check(color: Rgb, size: Pixels) -> impl IntoElement {
     .size(size)
 }
 
+/// A failed subagent's mark (the lanes review, fix 4: a dot read as Waiting's): a small ✕ in
+/// `color`, in a `size` box, its line the check's. Drawn still.
+pub fn failed_cross(color: Rgb, size: Pixels) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let unit = f32::from(bounds.size.width.min(bounds.size.height)) / 8.0;
+            if let Ok(path) = cross(bounds.center(), unit).build() {
+                window.paint_path(path, hsla(color));
+            }
+        },
+    )
+    .flex_none()
+    .size(size)
+}
+
 /// Line width, in a 12 px box.
 const STROKE: f32 = 1.5;
 /// The ring's and the arc's radius to the middle of the line, in a 12 px box (so 10 px across).
@@ -285,6 +301,17 @@ fn check(c: Point<Pixels>, unit: f32) -> PathBuilder {
     path.move_to(p(-2.3, 0.1));
     path.line_to(p(-0.7, 1.7));
     path.line_to(p(2.3, -1.5));
+    path
+}
+
+/// The ✕, 3.6 units across (a touch under the check's 4.6, as it is all ink).
+fn cross(c: Point<Pixels>, unit: f32) -> PathBuilder {
+    let p = |x: f32, y: f32| point(c.x + px(x * unit), c.y + px(y * unit));
+    let mut path = PathBuilder::stroke(px(STROKE * unit));
+    path.move_to(p(-1.8, -1.8));
+    path.line_to(p(1.8, 1.8));
+    path.move_to(p(1.8, -1.8));
+    path.line_to(p(-1.8, 1.8));
     path
 }
 

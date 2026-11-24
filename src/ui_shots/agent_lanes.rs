@@ -1,6 +1,7 @@
 //! M11ar's scenes: the subagent pill strip, and the chat switched to a subagent.
 
 use gpui::{Entity, VisualTestAppContext, px};
+use std::time::Duration;
 
 use super::agent::{decode, feed, scene_sized};
 use super::{Kind, Scene, Themes};
@@ -521,9 +522,9 @@ pub(super) fn agent_lanes_narrow() {
                     .placeholder()
                     .to_string()
             });
+            // Under 480 pt the placeholder is short (the lanes review).
             assert_eq!(
-                placeholder,
-                "Message Find the config loader \u{2014} Main passes it on after its step",
+                placeholder, "Message Find the config loader via Main",
                 "{n}"
             );
             let _ = super::frame_fresh(cx, window);
@@ -574,6 +575,7 @@ pub(super) fn agent_lanes_agy() {
             gpui::size(px(1100.0), px(640.0)),
             build_with(&AGY, theme, slot, start()),
             move |cx, window| {
+                still(cx);
                 let tab = tab_of(&keep);
                 feed(cx, &tab, |t, cx| t.send("Read a.txt and b.txt".into(), cx));
                 let lines: Vec<&str> = SUBS.lines().collect();
@@ -603,11 +605,24 @@ pub(super) fn agent_lanes_agy() {
                 let steps = cx.read(|cx| tab.read(cx).shot_lane_steps(&first));
                 assert_eq!(steps, 2, "{n}: read_file, send_message");
                 feed(cx, &tab, |t, cx| t.show_view(View::Lane(first.clone()), cx));
-                cx.read(|cx| tab.read(cx).shot_forget(&["lane-stop"]));
+                // The user's rule, for agy too: a finished lane gets the closing bar, never a
+                // box to Main (the lanes review, fix 1).
+                assert_eq!(
+                    mode_of(cx, &tab),
+                    crate::agent_tab::BoxMode::Bar(crate::agent_lanes::Bar::Finished(
+                        LaneStatus::Done
+                    )),
+                    "{n}"
+                );
+                cx.read(|cx| tab.read(cx).shot_forget(&["lane-stop", "closing-bar"]));
                 let _ = super::frame_fresh(cx, window);
                 assert!(
                     !cx.read(|cx| tab.read(cx).shot_part_now("lane-stop")),
                     "{n}: no Stop for agy"
+                );
+                assert!(
+                    cx.read(|cx| tab.read(cx).shot_part_now("closing-bar")),
+                    "{n}: the closing bar"
                 );
                 keep.borrow_mut().take();
             },
@@ -862,7 +877,8 @@ pub(super) fn agent_lanes_relay() {
     );
 }
 
-/// The relay box under 480 pt: the target pill says only "To Explore".
+/// The relay box under 480 pt: the target pill says only "To Explore", the placeholder
+/// "Message Explore via Main".
 pub(super) fn agent_lanes_relay_narrow() {
     scene_sized(
         "agent-lanes-relay-narrow",
@@ -879,6 +895,14 @@ pub(super) fn agent_lanes_relay_narrow() {
                 f32::from(pill.size.width) < 130.0,
                 "{n}: \u{201c}To Explore\u{201d} alone ({pill:?})"
             );
+            let placeholder = cx.read(|cx| {
+                tab.read(cx)
+                    .shot_composer()
+                    .read(cx)
+                    .placeholder()
+                    .to_string()
+            });
+            assert_eq!(placeholder, "Message Explore via Main", "{n}");
         },
     );
 }
@@ -927,12 +951,28 @@ fn lane_then(
 }
 
 /// The closing bar in place of the box's contents, its height the box's own.
+/// A lane's closing bar (`took`: its clock frozen there, so the scene checks a real time).
 fn closing_bar(name: &str, end: Option<LaneEnd>, ended: bool, width: f32) {
+    closing_bar_took(name, end, ended, width, None);
+}
+
+fn closing_bar_took(
+    name: &str,
+    end: Option<LaneEnd>,
+    ended: bool,
+    width: f32,
+    took: Option<Duration>,
+) {
     scene_sized(name, (width, 640.0), move |n, cx, window, tab| {
         still(cx);
         let _ = super::frame_fresh(cx, window);
         let empty_box = part(cx, tab, n, "box");
         lane_then(cx, tab, end.clone(), ended);
+        if let Some(took) = took {
+            feed(cx, tab, |t, _| t.shot_lane_took("lane", took));
+            let shown = cx.read(|cx| tab.read(cx).lane_elapsed("lane"));
+            assert_eq!(shown, Some(took), "{n}: the clock frozen");
+        }
         feed(cx, tab, |t, cx| t.show_view(View::Lane("lane".into()), cx));
         assert!(
             matches!(mode_of(cx, tab), crate::agent_tab::BoxMode::Bar(_)),
@@ -961,13 +1001,15 @@ fn closing_bar(name: &str, end: Option<LaneEnd>, ended: bool, width: f32) {
     });
 }
 
-/// A done lane's closing bar: "Explore finished in 0:00", Ask Main about it, Back to Main ⏎.
+/// A done lane's closing bar: "Explore finished in 1:33" (its clock frozen there, so the
+/// time display is checked), Ask Main about it, Back to Main ⏎.
 pub(super) fn agent_lanes_closing_bar() {
-    closing_bar(
+    closing_bar_took(
         "agent-lanes-closing-bar",
         Some(LaneEnd::Done),
         false,
         1100.0,
+        Some(Duration::from_secs(93)),
     );
 }
 
@@ -994,8 +1036,8 @@ pub(super) fn agent_lanes_closing_bar_ended() {
     closing_bar("agent-lanes-closing-bar-ended", None, true, 1100.0);
 }
 
-/// A live lane in the foreground: "working inside Main's step" (messages reach it only in
-/// the background).
+/// A live lane in the foreground: "Explore is working · Main is waiting on it, so messages
+/// can't reach it yet".
 pub(super) fn agent_lanes_closing_bar_foreground() {
     closing_bar("agent-lanes-closing-bar-foreground", None, false, 1100.0);
 }
@@ -1166,7 +1208,7 @@ pub(super) fn agent_lanes_list_grouped() {
 }
 
 /// A resumed conversation's relays: your words with "→ Explore" (and "About Explore"), Main's
-/// SendMessage as "Passed on to Explore ✓" — never the frame round them.
+/// SendMessage as "Passed on to Explore" — never the frame round them.
 pub(super) fn agent_lanes_relay_history() {
     use crate::providers::claude::{about_frame, relay_frame, transcript_events};
     use serde_json::json;

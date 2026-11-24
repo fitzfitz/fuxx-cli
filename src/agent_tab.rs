@@ -1017,6 +1017,9 @@ pub struct Colors {
     pub bar_dim: Rgb,
     pub bar_failed: Rgb,
     pub bar_ok: Rgb,
+    /// "Ask Main about it"'s edge on the box (the lanes review, fix 5: `outer_edge` vanished
+    /// in Mocha).
+    pub bar_edge: Rgb,
     pub relay_fill: Rgb,
     pub relay_text: Rgb,
     pub relay_dim: Rgb,
@@ -1207,6 +1210,11 @@ impl Colors {
             bar_dim: readable(ui.text_dim, &on_box, TEXT_MIN),
             bar_failed: readable(ui.block_failed, &on_box, TEXT_MIN),
             bar_ok: readable(ui.ring_done, &[ui.composer_inner], MARK_MIN),
+            bar_edge: readable(
+                mix(ui.composer_inner, theme.foreground, 0.20),
+                &[ui.composer_inner],
+                QUIET_LINE_MIN,
+            ),
             relay_fill,
             relay_text: readable(ui.text, &[relay_fill], TEXT_MIN),
             relay_dim: readable(ui.text_dim, &[relay_fill], TEXT_MIN),
@@ -1465,6 +1473,9 @@ pub struct AgentTab {
     tool_marks: std::collections::HashMap<String, Entity<MarkView>>,
     thinking_mark: Entity<MarkView>,
     bar_width: Rc<Cell<f32>>,
+    /// Whether the box's placeholder was last set for a tab under `NARROW` (a lane's relay
+    /// placeholder is shorter there; the width is known only once laid out).
+    placeholder_narrow: bool,
     /// When each running tool started (for its elapsed time).
     tool_started: std::collections::HashMap<String, Instant>,
     /// Tool calls that write files and haven't finished (reported to the edit ledger).
@@ -2156,6 +2167,7 @@ impl AgentTab {
             tool_marks: std::collections::HashMap::new(),
             thinking_mark,
             bar_width: Rc::new(Cell::new(f32::MAX)),
+            placeholder_narrow: false,
             tool_started: std::collections::HashMap::new(),
             open_edits: HashSet::new(),
             reasons: Reasons::default(),
@@ -5399,10 +5411,13 @@ impl AgentTab {
         };
         let now = pill(status, stopping, theme);
         let to_ink = ink(&now);
+        // Reduce motion or Animations off: the new ink at once (the lanes review: a still shot
+        // caught "Done" mid-blend, in Cultivating's peach).
+        let still = cx.reduce_motion() || !cx.global::<Appearance>().animations;
         let from_ink = top
             .pill_from
             .map(|(s, st)| ink(&pill(s, st, theme)))
-            .filter(|_| animating(top.pill_at, clock_now, Duration::from_millis(200)));
+            .filter(|_| !still && animating(top.pill_at, clock_now, Duration::from_millis(200)));
         let mark: AnyElement = match now.mark {
             PillMark::Status(s) => {
                 self.top_mark.update(cx, |m, _| m.set(s, px(MARK), on));
@@ -5417,7 +5432,7 @@ impl AgentTab {
                     .flex()
                     .items_center()
                     .justify_center();
-                if animating(top.pill_at, clock_now, status_mark::POP) {
+                if !still && animating(top.pill_at, clock_now, status_mark::POP) {
                     slot.with_animation(
                         ("agent-pill-done", top.pill_key),
                         Animation::new(status_mark::POP),
@@ -5776,6 +5791,11 @@ impl Render for AgentTab {
         let theme = appearance.theme;
         let mono = appearance.font.family.clone();
         let c = Colors::of(&theme);
+        let narrow = self.bar_width.get() < lanes_view::NARROW;
+        if narrow != self.placeholder_narrow {
+            self.placeholder_narrow = narrow;
+            self.update_placeholder(cx);
+        }
         let empty = self.conversation.items().is_empty();
         let info = self.provider.map(|p| p.info());
         let view = cx.entity().downgrade();
@@ -6912,6 +6932,8 @@ mod tests {
                     TEXT_MIN,
                 ),
                 ("bar ok", c.bar_ok, c.box_fill, MARK_MIN),
+                // The lanes review, fix 5: "Ask Main about it" has an edge in every theme.
+                ("bar edge", c.bar_edge, c.box_fill, QUIET_LINE_MIN),
                 ("relay text", c.relay_text, c.relay_fill, TEXT_MIN),
                 ("relay dim", c.relay_dim, c.relay_fill, TEXT_MIN),
                 (

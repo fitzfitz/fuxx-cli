@@ -906,6 +906,28 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     step") aren't in the spec; agy's lane keeps "Message Main — it can pass this to …" (the spec's ToMain); a
     relay's other attachments go in its text, images can't; a message for a lane held while Main restarts waits as
     any message does; the pills' width estimate is 7 pt a character (6.6 ran short once "+N" grew its mark).
+  - **After the design review** (2026-11-24; the Lead UI/UX Designer on the real lane screenshots, every item done):
+    (1) your rule for every provider — `lane_box` checks a finished lane first, so a finished agy lane gets the
+    closing bar too (only a running agy lane keeps "Message Main — it can pass this to …"); agy's "Ask Main about
+    it" goes to Main as an ordinary turn naming the subagent (`providers/agy.rs`; it used to be dropped).
+    (2) Foreground words: "Explore is working · Main is waiting on it, so messages can't reach it yet", tooltip
+    "Main waits for Explore to finish, so it can't pass a message on until then. Ask Main now and it reads it when
+    Explore is done."; the pill tooltip says "Main is waiting on it". Not ready: "Explore is working · you can
+    message it once Main has started". The words are one pure function, `agent_lanes::bar_words`. (3) Every bar mark
+    sits in the 12 pt slot, so row 1's words don't move by state. (4) Failed is a small ✕ (`status_mark::
+    failed_cross`, `failed_panel`) in the strip, the "+N" list and the bar, no longer a dot like Waiting's.
+    (5) "Ask Main about it" has an edge in every theme: token `bar_edge`, in the contrast test. (6) No "Explore
+    Explore": the header drops a kind equal to the label (`agent_lanes::header_kind`). Nits: "Passed on to
+    Explore" without the purple ✓ or the raw "Sent."; " · " before "Send again" (and before "Ask Main instead");
+    under 480 pt the relay placeholder is "Message Explore via Main"; `agent-lanes-closing-bar` freezes its clock at
+    1:33. agy-latte's orange-brown "Done": the box tab's 200 ms ink blend from Cultivating's peach, caught at its
+    start (it predates this work; the real window settles grey); the blend and the Done check's pop now honour
+    reduce motion and Animations off, and `agent-lanes-agy` shoots still. The lead's nit: agy's question banner is
+    titled "agy asked a question" (`notifier::asked_title`), not Waiting's "Needs your input"; the body stays
+    "agy asked: …".
+    - **AI's calls:** the " · " before "Ask Main instead" too (the same line as "Send again"); agy's about message
+      reads `About your subagent "Explore", which has finished:` then your words (agy has no history fuxx reads
+      back, so no tag).
   - **On screen:** not yet seen in the real window (see the Progress Log).
 - **agy's skipped questions, answered by a message** (2026-11-24; your words: "can you take a look at agy, it doesn't
   want to show the popup, it says it skips it. but claude is done great" … "give me the nearest solutions first for

@@ -166,7 +166,8 @@ pub fn follow_every(lane: Option<&Lane>, main: bool) -> std::time::Duration {
 /// What the box shows in a lane's view (the lanes chore, 2026-11-24).
 #[derive(Clone, Debug, PartialEq)]
 pub enum LaneBox {
-    /// The box talks to Main (an agent whose Main can't pass a message on: agy).
+    /// The box talks to Main (a running lane of an agent whose Main can't pass a message on:
+    /// agy).
     ToMain,
     /// Main passes your message on to the lane's subagent; with `images` (which can't be
     /// passed on) its send is off.
@@ -190,11 +191,12 @@ pub enum Bar {
 /// `ready`, and images waiting in the box. One pure rule, so you can never message a finished
 /// subagent.
 pub fn lane_box(lane: &Lane, relays: bool, ready: bool, images: bool) -> LaneBox {
-    if !relays {
-        return LaneBox::ToMain;
-    }
+    // First, for every provider (agy too): a finished lane can't be messaged.
     if !lane.status.live() {
         return LaneBox::Bar(Bar::Finished(lane.status.clone()));
+    }
+    if !relays {
+        return LaneBox::ToMain;
     }
     if !lane.controls.message {
         return LaneBox::Bar(Bar::Foreground);
@@ -203,6 +205,66 @@ pub fn lane_box(lane: &Lane, relays: bool, ready: bool, images: bool) -> LaneBox
         return LaneBox::Bar(Bar::NotReady);
     }
     LaneBox::Relay { images }
+}
+
+/// A lane header's kind and model, "Plan · Haiku"; the kind goes when it is the label (any
+/// case), so a lane named for its kind doesn't read "Explore Explore".
+pub fn header_kind(lane: &Lane) -> String {
+    let kind = Some(lane.kind.clone()).filter(|k| !k.eq_ignore_ascii_case(&lane.label));
+    [kind, lane.model.clone()]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" \u{b7} ")
+}
+
+/// The closing bar's row 1 words for lane `name` (`time`: its run's clock): the strong words,
+/// the quiet rest, and a tooltip on them (a failure's full reason; why a foreground lane can't
+/// be reached).
+pub fn bar_words(
+    why: &Bar,
+    name: &str,
+    time: Option<&str>,
+) -> (String, Option<String>, Option<String>) {
+    match why {
+        Bar::Finished(LaneStatus::Done) => (
+            format!("{name} finished"),
+            time.map(|t| format!(" in {t}")),
+            None,
+        ),
+        Bar::Finished(LaneStatus::Failed(reason)) => {
+            let reason = reason.trim();
+            (
+                format!("{name} failed"),
+                (!reason.is_empty()).then(|| format!(" \u{b7} {reason}")),
+                (!reason.is_empty()).then(|| reason.to_string()),
+            )
+        }
+        Bar::Finished(LaneStatus::Stopped) => (
+            format!("{name} was stopped"),
+            time.map(|t| format!(" after {t}")),
+            None,
+        ),
+        Bar::Finished(_) => (
+            format!("{name} ended"),
+            Some(" without a report".to_string()),
+            None,
+        ),
+        Bar::Foreground => (
+            format!("{name} is working"),
+            Some(" \u{b7} Main is waiting on it, so messages can't reach it yet".to_string()),
+            Some(format!(
+                "Main waits for {name} to finish, so it can't pass a message on until then. \
+                 Ask Main now and it reads it when {name} is done."
+            )),
+        ),
+        Bar::NotReady => (
+            format!("{name} is working"),
+            Some(" \u{b7} you can message it once Main has started".to_string()),
+            None,
+        ),
+    }
 }
 
 /// A lane pill's tooltip (the lanes chore): its state and time, its task's first line, whether
@@ -223,7 +285,7 @@ pub fn pill_tip(lane: &Lane, time: Option<std::time::Duration>, relays: bool) ->
     let message = (relays && lane.status.live()).then_some(if lane.controls.message {
         "you can message it"
     } else {
-        "working inside Main's step"
+        "Main is waiting on it"
     });
     [
         Some(state.as_str()),
@@ -317,7 +379,7 @@ mod tests {
         l.controls.message = false;
         assert_eq!(
             pill_tip(&l, t, true),
-            "Running 1:02 \u{b7} Read the test setup \u{b7} working inside Main's step"
+            "Running 1:02 \u{b7} Read the test setup \u{b7} Main is waiting on it"
         );
         assert_eq!(
             pill_tip(&l, t, false),
@@ -381,11 +443,8 @@ mod tests {
             message: true,
             woken_by_steps: false,
         };
-        // agy (no relay): the box talks to Main, whatever the lane.
+        // agy (no relay): a running lane's box talks to Main.
         assert_eq!(lane_box(&bg, false, true, false), LaneBox::ToMain);
-        let mut agy_done = bg.clone();
-        agy_done.status = LaneStatus::Done;
-        assert_eq!(lane_box(&agy_done, false, true, false), LaneBox::ToMain);
         // Claude, live, in the background, ready: a relay.
         assert_eq!(
             lane_box(&bg, true, true, false),
@@ -432,6 +491,120 @@ mod tests {
                 LaneBox::Bar(Bar::Finished(status))
             );
         }
+    }
+
+    /// The lanes review, fix 6: no "Explore Explore" — the header's kind goes when it is the
+    /// label (any case); the model stays.
+    #[test]
+    fn the_header_drops_a_kind_that_is_the_label() {
+        let mut l = lane("a", "Explore");
+        l.kind = "explore".into();
+        assert_eq!(header_kind(&l), "");
+        l.model = Some("Haiku".into());
+        assert_eq!(header_kind(&l), "Haiku");
+        l.kind = "Plan".into();
+        assert_eq!(header_kind(&l), "Plan \u{b7} Haiku");
+        l.model = None;
+        assert_eq!(header_kind(&l), "Plan");
+    }
+
+    /// The closing bar's words (the lanes review, fix 2 and the not-ready copy): the strong
+    /// words, the quiet rest, and a tooltip on the words.
+    #[test]
+    fn the_closing_bar_says_what_became_of_the_lane() {
+        let t = Some("1:33");
+        let words = |why: &Bar, time| bar_words(why, "Explore", time);
+        assert_eq!(
+            words(&Bar::Finished(LaneStatus::Done), t),
+            ("Explore finished".into(), Some(" in 1:33".into()), None)
+        );
+        assert_eq!(
+            words(&Bar::Finished(LaneStatus::Done), None),
+            ("Explore finished".into(), None, None)
+        );
+        assert_eq!(
+            words(
+                &Bar::Finished(LaneStatus::Failed(" no such file ".into())),
+                t
+            ),
+            (
+                "Explore failed".into(),
+                Some(" \u{b7} no such file".into()),
+                Some("no such file".into())
+            )
+        );
+        assert_eq!(
+            words(&Bar::Finished(LaneStatus::Failed(String::new())), t),
+            ("Explore failed".into(), None, None)
+        );
+        assert_eq!(
+            words(&Bar::Finished(LaneStatus::Stopped), Some("0:48")),
+            (
+                "Explore was stopped".into(),
+                Some(" after 0:48".into()),
+                None
+            )
+        );
+        assert_eq!(
+            words(&Bar::Finished(LaneStatus::Ended), t),
+            (
+                "Explore ended".into(),
+                Some(" without a report".into()),
+                None
+            )
+        );
+        assert_eq!(
+            words(&Bar::Foreground, t),
+            (
+                "Explore is working".into(),
+                Some(" \u{b7} Main is waiting on it, so messages can't reach it yet".into()),
+                Some(
+                    "Main waits for Explore to finish, so it can't pass a message on until \
+                     then. Ask Main now and it reads it when Explore is done."
+                        .into()
+                )
+            )
+        );
+        assert_eq!(
+            words(&Bar::NotReady, t),
+            (
+                "Explore is working".into(),
+                Some(" \u{b7} you can message it once Main has started".into()),
+                None
+            )
+        );
+    }
+
+    /// The user's rule ("make sure I cannot send a message when subagent is done"), for every
+    /// provider: a finished agy lane gets the closing bar too, never a box to Main.
+    #[test]
+    fn a_finished_agy_lane_gets_the_closing_bar() {
+        let mut agy = lane("a", "Explore");
+        agy.controls = LaneControls {
+            stop: false,
+            message: false,
+            woken_by_steps: true,
+        };
+        for status in [
+            LaneStatus::Done,
+            LaneStatus::Failed("no such file".into()),
+            LaneStatus::Stopped,
+            LaneStatus::Ended,
+        ] {
+            let mut done = agy.clone();
+            done.status = status.clone();
+            for (ready, images) in [(true, false), (false, false), (true, true)] {
+                assert_eq!(
+                    lane_box(&done, false, ready, images),
+                    LaneBox::Bar(Bar::Finished(status.clone())),
+                    "{status:?}"
+                );
+            }
+        }
+        // Only a running agy lane keeps the box to Main.
+        let mut waiting = agy.clone();
+        waiting.status = LaneStatus::Waiting;
+        assert_eq!(lane_box(&waiting, false, true, false), LaneBox::ToMain);
     }
 
     #[test]
