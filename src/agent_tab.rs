@@ -5745,7 +5745,7 @@ impl AgentTab {
     /// a row of the chat, so a scrolled chat still shows it).
     fn status_strip(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
         use crate::ui_tokens::chat;
-        let theme = cx.global::<Appearance>().theme.clone();
+        let theme = cx.global::<Appearance>().theme;
         let (main, counts) = self.status_line_now(&theme)?;
         let mark: AnyElement = match self.shown_status() {
             Status::Waiting => div()

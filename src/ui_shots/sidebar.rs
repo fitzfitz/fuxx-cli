@@ -638,6 +638,9 @@ fn sidebar_row_scenes() {
                     let notes = ws.sessions.get_mut(5).expect("notes");
                     notes.project = None;
                     let id = notes.id;
+                    // A workspace made in no folder remembers none (the 2026-11-24 chores).
+                    let notes_ws = ws.workspace_of(5).expect("notes' workspace");
+                    ws.model.set_home(notes_ws, None);
                     let found = Some(SCRATCH.into());
                     ws.places.set_folder(id, found, Instant::now());
                     ws.sync();
