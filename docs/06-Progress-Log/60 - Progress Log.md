@@ -39,6 +39,18 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-24 — Fix: fuxx crashed on launch on a bare `localhost:` in an agent chat
+
+- **What:** your words: "can you check why I cannot seem to open fuxx app anymore?", then "fix it please and remove
+  the tab". Every launch of v0.13.2 aborted: restoring the Sirius agent tab drew a reply with "…to localhost: `@…`",
+  and `bare_links` (`src/agent_markdown.rs`) sliced the trimmed address past the scheme, but `trim_url` had eaten the
+  scheme's own `:` ("localhost:" → "localhost", 9 bytes, sliced from 10): `start byte index 10 is out of bounds`.
+  Now the rest after the scheme is read with `get` and is empty when the trim left less, so such text stays plain.
+  The crashing tab was removed from `sessions.json` so the app opens. Not committed (on `master`).
+- **Checks:** the new cases ("localhost: here", "localhost:", "localhost:.", "(http:)") panicked at the same line
+  first, then pass; 2870 tests green; both clippy runs show no warnings in the file (the rest is the baseline);
+  `cargo fmt --check` clean. The installed app still has the bug until a release with this fix is installed.
+
 ### 2026-11-24 — v0.13.3 released
 
 - **What:** your word ("push and release v0.13.3, then clean up"). Merged `chore/agent-tab-perf` into master

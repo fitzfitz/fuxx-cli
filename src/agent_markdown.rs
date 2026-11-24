@@ -633,7 +633,8 @@ fn bare_links(text: &str) -> Vec<Span> {
                 .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '`'))
                 .unwrap_or(rest.len());
             let url = crate::links::trim_url(&rest[..end]);
-            let after = &url[scheme.len()..];
+            // The trim can eat the scheme's own `:` (`localhost: …`), leaving less than the scheme.
+            let after = url.get(scheme.len()..).unwrap_or("");
             let ok = if scheme == "localhost:" {
                 after.starts_with(|c: char| c.is_ascii_digit())
             } else {
@@ -766,6 +767,12 @@ mod tests {
             "xhttps://a.dev",
             "localhost:abc",
             "mylocalhost:3000",
+            // A scheme with nothing after it, which the trailing-punctuation trim makes shorter
+            // than the scheme: it used to slice past the end and crash on launch.
+            "sent a comment to localhost: here",
+            "localhost:",
+            "on localhost:.",
+            "(http:)",
         ] {
             assert_eq!(linked(plain), parse(plain), "{plain}");
         }
