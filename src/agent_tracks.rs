@@ -6,18 +6,20 @@
 use std::ops::Range;
 
 use super::*;
+use crate::agent_phases::{Phase, bands, column_phases, column_tip};
 use crate::agent_step_words::head_time;
 use crate::agent_steps::{Bead, Glyph, MAX_TRACKS, Track, Tracks};
+use crate::theme::mix;
 use crate::ui_tokens::chat;
 
 /// The summary column's width while a step shows every column (it scrolls sideways then).
 const SUMMARY_W: f32 = 220.0;
-/// A bead's glyph size: a little over the bead, so a text glyph fills it; a read's dot is
-/// smaller (reads are the calm part of a step).
-const GLYPH: f32 = chat::BEAD + 2.0;
-const READ_GLYPH: f32 = GLYPH - 2.0;
-/// The size of the small ✕ on the bead of a call that itself failed.
-const FAILED_MARK: f32 = 8.0;
+/// A call's tile and the icon in it (the 2026-11-24 chores: icons, not shapes).
+const TILE: f32 = 16.0;
+const TILE_ICON: f32 = 11.0;
+/// How much of a call's ink tints its tile, and a phase band's.
+const TILE_TINT: f32 = 0.16;
+const BAND_TINT: f32 = 0.14;
 /// The lane snaps to steps of this many columns, so summaries line up across steps and move at
 /// most a few times as a step grows.
 const LANE_SNAP: usize = 6;
@@ -55,6 +57,21 @@ pub fn cursor_moved(col: Option<usize>, dir: i8, shown: Range<usize>) -> usize {
     }
 }
 
+/// A call's icon in its tile (the 2026-11-24 chores); none for a running call (its arc).
+pub fn glyph_icon(g: Glyph) -> Option<crate::icons::Icon> {
+    use crate::icons::Icon;
+    Some(match g {
+        Glyph::Read => Icon::Eye,
+        Glyph::Search => Icon::Search,
+        Glyph::Edit => Icon::FilePen,
+        Glyph::Script | Glyph::Command => Icon::Terminal,
+        Glyph::Passed => Icon::Check,
+        Glyph::Failed | Glyph::Planned | Glyph::Cleared => Icon::Stop,
+        Glyph::Check => Icon::Circle,
+        Glyph::Running => return None,
+    })
+}
+
 /// A bead's glyph: its shape carries what it means (colour only backs it). The running arc is
 /// the call's mark, not text.
 pub fn glyph_text(g: Glyph) -> &'static str {
@@ -69,6 +86,36 @@ pub fn glyph_text(g: Glyph) -> &'static str {
         Glyph::Cleared => "✕",
         Glyph::Planned => "○",
         Glyph::Running => "",
+    }
+}
+
+/// Whether a band `cols` columns wide holds its `word` (at the bands' 10.5 pt, ~6 pt a
+/// character, and its 4 pt padding each side).
+pub fn fits_word(word: &str, cols: usize) -> bool {
+    cols as f32 * chat::TRACK_COL_W - 2. >= word.chars().count() as f32 * 6.0 + 8.
+}
+
+/// A call's ink by its kind: reads grey, searches the accent, edits the edit ink, commands
+/// the text's, passes green, failures red.
+fn glyph_ink(g: Glyph, c: &Colors) -> Rgb {
+    match g {
+        Glyph::Read | Glyph::Check | Glyph::Running => c.panel_dim,
+        Glyph::Search => c.track_look,
+        Glyph::Edit => c.bead_edit,
+        Glyph::Script | Glyph::Command => c.panel_text,
+        Glyph::Passed => c.tool_ok,
+        Glyph::Failed | Glyph::Planned | Glyph::Cleared => c.failed_panel,
+    }
+}
+
+/// A phase band's ink: as its calls' (Looking the accent, Ran the text's, Changing the edit
+/// ink, Checking green).
+fn phase_ink(p: Phase, c: &Colors) -> Rgb {
+    match p {
+        Phase::Looking => c.track_look,
+        Phase::Ran => c.panel_text,
+        Phase::Changing => c.bead_edit,
+        Phase::Checking => c.tool_ok,
     }
 }
 
@@ -185,14 +232,15 @@ impl AgentTab {
                     .left(px(column_x(at, shown.start)))
                     .top(px(chat::TRACK_HEAD))
                     .w(px(chat::TRACK_COL_W))
-                    .h(px(rows_h))
+                    .h(px(chat::TRACK_BANDS + rows_h))
                     .rounded(px(3.))
                     .cursor_pointer()
                     .hover(|s| s.bg(hsla(c.row_hover)))
                     .when(cursor == Some(at), |d| {
                         d.border_1().border_color(hsla(c.track_cursor))
                     })
-                    .tooltip(tip(col.tip.clone()))
+                    // Its number and what it did (your pick: "C1's hover").
+                    .tooltip(tip(column_tip(at, &col.tip)))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         cx.stop_propagation();
                         let (step, id) = (step.clone(), id.clone());
@@ -246,6 +294,8 @@ impl AgentTab {
                 })
                 .children(head_time(took).map(|t| SharedString::from(format!("{sep}{t}"))))
                 .when_some(earlier, |d, earlier| d.child(sep).child(earlier))
+                .child(div().flex_1())
+                .children(self.phase_legend(tracks, &shown, c))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
                     let step = step.clone();
@@ -263,6 +313,7 @@ impl AgentTab {
             .when(!all_cols, |d| d.w_full())
             .children(strips)
             .child(head)
+            .child(self.phase_bands(ix, tracks, &place, c))
             .children(rows);
         let body: AnyElement = if all_cols {
             div()
@@ -313,8 +364,102 @@ impl AgentTab {
             .into_any_element()
     }
 
-    /// One track: its label (the full path on hover), its beads with the rule between them,
-    /// and its summary.
+    /// The phases' key at the header's right, when a band is too narrow for its word: a dot and
+    /// the word for each phase the step shows, in order.
+    fn phase_legend(
+        &self,
+        tracks: &Tracks,
+        shown: &Range<usize>,
+        c: &Colors,
+    ) -> Option<AnyElement> {
+        let all = bands(&column_phases(tracks));
+        let visible: Vec<(Phase, usize)> = all
+            .iter()
+            .filter_map(|(p, run)| {
+                let cols = run
+                    .end
+                    .min(shown.end)
+                    .saturating_sub(run.start.max(shown.start));
+                (cols > 0).then_some((*p, cols))
+            })
+            .collect();
+        if visible.iter().all(|(p, cols)| fits_word(p.word(), *cols)) {
+            return None;
+        }
+        let mut phases: Vec<Phase> = Vec::new();
+        for (p, _) in &visible {
+            if !phases.contains(p) {
+                phases.push(*p);
+            }
+        }
+        phases.sort_by_key(|p| *p as u8);
+        let items = phases.into_iter().map(|p| {
+            let ink = phase_ink(p, c);
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(div().size(px(7.)).rounded(px(2.)).bg(hsla(ink)))
+                .child(SharedString::from(p.word()))
+        });
+        Some(
+            self.marked(
+                "tracks-legend",
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .text_size(px(11.))
+                    .children(items),
+            )
+            .into_any_element(),
+        )
+    }
+
+    /// The phase bands over the shown columns (your pick, "C2"): Looking around → Ran →
+    /// Changing → Checking, one band per run of columns of one phase, its word cut to fit.
+    fn phase_bands(&self, ix: usize, tracks: &Tracks, place: &Place, c: &Colors) -> AnyElement {
+        let phases = column_phases(tracks);
+        let shown = place.shown.clone();
+        let bands = bands(&phases).into_iter().filter_map(|(phase, run)| {
+            let start = run.start.max(shown.start);
+            let end = run.end.min(shown.end);
+            (start < end).then(|| {
+                let ink = phase_ink(phase, c);
+                div()
+                    .absolute()
+                    .left(px(column_x(start, shown.start) + 1.))
+                    .top_0()
+                    .w(px((end - start) as f32 * chat::TRACK_COL_W - 2.))
+                    .h_full()
+                    .rounded(px(4.))
+                    .bg(hsla(mix(c.panel, ink, BAND_TINT)))
+                    .px(px(4.))
+                    .flex()
+                    .items_center()
+                    .overflow_hidden()
+                    .text_size(px(10.5))
+                    .text_color(hsla(ink))
+                    // Its word where it fits; a one-call band is its colour alone (the
+                    // column's hover names the call).
+                    .when(fits_word(phase.word(), end - start), |d| {
+                        d.child(div().truncate().child(SharedString::from(phase.word())))
+                    })
+            })
+        });
+        self.marked(
+            "tracks-bands",
+            div()
+                .id(("agent-tracks-bands", ix))
+                .relative()
+                .w_full()
+                .h(px(chat::TRACK_BANDS))
+                .children(bands),
+        )
+        .into_any_element()
+    }
+
+    /// One track: its label (the full path on hover), its calls' icon tiles, and its summary.
     fn track_row(
         &self,
         n: usize,
@@ -330,38 +475,16 @@ impl AgentTab {
             .filter(|(col, _)| place.shown.contains(col))
             .collect();
         let x = |col: usize| (col - place.first) as f32 * chat::TRACK_COL_W;
-        let rule = match (shown.first(), shown.last()) {
-            (Some((a, _)), Some((b, _))) if a != b => Some(
-                div()
-                    .absolute()
-                    .left(px(x(*a) + chat::TRACK_COL_W / 2.))
-                    .w(px(x(*b) - x(*a)))
-                    .top(px(chat::TRACK_ROW / 2.))
-                    .h(px(1.))
-                    .bg(hsla(c.track_rule)),
-            ),
-            _ => None,
-        };
         let beads = shown.iter().map(|&&(col, bead)| {
-            // A call that failed draws as the change that didn't happen: dim, its ✕ says why.
-            let ink = if bead.dim || bead.failed {
-                c.panel_dim
+            // Each call an icon in a tile tinted by its kind (no rule between them: the
+            // columns are the time). A call that itself failed: its icon on a red tile.
+            let ink = if bead.failed {
+                c.failed_panel
             } else {
-                match bead.glyph {
-                    Glyph::Edit | Glyph::Script => c.bead_edit,
-                    Glyph::Passed => c.tool_ok,
-                    Glyph::Failed | Glyph::Planned | Glyph::Cleared => c.failed_panel,
-                    Glyph::Check => c.panel_dim,
-                    _ => c.bead,
-                }
+                glyph_ink(bead.glyph, c)
             };
-            let size = if bead.glyph == Glyph::Read {
-                READ_GLYPH
-            } else {
-                GLYPH
-            };
-            let mark: AnyElement = match bead.glyph {
-                Glyph::Running => {
+            let mark: AnyElement = match glyph_icon(bead.glyph) {
+                None => {
                     let id = &tracks.columns[col].id;
                     match self.tool_marks.get(id) {
                         Some(mark) => self
@@ -370,10 +493,27 @@ impl AgentTab {
                         None => div().child("●").into_any_element(),
                     }
                 }
-                Glyph::Check => self
-                    .marked("tracks-unknown", hollow_ring(ink, chat::BEAD))
-                    .into_any_element(),
-                g => div().child(glyph_text(g)).into_any_element(),
+                Some(icon) => {
+                    let tile = div()
+                        .size(px(TILE))
+                        .rounded(px(4.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(crate::icons::icon(icon, px(TILE_ICON), hsla(ink)));
+                    // A planned failure (a test written first) is an outlined tile: expected.
+                    let tile = if bead.glyph == Glyph::Planned {
+                        tile.border_1().border_color(hsla(ink))
+                    } else {
+                        tile.bg(hsla(mix(c.panel, ink, TILE_TINT)))
+                    };
+                    let tile = if bead.glyph == Glyph::Check {
+                        self.marked("tracks-unknown", tile)
+                    } else {
+                        tile
+                    };
+                    tile.into_any_element()
+                }
             };
             div()
                 .absolute()
@@ -384,22 +524,9 @@ impl AgentTab {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(size))
-                .line_height(relative(1.))
-                .text_color(hsla(ink))
+                // Not run (denied, stopped), or a failure a later pass cleared: quieter.
+                .when(bead.dim || bead.glyph == Glyph::Cleared, |d| d.opacity(0.5))
                 .child(mark)
-                // A call that itself failed: a small red ✕ on its bead.
-                .when(bead.failed, |d| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .top(px(2.))
-                            .right(px(0.))
-                            .text_size(px(FAILED_MARK))
-                            .text_color(hsla(c.failed_panel))
-                            .child("✕"),
-                    )
-                })
         });
         let full = if track.path.is_empty() {
             track.label.clone()
@@ -441,7 +568,6 @@ impl AgentTab {
                     .flex_none()
                     .w(px(place.beads_w))
                     .h_full()
-                    .children(rule)
                     .children(beads),
             )
             .child(
@@ -624,24 +750,47 @@ mod tests {
         assert_eq!(cursor_moved(Some(40), 1, 36..60), 41);
     }
 
+    /// Each call is a real icon (the 2026-11-24 chores: "change it into icon and make it easily
+    /// readable"): an eye reads, a magnifier searches, a pen edits, a terminal runs, a check
+    /// passed, an ✕ failed; the running arc is the call's own mark.
     #[test]
-    fn every_glyph_but_the_arc_has_its_shape() {
+    fn a_band_shows_its_word_only_where_it_fits() {
+        assert!(!fits_word("Ran", 1));
+        assert!(fits_word("Ran", 2));
+        assert!(!fits_word("Looking around", 4));
+        assert!(fits_word("Looking around", 6));
+    }
+
+    #[test]
+    fn every_glyph_but_the_arc_has_an_icon() {
+        use crate::icons::Icon;
         assert_eq!(
             [
                 Glyph::Read,
                 Glyph::Search,
                 Glyph::Edit,
                 Glyph::Script,
+                Glyph::Command,
                 Glyph::Passed,
                 Glyph::Failed,
                 Glyph::Planned,
+                Glyph::Cleared,
                 Glyph::Check,
-                Glyph::Command,
-                Glyph::Cleared
             ]
-            .map(glyph_text),
-            ["●", "▲", "■", "◇", "✓", "✖", "○", "◌", "●", "✕"]
+            .map(glyph_icon),
+            [
+                Some(Icon::Eye),
+                Some(Icon::Search),
+                Some(Icon::FilePen),
+                Some(Icon::Terminal),
+                Some(Icon::Terminal),
+                Some(Icon::Check),
+                Some(Icon::Stop),
+                Some(Icon::Stop),
+                Some(Icon::Stop),
+                Some(Icon::Circle),
+            ]
         );
-        assert_eq!(glyph_text(Glyph::Running), "");
+        assert_eq!(glyph_icon(Glyph::Running), None);
     }
 }

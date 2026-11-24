@@ -1040,11 +1040,10 @@ pub struct Colors {
     /// the accent and the status colours (`agent_lanes::lane_hue`), else `panel_dim`; held to
     /// `MARK_MIN` on the rows' fills and the page.
     pub lane_ink: Rgb,
-    /// The agent activity chore: a track's beads (an edit's apart), the rule from a track's
-    /// first bead to its last, and the keyboard cursor's ring on a column.
-    pub bead: Rgb,
+    /// The agent activity chore: an edit's ink in the tracks (its tile and band; orange, the
+    /// 2026-11-24 chores), a read or search's (blue), and the keyboard cursor's ring on a column.
     pub bead_edit: Rgb,
-    pub track_rule: Rgb,
+    pub track_look: Rgb,
     pub track_cursor: Rgb,
     /// The ledger's "tests failing" in the folder tab, on the tab and on a pill under the
     /// pointer.
@@ -1256,12 +1255,15 @@ impl Colors {
             relay_text: readable(ui.text, &[relay_fill], TEXT_MIN),
             relay_dim: readable(ui.text_dim, &[relay_fill], TEXT_MIN),
             lane_ink,
-            bead: readable(ui.text_dim, &[ui.panel, row_hover], MARK_MIN),
-            bead_edit: readable(ui.accent, &[ui.panel, row_hover], MARK_MIN),
-            track_rule: readable(
-                mix(ui.panel, theme.foreground, 0.14),
-                &[ui.panel],
-                QUIET_LINE_MIN,
+            bead_edit: readable(
+                ui.tab_colors[crate::tab_color::TabColor::Orange as usize],
+                &[ui.panel, row_hover],
+                MARK_MIN,
+            ),
+            track_look: readable(
+                ui.tab_colors[crate::tab_color::TabColor::Blue as usize],
+                &[ui.panel, row_hover],
+                MARK_MIN,
             ),
             track_cursor: readable(ui.accent, &[ui.panel, row_hover], MARK_MIN),
             ledger_failing: readable(
@@ -7362,15 +7364,13 @@ mod tests {
                 ("lane ink waiting", c.lane_ink, c.ask_fill, MARK_MIN),
                 ("lane ink waiting lit", c.lane_ink, c.ask_cursor, MARK_MIN),
                 ("lane ink on the page", c.lane_ink, c.page, MARK_MIN),
-                // The agent activity chore: the tracks' beads (at rest and in a hovered
-                // column), the cursor's ring and the rule between a track's beads.
-                ("bead", c.bead, c.panel, MARK_MIN),
-                ("bead hovered", c.bead, c.row_hover, MARK_MIN),
+                // The agent activity chore: an edit's ink (at rest and in a hovered column) and
+                // the cursor's ring.
                 ("bead edit", c.bead_edit, c.panel, MARK_MIN),
+                ("track look", c.track_look, c.panel, MARK_MIN),
                 ("bead edit hovered", c.bead_edit, c.row_hover, MARK_MIN),
                 ("passed bead hovered", c.tool_ok, c.row_hover, MARK_MIN),
                 ("track cursor", c.track_cursor, c.panel, MARK_MIN),
-                ("track rule", c.track_rule, c.panel, QUIET_LINE_MIN),
                 ("ledger failing", c.ledger_failing, c.outer, TEXT_MIN),
                 (
                     "ledger failing on a pill under the pointer",

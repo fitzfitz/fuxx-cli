@@ -1,7 +1,7 @@
 //! The chat's status line (the 2026-11-24 chores: the status moved out of the folder tab, which
 //! it ran past): under the last row while a turn is live, `Cultivating… · <running action> ·
 //! 0:31`, led by the plan's task when there is one; `Waiting for you · <question>` while the
-//! agent asks; `✓ Done · 0:42` once the turn ends. Under it a dim counts line, `4 changed ·
+//! agent asks; `Done · 0:42` (after the strip's ✓) once the turn ends. Under it a dim counts line, `4 changed ·
 //! checks 3/7`, from the ledger. Pure: the view hands it the facts.
 
 use std::time::{Duration, Instant};
@@ -38,7 +38,8 @@ pub fn status_line(s: &LineState) -> (String, Option<String>) {
             words.join(SEP)
         }
         Status::Done => {
-            let mut words = vec!["✓ Done".to_string()];
+            // The strip's mark is the ✓.
+            let mut words = vec!["Done".to_string()];
             words.extend(s.took.map(clock));
             words.join(SEP)
         }
@@ -168,9 +169,9 @@ mod tests {
             took: Some(Duration::from_secs(42)),
             ..state(Instant::now())
         };
-        assert_eq!(status_line(&s).0, "✓ Done · 0:42");
+        assert_eq!(status_line(&s).0, "Done · 0:42");
         let untimed = LineState { took: None, ..s };
-        assert_eq!(status_line(&untimed).0, "✓ Done");
+        assert_eq!(status_line(&untimed).0, "Done");
     }
 
     #[test]

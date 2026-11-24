@@ -679,7 +679,7 @@ pub(super) fn agent_ledger_done() {
         let _ = frame_fresh(cx, window);
         assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Done, "{n}");
         let (line, counts) = status(cx, tab);
-        assert!(line.starts_with("✓ Done"), "{n}: {line:?}");
+        assert!(line.starts_with("Done"), "{n}: {line:?}");
         assert_eq!(counts.as_deref(), Some("4 changed · checks pass"), "{n}");
     });
 }

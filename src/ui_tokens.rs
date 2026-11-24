@@ -104,14 +104,16 @@ pub mod chat {
     pub const R_CARD: f32 = 12.0;
     pub const R_BUBBLE: f32 = 16.0;
     pub const R_TAIL: f32 = 6.0;
-    /// A busy step's tracks (the agent activity chore): the header and a track's height, a
-    /// bead, the label column, a call's column, and the chat column under which tracks fall back
+    /// A busy step's tracks (the agent activity chore): the header and a track's height, the
+    /// label column, a call's column, and the chat column under which tracks fall back
     /// to rows.
     pub const TRACK_HEAD: f32 = 22.0;
     pub const TRACK_ROW: f32 = 22.0;
-    pub const BEAD: f32 = 8.0;
     pub const TRACK_LABEL_W: f32 = 148.0;
-    pub const TRACK_COL_W: f32 = 12.0;
+    /// Wide enough for a call's icon tile (the 2026-11-24 chores: icons, not dots).
+    pub const TRACK_COL_W: f32 = 18.0;
+    /// The phase bands' row over the columns (Looking around → Ran → Changing → Checking).
+    pub const TRACK_BANDS: f32 = 16.0;
     pub const TRACKS_NARROW: f32 = 560.0;
 }
 

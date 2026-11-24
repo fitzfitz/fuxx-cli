@@ -60,6 +60,10 @@ pub fn commands_summary(n: usize, failed: usize) -> String {
     out
 }
 
+/// A failure the agent planned (a test written first), in words (the 2026-11-24 chores: "I
+/// don't understand the state at all").
+pub const PLANNED: &str = "expected — test written first";
+
 /// A file track's summary from its touches (each with whether that call failed or didn't run,
 /// and the call's kind): "edited at :543 · +1 −0", "read 80–400, 78–120 · script 2×",
 /// "touched by a script", "searched · 3 matches", "edit failed".
@@ -175,12 +179,18 @@ pub fn file_summary(touches: &[(&Touch, bool, ToolKind)]) -> String {
             (true, n) => format!("touched by a script {n}×"),
         });
     }
+    // Tries that failed before one went through, in words.
+    match touches.len() - good.len() {
+        0 => {}
+        1 => parts.push("1st try failed".into()),
+        n => parts.push(format!("{n} tries failed")),
+    }
     parts.join(" · ")
 }
 
 /// A check run or failed call's outcome in words: "2 passed", "1 of 3 failed" (a row's title
 /// already says what ran), "build failed · E0425" (a compile error is the build's, whatever ran
-/// it), "red, as planned"; a failed call's first error (cut to `CHIP_ERROR_MAX`), else "failed".
+/// it), `PLANNED`; a failed call's first error (cut to `CHIP_ERROR_MAX`), else "failed".
 /// None: nothing to say (running, unknown, not run).
 pub fn outcome_phrase(a: &Activity) -> Option<String> {
     let Some(check) = &a.check else {
@@ -196,7 +206,7 @@ pub fn outcome_phrase(a: &Activity) -> Option<String> {
     match &check.outcome {
         Outcome::Passed { n: Some(n) } => Some(format!("{n} passed")),
         Outcome::Passed { n: None } => Some("passed".into()),
-        Outcome::Failed { .. } if a.planned_failure => Some("red, as planned".into()),
+        Outcome::Failed { .. } if a.planned_failure => Some(PLANNED.into()),
         Outcome::Failed {
             failed,
             of,
@@ -226,7 +236,7 @@ enum Standing {
 
 /// The checks track's summary: each scope's latest state, not a chain of runs. A scope still
 /// failing for real leads ("tests failed · cli:: 1 of 3", "+N more"); else a red run the agent
-/// announced ("tests · red, as planned"); else what passes ("tests · 2 passed", "3 passing · 2
+/// announced ("tests · expected — test written first"); else what passes ("tests · 2 passed", "3 passing · 2
 /// fixed", "red → green" when a planned failure went green). The kind is always named.
 pub fn checks_summary(runs: &[&Activity], cwd: &Path) -> String {
     let scopes = by_scope(runs, cwd);
@@ -254,7 +264,7 @@ pub fn checks_summary(runs: &[&Activity], cwd: &Path) -> String {
         return out;
     }
     if let Some((a, ..)) = latest.iter().find(|(_, s, _)| *s == Standing::Planned) {
-        let mut out = format!("{} · red, as planned", kind(a));
+        let mut out = format!("{} · {PLANNED}", kind(a));
         let passing = latest
             .iter()
             .filter(|(_, s, _)| *s == Standing::Passing)
@@ -569,6 +579,30 @@ mod tests {
         );
     }
 
+    /// A change that took more than one try says so in words (the 2026-11-24 chores).
+    #[test]
+    fn a_failed_edit_says_first_try_failed() {
+        let ch = |at, p, m| Touch {
+            path: "src/api.rs".into(),
+            how: How::Changed {
+                plus: p,
+                minus: m,
+                at,
+            },
+        };
+        let e = ToolKind::Edit;
+        let missed = ch(None, Some(1), Some(1));
+        let made = ch(None, Some(4), Some(2));
+        assert_eq!(
+            file_summary(&[(&missed, true, e), (&made, false, e)]),
+            "edited · +4 −2 · 1st try failed"
+        );
+        assert_eq!(
+            file_summary(&[(&missed, true, e), (&missed, true, e), (&made, false, e)]),
+            "edited · +4 −2 · 2 tries failed"
+        );
+    }
+
     #[test]
     fn checks_summaries_say_each_scopes_latest_state() {
         let cwd = Path::new(CWD);
@@ -588,7 +622,11 @@ mod tests {
         let s = |runs: &[Activity]| checks_summary(&runs.iter().collect::<Vec<_>>(), cwd);
         assert_eq!(s(&[cli(passed(2))]), "tests · 2 passed");
         assert_eq!(s(&[cli(passed(2)), build(passed_any())]), "2 passing");
-        assert_eq!(s(&[planned(failed(1, 3))]), "tests · red, as planned");
+        // Spelled out (the 2026-11-24 chores: "I don't understand the state at all").
+        assert_eq!(
+            s(&[planned(failed(1, 3))]),
+            "tests · expected — test written first"
+        );
         assert_eq!(
             s(&[planned(failed(1, 3)), cli(passed(2))]),
             "tests · red → green · 2 passed"
