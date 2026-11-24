@@ -1674,8 +1674,8 @@ impl Element for ComposerText {
                 input.buf.cursor(),
                 input.buf.selection(),
                 input.key_window,
-                // Empty: the agent's guess if there is one (faint, "⇥" after it), else the
-                // placeholder (dim).
+                // Empty: the agent's guess if there is one (greyed, italic, "⇥" after it),
+                // else the placeholder (dim).
                 input.buf.text().is_empty().then(|| match &input.ghost {
                     Some(ghost) => (ghost.clone(), true),
                     None => (input.placeholder.clone(), false),
@@ -1845,7 +1845,7 @@ impl Element for ComposerText {
         let mut drawn_placeholder = None;
         let mut drawn_ghost = None;
         let empty_ink = match &placeholder {
-            Some((_, true)) => hsla(ui.text_faint),
+            Some((_, true)) => hsla(ghost_ink(&ui)),
             _ => hsla(ui.text_dim),
         };
         if let Some((words, ghost)) = placeholder {
@@ -1866,7 +1866,11 @@ impl Element for ComposerText {
             if !words.is_empty() {
                 let run = TextRun {
                     len: words.len(),
-                    font: m.font.clone(),
+                    font: if ghost {
+                        ghost_font(&m.font)
+                    } else {
+                        m.font.clone()
+                    },
                     color: empty_ink,
                     background_color: None,
                     underline: None,
@@ -1984,9 +1988,48 @@ fn wrap_columns(width: Pixels, cell: Pixels) -> usize {
     (((width - cell) / cell).floor() as usize).max(1)
 }
 
+/// The agent's guess in the empty box (your words, 2026-11-24: "make it greyed out and italic"):
+/// the placeholder's ink taken 35 % toward the box's own fill, so it reads quieter than the
+/// placeholder and never like something you typed.
+fn ghost_ink(ui: &crate::theme::UiColors) -> alacritty_terminal::vte::ansi::Rgb {
+    crate::theme::mix(ui.text_dim, ui.composer_inner, 0.35)
+}
+
+/// The guess's font: the box's own, in italic (JetBrains Mono's italic face is bundled).
+fn ghost_font(font: &gpui::Font) -> gpui::Font {
+    gpui::Font {
+        style: gpui::FontStyle::Italic,
+        ..font.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{EditBuffer, atom_spans, shown_row};
+    use super::{EditBuffer, atom_spans, ghost_font, ghost_ink, shown_row};
+
+    /// Your words, 2026-11-24: "for the suggested prompt on agent chat input, make it greyed out
+    /// and italic". On every theme the guess is italic and a grey quieter than the placeholder
+    /// (`text_dim`) on the box, so it never reads as something you typed.
+    #[test]
+    fn the_suggestion_is_italic_and_greyer_than_the_placeholder() {
+        use crate::ui_tokens::contrast;
+        for (name, theme) in crate::theme::every_theme() {
+            let ui = theme.ui();
+            let ghost = ghost_ink(&ui);
+            let on = ui.composer_inner;
+            assert!(
+                contrast(ghost, on) < contrast(ui.text_dim, on),
+                "{name}: the guess isn't quieter than the placeholder"
+            );
+            assert!(
+                contrast(ghost, on) > 1.5,
+                "{name}: the guess all but vanishes"
+            );
+        }
+        let font = gpui::font("JetBrains Mono");
+        assert_eq!(ghost_font(&font).style, gpui::FontStyle::Italic);
+        assert_eq!(ghost_font(&font).family, font.family);
+    }
 
     #[test]
     fn atom_spans_are_the_atoms_on_a_row_row_relative() {

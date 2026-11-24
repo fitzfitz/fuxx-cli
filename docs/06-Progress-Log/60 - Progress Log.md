@@ -37,6 +37,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-24 — Chore: the suggested prompt greyed out and italic
+
+- **What:** your word ("for the suggested prompt on agent chat input, make it greyed out and italic"). Claude's
+  guess in the empty box is italic and a grey quieter than the placeholder; Tab still takes it. Under "Chores
+  after M11ar" in [[93 - Milestone 11ar - Subagents]].
+- **Checks:** 2726 tests (1 new, watched failing first); clippy at its baseline; `cargo fmt --check` clean;
+  `agent-box-suggestion` reference refreshed. Not yet seen in the real window.
+
 ### 2026-11-24 — Subagent lanes after the design review
 
 - **What:** an "After the design review" sub-bullet under the lanes bullets in "Chores after M11ar" in

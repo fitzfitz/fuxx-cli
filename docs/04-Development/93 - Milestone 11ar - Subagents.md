@@ -976,3 +976,11 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
     "agy asked: …" though the tab never waits, ⌘⇧A lands on the card, a new agy tab after the refusal starts in
     Accept edits).
   - **On screen:** not yet seen in the real window; no real agy was run (the fixtures are the recorded calls).
+- **The suggested prompt is greyed out and italic** (your words, 2026-11-24: "1 more fast chore, for the suggested
+  prompt on agent chat input, make it greyed out and italic"): Claude's guess in the empty box draws in the box
+  font's italic (JetBrains Mono Italic, bundled) and a grey quieter than the placeholder (`composer::ghost_ink`:
+  `text_dim` taken 35 % toward the box fill), so it never reads as typed text; its "⇥" stays.
+  - **Checks:** `the_suggestion_is_italic_and_greyer_than_the_placeholder` (every theme: quieter than the
+    placeholder, still over 1.5:1; the font italic), watched failing first; `agent-box-suggestion` reference
+    refreshed (both themes).
+
