@@ -31,6 +31,7 @@ pub const METHODS: &[&str] = &[
     "pane.equalize",
     "preset.list",
     "notify",
+    "link.open",
     "events.subscribe",
 ];
 
@@ -541,6 +542,7 @@ mod tests {
             "pane.equalize",
             "preset.list",
             "notify",
+            "link.open",
             "events.subscribe",
         ];
         want.sort();

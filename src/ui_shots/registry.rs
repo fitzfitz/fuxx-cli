@@ -269,6 +269,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-box-finder-drop",
     "terminal-drop-paths",
     "agent-queued-cancel",
+    "link-auto-open",
     "link-opens-split",
     "files-menu",
     "shell-cards-wrap",

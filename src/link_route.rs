@@ -3,10 +3,19 @@
 //! default browser. `link_place` is the pure choice; `Workspace::open_link` acts on it. Your
 //! focus stays where you clicked; a pane reused shows its new or found tab, whose pill flashes
 //! once.
+//!
+//! A program's own browser opening (an auto-open, through the `auto_open` shims and
+//! `fuxx link open URL`: `Workspace::link_open`) goes the same way from the terminal or agent
+//! tab it runs in, even in a workspace you aren't looking at; its tab's pill always flashes,
+//! and your focus stays where it is.
 
+use serde_json::{Value, json};
+
+use crate::api::{ApiError, Target, parse_target};
 use crate::appearance::OpenLinksIn;
 use crate::layout_model::{Model, PaneId, TabId, TabKind, WorkspaceId};
 use crate::split_tree::Dir;
+use crate::workspace_api::{opt_str, required_str};
 
 /// Below this width (points) the pane you clicked in isn't split: the link opens as a tab in it.
 pub const SPLIT_BELOW: f32 = 560.0;
@@ -22,6 +31,78 @@ pub enum LinkPlace {
     TabIn(PaneId),
     /// A new browser pane split right of this one.
     Split(PaneId),
+}
+
+/// Where a link to open came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkFrom {
+    /// Clicked (or the menu's Open Link): its tab's pill flashes when a pane is reused.
+    Click,
+    /// A program opened it by itself (`fuxx link open`): its tab's pill always flashes, since
+    /// you didn't ask for it just now.
+    AutoOpen,
+}
+
+/// The focus before a link opens from workspace `ws`: the focused tab, and `ws`'s own (its
+/// focused pane's shown tab), for `keep_focus`.
+pub fn focus_before(model: &Model, ws: WorkspaceId) -> (Option<TabId>, Option<TabId>) {
+    let ws_tab = model
+        .workspace(ws)
+        .and_then(|w| model.pane(w.focused))
+        .map(|p| p.active);
+    (model.focused_tab(), ws_tab)
+}
+
+/// After a link opened from pane `from` of workspace `ws` into pane `pane`: the focus as it was
+/// (`focus_before`). Into another pane, `ws`'s own focus and then yours go back; into `from`
+/// itself (a new tab in this pane), the tab stays shown there, and your focus goes back only
+/// when it was in another workspace (an auto-open from one you aren't looking at).
+pub fn keep_focus(
+    model: &mut Model,
+    ws: WorkspaceId,
+    from: PaneId,
+    pane: PaneId,
+    before: Option<TabId>,
+    ws_before: Option<TabId>,
+) {
+    let elsewhere = before
+        .and_then(|t| model.locate(t))
+        .is_some_and(|(w, _)| w != ws);
+    if pane != from
+        && let Some(t) = ws_before
+    {
+        model.select_tab(t);
+    }
+    if (pane != from || elsewhere)
+        && let Some(t) = before
+    {
+        model.select_tab(t);
+    }
+}
+
+/// The tab a `link.open` request runs in: agent tab `agent` (`aN`; `agents` finds its tab by
+/// number), else terminal `caller` (`sN`'s number). Neither, or a bad one, is an error.
+pub fn caller_tab(
+    model: &Model,
+    agents: impl Fn(u64) -> Option<TabId>,
+    p: &Value,
+) -> Result<TabId, ApiError> {
+    if let Some(agent) = opt_str(p, "agent")? {
+        let Target::Agent(n) = parse_target(agent) else {
+            return Err(ApiError::bad_request(format!(
+                "agent must be an agent tab like a2, not {agent}"
+            )));
+        };
+        return agents(n).ok_or_else(|| ApiError::not_found(format!("no agent tab a{n}")));
+    }
+    match p.get("caller").and_then(Value::as_u64) {
+        Some(id) => model
+            .terminal_tab(id)
+            .ok_or_else(|| ApiError::not_found(format!("no session s{id}"))),
+        None => Err(ApiError::bad_request(
+            "link open runs in a fuxx terminal or agent tab (FUXX_SESSION or FUXX_AGENT_TAB)",
+        )),
+    }
 }
 
 /// Whether two addresses are the same page (a trailing `/` aside).
@@ -121,6 +202,44 @@ impl crate::workspace::Workspace {
         window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) {
+        self.open_link_from(from, url, LinkFrom::Click, window, cx);
+    }
+
+    /// `link.open` (`fuxx link open URL`, a shim's): `url`, an http or https address, as a link
+    /// clicked in the terminal or agent tab the request names (`caller_tab`). Answered at once:
+    /// a page that loads, or doesn't, is the browser tab's business.
+    pub(crate) fn link_open(
+        &mut self,
+        p: &Value,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> Result<Value, ApiError> {
+        let url = required_str(p, "url")?;
+        if !crate::auto_open::is_web(url) {
+            return Err(ApiError::bad_request(format!(
+                "link open takes an http or https address, not {url}"
+            )));
+        }
+        let agents = |n: u64| {
+            self.agents
+                .iter()
+                .find(|(_, slot)| slot.id == n)
+                .map(|(&tab, _)| tab)
+        };
+        let from = caller_tab(&self.model, agents, p)?;
+        self.open_link_from(from, url, LinkFrom::AutoOpen, window, cx);
+        Ok(json!({}))
+    }
+
+    /// `open_link`, the link from `origin`.
+    pub(crate) fn open_link_from(
+        &mut self,
+        from: TabId,
+        url: &str,
+        origin: LinkFrom,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
         // Only the schemes a link may have (`links::allowed`): never `file://` or a script.
         if !crate::links::allowed(url) {
             return;
@@ -135,7 +254,7 @@ impl crate::workspace::Workspace {
         let place = link_place(&self.model, ws, from_pane, url, mode, last, narrow, |t| {
             self.browser_used(t, cx)
         });
-        let before = self.model.focused_tab();
+        let (before, ws_before) = focus_before(&self.model, ws);
         let kind = || TabKind::Browser {
             url: Some(url.to_string()),
         };
@@ -166,11 +285,7 @@ impl crate::workspace::Workspace {
             }
         };
         // Your focus stays where you clicked (unless the link went into that same pane).
-        if pane != from_pane
-            && let Some(before) = before
-        {
-            self.model.select_tab(before);
-        }
+        keep_focus(&mut self.model, ws, from_pane, pane, before, ws_before);
         self.sync();
         if !self.browser_tabs.contains_key(&tab) {
             let view = self.make_browser_tab(tab, None, window, cx);
@@ -179,7 +294,7 @@ impl crate::workspace::Workspace {
         self.use_browser_tab(tab, cx);
         self.link_panes.insert(ws, pane);
         let still = cx.reduce_motion() || !cx.global::<crate::appearance::Appearance>().animations;
-        if reused && !still {
+        if (reused || origin == LinkFrom::AutoOpen) && !still {
             self.flash_seq += 1;
             self.link_flash = Some((tab, self.flash_seq, std::time::Instant::now()));
         }
@@ -309,6 +424,84 @@ mod tests {
             link_place(&m, ws, p, URL, OpenLinksIn::Split, None, false, NEVER),
             LinkPlace::TabIn(a.pane)
         );
+    }
+
+    /// Two workspaces: `a` (one terminal, focused) and `b` (one terminal), as (model, a's tab,
+    /// b's workspace, b's pane, b's tab).
+    fn two() -> (Model, TabId, WorkspaceId, PaneId, TabId) {
+        let mut m = Model::new();
+        let b = m.new_workspace(0, TabKind::Terminal(2)).unwrap();
+        let a = m.new_workspace(0, TabKind::Terminal(1)).unwrap();
+        (m, a.tab, b.workspace, b.pane, b.tab)
+    }
+
+    #[test]
+    fn your_focus_stays_after_a_split_in_your_workspace() {
+        let (mut m, ws, p) = one();
+        let t = m.focused_tab().unwrap();
+        let (before, ws_before) = focus_before(&m, ws);
+        let right = m.split(p, Axis::Row, browser(Some(URL))).unwrap();
+        keep_focus(&mut m, ws, p, right.pane, before, ws_before);
+        assert_eq!(m.focused_tab(), Some(t));
+    }
+
+    #[test]
+    fn an_auto_open_in_another_workspace_moves_nothing_of_yours() {
+        let (mut m, yours, b, bp, bt) = two();
+        let (before, ws_before) = focus_before(&m, b);
+        let right = m.split(bp, Axis::Row, browser(Some(URL))).unwrap();
+        keep_focus(&mut m, b, bp, right.pane, before, ws_before);
+        assert_eq!(m.focused_tab(), Some(yours), "your tab keeps the focus");
+        assert_eq!(
+            m.workspace(b).unwrap().focused,
+            bp,
+            "its terminal stays its focus"
+        );
+        assert_eq!(m.pane(bp).unwrap().active, bt);
+        // "A new tab in this pane": the tab is shown there, but your workspace stays in front.
+        let (before, ws_before) = focus_before(&m, b);
+        let tab = m.add_tab(bp, browser(Some(URL))).unwrap();
+        keep_focus(&mut m, b, bp, bp, before, ws_before);
+        assert_eq!(m.focused_tab(), Some(yours));
+        assert_eq!(m.pane(bp).unwrap().active, tab.tab);
+    }
+
+    #[test]
+    fn a_new_tab_in_your_own_pane_is_shown() {
+        let (mut m, ws, p) = one();
+        let (before, ws_before) = focus_before(&m, ws);
+        let tab = m.add_tab(p, browser(Some(URL))).unwrap();
+        keep_focus(&mut m, ws, p, p, before, ws_before);
+        assert_eq!(m.focused_tab(), Some(tab.tab));
+    }
+
+    #[test]
+    fn an_auto_open_names_its_terminal_or_agent_tab() {
+        let (mut m, ws, p) = one();
+        let agent = m
+            .add_tab(
+                p,
+                TabKind::Agent {
+                    provider: "claude".into(),
+                    cwd: "code/my-app".into(),
+                    conversation: None,
+                    mode: None,
+                    title: None,
+                    model: None,
+                    effort: None,
+                },
+            )
+            .map(|o| o.tab);
+        let _ = ws;
+        let terminal = m.terminal_tab(1).unwrap();
+        let agents = |n: u64| (n == 2).then_some(agent).flatten();
+        let tab = |p: serde_json::Value| caller_tab(&m, agents, &p).map_err(|e| e.code);
+        assert_eq!(tab(serde_json::json!({"caller": 1})), Ok(terminal));
+        assert_eq!(tab(serde_json::json!({"agent": "a2"})), Ok(agent.unwrap()));
+        assert_eq!(tab(serde_json::json!({"caller": 9})), Err("not_found"));
+        assert_eq!(tab(serde_json::json!({"agent": "a7"})), Err("not_found"));
+        assert_eq!(tab(serde_json::json!({"agent": "s1"})), Err("bad_request"));
+        assert_eq!(tab(serde_json::json!({})), Err("bad_request"));
     }
 
     #[test]

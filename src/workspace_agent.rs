@@ -526,6 +526,9 @@ impl Workspace {
         let (label, badge, badge_rgb) = provider_look(&name);
         let id = self.next_agent_id;
         self.next_agent_id += 1;
+        // Before its boot task starts the process: its programs' auto-opens land beside it.
+        let socket = self.socket.clone();
+        view.update(cx, |view, _| view.set_link_caller(socket, id));
         self.agents.insert(
             tab,
             AgentSlot {

@@ -419,6 +419,8 @@ impl Workspace {
                 self.post_banner(title, String::new(), body, about, cx);
                 Ok(json!({}))
             }
+            // A program's own browser opening, from a shim (`link_route`).
+            "link.open" => self.link_open(p, window, cx),
             // session.wait and events.subscribe are answered in `reply_to`.
             "session.note" => {
                 let note = note_param(p)?;

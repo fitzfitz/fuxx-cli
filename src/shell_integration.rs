@@ -907,6 +907,48 @@ mod tests {
         );
     }
 
+    /// Auto-opens (chore after M11ar): macOS's `/etc/zprofile` (`path_helper`) and your own
+    /// files may move fuxx's shim folder behind `/usr/bin`; with the integration on (command
+    /// blocks, or a helper plugin too) it is first again from the first prompt, once, its
+    /// one-shot hook gone. A folder with a space and glob characters is matched as it is.
+    #[test]
+    fn the_shims_are_first_on_path_again_after_your_files() {
+        let t = TempDir::new("shims-first");
+        let dir = t.0.join("si");
+        install(&dir).unwrap();
+        let shims = t.0.join("odd folder/fuxx/shims [x]*");
+        std::fs::create_dir_all(&shims).unwrap();
+        let home = t.0.join("home");
+        // As path_helper leaves it, and twice to be sure it isn't kept twice.
+        t.write(
+            "home/.zshrc",
+            "PS1='%# '\nPATH=\"/usr/bin:/bin:$FUXX_SHIMS:/usr/sbin:$FUXX_SHIMS\"\n",
+        );
+        let check = "print -r -- \"[$PATH][${precmd_functions[(I)_fuxx_shims_first]}]\"";
+        for plugins in [false, true] {
+            let mut added = env_for(Path::new("/bin/zsh"), None, true, plugins, Some(&dir));
+            added.push(("FUXX_SHIMS".into(), shims.display().to_string()));
+            added.push((
+                "PATH".into(),
+                format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", shims.display()),
+            ));
+            let (core, _rx) = test_zsh::spawn_with("-il", &home, None, &added);
+            let blocks = run(&core, check);
+            let out = core.block_output(&blocks[0].id).unwrap_or_default();
+            let want = format!("[{}:", shims.display());
+            assert!(out.starts_with(&want), "plugins {plugins}: {out}");
+            assert_eq!(
+                out.matches(&shims.display().to_string()).count(),
+                1,
+                "plugins {plugins}: once: {out}"
+            );
+            assert!(
+                out.ends_with("][0]"),
+                "plugins {plugins}: the hook is gone: {out}"
+            );
+        }
+    }
+
     // --- Plugin mode (M11z): fuxx's .zprofile and .zshrc around yours ---
 
     /// The last block's output.

@@ -816,8 +816,8 @@ pub struct Workspace {
     /// A banner click held while the saved sessions reopen, shown when they have.
     pending_show: PendingShow,
     /// The socket this fuxx serves; none when it isn't serving (scripting off, or another fuxx
-    /// has it). Decides the shells' scripting variables.
-    socket: Option<PathBuf>,
+    /// has it). Decides the shells' and agents' scripting variables.
+    pub(crate) socket: Option<PathBuf>,
     /// Connections that asked for events (`events.subscribe`).
     pub(crate) subscribers: Vec<Conn>,
     /// Pending `session.wait`s.
@@ -1758,6 +1758,7 @@ impl Workspace {
             ssh_login_env(&saved),
             program.is_none(),
             zsh_integration(cx),
+            crate::auto_open::shims(),
         );
         let spawned = TerminalView::spawn(cx, program, cwd.as_deref(), startup.as_deref(), &env);
         let view = match spawned {
@@ -1851,6 +1852,7 @@ impl Workspace {
             ssh_login_env(saved),
             login_shell,
             zsh_integration(cx),
+            crate::auto_open::shims(),
         ))
     }
 
@@ -4607,34 +4609,50 @@ fn top_panel(panel: impl IntoElement) -> impl IntoElement {
 }
 
 /// The scripting variables for a shell. While this fuxx serves `socket`: the socket, the
-/// session id, and the `fuxx` program's folder (`exe_dir`) at the end of `path`. Otherwise both
-/// variables are removed, so one inherited from another fuxx can't make `fuxx` in this shell
-/// drive that fuxx's sessions. `id: None` (a daemon session): the daemon sets `FUXX_SESSION`,
-/// since only it knows the id.
+/// session id, and the `fuxx` program's folder (`exe_dir`) at the end of `path`; with the
+/// auto-open shims (`shims`, `auto_open`), their folder first on it and their `BROWSER`.
+/// Otherwise the variables are removed, so one inherited from another fuxx can't make `fuxx`
+/// in this shell drive that fuxx's sessions. `id: None` (a daemon session): the daemon sets
+/// `FUXX_SESSION`, since only it knows the id.
 fn scripting_env(
     socket: Option<&Path>,
     id: Option<u64>,
     exe_dir: Option<&Path>,
     path: Option<&OsStr>,
+    shims: Option<&Path>,
 ) -> ShellEnv {
     let Some(socket) = socket else {
         return ShellEnv {
             base: None,
             set: Vec::new(),
-            remove: vec!["FUXX_SOCKET", "FUXX_SESSION"],
+            remove: vec![
+                "FUXX_SOCKET",
+                "FUXX_SESSION",
+                crate::auto_open::SHIMS_VAR,
+                crate::auto_open::AGENT_VAR,
+            ],
         };
     };
     let mut set = vec![("FUXX_SOCKET".to_string(), socket.display().to_string())];
     if let Some(id) = id {
         set.push(("FUXX_SESSION".to_string(), format!("s{id}")));
     }
-    if let Some(dir) = exe_dir {
+    if exe_dir.is_some() || shims.is_some() {
         let mut path = path.map(OsStr::to_os_string).unwrap_or_default();
-        if !path.is_empty() {
-            path.push(":");
+        if let Some(dir) = exe_dir {
+            if !path.is_empty() {
+                path.push(":");
+            }
+            path.push(dir);
         }
-        path.push(dir);
-        set.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
+        let path = match shims {
+            Some(dir) => crate::auto_open::with_shims(Some(&path), dir),
+            None => path.to_string_lossy().into_owned(),
+        };
+        set.push(("PATH".to_string(), path));
+    }
+    if let Some(dir) = shims {
+        set.extend(crate::auto_open::shim_vars(dir));
     }
     ShellEnv {
         base: None,
@@ -4655,7 +4673,7 @@ struct ZshIntegration {
 /// A session's environment: `scripting_env` on fuxx's own, or with `login` (an SSH session's,
 /// M10b: your login shell's) on that, its `PATH` included. For your login shell
 /// (`login_shell`: no `program`), also what `shell_integration::env_for` adds for `$SHELL` with
-/// `integration` (M11l, M11z).
+/// `integration` (M11l, M11z). `shims`: the auto-open shims' folder (`scripting_env`).
 fn session_env(
     socket: Option<&Path>,
     id: Option<u64>,
@@ -4663,6 +4681,7 @@ fn session_env(
     login: Option<&[(String, String)]>,
     login_shell: bool,
     integration: Option<ZshIntegration>,
+    shims: Option<&Path>,
 ) -> ShellEnv {
     let path = match login {
         Some(login) => login
@@ -4673,7 +4692,7 @@ fn session_env(
     };
     let mut env = ShellEnv {
         base: login.map(<[_]>::to_vec),
-        ..scripting_env(socket, id, exe_dir, path.as_deref())
+        ..scripting_env(socket, id, exe_dir, path.as_deref(), shims)
     };
     if login_shell && let Some(zsh) = integration {
         // The shell `pty::command` starts for no program; `$SHELL` unset: no integration.
@@ -5139,6 +5158,7 @@ mod tests {
                     Some(7),
                     Some(exe),
                     Some(OsStr::new("/usr/bin")),
+                    None,
                 );
                 apply_env(&mut cmd, &env);
                 let var = |k: &str| cmd.get_env(k).map(|v| v.to_string_lossy().into_owned());
@@ -5168,7 +5188,15 @@ mod tests {
             ("PATH".to_string(), "/opt/homebrew/bin:/usr/bin".to_string()),
             ("SSH_AUTH_SOCK".to_string(), "/agent".to_string()),
         ];
-        let env = session_env(Some(ours), Some(4), Some(exe), Some(&login), false, None);
+        let env = session_env(
+            Some(ours),
+            Some(4),
+            Some(exe),
+            Some(&login),
+            false,
+            None,
+            None,
+        );
         assert_eq!(env.base.as_deref(), Some(&login[..]));
         let var = |k: &str| {
             env.set
@@ -5183,7 +5211,7 @@ mod tests {
         );
         assert_eq!(var("FUXX_SESSION"), Some("s4"));
         // Without it (a local session, or none read): fuxx's own, as before.
-        let own = session_env(Some(ours), Some(4), Some(exe), None, false, None);
+        let own = session_env(Some(ours), Some(4), Some(exe), None, false, None, None);
         assert!(own.base.is_none());
         let path = std::env::var("PATH").unwrap_or_default();
         let expected = if path.is_empty() {
@@ -5231,6 +5259,7 @@ mod tests {
                 marks: false,
                 plugins: helper_plugins_on(Some(&p)),
             }),
+            None,
         );
         let shell = std::env::var_os("SHELL").unwrap_or_default();
         if Path::new(&shell).file_name() == Some(OsStr::new("zsh")) {
@@ -5263,13 +5292,13 @@ mod tests {
             env.set.iter().map(|(k, _)| k.clone()).collect()
         };
         // Not a login shell (SSH's `ssh`, a program): nothing added.
-        let program = session_env(Some(ours), Some(4), None, None, false, i);
+        let program = session_env(Some(ours), Some(4), None, None, false, i, None);
         assert!(!keys(&program).iter().any(|k| k.contains("ZDOTDIR")));
         // No integration (off, or not installed): nothing added either.
-        let off = session_env(Some(ours), Some(4), None, None, true, None);
+        let off = session_env(Some(ours), Some(4), None, None, true, None, None);
         assert_eq!(off.set, program.set);
         // A login shell: what `env_for` gives for `$SHELL`, after the rest; nothing removed.
-        let login = session_env(Some(ours), Some(4), None, None, true, i);
+        let login = session_env(Some(ours), Some(4), None, None, true, i, None);
         let shell = std::env::var_os("SHELL").unwrap_or_default();
         let zdotdir = std::env::var_os("ZDOTDIR");
         let added = crate::shell_integration::env_for(
@@ -5292,18 +5321,83 @@ mod tests {
         }
     }
 
+    /// Auto-opens (chore after M11ar): the shim folder first on `PATH` (once, even when the
+    /// inherited `PATH` has it already), `BROWSER` its `fuxx-browser`, and `FUXX_SHIMS` for the
+    /// zsh integration. Not serving: none of it, and an inherited `FUXX_SHIMS` or agent tab goes.
+    #[test]
+    fn a_terminal_gets_the_shims_first_and_its_browser() {
+        let ours = Path::new("/me/fuxx.sock");
+        let exe = Path::new("/apps/fuxx.app/Contents/MacOS");
+        let shims = Path::new("/me/.local/share/fuxx/shims");
+        let inherited = OsStr::new("/usr/bin:/me/.local/share/fuxx/shims:/bin");
+        let env = scripting_env(Some(ours), Some(4), Some(exe), Some(inherited), Some(shims));
+        let var = |k: &str| {
+            env.set
+                .iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(
+            var("PATH"),
+            Some(
+                "/me/.local/share/fuxx/shims:/usr/bin:/bin:\
+                 /apps/fuxx.app/Contents/MacOS"
+            )
+        );
+        assert_eq!(
+            var("BROWSER"),
+            Some("/me/.local/share/fuxx/shims/fuxx-browser")
+        );
+        assert_eq!(var("FUXX_SHIMS"), shims.to_str());
+        // An SSH session's login PATH gets them too (its remote shell doesn't).
+        let login = [("PATH".to_string(), "/usr/bin".to_string())];
+        let ssh = session_env(
+            Some(ours),
+            Some(4),
+            None,
+            Some(&login),
+            false,
+            None,
+            Some(shims),
+        );
+        let path = ssh
+            .set
+            .iter()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(path, Some("/me/.local/share/fuxx/shims:/usr/bin"));
+        let off = scripting_env(None, Some(4), Some(exe), Some(inherited), Some(shims));
+        assert!(off.set.is_empty());
+        assert!(off.remove.contains(&"FUXX_SHIMS"));
+        assert!(off.remove.contains(&"FUXX_AGENT_TAB"));
+    }
+
     #[test]
     fn a_daemon_session_gets_its_id_from_the_daemon_not_the_window() {
         let ours = Path::new("/me/fuxx.sock");
         let exe = Path::new("/apps/fuxx.app/Contents/MacOS");
-        let env = scripting_env(Some(ours), None, Some(exe), Some(OsStr::new("/usr/bin")));
+        let env = scripting_env(
+            Some(ours),
+            None,
+            Some(exe),
+            Some(OsStr::new("/usr/bin")),
+            None,
+        );
         let keys: Vec<&str> = env.set.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, ["FUXX_SOCKET", "PATH"]);
         assert!(env.remove.is_empty());
         // Not serving: both still removed (the daemon then drops FUXX_SESSION too).
-        let off = scripting_env(None, None, Some(exe), None);
+        let off = scripting_env(None, None, Some(exe), None, None);
         assert!(off.set.is_empty());
-        assert_eq!(off.remove, ["FUXX_SOCKET", "FUXX_SESSION"]);
+        assert_eq!(
+            off.remove,
+            [
+                "FUXX_SOCKET",
+                "FUXX_SESSION",
+                "FUXX_SHIMS",
+                "FUXX_AGENT_TAB"
+            ]
+        );
     }
 
     /// A reopen starts where the terminal last was, while that folder exists; else where it

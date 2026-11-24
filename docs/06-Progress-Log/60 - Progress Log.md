@@ -37,6 +37,27 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-24 — Chore: a program's own browser opening lands like a clicked link
+
+- **What:** your words ("I want the same treatment happening when there is a browser autotrigger from the terminal
+  inside fuxxpace. For example running superpower mockup preview, doing an npm run dev with auto open, etc."). A new
+  `fuxx link open URL` opens the page as a link clicked in the calling terminal or agent tab would ("Open links in");
+  fuxx writes `open`, `xdg-open` and `fuxx-browser` shims to `~/.local/share/fuxx/shims` (`fuxx-dev` for a debug
+  build; no space in the path, so gh and other tools that split `$BROWSER` can run it; an earlier cut's folder under
+  "Application Support" is removed at start when it holds only the shims) and puts them first on every terminal's and agent's `PATH`, with `BROWSER` set; the zsh
+  integration puts them first again after `path_helper`. The tab's pill flashes; your focus stays. Under "Chores
+  after M11ar" in [[93 - Milestone 11ar - Subagents]], with the AI's calls and the limits (bash, fish or the
+  integration off: `BROWSER` only).
+- **Checks:** 2726 → 2748 tests (`--features ui-shots`: 2776 → 2798; the new ones each failed first, among them the
+  `open` script run through `sh` with a fake `fuxx` and a stub real `open`, and a real zsh's `PATH` after a
+  path_helper-like reorder); clippy 14/29 and 18/33 (unchanged, none on a changed line); `cargo fmt --check` clean.
+  Full `scripts/ui-shots.sh`: 345 passed (the new state scene `link-auto-open` among them), 0 failed; fingerprints
+  692 same, 32 look different, 0 differ in size, 0 without a reference: the known animation set plus the 11
+  `shell-cards*` shots, which differ on master without this change too (checked by running them on the unchanged
+  tree), so no reference was refreshed. After the move to `~/.local/share`: the gate again (same clippy counts, fmt
+  clean) and `scripts/ui-shots.sh link`: 2 passed, 0 failed. No real `npm run dev`, Vite or browser was run. Not yet seen in the real
+  window.
+
 ### 2026-11-24 — Chore: the suggested prompt greyed out and italic
 
 - **What:** your word ("for the suggested prompt on agent chat input, make it greyed out and italic"). Claude's

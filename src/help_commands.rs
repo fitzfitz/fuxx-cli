@@ -32,7 +32,7 @@ fn group_of(word: &str) -> &'static str {
         | "events" => "Driving a session",
         "note" | "progress" | "notify" => "Sidebar and banners",
         "equalize" | "presets" => "Layout",
-        "browser" => "Browser",
+        "browser" | "link" => "Browser",
         _ => "fuxx itself",
     }
 }
@@ -171,9 +171,9 @@ mod tests {
     }
 
     #[test]
-    fn thirty_five_entries_and_the_first_is_ls() {
+    fn thirty_six_entries_and_the_first_is_ls() {
         let r = parsed();
-        assert_eq!(r.entries.len(), 35);
+        assert_eq!(r.entries.len(), 36);
         assert_eq!(r.entries[0].usage, strs(&["ls"]));
         assert_eq!(
             r.entries[0].description,
@@ -199,6 +199,27 @@ mod tests {
         assert_eq!(
             e.description,
             "open a session in a workspace of its own (--split: a pane beside TARGET's, --tab: a tab in it); prints its id"
+        );
+    }
+
+    /// Auto-opens' command (chore after M11ar): beside the browser commands, its notes joined.
+    #[test]
+    fn link_open_sits_with_the_browser_commands() {
+        let r = parsed();
+        let e = r
+            .entries
+            .iter()
+            .find(|e| e.usage[0].starts_with("link "))
+            .unwrap();
+        assert_eq!(e.usage, strs(&["link open URL"]));
+        assert_eq!(e.group, "Browser");
+        assert!(
+            e.description
+                .starts_with("open URL as a clicked link in your terminal or agent tab")
+                && e.description
+                    .ends_with("call it for a program's own browser opening"),
+            "{}",
+            e.description
         );
     }
 
@@ -330,7 +351,7 @@ mod tests {
     fn matching_ignores_case_and_looks_at_group() {
         let r = parsed();
         let browser: Vec<_> = r.entries.iter().filter(|e| e.group == "Browser").collect();
-        assert_eq!(browser.len(), 8);
+        assert_eq!(browser.len(), 9);
         assert!(browser.iter().all(|e| entry_matches(e, "browser")));
         let snap: Vec<_> = r
             .entries

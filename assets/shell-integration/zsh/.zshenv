@@ -43,5 +43,21 @@ fi
     else
         'builtin' 'unset' '_fuxx_zdotdir_fuxx'
     fi
+    if [[ -o 'interactive' && -n "${FUXX_SHIMS-}" ]]; then
+        # fuxx's auto-open shims (FUXX_SHIMS: open, xdg-open, $BROWSER) first on PATH again at
+        # the first prompt, once: macOS's /etc/zprofile (path_helper) and your files may have
+        # moved the folder behind /usr/bin. The hook then takes itself out.
+        'builtin' 'typeset' -g _fuxx_shims="$FUXX_SHIMS"
+        _fuxx_shims_first() {
+            'builtin' 'local' ret=$?
+            'builtin' 'emulate' -L zsh
+            path=("$_fuxx_shims" ${path:#$_fuxx_shims})
+            precmd_functions=(${precmd_functions:#_fuxx_shims_first})
+            'builtin' 'unset' '_fuxx_shims'
+            'builtin' 'return' ret
+        }
+        'builtin' 'typeset' -ga precmd_functions
+        precmd_functions+=(_fuxx_shims_first)
+    fi
     'builtin' 'unset' '_fuxx_file' '_fuxx_marks' '_fuxx_plugins'
 }

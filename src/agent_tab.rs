@@ -1515,6 +1515,9 @@ pub struct AgentTab {
     /// of them is a restart, what you send waits with them (`queued`), for the restarted agent.
     waiting: Vec<Change>,
     asked: Asked,
+    /// The scripting socket and this tab's `aN` (`set_link_caller`): its process's programs
+    /// open their pages beside it (`auto_open::agent_env`, `fuxx link open`).
+    link_caller: Option<(PathBuf, u64)>,
     /// The command line of the last start (scenes check a restart resumes), and the environment
     /// it was given.
     #[cfg(feature = "ui-shots")]
@@ -1962,6 +1965,13 @@ impl AgentTab {
         self.after_change(true, cx);
     }
 
+    /// While this fuxx serves `socket`, its processes (from the next start) get it and this
+    /// tab's id `aN`, with the auto-open shims: a program they run that opens a browser by
+    /// itself lands beside this tab. Set by the workspace before the first start.
+    pub(crate) fn set_link_caller(&mut self, socket: Option<PathBuf>, id: u64) {
+        self.link_caller = socket.map(|socket| (socket, id));
+    }
+
     /// The environment the last (re)start added (prompt suggestions' switch).
     #[cfg(feature = "ui-shots")]
     pub fn shot_last_env(&self) -> Vec<(String, String)> {
@@ -2193,6 +2203,7 @@ impl AgentTab {
             _subscriptions: subscriptions,
             waiting: Vec::new(),
             asked: Asked::default(),
+            link_caller: None,
             #[cfg(feature = "ui-shots")]
             last_argv: Vec::new(),
             #[cfg(feature = "ui-shots")]
@@ -2575,6 +2586,22 @@ impl AgentTab {
         }
         if self.no_process {
             return;
+        }
+        // fuxx's own (socket, tab, shims: `auto_open`), the shims first on the login `PATH`.
+        let mut env = env;
+        if let Some((socket, id)) = &self.link_caller {
+            let inherited = std::env::var_os("PATH");
+            let path = self
+                .path
+                .as_deref()
+                .map(std::ffi::OsStr::new)
+                .or(inherited.as_deref());
+            env.extend(crate::auto_open::agent_env(
+                Some(socket),
+                *id,
+                crate::auto_open::shims(),
+                path,
+            ));
         }
         let process = self.listen(&argv, &env, cx);
         self.ask_catalog(provider, cx);

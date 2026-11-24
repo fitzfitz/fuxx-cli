@@ -4,6 +4,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -64,7 +65,24 @@ pub fn parse_reply(line: &str) -> Result<Value, ClientError> {
 
 /// Send one request and wait for its reply.
 pub fn call(path: &Path, request: &Request) -> Result<Value, ClientError> {
-    let mut reader = open(path, request)?;
+    let reader = open(path, request)?;
+    read_reply(reader)
+}
+
+/// `call`, giving up (as not reachable) when the reply hasn't come within `limit`: for
+/// `fuxx link open`, which a program's shim runs and must never hold up.
+pub fn call_within(path: &Path, request: &Request, limit: Duration) -> Result<Value, ClientError> {
+    let stream = connect(path)?;
+    stream.set_write_timeout(Some(limit)).map_err(lost)?;
+    stream.set_read_timeout(Some(limit)).map_err(lost)?;
+    let mut line = serde_json::to_string(request).expect("a request always serializes");
+    line.push('\n');
+    (&stream).write_all(line.as_bytes()).map_err(lost)?;
+    read_reply(BufReader::new(stream))
+}
+
+/// The one reply line `reader` gets.
+fn read_reply(mut reader: BufReader<UnixStream>) -> Result<Value, ClientError> {
     let mut line = String::new();
     if reader.read_line(&mut line).map_err(lost)? == 0 {
         return Err(ClientError::Unreachable(
@@ -109,5 +127,31 @@ mod tests {
         assert_eq!(client_socket_path(None, Some(home)), Some(via_home));
         assert_eq!(client_socket_path(None, None), None);
         assert_eq!(client_socket_path(Some(""), None), None);
+    }
+
+    /// A fuxx that takes the request but never answers (its window stuck): given up on after
+    /// the time limit, as not reachable, so a shim falls back to the real `open`.
+    #[test]
+    fn a_reply_that_never_comes_is_given_up_on() {
+        let dir = crate::test_temp::dir("api-client-silent");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("s.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let held = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            drop(conn);
+        });
+        let request = Request {
+            id: None,
+            method: "link.open".into(),
+            params: serde_json::json!({}),
+        };
+        let started = std::time::Instant::now();
+        let got = call_within(&sock, &request, std::time::Duration::from_millis(200));
+        assert!(matches!(got, Err(ClientError::Unreachable(_))), "{got:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        held.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

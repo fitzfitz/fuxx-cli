@@ -24,6 +24,7 @@ mod api_server;
 mod app_icon;
 mod app_log;
 mod appearance;
+mod auto_open;
 mod block_view;
 mod blocks;
 mod branch_git;
@@ -928,6 +929,10 @@ fn run_daemon(command: cli::DaemonCommand) -> i32 {
     }
 }
 
+/// How long `fuxx link open` waits for the window's answer (given at once, before any page
+/// loads) before it gives up.
+const LINK_OPEN_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Run one `fuxx <command>` against the running app; returns the exit code.
 fn run_command(command: &str, mut request: api::Request, json: bool, stream: bool) -> i32 {
     if command == "paste" {
@@ -967,7 +972,14 @@ fn run_command(command: &str, mut request: api::Request, json: bool, stream: boo
     };
 
     if !stream {
-        return match api_client::call(&path, &request) {
+        // A shim's `fuxx link open` never holds up the program that opened a page: no reply
+        // in time is "not reachable", and the shim runs the real `open`.
+        let reply = if command == "link open" {
+            api_client::call_within(&path, &request, LINK_OPEN_LIMIT)
+        } else {
+            api_client::call(&path, &request)
+        };
+        return match reply {
             Ok(result) => {
                 print(cli::render(command, &result, json));
                 0
@@ -1053,7 +1065,9 @@ fn main() {
     let caller = std::env::var("FUXX_SESSION")
         .ok()
         .and_then(|s| s.strip_prefix('s')?.parse().ok());
-    match cli::parse(&args, caller) {
+    // An agent tab's process (`FUXX_AGENT_TAB`): its `fuxx link open` opens beside that tab.
+    let agent = std::env::var(auto_open::AGENT_VAR).ok();
+    match cli::parse(&args, caller).map(|c| cli::with_agent(c, agent.as_deref())) {
         Ok(Cli::Gui) => {}
         Ok(Cli::Help(usage)) => {
             print!("{usage}");
@@ -1084,6 +1098,8 @@ fn main() {
     // Before any terminal starts (M11l): the zsh integration's scripts, written only when
     // missing or changed. A failure is logged and leaves it off.
     shell_integration::setup();
+    // And the auto-open shims (`open`, `xdg-open`, `$BROWSER`), written only when changed.
+    auto_open::setup();
     // Clicks on fuxx's banners, heard from before the app runs (a click that opened fuxx comes
     // as it starts), wait here for the workspace (from the app bundle only).
     let (clicked, clicks) = futures::channel::mpsc::unbounded();

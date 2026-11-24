@@ -88,6 +88,10 @@ usage: fuxx [command]   (no command opens the app)
   browser screenshot [PATH]            save a PNG of the page (default: a temp file); prints the path
   browser back | reload | close        go back, reload, or close the browser tab
        Every browser command takes --session TARGET (default: your session).
+  link open URL                        open URL as a clicked link in your terminal or agent tab
+                                       would (\"Open links in\"); returns at once. The open,
+                                       xdg-open and $BROWSER shims fuxx puts in its terminals
+                                       call it for a program's own browser opening
   ping                                 check that fuxx is reachable
   version                              print the version and the methods
   mcp                                  run as an MCP server on stdio
@@ -336,6 +340,70 @@ fn parse_browser(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
     })
 }
 
+/// `fuxx link open URL [--json]` (`args` after `link`; a `--json` given before `link` is in it
+/// too): the URL as a clicked link in the calling terminal (`caller`) or agent tab
+/// (`with_agent`) would open. Answered at once, never after the page loads.
+fn parse_link(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
+    let cmd = "link open";
+    let Some(word) = args.iter().position(|a| a != "--json") else {
+        return Err(usage_err("link", "needs a command: open"));
+    };
+    if args[word] != "open" {
+        return Err(format!(
+            "fuxx link: unknown command: {} (see `fuxx help`)",
+            args[word]
+        ));
+    }
+    let mut tail = args[..word].to_vec();
+    tail.extend_from_slice(&args[word + 1..]);
+    let a = Args::split(cmd, &tail).map_err(|e| format!("fuxx {cmd}: {e}"))?;
+    let [url] = a.pos.as_slice() else {
+        return Err(usage_err(cmd, "expects URL"));
+    };
+    let mut params = Map::new();
+    params.insert("url".into(), json!(url));
+    if let Some(c) = caller {
+        params.insert("caller".into(), json!(c));
+    }
+    Ok(Cli::Call {
+        command: cmd,
+        request: Request {
+            id: None,
+            method: "link.open".to_string(),
+            params: Value::Object(params),
+        },
+        json: a.on("json"),
+        stream: false,
+    })
+}
+
+/// `fuxx link open` run by an agent tab's process: the tab (`agent`, `FUXX_AGENT_TAB`'s `aN`)
+/// as the request's `agent`, unless a terminal (`caller`) already asks or it is empty. Any other
+/// command is as it was.
+pub fn with_agent(cli: Cli, agent: Option<&str>) -> Cli {
+    match cli {
+        Cli::Call {
+            command: "link open",
+            mut request,
+            json,
+            stream,
+        } => {
+            if let Some(agent) = agent.filter(|a| !a.is_empty())
+                && request.params.get("caller").is_none()
+            {
+                request.params["agent"] = json!(agent);
+            }
+            Cli::Call {
+                command: "link open",
+                request,
+                json,
+                stream,
+            }
+        }
+        other => other,
+    }
+}
+
 /// Parse the command line (without argv[0]). `caller` is the session in `FUXX_SESSION`.
 /// Only no arguments (or macOS's `-psn_…` launch argument) opens the app; anything else that
 /// isn't a command is an error, so a typo never opens a window.
@@ -358,6 +426,7 @@ pub fn parse(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
         "mcp" => return Ok(Cli::Mcp),
         "daemon" => return parse_daemon(&rest[1..], leading_json > 0).map(Cli::Daemon),
         "browser" => return parse_browser(&[&args[..leading_json], &rest[1..]].concat(), caller),
+        "link" => return parse_link(&[&args[..leading_json], &rest[1..]].concat(), caller),
         // M10c self-test: hidden, not in USAGE.
         "__browser-probe" => {
             return if leading_json == 0 && rest.len() == 1 {
@@ -828,6 +897,64 @@ mod tests {
             } => (request, json, stream),
             _ => panic!("not a call"),
         }
+    }
+
+    #[test]
+    fn link_open_parses_with_its_caller() {
+        let url = "http://localhost:5173";
+        match p(&["link", "open", url]).unwrap() {
+            Cli::Call {
+                command,
+                request,
+                json,
+                stream,
+            } => {
+                assert_eq!((command, json, stream), ("link open", false, false));
+                assert_eq!(request.method, "link.open");
+                assert_eq!(request.params, json!({"url": url, "caller": 3}));
+            }
+            other => panic!("not a call: {other:?}"),
+        }
+        let (r, json, _) = call(p(&["--json", "link", "open", "--", "--odd"]));
+        assert!(json);
+        assert_eq!(r.params["url"], "--odd");
+        for bad in [
+            &["link"][..],
+            &["link", "bogus"],
+            &["link", "open"],
+            &["link", "open", url, url],
+            &["link", "open", "--session", "s1", url],
+        ] {
+            let e = p(bad).unwrap_err();
+            assert!(e.starts_with("fuxx link"), "{bad:?}: {e}");
+        }
+        assert!(USAGE.contains("link open URL"));
+        assert_eq!(render("link open", &json!({}), false), "");
+    }
+
+    #[test]
+    fn link_open_from_an_agent_tab_names_it() {
+        let url = "http://localhost:5173";
+        let no_caller =
+            |a: &[&str]| parse(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), None);
+        let (r, ..) = call(Ok(with_agent(
+            no_caller(&["link", "open", url]).unwrap(),
+            Some("a2"),
+        )));
+        assert_eq!(r.params, json!({"url": url, "agent": "a2"}));
+        // A terminal's caller wins; an empty or missing agent adds nothing; other commands too.
+        let (r, ..) = call(Ok(with_agent(
+            p(&["link", "open", url]).unwrap(),
+            Some("a2"),
+        )));
+        assert_eq!(r.params, json!({"url": url, "caller": 3}));
+        let (r, ..) = call(Ok(with_agent(
+            no_caller(&["link", "open", url]).unwrap(),
+            Some(""),
+        )));
+        assert_eq!(r.params, json!({"url": url}));
+        let (r, ..) = call(Ok(with_agent(no_caller(&["ls"]).unwrap(), Some("a2"))));
+        assert_eq!(r.params, json!({}));
     }
 
     #[test]

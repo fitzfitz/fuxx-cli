@@ -138,6 +138,19 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "link-auto-open",
+        run: link_auto_open,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/auto_open.rs",
+            "src/link_route.rs",
+            "src/workspace_api.rs",
+            "src/workspace_browser.rs",
+        ],
+    },
+    Scene {
         name: "link-opens-split",
         run: link_opens_split,
         themes: Themes::One,
@@ -1545,6 +1558,175 @@ fn link_opens_split() {
     };
     render_with(&theme, dims(), build, act);
     println!("ui-shots: link-opens-split ok");
+}
+
+/// `link-auto-open`: a program in a terminal opens a browser by itself (`npm run dev` with
+/// auto-open: the `open` shim's `fuxx link open`, the `link.open` request). It lands in a
+/// browser split on the right, its pill flashing, the terminal keeping your focus; a second is
+/// a tab in that pane, flashing too; the same address again shows its tab. A terminal in a
+/// workspace you aren't looking at opens beside itself, and you stay where you are. No caller,
+/// an unknown one, or a non-web address is refused (the shim then runs the real `open`); with
+/// "Your default browser" it goes to the OS.
+fn link_auto_open() {
+    use crate::appearance::{Appearance, OpenLinksIn};
+    use serde_json::json;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let text = "$ npm run dev\r\n\r\n  VITE v5.4.0  ready in 312 ms\r\n\r\n  \u{279c}  Local:   http://localhost:5173/\r\n".to_string();
+    let theme = shot_theme(shot_themes()[0].1);
+    let slot: Slot = Rc::new(RefCell::new(None));
+    let build = one_terminal(theme, text, slot.clone());
+    let act = move |cx: &mut VisualTestAppContext, window: AnyWindowHandle| {
+        let n = "link-auto-open";
+        let ws = slotted(&slot);
+        frames(cx, window);
+        let term_tab = cx.read(|cx| ws.read(cx).model.focused_tab().expect("the terminal"));
+        let id = cx.read(|cx| ws.read(cx).sessions.items()[0].id);
+        let open = |cx: &mut VisualTestAppContext, p: serde_json::Value| {
+            let got = cx
+                .update_window(window, |_, window, cx| {
+                    ws.update(cx, |ws, cx| ws.link_open(&p, window, cx))
+                })
+                .expect("link.open");
+            frames(cx, window);
+            got.map_err(|e| e.code)
+        };
+        let panes = |cx: &mut VisualTestAppContext| {
+            cx.read(|cx| {
+                let ws = ws.read(cx);
+                let (wid, _) = ws.model.locate(term_tab).expect("its workspace");
+                ws.model
+                    .workspace(wid)
+                    .expect("it")
+                    .layout
+                    .leaves()
+                    .into_iter()
+                    .filter_map(|p| ws.model.pane(p))
+                    .map(|p| {
+                        let urls: Vec<String> = p
+                            .tabs
+                            .iter()
+                            .filter_map(|t| match &t.kind {
+                                TabKind::Browser { url } => url.clone(),
+                                _ => None,
+                            })
+                            .collect();
+                        (p.id, urls)
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let focused = |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).model.focused_tab());
+        let flash =
+            |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).link_flash.map(|(t, ..)| t));
+        let url = "http://localhost:5173/";
+        // The dev server's auto-open: a browser split on the right, flashing; focus stays.
+        assert_eq!(open(cx, json!({"url": url, "caller": id})), Ok(json!({})));
+        let now = panes(cx);
+        assert_eq!(now.len(), 2, "{n}: split: {now:?}");
+        assert!(now[0].1.is_empty(), "{n}: the terminal's pane has no page");
+        assert_eq!(now[1].1, [url], "{n}: the page on the right");
+        let first = cx.read(|cx| ws.read(cx).model.pane(now[1].0).unwrap().tabs[0].id);
+        assert_eq!(
+            flash(cx),
+            Some(first),
+            "{n}: a new split's pill flashes too"
+        );
+        assert_eq!(focused(cx), Some(term_tab), "{n}: your focus stays");
+        // A second address: a tab in that pane, flashing.
+        let docs = "https://example.com/docs";
+        assert_eq!(open(cx, json!({"url": docs, "caller": id})), Ok(json!({})));
+        let now = panes(cx);
+        assert_eq!(now.len(), 2, "{n}: no second split");
+        assert_eq!(now[1].1, [url, docs], "{n}: a tab in the link pane");
+        let second = cx.read(|cx| ws.read(cx).model.pane(now[1].0).unwrap().tabs[1].id);
+        assert_eq!(flash(cx), Some(second), "{n}: its pill flashes");
+        assert_eq!(focused(cx), Some(term_tab), "{n}: your focus stays");
+        // The first again: its tab shown, no third.
+        assert_eq!(open(cx, json!({"url": url, "caller": id})), Ok(json!({})));
+        let now = panes(cx);
+        assert_eq!(now[1].1.len(), 2, "{n}: not opened twice");
+        let shown = cx.read(|cx| ws.read(cx).model.pane(now[1].0).unwrap().active);
+        assert_eq!(shown, first, "{n}: its tab shown");
+        assert_eq!(flash(cx), Some(first), "{n}: and flashing");
+        // Refused, so the shim runs the real open: no caller, an unknown one, not a web page.
+        assert_eq!(open(cx, json!({"url": url})), Err("bad_request"), "{n}");
+        assert_eq!(
+            open(cx, json!({"url": url, "caller": 999})),
+            Err("not_found")
+        );
+        assert_eq!(
+            open(cx, json!({"url": url, "agent": "a9"})),
+            Err("not_found")
+        );
+        assert_eq!(
+            open(cx, json!({"url": "file:///etc/hosts", "caller": id})),
+            Err("bad_request")
+        );
+        assert_eq!(
+            open(cx, json!({"url": "mailto:team@example.com", "caller": id})),
+            Err("bad_request")
+        );
+        assert_eq!(panes(cx)[1].1.len(), 2, "{n}: nothing opened for those");
+        // A terminal in another workspace: its page opens beside it; you stay where you are.
+        let other = cx
+            .update_window(window, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let project = PathBuf::from("/Users/me/code/my-app");
+                    ws.open_shot_session("web", &project, "$ npm run dev\r\n", None, window, cx);
+                    ws.sessions.items().last().map(|s| s.id)
+                })
+            })
+            .expect("a second session")
+            .expect("its id");
+        frames(cx, window);
+        let other_tab = cx.read(|cx| ws.read(cx).model.terminal_tab(other).expect("its tab"));
+        select(cx, window, &ws, term_tab);
+        frames(cx, window);
+        let mine = cx.read(|cx| ws.read(cx).model.locate(term_tab).map(|(w, _)| w));
+        let theirs = cx.read(|cx| ws.read(cx).model.locate(other_tab).map(|(w, _)| w));
+        assert_ne!(mine, theirs, "{n}: a workspace of its own");
+        {
+            let preview = "http://localhost:5174/";
+            assert_eq!(
+                open(cx, json!({"url": preview, "caller": other})),
+                Ok(json!({}))
+            );
+            assert_eq!(focused(cx), Some(term_tab), "{n}: you stay where you are");
+            let (beside, its_focus) = cx.read(|cx| {
+                let ws = ws.read(cx);
+                let w = ws.model.workspace(theirs.unwrap()).unwrap();
+                let urls: Vec<String> = w
+                    .panes
+                    .iter()
+                    .flat_map(|p| &p.tabs)
+                    .filter_map(|t| match &t.kind {
+                        TabKind::Browser { url } => url.clone(),
+                        _ => None,
+                    })
+                    .collect();
+                let focus = ws.model.pane(w.focused).map(|p| p.active);
+                (urls, focus)
+            });
+            assert_eq!(beside, [preview], "{n}: beside the other terminal");
+            assert_eq!(
+                its_focus,
+                Some(other_tab),
+                "{n}: its terminal keeps its focus"
+            );
+        }
+        // "Your default browser": the OS, as for a click.
+        cx.update(|cx| {
+            cx.update_global::<Appearance, _>(|a, _| a.open_links_in = OpenLinksIn::Browser);
+        });
+        frames(cx, window);
+        assert_eq!(open(cx, json!({"url": docs, "caller": id})), Ok(json!({})));
+        let outside = cx.read(|cx| ws.read(cx).shot_opened_outside.clone());
+        assert_eq!(outside, [docs], "{n}: to the default browser");
+        slot.borrow_mut().take();
+    };
+    render_with(&theme, dims(), build, act);
+    println!("ui-shots: link-auto-open ok");
 }
 
 /// A small tree to change: src/ (main.rs, marked; lib.rs) and README.md, in a folder of its own.

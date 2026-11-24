@@ -983,4 +983,61 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
   - **Checks:** `the_suggestion_is_italic_and_greyer_than_the_placeholder` (every theme: quieter than the
     placeholder, still over 1.5:1; the font italic), watched failing first; `agent-box-suggestion` reference
     refreshed (both themes).
-
+- **A program's own browser opening lands like a clicked link** (your words, 2026-11-24: "the url click is cool,
+  open an new tab on right split pane. 1 thing is missed on this, I want the same treatment happening when there is
+  a browser autotrigger from the terminal inside fuxxpace. For example running superpower mockup preview, doing an
+  npm run dev with auto open, etc."): a new `fuxx link open URL` (protocol `link.open`, `src/auto_open.rs`,
+  `link_route.rs`) opens an http(s) address as a link clicked in the terminal (`FUXX_SESSION`) or agent tab (new
+  `FUXX_AGENT_TAB=aN`) it runs in, through `Workspace::open_link`, so "Open links in" decides: a split on the right,
+  a tab in this pane, or your default browser (handed to macOS as before). It answers at once, never after the page.
+  At start fuxx writes three POSIX `sh` shims to `~/.local/share/fuxx/shims` (`~/.local/share/fuxx-dev/shims` for a
+  debug build), each only when it changed: `open`, `xdg-open` and `fuxx-browser`. A lone `http://`/`https://` address (also
+  `-u URL`, `--url URL`) goes to `fuxx link open`; anything else (`-a`, `-R`, files, `file:`, `mailto:`, two
+  addresses) and any failure (fuxx closed, scripting off, no calling tab) runs `/usr/bin/open` with the arguments
+  untouched. Every fuxx terminal (local, background-service, an SSH session's local side) and agent process gets the
+  folder first on `PATH` (never twice), `BROWSER=<folder>/fuxx-browser` and `FUXX_SHIMS`; the zsh integration's
+  `.zshenv` puts the folder first again at the first prompt, once (a one-shot `precmd` hook), after
+  `/etc/zprofile`'s `path_helper` and your own files. The page's tab pill always flashes (a new split's too, as a
+  reused pane's), and your focus stays where it is; from a terminal in a workspace you aren't looking at, the page
+  opens beside that terminal and neither your focus nor that workspace's moves.
+  - **AI's calls:** a new command, not `browser open --flag`: `browser open` is the agent's automation browser (the
+    workspace's most recently used browser tab, which the other `browser.*` commands then drive, and it waits for
+    the page), while an auto-open is your link and must follow "Open links in" and return at once; one command with
+    two placement rules would be harder to read. `-a <fuxx-browser> URL` (the full path or the bare name) is taken
+    over too: with `BROWSER` set, Vite's `open` package runs `open -a "$BROWSER" URL` on macOS, which the real
+    `open` would refuse (a script is no app); any other `-a` passes through. `fuxx link open` gives up after 3 s
+    (`api_client::call_within`), so a stuck window never holds the program; the shim then runs the real `open`. The
+    shims run `/usr/bin/open` unless `FUXX_REAL_OPEN` names another (the tests' stub), `xdg-open` too. Terminals get
+    the shims only while this fuxx serves its socket (scripting on); otherwise `FUXX_SHIMS` and `FUXX_AGENT_TAB` are
+    removed with the other variables. An agent process gets `FUXX_SOCKET`, `FUXX_AGENT_TAB` and an empty
+    `FUXX_SESSION` (so one inherited never names a terminal), set before its first start. Your own `BROWSER`, if
+    you had one, is replaced inside fuxx (the shim's fallback is macOS's default browser). The Command Reference in
+    Help lists `link open` with the browser commands. `keep_focus` replaces the old "select the tab you were on":
+    the same for a click, and it also keeps the other workspace's focus for an auto-open from there.
+  - **Limits:** macOS login shells run `path_helper`, which moves the folder behind `/usr/bin`; only the zsh
+    integration (on with command blocks or a helper plugin) puts it back. With bash, fish, or the integration off,
+    a plain `open URL` in a login shell reaches the real `open`; `$BROWSER` still works (Python's `webbrowser`,
+    Vite with `BROWSER`, anything that reads it). Claude Code's Bash tool
+    may restore your shell's `PATH`; its commands then reach fuxx through `BROWSER` only. SSH sessions' remote
+    shells get no shims, and a background-service terminal started before this build gets them when reopened.
+  - **Moved (the lead's must-fix, same day):** the first cut put the shims under `~/Library/Application
+    Support/fuxx/shims`, and that space broke `$BROWSER` for tools that split it (gh's `auth login`). They now live
+    in `~/.local/share/fuxx/shims` (`fuxx-dev` for a debug build), a path with no space; at start fuxx removes the
+    old `shims` and `shims-dev` folders under "Application Support" when they hold nothing but the three shims.
+    Tests `the_shim_folder_and_browser_have_no_whitespace` (`BROWSER` is the folder's `fuxx-browser`) and
+    `the_old_shim_folder_goes_only_when_it_holds_just_shims`, both watched failing first.
+  - **Checks:** `auto_open` tests (the rule `auto_open_target`; the `open` script run through `sh` in a temp folder
+    with a fake `fuxx` and a stub real `open`: interception for a lone address, `-u`, `--url`, `-a <fuxx-browser>`,
+    `xdg-open` and `fuxx-browser`; an odd address with quotes, `$( )`, backticks and spaces reaches fuxx as it is and
+    runs nothing; pass-through untouched for files, `file:`, `mailto:`, `-a Safari`, `-R`, two addresses, no
+    arguments, outside fuxx and when `fuxx link open` fails; every case of the rule run through the script too; the
+    folder's dev split; `PATH` once; the agent's variables; writing only when changed, `0o755`);
+    `link_open_parses_with_its_caller`, `link_open_from_an_agent_tab_names_it`,
+    `a_reply_that_never_comes_is_given_up_on`, `methods_match_the_spec`, the four `keep_focus`/`caller_tab` tests,
+    `a_terminal_gets_the_shims_first_and_its_browser`, a real zsh's
+    `the_shims_are_first_on_path_again_after_your_files` (command blocks alone and with a helper plugin; a folder
+    with a space and glob characters; the hook gone after), `link_open_sits_with_the_browser_commands`; each watched
+    failing first. New state scene `link-auto-open` (a dev server's auto-open splits right and flashes, focus stays;
+    a second address is a tab there; the same one selects; refusals; a terminal in another workspace opens beside
+    itself; "Your default browser" goes to the OS).
+  - **On screen:** not yet seen in the real window; no real `npm run dev`, Vite or mockup preview was run.
