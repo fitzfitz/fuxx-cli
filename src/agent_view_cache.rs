@@ -19,7 +19,6 @@ use crate::agent_lanes::View;
 use crate::agent_steps::{
     CheckMark, Role, check_marks, open_of, roles_of, stands_alone, step_print,
 };
-use crate::status::Status;
 
 #[derive(Default)]
 pub struct ViewCache {
@@ -291,11 +290,8 @@ impl ViewCache {
     pub fn thinking_now(&self, c: &Conversation, view: &View) -> bool {
         let items = c.items();
         let (working, running, last) = match view {
-            View::Main => (
-                c.status() == Status::Working,
-                !c.running_tools().is_empty(),
-                items.last(),
-            ),
+            // Main has none: the status strip over the box says it (the 2026-11-24 chores).
+            View::Main => return false,
             View::Lane(id) => (
                 c.lane(id).is_some_and(|l| l.status.live()),
                 c.running_tools()

@@ -126,6 +126,8 @@ const CHEVRON_COL: f32 = 12.0;
 pub(crate) const EFFORT_SWITCH_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 /// The usage view's width.
 pub(crate) const USAGE_WIDTH: f32 = 300.0;
+/// The clock's cost and context panel.
+const CLOCK_WIDTH: f32 = 280.0;
 /// The usage view's tallest; it scrolls past it.
 pub(crate) const USAGE_MAX_H: f32 = 480.0;
 /// The mode menu's width (its rows carry a description).
@@ -186,6 +188,9 @@ pub enum BoxMenu {
     },
     /// The usage panel, over its own button beside the model pill (your word, 2026-11-21).
     Usage,
+    /// The cost and context panel, over the clock between the model pill and the gauge (the
+    /// 2026-11-24 chores).
+    Clock,
     Mode,
     Attach,
     /// The turn ledger's popover, over the status pill (the agent activity chore).
@@ -206,8 +211,8 @@ pub struct BoxTexts {
     pub usage: Option<String>,
     /// The warning dot on the model chip: a limit is close or reached.
     pub limit_warning: bool,
-    /// The turn ledger's parts after the status, as drawn (the agent activity chore).
-    pub ledger: Vec<String>,
+    /// The chat's status line and its counts line, as drawn (the 2026-11-24 chores).
+    pub status_line: Option<(String, Option<String>)>,
 }
 
 /// The catalog model (its place) and effort level that `start`'s flags name: a model whose id,
@@ -972,11 +977,7 @@ impl AgentTab {
                 self.conversation.context_pct(),
             ),
             limit_warning: self.limit_warning(cx),
-            ledger: self
-                .ledger_shown(&cx.global::<Appearance>().theme)
-                .into_iter()
-                .map(|p| p.text)
-                .collect(),
+            status_line: self.status_line_now(&cx.global::<Appearance>().theme),
         }
     }
 
@@ -1161,7 +1162,11 @@ impl AgentTab {
         let model = self
             .marked(
                 "model",
-                control_pill("agent-model", None, texts.model.clone(), c),
+                // On a narrow footer the model's name gives way first (the 2026-11-24 chores):
+                // the clock and the gauge keep their room.
+                control_pill("agent-model", None, texts.model.clone(), c)
+                    .flex_shrink(1.)
+                    .min_w(px(0.)),
             )
             .when(self.provider.is_some(), |d| {
                 d.cursor_pointer()
@@ -1186,6 +1191,58 @@ impl AgentTab {
         // Usage, its own button beside the model pill (your word, 2026-11-21: "take out usage
         // … from model popover to outside"): the gauge, round like +; its panel opens over it;
         // the warning dot when a limit is close or reached.
+        // The clock between the model pill and the gauge (the 2026-11-24 chores): a rest on it
+        // shows the cost and the context; its dot past 80 % context.
+        let clock_hover_fill = c.control_hover;
+        let context_warn = crate::agent_top::context_warning(self.conversation.context_pct());
+        let clock = self.cost_context(c).map(|panel| {
+            self.marked(
+                "clock-button",
+                div()
+                    .id("agent-clock-button")
+                    .relative()
+                    .flex_none()
+                    .size(px(BUTTON))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::Clock,
+                        px(CONTROL_ICON),
+                        hsla(c.dim),
+                    )),
+            )
+            .when(context_warn, |d| {
+                d.child(
+                    self.marked(
+                        "context-warning",
+                        div()
+                            .absolute()
+                            .top(px(4.))
+                            .right(px(4.))
+                            .size(px(LIMIT_DOT))
+                            .rounded_full()
+                            .bg(hsla(warn)),
+                    ),
+                )
+            })
+            .hover(move |s| s.bg(hsla(clock_hover_fill)))
+            .on_hover(cx.listener(|this, on: &bool, _, cx| {
+                this.clock_hovered(crate::hover_delay::Part::Anchor, *on, cx)
+            }))
+            .when(menu_on(|m| matches!(m, BoxMenu::Clock)), |d| {
+                let panel = div()
+                    .id("agent-clock-panel")
+                    .p(px(12.))
+                    .on_hover(cx.listener(|this, on: &bool, _, cx| {
+                        this.clock_hovered(crate::hover_delay::Part::Panel, *on, cx)
+                    }))
+                    .child(panel)
+                    .into_any_element();
+                d.child(self.menu_frame(Some(panel), None, CLOCK_WIDTH, cx))
+            })
+        });
         let usage_hover = c.control_hover;
         let usage = self
             .marked(
@@ -1454,6 +1511,7 @@ impl AgentTab {
                             .pl(px(BOX_X - CONTROL_INSET - (BUTTON - CONTROL_ICON) / 2.))
                             .child(attach)
                             .child(model)
+                            .children(clock)
                             .child(usage)
                             .child(div().flex_1())
                             .children(mode)
@@ -2478,10 +2536,17 @@ fn control_pill(
         .rounded(px(CHIP_H / 2.))
         .text_size(px(13.))
         .text_color(dim)
-        .children(glyph.map(|g| div().mr(px(6.)).child(icon(g, px(14.), dim))))
-        .child(SharedString::from(text))
+        .children(glyph.map(|g| div().flex_none().mr(px(6.)).child(icon(g, px(14.), dim))))
+        // Cut with "…" when the pill is let shrink (the model's, on a narrow footer).
         .child(
             div()
+                .min_w(px(0.))
+                .truncate()
+                .child(SharedString::from(text)),
+        )
+        .child(
+            div()
+                .flex_none()
                 .ml(px(4.))
                 .child(icon(Icon::ChevronDown, px(12.), dim)),
         )

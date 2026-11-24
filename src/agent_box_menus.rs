@@ -70,6 +70,7 @@ impl AgentTab {
                                             BoxMenu::Folder
                                                 | BoxMenu::Model { .. }
                                                 | BoxMenu::Usage
+                                                | BoxMenu::Clock
                                                 | BoxMenu::Mode
                                                 | BoxMenu::Attach
                                                 | BoxMenu::Ledger
@@ -444,6 +445,23 @@ impl AgentTab {
                 if open {
                     this.open_usage(cx);
                 } else if matches!(this.menu, Some(BoxMenu::Usage)) {
+                    this.close_menu(cx);
+                }
+            },
+            cx,
+        );
+    }
+
+    /// The clock's cost and context panel: as the gauge's (`usage_hovered`).
+    pub(super) fn clock_hovered(&mut self, part: Part, on: bool, cx: &mut Context<Self>) {
+        self.hover_panel(
+            |this| &mut this.clock_hover,
+            part,
+            on,
+            |this, open, cx| {
+                if open {
+                    this.open_menu(BoxMenu::Clock, cx);
+                } else if matches!(this.menu, Some(BoxMenu::Clock)) {
                     this.close_menu(cx);
                 }
             },

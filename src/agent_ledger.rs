@@ -98,10 +98,6 @@ pub struct Part {
     pub text: String,
 }
 
-/// A character's width at the pill's 12 pt medium, for fitting.
-pub const CHAR_W: f32 = 7.0;
-/// A pill's icon, padding and gap.
-pub const PILL_EXTRA: f32 = 34.0;
 /// Between the parts (and after the status word).
 pub const SEP: &str = " · ";
 
@@ -457,32 +453,6 @@ pub fn parts(ledger: &Ledger, now: Instant) -> Vec<Part> {
         text,
     }));
     out
-}
-
-/// How many of `parts` fit in `room` (cut from the right): each after a `SEP`; a leading
-/// running call always stays.
-pub fn fit(parts: &[Part], room: f32) -> usize {
-    let mut chars = 0;
-    let mut shown = 0;
-    for p in parts {
-        chars += SEP.chars().count() + p.text.chars().count();
-        if chars as f32 * CHAR_W > room {
-            break;
-        }
-        shown += 1;
-    }
-    let keep = parts.first().is_some_and(|p| p.kind == PartKind::Running) as usize;
-    shown.max(keep)
-}
-
-/// The room the ledger has in the folder tab: the column less the status, folder and branch
-/// pills.
-pub fn room(column_w: f32, status_word: &str, folder: &str, branch: Option<&str>) -> f32 {
-    let chars = status_word.chars().count()
-        + folder.chars().count()
-        + branch.map_or(0, |b| b.chars().count());
-    let pills = 2 + branch.is_some() as usize;
-    column_w - chars as f32 * CHAR_W - pills as f32 * PILL_EXTRA
 }
 
 #[cfg(test)]
@@ -877,27 +847,5 @@ mod tests {
             ..sample(now)
         };
         assert!(parts(&empty, now).is_empty());
-    }
-
-    #[test]
-    fn it_trims_from_the_right_keeping_the_running_call() {
-        let now = Instant::now();
-        let p = parts(&sample(now), now);
-        // 31, 9 and 11 characters; a fit counts the leading SEP and one SEP between parts:
-        // 3 parts = (3 + 31 + 3 + 9 + 3 + 11) * CHAR_W = 420, 2 parts = 322, 1 part = 238.
-        assert_eq!(fit(&p, 420.0), 3);
-        assert_eq!(fit(&p, 419.0), 2);
-        assert_eq!(fit(&p, 322.0), 2);
-        assert_eq!(fit(&p, 321.0), 1);
-        assert_eq!(fit(&p, 0.0), 1); // the running call is kept
-        assert_eq!(fit(&p[1..], 0.0), 0);
-    }
-
-    #[test]
-    fn the_room_is_the_column_less_the_status_folder_and_branch() {
-        assert_eq!(
-            room(760.0, "Done", "my-app", Some("main")),
-            760.0 - (4.0 + 6.0 + 4.0) * CHAR_W - 3.0 * PILL_EXTRA
-        );
     }
 }

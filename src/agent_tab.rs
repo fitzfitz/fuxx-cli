@@ -1580,6 +1580,8 @@ pub struct AgentTab {
     pub(crate) chip_closed_at: Option<gpui::Point<gpui::Pixels>>,
     /// The usage gauge's panel opens on a rest over it (the 2026-11-24 chores: hover, not click).
     pub(crate) usage_hover: crate::hover_delay::HoverDelay,
+    /// The clock's cost and context panel opens the same way.
+    pub(crate) clock_hover: crate::hover_delay::HoverDelay,
     /// The branch checked out in the agent's folder (none outside a repo, or before it is read):
     /// looked up on the background executor, never in `render` (`read_branch`).
     pub(crate) branch: Option<String>,
@@ -2286,6 +2288,7 @@ impl AgentTab {
             picker: None,
             chip_closed_at: None,
             usage_hover: Default::default(),
+            clock_hover: Default::default(),
             branch: None,
             files: None,
             listing: false,
@@ -3918,6 +3921,7 @@ impl AgentTab {
         self.effort_panel_at.set(None);
         // A hover-opened panel closed another way waits for a fresh rest.
         self.usage_hover.close();
+        self.clock_hover.close();
         #[cfg(feature = "ui-shots")]
         self.menu_rows.borrow_mut().clear();
         if self.menu.take().is_some() {
@@ -5661,46 +5665,15 @@ impl AgentTab {
             .text_size(px(12.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(hsla(to_ink))
+            // Its mark alone (the 2026-11-24 chores: the words ran past the tab's edge; they are
+            // the chat's status line now, `status_strip`); its word is the tip.
             .child(mark)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .whitespace_nowrap()
-                    .child(SharedString::from(self.status_word(theme)))
-                    // The turn ledger after the status (the agent activity chore): the running
-                    // call, the files changed, the checks; cut from the right to fit, the
-                    // running call kept.
-                    .children(self.ledger_shown(theme).into_iter().map(|part| {
-                        let failing = part.kind == crate::agent_ledger::PartKind::Checks
-                            && self.ledger.as_ref().is_some_and(|l| l.failing.is_some());
-                        div()
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(hsla(if failing { c.ledger_failing } else { c.dim }))
-                            .child(SharedString::from(format!(
-                                "{}{}",
-                                crate::agent_ledger::SEP,
-                                part.text
-                            )))
-                    })),
-            )
-            .when(self.ledger_shows(), |d| {
-                let hover = c.pill_hover;
-                d.relative()
-                    .rounded(px(crate::card_view::PILL_H / 2.))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hsla(hover)))
-                    .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
-                        let pressed = match event {
-                            gpui::ClickEvent::Mouse(click) => Some(click.down.position),
-                            _ => None,
-                        };
-                        // This press already shut the open popover (from outside it).
-                        let shut_at = this.chip_closed_at.take();
-                        if pressed.is_none() || shut_at != pressed {
-                            this.ledger_clicked(cx)
-                        }
-                    }))
+            .tooltip({
+                let word = self.status_word(theme);
+                move |_, cx| {
+                    cx.new(|_| crate::sidebar_toggle::Tip(word.clone().into()))
+                        .into()
+                }
             });
         let el = match from_ink {
             Some(from) => el
@@ -5732,32 +5705,123 @@ impl AgentTab {
         }
     }
 
-    /// The ledger shows in the folder tab: a live turn, and no question or permission open
-    /// (the box answers that first).
-    fn ledger_shows(&self) -> bool {
-        self.ledger.is_some() && self.shown_status() != Status::Waiting
-    }
-
-    /// The ledger's parts the folder tab has room for (the running call's clock as of now).
-    pub(crate) fn ledger_shown(&self, theme: &Theme) -> Vec<crate::agent_ledger::Part> {
-        use crate::agent_ledger::{fit, parts, room};
-        let Some(ledger) = self.ledger.as_ref().filter(|_| self.ledger_shows()) else {
-            return Vec::new();
+    /// The chat's status line and its counts line (`agent_status_line`), as of now: in Main,
+    /// while a turn works or waits on you, and after a turn this tab saw end (until the next).
+    pub(crate) fn status_line_now(&self, theme: &Theme) -> Option<(String, Option<String>)> {
+        use crate::agent_status_line::{LineState, status_line};
+        let status = self.shown_status();
+        let live = match status {
+            Status::Working | Status::Waiting => true,
+            // A turn this tab saw (its ledger), not a conversation only restored.
+            Status::Done => self.ledger.is_some(),
+            Status::Idle => self.stopping.is_some(),
         };
-        let mut all = parts(ledger, Instant::now());
-        let folder = crate::agent_box::folder_chip_text(&self.start.cwd);
-        let branch = self
-            .branch
-            .as_deref()
-            .map(crate::agent_box::branch_chip_text);
-        let column = self.bar_width.get().min(crate::ui_tokens::chat::COLUMN_MAX);
-        let room = room(column, &self.status_word(theme), &folder, branch.as_deref());
-        let shown = fit(&all, room);
-        all.truncate(shown);
-        all
+        if !live || self.view != crate::agent_lanes::View::Main {
+            return None;
+        }
+        let now = Instant::now();
+        let parts = self
+            .ledger
+            .as_ref()
+            .map(|l| crate::agent_ledger::parts(l, now))
+            .unwrap_or_default();
+        let word = self.status_word(theme);
+        let question = self.question();
+        Some(status_line(&LineState {
+            word: &word,
+            status,
+            question: question.as_deref(),
+            task: None,
+            running: self.ledger.as_ref().and_then(|l| l.running.as_ref()),
+            parts: &parts,
+            took: self.top.took,
+            now,
+        }))
     }
 
-    /// The status pill's click while the ledger shows: its popover opens, or (open) shuts.
+    /// The status line over the box (the 2026-11-24 chores: "change the Cultivating loading on
+    /// the chat to be the status states"): its mark in the avatar column, the line in the text
+    /// column, and under it the dim counts that open the ledger's popover. Always in view (not
+    /// a row of the chat, so a scrolled chat still shows it).
+    fn status_strip(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use crate::ui_tokens::chat;
+        let theme = cx.global::<Appearance>().theme.clone();
+        let (main, counts) = self.status_line_now(&theme)?;
+        let mark: AnyElement = match self.shown_status() {
+            Status::Waiting => div()
+                .size(px(6.))
+                .rounded_full()
+                .bg(hsla(c.ask_edge))
+                .into_any_element(),
+            Status::Done => status_mark::done_check(c.dim, px(12.)).into_any_element(),
+            Status::Working | Status::Idle => self.thinking_mark.clone().into_any_element(),
+        };
+        let failing = self.ledger.as_ref().is_some_and(|l| l.failing.is_some());
+        let hover = c.text;
+        let counts = counts.map(|text| {
+            self.marked(
+                "status-counts",
+                div()
+                    .id("agent-status-counts")
+                    .truncate()
+                    .text_color(hsla(if failing { c.ledger_failing } else { c.dim }))
+                    .cursor_pointer()
+                    .hover(move |s| s.text_color(hsla(hover)))
+                    .on_click(cx.listener(|this, _, _, cx| this.ledger_clicked(cx)))
+                    .child(SharedString::from(text)),
+            )
+        });
+        let line = div()
+            .w_full()
+            .max_w(px(chat::COLUMN_MAX))
+            .flex()
+            .gap(px(chat::AVATAR_GAP))
+            .pt(px(6.))
+            .pb(px(4.))
+            .text_size(px(text::META))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(chat::AVATAR))
+                    .h(px(18.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(mark),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .child(
+                        self.marked(
+                            "status-line",
+                            div()
+                                .h(px(18.))
+                                .flex()
+                                .items_center()
+                                .text_color(hsla(c.dim))
+                                .child(div().truncate().child(SharedString::from(main))),
+                        ),
+                    )
+                    .children(counts),
+            );
+        Some(
+            div()
+                .flex_none()
+                .w_full()
+                .px(px(crate::agent_box::AREA_X))
+                .flex()
+                .justify_center()
+                .child(line)
+                .into_any_element(),
+        )
+    }
+
+    /// The counts line's click: the ledger's popover opens (over the status mark), or shuts.
     fn ledger_clicked(&mut self, cx: &mut Context<Self>) {
         if matches!(self.menu, Some(crate::agent_box::BoxMenu::Ledger)) {
             self.close_menu(cx);
@@ -5773,19 +5837,61 @@ impl AgentTab {
         self.ledger.clone()
     }
 
-    fn top_line(&mut self, c: &Colors) -> AnyElement {
-        use crate::agent_top::{
-            Band, METER_H, METER_W, animating, band, ease_out_cubic, meter_fill, trim,
-        };
-        let clock_now = Instant::now();
-        let ms = Duration::from_millis;
+    fn top_line(&mut self) -> AnyElement {
+        use crate::agent_top::trim;
         let status = self.shown_status();
         let stopping = self.stopping.is_some();
         let cost = self.conversation.cost_usd();
         let context = self.conversation.context_pct();
         self.top.observe(status, stopping, cost, context);
+        let width = self.bar_width.clone();
+        let measure = gpui::canvas(
+            move |bounds, window, _| {
+                let w = f32::from(bounds.size.width);
+                if trim(width.replace(w)) != trim(w) {
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+        div()
+            .relative()
+            .flex_none()
+            .w_full()
+            .h(px(TOP_BAR))
+            .px(px(AREA_X))
+            .flex()
+            .items_center()
+            .text_size(px(text::META))
+            .font_features(crate::sidebar::tabular())
+            .child(measure)
+            // Its status moved to the box's tab (2026-11-22), its cost and context behind the
+            // box's clock (the 2026-11-24 chores): the bar is the chat's top margin now, and
+            // measures the tab's width.
+            .into_any_element()
+    }
+
+    /// The cost and the context (`+$1.31 $314.65  Context ▬ 69%`), as the clock's panel shows
+    /// them (the 2026-11-24 chores; the top bar's before); none with neither known.
+    pub(crate) fn cost_context(&self, c: &Colors) -> Option<AnyElement> {
+        use crate::agent_top::{
+            Band, METER_H, METER_W, Trim, animating, band, ease_out_cubic, meter_fill,
+        };
+        let clock_now = Instant::now();
+        let ms = Duration::from_millis;
+        let cost = self.conversation.cost_usd();
+        let context = self.conversation.context_pct();
+        if cost.is_none() && context.is_none() {
+            return None;
+        }
         let top = self.top.clone();
-        let shown = trim(self.bar_width.get());
+        let shown = Trim {
+            delta: true,
+            label: true,
+            meter: true,
+        };
         let cost_group = cost.map(|usd| {
             let fresh = animating(top.delta_at, clock_now, ms(200));
             let delta = top.delta.clone().filter(|_| shown.delta).map(|d| {
@@ -5898,39 +6004,20 @@ impl AgentTab {
                     |d, t| d.opacity(t),
                 )
         });
-        let width = self.bar_width.clone();
-        let measure = gpui::canvas(
-            move |bounds, window, _| {
-                let w = f32::from(bounds.size.width);
-                if trim(width.replace(w)) != trim(w) {
-                    window.refresh();
-                }
-            },
-            |_, _, _, _| {},
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .text_size(px(text::META))
+                .font_features(crate::sidebar::tabular())
+                .text_color(hsla(c.dim))
+                .children(cost_group)
+                .when(cost.is_some() && context.is_some(), |d| {
+                    d.child(div().w(px(16.)))
+                })
+                .children(context_group.map(|g| self.marked("context", g)))
+                .into_any_element(),
         )
-        .absolute()
-        .size_full();
-        div()
-            .relative()
-            .flex_none()
-            .w_full()
-            .h(px(TOP_BAR))
-            .px(px(AREA_X))
-            .flex()
-            .items_center()
-            .text_size(px(text::META))
-            .font_features(crate::sidebar::tabular())
-            .text_color(hsla(c.dim))
-            .child(measure)
-            // The status moved to the box's tab, before the folder (your words, 2026-11-22: "like
-            // terminal when doing like npm run dev"): `status_pill`.
-            .child(div().flex_1())
-            .children(cost_group)
-            .when(cost.is_some() && context.is_some(), |d| {
-                d.child(div().w(px(16.)))
-            })
-            .children(context_group.map(|g| self.marked("usage", g)))
-            .into_any_element()
     }
 
     /// Messages waiting for the process, under the conversation, and why they wait.
@@ -6330,7 +6417,7 @@ impl Render for AgentTab {
                     )
             })
             .text_color(hsla(c.text))
-            .child(self.top_line(&c))
+            .child(self.top_line())
             .children(self.lane_strip(&look, cx))
             .children(self.lane_header(&look, cx))
             .child(
@@ -6358,6 +6445,7 @@ impl Render for AgentTab {
                     stream
                 },
             )
+            .children(self.status_strip(&c, cx))
             .children(pending)
             // An error tab (no such agent) has nothing to send to.
             .when(self.provider.is_some(), |d| {

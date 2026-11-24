@@ -302,24 +302,12 @@ pub fn avatar_top(item: &Item) -> f32 {
     }
 }
 
-/// Whether the "Thinking…" line shows under Main's last row (all tools count, as before). The
-/// tab reads `ViewCache::thinking_now` (no scan); the rule stays here for its tests.
+/// Whether the "Thinking…" line shows under Main's last row: never since the 2026-11-24 chores
+/// (the status strip over the box says it, always in view). The tab reads
+/// `ViewCache::thinking_now` (no scan); the rule stays here for its tests.
 #[cfg(test)]
-pub fn shows_thinking(working: bool, items: &[Item]) -> bool {
-    let rows = main_rows(items);
-    let Some(&last) = rows.last() else {
-        return false;
-    };
-    working
-        && !items
-            .iter()
-            .any(|i| matches!(i, Item::Tool { running: true, .. }))
-        && !matches!(
-            items[last],
-            Item::Agent { done: false, .. }
-                | Item::Permission { answer: None, .. }
-                | Item::Question { reply: None, .. }
-        )
+pub fn shows_thinking(_working: bool, _items: &[Item]) -> bool {
+    false
 }
 
 /// Whether a tool row says its summary (not when it only repeats the name, or is empty).
@@ -540,7 +528,7 @@ mod tests {
             &[you(), question(None, true)],
             &[0, 1]
         ));
-        assert!(shows_thinking(true, &[you(), question(None, false)]));
+        assert!(!shows_thinking(true, &[you(), question(None, false)]));
     }
 
     #[test]
@@ -664,22 +652,13 @@ mod tests {
         assert_eq!(avatar_top(&asking(true)), 2.0);
     }
 
+    /// Main draws no thinking line any more (the 2026-11-24 chores): the status strip over the
+    /// box says what it does, whatever moves in the chat.
     #[test]
-    fn thinking_shows_while_working_with_nothing_else_moving() {
-        assert!(shows_thinking(true, &[you()]));
-        assert!(shows_thinking(true, &[you(), tool("a", None, false)]));
-        assert!(shows_thinking(true, &[you(), said(true)]));
-        assert!(!shows_thinking(false, &[you()]), "not working");
-        assert!(!shows_thinking(true, &[you(), said(false)]), "text streams");
-        assert!(
-            !shows_thinking(true, &[you(), tool("a", None, true)]),
-            "a tool runs"
-        );
-        assert!(
-            !shows_thinking(true, &[you(), asking(false)]),
-            "it asks you"
-        );
-        assert!(!shows_thinking(true, &[]));
+    fn main_has_no_thinking_line() {
+        assert!(!shows_thinking(true, &[you()]));
+        assert!(!shows_thinking(true, &[you(), tool("a", None, false)]));
+        assert!(!shows_thinking(true, &[you(), said(true)]));
     }
 
     /// Your word (2026-11-21): "thinking change to cultivating…".

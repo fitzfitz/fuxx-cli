@@ -65,6 +65,8 @@ pub enum Icon {
     ListChecks,
     Zap,
     Gauge,
+    /// The agent box's cost and context (the 2026-11-24 chores).
+    Clock,
     /// The agent chat (spec B-B): a todo's pending and active marks, an attachment chip.
     Circle,
     CircleDot,
@@ -78,7 +80,7 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 54] = [
+    pub const ALL: [Icon; 55] = [
         Icon::Terminal,
         Icon::Globe,
         Icon::File,
@@ -128,6 +130,7 @@ impl Icon {
         Icon::ListChecks,
         Icon::Zap,
         Icon::Gauge,
+        Icon::Clock,
         Icon::Circle,
         Icon::CircleDot,
         Icon::Paperclip,
@@ -187,6 +190,7 @@ impl Icon {
             Icon::ListChecks => "icons/lucide/list-checks.svg",
             Icon::Zap => "icons/lucide/zap.svg",
             Icon::Gauge => "icons/lucide/gauge.svg",
+            Icon::Clock => "icons/lucide/clock.svg",
             Icon::Circle => "icons/lucide/circle.svg",
             Icon::CircleDot => "icons/lucide/circle-dot.svg",
             Icon::Paperclip => "icons/lucide/paperclip.svg",
@@ -197,7 +201,7 @@ impl Icon {
 }
 
 /// The embedded files, by asset path.
-const FILES: [(&str, &[u8]); 52] = [
+const FILES: [(&str, &[u8]); 53] = [
     (
         "icons/lucide/circle.svg",
         include_bytes!("../assets/icons/lucide/circle.svg"),
@@ -229,6 +233,10 @@ const FILES: [(&str, &[u8]); 52] = [
     (
         "icons/lucide/gauge.svg",
         include_bytes!("../assets/icons/lucide/gauge.svg"),
+    ),
+    (
+        "icons/lucide/clock.svg",
+        include_bytes!("../assets/icons/lucide/clock.svg"),
     ),
     (
         "icons/lucide/activity.svg",

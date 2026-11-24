@@ -159,8 +159,11 @@ fn tracks(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<Rc<Tracks>> 
     cx.read(|cx| tab.read(cx).shot_tracks())
 }
 
-fn ledger(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<String> {
-    cx.read(|cx| tab.read(cx).shot_box(cx).ledger)
+/// The chat's status line and its counts line (the 2026-11-24 chores: the ledger moved there
+/// from the folder tab).
+fn status(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> (String, Option<String>) {
+    cx.read(|cx| tab.read(cx).shot_box(cx).status_line)
+        .unwrap_or_else(|| panic!("a status line"))
 }
 
 fn part(
@@ -364,9 +367,10 @@ pub(super) fn agent_tracks_failure() {
             all[0].first_error
         );
         let _ = part(cx, tab, n, "tracks-first-error");
-        assert_eq!(
-            ledger(cx, tab).last().map(String::as_str),
-            Some("build failing"),
+        assert!(
+            status(cx, tab)
+                .1
+                .is_some_and(|c| c.ends_with("build failing")),
             "{n}: a compile error under cargo test is the build's"
         );
     });
@@ -641,16 +645,24 @@ fn ledger_turn(running: bool) -> Turn {
     turn.bash("cargo test --bin fuxx", result)
 }
 
-/// The running turn: "Running tests …", "4 changed", "checks pass" (each scope's latest passed).
+/// The running turn, on the chat's status line: "Cultivating… · Running tests …", and under it
+/// "4 changed · checks pass" (each scope's latest passed); the folder tab keeps only the mark.
 pub(super) fn agent_ledger_running() {
     shoot("agent-ledger-running", DIMS, |n, cx, window, tab, _| {
         feed(cx, tab, |t, cx| t.send("Fix the client".into(), cx));
         give(cx, tab, ledger_turn(true).events());
         let _ = frame_fresh(cx, window);
-        let parts = ledger(cx, tab);
-        assert!(parts[0].starts_with("Running tests"), "{n}: {parts:?}");
-        assert_eq!(parts[1..], ["4 changed", "checks pass"], "{n}");
-        let _ = part(cx, tab, n, "status");
+        let (line, counts) = status(cx, tab);
+        assert!(line.contains(" · Running tests"), "{n}: {line:?}");
+        assert_eq!(counts.as_deref(), Some("4 changed · checks pass"), "{n}");
+        let mark = part(cx, tab, n, "status");
+        let folder = part(cx, tab, n, "folder");
+        assert!(
+            mark.right() <= folder.left(),
+            "{n}: the mark before the folder"
+        );
+        assert!(mark.size.width < px(40.), "{n}: the mark alone in the tab");
+        let _ = part(cx, tab, n, "status-line");
     });
 }
 
@@ -666,11 +678,13 @@ pub(super) fn agent_ledger_done() {
         give(cx, tab, events);
         let _ = frame_fresh(cx, window);
         assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Done, "{n}");
-        assert_eq!(ledger(cx, tab), ["4 changed", "checks pass"], "{n}");
+        let (line, counts) = status(cx, tab);
+        assert!(line.starts_with("✓ Done"), "{n}: {line:?}");
+        assert_eq!(counts.as_deref(), Some("4 changed · checks pass"), "{n}");
     });
 }
 
-/// A narrow tab: the parts cut from the right, the running call kept.
+/// A narrow tab: the status line is cut with … inside the chat column, never past it.
 pub(super) fn agent_ledger_trimmed() {
     shoot(
         "agent-ledger-trimmed",
@@ -680,14 +694,18 @@ pub(super) fn agent_ledger_trimmed() {
             give(cx, tab, ledger_turn(true).events());
             let _ = frame_fresh(cx, window);
             let _ = frame_fresh(cx, window);
-            let parts = ledger(cx, tab);
-            assert!(!parts.is_empty() && parts.len() < 3, "{n}: {parts:?}");
-            assert!(parts[0].starts_with("Running tests"), "{n}: {parts:?}");
+            let (line, _) = status(cx, tab);
+            assert!(line.contains("Running tests"), "{n}: {line:?}");
+            let drawn = part(cx, tab, n, "status-line");
+            assert!(
+                drawn.right() <= px(480.),
+                "{n}: inside the window {drawn:?}"
+            );
         },
     );
 }
 
-/// A click on the pill: the popover lists the changed files (`src/api.rs` with its +/−) and the
+/// A click on the counts under the status line: the popover lists the changed files (`src/api.rs` with its +/−) and the
 /// checks one row per scope ("3/7 passed"); a click on a file asks for its diff tab and closes
 /// it; Esc closes it too.
 pub(super) fn agent_ledger_popover() {
@@ -700,7 +718,7 @@ pub(super) fn agent_ledger_popover() {
         });
         give(cx, tab, events);
         let _ = frame_fresh(cx, window);
-        click(cx, window, part(cx, tab, n, "status"));
+        click(cx, window, part(cx, tab, n, "status-counts"));
         let _ = frame_fresh(cx, window);
         let l = cx
             .read(|cx| tab.read(cx).shot_ledger())
@@ -719,7 +737,7 @@ pub(super) fn agent_ledger_popover() {
             cx.read(|cx| tab.read(cx).shot_menu()).is_none(),
             "{n}: the popover closed"
         );
-        click(cx, window, part(cx, tab, n, "status"));
+        click(cx, window, part(cx, tab, n, "status-counts"));
         assert!(cx.read(|cx| tab.read(cx).shot_menu()).is_some(), "{n}");
         cx.simulate_keystrokes(window, "escape");
         cx.run_until_parked();
@@ -727,7 +745,7 @@ pub(super) fn agent_ledger_popover() {
             cx.read(|cx| tab.read(cx).shot_menu()).is_none(),
             "{n}: Esc closes it"
         );
-        click(cx, window, part(cx, tab, n, "status"));
+        click(cx, window, part(cx, tab, n, "status-counts"));
         let _ = frame_fresh(cx, window);
     });
 }

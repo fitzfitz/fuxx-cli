@@ -1668,8 +1668,9 @@ pub(super) fn agent_box_card() {
     );
 }
 
-/// Working: Stop in send's place; the top line says what the conversation cost and how full
-/// its context is (`$0.21 · context 18%`), no longer the chips.
+/// Working: Stop in send's place; what the conversation cost and how full its context is
+/// (`$0.21 · context 18%`) behind the clock between the model pill and the gauge (the
+/// 2026-11-24 chores: it left the top line), shown after a rest on it.
 pub(super) fn agent_box_working() {
     layout_scene("agent-box-working", |n, cx, window, tab| {
         let send = part(cx, tab, n, "send");
@@ -1701,13 +1702,45 @@ pub(super) fn agent_box_working() {
             "{n}: where send was {stop:?} {send:?}"
         );
         assert!(inside(stop, part(cx, tab, n, "box")), "{n}");
-        let usage = part(cx, tab, n, "usage");
+        let clock = part(cx, tab, n, "clock-button");
         assert!(
-            usage.bottom() <= px(30.0),
-            "{n}: on the pane's top line {usage:?}"
+            clock.left() >= part(cx, tab, n, "model").right(),
+            "{n}: the clock after the model pill"
         );
-        assert!(usage.right() > px(DIMS.0 / 2.0), "{n}: at its right");
+        assert!(
+            clock.right() <= part(cx, tab, n, "usage-button").left(),
+            "{n}: the clock before the gauge"
+        );
+        rest_on(cx, window, clock);
+        assert_eq!(menu(cx, tab), Some(BoxMenu::Clock), "{n}: a rest opens it");
+        let context = part(cx, tab, n, "context");
+        assert!(context.bottom() <= clock.top(), "{n}: its panel over it");
+        // Past 80 % the clock wears the warning dot.
+        feed(cx, tab, |t, cx| {
+            t.shot_feed(
+                vec![Event::Usage {
+                    context_pct: Some(85),
+                    cost_usd: Some(0.2116),
+                }],
+                cx,
+            )
+        });
+        let _ = frame_fresh(cx, window);
+        let dot = part(cx, tab, n, "context-warning");
+        assert!(inside(dot, clock), "{n}: the dot on the clock {dot:?}");
     });
+}
+
+/// Rest the pointer on `spot`, coming from elsewhere (a hover starts on arriving), for
+/// `hover_delay::OPEN_AFTER`: a hover panel opens then, not before.
+fn rest_on(cx: &mut VisualTestAppContext, window: AnyWindowHandle, spot: Bounds<Pixels>) {
+    let away = gpui::point(spot.center().x, px(40.));
+    cx.simulate_mouse_move(window, away, None, Modifiers::none());
+    cx.run_until_parked();
+    cx.simulate_mouse_move(window, spot.center(), None, Modifiers::none());
+    cx.advance_clock(crate::hover_delay::OPEN_AFTER);
+    cx.run_until_parked();
+    let _ = frame_fresh(cx, window);
 }
 
 /// A command block attached: its chip inside the box, above the text; its × takes it off

@@ -163,6 +163,15 @@ pub struct TopState {
     context_now: Option<u8>,
     pub context_from: Option<u8>,
     pub context_key: u64,
+    /// When the current Working stretch began, and how long the last one took (the status
+    /// line's `✓ Done · 0:42`).
+    work_began: Option<Instant>,
+    pub took: Option<std::time::Duration>,
+}
+
+/// The clock's warning dot (the 2026-11-24 chores): the context is past 80 %.
+pub fn context_warning(pct: Option<u8>) -> bool {
+    pct.is_some_and(|p| p > 80)
 }
 
 impl TopState {
@@ -193,9 +202,17 @@ impl TopState {
                 self.pill_key += 1;
                 self.pill_at = Some(now);
             }
-            if status == Status::Working && self.pill_now.is_none_or(|(s, _)| s != Status::Working)
-            {
+            let was_working = self.pill_now.is_some_and(|(s, _)| s == Status::Working);
+            if status == Status::Working && !was_working {
                 self.delta = None;
+                self.work_began = Some(now);
+                self.took = None;
+            }
+            if status != Status::Working && was_working {
+                self.took = self
+                    .work_began
+                    .take()
+                    .map(|t| now.saturating_duration_since(t));
             }
             self.pill_now = Some(state);
         }
@@ -230,6 +247,45 @@ mod tests {
     use super::*;
     use crate::agent_tab::Colors;
     use crate::ui_tokens::{MARK_MIN, contrast};
+    use std::time::Duration;
+
+    #[test]
+    fn context_warning_past_80_percent() {
+        assert!(!context_warning(None));
+        assert!(!context_warning(Some(80)));
+        assert!(context_warning(Some(81)));
+    }
+
+    #[test]
+    fn a_turn_records_how_long_it_worked() {
+        let t0 = Instant::now();
+        let mut top = TopState::default();
+        top.observe_at(Status::Working, false, None, None, t0);
+        assert_eq!(top.took, None);
+        top.observe_at(
+            Status::Working,
+            false,
+            None,
+            None,
+            t0 + Duration::from_secs(10),
+        );
+        top.observe_at(
+            Status::Done,
+            false,
+            None,
+            None,
+            t0 + Duration::from_secs(42),
+        );
+        assert_eq!(top.took, Some(Duration::from_secs(42)));
+        top.observe_at(
+            Status::Working,
+            false,
+            None,
+            None,
+            t0 + Duration::from_secs(50),
+        );
+        assert_eq!(top.took, None, "a new turn clears it");
+    }
 
     #[test]
     fn the_meter_bands_at_70_and_90() {
