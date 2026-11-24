@@ -210,6 +210,8 @@ transcripts); scenes for the strip, the rows, the view, the card, narrow and wid
 
 ## Chores after M11ar
 
+Everything below up to the 2026-11-24 "browser opened from a terminal" chore is **released in v0.13.0** (2026-11-24, run 45303453320).
+
 - **Working while subagents run** (your words, 2026-11-22: "the status indicator is false. it says done … but in
   reality there are subagents running under the hood"): the tab shows Working — its mark, the sidebar, the status
   pill ("1 subagent running"), and closing asks first — while any subagent still runs after Main finished

@@ -37,6 +37,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-24 — v0.13.0 released
+
+- **What:** your word ("push every work that has been done (except the agent chat UI plan), make a minor release").
+  Pushed master's 13 chore commits (`b8f7a6e..557f6b8`, `9d04fdd`), `Cargo.toml` 0.12.8 → 0.13.0 (`051b98c`), tag
+  `v0.13.0`; the Release workflow (run 45303453320: test, both slices, release) published
+  `https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.13.0` with `fuxx-0.13.0.zip`. In it since v0.12.8:
+  the agent chores of 2026-11-23/24: Auto by default, the pane's + menu, ⌘T like the last tab, prompt history and Claude's suggestions, the latest-prompt strip, split buttons, one selection blue, right-click menus, links in a split (and terminal auto-opens), file pills, Rewind and Fork, cancelling a queued message, the question card (and agy's, answered by message), subagent lanes (resume, messaging via Main, the closing bar), display-independent screenshots. The in-app updater offers it. Not in it: the agent activity view (designed, not built).
+- **Checks:** the outgoing diff grepped clean of private and work-project names before the push; `cargo test` 2748
+  passed locally; the tag matched `Cargo.toml` (`scripts/check-release-tag.sh`); all four jobs green.
+
 ### 2026-11-24 — Chore: a program's own browser opening lands like a clicked link
 
 - **What:** your words ("I want the same treatment happening when there is a browser autotrigger from the terminal
