@@ -6,7 +6,8 @@
 use std::ops::Range;
 
 use super::*;
-use crate::agent_steps::{Bead, Glyph, Track, Tracks, header};
+use crate::agent_step_words::header;
+use crate::agent_steps::{Bead, Glyph, Track, Tracks};
 use crate::ui_tokens::chat;
 
 /// The summary column's width while a step shows every column (it scrolls sideways then).
@@ -391,13 +392,6 @@ impl AgentTab {
                     .tooltip(tip(track.summary.clone())),
             )
             .into_any_element()
-    }
-
-    /// Item `ix`'s step tracks, when its row in the shown view draws a busy step.
-    pub(super) fn step_at(&self, ix: usize) -> Option<Rc<Tracks>> {
-        let pane = self.pane();
-        let k = pane.order.iter().position(|&i| i == ix)?;
-        pane.rows.get(k + pane.head as usize)?.tracks.clone()
     }
 
     /// The step whose first call is `lead`, as the shown view's rows hold it.

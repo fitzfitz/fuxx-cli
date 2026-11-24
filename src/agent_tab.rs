@@ -1286,10 +1286,12 @@ impl Colors {
 struct Row {
     print: u64,
     blocks: Option<Rc<Vec<Md>>>,
-    /// A tool row's role in its step (the agent activity chore), and a busy step's tracks on
-    /// its first row: built when the row's print changes, only read when drawn.
+    /// A tool row's role in its step (the agent activity chore), a busy step's tracks on its
+    /// first row, and a readable tool row's words: built when the row's print changes, only read
+    /// when drawn.
     role: Option<crate::agent_steps::Role>,
     tracks: Option<Rc<crate::agent_steps::Tracks>>,
+    words: Option<Rc<crate::agent_step_words::RowWords>>,
 }
 
 /// One view's list (M11ar: Main and each lane keep their own, so each keeps its scroll): its
@@ -3259,6 +3261,13 @@ impl AgentTab {
             )),
             _ => None,
         };
+        let words = |k: usize, role: &Option<crate::agent_steps::Role>| match role {
+            Some(crate::agent_steps::Role::Row(_)) => k
+                .checked_sub(lane_rows)
+                .and_then(|j| order.get(j))
+                .map(|&i| Rc::new(crate::agent_step_words::row_words(&items[i]))),
+            _ => None,
+        };
         if new.len() < old.len() {
             pane.list.splice(new.len()..old.len(), 0);
             pane.rows.drain(new.len()..);
@@ -3271,6 +3280,7 @@ impl AgentTab {
                 print: new[k],
                 blocks: block(k),
                 tracks: tracks(&role),
+                words: words(k, &role),
                 role,
             };
         }
@@ -3283,6 +3293,7 @@ impl AgentTab {
                     print,
                     blocks: block(k),
                     tracks: tracks(&role),
+                    words: words(k, &role),
                     role,
                 });
             }

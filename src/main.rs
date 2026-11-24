@@ -17,6 +17,7 @@ mod agent_lanes;
 mod agent_ledger;
 mod agent_markdown;
 mod agent_process;
+mod agent_step_words;
 mod agent_steps;
 mod agent_sweep;
 mod agent_tab;

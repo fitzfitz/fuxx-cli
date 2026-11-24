@@ -930,7 +930,7 @@ impl AgentTab {
                 ..Default::default()
             };
             (
-                crate::agent_steps::outcome_phrase(&a).unwrap_or_else(|| "ran".into()),
+                crate::agent_step_words::outcome_phrase(&a).unwrap_or_else(|| "ran".into()),
                 a.real_failure(),
             )
         };

@@ -23,10 +23,8 @@ impl AgentTab {
         let item = &items[ix];
         let c = &look.c;
         // A call inside a busy step is drawn by the step's first row (the agent activity chore).
-        let role = pane
-            .rows
-            .get(k + pane.head as usize)
-            .and_then(|r| r.role.as_ref());
+        let cached = pane.rows.get(k + pane.head as usize);
+        let role = cached.and_then(|r| r.role.as_ref());
         if role == Some(&crate::agent_steps::Role::Inside) {
             return div().into_any_element();
         }
@@ -47,7 +45,11 @@ impl AgentTab {
         if let Some((select, _)) = &look.draw.select {
             select.begin_row(k);
         }
-        let body = self.item_body(ix, item, 0, look);
+        // A busy step's first row draws its tracks; a readable tool row its cached words.
+        let body = match cached.and_then(|r| r.tracks.clone()) {
+            Some(tracks) => self.tracks(ix, &tracks, look),
+            None => self.item_body(ix, item, cached.and_then(|r| r.words.clone()), look),
+        };
         let text_column = chat::AVATAR + chat::AVATAR_GAP;
         let column = div().w_full().max_w(px(chat::COLUMN_MAX));
         let column = if agent_side(item) {
@@ -160,12 +162,12 @@ impl AgentTab {
         }
     }
 
-    /// An item's own look (inside a row, or nested `depth` deep under a tool).
+    /// An item's own look in its row (`words`: a readable tool row's, cached on the row).
     pub(super) fn item_body(
         &self,
         ix: usize,
         item: &Item,
-        depth: usize,
+        words: Option<Rc<crate::agent_step_words::RowWords>>,
         look: &Look,
     ) -> AnyElement {
         use crate::agent_chat::chat;
@@ -340,11 +342,10 @@ impl AgentTab {
                     .w_full()
                     .max_w(px(chat::COLUMN_MAX - 32.))
                     .text_color(hsla(c.text))
-                    .when(depth > 0, |d| d.text_color(hsla(c.dim)))
                     .child(md_preview::column(&blocks, ix, &look.draw))
                     .into_any_element()
             }
-            Item::Tool { .. } => self.tool(ix, item, look),
+            Item::Tool { .. } => self.tool(ix, item, words, look),
             // The todo list (spec B-B): a card with its count and a still meter, then the tasks.
             Item::Todo(list) => {
                 let done = list.iter().filter(|t| t.state == TodoState::Done).count();
@@ -636,7 +637,13 @@ impl AgentTab {
     /// target and result, and a chevron when it has more to show; a run of tool rows draws as one
     /// group (`tool_shell`). A click opens its detail in the modal (spec A). A subagent's call
     /// is its lane's row (`lane_row`).
-    fn tool(&self, ix: usize, item: &Item, look: &Look) -> AnyElement {
+    fn tool(
+        &self,
+        ix: usize,
+        item: &Item,
+        words: Option<Rc<crate::agent_step_words::RowWords>>,
+        look: &Look,
+    ) -> AnyElement {
         use crate::agent_chat::chat;
         let Item::Tool {
             id, running, ok, ..
@@ -646,10 +653,6 @@ impl AgentTab {
         };
         if let Some(lane) = self.conversation.lane(id) {
             return self.lane_row(ix, lane, look);
-        }
-        // A busy step: its tracks (the agent activity chore).
-        if let Some(tracks) = self.step_at(ix) {
-            return self.tracks(ix, &tracks, look);
         }
         let c = &look.c;
         let items = self.conversation.items();
@@ -669,13 +672,14 @@ impl AgentTab {
         // The row's words (the agent activity chore, approach A): what it did in plain words,
         // the command as a dim trace, and its outcome chips; a "Passed on" row as before.
         let activity = crate::agent_activity::of(item).unwrap_or_default();
-        let words = match &passed {
-            Some((_, said)) => crate::agent_steps::RowWords {
+        let words = match (&passed, words) {
+            (Some((_, said)), _) => Rc::new(crate::agent_step_words::RowWords {
                 title: said.clone(),
                 trace: None,
                 chips: Vec::new(),
-            },
-            None => crate::agent_steps::row_words(item),
+            }),
+            (None, Some(words)) => words,
+            (None, None) => Rc::new(crate::agent_step_words::row_words(item)),
         };
         let right: (String, Rgb) = if *running {
             let since = self.tool_times.get(id).map_or(Duration::ZERO, |(t, _)| {

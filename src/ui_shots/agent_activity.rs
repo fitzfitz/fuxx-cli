@@ -25,6 +25,7 @@ pub(super) const FILE: &str = file!();
 const SOURCES: &[&str] = &[
     "src/agent_tracks.rs",
     "src/agent_steps.rs",
+    "src/agent_step_words.rs",
     "src/agent_activity.rs",
     "src/agent_activity_command.rs",
     "src/agent_activity_checks.rs",
@@ -42,6 +43,7 @@ const LEDGER: &[&str] = &[
     "src/agent_box.rs",
     "src/agent_box_menus.rs",
     "src/agent_steps.rs",
+    "src/agent_step_words.rs",
     "src/agent_activity.rs",
     "src/agent_activity_command.rs",
     "src/agent_activity_checks.rs",
@@ -502,12 +504,12 @@ pub(super) fn agent_steps_rows() {
         give(cx, tab, turn.events());
         let _ = frame_fresh(cx, window);
         assert!(tracks(cx, tab).is_empty(), "{n}: small steps are rows");
-        let words: Vec<crate::agent_steps::RowWords> = cx.read(|cx| {
+        let words: Vec<crate::agent_step_words::RowWords> = cx.read(|cx| {
             tab.read(cx)
                 .shot_items()
                 .iter()
                 .filter(|i| matches!(i, Item::Tool { .. }))
-                .map(crate::agent_steps::row_words)
+                .map(crate::agent_step_words::row_words)
                 .collect()
         });
         assert_eq!(words[0].title, "Run the CLI tests", "{n}");
