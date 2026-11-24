@@ -909,6 +909,33 @@ pub(super) fn pixel_at(shot: &Shot, dims: Size<Pixels>, x: f32, y: f32) -> [u8; 
     [shot.rgba[i], shot.rgba[i + 1], shot.rgba[i + 2]]
 }
 
+/// The pixel in `b` (window points) that stands out most from `bg`: a part's ink.
+pub(super) fn ink_in(
+    shot: &Shot,
+    dims: gpui::Size<gpui::Pixels>,
+    b: gpui::Bounds<gpui::Pixels>,
+    bg: [u8; 3],
+) -> [u8; 3] {
+    let (x0, y0) = (f32::from(b.left()), f32::from(b.top()));
+    let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+    let far = |p: [u8; 3]| {
+        p.iter()
+            .zip(bg)
+            .map(|(a, b)| u32::from(a.abs_diff(b)))
+            .sum::<u32>()
+    };
+    let mut best = bg;
+    for i in 0..(w * 2.0) as usize {
+        for j in 0..(h * 2.0) as usize {
+            let p = pixel_at(shot, dims, x0 + i as f32 * 0.5, y0 + j as f32 * 0.5);
+            if far(p) > far(best) {
+                best = p;
+            }
+        }
+    }
+    best
+}
+
 /// One explicit draw of `window` (what `cached_panes` does per frame).
 pub(super) fn draw(cx: &mut VisualTestAppContext, window: AnyWindowHandle) {
     cx.update_window(window, |_, window, cx| window.draw(cx).clear())

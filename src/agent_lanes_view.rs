@@ -924,7 +924,10 @@ impl AgentTab {
         let order = crate::agent_lanes::shown_order(lanes);
         let mut widths = vec![pill_w("Main")];
         widths.extend(order.iter().map(|&i| pill_w(&labels[i])));
-        let avail = (width - 2.0 * AREA_X).min(crate::ui_tokens::chat::COLUMN_MAX);
+        // The robot after Main heads the subagents' pills (the subagent row chore): its slot
+        // comes off the room first.
+        let avail = (width - 2.0 * AREA_X).min(crate::ui_tokens::chat::COLUMN_MAX)
+            - (lane_row::BOT + crate::agent_lanes::PILL_GAP);
         let active = match &self.view {
             View::Main => 0,
             View::Lane(id) => order
@@ -1018,6 +1021,23 @@ impl AgentTab {
                     String::new(),
                     None,
                 ));
+                // The subagents' label: not clickable; its tooltip counts them.
+                let tip = crate::agent_lanes::strip_tip(lanes);
+                let live = lanes.iter().any(|l| l.status.live());
+                pills.push(
+                    self.marked(
+                        "strip-bot",
+                        div()
+                            .id("lane-strip-bot")
+                            .flex_none()
+                            .child(lane_row::robot(live, &c, c.dim))
+                            .tooltip(move |_, cx| -> gpui::AnyView {
+                                cx.new(|_| crate::sidebar_toggle::Tip(tip.clone().into()))
+                                    .into()
+                            }),
+                    )
+                    .into_any_element(),
+                );
                 continue;
             }
             let lane = &lanes[order[n - 1]];
@@ -1243,6 +1263,10 @@ impl AgentTab {
                             .items_center()
                             .gap(px(8.))
                             .text_size(px(text::META))
+                            .child(self.marked(
+                                "lane-header-bot",
+                                lane_row::robot(lane.status.live(), &c, c.dim),
+                            ))
                             .child(
                                 div()
                                     .flex_none()

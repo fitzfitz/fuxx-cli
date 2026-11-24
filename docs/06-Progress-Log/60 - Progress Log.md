@@ -37,6 +37,28 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-24 — Chore: a subagent's row shows it's a subagent
+
+- **What:** your words ("Make it different if its a subagent so that I knew its a subagent running. Is there an
+  outlined robot icon for this or colored ones would be awesome, I give this to Lead UI/UX Designer agent to
+  decide"), built to the Lead UI/UX Designer's spec. A subagent's row in the chat now has lucide's outlined robot
+  (`bot`, lucide-static 0.460.0) after its state mark, in a new derived `lane_ink` while it runs and dim once it
+  ended; its name is plain text (no longer the accent `tool_name`); the right side leads with a verb ("Running Read ·
+  0:12", "Needs input · 1:02", "14 steps · 2:10", "Failed", "Stopped", "Ended · 12 steps"); a waiting row is tinted;
+  a two-line tooltip says what it is. One robot heads the pill strip's subagents (tooltip "29 subagents · 3 running ·
+  1 needs input") and a lane's header. The row lives in `src/agent_lane_row.rs` and shares one `tool_shell` with
+  the tool rows. Claude's `general-purpose` kind counts as generic through a new `Provider::generic_lane_kind`. Under
+  "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]], with the AI's calls.
+- **Checks:** 2748 → 2754 tests (`--features ui-shots`: 2798 → 2804; the new ones each failed first); clippy 14/29 and
+  18/33 (unchanged, none on a changed line); `cargo fmt --check` clean. Full `scripts/ui-shots.sh`: 347 passed, 0
+  failed; fingerprints 691 same, 33 look different, 0 differ in size, 0 without a reference. The 33 are the animation
+  set that varies run to run (shell cards, the agent box's menus, the sliding scenes; each moved between two reruns).
+  References refreshed on purpose for `agent-tab-question-lane`, `agent-tab-question-lane-main` and
+  `agent-chat-latest-prompt` (the strip's robot moves the pills along); the lanes scenes are state scenes. New
+  scenes `agent-lanes-row` and `agent-lanes-row-tip`; `agent-lanes-states` gains an Ended lane and checks Main's
+  rows. No claude or agy was run.
+- **Not yet seen in the real window.**
+
 ### 2026-11-24 — Chore: "Divining…" becomes "Orchestrating…"
 
 - **What:** your word ("\"Divining\" label status indicator, change it to \"Orchestrating\""). The status pill reads

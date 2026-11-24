@@ -2,6 +2,7 @@
 //! stepping between views. Pure and GPUI-free; the lanes themselves are the conversation's.
 
 use crate::agent_conversation::{Lane, LaneStatus};
+use alacritty_terminal::vte::ansi::Rgb;
 
 /// What the agent tab's chat shows: the main agent's conversation, or one subagent's.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -326,6 +327,119 @@ pub fn list_groups(
 /// Whether a lane's header offers Stop: it is still going and its agent can stop it alone.
 pub fn shows_stop(lane: &Lane) -> bool {
     lane.controls.stop && lane.status.live()
+}
+
+/// The ink a subagent row's right-side words take (the subagent row chore, 2026-11-24).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    /// `panel_dim`.
+    Dim,
+    /// Waiting on you: `ask_head`.
+    Ask,
+    /// `failed_panel`.
+    Failed,
+}
+
+/// A subagent row's right-side words, led by a verb, and their ink: "Running Read · 0:12"
+/// (under `narrow`, a known tool drops "Running "), "Needs input · 1:02", "14 steps · 2:10",
+/// "Failed · 0:48", "Stopped · 0:48", "Ended · 12 steps".
+pub fn lane_row_words(
+    status: &LaneStatus,
+    last_tool: Option<&str>,
+    steps: usize,
+    time: Option<std::time::Duration>,
+    narrow: bool,
+) -> (String, Tone) {
+    let tool = last_tool.map(str::trim).filter(|t| !t.is_empty());
+    let (what, tone) = match status {
+        LaneStatus::Working => (
+            match (tool, narrow) {
+                (Some(t), true) => t.to_string(),
+                (Some(t), false) => format!("Running {t}"),
+                (None, _) => "Running".into(),
+            },
+            Tone::Dim,
+        ),
+        LaneStatus::Waiting => ("Needs input".into(), Tone::Ask),
+        LaneStatus::Done => (steps_label(steps), Tone::Dim),
+        LaneStatus::Failed(_) => ("Failed".into(), Tone::Failed),
+        LaneStatus::Stopped => ("Stopped".into(), Tone::Dim),
+        LaneStatus::Ended => {
+            return (format!("Ended \u{b7} {}", steps_label(steps)), Tone::Dim);
+        }
+    };
+    let words = match time {
+        Some(t) => format!("{what} \u{b7} {}", clock(t)),
+        None => what,
+    };
+    (words, tone)
+}
+
+/// A subagent row's tooltip, two lines: the pill's (`pill_tip`), then what it is and what a
+/// click does — "Explore subagent · click to open its lane"; a `kind` the provider calls
+/// generic (or none) just "Subagent".
+pub fn lane_row_tip(
+    lane: &Lane,
+    time: Option<std::time::Duration>,
+    relays: bool,
+    kind: Option<&str>,
+) -> String {
+    let what = match kind.map(str::trim).filter(|k| !k.is_empty()) {
+        Some(k) => format!("{k} subagent"),
+        None => "Subagent".into(),
+    };
+    format!(
+        "{}\n{what} \u{b7} click to open its lane",
+        pill_tip(lane, time, relays)
+    )
+}
+
+/// The strip robot's tooltip: "29 subagents · 3 running · 1 needs input" (no zero parts).
+pub fn strip_tip(lanes: &[Lane]) -> String {
+    let count = |s: LaneStatus| lanes.iter().filter(|l| l.status == s).count();
+    let (running, asking) = (count(LaneStatus::Working), count(LaneStatus::Waiting));
+    let all = match lanes.len() {
+        1 => "1 subagent".to_string(),
+        n => format!("{n} subagents"),
+    };
+    [
+        Some(all),
+        (running > 0).then(|| format!("{running} running")),
+        (asking > 0).then(|| format!("{asking} needs input")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" \u{b7} ")
+}
+
+/// The fewest degrees a lane's ink stands apart from the accent and the status colours.
+pub const LANE_HUE_MIN: f32 = 25.0;
+
+/// Of `candidates`, the one whose hue is farthest from every one of `avoid` (greys have no
+/// hue: a grey candidate can't win, a grey to avoid doesn't count); none when the best is under
+/// `LANE_HUE_MIN` away.
+pub fn lane_hue(candidates: &[Rgb], avoid: &[Rgb]) -> Option<Rgb> {
+    use crate::ui_tokens::hue_of;
+    let apart = |h: f32| {
+        avoid
+            .iter()
+            .filter_map(|&a| hue_of(a))
+            .map(|a| {
+                let d = (h - a).abs() % 360.0;
+                d.min(360.0 - d)
+            })
+            .fold(180.0_f32, f32::min)
+    };
+    candidates
+        .iter()
+        .filter_map(|&c| hue_of(c).map(|h| (c, apart(h))))
+        .filter(|&(_, d)| d >= LANE_HUE_MIN)
+        .fold(None, |best: Option<(Rgb, f32)>, (c, d)| match best {
+            Some((_, bd)) if bd >= d => best,
+            _ => Some((c, d)),
+        })
+        .map(|(c, _)| c)
 }
 
 /// "1 step", "14 steps".
@@ -797,5 +911,149 @@ mod tests {
             View::Main,
             "a lane that went: back to Main"
         );
+    }
+    /// The subagent row chore (2026-11-24): the row's right side leads with a verb; under 480 pt
+    /// a known tool drops "Running ".
+    #[test]
+    fn a_lane_row_says_what_its_subagent_is_doing() {
+        let t = |s| Some(Duration::from_secs(s));
+        let words = lane_row_words;
+        assert_eq!(
+            words(&LaneStatus::Working, Some("Read"), 3, t(12), false),
+            ("Running Read \u{b7} 0:12".into(), Tone::Dim)
+        );
+        assert_eq!(
+            words(&LaneStatus::Working, Some("Read"), 3, t(12), true),
+            ("Read \u{b7} 0:12".into(), Tone::Dim),
+            "narrow"
+        );
+        assert_eq!(
+            words(&LaneStatus::Working, None, 0, t(12), false),
+            ("Running \u{b7} 0:12".into(), Tone::Dim),
+            "no tool yet"
+        );
+        assert_eq!(
+            words(&LaneStatus::Working, None, 0, t(12), true),
+            ("Running \u{b7} 0:12".into(), Tone::Dim),
+            "narrow, no tool: the verb stays"
+        );
+        assert_eq!(
+            words(&LaneStatus::Working, Some("Read"), 3, None, false),
+            ("Running Read".into(), Tone::Dim),
+            "a resumed lane: no time"
+        );
+        assert_eq!(
+            words(&LaneStatus::Waiting, Some("Bash"), 3, t(62), false),
+            ("Needs input \u{b7} 1:02".into(), Tone::Ask)
+        );
+        assert_eq!(
+            words(&LaneStatus::Done, Some("Read"), 14, t(130), false),
+            ("14 steps \u{b7} 2:10".into(), Tone::Dim)
+        );
+        assert_eq!(
+            words(
+                &LaneStatus::Failed("no such file".into()),
+                None,
+                3,
+                t(48),
+                false
+            ),
+            ("Failed \u{b7} 0:48".into(), Tone::Failed)
+        );
+        assert_eq!(
+            words(&LaneStatus::Stopped, None, 3, t(48), false),
+            ("Stopped \u{b7} 0:48".into(), Tone::Dim)
+        );
+        assert_eq!(
+            words(&LaneStatus::Ended, None, 12, t(48), false),
+            ("Ended \u{b7} 12 steps".into(), Tone::Dim)
+        );
+        assert_eq!(
+            words(&LaneStatus::Ended, None, 1, None, false),
+            ("Ended \u{b7} 1 step".into(), Tone::Dim)
+        );
+    }
+
+    /// The row's tooltip: the pill's line, then what it is and what a click does.
+    #[test]
+    fn a_lane_row_s_tooltip_names_its_kind_on_a_second_line() {
+        let mut l = lane("a", "Explore");
+        l.task = "Read the test setup".into();
+        l.controls.message = true;
+        let t = Some(Duration::from_secs(12));
+        assert_eq!(
+            lane_row_tip(&l, t, true, Some("Explore")),
+            "Running 0:12 \u{b7} Read the test setup \u{b7} you can message it\n\
+             Explore subagent \u{b7} click to open its lane"
+        );
+        for generic in [None, Some(""), Some("  ")] {
+            assert_eq!(
+                lane_row_tip(&l, t, false, generic),
+                "Running 0:12 \u{b7} Read the test setup\n\
+                 Subagent \u{b7} click to open its lane",
+                "{generic:?}"
+            );
+        }
+    }
+
+    /// The strip robot's tooltip: how many, how many run, how many need you; no zero parts.
+    #[test]
+    fn the_strip_robot_counts_the_subagents() {
+        let mut lanes: Vec<Lane> = (0..29).map(|i| lane(&format!("l{i}"), "A")).collect();
+        for l in lanes.iter_mut().skip(4) {
+            l.status = LaneStatus::Done;
+        }
+        lanes[3].status = LaneStatus::Waiting;
+        assert_eq!(
+            strip_tip(&lanes),
+            "29 subagents \u{b7} 3 running \u{b7} 1 needs input"
+        );
+        assert_eq!(strip_tip(&lanes[4..6]), "2 subagents", "all finished");
+        assert_eq!(strip_tip(&lanes[..1]), "1 subagent \u{b7} 1 running");
+        assert_eq!(strip_tip(&lanes[3..4]), "1 subagent \u{b7} 1 needs input");
+    }
+
+    fn rgb(v: u32) -> Rgb {
+        Rgb {
+            r: (v >> 16) as u8,
+            g: (v >> 8) as u8,
+            b: v as u8,
+        }
+    }
+
+    /// The lane ink: of blue, magenta and cyan, the hue farthest from the accent and the
+    /// status colours; none when the best is under 25 degrees away.
+    #[test]
+    fn the_lane_ink_stands_apart_from_the_accent_and_the_status_colours() {
+        let expected = [
+            ("Catppuccin Latte", 0x179299),
+            ("Catppuccin Mocha", 0x94e2d5),
+            ("Dracula", 0xff79c6),
+            ("Nord", 0xb48ead),
+            ("Gruvbox Dark", 0x689d6a),
+            ("TokyoNight", 0xbb9af7),
+        ];
+        let themes = crate::theme::every_theme();
+        for (name, want) in expected {
+            let theme = &themes.iter().find(|(n, _)| *n == name).expect(name).1;
+            let ui = theme.ui();
+            let p = theme.palette;
+            let got = lane_hue(
+                &[p[4], p[5], p[6]],
+                &[ui.accent, ui.ring_working, ui.ring_waiting, ui.ring_done],
+            );
+            assert_eq!(got, Some(rgb(want)), "{name}");
+        }
+        // Too close to everything: none.
+        let red = rgb(0xff0000);
+        assert_eq!(lane_hue(&[rgb(0xff1000)], &[red]), None, "6 degrees off");
+        assert_eq!(
+            lane_hue(&[rgb(0xff1000), rgb(0x00ffff)], &[red]),
+            Some(rgb(0x00ffff))
+        );
+        // A grey candidate has no hue to stand apart with; grey avoids don't count.
+        let grey = rgb(0x808080);
+        assert_eq!(lane_hue(&[grey], &[red]), None);
+        assert_eq!(lane_hue(&[red], &[grey]), Some(red));
     }
 }

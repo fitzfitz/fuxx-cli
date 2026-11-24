@@ -1048,3 +1048,46 @@ Everything below up to the 2026-11-24 "browser opened from a terminal" chore is 
   - **Checks:** `subagents_still_running_keep_the_tab_working` updated and watched failing first; 2748 tests; the
     `agent-lanes` scenes (22) pass.
 
+- **A subagent's row shows it's a subagent** (your words, 2026-11-24: "If you can see the 'Write activity view ...' on
+  chat box, its a subagent running. Make it different if its a subagent so that I knew its a subagent running. Is
+  there an outlined robot icon for this or colored ones would be awesome, I give this to Lead UI/UX Designer agent to
+  decide"): the Lead UI/UX Designer's spec, built as written. A subagent's row in Main's chat reads
+  `[mark] [robot] name task … words ›`: the state's 12 pt mark stays where it was (in line with the tool dots, the
+  same shapes as the pills), then lucide's outlined `bot` (lucide-static 0.460.0, `assets/icons/lucide/bot.svg`,
+  `Icon::Bot`) 14 pt at the mark + 8, the name in `panel_text` MEDIUM and the task in `panel_dim`. The robot is a new
+  `lane_ink` while the subagent runs (working or waiting) and `panel_dim` once it ended; it never animates. The
+  right side leads with a verb: "Running Read · 0:12" (under 480 pt "Read · 0:12"; no tool yet "Running · 0:12"),
+  "Needs input · 1:02" in `ask_head` on an `ask_fill` row (`ask_cursor` under the pointer), "14 steps · 2:10",
+  "Failed · 0:48" in `failed_panel`, "Stopped · 0:48", "Ended · 12 steps". Its tooltip has two lines: the pill's
+  ("Running 0:12 · Read the test setup · you can message it"), then "Explore subagent · click to open its lane"
+  ("Subagent · …" for an empty or generic kind). One robot after Main heads the pill strip's subagents (14 pt,
+  `PILL_GAP` each side, its slot taken off the room before the pills are fitted; `lane_ink` while any lane runs, else
+  `dim`; not clickable; tooltip "29 subagents · 3 running · 1 needs input", zero parts dropped), and a lane's header
+  starts with it. The "+N" list, the permission card, "Passed on to Explore" rows and the closing bar are unchanged.
+  - **AI's calls:** **the name no longer uses `tool_name`, replacing M11ar's label rule** (the spec's "label
+    (`tool_name`)"). `lane_ink` (`agent_tab::Colors`, derived, not a chrome key): of the theme's blue, magenta and
+    cyan (`palette[4..=6]`) the hue farthest from the accent, working, waiting and done colours
+    (`agent_lanes::lane_hue`), `panel_dim` when the best is under 25° away, then held to `MARK_MIN` on `panel`,
+    `row_hover`, `ask_fill`, `ask_cursor` and the page; the built-in themes pick Latte teal, Mocha teal, Dracula
+    pink, Nord purple, Gruvbox aqua and TokyoNight magenta. Which kind is "generic" is the provider's to say: a new
+    `Provider::generic_lane_kind` (default: an empty kind), and Claude's file adds its catch-all `general-purpose`.
+    The strip's tooltip counts a waiting lane under "needs input", not "running". Narrow drops "Running " only when a
+    tool is known (else the row would read just a time). The waiting row gets its fill and no left edge. The row is
+    drawn in a new `src/agent_lane_row.rs`; the tool group's shell (fill, edges and corners by its place in the
+    group, the divider from 30 pt, hover) moved out of `tool()` into one `tool_shell` both rows use, with the status
+    slot, the right-side words and the chevron as shared helpers; the scenes' `ink_in` moved to the shots harness so
+    file-tab and lane scenes share it. `\n` does break the line in the nowrap `Tip` box (seen in the
+    `agent-lanes-row-tip` picture).
+  - **Checks:** unit tests `a_lane_row_says_what_its_subagent_is_doing`, `a_lane_row_s_tooltip_names_its_kind_on_a_second_line`,
+    `the_strip_robot_counts_the_subagents`, `the_lane_ink_stands_apart_from_the_accent_and_the_status_colours` (the
+    six themes' picks), `the_lane_ink_stands_apart_or_falls_back_to_dim`, `general_purpose_is_a_generic_subagent_kind`,
+    and the icon tests with `Icon::Bot` (54 icons, 52 files); each watched failing first. `lane_ink` added to
+    `the_tab_s_text_meets_the_floor_in_every_theme`. New state scenes `agent-lanes-row` (the robot's pixels in
+    `lane_ink` at the mark + 8, the name in `panel_text` not `tool_name`, the mark column in line with Bash's, the
+    divider from 30 pt, the row 30 tall, the strip's robot in `lane_ink`) and `agent-lanes-row-tip` (both tooltip
+    lines, the `row_hover` fill); `agent-lanes-states` gains an Ended lane (cut off in a resumed history) and checks
+    Main's rows (robot coloured only on live rows, the waiting row's `ask_fill`, each state's words), its window
+    860 pt tall so all of them are in the picture. The other lanes scenes are state scenes (no references), all
+    passing; references refreshed for `agent-tab-question-lane`, `agent-tab-question-lane-main` and
+    `agent-chat-latest-prompt` (the strip's robot moves the pills along).
+  - **On screen:** not yet seen in the real window; no claude or agy was run.

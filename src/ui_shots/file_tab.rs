@@ -4869,33 +4869,6 @@ fn sticky_fixture() -> String {
 /// `sticky_fixture`'s line count.
 const STICKY_LINES: usize = 69;
 
-/// The pixel in `b` (window points) that stands out most from `bg`: a part's ink.
-fn ink_in(
-    shot: &Shot,
-    dims: gpui::Size<gpui::Pixels>,
-    b: gpui::Bounds<gpui::Pixels>,
-    bg: [u8; 3],
-) -> [u8; 3] {
-    let (x0, y0) = (f32::from(b.left()), f32::from(b.top()));
-    let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
-    let far = |p: [u8; 3]| {
-        p.iter()
-            .zip(bg)
-            .map(|(a, b)| u32::from(a.abs_diff(b)))
-            .sum::<u32>()
-    };
-    let mut best = bg;
-    for i in 0..(w * 2.0) as usize {
-        for j in 0..(h * 2.0) as usize {
-            let p = pixel_at(shot, dims, x0 + i as f32 * 0.5, y0 + j as f32 * 0.5);
-            if far(p) > far(best) {
-                best = p;
-            }
-        }
-    }
-    best
-}
-
 /// `file-code-sticky` (both themes; M11ah Task 6): scrolled into `fn refresh`, its first line is
 /// pinned over the text's first row with its number, on the background, a 1 pt `divider` under
 /// it; with Wrap on it is one row, cut with "…"; a press on it scrolls back (that line on top,

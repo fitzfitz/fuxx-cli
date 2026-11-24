@@ -623,9 +623,10 @@ impl AgentTab {
 
     /// A tool call's row (spec B-B): its status (an arc while it runs, a dot once done), name,
     /// target and result, and a chevron when it has more to show; a run of tool rows draws as one
-    /// group (`agent_chat::group_shape`). A click opens its detail in the modal (spec A).
+    /// group (`tool_shell`). A click opens its detail in the modal (spec A). A subagent's call
+    /// is its lane's row (`lane_row`).
     fn tool(&self, ix: usize, item: &Item, look: &Look) -> AnyElement {
-        use crate::agent_chat::{Shape, chat, group_shape, summary_shown};
+        use crate::agent_chat::{chat, summary_shown};
         let Item::Tool {
             id,
             name,
@@ -640,10 +641,11 @@ impl AgentTab {
         else {
             return div().into_any_element();
         };
+        if let Some(lane) = self.conversation.lane(id) {
+            return self.lane_row(ix, lane, look);
+        }
         let c = &look.c;
         let items = self.conversation.items();
-        // A subagent's row (M11ar) reads from its lane: its name, its task, its state.
-        let lane = self.conversation.lane(id).cloned();
         let steps = items
             .iter()
             .filter(|i| parent_of(i) == Some(id.as_str()))
@@ -660,33 +662,13 @@ impl AgentTab {
             .passed_on(id)
             .and_then(|l| self.conversation.lane(l))
             .map(|l| (l.id.clone(), format!("Passed on to {}", l.label)));
-        let openable = lane.is_some() || crate::agent_tool_modal::openable(items, ix);
+        let openable = crate::agent_tool_modal::openable(items, ix);
         let blank = String::new();
-        let (name, summary) = match (&lane, &passed) {
-            (Some(l), _) => (&l.label, &l.task.lines().next().unwrap_or("").to_string()),
-            (None, Some((_, words))) => (words, &blank),
-            (None, None) => (name, summary),
+        let (name, summary) = match &passed {
+            Some((_, words)) => (words, &blank),
+            None => (name, summary),
         };
-        let right: (String, Rgb) = if let Some(l) = &lane {
-            // While it runs its last tool, then its step count; and its time when known.
-            let what = if l.status.live() {
-                l.last_tool.clone().unwrap_or_default()
-            } else {
-                crate::agent_lanes::steps_label(self.conversation.lane_steps(id))
-            };
-            let time = self.lane_elapsed(id).map(crate::agent_lanes::clock);
-            let words = [Some(what), time]
-                .into_iter()
-                .flatten()
-                .filter(|w| !w.is_empty())
-                .collect::<Vec<_>>()
-                .join(" · ");
-            let ink = match l.status {
-                crate::agent_conversation::LaneStatus::Failed(_) => c.failed_panel,
-                _ => c.panel_dim,
-            };
-            (words, ink)
-        } else if *running {
+        let right: (String, Rgb) = if *running {
             let since = self
                 .tool_started
                 .get(id)
@@ -714,71 +696,28 @@ impl AgentTab {
                 .bg(hsla(fill))
                 .into_any_element()
         };
-        let status: AnyElement = match (&lane, running, ok) {
-            (Some(l), _, _) => self.lane_mark(l, c),
-            (None, true, _) => match self.tool_marks.get(id) {
+        let status: AnyElement = match (running, ok) {
+            (true, _) => match self.tool_marks.get(id) {
                 Some(mark) => mark.clone().into_any_element(),
                 None => dot(c.todo_active),
             },
-            (None, false, Some(true)) => dot(c.tool_ok),
-            (None, false, Some(false)) => dot(c.failed_panel),
-            (None, false, None) => div()
+            (false, Some(true)) => dot(c.tool_ok),
+            (false, Some(false)) => dot(c.failed_panel),
+            (false, None) => div()
                 .size(px(chat::TOOL_DOT))
                 .rounded_full()
                 .border_1()
                 .border_color(hsla(c.panel_dim))
                 .into_any_element(),
         };
-        let chevron_slot = div()
-            .flex_none()
-            .size(px(crate::right_sidebar::CHEVRON))
-            .when(openable, |d| {
-                let (rest, hover) = (hsla(c.panel_dim), hsla(c.panel_text));
-                d.child(
-                    icon(Icon::ChevronRight, px(crate::right_sidebar::CHEVRON), rest)
-                        .group_hover("agent-tool-row", move |s| s.text_color(hover)),
-                )
-            });
-        let order = &self.pane().order;
-        let shape = order
-            .iter()
-            .position(|&i| i == ix)
-            .and_then(|k| crate::agent_chat::group_shape_at(items, order, k))
-            .or_else(|| group_shape(items, ix))
-            .unwrap_or(Shape::Solo);
-        let (top, bottom) = match shape {
-            Shape::Solo => (true, true),
-            Shape::First => (true, false),
-            Shape::Middle => (false, false),
-            Shape::Last => (false, true),
-        };
-        let row_hover = hsla(c.row_hover);
-        let tool = div()
-            .id(("agent-tool", ix))
-            .group("agent-tool-row")
-            .relative()
-            .w_full()
-            .h(px(chat::TOOL_ROW))
-            .px(px(chat::TOOL_PAD_X))
-            .flex()
-            .items_center()
-            .gap(px(chat::TOOL_GAP))
-            .bg(hsla(c.panel))
-            .border_color(hsla(c.panel_border))
-            .border_l_1()
-            .border_r_1()
-            .when(top, |d| d.border_t_1().rounded_t(px(chat::R_GROUP)))
-            .when(bottom, |d| d.border_b_1().rounded_b(px(chat::R_GROUP)))
-            .text_size(px(text::META))
-            .child(
-                div()
-                    .flex_none()
-                    .size(px(chat::TOOL_STATUS))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(status),
+        let tool = self
+            .tool_shell(
+                ix,
+                c.panel,
+                (openable || passed.is_some()).then_some(c.row_hover),
+                look,
             )
+            .child(self.marked("tool-mark", status_slot(status)))
             .child(
                 div()
                     .flex_none()
@@ -796,7 +735,7 @@ impl AgentTab {
                         d.child(SharedString::from(summary.clone()))
                     }),
             )
-            .when(steps > 0 && lane.is_none(), |d| {
+            .when(steps > 0, |d| {
                 d.child(
                     div()
                         .flex_none()
@@ -804,39 +743,13 @@ impl AgentTab {
                         .child(SharedString::from(format!("{steps} steps"))),
                 )
             })
-            .child(
-                div()
-                    .flex_none()
-                    .max_w(relative(0.4))
-                    .truncate()
-                    .font_features(crate::sidebar::tabular())
-                    .text_color(hsla(right.1))
-                    .child(SharedString::from(right.0)),
-            )
-            .child(chevron_slot)
-            // The line between a group's rows, from the name's column (spec B-B).
-            .when(!bottom, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .bottom_0()
-                        .left(px(chat::TOOL_DIVIDER_INSET))
-                        .right_0()
-                        .h(px(1.))
-                        .bg(hsla(c.tool_divider)),
-                )
-            });
-        // A subagent's row opens its lane (M11ar), as does a relay's passing on.
-        if let Some(lane_id) = lane
-            .as_ref()
-            .map(|l| l.id.clone())
-            .or_else(|| passed.as_ref().map(|(l, _)| l.clone()))
-        {
+            .child(right_words(right.0, right.1))
+            .child(tool_chevron(openable, c.panel_dim, c.panel_text));
+        // A relay's passing on opens the lane.
+        if let Some((lane_id, _)) = passed {
             let view = look.view.clone();
             let to = crate::agent_lanes::View::Lane(lane_id);
             return tool
-                .cursor_pointer()
-                .hover(move |s| s.bg(row_hover))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
                     let to = to.clone();
@@ -848,17 +761,76 @@ impl AgentTab {
         let tool = if openable {
             let view = look.view.clone();
             let id = id.clone();
-            tool.cursor_pointer()
-                .hover(move |s| s.bg(row_hover))
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    cx.stop_propagation();
-                    let id = id.clone();
-                    view.update(cx, |this, cx| this.open_tool(id, cx)).ok();
-                })
+            tool.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                let id = id.clone();
+                view.update(cx, |this, cx| this.open_tool(id, cx)).ok();
+            })
         } else {
             tool
         };
         tool.into_any_element()
+    }
+
+    /// A tool group's row shell (spec B-B), shared by a tool's row and a subagent's: `fill`,
+    /// the group's edges and corners by where row `ix` sits in its run (`group_shape_at`), the
+    /// line under it from the name's column (none under a group's last), and `hover` (with a
+    /// pointing hand) when it can be clicked. Its contents are the caller's.
+    pub(super) fn tool_shell(
+        &self,
+        ix: usize,
+        fill: Rgb,
+        hover: Option<Rgb>,
+        look: &Look,
+    ) -> Stateful<gpui::Div> {
+        use crate::agent_chat::{Shape, chat, group_shape};
+        let c = &look.c;
+        let items = self.conversation.items();
+        let order = &self.pane().order;
+        let shape = order
+            .iter()
+            .position(|&i| i == ix)
+            .and_then(|k| crate::agent_chat::group_shape_at(items, order, k))
+            .or_else(|| group_shape(items, ix))
+            .unwrap_or(Shape::Solo);
+        let (top, bottom) = match shape {
+            Shape::Solo => (true, true),
+            Shape::First => (true, false),
+            Shape::Middle => (false, false),
+            Shape::Last => (false, true),
+        };
+        div()
+            .id(("agent-tool", ix))
+            .group("agent-tool-row")
+            .relative()
+            .w_full()
+            .h(px(chat::TOOL_ROW))
+            .px(px(chat::TOOL_PAD_X))
+            .flex()
+            .items_center()
+            .gap(px(chat::TOOL_GAP))
+            .bg(hsla(fill))
+            .border_color(hsla(c.panel_border))
+            .border_l_1()
+            .border_r_1()
+            .when(top, |d| d.border_t_1().rounded_t(px(chat::R_GROUP)))
+            .when(bottom, |d| d.border_b_1().rounded_b(px(chat::R_GROUP)))
+            .text_size(px(text::META))
+            // The line between a group's rows, from the name's column (spec B-B).
+            .when(!bottom, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left(px(chat::TOOL_DIVIDER_INSET))
+                        .right_0()
+                        .h(px(1.))
+                        .bg(hsla(c.tool_divider)),
+                )
+            })
+            .when_some(hover, |d, hover| {
+                d.cursor_pointer().hover(move |s| s.bg(hsla(hover)))
+            })
     }
 
     /// An edit's diff, coloured as the file tab colours its diff rows.
@@ -1073,4 +1045,41 @@ fn selectable(
         }
         None => child,
     }
+}
+
+/// A tool group row's status slot (the mark column the group's dots line up in).
+pub(super) fn status_slot(mark: AnyElement) -> gpui::Div {
+    div()
+        .flex_none()
+        .size(px(crate::ui_tokens::chat::TOOL_STATUS))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(mark)
+}
+
+/// A tool group row's words on the right (a result, a time), in `ink`.
+pub(super) fn right_words(words: String, ink: Rgb) -> gpui::Div {
+    div()
+        .flex_none()
+        .max_w(relative(0.4))
+        .truncate()
+        .font_features(crate::sidebar::tabular())
+        .text_color(hsla(ink))
+        .child(SharedString::from(words))
+}
+
+/// A tool group row's chevron slot: the chevron when the row opens something, `rest`, `hover`
+/// under the pointer on the row.
+pub(super) fn tool_chevron(openable: bool, rest: Rgb, hover: Rgb) -> gpui::Div {
+    div()
+        .flex_none()
+        .size(px(crate::right_sidebar::CHEVRON))
+        .when(openable, |d| {
+            let (rest, hover) = (hsla(rest), hsla(hover));
+            d.child(
+                icon(Icon::ChevronRight, px(crate::right_sidebar::CHEVRON), rest)
+                    .group_hover("agent-tool-row", move |s| s.text_color(hover)),
+            )
+        })
 }

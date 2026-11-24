@@ -290,6 +290,11 @@ impl Provider for Claude {
         true
     }
 
+    /// `general-purpose` is Claude's catch-all subagent type (the subagent row chore).
+    fn generic_lane_kind(&self, kind: &str) -> bool {
+        kind.trim().is_empty() || kind == "general-purpose"
+    }
+
     fn cancels_queued(&self) -> bool {
         true
     }
@@ -2575,6 +2580,16 @@ mod tests {
             })
         );
         assert!(CLAUDE.relays_to_subagents());
+    }
+
+    /// The subagent row chore: Claude's catch-all type names no kind ("Subagent"); Explore,
+    /// Plan and custom types do.
+    #[test]
+    fn general_purpose_is_a_generic_subagent_kind() {
+        assert!(CLAUDE.generic_lane_kind("general-purpose"));
+        assert!(CLAUDE.generic_lane_kind(""));
+        assert!(!CLAUDE.generic_lane_kind("Explore"));
+        assert!(!CLAUDE.generic_lane_kind("code-reviewer"));
     }
 
     #[test]

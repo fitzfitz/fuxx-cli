@@ -343,6 +343,8 @@ pub(super) const ORDER: &[&str] = &[
     "agent-lanes-finish-mid-draft",
     "agent-lanes-list-grouped",
     "agent-lanes-relay-history",
+    "agent-lanes-row",
+    "agent-lanes-row-tip",
     "agent-rewind",
     "agent-fork",
     "agent-rewind-agy",

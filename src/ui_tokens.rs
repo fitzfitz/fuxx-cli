@@ -412,13 +412,14 @@ pub fn ensure_contrast(fg: Rgb, bg: Rgb, min: f32) -> Rgb {
     crate::theme::mix(fg, target, hi)
 }
 
-/// Hue in degrees (HSV), for tests that check a colour kept its hue. Panics on greys.
-#[cfg(test)]
-pub fn hue(c: Rgb) -> f32 {
+/// Hue in degrees (HSV); none for a grey.
+pub fn hue_of(c: Rgb) -> Option<f32> {
     let (r, g, b) = (c.r as f32, c.g as f32, c.b as f32);
     let (max, min) = (r.max(g).max(b), r.min(g).min(b));
     let d = max - min;
-    assert!(d > 0.0, "{c:?} is grey");
+    if d <= 0.0 {
+        return None;
+    }
     let h = if max == r {
         ((g - b) / d).rem_euclid(6.0)
     } else if max == g {
@@ -426,7 +427,13 @@ pub fn hue(c: Rgb) -> f32 {
     } else {
         (r - g) / d + 4.0
     };
-    h * 60.0
+    Some(h * 60.0)
+}
+
+/// `hue_of`, for tests that check a colour kept its hue. Panics on greys.
+#[cfg(test)]
+pub fn hue(c: Rgb) -> f32 {
+    hue_of(c).unwrap_or_else(|| panic!("{c:?} is grey"))
 }
 
 #[cfg(test)]

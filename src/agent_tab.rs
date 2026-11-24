@@ -44,6 +44,9 @@ mod rows;
 
 #[path = "agent_lanes_view.rs"]
 mod lanes_view;
+
+#[path = "agent_lane_row.rs"]
+mod lane_row;
 pub(crate) use lanes_view::{BAR_FADE, BoxMode};
 
 #[path = "agent_latest.rs"]
@@ -1023,6 +1026,11 @@ pub struct Colors {
     pub relay_fill: Rgb,
     pub relay_text: Rgb,
     pub relay_dim: Rgb,
+    /// The subagent row chore (2026-11-24): a live subagent's robot (its row, the strip's
+    /// group, its lane's header): of the theme's blue, magenta and cyan the hue farthest from
+    /// the accent and the status colours (`agent_lanes::lane_hue`), else `panel_dim`; held to
+    /// `MARK_MIN` on the rows' fills and the page.
+    pub lane_ink: Rgb,
 }
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
@@ -1085,6 +1093,17 @@ impl Colors {
             &[ui.composer_outer],
             crate::ui_tokens::SOFT_LINE_MIN,
         );
+        let panel_dim = readable(ui.text_dim, &[ui.panel, row_hover], TEXT_MIN);
+        let p = theme.palette;
+        let lane_ink = readable(
+            crate::agent_lanes::lane_hue(
+                &[p[4], p[5], p[6]],
+                &[ui.accent, ui.ring_working, ui.ring_waiting, ui.ring_done],
+            )
+            .unwrap_or(panel_dim),
+            &[ui.panel, row_hover, ask_fill, ask_cursor, page],
+            MARK_MIN,
+        );
         Colors {
             page,
             text: fit(ui.text, page),
@@ -1093,7 +1112,7 @@ impl Colors {
             panel_border: ui.panel_border,
             panel_hover: ui.panel_hover,
             panel_text: readable(ui.text, &[ui.panel, row_hover], TEXT_MIN),
-            panel_dim: readable(ui.text_dim, &[ui.panel, row_hover], TEXT_MIN),
+            panel_dim,
             tool_name: readable(ui.accent, &[ui.panel, row_hover], TEXT_MIN),
             failed_panel: readable(ui.block_failed, &[ui.panel, row_hover], TEXT_MIN),
             failed: fit(ui.block_failed, page),
@@ -1218,6 +1237,7 @@ impl Colors {
             relay_fill,
             relay_text: readable(ui.text, &[relay_fill], TEXT_MIN),
             relay_dim: readable(ui.text_dim, &[relay_fill], TEXT_MIN),
+            lane_ink,
         }
     }
 }
@@ -6879,6 +6899,39 @@ mod tests {
         assert_eq!(fingerprint(&a), fingerprint(&a.clone()));
     }
 
+    /// The subagent row chore: the robot's ink stands at least 25 degrees from the accent and
+    /// the three status colours, or is the dim fallback.
+    #[test]
+    fn the_lane_ink_stands_apart_or_falls_back_to_dim() {
+        use crate::ui_tokens::hue_of;
+        for (name, theme) in crate::theme::every_theme() {
+            let c = Colors::of(&theme);
+            let ui = theme.ui();
+            let p = theme.palette;
+            let avoid = [ui.accent, ui.ring_working, ui.ring_waiting, ui.ring_done];
+            let floors = [c.panel, c.row_hover, c.ask_fill, c.ask_cursor, c.page];
+            match crate::agent_lanes::lane_hue(&[p[4], p[5], p[6]], &avoid) {
+                Some(_) => {
+                    let h = hue_of(c.lane_ink).expect("a hue");
+                    for a in avoid.iter().filter_map(|&a| hue_of(a)) {
+                        let d = (h - a).abs() % 360.0;
+                        let d = d.min(360.0 - d);
+                        // The floor's nudge may move it a degree.
+                        assert!(
+                            d >= crate::agent_lanes::LANE_HUE_MIN - 1.0,
+                            "{name}: {d:.1} degrees"
+                        );
+                    }
+                }
+                None => assert_eq!(
+                    c.lane_ink,
+                    readable(c.panel_dim, &floors, MARK_MIN),
+                    "{name}: the fallback"
+                ),
+            }
+        }
+    }
+
     /// Step 3: text on the tab's surfaces meets the text floor in every theme (`text_dim` on
     /// `panel` and on `card` included).
     #[test]
@@ -6959,6 +7012,13 @@ mod tests {
                     TEXT_MIN,
                 ),
                 ("bar ok", c.bar_ok, c.box_fill, MARK_MIN),
+                // The subagent row chore: the robot on a row (at rest, hovered, waiting, lit)
+                // and on the page (the strip, a lane's header).
+                ("lane ink", c.lane_ink, c.panel, MARK_MIN),
+                ("lane ink hovered", c.lane_ink, c.row_hover, MARK_MIN),
+                ("lane ink waiting", c.lane_ink, c.ask_fill, MARK_MIN),
+                ("lane ink waiting lit", c.lane_ink, c.ask_cursor, MARK_MIN),
+                ("lane ink on the page", c.lane_ink, c.page, MARK_MIN),
                 // The lanes review, fix 5: "Ask Main about it" has an edge in every theme.
                 ("bar edge", c.bar_edge, c.box_fill, QUIET_LINE_MIN),
                 ("relay text", c.relay_text, c.relay_fill, TEXT_MIN),

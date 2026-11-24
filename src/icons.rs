@@ -71,11 +71,14 @@ pub enum Icon {
     Paperclip,
     /// Fork from one of your messages into a new tab (batch 3, chore 2).
     Fork,
+    /// A subagent (the subagent row chore, 2026-11-24): its row, the pill strip's group, its
+    /// lane's header.
+    Bot,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 53] = [
+    pub const ALL: [Icon; 54] = [
         Icon::Terminal,
         Icon::Globe,
         Icon::File,
@@ -129,6 +132,7 @@ impl Icon {
         Icon::CircleDot,
         Icon::Paperclip,
         Icon::Fork,
+        Icon::Bot,
     ];
 
     /// Its asset path.
@@ -187,12 +191,13 @@ impl Icon {
             Icon::CircleDot => "icons/lucide/circle-dot.svg",
             Icon::Paperclip => "icons/lucide/paperclip.svg",
             Icon::Fork => "icons/lucide/git-fork.svg",
+            Icon::Bot => "icons/lucide/bot.svg",
         }
     }
 }
 
 /// The embedded files, by asset path.
-const FILES: [(&str, &[u8]); 51] = [
+const FILES: [(&str, &[u8]); 52] = [
     (
         "icons/lucide/circle.svg",
         include_bytes!("../assets/icons/lucide/circle.svg"),
@@ -248,6 +253,10 @@ const FILES: [(&str, &[u8]); 51] = [
     (
         "icons/lucide/bell.svg",
         include_bytes!("../assets/icons/lucide/bell.svg"),
+    ),
+    (
+        "icons/lucide/bot.svg",
+        include_bytes!("../assets/icons/lucide/bot.svg"),
     ),
     (
         "icons/lucide/check.svg",

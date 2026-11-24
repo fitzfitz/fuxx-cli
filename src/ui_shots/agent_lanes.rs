@@ -14,6 +14,7 @@ pub(super) const FILE: &str = file!();
 
 const SOURCES: &[&str] = &[
     "src/agent_lanes_view.rs",
+    "src/agent_lane_row.rs",
     "src/agent_lanes.rs",
     "src/agent_tab.rs",
     "src/agent_rows.rs",
@@ -26,6 +27,7 @@ const SOURCES: &[&str] = &[
 /// The lanes chore's scenes (resume, relay, the closing bar): the box too.
 const LANES_CHORE: &[&str] = &[
     "src/agent_lanes_view.rs",
+    "src/agent_lane_row.rs",
     "src/agent_lanes.rs",
     "src/agent_tab.rs",
     "src/agent_box.rs",
@@ -221,6 +223,22 @@ pub(super) const SCENES: &[Scene] = &[
         kind: Kind::State,
         sources: LANES_CHORE,
     },
+    Scene {
+        name: "agent-lanes-row",
+        run: agent_lanes_row,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: SOURCES,
+    },
+    Scene {
+        name: "agent-lanes-row-tip",
+        run: agent_lanes_row_tip,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: SOURCES,
+    },
 ];
 
 const SUBAGENTS: &str = include_str!("../providers/fixtures/claude-subagents.jsonl");
@@ -363,12 +381,39 @@ pub(super) fn agent_lanes_overflow() {
     );
 }
 
-/// Each lane state's pill: working, waiting on you (tinted), done, failed, stopped.
+/// `agent-lanes-states`' height: Main's rows all in the picture (the subagent row chore).
+const STATES_H: f32 = 860.0;
+
+/// Each lane state's pill and Main's row: working, waiting on you (tinted), done, failed,
+/// stopped, and one ended in an earlier run.
 pub(super) fn agent_lanes_states() {
     scene_sized(
         "agent-lanes-states",
-        (1100.0, 640.0),
+        (1100.0, STATES_H),
         |n, cx, window, tab| {
+            still(cx);
+            // One cut off in an earlier run (the history has no end for it): Ended.
+            let mut ended = started("ended", "Ended");
+            for (id, tool) in [("e1", "Read"), ("e2", "Grep")] {
+                ended.push(Event::ToolStarted {
+                    id: id.into(),
+                    name: tool.into(),
+                    summary: String::new(),
+                    parent: Some("ended".into()),
+                    detail: None,
+                    writes: Vec::new(),
+                    texts: Vec::new(),
+                });
+            }
+            feed(cx, tab, |t, cx| {
+                t.shot_history(
+                    ended
+                        .into_iter()
+                        .map(crate::providers::Past::Event)
+                        .collect(),
+                    cx,
+                )
+            });
             feed(cx, tab, |t, cx| t.send("Five ways".into(), cx));
             let mut events: Vec<Event> = ["Working", "Waiting", "Done", "Failed", "Stopped"]
                 .iter()
@@ -390,11 +435,23 @@ pub(super) fn agent_lanes_states() {
                 events.push(Event::SubagentEnded { id: id.into(), end });
             }
             feed(cx, tab, |t, cx| t.shot_feed(events, cx));
-            let _ = super::frame_fresh(cx, window);
+            for (id, secs) in [
+                ("working", 12),
+                ("waiting", 62),
+                ("done", 130),
+                ("failed", 48),
+                ("stopped", 48),
+            ] {
+                feed(cx, tab, |t, _| {
+                    t.shot_lane_took(id, Duration::from_secs(secs))
+                });
+            }
+            let shot = super::frame_fresh(cx, window);
             let statuses: Vec<LaneStatus> = lanes_of(cx, tab).into_iter().map(|l| l.2).collect();
             assert_eq!(
                 statuses,
                 [
+                    LaneStatus::Ended,
                     LaneStatus::Working,
                     LaneStatus::Waiting,
                     LaneStatus::Done,
@@ -404,6 +461,208 @@ pub(super) fn agent_lanes_states() {
                 "{n}"
             );
             let _ = part(cx, tab, n, "strip");
+            // Main's rows (the subagent row chore): the robot coloured only while live, the
+            // waiting row tinted, the words led by a verb.
+            let c = colors(cx);
+            let dims = gpui::size(px(1100.0), px(STATES_H));
+            use crate::agent_lanes::Tone;
+            for (state, live, words, tone) in [
+                ("working", true, "Running \u{b7} 0:12", Tone::Dim),
+                ("waiting", true, "Needs input \u{b7} 1:02", Tone::Ask),
+                ("done", false, "No steps \u{b7} 2:10", Tone::Dim),
+                ("failed", false, "Failed \u{b7} 0:48", Tone::Failed),
+                ("stopped", false, "Stopped \u{b7} 0:48", Tone::Dim),
+                ("ended", false, "Ended \u{b7} 2 steps", Tone::Dim),
+            ] {
+                let row = part(cx, tab, n, &format!("lane-row-{state}"));
+                let bot = part(cx, tab, n, &format!("lane-bot-{state}"));
+                let fill = if state == "waiting" {
+                    c.ask_fill
+                } else {
+                    c.panel
+                };
+                let at = super::pixel_at(&shot, dims, f32::from(row.left()) + 4.0, mid_y(row));
+                assert!(super::near(at, fill), "{n}: {state}'s fill {at:?}");
+                let ink = super::ink_in(&shot, dims, bot, rgb3(fill));
+                let want = if live { c.lane_ink } else { c.panel_dim };
+                assert!(
+                    super::near(ink, want),
+                    "{n}: {state}'s robot {ink:?}, not {want:?}"
+                );
+                let lane = cx.read(|cx| {
+                    let t = tab.read(cx);
+                    t.shot_lanes().iter().find(|l| l.id == state).cloned()
+                });
+                let got = cx.read(|cx| tab.read(cx).lane_words(&lane.expect(state)));
+                assert!(
+                    got.0.starts_with(&words[..words.len() - 1]) && got.1 == tone,
+                    "{n}: {state}'s words {got:?}"
+                );
+            }
+        },
+    );
+}
+
+/// A part's middle, down.
+fn mid_y(b: gpui::Bounds<gpui::Pixels>) -> f32 {
+    f32::from(b.top() + b.size.height / 2.0)
+}
+
+/// A colour's channels, as a pixel's.
+fn rgb3(c: alacritty_terminal::vte::ansi::Rgb) -> [u8; 3] {
+    [c.r, c.g, c.b]
+}
+
+/// The tab's colours in the scene's theme.
+fn colors(cx: &VisualTestAppContext) -> crate::agent_tab::Colors {
+    cx.read(|cx| crate::agent_tab::Colors::of(&cx.global::<crate::appearance::Appearance>().theme))
+}
+
+/// The subagent row chore's group: Main read a file, started Explore (working, its last tool
+/// Read, 0:12 in) and runs Bash — one tool group of three rows.
+fn row_group(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>) {
+    feed(cx, tab, |t, cx| t.send("Explore the test setup".into(), cx));
+    let tool = |id: &str, name: &str, summary: &str| Event::ToolStarted {
+        id: id.into(),
+        name: name.into(),
+        summary: summary.into(),
+        parent: None,
+        detail: None,
+        writes: Vec::new(),
+        texts: Vec::new(),
+    };
+    let mut events = vec![
+        tool("read1", "Read", "tests/setup.rs"),
+        Event::ToolFinished {
+            id: "read1".into(),
+            ok: true,
+            summary: String::new(),
+            output: Some("fn setup() {}\n".into()),
+        },
+    ];
+    let mut explore = started("explore", "Explore");
+    if let Some(Event::SubagentStarted { kind, task, .. }) = explore.last_mut() {
+        *kind = "Explore".into();
+        *task = "Read the test setup".into();
+    }
+    events.extend(explore);
+    events.push(Event::SubagentProgress {
+        id: "explore".into(),
+        tokens: None,
+        tools: Some(3),
+        last_tool: Some("Read".into()),
+    });
+    events.push(tool("bash1", "Bash", "cargo test"));
+    feed(cx, tab, |t, cx| t.shot_feed(events, cx));
+    feed(cx, tab, |t, _| {
+        t.shot_lane_took("explore", Duration::from_secs(12))
+    });
+}
+
+/// A subagent's row (the subagent row chore, 2026-11-24): Read, Explore working ("Running Read
+/// · 0:12") and Bash in one group — the robot in `lane_ink` at the mark + 8, the name not in
+/// `tool_name`, the mark column in line with Bash's, the divider from 30 pt, the row 30 tall;
+/// the strip's robot after Main in `lane_ink`.
+pub(super) fn agent_lanes_row() {
+    scene_sized("agent-lanes-row", (1100.0, 640.0), |n, cx, window, tab| {
+        use crate::ui_tokens::chat::{TOOL_DIVIDER_INSET, TOOL_ROW};
+        still(cx);
+        row_group(cx, tab);
+        let shot = super::frame_fresh(cx, window);
+        let dims = gpui::size(px(1100.0), px(640.0));
+        let c = colors(cx);
+        let row = part(cx, tab, n, "lane-row-working");
+        let mark = part(cx, tab, n, "lane-row-mark");
+        let bot = part(cx, tab, n, "lane-bot-working");
+        let name = part(cx, tab, n, "lane-row-name");
+        let bash = part(cx, tab, n, "tool-mark");
+        assert!(bash.top() > row.top(), "{n}: Bash's mark, under the row");
+        assert!(
+            (f32::from(row.size.height) - TOOL_ROW).abs() < 0.5,
+            "{n}: 30 tall ({row:?})"
+        );
+        let mid_x = |b: gpui::Bounds<gpui::Pixels>| f32::from(b.left() + b.size.width / 2.0);
+        assert!(
+            (mid_x(mark) - mid_x(bash)).abs() < 0.5,
+            "{n}: the mark column in line with Bash's ({mark:?}, {bash:?})"
+        );
+        assert!(
+            (f32::from(bot.left() - mark.right()) - 8.0).abs() < 0.5
+                && (f32::from(bot.size.width) - 14.0).abs() < 0.5,
+            "{n}: a 14 pt robot at the mark + 8 ({bot:?})"
+        );
+        let ink = super::ink_in(&shot, dims, bot, rgb3(c.panel));
+        assert!(
+            super::near(ink, c.lane_ink),
+            "{n}: the robot in lane_ink {ink:?} ({:?})",
+            c.lane_ink
+        );
+        let ink = super::ink_in(&shot, dims, name, rgb3(c.panel));
+        assert!(
+            super::near(ink, c.panel_text) && !super::near(ink, c.tool_name),
+            "{n}: the name in panel_text {ink:?}"
+        );
+        let y = f32::from(row.bottom()) - 0.5;
+        let x = f32::from(row.left());
+        let line = super::pixel_at(&shot, dims, x + TOOL_DIVIDER_INSET + 2.0, y);
+        let before = super::pixel_at(&shot, dims, x + TOOL_DIVIDER_INSET - 2.0, y);
+        assert!(
+            super::near(line, c.tool_divider) && super::near(before, c.panel),
+            "{n}: the divider from 30 pt ({before:?} | {line:?})"
+        );
+        let strip_bot = part(cx, tab, n, "strip-bot");
+        let ink = super::ink_in(&shot, dims, strip_bot, rgb3(c.page));
+        assert!(
+            super::near(ink, c.lane_ink),
+            "{n}: the strip's robot in lane_ink {ink:?}"
+        );
+        let words = cx.read(|cx| {
+            let t = tab.read(cx);
+            t.lane_words(&t.shot_lanes()[0])
+        });
+        assert!(
+            words.0.starts_with("Running Read \u{b7} 0:1"),
+            "{n}: {words:?}"
+        );
+    });
+}
+
+/// The pointer on Explore's row: lit `row_hover`, its tooltip two lines — the pill's, then
+/// "Explore subagent · click to open its lane".
+pub(super) fn agent_lanes_row_tip() {
+    scene_sized(
+        "agent-lanes-row-tip",
+        (1100.0, 640.0),
+        |n, cx, window, tab| {
+            still(cx);
+            row_group(cx, tab);
+            let _ = super::frame_fresh(cx, window);
+            let row = part(cx, tab, n, "lane-row-working");
+            if let Ok(mut shown) = crate::sidebar_toggle::SHOWN_TIP.lock() {
+                *shown = None;
+            }
+            cx.simulate_mouse_move(window, row.center(), None, gpui::Modifiers::none());
+            cx.advance_clock(Duration::from_secs(1));
+            super::settle_frames(cx, window);
+            let shot = super::frame_fresh(cx, window);
+            let tip = crate::sidebar_toggle::SHOWN_TIP
+                .lock()
+                .ok()
+                .and_then(|t| t.clone())
+                .unwrap_or_else(|| panic!("{n}: a tooltip"));
+            let (one, two) = tip
+                .split_once('\n')
+                .unwrap_or_else(|| panic!("{n}: two lines: {tip:?}"));
+            assert!(
+                one.starts_with("Running 0:1")
+                    && one.ends_with("Read the test setup \u{b7} you can message it"),
+                "{n}: {one:?}"
+            );
+            assert_eq!(two, "Explore subagent \u{b7} click to open its lane", "{n}");
+            let c = colors(cx);
+            let dims = gpui::size(px(1100.0), px(640.0));
+            let at = super::pixel_at(&shot, dims, f32::from(row.left()) + 4.0, mid_y(row));
+            assert!(super::near(at, c.row_hover), "{n}: lit {at:?}");
         },
     );
 }

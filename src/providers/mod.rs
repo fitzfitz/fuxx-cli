@@ -398,6 +398,11 @@ pub trait Provider: Sync {
     fn relays_to_subagents(&self) -> bool {
         false
     }
+    /// Whether a subagent's `kind` names nothing in particular (the subagent row chore: its
+    /// row's tooltip then says just "Subagent"). Default: only an empty one.
+    fn generic_lane_kind(&self, kind: &str) -> bool {
+        kind.trim().is_empty()
+    }
     /// Whether the agent's questions (`Event::Question`) are answered by an ordinary message
     /// rather than `Action::Answer`: it asked, didn't wait, and went on (agy's print mode skips
     /// its own `ask_question`; 2026-11-24). The card then sends your picks as a message, the tab
