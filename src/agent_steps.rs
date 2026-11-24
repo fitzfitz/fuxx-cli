@@ -543,13 +543,18 @@ pub fn open_failures(items: &[Item], from: usize, cwd: &Path) -> HashSet<usize> 
     open.into_values().flatten().collect()
 }
 
-/// A step's print: its calls (and their prints), which of them hold an open failure, and
+/// A step's print: its calls (and their versions), which of them hold an open failure, and
 /// whether tracks fit — what makes it built again.
-pub fn step_print(items: &[Item], calls: &[usize], open: &HashSet<usize>, fits: bool) -> u64 {
+pub fn step_print(
+    version: &dyn Fn(usize) -> u64,
+    calls: &[usize],
+    open: &HashSet<usize>,
+    fits: bool,
+) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     for &ix in calls {
         ix.hash(&mut h);
-        crate::agent_tab::fingerprint(&items[ix]).hash(&mut h);
+        version(ix).hash(&mut h);
         open.contains(&ix).hash(&mut h);
     }
     fits.hash(&mut h);
@@ -1068,13 +1073,22 @@ pub(crate) mod tests {
         ];
         let calls = [0, 1, 2];
         let open = HashSet::from([1]);
-        let p = step_print(&items, &calls, &open, true);
-        assert_eq!(p, step_print(&items, &calls, &open, true));
-        assert_ne!(p, step_print(&items, &calls, &HashSet::new(), true));
-        assert_ne!(p, step_print(&items, &calls, &open, false));
+        // A call's version: here its content's fingerprint (the tab uses `Conversation::version`).
+        let print = |items: &[Item], open: &HashSet<usize>, fits: bool| {
+            step_print(
+                &|ix| crate::agent_tab::fingerprint(&items[ix]),
+                &calls,
+                open,
+                fits,
+            )
+        };
+        let p = print(&items, &open, true);
+        assert_eq!(p, print(&items, &open, true));
+        assert_ne!(p, print(&items, &HashSet::new(), true));
+        assert_ne!(p, print(&items, &open, false));
         if let Item::Tool { ok, .. } = &mut items[2] {
             *ok = Some(false);
         }
-        assert_ne!(p, step_print(&items, &calls, &open, true));
+        assert_ne!(p, print(&items, &open, true));
     }
 }

@@ -904,7 +904,7 @@ impl AgentTab {
         self.rw.pick = ix;
         if let Some(ix) = ix {
             let pane = self.pane();
-            if let Ok(row) = pane.order.binary_search(&ix) {
+            if let Ok(row) = pane.cache.order().binary_search(&ix) {
                 pane.list.scroll_to_reveal_item(row + pane.head as usize);
             }
         }

@@ -6,9 +6,7 @@ use super::*;
 impl AgentTab {
     /// Row `k` of the shown view's list (M11ar: each view has its own rows: `agent_chat::rows_of`).
     pub(super) fn item_row(&self, k: usize, look: &Look) -> AnyElement {
-        use crate::agent_chat::{
-            agent_side, avatar_top, chat, gap_before_at, shows_avatar_at, shows_thinking,
-        };
+        use crate::agent_chat::{agent_side, avatar_top, chat, gap_before_at, shows_avatar_at};
         let items = self.conversation.items();
         let pane = self.pane();
         // A lane's view: its task first ("from Main"), how it ended last (M11ar).
@@ -16,7 +14,7 @@ impl AgentTab {
             return self.lane_head_row(look);
         }
         let k = k - pane.head as usize;
-        let order = &pane.order;
+        let order = &pane.cache.order();
         let Some(&ix) = order.get(k) else {
             return self.lane_end_row(look);
         };
@@ -32,15 +30,8 @@ impl AgentTab {
         let last = k + 1 == order.len()
             || matches!(role, Some(crate::agent_steps::Role::Tracks(calls))
                 if calls.last() == order.last());
-        let thinking = last
-            && match &self.view {
-                crate::agent_lanes::View::Main => {
-                    shows_thinking(self.status() == Status::Working, items)
-                }
-                crate::agent_lanes::View::Lane(id) => self.conversation.lane(id).is_some_and(|l| {
-                    crate::agent_chat::shows_thinking_in(l.status.live(), items, order)
-                }),
-            };
+        // Read from what the conversation keeps (the running calls, the status): no scan.
+        let thinking = last && pane.cache.thinking_now(&self.conversation, &self.view);
         // Its text's pieces are keyed by this row (chat selection, chore after M11ar).
         if let Some((select, _)) = &look.draw.select {
             select.begin_row(k);
@@ -656,10 +647,7 @@ impl AgentTab {
         }
         let c = &look.c;
         let items = self.conversation.items();
-        let steps = items
-            .iter()
-            .filter(|i| parent_of(i) == Some(id.as_str()))
-            .count();
+        let steps = self.conversation.kids(id);
         // Main's SendMessage that delivered a relay (the lanes chore): "Passed on to Explore",
         // opening the lane; its green dot says it went (the lanes review: no ✓ in the name's
         // ink, no raw "Sent." on the right).
@@ -801,13 +789,12 @@ impl AgentTab {
         use crate::agent_chat::{Shape, chat, group_shape};
         let c = &look.c;
         let items = self.conversation.items();
-        let order = &self.pane().order;
         // Its shape in its drawn group, as its row's role says (the agent activity chore: a
         // busy step's tracks are a group of their own); elsewhere (a tool's detail) by the items.
         let pane = self.pane();
-        let shape = order
-            .iter()
-            .position(|&i| i == ix)
+        let shape = pane
+            .cache
+            .row_of(ix)
             .and_then(
                 |k| match pane.rows.get(k + pane.head as usize)?.role.as_ref()? {
                     crate::agent_steps::Role::Row(shape) => Some(*shape),

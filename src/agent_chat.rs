@@ -14,6 +14,8 @@ pub use crate::ui_tokens::chat;
 /// lane (the lanes chore) is in Main's rows and its lane's: there the last row until it
 /// settles, then where it settled (it never moves after).
 pub fn rows_of(items: &[Item], view: &View, lanes: &[&str]) -> Vec<usize> {
+    #[cfg(test)]
+    ROWS_OF_CALLS.with(|n| n.set(n.get() + 1));
     let tools: std::collections::HashSet<&str> = items
         .iter()
         .filter_map(|i| match i {
@@ -57,7 +59,7 @@ pub fn rows_of(items: &[Item], view: &View, lanes: &[&str]) -> Vec<usize> {
                 }
             }
             (View::Main, item) => {
-                if parent_of(item).is_none_or(|p| !lane_of(p)) {
+                if in_main(item, &lane_of) {
                     rows.push(ix);
                 }
             }
@@ -78,6 +80,18 @@ pub fn rows_of(items: &[Item], view: &View, lanes: &[&str]) -> Vec<usize> {
     rows.extend(waiting);
     rows.extend(asks);
     rows
+}
+
+// How many times `rows_of` ran on this thread (the perf chore's work-count tests).
+#[cfg(test)]
+thread_local! {
+    pub static ROWS_OF_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether item `item` is a row of Main's (`rows_of`'s rule, one item at a time): `live` says
+/// which tool calls have a lane (and are there).
+pub fn in_main(item: &Item, live: &dyn Fn(&str) -> bool) -> bool {
+    parent_of(item).is_none_or(|p| !live(p))
 }
 
 /// An item said by the agent (its avatar's column), not you or the tab.
@@ -156,10 +170,12 @@ pub fn shows_avatar_at(items: &[Item], rows: &[usize], k: usize) -> bool {
             .is_some_and(|p| agent_side(&items[rows[p]]))
 }
 
-/// Row `k`'s print: its item and which item it is, its shape, whether it is the last row and
-/// carries the thinking line — what makes it laid out again (`agent_tab::sync_rows`).
+/// Row `k`'s print: which item it is and that item's version (`Conversation::version`: never
+/// its text, the perf chore), its shape, whether it is the last row and carries the thinking
+/// line — what makes it laid out again (`agent_view_cache`).
 pub fn row_print_at(
     items: &[Item],
+    version: &dyn Fn(usize) -> u64,
     rows: &[usize],
     k: usize,
     thinking: bool,
@@ -167,7 +183,7 @@ pub fn row_print_at(
 ) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     rows[k].hash(&mut h);
-    crate::agent_tab::fingerprint(&items[rows[k]]).hash(&mut h);
+    version(rows[k]).hash(&mut h);
     group_shape_at(items, rows, k, alone).hash(&mut h);
     let last = k + 1 == rows.len();
     last.hash(&mut h);
@@ -175,6 +191,7 @@ pub fn row_print_at(
     h.finish()
 }
 
+#[cfg(test)]
 /// Whether the "Thinking…" line shows under the last of `rows`: the turn works and nothing
 /// else there moves (no text streaming, no tool running, no question waiting).
 pub fn shows_thinking_in(working: bool, items: &[Item], rows: &[usize]) -> bool {
@@ -240,7 +257,9 @@ pub fn avatar_top(item: &Item) -> f32 {
     }
 }
 
-/// Whether the "Thinking…" line shows under Main's last row (all tools count, as before).
+/// Whether the "Thinking…" line shows under Main's last row (all tools count, as before). The
+/// tab reads `ViewCache::thinking_now` (no scan); the rule stays here for its tests.
+#[cfg(test)]
 pub fn shows_thinking(working: bool, items: &[Item]) -> bool {
     let rows = main_rows(items);
     let Some(&last) = rows.last() else {
@@ -268,7 +287,14 @@ pub fn summary_shown(name: &str, summary: &str) -> bool {
 pub fn row_print(items: &[Item], ix: usize, thinking: bool) -> u64 {
     let rows = main_rows(items);
     match rows.iter().position(|&r| r == ix) {
-        Some(k) => row_print_at(items, &rows, k, thinking, &|_| false),
+        Some(k) => row_print_at(
+            items,
+            &|ix| crate::agent_tab::fingerprint(&items[ix]),
+            &rows,
+            k,
+            thinking,
+            &|_| false,
+        ),
         None => 0,
     }
 }
@@ -517,9 +543,10 @@ mod tests {
         assert!(shows_avatar_at(&items, &lane, 0));
         // A row's print knows which item it draws.
         let main = rows_of(&items, &View::Main, &["agent1"]);
+        let v = |ix: usize| ix as u64;
         assert_ne!(
-            row_print_at(&items, &main, 1, false, &|_| false),
-            row_print_at(&items, &main, 2, false, &|_| false)
+            row_print_at(&items, &v, &main, 1, false, &|_| false),
+            row_print_at(&items, &v, &main, 2, false, &|_| false)
         );
     }
 

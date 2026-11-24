@@ -1216,7 +1216,8 @@ impl AgentTab {
         let items = self.conversation.items();
         let pane = self.pane();
         if let Some(k) = pane
-            .order
+            .cache
+            .order()
             .iter()
             .position(|&i| matches!(&items[i], Item::Tool { id, .. } if id == lane))
         {

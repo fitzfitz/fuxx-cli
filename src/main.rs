@@ -26,6 +26,7 @@ mod agent_sweep;
 mod agent_tab;
 mod agent_tool_modal;
 mod agent_top;
+mod agent_view_cache;
 mod api;
 mod api_client;
 mod api_events;

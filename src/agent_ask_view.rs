@@ -220,7 +220,8 @@ impl AgentTab {
     pub(super) fn ask_row(&self) -> Option<usize> {
         let ix = self.conversation.oldest_ask()?;
         let pane = self.pane();
-        pane.order
+        pane.cache
+            .order()
             .binary_search(&ix)
             .ok()
             .map(|k| k + pane.head as usize)
@@ -284,7 +285,7 @@ impl AgentTab {
         };
         if matches!(self.conversation.items()[ix], Item::Permission { .. }) {
             let pane = self.pane();
-            if let Ok(k) = pane.order.binary_search(&ix) {
+            if let Ok(k) = pane.cache.order().binary_search(&ix) {
                 pane.list.scroll_to_reveal_item(k + pane.head as usize);
             }
             self.refocus = Some(Refocus::Box);
@@ -299,7 +300,7 @@ impl AgentTab {
     pub(super) fn reveal_ask(&mut self, cx: &mut Context<Self>) {
         if let Some((ix, _, _)) = self.ask_target() {
             let pane = self.pane();
-            if let Ok(k) = pane.order.binary_search(&ix) {
+            if let Ok(k) = pane.cache.order().binary_search(&ix) {
                 pane.list.scroll_to_reveal_item(k + pane.head as usize);
             }
         }
@@ -329,7 +330,7 @@ impl AgentTab {
     /// Item `ix`'s row laid out again in every view.
     fn relayout_item(&self, ix: usize) {
         for pane in self.panes.values() {
-            if let Ok(k) = pane.order.binary_search(&ix) {
+            if let Ok(k) = pane.cache.order().binary_search(&ix) {
                 let k = k + pane.head as usize;
                 if k < pane.list.item_count() {
                     pane.list.splice(k..k + 1, 1);
@@ -615,7 +616,8 @@ impl AgentTab {
         };
         let pane = self.pane();
         let row = pane
-            .order
+            .cache
+            .order()
             .binary_search(&ix)
             .ok()
             .map(|k| k + pane.head as usize);
@@ -1767,7 +1769,8 @@ impl AgentTab {
         let pane = self.pane();
         let list = pane.list.clone();
         let kept = pane
-            .order
+            .cache
+            .order()
             .binary_search(&ix)
             .ok()
             .map(|k| k + pane.head as usize)

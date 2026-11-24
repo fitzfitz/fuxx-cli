@@ -83,7 +83,7 @@ pub(crate) use rewind::{fork_tip, fork_title};
 use crate::agent_conversation::{Answer, Conversation, Item};
 use crate::agent_markdown::{Md, link_bare_urls, parse};
 use crate::agent_process::{self, AgentProcess, ProcessEvent};
-use crate::agent_tool_modal::{ToolModal, parent_of};
+use crate::agent_tool_modal::ToolModal;
 use crate::appearance::Appearance;
 use crate::block_view::BlockDrag;
 use crate::code_ask::{CodeRef, agent_path};
@@ -819,8 +819,18 @@ pub fn kept(text: &str, attachments: Vec<Attachment>) -> Vec<Attachment> {
         .collect()
 }
 
-/// What an item looks like, as a number: a row is laid out again when its number changes.
+// How many items `fingerprint` hashed on this thread (the perf chore's work-count tests).
+#[cfg(test)]
+thread_local! {
+    pub static FINGERPRINTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+/// What an item looks like, as a number (its text hashed whole: never on the hot path since
+/// the perf chore, where rows go by `Conversation::version`).
 pub(crate) fn fingerprint(item: &Item) -> u64 {
+    #[cfg(test)]
+    FINGERPRINTS.with(|n| n.set(n.get() + 1));
     let mut h = DefaultHasher::new();
     std::mem::discriminant(item).hash(&mut h);
     match item {
@@ -864,6 +874,7 @@ pub(crate) fn fingerprint(item: &Item) -> u64 {
 
 /// The rows to lay out again after the items changed from `old` to `new` (fingerprints): each
 /// changed row still there, and how the count changed (rows added at the end or dropped from it).
+#[cfg(test)]
 pub fn changed_rows(old: &[u64], new: &[u64]) -> Vec<usize> {
     old.iter()
         .zip(new)
@@ -1293,8 +1304,10 @@ struct Row {
 struct Pane {
     list: ListState,
     rows: Vec<Row>,
-    /// The items its rows draw (not counting `head` and `tail`).
-    order: Vec<usize>,
+    /// The items its rows draw (not counting `head` and `tail`), each row's role and print,
+    /// and whether the thinking line shows: derived from the conversation in `sync_rows`, only
+    /// read when drawn (the perf chore).
+    cache: crate::agent_view_cache::ViewCache,
     /// A lane's view (M11ar): its task as the first row ("from Main"), and how it ended as the
     /// last.
     head: bool,
@@ -1313,7 +1326,7 @@ impl Pane {
         Pane {
             list,
             rows: Vec::new(),
-            order: Vec::new(),
+            cache: Default::default(),
             select: Rc::default(),
             head: false,
             tail: false,
@@ -1548,6 +1561,9 @@ pub struct AgentTab {
     /// The shown view's turn ledger (the folder tab's words after the status, and its
     /// popover); None: no live turn.
     pub(crate) ledger: Option<crate::agent_ledger::Ledger>,
+    /// What the ledger was built for (its view, the lanes' shape, the turn): built again when
+    /// that changes or a change that isn't only the agent's words comes.
+    ledger_for: Option<(crate::agent_lanes::View, u64, Option<usize>, usize)>,
     /// When each tool call started and finished, live only (its elapsed time; the agent
     /// activity chore's step times).
     tool_times: crate::agent_steps::ToolTimes,
@@ -2257,6 +2273,7 @@ impl AgentTab {
             tracks_all: HashSet::new(),
             files_all: HashSet::new(),
             ledger: None,
+            ledger_for: None,
             tool_times: crate::agent_steps::ToolTimes::new(),
             open_edits: HashSet::new(),
             reasons: Reasons::default(),
@@ -3124,14 +3141,14 @@ impl AgentTab {
     /// After the conversation changed: rows, events, placeholder, the elapsed ticker, a redraw.
     fn after_change(&mut self, live: bool, cx: &mut Context<Self>) {
         // A Working arc for each running tool's row (spec B-B), none for the others.
+        // The conversation keeps the running calls (the perf chore): no scan.
+        let items = self.conversation.items();
         let running: Vec<String> = self
             .conversation
-            .items()
+            .running_tools()
             .iter()
-            .filter_map(|i| match i {
-                Item::Tool {
-                    id, running: true, ..
-                } => Some(id.clone()),
+            .filter_map(|&ix| match &items[ix] {
+                Item::Tool { id, .. } => Some(id.clone()),
                 _ => None,
             })
             .collect();
@@ -3179,79 +3196,71 @@ impl AgentTab {
         cx.notify();
     }
 
-    /// Lay out again the rows whose items changed (and a sub-agent's parent row), add the new
-    /// ones at the end, drop any gone from it.
+    /// Lay out again the rows whose prints changed (the view's cache derives them again from
+    /// the lowest item changed: the perf chore), add the new ones at the end, drop any gone.
     fn sync_rows(&mut self) {
         use crate::agent_lanes::View;
-        let view = self.view.clone();
-        let items = self.conversation.items();
-        let lanes: Vec<&str> = self
-            .conversation
-            .lanes()
-            .iter()
-            .map(|l| l.id.as_str())
-            .collect();
-        let order = crate::agent_chat::rows_of(items, &view, &lanes);
-        let lane = match &view {
-            View::Lane(id) => self.conversation.lane(id).cloned(),
-            View::Main => None,
-        };
-        // A row's print holds its item, its shape in its tool group and whether it carries the
-        // thinking line (spec B-B): a neighbour arriving lays it out again.
-        let thinking = match &lane {
-            None => crate::agent_chat::shows_thinking(self.status() == Status::Working, items),
-            Some(l) => crate::agent_chat::shows_thinking_in(l.status.live(), items, &order),
-        };
-        let mut new: Vec<u64> = Vec::new();
-        let head = lane.is_some();
-        let tail = lane.as_ref().is_some_and(|l| !l.status.live());
         fn print<T: Hash>(what: &T) -> u64 {
             let mut h = DefaultHasher::new();
             what.hash(&mut h);
             h.finish()
         }
-        if let Some(l) = &lane {
-            new.push(print(&("head", &l.task)));
+        let dirty = self.conversation.take_dirty();
+        let view = self.view.clone();
+        // A view not shown follows no change: it starts again when shown.
+        if dirty.is_some() {
+            for (v, pane) in self.panes.iter_mut() {
+                if *v != view {
+                    pane.cache.invalidate();
+                }
+            }
         }
-        // Each tool row's role in its step (the agent activity chore): a busy step draws as
-        // tracks on its first row, built below only when that row's print changes.
-        let alone = |i: &Item| crate::agent_steps::stands_alone(&self.conversation, i);
         let fits = tracks::fits_tracks(self.bar_width.get());
         self.tracks_fit = fits;
-        let roles = crate::agent_steps::roles_of(items, &order, &alone, fits);
-        let open = crate::agent_steps::open_failures(
-            items,
-            crate::agent_steps::turn_start(items),
-            &self.start.cwd,
-        );
-        new.extend((0..order.len()).map(|k| {
-            let row = crate::agent_chat::row_print_at(items, &order, k, thinking, &alone);
-            let step = match &roles[k] {
-                Some(crate::agent_steps::Role::Tracks(calls)) => {
-                    crate::agent_steps::step_print(items, calls, &open, fits)
-                }
-                _ => 0,
-            };
-            print(&(row, &roles[k], step))
-        }));
-        if let (true, Some(l)) = (tail, &lane) {
+        let lane = match &view {
+            View::Lane(id) => self.conversation.lane(id).cloned(),
+            View::Main => None,
+        };
+        let head = lane.is_some();
+        let tail = lane.as_ref().is_some_and(|l| !l.status.live());
+        let head_print = lane.as_ref().map(|l| print(&("head", &l.task)));
+        let tail_print = lane.as_ref().map(|l| {
             let time = self.lane_elapsed(&l.id).map(|d| d.as_secs());
-            new.push(print(&("tail", format!("{:?}", l.status), time)));
-        }
+            print(&("tail", format!("{:?}", l.status), time))
+        });
+        let pane = self.panes.entry(view.clone()).or_insert_with(Pane::new);
+        let from = pane
+            .cache
+            .sync(&self.conversation, &view, dirty, fits, &self.start.cwd);
+        let items = self.conversation.items();
+        let cache = &pane.cache;
+        let order = cache.order();
         let lane_rows = head as usize;
-        let pane = self.panes.entry(view).or_insert_with(Pane::new);
-        let old: Vec<u64> = pane.rows.iter().map(|r| r.print).collect();
-        let mut dirty = changed_rows(&old, &new);
+        let total = lane_rows + order.len() + tail as usize;
+        let new = |k: usize| match k.checked_sub(lane_rows) {
+            None => head_print.unwrap_or_default(),
+            Some(j) if j < order.len() => cache.print(j),
+            Some(_) => tail_print.unwrap_or_default(),
+        };
+        let old = pane.rows.len();
+        // The rows that may have changed: the head, and from the cache's first on.
+        let mut dirty_rows: Vec<usize> = (0..lane_rows)
+            .chain(lane_rows + from..total)
+            .filter(|&k| k < old && pane.rows[k].print != new(k))
+            .collect();
         let block = |k: usize| {
             k.checked_sub(lane_rows)
                 .and_then(|j| order.get(j))
                 .and_then(|&i| blocks_of(&items[i]))
         };
         let (times, cwd) = (&self.tool_times, &self.start.cwd);
-        let role = |k: usize| k.checked_sub(lane_rows).and_then(|j| roles.get(j)?.clone());
+        let role = |k: usize| {
+            k.checked_sub(lane_rows)
+                .and_then(|j| cache.role(j).cloned())
+        };
         let tracks = |role: &Option<crate::agent_steps::Role>| match role {
             Some(crate::agent_steps::Role::Tracks(calls)) => Some(Rc::new(
-                crate::agent_steps::tracks_of(items, calls, &open, times, cwd),
+                crate::agent_steps::tracks_of(items, calls, cache.open(), times, cwd),
             )),
             _ => None,
         };
@@ -3262,29 +3271,28 @@ impl AgentTab {
                 .map(|&i| Rc::new(crate::agent_step_words::row_words(&items[i]))),
             _ => None,
         };
-        if new.len() < old.len() {
-            pane.list.splice(new.len()..old.len(), 0);
-            pane.rows.drain(new.len()..);
+        if total < old {
+            pane.list.splice(total..old, 0);
+            pane.rows.drain(total..);
         }
-        dirty.retain(|&k| k < new.len());
-        for &k in &dirty {
+        dirty_rows.retain(|&k| k < total);
+        for &k in &dirty_rows {
             pane.list.splice(k..k + 1, 1);
             let role = role(k);
             pane.rows[k] = Row {
-                print: new[k],
+                print: new(k),
                 blocks: block(k),
                 tracks: tracks(&role),
                 words: words(k, &role),
                 role,
             };
         }
-        if new.len() > old.len() {
-            pane.list
-                .splice(old.len()..old.len(), new.len() - old.len());
-            for (k, &print) in new.iter().enumerate().skip(old.len()) {
+        if total > old {
+            pane.list.splice(old..old, total - old);
+            for k in old..total {
                 let role = role(k);
                 pane.rows.push(Row {
-                    print,
+                    print: new(k),
                     blocks: block(k),
                     tracks: tracks(&role),
                     words: words(k, &role),
@@ -3297,7 +3305,7 @@ impl AgentTab {
         let said = match &lane {
             Some(l) => Some((0, l.task.as_str())),
             None => self.conversation.latest_you().and_then(|ix| {
-                let k = order.binary_search(&ix).ok()?;
+                let k = cache.row_of(ix)?;
                 match &items[ix] {
                     Item::You { text, .. } => Some((k, text.as_str())),
                     _ => None,
@@ -3305,16 +3313,30 @@ impl AgentTab {
             }),
         };
         pane.latest = latest::Latest::update(pane.latest.take(), said);
-        pane.order = order;
         pane.head = head;
         pane.tail = tail;
-        // The turn ledger (the agent activity chore): rebuilt with the rows, never per frame.
-        self.ledger = crate::agent_ledger::ledger_of(
-            &self.conversation,
-            &self.view,
-            &self.tool_times,
-            &self.start.cwd,
+        // The turn ledger (the agent activity chore): rebuilt with the rows, never per frame,
+        // and not for the agent's words streaming (it counts calls only).
+        let key = (
+            view,
+            self.conversation.shape(),
+            self.conversation.latest_you(),
+            self.conversation.live_from(),
         );
+        let words_only = dirty.is_none_or(|d| {
+            items[d.min(items.len())..]
+                .iter()
+                .all(|i| matches!(i, Item::Agent { .. }))
+        });
+        if !words_only || self.ledger_for.as_ref() != Some(&key) {
+            self.ledger_for = Some(key);
+            self.ledger = crate::agent_ledger::ledger_of(
+                &self.conversation,
+                &self.view,
+                &self.tool_times,
+                &self.start.cwd,
+            );
+        }
     }
 
     /// The shown view's list.
@@ -3329,7 +3351,7 @@ impl AgentTab {
     /// a tool's detail).
     pub(super) fn blocks_at(&self, ix: usize) -> Option<Rc<Vec<Md>>> {
         let pane = self.pane();
-        match pane.order.iter().position(|&i| i == ix) {
+        match pane.cache.row_of(ix) {
             Some(k) => pane
                 .rows
                 .get(k + pane.head as usize)
@@ -3340,11 +3362,7 @@ impl AgentTab {
 
     /// While a tool runs, its elapsed time turns each second.
     fn keep_ticking(&mut self, cx: &mut Context<Self>) {
-        let running = self
-            .conversation
-            .items()
-            .iter()
-            .any(|i| matches!(i, Item::Tool { running: true, .. }))
+        let running = !self.conversation.running_tools().is_empty()
             || self.conversation.lanes().iter().any(|l| l.status.live());
         if !running {
             self.ticker = None;
@@ -3371,7 +3389,7 @@ impl AgentTab {
                         // The shown view's running rows (and live subagents' rows) say their
                         // time again.
                         let pane = this.pane();
-                        for (k, &i) in pane.order.iter().enumerate() {
+                        for (k, &i) in pane.cache.order().iter().enumerate() {
                             if ticks(&items[i]) {
                                 let k = k + pane.head as usize;
                                 pane.list.splice(k..k + 1, 1);

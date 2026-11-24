@@ -409,7 +409,7 @@ impl AgentTab {
     pub(super) fn flashed_you(&self, bubble: Div, ix: usize, c: &Colors) -> AnyElement {
         let pane = self.pane();
         let row = match &self.strip.flash {
-            Some(_) if !pane.head => pane.order.binary_search(&ix).ok(),
+            Some(_) if !pane.head => pane.cache.order().binary_search(&ix).ok(),
             _ => None,
         };
         match row {
