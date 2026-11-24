@@ -14,7 +14,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Latest (2026-11-24, later):** the agent tab perf chore 🟨 built on branch `chore/agent-tab-perf` (not merged, not pushed): long conversations no longer lag; waiting for your feel of it in the real window (note 93).
+- **Latest (2026-11-24):** **v0.13.3 released** (run 45367550134): the long-chat performance chore (long conversations no longer lag); waiting for your feel of it in the real window (note 93). Before it the same day: v0.13.2 (paste), v0.13.1 (the agent activity view and chores) and v0.13.0.
 - **Before (2026-11-24):** **v0.13.2 released** (run 45352171051): the paste chore. Before it the same day: v0.13.1 (the agent activity view and chores) and v0.13.0. Waiting for your on-screen checks (note 93, "Chores after M11ar").
 - **Before (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
 - **Released (2026-11-23):** **v0.12.7** (run 45097026110, `fuxx-0.12.7.zip`): chat text selection, the thinking fade, the graph fixture's made-up history.
@@ -38,6 +38,18 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-24 — v0.13.3 released
+
+- **What:** your word ("push and release v0.13.3, then clean up"). Merged `chore/agent-tab-perf` into master
+  (fast-forward, 7 commits), `Cargo.toml` 0.13.2 → 0.13.3 (`8461cf4`), tag `v0.13.3`; the Release workflow (run
+  45367550134: test, both slices, release) published `https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.13.3`
+  with `fuxx-0.13.3.zip`. In it since v0.13.2: long agent chats stay smooth: drawing reads only cached rows (no whole-conversation scans per frame), updates cost only what changed (versioned items, incremental rows, failures, ledgers and lane views; bursts drained in batches that yield to drawing). The in-app updater offers it.
+- **Checks:** the outgoing diff grepped clean; 2870 tests (2920 with ui-shots), clippy at its baseline,
+  `cargo fmt --check` clean on the merged master; the whole-branch review found no must-fix; all four release jobs
+  green on the first run.
+- **Clean-up:** the merged branch deleted; `cargo clean` freed 12.4 GiB; no screenshots or scratch left. Not yet
+  seen in the real window: how a long chat feels now.
 
 ### 2026-11-24 — Chore: a long conversation no longer makes the agent tab lag
 
