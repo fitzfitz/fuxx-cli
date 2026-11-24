@@ -14,16 +14,16 @@ use crate::agent_activity_command::read_command;
 /// output goes into a pipe.
 pub(super) struct Call {
     start: Activity,
-    piped: bool,
+    exit_hidden: bool,
 }
 
 /// A call's activity at its start (`said`: a lane's `toolSummary`), and what its finish needs.
 pub(super) fn call_started(name: &str, params: &Value, said: Option<String>) -> (Activity, Call) {
     let start = activity_at_start(name, params, said);
-    let piped = params["CommandLine"]
+    let exit_hidden = params["CommandLine"]
         .as_str()
-        .is_some_and(|c| read_command(c).piped);
-    (start.clone(), Call { start, piped })
+        .is_some_and(|c| !read_command(c).exit_trusted);
+    (start.clone(), Call { start, exit_hidden })
 }
 
 /// A call's final activity: `exit` from the command's header, `error` agy's own error text.
@@ -42,7 +42,7 @@ pub(super) fn call_finished(
             output,
             error,
             not_run: false,
-            piped: call.piped,
+            exit_hidden: call.exit_hidden,
         },
     )
 }

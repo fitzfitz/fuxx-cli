@@ -130,7 +130,7 @@ pub fn ledger_of(
             continue;
         }
         if let Some(check) = &a.check {
-            let key = (check.what, check.scope.clone());
+            let key = crate::agent_steps::check_key(check, cwd);
             match check.outcome {
                 Outcome::Passed { .. } => {
                     open.remove(&key);

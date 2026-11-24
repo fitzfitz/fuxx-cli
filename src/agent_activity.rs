@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 
 use crate::agent_activity_checks::{first_line, outcome, strip_ansi};
-use crate::agent_activity_command::{read_command, scope_filter};
+use crate::agent_activity_command::{read_command, scope_checks, scope_filter};
 use crate::agent_conversation::Item;
 use crate::diff_view::{RowKind, parse_diff};
 use crate::providers::ToolDetail;
@@ -181,8 +181,9 @@ pub struct Finish<'a> {
     /// The provider's own first error line, when it knows one.
     pub error: Option<String>,
     pub not_run: bool,
-    /// The check's output went into a pipe (the exit code is the pipe's last).
-    pub piped: bool,
+    /// The exit code isn't the check's own (a pipe's last, or a command after it: `; echo`,
+    /// `|| true`): `Reading::exit_trusted` false.
+    pub exit_hidden: bool,
 }
 
 /// The call's activity when it ends: a check's outcome read from its output, else a failed
@@ -194,9 +195,21 @@ pub fn finished(start: Activity, end: Finish<'_>) -> Activity {
     let exit_failed = end.exit.is_some_and(|c| c != 0);
     match &mut a.check {
         Some(check) if !end.not_run => {
-            check.outcome = outcome(check.what, end.output, end.exit, end.ok, end.piped);
+            check.outcome = outcome(check.what, end.output, end.exit, end.ok, end.exit_hidden);
         }
         Some(_) => {}
+        // grep / rg exit 1 when nothing matched: no failure, no matches.
+        None if a.kind == ToolKind::Search
+            && end.exit == Some(1)
+            && end.output.trim().is_empty()
+            && a.touches
+                .iter()
+                .all(|t| matches!(t.how, How::Searched { .. })) =>
+        {
+            for t in &mut a.touches {
+                t.how = How::Searched { matches: Some(0) };
+            }
+        }
         None if !end.ok || exit_failed => {
             a.failed = Some(
                 end.error
@@ -232,11 +245,13 @@ pub fn derived_words(
         _ => format!("{verb} {} {many}", touches.len()),
     };
     if let Some(check) = check {
-        let what = match check.what {
-            CheckWhat::Tests => "tests",
-            CheckWhat::Build => "build",
-            CheckWhat::Lint => "lint",
-        };
+        let what = what_word(check.what);
+        let whats = scope_checks(&check.scope);
+        if whats.len() > 1 {
+            let mut words: Vec<&str> = whats.into_iter().map(what_word).collect();
+            words.dedup();
+            return format!("Ran {}", words.join(" + "));
+        }
         let filter = scope_filter(&check.scope);
         return if filter.is_empty() {
             format!("Ran {what}")
@@ -287,6 +302,15 @@ pub fn derived_words(
     }
 }
 
+/// A check's kind in a word ("tests", "build", "lint").
+pub fn what_word(what: CheckWhat) -> &'static str {
+    match what {
+        CheckWhat::Tests => "tests",
+        CheckWhat::Build => "build",
+        CheckWhat::Lint => "lint",
+    }
+}
+
 /// The line part of a touch in words: " 80–400" for a read range, ":543" for a sed edit.
 fn detail(how: &How) -> String {
     match how {
@@ -309,7 +333,7 @@ pub fn fallback(
     ok: Option<bool>,
     output: Option<&str>,
 ) -> Activity {
-    let (start, piped) = match detail {
+    let (start, exit_hidden) = match detail {
         Some(ToolDetail::Command(cmd)) => {
             let r = read_command(cmd);
             let check = r.check.map(|(what, scope)| Check {
@@ -324,7 +348,7 @@ pub fn fallback(
                 check,
                 ..Default::default()
             };
-            (a, r.piped)
+            (a, !r.exit_trusted)
         }
         Some(ToolDetail::Diff { path, unified }) => {
             let rows = parse_diff(unified).rows;
@@ -384,7 +408,7 @@ pub fn fallback(
                 output: output.unwrap_or(""),
                 error: None,
                 not_run: false,
-                piped,
+                exit_hidden,
             },
         ),
         None => start,
@@ -447,6 +471,30 @@ mod tests {
     use super::*;
 
     const CARGO_TEST_FAILED_TAIL: &str = include_str!("fixtures/checks/cargo-test-failed-tail.txt");
+
+    #[test]
+    fn a_search_with_no_match_is_not_a_failure() {
+        let r = read_command("rg -n NOPE src/api.rs");
+        let start = Activity {
+            kind: r.kind,
+            derived: r.derived,
+            touches: r.touches,
+            ..Default::default()
+        };
+        let a = finished(
+            start,
+            Finish {
+                ok: false,
+                exit: Some(1),
+                output: "",
+                error: None,
+                not_run: false,
+                exit_hidden: false,
+            },
+        );
+        assert_eq!(a.failed, None);
+        assert_eq!(a.touches[0].how, How::Searched { matches: Some(0) });
+    }
 
     #[test]
     fn the_agents_words_lead_the_title() {
@@ -623,7 +671,7 @@ mod tests {
                 output: CARGO_TEST_FAILED_TAIL,
                 error: None,
                 not_run: false,
-                piped: true,
+                exit_hidden: true,
             },
         );
         assert!(done.check_failed() && done.failed.is_none());
@@ -640,7 +688,7 @@ mod tests {
                 output: "ls: nope: No such file or directory",
                 error: None,
                 not_run: false,
-                piped: false,
+                exit_hidden: false,
             },
         );
         assert_eq!(

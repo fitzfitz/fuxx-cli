@@ -13,19 +13,26 @@ use crate::agent_activity_command::{looks_like_path, read_command};
 /// goes into a pipe, and a Grep's input (its files are read from its result).
 pub(super) struct Call {
     start: Activity,
-    piped: bool,
+    exit_hidden: bool,
     grep: Option<Value>,
 }
 
 /// A call's activity at its start, and what its finish needs.
 pub(super) fn call_started(name: &str, input: &Value) -> (Activity, Call) {
     let start = activity_at_start(name, input);
-    let piped = name == "Bash"
+    let exit_hidden = name == "Bash"
         && input["command"]
             .as_str()
-            .is_some_and(|c| read_command(c).piped);
+            .is_some_and(|c| !read_command(c).exit_trusted);
     let grep = (name == "Grep").then(|| input.clone());
-    (start.clone(), Call { start, piped, grep })
+    (
+        start.clone(),
+        Call {
+            start,
+            exit_hidden,
+            grep,
+        },
+    )
 }
 
 /// A call's final activity from its result's text (`ok`: not `is_error`); `not_run`: the
@@ -33,7 +40,7 @@ pub(super) fn call_started(name: &str, input: &Value) -> (Activity, Call) {
 pub(super) fn call_finished(call: Call, ok: bool, text: &str, not_run: bool) -> Activity {
     let Call {
         mut start,
-        piped,
+        exit_hidden,
         grep,
     } = call;
     if let Some(input) = grep.filter(|_| ok) {
@@ -52,7 +59,7 @@ pub(super) fn call_finished(call: Call, ok: bool, text: &str, not_run: bool) -> 
             output: text,
             error: error_line(text).filter(|_| !ok),
             not_run,
-            piped,
+            exit_hidden,
         },
     )
 }

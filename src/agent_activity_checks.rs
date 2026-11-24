@@ -6,10 +6,17 @@ use std::borrow::Cow;
 
 use crate::agent_activity::{CheckWhat, Outcome};
 
-/// A check's outcome. A summary the output holds wins (an exit code can lie through a pipe);
-/// else the exit code; else, when the check's output went into a pipe, Unknown (never green);
-/// else the provider's ok / failed.
-pub fn outcome(what: CheckWhat, output: &str, exit: Option<i32>, ok: bool, piped: bool) -> Outcome {
+/// A check's outcome. A summary the output holds wins (an exit code can lie through a pipe),
+/// except a passing one against the check's own non-zero exit, which fails; else the exit code;
+/// else the provider's ok / failed. When the exit isn't the check's own (`exit_hidden`: a pipe,
+/// `; echo done`, `|| true`) neither exit nor ok counts: no summary is Unknown, never green.
+pub fn outcome(
+    what: CheckWhat,
+    output: &str,
+    exit: Option<i32>,
+    ok: bool,
+    exit_hidden: bool,
+) -> Outcome {
     let text = strip_ansi(output);
     let read = cargo(&text)
         .or_else(|| pytest(&text))
@@ -19,8 +26,20 @@ pub fn outcome(what: CheckWhat, output: &str, exit: Option<i32>, ok: bool, piped
             (what != CheckWhat::Tests && cargo_finished(&text))
                 .then_some(Outcome::Passed { n: None })
         });
-    if let Some(found) = read {
-        return found;
+    let own_exit = exit.filter(|_| !exit_hidden);
+    match read {
+        Some(Outcome::Passed { .. }) if own_exit.is_some_and(|c| c != 0) => {
+            return Outcome::Failed {
+                failed: None,
+                of: None,
+                first_error: error_line(&text).or_else(|| first_line(&text)),
+            };
+        }
+        Some(found) => return found,
+        None => {}
+    }
+    if exit_hidden {
+        return Outcome::Unknown;
     }
     let failed = || Outcome::Failed {
         failed: None,
@@ -30,7 +49,6 @@ pub fn outcome(what: CheckWhat, output: &str, exit: Option<i32>, ok: bool, piped
     match exit {
         Some(0) => Outcome::Passed { n: None },
         Some(_) => failed(),
-        None if piped => Outcome::Unknown,
         None if ok => Outcome::Passed { n: None },
         None => failed(),
     }
@@ -57,12 +75,28 @@ pub fn cargo(output: &str) -> Option<Outcome> {
         passed += count_before(rest, " passed").unwrap_or(0);
         failed += count_before(rest, " failed").unwrap_or(0);
     }
+    // A test binary that crashed or quit: cargo says so though every result line was ok.
+    let crashed = text.lines().map(str::trim).find(|l| {
+        l.starts_with("process didn't exit successfully") || l.starts_with("error: test failed")
+    });
     if seen {
         return Some(if failed > 0 {
             Outcome::Failed {
                 failed: Some(failed),
                 of: Some(passed + failed),
                 first_error: panic_line(&text).or_else(|| error_line(&text)),
+            }
+        } else if let Some(line) = crashed {
+            Outcome::Failed {
+                failed: None,
+                of: None,
+                first_error: text
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| l.starts_with("process didn't exit successfully"))
+                    .unwrap_or(line)
+                    .to_string()
+                    .into(),
             }
         } else {
             Outcome::Passed { n: Some(passed) }
@@ -87,11 +121,15 @@ fn cargo_finished(text: &str) -> bool {
 }
 
 /// The first line after cargo's first `---- … stdout ----`, without the thread's number
-/// (`thread 'x' (97794850) panicked` reads `thread 'x' panicked`).
+/// (`thread 'x' (97794850) panicked` reads `thread 'x' panicked`). A panic header ending in `:`
+/// is joined with its message as one sentence: `x: assertion … failed (src/cli.rs:42)`.
 fn panic_line(text: &str) -> Option<String> {
     let mut lines = text.lines().map(str::trim);
     lines.find(|l| l.starts_with("---- ") && l.ends_with(" stdout ----"))?;
     let line = lines.find(|l| !l.is_empty())?;
+    if let Some(joined) = panic_sentence(line, lines.next()) {
+        return Some(joined);
+    }
     let numbered = line
         .split_once("' (")
         .and_then(|(head, rest)| Some((head, rest.split_once(')')?)))
@@ -100,6 +138,21 @@ fn panic_line(text: &str) -> Option<String> {
         Some((head, (_, tail))) => format!("{head}'{tail}"),
         None => line.to_string(),
     })
+}
+
+/// `thread 'name' (id) panicked at file:line:col:` and its next line as `name: message
+/// (file:line)`; None when `header` isn't that shape or no message follows.
+fn panic_sentence(header: &str, message: Option<&str>) -> Option<String> {
+    let rest = header.strip_suffix(':')?.strip_prefix("thread '")?;
+    let (name, rest) = rest.split_once('\'')?;
+    let (_, at) = rest.split_once(" panicked at ")?;
+    let message = message.map(str::trim).filter(|m| !m.is_empty())?;
+    // `src/cli.rs:42:9` → `src/cli.rs:42`.
+    let at = match at.rsplit_once(':') {
+        Some((head, col)) if col.chars().all(|c| c.is_ascii_digit()) && head.contains(':') => head,
+        _ => at,
+    };
+    Some(format!("{name}: {message} ({at})"))
 }
 
 /// cargo's first `error[E…]:` line, else its first `error:` line other than "test failed".
@@ -171,24 +224,24 @@ pub fn jest(output: &str) -> Option<Outcome> {
         let rest = l.strip_prefix("Tests")?;
         (rest.starts_with(':') || rest.starts_with(' ')).then_some(rest.trim_start_matches(':'))
     })?;
-    let words: Vec<&str> = summary
-        .split(|c: char| c.is_whitespace() || c == ',' || c == '|')
-        .filter(|w| !w.is_empty())
-        .collect();
-    let count = |word: &str| {
-        words
-            .windows(2)
-            .find(|w| w[1] == word)
-            .and_then(|w| w[0].parse::<u32>().ok())
-    };
-    let total = count("total").or_else(|| {
-        words
-            .iter()
-            .find_map(|w| w.strip_prefix('(')?.strip_suffix(')')?.parse().ok())
-    });
-    let (passed, failed) = (count("passed"), count("failed"));
+    let tally = Tally::of(summary);
+    let total = tally.total();
+    let (passed, failed) = (tally.count("passed"), tally.count("failed"));
     if passed.is_none() && failed.is_none() {
         return None;
+    }
+    // A suite that failed to run (an import error, a crash) fails it, though every test passed.
+    let suites = suite_failures(&text).filter(|_| failed.is_none_or(|f| f == 0));
+    if let Some((f, of)) = suites {
+        return Some(Outcome::Failed {
+            failed: Some(f),
+            of,
+            first_error: text
+                .lines()
+                .map(str::trim)
+                .find(|l| l.starts_with("FAIL ") || l.starts_with("● "))
+                .map(String::from),
+        });
     }
     Some(match failed.filter(|f| *f > 0) {
         Some(f) => Outcome::Failed {
@@ -204,6 +257,48 @@ pub fn jest(output: &str) -> Option<Outcome> {
         },
         None => Outcome::Passed { n: passed },
     })
+}
+
+/// jest's `Test Suites: 1 failed, 2 passed, 3 total` / vitest's `Test Files  1 failed | 2
+/// passed (3)`: the failed suites and their total, when any failed.
+fn suite_failures(text: &str) -> Option<(u32, Option<u32>)> {
+    let line = text.lines().map(str::trim).find_map(|l| {
+        l.strip_prefix("Test Suites:")
+            .or_else(|| l.strip_prefix("Test Files"))
+    })?;
+    let tally = Tally::of(line);
+    Some((tally.count("failed").filter(|f| *f > 0)?, tally.total()))
+}
+
+/// A jest / vitest summary line's words: `1 failed, 4 passed, 5 total` or `1 failed | 4 passed
+/// (5)`.
+struct Tally<'a>(Vec<&'a str>);
+
+impl<'a> Tally<'a> {
+    fn of(line: &'a str) -> Self {
+        Tally(
+            line.split(|c: char| c.is_whitespace() || c == ',' || c == '|')
+                .filter(|w| !w.is_empty())
+                .collect(),
+        )
+    }
+
+    /// The number before `word`.
+    fn count(&self, word: &str) -> Option<u32> {
+        self.0
+            .windows(2)
+            .find(|w| w[1] == word)
+            .and_then(|w| w[0].parse().ok())
+    }
+
+    /// `N total`, else vitest's `(N)`.
+    fn total(&self) -> Option<u32> {
+        self.count("total").or_else(|| {
+            self.0
+                .iter()
+                .find_map(|w| w.strip_prefix('(')?.strip_suffix(')')?.parse().ok())
+        })
+    }
 }
 
 /// go test's `--- FAIL:` / `FAIL\t…` and `ok  \t…` lines.
@@ -282,7 +377,9 @@ mod tests {
             Some(Outcome::Failed {
                 failed: Some(1),
                 of: Some(3),
-                first_error: Some("thread 'cli::tests::bad' panicked at src/cli.rs:42:9:".into()),
+                first_error: Some(
+                    "cli::tests::bad: assertion `left == right` failed (src/cli.rs:42)".into()
+                ),
             })
         );
     }
@@ -377,6 +474,80 @@ mod tests {
                 first_error: Some("Diff in /tmp/fx/code/my-app/src/api.rs at line 3:".into())
             }
         );
+    }
+
+    #[test]
+    fn an_exit_another_command_decides_is_ignored() {
+        use crate::agent_activity_command::read_command;
+        // `; echo done`: Claude says ok and no exit; no summary → Unknown, never green.
+        let hidden = !read_command("cargo fmt --check; echo done").exit_trusted;
+        assert_eq!(
+            outcome(CheckWhat::Lint, "", None, true, hidden),
+            Outcome::Unknown
+        );
+        // agy always reports an exit: a piped check's 0 is the pipe's.
+        assert_eq!(
+            outcome(
+                CheckWhat::Tests,
+                "   Compiling fuxx v0.13.0\n",
+                Some(0),
+                true,
+                true
+            ),
+            Outcome::Unknown
+        );
+    }
+
+    #[test]
+    fn a_failing_exit_beats_a_passing_summary() {
+        // cargo: every result line ok, but a binary crashed.
+        let crashed = "Exit code 101\nrunning 12 tests\ntest result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n     Running tests/integration.rs\nerror: test failed, to rerun pass `--test integration`\n\nCaused by:\n  process didn't exit successfully: `target/debug/deps/integration-1a2b` (signal: 11, SIGSEGV: invalid memory reference)\n";
+        assert!(matches!(
+            cargo(crashed),
+            Some(Outcome::Failed { first_error: Some(e), .. }) if e.contains("SIGSEGV")
+        ));
+        // A trusted non-zero exit turns any passing summary red.
+        assert!(matches!(
+            outcome(
+                CheckWhat::Tests,
+                "==== 6 passed in 0.10s ====\nERROR: coverage under 80%\n",
+                Some(2),
+                false,
+                false
+            ),
+            Outcome::Failed { .. }
+        ));
+        // Behind a pipe the exit isn't the check's: the summary stands.
+        assert_eq!(
+            outcome(
+                CheckWhat::Tests,
+                "==== 6 passed in 0.10s ====",
+                Some(1),
+                true,
+                true
+            ),
+            Outcome::Passed { n: Some(6) }
+        );
+    }
+
+    #[test]
+    fn a_failed_suite_fails_jest_and_vitest_even_when_every_test_passed() {
+        assert!(matches!(
+            jest("Test Suites: 1 failed, 2 passed, 3 total\nTests:       5 passed, 5 total\n"),
+            Some(Outcome::Failed {
+                failed: Some(1),
+                of: Some(3),
+                ..
+            })
+        ));
+        assert!(matches!(
+            jest(" Test Files  1 failed | 2 passed (3)\n      Tests  5 passed (5)\n"),
+            Some(Outcome::Failed {
+                failed: Some(1),
+                of: Some(3),
+                ..
+            })
+        ));
     }
 
     #[test]

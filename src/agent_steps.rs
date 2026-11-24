@@ -7,7 +7,9 @@ use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::agent_activity::{Activity, CheckWhat, How, Outcome, ToolKind, Touch, file_name, of};
+use crate::agent_activity::{
+    Activity, Check, CheckWhat, How, Outcome, ToolKind, Touch, file_name, of, what_word,
+};
 use crate::agent_activity_checks::error_code;
 use crate::agent_chat::{Shape, group_shape_at};
 use crate::agent_conversation::{Conversation, Item};
@@ -567,14 +569,6 @@ pub fn outcome_phrase(a: &Activity) -> Option<String> {
     }
 }
 
-fn what_word(what: CheckWhat) -> &'static str {
-    match what {
-        CheckWhat::Tests => "tests",
-        CheckWhat::Build => "build",
-        CheckWhat::Lint => "lint",
-    }
-}
-
 /// The checks track's summary: each run's outcome, a planned failure that a later pass of the
 /// same check followed folded into "red → green · …", repeats collapsed, the last three kept.
 pub fn checks_summary(runs: &[&Activity]) -> String {
@@ -635,6 +629,26 @@ pub fn file_key(path: &str, cwd: &Path) -> PathBuf {
     out
 }
 
+/// A check's key (kind, scope), with each `cd <folder>` in its scope read against the tab's
+/// folder: a `cd` to the folder itself is left out (`cd /…/my-app && cargo test` is `cargo
+/// test`), any other is kept relative to it.
+pub fn check_key(check: &Check, cwd: &Path) -> (CheckWhat, String) {
+    let mut here = cwd.to_path_buf();
+    let mut parts: Vec<String> = Vec::new();
+    for part in check.scope.split(" && ") {
+        let Some(to) = part.strip_prefix("cd ") else {
+            parts.push(part.to_string());
+            continue;
+        };
+        here = file_key(to, &here);
+        if here != cwd {
+            let shown = here.strip_prefix(cwd).unwrap_or(&here);
+            parts.push(format!("cd {}", shown.display()));
+        }
+    }
+    (check.what, parts.join(" && "))
+}
+
 /// Where the current turn starts: the index after your latest message (0: none).
 pub fn turn_start(items: &[Item]) -> usize {
     items
@@ -645,12 +659,12 @@ pub fn turn_start(items: &[Item]) -> usize {
 
 /// The tool items from `from` whose check failed for real and that no later pass of the same
 /// kind and scope has cleared.
-pub fn open_failures(items: &[Item], from: usize) -> HashSet<usize> {
+pub fn open_failures(items: &[Item], from: usize, cwd: &Path) -> HashSet<usize> {
     let mut open: HashMap<(CheckWhat, String), Vec<usize>> = HashMap::new();
     for (ix, item) in items.iter().enumerate().skip(from) {
         let Some(a) = of(item) else { continue };
         let Some(check) = &a.check else { continue };
-        let key = (check.what, check.scope.clone());
+        let key = check_key(check, cwd);
         match check.outcome {
             Outcome::Passed { .. } => {
                 open.remove(&key);
@@ -1220,14 +1234,14 @@ mod tests {
             ),
             run_check("3", CheckWhat::Tests, "cargo test api::", passed(2)),
         ];
-        assert_eq!(open_failures(&items, 0), HashSet::from([1]));
+        assert_eq!(open_failures(&items, 0, Path::new(CWD)), HashSet::from([1]));
         items.push(run_check(
             "4",
             CheckWhat::Tests,
             "cargo test cli::",
             passed(3),
         ));
-        assert!(open_failures(&items, 0).is_empty());
+        assert!(open_failures(&items, 0, Path::new(CWD)).is_empty());
     }
 
     #[test]
@@ -1236,7 +1250,7 @@ mod tests {
             planned_failure: true,
             ..check(CheckWhat::Tests, "cargo test cli::", failed(1, 3))
         };
-        assert!(open_failures(&[tool("1", planned)], 0).is_empty());
+        assert!(open_failures(&[tool("1", planned)], 0, Path::new(CWD)).is_empty());
     }
 
     #[test]
@@ -1254,8 +1268,47 @@ mod tests {
         ];
         assert_eq!(turn_start(&items), 2);
         assert_eq!(turn_start(&items[..1]), 0);
-        assert!(open_failures(&items, turn_start(&items)).is_empty());
-        assert_eq!(open_failures(&items, 0), HashSet::from([0]));
+        assert!(open_failures(&items, turn_start(&items), Path::new(CWD)).is_empty());
+        assert_eq!(open_failures(&items, 0, Path::new(CWD)), HashSet::from([0]));
+    }
+
+    #[test]
+    fn a_cd_to_the_folder_is_the_same_scope_and_a_cd_elsewhere_is_not() {
+        let cwd = Path::new(CWD);
+        let key = |scope: &str| {
+            check_key(
+                &Check {
+                    what: CheckWhat::Tests,
+                    scope: scope.into(),
+                    outcome: Outcome::Unknown,
+                },
+                cwd,
+            )
+        };
+        assert_eq!(
+            key("cd /tmp/fx/code/my-app && cargo test"),
+            key("cargo test")
+        );
+        assert_eq!(
+            key("cd /tmp/fx/code/my-app/crates/a && cargo test"),
+            key("cd crates/a && cargo test")
+        );
+        assert_ne!(key("cd crates/a && cargo test"), key("cargo test"));
+        assert_ne!(
+            key("cd crates/a && cargo test"),
+            key("cd crates/b && cargo test")
+        );
+        // A pass in the folder by its absolute path clears the plain run's failure.
+        let items = vec![
+            run_check("1", CheckWhat::Tests, "cargo test", failed(1, 3)),
+            run_check(
+                "2",
+                CheckWhat::Tests,
+                "cd /tmp/fx/code/my-app && cargo test",
+                passed(3),
+            ),
+        ];
+        assert!(open_failures(&items, 0, cwd).is_empty());
     }
 
     #[test]

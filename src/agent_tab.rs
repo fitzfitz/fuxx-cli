@@ -3223,7 +3223,11 @@ impl AgentTab {
         let fits = tracks::fits_tracks(self.bar_width.get());
         self.tracks_fit = fits;
         let roles = crate::agent_steps::roles_of(items, &order, &alone, fits);
-        let open = crate::agent_steps::open_failures(items, crate::agent_steps::turn_start(items));
+        let open = crate::agent_steps::open_failures(
+            items,
+            crate::agent_steps::turn_start(items),
+            &self.start.cwd,
+        );
         new.extend((0..order.len()).map(|k| {
             let row = crate::agent_chat::row_print_at(items, &order, k, thinking, &alone);
             let step = match &roles[k] {

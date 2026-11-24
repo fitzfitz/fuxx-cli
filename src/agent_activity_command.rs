@@ -4,17 +4,20 @@
 
 use crate::agent_activity::{Check, CheckWhat, How, Outcome, ToolKind, Touch, derived_words};
 use crate::agent_detect::{is_assignment, unquote};
-use crate::command_name::{WRAPPERS, short_form};
+use crate::command_name::{WRAPPERS, past_wrapper, short_form};
 
 /// What a command does, as far as its words tell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reading {
     pub kind: ToolKind,
     pub touches: Vec<Touch>,
-    /// The check it runs (the last one, when several): what, and its normalised scope.
+    /// The check it runs: what, and its normalised scope. Several checks in one command are one
+    /// compound check: the first one's kind, their scopes joined by ` && ` (so only the same
+    /// command clears it); a `cd` before a check is part of its scope (`cd crates/a && cargo test`).
     pub check: Option<(CheckWhat, String)>,
-    /// The check's output goes into a pipe, so the command's exit code is the pipe's last.
-    pub piped: bool,
+    /// The command's exit code is the check's own: every check is last or followed only by
+    /// `&&`, and none feeds a pipe (`; echo done`, `|| true` and `| tail` hide it).
+    pub exit_trusted: bool,
     pub derived: String,
 }
 
@@ -25,6 +28,30 @@ const INTERPRETERS: [&str; 11] = [
 const READERS: [&str; 7] = ["cat", "head", "tail", "less", "wc", "nl", "bat"];
 const SEARCHERS: [&str; 3] = ["rg", "grep", "ag"];
 const LISTERS: [&str; 3] = ["find", "fd", "ls"];
+/// Output flags after a bare `--` (the test binary's) a scope leaves out; the `=`-less ones of
+/// `OUTPUT_VALUE_FLAGS` take the next word.
+const BINARY_OUTPUT_FLAGS: [&str; 4] = ["--nocapture", "--show-output", "-q", "--quiet"];
+const OUTPUT_VALUE_FLAGS: [&str; 3] = ["--color", "--test-threads", "--format"];
+/// Flags after a bare `--` whose next word is their value, not a filter (`--skip api`, `-D
+/// warnings`).
+const BINARY_VALUE_FLAGS: [&str; 10] = [
+    "--skip",
+    "-D",
+    "-W",
+    "-A",
+    "-F",
+    "--deny",
+    "--warn",
+    "--allow",
+    "--forbid",
+    "--cap-lints",
+];
+/// Extensions a script's string literal must end in to be read as a file when it holds no `/`.
+const KNOWN_EXTS: [&str; 36] = [
+    "rs", "toml", "lock", "py", "js", "mjs", "cjs", "ts", "tsx", "jsx", "json", "yaml", "yml",
+    "md", "txt", "sh", "go", "c", "h", "cc", "cpp", "hpp", "java", "kt", "swift", "rb", "html",
+    "css", "scss", "xml", "sql", "csv", "ini", "cfg", "conf", "log",
+];
 /// Output flags a check's scope leaves out: they change how it prints, not what it checks.
 const OUTPUT_FLAGS: [&str; 7] = [
     "-q",
@@ -68,14 +95,41 @@ const SEARCH_VALUE_FLAGS: [&str; 14] = [
     "--exclude",
 ];
 
+/// What follows a segment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Sep {
+    /// `&&`.
+    And,
+    /// `|` or `|&`.
+    Pipe,
+    /// `;`, `||` or a new line: the next command's exit replaces this one's.
+    Then,
+    /// `&`: run in the background, its exit never seen.
+    Background,
+    /// Nothing: the last command.
+    #[default]
+    End,
+}
+
 /// One command between `&&`, `||`, `;`, `|` or a new line: its words (unquoted), its `>` / `>>`
-/// targets, the heredoc it reads, and whether a pipe follows it.
+/// targets, the heredoc it reads, and what follows it.
 #[derive(Default)]
 struct Segment {
     words: Vec<String>,
     outs: Vec<String>,
     body: Option<String>,
-    piped: bool,
+    sep: Sep,
+}
+
+/// `path` under the folder a `cd` went to, when it is relative.
+fn under(dir: Option<&str>, path: &str) -> String {
+    match dir {
+        Some(d) if !path.starts_with(['/', '~']) => {
+            let path = path.strip_prefix("./").unwrap_or(path);
+            format!("{}/{path}", d.trim_end_matches('/'))
+        }
+        _ => path.to_string(),
+    }
 }
 
 /// What reading `command` finds. An unclosed quote or nothing readable is a plain run.
@@ -84,7 +138,7 @@ pub fn read_command(command: &str) -> Reading {
         kind: ToolKind::Execute,
         touches: Vec::new(),
         check: None,
-        piped: false,
+        exit_trusted: true,
         derived: derived_words(
             ToolKind::Execute,
             &[],
@@ -110,13 +164,17 @@ pub fn read_command(command: &str) -> Reading {
         minus: None,
         at: None,
     };
-    let (mut check, mut piped) = (None, false);
+    // Each check: its kind, its scope, the folder a `cd` before it went to, and its segment.
+    let mut checks: Vec<(CheckWhat, String, Option<String>, usize)> = Vec::new();
+    let mut dir: Option<String> = None;
     let (mut deleted, mut moved, mut change, mut script) = (false, false, false, false);
     let (mut searched, mut listed, mut read) = (false, false, false);
     let mut pattern = String::new();
-    for seg in &segments {
+    for (si, seg) in segments.iter().enumerate() {
+        let here = dir.clone();
+        let at = |p: &str| under(here.as_deref(), p);
         for out in seg.outs.iter().filter(|o| looks_like_path(o)) {
-            add(out, changed());
+            add(&at(out), changed());
             change = true;
         }
         let Some(pi) = program_at(&seg.words) else {
@@ -124,22 +182,27 @@ pub fn read_command(command: &str) -> Reading {
         };
         let words = &seg.words[pi..];
         if let Some((what, runner)) = check_of(words) {
-            check = Some((what, scope_of(runner)));
-            piped = seg.piped;
+            checks.push((what, scope_of(runner), here.clone(), si));
             continue;
         }
         let program = words[0].rsplit('/').next().unwrap_or_default();
         let args = &words[1..];
-        let paths = || args.iter().filter(|a| looks_like_path(a));
+        let paths = || args.iter().filter(|a| looks_like_path(a)).map(|a| at(a));
         match program {
+            "cd" => {
+                dir = args
+                    .iter()
+                    .find(|a| !a.starts_with('-'))
+                    .map(|to| under(here.as_deref(), to));
+            }
             p if READERS.contains(&p) => {
                 read = true;
-                paths().for_each(|a| add(a, How::Read { lines: None }));
+                paths().for_each(|a| add(&a, How::Read { lines: None }));
             }
             "sed" => {
                 let (inplace, script_text, files) = sed_parts(args);
                 let address = script_text.as_deref().map(sed_address).unwrap_or_default();
-                for f in files {
+                for f in files.iter().map(|f| at(f)) {
                     if inplace {
                         change = true;
                         let at = match address {
@@ -147,7 +210,7 @@ pub fn read_command(command: &str) -> Reading {
                             _ => None,
                         };
                         add(
-                            f,
+                            &f,
                             How::Changed {
                                 plus: None,
                                 minus: None,
@@ -161,7 +224,7 @@ pub fn read_command(command: &str) -> Reading {
                             Address::Line(n) => Some((n, n)),
                             Address::None => None,
                         };
-                        add(f, How::Read { lines });
+                        add(&f, How::Read { lines });
                     }
                 }
             }
@@ -173,25 +236,25 @@ pub fn read_command(command: &str) -> Reading {
                 }
                 files
                     .into_iter()
-                    .for_each(|f| add(f, How::Searched { matches: None }));
+                    .for_each(|f| add(&at(f), How::Searched { matches: None }));
             }
             p if LISTERS.contains(&p) => listed = true,
             "tee" | "touch" => {
-                paths().for_each(|a| add(a, changed()));
+                paths().for_each(|a| add(&a, changed()));
                 change = true;
             }
             "cp" => {
                 if let Some(dest) = paths().next_back() {
-                    add(dest, changed());
+                    add(&dest, changed());
                     change = true;
                 }
             }
             "rm" => {
-                paths().for_each(|a| add(a, changed()));
+                paths().for_each(|a| add(&a, changed()));
                 deleted = true;
             }
             "mv" => {
-                paths().for_each(|a| add(a, changed()));
+                paths().for_each(|a| add(&a, changed()));
                 moved = true;
             }
             p if INTERPRETERS.contains(&p) => {
@@ -203,13 +266,20 @@ pub fn read_command(command: &str) -> Reading {
                     script = true;
                     literals(text)
                         .iter()
-                        .filter(|l| looks_like_path(l))
-                        .for_each(|l| add(l, How::ScriptTouched));
+                        .filter(|l| script_path(l))
+                        .for_each(|l| add(&at(l), How::ScriptTouched));
                 }
             }
             _ => {}
         }
     }
+    let exit_trusted = checks.iter().all(|&(.., si)| {
+        segments[si].sep != Sep::Pipe
+            && segments[si..]
+                .iter()
+                .all(|s| matches!(s.sep, Sep::And | Sep::End))
+    });
+    let check = compound(&checks);
     let kind = if check.is_some() {
         ToolKind::Execute
     } else if deleted {
@@ -250,9 +320,55 @@ pub fn read_command(command: &str) -> Reading {
         kind,
         touches,
         check,
-        piped,
+        exit_trusted,
         derived,
     }
+}
+
+/// One check for a command's checks: the first one's kind and their scopes joined by ` && `,
+/// each led by `cd <folder>` when a `cd` before it went somewhere new.
+fn compound(checks: &[(CheckWhat, String, Option<String>, usize)]) -> Option<(CheckWhat, String)> {
+    let (what, ..) = checks.first()?;
+    let mut parts: Vec<String> = Vec::new();
+    let mut was: Option<&str> = None;
+    for (_, scope, dir, _) in checks {
+        if let Some(d) = dir.as_deref().filter(|d| Some(*d) != was) {
+            parts.push(format!("cd {d}"));
+        }
+        was = dir.as_deref();
+        parts.push(scope.clone());
+    }
+    Some((*what, parts.join(" && ")))
+}
+
+/// The checks a scope names, in order (one for a plain scope, more for a compound one).
+pub fn scope_checks(scope: &str) -> Vec<CheckWhat> {
+    scope_parts(scope)
+        .filter_map(|part| {
+            let words: Vec<String> = part.split_whitespace().map(String::from).collect();
+            check_of(&words).map(|(what, _)| what)
+        })
+        .collect()
+}
+
+/// A scope's check commands, without its `cd` parts.
+fn scope_parts(scope: &str) -> impl Iterator<Item = &str> {
+    scope.split(" && ").filter(|p| !p.starts_with("cd "))
+}
+
+/// Whether a script's string literal names a file: path-like, not a sed `s/…/…/` expression,
+/// and holding a `/` or ending in a known extension (`'os.path'` and `'utf-8'` are words).
+fn script_path(lit: &str) -> bool {
+    let sed = lit.strip_prefix('s').and_then(|rest| {
+        let d = rest.chars().next().filter(|c| !c.is_alphanumeric())?;
+        (rest.matches(d).count() >= 3).then_some(())
+    });
+    looks_like_path(lit)
+        && sed.is_none()
+        && (lit.contains('/')
+            || lit
+                .rsplit_once('.')
+                .is_some_and(|(_, ext)| KNOWN_EXTS.contains(&ext.to_ascii_lowercase().as_str())))
 }
 
 /// Where the program is among `words`: after `NAME=value` assignments and wrappers
@@ -265,10 +381,7 @@ fn program_at(words: &[String]) -> Option<usize> {
         }
         let w = words.get(i)?;
         if WRAPPERS.contains(&w.rsplit('/').next().unwrap_or_default()) {
-            i += 1;
-            while words.get(i).is_some_and(|w| w.starts_with('-')) {
-                i += 1;
-            }
+            i = past_wrapper(words, i);
             continue;
         }
         return (!w.is_empty()).then_some(i);
@@ -322,17 +435,36 @@ fn check_of(words: &[String]) -> Option<(CheckWhat, &[String])> {
 }
 
 /// A check's scope, normalised so two runs of the same check compare equal: the runner, its
-/// target flags and filters; not output flags, anything after a bare `--`, redirects or leading
-/// assignments.
+/// target flags and filters, and what follows a bare `--` (`-- cli::`, `--skip api`, `-D
+/// warnings` narrow or tighten it); not output flags, redirects or leading assignments.
 pub fn scope_of(words: &[String]) -> String {
     let mut kept: Vec<&str> = Vec::new();
+    let mut binary = false;
     let mut words = words
         .iter()
         .map(|w| unquote(w))
         .skip_while(|w| is_assignment(w));
     while let Some(w) = words.next() {
-        if w == "--" {
-            break;
+        if w == "--" && !binary {
+            binary = true;
+            kept.push(w);
+            continue;
+        }
+        if binary {
+            if BINARY_OUTPUT_FLAGS.contains(&w) || w.contains('>') || w.contains('<') {
+                continue;
+            }
+            if let Some(flag) = OUTPUT_VALUE_FLAGS
+                .iter()
+                .find(|f| w == **f || w.starts_with(&format!("{f}=")))
+            {
+                if w == *flag {
+                    words.next();
+                }
+                continue;
+            }
+            kept.push(w);
+            continue;
         }
         if w.contains('>') || w.contains('<') || w.starts_with('+') || OUTPUT_FLAGS.contains(&w) {
             continue;
@@ -345,12 +477,24 @@ pub fn scope_of(words: &[String]) -> String {
         }
         kept.push(w);
     }
+    if kept.last() == Some(&"--") {
+        kept.pop();
+    }
     kept.join(" ")
 }
 
 /// A scope's filter: its words past the runner and its subcommands, without flags and their
-/// values (`cargo test --bin fuxx cli::` → `cli::`).
+/// values (`cargo test --bin fuxx cli::` → `cli::`; `-- --skip api` → nothing); a compound
+/// scope's filters joined.
 pub fn scope_filter(scope: &str) -> String {
+    scope_parts(scope)
+        .map(part_filter)
+        .filter(|f| !f.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn part_filter(scope: &str) -> String {
     let mut words = scope.split_whitespace().skip(1).peekable();
     while words.peek().is_some_and(|w| {
         [
@@ -361,8 +505,11 @@ pub fn scope_filter(scope: &str) -> String {
         words.next();
     }
     let mut kept = Vec::new();
+    let mut binary = false;
     while let Some(w) = words.next() {
-        if VALUE_FLAGS.contains(&w) {
+        if w == "--" {
+            binary = true;
+        } else if VALUE_FLAGS.contains(&w) && !binary || binary && BINARY_VALUE_FLAGS.contains(&w) {
             words.next();
         } else if !w.starts_with('-') {
             kept.push(w);
@@ -413,8 +560,15 @@ fn sed_parts(args: &[String]) -> (bool, Option<String>, Vec<&String>) {
     let (mut inplace, mut script, mut files) = (false, None, Vec::new());
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
-        if a == "-i" || a.starts_with("-i") && !a.starts_with("-i ") || a.starts_with("--in-place")
-        {
+        let letters = a
+            .strip_prefix('-')
+            .filter(|f| !f.starts_with('-'))
+            .map(|f| {
+                f.split(|c: char| !c.is_ascii_alphabetic())
+                    .next()
+                    .unwrap_or("")
+            });
+        if letters.is_some_and(|l| l.contains('i')) || a.starts_with("--in-place") {
             inplace = true;
             if it.peek().is_some_and(|n| n.is_empty()) {
                 it.next(); // macOS `sed -i '' …`
@@ -528,10 +682,10 @@ fn segments(command: &str) -> Option<Vec<Segment>> {
                 None => cur.words.push(w),
             }
         };
-    let end = |cur: &mut Segment, segs: &mut Vec<Segment>, piped: bool| {
+    let end = |cur: &mut Segment, segs: &mut Vec<Segment>, sep: Sep| {
         let mut done = std::mem::take(cur);
         if !done.words.is_empty() || !done.outs.is_empty() || done.body.is_some() {
-            done.piped = piped;
+            done.sep = sep;
             segs.push(done);
         }
     };
@@ -558,32 +712,34 @@ fn segments(command: &str) -> Option<Vec<Segment>> {
                 Some('\n') | None => {}
                 Some(n) => word.push(n),
             },
-            ' ' | '\t' | '(' | ')' => finish(&mut word, &mut has_word, &mut cur, &mut pending),
+            ' ' | '\t' | '\r' | '(' | ')' => {
+                finish(&mut word, &mut has_word, &mut cur, &mut pending)
+            }
             '\n' | ';' => {
                 finish(&mut word, &mut has_word, &mut cur, &mut pending);
-                end(&mut cur, &mut segs, false);
+                end(&mut cur, &mut segs, Sep::Then);
             }
             '|' => {
                 finish(&mut word, &mut has_word, &mut cur, &mut pending);
-                let piped = match chars.peek() {
+                let sep = match chars.peek() {
                     Some('|') => {
                         chars.next();
-                        false
+                        Sep::Then
                     }
                     Some('&') => {
                         chars.next();
-                        true
+                        Sep::Pipe
                     }
-                    _ => true,
+                    _ => Sep::Pipe,
                 };
-                end(&mut cur, &mut segs, piped);
+                end(&mut cur, &mut segs, sep);
             }
             '&' => {
                 finish(&mut word, &mut has_word, &mut cur, &mut pending);
                 match chars.peek() {
                     Some('&') => {
                         chars.next();
-                        end(&mut cur, &mut segs, false);
+                        end(&mut cur, &mut segs, Sep::And);
                     }
                     Some('>') => {
                         chars.next();
@@ -592,7 +748,7 @@ fn segments(command: &str) -> Option<Vec<Segment>> {
                         }
                         pending = Some(Next::Out);
                     }
-                    _ => end(&mut cur, &mut segs, false),
+                    _ => end(&mut cur, &mut segs, Sep::Background),
                 }
             }
             '>' => {
@@ -643,7 +799,13 @@ fn segments(command: &str) -> Option<Vec<Segment>> {
         return None;
     }
     finish(&mut word, &mut has_word, &mut cur, &mut pending);
-    end(&mut cur, &mut segs, false);
+    end(&mut cur, &mut segs, Sep::End);
+    // Separators with nothing after them (a closing new line, a trailing `;`) end it.
+    if let Some(last) = segs.last_mut()
+        && last.sep == Sep::Then
+    {
+        last.sep = Sep::End;
+    }
     Some(segs)
 }
 
@@ -762,7 +924,7 @@ mod tests {
             r.check,
             Some((CheckWhat::Tests, "cargo test --bin fuxx cli::".into()))
         );
-        assert!(r.piped);
+        assert!(!r.exit_trusted);
         assert_eq!(r.kind, ToolKind::Execute);
         assert!(
             r.touches
@@ -857,7 +1019,7 @@ mod tests {
             (
                 "cargo clippy --all-targets -- -D warnings",
                 CheckWhat::Lint,
-                "cargo clippy --all-targets",
+                "cargo clippy --all-targets -- -D warnings",
             ),
             ("cargo fmt --check", CheckWhat::Lint, "cargo fmt --check"),
             (
@@ -895,9 +1057,146 @@ mod tests {
     }
 
     #[test]
-    fn a_pipe_marks_the_check_piped_only_when_the_check_feeds_it() {
-        assert!(read_command("cargo test 2>&1 | tail -20").piped);
-        assert!(!read_command("cargo test 2>&1; echo done").piped);
+    fn a_checks_exit_is_trusted_only_when_nothing_after_it_can_replace_it() {
+        for (cmd, trusted) in [
+            ("cargo test", true),
+            ("cargo test && echo ok", true),
+            ("cd crates/a && cargo test", true),
+            ("cargo fmt --check; echo done", false),
+            ("cargo test || true", false),
+            ("cargo test\necho done", false),
+            ("cargo test 2>&1 | tail -20", false),
+            ("cargo test &", false),
+        ] {
+            assert_eq!(read_command(cmd).exit_trusted, trusted, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn words_after_a_bare_dashdash_stay_in_the_scope_but_output_flags() {
+        let w = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        for (wide, narrow) in [
+            ("cargo test", "cargo test -- cli::"),
+            ("cargo test", "cargo test -- --skip api"),
+            ("cargo test", "cargo test -- --ignored"),
+            ("cargo test", "cargo test -- --exact"),
+            (
+                "cargo clippy --all-targets -- -D warnings",
+                "cargo clippy --all-targets",
+            ),
+        ] {
+            assert_ne!(scope_of(&w(wide)), scope_of(&w(narrow)), "{narrow}");
+        }
+        assert_eq!(
+            scope_of(&w(
+                "cargo test cli:: -- --nocapture --show-output --color=always -q --test-threads=1 --format pretty"
+            )),
+            "cargo test cli::"
+        );
+        assert_eq!(
+            scope_of(&w("cargo test -- --test-threads 2 --color never")),
+            "cargo test"
+        );
+        assert_eq!(scope_filter("cargo test -- --skip api"), "");
+        assert_eq!(scope_filter("cargo test -- cli::"), "cli::");
+        assert_eq!(
+            scope_filter("cargo clippy --all-targets -- -D warnings"),
+            ""
+        );
+    }
+
+    #[test]
+    fn several_checks_in_one_command_share_one_compound_scope() {
+        assert_eq!(
+            read_command("cargo clippy --all-targets -- -D warnings && cargo test").check,
+            Some((
+                CheckWhat::Lint,
+                "cargo clippy --all-targets -- -D warnings && cargo test".into()
+            ))
+        );
+        assert_eq!(
+            read_command("cargo test -p a && cargo test -p b").check,
+            Some((
+                CheckWhat::Tests,
+                "cargo test -p a && cargo test -p b".into()
+            ))
+        );
+        assert_eq!(
+            read_command("cargo clippy && cargo test").derived,
+            "Ran lint + tests"
+        );
+    }
+
+    #[test]
+    fn a_cd_scopes_the_check_and_prefixes_relative_paths() {
+        let a = read_command("cd crates/a && cargo test");
+        let b = read_command("cd crates/b && cargo test");
+        assert_ne!(a.check, b.check);
+        assert_eq!(
+            a.check,
+            Some((CheckWhat::Tests, "cd crates/a && cargo test".into()))
+        );
+        assert_eq!(
+            read_command("cd crates/a && sed -i '3s/x/y/' src/lib.rs").touches,
+            vec![touch(
+                "crates/a/src/lib.rs",
+                How::Changed {
+                    plus: None,
+                    minus: None,
+                    at: Some(3),
+                },
+            )]
+        );
+        assert_eq!(
+            read_command("cd /tmp/fx/other && cat x.rs && cat /etc/hosts.txt").touches,
+            vec![
+                touch("/tmp/fx/other/x.rs", How::Read { lines: None }),
+                touch("/etc/hosts.txt", How::Read { lines: None }),
+            ]
+        );
+        assert_eq!(
+            read_command("cd crates/a && cargo clippy && cargo test").check,
+            Some((
+                CheckWhat::Lint,
+                "cd crates/a && cargo clippy && cargo test".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn timeout_wraps_a_check_and_its_seconds_are_skipped() {
+        assert_eq!(
+            read_command("timeout 600 cargo test --bin fuxx").check,
+            Some((CheckWhat::Tests, "cargo test --bin fuxx".into()))
+        );
+    }
+
+    #[test]
+    fn combined_sed_flags_with_i_edit_in_place() {
+        for cmd in ["sed -Ei 's/a/b/' src/api.rs", "sed -ni '3p' src/api.rs"] {
+            assert_eq!(read_command(cmd).kind, ToolKind::Edit, "{cmd}");
+        }
+        assert_eq!(read_command("sed -n '3p' src/api.rs").kind, ToolKind::Read);
+    }
+
+    #[test]
+    fn windows_line_endings_leave_no_carriage_return_in_words() {
+        assert_eq!(
+            read_command("cat src/api.rs\r\ncargo test\r\n").touches,
+            vec![touch("src/api.rs", How::Read { lines: None })]
+        );
+        assert_eq!(
+            read_command("cargo test\r").check,
+            Some((CheckWhat::Tests, "cargo test".into()))
+        );
+    }
+
+    #[test]
+    fn a_scripts_sed_patterns_and_plain_words_are_not_files() {
+        let r = read_command(
+            "python3 - <<'EOF'\nimport re, os.path\nsubprocess.run(['sed', '-i', 's/a/b/g', 'src/api.rs'])\nx = 'utf-8'\ny = 'os.path'\nEOF",
+        );
+        assert_eq!(r.touches, vec![touch("src/api.rs", How::ScriptTouched)]);
     }
 
     #[test]
