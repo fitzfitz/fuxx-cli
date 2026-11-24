@@ -29,7 +29,7 @@ pub(super) fn robot(live: bool, c: &Colors, off: Rgb) -> gpui::Div {
 impl AgentTab {
     /// Subagent `lane`'s row (item `ix`, its tool call): `[mark] [robot] name task … words ›`,
     /// tinted while it waits on you; a click opens its lane, and its tooltip says what it is.
-    pub(super) fn lane_row(&self, ix: usize, lane: &Lane, look: &Look) -> AnyElement {
+    pub(super) fn lane_row(&self, k: usize, ix: usize, lane: &Lane, look: &Look) -> AnyElement {
         use crate::agent_chat::summary_shown;
         let c = &look.c;
         let waiting = lane.status == LaneStatus::Waiting;
@@ -63,7 +63,7 @@ impl AgentTab {
         let view = look.view.clone();
         let to = View::Lane(lane.id.clone());
         let row = self
-            .tool_shell(ix, fill, Some(hover), look)
+            .tool_shell(k, ix, fill, Some(hover), look)
             .child(self.marked("lane-row-mark", status_slot(self.lane_mark(lane, c))))
             .child(
                 div()

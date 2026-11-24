@@ -135,6 +135,25 @@ impl Ids {
 /// Every process this app started and hasn't seen reaped yet (pruned as more start).
 static STARTED: std::sync::Mutex<Vec<Ids>> = std::sync::Mutex::new(Vec::new());
 
+/// The most events the pump hands the agent tab at once (a burst beyond it waits for the next
+/// batch, after the window has drawn: the perf chore).
+pub const PUMP_BATCH: usize = 256;
+
+/// `first` and whatever else `rx` has ready, up to `max` in all.
+pub fn drain_ready<T>(
+    first: T,
+    rx: &mut futures::channel::mpsc::UnboundedReceiver<T>,
+    max: usize,
+) -> Vec<T> {
+    let mut batch = vec![first];
+    while batch.len() < max
+        && let Ok(more) = rx.try_recv()
+    {
+        batch.push(more);
+    }
+    batch
+}
+
 /// Start `argv` in `cwd` (with `PATH` = `path_env` if given, and `env` set too); never blocks.
 /// Events arrive on `events`.
 pub fn spawn(
@@ -476,6 +495,22 @@ fn send_line(line: &mut Vec<u8>, overlong: &mut bool, events: &UnboundedSender<P
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The perf chore: what the process said while the tab was busy comes as one batch (one
+    /// row sync for a burst), never more than `PUMP_BATCH`.
+    #[test]
+    fn a_burst_is_drained_as_one_batch() {
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        for n in 0..5 {
+            tx.unbounded_send(n).unwrap();
+        }
+        assert_eq!(drain_ready(100, &mut rx, 10), vec![100, 0, 1, 2, 3, 4]);
+        assert_eq!(drain_ready(7, &mut rx, 10), vec![7], "nothing more ready");
+        for n in 0..(PUMP_BATCH * 2) {
+            tx.unbounded_send(n).unwrap();
+        }
+        assert_eq!(drain_ready(0, &mut rx, PUMP_BATCH).len(), PUMP_BATCH);
+    }
     use futures::channel::mpsc::{TryRecvError, UnboundedReceiver, unbounded};
 
     fn argv(script: &str) -> Vec<String> {

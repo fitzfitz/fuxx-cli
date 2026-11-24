@@ -22,12 +22,18 @@ pub struct Items {
     dirty: Option<usize>,
     running: BTreeSet<usize>,
     permissions: BTreeSet<usize>,
-    /// Tool ids, counted (a replay may repeat one).
-    tools: HashMap<String, usize>,
-    /// Items under each parent (`parent_of`: a lane's words, steps and resumes), and tool calls
-    /// alone (a lane's steps).
-    kids: HashMap<String, usize>,
+    /// Each tool id's calls (a replay may repeat one).
+    tools: HashMap<String, BTreeSet<usize>>,
+    /// Items under each parent (`parent_of`: a lane's words, steps and resumes), and how many
+    /// of them are tool calls (a lane's steps).
+    under: HashMap<String, BTreeSet<usize>>,
     steps: HashMap<String, usize>,
+    /// Your messages relayed to a lane (`Item::You { to: Some(_) }`).
+    relays: BTreeSet<usize>,
+    /// The permissions and questions each lane asked (`by`).
+    asked_by: HashMap<String, BTreeSet<usize>>,
+    /// Each message's block still streaming (`Item::Agent { done: false }`), by its message.
+    open_texts: HashMap<String, usize>,
 }
 
 impl Deref for Items {
@@ -101,16 +107,66 @@ impl Items {
             _ => None,
         };
         let parent = parent_of(item).map(str::to_string);
+        let relay = matches!(item, Item::You { to: Some(_), .. });
+        let asker = match item {
+            Item::Permission { by: Some(b), .. } | Item::Question { by: Some(b), .. } => {
+                Some(b.clone())
+            }
+            _ => None,
+        };
+        if let Some(b) = asker {
+            let asked = self.asked_by.entry(b.clone()).or_default();
+            if by > 0 {
+                asked.insert(ix);
+            } else {
+                asked.remove(&ix);
+                if asked.is_empty() {
+                    self.asked_by.remove(&b);
+                }
+            }
+        }
+        let text = match item {
+            Item::Agent {
+                message,
+                done: false,
+                ..
+            } => Some(message.clone()),
+            _ => None,
+        };
         set(&mut self.running, running);
         set(&mut self.permissions, open);
+        set(&mut self.relays, relay);
+        if let Some(m) = text {
+            if by > 0 {
+                self.open_texts.insert(m, ix);
+            } else if self.open_texts.get(&m) == Some(&ix) {
+                self.open_texts.remove(&m);
+            }
+        }
         if let Some((id, parent)) = tool {
-            count(&mut self.tools, &id, by);
+            let calls = self.tools.entry(id.clone()).or_default();
+            if by > 0 {
+                calls.insert(ix);
+            } else {
+                calls.remove(&ix);
+                if calls.is_empty() {
+                    self.tools.remove(&id);
+                }
+            }
             if let Some(p) = parent {
                 count(&mut self.steps, &p, by);
             }
         }
         if let Some(p) = parent {
-            count(&mut self.kids, &p, by);
+            let under = self.under.entry(p.clone()).or_default();
+            if by > 0 {
+                under.insert(ix);
+            } else {
+                under.remove(&ix);
+                if under.is_empty() {
+                    self.under.remove(&p);
+                }
+            }
         }
     }
 
@@ -119,8 +175,11 @@ impl Items {
         self.running.clear();
         self.permissions.clear();
         self.tools.clear();
-        self.kids.clear();
+        self.under.clear();
         self.steps.clear();
+        self.relays.clear();
+        self.asked_by.clear();
+        self.open_texts.clear();
         for ix in 0..self.list.len() {
             self.index(ix, 1);
         }
@@ -225,9 +284,34 @@ impl Items {
         self.tools.contains_key(id)
     }
 
+    /// Tool call `id`'s index (its first, if a replay repeated it).
+    pub fn tool_index(&self, id: &str) -> Option<usize> {
+        self.tools.get(id)?.first().copied()
+    }
+
     /// How many items hang under `parent` (`parent_of`).
     pub fn kids(&self, parent: &str) -> usize {
-        self.kids.get(parent).copied().unwrap_or(0)
+        self.under.get(parent).map_or(0, BTreeSet::len)
+    }
+
+    /// The items under `parent` (`parent_of`), in order.
+    pub fn under(&self, parent: &str) -> Option<&BTreeSet<usize>> {
+        self.under.get(parent)
+    }
+
+    /// The permissions and questions lane `lane` asked, in order.
+    pub fn asked_by(&self, lane: &str) -> Option<&BTreeSet<usize>> {
+        self.asked_by.get(lane)
+    }
+
+    /// Your messages relayed to a lane, in order.
+    pub fn relays(&self) -> &BTreeSet<usize> {
+        &self.relays
+    }
+
+    /// Message `message`'s block still streaming, if any.
+    pub fn open_text(&self, message: &str) -> Option<usize> {
+        self.open_texts.get(message).copied()
     }
 
     /// How many tool calls hang under `parent`.
@@ -269,8 +353,20 @@ mod tests {
         }
     }
 
+    /// Running calls, open permissions, items and calls under "a", the items under it, the
+    /// relays, and message "m"'s open block.
+    type Indexes = (
+        Vec<usize>,
+        Vec<usize>,
+        usize,
+        usize,
+        Vec<usize>,
+        Vec<usize>,
+        Option<usize>,
+    );
+
     /// The indexes as a full scan finds them.
-    fn scan(items: &Items) -> (Vec<usize>, Vec<usize>, usize, usize) {
+    fn scan(items: &Items) -> Indexes {
         let running = items
             .iter()
             .enumerate()
@@ -288,15 +384,29 @@ mod tests {
             .iter()
             .filter(|i| matches!(i, Item::Tool { parent: Some(p), .. } if p == "a"))
             .count();
-        (running, open, kids, steps)
+        let at = |f: &dyn Fn(&Item) -> bool| -> Vec<usize> {
+            (0..items.len()).filter(|&ix| f(&items[ix])).collect()
+        };
+        let under = at(&|i| parent_of(i) == Some("a"));
+        let relays = at(&|i| matches!(i, Item::You { to: Some(_), .. }));
+        let text = items
+            .iter()
+            .rposition(|i| matches!(i, Item::Agent { message, done: false, .. } if message == "m"));
+        (running, open, kids, steps, under, relays, text)
     }
 
-    fn indexed(items: &Items) -> (Vec<usize>, Vec<usize>, usize, usize) {
+    fn indexed(items: &Items) -> Indexes {
         (
             items.running().iter().copied().collect(),
             items.open_permissions().iter().copied().collect(),
             items.kids("a"),
             items.steps("a"),
+            items
+                .under("a")
+                .map(|u| u.iter().copied().collect())
+                .unwrap_or_default(),
+            items.relays().iter().copied().collect(),
+            items.open_text("m"),
         )
     }
 
@@ -345,6 +455,23 @@ mod tests {
             *answer = Some(Answer::Allowed);
         }
         assert_eq!(indexed(&items), scan(&items));
+        items.push(Item::You {
+            text: "pass it on".into(),
+            attachments: Vec::new(),
+            id: None,
+            taken: false,
+            to: Some(crate::agent_conversation::Relay {
+                lane: "a".into(),
+                about: false,
+                state: crate::agent_conversation::RelayState::Sent,
+                settled_at: None,
+            }),
+        });
+        assert_eq!(indexed(&items), scan(&items));
+        if let Item::Agent { done, .. } = &mut *items.get_mut(3) {
+            *done = true;
+        }
+        assert_eq!(indexed(&items), scan(&items), "a finished block isn't open");
         items.insert(0, asking("q"));
         assert_eq!(indexed(&items), scan(&items));
         items.remove(1);

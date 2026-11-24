@@ -829,7 +829,6 @@ thread_local! {
 /// What an item looks like, as a number (its text hashed whole: never on the hot path since
 /// the perf chore, where rows go by `Conversation::version`).
 pub(crate) fn fingerprint(item: &Item) -> u64 {
-    #[cfg(test)]
     FINGERPRINTS.with(|n| n.set(n.get() + 1));
     let mut h = DefaultHasher::new();
     std::mem::discriminant(item).hash(&mut h);
@@ -870,32 +869,6 @@ pub(crate) fn fingerprint(item: &Item) -> u64 {
         Item::Notice(t) | Item::Error(t) => t.hash(&mut h),
     }
     h.finish()
-}
-
-/// The rows to lay out again after the items changed from `old` to `new` (fingerprints): each
-/// changed row still there, and how the count changed (rows added at the end or dropped from it).
-#[cfg(test)]
-pub fn changed_rows(old: &[u64], new: &[u64]) -> Vec<usize> {
-    old.iter()
-        .zip(new)
-        .enumerate()
-        .filter(|(_, (a, b))| a != b)
-        .map(|(i, _)| i)
-        .collect()
-}
-
-/// The most events the pump hands the tab at once (a burst beyond it waits for the next).
-pub const PUMP_BATCH: usize = 256;
-
-/// `first` and whatever else `rx` has ready, up to `max` in all.
-pub fn drain_ready<T>(first: T, rx: &mut mpsc::UnboundedReceiver<T>, max: usize) -> Vec<T> {
-    let mut batch = vec![first];
-    while batch.len() < max
-        && let Ok(more) = rx.try_recv()
-    {
-        batch.push(more);
-    }
-    batch
 }
 
 /// The command line with the provider's suggestion flags (`Provider::suggestion_flags`) added
@@ -1577,9 +1550,8 @@ pub struct AgentTab {
     /// The shown view's turn ledger (the folder tab's words after the status, and its
     /// popover); None: no live turn.
     pub(crate) ledger: Option<crate::agent_ledger::Ledger>,
-    /// What the ledger was built for (its view, the lanes' shape, the turn): built again when
-    /// that changes or a change that isn't only the agent's words comes.
-    ledger_for: Option<(crate::agent_lanes::View, u64, Option<usize>, usize)>,
+    /// The ledger's kept sums (`agent_ledger::LedgerCache`).
+    ledgers: crate::agent_ledger::LedgerCache,
     /// The "Stopped" notice that offers to rewind your latest message (`rewind::stopped_link`),
     /// found with the ledger, so a frame never looks for it.
     pub(crate) stopped: Option<usize>,
@@ -2297,7 +2269,7 @@ impl AgentTab {
             tracks_all: HashSet::new(),
             files_all: HashSet::new(),
             ledger: None,
-            ledger_for: None,
+            ledgers: Default::default(),
             stopped: None,
             rows_held: false,
             rows_pending: false,
@@ -2787,13 +2759,23 @@ impl AgentTab {
         self.started.push(process.clone());
         self.pump = Some(cx.spawn(async move |this, cx| {
             while let Some(event) = rx.next().await {
-                // What came while the tab was busy, as one batch (the perf chore).
-                let batch = drain_ready(event, &mut rx, PUMP_BATCH);
+                // The event and whatever else is already read, as one batch: one row sync for a
+                // burst (the perf chore).
+                let batch = crate::agent_process::drain_ready(
+                    event,
+                    &mut rx,
+                    crate::agent_process::PUMP_BATCH,
+                );
+                let full = batch.len() == crate::agent_process::PUMP_BATCH;
                 if this
                     .update(cx, |this, cx| this.on_process_batch(batch, cx))
                     .is_err()
                 {
                     break;
+                }
+                // A flood: let the window draw before the next batch.
+                if full {
+                    cx.background_executor().timer(Duration::ZERO).await;
                 }
             }
         }));
@@ -3257,11 +3239,7 @@ impl AgentTab {
     /// the lowest item changed: the perf chore), add the new ones at the end, drop any gone.
     fn sync_rows(&mut self) {
         use crate::agent_lanes::View;
-        fn print<T: Hash>(what: &T) -> u64 {
-            let mut h = DefaultHasher::new();
-            what.hash(&mut h);
-            h.finish()
-        }
+        use crate::agent_view_cache::hash as print;
         self.rows_pending = false;
         let dirty = self.conversation.take_dirty();
         let view = self.view.clone();
@@ -3373,29 +3351,18 @@ impl AgentTab {
         pane.latest = latest::Latest::update(pane.latest.take(), said);
         pane.head = head;
         pane.tail = tail;
-        // The turn ledger (the agent activity chore): rebuilt with the rows, never per frame,
-        // and not for the agent's words streaming (it counts calls only).
-        let key = (
-            view,
-            self.conversation.shape(),
-            self.conversation.latest_you(),
-            self.conversation.live_from(),
-        );
-        let words_only = dirty.is_none_or(|d| {
-            items[d.min(items.len())..]
-                .iter()
-                .all(|i| matches!(i, Item::Agent { .. }))
-        });
-        if !words_only || self.ledger_for.as_ref() != Some(&key) {
-            self.ledger_for = Some(key);
+        // The turn ledger (the agent activity chore): kept, never per frame, and not touched
+        // while only the agent's words stream; the "Stopped" link goes with it.
+        if let Some(ledger) = self.ledgers.sync(
+            &self.conversation,
+            &view,
+            dirty,
+            &self.tool_times,
+            &self.start.cwd,
+        ) {
+            self.ledger = ledger;
             self.stopped =
                 rewind::stopped_link(items, self.conversation.latest_you(), self.branching());
-            self.ledger = crate::agent_ledger::ledger_of(
-                &self.conversation,
-                &self.view,
-                &self.tool_times,
-                &self.start.cwd,
-            );
         }
     }
 
@@ -3407,16 +3374,16 @@ impl AgentTab {
             .expect("Main's pane is made with the tab")
     }
 
-    /// Item `ix`'s parsed text, from its row in the shown view (else parsed now: a step drawn in
-    /// a tool's detail).
-    pub(super) fn blocks_at(&self, ix: usize) -> Option<Rc<Vec<Md>>> {
+    /// Item `ix`'s parsed text, from its row `k` in the shown view (no search: the perf chore);
+    /// else parsed now.
+    pub(super) fn blocks_at(&self, k: usize, ix: usize) -> Option<Rc<Vec<Md>>> {
         let pane = self.pane();
-        match pane.cache.row_of(ix) {
-            Some(k) => pane
+        match pane.cache.order().get(k) {
+            Some(&i) if i == ix => pane
                 .rows
                 .get(k + pane.head as usize)
                 .and_then(|r| r.blocks.clone()),
-            None => blocks_of(&self.conversation.items()[ix]),
+            _ => blocks_of(&self.conversation.items()[ix]),
         }
     }
 
@@ -3436,24 +3403,28 @@ impl AgentTab {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let more = this
                     .update(cx, |this, cx| {
-                        let items = this.conversation.items();
-                        let live =
-                            |id: &str| this.conversation.lane(id).is_some_and(|l| l.status.live());
-                        let ticks = |i: &Item| match i {
-                            Item::Tool { running: true, .. } => true,
-                            Item::Tool { id, .. } => live(id),
-                            _ => false,
-                        };
-                        let any = items.iter().any(ticks)
-                            || this.conversation.lanes().iter().any(|l| l.status.live());
-                        // The shown view's running rows (and live subagents' rows) say their
-                        // time again.
+                        // The running calls and the live subagents' calls, from what the
+                        // conversation keeps (no scan: the perf chore).
+                        let c = &this.conversation;
+                        let live = c
+                            .lanes()
+                            .iter()
+                            .filter(|l| l.status.live())
+                            .filter_map(|l| c.tool_index(&l.id));
+                        let ticking: Vec<usize> =
+                            c.running_tools().iter().copied().chain(live).collect();
+                        let any = !ticking.is_empty() || c.lanes().iter().any(|l| l.status.live());
+                        // The shown view's rows of them say their time again.
                         let pane = this.pane();
-                        for (k, &i) in pane.cache.order().iter().enumerate() {
-                            if ticks(&items[i]) {
-                                let k = k + pane.head as usize;
-                                pane.list.splice(k..k + 1, 1);
-                            }
+                        let mut rows: Vec<usize> = ticking
+                            .iter()
+                            .filter_map(|&i| pane.cache.row_of(i))
+                            .collect();
+                        rows.sort_unstable();
+                        rows.dedup();
+                        for k in rows {
+                            let k = k + pane.head as usize;
+                            pane.list.splice(k..k + 1, 1);
                         }
                         if any {
                             cx.notify();
@@ -6392,22 +6363,6 @@ impl Render for AgentTab {
 
 #[cfg(test)]
 mod tests {
-    /// The perf chore: what the process said while the tab was busy comes as one batch (one
-    /// sync and one redraw for a burst), never more than `PUMP_BATCH`.
-    #[test]
-    fn a_burst_is_drained_as_one_batch() {
-        let (tx, mut rx) = futures::channel::mpsc::unbounded();
-        for n in 0..5 {
-            tx.unbounded_send(n).unwrap();
-        }
-        assert_eq!(drain_ready(100, &mut rx, 10), vec![100, 0, 1, 2, 3, 4]);
-        assert_eq!(drain_ready(7, &mut rx, 10), vec![7], "nothing more ready");
-        for n in 0..(PUMP_BATCH * 2) {
-            tx.unbounded_send(n).unwrap();
-        }
-        assert_eq!(drain_ready(0, &mut rx, PUMP_BATCH).len(), PUMP_BATCH);
-    }
-
     use super::*;
 
     // ---- Prompt suggestions (a chore after M11ar) ----
@@ -7165,24 +7120,6 @@ mod tests {
         assert_eq!(a.extension().and_then(|e| e.to_str()), Some("png"));
         assert_eq!(std::fs::read(&a).unwrap(), b"png bytes");
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn changed_rows_are_the_ones_whose_print_moved() {
-        assert_eq!(changed_rows(&[1, 2, 3], &[1, 9, 3, 4]), vec![1]);
-        assert_eq!(changed_rows(&[1, 2], &[1]), Vec::<usize>::new());
-        let a = Item::Agent {
-            message: "m".into(),
-            text: "Hel".into(),
-            done: false,
-            parent: None,
-        };
-        let mut b = a.clone();
-        if let Item::Agent { text, .. } = &mut b {
-            text.push_str("lo");
-        }
-        assert_ne!(fingerprint(&a), fingerprint(&b));
-        assert_eq!(fingerprint(&a), fingerprint(&a.clone()));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::agent_activity_checks::error_code;
 use crate::agent_conversation::{Conversation, Item};
 use crate::agent_lanes::{View, clock};
 pub use crate::agent_steps::ToolTimes;
-use crate::agent_steps::{file_key, stands_alone, turn_start};
+use crate::agent_steps::{file_key, stands_alone};
 
 /// The call running now (the latest started), its words, when it started (None: unknown) and
 /// how many others run with it.
@@ -107,62 +107,103 @@ pub const SEP: &str = " · ";
 
 /// The ledger of `view`'s current turn: Main's covers every call of the turn (its own and every
 /// subagent's), a lane's its own calls since its latest run began. None: no live turn (nothing
-/// said yet, or the turn is restored history).
+/// said yet, or the turn is restored history). Built from nothing: `LedgerCache`'s rule, which
+/// the tab uses.
+#[cfg(test)]
 pub fn ledger_of(
     conversation: &Conversation,
     view: &View,
     times: &ToolTimes,
     cwd: &Path,
 ) -> Option<Ledger> {
+    let from = calls_from(conversation, view)?;
+    let mut fold = Fold::default();
+    for ix in calls(conversation, view, from..conversation.items().len()) {
+        fold.add(conversation.items(), ix, times, cwd);
+    }
+    Some(fold.finish(conversation.items()))
+}
+
+/// Where `view`'s calls begin: Main's turn, or the lane's latest run (found through the
+/// lane's own items, not a scan); None: no live turn.
+fn calls_from(conversation: &Conversation, view: &View) -> Option<usize> {
     let latest = conversation.latest_you()?;
     if latest < conversation.live_from() {
         return None;
     }
     let items = conversation.items();
-    let calls: Vec<usize> = match view {
-        View::Main => (turn_start(items)..items.len())
-            .filter(|&ix| {
-                matches!(items[ix], Item::Tool { .. }) && !stands_alone(conversation, &items[ix])
+    Some(match view {
+        View::Main => conversation.turn_start(),
+        View::Lane(lane) => conversation
+            .under(lane)
+            .and_then(|under| {
+                under
+                    .iter()
+                    .rev()
+                    .find(|&&ix| matches!(&items[ix], Item::Resumed { .. }))
             })
-            .collect(),
-        View::Lane(lane) => {
-            let from = items
-                .iter()
-                .rposition(|i| matches!(i, Item::Resumed { lane: l, .. } if l == lane))
-                .map_or(0, |ix| ix + 1);
-            (from..items.len())
-                .filter(|&ix| matches!(&items[ix], Item::Tool { parent: Some(p), .. } if p == lane))
-                .collect()
-        }
-    };
-    let mut changed: Vec<Changed> = Vec::new();
-    let mut scripted: Vec<PathBuf> = Vec::new();
-    let mut read: Vec<PathBuf> = Vec::new();
-    let mut checks: Vec<CheckRun> = Vec::new();
-    let mut scopes: Vec<((CheckWhat, String), Scope)> = Vec::new();
-    let mut open: HashMap<(CheckWhat, String), usize> = HashMap::new();
-    let mut running: Vec<(usize, &str, Option<Instant>)> = Vec::new();
-    for &ix in &calls {
+            .map_or(0, |ix| ix + 1),
+    })
+}
+
+/// `view`'s calls in `range`: Main's every call (not one standing alone), a lane's its own
+/// (through the lane's items).
+fn calls<'a>(
+    conversation: &'a Conversation,
+    view: &'a View,
+    range: std::ops::Range<usize>,
+) -> Box<dyn Iterator<Item = usize> + 'a> {
+    let items = conversation.items();
+    match view {
+        View::Main => Box::new(range.filter(move |&ix| {
+            matches!(items[ix], Item::Tool { .. }) && !stands_alone(conversation, &items[ix])
+        })),
+        View::Lane(lane) => Box::new(
+            conversation
+                .under(lane)
+                .into_iter()
+                .flat_map(move |under| under.range(range.clone()).copied())
+                .filter(move |&ix| matches!(items[ix], Item::Tool { .. })),
+        ),
+    }
+}
+
+/// The ledger's sums as its calls are added in order (`ledger_of`; `LedgerCache` keeps them up
+/// to a point and adds only what came after).
+#[derive(Clone, Default)]
+struct Fold {
+    changed: Vec<Changed>,
+    scripted: Vec<PathBuf>,
+    read: Vec<PathBuf>,
+    checks: Vec<CheckRun>,
+    scopes: Vec<((CheckWhat, String), Scope)>,
+    open: HashMap<(CheckWhat, String), usize>,
+    running: Vec<(usize, String, Option<Instant>)>,
+}
+
+impl Fold {
+    fn add(&mut self, items: &[Item], ix: usize, times: &ToolTimes, cwd: &Path) {
         let Item::Tool {
             id, running: on, ..
         } = &items[ix]
         else {
-            continue;
+            return;
         };
-        let Some(a) = of(&items[ix]) else { continue };
+        let Some(a) = of(&items[ix]) else { return };
         if *on {
-            running.push((ix, id.as_str(), times.get(id).map(|(start, _)| *start)));
-            continue;
+            self.running
+                .push((ix, id.clone(), times.get(id).map(|(start, _)| *start)));
+            return;
         }
         if let Some(check) = &a.check {
             let key = crate::agent_steps::check_key(check, cwd);
             let run = (check.outcome.clone(), a.planned_failure);
-            match scopes.iter_mut().find(|(k, _)| *k == key) {
+            match self.scopes.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, s)) => {
                     s.scope = check.scope.clone();
                     s.runs.push(run);
                 }
-                None => scopes.push((
+                None => self.scopes.push((
                     key.clone(),
                     Scope {
                         what: check.what,
@@ -173,14 +214,14 @@ pub fn ledger_of(
             }
             match check.outcome {
                 Outcome::Passed { .. } => {
-                    open.remove(&key);
+                    self.open.remove(&key);
                 }
                 Outcome::Failed { .. } if a.real_failure() => {
-                    open.insert(key, ix);
+                    self.open.insert(key, ix);
                 }
                 _ => {}
             }
-            checks.push(CheckRun {
+            self.checks.push(CheckRun {
                 ix,
                 what: check.what,
                 scope: check.scope.clone(),
@@ -189,18 +230,18 @@ pub fn ledger_of(
             });
         }
         if a.failed.is_some() || a.not_run {
-            continue;
+            return;
         }
         for t in &a.touches {
             let key = file_key(&t.path, cwd);
             match t.how {
                 How::Changed { plus, minus, .. } => {
-                    match changed.iter_mut().find(|c| c.path == key) {
+                    match self.changed.iter_mut().find(|c| c.path == key) {
                         Some(c) => {
                             c.plus = add(c.plus, plus);
                             c.minus = add(c.minus, minus);
                         }
-                        None => changed.push(Changed {
+                        None => self.changed.push(Changed {
                             path: key,
                             plus,
                             minus,
@@ -208,63 +249,166 @@ pub fn ledger_of(
                     }
                 }
                 How::ScriptTouched => {
-                    if !scripted.contains(&key) {
-                        scripted.push(key);
+                    if !self.scripted.contains(&key) {
+                        self.scripted.push(key);
                     }
                 }
                 How::Read { .. } | How::Searched { .. } => {
-                    if !read.contains(&key) {
-                        read.push(key);
+                    if !self.read.contains(&key) {
+                        self.read.push(key);
                     }
                 }
             }
         }
     }
-    scripted.retain(|p| !changed.iter().any(|c| &c.path == p));
-    read.retain(|p| !changed.iter().any(|c| &c.path == p) && !scripted.contains(p));
-    let passed = checks
-        .iter()
-        .filter(|r| matches!(r.outcome, Outcome::Passed { .. }))
-        .count();
-    let total = checks.len();
-    // The latest real failure's kind; a compile error is the build's, whatever ran it.
-    let failing = open
-        .iter()
-        .max_by_key(|(_, ix)| **ix)
-        .map(|((what, _), &ix)| {
-            let compile = of(&items[ix])
-                .and_then(|a| match &a.check.as_ref()?.outcome {
-                    Outcome::Failed { first_error, .. } => first_error.clone(),
-                    _ => None,
-                })
-                .is_some_and(|e| error_code(&e).is_some());
-            if compile { CheckWhat::Build } else { *what }
+
+    fn finish(self, items: &[Item]) -> Ledger {
+        let Fold {
+            changed,
+            mut scripted,
+            mut read,
+            checks,
+            scopes,
+            open,
+            running,
+        } = self;
+        scripted.retain(|p| !changed.iter().any(|c| &c.path == p));
+        read.retain(|p| !changed.iter().any(|c| &c.path == p) && !scripted.contains(p));
+        let passed = checks
+            .iter()
+            .filter(|r| matches!(r.outcome, Outcome::Passed { .. }))
+            .count();
+        let total = checks.len();
+        // The latest real failure's kind; a compile error is the build's, whatever ran it.
+        let failing = open
+            .iter()
+            .max_by_key(|(_, ix)| **ix)
+            .map(|((what, _), &ix)| {
+                let compile = of(&items[ix])
+                    .and_then(|a| match &a.check.as_ref()?.outcome {
+                        Outcome::Failed { first_error, .. } => first_error.clone(),
+                        _ => None,
+                    })
+                    .is_some_and(|e| error_code(&e).is_some());
+                if compile { CheckWhat::Build } else { *what }
+            });
+        // The latest started runs now (else the last in order), the others "+N running".
+        let lead = running
+            .iter()
+            .enumerate()
+            .max_by_key(|(n, (_, _, started))| (*started, *n))
+            .map(|(_, r)| r);
+        let running = lead.map(|(ix, id, started)| Running {
+            id: id.clone(),
+            title: of(&items[*ix])
+                .map(|a| a.running_title())
+                .unwrap_or_default(),
+            started: *started,
+            more: running.len() - 1,
         });
-    // The latest started runs now (else the last in order), the others "+N running".
-    let lead = running
-        .iter()
-        .enumerate()
-        .max_by_key(|(n, (_, _, started))| (*started, *n))
-        .map(|(_, r)| *r);
-    let running = lead.map(|(ix, id, started)| Running {
-        id: id.to_string(),
-        title: of(&items[ix])
-            .map(|a| a.running_title())
-            .unwrap_or_default(),
-        started,
-        more: running.len() - 1,
-    });
-    Some(Ledger {
-        running,
-        changed,
-        scripted,
-        read,
-        checks,
-        scopes: scopes.into_iter().map(|(_, s)| s).collect(),
-        passed,
-        total,
-        failing,
-    })
+        Ledger {
+            running,
+            changed,
+            scripted,
+            read,
+            checks,
+            scopes: scopes.into_iter().map(|(_, s)| s).collect(),
+            passed,
+            total,
+            failing,
+        }
+    }
+}
+
+/// How far behind the end the kept sums stop: a call's last activity comes just after it
+/// finishes, so the newest calls are added again each time rather than kept.
+const LAG: usize = 16;
+
+/// What the kept sums are for: the view, the lanes' shape, your latest message, where the
+/// restored history ends, and where the view's calls begin.
+type LedgerKey = (View, u64, Option<usize>, usize, usize);
+
+/// The shown view's ledger, kept (the perf chore): its sums up to a point (`at`: before the
+/// first running call, and `LAG` behind the end), only what came after added again; built
+/// from nothing when what it is for changes or something before `at` changed.
+#[derive(Default)]
+pub struct LedgerCache {
+    key: Option<LedgerKey>,
+    /// It has run once (`key` None then means no live turn).
+    built: bool,
+    at: usize,
+    fold: Fold,
+    /// Calls added by the last `sync` (the work-count tests).
+    added: usize,
+}
+
+impl LedgerCache {
+    /// The ledger after a change (`dirty`: the lowest item changed); None from the outer
+    /// Option: nothing it reads changed (the agent's words streaming), the last one stands.
+    pub fn sync(
+        &mut self,
+        conversation: &Conversation,
+        view: &View,
+        dirty: Option<usize>,
+        times: &ToolTimes,
+        cwd: &Path,
+    ) -> Option<Option<Ledger>> {
+        let items = conversation.items();
+        let from = calls_from(conversation, view);
+        let key = from.map(|from| {
+            (
+                view.clone(),
+                conversation.shape(),
+                conversation.latest_you(),
+                conversation.live_from(),
+                from,
+            )
+        });
+        let same = self.built && self.key == key;
+        let words_only = dirty.is_none_or(|d| {
+            items[d.min(items.len())..]
+                .iter()
+                .all(|i| matches!(i, Item::Agent { .. }))
+        });
+        self.added = 0;
+        if same && words_only {
+            return None;
+        }
+        self.built = true;
+        let Some(from) = from else {
+            self.key = None;
+            return Some(None);
+        };
+        if !same || dirty.is_some_and(|d| d < self.at) {
+            self.key = key;
+            self.at = from;
+            self.fold = Fold::default();
+        }
+        // The kept sums move on over calls that are done, up to `LAG` behind the end.
+        let target = items.len().saturating_sub(LAG).max(self.at);
+        let mut stop = target;
+        for ix in calls(conversation, view, self.at..target) {
+            if matches!(items[ix], Item::Tool { running: true, .. }) {
+                stop = ix;
+                break;
+            }
+            self.fold.add(items, ix, times, cwd);
+            self.added += 1;
+        }
+        self.at = stop;
+        let mut fold = self.fold.clone();
+        for ix in calls(conversation, view, self.at..items.len()) {
+            fold.add(items, ix, times, cwd);
+            self.added += 1;
+        }
+        Some(Some(fold.finish(items)))
+    }
+
+    /// Calls added by the last `sync`.
+    #[cfg(test)]
+    pub fn added(&self) -> usize {
+        self.added
+    }
 }
 
 /// Two counts summed: unknown only when both are.

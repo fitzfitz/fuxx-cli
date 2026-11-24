@@ -94,6 +94,51 @@ pub fn in_main(item: &Item, live: &dyn Fn(&str) -> bool) -> bool {
     parent_of(item).is_none_or(|p| !live(p))
 }
 
+/// A lane's rows by `rows_of`'s rule, from what the conversation keeps (the perf chore: no
+/// scan): `own`, its items in order (its words, steps and resumes, and what it asked);
+/// `relays`, your messages relayed to any lane; `asks`, the open asks of every lane, in order.
+pub fn lane_rows(
+    items: &[Item],
+    lane: &str,
+    own: impl Iterator<Item = usize>,
+    relays: impl Iterator<Item = usize>,
+    asks: impl Iterator<Item = usize>,
+) -> Vec<usize> {
+    let mut settled: Vec<(usize, usize)> = Vec::new();
+    let mut waiting: Vec<usize> = Vec::new();
+    for ix in relays {
+        if let Item::You { to: Some(r), .. } = &items[ix]
+            && r.lane == lane
+            && !r.about
+        {
+            match r.settled_at {
+                Some(at) => settled.push((at, ix)),
+                None => waiting.push(ix),
+            }
+        }
+    }
+    // Each settled relay goes before the first row that came after it settled (ties: in item
+    // order, as a stable sort leaves them).
+    settled.sort_by_key(|&(at, _)| at);
+    let mut rows: Vec<usize> = Vec::new();
+    let mut next = settled.into_iter().peekable();
+    for ix in own {
+        while let Some(&(_, relay)) = next.peek().filter(|&&(at, _)| at <= ix) {
+            rows.push(relay);
+            next.next();
+        }
+        rows.push(ix);
+    }
+    rows.extend(next.map(|(_, relay)| relay));
+    rows.extend(waiting);
+    let by = |ix: usize| match &items[ix] {
+        Item::Permission { by, .. } | Item::Question { by, .. } => by.as_deref(),
+        _ => None,
+    };
+    rows.extend(asks.filter(|&ix| by(ix) != Some(lane)));
+    rows
+}
+
 /// An item said by the agent (its avatar's column), not you or the tab.
 pub fn agent_side(item: &Item) -> bool {
     matches!(

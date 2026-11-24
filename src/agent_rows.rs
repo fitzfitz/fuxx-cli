@@ -14,7 +14,7 @@ impl AgentTab {
             return self.lane_head_row(look);
         }
         let k = k - pane.head as usize;
-        let order = &pane.cache.order();
+        let order = pane.cache.order();
         let Some(&ix) = order.get(k) else {
             return self.lane_end_row(look);
         };
@@ -39,7 +39,7 @@ impl AgentTab {
         // A busy step's first row draws its tracks; a readable tool row its cached words.
         let body = match cached.and_then(|r| r.tracks.clone()) {
             Some(tracks) => self.tracks(ix, &tracks, look),
-            None => self.item_body(ix, item, cached.and_then(|r| r.words.clone()), look),
+            None => self.item_body(k, ix, item, cached.and_then(|r| r.words.clone()), look),
         };
         let text_column = chat::AVATAR + chat::AVATAR_GAP;
         let column = div().w_full().max_w(px(chat::COLUMN_MAX));
@@ -153,9 +153,11 @@ impl AgentTab {
         }
     }
 
-    /// An item's own look in its row (`words`: a readable tool row's, cached on the row).
+    /// An item's own look in its row `k` of the shown view (`words`: a readable tool row's,
+    /// cached on the row).
     pub(super) fn item_body(
         &self,
+        k: usize,
         ix: usize,
         item: &Item,
         words: Option<Rc<crate::agent_step_words::RowWords>>,
@@ -328,7 +330,7 @@ impl AgentTab {
                 run,
             } => self.resumed_row(lane, ended, said.as_deref(), *run, look),
             Item::Agent { .. } => {
-                let blocks = self.blocks_at(ix).unwrap_or_default();
+                let blocks = self.blocks_at(k, ix).unwrap_or_default();
                 div()
                     .w_full()
                     .max_w(px(chat::COLUMN_MAX - 32.))
@@ -336,7 +338,7 @@ impl AgentTab {
                     .child(md_preview::column(&blocks, ix, &look.draw))
                     .into_any_element()
             }
-            Item::Tool { .. } => self.tool(ix, item, words, look),
+            Item::Tool { .. } => self.tool(k, ix, item, words, look),
             // The todo list (spec B-B): a card with its count and a still meter, then the tasks.
             Item::Todo(list) => {
                 let done = list.iter().filter(|t| t.state == TodoState::Done).count();
@@ -630,6 +632,7 @@ impl AgentTab {
     /// is its lane's row (`lane_row`).
     fn tool(
         &self,
+        k: usize,
         ix: usize,
         item: &Item,
         words: Option<Rc<crate::agent_step_words::RowWords>>,
@@ -643,7 +646,7 @@ impl AgentTab {
             return div().into_any_element();
         };
         if let Some(lane) = self.conversation.lane(id) {
-            return self.lane_row(ix, lane, look);
+            return self.lane_row(k, ix, lane, look);
         }
         let c = &look.c;
         let items = self.conversation.items();
@@ -709,6 +712,7 @@ impl AgentTab {
         };
         let tool = self
             .tool_shell(
+                k,
                 ix,
                 c.panel,
                 (openable || passed.is_some()).then_some(c.row_hover),
@@ -781,6 +785,7 @@ impl AgentTab {
     /// pointing hand) when it can be clicked. Its contents are the caller's.
     pub(super) fn tool_shell(
         &self,
+        k: usize,
         ix: usize,
         fill: Rgb,
         hover: Option<Rgb>,
@@ -792,15 +797,14 @@ impl AgentTab {
         // Its shape in its drawn group, as its row's role says (the agent activity chore: a
         // busy step's tracks are a group of their own); elsewhere (a tool's detail) by the items.
         let pane = self.pane();
-        let shape = pane
-            .cache
-            .row_of(ix)
-            .and_then(
-                |k| match pane.rows.get(k + pane.head as usize)?.role.as_ref()? {
+        let shape = (pane.cache.order().get(k) == Some(&ix))
+            .then(
+                || match pane.rows.get(k + pane.head as usize)?.role.as_ref()? {
                     crate::agent_steps::Role::Row(shape) => Some(*shape),
                     _ => None,
                 },
             )
+            .flatten()
             .or_else(|| group_shape(items, ix, &|_| false))
             .unwrap_or(Shape::Solo);
         let (top, bottom) = match shape {

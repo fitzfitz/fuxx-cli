@@ -516,7 +516,9 @@ pub fn check_key(check: &Check, cwd: &Path) -> (CheckWhat, String) {
     (check.what, parts.join(" && "))
 }
 
-/// Where the current turn starts: the index after your latest message (0: none).
+/// Where the current turn starts: the index after your latest message (0: none). The tab asks
+/// `Conversation::turn_start` (kept, no scan); this is its rule.
+#[cfg(test)]
 pub fn turn_start(items: &[Item]) -> usize {
     items
         .iter()
@@ -525,19 +527,42 @@ pub fn turn_start(items: &[Item]) -> usize {
 }
 
 /// The tool items from `from` whose check failed for real and that no later pass of the same
-/// kind and scope has cleared.
+/// kind and scope has cleared. The tab keeps the turn's check runs (`check_marks`) instead.
+#[cfg(test)]
 pub fn open_failures(items: &[Item], from: usize, cwd: &Path) -> HashSet<usize> {
-    let mut open: HashMap<(CheckWhat, String), Vec<usize>> = HashMap::new();
-    for (ix, item) in items.iter().enumerate().skip(from) {
-        let Some(a) = of(item) else { continue };
-        let Some(check) = &a.check else { continue };
-        let key = check_key(check, cwd);
-        match check.outcome {
-            Outcome::Passed { .. } => {
-                open.remove(&key);
-            }
-            Outcome::Failed { .. } if a.real_failure() => open.entry(key).or_default().push(ix),
-            _ => {}
+    open_of(&check_marks(items, from..items.len(), cwd))
+}
+
+/// A check run that moves the open failures: its item, its kind and scope, and whether it
+/// passed (else it failed for real).
+pub type CheckMark = (usize, (CheckWhat, String), bool);
+
+/// The check runs in `range` that move the open failures, in order (the tab keeps them and
+/// adds only what changed: the perf chore).
+pub fn check_marks(items: &[Item], range: std::ops::Range<usize>, cwd: &Path) -> Vec<CheckMark> {
+    range
+        .filter_map(|ix| {
+            let a = of(&items[ix])?;
+            let check = a.check.as_ref()?;
+            let passed = match check.outcome {
+                Outcome::Passed { .. } => true,
+                Outcome::Failed { .. } if a.real_failure() => false,
+                _ => return None,
+            };
+            Some((ix, check_key(check, cwd), passed))
+        })
+        .collect()
+}
+
+/// The open failures `marks` leave: each real failure no later pass of its kind and scope
+/// cleared.
+pub fn open_of(marks: &[CheckMark]) -> HashSet<usize> {
+    let mut open: HashMap<&(CheckWhat, String), Vec<usize>> = HashMap::new();
+    for (ix, key, passed) in marks {
+        if *passed {
+            open.remove(key);
+        } else {
+            open.entry(key).or_default().push(*ix);
         }
     }
     open.into_values().flatten().collect()

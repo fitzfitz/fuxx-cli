@@ -9,14 +9,16 @@
 //! changed (`Conversation::shape`), the tracks' fit changed, or it was invalidated (a view
 //! shown again after changes it didn't follow).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-use crate::agent_chat::{in_main, row_print_at, rows_of};
+use crate::agent_chat::{in_main, lane_rows, row_print_at, rows_of};
 use crate::agent_conversation::{Conversation, Item};
 use crate::agent_lanes::View;
-use crate::agent_steps::{Role, open_failures, roles_of, stands_alone, step_print};
+use crate::agent_steps::{
+    CheckMark, Role, check_marks, open_of, roles_of, stands_alone, step_print,
+};
 use crate::status::Status;
 
 #[derive(Default)]
@@ -30,8 +32,11 @@ pub struct ViewCache {
     turn: usize,
     fits: bool,
     shape: u64,
-    /// The lanes whose tool call is there (a lane's steps leave Main only then).
-    live: Vec<String>,
+    /// Whether each lane's tool call is there, by the lanes' order (a lane's steps leave Main
+    /// only then).
+    live: Vec<bool>,
+    /// The turn's check runs that move the open failures (`agent_steps::check_marks`).
+    marks: Vec<CheckMark>,
     /// Main's order is item order (binary-searchable); a lane's may not be.
     sorted: bool,
     valid: bool,
@@ -39,7 +44,35 @@ pub struct ViewCache {
     derived: usize,
 }
 
-fn hash<T: Hash>(what: &T) -> u64 {
+/// Two sorted index sets as one sorted list.
+fn merged(a: Option<&BTreeSet<usize>>, b: Option<&BTreeSet<usize>>) -> Vec<usize> {
+    let a: Vec<usize> = a.map(|s| s.iter().copied().collect()).unwrap_or_default();
+    match b {
+        Some(b) => merge_sorted(a, &b.iter().copied().collect::<Vec<_>>()),
+        None => a,
+    }
+}
+
+/// Two sorted lists as one.
+fn merge_sorted(a: Vec<usize>, b: &[usize]) -> Vec<usize> {
+    if b.is_empty() {
+        return a;
+    }
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() || j < b.len() {
+        if j == b.len() || (i < a.len() && a[i] <= b[j]) {
+            out.push(a[i]);
+            i += 1;
+        } else {
+            out.push(b[j]);
+            j += 1;
+        }
+    }
+    out
+}
+
+pub(crate) fn hash<T: Hash>(what: &T) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     what.hash(&mut h);
     h.finish()
@@ -98,63 +131,110 @@ impl ViewCache {
         cwd: &Path,
     ) -> usize {
         let items = c.items();
-        let lanes: Vec<&str> = c.lanes().iter().map(|l| l.id.as_str()).collect();
-        let live: Vec<String> = lanes
-            .iter()
-            .filter(|l| c.has_tool(l))
-            .map(|l| l.to_string())
-            .collect();
+        // Which lanes' calls are there: a lane started before its call takes its steps out of
+        // Main only once the call comes (no new lane, so no new shape).
+        let shape = c.shape();
+        let lanes = c.lanes();
+        let live_changed = self.live.len() != lanes.len()
+            || lanes
+                .iter()
+                .zip(&self.live)
+                .any(|(l, &was)| c.has_tool(&l.id) != was);
         let sorted = matches!(view, View::Main);
         let full = !self.valid
             || self.fits != fits
-            || self.shape != c.shape()
-            || self.live != live
+            || self.shape != shape
+            || live_changed
             || self.sorted != sorted;
+        if live_changed {
+            self.live = lanes.iter().map(|l| c.has_tool(&l.id)).collect();
+        }
         let d = if full {
             0
         } else {
             dirty.unwrap_or(items.len()).min(items.len())
         };
-        let old = if full {
-            Vec::new()
-        } else {
-            std::mem::take(&mut self.order)
-        };
-        // The order: Main's items before `d` keep their rows; a lane's is found again (no item
-        // is hashed: cheap).
-        self.order = match view {
+        let old_len = if full { 0 } else { self.order.len() };
+        // The order, and the rows that kept their item (`moved`: the first that didn't) and the
+        // first whose item changed in place (`touched`).
+        let (moved, mut touched) = match view {
+            // Main's items before `d` keep their rows; the rest are found again in place.
             View::Main if !full => {
-                let kept = old.partition_point(|&i| i < d);
-                let lane_of = |p: &str| live.iter().any(|l| l == p);
-                let mut order = old[..kept].to_vec();
-                order.extend((d..items.len()).filter(|&ix| in_main(&items[ix], &lane_of)));
-                order
+                let kept = self.order.partition_point(|&i| i < d);
+                let was = self.order.split_off(kept);
+                let lane_of = |p: &str| {
+                    lanes
+                        .iter()
+                        .zip(&self.live)
+                        .any(|(l, &live)| live && l.id == p)
+                };
+                self.order
+                    .extend((d..items.len()).filter(|&ix| in_main(&items[ix], &lane_of)));
+                let same = was
+                    .iter()
+                    .zip(&self.order[kept..])
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                (kept + same, kept)
             }
-            _ => rows_of(items, view, &lanes),
+            View::Main => {
+                let ids: Vec<&str> = lanes.iter().map(|l| l.id.as_str()).collect();
+                self.order = rows_of(items, view, &ids);
+                (0, 0)
+            }
+            // A lane's from what the conversation keeps: its own items, the relays, the open
+            // asks (no scan of the conversation).
+            View::Lane(id) => {
+                let own = merged(c.under(id), c.asked_by(id));
+                let asks = merge_sorted(merged(Some(c.open_permissions()), None), c.open_asks());
+                let order = lane_rows(
+                    items,
+                    id,
+                    own.into_iter(),
+                    c.relays().iter().copied(),
+                    asks.into_iter(),
+                );
+                let same = if full {
+                    0
+                } else {
+                    self.order
+                        .iter()
+                        .zip(&order)
+                        .take_while(|(a, b)| a == b)
+                        .count()
+                };
+                self.order = order;
+                let touched = self.order[..same]
+                    .iter()
+                    .position(|&i| i >= d)
+                    .unwrap_or(same);
+                (same, touched)
+            }
         };
         let len = self.order.len();
-        let moved = old
-            .iter()
-            .zip(&self.order)
-            .take_while(|(a, b)| a == b)
-            .count();
-        // The rows whose item changed in place, the first of them.
-        let mut touched = self.order[..moved]
-            .iter()
-            .position(|&i| i >= d)
-            .unwrap_or(moved);
-        // The open failures: what a step's tracks mark. Only a change that isn't the agent's
-        // words can move them.
+        // The open failures: what a step's tracks mark, kept as the turn's check runs, those
+        // from the change on found again. Only a change that isn't the agent's words moves them.
         let turn = c.turn_start();
         if full || turn != self.turn || items[d..].iter().any(|i| !matches!(i, Item::Agent { .. }))
         {
-            let open = open_failures(items, turn, cwd);
-            if open != self.open
-                && let Some(k) = self
-                    .order
-                    .iter()
-                    .position(|i| open.contains(i) != self.open.contains(i))
-            {
+            if full || turn != self.turn {
+                self.marks = check_marks(items, turn..items.len(), cwd);
+            } else {
+                let from = d.max(turn);
+                self.marks.retain(|&(ix, _, _)| ix < from);
+                self.marks
+                    .extend(check_marks(items, from..items.len(), cwd));
+            }
+            let open = open_of(&self.marks);
+            if let Some(&m) = open.symmetric_difference(&self.open).min() {
+                let k = if sorted {
+                    self.order.partition_point(|&i| i < m)
+                } else {
+                    self.order
+                        .iter()
+                        .position(|i| open.contains(i) != self.open.contains(i))
+                        .unwrap_or(len)
+                };
                 touched = touched.min(k);
             }
             self.open = open;
@@ -168,7 +248,7 @@ impl ViewCache {
         // A row that came, went or moved changes the one before it too (its shape, or that
         // it is last).
         let mut start = touched.min(len);
-        if moved < len || len != old.len() {
+        if moved < len || len != old_len {
             start = start.min(moved.min(len).saturating_sub(1));
         }
         if full {
@@ -197,8 +277,7 @@ impl ViewCache {
         }
         self.derived = len - start;
         self.fits = fits;
-        self.shape = c.shape();
-        self.live = live;
+        self.shape = shape;
         self.sorted = sorted;
         self.valid = true;
         start

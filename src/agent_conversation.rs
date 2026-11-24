@@ -222,7 +222,6 @@ pub struct Cut {
     items: Vec<Item>,
     lanes: Vec<Lane>,
     lane_starts: Vec<usize>,
-    latest_you: Option<usize>,
 }
 
 #[allow(dead_code)] // Batch 3 wave 2 (the Rewind/Fork UI) calls it.
@@ -648,9 +647,7 @@ impl Conversation {
 
     /// Message `message`'s block still streaming (the newest), if any.
     fn open_text(&self, message: &str) -> Option<usize> {
-        self.items
-            .iter()
-            .rposition(|i| matches!(i, Item::Agent { message: m, done: false, .. } if m == message))
+        self.items.open_text(message)
     }
 
     pub fn you(&mut self, text: String, attachments: Vec<String>) {
@@ -921,7 +918,6 @@ impl Conversation {
             items: self.items.split_off(ix),
             lanes: self.lanes.split_off(keep),
             lane_starts: self.lane_starts.split_off(keep),
-            latest_you: self.latest_you,
         };
         // Once, on a cut: the message before it.
         self.latest_you = self
@@ -970,7 +966,13 @@ impl Conversation {
         self.lanes.extend(cut.lanes);
         self.lane_starts.extend(cut.lane_starts);
         self.shape += 1;
-        self.latest_you = cut.latest_you;
+        // Found again, not taken from the cut: something before the cut may have gone since
+        // (an unread message cancelled), and the turn starts after your latest (the perf
+        // chore's property test found it).
+        self.latest_you = self
+            .items
+            .iter()
+            .rposition(|i| matches!(i, Item::You { .. }));
         self.rebuild_asks();
     }
 
@@ -1080,6 +1082,36 @@ impl Conversation {
     /// resumes).
     pub fn kids(&self, id: &str) -> usize {
         self.items.kids(id)
+    }
+
+    /// The items under tool call `id` (`parent_of`), in order.
+    pub fn under(&self, id: &str) -> Option<&std::collections::BTreeSet<usize>> {
+        self.items.under(id)
+    }
+
+    /// Your messages relayed to a lane, in order.
+    pub fn relays(&self) -> &std::collections::BTreeSet<usize> {
+        self.items.relays()
+    }
+
+    /// The permissions and questions lane `lane` asked, in order.
+    pub fn asked_by(&self, lane: &str) -> Option<&std::collections::BTreeSet<usize>> {
+        self.items.asked_by(lane)
+    }
+
+    /// The open questions' indexes, oldest first.
+    pub fn open_asks(&self) -> &[usize] {
+        &self.open_asks
+    }
+
+    /// The open permissions' indexes, oldest first.
+    pub fn open_permissions(&self) -> &std::collections::BTreeSet<usize> {
+        self.items.open_permissions()
+    }
+
+    /// Tool call `id`'s index (its first).
+    pub fn tool_index(&self, id: &str) -> Option<usize> {
+        self.items.tool_index(id)
     }
 
     /// There is a tool call `id`.
