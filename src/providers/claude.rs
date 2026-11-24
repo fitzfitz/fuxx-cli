@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+mod activity;
+
 pub struct Claude;
 pub static CLAUDE: Claude = Claude;
 
@@ -914,8 +916,13 @@ fn agent_id_of(result_text: &str, record: &Value) -> Option<String> {
 
 #[derive(Default)]
 struct ClaudeTranslator {
-    /// Open permission requests by request id: the tool input and the suggestions to send back.
-    pending: HashMap<String, (Value, Value)>,
+    /// Open permission requests by request id: the tool input, the suggestions to send back,
+    /// and the tool call's id (a denied call is "not run": the agent activity chore).
+    pending: HashMap<String, (Value, Value, Option<String>)>,
+    /// The agent activity chore: each tool call between its start and its result.
+    calls: HashMap<String, activity::Call>,
+    /// The tool calls whose permission was denied.
+    denied: HashSet<String>,
     /// The model named by `system/init`, whose `modelUsage` entry sizes the context.
     model: Option<String>,
     /// The context window the last finished turn reported (for when no model is named).
@@ -1692,6 +1699,8 @@ impl ClaudeTranslator {
                                 input["to"].as_str().and_then(|to| self.lane_named(to))
                             })
                             .flatten();
+                        let (planned, call) = activity::call_started(&name, input);
+                        self.calls.insert(id.clone(), call);
                         out.push(Event::ToolStarted {
                             id: id.clone(),
                             summary: tool_summary(&name, input),
@@ -1700,6 +1709,10 @@ impl ClaudeTranslator {
                             texts: tool_texts(&name, input),
                             parent: parent.clone(),
                             name,
+                        });
+                        out.push(Event::Activity {
+                            id: id.clone(),
+                            activity: planned,
                         });
                         if let Some(lane) = passed {
                             out.push(Event::PassedOn { call: id, lane });
@@ -1712,23 +1725,31 @@ impl ClaudeTranslator {
         out
     }
 
-    fn user(&self, v: &Value) -> Vec<Event> {
+    fn user(&mut self, v: &Value) -> Vec<Event> {
         let Some(items) = v["message"]["content"].as_array() else {
             return Vec::new();
         };
-        items
-            .iter()
-            .filter(|i| i["type"] == "tool_result")
-            .map(|i| {
-                let text = result_text(&i["content"]);
-                Event::ToolFinished {
-                    id: s(&i["tool_use_id"]).unwrap_or_default(),
-                    ok: !i["is_error"].as_bool().unwrap_or(false),
-                    summary: short(&text, 60),
-                    output: (!text.is_empty()).then_some(text),
-                }
-            })
-            .collect()
+        let mut out = Vec::new();
+        for i in items.iter().filter(|i| i["type"] == "tool_result") {
+            let text = result_text(&i["content"]);
+            let id = s(&i["tool_use_id"]).unwrap_or_default();
+            let ok = !i["is_error"].as_bool().unwrap_or(false);
+            // The call's final activity, read from the result (the agent activity chore).
+            let done = self.calls.remove(&id).map(|call| {
+                let not_run = self.denied.remove(&id);
+                activity::call_finished(call, ok, &text, not_run)
+            });
+            out.push(Event::ToolFinished {
+                id: id.clone(),
+                ok,
+                summary: short(&text, 60),
+                output: (!text.is_empty()).then_some(text),
+            });
+            if let Some(activity) = done {
+                out.push(Event::Activity { id, activity });
+            }
+        }
+        out
     }
 
     fn system(&mut self, v: &Value) -> Vec<Event> {
@@ -1982,7 +2003,8 @@ impl ClaudeTranslator {
             // A subagent's request names it (`agent_id` is its task id).
             by,
         };
-        self.pending.insert(id, (input, suggestions));
+        self.pending
+            .insert(id, (input, suggestions, s(&req["tool_use_id"])));
         vec![event]
     }
 }
@@ -2131,7 +2153,7 @@ impl Translator for ClaudeTranslator {
                 .to_string(),
             ],
             Action::Allow { id } | Action::AlwaysAllow { id } => {
-                let Some((input, suggestions)) = self.pending.remove(id) else {
+                let Some((input, suggestions, _)) = self.pending.remove(id) else {
                     return Vec::new();
                 };
                 let mut response = json!({"behavior": "allow", "updatedInput": input});
@@ -2187,10 +2209,11 @@ impl Translator for ClaudeTranslator {
                 )]
             }
             Action::Deny { id, reason } => {
-                if self.pending.remove(id).is_none() {
+                let Some((_, _, call)) = self.pending.remove(id) else {
                     return Vec::new();
-                }
-                let message = reason.as_deref().unwrap_or("The user denied this.");
+                };
+                self.denied.extend(call);
+                let message = activity::deny_message(reason.as_deref());
                 vec![control_response(
                     id,
                     json!({"behavior": "deny", "message": message}),
@@ -3186,9 +3209,10 @@ mod tests {
         let line = json!({"type":"assistant","parent_tool_use_id":"toolu_parent","message":{"id":"m",
             "content":[{"type":"tool_use","id":"toolu_c","name":"Grep","input":{"pattern":"foo"}}]}})
         .to_string();
+        let ev = CLAUDE.translator().decode(&line);
         assert_eq!(
-            CLAUDE.translator().decode(&line),
-            vec![Event::ToolStarted {
+            ev[0],
+            Event::ToolStarted {
                 id: "toolu_c".into(),
                 name: "Grep".into(),
                 summary: "foo".into(),
@@ -3196,8 +3220,10 @@ mod tests {
                 detail: None,
                 writes: Vec::new(),
                 texts: Vec::new(),
-            }]
+            }
         );
+        // Its activity follows it (the agent activity chore).
+        assert!(matches!(&ev[1..], [Event::Activity { id, .. }] if id == "toolu_c"));
     }
 
     fn permission_line() -> (String, Value) {
@@ -3272,7 +3298,10 @@ mod tests {
         });
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(v["response"]["response"]["behavior"], "deny");
-        assert_eq!(v["response"]["response"]["message"], "Not now");
+        assert_eq!(
+            v["response"]["response"]["message"],
+            "The user denied this in fuxx: Not now"
+        );
 
         t.decode(&line);
         let out = t.encode(&Action::Deny {
@@ -3282,7 +3311,7 @@ mod tests {
         let v: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(
             v["response"]["response"]["message"],
-            "The user denied this."
+            "The user denied this in fuxx."
         );
     }
 
@@ -3842,12 +3871,15 @@ mod tests {
         ];
         let text: String = lines.iter().map(|l| l.to_string() + "\n").collect();
         let past = transcript_events(&format!("{text}not json\n"));
-        assert_eq!(past.len(), 3, "{past:?}");
+        // Each tool event is followed by its activity (the agent activity chore).
+        assert_eq!(past.len(), 5, "{past:?}");
         assert_eq!(past[0], Past::you("fix it"));
         assert!(matches!(&past[1], Past::Event(Event::ToolStarted { id, .. }) if id == "t1"));
+        assert!(matches!(&past[2], Past::Event(Event::Activity { id, .. }) if id == "t1"));
         assert!(
-            matches!(&past[2], Past::Event(Event::ToolFinished { id, ok: true, .. }) if id == "t1")
+            matches!(&past[3], Past::Event(Event::ToolFinished { id, ok: true, .. }) if id == "t1")
         );
+        assert!(matches!(&past[4], Past::Event(Event::Activity { id, .. }) if id == "t1"));
     }
 
     /// Review fix (Minor 5): a `user` line of text blocks is what you said; Claude's own command

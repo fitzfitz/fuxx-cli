@@ -4,6 +4,9 @@
 mod activity;
 mod activity_panel;
 mod adopt;
+mod agent_activity;
+mod agent_activity_checks;
+mod agent_activity_command;
 mod agent_ask;
 mod agent_box;
 mod agent_catalog;
@@ -11,8 +14,11 @@ mod agent_chat;
 mod agent_conversation;
 mod agent_detect;
 mod agent_lanes;
+mod agent_ledger;
 mod agent_markdown;
 mod agent_process;
+mod agent_step_words;
+mod agent_steps;
 mod agent_sweep;
 mod agent_tab;
 mod agent_tool_modal;
@@ -624,6 +630,16 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         ),
         // The agent's question card (batch 3, chore 8), while it has the keys and the box is
         // empty: after the box's keys so they win. Letters stay the box's (its Other).
+        // A busy step's tracks (the agent activity chore): only while its group has the keys.
+        KeyBinding::new("left", agent_tab::TrackPrev, Some("AgentTracks")),
+        KeyBinding::new("right", agent_tab::TrackNext, Some("AgentTracks")),
+        KeyBinding::new("enter", agent_tab::TrackOpen, Some("AgentTracks")),
+        KeyBinding::new("escape", agent_tab::TrackLeave, Some("AgentTracks")),
+        KeyBinding::new(
+            "alt-up",
+            agent_tab::FocusTracks,
+            Some("AgentTab > Composer"),
+        ),
         KeyBinding::new("up", agent_tab::AskUp, Some("AgentAsk > Composer")),
         KeyBinding::new("down", agent_tab::AskDown, Some("AgentAsk > Composer")),
         KeyBinding::new("left", agent_tab::AskPrev, Some("AgentAsk > Composer")),
@@ -1844,6 +1860,23 @@ mod tests {
         assert!(runs(&keymap, "cmd-k", modal).partial_eq(&OpenPalette));
         assert!(runs(&keymap, "cmd-t", modal).partial_eq(&NewTab));
         assert!(runs(&keymap, "cmd-w", modal).partial_eq(&CloseSession));
+    }
+
+    /// A busy step's tracks (the agent activity chore): ←/→ move the column cursor, Enter opens
+    /// its call, Esc gives the keyboard back; fuxx's keys still work there.
+    #[test]
+    fn the_track_keys_stay_in_the_tracks() {
+        let keymap = keymap();
+        let tracks: &[&str] = &["Workspace", "AgentTab", "AgentTracks"];
+        assert!(runs(&keymap, "left", tracks).partial_eq(&crate::agent_tab::TrackPrev));
+        assert!(runs(&keymap, "right", tracks).partial_eq(&crate::agent_tab::TrackNext));
+        assert!(runs(&keymap, "enter", tracks).partial_eq(&crate::agent_tab::TrackOpen));
+        assert!(runs(&keymap, "escape", tracks).partial_eq(&crate::agent_tab::TrackLeave));
+        // ⌥↑ in the box puts the keyboard on the latest busy step's tracks.
+        let composer: &[&str] = &["Workspace", "AgentTab", "Composer"];
+        assert!(runs(&keymap, "alt-up", composer).partial_eq(&crate::agent_tab::FocusTracks));
+        assert!(runs(&keymap, "cmd-k", tracks).partial_eq(&OpenPalette));
+        assert!(runs(&keymap, "cmd-w", tracks).partial_eq(&CloseSession));
     }
 
     /// The agent composer edits like the shell's line (zsh's emacs keys and the Mac ones the

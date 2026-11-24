@@ -50,9 +50,11 @@ use crate::ui_tokens::{self, contrast};
 use crate::workspace::{Overlay, Workspace};
 
 mod agent;
+mod agent_activity;
 mod agent_ask;
 mod agent_box;
 mod agent_lanes;
+mod agent_notice;
 mod agent_rewind;
 mod args;
 mod ask;

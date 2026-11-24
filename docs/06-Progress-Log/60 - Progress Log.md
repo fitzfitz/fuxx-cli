@@ -14,7 +14,8 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Latest (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
+- **Latest (2026-11-24):** the agent activity view chore 🟨 built on branch `chore/agent-activity-view`, its whole-branch review's fix wave in (code review, design review and the long-notice overlap fix; not merged, not pushed); waiting for the design re-check and your on-screen check (note 93, "Chores after M11ar").
+- **Before (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
 - **Released (2026-11-23):** **v0.12.7** (run 45097026110, `fuxx-0.12.7.zip`): chat text selection, the thinking fade, the graph fixture's made-up history.
 - **Released (2026-11-23):** **v0.12.6** (run 45070831970, `fuxx-0.12.6.zip`): M11ar, M11au and the chores since v0.12.5.
 - **Released (2026-11-22):** **v0.12.2** (run 45007594771, `fuxx-0.12.2.zip`): the agent box's sweep and the evening's fixes.
@@ -36,6 +37,55 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-24 — Fix: a long notice or error ran under the next message
+
+- **What:** your bug report ("why the layout below is broken?"): Claude Code's six-paragraph safety-check notice in
+  Main's chat was given less height than its wrapped text, so its last line drew under the next message. Root cause:
+  a row's column (`w_full`, at most `COLUMN_MAX`) sat in a flex column, and taffy measures a flex column's child at
+  its unclamped width, so on a wide tab the text was measured on wider lines than it was drawn on. Rows now centre
+  their column in a flex row (`agent_rows::centred`); the lane's task and end rows too. Note 93, "Chores after
+  M11ar".
+- **Checks:** new scene `agent-notice-long` (a long notice and a long error at 720 and 1100 pt) failed at 1100 first,
+  passes now; the agent and lanes scenes (155) pass.
+- **Not yet seen in the real window.**
+
+### 2026-11-24 — Chore: the agent activity view, after the review
+
+- **What:** the one fix wave after the whole-branch review, on `chore/agent-activity-view`: the code review's six
+  must-fix (a check's exit trusted only when it is its own; a failing exit or a crashed binary beats a passing summary;
+  an Unknown check never green on a row; only the first red run planned, no negations or bare "TDD"; scopes keep what
+  follows `--`; several checks in one command are one compound check), its should-fix (`cd` in scopes and paths,
+  Claude's `Exit code` line, denials in the history, cached row words, P/T over every run, the words split into
+  `agent_step_words.rs`) and nits; the design review's calm-vs-noise changes, material fixes 1–11, the pill's
+  separator gap and nits (one clock format, ⌥↑ to the latest step's tracks among them). Note 93, "After the review".
+- **Checks:** 2827 → 2850 tests (`--features ui-shots`: 2877 → 2900; each new one failed first); clippy 14/29 and
+  18/33; `cargo fmt --check` clean. Full `scripts/ui-shots.sh`: 359 passed, 1 failed (`agent-tab-wide`: this screen
+  is 1512 pt wide, so its 1600 pt window is clamped; it fails the same before the fix wave), 32 look different (the
+  animation set), 8 differ in size (the same clamp). References refreshed for `agent-tracks-running` and
+  `agent-tab-question-agy`. No claude or agy was run.
+- **Not yet seen in the real window.**
+
+### 2026-11-24 — Chore: the agent activity view
+
+- **What:** your words ("I love C"), built from the approved design and plan in 6 tasks on
+  `chore/agent-activity-view`. Each tool call now carries one provider-neutral `Activity` (Claude's and agy's
+  translators fill it; history rebuilds it): what it read, searched, changed or named in a script, how its check went
+  (cargo / pytest / jest / vitest / go test read from the output, so a failing `cargo test | tail` is never green), a
+  failed call's first error, a planned failure ("red first"). A step of 3+ calls draws as file tracks (a bead per call
+  per file, a checks track, summaries, the open failure under the group, "+N files", "+M earlier", hover / click /
+  ←→ per column); smaller steps are readable rows (the agent's words, a dim command trace, outcome chips). The box's
+  folder tab carries the turn ledger after the status ("Running tests 0:14 · 4 changed · checks 2/6") with a popover
+  whose changed files open their diff tab. Under "Chores after M11ar" in [[93 - Milestone 11ar - Subagents]], with
+  the AI's calls.
+- **Checks:** 2754 → 2827 tests (`--features ui-shots`: 2804 → 2877; each new one failed first); clippy 14/29 and
+  18/33 (unchanged, none on a changed line); `cargo fmt --check` clean. Full `scripts/ui-shots.sh`: 359 passed, 0
+  failed; fingerprints 694 same, 32 look different (the animation set that varies run to run: shell cards, the agent
+  box's menus, the sliding scenes), 0 differ in size, 0 without a reference. References re-recorded on purpose for
+  `agent-tab-question-agy` and `agent-tab-cached-current` (their tool row's new wording: "Listed files", "Ran tests"
+  with the command as a trace) and recorded for the new visual scene `agent-tracks-running`; the other 11 new scenes
+  are state scenes. No claude or agy was run.
+- **Not yet seen in the real window.**
 
 ### 2026-11-24 — Chore: a subagent's row shows it's a subagent
 

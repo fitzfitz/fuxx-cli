@@ -544,6 +544,13 @@ pub enum Event {
         summary: String,
         output: Option<String>,
     },
+    /// What tool call `id` does (the agent activity chore): sent right after its `ToolStarted`
+    /// (the call as planned) and right after its `ToolFinished` (the final one); history
+    /// replays the same pairs.
+    Activity {
+        id: String,
+        activity: crate::agent_activity::Activity,
+    },
     Todo(Vec<TodoItem>),
     Permission {
         id: String,

@@ -1,0 +1,27 @@
+# typed in jest's real summary shape (no jest project here)
+ FAIL  src/api.test.js
+  api
+    ✓ lists users (3 ms)
+    ✕ returns the user (5 ms)
+    ✓ creates a user (1 ms)
+    ✓ deletes a user
+    ✓ updates a user (1 ms)
+
+  ● api › returns the user
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: "ada"
+    Received: undefined
+
+      12 |     const user = await get(1);
+    > 13 |     expect(user.name).toBe("ada");
+         |                       ^
+
+      at Object.toBe (src/api.test.js:13:23)
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 4 passed, 5 total
+Snapshots:   0 total
+Time:        0.42 s
+Ran all test suites matching /api/i.

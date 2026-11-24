@@ -47,6 +47,9 @@ mod lanes_view;
 
 #[path = "agent_lane_row.rs"]
 mod lane_row;
+
+#[path = "agent_tracks.rs"]
+pub(crate) mod tracks;
 pub(crate) use lanes_view::{BAR_FADE, BoxMode};
 
 #[path = "agent_latest.rs"]
@@ -142,7 +145,16 @@ actions!(
         AskPick6,
         AskPick7,
         AskPick8,
-        AskPick9
+        AskPick9,
+        // A busy step's tracks (the agent activity chore; bound in main.rs to "AgentTracks":
+        // only while a step's group has the keyboard).
+        TrackPrev,
+        TrackNext,
+        TrackOpen,
+        TrackLeave,
+        // ⌥↑ in the box: the latest busy step's tracks take the keyboard (bound in main.rs to
+        // "AgentTab > Composer").
+        FocusTracks
     ]
 );
 
@@ -243,6 +255,8 @@ pub enum AgentTabEvent {
     OpenLink(String),
     /// A file to open in a file tab: a link to it in the chat, a path pill or its sent chip.
     OpenFile(PathBuf),
+    /// A changed file in the turn ledger's popover (the agent activity chore): its diff tab.
+    OpenDiff(PathBuf),
     /// A folder's pill or chip: shown in the Files tree.
     RevealInFiles(PathBuf),
 }
@@ -385,16 +399,6 @@ pub fn modal_motion(fresh: bool) -> Option<(Duration, Duration)> {
 
 pub fn resume_failed(started: bool, resume: bool) -> bool {
     resume && !started
-}
-
-/// A running tool's elapsed time: `4s`, `1m 05s`.
-pub fn elapsed_label(d: Duration) -> String {
-    let s = d.as_secs();
-    if s < 60 {
-        format!("{s}s")
-    } else {
-        format!("{}m {:02}s", s / 60, s % 60)
-    }
 }
 
 /// A read's result: how many lines it read.
@@ -830,6 +834,7 @@ pub(crate) fn fingerprint(item: &Item) -> u64 {
             result,
             output,
             dropped_lines,
+            activity,
             ..
         } => (
             running,
@@ -837,6 +842,7 @@ pub(crate) fn fingerprint(item: &Item) -> u64 {
             result,
             output.as_ref().map(String::len),
             dropped_lines,
+            activity,
         )
             .hash(&mut h),
         Item::Todo(list) => {
@@ -1031,6 +1037,15 @@ pub struct Colors {
     /// the accent and the status colours (`agent_lanes::lane_hue`), else `panel_dim`; held to
     /// `MARK_MIN` on the rows' fills and the page.
     pub lane_ink: Rgb,
+    /// The agent activity chore: a track's beads (an edit's apart), the rule from a track's
+    /// first bead to its last, and the keyboard cursor's ring on a column.
+    pub bead: Rgb,
+    pub bead_edit: Rgb,
+    pub track_rule: Rgb,
+    pub track_cursor: Rgb,
+    /// The ledger's "tests failing" in the folder tab, on the tab and on a pill under the
+    /// pointer.
+    pub ledger_failing: Rgb,
 }
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
@@ -1238,6 +1253,19 @@ impl Colors {
             relay_text: readable(ui.text, &[relay_fill], TEXT_MIN),
             relay_dim: readable(ui.text_dim, &[relay_fill], TEXT_MIN),
             lane_ink,
+            bead: readable(ui.text_dim, &[ui.panel, row_hover], MARK_MIN),
+            bead_edit: readable(ui.accent, &[ui.panel, row_hover], MARK_MIN),
+            track_rule: readable(
+                mix(ui.panel, theme.foreground, 0.14),
+                &[ui.panel],
+                QUIET_LINE_MIN,
+            ),
+            track_cursor: readable(ui.accent, &[ui.panel, row_hover], MARK_MIN),
+            ledger_failing: readable(
+                ui.block_failed,
+                &[ui.composer_outer, ui.composer_pill_hover],
+                TEXT_MIN,
+            ),
         }
     }
 }
@@ -1247,6 +1275,12 @@ impl Colors {
 struct Row {
     print: u64,
     blocks: Option<Rc<Vec<Md>>>,
+    /// A tool row's role in its step (the agent activity chore), a busy step's tracks on its
+    /// first row, and a readable tool row's words: built when the row's print changes, only read
+    /// when drawn.
+    role: Option<crate::agent_steps::Role>,
+    tracks: Option<Rc<crate::agent_steps::Tracks>>,
+    words: Option<Rc<crate::agent_step_words::RowWords>>,
 }
 
 /// One view's list (M11ar: Main and each lane keep their own, so each keeps its scroll): its
@@ -1324,6 +1358,8 @@ struct Files {
 enum Refocus {
     Modal,
     Box,
+    /// A step's tracks (the agent activity chore).
+    Tracks,
 }
 
 /// What the emitted events last said.
@@ -1496,8 +1532,20 @@ pub struct AgentTab {
     /// Whether the box's placeholder was last set for a tab under `NARROW` (a lane's relay
     /// placeholder is shorter there; the width is known only once laid out).
     placeholder_narrow: bool,
-    /// When each running tool started (for its elapsed time).
-    tool_started: std::collections::HashMap<String, Instant>,
+    /// The agent activity chore: whether the chat column held tracks at the last sync (a busy
+    /// step falls back to rows under `TRACKS_NARROW`), the tracks' keyboard focus (key context
+    /// `AgentTracks`) and cursor, and the steps opened to every column and to every file.
+    tracks_fit: bool,
+    tracks_focus: FocusHandle,
+    track_cursor: Option<tracks::TrackCursor>,
+    tracks_all: HashSet<String>,
+    files_all: HashSet<String>,
+    /// The shown view's turn ledger (the folder tab's words after the status, and its
+    /// popover); None: no live turn.
+    pub(crate) ledger: Option<crate::agent_ledger::Ledger>,
+    /// When each tool call started and finished, live only (its elapsed time; the agent
+    /// activity chore's step times).
+    tool_times: crate::agent_steps::ToolTimes,
     /// Tool calls that write files and haven't finished (reported to the edit ledger).
     open_edits: HashSet<String>,
     /// Why the edits were made (M11ag): see `Reasons`.
@@ -2198,7 +2246,13 @@ impl AgentTab {
             thinking_mark,
             bar_width: Rc::new(Cell::new(f32::MAX)),
             placeholder_narrow: false,
-            tool_started: std::collections::HashMap::new(),
+            tracks_fit: true,
+            tracks_focus: cx.focus_handle(),
+            track_cursor: None,
+            tracks_all: HashSet::new(),
+            files_all: HashSet::new(),
+            ledger: None,
+            tool_times: crate::agent_steps::ToolTimes::new(),
             open_edits: HashSet::new(),
             reasons: Reasons::default(),
             said: Said::default(),
@@ -2953,7 +3007,12 @@ impl AgentTab {
                     self.run.resume = None;
                 }
                 Event::ToolStarted { id, .. } => {
-                    self.tool_started.insert(id.clone(), Instant::now());
+                    self.tool_times.insert(id.clone(), (Instant::now(), None));
+                }
+                Event::ToolFinished { id, .. } => {
+                    if let Some((_, end)) = self.tool_times.get_mut(id) {
+                        end.get_or_insert_with(Instant::now);
+                    }
                 }
                 Event::Follow { id, path, main } => {
                     self.follow(id.clone(), path.clone(), *main, cx)
@@ -2991,7 +3050,10 @@ impl AgentTab {
                     // going on, not a failed resume (your report, 2026-11-22: the first `/clear`
                     // after a restart said "Couldn't resume…").
                     self.run.resume = None;
-                    self.tool_started.clear();
+                    self.tool_times.clear();
+                    self.track_cursor = None;
+                    self.tracks_all.clear();
+                    self.files_all.clear();
                     self.followers.clear();
                     self.lane_times.clear();
                     self.lane_runs.clear();
@@ -3146,9 +3208,27 @@ impl AgentTab {
         if let Some(l) = &lane {
             new.push(print(&("head", &l.task)));
         }
-        new.extend(
-            (0..order.len()).map(|k| crate::agent_chat::row_print_at(items, &order, k, thinking)),
+        // Each tool row's role in its step (the agent activity chore): a busy step draws as
+        // tracks on its first row, built below only when that row's print changes.
+        let alone = |i: &Item| crate::agent_steps::stands_alone(&self.conversation, i);
+        let fits = tracks::fits_tracks(self.bar_width.get());
+        self.tracks_fit = fits;
+        let roles = crate::agent_steps::roles_of(items, &order, &alone, fits);
+        let open = crate::agent_steps::open_failures(
+            items,
+            crate::agent_steps::turn_start(items),
+            &self.start.cwd,
         );
+        new.extend((0..order.len()).map(|k| {
+            let row = crate::agent_chat::row_print_at(items, &order, k, thinking, &alone);
+            let step = match &roles[k] {
+                Some(crate::agent_steps::Role::Tracks(calls)) => {
+                    crate::agent_steps::step_print(items, calls, &open, fits)
+                }
+                _ => 0,
+            };
+            print(&(row, &roles[k], step))
+        }));
         if let (true, Some(l)) = (tail, &lane) {
             let time = self.lane_elapsed(&l.id).map(|d| d.as_secs());
             new.push(print(&("tail", format!("{:?}", l.status), time)));
@@ -3162,6 +3242,21 @@ impl AgentTab {
                 .and_then(|j| order.get(j))
                 .and_then(|&i| blocks_of(&items[i]))
         };
+        let (times, cwd) = (&self.tool_times, &self.start.cwd);
+        let role = |k: usize| k.checked_sub(lane_rows).and_then(|j| roles.get(j)?.clone());
+        let tracks = |role: &Option<crate::agent_steps::Role>| match role {
+            Some(crate::agent_steps::Role::Tracks(calls)) => Some(Rc::new(
+                crate::agent_steps::tracks_of(items, calls, &open, times, cwd),
+            )),
+            _ => None,
+        };
+        let words = |k: usize, role: &Option<crate::agent_steps::Role>| match role {
+            Some(crate::agent_steps::Role::Row(_)) => k
+                .checked_sub(lane_rows)
+                .and_then(|j| order.get(j))
+                .map(|&i| Rc::new(crate::agent_step_words::row_words(&items[i]))),
+            _ => None,
+        };
         if new.len() < old.len() {
             pane.list.splice(new.len()..old.len(), 0);
             pane.rows.drain(new.len()..);
@@ -3169,18 +3264,26 @@ impl AgentTab {
         dirty.retain(|&k| k < new.len());
         for &k in &dirty {
             pane.list.splice(k..k + 1, 1);
+            let role = role(k);
             pane.rows[k] = Row {
                 print: new[k],
                 blocks: block(k),
+                tracks: tracks(&role),
+                words: words(k, &role),
+                role,
             };
         }
         if new.len() > old.len() {
             pane.list
                 .splice(old.len()..old.len(), new.len() - old.len());
             for (k, &print) in new.iter().enumerate().skip(old.len()) {
+                let role = role(k);
                 pane.rows.push(Row {
                     print,
                     blocks: block(k),
+                    tracks: tracks(&role),
+                    words: words(k, &role),
+                    role,
                 });
             }
         }
@@ -3200,6 +3303,13 @@ impl AgentTab {
         pane.order = order;
         pane.head = head;
         pane.tail = tail;
+        // The turn ledger (the agent activity chore): rebuilt with the rows, never per frame.
+        self.ledger = crate::agent_ledger::ledger_of(
+            &self.conversation,
+            &self.view,
+            &self.tool_times,
+            &self.start.cwd,
+        );
     }
 
     /// The shown view's list.
@@ -5066,8 +5176,8 @@ impl AgentTab {
             let n = |k| d.rows.iter().filter(|r| r.kind == k).count();
             (n(RowKind::Added), n(RowKind::Removed))
         });
-        let elapsed = self.tool_started.get(id).map_or(String::new(), |t| {
-            elapsed_label(look.now.saturating_duration_since(*t))
+        let elapsed = self.tool_times.get(id).map_or(String::new(), |(t, _)| {
+            crate::agent_lanes::clock(look.now.saturating_duration_since(*t))
         });
         let children: Vec<usize> = items
             .iter()
@@ -5509,16 +5619,46 @@ impl AgentTab {
             .font_weight(FontWeight::MEDIUM)
             .text_color(hsla(to_ink))
             .child(mark)
-            .child(SharedString::from(
-                // Main finished, its subagents haven't: say so (not "Cultivating…").
-                match (
-                    self.status(),
-                    crate::agent_lanes::running_word(self.conversation.lanes()),
-                ) {
-                    (Status::Done | Status::Idle, Some(word)) if !stopping => word,
-                    _ => now.word.to_string(),
-                },
-            ));
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .whitespace_nowrap()
+                    .child(SharedString::from(self.status_word(theme)))
+                    // The turn ledger after the status (the agent activity chore): the running
+                    // call, the files changed, the checks; cut from the right to fit, the
+                    // running call kept.
+                    .children(self.ledger_shown(theme).into_iter().map(|part| {
+                        let failing = part.kind == crate::agent_ledger::PartKind::Checks
+                            && self.ledger.as_ref().is_some_and(|l| l.failing.is_some());
+                        div()
+                            .font_weight(FontWeight::NORMAL)
+                            .text_color(hsla(if failing { c.ledger_failing } else { c.dim }))
+                            .child(SharedString::from(format!(
+                                "{}{}",
+                                crate::agent_ledger::SEP,
+                                part.text
+                            )))
+                    })),
+            )
+            .when(self.ledger_shows(), |d| {
+                let hover = c.pill_hover;
+                d.relative()
+                    .rounded(px(crate::card_view::PILL_H / 2.))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hsla(hover)))
+                    .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
+                        let pressed = match event {
+                            gpui::ClickEvent::Mouse(click) => Some(click.down.position),
+                            _ => None,
+                        };
+                        // This press already shut the open popover (from outside it).
+                        let shut_at = this.chip_closed_at.take();
+                        if pressed.is_none() || shut_at != pressed {
+                            this.ledger_clicked(cx)
+                        }
+                    }))
+            });
         let el = match from_ink {
             Some(from) => el
                 .with_animation(
@@ -5533,6 +5673,61 @@ impl AgentTab {
             self.marked("status", div().flex_none().child(el))
                 .into_any_element(),
         )
+    }
+
+    /// The status pill's word: the status's, or the subagents' while Main has finished and
+    /// they haven't.
+    fn status_word(&self, theme: &Theme) -> String {
+        let stopping = self.stopping.is_some();
+        let now = crate::agent_top::pill(self.shown_status(), stopping, theme);
+        match (
+            self.status(),
+            crate::agent_lanes::running_word(self.conversation.lanes()),
+        ) {
+            (Status::Done | Status::Idle, Some(word)) if !stopping => word,
+            _ => now.word.to_string(),
+        }
+    }
+
+    /// The ledger shows in the folder tab: a live turn, and no question or permission open
+    /// (the box answers that first).
+    fn ledger_shows(&self) -> bool {
+        self.ledger.is_some() && self.shown_status() != Status::Waiting
+    }
+
+    /// The ledger's parts the folder tab has room for (the running call's clock as of now).
+    pub(crate) fn ledger_shown(&self, theme: &Theme) -> Vec<crate::agent_ledger::Part> {
+        use crate::agent_ledger::{fit, parts, room};
+        let Some(ledger) = self.ledger.as_ref().filter(|_| self.ledger_shows()) else {
+            return Vec::new();
+        };
+        let mut all = parts(ledger, Instant::now());
+        let folder = crate::agent_box::folder_chip_text(&self.start.cwd);
+        let branch = self
+            .branch
+            .as_deref()
+            .map(crate::agent_box::branch_chip_text);
+        let column = self.bar_width.get().min(crate::ui_tokens::chat::COLUMN_MAX);
+        let room = room(column, &self.status_word(theme), &folder, branch.as_deref());
+        let shown = fit(&all, room);
+        all.truncate(shown);
+        all
+    }
+
+    /// The status pill's click while the ledger shows: its popover opens, or (open) shuts.
+    fn ledger_clicked(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.menu, Some(crate::agent_box::BoxMenu::Ledger)) {
+            self.close_menu(cx);
+        } else {
+            self.open_menu(crate::agent_box::BoxMenu::Ledger, cx);
+        }
+    }
+
+    /// The shown view's turn ledger (the scenes read it).
+    #[cfg(feature = "ui-shots")]
+    #[allow(dead_code)] // the scenes read the drawn parts (`BoxTexts.ledger`) instead.
+    pub fn shot_ledger(&self) -> Option<crate::agent_ledger::Ledger> {
+        self.ledger.clone()
     }
 
     fn top_line(&mut self, c: &Colors) -> AnyElement {
@@ -5843,6 +6038,10 @@ impl Render for AgentTab {
             self.placeholder_narrow = narrow;
             self.update_placeholder(cx);
         }
+        // The chat column crossed `TRACKS_NARROW`: busy steps change between tracks and rows.
+        if tracks::fits_tracks(self.bar_width.get()) != self.tracks_fit {
+            self.sync_rows();
+        }
         let empty = self.conversation.items().is_empty();
         let info = self.provider.map(|p| p.info());
         let view = cx.entity().downgrade();
@@ -5975,9 +6174,12 @@ impl Render for AgentTab {
         // The keyboard moves where a click or an action asked (they have no window).
         match self.refocus.take() {
             Some(Refocus::Modal) => window.focus(&self.modal_focus, cx),
+            Some(Refocus::Tracks) => window.focus(&self.tracks_focus, cx),
             // Back to the box only if the modal had the keyboard: a modal closed because its tool
             // went (a restart) while you type elsewhere takes nothing from you.
-            Some(Refocus::Box) if self.modal_focus.is_focused(window) => {
+            Some(Refocus::Box)
+                if self.modal_focus.is_focused(window) || self.tracks_focus.is_focused(window) =>
+            {
                 let to = self.composer.read(cx).focus_handle(cx);
                 window.focus(&to, cx);
             }
@@ -5997,6 +6199,11 @@ impl Render for AgentTab {
             } else {
                 "AgentTab"
             })
+            .on_action(cx.listener(Self::track_prev))
+            .on_action(cx.listener(Self::track_next))
+            .on_action(cx.listener(Self::track_open))
+            .on_action(cx.listener(Self::track_leave))
+            .on_action(cx.listener(Self::focus_tracks))
             .on_action(cx.listener(Self::ask_up))
             .on_action(cx.listener(Self::ask_down))
             .on_action(cx.listener(Self::ask_prev))
@@ -6489,8 +6696,6 @@ mod tests {
 
     #[test]
     fn words_and_chips() {
-        assert_eq!(elapsed_label(Duration::from_secs(4)), "4s");
-        assert_eq!(elapsed_label(Duration::from_secs(65)), "1m 05s");
         assert_eq!(lines_label(1), "1 line");
         assert_eq!(lines_label(84), "84 lines");
         assert_eq!(
@@ -6899,6 +7104,31 @@ mod tests {
         assert_eq!(fingerprint(&a), fingerprint(&a.clone()));
     }
 
+    #[test]
+    fn a_tool_s_print_changes_with_its_activity() {
+        let a = Item::Tool {
+            id: "t1".into(),
+            name: "Read".into(),
+            summary: "api.rs".into(),
+            parent: None,
+            running: false,
+            ok: Some(true),
+            result: String::new(),
+            detail: None,
+            output: None,
+            dropped_lines: 0,
+            activity: None,
+        };
+        let mut b = a.clone();
+        if let Item::Tool { activity, .. } = &mut b {
+            *activity = Some(Box::new(crate::agent_activity::Activity {
+                derived: "Read api.rs".into(),
+                ..Default::default()
+            }));
+        }
+        assert_ne!(fingerprint(&a), fingerprint(&b));
+    }
+
     /// The subagent row chore: the robot's ink stands at least 25 degrees from the accent and
     /// the three status colours, or is the dim fallback.
     #[test]
@@ -7019,6 +7249,22 @@ mod tests {
                 ("lane ink waiting", c.lane_ink, c.ask_fill, MARK_MIN),
                 ("lane ink waiting lit", c.lane_ink, c.ask_cursor, MARK_MIN),
                 ("lane ink on the page", c.lane_ink, c.page, MARK_MIN),
+                // The agent activity chore: the tracks' beads (at rest and in a hovered
+                // column), the cursor's ring and the rule between a track's beads.
+                ("bead", c.bead, c.panel, MARK_MIN),
+                ("bead hovered", c.bead, c.row_hover, MARK_MIN),
+                ("bead edit", c.bead_edit, c.panel, MARK_MIN),
+                ("bead edit hovered", c.bead_edit, c.row_hover, MARK_MIN),
+                ("passed bead hovered", c.tool_ok, c.row_hover, MARK_MIN),
+                ("track cursor", c.track_cursor, c.panel, MARK_MIN),
+                ("track rule", c.track_rule, c.panel, QUIET_LINE_MIN),
+                ("ledger failing", c.ledger_failing, c.outer, TEXT_MIN),
+                (
+                    "ledger failing on a pill under the pointer",
+                    c.ledger_failing,
+                    c.pill_hover,
+                    TEXT_MIN,
+                ),
                 // The lanes review, fix 5: "Ask Main about it" has an edge in every theme.
                 ("bar edge", c.bar_edge, c.box_fill, QUIET_LINE_MIN),
                 ("relay text", c.relay_text, c.relay_fill, TEXT_MIN),

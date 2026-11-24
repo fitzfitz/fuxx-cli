@@ -105,15 +105,23 @@ pub enum Shape {
     Last,
 }
 
-/// Row `k` of `rows` (item indexes) in its run of tool rows.
-pub fn group_shape_at(items: &[Item], rows: &[usize], k: usize) -> Option<Shape> {
-    let is_tool = |k: Option<usize>| {
+/// Row `k` of `rows` (item indexes) in its run of tool rows. A row that stands `alone` (a
+/// subagent's lane row, a "Passed on" row: the agent activity chore) is Solo and breaks the run.
+pub fn group_shape_at(
+    items: &[Item],
+    rows: &[usize],
+    k: usize,
+    alone: &dyn Fn(&Item) -> bool,
+) -> Option<Shape> {
+    let tool = |k: Option<usize>| {
         k.and_then(|k| rows.get(k))
-            .is_some_and(|&i| matches!(items[i], Item::Tool { .. }))
+            .map(|&i| &items[i])
+            .filter(|i| matches!(i, Item::Tool { .. }))
     };
-    if !is_tool(Some(k)) {
-        return None;
+    if alone(tool(Some(k))?) {
+        return Some(Shape::Solo);
     }
+    let is_tool = |k: Option<usize>| tool(k).is_some_and(|i| !alone(i));
     Some(match (is_tool(k.checked_sub(1)), is_tool(Some(k + 1))) {
         (false, false) => Shape::Solo,
         (false, true) => Shape::First,
@@ -150,11 +158,17 @@ pub fn shows_avatar_at(items: &[Item], rows: &[usize], k: usize) -> bool {
 
 /// Row `k`'s print: its item and which item it is, its shape, whether it is the last row and
 /// carries the thinking line — what makes it laid out again (`agent_tab::sync_rows`).
-pub fn row_print_at(items: &[Item], rows: &[usize], k: usize, thinking: bool) -> u64 {
+pub fn row_print_at(
+    items: &[Item],
+    rows: &[usize],
+    k: usize,
+    thinking: bool,
+    alone: &dyn Fn(&Item) -> bool,
+) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     rows[k].hash(&mut h);
     crate::agent_tab::fingerprint(&items[rows[k]]).hash(&mut h);
-    group_shape_at(items, rows, k).hash(&mut h);
+    group_shape_at(items, rows, k, alone).hash(&mut h);
     let last = k + 1 == rows.len();
     last.hash(&mut h);
     (last && thinking).hash(&mut h);
@@ -184,9 +198,9 @@ fn main_rows(items: &[Item]) -> Vec<usize> {
     rows_of(items, &View::Main, &[])
 }
 
-pub fn group_shape(items: &[Item], ix: usize) -> Option<Shape> {
+pub fn group_shape(items: &[Item], ix: usize, alone: &dyn Fn(&Item) -> bool) -> Option<Shape> {
     let rows = main_rows(items);
-    group_shape_at(items, &rows, rows.iter().position(|&r| r == ix)?)
+    group_shape_at(items, &rows, rows.iter().position(|&r| r == ix)?, alone)
 }
 
 /// The gap above row `ix`, from the row before it (spec B-B's table).
@@ -254,7 +268,7 @@ pub fn summary_shown(name: &str, summary: &str) -> bool {
 pub fn row_print(items: &[Item], ix: usize, thinking: bool) -> u64 {
     let rows = main_rows(items);
     match rows.iter().position(|&r| r == ix) {
-        Some(k) => row_print_at(items, &rows, k, thinking),
+        Some(k) => row_print_at(items, &rows, k, thinking, &|_| false),
         None => 0,
     }
 }
@@ -385,6 +399,7 @@ mod tests {
             detail: None,
             output: None,
             dropped_lines: 0,
+            activity: None,
         }
     }
 
@@ -490,15 +505,21 @@ mod tests {
         assert!(rows_of(&items, &View::Lane("nobody".into()), &["agent1"]).is_empty());
         // The helpers read the view's rows: in the lane, r2 follows r1 as one group.
         let lane = rows_of(&items, &View::Lane("agent1".into()), &["agent1"]);
-        assert_eq!(group_shape_at(&items, &lane, 0), Some(Shape::First));
-        assert_eq!(group_shape_at(&items, &lane, 1), Some(Shape::Last));
+        assert_eq!(
+            group_shape_at(&items, &lane, 0, &|_| false),
+            Some(Shape::First)
+        );
+        assert_eq!(
+            group_shape_at(&items, &lane, 1, &|_| false),
+            Some(Shape::Last)
+        );
         assert_eq!(gap_before_at(&items, &lane, 0), chat::FIRST_TOP);
         assert!(shows_avatar_at(&items, &lane, 0));
         // A row's print knows which item it draws.
         let main = rows_of(&items, &View::Main, &["agent1"]);
         assert_ne!(
-            row_print_at(&items, &main, 1, false),
-            row_print_at(&items, &main, 2, false)
+            row_print_at(&items, &main, 1, false, &|_| false),
+            row_print_at(&items, &main, 2, false, &|_| false)
         );
     }
 
@@ -513,15 +534,15 @@ mod tests {
             said(true),
             tool("d", None, false),
         ];
-        assert_eq!(group_shape(&items, 0), None, "not a tool");
-        assert_eq!(group_shape(&items, 1), Some(Shape::First));
+        assert_eq!(group_shape(&items, 0, &|_| false), None, "not a tool");
+        assert_eq!(group_shape(&items, 1, &|_| false), Some(Shape::First));
         assert_eq!(
-            group_shape(&items, 2),
+            group_shape(&items, 2, &|_| false),
             Some(Shape::Middle),
             "its step doesn't break it"
         );
-        assert_eq!(group_shape(&items, 4), Some(Shape::Last));
-        assert_eq!(group_shape(&items, 6), Some(Shape::Solo));
+        assert_eq!(group_shape(&items, 4, &|_| false), Some(Shape::Last));
+        assert_eq!(group_shape(&items, 6, &|_| false), Some(Shape::Solo));
     }
 
     #[test]

@@ -1,0 +1,20 @@
+# typed in vitest's real summary shape (no vitest project here)
+
+ RUN  v2.1.8 /tmp/fx/code/my-app
+
+ ❯ src/api.test.ts (5 tests | 1 failed) 8ms
+   × returns the user 4ms
+     → expected undefined to be 'ada'
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/api.test.ts > returns the user
+AssertionError: expected undefined to be 'ada'
+ ❯ src/api.test.ts:13:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 4 passed (5)
+   Start at  10:12:03
+   Duration  312ms (transform 21ms, setup 0ms, collect 18ms, tests 8ms, environment 0ms, prepare 61ms)

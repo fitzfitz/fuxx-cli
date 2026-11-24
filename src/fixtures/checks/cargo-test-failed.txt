@@ -1,0 +1,27 @@
+# real cargo test output (rustc 1.100), a throwaway crate; paths rewritten to /tmp/fx/code/my-app
+   Compiling my-app v0.1.0 (/tmp/fx/code/my-app)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/build/my-app/0221d452ff2e7559/out/my_app-0221d452ff2e7559)
+
+running 3 tests
+test cli::tests::also_good ... ok
+test cli::tests::good ... ok
+test cli::tests::bad ... FAILED
+
+failures:
+
+---- cli::tests::bad stdout ----
+
+thread 'cli::tests::bad' (97794850) panicked at src/cli.rs:42:9:
+assertion `left == right` failed
+  left: 4
+ right: 5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    cli::tests::bad
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

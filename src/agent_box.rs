@@ -81,6 +81,8 @@ const MENU_GAP: f32 = 4.0;
 const MENU_EDGE: f32 = 8.0;
 /// A menu row's height and corners; the most a menu's list grows before it scrolls.
 const ROW_H: f32 = 32.0;
+/// The turn ledger's popover's width (the agent activity chore).
+const LEDGER_MENU_WIDTH: f32 = 320.0;
 const ROW_RADIUS: f32 = 8.0;
 const MENU_LIST_MAX: f32 = 360.0;
 /// The `/` list's tallest height (it scrolls) and the width its names have before their lines.
@@ -187,6 +189,8 @@ pub enum BoxMenu {
     Usage,
     Mode,
     Attach,
+    /// The turn ledger's popover, over the status pill (the agent activity chore).
+    Ledger,
 }
 
 /// What the box's chips and the top line say, as drawn (scenes read it).
@@ -203,6 +207,8 @@ pub struct BoxTexts {
     pub usage: Option<String>,
     /// The warning dot on the model chip: a limit is close or reached.
     pub limit_warning: bool,
+    /// The turn ledger's parts after the status, as drawn (the agent activity chore).
+    pub ledger: Vec<String>,
 }
 
 /// The catalog model (its place) and effort level that `start`'s flags name: a model whose id,
@@ -967,6 +973,11 @@ impl AgentTab {
                 self.conversation.context_pct(),
             ),
             limit_warning: self.limit_warning(cx),
+            ledger: self
+                .ledger_shown(&cx.global::<Appearance>().theme)
+                .into_iter()
+                .map(|p| p.text)
+                .collect(),
         }
     }
 
@@ -1081,7 +1092,18 @@ impl AgentTab {
             });
         // The agent's status before the folder, as a shell's running command (`status_pill`).
         let theme = cx.global::<Appearance>().theme;
-        let status = self.status_pill(&theme, c, cx);
+        // Its turn ledger's popover hangs over it (the agent activity chore).
+        let status = self.status_pill(&theme, c, cx).map(|el| {
+            div()
+                .relative()
+                .flex_none()
+                .child(el)
+                .when(menu_on(|m| matches!(m, BoxMenu::Ledger)), |d| {
+                    let menu = self.ledger_menu(cx);
+                    d.child(self.menu_frame(Some(menu), None, LEDGER_MENU_WIDTH, cx))
+                })
+                .into_any_element()
+        });
         let branch = texts.branch.clone().map(|text| {
             let tip = text.clone();
             self.marked("branch", pill("agent-branch", Icon::Branch, text))

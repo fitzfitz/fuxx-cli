@@ -655,8 +655,9 @@ fn cut_words(text: &str, max: usize) -> String {
     format!("{}\u{2026}", kept.trim_end())
 }
 
-/// `text` cut to `max` characters, the last an ellipsis.
-fn cut(text: &str, max: usize) -> String {
+/// `text` cut to `max` characters, the last an ellipsis (shared: the activity view's titles,
+/// traces and chips).
+pub(crate) fn cut(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
     }

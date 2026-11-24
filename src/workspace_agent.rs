@@ -1118,6 +1118,12 @@ impl Workspace {
                 window,
                 cx,
             ),
+            AgentTabEvent::OpenDiff(path) => self.open_file_tab(
+                path.clone(),
+                crate::layout_model::FileMode::Diff,
+                window,
+                cx,
+            ),
             AgentTabEvent::RevealInFiles(path) => self.reveal_in_files(path, window, cx),
             AgentTabEvent::ShowForkSource => {
                 if let Some(&(source, _)) = self.fork_origins.get(&tab)

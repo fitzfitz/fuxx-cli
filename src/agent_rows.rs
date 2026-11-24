@@ -22,7 +22,16 @@ impl AgentTab {
         };
         let item = &items[ix];
         let c = &look.c;
-        let last = k + 1 == order.len();
+        // A call inside a busy step is drawn by the step's first row (the agent activity chore).
+        let cached = pane.rows.get(k + pane.head as usize);
+        let role = cached.and_then(|r| r.role.as_ref());
+        if role == Some(&crate::agent_steps::Role::Inside) {
+            return div().into_any_element();
+        }
+        // A step's tracks that end the list are its last row.
+        let last = k + 1 == order.len()
+            || matches!(role, Some(crate::agent_steps::Role::Tracks(calls))
+                if calls.last() == order.last());
         let thinking = last
             && match &self.view {
                 crate::agent_lanes::View::Main => {
@@ -36,7 +45,11 @@ impl AgentTab {
         if let Some((select, _)) = &look.draw.select {
             select.begin_row(k);
         }
-        let body = self.item_body(ix, item, 0, look);
+        // A busy step's first row draws its tracks; a readable tool row its cached words.
+        let body = match cached.and_then(|r| r.tracks.clone()) {
+            Some(tracks) => self.tracks(ix, &tracks, look),
+            None => self.item_body(ix, item, cached.and_then(|r| r.words.clone()), look),
+        };
         let text_column = chat::AVATAR + chat::AVATAR_GAP;
         let column = div().w_full().max_w(px(chat::COLUMN_MAX));
         let column = if agent_side(item) {
@@ -110,11 +123,10 @@ impl AgentTab {
             // The column centred in the tab (the box under it too: `box_area`).
             .flex()
             .flex_col()
-            .items_center()
             .text_size(px(chat::BODY))
             .line_height(relative(chat::BODY_LINE))
-            .child(column)
-            .children(thinking)
+            .child(centred(column))
+            .children(thinking.map(centred))
             .into_any_element()
     }
 
@@ -150,12 +162,12 @@ impl AgentTab {
         }
     }
 
-    /// An item's own look (inside a row, or nested `depth` deep under a tool).
+    /// An item's own look in its row (`words`: a readable tool row's, cached on the row).
     pub(super) fn item_body(
         &self,
         ix: usize,
         item: &Item,
-        depth: usize,
+        words: Option<Rc<crate::agent_step_words::RowWords>>,
         look: &Look,
     ) -> AnyElement {
         use crate::agent_chat::chat;
@@ -330,11 +342,10 @@ impl AgentTab {
                     .w_full()
                     .max_w(px(chat::COLUMN_MAX - 32.))
                     .text_color(hsla(c.text))
-                    .when(depth > 0, |d| d.text_color(hsla(c.dim)))
                     .child(md_preview::column(&blocks, ix, &look.draw))
                     .into_any_element()
             }
-            Item::Tool { .. } => self.tool(ix, item, look),
+            Item::Tool { .. } => self.tool(ix, item, words, look),
             // The todo list (spec B-B): a card with its count and a still meter, then the tasks.
             Item::Todo(list) => {
                 let done = list.iter().filter(|t| t.state == TodoState::Done).count();
@@ -519,7 +530,8 @@ impl AgentTab {
                 .fork_row(ix, t, look)
                 .unwrap_or_else(|| div().into_any_element()),
             // A notice (spec B-B): an info mark and the words, quiet, on the text's column.
-            Item::Notice(t) => div()
+            Item::Notice(t) => self
+                .marked("notice", div())
                 .w_full()
                 .flex()
                 .gap(px(6.))
@@ -555,7 +567,7 @@ impl AgentTab {
                 let closable = self.provider.is_none();
                 // An error (spec B-B): a card washed with the failure's colour, its octagon,
                 // the message in the body's colour (readable), its buttons under it.
-                div()
+                self.marked("error", div())
                     .w_full()
                     .px(px(14.))
                     .py(px(12.))
@@ -625,18 +637,16 @@ impl AgentTab {
     /// target and result, and a chevron when it has more to show; a run of tool rows draws as one
     /// group (`tool_shell`). A click opens its detail in the modal (spec A). A subagent's call
     /// is its lane's row (`lane_row`).
-    fn tool(&self, ix: usize, item: &Item, look: &Look) -> AnyElement {
-        use crate::agent_chat::{chat, summary_shown};
+    fn tool(
+        &self,
+        ix: usize,
+        item: &Item,
+        words: Option<Rc<crate::agent_step_words::RowWords>>,
+        look: &Look,
+    ) -> AnyElement {
+        use crate::agent_chat::chat;
         let Item::Tool {
-            id,
-            name,
-            summary,
-            running,
-            ok,
-            result,
-            detail,
-            output,
-            ..
+            id, running, ok, ..
         } = item
         else {
             return div().into_any_element();
@@ -650,10 +660,6 @@ impl AgentTab {
             .iter()
             .filter(|i| parent_of(i) == Some(id.as_str()))
             .count();
-        let diff = match detail {
-            Some(ToolDetail::Diff { unified, .. }) => Some(parse_diff(unified)),
-            _ => None,
-        };
         // Main's SendMessage that delivered a relay (the lanes chore): "Passed on to Explore",
         // opening the lane; its green dot says it went (the lanes review: no ✓ in the name's
         // ink, no raw "Sent." on the right).
@@ -663,32 +669,30 @@ impl AgentTab {
             .and_then(|l| self.conversation.lane(l))
             .map(|l| (l.id.clone(), format!("Passed on to {}", l.label)));
         let openable = crate::agent_tool_modal::openable(items, ix);
-        let blank = String::new();
-        let (name, summary) = match &passed {
-            Some((_, words)) => (words, &blank),
-            None => (name, summary),
+        // The row's words (the agent activity chore, approach A): what it did in plain words,
+        // the command as a dim trace, and its outcome chips; a "Passed on" row as before.
+        let activity = crate::agent_activity::of(item).unwrap_or_default();
+        let words = match (&passed, words) {
+            (Some((_, said)), _) => Rc::new(crate::agent_step_words::RowWords {
+                title: said.clone(),
+                trace: None,
+                chips: Vec::new(),
+            }),
+            (None, Some(words)) => words,
+            (None, None) => Rc::new(crate::agent_step_words::row_words(item)),
         };
         let right: (String, Rgb) = if *running {
-            let since = self
-                .tool_started
-                .get(id)
-                .map_or(Duration::ZERO, |t| look.now.saturating_duration_since(*t));
-            (elapsed_label(since), c.panel_dim)
-        } else if *ok == Some(false) {
-            let bare = result.trim_start_matches('✗').trim_start();
-            (bare.to_string(), c.failed_panel)
-        } else if passed.is_some() {
-            (String::new(), c.panel_dim)
-        } else if let Some(d) = &diff {
-            let added = d.rows.iter().filter(|r| r.kind == RowKind::Added).count();
-            let removed = d.rows.iter().filter(|r| r.kind == RowKind::Removed).count();
-            (format!("+{added} −{removed}"), c.panel_dim)
-        } else if let (true, Some(out)) = (name == "Read", output) {
-            (lines_label(out.lines().count()), c.panel_dim)
+            let since = self.tool_times.get(id).map_or(Duration::ZERO, |(t, _)| {
+                look.now.saturating_duration_since(*t)
+            });
+            (crate::agent_lanes::clock(since), c.panel_dim)
+        } else if activity.real_failure() {
+            (words.chips.join(" · "), c.failed_panel)
         } else {
-            (result.clone(), c.panel_dim)
+            (words.chips.join(" · "), c.panel_dim)
         };
-        // Its status: running, the Working arc; ok, a dot; failed, a red dot; else a ring.
+        // Its status: running, the Working arc; a real failure, a red dot; a failure the agent
+        // announced, a red ring; ok, a dot; else (stopped, denied) a ring.
         let dot = |fill: Rgb| {
             div()
                 .size(px(chat::TOOL_DOT))
@@ -696,19 +700,24 @@ impl AgentTab {
                 .bg(hsla(fill))
                 .into_any_element()
         };
-        let status: AnyElement = match (running, ok) {
-            (true, _) => match self.tool_marks.get(id) {
-                Some(mark) => mark.clone().into_any_element(),
-                None => dot(c.todo_active),
-            },
-            (false, Some(true)) => dot(c.tool_ok),
-            (false, Some(false)) => dot(c.failed_panel),
-            (false, None) => div()
+        let ring = |edge: Rgb| {
+            div()
                 .size(px(chat::TOOL_DOT))
                 .rounded_full()
                 .border_1()
-                .border_color(hsla(c.panel_dim))
-                .into_any_element(),
+                .border_color(hsla(edge))
+                .into_any_element()
+        };
+        use crate::agent_step_words::{RowMark, row_mark};
+        let status: AnyElement = match row_mark(*running, *ok, &activity) {
+            RowMark::Running => match self.tool_marks.get(id) {
+                Some(mark) => mark.clone().into_any_element(),
+                None => dot(c.todo_active),
+            },
+            RowMark::Failed => dot(c.failed_panel),
+            RowMark::Planned => ring(c.failed_panel),
+            RowMark::Unknown => ring(c.panel_dim),
+            RowMark::Ok => dot(c.tool_ok),
         };
         let tool = self
             .tool_shell(
@@ -719,20 +728,26 @@ impl AgentTab {
             )
             .child(self.marked("tool-mark", status_slot(status)))
             .child(
-                div()
-                    .flex_none()
-                    .text_color(hsla(c.tool_name))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(SharedString::from(name.clone())),
+                self.marked(
+                    "tool-title",
+                    div()
+                        .flex_none()
+                        .max_w(relative(0.6))
+                        .truncate()
+                        .text_color(hsla(c.tool_name))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(SharedString::from(words.title.clone())),
+                ),
             )
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.))
                     .truncate()
-                    .text_color(hsla(c.panel_text))
-                    .when(summary_shown(name, summary), |d| {
-                        d.child(SharedString::from(summary.clone()))
+                    .font_family(look.mono.clone())
+                    .text_color(hsla(c.panel_dim))
+                    .when_some(words.trace.clone(), |d, trace| {
+                        d.child(SharedString::from(trace))
                     }),
             )
             .when(steps > 0, |d| {
@@ -787,11 +802,19 @@ impl AgentTab {
         let c = &look.c;
         let items = self.conversation.items();
         let order = &self.pane().order;
+        // Its shape in its drawn group, as its row's role says (the agent activity chore: a
+        // busy step's tracks are a group of their own); elsewhere (a tool's detail) by the items.
+        let pane = self.pane();
         let shape = order
             .iter()
             .position(|&i| i == ix)
-            .and_then(|k| crate::agent_chat::group_shape_at(items, order, k))
-            .or_else(|| group_shape(items, ix))
+            .and_then(
+                |k| match pane.rows.get(k + pane.head as usize)?.role.as_ref()? {
+                    crate::agent_steps::Role::Row(shape) => Some(*shape),
+                    _ => None,
+                },
+            )
+            .or_else(|| group_shape(items, ix, &|_| false))
             .unwrap_or(Shape::Solo);
         let (top, bottom) = match shape {
             Shape::Solo => (true, true),
@@ -1029,6 +1052,15 @@ impl AgentTab {
             .into_any_element();
         selectable(look, shown, layout, pills)
     }
+}
+
+/// A row's column (`w_full`, at most `COLUMN_MAX`) centred in the row. In a flex row, so its
+/// height is measured at its clamped width: taffy sizes a flex column's child (its flex basis)
+/// at its `w_full` width, not clamped by `max_w`, so text that wraps would be measured on wider
+/// lines than it's drawn on and the next row would draw over its last lines (the notice-overlap
+/// bug, 2026-11-24).
+pub(super) fn centred(column: impl IntoElement) -> gpui::Div {
+    div().w_full().flex().justify_center().child(column)
 }
 
 /// Your message's text made selectable (chore after M11ar), as the agent's is in `md_preview`.

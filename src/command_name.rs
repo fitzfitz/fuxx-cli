@@ -17,8 +17,30 @@ pub const WORD_CAP: usize = 24;
 /// What a banner calls a command that has no short form.
 pub const NO_SHORT: &str = "command";
 
-/// Programs that run the next command: they and their options are skipped.
-const WRAPPERS: [&str; 6] = ["sudo", "env", "time", "nohup", "command", "exec"];
+/// Programs that run the next command: they and their options are skipped (`past_wrapper`).
+pub(crate) const WRAPPERS: [&str; 7] =
+    ["sudo", "env", "time", "nohup", "command", "exec", "timeout"];
+
+/// The index past wrapper `words[i]`'s own words: its options, `env`'s assignments and
+/// `timeout`'s duration (`timeout 600 cargo test`).
+pub(crate) fn past_wrapper(words: &[String], mut i: usize) -> usize {
+    let timeout = words.get(i).is_some_and(|w| unquote(w) == "timeout");
+    i += 1;
+    while words
+        .get(i)
+        .is_some_and(|w| w.starts_with('-') || is_assignment(w))
+    {
+        i += 1;
+    }
+    if timeout
+        && words
+            .get(i)
+            .is_some_and(|w| w.starts_with(|c: char| c.is_ascii_digit()))
+    {
+        i += 1;
+    }
+    i
+}
 /// Programs whose next plain word is a subcommand (`git push`, `pnpm dev`), so it may be shown.
 /// Any other program shows its name alone: its next word may be a value, even a secret
 /// (`echo sk-…`, `./deploy.sh prod`). The user's call, 2026-11-20.
@@ -153,13 +175,7 @@ pub fn short_form(line: &str) -> Option<String> {
     let mut last_wrapper = None;
     while let Some(w) = words.get(i).filter(|w| WRAPPERS.contains(&unquote(w))) {
         last_wrapper = Some(w);
-        i += 1;
-        while words
-            .get(i)
-            .is_some_and(|w| w.starts_with('-') || is_assignment(w))
-        {
-            i += 1;
-        }
+        i = past_wrapper(&words, i);
     }
     let program = match words.get(i) {
         Some(w) => {
@@ -406,6 +422,7 @@ mod tests {
             ("exec zsh", Some("zsh")),
             ("sudo -i", Some("sudo")),
             ("sudo env FOO=1 nohup make", Some("make")),
+            ("timeout 600 cargo test", Some("cargo test")),
         ]);
     }
 

@@ -1,0 +1,10 @@
+# real cargo build output (rustc 1.100), a throwaway crate; paths rewritten
+   Compiling my-app v0.1.0 (/tmp/fx/code/my-app)
+error[E0425]: cannot find function `call_within` in this scope
+  --> src/cli.rs:60:5
+   |
+60 |     call_within(3)
+   |     ^^^^^^^^^^^ not found in this scope
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `my-app` (lib) due to 1 previous error
