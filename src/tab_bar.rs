@@ -1465,12 +1465,22 @@ mod tests {
 
     #[test]
     fn done_while_not_shown_is_unseen() {
-        assert!(done_unseen_after(Status::Working, Status::Done, false, false));
+        assert!(done_unseen_after(
+            Status::Working,
+            Status::Done,
+            false,
+            false
+        ));
     }
 
     #[test]
     fn done_while_shown_is_seen() {
-        assert!(!done_unseen_after(Status::Working, Status::Done, true, false));
+        assert!(!done_unseen_after(
+            Status::Working,
+            Status::Done,
+            true,
+            false
+        ));
     }
 
     #[test]
@@ -1481,8 +1491,18 @@ mod tests {
 
     #[test]
     fn leaving_done_clears_unseen() {
-        assert!(!done_unseen_after(Status::Done, Status::Working, false, true));
-        assert!(!done_unseen_after(Status::Done, Status::Waiting, false, true));
+        assert!(!done_unseen_after(
+            Status::Done,
+            Status::Working,
+            false,
+            true
+        ));
+        assert!(!done_unseen_after(
+            Status::Done,
+            Status::Waiting,
+            false,
+            true
+        ));
     }
 
     #[test]

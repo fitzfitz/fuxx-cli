@@ -38,7 +38,7 @@ impl CaretBlink {
             return false;
         }
         match self.blinking_for(now) {
-            Some(since) => (since.as_millis() / FLIP.as_millis()) % 2 == 0,
+            Some(since) => (since.as_millis() / FLIP.as_millis()).is_multiple_of(2),
             None => true,
         }
     }

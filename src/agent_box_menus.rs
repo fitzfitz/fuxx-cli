@@ -463,9 +463,13 @@ impl AgentTab {
     ) {
         let hover = state(self);
         let wait = if on {
-            hover.enter(part).map(|t| (t, crate::hover_delay::OPEN_AFTER))
+            hover
+                .enter(part)
+                .map(|t| (t, crate::hover_delay::OPEN_AFTER))
         } else {
-            hover.leave(part).map(|t| (t, crate::hover_delay::CLOSE_GRACE))
+            hover
+                .leave(part)
+                .map(|t| (t, crate::hover_delay::CLOSE_GRACE))
         };
         let Some((ticket, wait)) = wait else {
             return;
