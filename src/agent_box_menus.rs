@@ -474,8 +474,10 @@ impl AgentTab {
         let Some((ticket, wait)) = wait else {
             return;
         };
+        // The timer starts now, as the pointer moves, not when the task first runs.
+        let timer = cx.background_executor().timer(wait);
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(wait).await;
+            timer.await;
             this.update(cx, |this, cx| {
                 let hover = state(this);
                 if hover.settle(ticket) {

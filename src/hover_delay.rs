@@ -137,6 +137,18 @@ mod tests {
     }
 
     #[test]
+    fn closed_while_over_waits_for_a_fresh_arrival() {
+        let mut h = HoverDelay::default();
+        let t = h.enter(Part::Anchor).unwrap();
+        h.settle(t);
+        h.close();
+        assert!(!h.is_open());
+        assert_eq!(h.leave(Part::Anchor), None, "already closed");
+        let t = h.enter(Part::Anchor).expect("a fresh wait");
+        assert!(h.settle(t));
+    }
+
+    #[test]
     fn close_drops_a_pending_open() {
         let mut h = HoverDelay::default();
         let t = h.enter(Part::Anchor).unwrap();

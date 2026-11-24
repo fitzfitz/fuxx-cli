@@ -3722,6 +3722,10 @@ fn open_usage(
 ) {
     use crate::hover_delay::OPEN_AFTER;
     let button = part(cx, tab, n, "usage-button");
+    // The pointer comes from elsewhere (a hover starts on arriving).
+    let away = gpui::point(button.center().x, px(40.));
+    cx.simulate_mouse_move(window, away, None, Modifiers::none());
+    cx.run_until_parked();
     cx.simulate_mouse_move(window, button.center(), None, Modifiers::none());
     cx.advance_clock(OPEN_AFTER - std::time::Duration::from_millis(100));
     cx.run_until_parked();
