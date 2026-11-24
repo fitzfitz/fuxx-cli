@@ -1908,7 +1908,7 @@ dependencies = [
 
 [[package]]
 name = "fuxx"
-version = "0.13.2"
+version = "0.13.3"
 dependencies = [
  "alacritty_terminal",
  "block2 0.6.2",
