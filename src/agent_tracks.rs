@@ -487,13 +487,25 @@ impl AgentTab {
 
     /// The shown view's step models, in order (the screenshot scenes read them).
     #[cfg(feature = "ui-shots")]
-    #[allow(dead_code)] // the scenes (this chore's last task) read it.
     pub fn shot_tracks(&self) -> Vec<Rc<Tracks>> {
         self.pane()
             .rows
             .iter()
             .filter_map(|r| r.tracks.clone())
             .collect()
+    }
+}
+
+#[cfg(feature = "ui-shots")]
+impl AgentTab {
+    /// How many steps show every column and every file, and the keyboard's column (the
+    /// scenes read it).
+    pub fn shot_track_state(&self) -> (usize, usize, Option<usize>) {
+        (
+            self.tracks_all.len(),
+            self.files_all.len(),
+            self.track_cursor.as_ref().map(|t| t.col),
+        )
     }
 }
 

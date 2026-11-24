@@ -1091,3 +1091,58 @@ Everything below up to the 2026-11-24 "browser opened from a terminal" chore is 
     passing; references refreshed for `agent-tab-question-lane`, `agent-tab-question-lane-main` and
     `agent-chat-latest-prompt` (the strip's robot moves the pills along).
   - **On screen:** not yet seen in the real window; no claude or agy was run.
+
+- **The agent activity view** (your words, 2026-11-24, on a subagent lane full of `python3 - <<'EOF'` / `sed -n …`
+  rows: "run superpowers mockup to enhance the UI and UX on this", then "deep dive it", then "I love C"; design
+  `docs/superpowers/specs/2026-11-24-agent-activity-view-design.md`, plan
+  `docs/superpowers/plans/2026-11-24-agent-activity-view.md`, both approved; built in the session, 6 tasks). An agent
+  tab now says what each step touched and how its checks went:
+  - **One provider-neutral `Activity` per tool call** (`src/agent_activity.rs`, shaped after ACP's tool call: kind,
+    the agent's own words, fuxx's derived words, the files it read / searched / changed / named in a script, a failed
+    call's first error line, a denial, a check with its kind, scope and outcome, a planned failure, the exit code).
+    Shared pure readers: `agent_activity_command` (a shell command split on `&&`/`;`/`|`/new lines with heredoc
+    bodies kept apart, a verb table, file arguments, `sed` addresses, check runners and a normalised scope) and
+    `agent_activity_checks` (cargo / pytest / jest / vitest / go test summaries; a summary in the output wins over an
+    exit code a pipe hid; a piped check with no summary is Unknown, never green). Claude's and agy's translators fill
+    it in `src/providers/claude/activity.rs` and `src/providers/agy/activity.rs` (Claude's Bash `description`, `Exit
+    code N`, `<tool_use_error>`, Grep's files from its result, denied calls; agy's exit header, a lane's
+    `toolSummary`), sent as `Event::Activity` after each start and finish and kept on the tool item; history rebuilds
+    the same. A check failure the narration or the call announced ("red first", "(red)", "failing test first", "should
+    fail", "expect … to fail", "TDD") is planned. Tool calls record live start and finish times.
+  - **A step of 3+ calls draws as file tracks** (`src/agent_tracks.rs`, from the pure `src/agent_steps.rs` model,
+    rebuilt only when the step's calls change): a header ("7 actions · 4 files · 2 failed · 0:12"), a checks track
+    and a track per file (changed first), one bead per call in time order (● read · ▲ search · ■ edit · ◆ script · ✓ ·
+    ✕ · ○ planned · the running arc; a call that failed gets a small red ✕ and changes nothing; denied or stopped
+    calls are dim), a summary per track ("edited · +2 −1", "read 80–400 · script 1×", "touched by a script",
+    "searched · 3 matches", "edit failed"), the step's open real failure under the group in the failure ink, "+N
+    files" past 6 tracks, the latest 24 calls with "+M earlier" (a click shows all, sideways). Hover a column for its
+    call, click it for the detail modal; a click on the header gives the keyboard (←/→, Enter, Esc). Under 560 pt
+    tracks fall back to rows. A subagent's lane row and a "Passed on" row break a step (tracks start after them) but
+    stay in their readable rows' group.
+  - **Smaller steps are readable rows**: the agent's words first ("Run the CLI tests"), else fuxx's ("Edited
+    link_route.rs", "Ran tests cli::"), the command as a dim mono trace, outcome chips ("2 passed", "+41 −0", "build
+    failed · E0425", "red, as planned", "failed"); a planned failure's mark is a hollow red ring.
+  - **The turn ledger in the box's folder tab**, after the status pill (`src/agent_ledger.rs`): the running call and
+    its time ("Running tests 0:14 · +1 running"), "4 changed", "checks 3/7" (or "tests failing" while the latest check
+    of a kind failed for real and no pass of the same kind and scope came since), cut from the right to fit with the
+    running call kept; Main's covers the whole tab, a lane's only itself; hidden while a question or permission is
+    open; only for a live turn. A click opens a popover (the box menus' frame): Changed (a click opens the file's diff
+    tab), Touched by scripts, Read, Checks, Planned failures.
+  - **AI's calls (rulings):** the header's "N failed" counts calls that themselves failed, not check failures (the
+    spec's header mock); the popover uses the box menus' `menu_frame`, not `overlay_panel::shell`; lane and "Passed
+    on" rows break a step but not the readable group (the subagent row chore's one-group look kept; its
+    `agent-lanes-row` checks pass unchanged); the fixture's first step has 7 calls (the 8th follows the "red first"
+    narration), so the busy scene checks "7 actions"; the ledger scenes' turn reads "checks 2/6" running and "checks
+    3/7" done. Every ruling is in the branch's ledger and the hand-off.
+  - **Checks:** unit tests in the new modules (among them `the_output_wins_over_an_exit_code_a_pipe_hid`,
+    `a_piped_check_with_no_summary_is_unknown_never_passed`, `bash_reads_its_description_command_and_exit`,
+    `a_failed_edit_touches_nothing_changed`, `history_rebuilds_the_same_activities`,
+    `sixty_calls_show_the_latest_24_and_plus_36_earlier`,
+    `a_failed_call_beads_its_kind_with_a_mark_and_counts_in_the_header`,
+    `a_real_failure_stays_until_the_same_kind_and_scope_passes`, `parallel_subagents_editing_one_file_count_it_once`,
+    `script_touched_files_are_listed_apart_and_never_counted`, `it_trims_from_the_right_keeping_the_running_call`,
+    `the_track_keys_stay_in_the_tracks`), each watched failing first; new colour tokens in
+    `the_tab_s_text_meets_the_floor_in_every_theme`. New scenes (both themes) `agent-tracks-busy`, `-running`,
+    `-failure`, `-planned`, `-more-files`, `-earlier`, `-narrow`, `agent-steps-rows`, `agent-ledger-running`, `-done`,
+    `-trimmed`, `-popover`.
+  - **On screen:** not yet seen in the real window; no claude or agy was run.

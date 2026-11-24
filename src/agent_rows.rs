@@ -799,13 +799,19 @@ impl AgentTab {
         let c = &look.c;
         let items = self.conversation.items();
         let order = &self.pane().order;
-        // A lane's row and a "Passed on" row stand alone (the agent activity chore).
-        let alone = |i: &Item| crate::agent_steps::stands_alone(&self.conversation, i);
+        // Its shape in its drawn group, as its row's role says (the agent activity chore: a
+        // busy step's tracks are a group of their own); elsewhere (a tool's detail) by the items.
+        let pane = self.pane();
         let shape = order
             .iter()
             .position(|&i| i == ix)
-            .and_then(|k| crate::agent_chat::group_shape_at(items, order, k, &alone))
-            .or_else(|| group_shape(items, ix, &alone))
+            .and_then(
+                |k| match pane.rows.get(k + pane.head as usize)?.role.as_ref()? {
+                    crate::agent_steps::Role::Row(shape) => Some(*shape),
+                    _ => None,
+                },
+            )
+            .or_else(|| group_shape(items, ix, &|_| false))
             .unwrap_or(Shape::Solo);
         let (top, bottom) = match shape {
             Shape::Solo => (true, true),

@@ -5714,7 +5714,7 @@ impl AgentTab {
 
     /// The shown view's turn ledger (the scenes read it).
     #[cfg(feature = "ui-shots")]
-    #[allow(dead_code)] // the scenes (this chore's last task) read it.
+    #[allow(dead_code)] // the scenes read the drawn parts (`BoxTexts.ledger`) instead.
     pub fn shot_ledger(&self) -> Option<crate::agent_ledger::Ledger> {
         self.ledger.clone()
     }

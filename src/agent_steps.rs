@@ -38,7 +38,7 @@ pub fn stands_alone(conversation: &Conversation, item: &Item) -> bool {
             .is_some()
 }
 
-/// How a tool row draws: a readable row in its group, a step's tracks (its first row, holding
+/// How a tool row draws: a readable row with its shape in its drawn group, a step's tracks (its first row, holding
 /// the step's calls as item indexes), or inside its step's tracks (drawn by the first row).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Role {
@@ -94,6 +94,31 @@ pub fn roles_of(
             }
         }
         k = end + 1;
+    }
+    // Drawn, the readable rows (a lane's or "Passed on" row too: the subagent row chore's look)
+    // group with their neighbours; a step's tracks are a group of their own.
+    let readable = |k: Option<usize>| {
+        k.and_then(|k| Some((rows.get(k)?, roles[k].as_ref()?)))
+            .is_some_and(|(&i, role)| {
+                matches!(items[i], Item::Tool { .. }) && matches!(role, Role::Row(_))
+            })
+    };
+    let drawn: Vec<Option<Shape>> = (0..rows.len())
+        .map(|k| {
+            readable(Some(k)).then(
+                || match (readable(k.checked_sub(1)), readable(Some(k + 1))) {
+                    (false, false) => Shape::Solo,
+                    (false, true) => Shape::First,
+                    (true, true) => Shape::Middle,
+                    (true, false) => Shape::Last,
+                },
+            )
+        })
+        .collect();
+    for (role, shape) in roles.iter_mut().zip(drawn) {
+        if let (Some(Role::Row(s)), Some(shape)) = (role.as_mut(), shape) {
+            *s = shape;
+        }
     }
     roles
 }
@@ -318,7 +343,8 @@ pub fn tracks_of(
                 f.first_change.get_or_insert(col);
             }
         }
-        if a.check.is_some() {
+        // Only finished checks have an outcome to say.
+        if a.check.is_some() && !*running {
             runs.push(a);
         }
     }
@@ -343,7 +369,11 @@ pub fn tracks_of(
         label: "Checks".into(),
         path: String::new(),
         beads: checks,
-        summary: checks_summary(&runs.iter().map(|r| r.as_ref()).collect::<Vec<_>>()),
+        summary: if runs.is_empty() {
+            "running…".into()
+        } else {
+            checks_summary(&runs.iter().map(|r| r.as_ref()).collect::<Vec<_>>())
+        },
     });
     let first_error = calls
         .iter()
@@ -889,15 +919,32 @@ mod tests {
         let roles: Vec<Option<Role>> = (0..6)
             .map(|k| role_at(&items, &rows, k, &alone, true))
             .collect();
+        // The lane row breaks the step (tracks start after it) but, drawn, stays in its
+        // readable rows' group (the subagent row chore's look); the group ends at the tracks.
         assert_eq!(
             roles,
             [
                 Some(Role::Row(Shape::First)),
+                Some(Role::Row(Shape::Middle)),
                 Some(Role::Row(Shape::Last)),
-                Some(Role::Row(Shape::Solo)),
                 Some(Role::Tracks(vec![3, 4, 5])),
                 Some(Role::Inside),
                 Some(Role::Inside),
+            ]
+        );
+        // Two short steps either side of a lane row: one readable group.
+        let short = [
+            read("a", "src/a.rs"),
+            lane_row("lane"),
+            read("c", "src/c.rs"),
+        ];
+        let roles: Vec<Option<Role>> = roles_of(&short, &all(&short), &alone, true);
+        assert_eq!(
+            roles,
+            [
+                Some(Role::Row(Shape::First)),
+                Some(Role::Row(Shape::Middle)),
+                Some(Role::Row(Shape::Last)),
             ]
         );
         assert_eq!(group_shape_at(&items, &rows, 2, &alone), Some(Shape::Solo));
@@ -1149,6 +1196,14 @@ mod tests {
         assert!(t.columns[2].running);
         let api = t.files.iter().find(|f| f.label == "api.rs").unwrap();
         assert_eq!(api.beads[0].1.glyph, Glyph::Running);
+        // A check still running: its track says so (not "ran").
+        let mut tests = run_check("4", CheckWhat::Tests, "cargo test", Outcome::Unknown);
+        if let Item::Tool { running: r, ok, .. } = &mut tests {
+            *r = true;
+            *ok = None;
+        }
+        let t = tracks(&[read("1", "src/a.rs"), read("3", "src/b.rs"), tests]);
+        assert_eq!(t.checks.unwrap().summary, "running…");
         assert_eq!(t.span, None, "no times known");
     }
 
