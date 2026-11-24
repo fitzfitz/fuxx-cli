@@ -14,7 +14,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Latest (2026-11-24):** the agent activity view chore 🟨 built on branch `chore/agent-activity-view`, its whole-branch review's fix wave in (code review, design review and the long-notice overlap fix; not merged, not pushed); waiting for the design re-check and your on-screen check (note 93, "Chores after M11ar").
+- **Latest (2026-11-24):** **v0.13.1 released** (run 45339699037): the agent activity view chore (merged, `71a520a`, after a whole-branch code review, a design review and its re-check), subagent rows with a robot, "Orchestrating…", the target pill's capped names and the long-notice overlap fix; v0.13.0 earlier the same day. The README and the vault's living notes describe fuxx as of v0.13.1. Waiting for your on-screen checks (note 93, "Chores after M11ar").
 - **Before (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
 - **Released (2026-11-23):** **v0.12.7** (run 45097026110, `fuxx-0.12.7.zip`): chat text selection, the thinking fade, the graph fixture's made-up history.
 - **Released (2026-11-23):** **v0.12.6** (run 45070831970, `fuxx-0.12.6.zip`): M11ar, M11au and the chores since v0.12.5.
