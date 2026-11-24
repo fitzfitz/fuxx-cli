@@ -1,5 +1,5 @@
 //! A panel that opens when the pointer rests on its anchor (the 2026-11-24 chores: the usage
-//! gauge and the clock). It opens `OPEN_AFTER` after the pointer arrives, if it is still there;
+//! gauge and the clock; the status bar's usage strip, which a press also opens). It opens `OPEN_AFTER` after the pointer arrives, if it is still there;
 //! it stays open while the pointer is on the anchor or the panel, and closes `CLOSE_GRACE` after
 //! it leaves both (the grace lets the pointer cross from one to the other). Pure: the view waits
 //! on a timer and calls `settle` with the ticket it was given, so a stale timer does nothing.
@@ -79,6 +79,12 @@ impl HoverDelay {
         true
     }
 
+    /// Opened at once (a press on the anchor), any wait dropped.
+    pub fn open_now(&mut self) {
+        self.ticket += 1;
+        self.open = true;
+    }
+
     /// Closed at once (a click elsewhere, the box losing its menu).
     pub fn close(&mut self) {
         *self = Self {
@@ -146,6 +152,22 @@ mod tests {
         assert_eq!(h.leave(Part::Anchor), None, "already closed");
         let t = h.enter(Part::Anchor).expect("a fresh wait");
         assert!(h.settle(t));
+    }
+
+    /// The status bar's strip opens on a press too (the review's finding 13: one hover rule).
+    #[test]
+    fn a_press_opens_at_once() {
+        let mut h = HoverDelay::default();
+        let t = h.enter(Part::Anchor).unwrap();
+        h.open_now();
+        assert!(h.is_open());
+        assert!(!h.settle(t), "the rest's timer is moot");
+        assert!(h.is_open());
+        let closing = h
+            .leave(Part::Anchor)
+            .expect("leaving closes it after the grace");
+        assert!(h.settle(closing));
+        assert!(!h.is_open());
     }
 
     #[test]

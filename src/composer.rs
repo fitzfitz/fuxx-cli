@@ -646,6 +646,15 @@ macro_rules! steps {
     };
 }
 
+/// As `steps!`, for keys that change the text (each a step for ⌘Z, `Composer::edit`).
+macro_rules! edits {
+    ($($name:ident: $action:ident => $f:expr;)*) => {
+        $(fn $name(&mut self, _: &$action, _: &mut Window, cx: &mut Context<Self>) {
+            self.edit($f, cx);
+        })*
+    };
+}
+
 impl Composer {
     pub fn new(placeholder: SharedString, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
@@ -962,17 +971,37 @@ impl Composer {
         }
     }
 
+    /// A caret key: it ends a typed word's run for ⌘Z (and copies nothing: the review's
+    /// finding 10).
     fn step(&mut self, f: impl FnOnce(&mut EditBuffer), cx: &mut Context<Self>) {
+        self.marked = None;
+        self.history.break_run();
+        f(&mut self.buf);
+        self.moved(cx);
+    }
+
+    /// A key that changes the text (⌫, ⌦, ⌘⌫, ⏎, a cut): a step for ⌘Z. A run of deletes is one
+    /// step; a deleted selection or a new line one of its own.
+    fn edit(&mut self, f: impl FnOnce(&mut EditBuffer), cx: &mut Context<Self>) {
+        use crate::undo_history::EditKind;
         self.marked = None;
         let before = self.snapshot();
         f(&mut self.buf);
-        // An edit is a step for ⌘Z; a move ends a typed word's run.
         if self.buf.text() != before.0 {
-            self.history
-                .record(before, crate::undo_history::EditKind::Delete);
-        } else {
-            self.history.break_run();
+            let kind = if self.buf.text().len() > before.0.len() {
+                EditKind::Typed('\n')
+            } else {
+                EditKind::Delete
+            };
+            if !before.1.is_empty() {
+                self.history.break_run();
+            }
+            self.history.record(before, kind);
         }
+        self.moved(cx);
+    }
+
+    fn moved(&mut self, cx: &mut Context<Self>) {
         self.motion.changed = Instant::now();
         self.follow_caret = true;
         cx.notify();
@@ -1009,15 +1038,18 @@ impl Composer {
             cx.emit(ComposerEvent::BackspaceEmpty);
             return;
         }
-        self.step(|b| b.backspace(), cx);
+        self.edit(|b| b.backspace(), cx);
     }
 
-    steps! {
+    edits! {
         delete: Delete => |b| b.delete();
         clear: Clear => |b| b.delete_to_line_start();
         delete_word_left: DeleteWordLeft => |b| b.delete_word_left();
         delete_to_line_end: DeleteToLineEnd => |b| b.delete_to_line_end();
         newline: Newline => |b| b.newline();
+    }
+
+    steps! {
         move_left: MoveLeft => |b| b.left(false);
         move_right: MoveRight => |b| b.right(false);
         up_pressed: MoveUp => |b| b.up();
@@ -1095,7 +1127,7 @@ impl Composer {
     fn cut_selection(&mut self, cx: &mut Context<Self>) {
         self.copy_selection(cx);
         if !self.buf.selection().is_empty() {
-            self.step(|b| b.backspace(), cx);
+            self.edit(|b| b.backspace(), cx);
         }
     }
 

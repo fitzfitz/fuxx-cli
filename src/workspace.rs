@@ -929,17 +929,15 @@ pub struct Workspace {
     pub(crate) notifications: NotificationList,
     /// The 🔔's popover, while it is open: the focus it holds (so Escape closes it).
     pub(crate) notifications_popover: Option<FocusHandle>,
-    /// The status bar's usage popover is open (M11ap), and where its strip was last drawn (a
-    /// press there toggles it, never counts as "outside").
-    pub(crate) usage_open: bool,
+    /// Where the status bar's usage strip was last drawn (a press there opens its popover, never
+    /// counts as "outside"; M11ap).
     pub(crate) usage_strip_at: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// The agent whose detail shows beside the usage list (its row hovered); where each row was
-    /// drawn (the scenes hover them); whether the pointer is on the strip and on the popover,
-    /// and a count of those changes (a delayed open or close that is out of date does nothing).
+    /// drawn (the scenes hover them); and the popover's hover state (`HoverDelay`: whether the
+    /// pointer is on the strip or the popover, and whether it is open).
     pub(crate) usage_detail: Option<&'static str>,
     pub(crate) usage_rows_at: UsageRowsAt,
-    pub(crate) usage_hover: (bool, bool),
-    pub(crate) usage_hover_gen: u64,
+    pub(crate) usage_hover: crate::hover_delay::HoverDelay,
 }
 
 impl Workspace {
@@ -1171,12 +1169,10 @@ impl Workspace {
             rows_drawn: false,
             band_pressed: false,
             slide: None,
-            usage_open: false,
             usage_strip_at: Default::default(),
             usage_detail: None,
             usage_rows_at: Default::default(),
-            usage_hover: (false, false),
-            usage_hover_gen: 0,
+            usage_hover: Default::default(),
             right_sidebar: RightSidebarState::new(),
             places: Places::new(home_dir(), crate::git_branch::this_hostname()),
             folders_now: HashMap::new(),
@@ -4189,8 +4185,8 @@ impl Render for Workspace {
             // Esc closes the usage popover (M11ap, the review's finding 3), caught before the
             // terminal (which keeps the keyboard) gets it — only while the popover is open.
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                if this.usage_open && event.keystroke.key == "escape" {
-                    this.usage_open = false;
+                if this.usage_hover.is_open() && event.keystroke.key == "escape" {
+                    this.usage_hover.close();
                     cx.stop_propagation();
                     cx.notify();
                 }

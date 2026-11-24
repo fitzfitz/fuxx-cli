@@ -326,7 +326,11 @@ fn status_bar_usage_scenes() {
                         window,
                         cx,
                     );
-                    ws.usage_open = open;
+                    if open {
+                        ws.usage_hover.open_now();
+                    } else {
+                        ws.usage_hover.close();
+                    }
                     // The open shot: the list, and Claude's row hovered (its detail beside it).
                     ws.usage_detail = open.then_some("claude");
                     ws
@@ -343,8 +347,9 @@ fn status_bar_usage_scenes() {
                     // hovering an agent's row shows its detail beside it, moving away closes it;
                     // Esc closes it too.
                     let ws = slot.borrow().clone().expect("the workspace");
-                    let is_open =
-                        |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).usage_open);
+                    let is_open = |cx: &mut VisualTestAppContext| {
+                        cx.read(|cx| ws.read(cx).usage_hover.is_open())
+                    };
                     let detail =
                         |cx: &mut VisualTestAppContext| cx.read(|cx| ws.read(cx).usage_detail);
                     let strip = cx

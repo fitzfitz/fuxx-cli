@@ -138,6 +138,13 @@ impl NameInput {
         self.history.clear();
     }
 
+    /// Deleting a selection is a step of its own, not part of a run of ⌫.
+    fn forget_run_if_selected(&mut self) {
+        if !self.selection().is_empty() {
+            self.history.break_run();
+        }
+    }
+
     /// A step for ⌘Z before an edit of `kind`.
     fn remember(&mut self, kind: crate::undo_history::EditKind) {
         let now = (self.text.clone(), self.selected.clone());
@@ -347,6 +354,7 @@ impl NameInput {
         if erased.is_empty() {
             return;
         }
+        self.forget_run_if_selected();
         self.remember(crate::undo_history::EditKind::Delete);
         self.put(erased, "");
         cx.notify();
@@ -358,6 +366,7 @@ impl NameInput {
         if erased.is_empty() {
             return;
         }
+        self.forget_run_if_selected();
         self.remember(crate::undo_history::EditKind::Delete);
         self.put(erased, "");
         cx.notify();
@@ -369,6 +378,7 @@ impl NameInput {
         if erased.is_empty() {
             return;
         }
+        self.forget_run_if_selected();
         self.remember(crate::undo_history::EditKind::Delete);
         self.put(erased, "");
         cx.notify();

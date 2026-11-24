@@ -601,40 +601,38 @@ impl Workspace {
 
     /// The pointer came onto or left the strip or its popover (Orca-style, your word,
     /// 2026-11-22): on the strip a moment (`USAGE_OPEN_DELAY`) opens the list; off both a moment
-    /// (`USAGE_CLOSE_DELAY`) closes it — the gap between them never closes it on the way.
+    /// (`USAGE_CLOSE_DELAY`) closes it — the gap between them never closes it on the way. The
+    /// rule is the agent box's (`hover_delay::HoverDelay`, the review's finding 13).
     pub(crate) fn usage_hovered(
         &mut self,
         on_strip: Option<bool>,
         on_popover: Option<bool>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(on) = on_strip {
-            self.usage_hover.0 = on;
-        }
-        if let Some(on) = on_popover {
-            self.usage_hover.1 = on;
-        }
-        self.usage_hover_gen += 1;
-        let generation = self.usage_hover_gen;
-        let (strip, popover) = self.usage_hover;
-        let (wait, opening) = if strip && !self.usage_open {
-            (USAGE_OPEN_DELAY, true)
-        } else if !strip && !popover && self.usage_open {
-            (USAGE_CLOSE_DELAY, false)
+        use crate::hover_delay::Part;
+        let (part, on) = match (on_strip, on_popover) {
+            (Some(on), _) => (Part::Anchor, on),
+            (None, Some(on)) => (Part::Panel, on),
+            (None, None) => return,
+        };
+        let wait = if on {
+            self.usage_hover.enter(part).map(|t| (t, USAGE_OPEN_DELAY))
         } else {
+            self.usage_hover.leave(part).map(|t| (t, USAGE_CLOSE_DELAY))
+        };
+        let Some((ticket, wait)) = wait else {
             return;
         };
+        let timer = cx.background_executor().timer(wait);
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(wait).await;
+            timer.await;
             this.update(cx, |this, cx| {
-                if this.usage_hover_gen != generation {
-                    return;
+                if this.usage_hover.settle(ticket) {
+                    if !this.usage_hover.is_open() {
+                        this.usage_detail = None;
+                    }
+                    cx.notify();
                 }
-                this.usage_open = opening;
-                if !opening {
-                    this.usage_detail = None;
-                }
-                cx.notify();
             })
             .ok();
         })
@@ -895,7 +893,7 @@ impl Workspace {
                 {
                     return;
                 }
-                this.usage_open = false;
+                this.usage_hover.close();
                 this.usage_detail = None;
                 cx.notify();
             }));
@@ -1272,7 +1270,7 @@ impl Workspace {
                 _ => (0..agents.len()).collect(),
             };
             let resets = shown.usage == UsageShown::Full;
-            let open = self.usage_open;
+            let open = self.usage_hover.is_open();
             let at = self.usage_strip_at.clone();
             let measure = gpui::canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {})
                 .absolute()
@@ -1319,7 +1317,7 @@ impl Workspace {
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        this.usage_open = true;
+                        this.usage_hover.open_now();
                         cx.notify();
                     }),
                 );

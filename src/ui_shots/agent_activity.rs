@@ -89,6 +89,7 @@ pub(super) const SCENES: &[Scene] = &[
     scene("agent-ledger-trimmed", agent_ledger_trimmed, LEDGER),
     scene("agent-ledger-popover", agent_ledger_popover, LEDGER),
     scene("agent-plan-tab", agent_plan_tab, PLAN),
+    scene("agent-plan-tab-narrow", agent_plan_tab_narrow, PLAN),
 ];
 
 /// The plan tab's scene: the box, its menus and the plan's rules.
@@ -170,7 +171,7 @@ fn tracks(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<Rc<Tracks>> 
 /// The chat's status line and its counts line (the 2026-11-24 chores: the ledger moved there
 /// from the folder tab).
 fn status(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> (String, Option<String>) {
-    cx.read(|cx| tab.read(cx).shot_box(cx).status_line)
+    cx.read(|cx| tab.read(cx).shot_status_line(cx))
         .unwrap_or_else(|| panic!("a status line"))
 }
 
@@ -657,8 +658,27 @@ fn ledger_turn(running: bool) -> Turn {
 /// shows the burger tab `☰ 4/6` at the folder-tab row's right; a click (and ⌥⌘P) opens its
 /// tasks, ✓ done, ◐ being built, ○ next.
 pub(super) fn agent_plan_tab() {
+    plan_scene("agent-plan-tab", DIMS, false);
+}
+
+/// A narrow pane with a long folder and branch: the folder tab gives way (its pills cut with
+/// "…") and never runs under the plan tab (the review's finding 12).
+pub(super) fn agent_plan_tab_narrow() {
+    plan_scene("agent-plan-tab-narrow", (460.0, 640.0), true);
+}
+
+fn plan_scene(name: &'static str, dims: (f32, f32), long: bool) {
     use crate::providers::{TodoItem, TodoState};
-    shoot("agent-plan-tab", DIMS, |n, cx, window, tab, _| {
+    shoot(name, dims, move |n, cx, window, tab, _| {
+        if long {
+            feed(cx, tab, |t, cx| {
+                t.shot_place(
+                    PathBuf::from("/tmp/fx/code/a-very-long-project-folder-name"),
+                    Some("feature/a-really-long-branch-name-for-the-plan".into()),
+                    cx,
+                )
+            });
+        }
         feed(cx, tab, |t, cx| t.send("Build the plan".into(), cx));
         let item = |text: &str, state| TodoItem {
             text: text.into(),
@@ -685,6 +705,13 @@ pub(super) fn agent_plan_tab() {
             burger.left() > folder.right(),
             "{n}: right of the folder tab"
         );
+        if long {
+            let branch = part(cx, tab, n, "branch");
+            assert!(
+                branch.right() < burger.left(),
+                "{n}: the branch chip ends before the plan tab ({branch:?} vs {burger:?})"
+            );
+        }
         assert!(
             (burger.center().y - folder.center().y).abs() < px(3.),
             "{n}: on the folder tab's row"

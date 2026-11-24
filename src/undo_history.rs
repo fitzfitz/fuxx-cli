@@ -1,8 +1,8 @@
 //! Undo and redo for a text field (the 2026-11-24 chores: "undo/redo what I typed … any text
 //! input"), shared by `NameInput` and the agent box's `Composer`. Generic over what a field
 //! keeps (its text and selection; the box's pasted-image pills are part of its text). Typing
-//! groups into word-sized steps; a paste, a cut or deletion, or a prompt recalled is one step
-//! each. A new edit
+//! groups into word-sized steps and a run of deletes into one; a paste, a cut or a deleted
+//! selection, or a prompt recalled is one step each. A new edit
 //! drops what redo held; a send or a commit clears it all.
 
 /// What an edit was, for grouping.
@@ -43,8 +43,9 @@ impl<S: Clone + PartialEq> UndoHistory<S> {
     pub fn record(&mut self, before: S, kind: EditKind) {
         let word =
             |k: Option<EditKind>| matches!(k, Some(EditKind::Typed(c)) if c.is_alphanumeric());
-        // A letter after a letter runs on into the same step.
-        let runs_on = word(Some(kind)) && word(self.last);
+        // A letter after a letter runs on into the same step, and a delete after a delete.
+        let runs_on = (word(Some(kind)) && word(self.last))
+            || (kind == EditKind::Delete && self.last == Some(EditKind::Delete));
         self.last = Some(kind);
         self.redo.clear();
         if runs_on || self.undo.last() == Some(&before) {
@@ -157,6 +158,28 @@ mod tests {
         h.record(text.clone(), EditKind::Recall);
         let recalled = "an older prompt".to_string();
         assert_eq!(h.undo(recalled).as_deref(), Some("draft"));
+    }
+
+    /// A run of ⌫ comes back with one ⌘Z, as macOS fields do (the review's finding 14).
+    #[test]
+    fn a_run_of_deletes_undoes_as_one_step() {
+        let mut h = UndoHistory::default();
+        let mut text = String::new();
+        type_in(&mut h, &mut text, "hello");
+        h.break_run();
+        for _ in 0..3 {
+            h.record(text.clone(), EditKind::Delete);
+            text.pop();
+        }
+        assert_eq!(text, "he");
+        assert_eq!(h.undo(text.clone()).as_deref(), Some("hello"));
+        // Typing after deleting starts a new step.
+        let mut h = UndoHistory::default();
+        let mut text = "ab".to_string();
+        h.record(text.clone(), EditKind::Delete);
+        text.pop();
+        type_in(&mut h, &mut text, "x");
+        assert_eq!(h.undo(text.clone()).as_deref(), Some("a"));
     }
 
     #[test]

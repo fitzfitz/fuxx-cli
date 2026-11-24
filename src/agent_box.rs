@@ -131,6 +131,8 @@ const CLOCK_WIDTH: f32 = 280.0;
 /// The plan tab's inset from the box's right edge (clear of its rounded corner), and its
 /// popover's width.
 const PLAN_TAB_INSET: f32 = 24.0;
+/// The least room between the folder tab's step and the plan tab.
+const PLAN_TAB_GAP: f32 = 8.0;
 pub(crate) const PLAN_WIDTH: f32 = 340.0;
 /// The usage view's tallest; it scrolls past it.
 pub(crate) const USAGE_MAX_H: f32 = 480.0;
@@ -218,8 +220,6 @@ pub struct BoxTexts {
     pub usage: Option<String>,
     /// The warning dot on the model chip: a limit is close or reached.
     pub limit_warning: bool,
-    /// The chat's status line and its counts line, as drawn (the 2026-11-24 chores).
-    pub status_line: Option<(String, Option<String>)>,
 }
 
 /// The catalog model (its place) and effort level that `start`'s flags name: a model whose id,
@@ -984,7 +984,6 @@ impl AgentTab {
                 self.conversation.context_pct(),
             ),
             limit_warning: self.limit_warning(cx),
-            status_line: self.status_line_now(&cx.global::<Appearance>().theme),
         }
     }
 
@@ -1202,7 +1201,10 @@ impl AgentTab {
         // shows the cost and the context; its dot past 80 % context.
         let clock_hover_fill = c.control_hover;
         let context_warn = crate::agent_top::context_warning(self.conversation.context_pct());
-        let clock = self.cost_context(c).map(|panel| {
+        // Its panel is built only while open (the review's finding 10).
+        let known =
+            self.conversation.cost_usd().is_some() || self.conversation.context_pct().is_some();
+        let clock = known.then(|| {
             self.marked(
                 "clock-button",
                 div()
@@ -1245,7 +1247,7 @@ impl AgentTab {
                     .on_hover(cx.listener(|this, on: &bool, _, cx| {
                         this.clock_hovered(crate::hover_delay::Part::Panel, *on, cx)
                     }))
-                    .child(panel)
+                    .children(self.cost_context(c))
                     .into_any_element();
                 d.child(self.menu_frame(Some(panel), None, CLOCK_WIDTH, cx))
             })
@@ -1711,9 +1713,13 @@ impl AgentTab {
             .child(send);
         let body = self.marked("outer", body);
         // The tab: no bottom edge, down over the body's top line (its fill hides it there).
+        // It gives way (its pills cut with "…") before it would meet the plan tab at the row's
+        // right (the review's finding 12).
         let tab = div()
             .flex()
-            .flex_none()
+            .flex_shrink(1.0)
+            .min_w(px(0.))
+            .overflow_hidden()
             .items_start()
             .gap(px(PILL_GAP))
             .h(px(TAB_RISE + EDGE))
@@ -1749,38 +1755,37 @@ impl AgentTab {
             )
             .size_full(),
         );
+        div().relative().w_full().child(body).child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right(px(PLAN_TAB_INSET))
+                .flex()
+                .items_end()
+                .child(tab)
+                .child(step)
+                .child(div().flex_1().min_w(px(PLAN_TAB_GAP)))
+                .children(plan.map(|plan| self.plan_tab_shell(plan, outer, edge))),
+        )
+    }
+
+    /// The plan tab at the folder-tab row's right (the 2026-11-24 chores, your pick "burger +
+    /// count"): a small tab in the folder tab's look round its pill.
+    fn plan_tab_shell(&self, plan: AnyElement, outer: gpui::Hsla, edge: gpui::Hsla) -> Div {
+        use crate::card_view::{EDGE, TAB_PAD, TAB_RISE};
         div()
-            .relative()
-            .w_full()
-            .child(body)
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .flex()
-                    .items_end()
-                    .child(tab)
-                    .child(step),
-            )
-            // The plan tab at the row's right (the 2026-11-24 chores, your pick "burger +
-            // count"), a small tab in the folder tab's look.
-            .children(plan.map(|plan| {
-                div()
-                    .absolute()
-                    .top_0()
-                    .right(px(PLAN_TAB_INSET))
-                    .h(px(TAB_RISE + EDGE))
-                    .pt(px(TAB_PAD - EDGE))
-                    .px(px(TAB_PAD))
-                    .bg(outer)
-                    .border_t_1()
-                    .border_l_1()
-                    .border_r_1()
-                    .border_color(edge)
-                    .rounded_t(px(10.))
-                    .child(plan)
-            }))
+            .flex_none()
+            .h(px(TAB_RISE + EDGE))
+            .pt(px(TAB_PAD - EDGE))
+            .px(px(TAB_PAD))
+            .bg(outer)
+            .border_t_1()
+            .border_l_1()
+            .border_r_1()
+            .border_color(edge)
+            .rounded_t(px(10.))
+            .child(plan)
     }
 
     /// The burger tab's pill (`☰ 4/6`), and the plan's tasks over it while open; none without a

@@ -2130,6 +2130,13 @@ impl AgentTab {
         self.box_texts(cx)
     }
 
+    /// The chat's status line and its counts line, as drawn (built here for the scenes, not on
+    /// every frame with the box's texts).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_status_line(&self, cx: &App) -> Option<(String, Option<String>)> {
+        self.status_line_now(&cx.global::<Appearance>().theme)
+    }
+
     /// Where a part of the box was last laid out: `folder`, `box`, `attachments`, `attach`,
     /// `model`, `mode`, `send`, `menu`, `usage`.
     #[cfg(feature = "ui-shots")]
