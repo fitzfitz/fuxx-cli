@@ -1091,3 +1091,8 @@ Everything below up to the 2026-11-24 "browser opened from a terminal" chore is 
     passing; references refreshed for `agent-tab-question-lane`, `agent-tab-question-lane-main` and
     `agent-chat-latest-prompt` (the strip's robot moves the pills along).
   - **On screen:** not yet seen in the real window; no claude or agy was run.
+- **The box's target pill caps the subagent's name** (your words, 2026-11-24: "have maxwidth on the subagent title,
+  make it ellipsis, I don't accept long text, we already have tooltip to see full title … just change the code
+  directly without tests"): "To ⟨name⟩ · via Main" and "To Main · about ⟨name⟩" cut the name at 180 pt with "…"
+  (`TARGET_NAME_MAX`); the tooltip (both modes now) holds the full name. No new tests, as asked; `cargo check` clean.
+

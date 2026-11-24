@@ -16,6 +16,8 @@ pub(crate) const BAR_FADE: Duration = Duration::from_millis(120);
 const STRIP_H: f32 = 32.0;
 /// A tab narrower than this cuts labels (and a relay's placeholder) shorter.
 pub(super) const NARROW: f32 = 480.0;
+/// The widest the box's target pill lets a subagent's name grow before it is cut with "…".
+const TARGET_NAME_MAX: f32 = 180.0;
 
 impl AgentTab {
     /// `Event::Follow`: read `path`'s new lines as lane `lane`'s (`agent_lanes::follow_every`:
@@ -285,20 +287,48 @@ impl AgentTab {
         let lane = self.shown_lane()?;
         let narrow = self.bar_width.get() < NARROW;
         let label = lane.label.clone();
-        let (strong, quiet, tip) = match mode {
+        // The subagent's name is capped and cut with "…" (your words, 2026-11-24: "have maxwidth
+        // on the subagent title, make it ellipsis … we already have tooltip to see full title").
+        let (relay, tip) = match mode {
             BoxMode::Relay { .. } => (
-                format!("To {label}"),
-                (!narrow).then_some(" \u{b7} via Main".to_string()),
-                Some(format!(
-                    "Main passes your message to {label}. It reads it after its current step."
-                )),
+                true,
+                format!("Main passes your message to {label}. It reads it after its current step."),
             ),
-            BoxMode::About { .. } => (
-                "To Main".to_string(),
-                Some(format!(" \u{b7} about {label}")),
-                None,
-            ),
+            BoxMode::About { .. } => (false, format!("Your message goes to Main, about {label}.")),
             _ => return None,
+        };
+        let name = |ink: Rgb, weight: FontWeight| {
+            div()
+                .min_w_0()
+                .max_w(px(TARGET_NAME_MAX))
+                .truncate()
+                .font_weight(weight)
+                .text_color(hsla(ink))
+                .child(SharedString::from(label.clone()))
+        };
+        let lead = |words: &'static str, ink: Rgb, weight: FontWeight| {
+            div()
+                .flex_none()
+                .font_weight(weight)
+                .text_color(hsla(ink))
+                .child(words)
+        };
+        let words = if relay {
+            div()
+                .flex()
+                .min_w_0()
+                .child(lead("To\u{a0}", c.relay_text, FontWeight::MEDIUM))
+                .child(name(c.relay_text, FontWeight::MEDIUM))
+                .children(
+                    (!narrow).then(|| lead(" \u{b7} via Main", c.relay_dim, FontWeight::NORMAL)),
+                )
+        } else {
+            div()
+                .flex()
+                .min_w_0()
+                .child(lead("To Main", c.relay_text, FontWeight::MEDIUM))
+                .child(lead(" \u{b7} about\u{a0}", c.relay_dim, FontWeight::NORMAL))
+                .child(name(c.relay_dim, FontWeight::NORMAL))
         };
         let (fill, accent) = (c.relay_fill, c.accent);
         let pill = div()
@@ -313,27 +343,10 @@ impl AgentTab {
             .bg(hsla(fill))
             .text_size(px(12.))
             .child(self.lane_mark(lane, c))
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(hsla(c.relay_text))
-                            .child(SharedString::from(strong)),
-                    )
-                    .children(quiet.map(|q| {
-                        div()
-                            .text_color(hsla(c.relay_dim))
-                            .child(SharedString::from(q))
-                    })),
-            )
-            .when_some(tip, |d, tip| {
-                d.tooltip(move |_, cx| {
-                    cx.new(|_| crate::sidebar_toggle::Tip(tip.clone().into()))
-                        .into()
-                })
+            .child(words)
+            .tooltip(move |_, cx| {
+                cx.new(|_| crate::sidebar_toggle::Tip(tip.clone().into()))
+                    .into()
             });
         let pill = self.marked("relay-target", pill);
         Some(match self.lane_flash_key(&lane.id, cx) {
