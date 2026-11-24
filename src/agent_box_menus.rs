@@ -71,6 +71,7 @@ impl AgentTab {
                                                 | BoxMenu::Model { .. }
                                                 | BoxMenu::Usage
                                                 | BoxMenu::Clock
+                                                | BoxMenu::Plan
                                                 | BoxMenu::Mode
                                                 | BoxMenu::Attach
                                                 | BoxMenu::Ledger
@@ -450,6 +451,94 @@ impl AgentTab {
             },
             cx,
         );
+    }
+
+    /// The plan's tasks (the 2026-11-24 chores), over the burger tab: each ✓ done (with its
+    /// commit), ◐ being built or ○ next, then each subagent and how it stands.
+    pub(super) fn plan_popover(
+        &self,
+        c: &crate::agent_tab::Colors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::plan_progress::{TaskState, counts};
+        let ui = cx.global::<Appearance>().theme.ui();
+        let (done, all) = counts(&self.plan);
+        let row =
+            |mark: &'static str, mark_ink: Rgb, title: String, tail: Option<String>, ink: Rgb| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .h(px(26.))
+                    .px(px(8.))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(14.))
+                            .text_color(hsla(mark_ink))
+                            .child(mark),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_color(hsla(ink))
+                            .child(SharedString::from(title)),
+                    )
+                    .children(tail.map(|t| {
+                        div()
+                            .flex_none()
+                            .font_features(crate::sidebar::tabular())
+                            .text_size(px(11.))
+                            .text_color(hsla(ui.text_dim))
+                            .child(SharedString::from(t))
+                    }))
+            };
+        let tasks = self.plan.iter().map(|t| match &t.state {
+            TaskState::Done { commit } => row(
+                "\u{2713}",
+                c.tool_ok,
+                t.title.clone(),
+                commit.clone(),
+                ui.text,
+            ),
+            TaskState::Building => row("\u{25d0}", c.todo_active, t.title.clone(), None, ui.text),
+            TaskState::Next => row("\u{25cb}", ui.text_dim, t.title.clone(), None, ui.text_dim),
+        });
+        let lanes: Vec<_> = self
+            .conversation
+            .lanes()
+            .iter()
+            .map(|l| {
+                let (mark, ink, word) = if l.status.live() {
+                    ("\u{25d0}", c.todo_active, "working")
+                } else {
+                    ("\u{2713}", c.tool_ok, "done")
+                };
+                row(mark, ink, l.label.clone(), Some(word.to_string()), ui.text)
+            })
+            .collect();
+        let heading = |words: String| {
+            div()
+                .px(px(8.))
+                .pt(px(6.))
+                .pb(px(2.))
+                .text_size(px(11.5))
+                .text_color(hsla(ui.text_dim))
+                .child(SharedString::from(words))
+        };
+        let content = div()
+            .flex()
+            .flex_col()
+            .text_size(px(12.5))
+            .child(heading(format!("Plan \u{b7} {done} of {all}")))
+            .children(tasks)
+            .when(!lanes.is_empty(), |d| {
+                d.child(heading("Subagents".into())).children(lanes)
+            })
+            .into_any_element();
+        self.menu_frame(Some(content), None, crate::agent_box::PLAN_WIDTH, cx)
     }
 
     /// The clock's cost and context panel: as the gauge's (`usage_hovered`).

@@ -172,6 +172,9 @@ pub struct Conversation {
     /// Your latest message's index (the chat's latest-prompt strip, chore after M11ar): kept as
     /// items come, so nothing scans the conversation for it.
     latest_you: Option<usize>,
+    /// The agent's todo list's index (it is updated in place), for the plan tab (the 2026-11-24
+    /// chores): read without a scan.
+    todo_at: Option<usize>,
     /// The open questions' indexes, oldest first (batch 3, chore 8): kept as items come and
     /// rebuilt after anything moves them, so `status` scans nothing for them.
     open_asks: Vec<usize>,
@@ -431,8 +434,14 @@ impl Conversation {
                 }
             }
             Event::Todo(list) => match self.items.iter().position(|i| matches!(i, Item::Todo(_))) {
-                Some(ix) => *self.items.get_mut(ix) = Item::Todo(list),
-                None => self.items.push(Item::Todo(list)),
+                Some(ix) => {
+                    *self.items.get_mut(ix) = Item::Todo(list);
+                    self.todo_at = Some(ix);
+                }
+                None => {
+                    self.todo_at = Some(self.items.len());
+                    self.items.push(Item::Todo(list));
+                }
             },
             Event::Permission {
                 id,
@@ -1326,6 +1335,14 @@ impl Conversation {
     /// Your latest message's index in `items`, if you said anything.
     pub fn latest_you(&self) -> Option<usize> {
         self.latest_you
+    }
+
+    /// The agent's todo list, if it keeps one (the plan tab).
+    pub fn todos(&self) -> Option<&[crate::providers::TodoItem]> {
+        match self.items.get(self.todo_at?) {
+            Some(Item::Todo(list)) => Some(list),
+            _ => None,
+        }
     }
 
     pub fn pending_permission(&self) -> Option<&Item> {

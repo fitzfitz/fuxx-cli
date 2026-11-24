@@ -128,6 +128,10 @@ pub(crate) const EFFORT_SWITCH_DELAY: std::time::Duration = std::time::Duration:
 pub(crate) const USAGE_WIDTH: f32 = 300.0;
 /// The clock's cost and context panel.
 const CLOCK_WIDTH: f32 = 280.0;
+/// The plan tab's inset from the box's right edge (clear of its rounded corner), and its
+/// popover's width.
+const PLAN_TAB_INSET: f32 = 24.0;
+pub(crate) const PLAN_WIDTH: f32 = 340.0;
 /// The usage view's tallest; it scrolls past it.
 pub(crate) const USAGE_MAX_H: f32 = 480.0;
 /// The mode menu's width (its rows carry a description).
@@ -191,6 +195,9 @@ pub enum BoxMenu {
     /// The cost and context panel, over the clock between the model pill and the gauge (the
     /// 2026-11-24 chores).
     Clock,
+    /// The plan's tasks, over the burger tab at the folder-tab row's right (the 2026-11-24
+    /// chores).
+    Plan,
     Mode,
     Attach,
     /// The turn ledger's popover, over the status pill (the agent activity chore).
@@ -1632,7 +1639,14 @@ impl AgentTab {
                     .flex_col()
                     .children(self.at_list(c, mono.clone(), cx))
                     .children(self.slash_list(c, mono, cx))
-                    .child(self.folder_tab(target, status, folder, branch, the_box, send, c)),
+                    .child(self.folder_tab(
+                        target,
+                        status,
+                        folder,
+                        branch,
+                        (the_box, send, self.plan_tab(c, cx)),
+                        c,
+                    )),
             )
             .into_any_element()
     }
@@ -1648,8 +1662,7 @@ impl AgentTab {
         status: Option<AnyElement>,
         folder: impl IntoElement,
         branch: Option<impl IntoElement>,
-        the_box: impl IntoElement,
-        send: impl IntoElement,
+        (the_box, send, plan): (impl IntoElement, impl IntoElement, Option<AnyElement>),
         c: &Colors,
     ) -> Div {
         use crate::card_view::{EDGE, OUTER_INSET, PILL_GAP, TAB_PAD, TAB_RISE};
@@ -1736,16 +1749,97 @@ impl AgentTab {
             )
             .size_full(),
         );
-        div().relative().w_full().child(body).child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .flex()
-                .items_end()
-                .child(tab)
-                .child(step),
-        )
+        div()
+            .relative()
+            .w_full()
+            .child(body)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .flex()
+                    .items_end()
+                    .child(tab)
+                    .child(step),
+            )
+            // The plan tab at the row's right (the 2026-11-24 chores, your pick "burger +
+            // count"), a small tab in the folder tab's look.
+            .children(plan.map(|plan| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .right(px(PLAN_TAB_INSET))
+                    .h(px(TAB_RISE + EDGE))
+                    .pt(px(TAB_PAD - EDGE))
+                    .px(px(TAB_PAD))
+                    .bg(outer)
+                    .border_t_1()
+                    .border_l_1()
+                    .border_r_1()
+                    .border_color(edge)
+                    .rounded_t(px(10.))
+                    .child(plan)
+            }))
+    }
+
+    /// The burger tab's pill (`☰ 4/6`), and the plan's tasks over it while open; none without a
+    /// task list (`plan_progress::shows`).
+    fn plan_tab(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use crate::plan_progress::{counts, shows};
+        if !shows(&self.plan) {
+            return None;
+        }
+        let (done, all) = counts(&self.plan);
+        let words = if done == all {
+            format!("{done}/{all} \u{2713}")
+        } else {
+            format!("{done}/{all}")
+        };
+        let hover = c.pill_hover;
+        let open = matches!(self.menu, Some(BoxMenu::Plan));
+        let pill = self
+            .marked(
+                "plan-tab",
+                div()
+                    .id("agent-plan-tab")
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .h(px(crate::card_view::PILL_H))
+                    .px(px(7.))
+                    .rounded(px(crate::card_view::PILL_H / 2.))
+                    .text_size(px(12.))
+                    .text_color(hsla(c.dim))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hsla(hover)))
+                    .when(open, |d| d.bg(hsla(hover)))
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::Menu,
+                        px(13.),
+                        hsla(c.dim),
+                    ))
+                    .child(SharedString::from(words))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| {
+                            crate::sidebar_toggle::Tip("Plan progress  \u{2325}\u{2318}P".into())
+                        })
+                        .into()
+                    })
+                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                        let pressed = match event {
+                            ClickEvent::Mouse(click) => Some(click.down.position),
+                            _ => None,
+                        };
+                        let closed_at = this.chip_closed_at.take();
+                        if pressed.is_none() || closed_at != pressed {
+                            this.toggle_plan(&crate::agent_tab::TogglePlan, window, cx);
+                        }
+                    })),
+            )
+            .when(open, |d| d.child(self.plan_popover(c, cx)));
+        Some(pill.into_any_element())
     }
 
     /// The `/` list, over the box while it is open: the agent's commands, skills and sub-agents

@@ -123,6 +123,7 @@ mod palette_match;
 mod pane_browser;
 mod pane_tab_menu;
 mod panes;
+mod plan_progress;
 mod plugin_fetch;
 mod plugin_manifest;
 mod plugin_settings;
@@ -654,6 +655,8 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
             agent_tab::FocusTracks,
             Some("AgentTab > Composer"),
         ),
+        // ⌥⌘P: the plan's tasks (the 2026-11-24 chores).
+        KeyBinding::new("cmd-alt-p", agent_tab::TogglePlan, Some("AgentTab")),
         KeyBinding::new("up", agent_tab::AskUp, Some("AgentAsk > Composer")),
         KeyBinding::new("down", agent_tab::AskDown, Some("AgentAsk > Composer")),
         KeyBinding::new("left", agent_tab::AskPrev, Some("AgentAsk > Composer")),

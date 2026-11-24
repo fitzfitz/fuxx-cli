@@ -88,6 +88,14 @@ pub(super) const SCENES: &[Scene] = &[
     scene("agent-ledger-done", agent_ledger_done, LEDGER),
     scene("agent-ledger-trimmed", agent_ledger_trimmed, LEDGER),
     scene("agent-ledger-popover", agent_ledger_popover, LEDGER),
+    scene("agent-plan-tab", agent_plan_tab, PLAN),
+];
+
+/// The plan tab's scene: the box, its menus and the plan's rules.
+const PLAN: &[&str] = &[
+    "src/plan_progress.rs",
+    "src/agent_box.rs",
+    "src/agent_box_menus.rs",
 ];
 
 const ACTIVITY: &str = include_str!("../providers/fixtures/claude-activity.jsonl");
@@ -643,6 +651,54 @@ fn ledger_turn(running: bool) -> Turn {
     }
     let result = (!running).then_some((PASSED_2, false));
     turn.bash("cargo test --bin fuxx", result)
+}
+
+/// Plan progress (the 2026-11-24 chores): a turn whose agent keeps a six-item list, four done,
+/// shows the burger tab `☰ 4/6` at the folder-tab row's right; a click (and ⌥⌘P) opens its
+/// tasks, ✓ done, ◐ being built, ○ next.
+pub(super) fn agent_plan_tab() {
+    use crate::providers::{TodoItem, TodoState};
+    shoot("agent-plan-tab", DIMS, |n, cx, window, tab, _| {
+        feed(cx, tab, |t, cx| t.send("Build the plan".into(), cx));
+        let item = |text: &str, state| TodoItem {
+            text: text.into(),
+            state,
+        };
+        give(
+            cx,
+            tab,
+            vec![Event::Todo(vec![
+                item("Task 1: the activity model", TodoState::Done),
+                item("Task 2: Claude and agy fill it", TodoState::Done),
+                item("Task 3: the step model", TodoState::Done),
+                item("Task 4: file tracks", TodoState::Done),
+                item("Task 5: the turn ledger", TodoState::Active),
+                item("Task 6: scenes and docs", TodoState::Pending),
+            ])],
+        );
+        let _ = frame_fresh(cx, window);
+        cx.run_until_parked();
+        let _ = frame_fresh(cx, window);
+        let burger = part(cx, tab, n, "plan-tab");
+        let folder = part(cx, tab, n, "folder");
+        assert!(
+            burger.left() > folder.right(),
+            "{n}: right of the folder tab"
+        );
+        assert!(
+            (burger.center().y - folder.center().y).abs() < px(3.),
+            "{n}: on the folder tab's row"
+        );
+        click(cx, window, burger);
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).shot_menu()),
+            Some(crate::agent_box::BoxMenu::Plan),
+            "{n}: the click opens the plan"
+        );
+        let plan = cx.read(|cx| tab.read(cx).plan.clone());
+        assert_eq!(crate::plan_progress::counts(&plan), (4, 6), "{n}");
+    });
 }
 
 /// The running turn, on the chat's status line: "Cultivating… · Running tests …", and under it

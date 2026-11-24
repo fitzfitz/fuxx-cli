@@ -121,6 +121,8 @@ actions!(
         CycleMode,
         HistoryUp,
         HistoryDown,
+        // ⌥⌘P: the plan's tasks (the 2026-11-24 chores).
+        TogglePlan,
         // The rewind pick (batch 3, chore 2; bound in main.rs to "RewindPick > Composer").
         PickUp,
         PickDown,
@@ -1584,6 +1586,11 @@ pub struct AgentTab {
     pub(crate) usage_hover: crate::hover_delay::HoverDelay,
     /// The clock's cost and context panel opens the same way.
     pub(crate) clock_hover: crate::hover_delay::HoverDelay,
+    /// Plan progress (the 2026-11-24 chores): the burger tab's tasks, the checklist file they
+    /// come from (none: the agent's own todo list), and whether to read them again.
+    pub(crate) plan: Vec<crate::plan_progress::PlanTask>,
+    plan_file: Option<PathBuf>,
+    plan_stale: bool,
     /// The branch checked out in the agent's folder (none outside a repo, or before it is read):
     /// looked up on the background executor, never in `render` (`read_branch`).
     pub(crate) branch: Option<String>,
@@ -2291,6 +2298,9 @@ impl AgentTab {
             chip_closed_at: None,
             usage_hover: Default::default(),
             clock_hover: Default::default(),
+            plan: Vec::new(),
+            plan_file: None,
+            plan_stale: false,
             branch: None,
             files: None,
             listing: false,
@@ -3368,6 +3378,16 @@ impl AgentTab {
             &self.tool_times,
             &self.start.cwd,
         ) {
+            // A checklist the turn wrote or read is the plan (newest first); the agent's own
+            // todo list wins.
+            if let Some(file) = self
+                .ledger
+                .as_ref()
+                .and_then(|l| plan_file_of(l, &self.start.cwd))
+            {
+                self.plan_file = Some(file);
+            }
+            self.plan_stale = true;
             self.ledger = ledger;
             self.stopped =
                 rewind::stopped_link(items, self.conversation.latest_you(), self.branching());
@@ -3870,6 +3890,12 @@ impl AgentTab {
     /// What Enter or ➤ does with the box's `text`: with a permission waiting, empty allows and
     /// text denies with it as the reason; else it is sent. The box is cleared once it is used.
     fn submit(&mut self, text: String, composer: &Entity<Composer>, cx: &mut Context<Self>) {
+        // A plan all done shows `6/6 ✓` until your next message (the 2026-11-24 chores).
+        let (done, all) = crate::plan_progress::counts(&self.plan);
+        if all > 0 && done == all {
+            self.plan.clear();
+            self.plan_file = None;
+        }
         if self.asking() {
             // The agent's question waits first: the box is its Other (batch 3, chore 8).
             self.ask_submit(&text, cx);
@@ -5733,7 +5759,7 @@ impl AgentTab {
             word: &word,
             status,
             question: question.as_deref(),
-            task: None,
+            task: crate::plan_progress::building(&self.plan),
             running: self.ledger.as_ref().and_then(|l| l.running.as_ref()),
             parts: &parts,
             took: self.top.took,
@@ -5821,6 +5847,55 @@ impl AgentTab {
                 .child(line)
                 .into_any_element(),
         )
+    }
+
+    /// The plan's tasks again, when the turn moved on (`plan_stale`): the agent's todo list, else
+    /// its checklist file, read with the branch's latest commits off the UI thread.
+    fn refresh_plan(&mut self, cx: &mut Context<Self>) {
+        if !self.plan_stale {
+            return;
+        }
+        self.plan_stale = false;
+        let todos = self.conversation.todos().map(<[_]>::to_vec);
+        let file = self.plan_file.clone();
+        if todos.is_none() && file.is_none() {
+            return;
+        }
+        let cwd = self.start.cwd.clone();
+        let read = cx.background_executor().spawn(async move {
+            let text = file.and_then(|f| std::fs::read_to_string(f).ok());
+            let commits = recent_commits(&cwd);
+            (text, commits)
+        });
+        cx.spawn(async move |this, cx| {
+            let (text, commits) = read.await;
+            this.update(cx, |this, cx| {
+                use crate::plan_progress::{from_checklist, from_todos, match_commits};
+                let mut tasks = match (&todos, &text) {
+                    (Some(list), _) => from_todos(list),
+                    (None, Some(md)) => from_checklist(md),
+                    (None, None) => Vec::new(),
+                };
+                if todos.is_none() {
+                    match_commits(&mut tasks, &commits);
+                }
+                if tasks != this.plan {
+                    this.plan = tasks;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// ⌥⌘P and the burger tab's click: the plan's tasks open, or shut.
+    pub(crate) fn toggle_plan(&mut self, _: &TogglePlan, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.menu, Some(crate::agent_box::BoxMenu::Plan)) {
+            self.close_menu(cx);
+        } else if crate::plan_progress::shows(&self.plan) {
+            self.open_menu(crate::agent_box::BoxMenu::Plan, cx);
+        }
     }
 
     /// The counts line's click: the ledger's popover opens (over the status mark), or shuts.
@@ -6161,6 +6236,7 @@ impl AgentTab {
 
 impl Render for AgentTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.refresh_plan(cx);
         let appearance = cx.global::<Appearance>();
         let theme = appearance.theme;
         let mono = appearance.font.family.clone();
@@ -6336,6 +6412,7 @@ impl Render for AgentTab {
             .on_action(cx.listener(Self::track_open))
             .on_action(cx.listener(Self::track_leave))
             .on_action(cx.listener(Self::focus_tracks))
+            .on_action(cx.listener(Self::toggle_plan))
             .on_action(cx.listener(Self::ask_up))
             .on_action(cx.listener(Self::ask_down))
             .on_action(cx.listener(Self::ask_prev))
@@ -6456,6 +6533,49 @@ impl Render for AgentTab {
             .children(modal)
             .children(image_view)
     }
+}
+
+/// The checklist file a turn worked from: the last Markdown file it changed, else the last it
+/// read (the plan tab's source when the agent keeps no todo list).
+fn plan_file_of(ledger: &crate::agent_ledger::Ledger, cwd: &Path) -> Option<PathBuf> {
+    let md = |p: &Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md"));
+    let path = ledger
+        .changed
+        .iter()
+        .map(|c| c.path.as_path())
+        .rev()
+        .find(|p| md(p))
+        .or_else(|| {
+            ledger
+                .read
+                .iter()
+                .map(PathBuf::as_path)
+                .rev()
+                .find(|p| md(p))
+        })?;
+    Some(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    })
+}
+
+/// The branch's latest commits (short hash and subject), for marking a plan's tasks done; none
+/// outside a repo. Run off the UI thread.
+fn recent_commits(cwd: &Path) -> Vec<(String, String)> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["log", "-n", "50", "--format=%h%x09%s"])
+        .output();
+    let Ok(out) = out else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(h, s)| (h.to_string(), s.to_string()))
+        .collect()
 }
 
 #[cfg(test)]

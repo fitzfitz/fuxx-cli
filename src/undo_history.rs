@@ -1,7 +1,8 @@
 //! Undo and redo for a text field (the 2026-11-24 chores: "undo/redo what I typed … any text
 //! input"), shared by `NameInput` and the agent box's `Composer`. Generic over what a field
-//! keeps (its text and selection, and the box's chips). Typing groups into word-sized steps; a
-//! paste, a cut, a deletion, a chip taken off or a prompt recalled is one step each. A new edit
+//! keeps (its text and selection; the box's pasted-image pills are part of its text). Typing
+//! groups into word-sized steps; a paste, a cut or deletion, or a prompt recalled is one step
+//! each. A new edit
 //! drops what redo held; a send or a commit clears it all.
 
 /// What an edit was, for grouping.
@@ -10,10 +11,8 @@ pub enum EditKind {
     /// A typed character: letters and digits run on into one step; anything else ends it.
     Typed(char),
     Paste,
-    Cut,
+    /// A deletion or a cut.
     Delete,
-    /// An attachment chip added or taken off.
-    Chip,
     /// An older prompt recalled with ↑ (or ↓ back).
     Recall,
 }
@@ -141,13 +140,13 @@ mod tests {
         assert_eq!(h.redo("x".into()), None);
     }
 
+    /// The box's pasted image is a pill in its text: taking it off is a deletion, undone whole.
     #[test]
-    fn removing_a_chip_undoes() {
-        let mut h: UndoHistory<(String, Vec<&str>)> = UndoHistory::default();
-        let before = ("fix it".to_string(), vec!["shot.png"]);
-        h.record(before.clone(), EditKind::Chip);
-        let now = ("fix it".to_string(), vec![]);
-        assert_eq!(h.undo(now), Some(before));
+    fn removing_an_image_pill_undoes() {
+        let mut h = UndoHistory::default();
+        let before = "fix it [Image #1]".to_string();
+        h.record(before.clone(), EditKind::Delete);
+        assert_eq!(h.undo("fix it ".into()), Some(before));
     }
 
     #[test]

@@ -88,6 +88,7 @@ pub fn describe(action: &str) -> Describe {
         "workspace::PrevTab" => Listed(Tabs, "Previous tab"),
         "agent_tab::PrevLane" => Listed(Tabs, "Previous Subagent"),
         "agent_tab::FocusTracks" => Listed(Tabs, "Step Through the Latest Busy Step"),
+        "agent_tab::TogglePlan" => Listed(Tabs, "Show the Plan's Progress"),
         "agent_tab::NextLane" => Listed(Tabs, "Next Subagent"),
         "agent_tab::CycleMode" => Listed(Tabs, "Next Agent Mode"),
         // The agent box (chores after M11ar): Tab takes the agent's guess; ↑/↓ recall prompts.
