@@ -2,7 +2,6 @@
 //! the agent's markdown, runs of tool calls and now and then a subagent's lane, about `items`
 //! rows long. Deterministic. For the work-count tests, the bench and the long-chat scene.
 
-use crate::agent_conversation::Conversation;
 use crate::providers::{Event, LaneControls, LaneEnd, Past};
 
 /// The agent's words for turn `t`: a few paragraphs, a list and a code block, so the markdown
@@ -87,8 +86,9 @@ pub fn history(items: usize) -> Vec<Past> {
 }
 
 /// A conversation restored from `history(items)`.
-pub fn conversation(items: usize) -> Conversation {
-    let mut c = Conversation::new();
+#[cfg(test)]
+pub fn conversation(items: usize) -> crate::agent_conversation::Conversation {
+    let mut c = crate::agent_conversation::Conversation::new();
     c.past(history(items));
     c
 }

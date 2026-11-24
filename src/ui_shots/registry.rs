@@ -14,10 +14,10 @@
 //! `--changed` follows.
 
 use super::{
-    Scene, agent, agent_activity, agent_ask, agent_box, agent_lanes, agent_notice, agent_rewind,
-    ask, branch, changes, chrome, chrome_parts, command, file_tab, file_tab_md, file_tab_md_reader,
-    menus, naming, notes, overlays, palette, panes, right_sidebar, sidebar, status_bar, terminal,
-    welcome, window,
+    Scene, agent, agent_activity, agent_ask, agent_box, agent_lanes, agent_long, agent_notice,
+    agent_rewind, ask, branch, changes, chrome, chrome_parts, command, file_tab, file_tab_md,
+    file_tab_md_reader, menus, naming, notes, overlays, palette, panes, right_sidebar, sidebar,
+    status_bar, terminal, welcome, window,
 };
 
 /// Files that run or declare the suite but change no scene's picture: an edit to one of these
@@ -55,6 +55,7 @@ pub(super) const AREAS: &[(&str, &[Scene])] = &[
     (agent_box::FILE, agent_box::SCENES),
     (agent_lanes::FILE, agent_lanes::SCENES),
     (agent_activity::FILE, agent_activity::SCENES),
+    (agent_long::FILE, agent_long::SCENES),
     (agent_notice::FILE, agent_notice::SCENES),
     (agent_rewind::FILE, agent_rewind::SCENES),
     (agent_ask::FILE, agent_ask::SCENES),
@@ -362,6 +363,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-ledger-trimmed",
     "agent-ledger-popover",
     "agent-notice-long",
+    "agent-long-chat",
     "agent-rewind",
     "agent-fork",
     "agent-rewind-agy",

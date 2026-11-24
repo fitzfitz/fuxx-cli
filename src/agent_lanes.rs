@@ -41,11 +41,14 @@ pub fn pill_labels(lanes: &[Lane], max: usize) -> Vec<String> {
         .collect()
 }
 
+/// What the kept labels were built for: the lanes' shape and the most characters a label has.
+type LabelsKey = (u64, usize);
+
 /// The strip's labels (`pill_labels`) kept for the lanes' shape (`Conversation::shape`: a lane
 /// started or gone) and the width's cut (the perf chore: built once, not per frame).
 #[derive(Default)]
 pub struct PillLabels {
-    kept: std::cell::RefCell<Option<((u64, usize), std::rc::Rc<Vec<String>>)>>,
+    kept: std::cell::RefCell<Option<(LabelsKey, std::rc::Rc<Vec<String>>)>>,
     builds: std::cell::Cell<usize>,
 }
 
