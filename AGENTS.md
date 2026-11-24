@@ -68,15 +68,18 @@ is pre-1.0 and consumed as a **pinned git dep** — verify the rev. See [`docs/0
 ## Guardrails specific to this project
 
 - **Scope is a terminal for AI agents, not a general IDE.** In: a real terminal (via
-  `alacritty_terminal`), multi-session panes, a sidebar, notification rings, agent-state detection.
-  Out (for now): embedded browser, SSH, remote/tmux daemon, config DSL, Windows — all
-  deferred. (Split panes moved into scope as M8 on 2026-10-27, by the user.) Guard with [`docs/01-Overview/12 - Scope.md`]. The threat now is "add every cmux feature
+  `alacritty_terminal`), multi-session panes, a sidebar, notification rings, agent-state detection,
+  plus what the roadmap has planned and built since (split panes M8; the scripting API M9; the background
+  session daemon, SSH workspaces and the agent browser M10a–M10c; agent tabs, plugins and more in M11 —
+  each listed in the Scope note). Out (for now): a remote fuxx daemon, editing (an IDE), a config DSL,
+  Windows. Guard with [`docs/01-Overview/12 - Scope.md`]. The threat now is "add every cmux feature
   at once," not terminal emulation.
 - **The old v1 scope is reversed and archived.** Terminal emulation IS the product now. The notes
   under `docs/90-Archive-v1-CLI-Wrapper/` (incl. "Why Not libghostty" / "Scope Boundaries") describe
   the *wrapper* project and no longer govern.
-- **macOS notifications:** use `osascript`, not `notify-rust` (v1 finding — see memory
-  `macos-notify-rust-broken`).
+- **macOS notifications:** never `notify-rust` (v1 finding — see memory `macos-notify-rust-broken`).
+  fuxx's own banners come from the app bundle through UserNotifications (M11c), with `osascript` as the
+  fallback.
 - **Verify crate versions/APIs via Context7** (above); GPUI rev must be pinned.
 - **Build for reuse, keep files lean, no duplication.** Before writing a UI component, helper, or
   function, search for an existing one to reuse or extend. If the same shape shows up a second
