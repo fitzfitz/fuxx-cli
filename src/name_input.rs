@@ -70,6 +70,13 @@ pub struct NameInput {
     /// Drawn without its own edge and fill (the box it sits in has them: a browser tab's
     /// address field).
     bare: bool,
+    /// Its caret's blink (the 2026-11-24 chores): `caret_on` is what the last render decided;
+    /// `blink_seen` the text, selection and focus it saw (a change restarts the blink); one
+    /// timer at a time, only while the caret will flip again.
+    blink: crate::caret_blink::CaretBlink,
+    caret_on: bool,
+    blink_seen: (String, Range<usize>, bool),
+    blink_timer: Option<gpui::Task<()>>,
     _blur: Subscription,
 }
 
@@ -99,6 +106,10 @@ impl NameInput {
             last_origin: None,
             last_bounds: None,
             bare: false,
+            blink: crate::caret_blink::CaretBlink::new(std::time::Instant::now()),
+            caret_on: true,
+            blink_seen: (String::new(), 0..0, false),
+            blink_timer: None,
             _blur: blur,
         }
     }
@@ -542,6 +553,7 @@ impl EntityInputHandler for NameInput {
 
 impl Render for NameInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.blink(window, cx);
         let ui = cx.global::<Appearance>().theme.ui();
         // Focused, the edge is the focus colour: softer than the dim text on a light theme, and
         // still a 3:1 line.
@@ -589,6 +601,37 @@ impl Render for NameInput {
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .child(NameText { input: cx.entity() })
+    }
+}
+
+impl NameInput {
+    /// The caret's blink for this render: a change of text, selection or focus makes it solid
+    /// again; the next flip, if any, is one timer that redraws only this field.
+    fn blink(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
+        let focused = self.focus_handle.is_focused(window);
+        let seen = (self.text.clone(), self.selected.clone(), focused);
+        if self.blink_seen != seen {
+            self.blink_seen = seen;
+            self.blink.last_input = now;
+            self.blink_timer = None;
+        }
+        self.blink.focused = focused;
+        self.blink.window_active = window.is_window_active();
+        self.blink.enabled = cx.global::<Appearance>().cursor_glow;
+        self.caret_on = self.blink.shown(now);
+        if self.blink_timer.is_none()
+            && let Some(wait) = self.blink.next_flip(now)
+        {
+            self.blink_timer = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                this.update(cx, |this, cx| {
+                    this.blink_timer = None;
+                    cx.notify();
+                })
+                .ok();
+            }));
+        }
     }
 }
 
@@ -694,9 +737,14 @@ impl Element for NameText {
         cx: &mut App,
     ) {
         let Some(line) = line.take() else { return };
-        let (focus_handle, caret_index, selection) = {
+        let (focus_handle, caret_index, selection, caret_on) = {
             let input = self.input.read(cx);
-            (input.focus_handle.clone(), input.caret(), input.selection())
+            (
+                input.focus_handle.clone(),
+                input.caret(),
+                input.selection(),
+                input.caret_on,
+            )
         };
         window.handle_input(
             &focus_handle,
@@ -725,7 +773,7 @@ impl Element for NameText {
         }
         line.paint(origin, line_height, TextAlign::Left, None, window, cx)
             .ok();
-        if focus_handle.is_focused(window) {
+        if focus_handle.is_focused(window) && caret_on {
             let x = origin.x + line.x_for_index(caret_index);
             let color = window.text_style().color;
             window.paint_quad(fill(
