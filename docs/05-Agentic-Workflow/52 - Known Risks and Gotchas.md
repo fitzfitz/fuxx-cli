@@ -25,15 +25,17 @@ Things likely to trip up **fuxx** (the terminal app), recorded so they don't sur
   observable, and say so.
 - **Rendering the `alacritty_terminal` grid is the hard part** ([[41 - Milestone 1 - One Terminal Pane]])
   — glyph shaping, colors, perf. Fallback if it's too costly: `gpui-ghostty` (needs the Zig toolchain).
-- **macOS notifications:** use **`osascript`**, not `notify-rust` (its deprecated `NSUserNotification`
-  backend silently no-ops on modern macOS). Memory: `macos-notify-rust-broken`.
+- **macOS notifications:** never `notify-rust` (its deprecated `NSUserNotification` backend silently no-ops on
+  modern macOS; memory: `macos-notify-rust-broken`). fuxx's own banners need the app bundle (UserNotifications,
+  M11c); `cargo run` and a refused permission fall back to **`osascript`**.
 - **Crate / API drift:** verify versions and APIs via **Context7** or the source repo; don't trust
   remembered numbers.
 
 ## Process
 
-- **Scope creep toward cmux-parity / a general IDE.** The core is a terminal + multi-agent rings;
-  split panes, browser, SSH, and a daemon are deferred ([[12 - Scope]]). Don't pull them into the core.
+- **Scope creep toward cmux-parity / a general IDE.** The core is a terminal + multi-agent rings. Split panes,
+  the browser, SSH and the background daemon came in later as planned milestones (M8, M10a–M10c); anything new
+  waits until [[12 - Scope]] and the roadmap say so. Editing stays out.
 - **Over-planning stalls solo projects.** One milestone at a time; don't spec far-future phases in
   detail early.
 - **Lost progress** between sessions if [[60 - Progress Log]] isn't updated.

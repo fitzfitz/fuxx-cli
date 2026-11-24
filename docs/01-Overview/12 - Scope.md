@@ -29,11 +29,30 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   font, size and ligatures and override colors, saved to fuxx's own settings file and applied live.
 - **Session ergonomics** (M7): project groups, rename/reorder, agent presets, session restore.
 - **Split panes** (M8, moved into scope 2026-10-27 on request): nested splits, each pane its own session.
+- **A scripting API** (M9, added 2026-10-27 on request): a private socket, the `fuxx` command (sessions, status,
+  question, answer, wait, events, note and progress) and `fuxx mcp` for agents. See
+  [[49 - Milestone 9 - Scripting API]].
+- **cmux's extras, built as M10a–M10c** (moved in 2026-10-27 by your go, split three ways after
+  [[Input - M10 Feasibility Study]]; they were on the "Out" list until then):
+  - **Persistent sessions** (M10a): an opt-in background `fuxx daemon` owns the sessions, so they keep running after
+    quit and the window reattaches. See [[50 - Milestone 10a - Persistent Sessions]].
+  - **SSH workspaces** (M10b): a session runs your local `ssh` (host picker from `~/.ssh/config`, connection reuse,
+    reconnect, optional tmux on the host). A remote fuxx daemon stays out. See [[51 - Milestone 10b - SSH Workspaces]].
+  - **The agent browser** (M10c, then inside a pane in M11b): a WebKit page agents drive through `fuxx browser …` and
+    MCP tools. See [[52 - Milestone 10c - Agent Browser]].
+- **The UI/UX uplift, workspaces and pane tabs** (M11 and M11b, added 2026-10-27 and 2026-11-06 on request): the
+  integrated titlebar, shaped status marks, light themes with a contrast floor; workspaces in the sidebar, split
+  panes each with their own tab bar of terminal and browser tabs, the 🔔 list. See
+  [[53 - Milestone 11 - UI-UX Uplift]] and [[54 - Milestone 11b - Workspaces, Pane Tabs and In-Pane Browser]].
+- **Native notifications** (M11c, moved here from M12 on 2026-11-06): banners from fuxx itself, a click shows the
+  terminal that raised it, `osascript` as the fallback. See [[55 - Milestone 11c - Native Notifications]].
+- **A Help menu** (M11d, added 2026-11-07 by you): searchable keyboard shortcuts (⌘/), the command reference,
+  notifications status, Report an Issue / Show Logs. See [[56 - Milestone 11d - Help Menu]].
 - macOS first (Linux capable via the Rust stack).
 - A **tester build** after the MVP (M4b, added 2026-10-26): an unsigned `.app` in a DMG. Signing,
   notarization and Homebrew stay later (M12, M13).
 - **Updating itself** (M11e, added 2026-11-08 by you): GitHub Releases built by GitHub Actions on a version tag,
-  and an "Update Available" button in the sidebar that downloads, swaps and reopens fuxx. No Developer ID needed.
+  and an "Update Available" button in the sidebar (in the status bar since M11i) that downloads, swaps and reopens fuxx. No Developer ID needed.
   See [[57 - Milestone 11e - Update Available]].
 - **A cursor with style** (M11f, added 2026-11-08 by you): a bar cursor that glides, breathes, follows the agent's
   status colour, with optional trail and sparks; set in Preferences. See [[58 - Milestone 11f - Cursor Style]].
@@ -148,29 +167,6 @@ The line between what fuxx **is** and **is not**, so a huge project stays finish
   [[78 - Milestone 11ac - File Tab Polish]].
 - **File tab chores** (M11ae, added 2026-11-16 by you: "let's fix file preview. right now no scrollbar…"; chosen: "B with overlay scrollbar"): a file tab's bar becomes a two-line title (name and git change count; folders, type, lines, when edited) with one File | Diff | Preview switch and icon buttons; an overlay scrollbar in File, Diff and Preview; drag-select past the text's edge scrolls. Not in it: editing, a minimap, scrollbars elsewhere, clickable path segments. See [[80 - Milestone 11ae - File Tab Chores]].
 - **File view upgrades** (M11af–M11ai, added 2026-11-16 by you: "can we make the UI great on the file preview?" → "everything", near-future ideas "1 and 3"): live changes with who wrote them, asking the agent from selected code, a richer code view (current line, sticky scope, folding, review-style diffs) and a richer Markdown reader (centred column, outline, callouts, coloured code). Still a read-only viewer: no editing, no language servers. See [[Proposal - File View Upgrades]].
-
-## Out of scope (for now — resist scope creep)
-
-- Being a general IDE / **editor**. *(Changed 2026-11-08 by you: a **read-only file viewer** is now in scope
-  (the right sidebar's Files and file tabs, M11g–M11h, [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]]).
-  Editing, autocomplete, language servers and debugging stay out.)*
-- A plugin store or marketplace, or a config *language* (scripting, conditionals) beyond the plain `key = value`
-  settings file above. *(Changed 2026-11-12 by you: **plugins** installed from a GitHub link are now in scope,
-  M11y–M11z above; a store, search or ratings stay out.)*
-- Windows support (later).
-- cmux's extras until the core is solid: **embedded browser, SSH workspaces, remote/tmux daemon** —
-  all deferred (see [[40 - Roadmap]] "Later"). *(Split panes were on this list until 2026-10-27, when
-  you moved them into scope as M8.)*
-
-## The rule
-
-If a feature doesn't serve **"run and watch AI agents in one window,"** it waits. Build the terminal +
-the multi-agent ring layer first; everything cmux-extra is post-core.
-
-## Related
-
-- [[10 - What Is fuxx]] · [[40 - Roadmap]]
-
 - **Commit from the Git tab** (M11aq, added 2026-11-22 by you: "let's do this", after the Lead UI/UX Designer's
   suggestions for the Git tab): a message field above the branch bar, ⌘↵ / ✓N to commit the staged files, a failed
   hook's output kept, the draft per repo for the run; ✦ has the workspace's agent write the message from the staged
@@ -179,7 +175,9 @@ the multi-agent ring layer first; everything cmux-extra is post-core.
   [[92 - Milestone 11aq - Commit]].
 - **Subagents** (M11ar, added 2026-11-22 by you: "I want the full power of both claude and agy", "go with A"): see
   each Claude and agy subagent, switch the chat view to one (pills) and follow it live, stop one where the agent
-  allows; one shared model, a translator per agent. Not in it: typing to a subagent, agy swarms. Next, each its own
+  allows; one shared model, a translator per agent. Not in it: typing to a subagent, agy swarms.
+  *(Changed 2026-11-24 by the chores after it: a message to a running Claude subagent goes through Main, which
+  passes it on; see "Agent tab chores" below.)* Next, each its own
   decision: **M11as Agent browser** (fuxx's browser tools in every agent tab) and **M11at Browser testing**. See
   [[93 - Milestone 11ar - Subagents]].
 - **Declared plugin settings** (M11au, added 2026-11-22 by you, approving fuxx-completes' suggestion-list design
@@ -190,3 +188,48 @@ the multi-agent ring layer first; everything cmux-extra is post-core.
   removes the values. This changes note 76's "Not in it: plugin settings pages inside Preferences" for declared
   settings only. Not in it: text, choice or range settings, live reload, settings for theme-only plugins' themes, a
   page of its own per plugin. See [[94 - Milestone 11au - Plugin Settings]].
+
+- **The agent box, UI Uplift 3 and live usage** (M11ak, M11al and M11ap, added 2026-11-17 and 2026-11-21 by you):
+  the agent tab's box (folder and branch chips, folder picker, model with effort, mode chip, attach, `/` and `@`
+  menus); the terminal and right panel as one floating card with roomier sidebar rows; Claude's and Antigravity's
+  usage live in a status bar strip with a popover. See [[83 - Milestone 11ak - Agent Box]],
+  [[84 - Milestone 11al - UI Uplift 3]] and [[91 - Milestone 11ap - Live Usage]].
+- **Agent tab chores after M11ar** (2026-11-23 and 2026-11-24, each on your words; released in v0.13.0 and v0.13.1):
+  new agent tabs in Auto, ⇧Tab through the modes, the pane bar's + menu and ⌘T like the last tab; prompt history
+  (↑/↓) and Claude's prompt suggestions; the latest-prompt strip; split buttons in place of the ⋯ menu; one selection
+  blue; one right-click menu (terminal, file tab, Files tree, chat and box); links and a program's own browser
+  openings landing where "Open links in" says (a split on the right by default); files as pills in the box; Rewind
+  and Fork (Claude; Edit for agy); taking back a queued message; the agent's questions as a card (agy's answered by
+  an ordinary message); subagent lanes that resume, a relay to a running subagent via Main, a closing bar, robot rows
+  and "Orchestrating…"; and the agent activity view (file tracks per busy step, honest check outcomes, the turn
+  ledger). Each is written up, with what it leaves out, in [[93 - Milestone 11ar - Subagents]] ("Chores after M11ar").
+
+## Out of scope (for now — resist scope creep)
+
+- Being a general IDE / **editor**. *(Changed 2026-11-08 by you: a **read-only file viewer** is now in scope
+  (the right sidebar's Files and file tabs, M11g–M11h, [[59 - Milestones 11g-11h - Right Sidebar and File Tabs]]).
+  Editing, autocomplete, language servers and debugging stay out.)*
+- A plugin store or marketplace, or a config *language* (scripting, conditionals) beyond the plain `key = value`
+  settings file above. *(Changed 2026-11-12 by you: **plugins** installed from a GitHub link are now in scope,
+  M11y–M11z above; a store, search or ratings stay out.)*
+- Windows support (later).
+- A **remote fuxx daemon** on SSH hosts (M10b runs your local `ssh`, with optional tmux on the host; a daemon of
+  fuxx's own on the remote side stays deferred). *(This line used to read "cmux's extras until the core is solid:
+  embedded browser, SSH workspaces, remote/tmux daemon — all deferred". Split panes left it on 2026-10-27 (M8), and
+  the browser, SSH workspaces and the local background daemon on 2026-10-27 too, built as M10a–M10c, see "In scope"
+  above.)*
+- Agent tabs on remote hosts, and agent providers beyond Claude Code and Antigravity until the planned **ACP
+  client** ([[40 - Roadmap]]; Codex and opencode presets run as terminal tabs today).
+
+## The rule
+
+If a feature doesn't serve **"run and watch AI agents in one window,"** it waits. Build the terminal +
+the multi-agent ring layer first; everything cmux-extra is post-core.
+
+*(Where that stands, 2026-11-24: the terminal and the ring layer are built, and the cmux extras came after them as
+their own milestones (M10a–M10c). The rule still holds for everything new: a feature is in only once it is written
+into this note and [[40 - Roadmap]].)*
+
+## Related
+
+- [[10 - What Is fuxx]] · [[40 - Roadmap]]

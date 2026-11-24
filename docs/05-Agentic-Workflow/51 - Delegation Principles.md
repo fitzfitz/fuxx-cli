@@ -36,7 +36,8 @@ session. The docs are part of the deliverable, not an afterthought.
 Before accepting any suggestion that adds a feature, check it against [[12 - Scope]]. The pull
 now is the opposite of v1's: to turn fuxx into a general IDE, or to drag cmux-parity extras
 (split panes, in-app browser, SSH, daemon) into the core early. Build the terminal + the
-multi-agent rings first; resist the rest until the core is solid.
+multi-agent rings first; resist the rest until the core is solid. *(2026-11-24: the core is built, and those
+extras arrived later as their own planned milestones (M8, M10a–M10c). The check still applies to anything new.)*
 
 ## Related
 

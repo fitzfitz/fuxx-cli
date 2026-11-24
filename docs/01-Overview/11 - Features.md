@@ -41,8 +41,8 @@ whatever the [[40 - Roadmap]] points at. Priorities: `P0` core / `P1` daily-driv
   detection, extended to OSC 99 / OSC 777 / BEL on 2026-10-26, + heuristics on the output stream).
 - `P0` Visual **ring / status badge** per session in the sidebar; at-a-glance across all sessions.
 - `P1` Desktop notifications for **background** sessions (focus-aware — don't nag about the active one).
-- `P1` Jump-to-session from a notification. *(Moved to M12 by D5, 2026-10-26; moved again to **M11c** on 2026-11-06: a test showed the ad-hoc signed `.app` can do it.)*
-- `P2` Notification history / activity feed.
+- `P1` Jump-to-session from a notification. *(Moved to M12 by D5, 2026-10-26; moved again to **M11c** on 2026-11-06: a test showed the ad-hoc signed `.app` can do it. Built in M11c.)*
+- `P2` Notification history / activity feed. *(Built: the 🔔 list in M11b, the right sidebar's Activity in M11h.)*
 
 ## D. Layout
 
@@ -52,18 +52,39 @@ whatever the [[40 - Roadmap]] points at. Priorities: `P0` core / `P1` daily-driv
 
 ## E. Programmability & integration (cmux-like)
 
-- `P2` A **socket API** per session (cmux exposes `CMUX_SOCKET_PATH` per pane) for scripting.
-- `P3` Scriptable automation of sessions/layout.
+- `P2` A **socket API** per session (cmux exposes `CMUX_SOCKET_PATH` per pane) for scripting. *(Built in M9: one
+  private socket, the `fuxx` command and `fuxx mcp`.)*
+- `P3` Scriptable automation of sessions/layout. *(Built in M9: `fuxx new --split/--tab`, `send`, `key`, `wait`, `events`.)*
 
-## F. cmux-parity extras (explicitly later)
+## F. cmux-parity extras (built after the core, M10a–M10c)
 
-- `P3` In-app scriptable browser.
-- `P3` SSH workspaces.
-- `P3` Remote / tmux-compatible daemon.
+- `P3` In-app scriptable browser. *(Built: M10c, inside a pane since M11b.)*
+- `P3` SSH workspaces. *(Built: M10b, local `ssh` with optional tmux on the host.)*
+- `P3` Remote / tmux-compatible daemon. *(A local background daemon is built (M10a, opt-in "Keep running after
+  quit"); a remote fuxx daemon stays deferred.)*
 
-## G. Distribution & platform
+## G. Agent tabs (M11aa onward)
+
+Added 2026-11-13 by you; see [[79 - Milestone 11aa - Agent Tabs]] and [[93 - Milestone 11ar - Subagents]].
+
+- Claude Code and Antigravity run by fuxx in their stream-json modes, drawn as a chat: replies, tool calls, diffs,
+  permission prompts, the agent's questions as a card. *(M11aa; the question card in the chores after M11ar.)*
+- The agent box: folder and branch chips, model and effort, mode (Auto by default, ⇧Tab), attachments, `/` and `@`
+  menus, prompt history, Claude's prompt suggestions, files as pills. *(M11ak and the chores after M11ar.)*
+- Subagents in lanes, Rewind and Fork, live usage, the agent activity view (file tracks, the turn ledger). *(M11ar,
+  M11ap and the chores after M11ar.)*
+- Background agents (M11ad) and an ACP client for more agents are planned, not built.
+
+## H. The repo, read-only
+
+- The right sidebar's Files, Changes (stage, revert, commit, branch bar, Graph) and Activity; read-only file tabs
+  with live changes, the agent's notes, a richer code view and a Markdown reader. *(M11g–M11h, M11t–M11w, M11ac,
+  M11ae–M11ai, M11aq.)*
+
+## I. Distribution & platform
 
 - `P1` Cross-platform-capable (macOS first; Linux via the Rust stack).
+- `P2` Updating itself from GitHub Releases. *(Built in M11e.)*
 - `P2` **Ship as a real `.app`** (bundle + signing/notarization). The notification identity (v1's `osascript` banner
   shows as "Script Editor") is fixed earlier, in **M11c**, from the ad-hoc signed app (test, 2026-11-06).
 - `P2` Homebrew cask for install.

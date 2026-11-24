@@ -15,9 +15,9 @@ running AI coding agents**, built in Rust.
 - [[10 - What Is fuxx]] — the product / vision
 - [[11 - Features]] — full feature catalog (phased)
 - [[12 - Scope]] — what the terminal is and is not
-- [[20 - Architecture Overview]] — GPUI + alacritty_terminal + sessions + rings
+- [[20 - Architecture Overview]] — GPUI + alacritty_terminal + workspaces, agent tabs + rings
 - [[30 - Tech Stack]] — GPUI, alacritty_terminal, portable-pty, rendering
-- [[40 - Roadmap]] — the ordered milestones (M0 → M4)
+- [[40 - Roadmap]] — the ordered milestones (M0 → M13)
 - [[70 - Terminal App Pivot — Vision and Stack]] — why we pivoted and how we chose the stack
 - [[50 - Agentic Workflow]] · [[60 - Progress Log]] — how we work + running memory (carried over from v1)
 - [[55 - Releasing]] — how a fuxx release is made (version, tag, the Release workflow)
