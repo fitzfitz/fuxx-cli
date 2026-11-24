@@ -385,6 +385,7 @@ mod tests {
             detail: None,
             output: None,
             dropped_lines: 0,
+            activity: None,
         }
     }
 

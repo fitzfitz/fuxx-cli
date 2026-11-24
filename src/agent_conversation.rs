@@ -1,6 +1,7 @@
 //! The conversation model (M11aa): folds a provider's `Event`s into chat items and a status.
 //! Pure and GPUI-free.
 
+use crate::agent_activity::{Activity, announces_failure};
 use crate::providers::{
     Event, LaneControls, LaneEnd, Past, QAnswer, Question, TodoItem, ToolDetail,
 };
@@ -73,6 +74,9 @@ pub enum Item {
         detail: Option<ToolDetail>,
         output: Option<String>,
         dropped_lines: usize,
+        /// What the call does (the agent activity chore): its provider's, set at its start and
+        /// replaced at its finish; None until the provider sends one.
+        activity: Option<Box<Activity>>,
     },
     Todo(Vec<TodoItem>),
     Permission {
@@ -198,6 +202,9 @@ pub struct Conversation {
     /// agy, 2026-11-24): it went on without waiting, so an open one waits on nothing, and
     /// only you close it (an answer, a skip, another message).
     by_message: bool,
+    /// Where the restored history ends (`items.len()` after `past`; 0: none restored): the
+    /// agent activity chore's ledger shows only for a live turn.
+    live_from: usize,
 }
 
 /// What `Conversation::cut_before` cut (batch 3, chore 2): kept for Undo Rewind until the next
@@ -282,6 +289,7 @@ impl Conversation {
                 self.cost_usd = None;
                 self.context_pct = None;
                 self.finished = false;
+                self.live_from = 0;
             }
             Event::Started {
                 conversation,
@@ -365,8 +373,10 @@ impl Conversation {
                     detail,
                     output: None,
                     dropped_lines: 0,
+                    activity: None,
                 })
             }
+            Event::Activity { id, activity } => self.set_activity(&id, activity),
             Event::ToolFinished {
                 id,
                 ok,
@@ -776,6 +786,54 @@ impl Conversation {
         // A subagent with no end in the history was cut off (the app quit mid-run).
         self.stop_lanes(LaneStatus::Ended);
         self.settle();
+        self.live_from = self.items.len();
+    }
+
+    /// Tool call `id`'s activity (the agent activity chore). A finished check that failed is
+    /// "as planned" when the call's own words or the narration before its run announced it.
+    fn set_activity(&mut self, id: &str, mut activity: Activity) {
+        let Some(ix) = self
+            .items
+            .iter()
+            .rposition(|i| matches!(i, Item::Tool { id: t, .. } if t == id))
+        else {
+            return;
+        };
+        let finished = matches!(&self.items[ix], Item::Tool { running: false, .. });
+        if finished && activity.check_failed() {
+            activity.planned_failure = activity.said.as_deref().is_some_and(announces_failure)
+                || self.narration_before(ix).is_some_and(announces_failure);
+        }
+        if let Item::Tool { activity: slot, .. } = &mut self.items[ix] {
+            *slot = Some(Box::new(activity));
+        }
+    }
+
+    /// The agent's text just before the run of tool calls holding item `ix`, from the same
+    /// agent (Main's, or the same lane's); None when your message comes first.
+    pub fn narration_before(&self, ix: usize) -> Option<&str> {
+        let Some(Item::Tool { parent, .. }) = self.items.get(ix) else {
+            return None;
+        };
+        for item in self.items[..ix].iter().rev() {
+            match item {
+                Item::Agent {
+                    text, parent: p, ..
+                } if p == parent => return Some(text),
+                Item::You { .. } => return None,
+                Item::Resumed { lane, .. } if parent.as_deref() == Some(lane.as_str()) => {
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Where the restored history ends (0: none restored).
+    #[allow(dead_code)] // the step model and ledger (this chore's next tasks) call it.
+    pub fn live_from(&self) -> usize {
+        self.live_from
     }
 
     /// The agent couldn't be started: one error row, and the conversation is over (Done).
@@ -792,6 +850,7 @@ impl Conversation {
     /// new conversation follows what came before). Nothing is left running or waiting.
     pub fn keep_first(&mut self, len: usize) {
         self.items.truncate(len);
+        self.live_from = self.live_from.min(len);
         // Rare (a failed resume): the one still there is looked for once.
         if self.latest_you.is_some_and(|i| i >= len) {
             self.latest_you = self
@@ -819,6 +878,7 @@ impl Conversation {
         // A lane's start is how many items there were then: one at `ix` or before began before
         // your message at `ix` was added.
         let keep = self.lane_starts.iter().take_while(|&&at| at <= ix).count();
+        self.live_from = self.live_from.min(ix);
         let cut = Cut {
             at: ix,
             items: self.items.split_off(ix),
@@ -3005,5 +3065,134 @@ mod tests {
         c.apply(Event::Cleared);
         check(&c, "cleared");
         assert!(c.open_asks.is_empty());
+    }
+
+    // ---- the agent activity chore ----
+
+    fn activity_of(derived: &str, check: Option<crate::agent_activity::Outcome>) -> Event {
+        Event::Activity {
+            id: "t1".into(),
+            activity: Activity {
+                derived: derived.into(),
+                check: check.map(|outcome| crate::agent_activity::Check {
+                    what: crate::agent_activity::CheckWhat::Tests,
+                    scope: "cargo test".into(),
+                    outcome,
+                }),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn finished_ok(id: &str, ok: bool) -> Event {
+        Event::ToolFinished {
+            id: id.into(),
+            ok,
+            summary: String::new(),
+            output: None,
+        }
+    }
+
+    fn tool_activity<'a>(c: &'a Conversation, id: &str) -> Option<&'a Activity> {
+        c.items().iter().find_map(|i| match i {
+            Item::Tool {
+                id: t, activity, ..
+            } if t == id => activity.as_deref(),
+            _ => None,
+        })
+    }
+
+    fn failed_check() -> Option<crate::agent_activity::Outcome> {
+        Some(crate::agent_activity::Outcome::Failed {
+            failed: Some(1),
+            of: Some(3),
+            first_error: None,
+        })
+    }
+
+    #[test]
+    fn an_activity_is_stored_on_its_tool_and_replaced_at_its_finish() {
+        let mut c = Conversation::new();
+        c.apply(tool_started("t1"));
+        assert!(tool_activity(&c, "t1").is_none());
+        c.apply(activity_of("Reading api.rs", None));
+        assert_eq!(tool_activity(&c, "t1").unwrap().derived, "Reading api.rs");
+        c.apply(finished_ok("t1", true));
+        c.apply(activity_of("Read api.rs", None));
+        assert_eq!(tool_activity(&c, "t1").unwrap().derived, "Read api.rs");
+    }
+
+    #[test]
+    fn a_failure_the_narration_announced_is_planned() {
+        let run = |narration: Option<&str>, said: Option<&str>| {
+            let mut c = Conversation::new();
+            if let Some(n) = narration {
+                c.apply(done("m1", n));
+            }
+            c.apply(tool_started("t1"));
+            c.apply(finished_ok("t1", false));
+            let Event::Activity { id, mut activity } = activity_of("Ran tests", failed_check())
+            else {
+                unreachable!()
+            };
+            activity.said = said.map(String::from);
+            c.apply(Event::Activity { id, activity });
+            tool_activity(&c, "t1").unwrap().planned_failure
+        };
+        assert!(run(Some("Write the failing test first (red first)."), None));
+        assert!(!run(None, None));
+        assert!(!run(Some("Run the tests."), None));
+        assert!(run(None, Some("Run it, it should fail")));
+    }
+
+    #[test]
+    fn narration_is_the_text_just_before_the_run() {
+        let mut c = Conversation::new();
+        c.you("go".into(), vec![]);
+        c.apply(done("m1", "A"));
+        c.apply(tool_started("t1"));
+        c.apply(tool_started("t2"));
+        assert_eq!(c.narration_before(3), Some("A"));
+        assert_eq!(c.narration_before(2), Some("A"));
+        let mut c = Conversation::new();
+        c.apply(done("m1", "A"));
+        c.you("go".into(), vec![]);
+        c.apply(tool_started("t1"));
+        assert_eq!(c.narration_before(2), None);
+        // A subagent's tool reads only its own lane's text.
+        let mut c = Conversation::new();
+        c.apply(done("m1", "Main says"));
+        c.apply(Event::MessageDone {
+            message: "m2".into(),
+            text: "Lane says".into(),
+            parent: Some("L".into()),
+        });
+        c.apply(done("m3", "Main again"));
+        c.apply(Event::ToolStarted {
+            id: "t1".into(),
+            name: "Bash".into(),
+            summary: "ls".into(),
+            parent: Some("L".into()),
+            detail: None,
+            writes: Vec::new(),
+            texts: Vec::new(),
+        });
+        assert_eq!(c.narration_before(3), Some("Lane says"));
+    }
+
+    #[test]
+    fn live_from_is_where_the_history_ends() {
+        let mut c = Conversation::new();
+        assert_eq!(c.live_from(), 0);
+        c.past(vec![
+            Past::You {
+                text: "hi".into(),
+                id: None,
+            },
+            Past::Event(done("m1", "hello")),
+        ]);
+        assert_eq!(c.live_from(), c.items().len());
+        c.apply(Event::Cleared);
+        assert_eq!(c.live_from(), 0);
     }
 }

@@ -16,6 +16,7 @@ mod agent_detect;
 mod agent_lanes;
 mod agent_markdown;
 mod agent_process;
+mod agent_steps;
 mod agent_sweep;
 mod agent_tab;
 mod agent_tool_modal;

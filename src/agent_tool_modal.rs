@@ -247,6 +247,7 @@ mod tests {
             detail,
             output: Some("out".into()),
             dropped_lines: 0,
+            activity: None,
         }
     }
 

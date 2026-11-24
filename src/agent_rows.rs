@@ -669,10 +669,9 @@ impl AgentTab {
             None => (name, summary),
         };
         let right: (String, Rgb) = if *running {
-            let since = self
-                .tool_started
-                .get(id)
-                .map_or(Duration::ZERO, |t| look.now.saturating_duration_since(*t));
+            let since = self.tool_times.get(id).map_or(Duration::ZERO, |(t, _)| {
+                look.now.saturating_duration_since(*t)
+            });
             (elapsed_label(since), c.panel_dim)
         } else if *ok == Some(false) {
             let bare = result.trim_start_matches('✗').trim_start();

@@ -1,7 +1,6 @@
 //! Reading a check's outcome from its output (the agent activity chore): cargo, pytest, jest /
 //! vitest and go test summaries, since an exit code can lie through a pipe
 //! (`cargo test 2>&1 | tail -20` exits as `tail` does). Pure and generic.
-#![allow(dead_code)] // the providers (this chore's next task) and the views call it; removed then.
 
 use std::borrow::Cow;
 
@@ -257,6 +256,7 @@ pub fn strip_ansi(text: &str) -> Cow<'_, str> {
 }
 
 /// A compiler error's code: `error[E0425]: …` → `E0425`.
+#[allow(dead_code)] // the step model and ledger (this chore's next tasks) call it.
 pub fn error_code(first_error: &str) -> Option<&str> {
     let rest = &first_error[first_error.find("error[")? + "error[".len()..];
     let code = &rest[..rest.find(']')?];

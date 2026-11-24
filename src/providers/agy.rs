@@ -7,6 +7,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::path::Path;
 
+mod activity;
+
 /// An RFC 3339 time (`2026-11-22T14:59:00Z`, `…+07:00`, fractions allowed) as unix seconds.
 pub fn rfc3339_unix(text: &str) -> Option<i64> {
     let (date, rest) = text.split_once(['T', 't'])?;
@@ -561,6 +563,9 @@ struct AgyTranslator {
     said: HashMap<String, String>,
     /// The tool steps started and not finished.
     running: HashSet<String>,
+    /// The agent activity chore: each tool call (a step's, or a lane's) between its start and
+    /// its result.
+    activities: HashMap<String, activity::Call>,
     /// The error rows of this turn (a `result` repeating one adds none).
     errors: Vec<String>,
     /// This conversation's id (a subagent reports to it).
@@ -657,11 +662,11 @@ fn tool_writes(name: &str, params: &Value) -> Vec<String> {
 
 /// A `run_command` step's output is agy's header (`Created At`, `Completed At`, `Command
 /// exited with code N.`), then `Command output:` and what the command printed: what it
-/// printed, and whether it exited 0 (None: no header).
-fn command_output(output: &str) -> (String, Option<bool>) {
+/// printed, and its exit code (None: no header).
+fn command_output(output: &str) -> (String, Option<i32>) {
     let code = output.lines().find_map(|l| {
         l.strip_prefix("Command exited with code ")
-            .map(|rest| rest.trim_end_matches('.').trim() == "0")
+            .and_then(|rest| rest.trim_end_matches('.').trim().parse().ok())
     });
     let printed = output
         .split_once("Command output:\n")
@@ -731,6 +736,9 @@ impl AgyTranslator {
         let params = &info["parameters"];
         let mut out = Vec::new();
         if self.running.insert(id.clone()) {
+            // Main's stream has no `toolSummary`: fuxx's own words.
+            let (planned, call) = activity::call_started(&name, params, None);
+            self.activities.insert(id.clone(), call);
             out.push(Event::ToolStarted {
                 id: id.clone(),
                 summary: tool_summary(&name, params),
@@ -744,22 +752,32 @@ impl AgyTranslator {
                 texts: Vec::new(),
                 name: name.clone(),
             });
+            out.push(Event::Activity {
+                id: id.clone(),
+                activity: planned,
+            });
         }
         if done {
             self.running.remove(&id);
             let raw = s(&info["output"]).unwrap_or_default();
-            let (output, exited_ok) = if name == "run_command" {
+            let (output, exit) = if name == "run_command" {
                 command_output(&raw)
             } else {
                 (raw, None)
             };
-            let failed = info["error"].is_string() || step["error"].is_string();
+            let error = s(&info["error"]).or_else(|| s(&step["error"]));
+            let ok = error.is_none() && exit.is_none_or(|c| c == 0);
+            let done = self
+                .activities
+                .remove(&id)
+                .map(|call| activity::call_finished(call, ok, exit, &output, error));
             out.push(Event::ToolFinished {
-                id,
-                ok: !failed && exited_ok != Some(false),
+                id: id.clone(),
+                ok,
                 summary: short(&output, 60),
                 output: (!output.trim().is_empty()).then_some(output),
             });
+            out.extend(done.map(|activity| Event::Activity { id, activity }));
         }
         out
     }
@@ -784,6 +802,10 @@ impl AgyTranslator {
                     writes: Vec::new(),
                     texts: Vec::new(),
                 });
+                out.push(Event::Activity {
+                    id: lane.clone(),
+                    activity: activity::activity_at_start("Subagent", &Value::Null, None),
+                });
                 out.push(Event::SubagentStarted {
                     id: lane.clone(),
                     parent: None,
@@ -805,6 +827,10 @@ impl AgyTranslator {
                     ok: true,
                     summary: String::new(),
                     output: None,
+                });
+                out.push(Event::Activity {
+                    id: lane.clone(),
+                    activity: activity::activity_at_start("Subagent", &Value::Null, None),
                 });
                 if let Some(path) = sub["log_uri"].as_str().and_then(followed_path) {
                     out.push(Event::Follow {
@@ -1030,8 +1056,12 @@ impl Translator for AgyTranslator {
                         .entry(lane.to_string())
                         .or_default()
                         .push(id.clone());
+                    // A lane's calls carry the agent's own words (`toolSummary`).
+                    let said = s(&args["toolSummary"]);
+                    let (planned, call) = activity::call_started(&name, &args, said);
+                    self.activities.insert(id.clone(), call);
                     out.push(Event::ToolStarted {
-                        id,
+                        id: id.clone(),
                         summary: tool_summary(&name, &args),
                         detail: args["CommandLine"]
                             .as_str()
@@ -1040,6 +1070,10 @@ impl Translator for AgyTranslator {
                         writes: Vec::new(),
                         texts: Vec::new(),
                         name: name.clone(),
+                    });
+                    out.push(Event::Activity {
+                        id: id.clone(),
+                        activity: planned,
                     });
                     let to_us = self
                         .conversation
@@ -1056,19 +1090,27 @@ impl Translator for AgyTranslator {
             }
             // A tool's result: it finishes the calls the step before made.
             Some("GENERIC") => {
-                let output = s(&v["content"]).unwrap_or_default();
-                let output: String = output
+                let raw = s(&v["content"]).unwrap_or_default();
+                // A command's header says how it exited (the agent activity chore).
+                let (printed, exit) = command_output(&raw);
+                let ok = exit.is_none_or(|c| c == 0);
+                let output: String = raw
                     .lines()
                     .filter(|l| !l.starts_with("Created At:") && !l.starts_with("Completed At:"))
                     .collect::<Vec<_>>()
                     .join("\n");
                 for id in self.calls.remove(lane).unwrap_or_default() {
+                    let done = self
+                        .activities
+                        .remove(&id)
+                        .map(|call| activity::call_finished(call, ok, exit, &printed, None));
                     out.push(Event::ToolFinished {
-                        id,
-                        ok: true,
+                        id: id.clone(),
+                        ok,
                         summary: short(output.trim(), 60),
                         output: (!output.trim().is_empty()).then(|| output.clone()),
                     });
+                    out.extend(done.map(|activity| Event::Activity { id, activity }));
                 }
             }
             _ => {}
@@ -1608,13 +1650,13 @@ mod tests {
         };
         assert!(matches!(
             t.decode(&line("ACTIVE", None)).as_slice(),
-            [Event::ToolStarted { id, .. }] if id == "c:6"
+            [Event::ToolStarted { id, .. }, Event::Activity { .. }] if id == "c:6"
         ));
         let out =
             "Created At: x\nCompleted At: x\nCommand exited with code 1.\n\nCommand output:\n";
         assert!(matches!(
             t.decode(&line("DONE", Some(out))).as_slice(),
-            [Event::ToolFinished { id, ok: false, .. }] if id == "c:6"
+            [Event::ToolFinished { id, ok: false, .. }, Event::Activity { .. }] if id == "c:6"
         ));
     }
 

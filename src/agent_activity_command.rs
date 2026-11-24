@@ -1,7 +1,6 @@
 //! Reading a shell command for the activity view (the agent activity chore): which files it
 //! reads, searches or changes, whether it runs a check (tests, a build, a lint) and on what scope.
 //! Pure and generic: providers call it for their Bash / run_command tools.
-#![allow(dead_code)] // the providers (this chore's next task) and the views call it; removed then.
 
 use crate::agent_activity::{Check, CheckWhat, How, Outcome, ToolKind, Touch, derived_words};
 use crate::agent_detect::{is_assignment, unquote};

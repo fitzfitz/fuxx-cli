@@ -3,7 +3,6 @@
 //! fills it once and the views only read it. Providers build it from their own events
 //! (`src/providers/<agent>.rs`) through the shared readers in `agent_activity_command` and
 //! `agent_activity_checks`.
-#![allow(dead_code)] // the providers (this chore's next task) and the views call it; removed then.
 
 use std::borrow::Cow;
 
@@ -23,6 +22,7 @@ pub enum ToolKind {
     Search,
     Execute,
     Fetch,
+    #[allow(dead_code)] // ACP's kind: an ACP provider sends it (fuxx's two providers don't).
     Think,
     #[default]
     Other,
@@ -101,6 +101,7 @@ pub struct Activity {
     pub exit: Option<i32>,
 }
 
+#[allow(dead_code)] // the step model and ledger (this chore's next tasks) call it.
 impl Activity {
     /// The agent's words, else fuxx's.
     pub fn title(&self) -> &str {
@@ -302,6 +303,7 @@ fn detail(how: &How) -> String {
 }
 
 /// An activity for a call its provider sent none for, from the item's own fields.
+#[allow(dead_code)] // the step model and ledger (this chore's next tasks) call it.
 pub fn fallback(
     name: &str,
     summary: &str,
@@ -392,8 +394,12 @@ pub fn fallback(
 }
 
 /// A tool item's activity: the one its provider sent, else a fallback. None: not a tool.
+#[allow(dead_code)] // the step model and ledger (this chore's next tasks) call it.
 pub fn of(item: &Item) -> Option<Cow<'_, Activity>> {
     match item {
+        Item::Tool {
+            activity: Some(a), ..
+        } => Some(Cow::Borrowed(&**a)),
         Item::Tool {
             name,
             summary,

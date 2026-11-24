@@ -830,6 +830,7 @@ pub(crate) fn fingerprint(item: &Item) -> u64 {
             result,
             output,
             dropped_lines,
+            activity,
             ..
         } => (
             running,
@@ -837,6 +838,7 @@ pub(crate) fn fingerprint(item: &Item) -> u64 {
             result,
             output.as_ref().map(String::len),
             dropped_lines,
+            activity,
         )
             .hash(&mut h),
         Item::Todo(list) => {
@@ -1496,8 +1498,9 @@ pub struct AgentTab {
     /// Whether the box's placeholder was last set for a tab under `NARROW` (a lane's relay
     /// placeholder is shorter there; the width is known only once laid out).
     placeholder_narrow: bool,
-    /// When each running tool started (for its elapsed time).
-    tool_started: std::collections::HashMap<String, Instant>,
+    /// When each tool call started and finished, live only (its elapsed time; the agent
+    /// activity chore's step times).
+    tool_times: crate::agent_steps::ToolTimes,
     /// Tool calls that write files and haven't finished (reported to the edit ledger).
     open_edits: HashSet<String>,
     /// Why the edits were made (M11ag): see `Reasons`.
@@ -2198,7 +2201,7 @@ impl AgentTab {
             thinking_mark,
             bar_width: Rc::new(Cell::new(f32::MAX)),
             placeholder_narrow: false,
-            tool_started: std::collections::HashMap::new(),
+            tool_times: crate::agent_steps::ToolTimes::new(),
             open_edits: HashSet::new(),
             reasons: Reasons::default(),
             said: Said::default(),
@@ -2953,7 +2956,12 @@ impl AgentTab {
                     self.run.resume = None;
                 }
                 Event::ToolStarted { id, .. } => {
-                    self.tool_started.insert(id.clone(), Instant::now());
+                    self.tool_times.insert(id.clone(), (Instant::now(), None));
+                }
+                Event::ToolFinished { id, .. } => {
+                    if let Some((_, end)) = self.tool_times.get_mut(id) {
+                        end.get_or_insert_with(Instant::now);
+                    }
                 }
                 Event::Follow { id, path, main } => {
                     self.follow(id.clone(), path.clone(), *main, cx)
@@ -2991,7 +2999,7 @@ impl AgentTab {
                     // going on, not a failed resume (your report, 2026-11-22: the first `/clear`
                     // after a restart said "Couldn't resume…").
                     self.run.resume = None;
-                    self.tool_started.clear();
+                    self.tool_times.clear();
                     self.followers.clear();
                     self.lane_times.clear();
                     self.lane_runs.clear();
@@ -5066,7 +5074,7 @@ impl AgentTab {
             let n = |k| d.rows.iter().filter(|r| r.kind == k).count();
             (n(RowKind::Added), n(RowKind::Removed))
         });
-        let elapsed = self.tool_started.get(id).map_or(String::new(), |t| {
+        let elapsed = self.tool_times.get(id).map_or(String::new(), |(t, _)| {
             elapsed_label(look.now.saturating_duration_since(*t))
         });
         let children: Vec<usize> = items
@@ -6897,6 +6905,31 @@ mod tests {
         }
         assert_ne!(fingerprint(&a), fingerprint(&b));
         assert_eq!(fingerprint(&a), fingerprint(&a.clone()));
+    }
+
+    #[test]
+    fn a_tool_s_print_changes_with_its_activity() {
+        let a = Item::Tool {
+            id: "t1".into(),
+            name: "Read".into(),
+            summary: "api.rs".into(),
+            parent: None,
+            running: false,
+            ok: Some(true),
+            result: String::new(),
+            detail: None,
+            output: None,
+            dropped_lines: 0,
+            activity: None,
+        };
+        let mut b = a.clone();
+        if let Item::Tool { activity, .. } = &mut b {
+            *activity = Some(Box::new(crate::agent_activity::Activity {
+                derived: "Read api.rs".into(),
+                ..Default::default()
+            }));
+        }
+        assert_ne!(fingerprint(&a), fingerprint(&b));
     }
 
     /// The subagent row chore: the robot's ink stands at least 25 degrees from the accent and
