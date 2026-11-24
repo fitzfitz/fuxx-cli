@@ -38,6 +38,23 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-24 — Chore: ⌘V in the agent box never stays silent
+
+- **What:** your words, after an image wouldn't paste (⌘⇧4 had saved the screenshot to a file, so the clipboard held
+  no new image and fuxx did nothing): "add those three as a chore". ⌘V in the agent box now (1) leaves a notice row
+  when it finds nothing usable ("Nothing to paste: the clipboard has no text, image or file fuxx can use."); (2) takes
+  files copied in Finder as a Finder drop does (image pills, path pills), not their names as text; (3) makes TIFF and
+  BMP clipboard images PNG (macOS's own `NSBitmapImageRep`, off the UI thread, no new crate), and names a format it
+  can't take (SVG, ICO, PNM: "fuxx can't paste SVG images. Try PNG or JPEG.") or an image it couldn't read. New
+  `src/agent_paste.rs` (the routing as a pure function, the per-format decision, the notices, the tab's side);
+  the drop's `drop_external` and the browser's PNG encoder (now `browser::png_from_data`) are reused, not copied.
+  Note 93, "Chores after M11ar".
+- **Checks:** 2852 → 2860 tests (`--features ui-shots`: 2902 → 2910; each new one failed first), among them a real
+  TIFF and BMP conversion built in the test; new state scene `agent-box-paste` (the scene's own clipboard, never the
+  real one); clippy 14/29 and 18/33 (none in the changed files); `cargo fmt --check` clean. Agent-box scenes 59
+  passed; full `scripts/ui-shots.sh` 361 passed, 1 failed (`agent-tab-wide`, which needs a screen at least 1600 pt
+  wide). Committed on master, not pushed. Not yet seen in the real window.
+
 ### 2026-11-24 — v0.13.1 released
 
 - **What:** your word ("after that, push it up release patch then do clean ups"). Merged `chore/agent-activity-view`

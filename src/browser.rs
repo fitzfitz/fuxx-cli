@@ -28,8 +28,8 @@ use objc2_app_kit::{
     NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
 };
 use objc2_foundation::{
-    NSArray, NSDate, NSDictionary, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint,
-    NSRect, NSSize, NSString, NSURL, NSURLErrorCancelled, NSURLRequest,
+    NSArray, NSData, NSDate, NSDictionary, NSError, NSNotification, NSObject, NSObjectProtocol,
+    NSPoint, NSRect, NSSize, NSString, NSURL, NSURLErrorCancelled, NSURLRequest,
 };
 use objc2_web_kit::{
     WKErrorCode, WKNavigation, WKNavigationAction, WKNavigationDelegate, WKUIDelegate,
@@ -1123,13 +1123,19 @@ pub(crate) fn png_bytes(image: &NSImage) -> Result<Vec<u8>, String> {
     let tiff = image
         .TIFFRepresentation()
         .ok_or("the screenshot has no bitmap form")?;
-    let bitmap =
-        NSBitmapImageRep::imageRepWithData(&tiff).ok_or("the screenshot isn't a bitmap")?;
+    png_from_data(&tiff).map_err(|e| format!("the screenshot {e}"))
+}
+
+/// Image `data` in any format macOS reads as a bitmap (TIFF, BMP, …) encoded as PNG, or what
+/// went wrong ("isn't a bitmap", "couldn't be encoded as PNG"). Touches no window: it may run
+/// off the main thread.
+pub(crate) fn png_from_data(data: &NSData) -> Result<Vec<u8>, &'static str> {
+    let bitmap = NSBitmapImageRep::imageRepWithData(data).ok_or("isn't a bitmap")?;
     // SAFETY: an empty properties dictionary is valid for every file type.
     let png = unsafe {
         bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
     }
-    .ok_or("the screenshot couldn't be encoded as PNG")?;
+    .ok_or("couldn't be encoded as PNG")?;
     Ok(png.to_vec())
 }
 

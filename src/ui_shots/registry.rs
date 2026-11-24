@@ -413,6 +413,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-box-image-view",
     "agent-box-image-agy",
     "agent-box-image-too-big",
+    "agent-box-paste",
     "agent-box-long-text",
     "agent-box-folder-picker",
     "agent-box-folder-search",

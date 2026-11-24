@@ -74,6 +74,21 @@ const ATTACH: &[&str] = &[
     "src/providers/mod.rs",
     "src/providers/claude.rs",
     "src/providers/agy.rs",
+    "src/agent_paste.rs",
+];
+
+/// The files ⌘V in the box goes through: the attach files, the path pills Finder's files become
+/// and the PNG encoder a TIFF or BMP goes through.
+const PASTE: &[&str] = &[
+    "src/agent_tab.rs",
+    "src/agent_box.rs",
+    "src/agent_conversation.rs",
+    "src/composer.rs",
+    "src/providers/mod.rs",
+    "src/providers/claude.rs",
+    "src/agent_paste.rs",
+    "src/agent_pills.rs",
+    "src/browser.rs",
 ];
 
 /// The files the folder picker is made of: the box's, the picker's lists, its search box, and
@@ -257,6 +272,14 @@ pub(super) const SCENES: &[Scene] = &[
         serial: false,
         kind: Kind::Visual,
         sources: ATTACH,
+    },
+    Scene {
+        name: "agent-box-paste",
+        run: agent_box_paste,
+        themes: Themes::One,
+        serial: false,
+        kind: Kind::State,
+        sources: PASTE,
     },
     Scene {
         name: "agent-box-long-text",
@@ -2302,6 +2325,104 @@ pub(super) fn agent_box_image_too_big() {
             ["\u{1f5bc} exact.png"],
             "{n}: no chip for the others"
         );
+        assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
+    });
+}
+
+/// ⌘V in the box (chore after M11ar, 2026-11-24), the clipboard fed through the scene's own
+/// (never the real one): nothing usable leaves "Nothing to paste: …"; a TIFF is made PNG (an
+/// image pill, its picture a PNG); an SVG is refused by name and an unreadable TIFF says so;
+/// files copied in Finder come in as a drop (path pills, an image pill), not as the names Finder
+/// puts beside them; text still goes in as text. Nothing is sent.
+pub(super) fn agent_box_paste() {
+    use crate::agent_tab::paste::{NOTHING_TO_PASTE, UNREADABLE_IMAGE, cant_paste, tiff_3x2};
+    use gpui::{ClipboardEntry, ClipboardItem, ExternalPaths, Image, ImageFormat};
+    layout_scene("agent-box-paste", |n, cx, window, tab| {
+        let composer = cx.read(|cx| tab.read(cx).shot_composer());
+        let text = |cx: &VisualTestAppContext| cx.read(|cx| composer.read(cx).text().to_string());
+        let paste = |cx: &mut VisualTestAppContext, entries: Vec<ClipboardEntry>| {
+            cx.write_to_clipboard(ClipboardItem { entries });
+            cx.simulate_keystrokes(window, "cmd-v");
+        };
+        let image =
+            |format, bytes: Vec<u8>| ClipboardEntry::Image(Image::from_bytes(format, bytes));
+        // Nothing on it the box can use.
+        paste(cx, Vec::new());
+        settle_until(n, cx, window, "the empty notice", |cx| {
+            notices(cx, tab).len() == 1
+        });
+        assert_eq!(notices(cx, tab), [NOTHING_TO_PASTE], "{n}");
+        // A TIFF (as some apps copy a picture): an image pill, sent as PNG.
+        paste(cx, vec![image(ImageFormat::Tiff, tiff_3x2())]);
+        settle_until(n, cx, window, "the TIFF's pill", |cx| {
+            text(cx).contains("[Image #1]")
+        });
+        let picture = cx.read(|cx| {
+            tab.read(cx)
+                .shot_attachments()
+                .iter()
+                .find_map(|a| match a {
+                    Attachment::Image { name, picture, .. } if name == "Image #1" => {
+                        Some(picture.clone())
+                    }
+                    _ => None,
+                })
+                .expect("the TIFF attached")
+        });
+        assert_eq!(picture.media_type, "image/png", "{n}");
+        assert_eq!(
+            crate::browser::png_size(&picture.bytes),
+            Some((3, 2)),
+            "{n}: a PNG of the TIFF's size"
+        );
+        // An SVG is refused by name; a TIFF that isn't one says it couldn't be read.
+        paste(cx, vec![image(ImageFormat::Svg, b"<svg/>".to_vec())]);
+        paste(cx, vec![image(ImageFormat::Tiff, b"not a tiff".to_vec())]);
+        settle_until(n, cx, window, "three notices", |cx| {
+            notices(cx, tab).len() == 3
+        });
+        assert_eq!(
+            notices(cx, tab)[1..],
+            [cant_paste("SVG"), UNREADABLE_IMAGE.to_string()],
+            "{n}"
+        );
+        // Files copied in Finder: a drop's pills, not their names as text.
+        let files = Files::new("paste");
+        let notes = files.make("notes.txt", b"made-up");
+        let shot = files.make("shot.png", PNG);
+        let docs = files.0.join("docs");
+        std::fs::create_dir_all(&docs).expect("the folder");
+        let finder = ExternalPaths(vec![notes.clone(), docs.clone(), shot.clone()].into());
+        paste(
+            cx,
+            vec![
+                ClipboardEntry::ExternalPaths(finder),
+                ClipboardEntry::String(gpui::ClipboardString::new(
+                    "notes.txt\rdocs\rshot.png".into(),
+                )),
+            ],
+        );
+        let pills = format!("{} {}/ ", notes.display(), docs.display());
+        settle_until(n, cx, window, "Finder's files as pills", |cx| {
+            text(cx).contains(&pills) && text(cx).contains("[Image #3]")
+        });
+        assert!(!text(cx).contains("notes.txt\r"), "{n}: not the names");
+        let drawn = cx.read(|cx| composer.read(cx).shot_pills().len());
+        assert!(
+            drawn >= 4,
+            "{n}: the image pills and path pills drawn: {drawn}"
+        );
+        // Text is still text.
+        paste(
+            cx,
+            vec![ClipboardEntry::String(gpui::ClipboardString::new(
+                " plain words".into(),
+            ))],
+        );
+        settle_until(n, cx, window, "the text", |cx| {
+            text(cx).ends_with(" plain words")
+        });
+        assert_eq!(notices(cx, tab).len(), 3, "{n}: no more notices");
         assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
     });
 }

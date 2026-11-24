@@ -1236,3 +1236,38 @@ The chores after it, through the agent activity view and its reviews, are **rele
     its own row; it failed at 1100 first (the notice's text ended at 401, the next row began at 364). The agent and
     lanes scenes (155) pass.
   - **On screen:** not yet seen in the real window.
+
+- **⌘V in the agent box never stays silent** (your words, 2026-11-24, after an image wouldn't paste: ⌘⇧4 had saved
+  the screenshot to a file, so the clipboard held no new image and fuxx did nothing; "add those three as a chore"):
+  1. **Something is said** when ⌘V finds nothing the box can use: a notice row in the chat, "Nothing to paste: the
+     clipboard has no text, image or file fuxx can use."
+  2. **Files copied in Finder** (⌘C, then ⌘V) come in as a Finder drop does: image files as image pills, anything
+     else (a folder too) as path pills, at the caret. Before, the file's name went in as text.
+  3. **TIFF and BMP clipboard images are made PNG** and pasted as an image pill. SVG, ICO and PNM say "fuxx can't
+     paste ⟨FORMAT⟩ images. Try PNG or JPEG."; a TIFF or BMP that can't be read says "Couldn't read that image from
+     the clipboard."
+  - **How:** the composer asks a pure `agent_paste::pasted` what the clipboard holds (files first, then text, then
+    the first image, else nothing) and emits `PastePaths`, `PasteImage` or `PasteNothing`; the tab's side reuses the
+    drop's `drop_external` (no copy of it) and the existing notice row. `attach_pasted_image` moved into the new
+    `src/agent_paste.rs` (`agent_tab.rs` shrinks); `image_take` says per format: take, make PNG, or refuse.
+  - **AI's calls:** the PNG comes from macOS's own reader (`NSBitmapImageRep` → PNG, the objc2 feature fuxx already
+    had), not a new crate: the agent browser's `png_bytes` already did TIFF → PNG this way, so its last two steps are
+    now the shared `browser::png_from_data`, and the clipboard's conversion runs in `add_image`'s background job
+    (`ImageFrom::ClipboardToPng`), off the UI thread, then meets the same size limit. The notices go in the chat's
+    notice row, as "Image too big" does: the box has no notice of its own, and a new surface wasn't asked for.
+    SVG, ICO and PNM are refused rather than tried. Terminal panes, rename boxes and the palette paste as before (the
+    composer is only the agent box). A paste that fails after it starts (an unreadable TIFF, as a too-big image
+    already did) still uses up its "Image #n" number.
+  - **Checks:** 2852 → 2860 tests (`--features ui-shots`: 2902 → 2910): the routing as a pure function (Finder's
+    files beat their names, text beats an image, the first image, empty parts paste nothing), the per-format
+    decision, the notices' words, and a real conversion of a TIFF and a BMP built in the test (a PNG of the same
+    size; bytes that are no image give the notice), each watched failing first. New state scene `agent-box-paste`
+    feeds the scene's own clipboard (never the real one): the empty notice, a TIFF as a PNG pill, the SVG and
+    unreadable-TIFF notices, Finder's files as two path pills and an image pill (not their names), text still text,
+    nothing sent; it failed with the empty-paste notice taken out. Clippy 14/29 and 18/33 (none in the changed
+    files); `cargo fmt --check` clean. The agent-box scenes: 59 passed (16 shots "look different"; `agent-box-effort-list`,
+    checked on master without this change, differs the same).
+    Full `scripts/ui-shots.sh`: 361 passed, 1 failed (`agent-tab-wide`, display-dependent: it needs a screen at
+    least 1600 pt wide and only the 1512 pt one was attached), 33 look different, 8 differ in size (the same clamp).
+  - **On screen:** not yet seen in the real window: the real clipboard (a Finder copy, a TIFF from Preview) wasn't
+    tried in the app.

@@ -83,8 +83,12 @@ pub enum ComposerEvent {
     AtTyped,
     /// Tab while a list is open over the box: complete with the selected row.
     Complete,
+    /// Paste with files on the clipboard (copied in Finder): the box takes them as a drop.
+    PastePaths(Vec<std::path::PathBuf>),
     /// Paste with an image (and no text) on the clipboard: the box makes it an attachment.
     PasteImage(gpui::Image),
+    /// Paste with nothing the box can take on the clipboard: a notice says so.
+    PasteNothing,
     /// A click on an atom's pill (a pasted image's `[Image #1]`, a path pill): its text, to
     /// open.
     OpenAtom(String),
@@ -1069,17 +1073,15 @@ impl Composer {
         self.paste_clipboard(cx);
     }
 
+    /// Text goes in at the caret; files, an image or nothing usable go to the tab
+    /// (`agent_paste::pasted` says which).
     fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
-        let Some(item) = cx.read_from_clipboard() else {
-            return;
-        };
-        if let Some(text) = item.text() {
-            self.insert(&text, cx);
-        } else if let Some(image) = item.into_entries().find_map(|entry| match entry {
-            gpui::ClipboardEntry::Image(image) => Some(image),
-            _ => None,
-        }) {
-            cx.emit(ComposerEvent::PasteImage(image));
+        use crate::agent_tab::paste::{Pasted, pasted};
+        match pasted(cx.read_from_clipboard()) {
+            Pasted::Paths(paths) => cx.emit(ComposerEvent::PastePaths(paths)),
+            Pasted::Text(text) => self.insert(&text, cx),
+            Pasted::Image(image) => cx.emit(ComposerEvent::PasteImage(image)),
+            Pasted::Nothing => cx.emit(ComposerEvent::PasteNothing),
         }
     }
 

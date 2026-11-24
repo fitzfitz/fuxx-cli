@@ -61,6 +61,9 @@ mod rewind;
 #[path = "agent_pills.rs"]
 pub(crate) mod pills;
 
+#[path = "agent_paste.rs"]
+pub(crate) mod paste;
+
 #[path = "agent_cancel.rs"]
 mod cancel;
 
@@ -699,6 +702,8 @@ const PASTED_DIR: &str = "fuxx-images";
 enum ImageFrom {
     File(PathBuf),
     Clipboard(Vec<u8>),
+    /// A TIFF or BMP image from the clipboard, made PNG on the way in.
+    ClipboardToPng(Vec<u8>),
 }
 
 /// What is sent as text for a message with attachments: the text, then each attachment (a
@@ -3557,27 +3562,6 @@ impl AgentTab {
         }
     }
 
-    /// An image pasted from the clipboard, as an image chip. A format the agents don't take
-    /// (not png, jpeg, gif or webp) is left out.
-    pub fn attach_pasted_image(&mut self, image: gpui::Image, cx: &mut Context<Self>) {
-        let media_type = match image.format {
-            gpui::ImageFormat::Png => "image/png",
-            gpui::ImageFormat::Jpeg => "image/jpeg",
-            gpui::ImageFormat::Gif => "image/gif",
-            gpui::ImageFormat::Webp => "image/webp",
-            _ => return,
-        };
-        self.pasted += 1;
-        let name = pasted_name(self.pasted);
-        self.add_image(
-            name,
-            media_type,
-            ImageFrom::Clipboard(image.bytes),
-            true,
-            cx,
-        );
-    }
-
     /// An image file dropped from Finder (batch 3, chore 5): an image pill in the text, as a
     /// pasted one, read from its file.
     pub(crate) fn add_inline_image(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -3614,6 +3598,7 @@ impl AgentTab {
                     (bytes, Some(path))
                 }
                 ImageFrom::Clipboard(bytes) => (bytes, None),
+                ImageFrom::ClipboardToPng(bytes) => (paste::to_png(&bytes)?, None),
             };
             let picture = picture(&name, media_type, bytes, limit, label)?;
             let path = match path {
@@ -3795,7 +3780,9 @@ impl AgentTab {
             }
             ComposerEvent::AtTyped => self.open_at(cx),
             ComposerEvent::Complete => self.complete_slash(cx),
+            ComposerEvent::PastePaths(paths) => self.paste_paths(paths.clone(), cx),
             ComposerEvent::PasteImage(image) => self.attach_pasted_image(image.clone(), cx),
+            ComposerEvent::PasteNothing => self.notice(paste::NOTHING_TO_PASTE.into(), cx),
             ComposerEvent::OpenAtom(mark) => {
                 // A path pill opens its file (or shows its folder); a pasted image its viewer.
                 if let Some(pill) = self.file_pills.get(mark).cloned() {
