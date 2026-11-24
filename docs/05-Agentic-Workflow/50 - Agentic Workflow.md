@@ -46,6 +46,20 @@ scenes its change touches.
   geometry, labels, state transitions) goes in plain functions tested by `cargo test`. A scene
   is for what needs a window: layout, pixels, real mouse and key events, focus.
 
+## Writing the code: reuse, lean files, no duplication (your call, 2026-11-24)
+
+Every UI component, helper or function is written with scale, clarity and reuse in mind ("We don't want
+bloated files and we don't want code duplications").
+
+- **Search before writing.** Look for an existing piece to reuse or extend before adding a new one.
+- **Extract on the second repeat.** If the same shape shows up a second time, pull it into one shared piece
+  instead of copy-pasting.
+- **Split a file before it bloats.** Break it into focused modules instead of growing it.
+- **Build for the next caller.** Shape each piece so the next feature can reuse it without editing it.
+- **Checked in the review.** The whole-branch review flags duplication and oversized files.
+
+This covers the code being written. It doesn't permit refactors outside the plan; propose those first.
+
 ## How a milestone is built (your call, 2026-11-19)
 
 Chosen to cut the wall-clock time per milestone ("I'd go with your 3 suggestions… do this 3 suggestions in
