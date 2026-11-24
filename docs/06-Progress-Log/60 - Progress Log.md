@@ -14,7 +14,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Latest (2026-11-24):** **v0.13.1 released** (run 45339699037): the agent activity view chore (merged, `71a520a`, after a whole-branch code review, a design review and its re-check), subagent rows with a robot, "Orchestrating…", the target pill's capped names and the long-notice overlap fix; v0.13.0 earlier the same day. The README and the vault's living notes describe fuxx as of v0.13.1. Waiting for your on-screen checks (note 93, "Chores after M11ar").
+- **Latest (2026-11-24):** **v0.13.2 released** (run 45352171051): the paste chore. Before it the same day: v0.13.1 (the agent activity view and chores) and v0.13.0. Waiting for your on-screen checks (note 93, "Chores after M11ar").
 - **Before (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
 - **Released (2026-11-23):** **v0.12.7** (run 45097026110, `fuxx-0.12.7.zip`): chat text selection, the thinking fade, the graph fixture's made-up history.
 - **Released (2026-11-23):** **v0.12.6** (run 45070831970, `fuxx-0.12.6.zip`): M11ar, M11au and the chores since v0.12.5.
@@ -37,6 +37,19 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-24 — v0.13.2 released
+
+- **What:** your word ("push if already done make a patch release"). Pushed `f9e07e6`, `Cargo.toml` 0.13.1 → 0.13.2
+  (`57254fc`), tag `v0.13.2`; the Release workflow (run 45352171051) published
+  `https://github.com/fitzfitz/fuxx-cli/releases/tag/v0.13.2` with `fuxx-0.13.2.zip`. In it since v0.13.1: ⌘V in the agent box never stays silent: Finder-copied files paste as pills, TIFF/BMP clipboard images become PNG, a notice when there's nothing to paste.
+  The in-app updater offers it.
+- **Checks:** the outgoing diff grepped clean; locally 2860 tests, clippy at its baseline, `cargo fmt --check` clean.
+  The tag's first run failed one test,
+  `test_temp::tests::a_scene_folder_is_the_same_each_time_made_empty_and_refused_while_held` ("free again"), which
+  passed on the same commit's master run and locally: flaky. Its failed job was re-run once and all four jobs went
+  green. The flaky test is logged as a chore candidate in [[40 - Roadmap]] to fix at its root.
+- **Clean-up:** no screenshots or scratch left; `cargo clean` freed 6.8 GiB.
 
 ### 2026-11-24 — Chore: ⌘V in the agent box never stays silent
 
