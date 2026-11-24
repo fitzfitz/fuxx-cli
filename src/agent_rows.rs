@@ -121,11 +121,10 @@ impl AgentTab {
             // The column centred in the tab (the box under it too: `box_area`).
             .flex()
             .flex_col()
-            .items_center()
             .text_size(px(chat::BODY))
             .line_height(relative(chat::BODY_LINE))
-            .child(column)
-            .children(thinking)
+            .child(centred(column))
+            .children(thinking.map(centred))
             .into_any_element()
     }
 
@@ -530,7 +529,8 @@ impl AgentTab {
                 .fork_row(ix, t, look)
                 .unwrap_or_else(|| div().into_any_element()),
             // A notice (spec B-B): an info mark and the words, quiet, on the text's column.
-            Item::Notice(t) => div()
+            Item::Notice(t) => self
+                .marked("notice", div())
                 .w_full()
                 .flex()
                 .gap(px(6.))
@@ -566,7 +566,7 @@ impl AgentTab {
                 let closable = self.provider.is_none();
                 // An error (spec B-B): a card washed with the failure's colour, its octagon,
                 // the message in the body's colour (readable), its buttons under it.
-                div()
+                self.marked("error", div())
                     .w_full()
                     .px(px(14.))
                     .py(px(12.))
@@ -1049,6 +1049,15 @@ impl AgentTab {
             .into_any_element();
         selectable(look, shown, layout, pills)
     }
+}
+
+/// A row's column (`w_full`, at most `COLUMN_MAX`) centred in the row. In a flex row, so its
+/// height is measured at its clamped width: taffy sizes a flex column's child (its flex basis)
+/// at its `w_full` width, not clamped by `max_w`, so text that wraps would be measured on wider
+/// lines than it's drawn on and the next row would draw over its last lines (the notice-overlap
+/// bug, 2026-11-24).
+pub(super) fn centred(column: impl IntoElement) -> gpui::Div {
+    div().w_full().flex().justify_center().child(column)
 }
 
 /// Your message's text made selectable (chore after M11ar), as the agent's is in `md_preview`.

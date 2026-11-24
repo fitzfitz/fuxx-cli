@@ -2,6 +2,7 @@
 //! subagent's steps to its own file), the pill strip that switches the chat between Main and
 //! each subagent (a lane), and the keys that step through them.
 
+use super::rows::centred;
 use super::*;
 use crate::agent_conversation::{Lane, LaneStatus};
 use crate::agent_lanes::{Bar, LaneBox, View};
@@ -1328,8 +1329,7 @@ impl AgentTab {
             .pt(px(crate::ui_tokens::chat::FIRST_TOP))
             .flex()
             .flex_col()
-            .items_center()
-            .child(
+            .child(centred(
                 self.marked(
                     "lane-task",
                     div()
@@ -1366,7 +1366,7 @@ impl AgentTab {
                             ),
                         ),
                 ),
-            )
+            ))
             .into_any_element()
     }
 
@@ -1406,8 +1406,7 @@ impl AgentTab {
             .pb(px(crate::ui_tokens::chat::LAST_BOTTOM))
             .flex()
             .flex_col()
-            .items_center()
-            .child(
+            .child(centred(
                 self.marked(
                     "lane-end",
                     div()
@@ -1422,7 +1421,7 @@ impl AgentTab {
                         .text_size(px(text::META))
                         .child(div().text_color(hsla(ink)).child(SharedString::from(word))),
                 ),
-            )
+            ))
             .into_any_element()
     }
 
