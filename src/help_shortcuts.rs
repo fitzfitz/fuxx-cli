@@ -180,6 +180,9 @@ pub fn describe(action: &str) -> Describe {
         // A busy step's tracks' own ←/→, Enter and Esc (the agent activity chore): only while
         // its group has the keys.
         other if other.starts_with("agent_tab::Track") => Unlisted,
+        // The folder picker's own ↑/↓ and ⌘1…⌘8 (the 2026-11-25 chores): only while it is open,
+        // its footer and its rows' key caps say them.
+        other if other.starts_with("agent_tab::Folder") => Unlisted,
         other if other.starts_with("host_picker::") => Unlisted,
         other if other.starts_with("palette::") => Unlisted,
         // The right-click menu's own ↑↓, ↩ and Esc (while it is open only).

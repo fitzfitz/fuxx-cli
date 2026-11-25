@@ -435,6 +435,53 @@ pub(crate) fn key_bindings() -> Vec<KeyBinding> {
         // move through the hosts and choose.
         KeyBinding::new("up", host_picker::SelectPrev, Some("HostPicker")),
         KeyBinding::new("down", host_picker::SelectNext, Some("HostPicker")),
+        // The agent box's folder picker (the 2026-11-25 chores): ↑/↓ move, ⌘1…⌘8 open Recent's.
+        KeyBinding::new("up", agent_tab::FolderUp, Some("FolderPicker > NameInput")),
+        KeyBinding::new(
+            "down",
+            agent_tab::FolderDown,
+            Some("FolderPicker > NameInput"),
+        ),
+        KeyBinding::new(
+            "cmd-1",
+            agent_tab::FolderPick1,
+            Some("FolderPicker > NameInput"),
+        ),
+        KeyBinding::new(
+            "cmd-2",
+            agent_tab::FolderPick2,
+            Some("FolderPicker > NameInput"),
+        ),
+        KeyBinding::new(
+            "cmd-3",
+            agent_tab::FolderPick3,
+            Some("FolderPicker > NameInput"),
+        ),
+        KeyBinding::new(
+            "cmd-4",
+            agent_tab::FolderPick4,
+            Some("FolderPicker > NameInput"),
+        ),
+        KeyBinding::new(
+            "cmd-5",
+            agent_tab::FolderPick5,
+            Some("FolderPicker > NameInput"),
+        ),
+        KeyBinding::new(
+            "cmd-6",
+            agent_tab::FolderPick6,
+            Some("FolderPicker > NameInput"),
+        ),
+        KeyBinding::new(
+            "cmd-7",
+            agent_tab::FolderPick7,
+            Some("FolderPicker > NameInput"),
+        ),
+        KeyBinding::new(
+            "cmd-8",
+            agent_tab::FolderPick8,
+            Some("FolderPicker > NameInput"),
+        ),
         KeyBinding::new("tab", host_picker::ToggleTmux, Some("HostPicker")),
         KeyBinding::new("alt-enter", host_picker::OpenWithTmux, Some("HostPicker")),
         // The command palette: its box is a NameInput too; these keys move through its list

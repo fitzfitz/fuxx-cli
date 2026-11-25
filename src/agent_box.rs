@@ -76,6 +76,8 @@ const OUTER_BOTTOM_RADIUS: f32 = SEND / 2.0 + SEND_INSET + crate::card_view::EDG
 const BUTTON: f32 = 28.0;
 /// A menu: its width, and the gap between it and the chip it opens up from.
 const MENU_WIDTH: f32 = 260.0;
+/// The folder picker's width: room for a folder's name over its place (the 2026-11-25 chores).
+const PICKER_WIDTH: f32 = 320.0;
 const MENU_GAP: f32 = 4.0;
 /// How far from the window's edges a menu keeps.
 const MENU_EDGE: f32 = 8.0;
@@ -173,6 +175,8 @@ pub(crate) struct FolderPicker {
     search: Entity<NameInput>,
     rows: Vec<PickerRow>,
     computer: Option<(Vec<PickerRow>, bool)>,
+    /// The row ↑/↓ moved to (the 2026-11-25 chores); none: ↵ takes the first folder.
+    selected: Option<usize>,
     /// Which of the folders it may list are there (checked off the UI thread), and the check
     /// running (it ends with the picker).
     checks: FolderChecks,
@@ -1098,7 +1102,7 @@ impl AgentTab {
             })
             .when(menu_on(|m| matches!(m, BoxMenu::Folder)), |d| {
                 let (menu, side) = self.folder_menu(cx);
-                d.child(self.menu_frame(Some(menu), side, MENU_WIDTH, cx))
+                d.child(self.menu_frame(Some(menu), side, PICKER_WIDTH, cx))
             });
         // The agent's status before the folder, as a shell's running command (`status_pill`).
         let theme = cx.global::<Appearance>().theme;
@@ -2241,6 +2245,11 @@ impl AgentTab {
         self.picker
             .as_ref()
             .map_or_else(Vec::new, |p| p.rows.clone())
+    }
+
+    /// The picker's row ↑/↓ moved to, while open.
+    pub fn shot_picker_selected(&self) -> Option<usize> {
+        self.picker.as_ref().and_then(|p| p.selected)
     }
 
     /// This Computer's rows beside the picker, while open.

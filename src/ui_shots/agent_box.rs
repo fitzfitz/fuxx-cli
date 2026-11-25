@@ -2608,11 +2608,14 @@ fn rows(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<PickerRow> {
     cx.read(|cx| tab.read(cx).shot_picker_rows())
 }
 
-fn folder_row_of(name: &str, current: bool) -> PickerRow {
+fn folder_row_of(name: &str, current: bool, shortcut: Option<u8>) -> PickerRow {
     PickerRow::Folder {
         path: folder(name),
         shown: format!("~/code/{name}"),
+        name: name.into(),
+        place: "~/code".into(),
         current,
+        shortcut,
     }
 }
 
@@ -2684,8 +2687,8 @@ pub(super) fn agent_box_folder_picker() {
             rows(cx, tab),
             [
                 PickerRow::Heading("Recent"),
-                folder_row_of("my-app", true),
-                folder_row_of("scratch", false),
+                folder_row_of("my-app", true, Some(1)),
+                folder_row_of("scratch", false, Some(2)),
                 PickerRow::ThisComputer,
                 PickerRow::NewProject,
                 PickerRow::NoProject,
@@ -2712,8 +2715,8 @@ pub(super) fn agent_box_folder_picker() {
         assert_eq!(
             cx.read(|cx| tab.read(cx).shot_computer_rows()),
             Some(vec![
-                folder_row_of("my-app", true),
-                folder_row_of("scratch", false)
+                folder_row_of("my-app", true, None),
+                folder_row_of("scratch", false, None)
             ]),
             "{n}: fuxx's and Claude's folders, each once"
         );
@@ -2767,11 +2770,19 @@ pub(super) fn agent_box_folder_search() {
             rows(cx, tab),
             [
                 PickerRow::Heading("Recent"),
-                folder_row_of("scratch", false)
+                folder_row_of("scratch", false, Some(1))
             ],
             "{n}"
         );
         assert_eq!(labels(cx, tab), ["~/code/scratch"], "{n}: drawn so");
+        // ↓ moves onto the first row you can pick, past the heading (the 2026-11-25 chores).
+        cx.simulate_keystrokes(window, "down");
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).shot_picker_selected()),
+            Some(1),
+            "{n}: ↓ lights the first folder"
+        );
         assert!(moves.borrow().is_empty(), "{n}: typing chooses nothing");
         assert!(written(cx, tab).is_empty(), "{n}: nothing sent");
     });

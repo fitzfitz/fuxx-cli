@@ -159,7 +159,19 @@ actions!(
         TrackLeave,
         // ⌥↑ in the box: the latest busy step's tracks take the keyboard (bound in main.rs to
         // "AgentTab > Composer").
-        FocusTracks
+        FocusTracks,
+        // The folder picker (the 2026-11-25 chores; bound in main.rs to "FolderPicker >
+        // NameInput": ↑/↓ move, ⌘1…⌘8 open a Recent row).
+        FolderUp,
+        FolderDown,
+        FolderPick1,
+        FolderPick2,
+        FolderPick3,
+        FolderPick4,
+        FolderPick5,
+        FolderPick6,
+        FolderPick7,
+        FolderPick8
     ]
 );
 

@@ -7,6 +7,10 @@ use crate::usage_view::{heading, quiet};
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{Animation, AnimationExt, FontWeight};
 
+/// The folder picker's tile (the 2026-11-25 chores, mockup A) and its two-line row.
+const FOLDER_TILE: f32 = 26.0;
+const FOLDER_ROW_H: f32 = 42.0;
+
 /// The turn ledger's popover's list, at most this tall (it scrolls past it).
 const LEDGER_LIST_MAX: f32 = 360.0;
 
@@ -153,6 +157,7 @@ impl AgentTab {
             search,
             rows: Vec::new(),
             computer: None,
+            selected: None,
             checks: FolderChecks::default(),
             _check: None,
             _subscriptions: subscriptions,
@@ -171,11 +176,14 @@ impl AgentTab {
     ) {
         match event {
             NameInputEvent::Confirm(_) => {
+                // The row ↑/↓ moved to, else the first folder.
                 let first = self.picker.as_ref().and_then(|p| {
-                    p.rows
-                        .iter()
-                        .find(|r| matches!(r, PickerRow::Folder { .. }))
-                        .cloned()
+                    p.selected.and_then(|i| p.rows.get(i)).cloned().or_else(|| {
+                        p.rows
+                            .iter()
+                            .find(|r| matches!(r, PickerRow::Folder { .. }))
+                            .cloned()
+                    })
                 });
                 if let Some(row) = first {
                     self.pick_row(row, cx);
@@ -276,6 +284,7 @@ impl AgentTab {
         });
         if let Some(picker) = self.picker.as_mut() {
             picker.rows = rows;
+            picker.selected = None;
             picker.computer = beside;
         }
         // Rows no longer listed leave no probe behind.
@@ -343,11 +352,12 @@ impl AgentTab {
         };
         let empty = picker.search.read(cx).text().is_empty();
         let field = crate::overlay_panel::filter_box(&ui, &picker.search, empty, SEARCH);
+        let selected = picker.selected;
         let rows: Vec<AnyElement> = picker
             .rows
             .iter()
             .enumerate()
-            .map(|(i, row)| self.picker_row(("box-folder", i), row, &ui, cx))
+            .map(|(i, row)| self.picker_row(("box-folder", i), row, selected == Some(i), &ui, cx))
             .collect();
         let list = div()
             .id("box-folder-rows")
@@ -356,18 +366,83 @@ impl AgentTab {
             .max_h(px(MENU_LIST_MAX))
             .overflow_y_scroll()
             .children(rows);
+        // What the keys do (the 2026-11-25 chores, mockup A).
+        let footer = div()
+            .flex()
+            .gap(px(14.))
+            .mt(px(2.))
+            .pt(px(6.))
+            .px(px(10.))
+            .pb(px(2.))
+            .border_t_1()
+            .border_color(hsla(ui.divider))
+            .text_size(px(11.))
+            .text_color(hsla(ui.text_dim))
+            .child("\u{2191}\u{2193} move")
+            .child("\u{21b5} open")
+            .child("esc close");
         let menu = div()
+            .key_context("FolderPicker")
+            .on_action(cx.listener(|this, _: &crate::agent_tab::FolderUp, _, cx| {
+                this.picker_move(false, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::agent_tab::FolderDown, _, cx| {
+                    this.picker_move(true, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::agent_tab::FolderPick1, w, cx| {
+                    this.pick_recent(1, w, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::agent_tab::FolderPick2, w, cx| {
+                    this.pick_recent(2, w, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::agent_tab::FolderPick3, w, cx| {
+                    this.pick_recent(3, w, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::agent_tab::FolderPick4, w, cx| {
+                    this.pick_recent(4, w, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::agent_tab::FolderPick5, w, cx| {
+                    this.pick_recent(5, w, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::agent_tab::FolderPick6, w, cx| {
+                    this.pick_recent(6, w, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::agent_tab::FolderPick7, w, cx| {
+                    this.pick_recent(7, w, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::agent_tab::FolderPick8, w, cx| {
+                    this.pick_recent(8, w, cx)
+                }),
+            )
             .flex()
             .flex_col()
             .gap(px(4.))
             .child(field)
             .child(list)
+            .child(footer)
             .into_any_element();
         let side = picker.computer.as_ref().map(|(rows, loading)| {
             let mut items: Vec<AnyElement> = rows
                 .iter()
                 .enumerate()
-                .map(|(i, row)| self.picker_row((COMPUTER_ROWS, i), row, &ui, cx))
+                .map(|(i, row)| self.picker_row((COMPUTER_ROWS, i), row, false, &ui, cx))
                 .collect();
             if *loading {
                 items.push(quiet("Loading\u{2026}", &ui));
@@ -394,26 +469,190 @@ impl AgentTab {
         (menu, side)
     }
 
-    /// One of the picker's rows, drawn; its click picks it.
+    /// ↑/↓ in the picker's search: the row it moves to lights (`folder_picker::moved`).
+    fn picker_move(&mut self, down: bool, cx: &mut Context<Self>) {
+        if let Some(picker) = self.picker.as_mut() {
+            picker.selected = crate::folder_picker::moved(&picker.rows, picker.selected, down);
+            cx.notify();
+        }
+    }
+
+    /// ⌘`n` in the picker's search: Recent's row `n` opens.
+    fn pick_recent(&mut self, n: u8, window: &mut Window, cx: &mut Context<Self>) {
+        let row = self.picker.as_ref().and_then(|p| {
+            p.rows
+                .iter()
+                .find(|r| matches!(r, PickerRow::Folder { shortcut: Some(k), .. } if *k == n))
+                .cloned()
+        });
+        if let Some(row) = row {
+            self.pick_row(row, cx);
+            self.keyboard_back(window, cx);
+        }
+    }
+
+    /// One of the picker's rows, drawn (mockup A, the 2026-11-25 chores): a folder as a tile, its
+    /// name over its place, ✓ or ⌘N on the right; an action with its icon. Its click picks it;
+    /// `selected`: the row ↑/↓ moved to.
     fn picker_row(
         &self,
         id: (&'static str, usize),
         row: &PickerRow,
+        selected: bool,
         ui: &UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (label, check, more) = match row {
+        use crate::icons::{Icon, icon};
+        let (glyph, label, more) = match row {
             PickerRow::Heading(h) => return heading((*h).into(), ui),
-            PickerRow::Folder { shown, current, .. } => (shown.clone(), *current, false),
-            PickerRow::ThisComputer => (THIS_COMPUTER.to_string(), false, true),
-            PickerRow::NewProject => (NEW_PROJECT.to_string(), false, false),
-            PickerRow::NoProject => (NO_PROJECT.to_string(), false, false),
+            PickerRow::Folder {
+                shown,
+                name,
+                place,
+                current,
+                shortcut,
+                ..
+            } => {
+                let home = name == "Home" && place == "~";
+                return self.picker_folder_row(
+                    id,
+                    row.clone(),
+                    (shown.clone(), name.clone(), place.clone()),
+                    (*current, *shortcut, home, selected),
+                    ui,
+                    cx,
+                );
+            }
+            PickerRow::ThisComputer => (Icon::FolderOpen, THIS_COMPUTER, true),
+            PickerRow::NewProject => (Icon::Plus, NEW_PROJECT, false),
+            PickerRow::NoProject => (Icon::Circle, NO_PROJECT, false),
         };
-        let row = row.clone();
-        self.menu_row(id, label, check, more, ui, cx, move |this, window, cx| {
-            this.pick_row(row.clone(), cx);
-            this.keyboard_back(window, cx);
-        })
+        let hover = ui.composer_pill_hover;
+        let pick = row.clone();
+        let el = div()
+            .id(id)
+            .relative()
+            .h(px(ROW_H))
+            .pl(px(10.))
+            .pr(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .rounded(px(ROW_RADIUS))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hsla(hover)))
+            .when(selected, |d| d.bg(hsla(hover)))
+            .child(div().w(px(FOLDER_TILE)).flex().justify_center().child(icon(
+                glyph,
+                px(14.),
+                hsla(ui.text_dim),
+            )))
+            .child(div().flex_1().child(SharedString::from(label)))
+            .when(more, |d| {
+                d.child(icon(Icon::ChevronRight, px(14.), hsla(ui.text_dim)))
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.pick_row(pick.clone(), cx);
+                this.keyboard_back(window, cx);
+            }));
+        let probe = match id.0 {
+            COMPUTER_ROWS => format!("{THIS_COMPUTER} \u{25b8} {label}"),
+            _ => label.to_string(),
+        };
+        self.marked_row(probe, el).into_any_element()
+    }
+
+    /// A folder's row (mockup A): a tile (the accent's tint for the current one), its name in
+    /// semibold over its place, ✓ when current else its ⌘N.
+    fn picker_folder_row(
+        &self,
+        id: (&'static str, usize),
+        row: PickerRow,
+        (shown, name, place): (String, String, String),
+        (current, shortcut, home, selected): (bool, Option<u8>, bool, bool),
+        ui: &UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::icons::{Icon, icon};
+        let hover = ui.composer_pill_hover;
+        let tile = div()
+            .flex_none()
+            .size(px(FOLDER_TILE))
+            .rounded(px(7.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(hsla(if current { ui.menu_current } else { hover }))
+            .child(icon(
+                if home { Icon::House } else { Icon::Folder },
+                px(14.),
+                hsla(if current { ui.accent } else { ui.text_dim }),
+            ));
+        let words = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .truncate()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(SharedString::from(name)),
+            )
+            .when(!place.is_empty(), |d| {
+                d.child(
+                    div()
+                        .truncate()
+                        .text_size(px(11.5))
+                        .text_color(hsla(ui.text_dim))
+                        .child(SharedString::from(place)),
+                )
+            });
+        let right = if current {
+            Some(icon(Icon::Check, px(14.), hsla(ui.accent)).into_any_element())
+        } else {
+            shortcut.map(|n| {
+                div()
+                    .flex_none()
+                    .px(px(4.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(hsla(ui.divider))
+                    .text_size(px(11.))
+                    .text_color(hsla(ui.text_dim))
+                    .child(SharedString::from(format!("\u{2318}{n}")))
+                    .into_any_element()
+            })
+        };
+        let el = div()
+            .id(id)
+            .relative()
+            .h(px(FOLDER_ROW_H))
+            .pl(px(8.))
+            .pr(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .rounded(px(ROW_RADIUS))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hsla(hover)))
+            .when(selected, |d| d.bg(hsla(hover)))
+            .when(current, |d| {
+                d.bg(hsla(ui.menu_current)).child(current_bar(ui))
+            })
+            .child(tile)
+            .child(words)
+            .children(right)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.pick_row(row.clone(), cx);
+                this.keyboard_back(window, cx);
+            }));
+        // Probed by its shown path, as before (the scenes find rows by it).
+        let probe = match id.0 {
+            COMPUTER_ROWS => format!("{THIS_COMPUTER} \u{25b8} {shown}"),
+            _ => shown,
+        };
+        self.marked_row(probe, el).into_any_element()
     }
 
     /// The catalog lookup the model menu reads: what is known for the agent and folder (not yet

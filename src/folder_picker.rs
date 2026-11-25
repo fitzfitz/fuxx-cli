@@ -107,11 +107,16 @@ impl FolderChecks {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PickerRow {
     Heading(&'static str),
-    /// A folder, as shown (`~/…`), ✓ when the agent is in it.
+    /// A folder, as shown (`~/…`, what a search matches), ✓ when the agent is in it; drawn as
+    /// its `name` over its `place` (the 2026-11-25 chores, mockup A), with ⌘`shortcut` when it
+    /// is one of Recent's.
     Folder {
         path: PathBuf,
         shown: String,
+        name: String,
+        place: String,
         current: bool,
+        shortcut: Option<u8>,
     },
     /// `This Computer ▸`: the folders fuxx and the agent know, beside the picker.
     ThisComputer,
@@ -129,11 +134,43 @@ pub const NO_PROJECT: &str = "No Project";
 
 /// `path` as a folder row.
 pub fn folder_row(path: &Path, current: &Path, home: Option<&Path>) -> PickerRow {
+    let (name, place) = folder_words(path, home);
     PickerRow::Folder {
         path: path.to_path_buf(),
         shown: home_relative(path, home),
+        name,
+        place,
         current: path == current,
+        shortcut: None,
     }
+}
+
+/// A folder's two lines (the 2026-11-25 chores, mockup A: nothing cut from the left): its name,
+/// and where it lives (`~/…`); your home folder reads "Home" in `~`.
+pub fn folder_words(path: &Path, home: Option<&Path>) -> (String, String) {
+    if home == Some(path) {
+        return ("Home".into(), "~".into());
+    }
+    let Some(name) = path.file_name() else {
+        return (path.to_string_lossy().into_owned(), String::new());
+    };
+    let place = path
+        .parent()
+        .map(|p| home_relative(p, home))
+        .unwrap_or_default();
+    (name.to_string_lossy().into_owned(), place)
+}
+
+/// The row ↑ (`down` false) or ↓ moves to from `at` (none: from before the first): the next one
+/// you can pick, never a heading; at an end it stays.
+pub fn moved(rows: &[PickerRow], at: Option<usize>, down: bool) -> Option<usize> {
+    let pickable = |i: &usize| !matches!(rows[*i], PickerRow::Heading(_));
+    let next = match (at, down) {
+        (None, _) => (0..rows.len()).find(pickable),
+        (Some(i), true) => (i + 1..rows.len()).find(pickable),
+        (Some(i), false) => (0..i).rev().find(pickable),
+    };
+    next.or(at)
 }
 
 /// The picker's rows for `query`. With none: Recent (its folders that `exists`), then This
@@ -165,7 +202,14 @@ pub fn picker_rows(
             rows.extend(found);
         }
     };
-    section(RECENT, folders(recent, &[]));
+    // Recent's rows carry ⌘1… (the 2026-11-25 chores).
+    let mut recents = folders(recent, &[]);
+    for (i, row) in recents.iter_mut().enumerate() {
+        if let PickerRow::Folder { shortcut, .. } = row {
+            *shortcut = u8::try_from(i + 1).ok().filter(|n| *n <= 9);
+        }
+    }
+    section(RECENT, recents);
     if query.is_empty() {
         rows.push(PickerRow::ThisComputer);
     } else {
@@ -215,6 +259,65 @@ mod tests {
                 PickerRow::NoProject => NO_PROJECT.into(),
             })
             .collect()
+    }
+
+    /// The 2026-11-25 chores (mockup A): a row leads with the folder's name, its place under it.
+    #[test]
+    fn a_folder_reads_name_then_place() {
+        let home = Some(Path::new("/Users/me"));
+        let w = |p: &str| folder_words(Path::new(p), home);
+        assert_eq!(
+            w("/Users/me/code/fuxx-cli"),
+            ("fuxx-cli".into(), "~/code".into())
+        );
+        assert_eq!(w("/Users/me"), ("Home".into(), "~".into()));
+        assert_eq!(w("/"), ("/".into(), String::new()));
+        assert_eq!(w("/opt/x"), ("x".into(), "/opt".into()));
+        assert_eq!(w("/Users/me/a"), ("a".into(), "~".into()));
+    }
+
+    /// Recent's rows carry ⌘1… in order; This Computer's none.
+    #[test]
+    fn recent_rows_get_cmd_digits() {
+        let recent: Vec<PathBuf> = (1..=8).map(|i| p(&format!("{HOME}/r{i}"))).collect();
+        let keys = |rows: &[PickerRow]| -> Vec<Option<u8>> {
+            rows.iter()
+                .filter_map(|r| match r {
+                    PickerRow::Folder { shortcut, .. } => Some(*shortcut),
+                    _ => None,
+                })
+                .collect()
+        };
+        let rows = picker_rows("", &recent, &[], &p("/x"), Some(Path::new(HOME)), |_| true);
+        assert_eq!(keys(&rows), (1..=8).map(Some).collect::<Vec<_>>());
+        let computer = vec![p(&format!("{HOME}/r1-other"))];
+        let rows = picker_rows(
+            "r1",
+            &recent,
+            &computer,
+            &p("/x"),
+            Some(Path::new(HOME)),
+            |_| true,
+        );
+        assert_eq!(
+            keys(&rows),
+            [Some(1), None],
+            "Recent's r1, then This Computer's"
+        );
+    }
+
+    /// ↑/↓ move between the rows you can pick, never onto a heading, and stop at the ends.
+    #[test]
+    fn arrows_skip_headings() {
+        let rows = picker_rows("", &[p("/a"), p("/b")], &[], &p("/x"), None, |_| true);
+        // # Recent, /a, /b, This Computer, New Project, No Project
+        assert!(matches!(rows[0], PickerRow::Heading(_)));
+        assert_eq!(moved(&rows, None, true), Some(1));
+        assert_eq!(moved(&rows, Some(1), true), Some(2));
+        assert_eq!(moved(&rows, Some(5), true), Some(5), "stays on the last");
+        assert_eq!(moved(&rows, Some(1), false), Some(1), "stays on the first");
+        assert_eq!(moved(&rows, Some(3), false), Some(2));
+        assert_eq!(moved(&[], None, true), None);
     }
 
     #[test]
@@ -330,16 +433,20 @@ mod tests {
             Some(&home),
             |_| true,
         );
-        assert_eq!(
-            rows[1],
-            folder_row(&recent[0], Path::new("/x"), Some(&home))
-        );
+        let mut first = folder_row(&recent[0], Path::new("/x"), Some(&home));
+        if let PickerRow::Folder { shortcut, .. } = &mut first {
+            *shortcut = Some(1);
+        }
+        assert_eq!(rows[1], first);
         assert_eq!(
             rows[2],
             PickerRow::Folder {
                 path: recent[1].clone(),
                 shown: "~/code/scratch".into(),
+                name: "scratch".into(),
+                place: "~/code".into(),
                 current: true,
+                shortcut: Some(2),
             }
         );
         assert_eq!(

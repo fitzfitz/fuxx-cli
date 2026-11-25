@@ -24,6 +24,8 @@ pub enum Icon {
     PanelLeft,
     Folder,
     FolderOpen,
+    /// Your home folder's row in the folder picker (the 2026-11-25 chores).
+    House,
     GitCompare,
     Activity,
     Back,
@@ -101,7 +103,7 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 66] = [
+    pub const ALL: [Icon; 67] = [
         Icon::Terminal,
         Icon::Globe,
         Icon::File,
@@ -112,6 +114,7 @@ impl Icon {
         Icon::PanelLeft,
         Icon::Folder,
         Icon::FolderOpen,
+        Icon::House,
         Icon::GitCompare,
         Icon::Activity,
         Icon::Back,
@@ -183,6 +186,7 @@ impl Icon {
             Icon::PanelLeft => "icons/lucide/panel-left.svg",
             Icon::Folder => "icons/lucide/folder.svg",
             Icon::FolderOpen => "icons/lucide/folder-open.svg",
+            Icon::House => "icons/lucide/house.svg",
             Icon::GitCompare => "icons/lucide/git-compare.svg",
             Icon::Activity => "icons/lucide/activity.svg",
             Icon::Back => "icons/lucide/chevron-left.svg",
@@ -244,7 +248,7 @@ impl Icon {
 }
 
 /// The embedded files, by asset path.
-const FILES: [(&str, &[u8]); 64] = [
+const FILES: [(&str, &[u8]); 65] = [
     (
         "icons/shapes/tab-step-fill.svg",
         include_bytes!("../assets/icons/shapes/tab-step-fill.svg"),
@@ -408,6 +412,10 @@ const FILES: [(&str, &[u8]); 64] = [
     (
         "icons/lucide/file.svg",
         include_bytes!("../assets/icons/lucide/file.svg"),
+    ),
+    (
+        "icons/lucide/house.svg",
+        include_bytes!("../assets/icons/lucide/house.svg"),
     ),
     (
         "icons/lucide/folder.svg",
