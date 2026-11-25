@@ -1440,7 +1440,7 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
      detail is open; the keyboard goes back to the box only if the tracks still held it (`ff9ab09`).
   6. **The plan popover over the chat** ("should be left aligned"): it opens leftward, its right edge on the tab's
      (the box's edge). Built so because, with the tab flush right, a popover hung from the tab's left would hang
-     280 pt past the box. If you meant its left edge on the tab's left, it's a one-line swap (`b59964e`).
+     280 pt past the box. Your call after a sample of both (2026-11-25): "keep A" (`b59964e`).
   7. **Your bubble wraps in a narrow pane** ("user's chat not as responsive"): the bubble could not shrink below
      its text's one-line width, so it ran off the left; `min_w(0)` (`b0566de`).
   8. **A copy icon on the chat's code blocks** ("no copy icon to copy the command"): top-right, dim, ✓ for 1.5 s
@@ -1480,7 +1480,7 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     - [ ] your message's hover icons stay while the pointer is on them
     - [ ] the plan tab sits flush with the box's right edge, its curve on its left
     - [ ] a click elsewhere clears a track column's border
-    - [ ] the plan popover opens over the chat, right edge on its tab (or say you wanted it the other way)
+    - [ ] the plan popover opens over the chat, right edge on its tab
     - [ ] your bubble wraps in a narrow pane
     - [ ] a chat code block's copy icon copies, then shows ✓
     - [ ] the folder picker: name over place, ⌘1–⌘8, ↑/↓ and ↵
