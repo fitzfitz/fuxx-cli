@@ -1,0 +1,4 @@
+<!-- fuxx's Working mark: a 270° arc from the top, clockwise, round ends (status_mark.rs) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="-6 -6 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+  <path d="M0 -4.25A4.25 4.25 0 1 1 -4.25 0" />
+</svg>

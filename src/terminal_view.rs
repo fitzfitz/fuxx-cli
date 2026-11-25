@@ -3452,36 +3452,37 @@ struct CardPaint<'a> {
 #[cfg(feature = "ui-shots")]
 pub type Spot = (f32, f32);
 
+/// The radius of the concave step where a composer's folder tab meets its box (both boxes).
+pub(crate) const TAB_STEP: f32 = 8.0;
+
 /// The concave corner where a composer's folder tab steps down to its box, from the corner
 /// `(x, y)` (the tab's right edge's left side, the box's top edge's bottom side), radius
-/// `radius`: only the wedge inside the curve in the box's colour (it covers the tab's and the
+/// `TAB_STEP`: only the wedge inside the curve in the box's colour (it covers the tab's and the
 /// box's straight edges there) and the curved edge. Nothing outside the curve is painted, so
 /// the box's shadow there shows as it falls (the lead designer's review, 2026-11-22: a
-/// page-coloured square cut it with a hard step). Both boxes draw it.
+/// page-coloured square cut it with a hard step). Both boxes draw it, as two SVG sprites (paths
+/// cost the GPU a whole-window pass each, 2026-11-25).
 pub(crate) fn paint_tab_step(
     window: &mut Window,
     (x, y): (f32, f32),
-    radius: f32,
     fill: gpui::Hsla,
     edge: gpui::Hsla,
+    cx: &App,
 ) {
-    use gpui::PathBuilder;
-    let p = |px_: f32, py: f32| point(px(px_), px(py));
-    let r = radius;
-    let mut wedge = PathBuilder::fill();
-    wedge.move_to(p(x, y - r));
-    wedge.line_to(p(x, y));
-    wedge.line_to(p(x + r, y));
-    wedge.arc_to(p(r, r), px(0.), false, true, p(x, y - r));
-    wedge.close();
-    if let Ok(path) = wedge.build() {
-        window.paint_path(path, fill);
-    }
-    let mut line = PathBuilder::stroke(px(1.));
-    line.move_to(p(x + 0.5, y - r));
-    line.arc_to(p(r - 0.5, r - 0.5), px(0.), false, false, p(x + r, y - 0.5));
-    if let Ok(path) = line.build() {
-        window.paint_path(path, edge);
+    use crate::icons::Icon;
+    let square = Bounds::new(
+        point(px(x), px(y - TAB_STEP)),
+        size(px(TAB_STEP), px(TAB_STEP)),
+    );
+    for (shape, color) in [(Icon::TabStepFill, fill), (Icon::TabStepEdge, edge)] {
+        let _ = window.paint_svg(
+            square,
+            shape.path().into(),
+            None,
+            Default::default(),
+            color,
+            cx,
+        );
     }
 }
 
@@ -3843,7 +3844,7 @@ fn paint_cards(
                         size(width, px(height - TAB_RISE)),
                     );
                     let tab = crate::card_view::composer_tab(p.state.borrow().pills_w, w);
-                    let (r_tab, r_body, r_step) = (px(14.0), px(15.0), px(8.0));
+                    let (r_tab, r_body) = (px(14.0), px(15.0));
                     // Your reference (2026-11-21, "the FEELS"): the box rests on the page with a
                     // soft shadow under it.
                     let dark = crate::ui_tokens::relative_luminance(p.ui.card) < 0.5;
@@ -3907,9 +3908,9 @@ fn paint_cards(
                         paint_tab_step(
                             window,
                             (f32::from(tab_right) - EDGE, body_top + EDGE),
-                            f32::from(r_step),
                             outer_fill,
                             edge_ink,
+                            cx,
                         );
                     }
                     composer = Some((f32::from(left), y, w));
@@ -4333,6 +4334,18 @@ pub(crate) fn paint_cursor_over(
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_tab_step_svgs_are_the_steps_radius() {
+        use crate::icons::{Icon, view_box};
+        for i in [Icon::TabStepFill, Icon::TabStepEdge] {
+            assert_eq!(
+                view_box(i),
+                (0.0, 0.0, super::TAB_STEP, super::TAB_STEP),
+                "{i:?}"
+            );
+        }
+    }
 
     use gpui::{Bounds, point, px, size};
 

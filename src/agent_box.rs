@@ -1743,13 +1743,13 @@ impl AgentTab {
         let step = div().flex_none().ml(px(-EDGE)).size(px(16.)).child(
             gpui::canvas(
                 |_, _, _| (),
-                move |bounds, _, window, _| {
+                move |bounds, _, window, cx| {
                     crate::terminal_view::paint_tab_step(
                         window,
                         (f32::from(bounds.left()), f32::from(bounds.bottom())),
-                        8.,
                         outer,
                         edge,
+                        cx,
                     )
                 },
             )
@@ -2361,73 +2361,43 @@ impl AgentTab {
 }
 
 /// A chip on the box's bottom row: quiet text, no edge.
+/// How far the send notch's shape reaches in from the box's bottom-right corner (the send
+/// circle's inset and size, the gap round it and a `JOINT` corner), and how far it runs past it.
+const NOTCH_REACH: f32 = SEND + NOTCH_GAP + JOINT + SEND_INSET - crate::card_view::OUTER_INSET;
+const NOTCH_OVER: f32 = 2.0;
+
 /// The send notch cut from the inner box's bottom-right, one shape in the outer colour painted
 /// first (under the box's text and controls): from the box's right edge round a `JOINT` corner,
 /// along the cut round the send circle (`SEND / 2 + NOTCH_GAP` about its centre), round the
 /// other `JOINT` corner into the box's bottom edge, then out 2 pt past the box (over its lit
 /// edge) and back; then the inner box's lit edge along the same wave
 /// (your report, 2026-11-22: "you're losing the border on the curve"), 1 pt in the edge's
-/// lower colour, 0.5 pt outside the box.
+/// lower colour, 0.5 pt outside the box. Both are SVG sprites (`assets/icons/shapes/notch-*`;
+/// paths cost the GPU a whole-window pass each, 2026-11-25).
 fn notch(c: &Colors) -> impl IntoElement {
-    use crate::card_view::OUTER_INSET;
-    use gpui::{PathBuilder, Point, canvas, point};
+    use crate::icons::Icon;
+    use gpui::{Bounds, canvas, point, size};
     let (outer, rim) = (hsla(c.outer), hsla(c.glow_bottom));
     canvas(
         |_, _, _| (),
-        move |bounds, _, window, _| {
-            let (x_r, y_b) = (f32::from(bounds.right()), f32::from(bounds.bottom()));
-            // The outer box's inside corner, the circle's centre and the cut's radius.
-            let (right, bottom) = (x_r + OUTER_INSET, y_b + OUTER_INSET);
-            let (cx, cy) = (
-                right - SEND_INSET - SEND / 2.,
-                bottom - SEND_INSET - SEND / 2.,
+        move |bounds, _, window, cx| {
+            let side = px(NOTCH_REACH + NOTCH_OVER);
+            let square = Bounds::new(
+                point(
+                    bounds.right() - px(NOTCH_REACH),
+                    bounds.bottom() - px(NOTCH_REACH),
+                ),
+                size(side, side),
             );
-            let cut = SEND / 2. + NOTCH_GAP;
-            let (top, left) = (cy - cut, cx - cut);
-            let p = |x: f32, y: f32| point(px(x), px(y));
-            let radii = |r: f32| -> Point<gpui::Pixels> { p(r, r) };
-            // The cut, in the outer colour: out to 2 pt past the box (over its 1 pt lit edge),
-            // its far corner round about the circle's centre, inside the outer box's border (the
-            // lead designer's review, 2026-11-22: the box's square corner poked out past it).
-            let (rr, bb) = (x_r + 2., y_b + 2.);
-            let far = bb - cy;
-            let mut shape = PathBuilder::fill();
-            shape.move_to(p(rr, top - JOINT));
-            shape.line_to(p(x_r, top - JOINT));
-            shape.arc_to(radii(JOINT), px(0.), false, true, p(x_r - JOINT, top));
-            shape.line_to(p(cx, top));
-            shape.arc_to(radii(cut), px(0.), false, false, p(left, cy));
-            shape.line_to(p(left, y_b - JOINT));
-            shape.arc_to(radii(JOINT), px(0.), false, true, p(left - JOINT, y_b));
-            shape.line_to(p(left - JOINT, bb));
-            shape.line_to(p(cx, bb));
-            shape.arc_to(radii(far), px(0.), false, false, p(rr, cy));
-            shape.close();
-            if let Ok(path) = shape.build() {
-                window.paint_path(path, outer);
-            }
-            // The lit edge along it, half a point outside the box.
-            let mut edge = PathBuilder::stroke(px(1.));
-            edge.move_to(p(x_r + 0.5, top - JOINT));
-            edge.arc_to(
-                radii(JOINT + 0.5),
-                px(0.),
-                false,
-                true,
-                p(x_r - JOINT, top + 0.5),
-            );
-            edge.line_to(p(cx, top + 0.5));
-            edge.arc_to(radii(cut - 0.5), px(0.), false, false, p(left + 0.5, cy));
-            edge.line_to(p(left + 0.5, y_b - JOINT));
-            edge.arc_to(
-                radii(JOINT + 0.5),
-                px(0.),
-                false,
-                true,
-                p(left - JOINT, y_b + 0.5),
-            );
-            if let Ok(path) = edge.build() {
-                window.paint_path(path, rim);
+            for (shape, color) in [(Icon::NotchFill, outer), (Icon::NotchEdge, rim)] {
+                let _ = window.paint_svg(
+                    square,
+                    shape.path().into(),
+                    None,
+                    Default::default(),
+                    color,
+                    cx,
+                );
             }
         },
     )
@@ -2657,6 +2627,19 @@ mod tests {
     use crate::providers::EffortChoice;
     use crate::providers::agy::AGY;
     use crate::providers::claude::CLAUDE;
+
+    #[test]
+    fn the_notch_svgs_fit_the_box_its_constants_give() {
+        use crate::icons::{Icon, view_box};
+        let side = NOTCH_REACH + NOTCH_OVER;
+        assert_eq!(
+            side, 58.0,
+            "redraw the notch SVGs if the box's sizes change"
+        );
+        for i in [Icon::NotchFill, Icon::NotchEdge] {
+            assert_eq!(view_box(i), (0.0, 0.0, side, side), "{i:?}");
+        }
+    }
     use Applies::{Live, NextConversation, Restart};
     use Step::{AfterTurn, NextStart, RestartNow};
 

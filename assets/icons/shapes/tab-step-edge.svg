@@ -1,0 +1,4 @@
+<!-- fuxx: the curved edge of a composer tab's concave step, 1 pt (terminal_view::paint_tab_step) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1">
+  <path d="M0.5 0A7.5 7.5 0 0 0 8 7.5" />
+</svg>

@@ -1,0 +1,4 @@
+<!-- fuxx: the wedge inside a composer tab's concave step, radius 8 (terminal_view::paint_tab_step) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
+  <path d="M0 0L0 8L8 8A8 8 0 0 1 0 0Z" />
+</svg>

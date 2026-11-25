@@ -21,10 +21,11 @@ use std::time::Duration;
 
 use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
-    App, Bounds, FillOptions, FillRule, Hsla, IntoElement, PathBuilder, PathStyle, Pixels, Point,
-    Window, canvas, div, point, prelude::*, px,
+    AnyElement, App, Hsla, IntoElement, Pixels, Transformation, Window, div, prelude::*, px,
+    radians,
 };
 
+use crate::icons::{Icon, icon};
 use crate::status::Status;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
@@ -106,13 +107,46 @@ pub fn mark_on(
     size: Pixels,
     fill: Rgb,
 ) -> impl IntoElement {
-    let ui = *ui;
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, cx| paint(status, ui, phase, popping, fill, bounds, window, cx),
-    )
-    .flex_none()
-    .size(size)
+    Mark {
+        status,
+        ui: *ui,
+        phase,
+        popping,
+        size,
+        fill,
+    }
+}
+
+/// A mark, laid out when it renders (so it reads `App::reduce_motion` then).
+#[derive(IntoElement)]
+struct Mark {
+    status: Status,
+    ui: UiColors,
+    phase: f32,
+    popping: Option<f32>,
+    size: Pixels,
+    fill: Rgb,
+}
+
+impl RenderOnce for Mark {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let still = cx.reduce_motion();
+        let box_ = f32::from(self.size);
+        let pieces = layers(
+            self.status,
+            &self.ui,
+            self.phase,
+            self.popping,
+            still,
+            self.fill,
+            box_,
+        );
+        div()
+            .flex_none()
+            .relative()
+            .size(self.size)
+            .children(pieces.into_iter().map(|l| l.into_element(box_)))
+    }
 }
 
 /// A sidebar row's Idle mark (M11i): 6 pt across; the ring's line as wide as the other marks'.
@@ -134,34 +168,13 @@ pub fn idle_mark(running: bool, ui: &UiColors) -> impl IntoElement {
 /// The sidebar's Done (chore, 2026-11-17: colour means activity, so a finished one isn't a
 /// bright dot): the check alone in `color` (a muted one), in a `size` box. Drawn still.
 pub fn done_check(color: Rgb, size: Pixels) -> impl IntoElement {
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            // The check is 4.6 units across: most of the box at 8 units to its side.
-            let unit = f32::from(bounds.size.width.min(bounds.size.height)) / 8.0;
-            if let Ok(path) = check(bounds.center(), unit).build() {
-                window.paint_path(path, hsla(color));
-            }
-        },
-    )
-    .flex_none()
-    .size(size)
+    icon(Icon::MarkCheck, size, hsla(color))
 }
 
 /// A failed subagent's mark (the lanes review, fix 4: a dot read as Waiting's): a small ✕ in
 /// `color`, in a `size` box, its line the check's. Drawn still.
 pub fn failed_cross(color: Rgb, size: Pixels) -> impl IntoElement {
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            let unit = f32::from(bounds.size.width.min(bounds.size.height)) / 8.0;
-            if let Ok(path) = cross(bounds.center(), unit).build() {
-                window.paint_path(path, hsla(color));
-            }
-        },
-    )
-    .flex_none()
-    .size(size)
+    icon(Icon::MarkCross, size, hsla(color))
 }
 
 /// Line width, in a 12 px box.
@@ -172,43 +185,108 @@ const RING: f32 = 4.25;
 const WAITING_DOT: f32 = 3.5;
 const HALO: f32 = 6.0;
 const DONE_DOT: f32 = 5.0;
-/// Fine flattening: the marks are tiny, so the default 0.1 px tolerance shows facets.
-const TOLERANCE: f32 = 0.01;
+/// The check's glyph box, in a 12 px box (its SVG is 8 units across, as `done_check`'s box).
+const CHECK_BOX: f32 = 8.0;
 
-#[allow(clippy::too_many_arguments)]
-fn paint(
+/// One piece of a mark, centred in its box, `d` px across. Discs and rings are rounded quads and
+/// the arc and the check SVG sprites (the scroll-lag chore, 2026-11-25): each painted path cost
+/// the GPU a whole-window pass, and a long chat drew one per finished step, every frame.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Layer {
+    Disc {
+        d: f32,
+        color: Hsla,
+    },
+    /// A ring `d` across on its outside, its line `width`.
+    Ring {
+        d: f32,
+        width: f32,
+        color: Hsla,
+    },
+    /// An SVG glyph in a `d` box, turned `turn` radians clockwise about its middle.
+    Glyph {
+        icon: Icon,
+        d: f32,
+        turn: f32,
+        color: Hsla,
+    },
+}
+
+impl Layer {
+    pub(crate) fn d(&self) -> f32 {
+        match self {
+            Layer::Disc { d, .. } | Layer::Ring { d, .. } | Layer::Glyph { d, .. } => *d,
+        }
+    }
+
+    /// This piece centred in a `box_` px square.
+    fn into_element(self, box_: f32) -> AnyElement {
+        let at = (box_ - self.d()) / 2.0;
+        match self {
+            Layer::Disc { d, color } => centred(at, d).rounded_full().bg(color).into_any_element(),
+            Layer::Ring { d, width, color } => centred(at, d)
+                .rounded_full()
+                .border(px(width))
+                .border_color(color)
+                .into_any_element(),
+            Layer::Glyph {
+                icon: glyph,
+                d,
+                turn,
+                color,
+            } => {
+                let sprite = icon(glyph, px(d), color)
+                    .absolute()
+                    .left(px(at))
+                    .top(px(at));
+                if turn == 0.0 {
+                    sprite.into_any_element()
+                } else {
+                    sprite
+                        .with_transformation(Transformation::rotate(radians(turn)))
+                        .into_any_element()
+                }
+            }
+        }
+    }
+}
+
+/// An absolutely placed `d` px square, `at` px in from its box's top-left.
+fn centred(at: f32, d: f32) -> gpui::Div {
+    div().absolute().left(px(at)).top(px(at)).size(px(d))
+}
+
+/// What `status`'s mark is made of in a `box_` px box (see `mark_on`); `still` is motion off.
+pub(crate) fn layers(
     status: Status,
-    ui: UiColors,
+    ui: &UiColors,
     phase: f32,
     popping: Option<f32>,
+    still: bool,
     fill: Rgb,
-    bounds: Bounds<Pixels>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let still = cx.reduce_motion();
+    box_: f32,
+) -> Vec<Layer> {
     // One unit is a pixel of a 12 px box.
-    let unit = f32::from(bounds.size.width.min(bounds.size.height)) / 12.0;
-    let c = bounds.center();
+    let unit = box_ / 12.0;
     match status {
-        Status::Idle => {
-            let ring = annulus(
-                c,
-                (RING - STROKE / 2.0) * unit,
-                (RING + STROKE / 2.0) * unit,
-            );
-            draw(window, ring, hsla(ui.ring_idle));
-        }
+        Status::Idle => vec![Layer::Ring {
+            d: 2.0 * (RING + STROKE / 2.0) * unit,
+            width: STROKE * unit,
+            color: hsla(ui.ring_idle),
+        }],
         Status::Working => {
+            // From the top, clockwise, leaving a quarter open (the glyph's own start).
             let turn = if still {
                 0.0
             } else {
-                (phase * TURNS_PER_BEAT).fract()
+                (phase * TURNS_PER_BEAT).fract() * TAU
             };
-            // From the top, clockwise, leaving a quarter open.
-            let start = -TAU / 4.0 + turn * TAU;
-            let arc = round_arc(c, RING * unit, STROKE * unit, start, start + 0.75 * TAU);
-            draw(window, arc, hsla(ui.ring_working));
+            vec![Layer::Glyph {
+                icon: Icon::MarkArc,
+                d: 12.0 * unit,
+                turn,
+                color: hsla(ui.ring_working),
+            }]
         }
         Status::Waiting => {
             let alpha = if still {
@@ -216,12 +294,19 @@ fn paint(
             } else {
                 halo_alpha(phase)
             };
-            let halo = Hsla {
-                a: alpha,
-                ..hsla(ui.ring_waiting)
-            };
-            draw(window, disc(c, HALO * unit), halo);
-            draw(window, disc(c, WAITING_DOT * unit), hsla(ui.ring_waiting));
+            vec![
+                Layer::Disc {
+                    d: 2.0 * HALO * unit,
+                    color: Hsla {
+                        a: alpha,
+                        ..hsla(ui.ring_waiting)
+                    },
+                },
+                Layer::Disc {
+                    d: 2.0 * WAITING_DOT * unit,
+                    color: hsla(ui.ring_waiting),
+                },
+            ]
         }
         Status::Done => {
             let scale = match popping {
@@ -229,90 +314,20 @@ fn paint(
                 _ => 1.0,
             };
             let u = unit * scale;
-            draw(window, disc(c, DONE_DOT * u), hsla(ui.ring_done));
-            draw(window, check(c, u), hsla(fill));
+            vec![
+                Layer::Disc {
+                    d: 2.0 * DONE_DOT * u,
+                    color: hsla(ui.ring_done),
+                },
+                Layer::Glyph {
+                    icon: Icon::MarkCheck,
+                    d: CHECK_BOX * u,
+                    turn: 0.0,
+                    color: hsla(fill),
+                },
+            ]
         }
     }
-
-    fn draw(window: &mut Window, path: PathBuilder, color: Hsla) {
-        if let Ok(path) = path.build() {
-            window.paint_path(path, color);
-        }
-    }
-}
-
-/// A fill path builder with the fine tolerance.
-fn filled() -> PathBuilder {
-    PathBuilder::fill().with_style(PathStyle::Fill(FillOptions::tolerance(TOLERANCE)))
-}
-
-/// The point at `angle` (radians, clockwise from the right, as y grows down) `r` from `c`.
-fn at(c: Point<Pixels>, r: f32, angle: f32) -> Point<Pixels> {
-    point(c.x + px(r * angle.cos()), c.y + px(r * angle.sin()))
-}
-
-/// A circle of radius `r` around `c` as two half arcs, added to `path`.
-fn circle(path: &mut PathBuilder, c: Point<Pixels>, r: f32) {
-    let radii = point(px(r), px(r));
-    path.move_to(at(c, r, 0.0));
-    path.arc_to(radii, px(0.0), false, true, at(c, r, TAU / 2.0));
-    path.arc_to(radii, px(0.0), false, true, at(c, r, 0.0));
-    path.close();
-}
-
-fn disc(c: Point<Pixels>, r: f32) -> PathBuilder {
-    let mut path = filled();
-    circle(&mut path, c, r);
-    path
-}
-
-/// A ring between radii `inner` and `outer` (even-odd: the inner circle is the hole).
-fn annulus(c: Point<Pixels>, inner: f32, outer: f32) -> PathBuilder {
-    let mut path = PathBuilder::fill().with_style(PathStyle::Fill(
-        FillOptions::tolerance(TOLERANCE).with_fill_rule(FillRule::EvenOdd),
-    ));
-    circle(&mut path, c, outer);
-    circle(&mut path, c, inner);
-    path
-}
-
-/// An arc of radius `r` and line width `width` from angle `from` clockwise to `to` (less than a
-/// full turn, more than half), with round ends. Drawn as one filled outline, since GPUI's
-/// stroke has no round caps: out along the outer edge, round the end, back along the inner
-/// edge, round the start.
-fn round_arc(c: Point<Pixels>, r: f32, width: f32, from: f32, to: f32) -> PathBuilder {
-    let h = width / 2.0;
-    let (outer, inner) = (point(px(r + h), px(r + h)), point(px(r - h), px(r - h)));
-    let cap = point(px(h), px(h));
-    let mut path = filled();
-    path.move_to(at(c, r + h, from));
-    path.arc_to(outer, px(0.0), true, true, at(c, r + h, to));
-    path.arc_to(cap, px(0.0), false, true, at(c, r - h, to));
-    path.arc_to(inner, px(0.0), true, false, at(c, r - h, from));
-    path.arc_to(cap, px(0.0), false, true, at(c, r + h, from));
-    path.close();
-    path
-}
-
-/// The check inside Done's dot, `unit` a pixel of a 12 px box.
-fn check(c: Point<Pixels>, unit: f32) -> PathBuilder {
-    let p = |x: f32, y: f32| point(c.x + px(x * unit), c.y + px(y * unit));
-    let mut path = PathBuilder::stroke(px(STROKE * unit));
-    path.move_to(p(-2.3, 0.1));
-    path.line_to(p(-0.7, 1.7));
-    path.line_to(p(2.3, -1.5));
-    path
-}
-
-/// The ✕, 3.6 units across (a touch under the check's 4.6, as it is all ink).
-fn cross(c: Point<Pixels>, unit: f32) -> PathBuilder {
-    let p = |x: f32, y: f32| point(c.x + px(x * unit), c.y + px(y * unit));
-    let mut path = PathBuilder::stroke(px(STROKE * unit));
-    path.move_to(p(-1.8, -1.8));
-    path.line_to(p(1.8, 1.8));
-    path.move_to(p(1.8, -1.8));
-    path.line_to(p(-1.8, 1.8));
-    path
 }
 
 #[cfg(test)]
@@ -360,6 +375,108 @@ mod tests {
         );
         // Continuous: no jumps between neighbouring samples.
         assert!(samples.windows(2).all(|w| (w[1] - w[0]).abs() < 0.05));
+    }
+
+    fn ui() -> UiColors {
+        crate::theme::Theme::default().ui()
+    }
+
+    fn rgb(r: u8, g: u8, b: u8) -> Rgb {
+        Rgb { r, g, b }
+    }
+
+    #[test]
+    fn a_12px_mark_keeps_the_sizes_the_paths_had() {
+        let (ui, fill) = (ui(), rgb(1, 2, 3));
+        let at = |s| layers(s, &ui, 0.0, None, true, fill, 12.0);
+        // Idle: a ring 10 px across (radius 4.25 to the middle of a 1.5 line).
+        assert_eq!(
+            at(Status::Idle),
+            vec![Layer::Ring {
+                d: 10.0,
+                width: 1.5,
+                color: hsla(ui.ring_idle)
+            }]
+        );
+        // Working: the arc's glyph fills the box.
+        assert!(matches!(
+            at(Status::Working)[..],
+            [Layer::Glyph { icon: Icon::MarkArc, d, .. }] if d == 12.0
+        ));
+        // Waiting: a 12 px halo under a 7 px dot.
+        match &at(Status::Waiting)[..] {
+            [Layer::Disc { d: halo, .. }, Layer::Disc { d: dot, color }] => {
+                assert_eq!((*halo, *dot), (12.0, 7.0));
+                assert_eq!(*color, hsla(ui.ring_waiting));
+            }
+            other => panic!("waiting: {other:?}"),
+        }
+        // Done: a 10 px dot, its check (an 8-unit glyph) cut out in the surface's colour.
+        assert_eq!(
+            at(Status::Done),
+            vec![
+                Layer::Disc {
+                    d: 10.0,
+                    color: hsla(ui.ring_done)
+                },
+                Layer::Glyph {
+                    icon: Icon::MarkCheck,
+                    d: 8.0,
+                    turn: 0.0,
+                    color: hsla(fill)
+                },
+            ]
+        );
+        // They scale with the box.
+        assert_eq!(
+            layers(Status::Idle, &ui, 0.0, None, true, fill, 24.0),
+            vec![Layer::Ring {
+                d: 20.0,
+                width: 3.0,
+                color: hsla(ui.ring_idle)
+            }]
+        );
+    }
+
+    #[test]
+    fn the_arc_turns_with_the_clock_and_stands_still_with_motion_off() {
+        let (ui, fill) = (ui(), rgb(0, 0, 0));
+        let turn =
+            |phase, still| match layers(Status::Working, &ui, phase, None, still, fill, 12.0)[..] {
+                [Layer::Glyph { turn, .. }] => turn,
+                _ => panic!("one glyph"),
+            };
+        // An eighth of a beat is half a turn (four turns a beat).
+        assert!((turn(0.125, false) - TAU / 2.0).abs() < 1e-4);
+        assert_eq!(turn(0.125, true), 0.0, "still: from the top");
+    }
+
+    #[test]
+    fn the_halo_breathes_and_holds_its_middle_with_motion_off() {
+        let (ui, fill) = (ui(), rgb(0, 0, 0));
+        let alpha =
+            |phase, still| match layers(Status::Waiting, &ui, phase, None, still, fill, 12.0)[..] {
+                [Layer::Disc { color, .. }, _] => color.a,
+                _ => panic!("halo and dot"),
+            };
+        assert!((alpha(0.0, false) - HALO_MIN).abs() < 1e-4);
+        assert!((alpha(1.0 / 6.0, false) - HALO_MAX).abs() < 1e-4);
+        assert!((alpha(0.0, true) - (HALO_MIN + HALO_MAX) / 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn done_pops_from_small_unless_motion_is_off() {
+        let (ui, fill) = (ui(), rgb(0, 0, 0));
+        let sizes = |popping, still| {
+            layers(Status::Done, &ui, 0.0, popping, still, fill, 12.0)
+                .iter()
+                .map(Layer::d)
+                .collect::<Vec<_>>()
+        };
+        let close = |a: Vec<f32>, b: [f32; 2]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+        assert!(close(sizes(Some(0.0), false), [6.0, 4.8]), "starts at 0.6");
+        assert!(close(sizes(Some(0.0), true), [10.0, 8.0]));
+        assert!(close(sizes(None, false), [10.0, 8.0]));
     }
 
     #[test]

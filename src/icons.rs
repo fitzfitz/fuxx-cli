@@ -78,11 +78,26 @@ pub enum Icon {
     /// A subagent (the subagent row chore, 2026-11-24): its row, the pill strip's group, its
     /// lane's header.
     Bot,
+    /// The status marks' own glyphs (the scroll-lag chore, 2026-11-25: drawn as SVG sprites, not
+    /// paths, which cost the GPU a whole-window pass each), not Lucide's: Working's arc (a
+    /// 12-unit box), the check and the ✕ (8-unit boxes), their line 1.5 units, as
+    /// `status_mark` drew them.
+    MarkArc,
+    MarkCheck,
+    MarkCross,
+    /// The chrome's own shapes, drawn as SVG sprites for the same reason (2026-11-25): a composer
+    /// tab's concave step (its wedge and its edge, radius 8), the agent box's send notch (its
+    /// fill and its lit edge, 58 pt square) and the tab colour menu's "no colour" slash.
+    TabStepFill,
+    TabStepEdge,
+    NotchFill,
+    NotchEdge,
+    SwatchSlash,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 56] = [
+    pub const ALL: [Icon; 64] = [
         Icon::Terminal,
         Icon::Globe,
         Icon::File,
@@ -139,6 +154,14 @@ impl Icon {
         Icon::Paperclip,
         Icon::Fork,
         Icon::Bot,
+        Icon::MarkArc,
+        Icon::MarkCheck,
+        Icon::MarkCross,
+        Icon::TabStepFill,
+        Icon::TabStepEdge,
+        Icon::NotchFill,
+        Icon::NotchEdge,
+        Icon::SwatchSlash,
     ];
 
     /// Its asset path.
@@ -200,12 +223,52 @@ impl Icon {
             Icon::Paperclip => "icons/lucide/paperclip.svg",
             Icon::Fork => "icons/lucide/git-fork.svg",
             Icon::Bot => "icons/lucide/bot.svg",
+            Icon::MarkArc => "icons/marks/arc.svg",
+            Icon::MarkCheck => "icons/marks/check.svg",
+            Icon::MarkCross => "icons/marks/cross.svg",
+            Icon::TabStepFill => "icons/shapes/tab-step-fill.svg",
+            Icon::TabStepEdge => "icons/shapes/tab-step-edge.svg",
+            Icon::NotchFill => "icons/shapes/notch-fill.svg",
+            Icon::NotchEdge => "icons/shapes/notch-edge.svg",
+            Icon::SwatchSlash => "icons/shapes/swatch-slash.svg",
         }
     }
 }
 
 /// The embedded files, by asset path.
-const FILES: [(&str, &[u8]); 54] = [
+const FILES: [(&str, &[u8]); 62] = [
+    (
+        "icons/shapes/tab-step-fill.svg",
+        include_bytes!("../assets/icons/shapes/tab-step-fill.svg"),
+    ),
+    (
+        "icons/shapes/tab-step-edge.svg",
+        include_bytes!("../assets/icons/shapes/tab-step-edge.svg"),
+    ),
+    (
+        "icons/shapes/notch-fill.svg",
+        include_bytes!("../assets/icons/shapes/notch-fill.svg"),
+    ),
+    (
+        "icons/shapes/notch-edge.svg",
+        include_bytes!("../assets/icons/shapes/notch-edge.svg"),
+    ),
+    (
+        "icons/shapes/swatch-slash.svg",
+        include_bytes!("../assets/icons/shapes/swatch-slash.svg"),
+    ),
+    (
+        "icons/marks/arc.svg",
+        include_bytes!("../assets/icons/marks/arc.svg"),
+    ),
+    (
+        "icons/marks/check.svg",
+        include_bytes!("../assets/icons/marks/check.svg"),
+    ),
+    (
+        "icons/marks/cross.svg",
+        include_bytes!("../assets/icons/marks/cross.svg"),
+    ),
     (
         "icons/lucide/circle.svg",
         include_bytes!("../assets/icons/lucide/circle.svg"),
@@ -453,6 +516,23 @@ pub fn icon(icon: Icon, size: Pixels, color: Hsla) -> Svg {
         .text_color(color)
 }
 
+/// `icon`'s viewBox, `(x, y, width, height)`: a test checks a shape against the box it's
+/// painted in.
+#[cfg(test)]
+pub fn view_box(icon: Icon) -> (f32, f32, f32, f32) {
+    let bytes = Assets.load(icon.path()).unwrap().unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    let at = text.find(r#"viewBox=""#).expect("a viewBox") + r#"viewBox=""#.len();
+    let n: Vec<f32> = text[at..]
+        .split('"')
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    (n[0], n[1], n[2], n[3])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,9 +543,13 @@ mod tests {
             let bytes = Assets.load(i.path()).expect("loads").expect("present");
             let text = std::str::from_utf8(&bytes).expect("text");
             assert!(text.contains("<svg"), "{i:?}: an svg");
+            // Drawn in the colour it's given.
+            assert!(text.contains("currentColor"), "{i:?}: in the given colour");
             // Lucide's: outline (no fill, stroked in the colour it's drawn in).
-            assert!(text.contains(r#"fill="none""#), "{i:?}: no fill");
-            assert!(text.contains(r#"stroke="currentColor""#), "{i:?}: stroked");
+            if i.path().starts_with("icons/lucide/") {
+                assert!(text.contains(r#"fill="none""#), "{i:?}: no fill");
+                assert!(text.contains(r#"stroke="currentColor""#), "{i:?}: stroked");
+            }
         }
     }
 

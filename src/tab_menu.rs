@@ -9,8 +9,8 @@
 //! keyboard so Escape closes it, and a click anywhere else (or any choice) closes it too.
 
 use gpui::{
-    AnyElement, ClickEvent, Context, FocusHandle, MouseButton, MouseDownEvent, PathBuilder, Pixels,
-    Point, PromptLevel, Window, actions, anchored, canvas, div, point, prelude::*, px,
+    AnyElement, ClickEvent, Context, FocusHandle, MouseButton, MouseDownEvent, Pixels, Point,
+    PromptLevel, Window, actions, anchored, div, prelude::*, px,
 };
 
 use crate::groups::GroupKey;
@@ -491,7 +491,7 @@ impl Workspace {
     }
 }
 
-/// The "no colour" swatch: an outlined circle with a slash through it.
+/// The "no colour" swatch: an outlined circle with a slash through it (an SVG sprite, 2026-11-25).
 fn no_color(ui: UiColors) -> impl IntoElement {
     let color = ui.text_dim;
     div()
@@ -499,29 +499,26 @@ fn no_color(ui: UiColors) -> impl IntoElement {
         .rounded_full()
         .border_1()
         .border_color(hsla(color))
-        .child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    // Corner to corner of the circle's inside, bottom left to top right.
-                    let inset = bounds.size.width * 0.15;
-                    let (o, s) = (bounds.origin, bounds.size);
-                    let mut path = PathBuilder::stroke(px(1.0));
-                    path.move_to(point(o.x + inset, o.y + s.height - inset));
-                    path.line_to(point(o.x + s.width - inset, o.y + inset));
-                    if let Ok(path) = path.build() {
-                        window.paint_path(path, hsla(color));
-                    }
-                },
-            )
-            .size_full(),
-        )
+        .child(crate::icons::icon(
+            crate::icons::Icon::SwatchSlash,
+            px(SWATCH - 2.0),
+            hsla(color),
+        ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use TabAction::*;
+
+    #[test]
+    fn the_no_colour_slash_fits_inside_the_swatch_ring() {
+        let inside = SWATCH - 2.0;
+        assert_eq!(
+            crate::icons::view_box(crate::icons::Icon::SwatchSlash),
+            (0.0, 0.0, inside, inside)
+        );
+    }
 
     /// Every one of `n` sessions has a row (no group closed).
     fn all(n: usize) -> Vec<usize> {

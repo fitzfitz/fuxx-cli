@@ -1,0 +1,4 @@
+<!-- fuxx: the agent box's lit edge along its send notch, 1 pt, 0.5 pt outside the box (agent_box::notch) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="58" height="58" viewBox="0 0 58 58" fill="none" stroke="currentColor" stroke-width="1">
+  <path d="M56.5 0A14.5 14.5 0 0 1 42 14.5L39 14.5A24.5 24.5 0 0 0 14.5 39L14.5 42A14.5 14.5 0 0 1 0 56.5" />
+</svg>
