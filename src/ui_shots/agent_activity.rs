@@ -716,6 +716,14 @@ fn plan_scene(name: &'static str, dims: (f32, f32), long: bool) {
             (burger.center().y - folder.center().y).abs() < px(3.),
             "{n}: on the folder tab's row"
         );
+        // Flush with the box's right edge, as the folder tab is with its left (the 2026-11-25
+        // chores: "the edge corner, should we make it like this").
+        let shell = part(cx, tab, n, "plan-tab-shell");
+        let outer = part(cx, tab, n, "outer");
+        assert!(
+            (shell.right() - outer.right()).abs() < px(1.5),
+            "{n}: the plan tab ends at the box's right edge ({shell:?} vs {outer:?})"
+        );
         click(cx, window, burger);
         let _ = frame_fresh(cx, window);
         assert_eq!(

@@ -90,6 +90,10 @@ pub enum Icon {
     /// fill and its lit edge, 58 pt square) and the tab colour menu's "no colour" slash.
     TabStepFill,
     TabStepEdge,
+    /// The same step on a tab's left (the plan tab's, flush with the box's right edge: the
+    /// 2026-11-25 chores).
+    TabStepFillLeft,
+    TabStepEdgeLeft,
     NotchFill,
     NotchEdge,
     SwatchSlash,
@@ -97,7 +101,7 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 64] = [
+    pub const ALL: [Icon; 66] = [
         Icon::Terminal,
         Icon::Globe,
         Icon::File,
@@ -159,6 +163,8 @@ impl Icon {
         Icon::MarkCross,
         Icon::TabStepFill,
         Icon::TabStepEdge,
+        Icon::TabStepFillLeft,
+        Icon::TabStepEdgeLeft,
         Icon::NotchFill,
         Icon::NotchEdge,
         Icon::SwatchSlash,
@@ -228,6 +234,8 @@ impl Icon {
             Icon::MarkCross => "icons/marks/cross.svg",
             Icon::TabStepFill => "icons/shapes/tab-step-fill.svg",
             Icon::TabStepEdge => "icons/shapes/tab-step-edge.svg",
+            Icon::TabStepFillLeft => "icons/shapes/tab-step-fill-left.svg",
+            Icon::TabStepEdgeLeft => "icons/shapes/tab-step-edge-left.svg",
             Icon::NotchFill => "icons/shapes/notch-fill.svg",
             Icon::NotchEdge => "icons/shapes/notch-edge.svg",
             Icon::SwatchSlash => "icons/shapes/swatch-slash.svg",
@@ -236,7 +244,7 @@ impl Icon {
 }
 
 /// The embedded files, by asset path.
-const FILES: [(&str, &[u8]); 62] = [
+const FILES: [(&str, &[u8]); 64] = [
     (
         "icons/shapes/tab-step-fill.svg",
         include_bytes!("../assets/icons/shapes/tab-step-fill.svg"),
@@ -244,6 +252,14 @@ const FILES: [(&str, &[u8]); 62] = [
     (
         "icons/shapes/tab-step-edge.svg",
         include_bytes!("../assets/icons/shapes/tab-step-edge.svg"),
+    ),
+    (
+        "icons/shapes/tab-step-fill-left.svg",
+        include_bytes!("../assets/icons/shapes/tab-step-fill-left.svg"),
+    ),
+    (
+        "icons/shapes/tab-step-edge-left.svg",
+        include_bytes!("../assets/icons/shapes/tab-step-edge-left.svg"),
     ),
     (
         "icons/shapes/notch-fill.svg",

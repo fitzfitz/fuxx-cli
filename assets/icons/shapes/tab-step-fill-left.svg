@@ -1,0 +1,4 @@
+<!-- fuxx: the wedge inside a tab's concave step on its left (the plan tab's), radius 8: tab-step-fill.svg mirrored (terminal_view::paint_tab_step_left) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
+  <path d="M8 0L8 8L0 8A8 8 0 0 0 8 0Z" />
+</svg>

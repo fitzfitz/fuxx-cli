@@ -134,9 +134,7 @@ const CLOCK_WIDTH: f32 = 280.0;
 pub(crate) fn centred_dx(anchor: f32, width: f32) -> f32 {
     (anchor - width) / 2.
 }
-/// The plan tab's inset from the box's right edge (clear of its rounded corner), and its
-/// popover's width.
-const PLAN_TAB_INSET: f32 = 24.0;
+/// The plan tab's popover's width.
 /// The least room between the folder tab's step and the plan tab.
 const PLAN_TAB_GAP: f32 = 8.0;
 pub(crate) const PLAN_WIDTH: f32 = 340.0;
@@ -1717,7 +1715,9 @@ impl AgentTab {
             .bg(outer)
             .border_1()
             .border_color(edge)
-            .rounded_tr(px(15.))
+            // Square under the plan tab, as the top-left is under the folder tab (the 2026-11-25
+            // chores: the plan tab flush with the right edge).
+            .rounded_tr(px(if plan.is_some() { 0. } else { 15. }))
             .rounded_b(px(OUTER_BOTTOM_RADIUS))
             .shadow(vec![shadow])
             .child(rim)
@@ -1772,13 +1772,40 @@ impl AgentTab {
                 .absolute()
                 .top_0()
                 .left_0()
-                .right(px(PLAN_TAB_INSET))
+                .right_0()
                 .flex()
                 .items_end()
                 .child(tab)
                 .child(step)
                 .child(div().flex_1().min_w(px(PLAN_TAB_GAP)))
-                .children(plan.map(|plan| self.plan_tab_shell(plan, outer, edge))),
+                .children(
+                    plan.map(|plan| {
+                        // Flush with the box's right edge, its step on its left: the folder tab
+                        // mirrored (the 2026-11-25 chores).
+                        let step = div().flex_none().mr(px(-EDGE)).size(px(16.)).child(
+                            gpui::canvas(
+                                |_, _, _| (),
+                                move |bounds, _, window, cx| {
+                                    crate::terminal_view::paint_tab_step_left(
+                                        window,
+                                        (f32::from(bounds.right()), f32::from(bounds.bottom())),
+                                        outer,
+                                        edge,
+                                        cx,
+                                    )
+                                },
+                            )
+                            .size_full(),
+                        );
+                        [
+                            step.into_any_element(),
+                            self.marked("plan-tab-shell", self.plan_tab_shell(plan, outer, edge))
+                                .into_any_element(),
+                        ]
+                    })
+                    .into_iter()
+                    .flatten(),
+                ),
         )
     }
 

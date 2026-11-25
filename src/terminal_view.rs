@@ -3470,11 +3470,44 @@ pub(crate) fn paint_tab_step(
     cx: &App,
 ) {
     use crate::icons::Icon;
+    paint_step_shapes(
+        window,
+        (x, y),
+        [(Icon::TabStepFill, fill), (Icon::TabStepEdge, edge)],
+        cx,
+    );
+}
+
+/// `paint_tab_step` mirrored, for a tab whose step is on its left (the plan tab, flush with the
+/// box's right edge: the 2026-11-25 chores): (`x`, `y`) is the step's bottom-right corner.
+pub(crate) fn paint_tab_step_left(
+    window: &mut Window,
+    (x, y): (f32, f32),
+    fill: gpui::Hsla,
+    edge: gpui::Hsla,
+    cx: &App,
+) {
+    use crate::icons::Icon;
+    paint_step_shapes(
+        window,
+        (x - TAB_STEP, y),
+        [(Icon::TabStepFillLeft, fill), (Icon::TabStepEdgeLeft, edge)],
+        cx,
+    );
+}
+
+/// A step's two sprites in the `TAB_STEP` square whose bottom-left corner is (`x`, `y`).
+fn paint_step_shapes(
+    window: &mut Window,
+    (x, y): (f32, f32),
+    shapes: [(crate::icons::Icon, gpui::Hsla); 2],
+    cx: &App,
+) {
     let square = Bounds::new(
         point(px(x), px(y - TAB_STEP)),
         size(px(TAB_STEP), px(TAB_STEP)),
     );
-    for (shape, color) in [(Icon::TabStepFill, fill), (Icon::TabStepEdge, edge)] {
+    for (shape, color) in shapes {
         let _ = window.paint_svg(
             square,
             shape.path().into(),

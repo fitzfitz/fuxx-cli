@@ -1,0 +1,4 @@
+<!-- fuxx: the curved edge of a tab's concave step on its left (the plan tab's), 1 pt: tab-step-edge.svg mirrored (terminal_view::paint_tab_step_left) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1">
+  <path d="M7.5 0A7.5 7.5 0 0 1 0 7.5" />
+</svg>
