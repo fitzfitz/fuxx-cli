@@ -300,6 +300,7 @@ pub(super) fn agent_rewind() {
     checks("agent-rewind-working", working_checks);
     checks("agent-rewind-strip", strip_checks);
     checks("agent-rewind-strip-sent", strip_sent_checks);
+    checks("agent-rewind-hover-stays", hover_stays_checks);
     for &(slug, theme_name) in shot_themes() {
         let theme = shot_theme(theme_name);
         let slot: Slot = Rc::default();
@@ -371,6 +372,41 @@ fn checks(
 /// message scrolled off by a long answer, the strip shows a Rewind button at its right; its
 /// click starts the same rewind as the "Stopped" notice's link (the agent's dry run asked), not
 /// the strip's jump.
+/// The 2026-11-25 chores ("icons disappear when I hover them"): with the pointer on a message's
+/// copy icon, the icons stay drawn (the strip blocks the mouse, so the row behind it reads as not
+/// hovered: the strip keeps itself shown).
+fn hover_stays_checks(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+    home: &std::path::Path,
+) {
+    talk_and_stop(cx, tab, home);
+    settle_frames(cx, window);
+    let first = index_of(cx, tab, FIRST);
+    let copy =
+        cx.read(|cx| tab.read(cx).rw.shot_buttons.borrow().clone())[&format!("copy:{first}")];
+    let dims = size(px(DIMS.0), px(DIMS.1));
+    // The chat's own fill, left of the icons (nothing drawn there).
+    let rest = super::frame_fresh(cx, window);
+    let bg = super::pixel_at(&rest, dims, 4.0, f32::from(copy.center().y));
+    cx.simulate_mouse_move(window, copy.center(), None, Modifiers::none());
+    settle_frames(cx, window);
+    let shot = super::frame_fresh(cx, window);
+    let ink = super::ink_in(&shot, dims, copy, bg);
+    let far = ink
+        .iter()
+        .zip(bg)
+        .map(|(a, b)| a.abs_diff(b))
+        .max()
+        .unwrap_or(0);
+    assert!(
+        far > 40,
+        "{n}: the copy icon under the pointer is drawn (ink {ink:?} on {bg:?})"
+    );
+}
+
 fn strip_checks(
     n: &str,
     cx: &mut VisualTestAppContext,

@@ -1109,8 +1109,13 @@ impl AgentTab {
                 .block_mouse_except_scroll()
                 // Transparent, not hidden, at rest: a hidden element registers no group hover,
                 // so the row's hover would never redraw it.
+                // Its own hover keeps it shown too (the 2026-11-25 chores: "icons disappear when
+                // I hover them"): it blocks the mouse, so under the pointer the row behind it
+                // reads as not hovered.
                 .when(!kept, |d| {
-                    d.opacity(0.).group_hover(YOU_ROW, |s| s.opacity(1.))
+                    d.opacity(0.)
+                        .group_hover(YOU_ROW, |s| s.opacity(1.))
+                        .hover(|s| s.opacity(1.))
                 })
                 .children(buttons)
                 .into_any_element(),
