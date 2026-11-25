@@ -128,6 +128,12 @@ pub(crate) const EFFORT_SWITCH_DELAY: std::time::Duration = std::time::Duration:
 pub(crate) const USAGE_WIDTH: f32 = 300.0;
 /// The clock's cost and context panel.
 const CLOCK_WIDTH: f32 = 280.0;
+
+/// How far left of its button a panel `width` wide starts so its middle sits over the button's
+/// middle (`anchor` wide): the clock's panel (the 2026-11-25 chores: "in the middle").
+pub(crate) fn centred_dx(anchor: f32, width: f32) -> f32 {
+    (anchor - width) / 2.
+}
 /// The plan tab's inset from the box's right edge (clear of its rounded corner), and its
 /// popover's width.
 const PLAN_TAB_INSET: f32 = 24.0;
@@ -1249,7 +1255,13 @@ impl AgentTab {
                     }))
                     .children(self.cost_context(c))
                     .into_any_element();
-                d.child(self.menu_frame(Some(panel), None, CLOCK_WIDTH, cx))
+                d.child(self.menu_frame_at(
+                    Some(panel),
+                    None,
+                    CLOCK_WIDTH,
+                    centred_dx(BUTTON, CLOCK_WIDTH),
+                    cx,
+                ))
             })
         });
         let usage_hover = c.control_hover;
@@ -3228,6 +3240,14 @@ mod tests {
         assert_eq!(current_mode(None, Some("auto"), Some("x")), Some("auto"));
         assert_eq!(current_mode(None, None, Some("x")), Some("x"));
         assert_eq!(current_mode(None, None, None), None);
+    }
+
+    /// The 2026-11-25 chores ("make it appear in the middle not right aligned"): the clock's
+    /// panel sits with its middle over the button's middle.
+    #[test]
+    fn centred_dx_puts_the_panel_middle_over_the_button() {
+        assert_eq!(centred_dx(28., 280.), -126.);
+        assert_eq!(centred_dx(280., 280.), 0.);
     }
 
     #[test]

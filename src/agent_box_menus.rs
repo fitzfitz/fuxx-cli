@@ -21,6 +21,19 @@ impl AgentTab {
         width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.menu_frame_at(content, side, width, 0., cx)
+    }
+
+    /// `menu_frame`, its left edge `dx` from its anchor's (negative: further left); the
+    /// window's edge still pushes it back in.
+    pub(super) fn menu_frame_at(
+        &self,
+        content: Option<AnyElement>,
+        side: Option<AnyElement>,
+        width: f32,
+        dx: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let ui = cx.global::<Appearance>().theme.ui();
         // No content: only the panel beside it (the usage button's).
         let dark = cx.global::<Appearance>().theme.is_dark();
@@ -44,7 +57,7 @@ impl AgentTab {
             .child(deferred(
                 anchored()
                     .anchor(Anchor::BottomLeft)
-                    .offset(point(px(0.), px(-MENU_GAP)))
+                    .offset(point(px(dx), px(-MENU_GAP)))
                     .snap_to_window_with_margin(px(MENU_EDGE))
                     .child(
                         // A press outside both panels closes it (one in the panel beside the
