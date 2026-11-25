@@ -44,6 +44,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-25 — Chore 15: the plan tab follows a plan in another repo
+
+- **Did:** the ☰ tab never moved while the landing site's plan was built: it read git in the tab's folder, not the
+  plan's, and counted only "Task N" subjects. Now it reads the plan's own repo and also matches each task's planned
+  commit message (note 93).
+- **Next task:** your on-screen checks (note 93).
+
 ### 2026-11-25 — v0.13.7 released
 
 - **What:** your words: "merge and release it", then "yes, scrub then release". The pre-push grep found a work

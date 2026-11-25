@@ -1489,3 +1489,11 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     - [ ] the plan tab shows no ◐ before work starts
     - [ ] the branch chip follows a `git switch` by the agent and in another terminal
     - [ ] the plan tab keeps a plan's tasks while the agent writes other `.md` notes, and across turns
+- **Chore 15: the plan tab follows a plan built in another repo** (your words, 2026-11-25: "the tasks progress isnt
+  updated on the outter right chatbox, is it a bug? if it is fix it as a chore"). Two causes: the tab read commits
+  (and the plan's start) with `git -C <the tab's folder>`, so a plan living in another repo (here fuxx-landing's,
+  built from a fuxx-cli tab) never saw its commits; and only a subject saying "Task N" counted, while those commits
+  used the messages the plan itself gives each task. Now git runs in the plan file's own folder, and a commit whose
+  subject starts with a task's planned commit message (the backticked text on its "commit" line,
+  `planned_subjects`) marks it done (`match_planned`). Tests 2984 green.
+  - [ ] Your check: a plan in another repo ticks its tasks off as their commits land.

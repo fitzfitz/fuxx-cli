@@ -126,6 +126,55 @@ pub fn plan_candidates(
     out
 }
 
+/// Each `### Task N` heading's planned commit message (chore 15): the first backticked text on a
+/// line of its section that says "commit"; none when the task names none.
+pub fn planned_subjects(md: &str) -> Vec<Option<String>> {
+    let mut out: Vec<Option<String>> = Vec::new();
+    for line in md.lines() {
+        if task_heading(line).is_some() {
+            out.push(None);
+            continue;
+        }
+        let Some(slot) = out.last_mut() else { continue };
+        if slot.is_some() || !line.to_lowercase().contains("commit") {
+            continue;
+        }
+        let at = line.to_lowercase().find("commit").unwrap_or(0);
+        let rest = &line[at..];
+        if let Some(open) = rest.find('`')
+            && let Some(len) = rest[open + 1..].find('`')
+        {
+            let text = rest[open + 1..open + 1 + len].trim();
+            if !text.is_empty() {
+                *slot = Some(text.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Marks done the tasks whose planned commit message (`planned`, by task) a commit's subject
+/// starts with, with that commit (chore 15: plans whose commits say what, not "Task N").
+pub fn match_planned(
+    tasks: &mut [PlanTask],
+    commits: &[(String, String)],
+    planned: &[Option<String>],
+) {
+    for (task, want) in tasks.iter_mut().zip(planned) {
+        let Some(want) = want.as_deref().map(str::to_lowercase) else {
+            continue;
+        };
+        if let Some((hash, _)) = commits
+            .iter()
+            .find(|(_, subject)| subject.trim().to_lowercase().starts_with(&want))
+        {
+            task.state = TaskState::Done {
+                commit: Some(hash.clone()),
+            };
+        }
+    }
+}
+
 /// Whether commit subject `subject` names task number `n` ("Task 3:", "Task 3 ", "task 3").
 fn names_task(subject: &str, n: usize) -> bool {
     let lower = subject.to_lowercase();
@@ -380,6 +429,44 @@ mod tests {
             "each once"
         );
         assert_eq!(plan_candidates(&[], Some(&kept)), [kept]);
+    }
+
+    /// Chore 15 (the ☰ tab never moved while a plan in another repo was built): each task's
+    /// planned commit message, from its commit step's backticks.
+    #[test]
+    fn a_task_names_its_planned_commit() {
+        let md = "### Task 1: Icons\n- [ ] Step 3: commit `Lucide icons for every faked icon`.\n\
+                  ### Task 2: Intro\n- [ ] Step 3: browser check. Commit `A first-load intro`.\n\
+                  ### Task 3: Ship\n- [ ] Push.\n";
+        assert_eq!(
+            planned_subjects(md),
+            [
+                Some("Lucide icons for every faked icon".to_string()),
+                Some("A first-load intro".to_string()),
+                None
+            ]
+        );
+    }
+
+    /// A commit whose subject starts with a task's planned message marks it done, with that
+    /// commit; then the next is in progress.
+    #[test]
+    fn a_planned_commit_marks_its_task() {
+        let md = "### Task 1: Icons\n- [ ] commit `Lucide icons`\n### Task 2: Intro\n- [ ] commit `A first-load intro`\n";
+        let mut tasks = from_checklist(md);
+        let commits = [(
+            "06c04f3".to_string(),
+            "Lucide icons for every faked icon".to_string(),
+        )];
+        match_planned(&mut tasks, &commits, &planned_subjects(md));
+        match_commits(&mut tasks, &commits);
+        assert_eq!(
+            tasks[0].state,
+            TaskState::Done {
+                commit: Some("06c04f3".into())
+            }
+        );
+        assert_eq!(tasks[1].state, TaskState::Building);
     }
 
     #[test]

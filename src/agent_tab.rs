@@ -6101,7 +6101,9 @@ impl AgentTab {
             // Commits name the tasks of a headed plan only, and only those made since it was
             // first there.
             let commits = if headed {
-                commits_since(&recent_commits(&cwd), plan_since(&cwd, &path))
+                // From the plan's own repo (chore 15: a plan in another repo than the tab's).
+                let repo = path.parent().map_or(cwd.clone(), Path::to_path_buf);
+                commits_since(&recent_commits(&repo), plan_since(&repo, &path))
             } else {
                 Vec::new()
             };
@@ -6120,6 +6122,12 @@ impl AgentTab {
                         // The plan shown from now on, until a turn's own file is one.
                         this.plan_file = Some(file);
                         let mut tasks = from_checklist(&md);
+                        // Commits saying the task's planned message count too (chore 15).
+                        crate::plan_progress::match_planned(
+                            &mut tasks,
+                            &commits,
+                            &crate::plan_progress::planned_subjects(&md),
+                        );
                         match_commits(&mut tasks, &commits);
                         tasks
                     }
