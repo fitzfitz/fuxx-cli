@@ -88,6 +88,8 @@ pub enum Item {
         answer: Option<Answer>,
         /// The subagent (lane id) that asks; `None`: the main agent.
         by: Option<String>,
+        /// The plan it asks to approve (the 2026-11-25 chores); its card shows it.
+        plan: Option<Box<crate::providers::PlanDraft>>,
     },
     /// The agent asks you to choose (batch 3, chore 8): open while `reply` is None.
     Question {
@@ -450,6 +452,7 @@ impl Conversation {
                 detail,
                 always,
                 by,
+                plan,
             } => {
                 self.mark_waiting(by.as_deref());
                 self.items.push(Item::Permission {
@@ -460,6 +463,7 @@ impl Conversation {
                     always,
                     answer: None,
                     by,
+                    plan: plan.map(Box::new),
                 })
             }
             Event::SubagentStarted {
@@ -1459,6 +1463,7 @@ mod tests {
             detail: "ls".into(),
             always: None,
             by: None,
+            plan: None,
         }
     }
 
@@ -2069,6 +2074,45 @@ mod tests {
         assert!(c.lanes().is_empty(), "a failed resume");
     }
 
+    /// The 2026-11-25 chores: a plan still waiting when the turn ends is expired, its plan kept
+    /// (the card shows it, with no live buttons).
+    #[test]
+    fn a_plan_expires_with_the_turn() {
+        let mut c = Conversation::new();
+        c.you("plan it".into(), Vec::new());
+        let plan = crate::providers::PlanDraft {
+            title: "Retry".into(),
+            markdown: "# Retry\n1. a".into(),
+            file: None,
+        };
+        c.apply(Event::Permission {
+            id: "p1".into(),
+            tool: "ExitPlanMode".into(),
+            what: String::new(),
+            detail: String::new(),
+            always: None,
+            by: None,
+            plan: Some(plan.clone()),
+        });
+        c.apply(Event::TurnDone {
+            ok: true,
+            message: None,
+        });
+        let card = c
+            .items()
+            .iter()
+            .find(|i| matches!(i, Item::Permission { .. }))
+            .cloned();
+        let Some(Item::Permission {
+            answer, plan: kept, ..
+        }) = card
+        else {
+            panic!("no card");
+        };
+        assert_eq!(answer, Some(Answer::Expired));
+        assert_eq!(kept.as_deref(), Some(&plan));
+    }
+
     #[test]
     fn settling_a_turn_leaves_a_working_lanes_steps() {
         let mut c = Conversation::new();
@@ -2082,6 +2126,7 @@ mod tests {
             detail: String::new(),
             always: None,
             by: Some("t1".into()),
+            plan: None,
         });
         c.apply(Event::TurnDone {
             ok: true,
@@ -2146,6 +2191,7 @@ mod tests {
             detail: String::new(),
             always: None,
             by: Some("t1".into()),
+            plan: None,
         });
         assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Waiting);
         assert!(
@@ -2188,6 +2234,7 @@ mod tests {
             detail: String::new(),
             always: None,
             by: Some("t1".into()),
+            plan: None,
         });
         assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Done);
     }
@@ -2445,6 +2492,7 @@ mod tests {
             detail: String::new(),
             always: None,
             by: Some("t1".into()),
+            plan: None,
         });
         c.process_gone();
         assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Stopped);
@@ -2733,6 +2781,7 @@ mod tests {
                 detail: String::new(),
                 always: None,
                 by: Some("t1".into()),
+                plan: None,
             });
         }
         c.answered("p1", Answer::Allowed);
@@ -2967,6 +3016,7 @@ mod tests {
             detail: String::new(),
             always: None,
             by: Some("t1".into()),
+            plan: None,
         });
         c.apply(Event::Permission {
             id: "p2".into(),
@@ -2975,6 +3025,7 @@ mod tests {
             detail: String::new(),
             always: None,
             by: None,
+            plan: None,
         });
         c.answered("p2", Answer::Allowed);
         c.apply(Event::AskWithdrawn { id: "q1".into() });
@@ -3015,6 +3066,7 @@ mod tests {
             detail: String::new(),
             always: None,
             by: Some("t1".into()),
+            plan: None,
         });
         c.reply("q1", Reply::Skipped);
         assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Waiting);
@@ -3029,6 +3081,7 @@ mod tests {
             detail: String::new(),
             always: None,
             by: Some("t1".into()),
+            plan: None,
         });
         c.answered("p2", Answer::Allowed);
         assert_eq!(c.lane("t1").unwrap().status, LaneStatus::Waiting);

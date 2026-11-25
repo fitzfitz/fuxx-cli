@@ -350,6 +350,7 @@ mod tests {
             always: None,
             answer: None,
             by: None,
+            plan: None,
         }
     }
 

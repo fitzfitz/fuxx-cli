@@ -426,6 +426,7 @@ pub(super) fn agent_lanes_states() {
                 detail: String::new(),
                 always: None,
                 by: Some("waiting".into()),
+                plan: None,
             });
             for (id, end) in [
                 ("done", LaneEnd::Done),

@@ -1329,6 +1329,17 @@ fn result_text(content: &Value) -> String {
     }
 }
 
+/// The tool Claude asks to leave plan mode with (its input: `plan`, `planFilePath`).
+const PLAN_TOOL: &str = "ExitPlanMode";
+
+/// `~/x` with your home folder for `~` (Claude names plan files so).
+fn expand_home(path: &str) -> std::path::PathBuf {
+    match (path.strip_prefix("~/"), crate::workspace::home_dir()) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => std::path::PathBuf::from(path),
+    }
+}
+
 /// The "always" button's whole label for a permission suggestion: Write and Edit offer a mode
 /// for the whole session (Ruling 10), Bash a rule for that command.
 fn describe_suggestion(sug: &Value) -> String {
@@ -1983,7 +1994,22 @@ impl ClaudeTranslator {
                 by,
             }];
         }
-        let suggestions = req["permission_suggestions"].clone();
+        // Its plan, when it asks to leave plan mode (the 2026-11-25 chores): the card shows it,
+        // and "Approve · auto-accept edits" (`AlwaysAllow`) sends the switch Claude Code itself
+        // offers there (it sends no suggestion for it).
+        let plan = (name == PLAN_TOOL)
+            .then(|| s(&input["plan"]))
+            .flatten()
+            .map(|markdown| crate::providers::PlanDraft {
+                title: crate::providers::plan_title(&markdown),
+                markdown,
+                file: s(&input["planFilePath"]).map(|f| expand_home(&f)),
+            });
+        let suggestions = if plan.is_some() {
+            json!([{"type": "setMode", "mode": "acceptEdits", "destination": "session"}])
+        } else {
+            req["permission_suggestions"].clone()
+        };
         let what = if name == "Bash" {
             s(&input["command"])
         } else {
@@ -2002,6 +2028,7 @@ impl ClaudeTranslator {
                 .map(describe_suggestion),
             // A subagent's request names it (`agent_id` is its task id).
             by,
+            plan,
         };
         self.pending
             .insert(id, (input, suggestions, s(&req["tool_use_id"])));
@@ -3232,6 +3259,70 @@ mod tests {
             .find(|v| v["request"]["subtype"] == "can_use_tool")
             .unwrap();
         (v.to_string(), v)
+    }
+
+    /// Claude's request to leave plan mode (the 2026-11-25 chores: "We cannot read it"): its
+    /// `plan` and `planFilePath`, read into a plan card's draft.
+    fn plan_line() -> (String, Value) {
+        let v = lines_of(include_str!("fixtures/claude-set-mode.jsonl"))
+            .into_iter()
+            .find(|v| v["request"]["tool_name"] == "ExitPlanMode")
+            .unwrap();
+        (v.to_string(), v)
+    }
+
+    #[test]
+    fn exit_plan_mode_is_a_plan() {
+        let (line, req) = plan_line();
+        let ev = CLAUDE.translator().decode(&line);
+        let [
+            Event::Permission {
+                plan: Some(plan), ..
+            },
+        ] = ev.as_slice()
+        else {
+            panic!("not a plan card: {ev:?}");
+        };
+        assert_eq!(plan.title, "Create hello.txt");
+        assert_eq!(
+            plan.markdown,
+            req["request"]["input"]["plan"].as_str().unwrap()
+        );
+        let file = plan.file.as_ref().expect("its file");
+        assert!(
+            file.ends_with(".claude/plans/create-a-file-named-silly-catmull.md")
+                && !file.starts_with("~"),
+            "{file:?}"
+        );
+    }
+
+    /// Approve · auto-accept edits sends Claude's own mode switch; Approve · ask per edit a bare
+    /// allow; Keep planning your note.
+    #[test]
+    fn approving_a_plan_with_auto_accept_sets_the_mode() {
+        let (line, req) = plan_line();
+        let rid = req["request_id"].as_str().unwrap().to_string();
+        let answer = |action: Action| -> Value {
+            let mut t = CLAUDE.translator();
+            t.decode(&line);
+            let out = t.encode(&action);
+            serde_json::from_str::<Value>(&out[0]).unwrap()["response"]["response"].clone()
+        };
+        let auto = answer(Action::AlwaysAllow { id: rid.clone() });
+        assert_eq!(auto["behavior"], "allow");
+        assert_eq!(
+            auto["updatedPermissions"],
+            json!([{"type": "setMode", "mode": "acceptEdits", "destination": "session"}])
+        );
+        let each = answer(Action::Allow { id: rid.clone() });
+        assert_eq!(each["behavior"], "allow");
+        assert!(each.get("updatedPermissions").is_none());
+        let keep = answer(Action::Deny {
+            id: rid,
+            reason: Some("split step 2".into()),
+        });
+        assert_eq!(keep["behavior"], "deny");
+        assert!(keep["message"].as_str().unwrap().contains("split step 2"));
     }
 
     #[test]

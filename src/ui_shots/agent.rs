@@ -90,6 +90,35 @@ pub(super) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
+        name: "agent-tab-plan-long",
+        run: agent_tab_plan_long,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/agent_tab.rs",
+            "src/agent_plan_card.rs",
+            "src/agent_rows.rs",
+        ],
+    },
+    Scene {
+        name: "agent-tab-plan",
+        run: agent_tab_plan,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::State,
+        sources: &[
+            "src/agent_tab.rs",
+            "src/agent_plan_card.rs",
+            "src/agent_rows.rs",
+            "src/agent_conversation.rs",
+            "src/md_preview.rs",
+            "src/providers/mod.rs",
+            "src/providers/claude.rs",
+            "src/providers/fixtures/claude-set-mode.jsonl",
+        ],
+    },
+    Scene {
         name: "agent-tab-permission",
         run: agent_tab_permission,
         themes: Themes::Both,
@@ -989,6 +1018,123 @@ pub(super) fn agent_tab_permission() {
     }
 }
 
+/// Claude's plan waiting for you (the 2026-11-25 chores: "We cannot read it"): the Plan card
+/// with the plan rendered, its three answers, the box's note hint. Then (not shot) Enter on the
+/// empty box approves it with edits accepted; text then Enter keeps it planning with the note.
+pub(super) fn agent_tab_plan() {
+    let to_card = |cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>| {
+        let events = decode(include_str!("../providers/fixtures/claude-set-mode.jsonl"));
+        let card = events
+            .iter()
+            .position(|e| matches!(e, Event::Permission { plan: Some(_), .. }))
+            .expect("a plan");
+        feed(cx, tab, |t, cx| {
+            t.send(
+                "Create hello.txt with the word hi, plan it first".into(),
+                cx,
+            )
+        });
+        feed(cx, tab, |t, cx| t.shot_feed(events[..=card].to_vec(), cx));
+    };
+    scene("agent-tab-plan", move |n, cx, _, tab| {
+        to_card(cx, tab);
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            assert_eq!(t.status(), Status::Waiting, "{n}");
+            assert_eq!(
+                t.question().as_deref(),
+                Some("Claude's plan is ready"),
+                "{n}"
+            );
+            assert_eq!(
+                t.shot_composer().read(cx).placeholder().as_ref(),
+                "Tell Claude what to change in the plan\u{2026} (optional)",
+                "{n}"
+            );
+        });
+    });
+    let theme = shot_theme("Catppuccin Mocha");
+    for (typed, want) in [
+        ("", Answer::AlwaysAllowed),
+        ("split step 2", Answer::Denied(Some("split step 2".into()))),
+    ] {
+        let slot: Slot = Rc::default();
+        let keep = slot.clone();
+        render_with(
+            &theme,
+            size(px(DIMS.0), px(DIMS.1)),
+            build(theme, slot),
+            move |cx, window| {
+                let tab = tab_of(&keep);
+                to_card(cx, &tab);
+                if !typed.is_empty() {
+                    cx.simulate_input(window, typed);
+                }
+                cx.simulate_keystrokes(window, "enter");
+                cx.run_until_parked();
+                cx.read(|cx| {
+                    let t = tab.read(cx);
+                    assert!(
+                        t.shot_items().iter().any(|i| matches!(
+                            i,
+                            Item::Permission { answer: Some(a), plan: Some(_), .. } if *a == want
+                        )),
+                        "agent-tab-plan: enter with {typed:?} answers {want:?}"
+                    );
+                    assert_eq!(t.shot_composer().read(cx).text(), "", "the box is cleared");
+                });
+                keep.borrow_mut().take();
+            },
+        );
+    }
+}
+
+/// A long plan (the 2026-11-25 chores): folded with "Show the whole plan"; opened whole, its
+/// outline chips under the title and, its buttons below the chat's view, the answer bar pinned
+/// over the box.
+pub(super) fn agent_tab_plan_long() {
+    scene("agent-tab-plan-long", |n, cx, window, tab| {
+        let mut md = String::from("# Plan: Retry against the current endpoint\n\n## Context\n");
+        md.push_str("Retries reuse the endpoint captured at the first attempt.\n\n## Steps\n");
+        for i in 1..=14 {
+            md.push_str(&format!(
+                "{i}. Step {i}: move the next part of `retry.rs` over.\n"
+            ));
+        }
+        md.push_str("\n## Risks\n- A failover mid-stream still ends it.\n\n## Verification\n- `cargo test retry`\n");
+        feed(cx, tab, |t, cx| {
+            t.send("Plan the retry fix first".into(), cx)
+        });
+        feed(cx, tab, |t, cx| {
+            t.shot_feed(
+                vec![Event::Permission {
+                    id: "plan-1".into(),
+                    tool: "ExitPlanMode".into(),
+                    what: String::new(),
+                    detail: String::new(),
+                    always: None,
+                    by: None,
+                    plan: Some(crate::providers::PlanDraft {
+                        title: crate::providers::plan_title(&md),
+                        markdown: md.clone(),
+                        file: Some("/tmp/fx/.claude/plans/retry-current-endpoint.md".into()),
+                    }),
+                }],
+                cx,
+            )
+        });
+        settle_frames(cx, window);
+        feed(cx, tab, |t, cx| t.shot_open_plan(cx));
+        settle_frames(cx, window);
+        cx.read(|cx| {
+            assert!(
+                tab.read(cx).shot_plan_bar(),
+                "{n}: the answer bar pinned over the box"
+            );
+        });
+    });
+}
+
 /// A finished turn: the reply, the model and cost chips, the context line.
 pub(super) fn agent_tab_done() {
     scene("agent-tab-done", |n, cx, _, tab| {
@@ -1859,6 +2005,7 @@ pub(super) fn agent_tab_cached_current() {
                     detail: String::new(),
                     always: Some("Always allow Bash(git commit:*)".into()),
                     by: None,
+                    plan: None,
                 }],
             ),
         ];
@@ -2795,6 +2942,7 @@ pub(super) fn agent_sidebar_waiting() {
                                 detail: "npm test".into(),
                                 always: None,
                                 by: None,
+                                plan: None,
                             }],
                             cx,
                         );

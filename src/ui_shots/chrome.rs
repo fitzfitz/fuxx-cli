@@ -2096,6 +2096,7 @@ pub(super) fn chrome_agent_status() {
                 detail: "ls".into(),
                 always: None,
                 by: None,
+                plan: None,
             };
             agent_hears(cx, &agent_claude, vec![ask]);
         },
@@ -2205,6 +2206,7 @@ pub(super) fn chrome_agent_status() {
                 detail: "npm test".into(),
                 always: None,
                 by: None,
+                plan: None,
             };
             agent_hears(cx, &agent_claude, vec![ask]);
         },

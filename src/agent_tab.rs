@@ -69,6 +69,9 @@ mod cancel;
 
 #[path = "agent_ask_view.rs"]
 mod ask_view;
+
+#[path = "agent_plan_card.rs"]
+mod plan_card;
 #[cfg(feature = "ui-shots")]
 pub(crate) use ask_view::ShotAsk;
 #[cfg(feature = "ui-shots")]
@@ -436,6 +439,17 @@ pub fn answer_line(answer: &Answer) -> String {
         Answer::Denied(None) => "Denied".into(),
         Answer::Expired => "Expired".into(),
         Answer::Withdrawn => "Not answered".into(),
+    }
+}
+
+/// An answered plan card's line (the 2026-11-25 chores).
+pub fn plan_answer_line(answer: &Answer) -> String {
+    match answer {
+        Answer::AlwaysAllowed => "Approved \u{b7} auto-accept edits \u{2713}".into(),
+        Answer::Allowed => "Approved \u{2713}".into(),
+        Answer::Denied(Some(note)) => format!("Kept planning: {note}"),
+        Answer::Denied(None) => "Kept planning".into(),
+        other => answer_line(other),
     }
 }
 
@@ -1575,6 +1589,15 @@ pub struct AgentTab {
     ledger_facts_gen: u64,
     /// The ledger popover's folded folders (their header's click).
     pub(crate) ledger_folded: std::collections::HashSet<String>,
+    /// The plan cards opened whole (Show the whole plan), by their request's id (the
+    /// 2026-11-25 chores).
+    plan_open: std::collections::HashSet<String>,
+    /// Keep planning… was pressed: the waiting plan's buttons step aside for your note.
+    plan_note: bool,
+    /// The waiting plan's footer, where it was last painted (the pinned bar's cue).
+    plan_footer: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    /// Whether the box held text at the last draw (a plan card reads it as a note).
+    box_text_nonempty: Cell<bool>,
     /// The ledger's kept sums (`agent_ledger::LedgerCache`).
     ledgers: crate::agent_ledger::LedgerCache,
     /// The "Stopped" notice that offers to rewind your latest message (`rewind::stopped_link`),
@@ -2321,6 +2344,10 @@ impl AgentTab {
             ledger_facts_for: Vec::new(),
             ledger_facts_gen: 0,
             ledger_folded: Default::default(),
+            plan_open: Default::default(),
+            plan_note: false,
+            plan_footer: Rc::default(),
+            box_text_nonempty: Cell::new(false),
             ledgers: Default::default(),
             stopped: None,
             rows_held: false,
@@ -2396,6 +2423,9 @@ impl AgentTab {
             return Some(line);
         }
         match self.conversation.pending_permission() {
+            Some(Item::Permission { plan: Some(_), .. }) => {
+                Some(format!("{}'s plan is ready", self.label()))
+            }
             Some(Item::Permission { what, .. }) => {
                 Some(format!("{} wants to run: {what}", self.label()))
             }
@@ -3520,6 +3550,8 @@ impl AgentTab {
         } else if self.drop_over {
             // Files dragged over the tab (batch 3, chore 5).
             pills::DROP_PLACEHOLDER.into()
+        } else if self.waiting_plan().is_some() {
+            format!("Tell {label} what to change in the plan\u{2026} (optional)").into()
         } else if self.conversation.pending_permission().is_some() {
             "Deny and say why… (optional)".into()
         } else if self.status() == Status::Working {
@@ -3784,6 +3816,7 @@ impl AgentTab {
         };
         self.write(&action);
         self.conversation.answered(&id, answer);
+        self.plan_note = false;
         self.after_change(true, cx);
         Ok(())
     }
@@ -3891,6 +3924,11 @@ impl AgentTab {
                     cx.notify();
                 } else if self.ask_take_back(cx) {
                     // A question waits: Esc goes back to its card, never stops the agent.
+                } else if self.plan_note {
+                    // Writing a note for a plan: Esc brings its buttons back.
+                    self.plan_note = false;
+                    self.relayout_plan();
+                    cx.notify();
                 } else if !self.esc_rewind(cx) {
                     self.stop(cx);
                 }
@@ -3938,6 +3976,16 @@ impl AgentTab {
         if self.asking() {
             // The agent's question waits first: the box is its Other (batch 3, chore 8).
             self.ask_submit(&text, cx);
+            return;
+        }
+        if self.waiting_plan().is_some() {
+            // A plan waits (the 2026-11-25 chores): empty Enter approves it (unless you are
+            // writing a note), text keeps it planning with your note.
+            self.suggestion = None;
+            if let Some(answer) = plan_card::plan_submit(&text, self.plan_noting(false)) {
+                self.answer(answer, cx).ok();
+                composer.update(cx, |c, cx| c.set_text(String::new(), cx));
+            }
             return;
         }
         if self.conversation.pending_permission().is_some() {
@@ -4059,6 +4107,11 @@ impl AgentTab {
         }
         self.pick_typed(cx);
         self.ask_box_changed(cx);
+        let typed = !self.composer.read(cx).text().is_empty();
+        if typed != self.box_text_nonempty.get() {
+            self.box_text_nonempty.set(typed);
+            self.relayout_plan();
+        }
         self.lane_box_changed(cx);
         self.slash_follow(cx);
         let Some(at) = &self.at else {
@@ -5067,6 +5120,18 @@ fn blocks_of(item: &Item) -> Option<Rc<Vec<Md>>> {
         // Batch 3, chore 6: its bare addresses are links too.
         Item::Agent { text, .. } => {
             let mut blocks = parse(text);
+            link_bare_urls(&mut blocks);
+            Some(Rc::new(blocks))
+        }
+        // A plan to approve (the 2026-11-25 chores): its card renders it.
+        Item::Permission {
+            plan: Some(plan), ..
+        } => {
+            let mut blocks = parse(&plan.markdown);
+            // Its `#` heading is the card's title already.
+            if let Some(at) = blocks.iter().position(|b| matches!(b, Md::Heading(1, _))) {
+                blocks.remove(at);
+            }
             link_bare_urls(&mut blocks);
             Some(Rc::new(blocks))
         }
@@ -6424,6 +6489,7 @@ impl Render for AgentTab {
             None
         } else {
             self.ask_dock(&look, cx)
+                .or_else(|| self.plan_bar(&look, cx))
         };
         // Your latest message pinned over the chat while it is scrolled above (chore after
         // M11ar).
@@ -7096,6 +7162,22 @@ mod tests {
         assert!(!resume_failed(true, true));
         assert!(!resume_failed(false, false));
         assert!(!resume_failed(true, false));
+    }
+
+    /// The 2026-11-25 chores: an answered plan says how it went.
+    #[test]
+    fn a_plan_answer_says_how_it_went() {
+        assert_eq!(
+            plan_answer_line(&Answer::AlwaysAllowed),
+            "Approved \u{b7} auto-accept edits \u{2713}"
+        );
+        assert_eq!(plan_answer_line(&Answer::Allowed), "Approved \u{2713}");
+        assert_eq!(
+            plan_answer_line(&Answer::Denied(Some("split it".into()))),
+            "Kept planning: split it"
+        );
+        assert_eq!(plan_answer_line(&Answer::Denied(None)), "Kept planning");
+        assert_eq!(plan_answer_line(&Answer::Expired), "Expired");
     }
 
     #[test]

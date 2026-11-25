@@ -367,6 +367,7 @@ fn edit(
                 detail: String::new(),
                 always: None,
                 by,
+                plan: None,
             });
         }
         18 => {

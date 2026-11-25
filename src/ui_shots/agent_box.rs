@@ -5231,6 +5231,7 @@ pub(super) fn agent_box_suggestion_stale() {
                         detail: "ls".into(),
                         always: None,
                         by: None,
+                        plan: None,
                     }],
                     cx,
                 )
@@ -5455,6 +5456,7 @@ pub(super) fn agent_box_history() {
                         detail: "ls".into(),
                         always: None,
                         by: None,
+                        plan: None,
                     }],
                     cx,
                 )

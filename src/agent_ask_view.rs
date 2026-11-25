@@ -1788,7 +1788,7 @@ impl AgentTab {
 
 /// The list scrolled so row `row`'s top sits `y` below the view's top (it stops following the
 /// end); the rows before it are as they were laid out.
-fn keep_row_at(list: &ListState, row: usize, y: f32) {
+pub(super) fn keep_row_at(list: &ListState, row: usize, y: f32) {
     if y <= 0. {
         list.scroll_to(gpui::ListOffset {
             item_ix: row,

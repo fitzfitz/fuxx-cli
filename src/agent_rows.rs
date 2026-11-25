@@ -444,6 +444,13 @@ impl AgentTab {
                     )
                     .into_any_element()
             }
+            // A plan to approve (the 2026-11-25 chores): its own card.
+            Item::Permission {
+                id,
+                answer,
+                plan: Some(plan),
+                ..
+            } => self.plan_card(k, ix, id, plan, answer.as_ref(), look),
             Item::Permission {
                 tool,
                 what,

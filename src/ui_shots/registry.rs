@@ -299,6 +299,8 @@ pub(super) const ORDER: &[&str] = &[
     "agent-tab-empty",
     "agent-tab-working",
     "agent-tab-permission",
+    "agent-tab-plan",
+    "agent-tab-plan-long",
     "agent-tab-question",
     "agent-tab-question-multi",
     "agent-tab-question-preview",

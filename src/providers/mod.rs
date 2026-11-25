@@ -560,6 +560,10 @@ pub enum Event {
         always: Option<String>,
         /// The subagent (lane id) that asks; `None`: the main agent.
         by: Option<String>,
+        /// The agent's plan, when this asks to leave plan mode with it (the 2026-11-25 chores:
+        /// Claude's `ExitPlanMode`): its card shows the plan, and `AlwaysAllow` approves it
+        /// with edits accepted from then on.
+        plan: Option<PlanDraft>,
     },
     /// The agent asks you to choose (batch 3, chore 8: Claude's `AskUserQuestion`), answered by
     /// `Action::Answer` (or skipped by `Action::Deny`). `id`: the tool call's, whose own
@@ -821,6 +825,28 @@ pub fn base64(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// A plan the agent asks you to approve (the 2026-11-25 chores): its title (`plan_title`), its
+/// markdown, and the file it was written to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanDraft {
+    pub title: String,
+    pub markdown: String,
+    pub file: Option<std::path::PathBuf>,
+}
+
+/// A plan's title: its first `# ` heading, a leading "Plan:" taken off; else "Plan".
+pub fn plan_title(markdown: &str) -> String {
+    markdown
+        .lines()
+        .find_map(|l| l.strip_prefix("# "))
+        .map(|t| {
+            let t = t.trim();
+            t.strip_prefix("Plan:").map_or(t, str::trim).to_string()
+        })
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "Plan".into())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1148,6 +1174,18 @@ mod commit_message_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plan card's title (the 2026-11-25 chores): its first `#` heading, less a leading
+    /// "Plan:", else "Plan".
+    #[test]
+    fn plan_title_falls_back() {
+        assert_eq!(plan_title("# Plan: Retry\n\n## Steps"), "Retry");
+        assert_eq!(plan_title("# Retry"), "Retry");
+        assert_eq!(plan_title("intro\n# Later"), "Later");
+        assert_eq!(plan_title("no heading"), "Plan");
+        assert_eq!(plan_title(""), "Plan");
+        assert_eq!(plan_title("## Only a second level"), "Plan");
+    }
 
     /// A provider that overrides nothing it needn't.
     struct Plain;
