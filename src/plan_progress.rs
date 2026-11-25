@@ -115,7 +115,8 @@ fn names_task(subject: &str, n: usize) -> bool {
 }
 
 /// Marks done the tasks a commit names (`Task 3:` in its subject), with that commit; then, if
-/// nothing is being built, the first task not done is.
+/// nothing is being built and some task is done already, the first task not done is (the
+/// 2026-11-25 chores: a plan nobody has started shows no ◐).
 pub fn match_commits(tasks: &mut [PlanTask], commits: &[(String, String)]) {
     for (i, task) in tasks.iter_mut().enumerate() {
         let named = commits
@@ -126,7 +127,11 @@ pub fn match_commits(tasks: &mut [PlanTask], commits: &[(String, String)]) {
             task.state = TaskState::Done { commit: Some(hash) };
         }
     }
-    if !tasks.iter().any(|t| t.state == TaskState::Building)
+    let started = tasks
+        .iter()
+        .any(|t| matches!(t.state, TaskState::Done { .. }));
+    if started
+        && !tasks.iter().any(|t| t.state == TaskState::Building)
         && let Some(first) = tasks.iter_mut().find(|t| t.state == TaskState::Next)
     {
         first.state = TaskState::Building;
@@ -277,6 +282,40 @@ mod tests {
         let mut one = from_checklist("### Task 1: A\n- [ ] x\n### Task 2: B\n- [ ] x\n");
         match_commits(&mut one, &[("1111111".into(), "Task 13: other".into())]);
         assert!(!done(&one[0]));
+    }
+
+    /// The 2026-11-25 chores (your pick): a plan still being discussed shows no task in progress.
+    #[test]
+    fn nothing_started_shows_nothing_building() {
+        let mut tasks = from_checklist(
+            "### Task 1: A\n- [ ] x\n### Task 2: B\n- [ ] x\n### Task 3: C\n- [ ] x\n",
+        );
+        match_commits(&mut tasks, &[]);
+        assert!(
+            tasks.iter().all(|t| t.state == TaskState::Next),
+            "{tasks:?}"
+        );
+    }
+
+    #[test]
+    fn after_a_done_task_the_next_is_building() {
+        let mut tasks = from_checklist(
+            "### Task 1: A\n- [ ] x\n### Task 2: B\n- [ ] x\n### Task 3: C\n- [ ] x\n",
+        );
+        match_commits(
+            &mut tasks,
+            &[("abc1234".into(), "Chore (Task 1): A".into())],
+        );
+        assert!(done(&tasks[0]));
+        assert_eq!(tasks[1].state, TaskState::Building);
+        assert_eq!(tasks[2].state, TaskState::Next);
+    }
+
+    #[test]
+    fn a_ticked_step_is_building() {
+        let tasks =
+            from_checklist("### Task 1: A\n- [x] x\n- [ ] y\n- [ ] z\n### Task 2: B\n- [ ] x\n");
+        assert_eq!(tasks[0].state, TaskState::Building);
     }
 
     #[test]
