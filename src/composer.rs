@@ -35,6 +35,11 @@ use crate::terminal_view::{CursorMotion, CursorSettings, breath_redraw, breath_s
 /// Rows shown before the box scrolls.
 const MAX_ROWS: usize = 8;
 
+/// How many of `rows` a box capped at `max` shows: at most `max`, at least one.
+fn shown_rows(rows: usize, max: usize) -> usize {
+    rows.min(max).max(1)
+}
+
 // Bound in main.rs with the "Composer" key context, so these keys never reach the terminal.
 actions!(
     composer,
@@ -607,6 +612,8 @@ pub struct Composer {
     /// Drawn with no edge, fill or padding of its own: a box around it draws them (the agent
     /// box, M11ak).
     bare: bool,
+    /// The most rows it grows to before it scrolls (`set_max_rows`).
+    max_rows: usize,
     /// From the last paint: the cell's width and height, the caret's shape and box, and the
     /// placeholder as drawn and where (scenes read them).
     last_cell: (Pixels, Pixels),
@@ -675,6 +682,7 @@ impl Composer {
             last_pills: Vec::new(),
             hovered_atom: None,
             bare: false,
+            max_rows: MAX_ROWS,
             last_cell: (px(0.), px(0.)),
             last_caret: None,
             last_placeholder: None,
@@ -690,6 +698,16 @@ impl Composer {
     pub fn set_bare(&mut self, bare: bool, cx: &mut Context<Self>) {
         if self.bare != bare {
             self.bare = bare;
+            cx.notify();
+        }
+    }
+
+    /// The most rows it grows to before it scrolls (the agent box: `MAX_ROWS`; the commit box:
+    /// 2, the 2026-11-25 chores). At least 1.
+    pub fn set_max_rows(&mut self, rows: usize, cx: &mut Context<Self>) {
+        let rows = rows.max(1);
+        if self.max_rows != rows {
+            self.max_rows = rows;
             cx.notify();
         }
     }
@@ -1015,7 +1033,7 @@ impl Composer {
             return;
         }
         let rows = self.buf.visual_row_count();
-        let shown = rows.min(MAX_ROWS);
+        let shown = shown_rows(rows, self.max_rows);
         if rows <= shown {
             return;
         }
@@ -1643,6 +1661,7 @@ impl Element for ComposerText {
         let m = CellMetrics::measure(cx.global::<Appearance>(), window);
         let (cell, line_height) = (m.cell_width, m.line_height);
         let input = self.input.clone();
+        let max_rows = input.read(cx).max_rows;
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         let id = window.request_measured_layout(style, move |known, available, _, cx| {
@@ -1658,7 +1677,7 @@ impl Element for ComposerText {
             });
             size(
                 width.unwrap_or(px(0.)),
-                line_height * rows.min(MAX_ROWS) as f32,
+                line_height * shown_rows(rows, max_rows) as f32,
             )
         });
         (id, ())
@@ -1677,7 +1696,7 @@ impl Element for ComposerText {
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
         let rows = input.buf.visual_rows();
-        let shown = rows.len().min(MAX_ROWS);
+        let shown = shown_rows(rows.len(), input.max_rows);
         let caret_row = row_at(&rows, input.buf.cursor());
         let mut first = input.first_row.min(rows.len() - shown);
         if input.follow_caret {
@@ -2131,7 +2150,18 @@ fn ghost_font(font: &gpui::Font) -> gpui::Font {
 
 #[cfg(test)]
 mod tests {
-    use super::{EditBuffer, atom_spans, ghost_font, ghost_ink, shown_row};
+    use super::{EditBuffer, atom_spans, ghost_font, ghost_ink, shown_row, shown_rows};
+
+    /// The commit box (the 2026-11-25 chores: "need to be textarea, max 2 lines"): five lines
+    /// in a box capped at 2 rows show 2; fewer than the cap show as many as there are, never 0.
+    #[test]
+    fn max_rows_caps_the_shown_rows() {
+        let b = EditBuffer::new("a\nb\nc\nd\ne");
+        assert_eq!(shown_rows(b.visual_row_count(), 2), 2);
+        assert_eq!(shown_rows(1, 2), 1);
+        assert_eq!(shown_rows(5, 8), 5);
+        assert_eq!(shown_rows(0, 2), 1);
+    }
 
     /// Your words, 2026-11-24: "for the suggested prompt on agent chat input, make it greyed out
     /// and italic". On every theme the guess is italic and a grey quieter than the placeholder

@@ -1,5 +1,5 @@
 //! The Changes tab's commit line (M11aq, note 92; the Lead UI/UX Designer's spec): above the
-//! branch bar while the repo has changes, a message field (a bare `NameInput`), ✦ to have an
+//! branch bar while the repo has changes, a message field (a bare `Composer` of at most 2 rows, the 2026-11-25 chores), ✦ to have an
 //! agent write the message from the staged diff, and ✓N to commit the staged files (⌘↵ in the
 //! field). A failed commit keeps the message and shows git's output under it on request; the
 //! draft is kept per repo for the run.
@@ -17,9 +17,11 @@ use gpui::{
     Subscription, Window, div, prelude::*, px,
 };
 
+use alacritty_terminal::vte::ansi::Rgb;
+
+use crate::composer::{Composer, ComposerEvent};
 use crate::git_branch::find_git;
 use crate::icons::{Icon, icon};
-use crate::name_input::{NameInput, NameInputEvent};
 use crate::providers::Provider;
 use crate::terminal_view::hsla;
 use crate::theme::UiColors;
@@ -36,14 +38,14 @@ const CARD_INSET: f32 = crate::changes_panel::BAR_PAD_X - 6.0;
 const CARD_PAD: f32 = 10.0;
 const CARD_R: f32 = 10.0;
 const FIELD_H: f32 = 18.0;
+/// The field's most rows before it scrolls (the 2026-11-25 chores: "max 2 lines").
+const FIELD_ROWS: usize = 2;
 const CONTROL_H: f32 = 26.0;
 const CONTROL_R: f32 = 6.0;
 /// Where the lines under the card start: the text's x.
 const UNDER_X: f32 = CARD_INSET + CARD_PAD;
 /// ✦'s note when it fails; the line adds "Try again".
 pub(crate) const WRITE_FAILED: &str = "Couldn't write a message";
-/// Enter in the field (it doesn't commit): how to.
-pub(crate) const ENTER_NOTE: &str = "Press ⌘↵ to commit";
 /// The output block's tallest.
 const OUTPUT_MAX_H: f32 = 8.0 * 15.0;
 
@@ -59,7 +61,7 @@ pub(crate) enum Busy {
 #[derive(Default)]
 pub(crate) struct CommitState {
     /// The field (made with the Workspace: it needs a window).
-    pub(crate) input: Option<Entity<NameInput>>,
+    pub(crate) input: Option<Entity<Composer>>,
     /// Each repo's draft but the one the field shows (`shows`).
     pub(crate) drafts: HashMap<PathBuf, String>,
     pub(crate) shows: Option<PathBuf>,
@@ -215,6 +217,31 @@ pub fn commit_blocked(staged: usize, message: &str, in_progress: Option<&str>) -
     None
 }
 
+/// Which of the box's two buttons can act (the 2026-11-25 chores: "lightgreyed them out when
+/// disabled"): ✦ once files are staged, Commit once there's a message too; neither while busy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommitButtons {
+    pub write: bool,
+    pub commit: bool,
+}
+
+pub fn commit_buttons(staged: usize, message: &str, busy: bool) -> CommitButtons {
+    let write = !busy && staged > 0;
+    CommitButtons {
+        write,
+        commit: write && !message.trim().is_empty(),
+    }
+}
+
+/// An off button's ink: halfway from the dim ink to the card's `fill` (the theme's faint ink is
+/// its dim one, so an off button looked on).
+pub fn off_ink(dim: Rgb, fill: Rgb) -> Rgb {
+    crate::theme::mix(dim, fill, OFF_MIX)
+}
+
+/// How far an off button's ink goes toward the card's fill.
+const OFF_MIX: f32 = 0.5;
+
 /// What the empty field says: what's happening, else what to write (short: a narrow panel holds
 /// it beside ✦ and "Commit 2"; ⌘↵ is in Commit's tooltip and Enter's note).
 pub fn field_hint(busy: Option<&Busy>, agent: Option<&str>) -> String {
@@ -272,8 +299,11 @@ impl Workspace {
     pub(crate) fn prepare_commit_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.right_sidebar.changes.commit.input.is_none() {
             let input = cx.new(|cx| {
-                let mut input = NameInput::new(String::new(), window, cx);
-                input.bare();
+                // A text area of 2 rows (the 2026-11-25 chores: "need to be textarea, max 2
+                // lines"); its hint is drawn over it here (`field_hint`), so it has none.
+                let mut input = Composer::new(SharedString::default(), window, cx);
+                input.set_bare(true, cx);
+                input.set_max_rows(FIELD_ROWS, cx);
                 input
             });
             // Esc (the field still focused; a blur also says Cancel): leave the field, and stop
@@ -283,20 +313,13 @@ impl Workspace {
                     return;
                 }
                 match event {
-                    NameInputEvent::Cancel => {
+                    ComposerEvent::Stop => {
                         window.blur();
                         this.stop_writing(cx);
                     }
-                    // Enter doesn't commit (⌘↵ does): say so, under the field.
-                    NameInputEvent::Confirm(_) => {
-                        let changes = &mut this.right_sidebar.changes;
-                        if let Some(root) = changes.repo_root()
-                            && changes.commit.busy.is_none()
-                        {
-                            changes.commit.note = Some((root, ENTER_NOTE));
-                            cx.notify();
-                        }
-                    }
+                    // ↵ commits (⇧↵ is a new line; ⌘↵ commits too, `CommitStaged`).
+                    ComposerEvent::Send(_) => this.commit_now(cx),
+                    _ => {}
                 }
             });
             // Typing redraws the line (✓ dims and lights with the message).
@@ -317,7 +340,7 @@ impl Workspace {
             .commit
             .swap_draft(&root, &holding)
         {
-            input.update(cx, |input, _| input.set_text(text));
+            input.update(cx, |input, cx| input.set_text(text, cx));
             self.check_in_progress(root, cx);
         }
     }
@@ -407,7 +430,7 @@ impl Workspace {
                 if commit.committed(&root, result) == Some(true)
                     && let Some(input) = commit.input.clone()
                 {
-                    input.update(cx, |input, _| input.set_text(String::new()));
+                    input.update(cx, |input, cx| input.set_text(String::new(), cx));
                 }
                 this.check_in_progress(root, cx);
                 this.right_sidebar.changes.refreshed = None;
@@ -480,9 +503,8 @@ impl Workspace {
                             && let Some(input) = commit.input.clone()
                         {
                             input.update(cx, |input, cx| {
-                                input.set_text(text);
-                                input.select_all();
-                                cx.notify();
+                                input.set_text(text, cx);
+                                input.menu_select_all(cx);
                             });
                         }
                     }
@@ -598,7 +620,7 @@ impl Workspace {
                 .on_action(cx.listener(|this, _: &CommitStaged, _, cx| this.commit_now(cx)))
                 .relative()
                 .w_full()
-                .h(px(FIELD_H))
+                .min_h(px(FIELD_H))
                 .flex()
                 .items_center()
                 .text_size(px(crate::changes_panel::GIT_NAME))
@@ -617,6 +639,8 @@ impl Workspace {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
+                            // The field types in the terminal's font: its hint does too.
+                            .font_family(mono.clone())
                             .text_color(hsla(ui.text_faint))
                             .child(placeholder),
                     ))
@@ -624,10 +648,14 @@ impl Workspace {
                 .child(input),
         );
         let pill_hover = box_colors.pill_hover;
+        // What each button can do now, and the light grey of one that can't (the 2026-11-25
+        // chores: "lightgreyed them out when disabled").
+        let buttons = commit_buttons(staged, &message, busy.is_some());
+        let off = off_ink(ui.text_dim, ui.composer_inner);
         let write = writer.map(|provider| {
             let label = provider.info().label;
             let writing = matches!(busy, Some(Busy::Writing(_)));
-            let enabled = busy.is_none() && staged > 0;
+            let enabled = buttons.write;
             drawn(
                 commit,
                 "write",
@@ -640,11 +668,7 @@ impl Workspace {
                     .justify_center()
                     .rounded(px(CONTROL_R))
                     .text_size(px(14.0))
-                    .text_color(hsla(if enabled || writing {
-                        ui.text_dim
-                    } else {
-                        ui.text_faint
-                    }))
+                    .text_color(hsla(if enabled || writing { ui.text_dim } else { off }))
                     // Writing: a stop square in the accent (pressing it stops), else ✦.
                     .map(|d| {
                         if writing {
@@ -684,7 +708,7 @@ impl Workspace {
         } else {
             write
         };
-        let can = blocked.is_none();
+        let can = buttons.commit && blocked.is_none();
         let ready = commit_label(staged);
         // Committing keeps the pill's width (nothing jumps): the ready label's, estimated.
         let ready_w = 10.0 * 2.0 + 14.0 + 4.0 + ready.chars().count() as f32 * 7.2;
@@ -709,7 +733,7 @@ impl Workspace {
                 .rounded(px(CONTROL_R))
                 .text_size(px(crate::changes_panel::GIT_NAME))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(hsla(if can { send_ink } else { ui.text_faint }))
+                .text_color(hsla(if can { send_ink } else { off }))
                 .when(can, |d| d.bg(hsla(send_fill)))
                 // Busy with its word showing (committing, or writing over a message): the quiet
                 // fill; writing into an empty field: the can't-commit look.
@@ -732,7 +756,7 @@ impl Workspace {
                         .child(icon(
                             Icon::Check,
                             px(crate::right_sidebar::HEADER_ICON),
-                            hsla(if can { send_ink } else { ui.text_faint }),
+                            hsla(if can { send_ink } else { off }),
                         ))
                         .child(SharedString::from(ready.clone())),
                 })
@@ -925,6 +949,54 @@ mod tests {
             None,
             "busy: the field says it"
         );
+    }
+
+    /// The 2026-11-25 chores ("buttons, lightgreyed them out when disabled"): ✦ and Commit each
+    /// act only when they can.
+    #[test]
+    fn commit_buttons_follow_what_can_act() {
+        let both = |write, commit| CommitButtons { write, commit };
+        assert_eq!(commit_buttons(0, "x", false), both(false, false));
+        assert_eq!(commit_buttons(2, "", false), both(true, false));
+        assert_eq!(commit_buttons(2, "  \n ", false), both(true, false));
+        assert_eq!(commit_buttons(2, "fix", false), both(true, true));
+        assert_eq!(commit_buttons(2, "fix", true), both(false, false));
+    }
+
+    /// Off, a button's ink sits halfway between the dim ink and the card's fill: lighter than
+    /// the dim ink (the theme's faint ink is the dim one, so an off button looked on).
+    #[test]
+    fn an_off_button_is_lighter_than_dim() {
+        use alacritty_terminal::vte::ansi::Rgb;
+        let dim = Rgb {
+            r: 100,
+            g: 100,
+            b: 100,
+        };
+        let fill = Rgb {
+            r: 250,
+            g: 250,
+            b: 250,
+        };
+        assert_eq!(
+            off_ink(dim, fill),
+            Rgb {
+                r: 175,
+                g: 175,
+                b: 175
+            }
+        );
+    }
+
+    /// A message pasted with five lines is kept whole (the field shows two rows of it).
+    #[test]
+    fn commit_keeps_every_line() {
+        let mut s = CommitState::default();
+        let (a, b) = (Path::new("/a"), Path::new("/b"));
+        s.swap_draft(a, "");
+        s.swap_draft(b, "a\nb\nc\nd\ne");
+        s.swap_draft(a, "a\nb\nc\nd\ne");
+        assert_eq!(s.swap_draft(b, "").as_deref(), Some("a\nb\nc\nd\ne"));
     }
 
     /// ✓ reads as the action, with how many it commits.

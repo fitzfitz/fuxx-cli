@@ -2064,8 +2064,7 @@ fn changes_commit_scenes() {
                         // A long hook runs: the message stays in the field, the line says so.
                         "committing" => cx.update(|cx| {
                             input.update(cx, |i, cx| {
-                                i.set_text("Commit from the Git tab".into());
-                                cx.notify();
+                                i.set_text("Commit from the Git tab".into(), cx);
                             });
                             ws.update(cx, |ws, cx| {
                                 ws.right_sidebar.changes.commit.busy =
@@ -2075,8 +2074,7 @@ fn changes_commit_scenes() {
                         }),
                         "typed" => cx.update(|cx| {
                             input.update(cx, |i, cx| {
-                                i.set_text("Commit from the Git tab".into());
-                                cx.notify();
+                                i.set_text("Commit from the Git tab".into(), cx);
                             })
                         }),
                         // The keyboard in the field: the card's edge lights.

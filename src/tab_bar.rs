@@ -1832,7 +1832,7 @@ mod tests {
     /// stands out; its icon is quieter on dark themes until it is hovered.
     #[test]
     fn inactive_tabs_are_quieter_than_the_shown_one() {
-        use crate::ui_tokens::{TEXT_MIN, contrast, relative_luminance};
+        use crate::ui_tokens::{contrast, relative_luminance};
         for (name, theme) in crate::theme::every_theme() {
             let ui = theme.ui();
             let l = relative_luminance;
