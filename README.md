@@ -77,6 +77,10 @@ workspaces live in `~/Library/Application Support/fuxx/sessions.json` if you wan
 - **The message box** has folder and branch chips, a model menu with effort, the mode chip (new tabs start in
   **Auto**; **⇧Tab** cycles modes), **+** for images, and `/` and `@` menus. **↑ / ↓** bring back what you sent from
   that folder, and Claude's guess at your next message waits greyed out in the empty box until **Tab** takes it.
+  The folder picker leads with each folder's name (**⌘1–⌘8** open recent ones), the branch chip follows a `git
+  switch` made anywhere, and a clock shows the turn's cost and the context used.
+- **⌘V never stays silent**: files copied in Finder paste as pills, TIFF and BMP images become PNG, and anything fuxx
+  can't use says so.
 - **Drag files in** from the Files tree (or Finder) and they become pills. Select lines in a file tab, hit
   **Ask claude** (⌘↵), and they land in the box as a chip.
 - **Rewind and Fork** from any of your messages (Claude): go back to before it, and undo the agent's file changes too
@@ -84,16 +88,21 @@ workspaces live in `~/Library/Application Support/fuxx/sessions.json` if you wan
 - Sent something while the agent was busy? **×** takes it back, as long as the agent hasn't read it yet.
 - **Questions come as a card**: when the agent wants you to choose, pick with a digit, a click or the arrow keys, or
   type your own answer. Claude's questions work this way, and so do agy's (answered by message).
+- **Plan Mode you can read**: when Claude finishes planning, the plan arrives as a card, rendered like a reply,
+  folded when long, its file one click away. **Approve · auto-accept edits** (⏎), **Approve · ask per edit**, or
+  **Keep planning…** with a note; a slim bar keeps the answers in reach while you read a long plan.
+- **Plan progress**: a **☰ 4/6** tab over the box follows the plan the agent works from: each task done (with its
+  commit), in progress, or next.
 - **Subagents get lanes**: a pill per subagent above the chat (⌥⌘[ / ⌥⌘]) shows its own steps live. Stop one
   (Claude), message a running one through Main, and a finished one tells you how it ended. Subagent rows wear a
   little robot, and the status says **Orchestrating…** while only subagents work.
 - **See what each step actually did**: a busy step draws as **file tracks**, one bead per read, search, edit or
   script, a row per file. Small steps are readable rows with outcome chips ("2 passed", "+41 −0", "build failed ·
   E0425"). Checks are marked honestly: passed, failed, failed on purpose (TDD), or unknown, never a guessed green.
-  The **turn ledger** next to the status says what's running, how many files changed and how the checks stand;
-  click it for the list and any file's diff.
+  The **turn ledger** over the box says what's running, how many files changed and how the checks stand; click it
+  for the changed files under their folders, with A/M/D and +/−, and any file's diff.
 - Your latest message stays **pinned over the chat** while you scroll; click it to jump back. Chat text can be
-  selected and copied.
+  selected and copied, and every code block has a copy button.
 - **Live usage**: the status bar shows how much of each agent's limit you've used and when it resets.
 
 ### 🗂 Workspaces, panes, tabs, and a sidebar that looks good doing it
@@ -109,16 +118,17 @@ workspaces live in `~/Library/Application Support/fuxx/sessions.json` if you wan
   another workspace.
 - **⌘K** searches everything (actions, workspaces, files, settings). **⌘P** jumps between workspaces.
 - **Pin** what matters, give workspaces a colour, rename with a real text box (yes, the caret moves).
+- **⌘Z / ⇧⌘Z** work in every text field and at the shell prompt. Closing a tab that's still working asks first.
 
 ### 📁 Your repo, right there
 - **⌥⌘\\** opens the right sidebar: **Files**, **Changes** and **Activity**.
 - **Files**: single-click a file for a quick **preview tab** (italic, replaced by the next click); double-click to keep
   it. Right-click for New File, Rename, Reveal in Finder, Copy Path or Move to Trash (⌘Z puts it back). Double-click
   a folder and your terminal `cd`s there; `cd` in a terminal and the tree follows.
-- **Changes**: stage, unstage and revert files, then **commit** right there (⌘↵), or let ✦ have your agent write the
-  message from the staged diff. A branch bar says where you stand against origin, with Fetch, Pull, Push or Publish,
-  and opens the **branch switcher** (with a confirm step and conflict warnings). A **Graph** shows the history with
-  lanes and a hover card.
+- **Changes**: stage, unstage and revert files, then **commit** right there in a two-line box (↵ or ⌘↵), or let ✦
+  have your agent write the message from the staged diff. A branch bar says where you stand against origin, with
+  Fetch, Pull, Push or Publish, and opens the **branch switcher** (with a confirm step and conflict warnings). A
+  **Graph** shows the history with lanes and a hover card.
 - **File tabs** are read-only viewers that update live while your agent edits: lines it just changed **glow**, each
   one marked with who wrote it, and the agent's own reason shows under its edit. Syntax colours, folding, a sticky
   line, ⌘F, and a **File ↔ Diff** switch with review-style cards or side by side. fuxx never changes your files.
