@@ -505,6 +505,25 @@ pub(super) fn agent_tracks_earlier() {
         cx.run_until_parked();
         assert_eq!(cx.read(|cx| tab.read(cx).shot_track_state()).2, None, "{n}");
         let _ = frame_fresh(cx, window);
+        // The 2026-11-25 chores ("the 'active' border is not removed when I clicked
+        // anywhere"): the cursor back, then a press above the tracks lets it go.
+        cx.simulate_click(window, head, Modifiers::none());
+        cx.run_until_parked();
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).shot_track_state()).2,
+            Some(29),
+            "{n}"
+        );
+        let above = gpui::point(group.origin.x + px(40.), group.origin.y - px(30.));
+        cx.simulate_click(window, above, Modifiers::none());
+        cx.run_until_parked();
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).shot_track_state()).2,
+            None,
+            "{n}: a press elsewhere clears the cursor"
+        );
     });
 }
 

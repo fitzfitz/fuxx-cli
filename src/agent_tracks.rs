@@ -136,6 +136,17 @@ pub struct TrackCursor {
     pub col: usize,
 }
 
+/// The cursor after a mouse press (the 2026-11-25 chores: "the 'active' border is not removed
+/// when I clicked anywhere"): a press off the step's tracks clears it, unless the call's detail
+/// it opened is still showing (you're still looking at that call).
+pub fn cursor_after_click(
+    cursor: Option<TrackCursor>,
+    on_tracks: bool,
+    detail_open: bool,
+) -> Option<TrackCursor> {
+    cursor.filter(|_| on_tracks || detail_open)
+}
+
 /// A hover tooltip with `words`.
 fn tip(words: String) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
     move |_, cx| {
@@ -338,7 +349,21 @@ impl AgentTab {
             .text_size(px(text::META))
             .font_features(crate::sidebar::tabular())
             .when(keyed, |d| {
-                d.key_context("AgentTracks").track_focus(&self.tracks_focus)
+                let (view, lead) = (look.view.clone(), lead.clone());
+                let focus = self.tracks_focus.clone();
+                d.key_context("AgentTracks")
+                    .track_focus(&self.tracks_focus)
+                    // A press anywhere else lets the column go; the keyboard goes back to the
+                    // box only if the press left it with the tracks (a press in another pane
+                    // keeps its own focus), checked once the press has landed.
+                    .on_mouse_down_out(move |_, window, cx| {
+                        let (view, lead, focus) = (view.clone(), lead.clone(), focus.clone());
+                        window.defer(cx, move |window, cx| {
+                            let keep = focus.is_focused(window);
+                            view.update(cx, |this, cx| this.track_press_out(&lead, keep, cx))
+                                .ok();
+                        });
+                    })
             })
             .child(body);
         let first_error = tracks.first_error.clone().map(|line| {
@@ -677,6 +702,22 @@ impl AgentTab {
         }
     }
 
+    /// A press outside step `lead`'s tracks: its cursor goes (`cursor_after_click`), and the
+    /// keyboard back to the box when the tracks still hold it (`held`). A cursor another step
+    /// took meanwhile stays.
+    fn track_press_out(&mut self, lead: &str, held: bool, cx: &mut Context<Self>) {
+        let Some(cur) = self.track_cursor.clone().filter(|c| c.lead == lead) else {
+            return;
+        };
+        if cursor_after_click(Some(cur), false, self.modal.is_some()).is_none() {
+            self.track_cursor = None;
+            if held {
+                self.refocus = Some(Refocus::Box);
+            }
+            cx.notify();
+        }
+    }
+
     /// Esc: the tracks give the keyboard back to the box.
     pub(super) fn track_leave(&mut self, _: &TrackLeave, _: &mut Window, cx: &mut Context<Self>) {
         self.track_cursor = None;
@@ -740,6 +781,29 @@ mod tests {
         assert_eq!(lane_width(6), 6.0 * chat::TRACK_COL_W);
         assert_eq!(lane_width(7), 12.0 * chat::TRACK_COL_W);
         assert_eq!(lane_width(24), 24.0 * chat::TRACK_COL_W);
+    }
+
+    #[test]
+    fn a_click_elsewhere_clears_the_cursor() {
+        // The 2026-11-25 chores: "the 'active' border is not removed when I clicked anywhere".
+        let c = || {
+            Some(TrackCursor {
+                lead: "t1".into(),
+                col: 2,
+            })
+        };
+        assert_eq!(cursor_after_click(c(), false, false), None);
+        assert_eq!(
+            cursor_after_click(c(), true, false),
+            c(),
+            "a click on the tracks"
+        );
+        assert_eq!(
+            cursor_after_click(c(), false, true),
+            c(),
+            "its call's detail open"
+        );
+        assert_eq!(cursor_after_click(None, false, false), None);
     }
 
     #[test]
