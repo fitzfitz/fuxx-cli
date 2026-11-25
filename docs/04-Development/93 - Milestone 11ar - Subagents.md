@@ -1393,3 +1393,33 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     panel only while it is open; a caret key in the box no longer copies its text.
   - **Checks.** Tests 2935 green; no new clippy warnings; `cargo fmt --check` clean; the scenes these touch 364
     passed, 1 failed (`agent-tab-wide`, as on master).
+- **Scroll lag: the status marks are sprites, not paths** (your words, 2026-11-25: "when large content, the scroll
+  seems laggy" … "go ahead, swap the marks to svg"; released in v0.13.6):
+  - **Found.** A 20 s `sample` of the installed app (v0.13.5) while you scrolled a long agent chat: the main thread
+    spent about 2.2 s blocked in `CAMetalLayer nextDrawable` (all three drawables still with the GPU), while fuxx's
+    own layout and paint took about 1.4 s. GPUI draws every batch of paths by ending the render pass, clearing and
+    resolving a whole-window 4× MSAA texture, and starting a new pass; the chat's finished steps each painted a
+    check as a path, between text, so a long chat cost the GPU many whole-window passes a frame.
+  - **Changed.** `status_mark` now builds each mark from layers (`layers`, tested): its discs and rings are rounded
+    quads, and Working's arc, the check and the ✕ are SVG glyphs (`assets/icons/marks/`, `Icon::MarkArc`,
+    `MarkCheck`, `MarkCross`), tinted like the Lucide icons. The arc turns by an SVG rotation, so it is drawn once and
+    never re-tessellated; the sizes in a 12 px box are the paths' (ring 10 px, halo 12, dots 7 and 10, check 8).
+    `mark_on`, `done_check` and `failed_cross` keep their signatures, so no caller changed.
+  - **The other fixed shapes too** (your words: "any icon that is not svg? we can make it as svg then just release
+    it"): a composer tab's concave step (its wedge and edge, `terminal_view::paint_tab_step`, both boxes), the agent
+    box's send notch (its fill and lit edge, `agent_box::notch`) and the tab colour menu's "no colour" slash are SVGs
+    in `assets/icons/shapes/`, painted with `window.paint_svg` in the same places. A test per shape checks its SVG
+    still fits the box its constants give (the notch's 58 pt from `SEND`, `NOTCH_GAP`, `JOINT`; the step's
+    `TAB_STEP` 8; the swatch's inside).
+  - **Still paths, on purpose:** the agent box's sweep (a comet whose length, colours and fade change every frame
+    along the box's outline) and the Graph panel's lanes (lines and curves laid out from each commit's parents).
+    Neither is an icon: both are drawn from data each frame.
+  - **Checks.** Tests 2942 green (seven new); no clippy warnings in the files touched (the existing ones are in
+    other files); `cargo fmt --check` clean; the scenes these touch 364 passed, 1 failed (`agent-tab-wide`, as on
+    master); `marks-mocha`, the lanes' ✓/✕, the notch and the tab step look as before (no scene opens the colour
+    menu, so the slash is checked by its test only).
+  - **Toolchain.** Homebrew's Rust 1.100 comes before rustup's 1.97.1 on this Mac's PATH and has no Intel standard
+    library, so `scripts/bundle-mac.sh` failed with it; the build and gates here ran with `~/.cargo/bin` first.
+  - **Your on-screen check:** in a build with this, scroll the same long agent chat, a long terminal and a big file
+    tab; it should keep up. (The terminal and file-tab lag weren't profiled yet: if either still lags, it's another
+    cause.)

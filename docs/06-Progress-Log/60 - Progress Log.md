@@ -42,6 +42,17 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-25 — Scroll lag: status marks as sprites
+
+- **Did:** profiled the scroll lag you reported in a long agent chat (the main thread waited on the GPU for about
+  2.2 s of 20, in `nextDrawable`), traced it to the marks painted as paths (each path batch is a whole-window MSAA
+  pass in GPUI), and redrew the marks as rounded quads and SVG glyphs; then the other fixed shapes (the tab step,
+  the send notch, the "no colour" slash) as SVGs too (note 93, Chores after M11ar). Released as v0.13.6.
+- **Learned:** in GPUI a painted path is far dearer on the GPU than its CPU cost suggests; anything drawn once per
+  row should be a quad or an SVG, never `paint_path`.
+- **Blocked:** nothing.
+- **Next task:** your on-screen check: scroll the long chat, a terminal and a file tab in a build with this.
+
 ### 2026-11-25 — v0.13.5 released
 
 - **What:** your words: "release fuxx". Version 0.13.5 (`bc7be97`), tag `v0.13.5`, Release run 45538971154: test,
