@@ -442,6 +442,15 @@ pub fn answer_line(answer: &Answer) -> String {
     }
 }
 
+/// How often the branch chip reads the branch at most (the 2026-11-25 chores).
+const BRANCH_REREAD: Duration = Duration::from_millis(500);
+
+/// Whether `event` may follow a branch switch (a tool call's end, a turn's end): the chip
+/// reads the branch again (the 2026-11-25 chores: "branch on outer chatbox is not align").
+pub fn rereads_branch(event: &Event) -> bool {
+    matches!(event, Event::ToolFinished { .. } | Event::TurnDone { .. })
+}
+
 /// An answered plan card's line (the 2026-11-25 chores).
 pub fn plan_answer_line(answer: &Answer) -> String {
     match answer {
@@ -1589,6 +1598,9 @@ pub struct AgentTab {
     ledger_facts_gen: u64,
     /// The ledger popover's folded folders (their header's click).
     pub(crate) ledger_folded: std::collections::HashSet<String>,
+    /// When the branch was last read for the chip, and a read waiting for its turn.
+    branch_read_at: Option<Instant>,
+    branch_read_queued: bool,
     /// The plan cards opened whole (Show the whole plan), by their request's id (the
     /// 2026-11-25 chores).
     plan_open: std::collections::HashSet<String>,
@@ -2222,9 +2234,13 @@ impl AgentTab {
         let subscriptions = vec![
             // The question card's light goes out while the window isn't the key window (the
             // design review of batch 3, chore 8): a change of key window draws it again.
-            cx.observe_window_activation(window, |this, _, cx| {
+            cx.observe_window_activation(window, |this, window, cx| {
                 if this.asking() {
                     cx.notify();
+                }
+                // Back to the front: a branch switched outside fuxx shows on the chip.
+                if window.is_window_active() {
+                    this.read_branch_soon(cx);
                 }
             }),
             cx.subscribe_in(&composer, window, Self::on_composer),
@@ -2344,6 +2360,8 @@ impl AgentTab {
             ledger_facts_for: Vec::new(),
             ledger_facts_gen: 0,
             ledger_folded: Default::default(),
+            branch_read_at: None,
+            branch_read_queued: false,
             plan_open: Default::default(),
             plan_note: false,
             plan_footer: Rc::default(),
@@ -3137,6 +3155,10 @@ impl AgentTab {
                 cx.emit(told);
             }
             self.rewind_event(&event);
+            // A `git switch` by the agent shows on the branch chip (the 2026-11-25 chores).
+            if rereads_branch(&event) {
+                self.read_branch_soon(cx);
+            }
             match &event {
                 Event::Started { conversation, .. } => {
                     self.run.started = true;
@@ -4990,6 +5012,33 @@ impl AgentTab {
             .ok();
         })
         .detach();
+    }
+
+    /// Read the branch again soon (the 2026-11-25 chores: the chip went stale after a `git
+    /// switch` by the agent or in another terminal): now, unless it was read less than
+    /// `BRANCH_REREAD` ago, then once when that has passed.
+    fn read_branch_soon(&mut self, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let wait = self
+            .branch_read_at
+            .map(|at| BRANCH_REREAD.saturating_sub(now.saturating_duration_since(at)))
+            .unwrap_or_default();
+        if wait.is_zero() {
+            self.branch_read_at = Some(now);
+            self.read_branch(cx);
+        } else if !self.branch_read_queued {
+            self.branch_read_queued = true;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                this.update(cx, |this, cx| {
+                    this.branch_read_queued = false;
+                    this.branch_read_at = Some(Instant::now());
+                    this.read_branch(cx);
+                })
+                .ok();
+            })
+            .detach();
+        }
     }
 
     /// The branch switcher switched the repo this agent's folder is in: read its branch again.
@@ -7162,6 +7211,27 @@ mod tests {
         assert!(!resume_failed(true, true));
         assert!(!resume_failed(false, false));
         assert!(!resume_failed(true, false));
+    }
+
+    /// The 2026-11-25 chores ("branch on outer chatbox is not align"): the branch is read again
+    /// after the agent's tool calls finish and at a turn's end, not while words stream.
+    #[test]
+    fn the_branch_is_read_again_after_tools_and_turns() {
+        assert!(rereads_branch(&Event::ToolFinished {
+            id: "t".into(),
+            ok: true,
+            summary: String::new(),
+            output: None,
+        }));
+        assert!(rereads_branch(&Event::TurnDone {
+            ok: true,
+            message: None,
+        }));
+        assert!(!rereads_branch(&Event::TextDelta {
+            message: "m".into(),
+            text: "hi".into(),
+            parent: None,
+        }));
     }
 
     /// The 2026-11-25 chores: an answered plan says how it went.
