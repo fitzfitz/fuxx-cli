@@ -1087,6 +1087,57 @@ pub(super) fn agent_tab_plan() {
             },
         );
     }
+    // The review's Important 1: Esc while typing a note brings the buttons back; it never
+    // stops Claude. Then a long note keeps planning, its line cut inside the card (Minor 6).
+    let slot: Slot = Rc::default();
+    let keep = slot.clone();
+    render_with(
+        &theme,
+        size(px(DIMS.0), px(DIMS.1)),
+        build(theme, slot),
+        move |cx, window| {
+            let n = "agent-tab-plan-esc";
+            let tab = tab_of(&keep);
+            to_card(cx, &tab);
+            cx.simulate_input(window, "half a thought");
+            cx.simulate_keystrokes(window, "escape");
+            cx.run_until_parked();
+            cx.read(|cx| {
+                let t = tab.read(cx);
+                assert_eq!(
+                    t.status(),
+                    Status::Waiting,
+                    "{n}: still waiting, not stopped"
+                );
+                assert!(
+                    t.shot_items().iter().any(|i| matches!(
+                        i,
+                        Item::Permission {
+                            answer: None,
+                            plan: Some(_),
+                            ..
+                        }
+                    )),
+                    "{n}: the plan still waits"
+                );
+                assert_eq!(t.shot_composer().read(cx).text(), "", "{n}: the note gone");
+            });
+            let long = "please split step 1 into three smaller steps and say for each one \
+                        which file it touches and how you will check it before moving on";
+            cx.simulate_input(window, long);
+            cx.simulate_keystrokes(window, "enter");
+            cx.run_until_parked();
+            settle_frames(cx, window);
+            let line = cx
+                .read(|cx| tab.read(cx).shot_part("plan-answer-line"))
+                .unwrap_or_else(|| panic!("{n}: the answered line drawn"));
+            assert!(
+                line.right() <= px(DIMS.0 - 8.),
+                "{n}: the note's line stays inside the card ({line:?})"
+            );
+            keep.borrow_mut().take();
+        },
+    );
 }
 
 /// A long plan (the 2026-11-25 chores): folded with "Show the whole plan"; opened whole, its

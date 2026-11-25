@@ -1607,7 +1607,9 @@ pub struct AgentTab {
     /// Keep planning… was pressed: the waiting plan's buttons step aside for your note.
     plan_note: bool,
     /// The waiting plan's footer, where it was last painted (the pinned bar's cue).
-    plan_footer: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    plan_footer: plan_card::FooterSeen,
+    /// The frame being drawn (the footer's place counts only from the frame just painted).
+    plan_frame: Cell<u64>,
     /// Whether the box held text at the last draw (a plan card reads it as a note).
     box_text_nonempty: Cell<bool>,
     /// The ledger's kept sums (`agent_ledger::LedgerCache`).
@@ -2365,6 +2367,7 @@ impl AgentTab {
             plan_open: Default::default(),
             plan_note: false,
             plan_footer: Rc::default(),
+            plan_frame: Cell::new(0),
             box_text_nonempty: Cell::new(false),
             ledgers: Default::default(),
             stopped: None,
@@ -3946,9 +3949,13 @@ impl AgentTab {
                     cx.notify();
                 } else if self.ask_take_back(cx) {
                     // A question waits: Esc goes back to its card, never stops the agent.
-                } else if self.plan_note {
-                    // Writing a note for a plan: Esc brings its buttons back.
+                } else if self.plan_noting(!self.composer.read(cx).text().is_empty()) {
+                    // Writing a note for a plan (Keep planning..., or typing): Esc brings its
+                    // buttons back and empties the box; it never stops the agent (the review's
+                    // Important 1).
                     self.plan_note = false;
+                    self.composer
+                        .update(cx, |c, cx| c.set_text(String::new(), cx));
                     self.relayout_plan();
                     cx.notify();
                 } else if !self.esc_rewind(cx) {
@@ -6468,6 +6475,7 @@ impl Render for AgentTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_plan(cx);
         self.refresh_ledger_facts(cx);
+        self.plan_frame.set(self.plan_frame.get() + 1);
         let appearance = cx.global::<Appearance>();
         let theme = appearance.theme;
         let mono = appearance.font.family.clone();

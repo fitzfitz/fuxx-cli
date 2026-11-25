@@ -1301,6 +1301,7 @@ impl AgentTab {
             FileStatus::Added => c.tool_ok,
             FileStatus::Modified => c.meter_caution,
             FileStatus::Deleted => c.failed,
+            FileStatus::Unchanged => ui.text_dim,
         };
         let groups = changed_groups(&ledger.changed, facts, &self.start.cwd);
         if !groups.is_empty() {
@@ -1409,7 +1410,10 @@ impl AgentTab {
                         FileStatus::Added => "A",
                         FileStatus::Modified => "M",
                         FileStatus::Deleted => "D",
+                        FileStatus::Unchanged => "",
                     };
+                    // A file only read has no diff: its click opens it.
+                    let unchanged = file.status == FileStatus::Unchanged;
                     let counts = div()
                         .flex_none()
                         .flex()
@@ -1450,7 +1454,9 @@ impl AgentTab {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .bg(hsla(crate::theme::mix(ink, c.panel, 0.82)))
+                                .when(!unchanged, |d| {
+                                    d.bg(hsla(crate::theme::mix(ink, c.panel, 0.82)))
+                                })
                                 .text_size(px(11.))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(hsla(ink))
@@ -1465,17 +1471,22 @@ impl AgentTab {
                                 .child(SharedString::from(file.name)),
                         )
                         .child(counts)
-                        .tooltip(|_, cx| {
+                        .tooltip(move |_, cx| {
                             cx.new(|_| {
                                 crate::sidebar_toggle::Tip(
-                                    "Open the diff (\u{2325}-click: the file)".into(),
+                                    if unchanged {
+                                        "Open the file"
+                                    } else {
+                                        "Open the diff (\u{2325}-click: the file)"
+                                    }
+                                    .into(),
                                 )
                             })
                             .into()
                         })
                         .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                             this.close_menu(cx);
-                            if event.modifiers().alt {
+                            if unchanged || event.modifiers().alt {
                                 cx.emit(AgentTabEvent::OpenFile(path.clone()));
                             } else {
                                 cx.emit(AgentTabEvent::OpenDiff(path.clone()));

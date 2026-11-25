@@ -136,8 +136,11 @@ impl AgentTab {
                 )
                 .child(div().flex_1())
                 .child(
-                    div()
-                        .flex_none()
+                    // A long note is cut, never past the card (the review's Minor 6).
+                    self.marked("plan-answer-line", div())
+                        .flex_shrink(1.0)
+                        .min_w(px(0.))
+                        .truncate()
                         .text_size(px(crate::ui_tokens::text::META))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(hsla(if approved { c.tool_ok } else { c.dim }))
@@ -146,6 +149,8 @@ impl AgentTab {
                 .into_any_element();
         }
         let waiting = answer.is_none();
+        // Only the oldest waiting ask answers (the review's Important 3): a later plan waits.
+        let live = waiting && plan_live(self.waiting_plan(), ix);
         let long = plan_is_long(&plan.markdown);
         let folded = long && !open;
         let outline = plan_outline(&blocks);
@@ -289,7 +294,7 @@ impl AgentTab {
         });
         // The footer: the answers while it waits (aside while you write a note), else how it
         // went.
-        let noting = self.plan_noting(cx_free_text(self));
+        let noting = live && self.plan_noting(cx_free_text(self));
         let footer = div()
             .mt(px(10.))
             .px(px(16.))
@@ -316,8 +321,14 @@ impl AgentTab {
                             "Your note goes back to {label}, and it keeps planning. Esc returns to the buttons."
                         ))),
                 ),
+                None if !live => d.child(
+                    div()
+                        .text_size(px(crate::ui_tokens::text::META))
+                        .text_color(hsla(c.dim))
+                        .child("Next: answer the request before it first."),
+                ),
                 None => d
-                    .child(self.plan_buttons("plan", look))
+                    .child(self.plan_buttons("plan", ix, look))
                     .child(
                         div()
                             .text_size(px(crate::ui_tokens::text::META))
@@ -327,7 +338,11 @@ impl AgentTab {
                             ))),
                     ),
             });
-        let footer = self.plan_footer_probe(footer);
+        let footer = if live {
+            self.plan_footer_probe(footer)
+        } else {
+            footer
+        };
         div()
             .id(SharedString::from(format!("plan-card-{ix}")))
             .w_full()
@@ -348,7 +363,7 @@ impl AgentTab {
     }
 
     /// The three answers, for the card's footer and the pinned bar (`id` keeps them apart).
-    fn plan_buttons(&self, id: &'static str, look: &Look) -> gpui::Div {
+    fn plan_buttons(&self, id: &'static str, ix: usize, look: &Look) -> gpui::Div {
         let c = &look.c;
         div()
             .flex()
@@ -363,8 +378,8 @@ impl AgentTab {
                     true,
                     c,
                 )
-                .on_click(on_tab(&look.view, |this, cx| {
-                    this.answer(Answer::AlwaysAllowed, cx).ok();
+                .on_click(on_tab(&look.view, move |this, cx| {
+                    this.answer_plan(ix, Answer::AlwaysAllowed, cx);
                 })),
             )
             .child(
@@ -374,8 +389,8 @@ impl AgentTab {
                     false,
                     c,
                 )
-                .on_click(on_tab(&look.view, |this, cx| {
-                    this.answer(Answer::Allowed, cx).ok();
+                .on_click(on_tab(&look.view, move |this, cx| {
+                    this.answer_plan(ix, Answer::Allowed, cx);
                 })),
             )
             .child(
@@ -397,7 +412,15 @@ impl AgentTab {
     /// Whether you are writing a note for a waiting plan: Keep planning was pressed, or the box
     /// has text (its buttons step aside, so Enter sends the note and can't approve).
     pub(super) fn plan_noting(&self, box_has_text: bool) -> bool {
-        self.plan_note || box_has_text
+        plan_noting_now(self.waiting_plan().is_some(), self.plan_note, box_has_text)
+    }
+
+    /// Plan `ix`'s answer, only while it is the oldest ask (the buttons' `answer` goes to that
+    /// one: the review's Important 3).
+    fn answer_plan(&mut self, ix: usize, answer: Answer, cx: &mut Context<Self>) {
+        if self.waiting_plan() == Some(ix) {
+            self.answer(answer, cx).ok();
+        }
     }
 
     /// Keep planning…: the box takes the keyboard for your note.
@@ -484,11 +507,14 @@ impl AgentTab {
 
     /// The footer, its painted place noted (the pinned bar shows while it is out of view).
     fn plan_footer_probe(&self, footer: gpui::Div) -> gpui::Div {
-        let seen = self.plan_footer.clone();
+        let (seen, frame) = (self.plan_footer.clone(), self.plan_frame.get());
         footer.child(
-            canvas(move |bounds, _, _| seen.set(Some(bounds)), |_, _, _, _| {})
-                .absolute()
-                .size_full(),
+            canvas(
+                move |bounds, _, _| seen.set(Some((bounds, frame))),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_full(),
         )
     }
 
@@ -496,7 +522,7 @@ impl AgentTab {
     /// chat's view (the 2026-11-25 chores, "loved the idea"): ☰, its title, the three answers.
     pub(super) fn plan_bar(&mut self, look: &Look, cx: &mut Context<Self>) -> Option<AnyElement> {
         let ix = self.waiting_plan()?;
-        if self.plan_note {
+        if self.plan_noting(self.box_text_nonempty.get()) {
             return None;
         }
         let title = match &self.conversation.items()[ix] {
@@ -507,19 +533,18 @@ impl AgentTab {
         };
         let list: ListState = self.pane().list.clone();
         let footer = self.plan_footer.clone();
-        let out = move |list: &ListState| -> bool {
+        // Painted in the frame just drawn, inside the view (the review's Important 5): the
+        // last frame's place now, this frame's once the list has laid out (it comes first).
+        let frame = self.plan_frame.get();
+        let out = move |list: &ListState, painted: u64| -> bool {
             let view = list.viewport_bounds();
-            match footer.get() {
-                _ if view.size.height <= px(0.) => false,
-                Some(f) => f.bottom() > view.bottom() || f.top() < view.top(),
-                None => true,
-            }
+            view.size.height > px(0.) && footer_out(footer.get(), painted, view)
         };
-        let shown = out(&list);
+        let shown = out(&list, frame.saturating_sub(1));
         let tab = cx.entity_id();
         let check = canvas(
             move |_, window, _| {
-                if out(&list) != shown {
+                if out(&list, frame) != shown {
                     window.on_next_frame(move |_, cx| cx.notify(tab));
                 }
             },
@@ -554,7 +579,7 @@ impl AgentTab {
                     .text_color(hsla(c.text))
                     .child(SharedString::from(title)),
             )
-            .child(self.plan_buttons("plan-bar", look));
+            .child(self.plan_buttons("plan-bar", ix, look));
         Some(
             layer
                 .block_mouse_except_scroll()
@@ -592,10 +617,35 @@ impl AgentTab {
         let list = &self.pane().list;
         let view = list.viewport_bounds();
         self.waiting_plan().is_some()
-            && self
-                .plan_footer
-                .get()
-                .is_none_or(|f| f.bottom() > view.bottom() || f.top() < view.top())
+            && footer_out(self.plan_footer.get(), self.plan_frame.get(), view)
+    }
+}
+
+/// Where the waiting plan's footer was painted, and in which frame (the pinned bar's cue).
+pub type FooterSeen = std::rc::Rc<std::cell::Cell<Option<(gpui::Bounds<gpui::Pixels>, u64)>>>;
+
+/// Whether you are writing a note for a plan: one waits (`waiting`), and Keep planning... was
+/// pressed (`note`) or the box has text (the review's Important 1 and 2: a note left from a plan
+/// that went counts for nothing).
+pub fn plan_noting_now(waiting: bool, note: bool, box_has_text: bool) -> bool {
+    waiting && (note || box_has_text)
+}
+
+/// Whether plan `ix`'s card answers: it is the oldest waiting ask.
+pub fn plan_live(oldest_waiting_plan: Option<usize>, ix: usize) -> bool {
+    oldest_waiting_plan == Some(ix)
+}
+
+/// Whether the footer is out of the chat's `view`: not painted in frame `frame`, or painted
+/// outside it.
+pub fn footer_out(
+    seen: Option<(gpui::Bounds<gpui::Pixels>, u64)>,
+    frame: u64,
+    view: gpui::Bounds<gpui::Pixels>,
+) -> bool {
+    match seen {
+        Some((f, at)) if at == frame => f.bottom() > view.bottom() || f.top() < view.top(),
+        _ => true,
     }
 }
 
@@ -618,6 +668,45 @@ fn cx_free_text(tab: &AgentTab) -> bool {
 mod tests {
     use super::*;
     use crate::agent_markdown::parse;
+
+    /// The review's Important 1 and 2: a note is being written only while a plan waits (a
+    /// Keep planning… left over from an expired plan counts for nothing), and typing counts.
+    #[test]
+    fn noting_needs_a_waiting_plan() {
+        assert!(plan_noting_now(true, true, false), "Keep planning pressed");
+        assert!(plan_noting_now(true, false, true), "typing");
+        assert!(!plan_noting_now(true, false, false));
+        assert!(
+            !plan_noting_now(false, true, true),
+            "no plan waits: a stale note is nothing"
+        );
+    }
+
+    /// The review's Important 3: only the oldest waiting ask's card answers (its buttons send to
+    /// that request); a later plan waits its turn.
+    #[test]
+    fn only_the_oldest_waiting_plan_is_live() {
+        assert!(plan_live(Some(4), 4));
+        assert!(!plan_live(Some(2), 4));
+        assert!(!plan_live(None, 4));
+    }
+
+    /// The review's Important 5: the footer counts as in view only when it was painted in the
+    /// frame just drawn, inside the chat's view.
+    #[test]
+    fn a_footer_not_painted_last_frame_is_out_of_view() {
+        use gpui::{Bounds, point, px, size};
+        let view = Bounds::new(point(px(0.), px(0.)), size(px(500.), px(400.)));
+        let inside = Bounds::new(point(px(0.), px(300.)), size(px(500.), px(40.)));
+        let below = Bounds::new(point(px(0.), px(390.)), size(px(500.), px(40.)));
+        assert!(!footer_out(Some((inside, 7)), 7, view));
+        assert!(
+            footer_out(Some((inside, 6)), 7, view),
+            "painted an older frame"
+        );
+        assert!(footer_out(Some((below, 7)), 7, view));
+        assert!(footer_out(None, 7, view));
+    }
 
     #[test]
     fn submit_on_a_plan() {

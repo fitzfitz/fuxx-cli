@@ -15,6 +15,8 @@ pub enum FileStatus {
     Added,
     Modified,
     Deleted,
+    /// There, and git says nothing of it (or no git to ask): a file only read.
+    Unchanged,
 }
 
 /// What git and the disk say of a path.
@@ -55,7 +57,7 @@ pub fn read_facts(root: &Path, paths: &[PathBuf]) -> HashMap<PathBuf, FileFacts>
         let is_file = meta.as_ref().is_some_and(|m| m.is_file());
         let status = match status.get(path) {
             Some(s) => *s,
-            None if meta.is_some() => FileStatus::Modified,
+            None if meta.is_some() => FileStatus::Unchanged,
             None => continue,
         };
         let (plus, minus) = match (counts.get(path), status) {
@@ -161,7 +163,13 @@ pub fn changed_groups(
     facts: &HashMap<PathBuf, FileFacts>,
     cwd: &Path,
 ) -> Vec<Group> {
-    let rows = changed.iter().map(|c| {
+    // A folder a command wrote into (`cp x dist/`) is no file (the review's Minor 7).
+    let file = |c: &&Changed| {
+        facts
+            .get(&c.path)
+            .is_none_or(|f| f.is_file || f.status == FileStatus::Deleted)
+    };
+    let rows = changed.iter().filter(file).map(|c| {
         let fact = facts.get(&c.path);
         let known = c.plus.is_some() || c.minus.is_some();
         let (plus, minus) = match fact {
@@ -171,7 +179,11 @@ pub fn changed_groups(
         FileRow {
             path: c.path.clone(),
             name: file_name(&c.path),
-            status: fact.map_or(FileStatus::Modified, |f| f.status),
+            // The turn changed it: committed since, it still reads M.
+            status: match fact.map(|f| f.status) {
+                None | Some(FileStatus::Unchanged) => FileStatus::Modified,
+                Some(s) => s,
+            },
             plus,
             minus,
         }
@@ -203,7 +215,7 @@ pub fn plain_groups(
     let rows = paths.iter().map(|p| FileRow {
         path: p.clone(),
         name: file_name(p),
-        status: facts.get(p).map_or(FileStatus::Modified, |f| f.status),
+        status: facts.get(p).map_or(FileStatus::Unchanged, |f| f.status),
         plus: None,
         minus: None,
     });
@@ -353,6 +365,35 @@ mod tests {
         assert_eq!(kept_paths(std::slice::from_ref(&gone), &facts), [gone]);
     }
 
+    /// The review's Minor 7 (your screenshot's `icons/lucide`): a folder a command wrote into
+    /// (`cp x dist/`) never shows as a changed file; a path not read yet stays.
+    #[test]
+    fn a_changed_folder_is_left_out() {
+        let c = [changed("dist", None, None), changed("src/a.rs", None, None)];
+        let facts = HashMap::from([(
+            p("dist"),
+            FileFacts {
+                status: FileStatus::Unchanged,
+                plus: None,
+                minus: None,
+                is_file: false,
+            },
+        )]);
+        let g = changed_groups(&c, &facts, Path::new(CWD));
+        assert_eq!(names(&g), [("src".into(), vec!["a.rs".to_string()])]);
+    }
+
+    /// The review's Important 4: a file git says nothing about is unchanged (a Read row gets no
+    /// badge); one the turn changed still reads M.
+    #[test]
+    fn a_clean_file_is_unchanged_but_a_changed_one_reads_m() {
+        let facts = HashMap::from([(p("src/a.rs"), fact(FileStatus::Unchanged, None, None))]);
+        let g = changed_groups(&[changed("src/a.rs", None, None)], &facts, Path::new(CWD));
+        assert_eq!(g[0].rows[0].status, FileStatus::Modified);
+        let read = plain_groups(&[p("src/a.rs")], &facts, Path::new(CWD));
+        assert_eq!(read[0].rows[0].status, FileStatus::Unchanged);
+    }
+
     #[test]
     fn total_sums_rows() {
         let row = |plus, minus| FileRow {
@@ -403,12 +444,21 @@ mod tests {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/new.txt"), "a\nb\nc\n").unwrap();
         fs::remove_file(root.join("gone.txt")).unwrap();
+        fs::write(root.join("clean.txt"), "c\n").unwrap();
+        git_in(&git, &root, &["add", "clean.txt"]);
+        git_in(&git, &root, &["commit", "-q", "-m", "clean"]);
         let paths = [
             root.join("a.txt"),
             root.join("src/new.txt"),
             root.join("gone.txt"),
+            root.join("clean.txt"),
         ];
         let f = read_facts(&root, &paths);
+        assert_eq!(
+            f[&paths[3]],
+            fact(FileStatus::Unchanged, None, None),
+            "git says nothing"
+        );
         assert_eq!(f[&paths[0]], fact(FileStatus::Modified, Some(2), Some(1)));
         assert_eq!(f[&paths[1]], fact(FileStatus::Added, Some(3), Some(0)));
         assert_eq!(f[&paths[2]].status, FileStatus::Deleted);
@@ -426,7 +476,11 @@ mod tests {
             root.join("missing.txt"),
         ];
         let f = read_facts(&root, &paths);
-        assert_eq!(f[&paths[0]], fact(FileStatus::Modified, None, None));
+        assert_eq!(
+            f[&paths[0]],
+            fact(FileStatus::Unchanged, None, None),
+            "nothing to tell"
+        );
         assert!(!f[&paths[1]].is_file, "a folder is no file");
         assert!(!f.contains_key(&paths[2]), "nothing there, nothing known");
     }
