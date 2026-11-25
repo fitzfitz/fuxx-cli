@@ -42,6 +42,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-25 — v0.13.6 released
+
+- **What:** your words: "we can make it as svg then just release it". Version 0.13.6 (`025e9cf`), tag `v0.13.6`,
+  Release run 45554343923: test, both slices and the release job green; "fuxx 0.13.6" is the latest release with
+  `fuxx-0.13.6.zip` (32 MB). It carries the scroll-lag chore: the status marks and the chrome's fixed shapes drawn
+  as SVG sprites, not paths (note 93).
+- **Next task:** your on-screen check: scroll a long agent chat, a terminal and a file tab in 0.13.6.
+
 ### 2026-11-25 — Scroll lag: status marks as sprites
 
 - **Did:** profiled the scroll lag you reported in a long agent chat (the main thread waited on the GPU for about
