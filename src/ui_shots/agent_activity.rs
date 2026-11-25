@@ -90,6 +90,17 @@ pub(super) const SCENES: &[Scene] = &[
     scene("agent-ledger-popover", agent_ledger_popover, LEDGER),
     scene("agent-plan-tab", agent_plan_tab, PLAN),
     scene("agent-plan-tab-narrow", agent_plan_tab_narrow, PLAN),
+    scene("agent-plan-waiting", agent_plan_waiting, PLAN_CARD),
+    scene("agent-plan-reading", agent_plan_reading, PLAN_CARD),
+    scene("agent-plan-approved", agent_plan_approved, PLAN_CARD),
+];
+
+/// The Plan card's scenes (the landing page's "Plan first, then build"): the card and its rules.
+const PLAN_CARD: &[&str] = &[
+    "src/agent_plan_card.rs",
+    "src/agent_tab.rs",
+    "src/agent_rows.rs",
+    "src/md_preview.rs",
 ];
 
 /// The plan tab's scene: the box, its menus and the plan's rules.
@@ -873,5 +884,144 @@ pub(super) fn agent_ledger_popover() {
         );
         click(cx, window, part(cx, tab, n, "status-counts"));
         let _ = frame_fresh(cx, window);
+    });
+}
+
+/// A realistic plan (the landing page's Plan card): its context, four steps and how it's
+/// checked; `long` adds a code sketch, more steps and its risks (past the fold, 4 parts).
+fn rich_plan(long: bool) -> String {
+    let mut md = String::from(
+        "# Plan: Retry against the current endpoint\n\n## Context\n`RetryState` keeps the \
+         `base_url` of the first attempt, so after a failover every retry still hits the dead \
+         host.\n\n## Steps\n1. In `retry.rs`, read the endpoint from `Client::current()` on \
+         every attempt.\n2. Drop `base_url` from `RetryState` and its two call sites.\n3. Add a \
+         test: a failover between attempts sends attempt 2 to the new host.\n4. Log the endpoint \
+         each attempt used, at debug level.\n",
+    );
+    if long {
+        md.push_str(
+            "5. Cap the whole retry at the request's deadline.\n6. Keep the jitter in \
+             `backoff.rs`, unchanged.\n\n```rust\nfn attempt(&self, n: u32) -> Result<Response> {\n    \
+             let endpoint = self.client.current(); // was: self.state.base_url\n    \
+             self.send(endpoint, n)\n}\n```\n\n## Risks\n- A failover mid-stream still ends the \
+             stream; that stays out of scope.\n",
+        );
+    }
+    md.push_str("\n## Verification\n- `cargo test retry`\n- Run the failover example against two local servers.\n");
+    md
+}
+
+/// You ask for a plan; Claude, in plan mode, read and searched, then asks you to approve it.
+fn to_plan(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, long: bool) {
+    feed(cx, tab, |t, cx| {
+        t.send(
+            "Retries keep hitting the old host after a failover. Plan the fix first.".into(),
+            cx,
+        )
+    });
+    let mut events = vec![Event::Mode("plan".into())];
+    events.extend(
+        Turn::new()
+            .read("src/retry.rs")
+            .read("src/client.rs")
+            .say("The retry loop captures the endpoint once, before the first attempt. Here's how I'd fix it.")
+            .events(),
+    );
+    let md = rich_plan(long);
+    events.push(Event::Permission {
+        id: "plan-1".into(),
+        tool: "ExitPlanMode".into(),
+        what: String::new(),
+        detail: String::new(),
+        always: None,
+        by: None,
+        plan: Some(crate::providers::PlanDraft {
+            title: crate::providers::plan_title(&md),
+            markdown: md,
+            file: Some(PathBuf::from(format!(
+                "{CWD}/.claude/plans/retry-current-endpoint.md"
+            ))),
+        }),
+    });
+    give(cx, tab, events);
+}
+
+/// The plan waiting for you: rendered, its three answers, the box asking what to change.
+pub(super) fn agent_plan_waiting() {
+    shoot("agent-plan-waiting", DIMS, |n, cx, window, tab, _| {
+        to_plan(cx, tab, false);
+        let _ = frame_fresh(cx, window);
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            assert_eq!(
+                t.question().as_deref(),
+                Some("Claude's plan is ready"),
+                "{n}"
+            );
+        });
+    });
+}
+
+/// A long plan opened whole: its outline chips, and the answers pinned over the box.
+pub(super) fn agent_plan_reading() {
+    shoot("agent-plan-reading", DIMS, |n, cx, window, tab, _| {
+        to_plan(cx, tab, true);
+        super::chrome::settle_frames(cx, window);
+        feed(cx, tab, |t, cx| t.shot_open_plan(cx));
+        super::chrome::settle_frames(cx, window);
+        assert!(
+            cx.read(|cx| tab.read(cx).shot_plan_bar()),
+            "{n}: the answer bar pinned over the box"
+        );
+    });
+}
+
+/// Approved with edits accepted: the card folds to one line, the mode follows Claude to Accept
+/// edits, and the first edits run.
+pub(super) fn agent_plan_approved() {
+    shoot("agent-plan-approved", DIMS, |n, cx, window, tab, _| {
+        to_plan(cx, tab, false);
+        feed(cx, tab, |t, cx| {
+            t.answer(crate::agent_conversation::Answer::AlwaysAllowed, cx)
+                .ok();
+        });
+        let mut events = vec![Event::Mode("acceptEdits".into())];
+        // Its calls numbered after the planning turn's, so no id is used twice.
+        let after_plan = Turn {
+            lines: Vec::new(),
+            n: 10,
+        };
+        events.extend(
+            after_plan
+                .say("Approved. Starting with `retry.rs`.")
+                .edit(
+                    "src/retry.rs",
+                    "self.state.base_url",
+                    "self.client.current()",
+                )
+                .edit("src/client.rs", "pub base_url: Url,", "")
+                .call(
+                    "Bash",
+                    json!({"command": "cargo test retry", "description": "Run the retry tests"}),
+                    None,
+                )
+                .events(),
+        );
+        give(cx, tab, events);
+        let _ = frame_fresh(cx, window);
+        cx.read(|cx| {
+            let t = tab.read(cx);
+            assert!(
+                t.shot_items().iter().any(|i| matches!(
+                    i,
+                    crate::agent_conversation::Item::Permission {
+                        answer: Some(crate::agent_conversation::Answer::AlwaysAllowed),
+                        plan: Some(_),
+                        ..
+                    }
+                )),
+                "{n}: approved"
+            );
+        });
     });
 }
