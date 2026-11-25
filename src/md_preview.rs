@@ -561,7 +561,7 @@ pub struct Draw {
     /// The chat's code blocks get a copy icon (the 2026-11-25 chores): which block was copied
     /// last and when (`code_key`), kept by the view across frames. None: no icon (the reader's
     /// blocks have their header's Copy).
-    pub copied: Option<Rc<Cell<Option<(u64, std::time::Instant)>>>>,
+    pub copied: Option<ChatCopied>,
 }
 
 /// `child`, which draws `text` laid out by `layout`, made selectable when `draw` asks for it.
@@ -1406,6 +1406,9 @@ fn pill_of(
 /// reader's blocks (`blocks_of`) one under another. Its links' element ids start from
 /// `base << 20` (a chat passes its item's index), so they stay the same from frame to frame.
 /// Mermaid blocks show as code (R7).
+/// The chat code block copied last (`code_key`) and when, kept by its view across frames.
+pub type ChatCopied = Rc<Cell<Option<(u64, std::time::Instant)>>>;
+
 /// How long a chat code block's ✓ shows after its copy.
 pub const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1500);
 

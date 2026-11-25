@@ -1555,7 +1555,7 @@ pub struct AgentTab {
     /// popover); None: no live turn.
     pub(crate) ledger: Option<crate::agent_ledger::Ledger>,
     /// The chat code block copied last and when (its ✓, the 2026-11-25 chores).
-    code_copied: Rc<Cell<Option<(u64, Instant)>>>,
+    code_copied: md_preview::ChatCopied,
     /// The ledger's kept sums (`agent_ledger::LedgerCache`).
     ledgers: crate::agent_ledger::LedgerCache,
     /// The "Stopped" notice that offers to rewind your latest message (`rewind::stopped_link`),
