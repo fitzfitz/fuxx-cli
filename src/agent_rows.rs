@@ -194,10 +194,15 @@ impl AgentTab {
                             .relative()
                             .flex()
                             .max_w(px(520.))
+                            // Free to shrink below its text's one-line width, so the text wraps
+                            // in a narrow pane (the 2026-11-25 chores: "user's chat not as
+                            // responsive"; it ran off the column's left edge).
+                            .min_w(px(0.))
                             .child(
                                 self.flashed_you(
-                                    div()
+                                    self.marked("you-bubble", div())
                                         .max_w(px(520.))
+                                        .min_w(px(0.))
                                         .px(px(14.))
                                         .py(px(9.))
                                         .rounded(px(chat::R_BUBBLE))

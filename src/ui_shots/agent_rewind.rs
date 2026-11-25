@@ -301,6 +301,7 @@ pub(super) fn agent_rewind() {
     checks("agent-rewind-strip", strip_checks);
     checks("agent-rewind-strip-sent", strip_sent_checks);
     checks("agent-rewind-hover-stays", hover_stays_checks);
+    narrow_bubble_check();
     for &(slug, theme_name) in shot_themes() {
         let theme = shot_theme(theme_name);
         let slot: Slot = Rc::default();
@@ -344,6 +345,42 @@ pub(super) fn agent_rewind() {
         );
         println!("ui-shots: {}", path.display());
     }
+}
+
+/// The 2026-11-25 chores ("user's chat not as responsive"): in a narrow pane a long one-line
+/// message wraps inside the pane; it never runs off the column's left edge.
+fn narrow_bubble_check() {
+    const W: f32 = 420.0;
+    let theme = shot_theme("Catppuccin Mocha");
+    let slot: Slot = Rc::default();
+    let keep = slot.clone();
+    super::render_with(
+        &theme,
+        size(px(W), px(DIMS.1)),
+        build_with(&CLAUDE, theme, slot, start()),
+        move |cx, window| {
+            let n = "agent-you-narrow";
+            let tab = tab_of(&keep);
+            let long = "let's try that first, the current retry endpoint keeps the old host after \
+                        a failover so every retry goes to the dead one";
+            feed(cx, &tab, |t, cx| t.send(long.into(), cx));
+            settle_frames(cx, window);
+            let bubble = cx
+                .read(|cx| tab.read(cx).shot_part("you-bubble"))
+                .unwrap_or_else(|| panic!("{n}: the bubble drawn"));
+            assert!(
+                bubble.left() >= px(0.) && bubble.right() <= px(W),
+                "{n}: the bubble sits inside the {W} pt pane ({bubble:?})"
+            );
+            // Wrapped, not cut: three lines or more at this width.
+            assert!(
+                bubble.size.height > px(70.),
+                "{n}: the text wraps ({bubble:?})"
+            );
+            keep.borrow_mut().take();
+        },
+    );
+    println!("ui-shots: agent-you-narrow: checked");
 }
 
 /// `act` on a Claude tab in a Mocha window of its own (a scene folder for its transcript).
