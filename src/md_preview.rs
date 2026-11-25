@@ -558,6 +558,10 @@ pub struct Draw {
     /// Chat's text is selectable (chore after M11ar): its selection and the wash to paint it
     /// with. The reader's is not (`None`).
     pub select: Option<(Rc<crate::chat_select::ChatSelect>, gpui::Hsla)>,
+    /// The chat's code blocks get a copy icon (the 2026-11-25 chores): which block was copied
+    /// last and when (`code_key`), kept by the view across frames. None: no icon (the reader's
+    /// blocks have their header's Copy).
+    pub copied: Option<Rc<Cell<Option<(u64, std::time::Instant)>>>>,
 }
 
 /// `child`, which draws `text` laid out by `layout`, made selectable when `draw` asks for it.
@@ -1402,6 +1406,89 @@ fn pill_of(
 /// reader's blocks (`blocks_of`) one under another. Its links' element ids start from
 /// `base << 20` (a chat passes its item's index), so they stay the same from frame to frame.
 /// Mermaid blocks show as code (R7).
+/// How long a chat code block's ✓ shows after its copy.
+pub const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// What a chat code block's copy puts on the clipboard: its text as written.
+pub fn code_copy_text(code: &str) -> String {
+    code.to_string()
+}
+
+/// A code block's key for its "copied" mark: its text's hash (blocks with the same text are one).
+pub fn code_key(code: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    code.hash(&mut h);
+    h.finish()
+}
+
+/// Whether block `key` shows ✓ at `now`: it was copied last, less than `COPIED_FOR` ago.
+pub fn shows_copied(
+    copied: Option<(u64, std::time::Instant)>,
+    key: u64,
+    now: std::time::Instant,
+) -> bool {
+    copied.is_some_and(|(k, at)| k == key && now.saturating_duration_since(at) < COPIED_FOR)
+}
+
+/// A chat code block's copy icon, at its top-right (the 2026-11-25 chores: "no copy icon to
+/// copy the command"): dim, the text's ink under the pointer, ✓ for `COPIED_FOR` after a copy.
+fn code_copy_button(
+    code: &str,
+    copied: &Rc<Cell<Option<(u64, std::time::Instant)>>>,
+    draw: &Draw,
+) -> AnyElement {
+    use crate::icons::{Icon, icon};
+    let c = draw.ink();
+    let key = code_key(code);
+    let done = shows_copied(copied.get(), key, std::time::Instant::now());
+    let (text, copied) = (code_copy_text(code), copied.clone());
+    let group = SharedString::from(format!("code-copy-{key}"));
+    div()
+        .id(gpui::ElementId::Name(group.clone()))
+        .group(group.clone())
+        .absolute()
+        .top(px(COPY_INSET))
+        .right(px(COPY_INSET))
+        .size(px(COPY_BUTTON))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.))
+        .cursor_pointer()
+        .hover(move |st| st.bg(hsla(mix(c.code_bg, c.text, 0.08))))
+        .tooltip(move |_, cx| {
+            cx.new(|_| crate::sidebar_toggle::Tip(if done { "Copied" } else { "Copy" }.into()))
+                .into()
+        })
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(move |_, window, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+            copied.set(Some((key, std::time::Instant::now())));
+            window.refresh();
+            // One redraw when the ✓ is over, not a frame loop.
+            let handle = window.window_handle();
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(COPIED_FOR).await;
+                handle.update(cx, |_, window, _| window.refresh()).ok();
+            })
+            .detach();
+        })
+        .child(if done {
+            icon(Icon::Check, px(COPY_ICON), hsla(c.code_text)).into_any_element()
+        } else {
+            icon(Icon::Copy, px(COPY_ICON), hsla(c.dim))
+                .group_hover(group, move |st| st.text_color(hsla(c.code_text)))
+                .into_any_element()
+        })
+        .into_any_element()
+}
+
+/// The copy button's square, its icon and its inset from the block's corner.
+const COPY_BUTTON: f32 = 22.0;
+const COPY_ICON: f32 = 14.0;
+const COPY_INSET: f32 = 4.0;
+
 pub fn column(blocks: &[Md], base: usize, draw: &Draw) -> AnyElement {
     draw.links.set(base << 20);
     div()
@@ -1493,9 +1580,16 @@ fn block(md: &Md, draw: &Draw) -> AnyElement {
         Md::Nested(depth, inner) => item(inner, *depth, draw),
         Md::Code { text: code, .. } => {
             let shown: Vec<String> = code.lines().map(expand_tabs).collect();
+            let copy = draw
+                .copied
+                .as_ref()
+                .map(|copied| code_copy_button(code, copied, draw));
             div()
+                .relative()
                 .w_full()
                 .px(px(s.code_pad.0))
+                // Clear of the copy icon on the right.
+                .when(copy.is_some(), |d| d.pr(px(COPY_BUTTON + COPY_INSET * 2.)))
                 .py(px(s.code_pad.1))
                 .rounded(px(s.code_radius))
                 .bg(hsla(c.code_bg))
@@ -1511,6 +1605,7 @@ fn block(md: &Md, draw: &Draw) -> AnyElement {
                     let layout = styled.layout().clone();
                     selectable(draw, code, layout, styled.into_any_element())
                 })
+                .children(copy)
                 .into_any_element()
         }
         Md::Quote(inner) => div()
@@ -1738,6 +1833,31 @@ fn text_on(spans: &[Span], draw: &Draw, on_stripe: bool) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 2026-11-25 chores ("no copy icon to copy the command"): a chat code block's copy
+    /// takes its text as written (tabs kept, nothing added).
+    #[test]
+    fn chat_code_copies_its_raw_text() {
+        assert_eq!(code_copy_text("a\tb\n"), "a\tb\n");
+        assert_eq!(
+            code_copy_text("docker compose build api\ndocker compose up -d api"),
+            "docker compose build api\ndocker compose up -d api"
+        );
+    }
+
+    /// Its ✓ shows on the block copied, for `COPIED_FOR`, then the copy icon is back.
+    #[test]
+    fn copied_shows_for_its_block_for_a_while() {
+        let t = std::time::Instant::now();
+        let key = code_key("ls");
+        assert!(shows_copied(Some((key, t)), key, t));
+        assert!(
+            !shows_copied(Some((key, t)), code_key("pwd"), t),
+            "another block"
+        );
+        assert!(!shows_copied(Some((key, t)), key, t + COPIED_FOR), "over");
+        assert!(!shows_copied(None, key, t));
+    }
 
     #[test]
     fn a_links_tooltip_is_its_address() {
@@ -2004,6 +2124,7 @@ mod tests {
             sizes: Sizes::CHAT,
             reader: None,
             select: None,
+            copied: None,
         };
         let blocks = crate::agent_markdown::parse(
             "See [the docs](https://e.x) and [more](https://f.x).\n\n- [a](https://g.x)",

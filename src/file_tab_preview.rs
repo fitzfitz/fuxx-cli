@@ -401,6 +401,7 @@ impl FileTab {
             // Batch 3, wave 3: its text selectable (Copy works) and its links found by a
             // right-click.
             select: Some((select.clone(), hsla(theme.ui().selection))),
+            copied: None,
             reader: Some(md_preview::ReaderDraw {
                 doc: read,
                 measure: crate::ui_tokens::reader::MEASURE,

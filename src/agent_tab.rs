@@ -1554,6 +1554,8 @@ pub struct AgentTab {
     /// The shown view's turn ledger (the folder tab's words after the status, and its
     /// popover); None: no live turn.
     pub(crate) ledger: Option<crate::agent_ledger::Ledger>,
+    /// The chat code block copied last and when (its ✓, the 2026-11-25 chores).
+    code_copied: Rc<Cell<Option<(u64, Instant)>>>,
     /// The ledger's kept sums (`agent_ledger::LedgerCache`).
     ledgers: crate::agent_ledger::LedgerCache,
     /// The "Stopped" notice that offers to rewind your latest message (`rewind::stopped_link`),
@@ -2295,6 +2297,7 @@ impl AgentTab {
             tracks_all: HashSet::new(),
             files_all: HashSet::new(),
             ledger: None,
+            code_copied: Rc::default(),
             ledgers: Default::default(),
             stopped: None,
             rows_held: false,
@@ -6347,6 +6350,7 @@ impl Render for AgentTab {
                 sizes: md_preview::Sizes::CHAT,
                 reader: None,
                 select: Some((select.clone(), hsla(theme.ui().selection))),
+                copied: Some(self.code_copied.clone()),
             },
             diff: diff_row_colours(&theme, theme.background),
             view: view.clone(),
