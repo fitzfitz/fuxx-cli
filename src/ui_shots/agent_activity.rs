@@ -752,6 +752,14 @@ fn plan_scene(name: &'static str, dims: (f32, f32), long: bool) {
         );
         let plan = cx.read(|cx| tab.read(cx).plan.clone());
         assert_eq!(crate::plan_progress::counts(&plan), (4, 6), "{n}");
+        // Over the chat, its right edge on the tab's (the box's), not hanging past it (the
+        // 2026-11-25 chores: "should be left aligned").
+        let _ = frame_fresh(cx, window);
+        let popover = part(cx, tab, n, "plan-popover");
+        assert!(
+            popover.right() <= outer.right() + px(1.) && popover.right() > outer.right() - px(24.),
+            "{n}: the popover ends at the box's right edge ({popover:?} vs {outer:?})"
+        );
     });
 }
 

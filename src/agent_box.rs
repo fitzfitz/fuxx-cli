@@ -1257,7 +1257,7 @@ impl AgentTab {
                     Some(panel),
                     None,
                     CLOCK_WIDTH,
-                    centred_dx(BUTTON, CLOCK_WIDTH),
+                    menus::MenuPlace::Left(centred_dx(BUTTON, CLOCK_WIDTH)),
                     cx,
                 ))
             })

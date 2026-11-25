@@ -10,6 +10,15 @@ use gpui::{Animation, AnimationExt, FontWeight};
 /// The turn ledger's popover's list, at most this tall (it scrolls past it).
 const LEDGER_LIST_MAX: f32 = 360.0;
 
+/// Where a menu's panel hangs against its anchor (the chip it is a child of): its left edge
+/// `dx` from the anchor's left, or its right edge `dx` from the anchor's right (positive: further
+/// right).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum MenuPlace {
+    Left(f32),
+    Right(f32),
+}
+
 impl AgentTab {
     /// The open menu's panel (`content` in it), hung above its chip (a child of it) and opening
     /// upward, in the tab menu's look; `side` (This Computer's folders) beside it. A click
@@ -21,19 +30,23 @@ impl AgentTab {
         width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.menu_frame_at(content, side, width, 0., cx)
+        self.menu_frame_at(content, side, width, MenuPlace::Left(0.), cx)
     }
 
-    /// `menu_frame`, its left edge `dx` from its anchor's (negative: further left); the
-    /// window's edge still pushes it back in.
+    /// `menu_frame`, placed by `place` against its anchor; the window's edge still pushes it
+    /// back in.
     pub(super) fn menu_frame_at(
         &self,
         content: Option<AnyElement>,
         side: Option<AnyElement>,
         width: f32,
-        dx: f32,
+        place: MenuPlace,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (corner, dx) = match place {
+            MenuPlace::Left(dx) => (Anchor::BottomLeft, dx),
+            MenuPlace::Right(dx) => (Anchor::BottomRight, dx),
+        };
         let ui = cx.global::<Appearance>().theme.ui();
         // No content: only the panel beside it (the usage button's).
         let dark = cx.global::<Appearance>().theme.is_dark();
@@ -53,10 +66,13 @@ impl AgentTab {
         div()
             .absolute()
             .top_0()
-            .left_0()
+            .map(|d| match place {
+                MenuPlace::Left(_) => d.left_0(),
+                MenuPlace::Right(_) => d.right_0(),
+            })
             .child(deferred(
                 anchored()
-                    .anchor(Anchor::BottomLeft)
+                    .anchor(corner)
                     .offset(point(px(dx), px(-MENU_GAP)))
                     .snap_to_window_with_margin(px(MENU_EDGE))
                     .child(
@@ -551,7 +567,19 @@ impl AgentTab {
                 d.child(heading("Subagents".into())).children(lanes)
             })
             .into_any_element();
-        self.menu_frame(Some(content), None, crate::agent_box::PLAN_WIDTH, cx)
+        let content = self
+            .marked("plan-popover", div().child(content))
+            .into_any_element();
+        // Over the chat, its right edge on the tab's, the box's edge (the 2026-11-25 chores:
+        // "should be left aligned"; the tab sits flush right, so hung from its left it would
+        // hang past the box).
+        self.menu_frame_at(
+            Some(content),
+            None,
+            crate::agent_box::PLAN_WIDTH,
+            MenuPlace::Right(crate::card_view::TAB_PAD + crate::card_view::EDGE),
+            cx,
+        )
     }
 
     /// The clock's cost and context panel: as the gauge's (`usage_hovered`).
