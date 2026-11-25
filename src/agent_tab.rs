@@ -1568,6 +1568,13 @@ pub struct AgentTab {
     pub(crate) ledger: Option<crate::agent_ledger::Ledger>,
     /// The chat code block copied last and when (its ✓, the 2026-11-25 chores).
     code_copied: md_preview::ChatCopied,
+    /// What git and the disk say of the turn's files (the 2026-11-25 chores), for the paths
+    /// last asked about; read off the UI thread when the ledger's files change.
+    pub(crate) ledger_facts: std::collections::HashMap<PathBuf, crate::changed_files::FileFacts>,
+    ledger_facts_for: Vec<PathBuf>,
+    ledger_facts_gen: u64,
+    /// The ledger popover's folded folders (their header's click).
+    pub(crate) ledger_folded: std::collections::HashSet<String>,
     /// The ledger's kept sums (`agent_ledger::LedgerCache`).
     ledgers: crate::agent_ledger::LedgerCache,
     /// The "Stopped" notice that offers to rewind your latest message (`rewind::stopped_link`),
@@ -2310,6 +2317,10 @@ impl AgentTab {
             files_all: HashSet::new(),
             ledger: None,
             code_copied: Rc::default(),
+            ledger_facts: Default::default(),
+            ledger_facts_for: Vec::new(),
+            ledger_facts_gen: 0,
+            ledger_folded: Default::default(),
             ledgers: Default::default(),
             stopped: None,
             rows_held: false,
@@ -5895,6 +5906,40 @@ impl AgentTab {
         )
     }
 
+    /// What git and the disk say of the turn's files, read again off the UI thread when the
+    /// ledger's paths (changed, scripted, read) differ from those last asked about.
+    fn refresh_ledger_facts(&mut self, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = self.ledger.as_ref().map_or_else(Vec::new, |l| {
+            l.changed
+                .iter()
+                .map(|c| c.path.clone())
+                .chain(l.scripted.iter().cloned())
+                .chain(l.read.iter().cloned())
+                .collect()
+        });
+        if paths == self.ledger_facts_for {
+            return;
+        }
+        self.ledger_facts_for = paths.clone();
+        self.ledger_facts_gen += 1;
+        let generation = self.ledger_facts_gen;
+        let root = self.start.cwd.clone();
+        let read = cx
+            .background_executor()
+            .spawn(async move { crate::changed_files::read_facts(&root, &paths) });
+        cx.spawn(async move |this, cx| {
+            let facts = read.await;
+            this.update(cx, |this, cx| {
+                if generation == this.ledger_facts_gen {
+                    this.ledger_facts = facts;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// The plan's tasks again, when the turn moved on (`plan_stale`): the agent's todo list, else
     /// its checklist file, read with the branch's latest commits off the UI thread.
     fn refresh_plan(&mut self, cx: &mut Context<Self>) {
@@ -6308,6 +6353,7 @@ impl AgentTab {
 impl Render for AgentTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_plan(cx);
+        self.refresh_ledger_facts(cx);
         let appearance = cx.global::<Appearance>();
         let theme = appearance.theme;
         let mono = appearance.font.family.clone();

@@ -50,6 +50,7 @@ mod browser_tab;
 mod browser_url;
 mod card_view;
 mod caret_blink;
+mod changed_files;
 mod changes_panel;
 mod chat_select;
 mod chrome_cache;
