@@ -1423,3 +1423,66 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   - **Your on-screen check:** in a build with this, scroll the same long agent chat, a long terminal and a big file
     tab; it should keep up. (The terminal and file-tab lag weren't profiled yet: if either still lags, it's another
     cause.)
+- **The 2026-11-25 chore batch** (13 chores, your words with each; branch `chore/batch-2026-11-25`, not merged or
+  pushed yet; design `docs/superpowers/specs/2026-11-25-chore-batch-design.md`, plan
+  `docs/superpowers/plans/2026-11-25-chore-batch.md`, one task per chore):
+  1. **Commit box: a 2-line text area** ("need to be textarea, max 2 lines. buttons, lightgreyed them out when
+     disabled"): the field is a bare `Composer` capped at 2 rows (`set_max_rows`), ↵ commits, ⇧↵ a new line, ⌘↵
+     still commits. ✦ and Commit take an off ink halfway to the card's fill when they can't act (the theme's faint
+     ink is its dim one, so they used to look on). It types in the terminal's mono font now (`3d5c7dc`).
+  2. **The clock panel centred** over its icon ("make it appear in the middle"): `menu_frame_at` (`5277a7b`).
+  3. **Your message's hover icons stay** ("icons disappear when I hover them"): the icon strip blocks the mouse,
+     which makes the row behind read as not hovered (GPUI's `BlockMouseExceptScroll`), so it faded out under the
+     pointer; its own hover keeps it shown (`7182cf7`).
+  4. **The plan tab flush right**, mirroring the folder tab (your picture): its step mirrored on its left
+     (`tab-step-*-left.svg`), the box's top-right corner square under it (`44ab245`).
+  5. **A click elsewhere clears a track column's cursor** ("the 'active' border is not removed"), unless its call's
+     detail is open; the keyboard goes back to the box only if the tracks still held it (`ff9ab09`).
+  6. **The plan popover over the chat** ("should be left aligned"): it opens leftward, its right edge on the tab's
+     (the box's edge). Built so because, with the tab flush right, a popover hung from the tab's left would hang
+     280 pt past the box. If you meant its left edge on the tab's left, it's a one-line swap (`b59964e`).
+  7. **Your bubble wraps in a narrow pane** ("user's chat not as responsive"): the bubble could not shrink below
+     its text's one-line width, so it ran off the left; `min_w(0)` (`b0566de`).
+  8. **A copy icon on the chat's code blocks** ("no copy icon to copy the command"): top-right, dim, ✓ for 1.5 s
+     (`34db382`, `d423609`).
+  9. **Folder picker, mockup A**: the name over its place, ✓ and the accent tile on the current one, ⌘1–⌘8 on
+     Recent's rows (Recent keeps 8), ↑/↓ and ↵, icons on the actions, a key-hint footer, Home's house (`bd4081c`).
+  10. **Changed files, mockup A**: a total, files under foldable folders, A/M/D and +/− from git
+      (`changed_files.rs`, read off the UI thread). Your duplicates were paths a Python script only named
+      (`icons/shapes/…` in `icons.rs`'s text) and a folder; only real files show now (`10eed67`).
+  11. **The Plan card** ("We cannot read it… let me see the mockup"; refined on the fuxx-look mockup): Claude's
+      `ExitPlanMode` request becomes a card with the plan rendered, folded past 12 lines (Show the whole plan /
+      Show less, outline chips for long plans), its file ↗, and Approve · auto-accept edits ⏎ (sends Claude's
+      `setMode acceptEdits` permission update), Approve · ask per edit, Keep planning… (your note as the reply).
+      Typing a note hides the buttons; Esc brings them back; a slim answer bar is pinned over the box while the
+      card's buttons are out of view; answered, it folds to one line (`82e75b1`).
+  12. **No ◐ before work has started** (your pick): a task shows in progress only after a task is done, a box is
+      ticked, or the agent's todo says so (`5bd68a3`).
+  13. **The branch chip keeps up** ("branch on outer chatbox is not align"): read again after each tool call, at a
+      turn's end and when fuxx comes back to the front, at most every 500 ms (`2d75124`).
+  - **Review** (one whole-branch review): 5 Important and 7 Minor. Fixed: Esc while typing a plan note stopped
+    Claude; a leftover note hid the next plan's buttons; a plan's buttons answered the oldest permission, not their
+    own; read files showed an M badge; the pinned bar read a stale footer place; a long note ran past its card;
+    folders still listed as changed (`2982506`). Deferred minors: one fold set shared by the popover's sections;
+    ↑/↓ in the picker doesn't scroll the lit row into view; the ledger's git read runs as Read paths grow, popover
+    closed; `plan_title` can take a `#` line from a code fence; two doc comments on the wrong item.
+  - **Checks.** Tests 2980 green; no new clippy warnings in the files touched; `cargo fmt --check` clean; the scenes
+    these touch 366 passed, 1 failed (`agent-tab-wide`, display-dependent, as on master); new scenes
+    `agent-tab-plan`, `agent-tab-plan-long`, `agent-rewind-hover-stays`, `agent-you-narrow`.
+  - **Not built, asked:** the plan tab hid this batch's tasks mid-build, because the last `.md` a turn writes is
+    taken as the plan (here the progress ledger, which has no tasks). Fix proposed as chore 14 (skip `.md` files
+    with no tasks; keep an unfinished plan across turns): waiting for your word.
+  - **Checklist for you** (GUI only, in a build with this):
+    - [ ] the commit box: wraps to 2 rows then scrolls; ✦ and Commit light grey when they can't act
+    - [ ] the clock panel opens centred over its icon
+    - [ ] your message's hover icons stay while the pointer is on them
+    - [ ] the plan tab sits flush with the box's right edge, its curve on its left
+    - [ ] a click elsewhere clears a track column's border
+    - [ ] the plan popover opens over the chat, right edge on its tab (or say you wanted it the other way)
+    - [ ] your bubble wraps in a narrow pane
+    - [ ] a chat code block's copy icon copies, then shows ✓
+    - [ ] the folder picker: name over place, ⌘1–⌘8, ↑/↓ and ↵
+    - [ ] the changed-files popover: groups, A/M/D, +/−, ⌥-click opens the file, no duplicates or folders
+    - [ ] a real Plan Mode run in each of the three answers, a long plan's bar, and Esc while typing a note
+    - [ ] the plan tab shows no ◐ before work starts
+    - [ ] the branch chip follows a `git switch` by the agent and in another terminal
