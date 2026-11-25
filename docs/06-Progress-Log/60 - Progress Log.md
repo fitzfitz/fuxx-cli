@@ -14,8 +14,8 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Latest (2026-11-25):** **The 2026-11-25 chore batch** (14 chores) built and reviewed on `chore/batch-2026-11-25`,
-  not merged or pushed; waiting for your on-screen check (note 93). Before it the same day: v0.13.6 (scroll lag).
+- **Latest (2026-11-25):** **v0.13.7 released** (run 45598556984): the 2026-11-25 chore batch (14 chores, reviewed;
+  note 93). Waiting for your on-screen check (note 93's 14 items). Before it the same day: v0.13.6 (scroll lag).
 - **Before (2026-11-25):** **v0.13.5 released** (run 45538971154): the chore batch (twelve chores and their review
   fixes, note 93) and v0.13.4's launch-crash fix (v0.13.4 itself never published); fuxx-completes 0.1.1 (the gutter
   list) released on all four channels. Waiting for your on-screen check (note 93's ten items).
@@ -43,6 +43,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-25 — v0.13.7 released
+
+- **What:** your words: "merge and release it", then "yes, scrub then release". The pre-push grep found a work
+  folder name and two work branch names in three files of the 19 unpushed commits; they were rewritten
+  (the folder and branch names replaced; tests 2982 green after), the branch fast-forwarded into master, and
+  version 0.13.7 (`0bdef43`), tag `v0.13.7`, Release run 45598556984: test, both slices and the release job green;
+  "fuxx 0.13.7" is the latest release with `fuxx-0.13.7.zip` (32 MB).
+- **Next task:** your on-screen check (note 93's 14 items).
 
 ### 2026-11-25 — The 2026-11-25 chore batch (14 chores), built and reviewed
 
