@@ -102,6 +102,30 @@ pub fn from_checklist(md: &str) -> Vec<PlanTask> {
         .collect()
 }
 
+/// Which of `files` (each: written by the turn, its text), in order, is the plan: the first
+/// with at least `MIN_TASKS` tasks, a file only read needing `### Task N` headings (not a README).
+/// Chore 14 of the 2026-11-25 batch: a note the turn wrote no longer hides the plan.
+pub fn first_plan(files: &[(bool, &str)]) -> Option<usize> {
+    files.iter().position(|(written, text)| {
+        (*written || has_task_headings(text)) && from_checklist(text).len() >= MIN_TASKS
+    })
+}
+
+/// The files to look for the plan in: the turn's own (`turn`, newest first), then the plan
+/// shown already (`kept`), so a turn that never touches it keeps it; each path once.
+pub fn plan_candidates(
+    turn: &[(std::path::PathBuf, bool)],
+    kept: Option<&(std::path::PathBuf, bool)>,
+) -> Vec<(std::path::PathBuf, bool)> {
+    let mut out = turn.to_vec();
+    if let Some(kept) = kept
+        && !out.iter().any(|(p, _)| *p == kept.0)
+    {
+        out.push(kept.clone());
+    }
+    out
+}
+
 /// Whether commit subject `subject` names task number `n` ("Task 3:", "Task 3 ", "task 3").
 fn names_task(subject: &str, n: usize) -> bool {
     let lower = subject.to_lowercase();
@@ -195,6 +219,7 @@ pub fn shows(tasks: &[PlanTask]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn todo(text: &str, state: TodoState) -> TodoItem {
         TodoItem {
@@ -316,6 +341,45 @@ mod tests {
         let tasks =
             from_checklist("### Task 1: A\n- [x] x\n- [ ] y\n- [ ] z\n### Task 2: B\n- [ ] x\n");
         assert_eq!(tasks[0].state, TaskState::Building);
+    }
+
+    /// Chore 14 (the 2026-11-25 batch: the tab vanished when a turn wrote a progress note): the
+    /// first file that is a plan wins; a written `.md` with no tasks, or a read one with no
+    /// `### Task N` headings, is passed over.
+    #[test]
+    fn the_first_real_plan_wins() {
+        let note = "# SDD ledger\nTask 1: complete\n";
+        let plan = "### Task 1: A\n- [ ] x\n### Task 2: B\n- [ ] y\n";
+        let readme = "# Readme\n- [ ] a\n- [ ] b\n";
+        let checklist = "- [ ] a\n- [x] b\n";
+        assert_eq!(first_plan(&[(true, note), (false, plan)]), Some(1));
+        assert_eq!(first_plan(&[(false, readme), (false, plan)]), Some(1));
+        assert_eq!(first_plan(&[(true, checklist), (false, plan)]), Some(0));
+        assert_eq!(first_plan(&[(true, note), (false, readme)]), None);
+    }
+
+    /// Chore 14: the turn's own files first (newest first), then the plan already shown, so a
+    /// turn that never touches it keeps it.
+    #[test]
+    fn the_shown_plan_is_the_last_resort() {
+        let p = |s: &str| PathBuf::from(s);
+        let turn = [(p("/w/note.md"), true), (p("/w/plan.md"), false)];
+        let kept = (p("/w/old-plan.md"), true);
+        assert_eq!(
+            plan_candidates(&turn, Some(&kept)),
+            [
+                (p("/w/note.md"), true),
+                (p("/w/plan.md"), false),
+                kept.clone()
+            ]
+        );
+        let same = (p("/w/plan.md"), true);
+        assert_eq!(
+            plan_candidates(&turn, Some(&same)),
+            [(p("/w/note.md"), true), (p("/w/plan.md"), false)],
+            "each once"
+        );
+        assert_eq!(plan_candidates(&[], Some(&kept)), [kept]);
     }
 
     #[test]

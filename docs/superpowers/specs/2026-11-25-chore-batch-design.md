@@ -104,6 +104,10 @@ Each chore has one sensible way; the two real choices were made on the mockups:
     end, and when fuxx's window comes back to the front (my call: covers a switch made outside
     fuxx without polling).
 
+14. **The plan tab keeps its plan** (added 2026-11-25 after the build, "go ahead"): a turn's `.md` files are tried
+    newest first and the first that is a plan wins (a note with no tasks is passed over); none, the plan already
+    shown stays, until its tasks are done.
+
 The plan has one task per chore (your pick, 2026-11-25), so the plan tab counts chores, plus the
 last task for the docs, screenshots and review. Each commit names its task (`Chore (Task N): …`)
 so the tab ticks it off.

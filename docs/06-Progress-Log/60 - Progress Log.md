@@ -14,7 +14,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Latest (2026-11-25):** **The 2026-11-25 chore batch** (13 chores) built and reviewed on `chore/batch-2026-11-25`,
+- **Latest (2026-11-25):** **The 2026-11-25 chore batch** (14 chores) built and reviewed on `chore/batch-2026-11-25`,
   not merged or pushed; waiting for your on-screen check (note 93). Before it the same day: v0.13.6 (scroll lag).
 - **Before (2026-11-25):** **v0.13.5 released** (run 45538971154): the chore batch (twelve chores and their review
   fixes, note 93) and v0.13.4's launch-crash fix (v0.13.4 itself never published); fuxx-completes 0.1.1 (the gutter
@@ -44,7 +44,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
-### 2026-11-25 — The 2026-11-25 chore batch (13 chores), built and reviewed
+### 2026-11-25 — The 2026-11-25 chore batch (14 chores), built and reviewed
 
 - **Did:** brainstormed the batch with mockups (you picked A for the folder picker, the changed files and the plan
   card, then refined the plan card on a fuxx-look mockup), wrote the design and a plan with one task per chore, and
@@ -55,8 +55,10 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 - **Learned:** in GPUI an element that blocks the mouse makes everything behind it read as not hovered, so a
   group-hover child that blocks the mouse hides itself; and a flex item's minimum width defaults to its text's
   one-line width, so a bubble needs `min_w(0)` to wrap in a narrow column.
-- **Blocked:** nothing. Chore 14 (the plan tab hiding a plan when a turn writes another `.md`) waits for your word.
-- **Next task:** your on-screen check (note 93's 13 items); then merge and release on your word.
+- **Then:** chore 14 on your word: the plan tab no longer loses its plan when a turn writes another `.md` (the
+  first file that is a plan wins; else the one shown stays).
+- **Blocked:** nothing.
+- **Next task:** your on-screen check (note 93's 14 items); then merge and release on your word.
 
 ### 2026-11-25 — v0.13.6 released
 

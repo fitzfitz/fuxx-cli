@@ -1423,7 +1423,7 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   - **Your on-screen check:** in a build with this, scroll the same long agent chat, a long terminal and a big file
     tab; it should keep up. (The terminal and file-tab lag weren't profiled yet: if either still lags, it's another
     cause.)
-- **The 2026-11-25 chore batch** (13 chores, your words with each; branch `chore/batch-2026-11-25`, not merged or
+- **The 2026-11-25 chore batch** (14 chores, your words with each; branch `chore/batch-2026-11-25`, not merged or
   pushed yet; design `docs/superpowers/specs/2026-11-25-chore-batch-design.md`, plan
   `docs/superpowers/plans/2026-11-25-chore-batch.md`, one task per chore):
   1. **Commit box: a 2-line text area** ("need to be textarea, max 2 lines. buttons, lightgreyed them out when
@@ -1469,9 +1469,11 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   - **Checks.** Tests 2980 green; no new clippy warnings in the files touched; `cargo fmt --check` clean; the scenes
     these touch 366 passed, 1 failed (`agent-tab-wide`, display-dependent, as on master); new scenes
     `agent-tab-plan`, `agent-tab-plan-long`, `agent-rewind-hover-stays`, `agent-you-narrow`.
-  - **Not built, asked:** the plan tab hid this batch's tasks mid-build, because the last `.md` a turn writes is
-    taken as the plan (here the progress ledger, which has no tasks). Fix proposed as chore 14 (skip `.md` files
-    with no tasks; keep an unfinished plan across turns): waiting for your word.
+  14. **The plan tab keeps its plan** (added after the review, your word "go ahead"): it hid this batch's tasks
+      mid-build, because the last `.md` a turn wrote was taken as the plan (the progress ledger, no tasks). Now the
+      turn's `.md` files are tried newest first (written, then read) and the first that is a plan wins
+      (`first_plan`: 2+ tasks; a file only read needs `### Task N` headings); none, the plan shown already stays
+      (`plan_candidates`), until its tasks are done.
   - **Checklist for you** (GUI only, in a build with this):
     - [ ] the commit box: wraps to 2 rows then scrolls; ✦ and Commit light grey when they can't act
     - [ ] the clock panel opens centred over its icon
@@ -1486,3 +1488,4 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     - [ ] a real Plan Mode run in each of the three answers, a long plan's bar, and Esc while typing a note
     - [ ] the plan tab shows no ◐ before work starts
     - [ ] the branch chip follows a `git switch` by the agent and in another terminal
+    - [ ] the plan tab keeps a plan's tasks while the agent writes other `.md` notes, and across turns

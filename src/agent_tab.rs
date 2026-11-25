@@ -1650,6 +1650,9 @@ pub struct AgentTab {
     /// The file, and whether the turn wrote it (a file only read counts only as a plan with
     /// `### Task N` headings).
     plan_file: Option<(PathBuf, bool)>,
+    /// The `.md` files the turn wrote or read, newest first (written before read): where the
+    /// plan is looked for before `plan_file`, the one shown (chore 14 of the 2026-11-25 batch).
+    plan_turn_files: Vec<(PathBuf, bool)>,
     plan_stale: bool,
     /// A finished plan, hidden after your next message until its list changes.
     plan_done: Option<Vec<crate::plan_progress::PlanTask>>,
@@ -2387,6 +2390,7 @@ impl AgentTab {
             clock_hover: Default::default(),
             plan: Vec::new(),
             plan_file: None,
+            plan_turn_files: Vec::new(),
             plan_stale: false,
             plan_done: None,
             plan_gen: 0,
@@ -3476,11 +3480,8 @@ impl AgentTab {
         ) {
             // A checklist the turn wrote or read is the plan (newest first); the agent's own
             // todo list wins.
-            if let Some(file) = ledger
-                .as_ref()
-                .and_then(|l| plan_file_of(l, &self.start.cwd))
-            {
-                self.plan_file = Some(file);
+            if let Some(l) = ledger.as_ref() {
+                self.plan_turn_files = plan_files_of(l, &self.start.cwd);
             }
             self.plan_stale = true;
             self.ledger = ledger;
@@ -6069,8 +6070,10 @@ impl AgentTab {
         }
         self.plan_stale = false;
         let todos = self.conversation.todos().map(<[_]>::to_vec);
-        let file = self.plan_file.clone();
-        if todos.is_none() && file.is_none() {
+        // The turn's files, then the plan shown (chore 14 of the 2026-11-25 batch).
+        let files =
+            crate::plan_progress::plan_candidates(&self.plan_turn_files, self.plan_file.as_ref());
+        if todos.is_none() && files.is_empty() {
             return;
         }
         self.plan_gen += 1;
@@ -6082,13 +6085,19 @@ impl AgentTab {
             if !from_file {
                 return None;
             }
-            let (path, written) = file?;
-            let text = std::fs::read_to_string(&path).ok()?;
+            // The first file that is a plan (`first_plan`): a note with no tasks is passed over.
+            let texts: Vec<(PathBuf, bool, String)> = files
+                .into_iter()
+                .filter_map(|(p, w)| Some((p.clone(), w, std::fs::read_to_string(&p).ok()?)))
+                .collect();
+            let pick = crate::plan_progress::first_plan(
+                &texts
+                    .iter()
+                    .map(|(_, w, t)| (*w, t.as_str()))
+                    .collect::<Vec<_>>(),
+            )?;
+            let (path, written, text) = texts.into_iter().nth(pick)?;
             let headed = has_task_headings(&text);
-            // A file only read is a plan only with `### Task N` headings (not a README).
-            if !written && !headed {
-                return None;
-            }
             // Commits name the tasks of a headed plan only, and only those made since it was
             // first there.
             let commits = if headed {
@@ -6096,7 +6105,7 @@ impl AgentTab {
             } else {
                 Vec::new()
             };
-            Some((text, commits))
+            Some((text, commits, (path, written)))
         });
         cx.spawn(async move |this, cx| {
             let read = read.await;
@@ -6107,7 +6116,9 @@ impl AgentTab {
                 }
                 let tasks = match (&todos, read) {
                     (Some(list), _) => from_todos(list),
-                    (None, Some((md, commits))) => {
+                    (None, Some((md, commits, file))) => {
+                        // The plan shown from now on, until a turn's own file is one.
+                        this.plan_file = Some(file);
                         let mut tasks = from_checklist(&md);
                         match_commits(&mut tasks, &commits);
                         tasks
@@ -6776,34 +6787,26 @@ impl Render for AgentTab {
     }
 }
 
-/// The checklist file a turn worked from, and whether it wrote it: the last Markdown file it
-/// changed, else the last it read (the plan tab's source when the agent keeps no todo list).
-fn plan_file_of(ledger: &crate::agent_ledger::Ledger, cwd: &Path) -> Option<(PathBuf, bool)> {
+/// The `.md` files the turn wrote (newest first), then those it only read (newest first),
+/// each once, as absolute paths; `true`: written.
+fn plan_files_of(ledger: &crate::agent_ledger::Ledger, cwd: &Path) -> Vec<(PathBuf, bool)> {
     let md = |p: &Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md"));
-    let written = ledger
-        .changed
-        .iter()
-        .map(|c| c.path.as_path())
-        .rev()
-        .find(|p| md(p));
-    let (path, wrote) = match written {
-        Some(p) => (p, true),
-        None => (
-            ledger
-                .read
-                .iter()
-                .map(PathBuf::as_path)
-                .rev()
-                .find(|p| md(p))?,
-            false,
-        ),
+    let abs = |p: &Path| {
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            cwd.join(p)
+        }
     };
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cwd.join(path)
-    };
-    Some((path, wrote))
+    let written = ledger.changed.iter().rev().map(|c| (abs(&c.path), true));
+    let read = ledger.read.iter().rev().map(|p| (abs(p), false));
+    let mut out: Vec<(PathBuf, bool)> = Vec::new();
+    for (p, w) in written.chain(read) {
+        if md(&p) && !out.iter().any(|(q, _)| *q == p) {
+            out.push((p, w));
+        }
+    }
+    out
 }
 
 /// When a plan file was first there, in seconds since the epoch: the commit that added it, else
