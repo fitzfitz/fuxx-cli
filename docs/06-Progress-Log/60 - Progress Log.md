@@ -14,9 +14,9 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Current status snapshot
 
-- **Latest (2026-11-24):** **the chore batch** (twelve chores, note 93) built on `chore/batch-2026-11-24`, reviewed,
-  merged to master, **not pushed**; waiting for your on-screen check (note 93's ten items) and your word on pushing,
-  on committing fuxx-completes' gutter list and on a release.
+- **Latest (2026-11-25):** **v0.13.5 released** (run 45538971154): the chore batch (twelve chores and their review
+  fixes, note 93) and v0.13.4's launch-crash fix (v0.13.4 itself never published); fuxx-completes 0.1.1 (the gutter
+  list) released on all four channels. Waiting for your on-screen check (note 93's ten items).
 - **Before (2026-11-24, earlier):** **v0.13.3 released** (run 45367550134): the long-chat performance chore.
 - **Before (2026-11-24):** **v0.13.2 released** (run 45352171051): the paste chore. Before it the same day: v0.13.1 (the agent activity view and chores) and v0.13.0. Waiting for your on-screen checks (note 93, "Chores after M11ar").
 - **Before (2026-11-21):** **M11ap — Live usage** 🟨 built on master, not pushed (note 91). Before it, the agent tab redesign chores 🟨 built, reviewed and **pushed** (`19ef2bb`), waiting for your on-screen check (note 88, 14 items).
@@ -41,6 +41,14 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 ---
 
 ## Entries
+
+### 2026-11-25 — v0.13.5 released
+
+- **What:** your words: "release fuxx". Version 0.13.5 (`bc7be97`), tag `v0.13.5`, Release run 45538971154: test,
+  both slices and the release job green; "fuxx 0.13.5" is the latest release with `fuxx-0.13.5.zip` (32 MB). It
+  carries the 2026-11-24 chore batch and its four minors (note 93), and v0.13.4's fix (a bare `localhost:` no longer
+  crashes fuxx on launch): v0.13.4 was tagged but its release job was cancelled, so it never published.
+- **Next task:** your on-screen check (note 93's ten items), now in the released app.
 
 ### 2026-11-25 — The chore batch's four minors
 
