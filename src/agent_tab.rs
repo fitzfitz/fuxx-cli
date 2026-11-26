@@ -5911,9 +5911,9 @@ impl AgentTab {
     ) -> Option<AnyElement> {
         use crate::agent_top::{PillMark, animating, ease_out_cubic, pill};
         let (status, stopping) = (self.shown_status(), self.stopping.is_some());
-        // One working mark (chore 17, your pick B): while the chat's status line shows, its
-        // spinner beside its words is the mark; the tab gets its own back when the line goes.
-        if (status == Status::Idle && !stopping) || self.status_line_shown() {
+        // One working mark (chore 17, your pick B; chore 31: also a live subagent's view): while
+        // the chat's mark shows, its spinner is the mark; the tab gets its own back when it goes.
+        if (status == Status::Idle && !stopping) || self.chat_mark_shown() {
             return None;
         }
         let clock_now = Instant::now();
@@ -6041,6 +6041,16 @@ impl AgentTab {
             now: Instant::now(),
         });
         Some((main, self.ledger.as_ref().map(chips).unwrap_or_default()))
+    }
+
+    /// Whether the chat shows the running mark (chore 31): Main's status line, or a live
+    /// subagent's own view. While it does, it is the only mark that spins: the folder tab has
+    /// none (chore 17), the relay chip shows the still 🤖, the subagents tab only its count.
+    pub(crate) fn chat_mark_shown(&self) -> bool {
+        crate::agent_subagents::chat_mark_shown(
+            self.status_line_shown(),
+            self.shown_lane().map(|l| l.status.live()),
+        )
     }
 
     /// Whether the chat's status line shows: in Main, while a turn works or waits on you, and

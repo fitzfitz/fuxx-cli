@@ -40,18 +40,21 @@ impl AgentTab {
             Tone::Done => c.tool_ok,
             Tone::Failed => c.failed_panel,
         };
-        Some(self.corner_pill(
-            "agent-shells-tab",
-            "shells-tab",
-            crate::icons::Icon::Terminal,
-            tab_words(shells),
-            ink,
-            BoxMenu::Shells,
-            "Background shells",
-            |this, _, cx| this.toggle_shells(cx),
-            c,
-            cx,
-        ))
+        Some(
+            self.corner_pill(
+                "agent-shells-tab",
+                "shells-tab",
+                crate::icons::Icon::Terminal,
+                tab_words(shells),
+                ink,
+                BoxMenu::Shells,
+                "Background shells",
+                |this, _, cx| this.toggle_shells(cx),
+                c,
+                cx,
+            )
+            .into_any_element(),
+        )
     }
 
     /// Whether a background shell still runs (its time turns each second).

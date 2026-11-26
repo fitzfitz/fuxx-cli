@@ -35,18 +35,37 @@ impl AgentTab {
             TabTone::Done => c.tool_ok,
             TabTone::NeedsYou => c.failed_panel,
         };
-        Some(self.corner_pill(
-            "agent-subagents-tab",
-            "subagents-tab",
-            crate::icons::Icon::Bot,
-            tab_words(lanes),
-            ink,
-            BoxMenu::Subagents,
-            "Subagents",
-            |this, _, cx| this.toggle_subagents(cx),
-            c,
-            cx,
-        ))
+        Some(
+            self.corner_pill(
+                "agent-subagents-tab",
+                "subagents-tab",
+                crate::icons::Icon::Bot,
+                tab_words(lanes),
+                ink,
+                BoxMenu::Subagents,
+                "Subagents",
+                |this, _, cx| this.toggle_subagents(cx),
+                c,
+                cx,
+            )
+            // Chore 31: it spins only while the chat shows no running mark of its own.
+            .when_some(self.tab_spinner(), |d, mark| d.child(mark))
+            .into_any_element(),
+        )
+    }
+
+    /// The subagents tab's spinner, a running subagent's arc (`tab_spins`), or none.
+    fn tab_spinner(&self) -> Option<AnyElement> {
+        let lanes = self.conversation.lanes();
+        if !crate::agent_subagents::tab_spins(lanes, self.chat_mark_shown()) {
+            return None;
+        }
+        let lane = lanes.iter().find(|l| l.status == LaneStatus::Working)?;
+        let mark = self.lane_marks.get(&lane.id)?.clone();
+        Some(
+            self.marked("subagents-tab-arc", div().flex_none().child(mark))
+                .into_any_element(),
+        )
     }
 
     /// The tab's click: the popover opens, or closes.

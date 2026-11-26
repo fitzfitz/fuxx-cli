@@ -11,6 +11,18 @@ pub enum TabTone {
     NeedsYou,
 }
 
+/// Whether the chat shows the running mark (chore 31: then it is the only one that spins):
+/// Main's status line (`status_line_shown`, chore 17), or a subagent's own view while it is live
+/// (`lane_live`: its header and rows say it).
+pub fn chat_mark_shown(status_line: bool, lane_live: Option<bool>) -> bool {
+    status_line || lane_live == Some(true)
+}
+
+/// Whether the tab spins beside its count: a subagent runs and the chat shows no running mark.
+pub fn tab_spins(lanes: &[Lane], chat_mark: bool) -> bool {
+    !chat_mark && lanes.iter().any(|l| l.status == LaneStatus::Working)
+}
+
 /// Finished (in any way) and all.
 pub fn counts(lanes: &[Lane]) -> (usize, usize) {
     let done = lanes.iter().filter(|l| !l.status.live()).count();
@@ -95,6 +107,25 @@ mod tests {
             controls: LaneControls::default(),
             runs: 1,
         }
+    }
+
+    /// Chore 31: one running mark at a time. The chat's (Main's status line, or a live
+    /// subagent's own view) is it while it shows; the tab spins only without it, and only while
+    /// one runs; the relay chip's mark stays still beside it.
+    #[test]
+    fn only_the_chat_mark_spins() {
+        assert!(chat_mark_shown(true, None), "Main's status line");
+        assert!(!chat_mark_shown(false, None));
+        assert!(chat_mark_shown(false, Some(true)), "a live subagent's view");
+        assert!(!chat_mark_shown(false, Some(false)), "a finished one's");
+        let running = [lane("a", LaneStatus::Working)];
+        assert!(!tab_spins(&running, true));
+        assert!(tab_spins(&running, false));
+        assert!(!tab_spins(&[lane("a", LaneStatus::Done)], false));
+        assert!(
+            !tab_spins(&[lane("a", LaneStatus::Waiting)], false),
+            "waits: red, still"
+        );
     }
 
     fn six() -> Vec<Lane> {

@@ -342,7 +342,23 @@ impl AgentTab {
             .rounded(px(crate::card_view::PILL_H / 2.))
             .bg(hsla(fill))
             .text_size(px(12.))
-            .child(self.lane_mark(lane, c))
+            // Chore 31: beside the chat's own running mark, a still 🤖 (it says where your
+            // message goes, not that work runs).
+            .child(if lane.status.live() && self.chat_mark_shown() {
+                mark_slot(
+                    self.marked(
+                        "relay-target-bot",
+                        div().child(crate::icons::icon(
+                            crate::icons::Icon::Bot,
+                            px(12.),
+                            hsla(c.relay_text),
+                        )),
+                    )
+                    .into_any_element(),
+                )
+            } else {
+                self.lane_mark(lane, c)
+            })
             .child(words)
             .tooltip(move |_, cx| {
                 cx.new(|_| crate::sidebar_toggle::Tip(tip.clone().into()))

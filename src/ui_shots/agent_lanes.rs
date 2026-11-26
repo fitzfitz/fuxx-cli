@@ -1009,6 +1009,21 @@ pub(super) fn agent_lanes_relay() {
             );
             let _ = super::frame_fresh(cx, window);
             let _ = part(cx, tab, n, "relay-target");
+            // Chore 31: the running subagent's own view shows its running mark, so the relay
+            // chip shows the still 🤖, the folder tab no mark, the subagents tab only its count.
+            cx.read(|cx| {
+                tab.read(cx)
+                    .shot_forget(&["relay-target-bot", "status", "subagents-tab-arc"])
+            });
+            let _ = super::frame_fresh(cx, window);
+            let now =
+                |cx: &VisualTestAppContext, p: &str| cx.read(|cx| tab.read(cx).shot_part_now(p));
+            assert!(
+                now(cx, "relay-target-bot"),
+                "{n}: the relay chip's still 🤖"
+            );
+            assert!(!now(cx, "status"), "{n}: no folder-tab mark");
+            assert!(!now(cx, "subagents-tab-arc"), "{n}: the tab's count alone");
             let relay = |cx: &mut VisualTestAppContext, words: &str| {
                 cx.simulate_input(window, words);
                 cx.simulate_keystrokes(window, "enter");

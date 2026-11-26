@@ -1875,7 +1875,7 @@ impl AgentTab {
         toggle: fn(&mut Self, &mut Window, &mut Context<Self>),
         c: &Colors,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> gpui::Stateful<Div> {
         let hover = c.pill_hover;
         let open = self.menu.as_ref() == Some(&menu);
         self.marked(
@@ -1909,7 +1909,6 @@ impl AgentTab {
                     }
                 })),
         )
-        .into_any_element()
     }
 
     /// The plan tab at the folder-tab row's right (the 2026-11-24 chores, your pick "burger +
@@ -1942,18 +1941,21 @@ impl AgentTab {
         } else {
             format!("{done}/{all}")
         };
-        Some(self.corner_pill(
-            "agent-plan-tab",
-            "plan-tab",
-            crate::icons::Icon::Menu,
-            words,
-            c.dim,
-            BoxMenu::Plan,
-            "Plan progress  \u{2325}\u{2318}P",
-            |this, window, cx| this.toggle_plan(&crate::agent_tab::TogglePlan, window, cx),
-            c,
-            cx,
-        ))
+        Some(
+            self.corner_pill(
+                "agent-plan-tab",
+                "plan-tab",
+                crate::icons::Icon::Menu,
+                words,
+                c.dim,
+                BoxMenu::Plan,
+                "Plan progress  \u{2325}\u{2318}P",
+                |this, window, cx| this.toggle_plan(&crate::agent_tab::TogglePlan, window, cx),
+                c,
+                cx,
+            )
+            .into_any_element(),
+        )
     }
 
     /// The `/` list, over the box while it is open: the agent's commands, skills and sub-agents
