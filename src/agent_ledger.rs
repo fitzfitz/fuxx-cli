@@ -75,7 +75,7 @@ pub struct Ledger {
     pub checks: Vec<CheckRun>,
     /// The checks by scope (`check_key`), in the order of their first run.
     pub scopes: Vec<Scope>,
-    /// Passed runs, and all runs (the popover's "P/T passed").
+    /// Scopes whose latest run passed, and all scopes (the popover's "P/T passed").
     pub passed: usize,
     pub total: usize,
     /// The latest check of a kind failed for real and no pass of the same kind and scope has
@@ -268,11 +268,9 @@ impl Fold {
         } = self;
         scripted.retain(|p| !changed.iter().any(|c| &c.path == p));
         read.retain(|p| !changed.iter().any(|c| &c.path == p) && !scripted.contains(p));
-        let passed = checks
-            .iter()
-            .filter(|r| matches!(r.outcome, Outcome::Passed { .. }))
-            .count();
-        let total = checks.len();
+        // By scope, as the popover's rows (chore 36: by run, "1/6 passed" sat over four rows).
+        let passed = scopes.iter().filter(|(_, s)| s.passing()).count();
+        let total = scopes.len();
         // The latest real failure's kind; a compile error is the build's, whatever ran it.
         let failing = open
             .iter()
@@ -657,8 +655,9 @@ mod tests {
             check("cargo test", Outcome::Passed { n: None }),
         );
         let l = main_of(&c);
-        // P/T counts every run (the lead's call: the design says "all check runs").
-        assert_eq!((l.passed, l.total, l.checks.len()), (2, 5, 5));
+        // P/T counts the scopes, as the popover's rows (chore 36: it counted every run): of
+        // `cargo test`, `cli::` and `api::`, only the first's latest run passed.
+        assert_eq!((l.passed, l.total, l.checks.len()), (1, 3, 5));
         assert!(l.checks[2].planned);
         // One group per scope, in the order first run, each with its runs.
         assert_eq!(
@@ -774,5 +773,52 @@ mod tests {
         c.you("again".into(), vec![]);
         call(&mut c, "2", None, edit("src/b.rs", Some(1), Some(0)));
         assert!(ledger_of(&c, &View::Main, &ToolTimes::new(), cwd()).is_some());
+    }
+
+    /// Chore 36, your picture: four rows (`--no-run` and the build piped, no verdict; a test
+    /// that failed then passed; one more) under "1/6 passed": the header counted runs.
+    #[test]
+    fn the_checks_header_counts_the_rows() {
+        let mut c = turn();
+        call(
+            &mut c,
+            "1",
+            None,
+            check("cargo test --bin fuxx --no-run", Outcome::Unknown),
+        );
+        let build = || Activity {
+            check: Some(Check {
+                what: CheckWhat::Build,
+                scope: "cargo build --features ui-shots".into(),
+                outcome: Outcome::Unknown,
+            }),
+            ..check("", Outcome::Unknown)
+        };
+        call(&mut c, "2", None, build());
+        call(&mut c, "3", None, build());
+        call(
+            &mut c,
+            "4",
+            None,
+            check("cargo test --bin fuxx the_task", failed()),
+        );
+        call(
+            &mut c,
+            "5",
+            None,
+            check(
+                "cargo test --bin fuxx the_task",
+                Outcome::Passed { n: Some(1) },
+            ),
+        );
+        call(
+            &mut c,
+            "6",
+            None,
+            check("cargo clippy --all-targets", Outcome::Unknown),
+        );
+        let l = main_of(&c);
+        assert_eq!(l.scopes.len(), 4);
+        assert_eq!((l.passed, l.total), (1, 4), "as many as the rows");
     }
 }

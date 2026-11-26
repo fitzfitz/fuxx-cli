@@ -32,7 +32,7 @@ const TAIL: f32 = 11.0;
 pub(crate) enum Mark {
     Done,
     Failed,
-    /// Ended by you or the agent (a stopped shell).
+    /// Ended without failing for real (a stopped shell, a planned failure): a dim ✕.
     Stopped,
     Building,
     Next,

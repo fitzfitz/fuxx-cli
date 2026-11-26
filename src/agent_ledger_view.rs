@@ -10,6 +10,7 @@ use gpui::{
 use super::popover::{self, Mark};
 use super::{AgentTab, AgentTabEvent, Colors};
 use crate::agent_box::menus::MenuPlace;
+use crate::agent_ledger::Scope;
 use crate::agent_status_line::ChipKind;
 use crate::appearance::Appearance;
 use crate::changed_files::{FileStatus, Group, How};
@@ -248,10 +249,10 @@ impl AgentTab {
         self.marked_row(label, row).into_any_element()
     }
 
-    /// The checks: "Checks" with "P/T passed", then a row per scope: its command, its runs'
-    /// marks and its latest outcome (red only while that run still fails for real).
+    /// The checks: "Checks" with "P/T passed" (scopes, as the rows), then a row per scope: its
+    /// latest run's mark, its command and how that run went (red only while it still fails for
+    /// real).
     fn checks_part(&self, out: &mut Vec<AnyElement>, cx: &mut Context<Self>) {
-        use crate::agent_activity::{Activity, Check};
         let ui = cx.global::<Appearance>().theme.ui();
         let c = Colors::of(&cx.global::<Appearance>().theme);
         let mono = cx.global::<Appearance>().font.family.clone();
@@ -261,40 +262,10 @@ impl AgentTab {
         if ledger.scopes.is_empty() {
             return;
         }
-        out.push(
-            popover::header(
-                "Checks",
-                Some(popover::count(format!(
-                    "{}/{} passed",
-                    ledger.passed, ledger.total
-                ))),
-                &ui,
-            )
-            .into_any_element(),
-        );
+        let count = format!("{}/{} passed", ledger.passed, ledger.total);
+        out.push(popover::header("Checks", Some(popover::count(count)), &ui).into_any_element());
         for (n, scope) in ledger.scopes.iter().enumerate() {
-            let Some((latest, planned)) = scope.runs.last() else {
-                continue;
-            };
-            let a = Activity {
-                check: Some(Check {
-                    what: scope.what,
-                    scope: scope.scope.clone(),
-                    outcome: latest.clone(),
-                }),
-                planned_failure: *planned,
-                ..Default::default()
-            };
-            let words = crate::agent_step_words::outcome_phrase(&a).unwrap_or_else(|| "ran".into());
-            let strip = scope.runs.iter().map(|(outcome, planned)| {
-                use crate::agent_steps::{Glyph, check_glyph};
-                let mark = match check_glyph(outcome, *planned) {
-                    Glyph::Passed => Mark::Done,
-                    Glyph::Failed | Glyph::Planned => Mark::Failed,
-                    _ => Mark::NoVerdict,
-                };
-                popover::mark(mark, &c, &ui)
-            });
+            let (mark, words) = check_row(scope);
             let outcome_ink = if scope.failing() {
                 c.bar_failed
             } else {
@@ -303,10 +274,84 @@ impl AgentTab {
             // Probed by its command (the scenes read the popover's rows).
             let row = popover::row()
                 .id(("ledger-check", n))
+                .child(popover::mark_cell(popover::mark(mark, &c, &ui)))
                 .child(popover::mono(scope.scope.clone(), ui.text, mono.clone()))
-                .child(div().flex_none().flex().gap(px(2.)).children(strip))
                 .child(popover::tail(words, outcome_ink));
             out.push(self.marked_row(scope.scope.clone(), row).into_any_element());
         }
+    }
+}
+
+/// A checks row (chore 36): its latest run's mark and words — ✓ "2 passed", ✕ "1 of 3 failed"
+/// (dim for a planned failure, never red), – "ran" when nothing says how it went.
+fn check_row(scope: &Scope) -> (Mark, String) {
+    use crate::agent_activity::{Activity, Check, Outcome};
+    let Some((latest, planned)) = scope.runs.last() else {
+        return (Mark::NoVerdict, "ran".into());
+    };
+    let a = Activity {
+        check: Some(Check {
+            what: scope.what,
+            scope: scope.scope.clone(),
+            outcome: latest.clone(),
+        }),
+        planned_failure: *planned,
+        ..Default::default()
+    };
+    let words = crate::agent_step_words::outcome_phrase(&a).unwrap_or_else(|| "ran".into());
+    let mark = match latest {
+        Outcome::Passed { .. } => Mark::Done,
+        Outcome::Failed { .. } if *planned => Mark::Stopped,
+        Outcome::Failed { .. } => Mark::Failed,
+        Outcome::Unknown => Mark::NoVerdict,
+    };
+    (mark, words)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_activity::{CheckWhat, Outcome};
+
+    fn scope(runs: &[(Outcome, bool)]) -> Scope {
+        Scope {
+            what: CheckWhat::Tests,
+            scope: "cargo test".into(),
+            runs: runs.to_vec(),
+        }
+    }
+
+    /// Chore 36, your picture's rows: one mark per row, the latest run's; no "ran" beside an
+    /// empty circle.
+    #[test]
+    fn a_checks_row_shows_its_latest_run() {
+        let failed = Outcome::Failed {
+            failed: Some(1),
+            of: Some(3),
+            first_error: None,
+        };
+        let passed = Outcome::Passed { n: Some(1) };
+        assert_eq!(
+            check_row(&scope(&[(Outcome::Unknown, false)])),
+            (Mark::NoVerdict, "ran".to_string())
+        );
+        assert_eq!(
+            check_row(&scope(&[
+                (Outcome::Unknown, false),
+                (Outcome::Unknown, false)
+            ])),
+            (Mark::NoVerdict, "ran".to_string())
+        );
+        assert_eq!(
+            check_row(&scope(&[(failed.clone(), false), (passed, false)])),
+            (Mark::Done, "1 passed".to_string())
+        );
+        assert_eq!(
+            check_row(&scope(&[(failed.clone(), false)])),
+            (Mark::Failed, "1 of 3 failed".to_string())
+        );
+        let (mark, words) = check_row(&scope(&[(failed, true)]));
+        assert_eq!(mark, Mark::Stopped, "a planned failure: a dim ✕, never red");
+        assert_eq!(words, crate::agent_step_words::PLANNED);
     }
 }

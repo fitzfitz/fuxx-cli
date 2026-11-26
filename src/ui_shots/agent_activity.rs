@@ -1007,7 +1007,7 @@ pub(super) fn agent_ledger_trimmed() {
 
 /// A click on a chip on the status line's right (chore 22: each opens its part): the checks
 /// chip lists the checks; the changed chip lists the changed files (`src/api.rs` with its +/−) and the
-/// checks one row per scope ("3/7 passed"); a click on a file asks for its diff tab and closes
+/// checks one row per scope ("3/3 passed": scopes, as the rows, chore 36); a click on a file asks for its diff tab and closes
 /// it; Esc closes it too.
 pub(super) fn agent_ledger_popover() {
     shoot("agent-ledger-popover", DIMS, |n, cx, window, tab, told| {
@@ -1022,7 +1022,7 @@ pub(super) fn agent_ledger_popover() {
         let l = cx
             .read(|cx| tab.read(cx).shot_ledger())
             .unwrap_or_else(|| panic!("{n}: a ledger"));
-        assert_eq!((l.passed, l.total, l.scopes.len()), (3, 7, 3), "{n}");
+        assert_eq!((l.passed, l.total, l.scopes.len()), (3, 3, 3), "{n}");
         // Each chip opens its part (chore 22): the checks chip the checks, not the files.
         let scope = l.scopes[0].scope.clone();
         let listed = |cx: &VisualTestAppContext, label: &str| {
