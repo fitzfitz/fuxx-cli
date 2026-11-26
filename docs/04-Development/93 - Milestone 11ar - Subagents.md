@@ -1576,3 +1576,13 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   old top bar (its status/cost/context row moved to the clock in the 2026-11-24 batch), or the lane row's top margin
   stacked on the chat's top padding. Measure it in a scene, find what reserves it, trim it to the standard gap, and
   pin the gap with a check (on Main, and with chore 19's slim `← Main › 🤖 …` row inside a subagent).
+- **Chore 22 (queued, not built): the status line's counts become chips on its right** (your words, 2026-11-26,
+  with two pictures: "the changed/checks, it doesnt look good, can you suggest me the best place to place it?" →
+  "what about this case" (a running line with "1 changed" on a second line) → "queue it"). Today "3 changed ·
+  checks pass" sits on its own line under "Done · 3:11", like a loose sentence. Make the status line one row:
+  the left side (mark · word · action · time · +N more) truncates its action with "…" when space runs short;
+  the right side, pinned to the row's right edge so it doesn't move as the action changes, holds quiet chips:
+  `⧉ N changed` (opens the changed files list) and `✓ checks` (opens the check results; a running arc while
+  checks run, red with ✕ when one failed). Chips show as soon as there's something to show (mid-run too), in
+  every state (running, needs you, done). Dimmed like the time. Build after chore 17 (same status line,
+  src/agent_status_line.rs); pin it in a scene for the running and done cases, a narrow width included.
