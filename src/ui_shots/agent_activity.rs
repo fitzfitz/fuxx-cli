@@ -42,6 +42,11 @@ const SOURCES: &[&str] = &[
 /// The ledger's scenes: the box and its menus too.
 const LEDGER: &[&str] = &[
     "src/agent_ledger.rs",
+    "src/agent_ledger_view.rs",
+    "src/agent_popover.rs",
+    "src/agent_status_view.rs",
+    "src/agent_status_line.rs",
+    "src/changed_files.rs",
     "src/agent_box.rs",
     "src/agent_box_menus.rs",
     "src/agent_steps.rs",
@@ -126,6 +131,7 @@ const PLAN_CARD: &[&str] = &[
 /// The plan tab's scene: the box, its menus and the plan's rules.
 const PLAN: &[&str] = &[
     "src/plan_progress.rs",
+    "src/agent_popover.rs",
     "src/agent_box.rs",
     "src/agent_box_menus.rs",
 ];

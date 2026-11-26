@@ -4,13 +4,12 @@
 
 use std::time::{Duration, Instant};
 
-use alacritty_terminal::vte::ansi::Rgb;
 use gpui::{
     AnyElement, AppContext, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
-    px,
+    ParentElement, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px,
 };
 
+use super::popover::{self, Mark};
 use super::{AgentTab, AgentTabEvent, BLACK, Colors, MARK};
 use crate::agent_box::BoxMenu;
 use crate::agent_box::menus::MenuPlace;
@@ -192,8 +191,9 @@ impl AgentTab {
         }
     }
 
-    /// The popover (pointing at the tab, as the plan's): "1 of 3 done · 2 running", a row per
-    /// shell, and "Click a shell to follow its output".
+    /// The popover (pointing at the tab, as the plan's), in the popovers' one look (chore 36):
+    /// "Shells" and "1 of 3 done · 2 running", a row per shell, and "Click a shell to follow
+    /// its output".
     pub(crate) fn shells_popover(&self, c: &Colors, cx: &mut Context<Self>) -> AnyElement {
         let ui = cx.global::<Appearance>().theme.ui();
         let now = Instant::now();
@@ -204,37 +204,19 @@ impl AgentTab {
             .enumerate()
             .map(|(i, shell)| self.shell_row(i, shell, now, c, cx))
             .collect();
-        let quiet = |words: &'static str| {
-            div()
-                .px(px(8.))
-                .py(px(6.))
-                .text_size(px(11.5))
-                .text_color(hsla(ui.text_dim))
-                .child(words)
-        };
-        let content = div()
-            .flex()
-            .flex_col()
-            .text_size(px(12.5))
-            .child(
-                div()
-                    .px(px(8.))
-                    .pt(px(6.))
-                    .pb(px(2.))
-                    .text_size(px(11.5))
-                    .text_color(hsla(ui.text_dim))
-                    .child(SharedString::from(shells.header())),
-            )
-            .when(rows.is_empty(), |d| d.child(quiet("All finished")))
-            .children(rows)
-            .child(quiet("Click a shell to follow its output"));
-        let content = self
-            .marked("shells-popover", div().child(content))
-            .into_any_element();
+        let mut content = vec![
+            popover::header("Shells", Some(popover::count(shells.header())), &ui)
+                .into_any_element(),
+        ];
+        if rows.is_empty() {
+            content.push(popover::quiet("All finished", &ui).into_any_element());
+        }
+        content.extend(rows);
+        content.push(popover::quiet("Click a shell to follow its output", &ui).into_any_element());
         // Hung inside the corner tab's edge (`corner_tabs`): out by that edge to the box's.
-        self.menu_frame_at(
-            Some(content),
-            None,
+        self.popover_frame(
+            "shells-popover",
+            content,
             SHELLS_WIDTH,
             MenuPlace::Right(crate::card_view::EDGE),
             cx,
@@ -259,28 +241,18 @@ impl AgentTab {
         } else {
             (ui.text_dim, ui.text_dim)
         };
-        let glyph = |g: &'static str, ink: Rgb| {
-            div()
-                .text_size(px(12.))
-                .text_color(hsla(ink))
-                .child(g)
-                .into_any_element()
-        };
         let mark = match (shell.ended, self.shell_marks.get(&shell.id)) {
             (None, Some(arc)) => arc.clone().into_any_element(),
-            (None, None) => glyph("\u{25d0}", c.todo_active),
-            (Some((ShellEnd::Done, _)), _) => glyph("\u{2713}", c.tool_ok),
-            (Some((ShellEnd::Failed, _)), _) => glyph("\u{2715}", c.failed_panel),
-            (Some((ShellEnd::Stopped, _)), _) => glyph("\u{2715}", ui.text_dim),
+            (None, None) => popover::mark(Mark::Building, c, &ui),
+            (Some((ShellEnd::Done, _)), _) => popover::mark(Mark::Done, c, &ui),
+            (Some((ShellEnd::Failed, _)), _) => popover::mark(Mark::Failed, c, &ui),
+            (Some((ShellEnd::Stopped, _)), _) => popover::mark(Mark::Stopped, c, &ui),
         };
         let small = |text: String| {
-            div()
-                .pl(px(22.))
-                .truncate()
-                .font_family(mono.clone())
+            popover::mono(text, dim, mono.clone())
+                .pl(px(popover::PAD_X + popover::INDENT))
+                .pr(px(popover::PAD_X))
                 .text_size(px(11.))
-                .text_color(hsla(dim))
-                .child(SharedString::from(text))
         };
         let id = shell.id.clone();
         let stop = running.then(|| {
@@ -314,12 +286,12 @@ impl AgentTab {
             }
         });
         let openable = shell.output.is_some();
+        // Two lines under the first (its command, its last output line): the row's own height.
         let row = div()
             .id(("shell-row", i))
             .flex()
             .flex_col()
             .gap(px(2.))
-            .px(px(8.))
             .py(px(5.))
             .rounded(px(6.))
             .when(openable, |d| {
@@ -334,37 +306,16 @@ impl AgentTab {
                     )
             })
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
+                popover::line()
+                    .child(popover::mark_cell(mark))
                     .child(
-                        div()
-                            .flex_none()
-                            .w(px(14.))
-                            .flex()
-                            .justify_center()
-                            .child(mark),
+                        popover::title(shell.description.clone(), title_ink)
+                            .font_weight(FontWeight::MEDIUM),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .truncate()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(hsla(title_ink))
-                            .child(SharedString::from(shell.description.clone())),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .font_features(crate::sidebar::tabular())
-                            .text_size(px(11.))
-                            .text_color(hsla(dim))
-                            .child(SharedString::from(crate::agent_lanes::clock(
-                                shell.elapsed(now),
-                            ))),
-                    )
+                    .child(popover::tail(
+                        crate::agent_lanes::clock(shell.elapsed(now)),
+                        dim,
+                    ))
                     .children(stop),
             )
             .child(small(shell.command.clone()))

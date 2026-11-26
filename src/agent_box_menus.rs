@@ -11,9 +11,6 @@ use gpui::{Animation, AnimationExt, FontWeight};
 const FOLDER_TILE: f32 = 26.0;
 const FOLDER_ROW_H: f32 = 42.0;
 
-/// The turn ledger's popover's list, at most this tall (it scrolls past it).
-const LEDGER_LIST_MAX: f32 = 360.0;
-
 /// Where a menu's panel hangs against its anchor (the chip it is a child of): its left edge
 /// `dx` from the anchor's left, or its right edge `dx` from the anchor's right (positive: further
 /// right).
@@ -747,89 +744,44 @@ impl AgentTab {
         }
     }
 
-    /// The plan's tasks (the 2026-11-24 chores), over the burger tab: each ✓ done (with its
-    /// commit), ◐ being built or ○ next (the subagents have their own tab since chore 19).
+    /// The plan's tasks (the 2026-11-24 chores), over the burger tab, in the popovers' one look
+    /// (chore 36): each ✓ done (with its commit), ◐ being built or ○ next (the subagents have
+    /// their own tab since chore 19).
     pub(super) fn plan_popover(
         &self,
         c: &crate::agent_tab::Colors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        use crate::agent_tab::popover::{self, Mark};
         use crate::plan_progress::{TaskState, counts};
         let ui = cx.global::<Appearance>().theme.ui();
         let (done, all) = counts(&self.plan);
-        let row =
-            |mark: &'static str, mark_ink: Rgb, title: String, tail: Option<String>, ink: Rgb| {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .h(px(26.))
-                    .px(px(8.))
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(14.))
-                            .text_color(hsla(mark_ink))
-                            .child(mark),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .truncate()
-                            .text_color(hsla(ink))
-                            .child(SharedString::from(title)),
-                    )
-                    .children(tail.map(|t| {
-                        div()
-                            .flex_none()
-                            .font_features(crate::sidebar::tabular())
-                            .text_size(px(11.))
-                            .text_color(hsla(ui.text_dim))
-                            .child(SharedString::from(t))
-                    }))
-            };
+        let mut content = vec![
+            popover::header(
+                "Plan",
+                Some(popover::count(format!("{done} of {all}"))),
+                &ui,
+            )
+            .into_any_element(),
+        ];
         // Each probed by its title (the scenes read the popover's rows).
-        let tasks = self.plan.iter().map(|t| {
-            let el = match &t.state {
-                TaskState::Done { commit } => row(
-                    "\u{2713}",
-                    c.tool_ok,
-                    t.title.clone(),
-                    commit.clone(),
-                    ui.text,
-                ),
-                TaskState::Building => {
-                    row("\u{25d0}", c.todo_active, t.title.clone(), None, ui.text)
-                }
-                TaskState::Next => row("\u{25cb}", ui.text_dim, t.title.clone(), None, ui.text_dim),
+        content.extend(self.plan.iter().map(|t| {
+            let (mark, ink, commit) = match &t.state {
+                TaskState::Done { commit } => (Mark::Done, ui.text, commit.clone()),
+                TaskState::Building => (Mark::Building, ui.text, None),
+                TaskState::Next => (Mark::Next, ui.text_dim, None),
             };
-            self.marked_row(t.title.clone(), el)
-        });
-        let heading = |words: String| {
-            div()
-                .px(px(8.))
-                .pt(px(6.))
-                .pb(px(2.))
-                .text_size(px(11.5))
-                .text_color(hsla(ui.text_dim))
-                .child(SharedString::from(words))
-        };
-        let content = div()
-            .flex()
-            .flex_col()
-            .text_size(px(12.5))
-            .child(heading(format!("Plan \u{b7} {done} of {all}")))
-            .children(tasks)
-            .into_any_element();
-        let content = self
-            .marked("plan-popover", div().child(content))
-            .into_any_element();
+            let row = popover::row()
+                .child(popover::mark_cell(popover::mark(mark, c, &ui)))
+                .child(popover::title(t.title.clone(), ink))
+                .children(commit.map(|h| popover::tail(h, ui.text_dim)));
+            self.marked_row(t.title.clone(), row).into_any_element()
+        }));
         // Over the chat, its right edge on the box's (the 2026-11-25 chores: "should be left
         // aligned"): hung from the corner tabs' right edge (`corner_tabs`).
-        self.menu_frame_at(
-            Some(content),
-            None,
+        self.popover_frame(
+            "plan-popover",
+            content,
             crate::agent_box::PLAN_WIDTH,
             MenuPlace::Right(crate::card_view::EDGE),
             cx,
@@ -1287,361 +1239,6 @@ impl AgentTab {
                 self.marked_row(label.to_string(), row).into_any_element()
             });
         div().flex().flex_col().children(rows).into_any_element()
-    }
-
-    /// The turn ledger's popover (the agent activity chore): the files the turn changed (a
-    /// click opens one's diff tab), those scripts touched, those it only read, its checks and,
-    /// apart, its planned failures. Empty sections are left out.
-    pub(crate) fn ledger_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        use crate::agent_activity::{Activity, Check};
-        let ui = cx.global::<Appearance>().theme.ui();
-        let c = Colors::of(&cx.global::<Appearance>().theme);
-        let Some(ledger) = self.ledger.as_ref() else {
-            return div().into_any_element();
-        };
-        let cwd = self.start.cwd.clone();
-        let shown = move |p: &Path| {
-            p.strip_prefix(&cwd)
-                .unwrap_or(p)
-                .to_string_lossy()
-                .into_owned()
-        };
-        let mut out: Vec<AnyElement> = Vec::new();
-        // The 2026-11-25 chores (mockup A): a total, then the files under their folders (each
-        // folder folds), an A/M/D badge and +/− on each; paths a script only named, and
-        // folders, never show (`changed_files`).
-        use crate::changed_files::{FileStatus, changed_groups, kept_paths, plain_groups, total};
-        let facts = &self.ledger_facts;
-        let ink_of = |status: FileStatus| match status {
-            FileStatus::Added => c.tool_ok,
-            FileStatus::Modified => c.meter_caution,
-            FileStatus::Deleted => c.failed,
-            FileStatus::Unchanged => ui.text_dim,
-        };
-        // The part its chip asked for (chore 22): `⧉ N changed` the files, `✓ checks` the
-        // checks; both when neither did.
-        use crate::agent_status_line::ChipKind;
-        let show_files = self.ledger_part != Some(ChipKind::Checks);
-        let show_checks = self.ledger_part != Some(ChipKind::Changed);
-        let groups = if show_files {
-            changed_groups(&ledger.changed, facts, &self.start.cwd)
-        } else {
-            Vec::new()
-        };
-        if !groups.is_empty() {
-            let (files, plus, minus) = total(&groups);
-            out.push(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .px(px(8.))
-                    .pt(px(4.))
-                    .pb(px(2.))
-                    .font_features(crate::sidebar::tabular())
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(SharedString::from(
-                                crate::git_stage::files(files) + " changed",
-                            )),
-                    )
-                    .when(plus > 0, |d| {
-                        d.child(
-                            div()
-                                .text_color(hsla(c.tool_ok))
-                                .child(SharedString::from(format!("+{plus}"))),
-                        )
-                    })
-                    .when(minus > 0, |d| {
-                        d.child(
-                            div()
-                                .text_color(hsla(c.failed))
-                                .child(SharedString::from(format!("\u{2212}{minus}"))),
-                        )
-                    })
-                    .into_any_element(),
-            );
-        }
-        let mut n: usize = 0;
-        let mut section = |title: Option<&str>,
-                           groups: Vec<crate::changed_files::Group>,
-                           id: &'static str,
-                           out: &mut Vec<AnyElement>,
-                           cx: &mut Context<Self>| {
-            if groups.is_empty() {
-                return;
-            }
-            if let Some(title) = title {
-                out.push(heading(title.into(), &ui));
-            }
-            for group in groups {
-                let folded = self.ledger_folded.contains(&group.folder);
-                if !group.folder.is_empty() {
-                    let key = group.folder.clone();
-                    let hover = ui.panel_hover;
-                    n += 1;
-                    out.push(
-                        div()
-                            .id((id, 10_000 + n))
-                            .h(px(24.))
-                            .px(px(6.))
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .rounded(px(ROW_RADIUS))
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(hsla(hover)))
-                            .text_size(px(11.5))
-                            .text_color(hsla(ui.text_dim))
-                            .child(crate::icons::icon(
-                                if folded {
-                                    crate::icons::Icon::ChevronRight
-                                } else {
-                                    crate::icons::Icon::ChevronDown
-                                },
-                                px(12.),
-                                hsla(ui.text_dim),
-                            ))
-                            .child(
-                                div()
-                                    .min_w(px(0.))
-                                    .truncate()
-                                    .child(SharedString::from(group.folder.clone())),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_color(hsla(ui.text_faint))
-                                    .child(SharedString::from(group.rows.len().to_string())),
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if !this.ledger_folded.remove(&key) {
-                                    this.ledger_folded.insert(key.clone());
-                                }
-                                cx.notify();
-                            }))
-                            .into_any_element(),
-                    );
-                }
-                if folded {
-                    continue;
-                }
-                for file in group.rows {
-                    n += 1;
-                    let ink = ink_of(file.status);
-                    let letter = match file.status {
-                        FileStatus::Added => "A",
-                        FileStatus::Modified => "M",
-                        FileStatus::Deleted => "D",
-                        FileStatus::Unchanged => "",
-                    };
-                    // A file only read has no diff: its click opens it.
-                    let unchanged = file.status == FileStatus::Unchanged;
-                    let counts = div()
-                        .flex_none()
-                        .flex()
-                        .gap(px(6.))
-                        .font_features(crate::sidebar::tabular())
-                        .when_some(file.plus.filter(|p| *p > 0), |d, p| {
-                            d.child(
-                                div()
-                                    .text_color(hsla(c.tool_ok))
-                                    .child(SharedString::from(format!("+{p}"))),
-                            )
-                        })
-                        .when_some(file.minus.filter(|m| *m > 0), |d, m| {
-                            d.child(
-                                div()
-                                    .text_color(hsla(c.failed))
-                                    .child(SharedString::from(format!("\u{2212}{m}"))),
-                            )
-                        });
-                    let (path, hover) = (file.path.clone(), ui.panel_hover);
-                    let label = shown(&file.path);
-                    let el = div()
-                        .id((id, n))
-                        .h(px(ROW_H - 4.))
-                        .pl(px(if group.folder.is_empty() { 8. } else { 22. }))
-                        .pr(px(8.))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .rounded(px(ROW_RADIUS))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hsla(hover)))
-                        .child(
-                            div()
-                                .flex_none()
-                                .size(px(16.))
-                                .rounded(px(4.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .when(!unchanged, |d| {
-                                    d.bg(hsla(crate::theme::mix(ink, c.panel, 0.82)))
-                                })
-                                .text_size(px(11.))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(hsla(ink))
-                                .child(letter),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .truncate()
-                                .text_color(hsla(ui.text))
-                                .child(SharedString::from(file.name)),
-                        )
-                        .child(counts)
-                        .tooltip(move |_, cx| {
-                            cx.new(|_| {
-                                crate::sidebar_toggle::Tip(
-                                    if unchanged {
-                                        "Open the file"
-                                    } else {
-                                        "Open the diff (\u{2325}-click: the file)"
-                                    }
-                                    .into(),
-                                )
-                            })
-                            .into()
-                        })
-                        .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
-                            this.close_menu(cx);
-                            if unchanged || event.modifiers().alt {
-                                cx.emit(AgentTabEvent::OpenFile(path.clone()));
-                            } else {
-                                cx.emit(AgentTabEvent::OpenDiff(path.clone()));
-                            }
-                        }));
-                    out.push(self.marked_row(label, el).into_any_element());
-                }
-            }
-        };
-        section(None, groups, "ledger-changed", &mut out, cx);
-        // Touched by scripts, and read: only files (or files gone), grouped the same way, with
-        // no counts; nothing until git and the disk have answered.
-        if show_files {
-            section(
-                Some("Touched by scripts"),
-                plain_groups(&kept_paths(&ledger.scripted, facts), facts, &self.start.cwd),
-                "ledger-scripted",
-                &mut out,
-                cx,
-            );
-            section(
-                Some("Read"),
-                plain_groups(&kept_paths(&ledger.read, facts), facts, &self.start.cwd),
-                "ledger-read",
-                &mut out,
-                cx,
-            );
-        }
-        // The checks, one row per scope: its command, its runs' glyphs and its latest outcome
-        // (red only while that run still fails for real); "P/T passed" beside the heading.
-        if show_checks && !ledger.scopes.is_empty() {
-            out.push(
-                div()
-                    .flex()
-                    .items_center()
-                    .child(div().flex_1().child(heading("Checks".into(), &ui)))
-                    .child(
-                        div()
-                            .px(px(8.))
-                            .text_size(px(crate::ui_tokens::text::META))
-                            .text_color(hsla(ui.text_dim))
-                            .font_features(crate::sidebar::tabular())
-                            .child(SharedString::from(format!(
-                                "{}/{} passed",
-                                ledger.passed, ledger.total
-                            ))),
-                    )
-                    .into_any_element(),
-            );
-        }
-        for (n, scope) in ledger.scopes.iter().enumerate().filter(|_| show_checks) {
-            let Some((latest, planned)) = scope.runs.last() else {
-                continue;
-            };
-            let a = Activity {
-                check: Some(Check {
-                    what: scope.what,
-                    scope: scope.scope.clone(),
-                    outcome: latest.clone(),
-                }),
-                planned_failure: *planned,
-                ..Default::default()
-            };
-            let words = crate::agent_step_words::outcome_phrase(&a).unwrap_or_else(|| "ran".into());
-            let strip = scope.runs.iter().map(|(outcome, planned)| {
-                use crate::agent_steps::{Glyph, check_glyph};
-                let glyph = check_glyph(outcome, *planned);
-                let ink = match glyph {
-                    Glyph::Passed => c.bar_ok,
-                    Glyph::Failed | Glyph::Planned => c.bar_failed,
-                    _ => c.bar_dim,
-                };
-                match glyph {
-                    Glyph::Check => div()
-                        .flex()
-                        .items_center()
-                        .child(crate::agent_tab::tracks::hollow_ring(ink, 8.)),
-                    _ => div()
-                        .text_color(hsla(ink))
-                        .child(crate::agent_tab::tracks::glyph_text(glyph)),
-                }
-            });
-            let outcome_ink = if scope.failing() {
-                c.bar_failed
-            } else {
-                ui.text_dim
-            };
-            out.push(
-                // Probed by its command (the scenes read the popover's rows).
-                self.marked_row(scope.scope.clone(), div())
-                    .id(("ledger-check", n))
-                    .h(px(ROW_H))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .rounded(px(ROW_RADIUS))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .truncate()
-                            .text_color(hsla(ui.text))
-                            .child(SharedString::from(scope.scope.clone())),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .gap(px(2.))
-                            .text_size(px(crate::ui_tokens::text::META))
-                            .children(strip),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(hsla(outcome_ink))
-                            .font_features(crate::sidebar::tabular())
-                            .child(SharedString::from(words)),
-                    )
-                    .into_any_element(),
-            );
-        }
-        div()
-            .id("agent-ledger-list")
-            .flex()
-            .flex_col()
-            .max_h(px(LEDGER_LIST_MAX))
-            .overflow_y_scroll()
-            .children(out)
-            .into_any_element()
     }
 
     /// `File…` (any files) or `Image…` (`images`) chosen: the menu closes and the macOS file

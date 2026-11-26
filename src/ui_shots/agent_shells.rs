@@ -20,6 +20,7 @@ pub(super) const FILE: &str = file!();
 const SOURCES: &[&str] = &[
     "src/agent_shells.rs",
     "src/agent_shells_view.rs",
+    "src/agent_popover.rs",
     "src/agent_box.rs",
     "src/agent_box_menus.rs",
     "src/agent_rows.rs",

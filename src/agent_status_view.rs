@@ -12,7 +12,6 @@ use gpui::{
 
 use super::{AgentTab, BLACK, Colors, MARK};
 use crate::agent_box::BoxMenu;
-use crate::agent_box::menus::MenuPlace;
 use crate::agent_status_line::{Chip, ChipKind, ChipState};
 use crate::appearance::Appearance;
 use crate::mark_view::MarkView;
@@ -136,16 +135,7 @@ impl AgentTab {
             .map(|chip| self.status_chip(chip, c, cx))
             .collect();
         let open = matches!(self.menu, Some(BoxMenu::Ledger));
-        let popover = open.then(|| {
-            let menu = self.ledger_menu(cx);
-            self.menu_frame_at(
-                Some(menu),
-                None,
-                crate::agent_box::LEDGER_MENU_WIDTH,
-                MenuPlace::Right(0.),
-                cx,
-            )
-        });
+        let popover = open.then(|| self.ledger_popover(cx));
         self.marked(
             "status-chips",
             div()

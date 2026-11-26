@@ -18,6 +18,7 @@ pub(super) const FILE: &str = file!();
 const SOURCES: &[&str] = &[
     "src/agent_subagents.rs",
     "src/agent_subagents_view.rs",
+    "src/agent_popover.rs",
     "src/agent_lanes_view.rs",
     "src/agent_box.rs",
     "src/agent_box_menus.rs",
@@ -42,6 +43,7 @@ const CORNER: &[&str] = &[
     "src/corner_tabs.rs",
     "src/agent_subagents.rs",
     "src/agent_subagents_view.rs",
+    "src/agent_popover.rs",
     "src/agent_shells.rs",
     "src/agent_shells_view.rs",
     "src/agent_box.rs",

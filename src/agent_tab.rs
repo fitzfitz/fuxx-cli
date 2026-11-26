@@ -87,6 +87,12 @@ mod subagents_view;
 
 #[path = "agent_status_view.rs"]
 mod status_view;
+
+#[path = "agent_popover.rs"]
+pub(crate) mod popover;
+
+#[path = "agent_ledger_view.rs"]
+mod ledger_view;
 #[cfg(feature = "ui-shots")]
 pub(crate) use ask_view::ShotAsk;
 #[cfg(feature = "ui-shots")]

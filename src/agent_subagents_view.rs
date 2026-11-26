@@ -6,10 +6,10 @@
 
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px,
+    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px,
 };
 
-use super::{AgentTab, Colors};
+use super::{AgentTab, Colors, popover};
 use crate::agent_box::BoxMenu;
 use crate::agent_box::menus::MenuPlace;
 use crate::agent_conversation::{Lane, LaneStatus};
@@ -18,8 +18,7 @@ use crate::agent_subagents::{TabTone, header, order, row_words, tab_tone, tab_wo
 use crate::appearance::Appearance;
 use crate::terminal_view::hsla;
 
-/// A row's height, and how many show before the list scrolls.
-const ROW_H: f32 = 26.0;
+/// How many rows show before the list scrolls.
 const MAX_ROWS: usize = 10;
 
 impl AgentTab {
@@ -96,8 +95,9 @@ impl AgentTab {
         }
     }
 
-    /// The popover (pointing at the tab, as the plan's): "1 of 2 done · 1 running", a row per
-    /// subagent, and "Click a subagent to open it".
+    /// The popover (pointing at the tab, as the plan's), in the popovers' one look (chore 36):
+    /// "Subagents" and "1 of 2 done · 1 running", a row per subagent, and "Click a subagent to
+    /// open it".
     pub(crate) fn subagents_popover(&self, c: &Colors, cx: &mut Context<Self>) -> AnyElement {
         let ui = cx.global::<Appearance>().theme.ui();
         let lanes = self.conversation.lanes();
@@ -105,34 +105,21 @@ impl AgentTab {
             .into_iter()
             .map(|i| self.subagent_row(i, &lanes[i], c, cx))
             .collect();
-        let quiet = |words: SharedString, top: f32, bottom: f32| {
-            div()
-                .px(px(8.))
-                .pt(px(top))
-                .pb(px(bottom))
-                .text_size(px(11.5))
-                .text_color(hsla(ui.text_dim))
-                .child(words)
-        };
         // Many subagents scroll inside the popover (it never runs off the window).
         let list = div()
             .id("subagent-rows")
-            .max_h(px(MAX_ROWS as f32 * ROW_H))
+            .max_h(px(MAX_ROWS as f32 * popover::ROW_H))
             .overflow_y_scroll()
             .children(rows);
-        let content = div()
-            .flex()
-            .flex_col()
-            .text_size(px(12.5))
-            .child(quiet(header(lanes).into(), 6., 2.))
-            .child(self.marked("subagent-rows", list))
-            .child(quiet("Click a subagent to open it".into(), 6., 6.));
-        let content = self
-            .marked("subagents-popover", div().child(content))
-            .into_any_element();
-        self.menu_frame_at(
-            Some(content),
-            None,
+        let content = vec![
+            popover::header("Subagents", Some(popover::count(header(lanes))), &ui)
+                .into_any_element(),
+            self.marked("subagent-rows", list).into_any_element(),
+            popover::quiet("Click a subagent to open it", &ui).into_any_element(),
+        ];
+        self.popover_frame(
+            "subagents-popover",
+            content,
             crate::agent_box::PLAN_WIDTH,
             MenuPlace::Right(crate::card_view::EDGE),
             cx,
@@ -157,27 +144,16 @@ impl AgentTab {
         } else {
             ui.text_dim
         };
-        let words_el = div()
-            .flex_none()
-            .font_features(crate::sidebar::tabular())
-            .text_size(px(11.))
-            .text_color(hsla(if waiting { c.failed_panel } else { ui.text_dim }))
-            .when(waiting, |d| d.font_weight(FontWeight::MEDIUM))
-            .child(SharedString::from(words));
+        let words_el = popover::tail(words, if waiting { c.failed_panel } else { ui.text_dim })
+            .when(waiting, |d| d.font_weight(FontWeight::MEDIUM));
         let words_el = if waiting {
             self.marked("subagent-needs-you", words_el)
         } else {
             words_el
         };
         let id = lane.id.clone();
-        let row = div()
+        let row = popover::row()
             .id(("subagent-row", i))
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .h(px(ROW_H))
-            .px(px(8.))
-            .rounded(px(6.))
             .cursor_pointer()
             .hover(move |s| s.bg(hsla(ui.row_hover)))
             .on_mouse_down(
@@ -187,22 +163,8 @@ impl AgentTab {
                     this.open_subagent(&id, cx);
                 }),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(14.))
-                    .flex()
-                    .justify_center()
-                    .child(self.lane_mark(lane, c)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .truncate()
-                    .text_color(hsla(name_ink))
-                    .child(SharedString::from(lane.label.clone())),
-            )
+            .child(popover::mark_cell(self.lane_mark(lane, c)))
+            .child(popover::title(lane.label.clone(), name_ink))
             .child(words_el);
         self.marked_row(lane.label.clone(), row).into_any_element()
     }

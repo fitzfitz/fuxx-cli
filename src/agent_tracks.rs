@@ -72,23 +72,6 @@ pub fn glyph_icon(g: Glyph) -> Option<crate::icons::Icon> {
     })
 }
 
-/// A bead's glyph: its shape carries what it means (colour only backs it). The running arc is
-/// the call's mark, not text.
-pub fn glyph_text(g: Glyph) -> &'static str {
-    match g {
-        Glyph::Read | Glyph::Command => "●",
-        Glyph::Check => "◌",
-        Glyph::Search => "▲",
-        Glyph::Edit => "■",
-        Glyph::Script => "◇",
-        Glyph::Passed => "✓",
-        Glyph::Failed => "✖",
-        Glyph::Cleared => "✕",
-        Glyph::Planned => "○",
-        Glyph::Running => "",
-    }
-}
-
 /// Whether a band `cols` columns wide holds its `word` (at the bands' 10.5 pt, ~6 pt a
 /// character, and its 4 pt padding each side).
 pub fn fits_word(word: &str, cols: usize) -> bool {
@@ -117,16 +100,6 @@ fn phase_ink(p: Phase, c: &Colors) -> Rgb {
         Phase::Changing => c.bead_edit,
         Phase::Checking => c.tool_ok,
     }
-}
-
-/// An unknown check's mark: a drawn hollow ring `size` across in `ink` (the font's ◌ draws as
-/// faint dots at bead size).
-pub(crate) fn hollow_ring(ink: Rgb, size: f32) -> gpui::Div {
-    div()
-        .size(px(size))
-        .rounded_full()
-        .border_1()
-        .border_color(hsla(ink))
 }
 
 /// The keyboard's column in a step's tracks: the step (its first call's id) and the column.
