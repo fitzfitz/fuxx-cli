@@ -12,7 +12,7 @@ use super::{AgentTab, AgentTabEvent, Colors};
 use crate::agent_box::menus::MenuPlace;
 use crate::agent_status_line::ChipKind;
 use crate::appearance::Appearance;
-use crate::changed_files::{FileStatus, Group};
+use crate::changed_files::{FileStatus, Group, How};
 use crate::terminal_view::hsla;
 
 /// The list, at most this tall (it scrolls past it).
@@ -46,21 +46,19 @@ impl AgentTab {
         )
     }
 
-    /// The files: "Changed files" with how many and their +/−, then each folder (it folds) and
-    /// its files, an A/M/D mark and +/− on each; those scripts touched and those only read
-    /// after them. Paths a script only named, and folders, never show (`changed_files`).
+    /// The files: "Changed files" with how many and their +/−, then each folder once (it folds)
+    /// and its files, those changed, scripted or read together (chore 36), an A/M/D mark and
+    /// +/− on each. Paths a script only named, and folders, never show (`changed_files`).
     fn files_part(&self, out: &mut Vec<AnyElement>, cx: &mut Context<Self>) {
-        use crate::changed_files::{changed_groups, kept_paths, plain_groups, total};
+        use crate::changed_files::{files_list, total};
         let ui = cx.global::<Appearance>().theme.ui();
         let c = Colors::of(&cx.global::<Appearance>().theme);
         let Some(ledger) = self.ledger.as_ref() else {
             return;
         };
-        let facts = &self.ledger_facts;
-        let cwd = &self.start.cwd;
-        let groups = changed_groups(&ledger.changed, facts, cwd);
-        if !groups.is_empty() {
-            let (files, plus, minus) = total(&groups);
+        let list = files_list(ledger, &self.ledger_facts, &self.start.cwd);
+        let (files, plus, minus) = total(&list.inside);
+        if !list.inside.is_empty() {
             let count = div()
                 .flex()
                 .gap(px(6.))
@@ -83,23 +81,7 @@ impl AgentTab {
             out.push(popover::header("Changed files", Some(count), &ui).into_any_element());
         }
         let mut n = 0;
-        self.file_groups(None, groups, "ledger-changed", &mut n, out, cx);
-        self.file_groups(
-            Some("Touched by scripts"),
-            plain_groups(&kept_paths(&ledger.scripted, facts), facts, cwd),
-            "ledger-scripted",
-            &mut n,
-            out,
-            cx,
-        );
-        self.file_groups(
-            Some("Read"),
-            plain_groups(&kept_paths(&ledger.read, facts), facts, cwd),
-            "ledger-read",
-            &mut n,
-            out,
-            cx,
-        );
+        self.file_groups(None, list.inside, "ledger-files", &mut n, out, cx);
     }
 
     /// `groups` under `title`: each folder's row (a click folds it), then its files.
@@ -167,8 +149,9 @@ impl AgentTab {
         }
     }
 
-    /// One file's row: its A/M/D mark, its name and its +/−; a click opens its diff tab (⌥: the
-    /// file; a file only read has no diff, so the file).
+    /// One file's row: its A/M/D mark, its name and its +/− (one a script touched says
+    /// "script", one only read "read", dim); a click opens its diff tab (⌥: the file; a file
+    /// only read has no diff, so the file).
     fn file_row(
         &self,
         file: crate::changed_files::FileRow,
@@ -195,7 +178,17 @@ impl AgentTab {
             })
             .when_some(file.minus.filter(|m| *m > 0), |d, m| {
                 d.child(popover::tail(format!("\u{2212}{m}"), c.failed))
+            })
+            .map(|d| match file.how {
+                How::Changed => d,
+                How::Script => d.child(popover::tail("script", ui.text_dim)),
+                How::Read => d.child(popover::tail("read", ui.text_dim)),
             });
+        let name_ink = if file.how == How::Read {
+            ui.text_dim
+        } else {
+            ui.text
+        };
         let label = file
             .path
             .strip_prefix(&self.start.cwd)
@@ -215,7 +208,7 @@ impl AgentTab {
                     .text_color(hsla(ink))
                     .child(letter),
             ))
-            .child(popover::mono(file.name, ui.text, mono))
+            .child(popover::mono(file.name, name_ink, mono))
             .child(counts)
             .tooltip(move |_, cx| {
                 cx.new(|_| {

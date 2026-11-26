@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::agent_ledger::Changed;
+use crate::agent_ledger::{Changed, Ledger};
 
 /// How a file stands against the last commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,14 +28,29 @@ pub struct FileFacts {
     pub is_file: bool,
 }
 
-/// A file's row: its name, its status and its +/− (none: not known).
+/// How the turn touched a file: changed it (its calls), a script did, or it only read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum How {
+    Changed,
+    Script,
+    Read,
+}
+
+/// A file's row: its name, how the turn touched it, its status and its +/− (none: not known).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileRow {
     pub path: PathBuf,
     pub name: String,
+    pub how: How,
     pub status: FileStatus,
     pub plus: Option<u32>,
     pub minus: Option<u32>,
+}
+
+/// The popover's files (chore 36): every file the turn touched, under its folder.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FilesList {
+    pub inside: Vec<Group>,
 }
 
 /// The rows under one folder (relative to the tab's folder; `""`: its top).
@@ -156,20 +171,35 @@ fn line_count(path: &Path) -> Option<u32> {
     u32::try_from(text.lines().count()).ok()
 }
 
-/// The files the turn changed, as rows under their folders (folders in order, `""` first; files
-/// by name). The ledger's own +/− win; `facts` fill what it doesn't know, and give each its status.
-pub fn changed_groups(
-    changed: &[Changed],
-    facts: &HashMap<PathBuf, FileFacts>,
-    cwd: &Path,
-) -> Vec<Group> {
+/// The files `ledger`'s turn touched, as rows under their folders (each folder once, the top's
+/// first, then case-blind; files by name): those it changed, those scripts touched and those it
+/// only read, all in one grouping (chore 36: grouped apart, a folder came back once per kind).
+pub fn files_list(ledger: &Ledger, facts: &HashMap<PathBuf, FileFacts>, cwd: &Path) -> FilesList {
+    let (scripted, read) = (
+        kept_paths(&ledger.scripted, facts),
+        kept_paths(&ledger.read, facts),
+    );
+    let rows = changed_rows(&ledger.changed, facts)
+        .chain(plain_rows(&scripted, facts, How::Script))
+        .chain(plain_rows(&read, facts, How::Read));
+    FilesList {
+        inside: grouped(rows, cwd),
+    }
+}
+
+/// The files the turn changed, as rows. The ledger's own +/− win; `facts` fill what it doesn't
+/// know, and give each its status.
+fn changed_rows<'a>(
+    changed: &'a [Changed],
+    facts: &'a HashMap<PathBuf, FileFacts>,
+) -> impl Iterator<Item = FileRow> + 'a {
     // A folder a command wrote into (`cp x dist/`) is no file (the review's Minor 7).
     let file = |c: &&Changed| {
         facts
             .get(&c.path)
             .is_none_or(|f| f.is_file || f.status == FileStatus::Deleted)
     };
-    let rows = changed.iter().filter(file).map(|c| {
+    changed.iter().filter(file).map(|c| {
         let fact = facts.get(&c.path);
         let known = c.plus.is_some() || c.minus.is_some();
         let (plus, minus) = match fact {
@@ -179,6 +209,7 @@ pub fn changed_groups(
         FileRow {
             path: c.path.clone(),
             name: file_name(&c.path),
+            how: How::Changed,
             // The turn changed it: committed since, it still reads M.
             status: match fact.map(|f| f.status) {
                 None | Some(FileStatus::Unchanged) => FileStatus::Modified,
@@ -187,8 +218,7 @@ pub fn changed_groups(
             plus,
             minus,
         }
-    });
-    grouped(rows, cwd)
+    })
 }
 
 /// `paths` (touched by scripts, or read) that are files, or files gone: a folder, or a path
@@ -206,27 +236,28 @@ pub fn kept_paths(paths: &[PathBuf], facts: &HashMap<PathBuf, FileFacts>) -> Vec
     out
 }
 
-/// `paths` as rows with no counts, grouped as `changed_groups` does.
-pub fn plain_groups(
-    paths: &[PathBuf],
-    facts: &HashMap<PathBuf, FileFacts>,
-    cwd: &Path,
-) -> Vec<Group> {
-    let rows = paths.iter().map(|p| FileRow {
+/// `paths` as rows touched `how`, with no counts.
+fn plain_rows<'a>(
+    paths: &'a [PathBuf],
+    facts: &'a HashMap<PathBuf, FileFacts>,
+    how: How,
+) -> impl Iterator<Item = FileRow> + 'a {
+    paths.iter().map(move |p| FileRow {
         path: p.clone(),
         name: file_name(p),
+        how,
         status: facts.get(p).map_or(FileStatus::Unchanged, |f| f.status),
         plus: None,
         minus: None,
-    });
-    grouped(rows, cwd)
+    })
 }
 
-/// How many files, and their +/− summed (unknown counts as 0).
+/// How many files the turn changed, and their +/− summed (unknown counts as 0).
 pub fn total(groups: &[Group]) -> (usize, u32, u32) {
     groups
         .iter()
         .flat_map(|g| &g.rows)
+        .filter(|r| r.how == How::Changed)
         .fold((0, 0, 0), |(n, p, m), r| {
             (n + 1, p + r.plus.unwrap_or(0), m + r.minus.unwrap_or(0))
         })
@@ -239,10 +270,10 @@ fn file_name(path: &Path) -> String {
     )
 }
 
-/// Rows under their folder relative to `cwd` (outside it: the folder as it is), folders in
-/// order with the top's (`""`) first, files by name.
+/// Rows under their folder relative to `cwd` (outside it: the folder as it is), each folder
+/// once, in order case-blind with the top's (`""`) first, files by name.
 fn grouped(rows: impl Iterator<Item = FileRow>, cwd: &Path) -> Vec<Group> {
-    let mut by: std::collections::BTreeMap<String, Vec<FileRow>> = Default::default();
+    let mut by: std::collections::BTreeMap<(String, String), Vec<FileRow>> = Default::default();
     for row in rows {
         let parent = row.path.parent().unwrap_or(Path::new(""));
         let folder = parent
@@ -250,10 +281,12 @@ fn grouped(rows: impl Iterator<Item = FileRow>, cwd: &Path) -> Vec<Group> {
             .unwrap_or(parent)
             .to_string_lossy()
             .into_owned();
-        by.entry(folder).or_default().push(row);
+        by.entry((folder.to_lowercase(), folder))
+            .or_default()
+            .push(row);
     }
     by.into_iter()
-        .map(|(folder, mut rows)| {
+        .map(|((_, folder), mut rows)| {
             rows.sort_by(|a, b| a.name.cmp(&b.name));
             Group { folder, rows }
         })
@@ -287,6 +320,22 @@ mod tests {
             minus,
             is_file: status != FileStatus::Deleted,
         }
+    }
+
+    fn changed_groups(
+        c: &[Changed],
+        facts: &HashMap<PathBuf, FileFacts>,
+        cwd: &Path,
+    ) -> Vec<Group> {
+        grouped(changed_rows(c, facts), cwd)
+    }
+
+    fn plain_groups(
+        paths: &[PathBuf],
+        facts: &HashMap<PathBuf, FileFacts>,
+        cwd: &Path,
+    ) -> Vec<Group> {
+        grouped(plain_rows(paths, facts, How::Read), cwd)
     }
 
     fn names(groups: &[Group]) -> Vec<(String, Vec<String>)> {
@@ -399,6 +448,7 @@ mod tests {
         let row = |plus, minus| FileRow {
             path: p("a"),
             name: "a".into(),
+            how: How::Changed,
             status: FileStatus::Modified,
             plus,
             minus,
@@ -496,5 +546,67 @@ mod tests {
         let paths = [root.join("a.txt")];
         let f = read_facts(&root, &paths);
         assert_eq!(f[&paths[0]], fact(FileStatus::Added, Some(2), Some(0)));
+    }
+
+    fn ledger(changed: &[&str], scripted: &[&str], read: &[&str]) -> Ledger {
+        Ledger {
+            running: None,
+            changed: changed
+                .iter()
+                .map(|c| self::changed(c, None, None))
+                .collect(),
+            scripted: scripted.iter().map(|s| p(s)).collect(),
+            read: read.iter().map(|r| p(r)).collect(),
+            checks: Vec::new(),
+            scopes: Vec::new(),
+            passed: 0,
+            total: 0,
+            failing: None,
+            checking: false,
+        }
+    }
+
+    fn facts_of(paths: &[&str]) -> HashMap<PathBuf, FileFacts> {
+        paths
+            .iter()
+            .map(|s| (p(s), fact(FileStatus::Modified, None, None)))
+            .collect()
+    }
+
+    /// Chore 36, your picture: `src` (agent_tab.rs), `src/browser` (probe.rs), then `src`
+    /// again (agent_box.rs, which a script edited): each kind of touch was grouped on its own.
+    #[test]
+    fn the_picture_groups_src_once() {
+        let l = ledger(
+            &["src/agent_tab.rs", "src/browser/probe.rs"],
+            &["src/agent_box.rs"],
+            &["src/agent_lanes.rs"],
+        );
+        let facts = facts_of(&["src/agent_box.rs", "src/agent_lanes.rs"]);
+        let list = files_list(&l, &facts, Path::new(CWD));
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            names(&list.inside),
+            [
+                (
+                    "src".into(),
+                    s(&["agent_box.rs", "agent_lanes.rs", "agent_tab.rs"])
+                ),
+                ("src/browser".into(), s(&["probe.rs"])),
+            ]
+        );
+        let how: Vec<How> = list.inside[0].rows.iter().map(|r| r.how).collect();
+        assert_eq!(how, [How::Script, How::Read, How::Changed]);
+        // Only the changed count.
+        assert_eq!(total(&list.inside).0, 2);
+    }
+
+    /// Folders sort case-blind (`assets` before `Docs`), the top's first.
+    #[test]
+    fn folders_sort_case_blind() {
+        let l = ledger(&["Docs/a.md", "assets/x.svg", "README.md"], &[], &[]);
+        let list = files_list(&l, &HashMap::new(), Path::new(CWD));
+        let folders: Vec<&str> = list.inside.iter().map(|g| g.folder.as_str()).collect();
+        assert_eq!(folders, ["", "assets", "Docs"]);
     }
 }
