@@ -99,6 +99,11 @@ pub(super) const SCENES: &[Scene] = &[
         PLAN_CARD,
     ),
     scene(
+        "agent-plan-approved-folded",
+        agent_plan_approved_folded,
+        PLAN_CARD,
+    ),
+    scene(
         "agent-plan-long-command",
         agent_plan_long_command,
         PLAN_CARD,
@@ -1304,9 +1309,13 @@ pub(super) fn agent_plan_approved_auto() {
             Some("auto"),
             "{n}: Claude's report agrees"
         );
-        let _ = frame_fresh(cx, window);
-        let line = part(cx, tab, n, "plan-answered");
-        assert!(line.size.height <= px(40.), "{n}: one line ({line:?})");
+        ends_folded(
+            n,
+            cx,
+            window,
+            tab,
+            "Plan approved \u{b7} Auto mode \u{2713}",
+        );
         cx.read(|cx| {
             assert!(tab.read(cx).shot_items().iter().any(|i| matches!(
                 i,
@@ -1317,6 +1326,70 @@ pub(super) fn agent_plan_approved_auto() {
             )))
         });
     });
+}
+
+/// Chore 24: approved with edits accepted, the scene ends on the folded one-line card (the
+/// landing's "Plan approved" picture): `☰ Plan approved · auto-accept edits ✓ … Show plan`
+/// and its chevron.
+pub(super) fn agent_plan_approved_folded() {
+    shoot(
+        "agent-plan-approved-folded",
+        DIMS,
+        |n, cx, window, tab, _| {
+            to_plan(cx, tab, false);
+            feed(cx, tab, |t, cx| {
+                t.answer(crate::agent_conversation::Answer::AlwaysAllowed, cx)
+                    .ok();
+            });
+            after_approval(cx, tab, "acceptEdits");
+            ends_folded(
+                n,
+                cx,
+                window,
+                tab,
+                "Plan approved \u{b7} auto-accept edits \u{2713}",
+            );
+        },
+    );
+}
+
+/// The answered plan shows only its one line, reading `words`, with Show plan and its
+/// chevron on it; nothing of the plan's body is drawn.
+fn ends_folded(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+    words: &str,
+) {
+    cx.read(|cx| {
+        tab.read(cx)
+            .shot_forget(&["plan-body", "plan-answered", "plan-show"])
+    });
+    let _ = frame_fresh(cx, window);
+    let drawn =
+        |cx: &VisualTestAppContext, name: &str| cx.read(|cx| tab.read(cx).shot_part_now(name));
+    assert!(drawn(cx, "plan-answered"), "{n}: the folded line");
+    assert!(!drawn(cx, "plan-body"), "{n}: no plan body");
+    let line = part(cx, tab, n, "plan-answered");
+    assert!(line.size.height <= px(40.), "{n}: one line ({line:?})");
+    let said = cx.read(|cx| {
+        tab.read(cx).shot_items().iter().find_map(|i| match i {
+            Item::Permission {
+                plan: Some(_),
+                answer: Some(a),
+                ..
+            } => Some(crate::agent_tab::plan_answer_line(a)),
+            _ => None,
+        })
+    });
+    assert_eq!(said.as_deref(), Some(words), "{n}: its words");
+    let words_at = part(cx, tab, n, "plan-answer-line");
+    assert!(
+        line.contains(&words_at.center()),
+        "{n}: the words on the line"
+    );
+    chevron_ends(n, cx, tab, "plan-show");
 }
 
 /// Chore 30: link `name` ends in its chevron icon (no glyph): inside it, at its right, on its
