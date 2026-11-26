@@ -44,6 +44,20 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-26 — v0.13.10 released
+
+- **What:** your words: "yes, build 25 to 30 and release", then "include 24 too" and "build 31 too and release with
+  the rest". Version 0.13.10 (`e1d0269`), tag `v0.13.10`, Release run 45783556089: test, both slices and the release
+  job green on a rerun; "fuxx 0.13.10" is the latest release with `fuxx-0.13.10.zip` (32 MB). It carries chores
+  24–31: a scene ending on the folded approved plan, a calmer permission card, approve a plan into Auto, a mode
+  change reaching Claude mid-turn, a thin blinking caret in the commit box, padded inputs, chevrons in cards, and
+  only the status line spinning.
+- **The first run failed** in `test` on a flaky test (`test_temp`'s scene-folder lock, also failed master on
+  2026-11-25): a child another test spawns (a pty, a `pre_exec` command) holds a copy of the lock's file until it
+  execs, so re-claiming at once can be refused. Shown with a small flock + fork experiment. The tag's jobs were
+  rerun (green, tag unmoved); the test now waits up to 5 s for the lock (`ece16fc`).
+- **Next task:** your on-screen checks (note 93, chores 24–31); the landing update for 0.13.10.
+
 ### 2026-11-26 — Chores 24–31: a calmer permission card, Auto that takes, plan into Auto, chevrons, one spinner
 
 - **Did:** eight chores on master (note 93). 24: a scene that ends on the folded approved plan
