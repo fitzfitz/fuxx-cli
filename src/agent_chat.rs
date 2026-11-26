@@ -469,6 +469,7 @@ mod tests {
             what: "ls".into(),
             detail: String::new(),
             always: None,
+            about: None,
             answer: answered.then_some(Answer::Allowed),
             by: None,
             plan: None,

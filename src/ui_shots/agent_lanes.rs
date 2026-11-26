@@ -388,6 +388,7 @@ pub(super) fn agent_lanes_states() {
                 what: "ls".into(),
                 detail: String::new(),
                 always: None,
+                about: None,
                 by: Some("waiting".into()),
                 plan: None,
             });

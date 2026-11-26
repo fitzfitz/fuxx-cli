@@ -366,6 +366,7 @@ fn edit(
                 what: "rm".into(),
                 detail: String::new(),
                 always: None,
+                about: None,
                 by,
                 plan: None,
             });

@@ -37,9 +37,11 @@ impl AgentTab {
         ink: Hsla,
         size: f32,
     ) -> Stateful<Div> {
+        // Its own width, also in a column (which would stretch it across the card).
         div()
             .id(id)
             .flex_none()
+            .self_start()
             .flex()
             .items_center()
             .gap(px(3.))
@@ -70,7 +72,10 @@ mod tests {
         for (name, text) in [
             ("agent_plan_card.rs", include_str!("agent_plan_card.rs")),
             ("card_view.rs", include_str!("card_view.rs")),
-            ("agent_card_parts.rs", ""),
+            (
+                "agent_permission_card.rs",
+                include_str!("agent_permission_card.rs"),
+            ),
         ] {
             for g in glyphs {
                 assert!(!text.contains(g), "{name}: {g}");

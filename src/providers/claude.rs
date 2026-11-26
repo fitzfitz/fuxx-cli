@@ -1371,6 +1371,12 @@ fn describe_suggestion(sug: &Value) -> String {
                         .map(|r| {
                             let tool = r["toolName"].as_str().unwrap_or("");
                             match r["ruleContent"].as_str() {
+                                // Chore 25: a Bash rule reads as the command it allows, a
+                                // prefix rule's ":*" as " *" ("git commit *").
+                                Some(c) if tool == "Bash" => match c.strip_suffix(":*") {
+                                    Some(prefix) => format!("{prefix} *"),
+                                    None => c.to_string(),
+                                },
                                 Some(c) => format!("{tool}({c})"),
                                 None => tool.to_string(),
                             }
@@ -2035,18 +2041,28 @@ impl ClaudeTranslator {
         } else {
             req["permission_suggestions"].clone()
         };
-        let what = if name == "Bash" {
-            s(&input["command"])
+        // Chore 25: a Bash call reads as its command, titled by its own description; nothing
+        // else of its input (timeout, background) is worth a raw block. Any other tool keeps its
+        // input for "Show input".
+        let command = (name == "Bash").then(|| s(&input["command"])).flatten();
+        let about = command
+            .as_ref()
+            .and_then(|_| s(&input["description"]).or_else(|| s(&req["description"])))
+            .filter(|d| !d.trim().is_empty());
+        let detail = if command.is_some() {
+            String::new()
         } else {
-            None
-        }
-        .or_else(|| s(&req["description"]))
-        .unwrap_or_else(|| tool_summary(name, &input));
+            serde_json::to_string_pretty(&input).unwrap_or_default()
+        };
+        let what = command
+            .or_else(|| s(&req["description"]))
+            .unwrap_or_else(|| tool_summary(name, &input));
         let event = Event::Permission {
             id: id.clone(),
             tool: s(&req["display_name"]).unwrap_or_else(|| name.to_string()),
             what,
-            detail: serde_json::to_string_pretty(&input).unwrap_or_default(),
+            detail,
+            about,
             always: suggestions
                 .as_array()
                 .and_then(|a| a.first())
@@ -3438,6 +3454,7 @@ mod tests {
         assert_eq!(id, req["request_id"].as_str().unwrap());
         assert_eq!(tool, "Write");
         assert_eq!(what, "hello.txt");
+        // No readable form beyond its file: its input, for "Show input" (chore 25).
         assert!(detail.contains("\"file_path\"") && detail.contains('\n'));
         assert_eq!(always.as_deref(), Some("Allow all edits this session"));
     }
@@ -3998,16 +4015,45 @@ mod tests {
             .unwrap();
         let ev = CLAUDE.translator().decode(&v.to_string());
         let Event::Permission {
-            tool, what, always, ..
+            tool,
+            what,
+            always,
+            about,
+            detail,
+            ..
         } = &ev[0]
         else {
             panic!("{ev:?}")
         };
         assert_eq!(tool, "Bash");
         assert_eq!(what, "python3 -c 'import time; time.sleep(60)'");
+        // Chore 25: its own description is the card's title; the command is its readable form,
+        // so no raw input under it; the rule reads as the command.
+        assert_eq!(
+            about.as_deref(),
+            v["request"]["input"]["description"].as_str()
+        );
+        assert!(about.is_some());
+        assert_eq!(detail, "");
         assert_eq!(
             always.as_deref(),
-            Some("Always allow Bash(python3 -c 'import time; time.sleep(60)')")
+            Some("Always allow python3 -c 'import time; time.sleep(60)'")
+        );
+    }
+
+    /// Chore 25: a Bash rule reads as the command (a prefix rule's `:*` as " *"); another
+    /// tool's keeps its name.
+    #[test]
+    fn a_bash_rule_reads_as_its_command() {
+        let rule = |tool: &str, content: &str| {
+            describe_suggestion(&json!({"type": "addRules", "behavior": "allow",
+                "rules": [{"toolName": tool, "ruleContent": content}]}))
+        };
+        assert_eq!(rule("Bash", "git commit:*"), "Always allow git commit *");
+        assert_eq!(rule("Bash", "npm test"), "Always allow npm test");
+        assert_eq!(
+            rule("WebFetch", "domain:example.com"),
+            "Always allow WebFetch(domain:example.com)"
         );
     }
 

@@ -457,6 +457,7 @@ impl AgentTab {
                 what,
                 detail,
                 always,
+                about,
                 answer,
                 by,
                 ..
@@ -547,11 +548,16 @@ impl AgentTab {
                         self.queued_line(ix, line, look)
                     }
                     None => self.permission_card(
-                        tool,
-                        what,
-                        detail,
-                        always.as_deref(),
-                        by.as_deref(),
+                        permission_card::Ask {
+                            ix,
+                            id,
+                            tool,
+                            what,
+                            detail,
+                            about: about.as_deref(),
+                            always: always.as_deref(),
+                            by: by.as_deref(),
+                        },
                         look,
                     ),
                 }
@@ -938,107 +944,6 @@ impl AgentTab {
                             .child(SharedString::from(line.to_string())),
                     )
             }))
-            .into_any_element()
-    }
-
-    /// The open permission card: what the agent wants to run, and Allow / always / Deny.
-    fn permission_card(
-        &self,
-        tool: &str,
-        what: &str,
-        detail: &str,
-        always: Option<&str>,
-        by: Option<&str>,
-        look: &Look,
-    ) -> AnyElement {
-        let c = &look.c;
-        let mut shown: Vec<&str> = detail.lines().take(DETAIL_LINES).collect();
-        if detail.lines().count() > DETAIL_LINES {
-            shown.push("…");
-        }
-        // A subagent's request names it (M11ar): "Reader wants to run Bash".
-        let label: SharedString = match by.and_then(|b| self.conversation.lane(b)) {
-            Some(lane) => lane.label.clone().into(),
-            None => look.label.clone(),
-        };
-        // Spec B-B: a card (r12), a shield before its heading, the command in a well.
-        div()
-            .w_full()
-            .px(px(14.))
-            .py(px(12.))
-            .rounded(px(crate::agent_chat::chat::R_CARD))
-            .border_1()
-            .border_color(hsla(c.ask_edge))
-            .bg(hsla(c.ask_fill))
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .text_color(hsla(c.ask_head))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(icon(Icon::Shield, px(14.), hsla(c.ask_head)))
-                    .child(SharedString::from(format!("{label} wants to run {tool}"))),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .px(px(12.))
-                    .py(px(10.))
-                    .rounded(px(crate::agent_chat::chat::R_GROUP))
-                    .bg(hsla(c.code_fill))
-                    .font_family(look.mono.clone())
-                    .text_size(px(12.5))
-                    .text_color(hsla(c.code_text))
-                    .child(SharedString::from(what.to_string())),
-            )
-            .when(!detail.trim().is_empty(), |d| {
-                d.child(
-                    div()
-                        .font_family(look.mono.clone())
-                        .text_size(px(text::META))
-                        .text_color(hsla(c.ask_dim))
-                        .child(SharedString::from(shown.join("\n"))),
-                )
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(6.))
-                    .text_size(px(text::META + 0.5))
-                    .child(button("agent-allow", "Allow  ⏎", true, c).on_click(on_tab(
-                        &look.view,
-                        |this, cx| {
-                            this.answer(Answer::Allowed, cx).ok();
-                        },
-                    )))
-                    .when_some(always.map(str::to_string), |d, always| {
-                        d.child(button("agent-always", always, false, c).on_click(on_tab(
-                            &look.view,
-                            |this, cx| {
-                                this.answer(Answer::AlwaysAllowed, cx).ok();
-                            },
-                        )))
-                    })
-                    .child(button("agent-deny", "Deny", false, c).on_click(on_tab(
-                        &look.view,
-                        |this, cx| {
-                            this.answer(Answer::Denied(None), cx).ok();
-                        },
-                    ))),
-            )
-            .child(
-                div()
-                    .text_size(px(text::META))
-                    .text_color(hsla(c.ask_dim))
-                    .child(SharedString::from(format!(
-                        "Or type in the box below to tell {label} what to do instead."
-                    ))),
-            )
             .into_any_element()
     }
 

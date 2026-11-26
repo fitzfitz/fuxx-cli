@@ -76,6 +76,9 @@ mod plan_card;
 #[path = "agent_card_parts.rs"]
 mod card_parts;
 
+#[path = "agent_permission_card.rs"]
+mod permission_card;
+
 #[path = "agent_shells_view.rs"]
 mod shells_view;
 
@@ -1640,6 +1643,8 @@ pub struct AgentTab {
     plan_reopened: std::collections::HashSet<String>,
     /// Answered permissions whose long command is opened whole (chore 23).
     command_open: std::collections::HashSet<String>,
+    /// The open permission cards whose raw input is shown ("Show input", chore 25).
+    input_open: std::collections::HashSet<String>,
     /// Keep planning… was pressed: the waiting plan's buttons step aside for your note.
     plan_note: bool,
     /// The waiting plan's footer, where it was last painted (the pinned bar's cue).
@@ -2424,6 +2429,7 @@ impl AgentTab {
             plan_open: Default::default(),
             plan_reopened: Default::default(),
             command_open: Default::default(),
+            input_open: Default::default(),
             plan_note: false,
             plan_footer: Rc::default(),
             plan_frame: Cell::new(0),

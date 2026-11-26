@@ -56,6 +56,7 @@ mod agent_box;
 mod agent_lanes;
 mod agent_long;
 mod agent_notice;
+mod agent_permission;
 mod agent_rewind;
 mod agent_shells;
 mod agent_subagents;

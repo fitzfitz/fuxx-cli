@@ -15,9 +15,9 @@
 
 use super::{
     Scene, agent, agent_activity, agent_ask, agent_box, agent_lanes, agent_long, agent_notice,
-    agent_rewind, agent_shells, agent_subagents, ask, branch, changes, chrome, chrome_parts,
-    command, file_tab, file_tab_md, file_tab_md_reader, menus, naming, notes, overlays, palette,
-    panes, right_sidebar, sidebar, status_bar, terminal, welcome, window,
+    agent_permission, agent_rewind, agent_shells, agent_subagents, ask, branch, changes, chrome,
+    chrome_parts, command, file_tab, file_tab_md, file_tab_md_reader, menus, naming, notes,
+    overlays, palette, panes, right_sidebar, sidebar, status_bar, terminal, welcome, window,
 };
 
 /// Files that run or declare the suite but change no scene's picture: an edit to one of these
@@ -55,6 +55,7 @@ pub(super) const AREAS: &[(&str, &[Scene])] = &[
     (agent_box::FILE, agent_box::SCENES),
     (agent_lanes::FILE, agent_lanes::SCENES),
     (agent_activity::FILE, agent_activity::SCENES),
+    (agent_permission::FILE, agent_permission::SCENES),
     (agent_shells::FILE, agent_shells::SCENES),
     (agent_subagents::FILE, agent_subagents::SCENES),
     (agent_long::FILE, agent_long::SCENES),
@@ -372,6 +373,10 @@ pub(super) const ORDER: &[&str] = &[
     "agent-plan-approved-auto",
     "agent-plan-long-command",
     "agent-plan-waiting-narrow",
+    "agent-permission-short",
+    "agent-permission-heredoc",
+    "agent-permission-input",
+    "agent-permission-narrow",
     "agent-shells-with-plan",
     "agent-shells-alone",
     "agent-shells-done",

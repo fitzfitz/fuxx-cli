@@ -101,6 +101,8 @@ pub enum Item {
         what: String,
         detail: String,
         always: Option<String>,
+        /// What the call is for (`Event::Permission::about`, chore 25).
+        about: Option<String>,
         answer: Option<Answer>,
         /// The subagent (lane id) that asks; `None`: the main agent.
         by: Option<String>,
@@ -498,6 +500,7 @@ impl Conversation {
                 what,
                 detail,
                 always,
+                about,
                 by,
                 plan,
             } => {
@@ -508,6 +511,7 @@ impl Conversation {
                     what,
                     detail,
                     always,
+                    about,
                     answer: None,
                     by,
                     plan: plan.map(Box::new),
@@ -1551,6 +1555,7 @@ mod tests {
             what: "run ls".into(),
             detail: "ls".into(),
             always: None,
+            about: None,
             by: None,
             plan: None,
         }
@@ -2234,6 +2239,7 @@ mod tests {
             what: String::new(),
             detail: String::new(),
             always: None,
+            about: None,
             by: None,
             plan: Some(plan.clone()),
         });
@@ -2268,6 +2274,7 @@ mod tests {
             what: "ls".into(),
             detail: String::new(),
             always: None,
+            about: None,
             by: Some("t1".into()),
             plan: None,
         });
@@ -2333,6 +2340,7 @@ mod tests {
             what: "ls".into(),
             detail: String::new(),
             always: None,
+            about: None,
             by: Some("t1".into()),
             plan: None,
         });
@@ -2376,6 +2384,7 @@ mod tests {
             what: "ls".into(),
             detail: String::new(),
             always: None,
+            about: None,
             by: Some("t1".into()),
             plan: None,
         });
@@ -2634,6 +2643,7 @@ mod tests {
             what: "ls".into(),
             detail: String::new(),
             always: None,
+            about: None,
             by: Some("t1".into()),
             plan: None,
         });
@@ -2923,6 +2933,7 @@ mod tests {
                 what: "ls".into(),
                 detail: String::new(),
                 always: None,
+                about: None,
                 by: Some("t1".into()),
                 plan: None,
             });
@@ -3158,6 +3169,7 @@ mod tests {
             what: "npm test".into(),
             detail: String::new(),
             always: None,
+            about: None,
             by: Some("t1".into()),
             plan: None,
         });
@@ -3167,6 +3179,7 @@ mod tests {
             what: "ls".into(),
             detail: String::new(),
             always: None,
+            about: None,
             by: None,
             plan: None,
         });
@@ -3208,6 +3221,7 @@ mod tests {
             what: "ls".into(),
             detail: String::new(),
             always: None,
+            about: None,
             by: Some("t1".into()),
             plan: None,
         });
@@ -3223,6 +3237,7 @@ mod tests {
             what: "ls".into(),
             detail: String::new(),
             always: None,
+            about: None,
             by: Some("t1".into()),
             plan: None,
         });

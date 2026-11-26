@@ -348,6 +348,7 @@ mod tests {
             what: "ls".into(),
             detail: String::new(),
             always: None,
+            about: None,
             answer: None,
             by: None,
             plan: None,

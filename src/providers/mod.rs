@@ -575,8 +575,13 @@ pub enum Event {
         id: String,
         tool: String,
         what: String,
+        /// The tool's raw input, for a tool with no readable form (`what` alone can't say it);
+        /// empty when `what` is all there is to read (chore 25: a Bash command).
         detail: String,
         always: Option<String>,
+        /// What the call is for, in the agent's own words (chore 25: a Bash call's
+        /// `description`): the card's title. None: "<agent> wants to run <tool>".
+        about: Option<String>,
         /// The subagent (lane id) that asks; `None`: the main agent.
         by: Option<String>,
         /// The agent's plan, when this asks to leave plan mode with it (the 2026-11-25 chores:

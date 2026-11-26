@@ -1164,6 +1164,7 @@ pub(super) fn agent_tab_plan_long() {
                     what: String::new(),
                     detail: String::new(),
                     always: None,
+                    about: None,
                     by: None,
                     plan: Some(crate::providers::PlanDraft {
                         title: crate::providers::plan_title(&md),
@@ -2055,6 +2056,7 @@ pub(super) fn agent_tab_cached_current() {
                     what: "git commit -m \"fix rsvp\"".into(),
                     detail: String::new(),
                     always: Some("Always allow Bash(git commit:*)".into()),
+                    about: None,
                     by: None,
                     plan: None,
                 }],
@@ -2998,6 +3000,7 @@ pub(super) fn agent_sidebar_waiting() {
                                 what: "npm test".into(),
                                 detail: "npm test".into(),
                                 always: None,
+                                about: None,
                                 by: None,
                                 plan: None,
                             }],

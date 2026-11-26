@@ -2095,6 +2095,7 @@ pub(super) fn chrome_agent_status() {
                 what: "ls".into(),
                 detail: "ls".into(),
                 always: None,
+                about: None,
                 by: None,
                 plan: None,
             };
@@ -2205,6 +2206,7 @@ pub(super) fn chrome_agent_status() {
                 what: "npm test".into(),
                 detail: "npm test".into(),
                 always: None,
+                about: None,
                 by: None,
                 plan: None,
             };

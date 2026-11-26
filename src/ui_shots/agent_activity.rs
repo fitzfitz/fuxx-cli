@@ -1134,6 +1134,7 @@ fn to_plan_as(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, long: bool,
         what: String::new(),
         detail: String::new(),
         always: None,
+        about: None,
         by: None,
         plan: Some(crate::providers::PlanDraft {
             title: crate::providers::plan_title(&md),
@@ -1320,7 +1321,7 @@ pub(super) fn agent_plan_approved_auto() {
 
 /// Chore 30: link `name` ends in its chevron icon (no glyph): inside it, at its right, on its
 /// words' line and no taller than them.
-fn chevron_ends(n: &str, cx: &VisualTestAppContext, tab: &Entity<AgentTab>, name: &str) {
+pub(super) fn chevron_ends(n: &str, cx: &VisualTestAppContext, tab: &Entity<AgentTab>, name: &str) {
     let link = part(cx, tab, n, name);
     let chevron = part(cx, tab, n, "fold-chevron");
     assert!(
@@ -1393,6 +1394,7 @@ pub(super) fn agent_plan_long_command() {
             what: "cat > /tmp/fx/code/my-app/scripts/retry_check_for_the_failover_case.sh <<'EOF' && chmod +x /tmp/fx/code/my-app/scripts/retry_check_for_the_failover_case.sh && echo written to the scripts folder\nset -e\ncargo test retry -- --nocapture\ncargo test client::current\necho done\nEOF".into(),
             detail: String::new(),
             always: None,
+            about: None,
             by: None,
             plan: None,
         });
