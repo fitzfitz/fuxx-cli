@@ -1586,3 +1586,17 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   checks run, red with ✕ when one failed). Chips show as soon as there's something to show (mid-run too), in
   every state (running, needs you, done). Dimmed like the time. Build after chore 17 (same status line,
   src/agent_status_line.rs); pin it in a scene for the running and done cases, a narrow width included.
+- **Chore 23 (queued, not built): no overlap after a plan is approved; a smaller, tighter plan card** (your words,
+  2026-11-26, with a picture: "also fix this layout messy overlapping … this is when I accept the plan mode. The
+  plan mode floating buttons, looks very bad and everything too big. redesign it and don't make too much spaces" →
+  my sketch → "yes, build 23 too and release with the rest"). (1) The bug: after you approve a plan, rows paint over
+  each other (an open plan card, its "Show less", "Approved · auto-accept edits ✓", and an "Allowed · Bash …" row
+  whose long multi-line command runs over the rows below). Suspects: the chat list keeping a row's old height after
+  the card changes size, or the long command overflowing its row. Debug first; whatever the cause, a long command
+  shows one line with "…" until opened. (2) The card: the plan text at the chat's own size (not 16 pt), 12 pt
+  padding; one header line `☰ Claude's plan · plan.md ↗ · 7 steps`; folded after 12 lines with "Show all ▾"; the
+  three answers in one row of 24 pt buttons (`Approve · auto-accept ⏎`, `Approve`, `Keep planning`). With the
+  buttons scrolled away, one slim pill on the box's top edge (`☰ Plan waiting · Approve ⏎ · Keep planning`)
+  instead of the big floating bar. Once answered it always folds to one line, even if it was open: `☰ Plan
+  approved · auto-accept edits ✓ … Show plan ›`; opened, it reads only (no footer, Show less at the top only).
+  Pin it in the plan card scenes (waiting, answered, opened-after-answer, a long command row below it).
