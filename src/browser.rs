@@ -32,9 +32,9 @@ use objc2_foundation::{
     NSPoint, NSRect, NSSize, NSString, NSURL, NSURLErrorCancelled, NSURLRequest,
 };
 use objc2_web_kit::{
-    WKErrorCode, WKNavigation, WKNavigationAction, WKNavigationDelegate, WKUIDelegate,
-    WKUserScript, WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore,
-    WKWindowFeatures,
+    WKErrorCode, WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
+    WKUIDelegate, WKUserScript, WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration,
+    WKWebsiteDataStore, WKWindowFeatures,
 };
 use serde_json::Value;
 
@@ -974,10 +974,34 @@ define_class!(
         }
     }
 
-    // SAFETY: the signatures match `webView:didStartProvisionalNavigation:`,
-    // `webView:didCommitNavigation:`, `webView:didFinishNavigation:`,
-    // `webView:didFailProvisionalNavigation:withError:` and `webView:didFailNavigation:withError:`.
+    // SAFETY: the signatures match `webView:decidePolicyForNavigationAction:decisionHandler:`,
+    // `webView:didStartProvisionalNavigation:`, `webView:didCommitNavigation:`,
+    // `webView:didFinishNavigation:`, `webView:didFailProvisionalNavigation:withError:` and
+    // `webView:didFailNavigation:withError:`.
     unsafe impl WKNavigationDelegate for BrowserDelegate {
+        // Every navigation, in any frame: none to a file on disk but a page
+        // (`browser_url::may_navigate`); a local page's own images and styles are no
+        // navigations, so they still load.
+        #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
+        fn decide_policy(
+            &self,
+            _web_view: &WKWebView,
+            action: &WKNavigationAction,
+            decide: &block2::DynBlock<dyn Fn(WKNavigationActionPolicy)>,
+        ) {
+            // SAFETY: main thread (WebKit calls its delegates there); plain property reads.
+            let url = unsafe { action.request() }
+                .URL()
+                .and_then(|url| url.absoluteString())
+                .map(|url| url.to_string())
+                .unwrap_or_default();
+            decide.call((if crate::browser_url::may_navigate(&url) {
+                WKNavigationActionPolicy::Allow
+            } else {
+                WKNavigationActionPolicy::Cancel
+            },));
+        }
+
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
         fn did_start_navigation(&self, _web_view: &WKWebView, _navigation: Option<&WKNavigation>) {
             self.changed();

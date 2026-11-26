@@ -579,6 +579,7 @@ async fn probe_file_page(b: &Browser, ex: &BackgroundExecutor) -> Result<Value, 
              <body><h1>my-app mockup</h1><img src=\"img/dot.svg\"></body></html>",
         ),
         ("style.css", "body { color: rgb(1, 2, 3); }"),
+        ("notes.txt", "my-app notes"),
         (
             "img/dot.svg",
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"7\" height=\"5\">\
@@ -605,11 +606,25 @@ async fn probe_file_page(b: &Browser, ex: &BackgroundExecutor) -> Result<Value, 
         }
         Err(e) => json!({ "error": e }),
     };
-    let _ = std::fs::remove_dir_all(&dir);
     check(
         report["title"] == "local page" && report["seen"]["Ok"] == json!(["rgb(1, 2, 3)", 7]),
         "a file:// page loads with its stylesheet and image",
         &report,
+    )
+    .inspect_err(|_| {
+        let _ = std::fs::remove_dir_all(&dir);
+    })?;
+    // The review's finding: a script can't steer the page to another file (the policy).
+    let notes = format!("file://{}", dir.join("notes.txt").display()).replace(' ', "%20");
+    let _ = ask(b, ex, &format!("location.href = {}", json!(notes))).await;
+    ex.timer(Duration::from_millis(500)).await;
+    let stayed = settle(b, ex, |s| !s.loading).await;
+    let _ = std::fs::remove_dir_all(&dir);
+    let stayed = stayed?;
+    check(
+        stayed.url == url && stayed.title == "local page",
+        "a local page can't go to a file that isn't a page",
+        &stayed,
     )?;
     Ok(report)
 }

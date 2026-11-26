@@ -118,6 +118,16 @@ pub fn is_local_page(url: &str) -> bool {
     scheme.eq_ignore_ascii_case("file://") && is_page_name(path)
 }
 
+/// Whether a browser page may go to `url` (the navigation policy, after the chores 33–35
+/// review): anywhere but a `file://` that isn't a page (`is_local_page`), so a local page's tab
+/// can't be steered (a link, a script, `browser.eval`) to show another file on disk.
+pub fn may_navigate(url: &str) -> bool {
+    let file = url
+        .get(..5)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("file:"));
+    !file || is_local_page(url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +153,28 @@ mod tests {
             "/x/page.html.txt",
         ] {
             assert_eq!(page_url(Path::new(no)), None, "{no}");
+        }
+    }
+
+    /// The review's finding (chores 33–35): a page may go anywhere but to a file that isn't a
+    /// page, so a local page's tab can't be steered to read other files.
+    #[test]
+    fn a_page_may_go_to_no_file_but_a_page() {
+        for yes in [
+            "https://example.com/a",
+            "about:blank",
+            "file:///x/my-app/index.html",
+            "FILE:///x/my-app/about.HTM#team",
+        ] {
+            assert!(may_navigate(yes), "{yes}");
+        }
+        for no in [
+            "file:///Users/me/.ssh/id_ed25519",
+            "FILE:///etc/hosts",
+            "file:///x/my-app/",
+            "file:///x/report.pdf?a=.html",
+        ] {
+            assert!(!may_navigate(no), "{no}");
         }
     }
 

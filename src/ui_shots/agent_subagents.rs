@@ -496,6 +496,10 @@ fn corner_tabs(name: &'static str, state: Corner) {
                 cx.read(|cx| tab.read(cx).shot_menu()).is_none(),
                 "{n}: closed again"
             );
+            // The pointer off the tabs, so the picture shows them at rest.
+            let away = gpui::point(px(40.), px(40.));
+            cx.simulate_mouse_move(window, away, None, gpui::Modifiers::none());
+            let _ = frame_fresh(cx, window);
         }
     });
 }

@@ -120,7 +120,7 @@ pub fn same_url(a: &str, b: &str) -> bool {
 
 /// Where `url`, clicked in pane `from` of workspace `ws`, opens under `mode`.
 ///
-/// - `mailto:` (anything not http or https, or a local page: chore 35) and "Your default
+/// - `mailto:` (anything not http or https or a local page, chore 35) and "Your default
 ///   browser": the OS.
 /// - "A new tab in this pane": `from`.
 /// - "A browser split on the right": the workspace's last link pane (`last`) while it is
@@ -216,9 +216,10 @@ impl crate::workspace::Workspace {
         self.open_link_from(from, url, LinkFrom::Click, window, cx);
     }
 
-    /// `link.open` (`fuxx link open URL`, a shim's): `url`, an http or https address, as a link
-    /// clicked in the terminal or agent tab the request names (`caller_tab`). Answered at once:
-    /// a page that loads, or doesn't, is the browser tab's business.
+    /// `link.open` (`fuxx link open URL`, a shim's): `url`, an http or https address or a local
+    /// page's (`auto_open::takes`, chore 35), as a link clicked in the terminal or agent tab the
+    /// request names (`caller_tab`). Answered at once: a page that loads, or doesn't, is the
+    /// browser tab's business.
     pub(crate) fn link_open(
         &mut self,
         p: &Value,
