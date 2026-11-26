@@ -1570,3 +1570,9 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   subjects ("Chore 16: …") match neither "Task N" nor the plan's planned commit messages (chore 15). Debug it
   first: compare the plan's commit lines with the commits on master, and fix the matching (or the plan
   template), with a test from this real plan.
+- **Chore 21 (queued, not built): no empty band above the subagent row** (your words, 2026-11-26, with a picture:
+  "what's the empty gap?" → "I meant between the subagets tab and the terminal/agent tab" → "queue it"). Under the
+  tab bar, above the lane pills (`✓ Main 🤖 …`), about 70 pt of nothing. Likely space still kept for the agent tab's
+  old top bar (its status/cost/context row moved to the clock in the 2026-11-24 batch), or the lane row's top margin
+  stacked on the chat's top padding. Measure it in a scene, find what reserves it, trim it to the standard gap, and
+  pin the gap with a check (on Main, and with chore 19's slim `← Main › 🤖 …` row inside a subagent).
