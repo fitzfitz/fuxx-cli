@@ -1556,3 +1556,17 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   line sits off the box's line. Fix by checking the step's anchor (`bounds.right()` / `bounds.bottom()`, its 16 pt
   box and `mr(-EDGE)`) against the folder tab's step and the box's border, in both themes and at 1x/2x; pin it with
   a pixel check in `agent-plan-tab` (the edge colour continuous where the curve meets the box's top line).
+- **Chore 19 (queued, not built): subagents move to a corner tab; the top row becomes a way back** (your words,
+  2026-11-26: "Love subagents on the popover list. can we just move there and make it clickable? we remove the one on
+  the top. Or maybe we add 1 more section beside the task and the shell, add icon ':robot #N'" → my take → "queue
+  it"). (1) A third corner tab beside the shells and plan tabs, in their look: a robot icon and done/all
+  subagents (`🤖 4/6`); its popover is the plan popover's "Subagents" list, each row clickable to open that lane,
+  running rows with their arc and current action, a "Needs you" row in red jumping to its question. The plan
+  popover keeps only its tasks. (2) The top lane row shows only while you are inside a subagent's view, slimmed
+  to a breadcrumb: `← Main › 🤖 <label>` and its status; on Main it is gone. ⌥⌘[ / ⌥⌘] still step between
+  lanes.
+- **Chore 20 (queued, not built): the plan tab ticks off chore 16's plan** (seen in your 2026-11-26 picture: "Plan ·
+  0 of 5" for docs/superpowers/plans/2026-11-25-background-shells.md, all five tasks built). Likely its commits'
+  subjects ("Chore 16: …") match neither "Task N" nor the plan's planned commit messages (chore 15). Debug it
+  first: compare the plan's commit lines with the commits on master, and fix the matching (or the plan
+  template), with a test from this real plan.
