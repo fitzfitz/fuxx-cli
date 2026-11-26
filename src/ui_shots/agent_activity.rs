@@ -179,11 +179,47 @@ fn tracks(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> Vec<Rc<Tracks>> 
     cx.read(|cx| tab.read(cx).shot_tracks())
 }
 
-/// The chat's status line and its counts line (the 2026-11-24 chores: the ledger moved there
-/// from the folder tab).
-fn status(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> (String, Option<String>) {
-    cx.read(|cx| tab.read(cx).shot_status_line(cx))
-        .unwrap_or_else(|| panic!("a status line"))
+/// The chat's status line and its chips (the 2026-11-24 chores: the ledger moved there from the
+/// folder tab; chore 22: chips on its right), each as (kind, state, words).
+fn status(
+    cx: &VisualTestAppContext,
+    tab: &Entity<AgentTab>,
+) -> (
+    String,
+    Vec<(
+        crate::agent_status_line::ChipKind,
+        crate::agent_status_line::ChipState,
+        String,
+    )>,
+) {
+    let (line, chips) = cx
+        .read(|cx| tab.read(cx).shot_status_line(cx))
+        .unwrap_or_else(|| panic!("a status line"));
+    let chips = chips
+        .into_iter()
+        .map(|c| (c.kind, c.state, c.text))
+        .collect();
+    (line, chips)
+}
+
+/// Chore 22: the chips on the status line's row (centres level), pinned to the column's right
+/// edge (the box's), the line ending before them.
+fn chips_on_the_row(n: &str, cx: &VisualTestAppContext, tab: &Entity<AgentTab>) {
+    let line = part(cx, tab, n, "status-line");
+    let chips = part(cx, tab, n, "status-chips");
+    let outer = part(cx, tab, n, "outer");
+    assert!(
+        (line.center().y - chips.center().y).abs() < px(1.5),
+        "{n}: one row ({line:?} vs {chips:?})"
+    );
+    assert!(
+        line.right() <= chips.left(),
+        "{n}: the line ends before the chips"
+    );
+    assert!(
+        (chips.right() - outer.right()).abs() <= px(2.),
+        "{n}: pinned to the right edge ({chips:?} vs {outer:?})"
+    );
 }
 
 pub(super) fn part(
@@ -391,11 +427,28 @@ pub(super) fn agent_tracks_failure() {
             all[0].first_error
         );
         let _ = part(cx, tab, n, "tracks-first-error");
-        assert!(
-            status(cx, tab)
-                .1
-                .is_some_and(|c| c.ends_with("build failing")),
+        use crate::agent_status_line::{ChipKind, ChipState};
+        assert_eq!(
+            status(cx, tab).1.last(),
+            Some(&(ChipKind::Checks, ChipState::Failed, "build".to_string())),
             "{n}: a compile error under cargo test is the build's"
+        );
+        // Red with ✕ (chore 22).
+        let shot = frame_fresh(cx, window);
+        let c = cx.read(|cx| {
+            crate::agent_tab::Colors::of(&cx.global::<crate::appearance::Appearance>().theme)
+        });
+        let chip = part(cx, tab, n, "status-checks");
+        let ink = super::ink_in(
+            &shot,
+            size(px(DIMS.0), px(DIMS.1)),
+            chip,
+            [c.page.r, c.page.g, c.page.b],
+        );
+        assert!(
+            super::gap(ink, c.ledger_failing) < 40,
+            "{n}: the checks chip in red ({ink:?} vs {:?})",
+            c.ledger_failing
         );
     });
 }
@@ -826,16 +879,26 @@ fn corner_step_meets_the_line(
     }
 }
 
-/// The running turn, on the chat's status line: "Cultivating… · Running tests …", and under it
-/// "4 changed · checks pass" (each scope's latest passed); the folder tab keeps only the mark.
+/// The running turn, on the chat's status line: "Cultivating… · Running tests …", and on its
+/// right the chips `⧉ 4 changed` and the checks' arc (a check runs: chore 22); the folder tab
+/// drops its mark (chore 17).
 pub(super) fn agent_ledger_running() {
     shoot("agent-ledger-running", DIMS, |n, cx, window, tab, _| {
         feed(cx, tab, |t, cx| t.send("Fix the client".into(), cx));
         give(cx, tab, ledger_turn(true).events());
         let _ = frame_fresh(cx, window);
-        let (line, counts) = status(cx, tab);
+        let (line, chips) = status(cx, tab);
         assert!(line.contains(" · Running tests"), "{n}: {line:?}");
-        assert_eq!(counts.as_deref(), Some("4 changed · checks pass"), "{n}");
+        use crate::agent_status_line::{ChipKind, ChipState};
+        assert_eq!(
+            chips,
+            [
+                (ChipKind::Changed, ChipState::Quiet, "4 changed".to_string()),
+                (ChipKind::Checks, ChipState::Running, "checks".to_string()),
+            ],
+            "{n}"
+        );
+        chips_on_the_row(n, cx, tab);
         // One working mark (chore 17, option B): the status line's; the folder tab drops its
         // own while the line shows.
         cx.read(|cx| tab.read(cx).shot_forget(&["status", "status-line"]));
@@ -860,13 +923,23 @@ pub(super) fn agent_ledger_done() {
         give(cx, tab, events);
         let _ = frame_fresh(cx, window);
         assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Done, "{n}");
-        let (line, counts) = status(cx, tab);
+        let (line, chips) = status(cx, tab);
         assert!(line.starts_with("Done"), "{n}: {line:?}");
-        assert_eq!(counts.as_deref(), Some("4 changed · checks pass"), "{n}");
+        use crate::agent_status_line::{ChipKind, ChipState};
+        assert_eq!(
+            chips,
+            [
+                (ChipKind::Changed, ChipState::Quiet, "4 changed".to_string()),
+                (ChipKind::Checks, ChipState::Passed, "checks".to_string()),
+            ],
+            "{n}: each scope's latest passed"
+        );
+        chips_on_the_row(n, cx, tab);
     });
 }
 
-/// A narrow tab: the status line is cut with … inside the chat column, never past it.
+/// A narrow tab: the status line is cut with … before the chips, which stay on its row, inside
+/// the window.
 pub(super) fn agent_ledger_trimmed() {
     shoot(
         "agent-ledger-trimmed",
@@ -878,16 +951,19 @@ pub(super) fn agent_ledger_trimmed() {
             let _ = frame_fresh(cx, window);
             let (line, _) = status(cx, tab);
             assert!(line.contains("Running tests"), "{n}: {line:?}");
-            let drawn = part(cx, tab, n, "status-line");
+            // The line gives way (cut with "…"), the chips keep their place (chore 22).
+            chips_on_the_row(n, cx, tab);
+            let chips = part(cx, tab, n, "status-chips");
             assert!(
-                drawn.right() <= px(480.),
-                "{n}: inside the window {drawn:?}"
+                chips.right() <= px(480.),
+                "{n}: inside the window {chips:?}"
             );
         },
     );
 }
 
-/// A click on the counts under the status line: the popover lists the changed files (`src/api.rs` with its +/−) and the
+/// A click on a chip on the status line's right (chore 22: each opens its part): the checks
+/// chip lists the checks; the changed chip lists the changed files (`src/api.rs` with its +/−) and the
 /// checks one row per scope ("3/7 passed"); a click on a file asks for its diff tab and closes
 /// it; Esc closes it too.
 pub(super) fn agent_ledger_popover() {
@@ -900,12 +976,32 @@ pub(super) fn agent_ledger_popover() {
         });
         give(cx, tab, events);
         let _ = frame_fresh(cx, window);
-        click(cx, window, part(cx, tab, n, "status-counts"));
-        let _ = frame_fresh(cx, window);
         let l = cx
             .read(|cx| tab.read(cx).shot_ledger())
             .unwrap_or_else(|| panic!("{n}: a ledger"));
         assert_eq!((l.passed, l.total, l.scopes.len()), (3, 7, 3), "{n}");
+        // Each chip opens its part (chore 22): the checks chip the checks, not the files.
+        let scope = l.scopes[0].scope.clone();
+        let listed = |cx: &VisualTestAppContext, label: &str| {
+            cx.read(|cx| tab.read(cx).shot_menu_row(label)).is_some()
+        };
+        click(cx, window, part(cx, tab, n, "status-checks"));
+        let _ = frame_fresh(cx, window);
+        assert!(
+            listed(cx, &scope) && !listed(cx, "src/api.rs"),
+            "{n}: the checks chip lists the checks"
+        );
+        // The changed chip, with the checks' popover open: the files, not the checks.
+        click(cx, window, part(cx, tab, n, "status-changed"));
+        let _ = frame_fresh(cx, window);
+        assert!(
+            cx.read(|cx| tab.read(cx).shot_menu()).is_some(),
+            "{n}: the other chip opens its part from that press"
+        );
+        assert!(
+            listed(cx, "src/api.rs") && !listed(cx, &scope),
+            "{n}: the changed chip lists the files"
+        );
         let row = cx
             .read(|cx| tab.read(cx).shot_menu_row("src/api.rs"))
             .unwrap_or_else(|| panic!("{n}: src/api.rs listed"));
@@ -919,23 +1015,23 @@ pub(super) fn agent_ledger_popover() {
             cx.read(|cx| tab.read(cx).shot_menu()).is_none(),
             "{n}: the popover closed"
         );
-        click(cx, window, part(cx, tab, n, "status-counts"));
+        click(cx, window, part(cx, tab, n, "status-changed"));
         assert!(cx.read(|cx| tab.read(cx).shot_menu()).is_some(), "{n}");
-        // The counts again close it (the review's finding 5: the press outside closed it and
+        // The chip again closes it (the review's finding 5: the press outside closed it and
         // the click opened it again).
-        click(cx, window, part(cx, tab, n, "status-counts"));
+        click(cx, window, part(cx, tab, n, "status-changed"));
         assert!(
             cx.read(|cx| tab.read(cx).shot_menu()).is_none(),
             "{n}: a second click closes it"
         );
-        click(cx, window, part(cx, tab, n, "status-counts"));
+        click(cx, window, part(cx, tab, n, "status-changed"));
         cx.simulate_keystrokes(window, "escape");
         cx.run_until_parked();
         assert!(
             cx.read(|cx| tab.read(cx).shot_menu()).is_none(),
             "{n}: Esc closes it"
         );
-        click(cx, window, part(cx, tab, n, "status-counts"));
+        click(cx, window, part(cx, tab, n, "status-changed"));
         let _ = frame_fresh(cx, window);
     });
 }

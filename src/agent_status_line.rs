@@ -1,13 +1,13 @@
 //! The chat's status line (the 2026-11-24 chores: the status moved out of the folder tab, which
 //! it ran past): under the last row while a turn is live, `Cultivating… · <running action> ·
 //! 0:31`, led by the plan's task when there is one; `Waiting for you · <question>` while the
-//! agent asks; `Done · 0:42` (after the strip's ✓) once the turn ends. Under it a dim counts line, `4 changed ·
-//! checks 3/7`, from the ledger. Pure: the view hands it the facts.
+//! agent asks; `Done · 0:42` (after the strip's ✓) once the turn ends. On its right, pinned, the
+//! ledger's chips (chore 22): `⧉ 4 changed` and `✓ checks`. Pure: the view hands it the facts.
 
 use std::time::{Duration, Instant};
 
 use crate::agent_lanes::clock;
-use crate::agent_ledger::{Part, PartKind, Running, SEP};
+use crate::agent_ledger::{Ledger, Running, SEP};
 use crate::status::Status;
 
 /// What the line is made from.
@@ -22,8 +22,6 @@ pub struct LineState<'a> {
     pub task: Option<(usize, usize)>,
     /// The call running now.
     pub running: Option<&'a Running>,
-    /// The ledger's parts (only `Changed` and `Checks` are read).
-    pub parts: &'a [Part],
     /// How long the last turn worked (Done).
     pub took: Option<Duration>,
     pub now: Instant,
@@ -34,9 +32,9 @@ fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("").trim_end().to_string()
 }
 
-/// The main line, and the counts line under it (none with nothing to count).
-pub fn status_line(s: &LineState) -> (String, Option<String>) {
-    let main = match s.status {
+/// The line's words (its counts are the chips on its right: `chips`).
+pub fn status_line(s: &LineState) -> String {
+    match s.status {
         Status::Waiting => {
             let mut words = vec!["Waiting for you".to_string()];
             words.extend(s.question.map(first_line));
@@ -61,26 +59,81 @@ pub fn status_line(s: &LineState) -> (String, Option<String>) {
             }
             words.join(SEP)
         }
+    }
+}
+
+/// A chip on the status row's right (chore 22): what it counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChipKind {
+    /// `⧉ 4 changed`: opens the changed files.
+    Changed,
+    /// `✓ checks`: opens the check results.
+    Checks,
+}
+
+/// How a chip stands: its glyph and ink.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChipState {
+    /// The changed files' (dim, no state).
+    Quiet,
+    /// A check runs now: the arc.
+    Running,
+    /// Every check's latest run passed: ✓.
+    Passed,
+    /// Checks ran, not all known to pass: a ring.
+    Ran,
+    /// One fails for real: red, ✕.
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chip {
+    pub kind: ChipKind,
+    pub state: ChipState,
+    pub text: String,
+}
+
+/// The status row's chips (chore 22): `N changed` once a file changed; the checks once one ran
+/// or runs — running (the arc) while one runs, failing (red, what fails), passing, or ran.
+pub fn chips(ledger: &Ledger) -> Vec<Chip> {
+    use crate::agent_activity::CheckWhat;
+    let mut out = Vec::new();
+    if !ledger.changed.is_empty() {
+        out.push(Chip {
+            kind: ChipKind::Changed,
+            state: ChipState::Quiet,
+            text: format!("{} changed", ledger.changed.len()),
+        });
+    }
+    let checks = |state, text: &str| Chip {
+        kind: ChipKind::Checks,
+        state,
+        text: text.to_string(),
     };
-    let counts: Vec<&str> = s
-        .parts
-        .iter()
-        .filter(|p| matches!(p.kind, PartKind::Changed | PartKind::Checks))
-        .map(|p| p.text.as_str())
-        .collect();
-    (main, (!counts.is_empty()).then(|| counts.join(SEP)))
+    let chip = match ledger.failing {
+        _ if ledger.checking => Some(checks(ChipState::Running, "checks")),
+        Some(CheckWhat::Tests) => Some(checks(ChipState::Failed, "tests")),
+        Some(CheckWhat::Build) => Some(checks(ChipState::Failed, "build")),
+        Some(CheckWhat::Lint) => Some(checks(ChipState::Failed, "lint")),
+        None if ledger.scopes.is_empty() => None,
+        None if ledger
+            .scopes
+            .iter()
+            .all(crate::agent_ledger::Scope::passing) =>
+        {
+            Some(checks(ChipState::Passed, "checks"))
+        }
+        None => Some(checks(ChipState::Ran, "checks")),
+    };
+    out.extend(chip);
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn part(kind: PartKind, text: &str) -> Part {
-        Part {
-            kind,
-            text: text.into(),
-        }
-    }
+    use crate::agent_activity::{CheckWhat, Outcome};
+    use crate::agent_ledger::Scope;
 
     fn state<'a>(now: Instant) -> LineState<'a> {
         LineState {
@@ -89,7 +142,6 @@ mod tests {
             question: None,
             task: None,
             running: None,
-            parts: &[],
             took: None,
             now,
         }
@@ -113,14 +165,14 @@ mod tests {
             ..state(now)
         };
         assert_eq!(
-            status_line(&s).0,
+            status_line(&s),
             "Cultivating… · Run the full e2e suite · 0:31"
         );
     }
 
     #[test]
     fn working_with_nothing_running_is_the_word_alone() {
-        assert_eq!(status_line(&state(Instant::now())).0, "Cultivating…");
+        assert_eq!(status_line(&state(Instant::now())), "Cultivating…");
     }
 
     #[test]
@@ -132,7 +184,7 @@ mod tests {
             ..state(now)
         };
         assert_eq!(
-            status_line(&s).0,
+            status_line(&s),
             "Cultivating… · Run the full e2e suite · 0:31 · +2 more"
         );
     }
@@ -147,7 +199,7 @@ mod tests {
             ..state(now)
         };
         assert_eq!(
-            status_line(&s).0,
+            status_line(&s),
             "Task 5/6 · Cultivating… · Run the full e2e suite · 0:31"
         );
     }
@@ -159,12 +211,12 @@ mod tests {
             question: Some("Allow Bash?"),
             ..state(Instant::now())
         };
-        assert_eq!(status_line(&s).0, "Waiting for you · Allow Bash?");
+        assert_eq!(status_line(&s), "Waiting for you · Allow Bash?");
         let bare = LineState {
             question: None,
             ..s
         };
-        assert_eq!(status_line(&bare).0, "Waiting for you");
+        assert_eq!(status_line(&bare), "Waiting for you");
     }
 
     /// A permission's command or a call's title may run over lines (a heredoc): the line keeps
@@ -177,7 +229,7 @@ mod tests {
             ..state(Instant::now())
         };
         assert_eq!(
-            status_line(&s).0,
+            status_line(&s),
             "Waiting for you · Claude wants to run: cat <<EOF"
         );
         let now = Instant::now();
@@ -190,7 +242,7 @@ mod tests {
             running: Some(&r),
             ..state(now)
         };
-        assert_eq!(status_line(&s).0, "Cultivating… · Run a script");
+        assert_eq!(status_line(&s), "Cultivating… · Run a script");
     }
 
     #[test]
@@ -200,26 +252,79 @@ mod tests {
             took: Some(Duration::from_secs(42)),
             ..state(Instant::now())
         };
-        assert_eq!(status_line(&s).0, "Done · 0:42");
+        assert_eq!(status_line(&s), "Done · 0:42");
         let untimed = LineState { took: None, ..s };
-        assert_eq!(status_line(&untimed).0, "Done");
+        assert_eq!(status_line(&untimed), "Done");
     }
 
+    fn ledger(changed: usize, runs: &[Outcome], checking: bool) -> Ledger {
+        Ledger {
+            running: None,
+            changed: (0..changed)
+                .map(|n| crate::agent_ledger::Changed {
+                    path: format!("/tmp/fx/code/my-app/src/f{n}.rs").into(),
+                    plus: None,
+                    minus: None,
+                })
+                .collect(),
+            scripted: Vec::new(),
+            read: Vec::new(),
+            checks: Vec::new(),
+            scopes: if runs.is_empty() {
+                Vec::new()
+            } else {
+                vec![Scope {
+                    what: CheckWhat::Tests,
+                    scope: "cargo test".into(),
+                    runs: runs.iter().map(|o| (o.clone(), false)).collect(),
+                }]
+            },
+            passed: 0,
+            total: 0,
+            failing: None,
+            checking,
+        }
+    }
+
+    fn chip(kind: ChipKind, state: ChipState, text: &str) -> Chip {
+        Chip {
+            kind,
+            state,
+            text: text.into(),
+        }
+    }
+
+    /// Chore 22: the counts are chips on the row's right, as soon as there is something to say.
     #[test]
-    fn counts_line_joins_changed_and_checks() {
-        let parts = [
-            part(PartKind::Running, "Run the full e2e suite 0:31"),
-            part(PartKind::Changed, "4 changed"),
-            part(PartKind::Checks, "checks pass"),
-        ];
-        let s = LineState {
-            parts: &parts,
-            ..state(Instant::now())
-        };
+    fn chips_say_changed_and_how_the_checks_stand() {
+        let passed = Outcome::Passed { n: Some(2) };
         assert_eq!(
-            status_line(&s).1.as_deref(),
-            Some("4 changed · checks pass")
+            chips(&ledger(4, std::slice::from_ref(&passed), false)),
+            [
+                chip(ChipKind::Changed, ChipState::Quiet, "4 changed"),
+                chip(ChipKind::Checks, ChipState::Passed, "checks"),
+            ]
         );
-        assert_eq!(status_line(&state(Instant::now())).1, None);
+        assert!(chips(&ledger(0, &[], false)).is_empty(), "nothing yet");
+        assert_eq!(
+            chips(&ledger(0, &[], true)),
+            [chip(ChipKind::Checks, ChipState::Running, "checks")],
+            "a check running, none finished yet"
+        );
+        assert_eq!(
+            chips(&ledger(1, std::slice::from_ref(&passed), true))[1],
+            chip(ChipKind::Checks, ChipState::Running, "checks"),
+            "running again"
+        );
+        assert_eq!(
+            chips(&ledger(0, &[Outcome::Unknown], false)),
+            [chip(ChipKind::Checks, ChipState::Ran, "checks")]
+        );
+        let mut failing = ledger(0, &[Outcome::Unknown], false);
+        failing.failing = Some(CheckWhat::Build);
+        assert_eq!(
+            chips(&failing),
+            [chip(ChipKind::Checks, ChipState::Failed, "build")]
+        );
     }
 }

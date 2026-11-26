@@ -78,6 +78,9 @@ mod shells_view;
 
 #[path = "agent_subagents_view.rs"]
 mod subagents_view;
+
+#[path = "agent_status_view.rs"]
+mod status_view;
 #[cfg(feature = "ui-shots")]
 pub(crate) use ask_view::ShotAsk;
 #[cfg(feature = "ui-shots")]
@@ -1577,6 +1580,10 @@ pub struct AgentTab {
     /// The open shells popover's reading of their last output lines (chore 16).
     shell_poll: Option<Task<()>>,
     thinking_mark: Entity<MarkView>,
+    /// The checks chip's arc while a check runs (chore 22).
+    checks_mark: Option<Entity<MarkView>>,
+    /// Which chip opened the ledger's popover: its part shows (chore 22).
+    pub(crate) ledger_part: Option<crate::agent_status_line::ChipKind>,
     bar_width: Rc<Cell<f32>>,
     /// Whether the box's placeholder was last set for a tab under `NARROW` (a lane's relay
     /// placeholder is shorter there; the width is known only once laid out).
@@ -2211,7 +2218,10 @@ impl AgentTab {
     /// The chat's status line and its counts line, as drawn (built here for the scenes, not on
     /// every frame with the box's texts).
     #[cfg(feature = "ui-shots")]
-    pub fn shot_status_line(&self, cx: &App) -> Option<(String, Option<String>)> {
+    pub fn shot_status_line(
+        &self,
+        cx: &App,
+    ) -> Option<(String, Vec<crate::agent_status_line::Chip>)> {
         self.status_line_now(&cx.global::<Appearance>().theme)
     }
 
@@ -2367,6 +2377,8 @@ impl AgentTab {
             shell_marks: std::collections::HashMap::new(),
             shell_poll: None,
             thinking_mark,
+            checks_mark: None,
+            ledger_part: None,
             bar_width: Rc::new(Cell::new(f32::MAX)),
             placeholder_narrow: false,
             tracks_fit: true,
@@ -5809,6 +5821,7 @@ impl AgentTab {
         self.modal_mark = cx.new(|cx| MarkView::new(clock, Status::Working, px(MARK), BLACK, cx));
         self.thinking_mark =
             cx.new(|cx| MarkView::new(clock, Status::Working, px(MARK), BLACK, cx));
+        self.checks_mark = None;
         self.clock = clock.clone();
         self.tool_marks.clear();
         self.shell_marks.clear();
@@ -5952,32 +5965,28 @@ impl AgentTab {
         }
     }
 
-    /// The chat's status line and its counts line (`agent_status_line`), as of now: in Main,
-    /// while a turn works or waits on you, and after a turn this tab saw end (until the next).
-    pub(crate) fn status_line_now(&self, theme: &Theme) -> Option<(String, Option<String>)> {
-        use crate::agent_status_line::{LineState, status_line};
+    /// The chat's status line and its chips (`agent_status_line`), as of now: in Main, while a
+    /// turn works or waits on you, and after a turn this tab saw end (until the next).
+    pub(crate) fn status_line_now(
+        &self,
+        theme: &Theme,
+    ) -> Option<(String, Vec<crate::agent_status_line::Chip>)> {
+        use crate::agent_status_line::{LineState, chips, status_line};
         if !self.status_line_shown() {
             return None;
         }
-        let status = self.shown_status();
-        let now = Instant::now();
-        let parts = self
-            .ledger
-            .as_ref()
-            .map(|l| crate::agent_ledger::parts(l, now))
-            .unwrap_or_default();
         let word = self.status_word(theme);
         let question = self.question();
-        Some(status_line(&LineState {
+        let main = status_line(&LineState {
             word: &word,
-            status,
+            status: self.shown_status(),
             question: question.as_deref(),
             task: crate::plan_progress::building(&self.plan),
             running: self.ledger.as_ref().and_then(|l| l.running.as_ref()),
-            parts: &parts,
             took: self.top.took,
-            now,
-        }))
+            now: Instant::now(),
+        });
+        Some((main, self.ledger.as_ref().map(chips).unwrap_or_default()))
     }
 
     /// Whether the chat's status line shows: in Main, while a turn works or waits on you, and
@@ -5990,98 +5999,6 @@ impl AgentTab {
             Status::Idle => self.stopping.is_some(),
         };
         live && self.view == crate::agent_lanes::View::Main
-    }
-
-    /// The status line over the box (the 2026-11-24 chores: "change the Cultivating loading on
-    /// the chat to be the status states"): its mark in the avatar column, the line in the text
-    /// column, and under it the dim counts that open the ledger's popover. Always in view (not
-    /// a row of the chat, so a scrolled chat still shows it).
-    fn status_strip(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
-        use crate::ui_tokens::chat;
-        let theme = cx.global::<Appearance>().theme;
-        let (main, counts) = self.status_line_now(&theme)?;
-        let mark: AnyElement = match self.shown_status() {
-            Status::Waiting => div()
-                .size(px(6.))
-                .rounded_full()
-                .bg(hsla(c.ask_edge))
-                .into_any_element(),
-            Status::Done => status_mark::done_check(c.dim, px(12.)).into_any_element(),
-            Status::Working | Status::Idle => self.thinking_mark.clone().into_any_element(),
-        };
-        let failing = self.ledger.as_ref().is_some_and(|l| l.failing.is_some());
-        let hover = c.text;
-        let counts = counts.map(|text| {
-            self.marked(
-                "status-counts",
-                div()
-                    .id("agent-status-counts")
-                    .truncate()
-                    .text_color(hsla(if failing { c.ledger_failing } else { c.dim }))
-                    .cursor_pointer()
-                    .hover(move |s| s.text_color(hsla(hover)))
-                    .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
-                        let pressed = match event {
-                            gpui::ClickEvent::Mouse(click) => Some(click.down.position),
-                            _ => None,
-                        };
-                        // This press already shut the open popover (from outside it).
-                        let shut_at = this.chip_closed_at.take();
-                        if pressed.is_none() || shut_at != pressed {
-                            this.ledger_clicked(cx)
-                        }
-                    }))
-                    .child(SharedString::from(text)),
-            )
-        });
-        let line = div()
-            .w_full()
-            .max_w(px(chat::COLUMN_MAX))
-            .flex()
-            .gap(px(chat::AVATAR_GAP))
-            .pt(px(6.))
-            .pb(px(4.))
-            .text_size(px(text::META))
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(chat::AVATAR))
-                    .h(px(18.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(mark),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.))
-                    .child(
-                        self.marked(
-                            "status-line",
-                            div()
-                                .h(px(18.))
-                                .flex()
-                                .items_center()
-                                .text_color(hsla(c.dim))
-                                .child(div().truncate().child(SharedString::from(main))),
-                        ),
-                    )
-                    .children(counts),
-            );
-        Some(
-            div()
-                .flex_none()
-                .w_full()
-                .px(px(crate::agent_box::AREA_X))
-                .flex()
-                .justify_center()
-                .child(line)
-                .into_any_element(),
-        )
     }
 
     /// What git and the disk say of the turn's files, read again off the UI thread when the
@@ -6201,15 +6118,6 @@ impl AgentTab {
             self.close_menu(cx);
         } else if crate::plan_progress::shows(&self.plan) {
             self.open_menu(crate::agent_box::BoxMenu::Plan, cx);
-        }
-    }
-
-    /// The counts line's click: the ledger's popover opens (over the status mark), or shuts.
-    fn ledger_clicked(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.menu, Some(crate::agent_box::BoxMenu::Ledger)) {
-            self.close_menu(cx);
-        } else {
-            self.open_menu(crate::agent_box::BoxMenu::Ledger, cx);
         }
     }
 

@@ -1269,7 +1269,7 @@ impl AgentTab {
     /// The turn ledger's popover (the agent activity chore): the files the turn changed (a
     /// click opens one's diff tab), those scripts touched, those it only read, its checks and,
     /// apart, its planned failures. Empty sections are left out.
-    pub(super) fn ledger_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn ledger_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         use crate::agent_activity::{Activity, Check};
         let ui = cx.global::<Appearance>().theme.ui();
         let c = Colors::of(&cx.global::<Appearance>().theme);
@@ -1295,7 +1295,16 @@ impl AgentTab {
             FileStatus::Deleted => c.failed,
             FileStatus::Unchanged => ui.text_dim,
         };
-        let groups = changed_groups(&ledger.changed, facts, &self.start.cwd);
+        // The part its chip asked for (chore 22): `⧉ N changed` the files, `✓ checks` the
+        // checks; both when neither did.
+        use crate::agent_status_line::ChipKind;
+        let show_files = self.ledger_part != Some(ChipKind::Checks);
+        let show_checks = self.ledger_part != Some(ChipKind::Changed);
+        let groups = if show_files {
+            changed_groups(&ledger.changed, facts, &self.start.cwd)
+        } else {
+            Vec::new()
+        };
         if !groups.is_empty() {
             let (files, plus, minus) = total(&groups);
             out.push(
@@ -1491,23 +1500,25 @@ impl AgentTab {
         section(None, groups, "ledger-changed", &mut out, cx);
         // Touched by scripts, and read: only files (or files gone), grouped the same way, with
         // no counts; nothing until git and the disk have answered.
-        section(
-            Some("Touched by scripts"),
-            plain_groups(&kept_paths(&ledger.scripted, facts), facts, &self.start.cwd),
-            "ledger-scripted",
-            &mut out,
-            cx,
-        );
-        section(
-            Some("Read"),
-            plain_groups(&kept_paths(&ledger.read, facts), facts, &self.start.cwd),
-            "ledger-read",
-            &mut out,
-            cx,
-        );
+        if show_files {
+            section(
+                Some("Touched by scripts"),
+                plain_groups(&kept_paths(&ledger.scripted, facts), facts, &self.start.cwd),
+                "ledger-scripted",
+                &mut out,
+                cx,
+            );
+            section(
+                Some("Read"),
+                plain_groups(&kept_paths(&ledger.read, facts), facts, &self.start.cwd),
+                "ledger-read",
+                &mut out,
+                cx,
+            );
+        }
         // The checks, one row per scope: its command, its runs' glyphs and its latest outcome
         // (red only while that run still fails for real); "P/T passed" beside the heading.
-        if !ledger.scopes.is_empty() {
+        if show_checks && !ledger.scopes.is_empty() {
             out.push(
                 div()
                     .flex()
@@ -1527,7 +1538,7 @@ impl AgentTab {
                     .into_any_element(),
             );
         }
-        for (n, scope) in ledger.scopes.iter().enumerate() {
+        for (n, scope) in ledger.scopes.iter().enumerate().filter(|_| show_checks) {
             let Some((latest, planned)) = scope.runs.last() else {
                 continue;
             };
@@ -1565,7 +1576,8 @@ impl AgentTab {
                 ui.text_dim
             };
             out.push(
-                div()
+                // Probed by its command (the scenes read the popover's rows).
+                self.marked_row(scope.scope.clone(), div())
                     .id(("ledger-check", n))
                     .h(px(ROW_H))
                     .px(px(8.))

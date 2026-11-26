@@ -84,7 +84,7 @@ const MENU_EDGE: f32 = 8.0;
 /// A menu row's height and corners; the most a menu's list grows before it scrolls.
 const ROW_H: f32 = 32.0;
 /// The turn ledger's popover's width (the agent activity chore).
-const LEDGER_MENU_WIDTH: f32 = 320.0;
+pub(crate) const LEDGER_MENU_WIDTH: f32 = 320.0;
 const ROW_RADIUS: f32 = 8.0;
 const MENU_LIST_MAX: f32 = 360.0;
 /// The `/` list's tallest height (it scrolls) and the width its names have before their lines.
@@ -1110,21 +1110,10 @@ impl AgentTab {
             });
         // The agent's status before the folder, as a shell's running command (`status_pill`).
         let theme = cx.global::<Appearance>().theme;
-        // Its turn ledger's popover hangs over it (the agent activity chore), and still hangs
-        // there while the status line has the mark (chore 17).
-        let ledger_open = menu_on(|m| matches!(m, BoxMenu::Ledger));
-        let mark = self.status_pill(&theme, c, cx);
-        let status = (mark.is_some() || ledger_open).then(|| {
-            div()
-                .relative()
-                .flex_none()
-                .children(mark)
-                .when(ledger_open, |d| {
-                    let menu = self.ledger_menu(cx);
-                    d.child(self.menu_frame(Some(menu), None, LEDGER_MENU_WIDTH, cx))
-                })
-                .into_any_element()
-        });
+        // (The turn ledger's popover hangs from the status row's chips since chore 22.)
+        let status = self
+            .status_pill(&theme, c, cx)
+            .map(|el| div().flex_none().child(el).into_any_element());
         let branch = texts.branch.clone().map(|text| {
             let tip = text.clone();
             self.marked("branch", pill("agent-branch", Icon::Branch, text))

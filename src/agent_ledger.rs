@@ -9,7 +9,7 @@ use std::time::Instant;
 use crate::agent_activity::{CheckWhat, How, Outcome, of};
 use crate::agent_activity_checks::error_code;
 use crate::agent_conversation::{Conversation, Item};
-use crate::agent_lanes::{View, clock};
+use crate::agent_lanes::View;
 pub use crate::agent_steps::ToolTimes;
 use crate::agent_steps::{file_key, stands_alone};
 
@@ -81,21 +81,8 @@ pub struct Ledger {
     /// The latest check of a kind failed for real and no pass of the same kind and scope has
     /// come since.
     pub failing: Option<CheckWhat>,
-}
-
-/// Which part of the folder tab's ledger.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PartKind {
-    Running,
-    Changed,
-    Checks,
-}
-
-/// One part of the ledger as the folder tab says it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Part {
-    pub kind: PartKind,
-    pub text: String,
+    /// A check runs now (one of the running calls is one: chore 22's arc).
+    pub checking: bool,
 }
 
 /// Between the parts (and after the status word).
@@ -288,6 +275,10 @@ impl Fold {
                     .is_some_and(|e| error_code(&e).is_some());
                 if compile { CheckWhat::Build } else { *what }
             });
+        // A running call that is a check (its command is one: `cargo test`, a build).
+        let checking = running
+            .iter()
+            .any(|(ix, _, _)| of(&items[*ix]).is_some_and(|a| a.check.is_some()));
         // The latest started runs now (else the last in order), the others "+N running".
         let lead = running
             .iter()
@@ -312,6 +303,7 @@ impl Fold {
             passed,
             total,
             failing,
+            checking,
         }
     }
 }
@@ -413,46 +405,6 @@ fn add(a: Option<u32>, b: Option<u32>) -> Option<u32> {
         (None, None) => None,
         _ => Some(a.unwrap_or(0) + b.unwrap_or(0)),
     }
-}
-
-/// The folder tab's parts: the running call and its time ("+N running"), the files changed,
-/// and the checks by each scope's latest run: "tests failing" while one fails for real, "checks
-/// pass" when every scope's passed, else "checks ran" (P/T is the popover's).
-pub fn parts(ledger: &Ledger, now: Instant) -> Vec<Part> {
-    let mut out = Vec::new();
-    if let Some(r) = &ledger.running {
-        let mut text = r.title.clone();
-        if let Some(started) = r.started {
-            text.push(' ');
-            text.push_str(&clock(now.saturating_duration_since(started)));
-        }
-        if r.more > 0 {
-            text.push_str(&format!("{SEP}+{} running", r.more));
-        }
-        out.push(Part {
-            kind: PartKind::Running,
-            text,
-        });
-    }
-    if !ledger.changed.is_empty() {
-        out.push(Part {
-            kind: PartKind::Changed,
-            text: format!("{} changed", ledger.changed.len()),
-        });
-    }
-    let checks = match ledger.failing {
-        Some(CheckWhat::Tests) => Some("tests failing".to_string()),
-        Some(CheckWhat::Build) => Some("build failing".to_string()),
-        Some(CheckWhat::Lint) => Some("lint failing".to_string()),
-        None if ledger.scopes.is_empty() => None,
-        None if ledger.scopes.iter().all(Scope::passing) => Some("checks pass".to_string()),
-        None => Some("checks ran".to_string()),
-    };
-    out.extend(checks.map(|text| Part {
-        kind: PartKind::Checks,
-        text,
-    }));
-    out
 }
 
 #[cfg(test)]
@@ -724,9 +676,36 @@ mod tests {
         let l = main_of(&c);
         assert_eq!(l.failing, Some(CheckWhat::Build));
         assert_eq!(
-            parts(&l, Instant::now()).last().map(|p| p.text.as_str()),
-            Some("build failing")
+            crate::agent_status_line::chips(&l)
+                .last()
+                .map(|c| c.text.as_str()),
+            Some("build")
         );
+    }
+
+    /// Chore 22: a running call that is a check makes the checks chip's arc; a finished one
+    /// doesn't.
+    #[test]
+    fn a_running_check_is_checking() {
+        let mut c = turn();
+        started(
+            &mut c,
+            "1",
+            None,
+            &check("cargo test cli::", Outcome::Unknown),
+        );
+        assert!(main_of(&c).checking, "running");
+        let mut done = turn();
+        call(&mut done, "1", None, check("cargo test cli::", failed()));
+        assert!(!main_of(&done).checking, "finished");
+        let mut edit_only = turn();
+        started(
+            &mut edit_only,
+            "1",
+            None,
+            &edit("src/a.rs", Some(1), Some(0)),
+        );
+        assert!(!main_of(&edit_only).checking, "not a check");
     }
 
     #[test]
@@ -784,68 +763,5 @@ mod tests {
         c.you("again".into(), vec![]);
         call(&mut c, "2", None, edit("src/b.rs", Some(1), Some(0)));
         assert!(ledger_of(&c, &View::Main, &ToolTimes::new(), cwd()).is_some());
-    }
-
-    fn sample(now: Instant) -> Ledger {
-        Ledger {
-            running: Some(Running {
-                id: "t".into(),
-                title: "Running tests".into(),
-                started: Some(now - Duration::from_secs(14)),
-                more: 1,
-            }),
-            changed: (0..4)
-                .map(|n| Changed {
-                    path: PathBuf::from(format!("{CWD}/src/f{n}.rs")),
-                    plus: None,
-                    minus: None,
-                })
-                .collect(),
-            scripted: Vec::new(),
-            read: Vec::new(),
-            checks: Vec::new(),
-            scopes: vec![Scope {
-                what: CheckWhat::Tests,
-                scope: "cargo test".into(),
-                runs: vec![(Outcome::Passed { n: Some(2) }, false)],
-            }],
-            passed: 2,
-            total: 6,
-            failing: None,
-        }
-    }
-
-    fn texts(parts: &[Part]) -> Vec<&str> {
-        parts.iter().map(|p| p.text.as_str()).collect()
-    }
-
-    #[test]
-    fn parts_read_running_changed_checks() {
-        let now = Instant::now();
-        let mut l = sample(now);
-        assert_eq!(
-            texts(&parts(&l, now)),
-            [
-                "Running tests 0:14 · +1 running",
-                "4 changed",
-                "checks pass"
-            ]
-        );
-        l.scopes[0].runs.push((Outcome::Unknown, false));
-        assert_eq!(parts(&l, now)[2].text, "checks ran");
-        l.failing = Some(CheckWhat::Tests);
-        assert_eq!(parts(&l, now)[2].text, "tests failing");
-        l.failing = Some(CheckWhat::Build);
-        assert_eq!(parts(&l, now)[2].text, "build failing");
-        let empty = Ledger {
-            running: None,
-            changed: Vec::new(),
-            scopes: Vec::new(),
-            passed: 0,
-            total: 0,
-            failing: None,
-            ..sample(now)
-        };
-        assert!(parts(&empty, now).is_empty());
     }
 }
