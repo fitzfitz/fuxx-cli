@@ -1550,3 +1550,9 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   under it); the tab gets its mark back when the status line goes (idle, or "Done" faded). The spinner stays beside
   the words it describes. Not chosen: A (drop the status line's mark), C (the status line inside the tab), D (an
   accent bar instead of the status line's spinner).
+- **Chore 18 (queued, not built): the plan tab's left step meets the box's line** (your words, 2026-11-26, with a
+  picture of `☰ 0/5`: "the line is offside"). The concave step on the plan tab's left (chore 4's mirrored sprite,
+  `paint_tab_step_left`, drawn from its square's bottom-right) doesn't join the box's top edge cleanly: its curved
+  line sits off the box's line. Fix by checking the step's anchor (`bounds.right()` / `bounds.bottom()`, its 16 pt
+  box and `mr(-EDGE)`) against the folder tab's step and the box's border, in both themes and at 1x/2x; pin it with
+  a pixel check in `agent-plan-tab` (the edge colour continuous where the curve meets the box's top line).
